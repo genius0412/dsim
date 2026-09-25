@@ -261,17 +261,42 @@ export function fetchUserStats(userId: string, season?: number, game?: GameId): 
 
 export interface GlobalStats {
   users: number;
-  /** total games played — COMBINED across every game (the homepage headline) */
+  /** total games played — COMBINED across every game and source (the homepage headline) */
   games: number;
-  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
-  /** games played PER GAME (DECODE + Chain Reaction tracked separately); the
-   * homepage sums these into `games`. Absent from older servers. */
+  /** solo = record solo + practice · duo = record duo · 1v1 / 2v2 = ranked ·
+   * custom = custom rooms + Discord rooms + LAN. `custom` is absent from older servers,
+   * which also counted custom rooms inside 1v1 / 2v2. */
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number; custom?: number };
+  /** games played PER GAME. Absent from older servers. */
   byGame?: Partial<Record<GameId, number>>;
 }
 
 /** site-wide totals for the homepage (players + games played, by category) */
 export function fetchGlobalStats(): Promise<GlobalStats> {
   return getJson(`/api/stats`);
+}
+
+/**
+ * Count one match the cloud did not run: a finished solo PRACTICE run, or a LAN match (its
+ * host sends it; nobody else does). Server rooms count themselves. Fire-and-forget: offline,
+ * no game server, or an older server that 404s all cost nothing.
+ *
+ * `text/plain` so the POST is a simple request with no CORS preflight, and `keepalive` so a
+ * practice run harvested while the page unloads still gets its report out.
+ */
+export function reportPlayed(game: GameId, source: 'practice' | 'lan', mode?: '1v1' | '2v2'): void {
+  const base = gameServerHttpUrl();
+  if (!base) return;
+  try {
+    void fetch(`${base}/api/played`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ game, source, mode }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* fetch unavailable — nothing to count with */
+  }
 }
 
 /** every live RANKED match currently running (for the "Watch Live" list). Each

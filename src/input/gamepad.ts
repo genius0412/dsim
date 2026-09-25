@@ -64,7 +64,18 @@ const EMPTY: GamepadSample = {
  * user's PadBindings: the drive stick translates, the other stick's X turns.
  * Which BUTTONS mean which ACTION — singles and combos alike — is the chord
  * resolver's answer (`padChords.ts`); this class only reads the hardware. */
+/**
+ * HOW LONG A PAD MAY VANISH BEFORE IT COUNTS AS UNPLUGGED (ms). `getGamepads()` can report no
+ * connected pad for a single frame (seen on Bluetooth pads), and returning the empty sample
+ * then released every held button at once: replay 1dc6eb8f has one all-zero input frame in the
+ * middle of a held press, and the ramp toggled twice on it. Within the grace the last sample is
+ * held, with its one-shot actions cleared so they cannot fire again.
+ */
+const PAD_DROPOUT_GRACE_MS = 100;
+
 export class GamepadInput {
+  private last: GamepadSample | null = null;
+  private lostAt = 0;
   private prevStart = false;
   private prevRestart = false;
   private prevFlip = false;
@@ -74,7 +85,16 @@ export class GamepadInput {
   sample(bindings: PadBindings): GamepadSample {
     const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
     const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (!pad) {
+      if (this.last) {
+        if (this.lostAt === 0) this.lostAt = now;
+        if (now - this.lostAt < PAD_DROPOUT_GRACE_MS) {
+          return { ...this.last, flipFront: false, park: false, start: false, restart: false };
+        }
+      }
+      this.last = null;
+      this.lostAt = 0;
       this.prevStart = false;
       this.prevRestart = false;
       this.prevFlip = false;
@@ -92,7 +112,7 @@ export class GamepadInput {
        in-match menu is dead until it is released, so the press that got the player out of the
        menu cannot also fire a shot on the way back in — `padNav.ts` says why. */
     const held = applyPadMask(raw);
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lostAt = 0;
     const on = this.chords.resolve(held, bindings, now);
     const ax = (i: number): number => shape(pad.axes[i] ?? 0, bindings.deadzone, bindings.curve);
     // left stick = axes 0/1, right stick = axes 2/3
@@ -124,6 +144,7 @@ export class GamepadInput {
     this.prevRestart = on.restart;
     this.prevFlip = on.flipFront;
     this.prevPark = on.park;
+    this.last = sampleOut;
     return sampleOut;
   }
 }

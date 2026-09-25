@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { GameId } from '../src/types';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
@@ -23,6 +24,7 @@ import {
   declineRoomInvite,
   dismissRoomInvite,
   addActivity,
+  countPlay,
   ensureProfile,
   listPracticeRuns,
   savePracticeRun,
@@ -116,6 +118,7 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  * empty/404 gracefully when the DB is disabled.
  *
  *   GET  /api/stats                          — site-wide players + games played
+ *   POST /api/played {game, source, mode}    — count one practice / LAN match (public)
  *   GET  /api/records?mode=solo|duo&drivetrain=<dt|overall>&season=<n>&limit=<n>
  *   GET  /api/elo?mode=1v1|2v2&season=<n>&limit=<n>
  *   GET  /api/user/<id>/stats?season=<n>   — one user's ELO+records+W/L+history
@@ -323,6 +326,30 @@ function exportRateOk(userId: string): boolean {
   if (until && until > now) return false;
   exportRate.set(userId, now + EXPORT_WINDOW_MS);
   return true;
+}
+
+/**
+ * THROTTLE FOR `POST /api/played`, the public match-count report. Keyed by a HASH of the
+ * address, so the limiter never holds a raw IP (the analytics rule, `server/analytics.ts`).
+ * A practice match takes minutes, so 30 in ten minutes is a room full of players behind one
+ * NAT, not one player.
+ */
+const PLAYED_WINDOW_MS = 10 * 60_000;
+const PLAYED_MAX_PER_WINDOW = 30;
+const playedRate = new Map<string, { n: number; until: number }>();
+
+function playedRateOk(ip: string): boolean {
+  const key = createHash('sha256').update(ip).digest('hex').slice(0, 16);
+  const now = Date.now();
+  // swept on the way past, unconditionally — see `uploadRateOk`
+  for (const [k, v] of playedRate) if (v.until <= now) playedRate.delete(k);
+  const hit = playedRate.get(key);
+  if (!hit) {
+    playedRate.set(key, { n: 1, until: now + PLAYED_WINDOW_MS });
+    return true;
+  }
+  hit.n++;
+  return hit.n <= PLAYED_MAX_PER_WINDOW;
 }
 
 /** the Bearer token from an Authorization header, if it looks like one */
@@ -1685,8 +1712,36 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/stats') {
       const stats = dbEnabled
         ? await getGlobalStats()
-        : { users: 0, games: 0, byCategory: { solo: 0, duo: 0, '1v1': 0, '2v2': 0 } };
+        : { users: 0, games: 0, byCategory: { solo: 0, duo: 0, '1v1': 0, '2v2': 0, custom: 0 }, detail: [] };
       return json(200, stats), true;
+    }
+
+    /**
+     * A MATCH THE CLOUD DID NOT RUN, reported by the client that played it: solo practice (the
+     * local sim) and a LAN match (sent by its host alone). Server rooms count themselves in
+     * `persistMatch`. Public, because practice is played signed out; so the answer is always
+     * 204 and a refused or throttled report is dropped without saying why.
+     *
+     * The count is client-reported and reaches nothing but the homepage counter. The limit
+     * per address bounds how far one machine can move it; a school behind one NAT playing
+     * practice all afternoon stays well inside it.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/played') {
+      const done = (): true => (res.writeHead(204, CORS), res.end(), true);
+      if (!dbEnabled || !playedRateOk(clientIp(req))) return done();
+      let body: { game?: unknown; source?: unknown; mode?: unknown };
+      try {
+        body = JSON.parse(await readBody(req, 512));
+      } catch {
+        return done();
+      }
+      if (!isGameId(body.game)) return done();
+      const source = body.source === 'practice' || body.source === 'lan' ? body.source : null;
+      if (!source) return done();
+      // practice is one driver by construction; a LAN match is a versus room
+      const mode = source === 'practice' ? 'solo' : body.mode === '2v2' ? '2v2' : '1v1';
+      await countPlay(body.game, source, mode).catch((e: unknown) => console.error('[played] count failed:', e));
+      return done();
     }
 
     // season list for the leaderboard's season picker; `current` is the live one

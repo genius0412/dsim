@@ -31,7 +31,7 @@ export function Changelog() {
     <>
       <h1 className="ds-h1">Changes</h1>
 
-      <section className="ds-panel">
+      <section className="ds-panel cl-panel">
         {/* NO PANEL TITLE. The eyebrow says "DSIM · Changes", the h1 says
             "Changes", and "What's changed" said it a third time inside 60px on a
             page holding exactly one panel. The GitHub link is the only thing in
@@ -46,7 +46,7 @@ export function Changelog() {
             GitHub
           </a>
         </div>
-        <div className="ds-panel-body">
+        <div className="ds-panel-body cl-body">
           {/* "No changelog yet" was false here: the changelog exists, this build just can't
               reach it. Say that, and point at where the releases are readable anyway. */}
           {!configured ? (

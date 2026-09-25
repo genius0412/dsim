@@ -208,6 +208,15 @@ const themedPairs = (t) => {
     ['--ds-accent on panel (contributor icon)', t('--ds-accent'), panel, AA],
     ['--ds-ink-dim on panel (contributor card)', t('--ds-ink-dim'), panel, AA],
 
+    // PATCH NOTES (.ann-panel modal and /changelogs, both on --ds-panel since the notes lost
+    // their --ds-tile card): body, bold leads, the mono `##` section label, the date, and the
+    // inset focus ring of the scrollable notes region
+    ['.ann-md body --ds-ink-dim on panel', t('--ds-ink-dim'), panel, AA],
+    ['.ann-md strong --ds-ink on panel', t('--ds-ink'), panel, AA],
+    ['.ann-md ## label --ds-accent on panel', t('--ds-accent'), panel, AA],
+    ['.ann-item-date --ds-mut on panel', t('--ds-mut'), panel, AA],
+    ['.ann-scroll focus ring on panel (1.4.11)', t('--ds-accent'), panel, NON_TEXT],
+
     // 1.4.11 — interactive boundaries, measured against the card behind them
     ['--ds-line-strong on panel (1.4.11)', t('--ds-line-strong'), panel, NON_TEXT],
     ['focus ring --ds-accent on bg (1.4.11)', t('--ds-accent'), bg, NON_TEXT],

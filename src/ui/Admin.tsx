@@ -614,7 +614,7 @@ export function Admin({
         {annBody.trim() && (
           <div className="admin-field col">
             <span className="ds-hint">Preview</span>
-            <div className="ann-item">
+            <div className="ann-item ann-preview">
               <Markdown text={annBody} className="ann-md" />
             </div>
           </div>

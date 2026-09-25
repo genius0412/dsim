@@ -118,6 +118,7 @@ import {
   bbPlacePoint,
   bbPlacePointLocal,
   bbRampSettled,
+  bbRampStep,
   bbRampSwingProgress,
   bbRobotSolids,
   bbSlewTurret,
@@ -3073,6 +3074,37 @@ export function robotChecks(check: Check): void {
       flush(r);
       tick(w, cmd({ bbRamp: true }));
       check('flower intake: a bbRamp press during `pre` does nothing', r.bbRampOut !== true, `out=${r.bbRampOut}`);
+    }
+    {
+      // DEBOUNCE (replay 1dc6eb8f, 2026-09-25): a held ramp button with a 1- or 2-tick dropout in
+      // it is ONE press. Each dropout in that match flipped the ramp twice. A 3-tick gap was the
+      // fastest real re-press in the same match, so it still counts.
+      const flipsWithGap = (gap: number): number => {
+        const { r } = pullWorld(123, 'ramp');
+        let t = 0;
+        let flips = 0;
+        let out = r.bbRampOut;
+        const hold = (on: boolean, n: number): void => {
+          for (let i = 0; i < n; i++) {
+            t += 1 / 60;
+            bbRampStep(r, cmd({ bbRamp: on }), true, t);
+            if (r.bbRampOut !== out) {
+              flips++;
+              out = r.bbRampOut;
+            }
+          }
+        };
+        hold(true, 8);
+        hold(false, gap);
+        hold(true, 8);
+        hold(false, 10);
+        return flips;
+      };
+      const f = [1, 2, 3, 6].map(flipsWithGap);
+      check('ramp debounce: a 1-tick dropout inside a held press toggles ONCE', f[0] === 1, `flips=${f[0]}`);
+      check('ramp debounce: a 2-tick dropout inside a held press toggles ONCE', f[1] === 1, `flips=${f[1]}`);
+      check('ramp debounce: a 3-tick gap is a real re-press and toggles TWICE', f[2] === 2, `flips=${f[2]}`);
+      check('ramp debounce: a 6-tick gap toggles TWICE', f[3] === 2, `flips=${f[3]}`);
     }
   }
 

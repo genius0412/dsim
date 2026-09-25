@@ -41,7 +41,7 @@ import {
 } from './bodies';
 import { hiveTiltAngle } from './hive3d';
 import { hyp3, QUAT_IDENTITY, round4, tiltQuatX, yawQuat, yawOfQuat } from './math3';
-import { GROUP_NECTAR } from './groups';
+import { GROUP_CHASSIS, GROUP_NECTAR } from './groups';
 
 /**
  * BIOBUZZ 3D — CLIENT-SIDE PREDICTION WORLDS (Day 2, `docs/biobuzz/plan-3d.md` §5).
@@ -666,7 +666,7 @@ function fitChassis(
     // the frame, the mechanisms and each mouth's two arms, exactly as the authority builds them
     for (const sh of predictChassisShapes(r.spec, heightIn)) {
       world3d.createCollider(
-        chassisMechDesc(RAPIER, sh).setTranslation(sh.cx, sh.cy, sh.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0),
+        chassisMechDesc(RAPIER, sh).setTranslation(sh.cx, sh.cy, sh.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_CHASSIS),
         body,
       );
     }
@@ -690,7 +690,8 @@ function fitChassis(
       .setTranslation(forward, 0, bodyCz)
       .setDensity(0)
       .setFriction(PHYS_FRICTION)
-      .setRestitution(0),
+      .setRestitution(0)
+      .setCollisionGroups(GROUP_CHASSIS),
     body,
   );
   for (const s of chassis3dMechShapes(r.spec, heightIn, { front: fe.front, back: fe.rear, left: fe.half, right: fe.half })) {
@@ -699,7 +700,8 @@ function fitChassis(
         .setTranslation(s.cx, s.cy, s.cz)
         .setDensity(0)
         .setFriction(PHYS_FRICTION)
-        .setRestitution(0),
+        .setRestitution(0)
+        .setCollisionGroups(GROUP_CHASSIS),
       body,
     );
   }

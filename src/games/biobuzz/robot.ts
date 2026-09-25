@@ -1,6 +1,7 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import { INTAKE_RAIL_T, SIM_DT } from '../../config';
 import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
+import { debouncedPress } from '../../sim/robot';
 import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
 import {
@@ -1487,11 +1488,18 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null {
  * keeps the 2D pipeline byte-identical for every spec that existed before this archetype did
  * (`npm test` hashes worlds). `enabled` false (pre-match, a phase transition, post-match) drops
  * the press on the floor the same way drive/intake/fire do, rather than letting it queue.
+ *
+ * ⚠️ **DEBOUNCED: A RELEASE SHORTER THAN `TOGGLE_DEBOUNCE_S` IS NOT A RELEASE** (`debouncedPress`). Replay
+ * 1dc6eb8f (2026-09-25) held the ramp button through two one-tick dropouts — one a whole input
+ * frame of zeros, a gamepad read that came back empty — and each flipped the ramp twice. The
+ * driver saw it deploy and fold for no reason. The latch now stays set through a short gap;
+ * `bbRampUpAt` is when the button went up, so the latch clears only once the gap is long
+ * enough. The fastest real re-press in that replay's mashing was 3 ticks.
  */
 export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean, time: number): void {
   if (bbIntakeKindOf(r.spec) !== 'ramp') return;
-  const wants = enabled && (cmd?.bbRamp ?? false);
-  if (wants && !r.bbRampHeld) {
+  const e = debouncedPress(r.bbRampHeld ?? false, r.bbRampUpAt, enabled && (cmd?.bbRamp ?? false), time);
+  if (e.press) {
     r.bbRampOut = !(r.bbRampOut ?? false);
     r.bbRampAt = time;
     // A FRESH PRESS RE-ARMS THE SWING GUARD (owner, 2026-09-20: a swing that would carry the
@@ -1500,7 +1508,8 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
     // DIFFERENT swing, so it gets to test again.
     r.bbRampBlocked = false;
   }
-  r.bbRampHeld = wants;
+  r.bbRampHeld = e.held;
+  if (e.upAt !== undefined || r.bbRampUpAt !== undefined) r.bbRampUpAt = e.upAt;
 }
 
 /**

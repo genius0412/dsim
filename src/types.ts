@@ -528,6 +528,9 @@ export interface RobotState {
   /** was the `driveMode` button held last tick? The sim edge-triggers the butterfly swap
    * off this, so holding the button swaps once (not every tick). Plain bool ⇒ snapshot-safe. */
   driveModeHeld: boolean;
+  /** `world.time` the driveMode button went up while `driveModeHeld` is still latched
+   * (`debouncedPress`); absent otherwise. */
+  driveModeUpAt?: number;
   /** BIOBUZZ `ramp` intake: is the ramp DEPLOYED (dropped forward)? Absent reads false, the
    * folded start R102 requires. RUNTIME state the driver toggles with `bbRamp`; the sim credits
    * the ramp's reach only `BB_RAMP_DEPLOY_S` after `bbRampAt`, and the renderer eases the swing
@@ -535,12 +538,16 @@ export interface RobotState {
   bbRampOut?: boolean;
   /** `world.time` of the last ramp toggle (either direction). */
   bbRampAt?: number;
-  /** was `bbRamp` held last tick? — the edge latch, `driveModeHeld`'s twin. */
+  /** the edge latch, `driveModeHeld`'s twin — but DEBOUNCED: it stays set through a release
+   * shorter than `TOGGLE_DEBOUNCE_S` (`debouncedPress`). */
   bbRampHeld?: boolean;
+  /** `world.time` the ramp button went up while `bbRampHeld` is still latched; absent otherwise. */
+  bbRampUpAt?: number;
   /** OSCILLATION GUARD (owner, 2026-09-20: a swing that would carry the ramp into a static — the
    * flower it is deploying into, or a wall it would fold up through — reverses back where it
-   * came from, `bbRampSwingStep`). Once a swing has reversed, it retraces a path that was already
-   * proven clear, so the guard skips re-testing for the REST of that swing. Absent reads false;
+   * came from, `bbRampSwingStep`). Once a swing has reversed, 2D skips re-testing for the REST of
+   * that swing; 3D skips only a reversed FOLD, and a reversed deploy that hits again folds for
+   * good, because a moving robot can close on the static meanwhile (`bbRampSwingStep3d`). Absent reads false;
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;

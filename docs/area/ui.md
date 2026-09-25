@@ -637,6 +637,18 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   prediction panel, the server notice, the touch pad's idle labels, the score-bar
   tips and the replay-video labels, plus the results stage on `--ds-stage-bg`. A new in-match
   surface gets its pairs there.
+- **PATCH NOTES ARE READ AT `.ann-md`, NOT `.md`** (2026-09-25, owner: the card was "pretty
+  small so it is hard to read"). The "What’s new" modal, `/changelogs` and the admin preview all
+  render `AnnouncementItem`/`.ann-md`: body `--ds-t-lg` at `--ds-lh-long` and 68ch, title
+  `--ds-t-xl`, `##` a mono-caps accent label (every bullet already opens in bold, so a bold
+  heading read as one more bullet). Items are FLAT, divided by a rule: no tile inside the panel.
+  The base `.md` stays compact for everything else. The modal scrolls between a fixed action
+  bar and the panel top, so "Got it" never scrolls away. ⚠️ A class added beside a `.ds-*` one
+  (`.cl-body` on `.ds-panel-body`, `.cl-head` on `.ds-panel-h`) is written COMPOUND: at equal
+  specificity file position decides, `shell.css` loads after `styles.css`, and `.ds-panel-h` sits
+  below `.cl-head` in shell.css. `.cl-head` lost that way, and its lone GitHub button
+  sat on the left. (A compound `.ds-*` rule belongs in shell.css, or `uiaudit` counts it as
+  `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **PHONE LAYOUT.** At ≤900px `.ds-body` wraps into ONE nav row: the rail (order 1) and the

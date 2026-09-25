@@ -342,6 +342,15 @@ sides. A custom one writes its row whatever the roster, and a bot room (`MatchOu
 does too but credits no `user_activity`. The Career panel's "Ranked W–L" is `m.ranked` only,
 so these add no free wins. A short roster never goes public (see UNANIMITY above), so a
 one-sided game is watchable by its players and staff only.
+**THE HOMEPAGE COUNTS GAMES AT THE SOURCE, NOT FROM `records`/`matches`** (owner, 2026-09-25:
+count custom, practice, LAN and Discord games too). `play_counts` (migration 0050) is a counter
+per UTC day × game × source (`record`/`ranked`/`custom`/`discord`/`practice`/`lan`) × mode.
+Server rooms count in `persistMatch` BEFORE the anonymous drop (`playSourceOf`), so a room with
+no signed-in player still counts. Practice and LAN run off the cloud, so the client reports them
+to the public `POST /api/played` when it is online (LAN: the host only); the route is throttled
+per hashed address and always answers 204. `getGlobalStats` folds the split for the homepage:
+Solo = record solo + practice, 1v1/2v2 = ranked only, Custom = custom + Discord + LAN. Do not
+derive the headline from the history tables again: they drop exactly the games this counts.
 **THE MATCH HISTORY LIST STAYS PUBLIC** — results, scores, W/L and rating deltas are the
 leaderboard's substance. What comes off the page is the WATCH BUTTON: `userMatchHistory` takes a
 `viewerId` and nulls `replayId` on a row that reader may not watch, so the button is absent rather

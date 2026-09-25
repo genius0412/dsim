@@ -19,6 +19,12 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   (30 Hz)**. `server/room.ts` = lobby + match + host lifecycle + deterministic drop.
   `SNAPSHOT_INTERVAL` was dropped from 60 Hz after profiling (the lag was NETWORK, not CPU;
   halving snapshot bandwidth + `setNoDelay(true)` to kill Nagle was the fix).
+- ⚠️ **A MISSING INPUT TICK KEEPS THE LAST APPLIED BUTTONS** (`frameCommands`, 2026-09-25).
+  Inputs ride the unreliable lane, one tick per packet, and a tick with none of its own is filled
+  from `latest`, the newest command BY TICK. A client runs ahead, so that is usually a FUTURE
+  command. Its stick is borrowed; its `buttons` are not — they come from `held`. A future release
+  borrowed into a gap made a held button read up-down-up, and every edge-triggered toggle fired
+  twice. Smoke: "input gap:" (shared).
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).

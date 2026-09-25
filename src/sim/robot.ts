@@ -85,6 +85,30 @@ export interface DriveWrench {
   latCap: number;
 }
 
+/**
+ * A DEBOUNCED PRESS EDGE for a toggle button (butterfly `driveMode`, the BIOBUZZ ramp).
+ *
+ * A release shorter than `TOGGLE_DEBOUNCE_S` is a dropout, not a release: replay 1dc6eb8f
+ * (2026-09-25) held a toggle through a one-tick all-zero input frame and a one-tick bit drop, and
+ * each flipped the toggle twice. `upAt` is when the button went up while `held` is still latched.
+ * Returns the new latch state and whether this tick is a fresh press.
+ */
+export function debouncedPress(
+  held: boolean,
+  upAt: number | undefined,
+  wants: boolean,
+  time: number,
+): { press: boolean; held: boolean; upAt: number | undefined } {
+  if (!wants) {
+    if (!held) return { press: false, held: false, upAt: undefined };
+    if (upAt === undefined) return { press: false, held: true, upAt: time };
+    if (time - upAt >= C.TOGGLE_DEBOUNCE_S) return { press: false, held: false, upAt: undefined };
+    return { press: false, held: true, upAt };
+  }
+  const released = upAt !== undefined && time - upAt >= C.TOGGLE_DEBOUNCE_S;
+  return { press: !held || released, held: true, upAt: undefined };
+}
+
 export function updateRobot(
   world: World,
   r: RobotState,
@@ -97,9 +121,10 @@ export function updateRobot(
   // model: the real lift takes a moment, but at 60 Hz that is a couple of ticks and the
   // interesting decision is WHEN to swap, not the servo travel.
   if (r.spec.drivetrain === 'butterfly') {
-    const wants = cmd.driveMode ?? false;
-    if (wants && !r.driveModeHeld) r.butterflyTank = !r.butterflyTank;
-    r.driveModeHeld = wants;
+    const e = debouncedPress(r.driveModeHeld, r.driveModeUpAt, cmd.driveMode ?? false, world.time);
+    if (e.press) r.butterflyTank = !r.butterflyTank;
+    r.driveModeHeld = e.held;
+    if (e.upAt !== undefined || r.driveModeUpAt !== undefined) r.driveModeUpAt = e.upAt;
   }
   // ---- drive: driver frame -> robot frame -------------------------------
   const dp = driveParams(r.spec, r.butterflyTank);

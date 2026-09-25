@@ -123,6 +123,32 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
   `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
   positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLID BOXES**
+  (`groups.ts`, `GROUP_FLOWER_RING` / `GROUP_FLOWER_SOLID` / `GROUP_CHASSIS`;
+  `flowerTube.ts`, `buildFlowerSolids3d`). A trimesh has no inside. A chassis pressed past a
+  plate's outer face was pushed out through the plate's top face: up onto the 0.354-in LOWER
+  plate (a chassis cannot pitch or roll, so it was held level off the tiles) or, once the lower
+  plate was out of the way, down into the tiles under the MIDDLE one, whose top (5.254) sits
+  0.046 in under the chassis top (`BB3_CHASSIS_TOP_Z` 5.3). MEASURED (`scratch/flowersweep.ts`,
+  8,960 legal drive-ins, all four FLOWERS, eight builds; `scratch/shove.ts`, 1,472 legal shoves):
+  before, 1,025 drive-ins and 214 shoves lifted the chassis over 0.1 in and 2 drive-ins left it
+  at z 0.34 where 4 s of any drive command moved it 0.004 in; lower plate removed alone, 55
+  shoves sank it up to 1.5 in. After: 0 lifted, 0 sunk, 0 parked, deepest plate contact 0.38 in.
+  - The lower plate gets no box: the middle plate's footprint contains it and every chassis spans
+    the middle plate's z band, so it never stopped a chassis. Elements meet exactly the plates they
+    met before, and a deployed ramp meets neither the trimesh nor the solids (the swing guard's
+    query has no groups, so it does see the solids).
+  - ⚠️ **The three plates are ONE trimesh collider** so each flower still has five colliders.
+    Two extra colliders per flower, even set to meet nothing, shift every later handle, reorder
+    Rapier's pairs, and flipped two unrelated order-sensitive checks (a hive foot-bar contact
+    height, the hive settle clock).
+  - Every robot collider carries `GROUP_CHASSIS`, `GROUP_POCKET` or `GROUP_RAMP`, in `bodies.ts`
+    and `predict.ts`; one built on the default groups meets the trimesh again.
+  - A chassis TELEPORTED more than 1.4 in into a plate is still pushed into the tiles and held.
+    Nothing in play puts one there (`bbEvalStart` keeps starts off every FLOWER), but a harness
+    that drops robots at random poses will find it. `containmentPass` clamps an out-of-field robot
+    to the nearest interior point without looking at statics, which at x ±70.17 is inside a FLOWER.
+  - The FLOWER3D lane pins the lift, the hang and the shove.
 - ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON THE CONTENTS' WEIGHT** (owner report 2026-09-19:
   "it says 0 more to tip and it does not tip"). The detent used to be a breakaway the load had to
   out-torque, and no calibration can make that agree with a COUNT: measured at the shipped hold,
@@ -396,6 +422,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   too. (The Box Tube's flat cradle, drawn to 6.55 with no tall shape, was the other residual; the
   tube is a standing tower now and its stowed envelope is two collider boxes — see the Box Tube
   bullet under the shot path.)
+- ⚠️ **A CHASSIS PLACED INSIDE THE HIVE FRAME IS SET DOWN BESIDE IT, NOT ON IT** (2026-09-25).
+  `scratch/rampstuck.ts` froze 8/400 random drives (14/400 on another seed, both builds) with the
+  robot at z ≈ 2.1 on a foot bar or frame foot. Every one of them STARTED inside the frame; 0/1200
+  runs that started clear ever climbed, and a 2v2 ram probe never lifted a robot. The solver's
+  shallowest way out of a 2.15-in bar under a 16-in chassis is UP (z 0.50 after one tick), and the
+  A-frame leg then runs between the frame box and an intake arm, pushed from both sides, so no
+  drive command moves it, even with zero friction. `setChassisClear` (`engineImpl.ts`) runs on a
+  POSITION the solver did not produce (a new body, a gameplay move, the deploy-edge rebuild): a
+  chassis more than `BB3_FIT_DEPTH` (0.25 in) inside a fixed collider is moved sideways, same
+  height and heading, to the nearest clear spot (rings 0.5 in apart, out to 24 in). Rules: fixed
+  bodies only (they never move, so it is order-independent mid-sync); the chassis only, never
+  the reach hardware (a ramp blade in a static stays the swing guard's and the embed fold's call);
+  NOT on a heading-only edit, because `squareUpRobotsWalls` turns wall-touching robots every tick
+  and re-testing those moved a robot that another robot was pressing into a static past 0.25 in
+  (6 mid-match moves in 150 ram runs; 0 after). Three older
+  checks had been staging robots across the red foot bar without knowing it (the foot-bar
+  "containment" spawn and two sweeper capture probes at x −20) and passed with the robot perched;
+  they stage clear of the frame now. Smoke: "hive frame:" ×2 in `sim3d.ts`.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -1238,6 +1282,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     SETTLED footprint's own clearance margin (0 in flush) can still be caught mid-swing (3 in off
     the foot still refused; 4 in and up settle clean). The guard is catching a real transient
     collision a final-pose-only check cannot see.
+  - ⚠️ **A RAMP ROBOT MUST NOT BE ABLE TO FREEZE ITSELF** (replay 1dc6eb8f, 2026-09-25: frozen
+    from 1:50 to the buzzer). The jam is one contact: the 0.08-in deck held VERTICALLY by a fixed
+    body, so the solver pushes the chassis into the tiles, the floor pushes back, and friction on
+    that contact holds the robot. Two ways in, both closed in `bbRampSwingStep3d` (`elements3d.ts`):
+    - A fold pressed at speed just short of a wall reversed to a deploy that was never tested
+      again ("it retraces proven-clear ground"). A swinging ramp has no collider, so the robot kept
+      closing and the ramp settled 2.4 in inside the wall. Now only a reversed FOLD skips the test;
+      a reversed deploy that hits again folds for good. Standing still, nothing changes.
+    - A settled ramp driven across a hive foot bar or frame foot: the chassis clears them, only the
+      blade meets them. `rampEmbedded` reads the step's own manifolds on `GROUP_RAMP` colliders; a
+      fixed-body contact with `|n.z| > 0.5` deeper than `BB_RAMP_EMBED_DEPTH` (0.05) folds the ramp.
+      Measured: 7 of 400 random drives froze this way before, 0 after.
+    Once it was in the wall, every fold press reversed instantly, because the ramp was already
+    inside the static. That is why the fix is a fold, not a stronger guard. Smoke: "ramp jam:" ×2.
+  - ⚠️ **THE RAMP TOGGLE IS DEBOUNCED** (`debouncedPress`, `TOGGLE_DEBOUNCE_S` 2.5 ticks; `RobotState.bbRampUpAt`).
+    The same replay held the button through two 1-tick dropouts, one a whole input frame of zeros
+    (an empty gamepad read), and each flipped the ramp twice. The fastest real re-press in it was
+    3 ticks. Smoke: "ramp debounce:" ×4. Butterfly `driveMode` shares the helper.
   - ⚠️ **SIDE ROLLERS RELOCATED TO THE MOUTH'S OWN EDGES** (owner, 2026-09-20: "situated on the
     edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's
     axis is `bbSideRollerY(mouthHalf)` = `mouthHalf − BB_SIDE_ROLLER_EDGE_INSET`, not the old fixed
