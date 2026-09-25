@@ -2947,7 +2947,12 @@ export function sim3dChecks(check: Check): void {
       const r = w.robots[0];
       r.fieldCentric = false;
       r.heading = Math.PI;
-      r.pos.x = -23.6; // spawned INSIDE where the old full-width box used to be solid
+      // the FRONT EDGE spawned 0.83 in INSIDE where the old full-width box used to be solid
+      // (x −24.73 … −22.75), 0.17 in short of the flange. This used to centre the robot at
+      // −23.6, which put the whole chassis across the flange: it was lifted onto the bar
+      // (z 2.15) and the check still passed, because it never read z.
+      const x0 = -23.9 + robotExtents(r).front;
+      r.pos.x = x0;
       r.pos.y = 0;
       r.vel.x = r.vel.y = 0;
       r.angVel = 0;
@@ -2955,8 +2960,8 @@ export function sim3dChecks(check: Check): void {
       const engine = engineFor(w);
       check(
         'foot bar 3d: a chassis spawned where the old box used to be solid needs no containment fix -- the floor is genuinely open',
-        engine.containmentFixes === 0 && Math.abs(r.pos.x - -23.6) < 1,
-        `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)}`,
+        engine.containmentFixes === 0 && Math.abs(r.pos.x - x0) < 1 && Math.abs(r.z ?? 0) < 0.1,
+        `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)} from ${x0.toFixed(2)}, z=${(r.z ?? 0).toFixed(3)}`,
       );
       disposeEngineFor(w);
     }
@@ -3612,12 +3617,12 @@ export function sim3dChecks(check: Check): void {
       r.hopper = [];
       r.autoIntake = false;
       r.autoFire = false;
-      r.pos = { x: -20, y: 0 };
+      r.pos = { x: -8, y: 0 };
       r.heading = 0;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       w.balls.length = 0;
-      w.balls.push({ id: 9001, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      w.balls.push({ id: 9001, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
       run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
       const took = r.hopper.length > 0;
       disposeEngineFor(w);
@@ -3734,12 +3739,12 @@ export function sim3dChecks(check: Check): void {
       r.hopper = [];
       r.autoIntake = false;
       r.autoFire = false;
-      r.pos = { x: -20, y: 0 };
+      r.pos = { x: -8, y: 0 };
       r.heading = 0;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       w.balls.length = 0;
-      w.balls.push({ id: 9102, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      w.balls.push({ id: 9102, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: 0, y: offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
       run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
       const took = r.hopper.length > 0;
       disposeEngineFor(w);
@@ -3888,6 +3893,68 @@ export function sim3dChecks(check: Check): void {
         'ramp jam: a settled ramp across a hive foot bar folds and the robot drives away',
         ready && r.bbRampOut === false && r.pos.x - x0 > 3 && (r.z ?? 0) > -0.05,
         `ready=${ready} out=${r.bbRampOut} moved=${(r.pos.x - x0).toFixed(2)} z=${(r.z ?? 0).toFixed(3)} minZ=${minZ.toFixed(3)}`,
+      );
+      disposeEngineFor(w);
+    }
+  }
+
+  // (c1b) A CHASSIS PLACED INSIDE THE HIVE FRAME. The solver's shallowest way out of a 2.15-in
+  // foot bar was UP: the robot was lifted onto the bar with the A-frame leg between its frame box
+  // and an intake arm, and never moved again (8/400 random placements, `scratch/rampstuck.ts`).
+  // `fitChassisOut` sets it down beside the frame instead. Poses are the stuck placements.
+  {
+    const spec = bbArchSpec('sweeper', 'front');
+    const drive = (w: World, c: Partial<RobotCommand>, n: number): void => {
+      for (let i = 0; i < n; i++) step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+    };
+    const staged = (x: number, y: number, headingDeg: number): World => {
+      const w = mkWorld3d('free', 8100, spec);
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x, y };
+      r.heading = (headingDeg * Math.PI) / 180;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.autoIntake = false;
+      r.autoFire = false;
+      return w;
+    };
+    const poses: [number, number, number][] = [[-22.2, 15.4, 92], [29.9, 21.5, 233], [-24.4, 10, 45], [16, -22.3, 0], [-30.1, -11.7, 0]];
+    let bad = '';
+    for (const [x, y, h] of poses) {
+      const w = staged(x, y, h);
+      const r = w.robots[0];
+      drive(w, {}, 30);
+      const z0 = r.z ?? 0;
+      const x0 = r.pos.x;
+      const y0 = r.pos.y;
+      let maxD = 0;
+      for (const c of [{ driveY: 1, leftDrive: 1, rightDrive: 1 }, { driveY: -1, leftDrive: -1, rightDrive: -1 }, { driveX: 1 }, { driveX: -1 }]) {
+        for (let k = 0; k < 40; k++) {
+          drive(w, c, 1);
+          maxD = Math.max(maxD, Math.hypot(r.pos.x - x0, r.pos.y - y0));
+        }
+      }
+      if (Math.abs(z0) > 0.1 || maxD < 12) bad += `(${x},${y},${h}°): z=${z0.toFixed(2)} moved ${maxD.toFixed(2)}; `;
+      disposeEngineFor(w);
+    }
+    check('hive frame: a chassis placed inside the frame is set down on the tiles beside it and drives away', bad === '', bad);
+
+    // ...and a chassis PARKED against the bar is left where the solver put it: a re-sync of its
+    // own pose must not move it. Driven flat into the flange's outer face from open field.
+    {
+      const w = staged(-45, 0, 0);
+      const r = w.robots[0];
+      drive(w, { driveY: 1, leftDrive: 1, rightDrive: 1 }, 180);
+      drive(w, {}, 30);
+      const x0 = r.pos.x;
+      r.pos = { x: x0 + 0.001, y: r.pos.y }; // a pose edit: forces the teleport path
+      drive(w, {}, 1);
+      const front = x0 + robotExtents(r).front;
+      check(
+        'hive frame: a chassis parked against the foot bar is not moved when its pose is re-synced',
+        Math.abs(r.pos.x - x0) < 0.05 && front > -25 && Math.abs(r.z ?? 0) < 0.1,
+        `parked x=${x0.toFixed(3)} (front edge ${front.toFixed(2)}, flange face −24.73) → ${r.pos.x.toFixed(3)} z=${(r.z ?? 0).toFixed(3)}`,
       );
       disposeEngineFor(w);
     }

@@ -3775,6 +3775,22 @@ export const BB3_INTAKE_CORNER_R = 0.125;
  */
 export const BB3_INTAKE_CORNER_CLAMP = 0.8;
 
+/**
+ * A CHASSIS PLACED INSIDE A FIXED SOLID IS MOVED OUT SIDEWAYS (in) — `setChassisClear`
+ * (`sim3d/engineImpl.ts`), 3D only.
+ *
+ * A pose the solver did not produce (a new body, a teleport, a deploy-edge rebuild) can put the
+ * chassis inside the hive frame. Left to the solver, the shallowest way out of a 2.15-in foot bar
+ * under a 16-in chassis is UP, so the robot was lifted onto the bar with the A-frame leg running
+ * between its frame box and an intake arm, and could never move again (8/400 random placements,
+ * `scratch/rampstuck.ts`). `BB3_FIT_DEPTH` is the penetration that counts as inside: over the
+ * ≈0.1 in the solver leaves on a resting contact, so a wall-flush start or a robot parked against
+ * a frame part is never moved. The search walks rings `BB3_FIT_STEP` apart out to `BB3_FIT_MAX`.
+ */
+export const BB3_FIT_DEPTH = 0.25;
+export const BB3_FIT_STEP = 0.5;
+export const BB3_FIT_MAX = 24;
+
 
 /**
  * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`

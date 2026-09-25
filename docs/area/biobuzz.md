@@ -396,6 +396,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   too. (The Box Tube's flat cradle, drawn to 6.55 with no tall shape, was the other residual; the
   tube is a standing tower now and its stowed envelope is two collider boxes — see the Box Tube
   bullet under the shot path.)
+- ⚠️ **A CHASSIS PLACED INSIDE THE HIVE FRAME IS SET DOWN BESIDE IT, NOT ON IT** (2026-09-25).
+  `scratch/rampstuck.ts` froze 8/400 random drives (14/400 on another seed, both builds) with the
+  robot at z ≈ 2.1 on a foot bar or frame foot. Every one of them STARTED inside the frame; 0/1200
+  runs that started clear ever climbed, and a 2v2 ram probe never lifted a robot. The solver's
+  shallowest way out of a 2.15-in bar under a 16-in chassis is UP (z 0.50 after one tick), and the
+  A-frame leg then runs between the frame box and an intake arm, pushed from both sides, so no
+  drive command moves it, even with zero friction. `setChassisClear` (`engineImpl.ts`) runs on a
+  POSITION the solver did not produce (a new body, a gameplay move, the deploy-edge rebuild): a
+  chassis more than `BB3_FIT_DEPTH` (0.25 in) inside a fixed collider is moved sideways, same
+  height and heading, to the nearest clear spot (rings 0.5 in apart, out to 24 in). Rules: fixed
+  bodies only (they never move, so it is order-independent mid-sync); the chassis only, never
+  the reach hardware (a ramp blade in a static stays the swing guard's and the embed fold's call);
+  NOT on a heading-only edit, because `squareUpRobotsWalls` turns wall-touching robots every tick
+  and re-testing those moved a robot that another robot was pressing into a static past 0.25 in
+  (6 mid-match moves in 150 ram runs; 0 after). Three older
+  checks had been staging robots across the red foot bar without knowing it (the foot-bar
+  "containment" spawn and two sweeper capture probes at x −20) and passed with the robot perched;
+  they stage clear of the frame now. Smoke: "hive frame:" ×2 in `sim3d.ts`.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
