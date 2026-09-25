@@ -160,6 +160,9 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     unrelated reason would pass "it did not start"), plus the old-client, mixed-roster, 2D-game
     and deadline cases, and the ranked window's extension end to end.
 
+- **A CUSTOM ROOM PLAYS ZENITH AUTOS** (`docs/area/autos.md`): `{ t: 'zenithAuto' }` behind the
+  `'zenithAuto'` server cap, one message, never on the roster; the server's auto seat runs in
+  `frameCommands` beside the bots, so its commands are recorded and ride `cmds`. Never ranked.
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.

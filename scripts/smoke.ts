@@ -7718,7 +7718,9 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   });
   check('savedRobots capped at MAX_SAVED_ROBOTS', lib.savedRobots.length === 3, `${lib.savedRobots.length}`);
   check('each saved robot is coerced to a legal spec', lib.savedRobots.every((r) => r.driveRpm >= 200 && r.massLb >= 10));
-  check('savedAutos drops invalid entries + caps at MAX_SAVED_AUTOS', lib.savedAutos.length === 4, `${lib.savedAutos.length}`);
+  // the `.pp` library is not read back at all since its import went (owner, 2026-09-25): valid
+  // entries are dropped with the invalid ones
+  check('savedAutos (the retired .pp library) is dropped whole, valid entries included', lib.savedAutos.length === 0, `${lib.savedAutos.length}`);
   check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
   {
     // the `.pp` import is gone (owner, 2026-09-25): a stored path and library never come back

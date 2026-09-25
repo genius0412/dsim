@@ -335,7 +335,11 @@ const BASELINE = {
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
   discord: { gzip: 44.30 * 1000 },
-  hostWorker: { gzip: 720.96 * 1000 },
+  // 2026-09-25: 720.96 -> 778.01 (+57.05), MEASURED. The LAN host runs `server/room.ts` in a
+  // tab, and a custom room now plays Zenith autos (docs/area/autos.md), so the room statically
+  // imports the auto seat and with it Zenith's planner and follower (the `autos` chunk's content,
+  // 55.75 KB). Only a player HOSTING a LAN room downloads this worker; nobody else pays for it.
+  hostWorker: { gzip: 778.01 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
   // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)

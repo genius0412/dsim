@@ -719,7 +719,7 @@ export class GameController {
    * world (`makeWorld`), like the bots. Solo only: a room, a record run and the tutorial never
    * get one (a room's auto is the server's job, and not built yet).
    */
-  private readonly zenithAuto: GameControllerZenithAuto | null;
+  private zenithAuto: GameControllerZenithAuto | null;
   private autoSeat: import('./auto/zenithAutos').AutoSeat | null = null;
   /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
@@ -950,6 +950,7 @@ export class GameController {
     }
     this.zenithAuto = opts?.zenithAuto && !session && !this.tutorial ? opts.zenithAuto : null;
     this.world = this.makeWorld();
+    this.loadSessionAuto();
     // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
     // path as every other match event — the first `frameLogic()` drains it into a toast.
     if (opts?.physicsFallbackNotice) this.world.events.push(opts.physicsFallbackNotice);
@@ -1098,6 +1099,8 @@ export class GameController {
       // older server hosts.
       const w = build('match', this.session.seed, this.session.setups, this.settings, this.session.physics);
       w.match.preCountdown = C.PRE_COUNTDOWN;
+      // a rematch rebuilds the world: the local robot's auto seat goes with it, as in solo
+      this.seatAuto(w);
       return w;
     }
     // REUSE the seed on a rebuild (`reseed: false`). Starting a solo practice match rebuilds
@@ -1175,6 +1178,36 @@ export class GameController {
       if (tier === undefined || r.id === this.localRobotId) continue;
       this.bots.set(r.id, drv.create(world, r.id, tier, (seed ^ ((r.id + 1) * 0x9e3779b1)) >>> 0));
     }
+  }
+
+  /**
+   * A CUSTOM ROOM'S AUTO ON THE LOCAL ROBOT (docs/area/autos.md): the server drives the robot
+   * through AUTO with its own seat, and this client runs the SAME seat over its predicted world,
+   * so what it predicts is what the server does; snapshots correct whatever drifts. The chunk is
+   * fetched here, because six UI paths build a session synchronously (see `physicsPending`), and
+   * until it lands the robot is predicted on the driver's own command and corrected like any lag.
+   */
+  private loadSessionAuto(): void {
+    const s = this.session;
+    if (!s || this.spectator) return;
+    const mine = s.setups.find((x) => x.id === this.localRobotId)?.zenithAuto;
+    if (!mine) return;
+    let name = 'auto';
+    try {
+      const n = (JSON.parse(mine.auto) as { name?: unknown }).name;
+      if (typeof n === 'string') name = n;
+    } catch {
+      /* the server validated it; the name is cosmetic */
+    }
+    import('./auto/zenithAutos').then(
+      (module) => {
+        if (this.disposed) return;
+        this.zenithAuto = { ...mine, name, module };
+        this.seatAuto(this.world);
+      },
+      // eslint-disable-next-line no-console
+      (err) => console.warn('[autos] the auto chunk failed to load; the server still drives the robot', err),
+    );
   }
 
   /** The canonical start pose that seats the local robot where the auto begins, or null. */
@@ -2171,8 +2204,9 @@ export class GameController {
         break;
       }
       const tick = lead + 1;
-      const local = localizeCommand(cmd);
-      s.sendInput(tick, cmd);
+      // the local robot's auto (a custom room's) drives it in AUTO, as the server's seat does
+      const local = localizeCommand(this.autoSeat ? this.autoSeat.step(this.world, cmd) : cmd);
+      s.sendInput(tick, local);
       this.inputBuf.push({ tick, cmd: local });
       if (pred) {
         this.predictTick = tick;

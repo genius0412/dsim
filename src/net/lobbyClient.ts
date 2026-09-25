@@ -1,3 +1,4 @@
+import type { ZenithAutoSetup } from '../auto/types';
 import type { DodgeVerdict } from '../dodge';
 import type { GameId, Physics } from '../types';
 import type { RobotSetup } from '../sim/spawn';
@@ -244,7 +245,28 @@ export class LobbyClient {
   private sendPhysicsReady(): void {
     this.seated = true;
     if (this.ready3d) this.transport.send(encodeMsg({ t: 'physicsReady' }));
+    // the auto rides the same moment: a new socket is a new client record with no auto on it
+    if (this.zenithAutoSet) this.transport.send(encodeMsg({ t: 'zenithAuto', auto: this.zenithAuto }));
   }
+
+  /**
+   * THIS PLAYER'S ZENITH AUTO for a custom room (`{ t: 'zenithAuto' }`, docs/area/autos.md), or
+   * null for none. Latched like `physicsReady` and for the same reason: a frame sent before the
+   * seat exists is dropped, so the latch is flushed on `welcome` (every reattach included) and
+   * sent at once when it changes on a seat already held. The CALLER gates on `serverCaps()`
+   * containing `'zenithAuto'`: an older server ignores the message, and the driver would stand
+   * through AUTO with nothing saying why.
+   */
+  setZenithAuto(auto: ZenithAutoSetup | null): void {
+    const same = JSON.stringify(auto) === JSON.stringify(this.zenithAuto);
+    this.zenithAuto = auto;
+    this.zenithAutoSet = true;
+    if (this.seated && !same) this.transport.send(encodeMsg({ t: 'zenithAuto', auto }));
+  }
+
+  private zenithAuto: ZenithAutoSetup | null = null;
+  /** true once the caller has said anything, so a seat is never sent a null it did not ask for */
+  private zenithAutoSet = false;
 
   /**
    * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).

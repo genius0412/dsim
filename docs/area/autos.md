@@ -48,12 +48,18 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
 - **THE LIBRARY IS NOT IN `GameSettings`.** Settings sync to the account under a 64 KB cap
   (`server/api.ts`) and one auto can be most of that, so it is `ZENITH_AUTOS_KEY` in
   `localStorage`, device-local, registered in `storageKeys.ts`.
-- **`setup.zenithAuto` IS BOUNDED BYTES** (`coerceZenithAuto`: 64 KiB auto, 16 KiB waypoints) and
+- **`setup.zenithAuto` IS BOUNDED BYTES** (`coerceZenithAuto`: 40 KiB auto, 8 KiB waypoints, so one `zenithAuto` message fits the server's 64 KiB frame cap) and
   dropped by `coerceSetup` for a game without `GameSimModule.zenithAutos`. The one validator is
   Zenith's schema, in the seat: a bad file makes the seat report an error and drive nothing.
-- **SOLO ONLY, for now.** `GameView` loads the chunk for Solo practice and Free Drive; a room, a
-  record run and the tutorial never get a seat. Online is plan item D6 (a `caps` bit, the seat in
-  `Room.frameCommands`, the same seat predicting on the client) and is a SERVER change.
+- **SOLO AND CUSTOM ROOMS; NEVER RANKED OR RECORD** (owner, 2026-09-25). Solo: `GameView` loads
+  the chunk for Solo practice and Free Drive (the tutorial never gets a seat). Custom rooms: the
+  lobby sends the active auto once in `{ t: 'zenithAuto' }` (never on the roster, which carries
+  only `autoName`), gated on the server's `'zenithAuto'` cap; `Room.playsZenithAutos` refuses it
+  in a ranked, staged or record room and `beginMatch` strips it there. The server seats the robot
+  at the auto's start and runs the seat in `frameCommands` beside the bots; the client runs the
+  same seat over its prediction (`GameController.loadSessionAuto`). `room.ts` is also the LAN
+  host's room, so LAN rooms play autos too. ⚠️ It is a SERVER change: it needs a deploy, and the
+  Fly image needs the Zenith packages (vendored or published) to build.
 
 ## Zenith as the editor: `zenith-host/1`
 

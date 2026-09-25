@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, RobotCommand, World } from '../../src/types';
-import { SIM_DT } from '../../src/config';
+import { PRE_COUNTDOWN as C_PRE, SIM_DT } from '../../src/config';
 import { BIOBUZZ_SIM } from '../../src/games/biobuzz/sim';
 import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { startMatch } from '../../src/sim/match';
@@ -15,6 +15,10 @@ import { autoAdapterFor, autoStartPose, createAutoSeat, type AutoSeat } from '..
 import { ZENITH_AUTO_MAX_BYTES } from '../../src/auto/coerce';
 import type { ZenithAutoSetup } from '../../src/auto/types';
 import { cmd, setup, type Check } from './harness';
+import { Room, type Client } from '../../server/room';
+import { CLIENT_CAPS, type ServerMsg } from '../../src/net/protocol';
+import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
+import { DEFAULT_ASSISTS } from '../../src/sim/spawn';
 
 /**
  * THE AUTO LANE — Zenith autos driven by an auto seat (docs/area/autos.md).
@@ -429,6 +433,82 @@ export function autoChecks(check: Check): void {
       seat.status().state === 'done' && fired >= 5 && inZone,
       `state ${seat.status().state}, fired ${fired}, end (${r.pos.x.toFixed(1)}, ${r.pos.y.toFixed(1)})`,
     );
+  }
+
+  // ── CUSTOM ROOMS: the server drives the robot (owner, 2026-09-25: custom only) ────────────
+  {
+    const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+      id,
+      send: (m) => sink.push(JSON.parse(JSON.stringify(m)) as ServerMsg),
+      player: {
+        clientId: id,
+        name: id,
+        teamName: 'Smoke',
+        teamNumber: 1,
+        alliance,
+        startIndex: 0,
+        ready: true,
+        spec: { ...BB_DEFAULT_SPEC },
+        assists: { ...DEFAULT_ASSISTS, fieldCentric: false, aimAssist: false },
+      },
+      connected: true,
+      disconnectAt: 0,
+      caps: CLIENT_CAPS,
+    });
+    const auto = readFileSync(join(here, 'fixtures', 'zenith', 'garden-cycle.auto.json'), 'utf8');
+    const seen: ServerMsg[] = [];
+    const room = new Room('auto-cust', () => {}, { kind: 'versus', game: 'biobuzz', physics: '2d' });
+    room.add(mk('au-a', 'red', seen));
+    room.onMessage('au-a', { t: 'zenithAuto', auto: { auto } });
+    const roster = [...seen].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    check('AUTO room: the roster names the auto, and carries no file', roster?.players[0]?.autoName === 'garden-cycle' && !JSON.stringify(roster).includes('"steps"'), JSON.stringify(roster?.players[0]?.autoName));
+    // a BIOBUZZ room is 3D on the server whatever it asks for, so it waits for the seat's 3D chunk
+    room.onMessage('au-a', { t: 'physicsReady' });
+    room.onMessage('au-a', { t: 'start' });
+    const start = seen.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+    const mine = start?.setups.find((x) => x.id === 0);
+    check('AUTO room: the match setup carries the auto', mine?.zenithAuto?.auto === auto);
+    const world = (room as unknown as { world: World }).world;
+    const r = world.robots[0];
+    check(
+      'AUTO room: the robot is seated at the auto’s start (a RED file, a RED robot)',
+      Math.hypot(r.pos.x + 34, r.pos.y + 63.17) < 1 && Math.abs(wrap(r.heading - Math.PI / 2)) < 0.02,
+      `(${r.pos.x.toFixed(2)}, ${r.pos.y.toFixed(2)}, ${r.heading.toFixed(3)})`,
+    );
+    // no input is ever sent: the server's own seat has to drive it
+    room.advanceForTest(Math.round((C_PRE + 9) / SIM_DT));
+    const moved = Math.hypot(world.robots[0].pos.x + 34, world.robots[0].pos.y + 63.17);
+    check('AUTO room: with no input from the client, the SERVER’s seat drives the robot through AUTO', world.match.phase === 'auto' && moved > 20 && world.robots[0].hopper.length < 4, `phase ${world.match.phase}, moved ${moved.toFixed(1)} in, hopper ${world.robots[0].hopper.length}`);
+    room.advanceForTest(1);
+  }
+  {
+    // a RECORD room refuses one, with a line that says why, and its roster names nothing
+    const seen: ServerMsg[] = [];
+    const rec = new Room('auto-rec', () => {}, { kind: 'record', record: 'solo', game: 'biobuzz' });
+    rec.add({
+      id: 'au-r',
+      send: (m) => seen.push(m),
+      player: { clientId: 'au-r', name: 'r', teamName: 'S', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...BB_DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+      caps: CLIENT_CAPS,
+    });
+    rec.onMessage('au-r', { t: 'zenithAuto', auto: { auto: JSON.stringify(probeAuto()) } });
+    const err = seen.find((m) => m.t === 'error') as Extract<ServerMsg, { t: 'error' }> | undefined;
+    check('AUTO room: a RECORD room refuses an auto and says it is custom rooms only', err?.message === 'Autos run in custom rooms only.', err?.message);
+    // and a malformed file is refused in the lobby, not left to stand a robot still
+    const bad: ServerMsg[] = [];
+    const room = new Room('auto-bad', () => {}, { kind: 'versus', game: 'biobuzz', physics: '2d' });
+    room.add({
+      id: 'au-b',
+      send: (m) => bad.push(m),
+      player: { clientId: 'au-b', name: 'b', teamName: 'S', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...BB_DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+      caps: CLIENT_CAPS,
+    });
+    room.onMessage('au-b', { t: 'zenithAuto', auto: { auto: '{"formatVersion":3}' } });
+    check('AUTO room: a malformed auto is refused in the lobby', bad.some((m) => m.t === 'error'));
   }
 
   // ── the team's own file: biobuzz's close.auto.json with its waypoints ────────────────────

@@ -279,6 +279,12 @@ export interface LobbyPlayer {
    * ways, so no `caps` gate — an older client ignores the key and renders no chip.
    */
   ready3d?: boolean;
+  /**
+   * The NAME of the Zenith auto this player will run in AUTO, server-authored from their
+   * `zenithAuto` message, so the lobby can show who has one. Only the name: the file itself never
+   * rides the roster. Absent = none (or an older server). Custom rooms only.
+   */
+  autoName?: string;
   spec: RobotSpec;
   assists: AssistConfig;
   // NOTE: no `autoPath` here. Autonomous does not run in a server-authoritative
@@ -566,6 +572,13 @@ export const SERVER_CAPS: string[] = [
    * apart from one that is done.
    */
   'ready3d',
+  /**
+   * `'zenithAuto'` — THIS DEPLOY PLAYS A PLAYER'S ZENITH AUTO IN A CUSTOM ROOM'S AUTO.
+   *
+   * The client sends `{ t: 'zenithAuto' }` only to a server that says this, because an older one
+   * would silently drop the file and the driver would stand still through AUTO wondering why.
+   */
+  'zenithAuto',
 ];
 
 /** the formats a "play a friend" challenge can be issued in. Shared so the API's
@@ -692,6 +705,16 @@ export type ClientMsg =
    * message rather than refusing it — so there is no `SERVER_CAPS` gate on sending it.
    */
   | { t: 'physicsReady' }
+  /**
+   * THIS PLAYER'S ZENITH AUTO for the next match of a CUSTOM room (docs/area/autos.md), or null
+   * to clear it. Sent once from the lobby, never on the roster (a file is up to 64 KiB and the
+   * roster is broadcast on every change): the server keeps it on the client record, puts its
+   * name on the roster (`LobbyPlayer.autoName`), and at match start puts it into that robot's
+   * setup, where the server's auto seat drives it through AUTO. A ranked, staged or record room
+   * ignores it. An older server ignores the message, so send it only when the server
+   * advertises `'zenithAuto'` (`SERVER_CAPS`).
+   */
+  | { t: 'zenithAuto'; auto: import('../auto/types').ZenithAutoSetup | null }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**

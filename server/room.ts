@@ -4,6 +4,9 @@
    on Node 19+ and in every browser DSIM supports. */
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
+import { coerceZenithAuto } from '../src/auto/coerce';
+import type { ZenithAutoSetup } from '../src/auto/types';
+import { AutoLoadError, autoAdapterFor, autoStartPose, createAutoSeat, loadZenithAuto, parseAutoText, type AutoSeat } from '../src/auto/zenithAutos';
 import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
@@ -293,6 +296,8 @@ export interface Client {
    * clearing it could only hold a returning driver up for something already done.
    */
   ready3d?: boolean;
+  /** this player's Zenith auto for a CUSTOM room's next match (`{ t: 'zenithAuto' }`), bounded */
+  zenithAuto?: ZenithAutoSetup;
   /** release channel this client build reported ('alpha' | 'stable' | …). The first
    * client to join sets the ROOM's channel; alpha rooms are never persisted. */
   channel?: string;
@@ -682,6 +687,8 @@ export class Room {
   /** live AI drivers for the match in flight, keyed by robot id. Built in `beginMatch`,
    *  disposed in `stop`. Empty in every room with no bot seat, which is nearly all of them. */
   private readonly botDrivers = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
+  /** the Zenith auto seats of the match being played, by robot id (`beginMatch`) */
+  private readonly autoSeats = new Map<number, AutoSeat>();
   /** the tier each bot ROBOT plays at, resolved at `startMatch` when seats become robot ids. */
   private readonly botTiers = new Map<number, string>();
   /** a bot has been seated here at some point — latched, so removing one before START does not
@@ -1702,6 +1709,36 @@ export class Room {
           else if (this.customStart) this.beginCustomStart();
         }
         break;
+      /**
+       * A PLAYER'S ZENITH AUTO for the next match (docs/area/autos.md). Stored, bounded, on the
+       * client record, not the roster; its name goes on the roster. Refused (with a line saying
+       * why) outside a custom room, and validated with Zenith's own schema so a bad file is
+       * refused here, in the lobby, rather than standing a robot still through AUTO.
+       */
+      case 'zenithAuto': {
+        if (msg.auto === null) {
+          delete c.zenithAuto;
+        } else {
+          if (!this.playsZenithAutos()) {
+            c.send({ t: 'error', message: 'Autos run in custom rooms only.' });
+            break;
+          }
+          const z = coerceZenithAuto(msg.auto);
+          if (!z) {
+            c.send({ t: 'error', message: 'That auto is too large to send.' });
+            break;
+          }
+          try {
+            parseAutoText(z.auto);
+          } catch (e) {
+            c.send({ t: 'error', message: e instanceof AutoLoadError ? e.message : 'That is not a Zenith auto file.' });
+            break;
+          }
+          c.zenithAuto = z;
+        }
+        this.broadcastRoster();
+        break;
+      }
       case 'start':
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
@@ -1927,15 +1964,20 @@ export class Room {
         si = (si + 1) % anchors;
       }
       used[alliance].add(si);
+      const spec = (c.tier !== null ? drv?.build?.({ seed, robotId: i, tier: c.tier, alliance }) : undefined) ?? c.player.spec;
+      // A ZENITH AUTO (custom rooms): the robot starts where the auto does, as it would at a field
+      const za = c.tier === null && this.playsZenithAutos() ? this.clients.get(c.key)?.zenithAuto : undefined;
+      const autoStart = za ? zenithStartPose(za, alliance, spec, this.game) : null;
       setups.push({
         id: i,
         alliance,
-        spec: (c.tier !== null ? drv?.build?.({ seed, robotId: i, tier: c.tier, alliance }) : undefined) ?? c.player.spec,
+        spec,
         assists: c.player.assists,
         startIndex: si,
         // a custom pose overrides the de-conflicted startIndex; createWorld snaps
         // it G304-legal. Old clients omit it → the preset is used.
-        startPose: c.player.startPose ?? undefined,
+        startPose: autoStart ?? c.player.startPose ?? undefined,
+        ...(za ? { zenithAuto: za } : {}),
       });
       // A BOT HAS NO SOCKET, so it takes no `robotOf` entry: that map is what `onInput` resolves
       // a client id through, and a bot must never be a thing an input can be addressed to.
@@ -1956,6 +1998,9 @@ export class Room {
     // regardless of what a client advertised. Local session-less practice, which
     // never reaches Room, keeps running auto client-side.
     setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
+    // ...and a ZENITH auto only survives into a custom room (`playsZenithAutos`). A staged or
+    // rematch path that somehow carried one elsewhere loses it here, at the one chokepoint.
+    if (!this.playsZenithAutos()) setups = setups.map((s) => (s.zenithAuto ? { ...s, zenithAuto: undefined } : s));
     this.phase = 'match';
     this.matchGen++; // any input stamped with an older generation is now stale
     this.rematchVotes.clear();
@@ -2010,6 +2055,27 @@ export class Room {
       for (const [rid, tier] of this.botTiers) {
         this.botDrivers.set(rid, drv.create(world, rid, tier, (seed ^ ((rid + 1) * 0x9e3779b1)) >>> 0));
       }
+    }
+    /**
+     * SEAT THE ZENITH AUTOS, beside the bots and on the same contract: stepped once per tick in
+     * `frameCommands`, before the step, so their commands are recorded, ride the snapshot's
+     * `cmds`, and a replay needs no seat. A seat drives only in AUTO; from TELEOP it hands the
+     * driver's own command back.
+     */
+    for (const seat of this.autoSeats.values()) seat.dispose();
+    this.autoSeats.clear();
+    for (const s of setups) {
+      if (!s.zenithAuto) continue;
+      const adapter = autoAdapterFor(this.game);
+      if (!adapter) continue;
+      const seat = createAutoSeat(world, s.id, s.zenithAuto, adapter);
+      if (seat.status().state === 'error') {
+        for (const c of this.clients.values()) {
+          if (this.robotOf.get(c.id) === s.id) c.send({ t: 'error', message: `Your auto is off: ${seat.status().error ?? 'it could not be loaded'}` });
+        }
+        continue;
+      }
+      this.autoSeats.set(s.id, seat);
     }
     this.finalized = false;
     this.settle = newSettleClock();
@@ -3247,6 +3313,11 @@ export class Room {
       // consumed / past inputs will never be needed again
       if (buf) for (const t of buf.keys()) if (t <= tick) buf.delete(t);
     }
+    // THE ZENITH AUTOS, last: each takes its driver's command for this tick (what the loop above
+    // resolved) and hands it back outside AUTO, or replaces it with its own inside
+    for (const [rid, seat] of this.autoSeats) {
+      frame.set(rid, localizeCommand(seat.step(w, frame.get(rid) ?? ZERO_CMD)));
+    }
     return frame;
   }
 
@@ -3479,8 +3550,19 @@ export class Room {
    * does not exist and will never end.
    */
   private rosterPlayer(c: Client): LobbyPlayer {
-    if (this.physics !== '3d' || !reportsPhysicsReady(c.caps)) return c.player;
-    return { ...c.player, ready3d: !!c.ready3d };
+    const autoName = c.zenithAuto ? autoNameOf(c.zenithAuto) : undefined;
+    const p = autoName ? { ...c.player, autoName } : c.player;
+    if (this.physics !== '3d' || !reportsPhysicsReady(c.caps)) return p;
+    return { ...p, ready3d: !!c.ready3d };
+  }
+
+  /**
+   * DOES THIS ROOM PLAY ZENITH AUTOS? Custom rooms only (owner, 2026-09-25): never a ranked or
+   * matchmade room, whose AUTO points would be a player's file rather than their hands, and
+   * never a record run, whose replay is leaderboard proof. And only a game that plays them.
+   */
+  private playsZenithAutos(): boolean {
+    return !this.ranked && !this.pendingMatch && this.config.kind !== 'record' && simModuleFor(this.game).zenithAutos === true;
   }
 
   private broadcastRoster(): void {
@@ -3613,5 +3695,25 @@ export class Room {
       'Match cancelled - an opponent did not connect.',
       this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
     );
+  }
+}
+/** The `name` an auto file declares, for the roster; never throws. */
+function autoNameOf(z: ZenithAutoSetup): string | undefined {
+  try {
+    const name = (JSON.parse(z.auto) as { name?: unknown }).name;
+    return typeof name === 'string' ? name.slice(0, 60) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The canonical start pose that seats a robot where its auto starts, or null when it cannot load. */
+function zenithStartPose(z: ZenithAutoSetup, alliance: Alliance, spec: RobotSpec, game: GameId): StartPose | null {
+  const adapter = autoAdapterFor(game);
+  if (!adapter) return null;
+  try {
+    return autoStartPose(loadZenithAuto(z, alliance, spec, adapter), alliance, adapter);
+  } catch {
+    return null;
   }
 }

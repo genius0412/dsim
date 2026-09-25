@@ -1,3 +1,29 @@
+# HANDOFF — 2026-09-25b (same branch: autos in custom rooms, the .pp import gone, the tarballs out of git)
+
+**READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed. ⚠️ **The branch was
+REWRITTEN and force-pushed** (2026-09-25) to take `vendor/zenith/*.tgz` out of every commit: this
+repo is public, Zenith is not yet, and a packed package is its compiled source. They are gitignored
+now; a fresh clone runs `node scripts/vendor-zenith.mjs ../zenith` before `npm ci`, and neither
+Vercel nor the Fly image can build this branch until the packages publish.
+
+**State.** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass; `smoke.ts` ALL PASS
+(2427); BIOBUZZ suite: AUTO lane 54/54, the only failures the known `fieldDims.gen.ts` drift and
+the load-sensitive `step3d` perf medians.
+
+- **Custom rooms play autos** (owner: custom only, never ranked). `{ t: 'zenithAuto' }` behind the
+  `'zenithAuto'` SERVER cap; `Room.playsZenithAutos`; the server seats the robot at the auto's
+  start and runs the seat in `frameCommands`; the client predicts with the same seat. ⚠️ SERVER
+  change, needs a deploy. LAN rooms get it too (`room.ts` is the LAN host's room): the hostWorker
+  chunk grew 57 KB, re-baselined.
+- **The `.pp` import is gone** (owner: autos must use the robot's commands). `coerceSettings` drops
+  a stored path; DECODE's traversal stays only for old practice replays.
+- **Commands read plainly** in Zenith's insert menu and in "Commands your auto can use".
+- Auto bounds are now 40 KiB + 8 KiB so one `zenithAuto` message fits `WS_MAX_PAYLOAD` (64 KiB).
+
+**Next.** Publish Zenith, then: `file:` specs to version ranges, drop `vendor/`, deploy the server.
+
+---
+
 # HANDOFF — 2026-09-25 (branch `claude/zenith-dsim-auto-pathing-g29xta`: Zenith autos, driven)
 
 **READ FIRST if you are on this branch.** Off `alpha` @ `c4afe65`. Pushed; **no PR yet** (the owner

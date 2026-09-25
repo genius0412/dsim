@@ -32,6 +32,7 @@ import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
 import { serverCaps } from '../net/api';
+import { activeZenithAuto } from '../auto/library';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { MatchStrategy } from './MatchStrategy';
 import { botLabel } from './MatchSetup';
@@ -514,6 +515,16 @@ export function Lobby({
     // reconnect's join frame, so once here is enough — and it is here rather than beside each
     // `join`/`resume` because `wire` is the one place both of them pass through.
     announcePhysicsReady(lobby, roomGame);
+    // THIS PLAYER'S ZENITH AUTO (custom rooms only; docs/area/autos.md): the one on in
+    // Configure ▸ Match ▸ Autonomous, sent once the server says it can play it. Latched in the
+    // client like the readiness above, so a reconnect re-sends it. A record run never sends one.
+    if (!isRecord && moduleFor(roomGame).zenithAutos) {
+      void serverCaps().then((caps) => {
+        if (!caps.includes('zenithAuto')) return;
+        const active = activeZenithAuto(roomGame);
+        lobby.setZenithAuto(active ? { auto: active.auto, ...(active.waypoints ? { waypoints: active.waypoints } : {}) } : null);
+      });
+    }
     return lobby;
   }
 
@@ -951,6 +962,8 @@ export function Lobby({
                       "Medium bot · READY" is indistinguishable from a driver who picked that
                       name, and the difference is whether the match rates. */}
                   {p.bot && <span className="ds-chip">BOT</span>}
+                  {/* the Zenith auto this driver's robot plays in AUTO (custom rooms) */}
+                  {p.autoName && <span className="ds-chip">AUTO · {p.autoName}</span>}
                   {p.clientId === hostId && (
                     <span className="ds-chip on">HOST</span>
                   )}

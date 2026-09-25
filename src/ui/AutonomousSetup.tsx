@@ -329,8 +329,8 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
         </p>
       )}
       <p className="ds-hint">
-        In a match the robot starts where the auto does and drives it through AUTO. In Free drive the auto plays once, and
-        Restart plays it again.
+        In a match, solo or in a custom room, the robot starts where the auto does and drives it through AUTO. Ranked
+        matches never run one. In Free drive the auto plays once, and Restart plays it again.
       </p>
     </section>
   );
