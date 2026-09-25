@@ -1,3 +1,8 @@
+# HANDOFF — 2026-09-25i (production = alpha = `9a91323`)
+
+- **Everything on `alpha` as of 5419acb3 is on production**: `main` = `9a91323`, Vercel and every Fly machine (announced deploy, `/health` ok, satellites re-sized). Includes the combined Vercel history display, counting all traffic (DNT/GPC no longer gate), `LEGAL_UPDATED` September 25, 2026 (every signed-in account accepts once), controller hold-to-remove, and the budget-lane test change.
+- **Still the owner's to run:** the Vercel history import against production (`node scratch/import-vercel.mjs`, then `--write`, from the prediction-hud-simplify worktree), then switch Web Analytics off in the Vercel project. Alpha remains on its site lockdown; tester tags pending.
+
 # HANDOFF — 2026-09-25j (controller: hold a button to remove a bind)
 
 **State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `uiaudit`, `docaudit` pass. Client only, no deploy needed.
