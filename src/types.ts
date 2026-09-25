@@ -535,12 +535,16 @@ export interface RobotState {
   bbRampOut?: boolean;
   /** `world.time` of the last ramp toggle (either direction). */
   bbRampAt?: number;
-  /** was `bbRamp` held last tick? — the edge latch, `driveModeHeld`'s twin. */
+  /** the edge latch, `driveModeHeld`'s twin — but DEBOUNCED: it stays set through a release
+   * shorter than `BB_RAMP_DEBOUNCE_S` (`bbRampStep`). */
   bbRampHeld?: boolean;
+  /** `world.time` the ramp button went up while `bbRampHeld` is still latched; absent otherwise. */
+  bbRampUpAt?: number;
   /** OSCILLATION GUARD (owner, 2026-09-20: a swing that would carry the ramp into a static — the
    * flower it is deploying into, or a wall it would fold up through — reverses back where it
-   * came from, `bbRampSwingStep`). Once a swing has reversed, it retraces a path that was already
-   * proven clear, so the guard skips re-testing for the REST of that swing. Absent reads false;
+   * came from, `bbRampSwingStep`). Once a swing has reversed, 2D skips re-testing for the REST of
+   * that swing; 3D skips only a reversed FOLD, and a reversed deploy that hits again folds for
+   * good, because a moving robot can close on the static meanwhile (`bbRampSwingStep3d`). Absent reads false;
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;

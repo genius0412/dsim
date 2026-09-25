@@ -3819,6 +3819,80 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // (c1) A RAMP ROBOT CANNOT FREEZE ITSELF ON A STATIC (replay 1dc6eb8f, 2026-09-25: frozen from
+  // 1:50 to the buzzer). Both jams are the same contact: the thin deck held VERTICALLY by a fixed
+  // body, so the solver pushes the chassis into the tiles and friction holds it there.
+  {
+    const spec = { ...bbArchSpec('ramp', 'frontback'), length: 15, width: 17 };
+    const drive = (w: World, c: Partial<RobotCommand>, n: number): void => {
+      for (let i = 0; i < n; i++) step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+    };
+    const staged = (x: number, y: number, heading: number): World => {
+      const w = mkWorld3d('match', 8140, spec);
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x, y };
+      r.heading = heading;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.autoIntake = false;
+      r.autoFire = false;
+      drive(w, {}, 1);
+      drive(w, { bbRamp: true }, 1);
+      drive(w, {}, 25);
+      return w;
+    };
+    // (i) the replay's own sequence, staged: a FOLD pressed just short of a wall at full speed.
+    // The fold's overshoot hits the wall and reverses to a deploy; the old guard stopped testing
+    // there, the robot closed 2.4 in with no ramp collider, and the ramp settled inside the wall.
+    {
+      const w = staged(-44, 0, Math.PI / 2);
+      const r = w.robots[0];
+      const ready = !!r.bbRampOut && !r.bbRampBlocked;
+      const back = { driveY: -1, leftDrive: -1, rightDrive: -1 };
+      drive(w, back, 40);
+      r.pos = { x: -44, y: -52 };
+      drive(w, back, 1);
+      drive(w, { ...back, bbRamp: true }, 6);
+      drive(w, back, 40);
+      const y0 = r.pos.y;
+      drive(w, { driveY: 1, leftDrive: 1, rightDrive: 1 }, 60);
+      check(
+        'ramp jam: a fold pressed at speed just short of a wall does not freeze the robot there',
+        ready && r.pos.y - y0 > 3 && (r.z ?? 0) > -0.05,
+        `ready=${ready} moved=${(r.pos.y - y0).toFixed(2)} z=${(r.z ?? 0).toFixed(3)} out=${r.bbRampOut}`,
+      );
+      disposeEngineFor(w);
+    }
+    // (ii) a SETTLED ramp whose deck ends up across a hive foot bar (the chassis clears the bar;
+    // only the 0.4-in blade meets it). 7 of 400 random drives froze this way before the fix.
+    {
+      const probe = bbCoerce(spec);
+      const uOut = mouthAxes(bbMouths(probe).find((m) => m.edge === 'front')!, probe.length / 2, probe.width / 2).uOut;
+      const deckMid = uOut + (BB_RAMP_IN + BB_RAMP_OUT) / 2;
+      const barX = -24.4; // the red foot bar's centreline (x −24.73 … −24.07)
+      const w = staged(-44, 34, Math.PI);
+      const r = w.robots[0];
+      const ready = !!r.bbRampOut && !r.bbRampBlocked;
+      r.pos = { x: barX + deckMid, y: 0 };
+      drive(w, {}, 5);
+      const x0 = r.pos.x;
+      let minZ = 0;
+      for (let i = 0; i < 60; i++) {
+        drive(w, { driveY: -1, leftDrive: -1, rightDrive: -1 }, 1);
+        minZ = Math.min(minZ, r.z ?? 0);
+      }
+      check(
+        'ramp jam: a settled ramp across a hive foot bar folds and the robot drives away',
+        ready && r.bbRampOut === false && r.pos.x - x0 > 3 && (r.z ?? 0) > -0.05,
+        `ready=${ready} out=${r.bbRampOut} moved=${(r.pos.x - x0).toFixed(2)} z=${(r.z ?? 0).toFixed(3)} minZ=${minZ.toFixed(3)}`,
+      );
+      disposeEngineFor(w);
+    }
+  }
+
   // (c2) THE RAMP EDGE NEVER MOVES THE CHASSIS (owner report 2026-09-21: "deploying the ramp is
   // lowering the entire robot into the ground"). Clearing the WHOLE compound at the settle edge
   // dropped the floor contacts: three ticks of free fall, 0.28 in under the tiles, and no

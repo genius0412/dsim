@@ -22,6 +22,7 @@ import {
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
+  BB_RAMP_DEBOUNCE_S,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_SIDE_ROLLER_PROTRUDE,
@@ -1487,11 +1488,30 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null {
  * keeps the 2D pipeline byte-identical for every spec that existed before this archetype did
  * (`npm test` hashes worlds). `enabled` false (pre-match, a phase transition, post-match) drops
  * the press on the floor the same way drive/intake/fire do, rather than letting it queue.
+ *
+ * ⚠️ **DEBOUNCED: A RELEASE SHORTER THAN `BB_RAMP_DEBOUNCE_S` IS NOT A RELEASE.** Replay
+ * 1dc6eb8f (2026-09-25) held the ramp button through two one-tick dropouts — one a whole input
+ * frame of zeros, a gamepad read that came back empty — and each flipped the ramp twice. The
+ * driver saw it deploy and fold for no reason. The latch now stays set through a short gap;
+ * `bbRampUpAt` is when the button went up, so the latch clears only once the gap is long
+ * enough. The fastest real re-press in that replay's mashing was 3 ticks.
  */
 export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean, time: number): void {
   if (bbIntakeKindOf(r.spec) !== 'ramp') return;
   const wants = enabled && (cmd?.bbRamp ?? false);
-  if (wants && !r.bbRampHeld) {
+  if (!wants) {
+    if (r.bbRampHeld) {
+      if (r.bbRampUpAt === undefined) r.bbRampUpAt = time;
+      else if (time - r.bbRampUpAt >= BB_RAMP_DEBOUNCE_S) {
+        r.bbRampHeld = false;
+        r.bbRampUpAt = undefined;
+      }
+    }
+    return;
+  }
+  const released = r.bbRampUpAt !== undefined && time - r.bbRampUpAt >= BB_RAMP_DEBOUNCE_S;
+  r.bbRampUpAt = undefined;
+  if (!r.bbRampHeld || released) {
     r.bbRampOut = !(r.bbRampOut ?? false);
     r.bbRampAt = time;
     // A FRESH PRESS RE-ARMS THE SWING GUARD (owner, 2026-09-20: a swing that would carry the

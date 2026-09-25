@@ -1238,6 +1238,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     SETTLED footprint's own clearance margin (0 in flush) can still be caught mid-swing (3 in off
     the foot still refused; 4 in and up settle clean). The guard is catching a real transient
     collision a final-pose-only check cannot see.
+  - ⚠️ **A RAMP ROBOT MUST NOT BE ABLE TO FREEZE ITSELF** (replay 1dc6eb8f, 2026-09-25: frozen
+    from 1:50 to the buzzer). The jam is one contact: the 0.08-in deck held VERTICALLY by a fixed
+    body, so the solver pushes the chassis into the tiles, the floor pushes back, and friction on
+    that contact holds the robot. Two ways in, both closed in `bbRampSwingStep3d` (`elements3d.ts`):
+    - A fold pressed at speed just short of a wall reversed to a deploy that was never tested
+      again ("it retraces proven-clear ground"). A swinging ramp has no collider, so the robot kept
+      closing and the ramp settled 2.4 in inside the wall. Now only a reversed FOLD skips the test;
+      a reversed deploy that hits again folds for good. Standing still, nothing changes.
+    - A settled ramp driven across a hive foot bar or frame foot: the chassis clears them, only the
+      blade meets them. `rampEmbedded` reads the step's own manifolds on `GROUP_RAMP` colliders; a
+      fixed-body contact with `|n.z| > 0.5` deeper than `BB_RAMP_EMBED_DEPTH` (0.05) folds the ramp.
+      Measured: 7 of 400 random drives froze this way before, 0 after.
+    Once it was in the wall, every fold press reversed instantly, because the ramp was already
+    inside the static. That is why the fix is a fold, not a stronger guard. Smoke: "ramp jam:" ×2.
+  - ⚠️ **THE RAMP TOGGLE IS DEBOUNCED** (`BB_RAMP_DEBOUNCE_S`, 2.5 ticks; `RobotState.bbRampUpAt`).
+    The same replay held the button through two 1-tick dropouts, one a whole input frame of zeros
+    (an empty gamepad read), and each flipped the ramp twice. The fastest real re-press in it was
+    3 ticks. Smoke: "ramp debounce:" ×4. `driveMode` has the same latch and no debounce.
   - ⚠️ **SIDE ROLLERS RELOCATED TO THE MOUTH'S OWN EDGES** (owner, 2026-09-20: "situated on the
     edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's
     axis is `bbSideRollerY(mouthHalf)` = `mouthHalf − BB_SIDE_ROLLER_EDGE_INSET`, not the old fixed
