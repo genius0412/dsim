@@ -1,3 +1,19 @@
+# HANDOFF — 2026-09-25c (BIOBUZZ ramp: the self-freeze and the double toggle)
+
+**State: pushed on `alpha`.** `npm test` (shared + 5129 BIOBUZZ), `build`, `server:check`, `docaudit` pass. ⚠️ **Sim change** (`src/games/biobuzz/`), so the game servers run it only after a deploy. Production needs this on `main` plus a Fly deploy.
+
+- **Player report + replay 1dc6eb8f (production, 3D):** a `frontback` ramp build deployed and folded "at random" and froze at 1:50 of match time until the buzzer. Pulled the row read-only and re-simulated it (`scratch/analyzereplay.ts`, `scratch/replayticks.ts`; the replay JSON stays in `scratch/`, it is private).
+- **The freeze:** t6508 fold pressed 3 in short of the −y wall at 45 in/s → the fold's overshoot hit the wall → reversed to a deploy the old guard never re-tested → no ramp collider mid-swing, the robot closed 2.4 in → the ramp settled inside the wall, the deck's contact normal was (0,0,−1), and the chassis sank to z −0.32 and stayed. Every later fold press reversed instantly. Fix in `bbRampSwingStep3d`: a reversed deploy is re-tested and folds on a second hit; a settled ramp a fixed body presses vertically (`rampEmbedded`, `BB_RAMP_EMBED_DEPTH`) folds. Verified on the recorded state (old guard until t6505, new after): the robot folds at t6511 and drives off.
+- **Same jam off the hive foot bars:** 7/400 random ramp drives froze with the blade under a foot bar or frame foot; 0/400 after.
+- **The random toggles:** two 1-tick button dropouts in that match (one a whole all-zero input frame, an empty gamepad read) each toggled twice. `bbRampStep` is debounced (`BB_RAMP_DEBOUNCE_S` 2.5 ticks, `RobotState.bbRampUpAt`). The rest were the swing guard doing its job near walls and the hive foot bars (2.15 in, easy to miss).
+- ⚠️ Replays of ramp builds recorded before this can diverge (this one does from t6172). `SIM_VERSION` stays 3, as ruled 2026-09-20.
+- **Not fixed, found on the way:**
+  - ANY build can get stuck ON TOP of a hive foot bar or frame foot (z ≈ 2.1): 8/400 random drives with a sweeper or a folded ramp; `scratch/rampstuck.ts <n> <seed> sweeper` reproduces it.
+  - A chassis can end up inside a flower's ring trimesh (1/400).
+  - The server fills a missing input tick with `latest`, the NEWEST command by tick, which is usually from the future, so a lost packet near an edge can double-toggle any edge-triggered button (`frameCommands`, `server/room.ts`). The replay shows no case of it.
+  - `driveMode` has the same undebounced latch.
+  - The client produced an all-zero input frame mid-press (gamepad dropout); worth a look in `src/input/gamepad.ts`.
+
 # HANDOFF — 2026-09-25b (ranked badge numerals centred)
 
 **State: pushed on `alpha`.** `build` and `uiaudit` pass. Client-only.
