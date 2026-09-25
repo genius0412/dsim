@@ -602,6 +602,11 @@ const namesOf = (m: PendingMatch | undefined): string =>
   const cap = Number(/^SATELLITE_MAX_ROOMS=(\d+)/m.exec(sh)?.[1] ?? NaN);
   check('fleet: satellites declare a MAX_ROOMS below the 24 default',
     cap > 0 && cap < 24, String(cap));
+  // the dedicated-core figure, same rule, and never BELOW the shared one: a performance core
+  // carries more than a shared vCPU, and 2026-09-25's refusals were a dedicated core at 6
+  const capDedicated = Number(/^SATELLITE_MAX_ROOMS_DEDICATED=(\d+)/m.exec(sh)?.[1] ?? NaN);
+  check('fleet: dedicated-core satellites declare a MAX_ROOMS between the shared cap and 24',
+    capDedicated >= cap && capDedicated < 24, `${capDedicated} vs shared ${cap}`);
   // TWO checks, not one, because DECLARING the variable and PASSING it are separate
   // failures and only the first is visible in a diff: a `SATELLITE_MAX_ROOMS=6` that no
   // command line reads looks exactly like a working cap and silently leaves every
