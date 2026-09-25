@@ -4271,22 +4271,33 @@ export function sim3dChecks(check: Check): void {
       // and this fixture's `reach` permanently null — MEASURED (`scratch/ramp_flush_debug.ts`):
       // the branch never fired once across 500 ticks. Same fix `robot.ts`'s own
       // `openPark`-then-`flush` fixtures already use for this exact mechanic.
-      r.pos = { x: f.x - 100, y: f.y };
-      r.heading = 0;
+      // ⚠️ INFIELD of F1, not `f.x - 100`: F1 is on the LEFT wall, so that point is 100 in outside
+      // the field, and the containment net clamped the robot back in ON TOP of F1 — it deployed
+      // wherever the plates happened to eject it, and that ejection also knocked the column off
+      // the axis. Found 2026-09-25 when robots stopped meeting the ring trimesh and the swing
+      // guard, seeing the solid plates, refused that deploy. Deployed in the open, the teleport
+      // flush lands the blade on a CENTRED column (chassis lifted to z 2.1, nothing retrieved,
+      // old and new physics alike), so the column is dropped in AFTER the robot is held flush:
+      // it falls onto the blade the way a placed column does.
+      r.pos = { x: f.x + 40, y: f.y };
+      r.heading = Math.PI;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       r.hopper = [];
       for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // press the ramp out, still in the open
+      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
+      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
       let id = 9300;
       for (let k = 0; k < 2; k++) {
         w.balls.push({ id, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'element', el: 'flower:0', slot: 0 }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 }, z: FLOWER_RING_Z.top[0] - BB_POLLEN_R, vz: 0 });
         id++;
-        for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+        for (let t = 0; t < 60; t++) {
+          flushPose(); // NOW flush, ramp already settled, held there while the column drops
+          step3d(w, 1 / 60, new Map());
+        }
       }
-      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // press the ramp out, still in the open
-      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
-      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
-      flushPose(); // NOW move flush, ramp already settled
+      flushPose();
       return w;
     };
     const wa = buildRampRetrieveWorld(8150);

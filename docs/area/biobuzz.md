@@ -123,6 +123,32 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
   `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
   positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLID BOXES**
+  (`groups.ts`, `GROUP_FLOWER_RING` / `GROUP_FLOWER_SOLID` / `GROUP_CHASSIS`;
+  `flowerTube.ts`, `buildFlowerSolids3d`). A trimesh has no inside. A chassis pressed past a
+  plate's outer face was pushed out through the plate's top face: up onto the 0.354-in LOWER
+  plate (a chassis cannot pitch or roll, so it was held level off the tiles) or, once the lower
+  plate was out of the way, down into the tiles under the MIDDLE one, whose top (5.254) sits
+  0.046 in under the chassis top (`BB3_CHASSIS_TOP_Z` 5.3). MEASURED (`scratch/flowersweep.ts`,
+  8,960 legal drive-ins, all four FLOWERS, eight builds; `scratch/shove.ts`, 1,472 legal shoves):
+  before, 1,025 drive-ins and 214 shoves lifted the chassis over 0.1 in and 2 drive-ins left it
+  at z 0.34 where 4 s of any drive command moved it 0.004 in; lower plate removed alone, 55
+  shoves sank it up to 1.5 in. After: 0 lifted, 0 sunk, 0 parked, deepest plate contact 0.38 in.
+  - The lower plate gets no box: the middle plate's footprint contains it and every chassis spans
+    the middle plate's z band, so it never stopped a chassis. Elements meet exactly the plates they
+    met before, and a deployed ramp meets neither the trimesh nor the solids (the swing guard's
+    query has no groups, so it does see the solids).
+  - ⚠️ **The three plates are ONE trimesh collider** so each flower still has five colliders.
+    Two extra colliders per flower, even set to meet nothing, shift every later handle, reorder
+    Rapier's pairs, and flipped two unrelated order-sensitive checks (a hive foot-bar contact
+    height, the hive settle clock).
+  - Every robot collider carries `GROUP_CHASSIS`, `GROUP_POCKET` or `GROUP_RAMP`, in `bodies.ts`
+    and `predict.ts`; one built on the default groups meets the trimesh again.
+  - A chassis TELEPORTED more than 1.4 in into a plate is still pushed into the tiles and held.
+    Nothing in play puts one there (`bbEvalStart` keeps starts off every FLOWER), but a harness
+    that drops robots at random poses will find it. `containmentPass` clamps an out-of-field robot
+    to the nearest interior point without looking at statics, which at x ±70.17 is inside a FLOWER.
+  - The FLOWER3D lane pins the lift, the hang and the shove.
 - ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON THE CONTENTS' WEIGHT** (owner report 2026-09-19:
   "it says 0 more to tip and it does not tip"). The detent used to be a breakaway the load had to
   out-torque, and no calibration can make that agree with a COUNT: measured at the shipped hold,
