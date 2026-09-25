@@ -528,6 +528,9 @@ export interface RobotState {
   /** was the `driveMode` button held last tick? The sim edge-triggers the butterfly swap
    * off this, so holding the button swaps once (not every tick). Plain bool ⇒ snapshot-safe. */
   driveModeHeld: boolean;
+  /** `world.time` the driveMode button went up while `driveModeHeld` is still latched
+   * (`debouncedPress`); absent otherwise. */
+  driveModeUpAt?: number;
   /** BIOBUZZ `ramp` intake: is the ramp DEPLOYED (dropped forward)? Absent reads false, the
    * folded start R102 requires. RUNTIME state the driver toggles with `bbRamp`; the sim credits
    * the ramp's reach only `BB_RAMP_DEPLOY_S` after `bbRampAt`, and the renderer eases the swing
@@ -536,7 +539,7 @@ export interface RobotState {
   /** `world.time` of the last ramp toggle (either direction). */
   bbRampAt?: number;
   /** the edge latch, `driveModeHeld`'s twin — but DEBOUNCED: it stays set through a release
-   * shorter than `BB_RAMP_DEBOUNCE_S` (`bbRampStep`). */
+   * shorter than `TOGGLE_DEBOUNCE_S` (`debouncedPress`). */
   bbRampHeld?: boolean;
   /** `world.time` the ramp button went up while `bbRampHeld` is still latched; absent otherwise. */
   bbRampUpAt?: number;

@@ -1,6 +1,7 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import { INTAKE_RAIL_T, SIM_DT } from '../../config';
 import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
+import { debouncedPress } from '../../sim/robot';
 import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
 import {
@@ -22,7 +23,6 @@ import {
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
-  BB_RAMP_DEBOUNCE_S,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_SIDE_ROLLER_PROTRUDE,
@@ -1489,7 +1489,7 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null {
  * (`npm test` hashes worlds). `enabled` false (pre-match, a phase transition, post-match) drops
  * the press on the floor the same way drive/intake/fire do, rather than letting it queue.
  *
- * ⚠️ **DEBOUNCED: A RELEASE SHORTER THAN `BB_RAMP_DEBOUNCE_S` IS NOT A RELEASE.** Replay
+ * ⚠️ **DEBOUNCED: A RELEASE SHORTER THAN `TOGGLE_DEBOUNCE_S` IS NOT A RELEASE** (`debouncedPress`). Replay
  * 1dc6eb8f (2026-09-25) held the ramp button through two one-tick dropouts — one a whole input
  * frame of zeros, a gamepad read that came back empty — and each flipped the ramp twice. The
  * driver saw it deploy and fold for no reason. The latch now stays set through a short gap;
@@ -1498,20 +1498,8 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null {
  */
 export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean, time: number): void {
   if (bbIntakeKindOf(r.spec) !== 'ramp') return;
-  const wants = enabled && (cmd?.bbRamp ?? false);
-  if (!wants) {
-    if (r.bbRampHeld) {
-      if (r.bbRampUpAt === undefined) r.bbRampUpAt = time;
-      else if (time - r.bbRampUpAt >= BB_RAMP_DEBOUNCE_S) {
-        r.bbRampHeld = false;
-        r.bbRampUpAt = undefined;
-      }
-    }
-    return;
-  }
-  const released = r.bbRampUpAt !== undefined && time - r.bbRampUpAt >= BB_RAMP_DEBOUNCE_S;
-  r.bbRampUpAt = undefined;
-  if (!r.bbRampHeld || released) {
+  const e = debouncedPress(r.bbRampHeld ?? false, r.bbRampUpAt, enabled && (cmd?.bbRamp ?? false), time);
+  if (e.press) {
     r.bbRampOut = !(r.bbRampOut ?? false);
     r.bbRampAt = time;
     // A FRESH PRESS RE-ARMS THE SWING GUARD (owner, 2026-09-20: a swing that would carry the
@@ -1520,7 +1508,8 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
     // DIFFERENT swing, so it gets to test again.
     r.bbRampBlocked = false;
   }
-  r.bbRampHeld = wants;
+  r.bbRampHeld = e.held;
+  if (e.upAt !== undefined || r.bbRampUpAt !== undefined) r.bbRampUpAt = e.upAt;
 }
 
 /**

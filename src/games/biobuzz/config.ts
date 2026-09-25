@@ -1432,10 +1432,6 @@ export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
  * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
 export const BB_RAMP_DEPLOY_S = 0.3;
-/** a ramp-button release shorter than this is a glitch, not a release (`bbRampStep`). 2.5 ticks,
- * so a 3-tick gap (the fastest real re-press in replay 1dc6eb8f) counts and a 1–2-tick dropout
- * does not. */
-export const BB_RAMP_DEBOUNCE_S = 2.5 / 60;
 /** how deep a fixed body may press a SETTLED ramp vertically before it folds (in) — the 3D jam
  * guard in `elements3d.ts`'s `bbRampSwingStep3d`. Resting contact sits near `PHYS_ALLOWED_ERROR`
  * (0.01); the jam in replay 1dc6eb8f was 0.13 deep, the random-drive jams 0.38–0.45. */

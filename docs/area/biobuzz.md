@@ -1252,10 +1252,10 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       Measured: 7 of 400 random drives froze this way before, 0 after.
     Once it was in the wall, every fold press reversed instantly, because the ramp was already
     inside the static. That is why the fix is a fold, not a stronger guard. Smoke: "ramp jam:" ×2.
-  - ⚠️ **THE RAMP TOGGLE IS DEBOUNCED** (`BB_RAMP_DEBOUNCE_S`, 2.5 ticks; `RobotState.bbRampUpAt`).
+  - ⚠️ **THE RAMP TOGGLE IS DEBOUNCED** (`debouncedPress`, `TOGGLE_DEBOUNCE_S` 2.5 ticks; `RobotState.bbRampUpAt`).
     The same replay held the button through two 1-tick dropouts, one a whole input frame of zeros
     (an empty gamepad read), and each flipped the ramp twice. The fastest real re-press in it was
-    3 ticks. Smoke: "ramp debounce:" ×4. `driveMode` has the same latch and no debounce.
+    3 ticks. Smoke: "ramp debounce:" ×4. Butterfly `driveMode` shares the helper.
   - ⚠️ **SIDE ROLLERS RELOCATED TO THE MOUTH'S OWN EDGES** (owner, 2026-09-20: "situated on the
     edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's
     axis is `bbSideRollerY(mouthHalf)` = `mouthHalf − BB_SIDE_ROLLER_EDGE_INSET`, not the old fixed

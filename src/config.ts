@@ -202,8 +202,22 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *    because the behaviour moved and the number did not. A v3 build reads them as `behaviour`
  *    and plays them as DRIFT, which is the right outcome — it cannot tell them apart from a
  *    genuine 2, and drift is the label that says "the ending may land differently".
+ * 4: THE STUCK-ROBOT BATCH (replay 1dc6eb8f, 2026-09-25: a BIOBUZZ ramp robot frozen from 1:50
+ *    to the buzzer). Everything stamped 3 before it plays as DRIFT. It also closes the honesty
+ *    hole BIOBUZZ 3D left open: 3D behaviour moved several times on 3 (the turret rest pitch of
+ *    2026-09-24, the ramp work of 2026-09-20/21) without a number.
+ *    · TOGGLES ARE DEBOUNCED (`debouncedPress`, `TOGGLE_DEBOUNCE_S`): a release under 2.5 ticks
+ *      is not a release, for butterfly `driveMode` (DECODE and Chain Reaction too) and the
+ *      BIOBUZZ ramp;
+ *    · THE BIOBUZZ 3D RAMP GUARD re-tests a reversed deploy and folds on a second hit, and a
+ *      settled ramp a fixed body presses vertically folds (`bbRampSwingStep3d`).
  */
-export const SIM_VERSION = 3;
+export const SIM_VERSION = 4;
+
+/** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
+ * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,
+ * counts; a 1–2-tick dropout does not. */
+export const TOGGLE_DEBOUNCE_S = 2.5 / 60;
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode).
