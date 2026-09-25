@@ -14,7 +14,7 @@ import {
 } from '../config';
 
 import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
-import { GROUP_FLOWER_RING, GROUP_NECTAR_SORTER } from './groups';
+import { GROUP_FLOWER_RING, GROUP_FLOWER_SOLID, GROUP_NECTAR_SORTER } from './groups';
 
 /**
  * BIOBUZZ 3D PHYSICS — THE FLOWER TUBE (Day 2, `docs/biobuzz/plan-3d.md` §3.7).
@@ -58,7 +58,14 @@ import { GROUP_FLOWER_RING, GROUP_NECTAR_SORTER } from './groups';
  * inner faces are chords, i.e. a bore that is polygonal by construction AND N times the
  * broad-phase work. `TriMeshFlags.FIX_INTERNAL_EDGES` is what makes the trimesh behave as a
  * surface rather than as a bag of triangles: without it a sphere rolling across the plate's top
- * face catches on every shared edge it crosses.
+ * face catches on every shared edge it crosses. (The three plates now share ONE trimesh collider;
+ * see `buildFlowerTubes3d`.)
+ *
+ * ⚠️ **A TRIMESH HAS NO INSIDE, SO NO ROBOT MEETS IT.** A chassis box pressed past a plate's outer
+ * face was pushed out through the plate's top or bottom face instead: lifted onto the lower plate
+ * and left hanging there, or sunk into the tiles under the middle one. A robot meets the middle
+ * and top plates as solid boxes (`buildFlowerSolids3d`) and the lower plate not at all;
+ * `groups.ts`'s sixth bit has the measurements.
  *
  * ── AND THE CAGE, WHICH IS THE WALL BETWEEN THE TOP TWO PLATES THE CAD HAS NO PART FOR ──────
  * `buildFlowerCage3d` (below) closes the 15-in gap between the mid plate's top face and the top
@@ -167,9 +174,16 @@ export function ringTrimesh(ring: FieldFlowerRing, segments: number = BB3_FLOWER
 }
 
 /**
- * Build every FLOWER's three ring plates into `world3d` — one fixed body per flower, three
- * trimesh colliders on it, in `BB_FLOWERS` order then bottom-to-top (determinism: the same
- * build order rule every other static follows).
+ * Build every FLOWER into `world3d` — one fixed body per flower, in `BB_FLOWERS` order
+ * (determinism: the same build order rule every other static follows). On each body: the three
+ * ring plates as ONE trimesh (bottom-to-top), the cage, the nectar sorter, then the two plate
+ * SOLIDS a robot meets instead of the trimesh (`buildFlowerSolids3d`).
+ *
+ * ⚠️ **THE THREE PLATES ARE ONE COLLIDER SO THE COUNT DID NOT MOVE.** Adding the two solids as
+ * well as three plate trimeshes made every later collider's handle two higher per flower, which
+ * reorders Rapier's pairs; that alone (the solids set to meet nothing) flipped two unrelated,
+ * order-sensitive HIVE3D/SIM3D checks. A trimesh's contacts are per triangle either way, so an
+ * element meets exactly the same surfaces, and the FLOWER3D lane's fit checks agree.
  *
  * Friction is the same `PHYS_WALL_FRICTION` the supports take; restitution 0, because a plate
  * is the surface an element has to COME TO REST on and a bouncy one turns a placed nectar into
@@ -185,17 +199,60 @@ export function buildFlowerTubes3d(
     const rings = cadFlowerRings(i);
     if (rings.length === 0) continue;
     const body = world3d.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const verts: number[] = [];
+    const idx: number[] = [];
     for (const ring of rings) {
       const mesh = ringTrimesh(ring);
       if (!mesh) continue;
-      const desc = RAPIER.ColliderDesc.trimesh(mesh.vertices, mesh.indices, RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES);
-      if (!desc) continue;
-      // a ring plate does not meet a deployed RAMP — `groups.ts` has the measurement
+      const base = verts.length / 3;
+      for (const v of mesh.vertices) verts.push(v);
+      for (const k of mesh.indices) idx.push(k + base);
+    }
+    const desc =
+      idx.length > 0
+        ? RAPIER.ColliderDesc.trimesh(new Float32Array(verts), new Uint32Array(idx), RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES)
+        : null;
+    if (desc) {
+      // the plates meet elements; a deployed RAMP and a robot skip them (`groups.ts`)
       world3d.createCollider(desc.setFriction(friction).setRestitution(0).setCollisionGroups(GROUP_FLOWER_RING), body);
       built++;
     }
     built += buildFlowerCage3d(RAPIER, world3d, body, rings, friction);
     built += buildNectarSorter3d(RAPIER, world3d, body, rings, friction);
+    built += buildFlowerSolids3d(RAPIER, world3d, body, rings, friction);
+  }
+  return built;
+}
+
+/**
+ * What a ROBOT meets of a FLOWER's plates: the MIDDLE and TOP plates as solid boxes over their own
+ * measured footprint and z band, and nothing for the LOWER plate. `GROUP_FLOWER_SOLID` in
+ * `groups.ts` has why a robot must not meet the trimesh (it has no inside) and why the lower
+ * plate needs no box. Elements and a deployed ramp never meet these. The ramp swing guard's query
+ * carries no groups, so it sees them: a swing through a plate's inside is refused, where the
+ * trimesh let one through if it touched no triangle.
+ */
+export function buildFlowerSolids3d(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  rings: readonly FieldFlowerRing[],
+  friction: number,
+): number {
+  let built = 0;
+  for (const ring of rings) {
+    if (ring.id === 'lower') continue;
+    const [x0, x1] = ring.rect.x;
+    const [y0, y1] = ring.rect.y;
+    const [zLo, zHi] = ring.z;
+    if (!(x1 > x0 && y1 > y0 && zHi > zLo)) continue;
+    const desc = RAPIER.ColliderDesc.cuboid((x1 - x0) / 2, (y1 - y0) / 2, (zHi - zLo) / 2)
+      .setTranslation((x0 + x1) / 2, (y0 + y1) / 2, (zLo + zHi) / 2)
+      .setFriction(friction)
+      .setRestitution(0)
+      .setCollisionGroups(GROUP_FLOWER_SOLID);
+    world3d.createCollider(desc, body);
+    built++;
   }
   return built;
 }

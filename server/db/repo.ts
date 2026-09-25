@@ -4613,33 +4613,68 @@ export async function eloHistoryUserStanding(opts: {
 }
 
 // -------------------------------------------------------- global stats -----
-export interface GlobalStats {
-  users: number;
-  /** total games played — COMBINED across every game (the homepage headline) */
-  games: number;
-  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
-  /** games played PER GAME (DECODE + Chain Reaction tracked separately). The
-   * homepage sums these into `games`; the split is here if a surface wants it. */
-  byGame: Record<Game, number>;
+
+/** where a game was played (migration 0050). Server rooms report the first four at match end;
+ * a client that was online reports the last two, which run off the cloud. */
+export type PlaySource = 'record' | 'ranked' | 'custom' | 'discord' | 'practice' | 'lan';
+export type PlayMode = 'solo' | 'duo' | '1v1' | '2v2';
+export const PLAY_SOURCES: readonly PlaySource[] = ['record', 'ranked', 'custom', 'discord', 'practice', 'lan'];
+export const PLAY_MODES: readonly PlayMode[] = ['solo', 'duo', '1v1', '2v2'];
+
+/** Count one game played. One upsert on today's (UTC) row; no identity is stored. */
+export async function countPlay(game: Game | undefined, source: PlaySource, mode: PlayMode): Promise<void> {
+  await q(
+    `insert into play_counts (day, game, source, mode, n)
+     values ((now() at time zone 'utc')::date, $1, $2, $3, 1)
+     on conflict (day, game, source, mode) do update set n = play_counts.n + 1`,
+    [g(game), source, mode],
+  );
 }
 
-/** site-wide totals for the homepage: registered players + games played, split
- * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
- * games) AND by game (DECODE vs Chain Reaction, recorded separately). The
- * headline `games` COMBINES every game. Cheap COUNT/GROUP BY over indexed tables. */
+/**
+ * The homepage's categories, folded from the raw split:
+ * solo = record solo + practice · duo = record duo · 1v1 / 2v2 = ranked ·
+ * custom = custom rooms + Discord rooms + LAN, any format.
+ */
+export function playCategory(source: PlaySource, mode: PlayMode): keyof GlobalStats['byCategory'] | null {
+  switch (source) {
+    case 'practice':
+      return 'solo';
+    case 'record':
+      return mode === 'duo' ? 'duo' : 'solo';
+    case 'ranked':
+      return mode === '2v2' ? '2v2' : mode === '1v1' ? '1v1' : null;
+    case 'custom':
+    case 'discord':
+    case 'lan':
+      return 'custom';
+  }
+}
+
+export interface GlobalStats {
+  users: number;
+  /** total games played — COMBINED across every game and source (the homepage headline) */
+  games: number;
+  /** the homepage's categories; see `playCategory` for what each one folds in */
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number; custom: number };
+  /** games played PER GAME, every source */
+  byGame: Record<Game, number>;
+  /** the raw split the categories are folded from: per game × source × mode */
+  detail: { game: Game; source: PlaySource; mode: PlayMode; n: number }[];
+}
+
+/** site-wide totals for the homepage: registered players + games played, from the
+ * `play_counts` counters (migration 0050). */
 /**
  * MEMOIZED, because this is a PUBLIC, UNAUTHENTICATED endpoint (`/api/stats`, api.ts) that
- * every homepage load hits, and the three queries below are unbounded aggregates: a
- * `count(*)` over all of `profiles`, and a `group by` over the whole of `records` and the
- * whole of `matches`. The group-bys can index-only-scan, but they still read every entry,
- * so the cost grows with total site history forever while the ANSWER moves by a handful of
- * rows a minute — a number rendered as "12,431 games played" does not need to be current to
- * the second.
+ * every homepage load hits. `play_counts` grows by at most games × sources × modes rows a day,
+ * so the sum is cheap, but `count(*)` over `profiles` still reads every entry, and N
+ * concurrent visitors should not be N scans of it. A number rendered as "12,431 games played"
+ * does not need to be current to the second.
  *
  * Same shape as `actCache` above and `userRoomCache` below: a module-level `{at, val}` with
  * a millisecond constant. 60s rather than something longer because this is what the
- * homepage's liveness reads as; the point is to stop N concurrent visitors becoming N full
- * scans, and that is already won at one second.
+ * homepage's liveness reads as.
  */
 const STATS_TTL_MS = 60_000;
 let statsCache: { at: number; val: GlobalStats } | null = null;
@@ -4651,25 +4686,26 @@ export function clearStatsCache(): void {
 
 export async function getGlobalStats(now = Date.now()): Promise<GlobalStats> {
   if (statsCache && now - statsCache.at < STATS_TTL_MS) return statsCache.val;
-  const [users, recRows, matchRows] = await Promise.all([
+  const [users, rows] = await Promise.all([
     q<{ n: string }>(`select count(*) as n from profiles`),
-    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from records group by game, mode`),
-    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from matches group by game, mode`),
+    q<{ game: Game; source: PlaySource; mode: PlayMode; n: string }>(
+      `select game, source, mode, sum(n) as n from play_counts group by game, source, mode order by 1, 2, 3`,
+    ),
   ]);
-  const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
-  // seeded from GAME_IDS so a new game reports 0 rather than being absent from
-  // the map (and so this stops being a place a new game has to be added)
+  const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0, custom: 0 };
+  // seeded from GAME_IDS so a new game reports 0 rather than being absent from the map
   const byGame = Object.fromEntries(GAME_IDS.map((g) => [g, 0])) as Record<Game, number>;
-  for (const r of [...recRows, ...matchRows]) {
+  const detail: GlobalStats['detail'] = [];
+  let games = 0;
+  for (const r of rows) {
     const n = Number(r.n);
-    // combined-by-category (homepage) — sums across games
-    if (r.mode in byCategory) byCategory[r.mode as keyof GlobalStats['byCategory']] += n;
-    // recorded separately per game
-    const gk = (r.game ?? 'decode') as Game;
-    if (gk in byGame) byGame[gk] += n;
+    detail.push({ game: r.game, source: r.source, mode: r.mode, n });
+    games += n;
+    const cat = playCategory(r.source, r.mode);
+    if (cat) byCategory[cat] += n;
+    if (r.game in byGame) byGame[r.game] += n;
   }
-  const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
-  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame, detail };
   statsCache = { at: now, val };
   return val;
 }

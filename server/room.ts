@@ -378,6 +378,9 @@ export interface MatchOutcome {
   mode?: '1v1' | '2v2';
   /** a bot was seated: the match and replay are kept, playtime is not credited */
   bots?: boolean;
+  /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
+   *  source in `play_counts`, folded into Custom on the homepage */
+  discord?: boolean;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -3040,6 +3043,7 @@ export class Room {
         // actually fielded. See `MatchOutcome.mode`.
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
+        discord: this.group !== '',
         result,
         replay,
         participants,
@@ -3442,6 +3446,11 @@ export class Room {
     return this.world;
   }
 
+  /** TEST SEAM: the commands the last step actually ran, by robot id. */
+  lastFrameForTest(): ReadonlyMap<number, RobotCommand> {
+    return this.lastFrame;
+  }
+
   /** TEST / TOOL SEAM: drive an already-started match deterministically with NO
    * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
    * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
@@ -3548,7 +3557,20 @@ export class Room {
         frame.set(r.id, c);
       } else if (w.tick - (this.lastRecvTick.get(r.id) ?? -HOLD_TICKS - 1) <= HOLD_TICKS) {
         // no exact input for this tick, but the client is live ⇒ apply its latest
-        const latest = this.latest.get(r.id) ?? this.held.get(r.id) ?? ZERO_CMD;
+        let latest = this.latest.get(r.id) ?? this.held.get(r.id) ?? ZERO_CMD;
+        /**
+         * ⚠️ A GAP MUST NOT INVENT A PRESS OR A RELEASE. `latest` is the newest command BY
+         * TICK, and a client runs ahead of the server, so for a lost or late packet it is
+         * usually a FUTURE one. Its stick is fine to borrow, its buttons are not: a held button
+         * that reads released for one gap tick and held the next is a second press, and every
+         * edge-triggered toggle (the BIOBUZZ ramp, `driveMode`) fires twice. So a future
+         * command keeps the buttons of the last one this robot actually ran.
+         */
+        if ((this.latestTick.get(r.id) ?? -1) > tick) {
+          const q = quantizeCommand(latest);
+          q.buttons = quantizeCommand(this.held.get(r.id) ?? ZERO_CMD).buttons;
+          latest = dequantizeCommand(q);
+        }
         this.held.set(r.id, latest);
         frame.set(r.id, latest);
       } else {

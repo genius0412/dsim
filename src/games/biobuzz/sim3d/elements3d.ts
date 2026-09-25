@@ -1,5 +1,5 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { BB_HOOD_DEFAULT_DEG, bbHeightNow } from '../config';
+import { BB_HOOD_DEFAULT_DEG, BB_RAMP_DEPLOY_S, BB_RAMP_EMBED_DEPTH, bbHeightNow } from '../config';
 import { capturePollen } from '../elements';
 import {
   bbAimTarget,
@@ -15,6 +15,7 @@ import {
   bbIntakeExtraReach,
   bbLaunch,
   bbRampReverse,
+  bbRampSettled,
   bbRampStep,
   bbRampSwingProgress,
   bbSlewTurret,
@@ -28,6 +29,7 @@ import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
 import { engineFor, type Engine3d } from './engineImpl';
 import { rapier3d } from './engine';
 import { rampSwingBlocked } from './bodies';
+import { GROUP_RAMP } from './groups';
 import { bbKindIndex } from '../score';
 
 /**
@@ -124,24 +126,68 @@ const ZERO_CMD3D: RobotCommand = Object.freeze({
 /**
  * ⚠️ **THE SWING GUARD, 3D'S HALF** (owner, 2026-09-20: "if it collides with the flower or any
  * non-moving solid thing as it is being deployed, it should fold back up... same with
- * un-deploying"). Runs right after `bbRampStep` every tick of a swing that is still in flight —
- * `bbRampSwingProgress` returns `null` (and this is a no-op) once the swing has settled, and the
- * oscillation guard (`r.bbRampBlocked`) skips the query outright once one reversal has already
- * proven this swing needs it. `rampSwingBlocked` is the actual Rapier query
- * (`bodies.ts`); a hit reverses the swing (`bbRampReverse`) in place, so the very next tick's
+ * un-deploying"). Runs right after `bbRampStep` every tick. `rampSwingBlocked` is the Rapier
+ * query (`bodies.ts`); a hit reverses the swing (`bbRampReverse`) in place, so the next tick's
  * `bbRampSwingProgress` picks up the SAME eased curve running the other way.
+ *
+ * ⚠️ **A REVERSED DEPLOY IS STILL TESTED, AND A SETTLED RAMP A STATIC PRESSES VERTICALLY FOLDS**
+ * (replay 1dc6eb8f, 2026-09-25: a ramp robot frozen from 1:50 to the buzzer). The driver folded
+ * while driving at a wall at 45 in/s. The fold's outward overshoot hit the wall and reversed to a
+ * deploy, which was not tested again because it "retraced proven-clear ground". It did not: a
+ * swinging ramp has no collider, the robot kept closing, and the ramp settled 2.4 in further on,
+ * inside the wall. Its colliders were built there, the thin deck's shortest way out was DOWN, and
+ * the floor pushed back: the chassis sank 0.3 in and never moved again. Every later fold press
+ * reversed at once, because the ramp was already in the wall.
+ * - Only a reversed FOLD skips the test: it retracts and removes solid, so it cannot land inside
+ *   anything. A reversed DEPLOY is tested like any swing, and a second hit folds for good.
+ *   Standing still that second hit never comes — the retraced poses were clear a tick ago.
+ * - A SETTLED ramp in a contact with a fixed body whose normal is mostly vertical and deeper than
+ *   `BB_RAMP_EMBED_DEPTH` folds (`rampEmbedded`). That is the jam's signature and nothing in play
+ *   makes it: the deck rides 0.4 in over the tiles and skips the ring plates, so a static can only
+ *   push it vertically from inside or above. The same jam came from driving the blade under a hive
+ *   foot bar or frame foot (measured: 7 of 400 random drives froze that way, 0 after).
  */
 function bbRampSwingStep3d(world: World, r: RobotState): void {
-  if (r.bbRampBlocked) return;
   const e = bbRampSwingProgress(r, world.time);
-  if (e === null) return;
+  if (e === null) {
+    if (bbRampSettled(r, world.time) && rampEmbedded(engineFor(world), r)) {
+      bbRampReverse(r, world.time, BB_RAMP_DEPLOY_S);
+    }
+    return;
+  }
+  if (r.bbRampBlocked && !r.bbRampOut) return;
   const engine = engineFor(world);
   const heightIn = bbHeightNow(world, r.spec);
-  // every OTHER robot's body, so a swing cannot be deployed through one. Not this robot's own:  // the blade hangs off that body and would report a hit on every tick of every swing.  const others = new Set<number>();  for (const [id, body] of engine.robots) if (id !== r.id) others.add(body.handle);  const hit = rampSwingBlocked(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e, others);
+  // every OTHER robot's body, so a swing cannot be deployed through one. Not this robot's own:
+  // the blade hangs off that body and would report a hit on every tick of every swing.
+  const others = new Set<number>();
+  for (const [id, body] of engine.robots) if (id !== r.id) others.add(body.handle);
+  const hit = rampSwingBlocked(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e, others);
   if (hit) {
     const elapsed = world.time - (r.bbRampAt ?? world.time);
     bbRampReverse(r, world.time, elapsed);
   }
+}
+
+/** is this robot's settled ramp held VERTICALLY by a fixed body — the jam `bbRampSwingStep3d`
+ * folds out of? Reads the step's own contact manifolds on the ramp's colliders (`GROUP_RAMP`). */
+function rampEmbedded(engine: Engine3d, r: RobotState): boolean {
+  const body = engine.robots.get(r.id);
+  if (!body) return false;
+  const w3 = engine.world3d;
+  let hit = false;
+  for (let i = 0; i < body.numColliders() && !hit; i++) {
+    const col = body.collider(i);
+    if (col.collisionGroups() !== GROUP_RAMP) continue;
+    w3.contactPairsWith(col, (other) => {
+      if (hit || !other.parent()?.isFixed()) return;
+      w3.contactPair(col, other, (m) => {
+        if (Math.abs(m.normal().z) <= 0.5) return;
+        for (let k = 0; k < m.numContacts(); k++) if (m.contactDist(k) < -BB_RAMP_EMBED_DEPTH) hit = true;
+      });
+    });
+  }
+  return hit;
 }
 
 /**

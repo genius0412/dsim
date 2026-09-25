@@ -286,6 +286,7 @@ import {
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import { GamepadInput } from '../src/input/gamepad';
 import {
   awardBadge,
   awardBoardWord,
@@ -7318,9 +7319,15 @@ function ramOffCentreSamples(
   press(true);
   press(true);
   check('butterfly: HOLDING does not keep swapping (edge-triggered)', rb.butterflyTank === true);
+  // a 1-tick release is a dropout, not a release (`debouncedPress`, replay 1dc6eb8f)
   press(false);
   press(true);
-  check('butterfly: releasing and pressing again swaps back', rb.butterflyTank === false);
+  check('butterfly: a ONE-tick release inside a held press does not swap (debounced)', rb.butterflyTank === true);
+  press(false);
+  press(false);
+  press(false);
+  press(true);
+  check('butterfly: releasing for 3 ticks and pressing again swaps back', rb.butterflyTank === false);
   // a non-butterfly must ignore the command entirely
   const w2 = createWorld('free', 42, [
     { id: 0, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC, drivetrain: 'mecanum' }), assists: DEFAULT_ASSISTS, startIndex: 0 },
@@ -15370,6 +15377,53 @@ function pinScene(
   gapRoom.snapGapStats(true);
   check('snapshot spacing: a reset drains the window (a second read is not the same numbers)', gapRoom.snapGapStats().n === 0);
   gapRoom.stop();
+}
+
+// ---- A MISSING INPUT TICK CANNOT INVENT A BUTTON EDGE -------------------------------
+// Inputs ride the unreliable lane. A tick with no input of its own is filled from `latest`, the
+// newest command by tick, which for a client running ahead is a FUTURE one. Its buttons used to
+// come along: a button held across the gap read released for that one tick, so the next held
+// tick was a second press and a toggle (the BIOBUZZ ramp, `driveMode`) fired twice.
+{
+  const mkC = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const room = new Room('smoke-gapfill', () => {}, { kind: 'versus' });
+  room.add(mkC('g1'));
+  room.onMessage('g1', { t: 'start' });
+  room.advanceForTest(5);
+  const t0 = room.tickForTest();
+  const held = quantizeCommand({ driveX: 0.5, driveY: 0, rotate: 0, intake: true, fire: false });
+  const up = quantizeCommand({ driveX: -0.5, driveY: 0, rotate: 0, intake: false, fire: false });
+  // held for t0+1 … t0+10 with t0+5 LOST, then released from t0+11 — all sent up front, the way
+  // a client ahead of the server has already sent them when the gap tick is stepped
+  for (let t = t0 + 1; t <= t0 + 15; t++) {
+    if (t === t0 + 5) continue;
+    room.onMessage('g1', { t: 'input', tick: t, q: t <= t0 + 10 ? held : up });
+  }
+  const intake: boolean[] = [];
+  const gapDx: number[] = [];
+  for (let i = 1; i <= 10; i++) {
+    room.advanceForTest(1);
+    const c = room.lastFrameForTest().get(0);
+    intake.push(!!c?.intake);
+    if (i === 5) gapDx.push(c?.driveX ?? NaN);
+  }
+  check(
+    'input gap: a lost tick inside a held button keeps it held (no invented release/press)',
+    intake.every(Boolean),
+    intake.map((v) => (v ? 1 : 0)).join(''),
+  );
+  check(
+    'input gap: ...while the gap tick still takes the stick from the newest command',
+    Math.abs(gapDx[0] - dequantizeCommand(up).driveX) < 1e-9,
+    `dx=${gapDx[0]}`,
+  );
+  room.stop();
 }
 
 // ---- predict/reconcile parity ----------------------------------------------
@@ -23909,6 +23963,35 @@ const dumperSetup = (): RobotSetup => {
   k = removeKey(k, 'intake', 0);
   check('keys: removeKey drops the slot', J(k.keys.intake) === J(['k']));
   check('keys: removing a slot that does not exist is a no-op', J(removeKey(k, 'intake', 3).keys.intake) === J(['k']));
+
+  // A PAD THAT VANISHES FOR ONE FRAME IS STILL HELD (replay 1dc6eb8f: an all-zero input frame
+  // mid-press toggled the ramp twice). `getGamepads()` is stubbed; the real one is restored.
+  {
+    const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+    const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+    let pads: unknown[] = [];
+    Object.defineProperty(nav, 'getGamepads', { value: () => pads, configurable: true, writable: true });
+    try {
+      const pad = { connected: true, axes: [0.9, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })) };
+      const gi = new GamepadInput();
+      pads = [pad];
+      const a = gi.sample(DEFAULT_BINDINGS.pad);
+      pads = [];
+      const gap = gi.sample(DEFAULT_BINDINGS.pad);
+      check(
+        'gamepad: a one-frame dropout holds the last sample instead of releasing everything',
+        a.driveX > 0.5 && gap.connected && gap.driveX === a.driveX,
+        `before=${a.driveX.toFixed(2)} gap=${gap.driveX.toFixed(2)} connected=${gap.connected}`,
+      );
+      const until = performance.now() + 120;
+      while (performance.now() < until) { /* past the 100-ms grace */ }
+      const gone = gi.sample(DEFAULT_BINDINGS.pad);
+      check('gamepad: ...and a pad gone past the grace reads unplugged', !gone.connected && gone.driveX === 0, `connected=${gone.connected}`);
+    } finally {
+      if (had) Object.defineProperty(nav, 'getGamepads', had);
+      else delete nav.getGamepads;
+    }
+  }
 
   // THE RESOLVER. With no combo bound the answer is the old "any bound button held", on the
   // same frame, no state: a player who never bound a combo pays nothing.

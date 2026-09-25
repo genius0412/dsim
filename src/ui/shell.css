@@ -1861,8 +1861,25 @@ button.ds-key:where(:not(:disabled)):active,
 }
 /* the words in the UI face; the counts carry `.ds-num`, so only the digits are mono (01-04) */
 .ds-homestats-break {
+  /* its own row under the two tiles, as two centred lines */
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-s-1);
   font-size: var(--ds-t-sm);
   color: var(--ds-mut);
+}
+.ds-homestats-break .hb-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  column-gap: var(--ds-s-4);
+  row-gap: var(--ds-s-1);
+}
+/* the count reads ahead of its label */
+.ds-homestats-break .ds-num {
+  color: var(--ds-ink);
 }
 
 /* ---- rejoin banner (an in-progress multiplayer game to return to) ---- */
@@ -2145,9 +2162,35 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-page-note {
   margin-bottom: var(--ds-s-4);
 }
-/* a panel header whose only slot is its action */
-.cl-head {
+/* a panel header whose only slot is its action. Compound, because `.ds-panel-h` is declared
+   further down this file at the same specificity and its `space-between` put the lone button on
+   the LEFT. The side padding matches `.cl-body` so the button and the notes share an edge. */
+.ds-panel-h.cl-head {
   justify-content: flex-end;
+  padding-inline: var(--ds-s-6);
+}
+/* the changelog page (Changelog.tsx) is one reading column, as wide as the notes' 68ch measure
+   plus padding: the `.ds-legal-col` approach, fit-content capped by the text's own max-width.
+   The notes themselves are styled with the modal's, in styles.css (`.ann-*`). */
+.cl-panel {
+  width: fit-content;
+  max-width: 100%;
+}
+.ds-panel-body.cl-body {
+  padding: var(--ds-s-6);
+}
+.cl-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-6);
+}
+@media (max-width: 640px) {
+  .ds-panel-h.cl-head {
+    padding-inline: var(--ds-s-4);
+  }
+  .ds-panel-body.cl-body {
+    padding: var(--ds-s-5) var(--ds-s-4);
+  }
 }
 .cl-head .ds-btn {
   display: inline-flex;

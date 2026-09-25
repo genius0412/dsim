@@ -58,7 +58,7 @@ import { bbIntakeKindOf } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
-import { GROUP_ELEMENT_BIT, GROUP_NECTAR_BIT, GROUP_RAMP } from './groups';
+import { GROUP_CHASSIS, GROUP_ELEMENT_BIT, GROUP_RING_BIT, GROUP_NECTAR_BIT, GROUP_RAMP } from './groups';
 import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
 
 /**
@@ -301,7 +301,8 @@ export const GROUP_ELEMENT = (GROUP_ELEMENT_BIT << 16) | 0xffff;
  * the two would be comparing -5 against 4294967291. */
 // ...and NOT a NECTAR either: a NECTAR carries its own bit as well (`groups.ts`, the flower's
 // middle-ring lip), and a filter that cleared only the element bit would meet it through that one.
-export const GROUP_POCKET = (((0xffff << 16) | (0xffff & ~(GROUP_ELEMENT_BIT | GROUP_NECTAR_BIT))) >>> 0) as number;
+// Nor a FLOWER's ring-plate trimesh: a robot meets the plates as solid boxes (`groups.ts`).
+export const GROUP_POCKET = (((0xffff << 16) | (0xffff & ~(GROUP_ELEMENT_BIT | GROUP_NECTAR_BIT | GROUP_RING_BIT))) >>> 0) as number;
 
 /**
  * THE HIVE FRAME IS A REAL COLLIDER AGAIN (2026-09-18 CAD round 2).
@@ -1469,7 +1470,7 @@ export function addChassis3dColliders(
     // so a mechanism is solid to the same set the prism it replaces was.
     const desc = chassisMechDesc(RAPIER, s);
     world3d.createCollider(
-      desc.setTranslation(s.cx, s.cy, s.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0),
+      desc.setTranslation(s.cx, s.cy, s.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_CHASSIS),
       body,
     );
   }
@@ -1560,6 +1561,7 @@ export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): Instance
    */
   if (!s.elementSolid) desc.setCollisionGroups(GROUP_POCKET);
   else if (s.ramp) desc.setCollisionGroups(GROUP_RAMP);
+  else desc.setCollisionGroups(GROUP_CHASSIS);
   return desc;
 }
 

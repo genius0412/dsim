@@ -1,3 +1,54 @@
+# HANDOFF — 2026-09-25d (stuck-robot batch, SIM_VERSION 4)
+
+**State: pushed on `alpha`, going to `main` in the same release.** `npm test` passes except the known `PREDICT_FULL_BUDGET_MS` wall-clock flake under load (5 ms alone). `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. ⚠️ **Server + sim change; `SIM_VERSION` 3 → 4 (owner approved 2026-09-25)**: every older replay, all games, plays as drift. Standings do not move (`BALANCE_VERSION` keys them).
+
+- **Everything from 09-25c's "not fixed" list is fixed:**
+  - Hive-frame perch: every case started inside the frame (the harness spawned into overlaps). `setChassisClear` (`engineImpl.ts`) sets a chassis placed > 0.25 in inside a fixed part down beside it.
+  - Flower trap: ring-plate trimeshes have no inside. Robots now meet the middle/top plates as solid boxes (`buildFlowerSolids3d`, `GROUP_CHASSIS`); elements meet the same surfaces as before. 8,960 drive-ins: 2 traps / 1,025 lifts → 0 / 0.
+  - Server gap-fill: a tick filled from a future `latest` keeps the last applied buttons (`frameCommands`). Smoke "input gap:" fails on the old fill.
+  - `debouncedPress` (`src/sim/robot.ts`, `TOGGLE_DEBOUNCE_S`) serves butterfly `driveMode` and the ramp.
+  - `GamepadInput` holds the last sample through a < 100 ms pad dropout.
+- `scratch/rampstuck.ts` (overlap spawns included): 0/400 on seeds 2/3 sweeper and 2/4 ramp, from 8/14/11/10.
+- **Patch notes**: `docs/releases/2026-09-25-stuck-robot-fixes.md`, three notes (BIOBUZZ, DECODE, Chain Reaction) with the publishing block. Publish AFTER the production deploy. The What's New modal and `/changelogs` were restyled for reading (15-px body, 68ch measure, fixed button bar).
+- **Also merged into this release from another session:** homepage play counts (`0050_play_counts`) and the room-cap fix that was waiting on `main`.
+- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0052; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; renumber its migrations past 0052 when merging.
+- A flower-side note from that agent: `containmentPass` clamps an out-of-field robot to x ±70.17 without checking statics. `setChassisClear` now catches the resulting overlap on the next sync.
+
+# HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
+
+**State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Also on `main` as `ffaf321f`** (cherry-picked alone onto a8390771; build, server:check, test:mm pass there). **NOT DEPLOYED**: production needs `./scripts/fly-deploy.sh` from a `main` worktree, which also re-applies the new per-size caps. Verify after: `/api/perf` with `fly-prefer-region: lhr` shows `capRooms` and `maxRooms 10`.
+
+- **Owner report:** prod says some servers are busy with few games running.
+- **Measured (`/api/perf`, fly-prefer-region):** lhr `rooms 2, maxRooms 6, admitting false`, 0.25 cores. Its log: `[admit] refused room … at cap (6/6)` for record runs every few seconds, and two staged ranked rooms (`lhr-1v15…`) refused, which cancels the pairing.
+- **Cause:** a finished match stops stepping but stays in `rooms` while anyone is on the results screen (no timeout), and the cap counted `rooms.size`. Also 6 was below the 8–10-with-margin figure for a dedicated core, and six of seven satellites are performance-1x now.
+- **Fix:** the cap counts `Room.holdsCapacity()` (not finalized) via `roomsHoldingCapacity()`; `/api/perf` adds `capRooms`; the refusal log prints both counts. `fly-deploy.sh`: `SATELLITE_MAX_ROOMS_DEDICATED=10` for performance-*, 6 for shared. mmsmoke + smoke pin both. `docs/deploy.md` / `docs/capacity.md` updated.
+- **Not fixed:** the matchmaker is still not load-aware (capacity.md §7), so a genuinely full satellite still refuses staged ranked rooms.
+
+# HANDOFF — 2026-09-25d (homepage counts every game: custom, practice, LAN, Discord)
+
+**State: pushed on `alpha`.** `build`, `server:check`, `dbtest` (ALL PASS, 19 new `plays:` checks), `uiaudit`, `docaudit` pass. `npm test`: shared PASS; BIOBUZZ 3 wall-clock perf checks failed under full load (predict budget, step3d p95), no sim code touched. ⚠️ **Server change + migration 0050**: needs the alpha deploy (and a `main` deploy for production).
+
+- **Owner:** the homepage should count custom games, solo practice, LAN and Discord games, each logged separately and per game; the page folds them into Solo / Duo / 1v1 / 2v2 / Custom.
+- **Before:** the counts came from `records` + `matches`, so anonymous rooms, Discord rooms (signed out), practice and LAN never counted, and custom rooms were inside 1v1/2v2.
+- **Now:** `play_counts` (0050) counts per UTC day × game × source × mode. Server rooms count in `persistMatch` before the anonymous drop (`playSourceOf`; `MatchOutcome.discord` from `Room.group`). Practice (every kept run, signed in or out) and LAN (host only) are reported by the client to the public `POST /api/played` (text/plain, keepalive; 30 per 10 min per hashed address; always 204). The migration backfills from `records`, `matches`, `practice_runs`, `lan_runs`.
+- **Homepage:** two lines under the tiles, Solo · Duo then 1v1 · 2v2 · Custom (owner: the one line was cramped). Solo = record solo + practice, Duo = record duo, 1v1/2v2 = ranked only, Custom = custom + Discord + LAN. `/api/stats` also returns `detail` (the raw split). Custom is hidden against an older server. Rule in `docs/area/accounts.md`.
+- **Expect** 1v1/2v2 to DROP after the deploy (custom rooms moved to Custom) and Solo to rise (practice uploads backfilled).
+# HANDOFF — 2026-09-25c (BIOBUZZ ramp: the self-freeze and the double toggle)
+
+**State: pushed on `alpha`.** `npm test` (shared + 5129 BIOBUZZ), `build`, `server:check`, `docaudit` pass. ⚠️ **Sim change** (`src/games/biobuzz/`), so the game servers run it only after a deploy. Production needs this on `main` plus a Fly deploy.
+
+- **Player report + replay 1dc6eb8f (production, 3D):** a `frontback` ramp build deployed and folded "at random" and froze at 1:50 of match time until the buzzer. Pulled the row read-only and re-simulated it (`scratch/analyzereplay.ts`, `scratch/replayticks.ts`; the replay JSON stays in `scratch/`, it is private).
+- **The freeze:** t6508 fold pressed 3 in short of the −y wall at 45 in/s → the fold's overshoot hit the wall → reversed to a deploy the old guard never re-tested → no ramp collider mid-swing, the robot closed 2.4 in → the ramp settled inside the wall, the deck's contact normal was (0,0,−1), and the chassis sank to z −0.32 and stayed. Every later fold press reversed instantly. Fix in `bbRampSwingStep3d`: a reversed deploy is re-tested and folds on a second hit; a settled ramp a fixed body presses vertically (`rampEmbedded`, `BB_RAMP_EMBED_DEPTH`) folds. Verified on the recorded state (old guard until t6505, new after): the robot folds at t6511 and drives off.
+- **Same jam off the hive foot bars:** 7/400 random ramp drives froze with the blade under a foot bar or frame foot; 0/400 after.
+- **The random toggles:** two 1-tick button dropouts in that match (one a whole all-zero input frame, an empty gamepad read) each toggled twice. `bbRampStep` is debounced (`BB_RAMP_DEBOUNCE_S` 2.5 ticks, `RobotState.bbRampUpAt`). The rest were the swing guard doing its job near walls and the hive foot bars (2.15 in, easy to miss).
+- ⚠️ Replays of ramp builds recorded before this can diverge (this one does from t6172). `SIM_VERSION` stays 3, as ruled 2026-09-20.
+- **Not fixed, found on the way:**
+  - ANY build can get stuck ON TOP of a hive foot bar or frame foot (z ≈ 2.1): 8/400 random drives with a sweeper or a folded ramp; `scratch/rampstuck.ts <n> <seed> sweeper` reproduces it.
+  - A chassis can end up inside a flower's ring trimesh (1/400).
+  - The server fills a missing input tick with `latest`, the NEWEST command by tick, which is usually from the future, so a lost packet near an edge can double-toggle any edge-triggered button (`frameCommands`, `server/room.ts`). The replay shows no case of it.
+  - `driveMode` has the same undebounced latch.
+  - The client produced an all-zero input frame mid-press (gamepad dropout); worth a look in `src/input/gamepad.ts`.
+
 # HANDOFF — 2026-09-25b (ranked badge numerals centred)
 
 **State: pushed on `alpha`.** `build` and `uiaudit` pass. Client-only.
@@ -5,7 +56,15 @@
 - **Bug (owner):** the 1/2/3 on the podium crests sat off centre. They were HTML text over the SVG, so Space Grotesk's metrics decided where they landed: the 1's flag pulled its ink a unit left, and the digits rode high at the small sizes.
 - **Fix:** `NUMERAL` in `BadgeMark.tsx` draws them as stroked paths in the crest's 24 box, centred on (12, 11.5), so they also scale with the crest at every size (they were 60% of it at `sm` and 30% at `lg`). `.badge-num` is now a stroke rule in `shell.css`.
 
-# HANDOFF — 2026-09-25 (email verification takes the CODE Neon Auth sends)
+# HANDOFF — 2026-09-25b (email verification + Google sign-in fix RELEASED to production)
+
+**State: production = `main` = `a8390771`**, Vercel (`/version.json` a839077) and every Fly machine on it. `REQUIRE_VERIFIED_EMAIL=1` is Deployed on `dohun-sim-decode` and `dsim-alpha`: unverified email/password accounts are refused ranked, record rooms and practice saves, and each refusal shows the code form in place.
+
+- Shipped: code entry (Profile banner, sign-up step, `/account/verify`, and at each refusal), set/change password by code (Google accounts get a password login), the gate reading `neon_auth."user"`, the practice-save refusal no longer silent, and the Google sign-in verifier kept through URL canonicalization. Also rode along: ranked badge numeral (`1f1421a3`) and the career stats flash fix (`537af652`).
+- Deployed twice with `announce-deploy.sh` (players were online): the owner set the secret after the first deploy, and the classifier blocks Claude from `flyctl secrets set` on production (memory note).
+- **Watch:** Google sign-in reports on prod (if some still bounce, ask for the browser: Safari/Brave third-party cookie blocking is the next suspect), and complaints from the 742 unverified accounts about expired codes. The in-place Send a new code covers them.
+
+# HANDOFF — 2026-09-25 (alpha: email verification takes the CODE Neon Auth sends)
 
 **State: pushed on `alpha`.** `npm test` (shared + 5123 BIOBUZZ), `build`, `server:check`, `uiaudit` pass. Server change (the two refusal strings now say "Enter the code we emailed you"), so it rides the next Fly deploy. Nothing on `main`.
 

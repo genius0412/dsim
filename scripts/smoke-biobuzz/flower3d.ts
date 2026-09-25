@@ -1,5 +1,5 @@
 import type { Check } from './harness';
-import { cmd, mkWorld, mkWorld3d, run, run3d, setup } from './harness';
+import { cmd, mkWorld, mkWorld3d, mkWorld3dPair, run, run3d, setup } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { engineFor, disposeEngineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
@@ -17,6 +17,7 @@ import {
   BB3_FLOWER_RING_SEGMENTS,
   BB3_FLOWER_SCATTER_FRAC,
   BB_FLOWERS,
+  BB_PRESETS,
   bbFlowerReachOf,
   BB_FLOWER_LOW_HOLE,
   BB_FLOWER_LOW_Z,
@@ -973,6 +974,158 @@ export function flower3dChecks(check: Check): void {
   flowerCageChecks(check);
   flowerScatterChecks(check);
   flowerStagedScatterChecks(check);
+  flowerChassisChecks(check);
+}
+
+/**
+ * A CHASSIS DRIVEN INTO A FLOWER STAYS ON THE TILES AND CAN ALWAYS DRIVE AWAY (`groups.ts`,
+ * `GROUP_FLOWER_LOWER_RING`). The lower ring plate is a 0.354-in trimesh on the tiles; a chassis
+ * that met it was lifted onto it and could be left hanging there level, wheels off the floor,
+ * against the middle plate. No chassis meets the lower plate now, and the middle plate, whose
+ * footprint contains it, still stops every one.
+ */
+function flowerChassisChecks(check: Check): void {
+  const inward = (i: number): { x: number; y: number } => {
+    const wall = BB_FLOWERS[i].wall;
+    return wall === 'left' ? { x: 1, y: 0 } : wall === 'right' ? { x: -1, y: 0 } : wall === 'rear' ? { x: 0, y: -1 } : { x: 0, y: 1 };
+  };
+  /** a robot facing FLOWER `i` from 6 in clear of its plates, `lat` in along the wall, turned `angDeg` */
+  const facing = (w: World, i: number, angDeg: number, lat: number): RobotState => {
+    const f = BB_FLOWERS[i];
+    const n = inward(i);
+    const r = w.robots[0];
+    const d = 2.5 + Math.max(r.spec.length, r.spec.width) / 2 + 2 + 6;
+    r.pos = { x: f.x + n.x * d - n.y * lat, y: f.y + n.y * d + n.x * lat };
+    r.heading = Math.atan2(-n.y, -n.x) + (angDeg * Math.PI) / 180;
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    r.autoIntake = false;
+    r.autoFire = false;
+    return r;
+  };
+
+  // ---- square drive-ins with one side of the chassis over the plate's edge: never lifted -------
+  // MEASURED before the fix: every one of these twelve rode up onto the lower plate, z 0.28–0.67.
+  {
+    let worst = 0;
+    let where = '';
+    let k = 0;
+    for (let i = 0; i < BB_FLOWERS.length; i++) {
+      for (const [ang, lat] of [
+        [0, -9],
+        [0, 8],
+        [-10, 3],
+      ]) {
+        const w = mkWorld3d('free', 9300 + k++);
+        w.balls.length = 0;
+        const r = facing(w, i, ang, lat);
+        step3d(w, 1 / 60, new Map());
+        const c = new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]);
+        for (let t = 0; t < 120; t++) {
+          step3d(w, 1 / 60, c);
+          if ((r.z ?? 0) > worst) {
+            worst = r.z ?? 0;
+            where = `F${i + 1} ang ${ang} lat ${lat} t=${t}`;
+          }
+        }
+        disposeEngineFor(w);
+      }
+    }
+    check(
+      'a chassis driven into a FLOWER is never lifted onto its lower ring plate (4 flowers x 3 approaches)',
+      worst <= 0.05,
+      `worst chassis z ${worst.toFixed(3)} in${where ? ` at ${where}` : ''}`,
+    );
+  }
+
+  // ---- the drive that parked a Forager on the lower plate for good: it can leave --------------
+  // Found by `scratch/flowersweep.ts`: a slow approach to F4 with a wiggle ended at z 0.34 beside
+  // the plates, and 4 s of full drive, strafe and turn moved it 0.004 in.
+  {
+    const w = mkWorld3d('free', 9956, BB_PRESETS[1]);
+    w.balls.length = 0;
+    const r = facing(w, 3, -10, 8);
+    step3d(w, 1 / 60, new Map());
+    for (let t = 0; t < 180; t++) {
+      const ph = t / 60;
+      const ro = t > 60 ? Math.sin(ph * 9) : 0;
+      const c = t > 60 ? { driveY: 0.4, driveX: Math.cos(ph * 7), rotate: ro, leftDrive: 0.4 - ro, rightDrive: 0.4 + ro } : { driveY: 0.4, leftDrive: 0.4, rightDrive: 0.4 };
+      step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+    }
+    const parkedZ = r.z ?? 0;
+    const x0 = r.pos.x;
+    const y0 = r.pos.y;
+    const h0 = r.heading;
+    let moved = 0;
+    let turned = 0;
+    for (const c of [
+      { driveY: -1, leftDrive: -1, rightDrive: -1 },
+      { driveY: 1, leftDrive: 1, rightDrive: 1 },
+      { driveX: 1 },
+      { driveX: -1 },
+      { rotate: 1, leftDrive: -1, rightDrive: 1 },
+      { rotate: -1, leftDrive: 1, rightDrive: -1 },
+    ]) {
+      for (let t = 0; t < 40; t++) {
+        step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+        moved = Math.max(moved, Math.hypot(r.pos.x - x0, r.pos.y - y0));
+        turned = Math.max(turned, Math.abs(r.heading - h0));
+      }
+    }
+    disposeEngineFor(w);
+    check(
+      'a Forager driven slowly into F4 with a wiggle is not left hanging on the lower ring plate — it drives away',
+      parkedZ <= 0.05 && moved > 1,
+      `z ${parkedZ.toFixed(3)} after the drive-in; then moved ${moved.toFixed(2)} in, turned ${((turned * 180) / Math.PI).toFixed(1)} deg`,
+    );
+  }
+
+  // ---- a robot SHOVED into a FLOWER stays on the tiles ----------------------------------------
+  // A Forager at full power pins another into the plates. MEASURED before: the trimesh lifted the
+  // victim onto the lower plate (z 0.35 and 0.69 here); with only the lower plate taken away the
+  // middle plate's top face pushed it 1.15 in down into the tiles instead. The solid boxes do
+  // neither (`scratch/shove.ts`, 1,472 legal shoves: 0 lifted, 0 sunk).
+  {
+    let worst = 0;
+    let where = '';
+    for (const [vi, i, ang, lat] of [
+      [1, 0, 30, -6],
+      [0, 1, 150, 8],
+    ]) {
+      const w = mkWorld3dPair('free', 9400 + vi, BB_PRESETS[vi], BB_PRESETS[1]);
+      w.balls.length = 0;
+      const f = BB_FLOWERS[i];
+      const n = inward(i);
+      const [a, b] = w.robots;
+      const ha = Math.max(a.spec.length, a.spec.width) / 2 + 3.5;
+      a.pos = { x: f.x + n.x * (2.5 + ha) - n.y * lat, y: f.y + n.y * (2.5 + ha) + n.x * lat };
+      a.heading = Math.atan2(n.y, n.x) + (ang * Math.PI) / 180;
+      const hb = Math.max(b.spec.length, b.spec.width) / 2 + 1;
+      b.pos = { x: a.pos.x + n.x * (ha + hb + 2), y: a.pos.y + n.y * (ha + hb + 2) };
+      b.heading = Math.atan2(-n.y, -n.x);
+      for (const r of [a, b]) {
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        r.autoIntake = false;
+        r.autoFire = false;
+      }
+      step3d(w, 1 / 60, new Map());
+      const c = new Map([[1, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]);
+      for (let t = 0; t < 180; t++) {
+        step3d(w, 1 / 60, c);
+        if (Math.abs(a.z ?? 0) > Math.abs(worst)) {
+          worst = a.z ?? 0;
+          where = `victim ${BB_PRESETS[vi].name} at F${i + 1} ang ${ang} lat ${lat} t=${t}`;
+        }
+      }
+      disposeEngineFor(w);
+    }
+    check(
+      'a robot shoved into a FLOWER by a Forager is neither lifted onto a plate nor pushed into the tiles',
+      Math.abs(worst) <= 0.05,
+      `worst victim z ${worst.toFixed(3)} in${where ? ` (${where})` : ''}`,
+    );
+  }
 }
 
 /**

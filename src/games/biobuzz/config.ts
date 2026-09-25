@@ -1432,6 +1432,10 @@ export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
  * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
 export const BB_RAMP_DEPLOY_S = 0.3;
+/** how deep a fixed body may press a SETTLED ramp vertically before it folds (in) — the 3D jam
+ * guard in `elements3d.ts`'s `bbRampSwingStep3d`. Resting contact sits near `PHYS_ALLOWED_ERROR`
+ * (0.01); the jam in replay 1dc6eb8f was 0.13 deep, the random-drive jams 0.38–0.45. */
+export const BB_RAMP_EMBED_DEPTH = 0.05;
 export const BB_RAMP_REACH: BbFlowerReach = {
   out: [0, BB_RAMP_OUT],
   half: null, // the full mouth width
@@ -3770,6 +3774,22 @@ export const BB3_INTAKE_CORNER_R = 0.125;
  * the same measured threshold under it, so it binds only as a floor on the core.
  */
 export const BB3_INTAKE_CORNER_CLAMP = 0.8;
+
+/**
+ * A CHASSIS PLACED INSIDE A FIXED SOLID IS MOVED OUT SIDEWAYS (in) — `setChassisClear`
+ * (`sim3d/engineImpl.ts`), 3D only.
+ *
+ * A pose the solver did not produce (a new body, a teleport, a deploy-edge rebuild) can put the
+ * chassis inside the hive frame. Left to the solver, the shallowest way out of a 2.15-in foot bar
+ * under a 16-in chassis is UP, so the robot was lifted onto the bar with the A-frame leg running
+ * between its frame box and an intake arm, and could never move again (8/400 random placements,
+ * `scratch/rampstuck.ts`). `BB3_FIT_DEPTH` is the penetration that counts as inside: over the
+ * ≈0.1 in the solver leaves on a resting contact, so a wall-flush start or a robot parked against
+ * a frame part is never moved. The search walks rings `BB3_FIT_STEP` apart out to `BB3_FIT_MAX`.
+ */
+export const BB3_FIT_DEPTH = 0.25;
+export const BB3_FIT_STEP = 0.5;
+export const BB3_FIT_MAX = 24;
 
 
 /**

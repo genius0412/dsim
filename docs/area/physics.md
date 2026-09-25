@@ -265,6 +265,11 @@ session and this is not needed by most of them. The `governs:` line above is rea
 
 ## Robot spec, builder, and drive feel
 
+- ⚠️ **TOGGLE BUTTONS ARE DEBOUNCED** (`debouncedPress`, `src/sim/robot.ts`; `TOGGLE_DEBOUNCE_S`
+  2.5 ticks). A release shorter than that is a dropout: replay 1dc6eb8f held a toggle through a
+  one-tick all-zero input frame, and it flipped twice. Butterfly `driveMode` and the BIOBUZZ ramp
+  both use it; a new toggle should too. The latch keeps `…UpAt` while it waits.
+
 `RobotSpec` is shared by both games; some fields are game-specific and optional.
 
 Shared: `name`/`teamName`/`teamNumber`, `length`, `width`, `intake` (`IntakeStyle`), `massLb`
