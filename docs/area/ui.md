@@ -51,7 +51,12 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   L, and the camera starts unbound, with the red dot on BIOBUZZ.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
-  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). The screen
+  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,
+  HOLD one button alone for `PAD_HOLD_REMOVE_MS` (1 s) and let go**: that removes the armed slot,
+  or cancels an empty one (`PadCapture`, `padChords.ts`). Pad navigation is suspended while a
+  capture is armed and every button is the bind, so before this a controller-only player could
+  neither remove a bind nor leave a capture. The same stepper runs during a KEY capture, where a
+  pad press cancels. The screen
   used to let you REPLACE a slot and never ADD one, which with sixteen buttons and twelve pad
   actions meant every rebind cascaded into an UNBOUND somewhere else.
 - **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
