@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
 
-**State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Server + deploy-script change**: production needs it on `main` and a `./scripts/fly-deploy.sh` (which also re-applies the new per-size caps).
+**State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Also on `main` as `ffaf321f`** (cherry-picked alone onto a8390771; build, server:check, test:mm pass there). **NOT DEPLOYED**: production needs `./scripts/fly-deploy.sh` from a `main` worktree, which also re-applies the new per-size caps. Verify after: `/api/perf` with `fly-prefer-region: lhr` shows `capRooms` and `maxRooms 10`.
 
 - **Owner report:** prod says some servers are busy with few games running.
 - **Measured (`/api/perf`, fly-prefer-region):** lhr `rooms 2, maxRooms 6, admitting false`, 0.25 cores. Its log: `[admit] refused room … at cap (6/6)` for record runs every few seconds, and two staged ranked rooms (`lhr-1v15…`) refused, which cancels the pairing.
