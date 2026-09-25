@@ -1,3 +1,13 @@
+# HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
+
+**State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Server + deploy-script change**: production needs it on `main` and a `./scripts/fly-deploy.sh` (which also re-applies the new per-size caps).
+
+- **Owner report:** prod says some servers are busy with few games running.
+- **Measured (`/api/perf`, fly-prefer-region):** lhr `rooms 2, maxRooms 6, admitting false`, 0.25 cores. Its log: `[admit] refused room … at cap (6/6)` for record runs every few seconds, and two staged ranked rooms (`lhr-1v15…`) refused, which cancels the pairing.
+- **Cause:** a finished match stops stepping but stays in `rooms` while anyone is on the results screen (no timeout), and the cap counted `rooms.size`. Also 6 was below the 8–10-with-margin figure for a dedicated core, and six of seven satellites are performance-1x now.
+- **Fix:** the cap counts `Room.holdsCapacity()` (not finalized) via `roomsHoldingCapacity()`; `/api/perf` adds `capRooms`; the refusal log prints both counts. `fly-deploy.sh`: `SATELLITE_MAX_ROOMS_DEDICATED=10` for performance-*, 6 for shared. mmsmoke + smoke pin both. `docs/deploy.md` / `docs/capacity.md` updated.
+- **Not fixed:** the matchmaker is still not load-aware (capacity.md §7), so a genuinely full satellite still refuses staged ranked rooms.
+
 # HANDOFF — 2026-09-25d (homepage counts every game: custom, practice, LAN, Discord)
 
 **State: pushed on `alpha`.** `build`, `server:check`, `dbtest` (ALL PASS, 19 new `plays:` checks), `uiaudit`, `docaudit` pass. `npm test`: shared PASS; BIOBUZZ 3 wall-clock perf checks failed under full load (predict budget, step3d p95), no sim code touched. ⚠️ **Server change + migration 0050**: needs the alpha deploy (and a `main` deploy for production).
