@@ -210,7 +210,10 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      is not a release, for butterfly `driveMode` (DECODE and Chain Reaction too) and the
  *      BIOBUZZ ramp;
  *    · THE BIOBUZZ 3D RAMP GUARD re-tests a reversed deploy and folds on a second hit, and a
- *      settled ramp a fixed body presses vertically folds (`bbRampSwingStep3d`).
+ *      settled ramp a fixed body presses vertically folds (`bbRampSwingStep3d`);
+ *    · A BIOBUZZ 3D CHASSIS PLACED INSIDE A FIXED PART (a new body, a gameplay move, the
+ *      deploy-edge rebuild) is set down beside it, same height and heading (`setChassisClear`),
+ *      instead of being lifted onto the hive foot bar and wedged there for good.
  */
 export const SIM_VERSION = 4;
 
