@@ -61,7 +61,11 @@ export function AnnouncementItem({ a }: { a: Announcement }): JSX.Element {
     <article className={`ann-item ${a.kind}`}>
       <header className="ann-item-head">
         <KindBadge kind={a.kind} />
-        <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
+        {/* "Sep 25, 2026", not "9/25/2026": the numeric form reads day-first or month-first
+            depending on where the reader is from */}
+        <time className="ann-item-date" dateTime={a.publishedAt}>
+          {new Date(a.publishedAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
+        </time>
       </header>
       <h2 className="ann-item-title">{a.title}</h2>
       {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
@@ -150,7 +154,9 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
         aria-label="What’s new"
         tabIndex={-1}
       >
-        <div className="ann-scroll">
+        {/* tabIndex 0: the notes can be longer than the panel, and a keyboard user scrolls
+            them with the arrows once focus is here (Tab from "Got it" wraps to it) */}
+        <div className="ann-scroll" tabIndex={0} role="region" aria-label="Notes">
           {items.map((a) => (
             <AnnouncementItem key={a.id} a={a} />
           ))}
