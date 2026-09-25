@@ -76,7 +76,11 @@ Zenith, so it lies over the plan Zenith drew.
 
 ## Vendoring
 
-The Zenith packages are not on npm yet: `vendor/zenith/*.tgz` are `file:` deps, packed by
+⚠️ **THE TARBALLS ARE NOT IN GIT, AND MUST NOT BE** (`.gitignore`): this repository is public,
+Zenith is not yet, and a packed package is its compiled source (it was pushed once, and the
+branch was rewritten to take it back out). Until the packages publish, a fresh clone runs the
+vendor script against a Zenith checkout before `npm ci`, and neither Vercel nor the Fly image can
+build this branch. The Zenith packages are not on npm yet: `vendor/zenith/*.tgz` are `file:` deps, packed by
 `node scripts/vendor-zenith.mjs ../zenith`, which records the source commit in
 `vendor/zenith/SOURCE.md` and reinstalls the tarballs (⚠️ plain `npm install` keeps a changed
 tarball's OLD integrity hash, and `npm ci` then refuses it). The Dockerfile copies `vendor/`

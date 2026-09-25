@@ -10,7 +10,10 @@
  *
  *   node scripts/vendor-zenith.mjs [path/to/zenith]
  *
- * The day the packages publish, the `file:` specs become version ranges and this script goes.
+ * ⚠️ THE TARBALLS ARE NEVER COMMITTED (`.gitignore`): this repository is public and Zenith is not
+ * yet, and a packed package is its compiled source. So a fresh clone of this branch runs this
+ * script against a Zenith checkout before `npm ci`. The day the packages publish, the `file:`
+ * specs become version ranges and this script goes.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';

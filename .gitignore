@@ -30,3 +30,7 @@ scripts/.smokeshard-*.ts
 # Serena MCP per-developer project config
 .serena/
 .impeccable/
+
+# Zenith is not public yet: its packed packages stay on the machine that packed them
+# (scripts/vendor-zenith.mjs). Never commit them.
+vendor/zenith/*.tgz
