@@ -94,7 +94,8 @@ const BASELINE = {
   // → 112, 2026-09-23: queue pages on the spacing tokens (console column, head, actions, strategy cards, players).
   // → 110, 2026-09-23: the phone footer's 14px/16px pad and the breakdown chip's 2px 8px on tokens.
   // → 106, 2026-09-25: the patch-note modal and /changelogs on the spacing tokens.
-  'off-grid-gap': 106,
+  // → 105, 2026-09-25: the lockdown/banner merge put one more gap on the tokens.
+  'off-grid-gap': 105,
   // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
   // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
