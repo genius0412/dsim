@@ -882,6 +882,14 @@ function snapSendGap(reset: boolean): { rooms: number; n: number; meanMs: number
   return { rooms: contributing, n, meanMs: n ? Math.round((sumMs / n) * 100) / 100 : 0, maxMs };
 }
 
+/** rooms counted against `MAX_ROOMS`: every room except one whose match has finished and is
+ *  only holding its players on the results screen (see `Room.holdsCapacity`) */
+function roomsHoldingCapacity(): number {
+  let n = 0;
+  for (const r of rooms.values()) if (r.holdsCapacity()) n++;
+  return n;
+}
+
 function localLive(): LiveRoom[] {
   return [...rooms.values()].map((r) => r.summary()).filter((s): s is LiveRoom => s !== null);
 }
@@ -2256,7 +2264,9 @@ const httpServer = createServer((req, res) => {
       // the admission cap and whether it is currently biting. An operator debugging
       // "players say the region is full" needs both numbers in one place.
       maxRooms: MAX_ROOMS,
-      admitting: MAX_ROOMS === 0 || rooms.size < MAX_ROOMS,
+      // what the cap counts: the registry minus finished matches still showing results
+      capRooms: roomsHoldingCapacity(),
+      admitting: MAX_ROOMS === 0 || roomsHoldingCapacity() < MAX_ROOMS,
       players: onlineCount,
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       // HEAP, not just RSS. RSS alone cannot distinguish "V8 is holding freed pages it
@@ -2841,7 +2851,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * reasoning is in the comment below; this is only its value moved earlier.
      */
     const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
-    if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
+    if (!r && MAX_ROOMS > 0 && roomsHoldingCapacity() >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
       // here is always allowed, because that player's partner is already on this
       // machine and bouncing them would break a room that is under way.
@@ -2854,7 +2864,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // one region in the embed and the activity's room code is DETERMINISTIC, so if the first
       // participant to open an instance's lobby is refused, nobody in that voice channel can
       // reach a room at all. Waiting is the only move they have; the sentence says so.
-      console.warn(`[admit] refused room ${code}: at cap (${rooms.size}/${MAX_ROOMS})`);
+      console.warn(`[admit] refused room ${code}: at cap (${roomsHoldingCapacity()}/${MAX_ROOMS}, ${rooms.size} in registry)`);
       send({
         t: 'error',
         code: 'region_full',

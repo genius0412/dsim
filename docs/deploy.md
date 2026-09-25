@@ -366,11 +366,15 @@ is closest to how the 13.3 figure was measured. Re-measure with
 
 **`MAX_ROOMS`** (env) caps how many rooms a machine will host; past it, new rooms are refused with
 `region_full` and the client offers another region. Unlimited off Fly. On Fly it is **24 on the
-primary (iad)** and **6 on every satellite** — `SATELLITE_MAX_ROOMS` in `scripts/fly-deploy.sh`,
-applied with `--env MAX_ROOMS=` on the `fly machine update` loop, because `fly deploy` regenerates
+primary (iad)**, **10 on a dedicated-core satellite and 6 on a shared one** —
+`SATELLITE_MAX_ROOMS_DEDICATED` / `SATELLITE_MAX_ROOMS` in `scripts/fly-deploy.sh`, applied with `--env MAX_ROOMS=` on the `fly machine update` loop, because `fly deploy` regenerates
 machine config from `fly.toml` and would revert a hand-set value. The satellites run
 `shared-cpu-1x`, which fly.toml's own note puts at "≈ ONE busy room" and the table above gives 3–5
 with margin, so the 24 sized for iad was not a guard there at all.
+**A finished match does not count** (`Room.holdsCapacity`): it has stopped stepping but stays in the
+registry while its players read the results screen, which has no timeout. Counting those made lhr
+refuse every new room at "6/6" on 2026-09-25 with two live matches and a quarter of a core in use.
+`/api/perf` reports both `rooms` (live matches) and `capRooms` (what the cap counts).
 24 is deliberately above the redline (~13 driven rooms/core, 8–10 with margin — see the table
 above and `docs/capacity.md` §2/§4) — it is a **runaway guard, not a measured safe-load
 admission and not a tuning knob**: most rooms are parked rather than driven, and a cap set at the
@@ -380,12 +384,13 @@ places, the constant, this paragraph and `SATELLITE_MAX_ROOMS`.
 ⚠️ **`MAX_ROOMS=0` disables it, but it is NOT a durable rollback lever on a satellite.** A
 hand-set env survives only until the next `./scripts/fly-deploy.sh`, whose re-shrink loop writes
 `MAX_ROOMS=$SATELLITE_MAX_ROOMS` back over it. To disable the cap fleet-wide for real, set
-`SATELLITE_MAX_ROOMS=0` in the script and deploy.
+`SATELLITE_MAX_ROOMS=0` and `SATELLITE_MAX_ROOMS_DEDICATED=0` in the script and deploy.
 ⚠️ **A cap that BITES costs a rated match.** The cap gates room CREATION on the same `join` path a
 matchmaker-staged room takes, and `bestHost` is not load-aware — so a satellite at its cap refuses
 the room, nobody connects, `RANKED_JOIN_GRACE_MS` lapses and `cancelPending` charges the innocent
-players a no-show dodge. True at 24 as well; 6 makes it reachable sooner. If `/api/perf` shows a
-satellite refusing with headroom to spare, raise it to 8–10 rather than back to 24.
+players a no-show dodge. True at 24 as well; a low cap makes it reachable sooner. If `/api/perf`
+shows a dedicated-core satellite refusing with headroom to spare, raise it toward 13 rather than
+back to 24.
 
 **`MAX_SPECTATORS_PER_ROOM`** (24) and **`MAX_SPECTATORS`** (192) cap watchers per room and per
 machine. `MAX_ROOMS` bounds how many matches a machine *simulates* and nothing bounded how many
