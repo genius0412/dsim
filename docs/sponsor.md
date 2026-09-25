@@ -58,7 +58,7 @@ the Discord server icon is a manual step. Put it on the same list.
 ⚠️ **IT HAS NO PLACEMENT ID AND CARRIES NO UTM TAG, deliberately.** An image inside a link
 preview has no click target of its own, so there is no click to attribute; an id that can never
 appear in `utm_medium` would put a permanently-zero row in the monthly report. It is an
-impression, and the impression it belongs to is the one Vercel already counts as a session.
+impression, and the impression it belongs to is the one the site already counts as a session.
 
 Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
 
@@ -179,8 +179,16 @@ whose plate is painted `rgba(18,21,26,0.86)` regardless of theme.
 
 ## The monthly attribution report
 
-All of it from **Vercel Web Analytics** (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless).
-No database migration, no server change, no identifiers in any payload.
+All of it from DSIM's own analytics (`src/analytics.ts` → `server/analytics.ts`,
+`VITE_ANALYTICS=1`, cookieless, no identifiers in any payload). The admin console's
+**Analytics** tab has a **Sponsor report** panel laid out as the lines below: pick **Last
+month** and press **Export CSV**. A month older than the 30 days of raw events still reads
+correctly — events and their properties are kept in the daily rollups.
+
+Until September 2026 the report was read off Vercel Web Analytics. That was removed; its history
+(2026-09-13 onward, loaded by `scripts/import-vercel-analytics.ts`) has its own section on the
+same tab, with its own Sponsor report panel. Vercel counted no sessions, so for those days the Sessions line is
+visitors (daily uniques).
 
 ### What counts as an impression
 
@@ -208,7 +216,7 @@ mount. Under-reporting a placement somebody paid for is the worse failure of the
 | **Time on screen** | Events → `sponsor_dwell`, property `dwell` — a bucket (`<5s`, `5-15s`, `15-60s`, `1-5m`, `5m+`), broken down by `placement`. Report it as a DISTRIBUTION, never a total: one flush per mount, so the shape is the finding. This is where the in-game chip earns its keep — it is the longest-exposure placement in the app and a plain impression count cannot show that. |
 | **Videos carrying the mark** | Events → `sponsor_shown` filtered to `placement=replay`, property `format` for mp4/webm. Counts FILES PRODUCED with the burn-in, not views of them — see the caveat below. |
 | **Desktop downloads** | Events → `desktop_download`, property `os`. Stands in for the Electron splash, which cannot be measured at all. |
-| **Sessions** | Vercel's own Visitors / Sessions for the site over the month. The mark is on the shell footer, so site sessions and sponsor-exposed sessions are the same set. |
+| **Sessions** | The Sessions tile for the month (a session ends after 30 minutes idle). The mark is on the shell footer, so site sessions and sponsor-exposed sessions are the same set. |
 | **New players** | Events → `player_joined`, for the month. |
 
 Offset's own side of the funnel (landing-page sessions attributable to DSIM) is read off the
@@ -217,12 +225,11 @@ UTM tags every link carries: `utm_source=dsim`, `utm_medium=<placement>`,
 
 ### ⚠️ The deploy has to have it switched on
 
-`VITE_ANALYTICS=1` must be set in the Vercel project's environment, and Web Analytics enabled
-for the project. If it is not, every event above silently reports **zero** — the app is
-working, the placements are rendering, and the report is empty. Custom events are also a
-**paid-plan** feature of Vercel Web Analytics; on the free tier the page-view lines (Sessions)
-still work and every `sponsor_*` line reads zero. Check that a `sponsor_shown` row exists in
-the dashboard before the first report month closes, not after.
+`VITE_ANALYTICS=1` must be set in the Vercel project's environment (it is a build flag), the
+build must point at the cloud game server, and that server needs `DATABASE_URL`. If any is
+missing, every line above silently reports **zero** — the app is working, the placements are
+rendering, and the report is empty. Check that `sponsor_shown` appears in the Events panel
+before the report month closes, not after.
 
 ### What the report cannot say, and must not pretend to
 
@@ -241,7 +248,10 @@ the dashboard before the first report month closes, not after.
   is its proxy: one download is at least one splash, and repeat launches are invisible.
 - **The loading screen fires nothing.** Its markup ships before the analytics script exists.
   Its clicks are visible only to Offset, via the `utm_medium=loading` tag.
-- **Sessions are not people.** Vercel Analytics is cookieless, so they are not deduplicated
-  across devices.
+- **Sessions are not people.** The visitor key is a hash salted per day, so nothing is
+  deduplicated across days or devices.
+- **Months either side of the switch are not like for like.** Our own count honours Do Not
+  Track and Global Privacy Control and Vercel's did not, so the same traffic reads somewhat
+  lower from then on. Say so if a report compares across the switch.
 - **A click is a click-through, not a visit.** Offset's own analytics is the authority on what
   arrived.

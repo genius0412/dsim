@@ -365,7 +365,9 @@ import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
 import type { PendingRosterEntry } from '../server/matchTypes';
-import { maintenanceBiting } from '../server/db/repo';
+import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
+import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
+import type { SiteAccess, SiteBanner, SiteLockdown } from '../src/net/protocol';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
 import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
@@ -16018,6 +16020,77 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('maintenance: nothing scheduled renders nothing at all', line({}, T) === null);
   check('maintenance: the operator message is carried through to players',
     (line({ biting: true }, T) ?? '').includes('Season reset'));
+}
+
+// ---- SITE LOCKDOWN + BANNERS: the client gate and the banner filter (0051/0052) ------------
+// The rules the closed screen and the banner strip run on. Pure (`src/net/siteRules.ts`), so
+// they are pinned here; the server half (`lockdownPasses`) is pinned beside them and again
+// against a real database in dbtest.
+{
+  const T = 1_000_000;
+  const lock = (over: Partial<SiteLockdown> = {}): SiteLockdown => ({
+    scope: 'site', message: '', redirectUrl: null, redirectLabel: null, startsAt: null, endsAt: null,
+    biting: true, bypass: ['beta'], ...over,
+  });
+  const acc = (over: Partial<SiteAccess> = {}): SiteAccess => ({ userId: 'u', admin: false, groups: [], passes: false, ...over });
+
+  check('site gate: a biting SITE lockdown closes the app for a stranger', siteIsClosed({ lockdown: lock(), access: undefined }, false));
+  check('site gate: ...and opens it for an account the server says passes',
+    !siteIsClosed({ lockdown: lock(), access: acc({ groups: ['beta'], passes: true }) }, false));
+  check('site gate: a MATCHES lockdown never closes the app (menus stay; starts are refused)',
+    !siteIsClosed({ lockdown: lock({ scope: 'matches' }), access: null }, false));
+  check('site gate: a SCHEDULED site lockdown does not close anything yet',
+    !siteIsClosed({ lockdown: lock({ biting: false }), access: null }, false));
+  check('site gate: FAIL OPEN: no answer from the server is an open site', !siteIsClosed({ lockdown: null, access: undefined }, false));
+  check('site gate: a build baked CLOSED stays closed with no answer (the alpha, its server down)',
+    siteIsClosed({ lockdown: null, access: undefined }, true));
+  check('site gate: ...opens for any access group', !siteIsClosed({ lockdown: null, access: acc({ groups: ['contributor'] }) }, true));
+  check('site gate: ...and for an admin', !siteIsClosed({ lockdown: null, access: acc({ admin: true }) }, true));
+  check('site gate: ...but not for a signed-in stranger', siteIsClosed({ lockdown: null, access: acc() }, true));
+
+  check('site gate: an admin let through a closed alpha is TOLD so',
+    (siteBypassLine({ lockdown: lock(), access: acc({ admin: true, passes: true }) }, true, 'alpha') ?? '').includes('Alpha is closed to players'));
+  check('site gate: a tester sees which group let them in',
+    (siteBypassLine({ lockdown: lock(), access: acc({ groups: ['beta'], passes: true }) }, false, 'stable') ?? '').includes('beta tester'));
+  check('site gate: a matches lockdown tells an admin they can still start matches',
+    (siteBypassLine({ lockdown: lock({ scope: 'matches' }), access: acc({ admin: true, passes: true }) }, false, 'stable') ?? '').includes('still start'));
+  check('site gate: nothing to bypass, no line', siteBypassLine({ lockdown: null, access: acc({ admin: true, passes: true }) }, false, 'stable') === null);
+
+  // the server's rule, the same shape: admins always, listed groups only
+  const w = { active: true, startsAt: null, endsAt: null, message: '', scope: 'site' as const, bypass: ['dev' as const] };
+  check('lockdown: the server lets an admin through every time', lockdownPasses(w, { admin: true, groups: [] }, T));
+  check('lockdown: a listed group passes, an unlisted one does not',
+    lockdownPasses(w, { admin: false, groups: ['dev'] }, T) && !lockdownPasses(w, { admin: false, groups: ['beta'] }, T));
+
+  const b = (over: Partial<SiteBanner>): SiteBanner => ({
+    id: 1, kind: 'info', message: 'm', startsAt: null, endsAt: null, game: null, channel: null, revision: 1, ...over,
+  });
+  const set = [
+    b({ id: 1, kind: 'info' }),
+    b({ id: 2, kind: 'known-bug', game: 'biobuzz' }),
+    b({ id: 3, kind: 'warning', channel: 'alpha' }),
+    b({ id: 4, kind: 'restart', endsAt: T + 60_000 }),
+    b({ id: 5, kind: 'info', startsAt: T + 60_000 }),
+    b({ id: 6, kind: 'known-bug', endsAt: T - 1 }),
+  ];
+  const seen = (opts: { game?: string; channel?: string; dismissed?: Record<string, number> } = {}) =>
+    visibleBanners(set, { game: opts.game ?? 'decode', channel: opts.channel ?? 'stable', dismissed: opts.dismissed ?? {}, now: T }).map((x) => x.id);
+  check('banners: the restart outranks everything, then warning, known bug, notice',
+    JSON.stringify(seen({ game: 'biobuzz', channel: 'alpha' })) === '[4,3,2,1]', JSON.stringify(seen({ game: 'biobuzz', channel: 'alpha' })));
+  check('banners: a game-scoped one shows only in its game', !seen({ game: 'decode' }).includes(2) && seen({ game: 'biobuzz' }).includes(2));
+  check('banners: a channel-scoped one shows only on its site', !seen({ channel: 'stable' }).includes(3));
+  check('banners: a scheduled one waits for its start, an ended one is gone', !seen().includes(5) && !seen().includes(6));
+  check('banners: a dismissal holds at its revision', !seen({ dismissed: { '1': 1 } }).includes(1));
+  check('banners: ...and an edit (new revision) brings it back',
+    visibleBanners([b({ id: 1, revision: 2 })], { game: 'decode', channel: 'stable', dismissed: { '1': 1 }, now: T }).length === 1);
+  check('banners: a restart cannot be dismissed', seen({ dismissed: { '4': 1 } }).includes(4));
+
+  // the in-flow maintenance strip (presence) steps aside for a SITE lockdown once it bites
+  const siteLine = (over: Record<string, unknown>) =>
+    maintenanceLine({ startsAt: null, endsAt: null, message: '', biting: false, scope: 'site', ...over } as never, T);
+  check('maintenance: a biting SITE lockdown leaves the strip empty (the banner stack says it)', siteLine({ biting: true }) === null);
+  check('maintenance: a scheduled SITE lockdown says the site closes, not that games pause',
+    (siteLine({ startsAt: T + 10 * 60_000 }) ?? '').includes('site closes in 10 minutes'));
 }
 
 // ---- SOURCE GUARD: no engine-defined math anywhere the sim can reach --------

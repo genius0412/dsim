@@ -127,6 +127,35 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   behind an editor was by itself enough to keep the game server — which auto-stops when idle —
   permanently awake.
 
+### Lockdown and access groups (0023, 0051)
+
+The one `maintenance` row is the LOCKDOWN. `server/siteState.ts` caches it (10 s) and owns the
+rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
+
+- **SCOPE.** `matches` is the old window: no new matches, menus stay. `site` closes the app:
+  the client shows the closed screen, and the server also refuses spectating, LAN joins and
+  every `/api` POST. A POST without `scope` means `matches` (older console, release curls).
+- **WHO PASSES.** Admins (`ADMIN_USER_IDS`, the owner included) always. Otherwise membership
+  of a group the lockdown lists in `bypass`. Nobody else, signed in or not.
+- **WINDOW.** `startsAt` null = now, `endsAt` null = until lifted. Open-ended is allowed for
+  both scopes; the alpha closure is one. A scheduled one announces itself and bites at its start.
+- **THE DOORS** (all `lockdownRefusal`, `match` = either scope, `site` = site scope only):
+  room `join` (match, staged rooms exempt), ranked `queue` (match), a room `start`/`restart`/
+  rematch vote (match, staged rooms exempt; a lobby formed before the window cannot play
+  through it), `lanHost` (match), `spectate` and `lanJoin` (site; `lanJoin` now carries an
+  optional token), every non-GET in `handleApi` (site; exempt: the Ko-fi webhook and
+  `/api/user/delete`). `rejoin` and `abandon` stay open: a match already running finishes and
+  persists. Reads stay open.
+- **ACCESS GROUPS** (`access_members`): `beta`, `dev`, `contributor`, keyed by USER ID and
+  cascading with the profile. Granted by player tag (`resolvePlayerTag`: id, then @username,
+  then display name; a shared display name is an error naming the @usernames), listed with
+  today's handle. `POST /api/admin/access` (grant / revoke / bulk), each grant and revoke in
+  `admin_audit` as `access.grant` / `access.revoke`. Cached 30 s per account; the granting
+  machine drops its entry at once. **Each deployment has its own list**: alpha reads the alpha
+  database. A tag that has never signed in on that site does not resolve: `GET /api/status`
+  creates the profile, so signing in once on the closed screen is enough.
+- **Not built:** a badge for testers on profiles or rosters. `profiles.role` is untouched.
+
 **STAFF ROLES — owner + admin badges, and perks, DONE.** `profiles.role`
 (`0020_staff_roles.sql`) is null | 'owner' | 'admin'. It is a **PROJECTION** of
 `ADMIN_USER_IDS` / `OWNER_USER_ID` (`OWNER_USER_ID` defaults to the FIRST id in

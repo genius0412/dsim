@@ -165,7 +165,9 @@ export class LanSignalClient implements LanSignalBus {
 
   /** ask to be introduced to a code's host */
   async join(code: string): Promise<{ code: string; hostId: string }> {
-    const m = await this.request({ t: 'lanJoin', code }, 'lanJoined');
+    // optional here: only a closed site asks who a guest is
+    const authToken = await getAuthToken().catch(() => undefined);
+    const m = await this.request({ t: 'lanJoin', code, authToken: authToken ?? undefined }, 'lanJoined');
     if (m.t !== 'lanJoined') throw new LanSignalError('Unexpected reply.', 'protocol');
     return { code: m.code, hostId: m.hostId };
   }

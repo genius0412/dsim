@@ -148,6 +148,14 @@ function heading(level: number, content: ReactNode, key: string, base: number): 
   return <Tag key={key} className={cls}>{content}</Tag>;
 }
 
+/**
+ * ONE LINE of the inline subset (links, bold, italic, code) — for a site banner, where a block
+ * element would break the strip. Line breaks collapse to spaces.
+ */
+export function MarkdownInline({ text }: { text: string }) {
+  return <>{inline(text.replace(/\s*\n\s*/g, ' '), 'mi')}</>;
+}
+
 /** Render a Markdown string as themed React elements. */
 export function Markdown({
   text,

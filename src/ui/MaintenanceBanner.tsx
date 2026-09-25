@@ -33,6 +33,15 @@ export function maintenanceLine(m: MaintenanceInfo | null | undefined, now = Dat
   if (!m) return null;
   const win = windowLabel(m);
   const base = m.message?.trim();
+  // A SITE lockdown (0051) closes the app itself: while it bites, whoever still sees the menus
+  // was let through and is told so by the banner stack, so this strip has nothing to add.
+  if (m.scope === 'site') {
+    if (m.biting || !m.startsAt || m.startsAt <= now) return null;
+    const mins = Math.max(1, Math.round((m.startsAt - now) / 60000));
+    return `${base || 'DSIM is closing for maintenance'}. The site closes in ${mins} minute${mins === 1 ? '' : 's'}${
+      win ? ` (${win})` : ''
+    }.`;
+  }
   if (m.biting) {
     return `${base || 'Maintenance in progress'}. New games are paused${win ? ` (${win})` : ''}.`;
   }
