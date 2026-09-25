@@ -1395,6 +1395,21 @@ export class Room {
   }
 
   /**
+   * Does this room count against `MAX_ROOMS`? Not once its match is FINALIZED.
+   *
+   * A finished room stops stepping and stops sending snapshots (both loops test
+   * `finalized`), but it stays in the registry for as long as anyone sits on the results
+   * screen, which has no timeout. Counting it made the cap bite on rooms that cost nothing:
+   * lhr on 2026-09-25 refused every new room at "6/6" with 2 live matches and 0.25 cores in
+   * use, including two staged ranked rooms. A rematch or a return to the lobby clears
+   * `finalized` and the room counts again; neither passes the admission check, the same way
+   * joining any existing room does not.
+   */
+  holdsCapacity(): boolean {
+    return !this.finalized;
+  }
+
+  /**
    * Operator snapshot of who is in this room, for the cross-region presence beat.
    *
    * Signed-in drivers are listed by ACCOUNT ID and nothing else — the caller joins

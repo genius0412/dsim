@@ -15775,10 +15775,18 @@ const forceRoomToPost = (room: Room): void => {
   room.add(mkR('a', 'red'));
   room.add(mkR('b', 'blue'));
   room.add(mkR('c', 'blue'));
+  // MAX_ROOMS counts `holdsCapacity()`. A room in its lobby or mid-match holds a slot...
+  check('capacity: a room in its lobby counts against MAX_ROOMS', room.holdsCapacity());
   room.onMessage('a', { t: 'start' });
+  check('capacity: ...and so does a live match', room.holdsCapacity());
   forceRoomToPost(room);
   check('recycle: the match actually finished (everything below is about a FINISHED room)',
     room.worldForTest()?.match.phase === 'post', String(room.worldForTest()?.match.phase));
+  // ...but a FINISHED one does not: it has stopped stepping and only holds players on the
+  // results screen, which has no timeout. Counting it made lhr refuse every new room at "6/6"
+  // with two live matches (2026-09-25).
+  check('⚠️ capacity: a finished match on its results screen does NOT count against MAX_ROOMS',
+    !room.holdsCapacity());
 
   // THE OLD BEHAVIOUR, asserted so the reason for the feature stays on the record:
   // a room that has played is shut to everyone until its world is cleared.
@@ -15802,6 +15810,8 @@ const forceRoomToPost = (room: Room): void => {
   check('recycle: the held slot of the player who left is released',
     (lastRoster(sink.a)?.players.length ?? 0) === 2);
   check('recycle: ...so the room takes new players again', room.canJoin());
+  check('capacity: a finished room sent back to its lobby counts against MAX_ROOMS again',
+    room.holdsCapacity());
   check('recycle: nobody carries a READY into the next game',
     (lastRoster(sink.a)?.players ?? []).every((p) => !p.ready));
 
@@ -27289,7 +27299,7 @@ const dumperSetup = (): RobotSetup => {
   );
 
   // ---- at capacity --------------------------------------------------------
-  const cap = idx.match(/if \(!r && MAX_ROOMS > 0 && rooms\.size >= MAX_ROOMS\) \{([\s\S]*?)\n    \}/);
+  const cap = idx.match(/if \(!r && MAX_ROOMS > 0 && roomsHoldingCapacity\(\) >= MAX_ROOMS\) \{([\s\S]*?)\n    \}/);
   check('region_full: the capacity refusal is still found (anchors the checks below)', !!cap);
   check(
     '⚠️ region_full: a grouped joiner is not told to pick a region the embed does not have',
@@ -27304,7 +27314,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'region_full: the group is read BEFORE the refusal whose wording depends on it',
     idx.indexOf('const wantGroup =') > 0 &&
-      idx.indexOf('const wantGroup =') < idx.indexOf('if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS)'),
+      idx.indexOf('const wantGroup =') < idx.indexOf('if (!r && MAX_ROOMS > 0 && roomsHoldingCapacity() >= MAX_ROOMS)'),
   );
   check(
     '⚠️ region_full: the client hint that points AT the region picker is gated on there being one',
