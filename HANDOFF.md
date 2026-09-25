@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-25f (lockdown scopes, access groups, site banners, alpha closed)
+
+**State: committed on a feature branch, NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, new `lockdown:`/`access:`/`banners:`/`site:` checks), `uiaudit`, `contrast` (399), `docaudit`, `shiftaudit` (0 shifts) pass; `npm test` shared PASS, BIOBUZZ one wall-clock check (PREDICT_FULL_BUDGET_MS) failed under load and passed alone. ⚠️ **Server change + migrations 0051/0052**: alpha needs `./scripts/fly-deploy.sh --alpha`, production a `main` deploy.
+
+- **Lockdown has a scope** (`matches` = old maintenance, `site` = whole app closed), a message, a redirect button, an open-ended window, and bypass groups. Admins always pass. Enforced at join, queue, room start/restart/rematch, LAN host (either scope) and spectate, LAN join, every `/api` POST (site). Rules in `docs/area/accounts.md`.
+- **Access groups** `beta`/`dev`/`contributor` (`access_members`, by user id, audited). Console tab **Access** (single + bulk by player tag). Per deployment: alpha testers go in the alpha DB.
+- **Banners** (`banners` table): info / known-bug / warning / restart. The restart countdown now reaches every region (it was in one machine's memory). Console **Server** tab. Strip is `BannerStack.tsx`; one row + "N more"; dismiss per id+revision.
+- **Closed screen** (`ClosedScreen.tsx`) replaces the app at first load; fail open, except a build with `VITE_SITE_LOCKDOWN=1`.
+- **To close alpha** (owner/release manager, in order): deploy the alpha server, run the lockdown curl in `docs/deploy.md` ("Closing alpha…"), then set `VITE_SITE_LOCKDOWN=1` on Vercel's `alpha` branch and redeploy it. Then add testers (owner sends tags).
+- **Not built:** tester badges on profiles; draining the ranked queue when a lockdown starts (a pairing staged before it bites still plays).
+
 # HANDOFF — 2026-09-25d (stuck-robot batch, SIM_VERSION 4)
 
 **State: pushed on `alpha`, going to `main` in the same release.** `npm test` passes except the known `PREDICT_FULL_BUDGET_MS` wall-clock flake under load (5 ms alone). `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. ⚠️ **Server + sim change; `SIM_VERSION` 3 → 4 (owner approved 2026-09-25)**: every older replay, all games, plays as drift. Standings do not move (`BALANCE_VERSION` keys them).
