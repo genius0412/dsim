@@ -1,3 +1,19 @@
+# HANDOFF — 2026-09-25d (stuck-robot batch, SIM_VERSION 4)
+
+**State: pushed on `alpha`, going to `main` in the same release.** `npm test` passes except the known `PREDICT_FULL_BUDGET_MS` wall-clock flake under load (5 ms alone). `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. ⚠️ **Server + sim change; `SIM_VERSION` 3 → 4 (owner approved 2026-09-25)**: every older replay, all games, plays as drift. Standings do not move (`BALANCE_VERSION` keys them).
+
+- **Everything from 09-25c's "not fixed" list is fixed:**
+  - Hive-frame perch: every case started inside the frame (the harness spawned into overlaps). `setChassisClear` (`engineImpl.ts`) sets a chassis placed > 0.25 in inside a fixed part down beside it.
+  - Flower trap: ring-plate trimeshes have no inside. Robots now meet the middle/top plates as solid boxes (`buildFlowerSolids3d`, `GROUP_CHASSIS`); elements meet the same surfaces as before. 8,960 drive-ins: 2 traps / 1,025 lifts → 0 / 0.
+  - Server gap-fill: a tick filled from a future `latest` keeps the last applied buttons (`frameCommands`). Smoke "input gap:" fails on the old fill.
+  - `debouncedPress` (`src/sim/robot.ts`, `TOGGLE_DEBOUNCE_S`) serves butterfly `driveMode` and the ramp.
+  - `GamepadInput` holds the last sample through a < 100 ms pad dropout.
+- `scratch/rampstuck.ts` (overlap spawns included): 0/400 on seeds 2/3 sweeper and 2/4 ramp, from 8/14/11/10.
+- **Patch notes**: `docs/releases/2026-09-25-stuck-robot-fixes.md`, three notes (BIOBUZZ, DECODE, Chain Reaction) with the publishing block. Publish AFTER the production deploy. The What's New modal and `/changelogs` were restyled for reading (15-px body, 68ch measure, fixed button bar).
+- **Also merged into this release from another session:** homepage play counts (`0050_play_counts`) and the room-cap fix that was waiting on `main`.
+- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0052; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; renumber its migrations past 0052 when merging.
+- A flower-side note from that agent: `containmentPass` clamps an out-of-field robot to x ±70.17 without checking statics. `setChassisClear` now catches the resulting overlap on the next sync.
+
 # HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
 
 **State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Also on `main` as `ffaf321f`** (cherry-picked alone onto a8390771; build, server:check, test:mm pass there). **NOT DEPLOYED**: production needs `./scripts/fly-deploy.sh` from a `main` worktree, which also re-applies the new per-size caps. Verify after: `/api/perf` with `fly-prefer-region: lhr` shows `capRooms` and `maxRooms 10`.

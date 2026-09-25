@@ -6,12 +6,9 @@ for every client the moment it is posted.
 
 What ships: the ramp freeze and ramp swing fixes (`5216595f`), the toggle debounce, server
 input gap-fill and gamepad dropout hold with `SIM_VERSION` 4 (`fa125d2f`), and the hive-frame
-set-down (`194d23bd`). `BALANCE_VERSION` does not move, so no board, rating or season resets.
+set-down, and the FLOWER ring-plate fix. `BALANCE_VERSION` does not move, so no board, rating or season resets.
 
-⚠️ **The FLOWER ring-plate fix is still in progress.** Its line in the BIOBUZZ note sits
-between `<!-- PENDING: flower trap -->` and `<!-- /PENDING -->`. Set `FLOWER=keep` in the
-publishing block only if that fix is in the deploy; the default cuts it. The markers are never
-posted either way.
+The FLOWER ring-plate fix is in this deploy; its line is part of the BIOBUZZ note.
 
 The bodies have no `# Welcome to …` heading (`docs/patch-notes.md` §5): a patch opens no new
 period, and the card title above the body already names the note. The bold bullets at the top
@@ -39,9 +36,7 @@ are the summary.
 ## 3D field
 
 - **A robot that ends up overlapping the HIVE frame is set down beside it.** It used to be lifted onto the foot bar and stuck there.
-<!-- PENDING: flower trap -->
-- **A robot no longer catches on a FLOWER’s bottom ring plate** and stops moving.
-<!-- /PENDING -->
+- **A robot no longer catches on a FLOWER’s ring plates.** Driving or being pushed into a FLOWER could lift a robot onto the bottom plate’s lip and hold it there for the rest of the match. The plates now stop a robot the way solid aluminium does.
 
 ## Controls
 
@@ -100,7 +95,7 @@ into a GET and curl refuses it beside a request body. Needs curl 7.87 or later (
 ```sh
 GS=https://dohun-sim-decode.fly.dev
 NOTES=docs/releases/2026-09-25-stuck-robot-fixes.md
-FLOWER=cut   # keep: publish the FLOWER ring-plate line (only if that fix is deployed)
+FLOWER=keep  # keep: publish the FLOWER ring-plate line (only if that fix is deployed)
 
 note() {
   node -e '

@@ -213,7 +213,11 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      settled ramp a fixed body presses vertically folds (`bbRampSwingStep3d`);
  *    · A BIOBUZZ 3D CHASSIS PLACED INSIDE A FIXED PART (a new body, a gameplay move, the
  *      deploy-edge rebuild) is set down beside it, same height and heading (`setChassisClear`),
- *      instead of being lifted onto the hive foot bar and wedged there for good.
+ *      instead of being lifted onto the hive foot bar and wedged there for good;
+ *    · A BIOBUZZ 3D ROBOT MEETS A FLOWER'S MIDDLE AND TOP RING PLATES AS SOLID BOXES and no plate
+ *      trimesh (`buildFlowerSolids3d`, `GROUP_CHASSIS`), so a chassis is no longer lifted onto the
+ *      0.35-in lower lip or pushed into the tiles; the three plate trimeshes are one collider now,
+ *      which moves Rapier's pair order. Elements meet the same surfaces as before.
  */
 export const SIM_VERSION = 4;
 
