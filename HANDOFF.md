@@ -1,3 +1,10 @@
+# HANDOFF — 2026-09-25g (release 1 on production; release 2 on alpha; ALPHA IS CLOSED)
+
+- **Release 1 (stuck-robot batch, SIM_VERSION 4) is on production**: `main` = `9fae19c`, Vercel and every Fly machine; three patch notes published (BIOBUZZ, DECODE, Chain Reaction).
+- **Release 2 is on `alpha` and dsim-alpha, NOT on `main`**: lockdown scopes / access groups / banners (migrations 0051, 0052) and the Vercel Analytics removal (0053). The production merge waits on the owner's go-ahead. After it deploys, the Vercel history import (below) runs against production, and Web Analytics gets switched off in the Vercel project.
+- **Alpha is on a SITE lockdown** (set 2026-09-25 via `/api/admin/maintenance` on dsim-alpha): closed screen with "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers are in the groups yet; the owner will send tags (Access tab, or `/api/admin/access`). The build flag `VITE_SITE_LOCKDOWN=1` is NOT set on the Vercel preview env yet (it keeps alpha closed even with its server down).
+- The two sections below were written before the merge; their "not pushed" state lines are superseded by this one.
+
 # HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
 
 **State: committed on branch `claude/drop-vercel-analytics` (off alpha 96225a0a), NOT pushed.** `build`, `server:check`, `dbtest` (ALL PASS, 17 new checks), `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only wall-clock timing flakes (predict budget / step3d p95), lanes pass alone. ⚠️ **Server change + migration 0053** (renumbered at merge: 0051/0052 are lockdown/banners).
