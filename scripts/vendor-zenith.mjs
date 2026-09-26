@@ -46,7 +46,7 @@ writeFileSync(
   resolve(out, 'SOURCE.md'),
   `# Vendored Zenith packages
 
-Packed by \`scripts/vendor-zenith.mjs\` from \`Horizon-36596/zenith\` @ \`${sha}\` (branch \`${branch}\`, version ${version}).
+Packed by \`scripts/vendor-zenith.mjs\` from a Zenith checkout @ \`${sha}\` (branch \`${branch}\`, version ${version}).
 Do not edit the tarballs by hand; re-run the script against a Zenith checkout.
 `,
 );

@@ -3,10 +3,12 @@
 **READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed, **alpha merged in**
 (`953c293`, six conflicts, every one "keep both"). Not on `alpha` yet, for one reason: **Zenith
 0.1.1 (on npm) has neither `createLiveRun` nor host mode**, which are what this branch plays autos
-through. Those commits were ported onto Zenith's released `main`, but Zenith now restricts branch
-creation, so they are NOT on GitHub: the owner has them as a patch series and a bundle
-(`git am`). Until a release carries them this branch still vendors (`vendor-zenith.mjs`, now
-version-aware), so Vercel and Fly cannot build it.
+through. They are finished on Zenith's private development repository, on the branch of the same
+name as this one, merged with its `main` and passing Zenith's own release gate (snapshot, scrub,
+clean build and tests, docs site). ⚠️ **Zenith releases only on the owner's explicit go in the same
+conversation** (Zenith's `CLAUDE.md` rule 11, 2026-09-26): never bump, tag or publish 0.1.2 from a
+DSIM session. Until it is out this branch still vendors (`vendor-zenith.mjs`, now version-aware),
+so Vercel and Fly cannot build it.
 
 **State.** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass; `smoke.ts` ALL PASS;
 BIOBUZZ: AUTO lane 54/54, the one failure the `fieldDims.gen.ts` drift, which fails the same on
@@ -19,7 +21,7 @@ DSIM, Save back, and a solo match driving its auto.
 - **Alpha has its own server** (`./scripts/fly-deploy.sh --alpha`), so online custom-room autos can
   be tried on alpha without production. Solo, Free Drive and LAN rooms need no server deploy.
 
-**Next, in order.** (1) The owner applies the Zenith patches and releases (0.1.2). (2) The npm switch
+**Next, in order.** (1) The owner merges the Zenith branch and releases 0.1.2. (2) The npm switch
 in `docs/area/autos.md` › Vendoring, then the full gate. (3) Merge this branch into `alpha` and
 push. (4) For online custom rooms: the alpha server deploy.
 
