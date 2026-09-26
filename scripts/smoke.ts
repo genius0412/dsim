@@ -8123,6 +8123,19 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         /r\.lastIntakeAt > \(this\.prevIntakeAt/.test(gm) &&
         !/lastFireAt !== this\.prevFireAt/.test(gm),
     );
+    // A PUBLIC PROFILE IS PER GAME. The server falls back to DECODE when `?game=` is absent, so
+    // a profile that dropped the game showed a player's DECODE career on /biobuzz/profile/<name>
+    // (owner, 2026-09-25). Both of its fetches carry it, as My Stats' always did.
+    {
+      const prof = readFileSync('src/ui/Profile.tsx', 'utf8');
+      const app = readFileSync('src/ui/App.tsx', 'utf8');
+      check(
+        'profile: stats and match history are fetched for the game being viewed',
+        /fetchUserStatsByUsername\(username, season, game\)/.test(prof) &&
+          /fetchUserMatchesByUsername\(username, \{ \.\.\.opts, game \}\)/.test(prof) &&
+          /<Profile[\s\S]{0,300}nav=\{\{ game: settings\.game/.test(app),
+      );
+    }
     // A REPLAY'S ROBOT NAMES ARE PUBLIC, because `renderer.ts` draws them ON THE FIELD — so
     // they are in the replay viewer and burned into every exported video, the one copy of a
     // match that outlives the sim version that recorded it. Scrubbed in `saveReplay`, the ONE

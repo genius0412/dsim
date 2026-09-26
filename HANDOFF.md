@@ -1,3 +1,11 @@
+# HANDOFF — 2026-09-25l (a player's profile shows the game you are viewing)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `docaudit` pass. Client only, no deploy needed (the server already honoured `?game=` on both profile routes).
+
+- **Owner:** opening someone's BIOBUZZ career showed their DECODE one.
+- **Cause:** the public profile page (`src/ui/Profile.tsx`) sent no `game` on its stats or match-history fetch, and the server falls back to DECODE. My Stats always passed it; `App.tsx` never handed Profile the game.
+- **Fix:** `fetchUserStatsByUsername` takes a `game`, Profile passes `nav.game` to both fetches, App passes `settings.game`. Smoke check in `scripts/smoke.ts` ("profile: stats and match history…").
+
 # HANDOFF — 2026-09-25k (3D name labels sit on the robot, not 30 in above it)
 
 **State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `bundleaudit` pass. Client only, no deploy needed.
