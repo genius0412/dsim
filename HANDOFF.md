@@ -1,6 +1,33 @@
+# HANDOFF — 2026-09-26 (same branch: alpha merged in, Zenith 0.1.1 re-vendored, waiting on a Zenith release)
+
+**READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed, **alpha merged in**
+(`953c293`, six conflicts, every one "keep both"). Not on `alpha` yet, for one reason: **Zenith
+0.1.1 (on npm) has neither `createLiveRun` nor host mode**, which are what this branch plays autos
+through. Those commits were ported onto Zenith's released `main`, but Zenith now restricts branch
+creation, so they are NOT on GitHub: the owner has them as a patch series and a bundle
+(`git am`). Until a release carries them this branch still vendors (`vendor-zenith.mjs`, now
+version-aware), so Vercel and Fly cannot build it.
+
+**State.** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass; `smoke.ts` ALL PASS;
+BIOBUZZ: AUTO lane 54/54, the one failure the `fieldDims.gen.ts` drift, which fails the same on
+clean alpha. Browser-checked end to end on both dev servers: panel, Edit in Zenith, Simulate in
+DSIM, Save back, and a solo match driving its auto.
+
+- **Main chunk.** The merge put main at 984.51 KB against a 982.82 ceiling (alpha alone: 980.38).
+  The Autonomous panel is `React.lazy` now and the editor popup sits behind the client entry
+  `src/ui/zenithEditor.ts`: main 980.95, `autos` 55.77 -> 59.93 (moved, not grown).
+- **Alpha has its own server** (`./scripts/fly-deploy.sh --alpha`), so online custom-room autos can
+  be tried on alpha without production. Solo, Free Drive and LAN rooms need no server deploy.
+
+**Next, in order.** (1) The owner applies the Zenith patches and releases (0.1.2). (2) The npm switch
+in `docs/area/autos.md` › Vendoring, then the full gate. (3) Merge this branch into `alpha` and
+push. (4) For online custom rooms: the alpha server deploy.
+
+---
+
 # HANDOFF — 2026-09-25b (same branch: autos in custom rooms, the .pp import gone, the tarballs out of git)
 
-**READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed. ⚠️ **The branch was
+Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed. ⚠️ **The branch was
 REWRITTEN and force-pushed** (2026-09-25) to take `vendor/zenith/*.tgz` out of every commit: this
 repo is public, Zenith is not yet, and a packed package is its compiled source. They are gitignored
 now; a fresh clone runs `node scripts/vendor-zenith.mjs ../zenith` before `npm ci`, and neither

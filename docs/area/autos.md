@@ -45,6 +45,11 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   chunk, and none of them may import `@horizon36596/zenith-*` (types excepted). Everything else is
   reached through `import('./auto/zenithAutos')`, a facade NAMED so the chunk is not `index-*`
   (it once was, and `bundleaudit` billed it as main). `bundleaudit` routes it as `autos`.
+  The CLIENT imports `src/ui/zenithEditor.ts` instead: the facade plus the editor popup
+  (`zenithLaunch.ts`, `zenithHost.ts`, which read `window` and `import.meta.env`, so the server
+  must not). The robot builder's Autonomous panel is `React.lazy` too. Both went lazy on
+  2026-09-26 because the alpha merge put main over its ceiling; keep new auto UI out of main the
+  same way.
 - **THE LIBRARY IS NOT IN `GameSettings`.** Settings sync to the account under a 64 KB cap
   (`server/api.ts`) and one auto can be most of that, so it is `ZENITH_AUTOS_KEY` in
   `localStorage`, device-local, registered in `storageKeys.ts`.
@@ -58,8 +63,9 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   in a ranked, staged or record room and `beginMatch` strips it there. The server seats the robot
   at the auto's start and runs the seat in `frameCommands` beside the bots; the client runs the
   same seat over its prediction (`GameController.loadSessionAuto`). `room.ts` is also the LAN
-  host's room, so LAN rooms play autos too. ⚠️ It is a SERVER change: it needs a deploy, and the
-  Fly image needs the Zenith packages (vendored or published) to build.
+  host's room, so LAN rooms play autos too. ⚠️ It is a SERVER change: it needs a deploy (alpha
+  has its own server, `./scripts/fly-deploy.sh --alpha`), and the Fly image needs the Zenith
+  packages (vendored or published) to build.
 
 ## Zenith as the editor: `zenith-host/1`
 
@@ -82,12 +88,22 @@ Zenith, so it lies over the plan Zenith drew.
 
 ## Vendoring
 
-⚠️ **THE TARBALLS ARE NOT IN GIT, AND MUST NOT BE** (`.gitignore`): this repository is public,
-Zenith is not yet, and a packed package is its compiled source (it was pushed once, and the
-branch was rewritten to take it back out). Until the packages publish, a fresh clone runs the
-vendor script against a Zenith checkout before `npm ci`, and neither Vercel nor the Fly image can
-build this branch. The Zenith packages are not on npm yet: `vendor/zenith/*.tgz` are `file:` deps, packed by
-`node scripts/vendor-zenith.mjs ../zenith`, which records the source commit in
-`vendor/zenith/SOURCE.md` and reinstalls the tarballs (⚠️ plain `npm install` keeps a changed
-tarball's OLD integrity hash, and `npm ci` then refuses it). The Dockerfile copies `vendor/`
-before `npm ci`. The day they publish, the specs become version ranges.
+⚠️ **THE TARBALLS ARE NOT IN GIT, AND MUST NOT BE** (`.gitignore`): a packed package is its
+compiled source, and it was pushed once while Zenith was private (the branch was rewritten to
+take it back out). Zenith 0.1.1 is on npm, but it has NEITHER `createLiveRun` NOR host mode, which
+landed after it. So until a release carries them, `vendor/zenith/*.tgz` are `file:` deps packed by
+`node scripts/vendor-zenith.mjs ../zenith` from a Zenith checkout holding those commits (it records
+the commit in `vendor/zenith/SOURCE.md`, takes the version from Zenith's `package.json`, and
+reinstalls the tarballs: ⚠️ plain `npm install` keeps a changed tarball's OLD integrity hash, and
+`npm ci` then refuses it). Neither Vercel nor the Fly image can build this branch until then. The
+Dockerfile copies `vendor/` before `npm ci`.
+
+**THE DAY A RELEASE CARRIES THEM** (check: `npm view @horizon36596/zenith-core@<v>` and grep its
+`dist` for `createLiveRun`):
+1. `npm install @horizon36596/zenith-core@^<v> @horizon36596/zenith-schema@^<v>
+   @horizon36596/zenith-season-biobuzz@^<v>`, which replaces the `file:` specs and the lockfile rows.
+2. Delete `vendor/`, `scripts/vendor-zenith.mjs`, the Dockerfile's `COPY vendor` line, the
+   `vendor/zenith/*.tgz` line in `.gitignore`, and this section down to this list; drop the script
+   from this guide's `governs:`.
+3. `rm -rf node_modules && npm ci`, then `npm run build`, `server:check`, `npm run test:bb -- --lane
+   AUTO`, `npm test`, `bundleaudit`, `docaudit`. Then the branch builds anywhere.
