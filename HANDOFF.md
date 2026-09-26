@@ -1,3 +1,25 @@
+# HANDOFF — 2026-09-25l (a player's profile shows the game you are viewing)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `docaudit` pass. Client only, no deploy needed (the server already honoured `?game=` on both profile routes).
+
+- **Owner:** opening someone's BIOBUZZ career showed their DECODE one.
+- **Cause:** the public profile page (`src/ui/Profile.tsx`) sent no `game` on its stats or match-history fetch, and the server falls back to DECODE. My Stats always passed it; `App.tsx` never handed Profile the game.
+- **Fix:** `fetchUserStatsByUsername` takes a `game`, Profile passes `nav.game` to both fetches, App passes `settings.game`. Smoke check in `scripts/smoke.ts` ("profile: stats and match history…").
+
+# HANDOFF — 2026-09-25k (3D name labels sit on the robot, not 30 in above it)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `bundleaudit` pass. Client only, no deploy needed.
+
+- **Owner:** names over other robots were "WAY too high".
+- **Cause:** the 3D overlay (`drawProjectedOverlay` in `src/render/renderer.ts`) anchored every label at a flat `LABEL_Z = 30` in above the robot's base. That dates from when a build could stand 29 in; the height dial now stops at 18 and defaults to 14.
+- **Fix:** anchor at `bbHeightNow(world, r.spec) + LABEL_CLEARANCE` (3 in), so the label sits just over the robot's own top (stowed height pre-match, deployed after). Smoke check in `scripts/smoke-biobuzz/render.ts`. The 2D label offset (14 in screen-up from the centre) is unchanged.
+- Not seen in a browser: labels only draw over OTHER robots, and offline solo practice has one.
+
+# HANDOFF — 2026-09-25i (production = alpha = `9a91323`)
+
+- **Everything on `alpha` as of 5419acb3 is on production**: `main` = `9a91323`, Vercel and every Fly machine (announced deploy, `/health` ok, satellites re-sized). Includes the combined Vercel history display, counting all traffic (DNT/GPC no longer gate), `LEGAL_UPDATED` September 25, 2026 (every signed-in account accepts once), controller hold-to-remove, and the budget-lane test change.
+- **Still the owner's to run:** the Vercel history import against production (`node scratch/import-vercel.mjs`, then `--write`, from the prediction-hud-simplify worktree), then switch Web Analytics off in the Vercel project. Alpha remains on its site lockdown; tester tags pending.
+
 # HANDOFF — 2026-09-25j (controller: hold a button to remove a bind)
 
 **State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `uiaudit`, `docaudit` pass. Client only, no deploy needed.
