@@ -510,6 +510,17 @@ export const DEFAULT_BINDINGS: ControlBindings = {
   },
 };
 
+/**
+ * WHERE A NEW ACTION GOES WHEN ITS DEFAULT KEY IS TAKEN in a stored map (`mergeBindings`), tried
+ * in order. An action not listed here loads UNBOUND in that case, which is right for a view key
+ * (the camera still works on its own) and wrong for a mechanism: an unbound Deploy ramp is a
+ * part of the robot the player cannot use, with nothing on screen saying why. G sits by the
+ * mechanism row, and no BIOBUZZ action has ever defaulted to it.
+ */
+const FRESH_FALLBACK_KEYS: Partial<Record<KeyAction, readonly string[]>> = {
+  bbRamp: ['g', 'm'],
+};
+
 export function cloneBindings(b: ControlBindings): ControlBindings {
   const keys = {} as Record<KeyAction, string[]>;
   for (const a of KEY_ACTIONS) keys[a] = [...b.keys[a]];
@@ -618,13 +629,39 @@ export function mergeBindings(saved: unknown): ControlBindings {
         fresh.push(a);
       }
     }
+    /* ⚠️ THE RAMP'S CASUALTIES, REPAIRED (2026-09-26). Maps saved 2026-09-12..19 carry Place
+       POLLEN on its OLD default Z and no Deploy ramp at all, so the rule below gave the ramp no
+       key: Z was taken, and nothing else was offered. Pads were never touched, which is why
+       only keyboard players reported "the ramp never deploys". Any save since then wrote that
+       `[]` back, so the blob no longer looks older than the ramp. A stored empty ramp beside
+       Place POLLEN still on exactly ['z'] is that casualty, not a choice, and is re-treated as
+       new here. A player on today's map who unbinds the ramp has Place POLLEN on C, and keeps
+       their empty row. */
+    if (
+      !fresh.includes('bbRamp') &&
+      out.keys.bbRamp.length === 0 &&
+      out.keys.bbPlace.length === 1 &&
+      out.keys.bbPlace[0] === 'z'
+    ) {
+      out.keys.bbRamp = [...DEFAULT_BINDINGS.keys.bbRamp];
+      fresh.push('bbRamp');
+    }
     // AN ACTION NEWER THAN THE BLOB takes its default only where no bind the player MADE holds
     // it. BIOBUZZ's Deploy ramp used to default to L, the camera's key now: a player still on
     // that map keeps L on the ramp, and the camera starts unbound (a red dot on BIOBUZZ).
-    for (const a of fresh) {
-      out.keys[a] = out.keys[a].filter(
-        (k) => !KEY_ACTIONS.some((o) => o !== a && !fresh.includes(o) && actionsConflict(o, a) && out.keys[o].includes(k)),
+    // ...unless it names a `FRESH_FALLBACK_KEYS` entry: a mechanism with no key is a dead robot
+    // part, so it takes the first free fallback instead of loading unbound.
+    const takenFor = (a: KeyAction, k: string, skipFresh: boolean): boolean =>
+      KEY_ACTIONS.some(
+        (o) => o !== a && !(skipFresh && fresh.includes(o)) && actionsConflict(o, a) && out.keys[o].includes(k),
       );
+    for (const a of fresh) {
+      out.keys[a] = out.keys[a].filter((k) => !takenFor(a, k, true));
+    }
+    for (const a of fresh) {
+      if (out.keys[a].length > 0) continue;
+      const k = FRESH_FALLBACK_KEYS[a]?.find((f) => !takenFor(a, f, false));
+      if (k !== undefined) out.keys[a] = [k];
     }
   }
   if (typeof s.pad === 'object' && s.pad !== null) {
