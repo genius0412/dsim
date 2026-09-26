@@ -5,6 +5,18 @@ Measured 2026-09-10 on branch `perf-load`, against the real server (`npm run ser
 exactly as `game.ts` does. Raw JSON in `.loadtest-out/`, reproduced by `scripts/loadsweep.sh` and
 tabulated by `scripts/loadsummary.ts`.
 
+## ⚠️ MULTI-CORE — URGENT, NOT STARTED (owner, 2026-09-24)
+
+The game server is ONE Node process on ONE core: nothing in `server/` uses `worker_threads` or
+`cluster`. Every room on a machine shares that core, so a bigger VM (`shared-cpu-4x`, a
+`performance-2x`) buys headroom for the OS and nothing for rooms. This matters more now that
+every online BIOBUZZ room is a 3D solve (Act 2, 2026-09-24). Until it is built, satellites that
+carry real load stay on `performance-1x` (one dedicated core), and `SATELLITE_SIZES` in
+`scripts/fly-deploy.sh` says so. The owner wants this done as soon as possible after the Act 2
+release. The obvious shape is rooms spread over worker threads, each worker stepping its own
+rooms, with the socket layer and the room-code routing kept on the main thread. Rooms already
+live in process memory and nothing crosses between rooms, so that seam exists.
+
 **Read the next section before quoting any number from this file.** Half of what a capacity model
 normally reports is not measurable on the machine these runs came from, and the half that is
 measurable is the half that matters.
@@ -325,7 +337,7 @@ machine's memory at full population.
 |---|---|---|
 | 1 | **Ghost rooms.** After all drivers vanish mid-match a room keeps its 60 Hz loop for `RECONNECT_GRACE_MS` (45 s). Measured `/api/perf` showing **19 rooms and 0.906 cores with 0 players.** | **FIXED** `3490f4c` — 12 ghost rooms went 0.556–0.769 → 0.000–0.042 cores |
 | 2 | **`Room.onInput` grows without bound.** Future-tick inputs are buffered in a per-robot `pending` map pruned only once the world reaches that tick, so a client stamping huge tick numbers grows server memory indefinitely. | **FIXED** `d0ba653` — `MAX_INPUT_LEAD_TICKS`, 6 smoke checks |
-| 3 | **No admission control whatsoever.** Every `join` for an unknown code created a room. A busy region did not degrade, it collapsed, and it collapsed for everyone already on the machine. | **FIXED** `a8bf161` — `MAX_ROOMS` (24 on iad, **6** on satellites via `SATELLITE_MAX_ROOMS`), `region_full`. ⚠️ **24 is a RUNAWAY GUARD, not a measured safe load** — deliberately well above the ~13 driven rooms/core of §2 and the 8–10-with-margin of §4, because most rooms are parked (0.031 cores) rather than driven (0.075) and a cap set at the redline would refuse players while the machine still had headroom. The constant's own comment says the same thing; keep the two in step. A load-driven cap is the follow-up (§0: none of the latency thresholds are measurable on the Windows dev box). |
+| 3 | **No admission control whatsoever.** Every `join` for an unknown code created a room. A busy region did not degrade, it collapsed, and it collapsed for everyone already on the machine. | **FIXED** `a8bf161` — `MAX_ROOMS` (24 on iad; on satellites **10** dedicated-core / **6** shared via `SATELLITE_MAX_ROOMS_DEDICATED` / `SATELLITE_MAX_ROOMS`), `region_full`. A finished match on the results screen does not count (`Room.holdsCapacity`, 2026-09-25). ⚠️ **24 is a RUNAWAY GUARD, not a measured safe load** — deliberately well above the ~13 driven rooms/core of §2 and the 8–10-with-margin of §4, because most rooms are parked (0.031 cores) rather than driven (0.075) and a cap set at the redline would refuse players while the machine still had headroom. The constant's own comment says the same thing; keep the two in step. A load-driven cap is the follow-up (§0: none of the latency thresholds are measurable on the Windows dev box). |
 | 4 | **Snapshots sent uncompressed.** `perMessageDeflate: false`. | **FIXED on `alpha`** `e287c0e` + `41e346d` — 15/8, −82% to −88% end to end. The 13/6 this document recommended was superseded; see the correction in §6 |
 | 4b | **Snapshot encoding was O(AUDIENCE).** Each client's own `send` closure ran `ws.send(encodeMsg(m))`, so one 2v2 frame was stringified four times from the same object, plus once per spectator. | **FIXED** `d32a2d7` — `Client.sendRaw`; at 4 recipients 0.37% → 0.09% of a core per room, at 32 recipients 3.79% → 0.14% |
 | 5 | **Presence heartbeat is O(N).** Every 5 s each machine upserts `operatorSnapshot()` (a row per player *and* per guest) plus `localLive()` (every room summary) into Postgres. | **partly mitigated** — its payload scales with *per-machine* population, which `MAX_ROOMS` now bounds |

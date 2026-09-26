@@ -101,7 +101,7 @@ export const BB_DEFAULT_SPEC: RobotSpec = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
  *                                 BEFORE anything below reads it
  *   1. INTAKE MOUNT             → an enum, and it feeds the ranges below
  *   2. SIZE                     → per-mount envelope (`bbSizeLimits`)
- *   3. MASS                     → drivetrain × inertia × the loadout's mechanism floor
+ *   3. MASS                     → drivetrain × the loadout's mechanism floor
  *   4. HOPPER                   → footprint × launcher × mount (`bbStorageMax`)
  *
  * ⚠️ WHY THE LOADOUT IS STEP 0. Mass (`bbMassLimits`) and storage (`bbStorageMax`) both read
@@ -165,7 +165,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   out.intakeSide = out.intakeMount === 'side';
 
   // 2) SIZE, from the resolved intake mount (which is why step 1 runs first).
-  const size = bbSizeLimits(out);
+  // LENGTH FIRST, then the width range read off the clamped length: which R105.A rectangle can
+  // hold the build depends on it (`bbSizeLimits`).
+  const lenLim = bbSizeLimits(out);
   // When a mount leaves nothing legal, `bbSizeLimits` reports max < min on purpose. Clamping
   // to an inverted range would produce the MAX (i.e. a robot smaller than the floor), so
   // widen to the floor.
@@ -175,7 +177,8 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // which an older coercer wrote and a save still carries — sailed through every later pass and
   // the builder printed it. Snapping heals the stored spec on load, and it happens HERE rather
   // than in the builder so that what is sent, saved, simulated and keyed is the snapped number.
-  out.length = bbSnapSize(clampFinite(out.length, size.minLength, Math.max(size.minLength, size.maxLength), base.length));
+  out.length = bbSnapSize(clampFinite(out.length, lenLim.minLength, Math.max(lenLim.minLength, lenLim.maxLength), base.length));
+  const size = bbSizeLimits(out);
   out.width = bbSnapSize(clampFinite(out.width, size.minWidth, Math.max(size.minWidth, size.maxWidth), base.width));
 
   // 3) MASS, from the BUILD — a bare chassis per drivetrain plus every mechanism bolted to it
@@ -188,6 +191,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // prices in a DECODE shooter — it is ABOVE this model's floor for every drivetrain, so it would
   // raise a light BIOBUZZ build before this line ever saw it and a preset it moved would be a card
   // that never reads as selected.
+  // `flywheelInertia` is a DECODE field. BIOBUZZ has no inertia, so it is pinned to 0 rather
+  // than left as whatever the spec arrived with (DECODE's default seeds 0.4).
+  out.flywheelInertia = 0;
   const mass = bbMassLimits(out);
   out.massLb = clampFinite(out.massLb, mass.min, mass.max, base.massLb);
 
@@ -198,7 +204,7 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
 
   // 5) HEIGHT (3D physics, Day 1 seam — `docs/biobuzz/plan-3d.md`). Independent of every field
   // above it, so it can run last without affecting their order. Present and finite ⇒ clamped to
-  // R105.A's vertical envelope; anything else (absent, a string, NaN, Infinity off a spoofed
+  // `BB3_HEIGHT_MIN..MAX`, the builder slider's own range; anything else (absent, a string, NaN, Infinity off a spoofed
   // wire spec) is DROPPED rather than clamped to a boundary that would look like a deliberate
   // choice nobody made. The 2D pipeline never reads this field either way.
   //

@@ -62,6 +62,270 @@ works; until then set `VITE_ZENITH_URL`.
   mirror `constant`/`linear`/`facePoint` headings for the other alliance. DSIM mirrors them.
 
 ---
+# HANDOFF — 2026-09-25i (production = alpha = `9a91323`)
+
+- **Everything on `alpha` as of 5419acb3 is on production**: `main` = `9a91323`, Vercel and every Fly machine (announced deploy, `/health` ok, satellites re-sized). Includes the combined Vercel history display, counting all traffic (DNT/GPC no longer gate), `LEGAL_UPDATED` September 25, 2026 (every signed-in account accepts once), controller hold-to-remove, and the budget-lane test change.
+- **Still the owner's to run:** the Vercel history import against production (`node scratch/import-vercel.mjs`, then `--write`, from the prediction-hud-simplify worktree), then switch Web Analytics off in the Vercel project. Alpha remains on its site lockdown; tester tags pending.
+
+# HANDOFF — 2026-09-25j (controller: hold a button to remove a bind)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `uiaudit`, `docaudit` pass. Client only, no deploy needed.
+
+- **Bug:** on the Controls screen a controller-only player could not remove a pad bind or leave a capture. Pad navigation is suspended while a slot is armed and every button becomes the bind; Esc, Backspace and the `×` cap need a keyboard or pointer. A keyboard slot armed with A was a dead end too.
+- **Fix:** hold one pad button alone for 1 s (`PAD_HOLD_REMOVE_MS`) and let go: removes the armed slot, or cancels an empty/add slot. The status line reads "Release to remove A from Shoot." once the hold registers. A second button joining makes it a combo again. During a key capture a pad press cancels.
+- The capture loop moved out of `ControlsSection.tsx` into `PadCapture` (`src/input/padChords.ts`), with smoke checks. Verified in the dev server with a mocked gamepad (remove, cancel, tap-to-bind, key-capture cancel).
+- Gotcha for browser checks: the preview pane is often hidden, so `requestAnimationFrame` never fires and the pad capture looks dead. Shim rAF with `setTimeout` before testing.
+
+# HANDOFF — 2026-09-25i (BIOBUZZ timing checks no longer fail under `npm test`)
+
+**State: pushed on `alpha`.** `npm test` passed on every full run after the change (5134 BIOBUZZ checks, shared PASS), including runs beside another worktree's `npm test`. `build` and `docaudit` pass. Test tooling only (plus one comment in `flowerTube.ts`), no sim change, no deploy needed.
+
+- **Bug:** `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS` read 9–11 ms against 8 on nearly every full run (4.0 ms alone). `bot-driven 2v2 step3d p95` failed now and then for the same reason.
+- **Cause:** 18 test processes on 16 physical cores make every core slower, so taking more readings does not help. Best of 30 still read 6.3–7.4 ms in-suite. `process.cpuUsage()` on Windows moves in 15.6 ms steps, so CPU time is no use either.
+- **Fix, three layers:**
+  - New `PERF` lane (last in `index.ts`) holds every absolute-ms check: `predictPerfChecks`, `aiPerfChecks`, `sim3dPerfChecks`, exported from their lane files. `bbshard.mjs` never packs it (`SOLO`), runs it alone after its shards, and with `--gate` waits for `test-all.mjs` to close its stdin when the shared suite exits.
+  - Predict budgets are best of 30 `performance.now()` readings (were best of 5 on `Date.now()`).
+  - Another worktree's `npm test` still slows it (p95 1.85 ms seen), so `perfLane` re-runs the lane after 5/10/20 s when a check fails and reports the first attempt where all held.
+  - Thresholds and check count unchanged.
+- **After:** FULL ~3.9 ms, p95 ~0.77 ms in-suite; green wall 33–38 s (unchanged). A temporary slowdown to 9.0 ms failed all four attempts; a red PERF lane now costs ~50 s extra.
+- **Rule** (in `docs/area/biobuzz.md`): a new check against a number of milliseconds goes in the PERF lane. Paired ratios stay in their lanes.
+- The earlier sections' "known flake: PREDICT_FULL_BUDGET_MS" notes are superseded by this one.
+
+# HANDOFF — 2026-09-25h (Vercel history folded into the Analytics tab)
+
+**State: committed on branch `analytics-combined-history` (off alpha 43c3c1e5), NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, 29 new `analytics/combine:` checks), `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only the `PREDICT_FULL_BUDGET_MS` wall-clock flake, `--lane PREDICT` passes alone. ⚠️ **Server change** (no migration): the combined read is in `server/analytics.ts`.
+
+- **Owner:** combine the imported Vercel history with the normal display instead of a separate section.
+- **Rule:** one source per day. Our start day is derived (earliest own day on the import's channel; if the import holds that partial day, ours starts the next day). Days before it come from `analytics_imported`, days from it from ours; imported rows on/after it are ignored. Full rule in `docs/area/monetization.md`.
+- **Folded in:** views/visitors tiles, chart (dotted Vercel | DSIM marker), pages, referrers, countries, devices, OS, browsers, channel/surface, events + properties, sponsor report. Ours only, marked "from Sep N": sessions, bounce, session length, entry pages, UTM, screen, language, build.
+- **API:** `/api/analytics` adds `history` and `grain`; `imported` is always `null` now (kept for older admin pages). The importer stores a preview export as `vercel-preview` (alpha channel).
+- Day buckets are now formatted in SQL and chart day labels are UTC; they were a day early west of UTC.
+- Pre-existing, not touched: the admin console scrolls sideways at 390px (header/tab strip).
+
+# HANDOFF — 2026-09-25g (both releases on production; ALPHA IS CLOSED)
+
+- **Production = `main` = `d039cb7`**, Vercel and every Fly machine: release 1 (stuck-robot batch, SIM_VERSION 4; three patch notes published) and release 2 (lockdown scopes, access groups, site banners; Vercel Analytics removed; migrations 0051–0053 applied at boot).
+- **Vercel history import:** a fresh export (2026-09-13 → 09-25, 411,076 page views) is in `scratch/vercel-analytics-production.json`, run with `node scratch/import-vercel.mjs [--write]` from this worktree. The owner runs it (production DB access is theirs). Then switch Web Analytics off in the Vercel project settings. Alpha's own preview export has not been imported.
+- **Alpha is on a SITE lockdown** (set via `/api/admin/maintenance` on dsim-alpha): closed screen, "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers in the groups yet — the owner will send tags (Access tab or `/api/admin/access`). `VITE_SITE_LOCKDOWN=1` is not set on the Vercel preview env (it would keep alpha closed with its server down).
+- The sections below were written before the merges; their "not pushed" lines are superseded.
+
+# HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
+
+**State: committed on branch `claude/drop-vercel-analytics` (off alpha 96225a0a), NOT pushed.** `build`, `server:check`, `dbtest` (ALL PASS, 17 new checks), `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only wall-clock timing flakes (predict budget / step3d p95), lanes pass alone. ⚠️ **Server change + migration 0053** (renumbered at merge: 0051/0052 are lockdown/banners).
+
+- **Owner:** first-party analytics is extensive enough; pull Vercel's data in and remove Vercel Analytics.
+- **Removed:** `@vercel/analytics` (package.json + lockfile), `<Analytics />` in `main.tsx`, the `track` sink in `src/analytics.ts`. Events now go only to `/api/a/ev`, so DNT/GPC now also stops events (it did not for Vercel's). No CSP/vercel.json entries existed for it.
+- **Gaps closed:** events and their properties are rolled up (`dim = 'event'`/`'evprop'`, val `name|key|value`), so ranges past 30 days show events and a month-old sponsor report still breaks down by placement. New **Sponsor report** panel (docs/sponsor.md's lines, CSV) and **Last month** range. "First-party history starts …" note. Vercel had nothing else we lacked (its UTM breakdowns were a paid add-on it never gave us; `route` is empty for Vite).
+- **History:** `scripts/vercel-analytics-export.mjs` (public Web Analytics API, read-only) → `scratch/vercel-analytics-<env>.json`; `scripts/import-vercel-analytics.ts` (dry run unless `--write`) → `analytics_imported` (0053), replacing the file's days. Paths are scrubbed with `normalizePath` (moved to `src/pathScrub.ts` so the server can import it). Shown as its own dashboard section, never summed with ours. Exported 2026-09-13 → 2026-09-25: 408,814 page views, 13,008 daily-unique visitors, events incl. 194,805 `sponsor_shown`, 379 `sponsor_click`, 823 `player_joined`. Preview (alpha) export too: 10,720 views.
+- **Next (owner):** deploy the server (migration 0052), then RE-EXPORT (to catch the days up to removal) and import: `VERCEL_TOKEN=… node scripts/vercel-analytics-export.mjs --team team_btPkJqnmnzu4DXvfygxEr4vl`, then `DATABASE_URL=<prod> npx tsx scripts/import-vercel-analytics.ts --file scratch/vercel-analytics-production.json --write`. Do it before ~2026-10-13: the API only answers inside the plan's reporting window, and data starts 2026-09-13. Then disable Web Analytics in the Vercel project.
+- **Legal:** Vercel's "second usage count" line dropped from the processors list, one sentence added that its daily totals were kept. `LEGAL_UPDATED` NOT moved: a processor removed is not a material expansion (monetization.md).
+# HANDOFF — 2026-09-25f (lockdown scopes, access groups, site banners, alpha closed)
+
+**State: committed on a feature branch, NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, new `lockdown:`/`access:`/`banners:`/`site:` checks), `uiaudit`, `contrast` (399), `docaudit`, `shiftaudit` (0 shifts) pass; `npm test` shared PASS, BIOBUZZ one wall-clock check (PREDICT_FULL_BUDGET_MS) failed under load and passed alone. ⚠️ **Server change + migrations 0051/0052**: alpha needs `./scripts/fly-deploy.sh --alpha`, production a `main` deploy.
+
+- **Lockdown has a scope** (`matches` = old maintenance, `site` = whole app closed), a message, a redirect button, an open-ended window, and bypass groups. Admins always pass. Enforced at join, queue, room start/restart/rematch, LAN host (either scope) and spectate, LAN join, every `/api` POST (site). Rules in `docs/area/accounts.md`.
+- **Access groups** `beta`/`dev`/`contributor` (`access_members`, by user id, audited). Console tab **Access** (single + bulk by player tag). Per deployment: alpha testers go in the alpha DB.
+- **Banners** (`banners` table): info / known-bug / warning / restart. The restart countdown now reaches every region (it was in one machine's memory). Console **Server** tab. Strip is `BannerStack.tsx`; one row + "N more"; dismiss per id+revision.
+- **Closed screen** (`ClosedScreen.tsx`) replaces the app at first load; fail open, except a build with `VITE_SITE_LOCKDOWN=1`.
+- **To close alpha** (owner/release manager, in order): deploy the alpha server, run the lockdown curl in `docs/deploy.md` ("Closing alpha…"), then set `VITE_SITE_LOCKDOWN=1` on Vercel's `alpha` branch and redeploy it. Then add testers (owner sends tags).
+- **Not built:** tester badges on profiles; draining the ranked queue when a lockdown starts (a pairing staged before it bites still plays).
+
+# HANDOFF — 2026-09-25d (stuck-robot batch, SIM_VERSION 4)
+
+**State: pushed on `alpha`, going to `main` in the same release.** `npm test` passes except the known `PREDICT_FULL_BUDGET_MS` wall-clock flake under load (5 ms alone). `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. ⚠️ **Server + sim change; `SIM_VERSION` 3 → 4 (owner approved 2026-09-25)**: every older replay, all games, plays as drift. Standings do not move (`BALANCE_VERSION` keys them).
+
+- **Everything from 09-25c's "not fixed" list is fixed:**
+  - Hive-frame perch: every case started inside the frame (the harness spawned into overlaps). `setChassisClear` (`engineImpl.ts`) sets a chassis placed > 0.25 in inside a fixed part down beside it.
+  - Flower trap: ring-plate trimeshes have no inside. Robots now meet the middle/top plates as solid boxes (`buildFlowerSolids3d`, `GROUP_CHASSIS`); elements meet the same surfaces as before. 8,960 drive-ins: 2 traps / 1,025 lifts → 0 / 0.
+  - Server gap-fill: a tick filled from a future `latest` keeps the last applied buttons (`frameCommands`). Smoke "input gap:" fails on the old fill.
+  - `debouncedPress` (`src/sim/robot.ts`, `TOGGLE_DEBOUNCE_S`) serves butterfly `driveMode` and the ramp.
+  - `GamepadInput` holds the last sample through a < 100 ms pad dropout.
+- `scratch/rampstuck.ts` (overlap spawns included): 0/400 on seeds 2/3 sweeper and 2/4 ramp, from 8/14/11/10.
+- **Patch notes**: `docs/releases/2026-09-25-stuck-robot-fixes.md`, three notes (BIOBUZZ, DECODE, Chain Reaction) with the publishing block. Publish AFTER the production deploy. The What's New modal and `/changelogs` were restyled for reading (15-px body, 68ch measure, fixed button bar).
+- **Also merged into this release from another session:** homepage play counts (`0050_play_counts`) and the room-cap fix that was waiting on `main`.
+- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0053 after the merge; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; merged too: its migrations are 0051/0052.
+- A flower-side note from that agent: `containmentPass` clamps an out-of-field robot to x ±70.17 without checking statics. `setChassisClear` now catches the resulting overlap on the next sync.
+
+# HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
+
+**State: pushed on `alpha`.** `server:check`, `test:mm` (201), `docaudit` pass; `npm test` shared PASS, BIOBUZZ 1 wall-clock perf check failed under load (a different one each run, no `src/` touched). ⚠️ **Also on `main` as `ffaf321f`** (cherry-picked alone onto a8390771; build, server:check, test:mm pass there). **NOT DEPLOYED**: production needs `./scripts/fly-deploy.sh` from a `main` worktree, which also re-applies the new per-size caps. Verify after: `/api/perf` with `fly-prefer-region: lhr` shows `capRooms` and `maxRooms 10`.
+
+- **Owner report:** prod says some servers are busy with few games running.
+- **Measured (`/api/perf`, fly-prefer-region):** lhr `rooms 2, maxRooms 6, admitting false`, 0.25 cores. Its log: `[admit] refused room … at cap (6/6)` for record runs every few seconds, and two staged ranked rooms (`lhr-1v15…`) refused, which cancels the pairing.
+- **Cause:** a finished match stops stepping but stays in `rooms` while anyone is on the results screen (no timeout), and the cap counted `rooms.size`. Also 6 was below the 8–10-with-margin figure for a dedicated core, and six of seven satellites are performance-1x now.
+- **Fix:** the cap counts `Room.holdsCapacity()` (not finalized) via `roomsHoldingCapacity()`; `/api/perf` adds `capRooms`; the refusal log prints both counts. `fly-deploy.sh`: `SATELLITE_MAX_ROOMS_DEDICATED=10` for performance-*, 6 for shared. mmsmoke + smoke pin both. `docs/deploy.md` / `docs/capacity.md` updated.
+- **Not fixed:** the matchmaker is still not load-aware (capacity.md §7), so a genuinely full satellite still refuses staged ranked rooms.
+
+# HANDOFF — 2026-09-25d (homepage counts every game: custom, practice, LAN, Discord)
+
+**State: pushed on `alpha`.** `build`, `server:check`, `dbtest` (ALL PASS, 19 new `plays:` checks), `uiaudit`, `docaudit` pass. `npm test`: shared PASS; BIOBUZZ 3 wall-clock perf checks failed under full load (predict budget, step3d p95), no sim code touched. ⚠️ **Server change + migration 0050**: needs the alpha deploy (and a `main` deploy for production).
+
+- **Owner:** the homepage should count custom games, solo practice, LAN and Discord games, each logged separately and per game; the page folds them into Solo / Duo / 1v1 / 2v2 / Custom.
+- **Before:** the counts came from `records` + `matches`, so anonymous rooms, Discord rooms (signed out), practice and LAN never counted, and custom rooms were inside 1v1/2v2.
+- **Now:** `play_counts` (0050) counts per UTC day × game × source × mode. Server rooms count in `persistMatch` before the anonymous drop (`playSourceOf`; `MatchOutcome.discord` from `Room.group`). Practice (every kept run, signed in or out) and LAN (host only) are reported by the client to the public `POST /api/played` (text/plain, keepalive; 30 per 10 min per hashed address; always 204). The migration backfills from `records`, `matches`, `practice_runs`, `lan_runs`.
+- **Homepage:** two lines under the tiles, Solo · Duo then 1v1 · 2v2 · Custom (owner: the one line was cramped). Solo = record solo + practice, Duo = record duo, 1v1/2v2 = ranked only, Custom = custom + Discord + LAN. `/api/stats` also returns `detail` (the raw split). Custom is hidden against an older server. Rule in `docs/area/accounts.md`.
+- **Expect** 1v1/2v2 to DROP after the deploy (custom rooms moved to Custom) and Solo to rise (practice uploads backfilled).
+# HANDOFF — 2026-09-25c (BIOBUZZ ramp: the self-freeze and the double toggle)
+
+**State: pushed on `alpha`.** `npm test` (shared + 5129 BIOBUZZ), `build`, `server:check`, `docaudit` pass. ⚠️ **Sim change** (`src/games/biobuzz/`), so the game servers run it only after a deploy. Production needs this on `main` plus a Fly deploy.
+
+- **Player report + replay 1dc6eb8f (production, 3D):** a `frontback` ramp build deployed and folded "at random" and froze at 1:50 of match time until the buzzer. Pulled the row read-only and re-simulated it (`scratch/analyzereplay.ts`, `scratch/replayticks.ts`; the replay JSON stays in `scratch/`, it is private).
+- **The freeze:** t6508 fold pressed 3 in short of the −y wall at 45 in/s → the fold's overshoot hit the wall → reversed to a deploy the old guard never re-tested → no ramp collider mid-swing, the robot closed 2.4 in → the ramp settled inside the wall, the deck's contact normal was (0,0,−1), and the chassis sank to z −0.32 and stayed. Every later fold press reversed instantly. Fix in `bbRampSwingStep3d`: a reversed deploy is re-tested and folds on a second hit; a settled ramp a fixed body presses vertically (`rampEmbedded`, `BB_RAMP_EMBED_DEPTH`) folds. Verified on the recorded state (old guard until t6505, new after): the robot folds at t6511 and drives off.
+- **Same jam off the hive foot bars:** 7/400 random ramp drives froze with the blade under a foot bar or frame foot; 0/400 after.
+- **The random toggles:** two 1-tick button dropouts in that match (one a whole all-zero input frame, an empty gamepad read) each toggled twice. `bbRampStep` is debounced (`BB_RAMP_DEBOUNCE_S` 2.5 ticks, `RobotState.bbRampUpAt`). The rest were the swing guard doing its job near walls and the hive foot bars (2.15 in, easy to miss).
+- ⚠️ Replays of ramp builds recorded before this can diverge (this one does from t6172). `SIM_VERSION` stays 3, as ruled 2026-09-20.
+- **Not fixed, found on the way:**
+  - ANY build can get stuck ON TOP of a hive foot bar or frame foot (z ≈ 2.1): 8/400 random drives with a sweeper or a folded ramp; `scratch/rampstuck.ts <n> <seed> sweeper` reproduces it.
+  - A chassis can end up inside a flower's ring trimesh (1/400).
+  - The server fills a missing input tick with `latest`, the NEWEST command by tick, which is usually from the future, so a lost packet near an edge can double-toggle any edge-triggered button (`frameCommands`, `server/room.ts`). The replay shows no case of it.
+  - `driveMode` has the same undebounced latch.
+  - The client produced an all-zero input frame mid-press (gamepad dropout); worth a look in `src/input/gamepad.ts`.
+
+# HANDOFF — 2026-09-25b (ranked badge numerals centred)
+
+**State: pushed on `alpha`.** `build` and `uiaudit` pass. Client-only.
+
+- **Bug (owner):** the 1/2/3 on the podium crests sat off centre. They were HTML text over the SVG, so Space Grotesk's metrics decided where they landed: the 1's flag pulled its ink a unit left, and the digits rode high at the small sizes.
+- **Fix:** `NUMERAL` in `BadgeMark.tsx` draws them as stroked paths in the crest's 24 box, centred on (12, 11.5), so they also scale with the crest at every size (they were 60% of it at `sm` and 30% at `lg`). `.badge-num` is now a stroke rule in `shell.css`.
+
+# HANDOFF — 2026-09-25b (email verification + Google sign-in fix RELEASED to production)
+
+**State: production = `main` = `a8390771`**, Vercel (`/version.json` a839077) and every Fly machine on it. `REQUIRE_VERIFIED_EMAIL=1` is Deployed on `dohun-sim-decode` and `dsim-alpha`: unverified email/password accounts are refused ranked, record rooms and practice saves, and each refusal shows the code form in place.
+
+- Shipped: code entry (Profile banner, sign-up step, `/account/verify`, and at each refusal), set/change password by code (Google accounts get a password login), the gate reading `neon_auth."user"`, the practice-save refusal no longer silent, and the Google sign-in verifier kept through URL canonicalization. Also rode along: ranked badge numeral (`1f1421a3`) and the career stats flash fix (`537af652`).
+- Deployed twice with `announce-deploy.sh` (players were online): the owner set the secret after the first deploy, and the classifier blocks Claude from `flyctl secrets set` on production (memory note).
+- **Watch:** Google sign-in reports on prod (if some still bounce, ask for the browser: Safari/Brave third-party cookie blocking is the next suspect), and complaints from the 742 unverified accounts about expired codes. The in-place Send a new code covers them.
+
+# HANDOFF — 2026-09-25 (alpha: email verification takes the CODE Neon Auth sends)
+
+**State: pushed on `alpha`.** `npm test` (shared + 5123 BIOBUZZ), `build`, `server:check`, `uiaudit` pass. Server change (the two refusal strings now say "Enter the code we emailed you"), so it rides the next Fly deploy. Nothing on `main`.
+
+- **Bug (owner):** the verification email arrived with a code and nowhere in the app took one. Neon Auth verifies with an OTP; the app only knew the link/token path.
+- **Fix:** `verifyEmailCode` (`authFlows.ts`, `emailOtp.verifyEmail`) + `VerifyCodeForm`, shown in the Profile banner, as a code step in the sign-up dialog, and on `/account/verify`. The session refreshes itself on that route, so the banner goes away. Rule in `docs/area/accounts.md`.
+- **Copy:** the banner said ranked and record runs need a verified address. False: `REQUIRE_VERIFIED_EMAIL` is off. The sentence is gone.
+- **Gate ON on alpha (owner, 2026-09-25):** `REQUIRE_VERIFIED_EMAIL=1` on `dsim-alpha`. The JWT's claims were never confirmed, so the gate now reads Neon Auth's own `neon_auth."user"."emailVerified"` from the game DB (`authEmailVerified`, repo.ts; dbtest pins it) before the `/get-session` fallback. At the time of setting, 742 of 1787 auth users were unverified. Production still needs the code UI on `main` first, then the secret. It gates ranked, record rooms AND practice saves (`POST /api/practice`, which now has its own refusal sentence).
+- **Google sign-in "just reloads" (prod report):** Neon returns from Google with `?neon_auth_session_verifier=`, which the SDK reads off `location.search` when its first `get-session` starts. App's mount-time URL canonicalization stripped every query and sometimes won that race, so the player came back signed out. It now keeps that one param (the SDK deletes it after the exchange). Client-only; reaches prod with the next `main` deploy. Smoke pins it.
+- **Refusals are fixable in place:** the three gate refusals carry `code: 'email_unverified'` (new `ErrorCode`). The ranked screen and the record card show `VerifyEmailInline` (code field + Send a new code) instead of the Profile-page sentence; the record card swaps TRY AGAIN for START RUN once verified. A refused practice save used to fail SILENTLY and stall the upload backlog; it now sets `practiceUploadBlocked` and Practice replays says so with the same form. A successful code fires `dsim:email-verified`, and App drains the backlog on it. Older clients still get the sentence.
+- **Password by code (owner: Google users should be able to sign in both ways):** Profile ▸ Account ▸ Password now emails a code and takes code + new password (`requestPasswordCode` / `setPasswordWithCode`). It creates the password login for a Google-only account ("Not set" / "Set a password") and changes an existing one. Reviewed in an offscreen preview with a stubbed client; not yet run against real Neon Auth.
+- **Password resets stay link-based:** owner confirmed Neon sends a LINK for resets, so "Forgot password?" and `/account/reset` are right as they are.
+
+# HANDOFF — 2026-09-24o (BIOBUZZ Act 2 RELEASED to production; PR #83 merged with review fixes)
+
+**State: production = `main` = `fff39e92`, Vercel and every Fly machine on it.** Maintenance lifts 22:30 EDT (02:30Z); the Act 2 and patch-notes announcements publish at the same moment.
+
+- **Released:** alpha → `main` fast-forward (`9d9efac2`, 21:37), then PR #83 + review fixes (`fff39e92`, 22:23). Migrations 0037–0049 applied on boot. Boot award job: 23 grants over 5 periods (DECODE and Chain Reaction Act 1 + their closed seasons).
+- **BIOBUZZ rolled to Act 2 · Season 1** (season 5), `announce=0`: 11 grants over 2 periods. Act 1's archived board shows its 2D records (per-season era, 2026-09-24n). DECODE (7) and Chain Reaction (5) unchanged.
+- **Production secrets:** the ten linking/star/boost secrets are live. `.env` in `D:\Projects\2ddecodesim` holds alpha's under the plain names and production's GitHub OAuth app as `PROD_GITHUB_OAUTH_ID` / `PROD_GITHUB_OAUTH_SECRET`. ⚠️ `ADMIN_SECRET` needs URL-encoding in a query string (`curl -G --data-urlencode`); a raw one 403s.
+- **Satellites:** gru/syd/nrt on `performance-1x` in `SATELLITE_SIZES`, MAX_ROOMS 6. ⚠️ **Multi-core game server is the urgent next capacity item** (`docs/capacity.md`, "MULTI-CORE").
+- **PR #83 review** found a blocker (seat token lost after a room recycle, so reconnect/abandon refused from a room's second match) plus 8 smaller issues and 12 CRLF-fragile checks; all fixed in `fff39e92` and pinned by checks. The first-time BIOBUZZ loadout now seeds from `BB_DEFAULT_SPEC` (Pollinator); owner approved.
+- **Next:** post the Discord announcement (text in `docs/releases/biobuzz-act2.md` §5; link `https://playdsim.com/?act2` so Discord re-fetches the card, the old one said "2D"). The public FTC post (§6) a day later. Watch `/api/perf` and the capacity task for 3D room load. The Discord Activity is still unverified in a real Discord client.
+
+# HANDOFF — 2026-09-24o (PR #83 review fixes, branch `pr83-fixes`)
+
+**State: committed on local branch `pr83-fixes` (PR #83's `fix/discord-activity-audit` + `origin/alpha` merged in). Not pushed, not deployed.** ⚠️ Server change (`server/room.ts`: the recycle's `lobby` frame carries `seatToken`; per-field moderation verdicts), so it rides the next Fly deploy.
+
+- **Seat token lost on recycle (blocker):** the lobby that adopts a recycled socket never gets a `welcome`, so match two's session had an empty token and rejoin/Abandon were refused. Fixed both ways: `ResumedRoom.seatToken` → `LobbyClient.resume`, and the owner's `t: 'lobby'` frame re-states it.
+- **Moderation:** a verdict is written only over a field that still holds the value checked.
+- **Lobby:** an in-room refusal is shown (`.ds-form-err`) and no longer latches `refusedRef`; the web invite panel drops "Trying again in 0s."; TRY NOW / TRY AGAIN dispose the refused socket.
+- **App.rejoinGame:** re-entry guard (`rejoiningRef`); a session the player walked away from during the wait is disposed (not when the recycle took its socket).
+- **HDRI failure count** resets on success and after `HDRI_RETRY_MS`. **Discord lobby list:** two failed reads with no answer unlock JOIN MAIN LOBBY.
+- **Smoke:** the PR's source-reading checks normalise CRLF at the read site; new checks under "recycle seat:", "moderation:", "lobby:", "rejoin:", "discord lobbies:".
+- **Not changed, owner call pending:** `settings.ts` seeding a first-time BIOBUZZ loadout from `BB_DEFAULT_SPEC`.
+
+# HANDOFF — 2026-09-24n (BIOBUZZ Act 1's 2D records stay on the boards; Act 2 release prep)
+
+**State: pushed on `alpha`.** `dbtest` ALL PASS (10 new era checks), `server:check`, `build`, `docaudit` pass. Server change: `dsim-alpha` needs a redeploy, and production gets it with the `main` deploy. Nothing merged to `main`, nothing deployed.
+
+- **Owner:** "Biobuzz Act 1's 2D records should NOT get filtered off the boards."
+- **Bug:** `boardPhysics` was per GAME, so after the 3D cutover every BIOBUZZ season read as `'3d'`. Act 1's archived board came back empty, and rolling into Act 2 would have claimed its record awards with `winners = 0`, which is permanent.
+- **Fix (`server/db/repo.ts`):** `boardPhysics(game, balanceVersion)` is per season. The live season is the live solve. An archived season is the solve most of its rows were played on, so a few 3D runs set between the deploy and the roll can't take the board. `submitRecord` keeps the live-only rule (`livePhysics`). `/api/records` echoes the era, and `Leaderboard.tsx` keeps rows of that era.
+- **Also fixed:** `recordRank` threw on the `'overall'` board (a mixed-drivetrain duo). `$4` was left out of the SQL, and Postgres refuses a parameter it can't type.
+- **Also:** the Lobby hint said bot rooms aren't saved. They have been since 09-24e.
+- **Release plan, patch notes, Discord posts:** `docs/releases/biobuzz-act2.md`. Open items for the owner are in its §1: production Fly secrets for linking/star/boost (missing on `dohun-sim-decode`), satellite sizes, the mis-merged `update_rc` block in `fly-deploy.sh`, and leaving the Discord Activity unannounced.
+- **Roll BIOBUZZ Act 2 right after the Fly deploy, under maintenance,** before anyone sets a 3D record in season 4.
+
+# HANDOFF — 2026-09-24m (BIOBUZZ builder: 18-in chassis, no inertia, no mount blurbs)
+
+**State: committed and pushed on `alpha`.** `npm test` 5090/5090, `build`, `server:check`, `uiaudit`, `docaudit` pass. The predict lane's timing checks failed twice under full load before the rebase and pass alone. ⚠️ **Server change** (`src/sim/spawn.ts`, the BIOBUZZ size clamp): alpha needs `./scripts/fly-deploy.sh --alpha`, production a deploy from `main`. An old server clamps an 18-in BIOBUZZ chassis back to 15 × 17.
+
+- **Owner:** "Single turret single intake no boxtube should be as low as 18 lbs… I dont know where this .1 lbs comes from… why is max width/length 17 not 18?" and remove the text under the SIDES / FRONT+BACK mount buttons.
+- **The .1 lb:** BIOBUZZ has no inertia, but `bbMassLimits` added `4 · flywheelInertia` and a new BIOBUZZ spec is seeded from DECODE's `DEFAULT_SPEC` (0.4), so mecanum + turret floored at 18.6 and tank + turret at 20.1. The term is gone, `coerceBiobuzzSpec` pins `flywheelInertia` to 0, `BB_INERTIA_DEFAULT` is deleted, and `bbSpecMatches` no longer compares it. `BB_MASS_TURRET` is 5 and `BB_MASS_DUMPER` 3.5, so preset floors are unchanged. The mass slider steps 0.5 (`BB_MASS_STEP`) instead of 1 anchored at the floor.
+- **18 in:** `BB_MAX_LENGTH/WIDTH` = `ROBOT_MAX_SIZE`. The BIOBUZZ arm of `coerceSpec` carries raw `length`/`width` across (DECODE's `lengthLimits` capped sloped at 15), and `bbEnvelope` keeps only the shared floors.
+- **Width depends on length now.** The R105.A envelope is the union of both rectangles. Picking one per build made a front sweeper + flank tube choose 18 × 15.5 over 15 × 18 and shrink saved 15 × 17 builds. The coercer clamps length first, then reads width off it.
+- Masses are NOT snapped: replays re-coerce specs through `createWorld`, so a saved 20.1 stays 20.1 until the slider moves. No legal spec moves under the new clamps.
+- `BB_INTAKE_MOUNT_BLURBS` is deleted.
+- **Box Tube 2.5 → 1.5 lb** (owner: "1.5 lbs max"). Offset lists the 2-stage kit at ~475 g, 275 g moving. Pollinator floor 20.5 → 19.5; its declared 24.5 is unchanged.
+- ⚠️ `npm test` has one non-timing failure that is NOT from this work: net3d "ruling: ...and it drops a 2D row an OLDER server still serves" greps `Leaderboard.tsx` for the 2D-row filter that `172c6ca1` (09-24n) removed on purpose. The check needs updating to the new per-season era rule.
+- Checks: robot lane "mass: a DECODE-seeded spec coerces to no inertia…", "size: …" ×4. Rules in `docs/area/biobuzz.md` ("BIOBUZZ HAS NO INERTIA", "THE CHASSIS GOES TO 18 × 18").
+
+# HANDOFF — 2026-09-24l (a turret SPAWNS at the elevation it aims at, and the preview draws it there)
+
+**State: pushed on `alpha`, alpha game server redeployed.** `build`, `server:check` pass; `npm test` passes except the known `PREDICT_FULL_BUDGET` timing flake.
+
+- **Bug (owner):** "The hood is WAY too high. It never goes that high." A turret's pitch was absent at spawn (read as 0, LEVEL), which is the hood's tallest pose and one no HIVE shot uses: the aim solve never goes below ~58.6° (2,116 poses per exit on a double turret; p50 68.7°, max the 80° stop). The builder preview and thumbnails never run `sync`, so they sat there permanently; a match sat there until its first aim tick and swung ~69° up.
+- **Fix:** `BB_TURRET_PITCH_REST` (69°, `config.ts`) is the one value. `spawn.ts` seeds `bbTurretPitch` (and a double turret's `bbTurret2Pitch`, which was 0) at it; `buildRobotGroup` builds every hood at it, so preview and spawn cannot disagree. Turretless builds still carry no pitch field.
+- ⚠️ **IT CHANGES PLAY, SO REPLAYS OF TURRETED ROBOTS RECORDED BEFORE THIS DIVERGE.** A/B over 2D and 3D bot matches: traces split at tick 30 (first shots leave ~0.5 s sooner) and final scores differ. `SIM_VERSION` stays 3, the same call as 2026-09-20. Production is untouched; it needs this on `main` plus a Fly deploy.
+- **Checks:** robot lane — a turret and a double turret spawn at REST, a dumper carries no pitch; render lane — REST lies inside the band `bbTurretSolution` produces, and `hoodPlateChecks`' `default` pitch is REST. The AIPLAY 2v2 foul check moved 7007 → 7005: 7007 picked up one AUTO G402 when the match diverged; the rate over 7000–7019 is 2/20, against 3/20 before.
+
+# HANDOFF — 2026-09-24j (games left at the buzzer were never saved)
+
+**State: committed and pushed on `alpha`, alpha game server deployed.** `server:check`, `build`, `dbtest`, `docaudit` pass; `npm test` all pass except the known `PREDICT_FULL_BUDGET_MS` load flake. Server change: production gets it with the `main` deploy.
+
+- **Report (beta tester):** some replays are not saving, or not viewable sometimes.
+- **Cause, reproduced headlessly:** only SOLO record runs kept stepping to finalize after their driver left. In every other room (custom, vs bots, duo record, ranked), the last connected driver leaving between the buzzer and the field settling (up to 10 s, before the results screen appears) froze the room and it was deleted unsaved. That meant no replay, no history row and no ELO. Closing the tab, a network drop and Abandon all lost it.
+- **Fix (`server/room.ts`):** `detach` sets `finishing` in any room once nobody is connected inside `inFinishWindow`; `abandonSlot` leaves the seat in any room inside it. Mid-match walkouts are still not saved. Checks: `smoke.ts` "versus buzzer" (they fail on the old code).
+- **Ruled out:** the recorder and playback are sound. Real `Room` matches (record, vs bots, mid-match drop and reconnect, late loader, leave at buzzer) re-simulate to the server's exact hash after a JSON round trip. Alpha DB (read-only, aggregates): every match and record in 14 days has a replay; the 11 orphan replays are all Sep 12–19 and match already-fixed bugs.
+- **Also:** `fetchReplay` retries a 403 once with a freshly fetched token (`maybeAuthedJson`), because a failed or stale token made a player's OWN versus replay read as "private".
+- **Left as is:** deleting an account deletes the versus replays other players were in (`deleteAccount`), which is deliberate.
+
+# HANDOFF — 2026-09-24i (3D matches wait for every driver's physics AND view; 20 s cap)
+
+**State: committed and pushed on `alpha`, alpha game server deployed.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: all pass except the known `PREDICT_FULL_BUDGET_MS` load flake (10 ms under 18 processes, 4 ms alone). Server + protocol change: production gets it with the `main` deploy.
+
+- **Owner:** server matches, record runs included, still started while 3D physics/render were loading. Also: cap the wait and start anyway.
+- **Cause:** the 2026-09-22 gate (`physicsReady`) is sent from the lobby and covers only the physics chunk. The 3D view loads in the game screen, which is only built on `matchStart`, so it always loaded after the match had started.
+- **Fix:** a `'3d'` match now holds at tick 0 after `matchStart` (`Room.beginLoadHold`/`loadHeld`) until every connected `'viewready'` seat sends `{ t: 'viewReady', gen }`. The controller sends it once physics and the scene are up (2D view or a failed scene count). `loadHold` messages drive the loading screen ("Another driver · Loading… starts in Ns") and stop client prediction.
+- **Cap:** `LOAD_HOLD_MAX_MS` = 20 s, then the match starts. Late seats are logged server-side and named in the others' event log. The late client joins when loaded, and its loading ticks are excused from the AFK verdict.
+- `preloadRoomView` fetches the scene chunk from Lobby/Matchmaking/RecordRun.
+- Verified over a real socket against a local server: held at tick 0 for 3 s with no snapshots, released within a tick of `viewReady`; the silent client was started without at 20 s. A browser record run released on its own report.
+- Rules: `docs/area/netcode.md` ("THE LOAD HOLD"). Checks: `net3d.ts` §2c.
+
+# HANDOFF — 2026-09-24h (pre-merge pass over the background work alpha added)
+
+**State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Server change: needs `./scripts/fly-deploy.sh --alpha`, and production gets it with the `main` deploy.
+
+Reviewed every timer, poll and spawned process in `origin/main...alpha`. Fixed:
+- **Analytics job, advisory lock** (`server/analytics.ts`): lock and unlock went through `q()`, i.e. any pooled connection, so the unlock could land on another session and leave the lock held. Now a dedicated client, as `migrate()` does. A machine that loses the lock race re-arms instead of dropping its rows.
+- **Analytics rollup window**: the job rolled "the last three hours" unaligned, and the upsert replaces a bucket, so every pass overwrote the oldest hourly bucket and TODAY'S DAILY ROW with a 3-hour slice. `runRollupGrain` widens to whole buckets. The day rollup and the retention sweep now run at most once per UTC hour (were every 5 min), rolling from a watermark so a quiet spell loses nothing. New `analyticsTick(now)` is exported for dbtest.
+- **Star/boost hourly sweeps** (`server/index.ts`): every machine read Postgres hourly with nobody online, waking Neon for 5 billed minutes per machine per hour. They now skip an hour with no signed-in player on that machine (`sweepWanted`). The boot sweep and the on-link sweep are unchanged.
+- **Client**: AdminAnalytics auto-refresh and the Discord lobby list (3 s) skip hidden tabs. The builder's 3D turntable skips drawing while scrolled off screen (IntersectionObserver).
+- **`npm test`**: the two runners together started 18 processes regardless of core count. Below 19 threads the budget is now split 2:1. No change on a 32-thread box.
+- `docs/ui-components.md` regenerated (it was stale from the stow-slider removal and failing `uiaudit`).
+
+Looked at and left alone: the presence heartbeat and pending reaper (already activity-gated), room start retries (bounded; a failed server wasm load exits the process), pad-nav polls (only while a pad is connected), `usePolled` (already visibility-aware), Electron's unlimited-FPS switches (opt-in, default off).
+
+# HANDOFF — 2026-09-24g (titles folded into badges; stargazer is a badge; one claim card per item)
+
+**State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `uiaudit`, `docaudit`, `contrast` all pass. ⚠️ **Server change + migration 0049**: the alpha game server needs `./scripts/fly-deploy.sh --alpha`, and production needs a deploy from `main` once it gets there.
+
+- **Owner:** "titles are now essentially the same thing as badges … remove titles completely", keep 3 badge slots, no count-based evolving art for now, and stargazer becomes a badge.
+- **Migration 0049** strips title items from `reward_grants`, rewrites `title:stargazer` to the `stargazer` badge (the decal stays on the same grant), removes `title:stargazer` from `profiles.cosmetics`, moves anyone wearing a title onto its badge if they hold it and have a free slot, and nulls `profiles.title` (the column stays). A retired per-season title (0045) had no badge, so it is simply taken off; the row stays in the trophy case.
+- **Gone:** `TitleChip`/`TitleMark`/`TitlePicker`/the `AwardBadge` hexagon, `earnedTitles`/`setTitle`/`getTitle`/`clearTitleIfEquipped`, `TITLE_KEYS`, `LobbyPlayer.title`, `badgeCols`' title column. Every name surface uses `<BadgeMarks badges={…}/>`. The trophy case is `AwardList.tsx`, each row drawn with `awardBadge`. `awardTitleId` is `awardKey` (dedupe only).
+- **Old clients:** `/api/user/title` still answers (GET empty, POST `null` only) and the reward routes still send `title: null, earnedTitles: []` (`RETIRED_TITLE_FIELDS`). Delete both once no pre-0049 client can connect.
+- **Claim dialog, one card per item (owner):** the star grant is two cards, badge then decal, each with its own Claim / Equip now. The first card claims the whole grant; Equip now wears that card's item only. `grantCards` (rewards.ts), `answerCard`/`currentCard`/`revealing` (rewardsStore.ts).
+- The stargazer disc is drawn by `BadgeArt` (`.badge-mark.tier-stargazer`), not `SupporterBadge`.
+- Rules: `docs/area/accounts.md` ("TITLES ARE GONE", "ONE CARD PER ITEM", "THE STAR").
+
+# HANDOFF — 2026-09-24f (BIOBUZZ height dial capped at 18 in)
+
+**State: committed and pushed on `alpha`.** `build`, `server:check`, `docaudit` pass; `npm test` all pass (the `PREDICT_FULL_BUDGET_MS` timing flake failed once and passed on a rerun).
+
+- **Owner:** the height slider went to 29 in, which was too tall. `heightIn` is the robot's TOTAL height, not the chassis.
+- `BB3_HEIGHT_MAX` 29 → **18**. The builder slider and `coerceBiobuzzSpec` both read it, so they cannot disagree. The AI roster (15–17 in) was already under it.
+- 18 is R102's starting cube, so no coerced build folds any more. The builder's **stow height slider and the R102 note are removed**. The fold rule itself (`bbStowHeightIn`/`bbStowLegal`/`bbHeightNow`, the deploy-edge rebuild) is untouched and still refuses a raw spec off the wire. The 3D preview's "Stowed" toggle is also untouched; it can no longer appear.
+- Saved builds over 18 in are clamped to 18 on load.
+- Nothing about physics changed. The owner prefers height to be cosmetic eventually, but asked for only the cap for now.
+- Tests: the `heightIn` coerce checks use 16/29; the 29-in hive drive-under checks now say R105.A's 29 (raw spec) instead of `BB3_HEIGHT_MAX`; the declared-stow refusal uses an uncoerced spec.
 
 # HANDOFF — 2026-09-24e (custom-room games are saved, so their replays can be watched)
 

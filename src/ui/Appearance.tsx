@@ -7,24 +7,25 @@ import { rewardEyebrow, rewardHeadline } from '../rewards';
 import { useAds } from '../ads/AdsProvider';
 import { AuthDisabled } from './AuthDisabled';
 import { AuthPanel } from './AuthPanel';
-import { BadgeArt } from './BadgeMark';
+import { inDiscordActivity } from '../net/discordActivity';
+import { SITE_HOST } from '../lib/authFlows';
+import { BadgeArt, BadgeMarks } from './BadgeMark';
 import { DisplayName, Username } from './ProfileName';
 import { ProfileTabs, type ProfileTab } from './ProfileTabs';
 import { DecalPreview } from './RewardDialog';
 import { ensureRewards, equipBadges, reopenRewards, useRewards } from './rewardsStore';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
-import { TitlePicker } from './TitlePicker';
 
 /**
  * APPEARANCE — how you appear to other players (owner, 2026-09-22: the profile's "title and
- * cosmetics settings", separated from the account's settings).
+ * cosmetics settings", separated from the account's settings; titles folded into badges on
+ * 2026-09-24).
  *
  * Top to bottom: what a stranger sees beside your name, anything waiting to be claimed, the
- * name itself, the title, the badges, and the robot look your rewards have unlocked. Every
- * piece of reward state comes from ONE store (`rewardsStore`), shared with the claim dialog,
- * so a reward claimed there changes this page without a reload — and the preview at the top
- * is drawn with `TitleMark`, the same component every board row uses, so it cannot show you
+ * name itself, the badges, and the robot look your rewards have unlocked. Every piece of
+ * reward state comes from ONE store (`rewardsStore`), shared with the claim dialog, so a
+ * reward claimed there changes this page without a reload — and the preview at the top is
+ * drawn with `BadgeMarks`, the same component every board row uses, so it cannot show you
  * something the boards would not.
  */
 export function Appearance({
@@ -86,10 +87,31 @@ function SignedIn({
 
   if (session.isPending) return <p className="ds-loading">Loading…</p>;
   if (!user) {
+    /**
+     * INSIDE THE ACTIVITY THERE IS NOTHING TO OFFER, so this says so instead of asking.
+     *
+     * Discord's frame blocks the sign-in service outright, so the button below can only
+     * fail — and this page is reachable from the home menu's own keycap, which makes it one
+     * of the first things a participant can walk into. Same shape as the Account page's
+     * panel: name the limit, name where the account does work, and no live control that
+     * cannot succeed. Plain text rather than a link, because navigating the activity frame
+     * away from itself has no back button.
+     */
+    if (inDiscordActivity()) {
+      return (
+        <div className="ds-panel">
+          <div className="ds-empty">
+            <div className="big">Titles and badges aren’t available inside Discord</div>
+            They belong to an account, and Discord’s activity frame blocks the sign-in
+            service. Open {SITE_HOST} in a browser to use yours.
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="ds-panel">
         <div className="ds-empty">
-          <div className="big">Sign in to earn titles and badges</div>
+          <div className="big">Sign in to earn badges</div>
           Ranked podiums and record boards pay out to accounts when an act or season ends.
         </div>
         <div className="ds-panel-body row">
@@ -128,7 +150,6 @@ function SignedIn({
           <Username userId={user.id} />
         </div>
       </div>
-      <TitlePicker />
       <BadgePicker />
       <RobotLook onRobotBuilder={onRobotBuilder} />
     </>
@@ -162,7 +183,7 @@ function Preview({
         <div className="appr-preview">
           <span className="appr-name">{name}</span>
           <SupporterBadge supporter={profile?.supporter} role={profile?.role} />
-          <TitleMark title={r.state?.title ?? null} badges={r.state?.equippedBadges} />
+          <BadgeMarks badges={r.state?.equippedBadges} />
           {username && <span className="lb-at">@{username}</span>}
         </div>
       </div>
@@ -201,7 +222,7 @@ function Unclaimed() {
  * THE BADGE PICKER — wear up to `MAX_EQUIPPED_BADGES`, in the order picked.
  *
  * EVERY badge is listed, the ones not yet earned as locked tiles that say how to earn them:
- * the set is four and closed, and a badge you cannot see is not one you can aim at. The same
+ * the set is five and closed, and a badge you cannot see is not one you can aim at. The same
  * call `CosmeticsRows` makes for locked swatches ("a visible locked option is honest").
  * Picking a fourth when three are worn swaps out the one worn longest (`withBadgeEquipped`).
  */

@@ -114,7 +114,6 @@
     "@horizon36596/zenith-schema": "file:vendor/zenith/horizon36596-zenith-schema-0.1.0.tgz",
     "@horizon36596/zenith-season-biobuzz": "file:vendor/zenith/horizon36596-zenith-season-biobuzz-0.1.0.tgz",
     "@neondatabase/auth": "0.4.2-beta",
-    "@vercel/analytics": "^2.0.1",
     "jose": "^6.1.2",
     "pg": "^8.22.0",
     "react": "^18.3.1",

@@ -1519,6 +1519,39 @@ button {
   }
 }
 
+/* YOUR KEYS ARE NOT REACHING THIS WINDOW (see `Keyboard.hasFocus` and GameView's note).
+   Embedded as a Discord Activity the game is a cross-origin iframe next to a chat box, so a
+   driver can be in a live match with the focus somewhere else and nothing on screen saying so.
+   Top-centre, which is the one edge of the field nothing owns: the MENU/RESET cluster keeps
+   the top-left, the status chips the top-right, the event log the left edge.
+
+   ⚠️ `pointer-events: none`, like everything else floating over the field: the click this
+   notice ASKS FOR has to land on the canvas, and a notice that swallowed it would be the bug
+   it is reporting. (`.hud` sets it for its own subtree; this is `.hud`'s sibling.)
+
+   Its ground is the canvas, so category 3 throughout — `--ds-stage-bg` fill, `--ds-on-field`
+   ink, `--ds-on-field-dim` edge — which are the three pairs `scripts/contrast.mjs` already
+   audits for the loading screen and the results stage. Nothing here themes, and nothing here
+   may: the field is hardcoded dark in both themes. */
+.focus-hint {
+  position: absolute;
+  top: var(--ds-s-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30; /* with the countdown, over the ranked intro overlay */
+  max-width: min(340px, calc(100% - var(--ds-s-6)));
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-on-field-dim);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-stage-bg);
+  color: var(--ds-on-field);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  text-align: center;
+  pointer-events: none;
+}
+
 /* quiet event log on the left edge — no popups over the field */
 .eventlog {
   position: absolute;
@@ -2326,15 +2359,15 @@ button {
   min-width: 0;
   font-weight: 700;
 }
-/* ⚠️ NO TITLE CHIP ON THIS ROW, DELIBERATELY — the badge only.
-   Every other surface that prints a name prints badge THEN title, and this one does not,
-   because the roster row is ONE LINE by contract: `.resx-roster-row` is `flex-wrap: nowrap`
-   and `Marquee` scrolls rather than wrapping, precisely so the two alliance halves'
-   rows stay level with each other. The chips beside the name are `flex: 0 0 auto`, so the
-   name is what shrinks — and a variable-width TEXT chip costs about four times what the
-   badge disc does. Measured on a 340px half, "Maximiliano Featherstone" clipped to "M."
-   with a title chip beside it. The badge is ~1em and fixed, so it fits; a title belongs
-   here only with a second line to put it on, which is a layout decision, not a chip. */
+/* ⚠️ THE STATUS DISC ONLY ON THIS ROW, DELIBERATELY — no earned badges.
+   Every other surface that prints a name prints the disc THEN the worn badges, and this one
+   does not, because the roster row is ONE LINE by contract: `.resx-roster-row` is
+   `flex-wrap: nowrap` and `Marquee` scrolls rather than wrapping, precisely so the two
+   alliance halves' rows stay level with each other. The marks beside the name are
+   `flex: 0 0 auto`, so the name is what shrinks. Measured on a 340px half, when a variable-
+   width title chip still existed, "Maximiliano Featherstone" clipped to "M." beside it; three
+   badges with `×N` counters cost about the same. The disc is ~1em and fixed, so it fits; the
+   badges belong here only with a second line to put them on, which is a layout decision. */
 /* both of these are sized in `em` OFF THE ROSTER ROW rather than off the unit: they are
    parts of that row, so they scale for free and cannot drift out of proportion with it. */
 .resx-you {
@@ -3329,38 +3362,6 @@ button {
   }
 }
 
-/* admin server-notice banner (scheduled restart countdown / info) */
-.server-notice {
-  position: fixed;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2000;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 92vw;
-  padding: 8px 18px;
-  border-radius: var(--ds-round-md);
-  /* FILLS WITH FIXED INK (category 2): it floats over the match AND the shell, so it keeps one
-     look in both themes, and each pair is audited in contrast.mjs. The urgent one was white on
-     #ef4444 at 3.76:1 — the "restarting now" banner, the one line that must read at a glance.
-     A hard block shadow, not a blur (DESIGN.md's No-Blur Rule). */
-  background: var(--ds-gold);
-  color: var(--ds-gold-ink);
-  font-weight: 700;
-  font-size: 13px;
-  box-shadow: var(--ds-block);
-  pointer-events: none;
-}
-.server-notice.urgent {
-  background: var(--ds-red-chip);
-  color: var(--ds-red-chip-ink);
-}
-.server-notice-icon {
-  font-size: 15px;
-}
-
 /* in-game reconnect / server-restart overlay */
 .net-overlay {
   position: absolute;
@@ -3414,8 +3415,8 @@ button {
    THE BADGE IS ONE 128×128 SVG — the disc (`circle`, filled by `fill`) and the
    glyph (`.sup-glyph`, filled by `color`) in the same coordinate space, so where
    the glyph sits is geometry. A CSS disc holding a separate glyph SVG, centred by
-   flexbox at 58%, drifted per surface. Owner, admin, supporter and the stargazer
-   title (`BadgeIcon`) all render through this one rule.
+   flexbox at 58%, drifted per surface. Owner, admin and supporter (`BadgeIcon`)
+   all render through this one rule.
 
    `vertical-align: middle` puts the badge's centre on the parent's baseline plus
    half its x-height — the optical middle of the adjacent name. It replaced
@@ -3442,8 +3443,8 @@ button {
 .sup-badge .sup-glyph {
   fill: currentColor;
 }
-/* 1em, the one base size the three sibling marks share (`.award-badge.award-sm`, `.badge-glyph`)
-   so a name carrying a disc, a hexagon and a crest reads as one family, not three sizes */
+/* 1em, the one base size the sibling marks share (`.badge-glyph`), so a name carrying a
+   disc and a crest reads as one family, not two sizes */
 .sup-badge.sup-sm {
   width: 1em;
   height: 1em;
@@ -3498,18 +3499,7 @@ button {
   fill: var(--ds-staff);
   color: var(--ds-staff-ink);
 }
-/* THE STARGAZER TITLE (`TitleChip`): a yellow ★ on the award violet, the ledger's
-   hue. Yellow on that violet is ~2.4:1, so the star carries an award-ink outline —
-   the outline is what separates it (both pairs in `contrast.mjs`). */
-.sup-badge.stargazer {
-  fill: var(--ds-award);
-  color: var(--ds-star);
-}
-.sup-badge.stargazer .sup-glyph {
-  stroke: var(--ds-award-ink);
-  stroke-width: 6;
-  stroke-linejoin: round;
-}/* ON AN ALLIANCE FILL (the results roster) no badge hue is safe — the owner's green is
+/* ON AN ALLIANCE FILL (the results roster) no badge hue is safe — the owner's green is
    ~1.3:1 on the red half — so the disc takes a light ring, the way a HUD card is told
    apart from the field by its edge. Fixed on-field ink: the alliance fills never theme. */
 .resx-half .sup-badge {
@@ -3522,13 +3512,13 @@ button {
  *  (src/ui/Announcements.tsx). Shown once on the menu shell.
  * ================================================================= */
 
-/* full changelog page (Changelog.tsx) — reuses .ann-item/.ann-md and KindBadge
-   (self-contained, no dependency on the modal-only .ann-panel/.ann-overlay). */
-.cl-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
+/* READING SIZE (2026-09-25, owner: "the patch note card UI is pretty small so it is hard to
+   read"). A note was 14px Markdown at 1.45 in a 560px modal, inside a tile inside the panel, so
+   the text sat two insets deep; on /changelogs the same card ran the full panel width, ~160
+   characters a line. Now: body at --ds-t-lg with --ds-lh-long and a 68ch measure (the legal
+   pages' reading rules), the title at --ds-t-xl, and NO card inside the card. Items are flat and
+   separated by a rule, in the modal and on the page alike. The /changelogs page's own column
+   (`.cl-*`) is in shell.css beside `.cl-head`, since it composes `.ds-panel` classes. */
 
 /* the kind pill is `.ds-badge` (shell.css) with a tone per kind — see KindBadge */
 
@@ -3536,27 +3526,46 @@ button {
 .ann-overlay {
   position: fixed;
   z-index: 60; /* above the nav rail + shell */
+  padding: var(--ds-s-4); /* the phone gutter; `.overlay`'s own is 12px */
   animation: ann-fade 0.25s ease-out;
 }
+/* Three rows: the notes scroll between a fixed top edge and a fixed action bar, so "Got it"
+   never scrolls away and a long note never pushes it off a phone screen. The panel clips
+   (`overflow: hidden`) only so the scroller's square corners follow the radius. */
 .ann-panel {
   background: var(--ds-panel);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-lg);
-  padding: 22px 24px 20px;
-  width: min(560px, calc(100vw - 40px));
-  max-height: min(80vh, 720px);
+  width: min(640px, 100%);
+  max-height: min(85dvh, 820px);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  overflow: hidden;
   box-shadow: var(--ds-block);
   animation: ann-pop 0.28s cubic-bezier(0.2, 1, 0.3, 1);
 }
+/* Scroll shadows are `.ds-table-scroll`'s, turned vertical: the `local` panel-coloured caps
+   scroll with the content and cover the `scroll` shadows at either end, so a shadow shows only
+   where there is more to read. It is keyboard-scrollable (tabIndex 0), so its ring is INSET:
+   outside, it would draw over the panel edge and the action bar. */
 .ann-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--ds-s-6);
   overflow-y: auto;
-  padding-right: 4px;
+  overscroll-behavior: contain;
+  padding: var(--ds-s-6);
+  background:
+    linear-gradient(to bottom, var(--ds-panel) 40%, transparent) top / 100% 24px no-repeat local,
+    linear-gradient(to top, var(--ds-panel) 40%, transparent) bottom / 100% 24px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--ds-ink) 22%, transparent), transparent) top / 100% 12px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--ds-ink) 22%, transparent), transparent) bottom / 100% 12px no-repeat scroll,
+    var(--ds-panel);
+}
+.ann-scroll:focus-visible {
+  outline-offset: -2px;
 }
 /* ⚠️ THE KIND IS THE BADGE, AND IT ALWAYS WAS. The comment that stood here said the left edge
    "carries the announcement's kind" and kept it on that ground — but `Announcements.tsx` renders
@@ -3564,29 +3573,45 @@ button {
    the header already says in words. A reader who cannot tell amber from teal lost nothing by it,
    which is the test that settles whether a colour is carrying meaning or decorating. */
 .ann-item {
+  min-width: 0;
+}
+/* one owner per gap: the list's gap is the space ABOVE the rule, this padding the space below */
+.ann-item + .ann-item {
+  border-top: 1px solid var(--ds-line);
+  padding-top: var(--ds-s-6);
+}
+/* the admin console's live preview is the one place an item stands alone in a form, so it keeps
+   a box to read as "this is what players will see" */
+.ann-item.ann-preview {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-md);
-  background: var(--ds-tile);
-  padding: 12px 16px;
+  padding: var(--ds-s-4);
 }
 .ann-item-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: var(--ds-s-2);
   margin-bottom: var(--ds-s-2);
 }
-.ann-item-head .ds-hint { margin: 0; }
+.ann-item-date {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+  font-variant-numeric: tabular-nums;
+}
 .ann-item-title {
-  font-size: var(--ds-t-lg);
+  font-size: var(--ds-t-xl);
   font-weight: 800;
+  letter-spacing: var(--ds-track-tight);
+  line-height: var(--ds-lh-heading);
   color: var(--ds-ink);
+  text-wrap: balance;
   margin: 0;
 }
 .ann-item-tag {
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   font-weight: 700;
-  letter-spacing: 1px;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
   margin: var(--ds-s-1) 0 0;
@@ -3602,7 +3627,6 @@ button {
      cut it. Break inside the word only when there is no other option. */
   overflow-wrap: anywhere;
 }
-.ann-md { margin-top: var(--ds-s-2); }
 /* collapse the outer margins of the first/last block so the card padding rules */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
@@ -3640,6 +3664,51 @@ button {
 .md-link { color: var(--ds-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-link:hover { opacity: 0.85; }
 
+/* ---- a patch note's body (the modal, /changelogs, the admin preview) ----- */
+/* Declared AFTER the base `.md-*` rules, and the descendant rules are (0,2,0), so they win by
+   specificity as well as file position. `##` is a section label in the app's own panel-title idiom (mono caps) rather
+   than a second bold line, because every bullet in a note already opens in bold: a heading in
+   the same weight and size read as one more bullet. */
+.ann-md {
+  margin-top: var(--ds-s-4);
+  max-width: 68ch;
+  font-size: var(--ds-t-lg);
+  line-height: var(--ds-lh-long);
+}
+.ann-md .md-p { margin: var(--ds-s-3) 0; }
+.ann-md strong { font-weight: 700; }
+.ann-md .md-h1 {
+  font-size: var(--ds-t-lg);
+  margin: var(--ds-s-5) 0 var(--ds-s-3);
+}
+.ann-md .md-h2 {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-accent);
+  margin: var(--ds-s-6) 0 var(--ds-s-3);
+}
+.ann-md .md-h3,
+.ann-md .md-h4 {
+  font-size: var(--ds-t-lg);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ds-ink);
+  margin: var(--ds-s-5) 0 var(--ds-s-2);
+}
+.ann-md .md-list {
+  gap: var(--ds-s-2);
+  margin: var(--ds-s-3) 0;
+  padding-left: var(--ds-s-5);
+}
+.ann-md .md-li > .md-list { margin: var(--ds-s-2) 0 0; }
+.ann-md .md-li::marker { color: var(--ds-mut); }
+/* the heading is the first thing in the body, so the collapse above has to beat the margin */
+.ann-md > :first-child { margin-top: 0; }
+.ann-md > :last-child { margin-bottom: 0; }
+
 /* ---- long-form legal documents (privacy policy, terms) ------------------ */
 /* The base `.md` type is tuned for short announcement cards and reads far too
    tight over a multi-screen document, so `.legal-md` keeps its size but opens the
@@ -3665,9 +3734,23 @@ button {
   margin: 12px 0;
 }
 .ann-actions {
+  flex: none;
   display: flex;
   justify-content: flex-end;
-  padding-top: 2px;
+  border-top: 1px solid var(--ds-line);
+  padding: var(--ds-s-4) var(--ds-s-6);
+}
+@media (max-width: 640px) {
+  .ann-scroll {
+    padding: var(--ds-s-5) var(--ds-s-4);
+  }
+  .ann-actions {
+    padding: var(--ds-s-3) var(--ds-s-4);
+  }
+  /* a thumb-width target; it is the only action, so "primary rightmost" still holds */
+  .ann-actions .ds-btn {
+    flex: 1 1 auto;
+  }
 }
 
 /* ---- full-screen cinematic reveal (new season / new act) ---------------- */

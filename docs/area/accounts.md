@@ -29,6 +29,11 @@ half all read it, because the era filter used to be an optional argument that `/
 filled from a QUERY PARAMETER and every path that forgot to ask silently mixed both eras. The
 filter sits INSIDE the per-player `best` CTE: filtering after it would find a player's 2D
 personal best, reject it, and leave them off a board they have a legitimate 3D score on.
+**THE ERA IS PER SEASON** (owner, 2026-09-24: "BIOBUZZ Act 1's 2D records should NOT get
+filtered off the boards"). The LIVE season is the live solve; an ARCHIVED season is the solve
+most of its rows were played on, so Act 1 reads as a 2D board and pays its record awards off it.
+Reading it as `'3d'` emptied the board and claimed the period with zero winners, permanently.
+`/api/records` echoes the era and `Leaderboard.tsx` keeps rows of that era.
 `submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
 Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
 `npm run dbtest`.
@@ -122,6 +127,35 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   behind an editor was by itself enough to keep the game server — which auto-stops when idle —
   permanently awake.
 
+### Lockdown and access groups (0023, 0051)
+
+The one `maintenance` row is the LOCKDOWN. `server/siteState.ts` caches it (10 s) and owns the
+rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
+
+- **SCOPE.** `matches` is the old window: no new matches, menus stay. `site` closes the app:
+  the client shows the closed screen, and the server also refuses spectating, LAN joins and
+  every `/api` POST. A POST without `scope` means `matches` (older console, release curls).
+- **WHO PASSES.** Admins (`ADMIN_USER_IDS`, the owner included) always. Otherwise membership
+  of a group the lockdown lists in `bypass`. Nobody else, signed in or not.
+- **WINDOW.** `startsAt` null = now, `endsAt` null = until lifted. Open-ended is allowed for
+  both scopes; the alpha closure is one. A scheduled one announces itself and bites at its start.
+- **THE DOORS** (all `lockdownRefusal`, `match` = either scope, `site` = site scope only):
+  room `join` (match, staged rooms exempt), ranked `queue` (match), a room `start`/`restart`/
+  rematch vote (match, staged rooms exempt; a lobby formed before the window cannot play
+  through it), `lanHost` (match), `spectate` and `lanJoin` (site; `lanJoin` now carries an
+  optional token), every non-GET in `handleApi` (site; exempt: the Ko-fi webhook and
+  `/api/user/delete`). `rejoin` and `abandon` stay open: a match already running finishes and
+  persists. Reads stay open.
+- **ACCESS GROUPS** (`access_members`): `beta`, `dev`, `contributor`, keyed by USER ID and
+  cascading with the profile. Granted by player tag (`resolvePlayerTag`: id, then @username,
+  then display name; a shared display name is an error naming the @usernames), listed with
+  today's handle. `POST /api/admin/access` (grant / revoke / bulk), each grant and revoke in
+  `admin_audit` as `access.grant` / `access.revoke`. Cached 30 s per account; the granting
+  machine drops its entry at once. **Each deployment has its own list**: alpha reads the alpha
+  database. A tag that has never signed in on that site does not resolve: `GET /api/status`
+  creates the profile, so signing in once on the closed screen is enough.
+- **Not built:** a badge for testers on profiles or rosters. `profiles.role` is untouched.
+
 **STAFF ROLES — owner + admin badges, and perks, DONE.** `profiles.role`
 (`0020_staff_roles.sql`) is null | 'owner' | 'admin'. It is a **PROJECTION** of
 `ADMIN_USER_IDS` / `OWNER_USER_ID` (`OWNER_USER_ID` defaults to the FIRST id in
@@ -142,9 +176,9 @@ and nag them to link a Ko-fi account that will never pay). `getSupporter` return
 `LobbyPlayer.role` is **server-authored** exactly like `supporter` (a self-declared
 "owner" beside a driver's name is an impersonation primitive). UI: ONE
 `SupporterBadge` renders owner ★ > admin ◆ > supporter ♥ — exactly one, since staff are
-also `supporter: true`. All three, plus the `title:stargazer` ★ badge (`TitleChip`), are ONE
-128×128 SVG each drawn by `BadgeIcon` (disc and glyph in one coordinate space; a CSS disc
-holding a separate glyph drifted). **Badge colours must be SATURATED IN BOTH THEMES**: the audit
+also `supporter: true`. All three are ONE 128×128 SVG each drawn by `BadgeIcon` (disc and
+glyph in one coordinate space; a CSS disc holding a separate glyph drifted); the earned
+`stargazer` disc is drawn the same way, by `BadgeArt`. **Badge colours must be SATURATED IN BOTH THEMES**: the audit
 checks the glyph against its own fill, NOT the badge against the card behind it, so the
 lavender pastel (#34305c in dark) passed contrast while being invisible on the dark
 panel. Distinguish by SHAPE as well as hue.
@@ -175,50 +209,61 @@ Tests: covered in `npm run dbtest` (which prints its own count — an exact numb
 into this file goes stale the first time anyone adds a check, as the three that said 36 and
 ~61 had).
 
-**AND THE EQUIPPED TITLE GOES WITH IT (2026-09-22).** The badge rule above had spread to every
-surface; the TITLE had not — it rendered on the leaderboard alone, so the one thing the title
-picker promises ("shows beside your name") was true on exactly one screen out of nine. The
-one-of-two (an award hexagon for an id `parseAwardTitleId` recognises, the ledger chip
-otherwise) is now **`TitleMark` (`src/ui/TitleChip.tsx`)**, a component for the same reason the
-badge is one: a surface that simply omits the chip still compiles and still renders, only bare.
-`<SupporterBadge …/><TitleMark title={…}/>`, in that order, as siblings of the name element.
-Covered: both leaderboards, career, profile header, match history, friends + the request toast,
-the lobby roster, and the ranked strategy reveal (which printed no badge either).
-Server side, this is additive and backward compatible: `getProfile` projects `title` (one more
-column off the profile row the room join already reads), so `LobbyPlayer.title` is
-server-authored beside `supporter`/`role` and on the same terms — a title is something EARNED,
-so a self-declared one is a claim to have earned it. `sanitizePlayer` is an allowlist and
-`PlayerPatch` is a `Pick`, neither of which names it, so a client cannot put it on the wire.
-`MatchDriver` carries `supporter`/`role` for the results roster but deliberately **not**
-`title`: that row is one line with a marqueeing name, and a variable-width text chip takes its
-width from the name — see the note beside `.resx-roster-name` in `src/ui/styles.css`.
+**AND THE WORN BADGES GO WITH IT.** Every surface that prints a name prints
+`<SupporterBadge …/><BadgeMarks badges={…}/>`, in that order, as siblings of the name element:
+both leaderboards, career, profile header, match history, friends + the request toast, the
+lobby roster, the ranked strategy reveal and the Appearance preview. `BadgeMarks` is a component
+for the reason the status disc is one: a surface that omits it still compiles and still renders,
+only bare. `getProfile` projects `equipped_badges` (the profile row the room join already
+reads), so `LobbyPlayer.badges` is server-authored beside `supporter`/`role` — a badge is a claim
+to have won something. `sanitizePlayer` is an allowlist and `PlayerPatch` is a `Pick`, neither of
+which names it, so a client cannot put it on the wire. `MatchDriver` carries `supporter`/`role`
+for the results roster but deliberately **not** the badges: that row is one line with a
+marqueeing name — see the note beside `.resx-roster-name` in `src/ui/styles.css`.
 Two surfaces print no badge because they print no person: `DiscordLobbyList` (room codes and
 seat counts) and `ChallengePicker` (a `@username` in its own dialog title, reached from a
 friends row that already carries both).
 
+**TITLES ARE GONE (migration 0049, owner 2026-09-24): "titles are now essentially the same thing
+as badges … remove titles completely".** Every competitive grant had delivered a title AND a
+badge for one finish. 0049 stripped title items from `reward_grants`, turned the star's
+`title:stargazer` into the `stargazer` badge, moved whoever was WEARING a title onto its badge
+(if held, and if a slot was free), and nulled `profiles.title` — the column stays, unread.
+Which act or season a badge came from is its grant's `reason`, shown in the profile's trophy
+case (`AwardList`, each row drawn with `awardBadge`). ⚠️ **One Fly app serves every client**, so
+`/api/user/title` still answers (GET: nothing; POST: `null` only) and the reward routes still
+send `title: null, earnedTitles: []` (`RETIRED_TITLE_FIELDS`, `server/api.ts`) — an old client
+calls `earnedTitles.includes` unguarded. Remove both once no pre-0049 client can connect.
+
 **REWARDS — EVERY GRANT IS CLAIMED, NEVER SILENT (migration 0048, 2026-09-22).** Owner: "Titles
-should not ever silently get added UNLESS specified." Every title, badge and cosmetic an account
-is given is a row in `reward_grants`, unique on `(user_id, grant_key)` where the key names the
+should not ever silently get added UNLESS specified." Every badge and cosmetic an account is
+given is a row in `reward_grants`, unique on `(user_id, grant_key)` where the key names the
 reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `stargazer`).
-- **PENDING DELIVERS NOTHING.** A pending grant's title is not in `earnedTitles`, its badge is not
-  in `badgeCounts`, its cosmetic is not in `profiles.cosmetics`. `claimReward` applies it in one
-  transaction; `equip` also wears the first title and each badge. The claim dialog
+- **PENDING DELIVERS NOTHING.** A pending grant's badge is not in `badgeCounts` and its cosmetic
+  is not in `profiles.cosmetics`. `claimReward` applies it in one transaction. The claim dialog
   (`src/ui/RewardDialog.tsx`) is the only way in, mounted inside `AppShell` (never over a match),
   behind `TermsGate`/`UsernameGate` (its parents) and every other shell modal (`blocked`).
+- **ONE CARD PER ITEM** (owner, 2026-09-24): the star gives a badge AND a decal, and one "Equip
+  now" for both did not say which it wears. `grantCards` (`src/rewards.ts`) orders a grant's
+  items, badges first; each is a card with its own Claim / Equip now. The FIRST card's answer
+  claims the whole grant (`answerCard`, `rewardsStore.ts`, with `equip: false`); Equip now then
+  wears that card's item only (a badge via `/api/user/badges`, a decal on the active robot). The
+  claimed grant is held in `revealing` so its later cards still show once it leaves `pending`.
 - **`grantReward` IS THE ONE DOOR.** Silent is a per-source CODE flag (`REWARD_SOURCES`, off unless
   a row says so); the only silent source is `legacy`. `grantCosmetic` is now the inventory write a
   claim makes, not a grant path. A revoked grant keeps its row (`revoked_at`), so a re-star re-opens
   the same key as pending instead of minting a second grant.
-- **BADGES COUNT, TITLES DO NOT** (`src/badges.ts`). Four closed ids: `ranked-gold|silver|bronze`
-  (act podium) and `record-holder` (season records). The count is claimed, unrevoked grants carrying
-  the id. `profiles.equipped_badges` (`[{id,n}]`, at most 3) is a PROJECTION of that count, rewritten
-  only by `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so
-  every name surface gets it free. `TitleMark` takes `badges` — pass it wherever a title shows.
+- **BADGES COUNT** (`src/badges.ts`). Five closed ids: `ranked-gold|silver|bronze` (act podium),
+  `record-holder` (season records) and `stargazer` (the GitHub star; revocable, never past 1). The
+  count is claimed, unrevoked grants carrying the id. `profiles.equipped_badges` (`[{id,n}]`, at
+  most 3 — the owner kept 3 when titles folded in) is a PROJECTION of that count, rewritten only by
+  `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so every
+  name surface gets it free. No evolving art by count yet (owner, 2026-09-24: not now).
 - **THE CRITERIA** (`runRewardJob`, owner 2026-09-22). End of every ranked ACT: top 3 of each ladder
-  via `eloLeaderboard` (placed players, `user_id` last on ties) → an act title
-  (`award:<game>:act<N>:ranked_act:<mode>:<rank>`) + a podium badge. End of every SEASON: the SOLO
-  record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard` (its `boardPhysics`
-  default) → one grant per player per season, a title per placement, ONE `record-holder` badge.
+  via `eloLeaderboard` (placed players, `user_id` last on ties) → a podium badge. End of every
+  SEASON: the SOLO record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard`
+  (its `boardPhysics` default) → one grant per player per season, every placement on its
+  `reason`, ONE `record-holder` badge.
   **Act 0 is never paid**, ranked or records. Duo boards are out (`RECORD_AWARD_MODES`); adding
   `'duo'` there is the whole change.
 - **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
@@ -232,12 +277,16 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   closed act's row except `chargeRatingForBehaviour`, which targets a player's most recent board).
   Season records are `records` rows stamped with `balance_version`. Each grant's `reason` now stores
   the rank and the rating or score it closed on.
-- **`season_awards` (0045) IS RETIRED**: nothing writes it; its titles stay wearable. A placement
-  both hold is one title (same id) and one trophy-case row (`trophyCase` dedupes).
-- **OLD CLIENTS** never call `/api/user/rewards`, so they never see a pending grant and keep working
-  on `/api/user/title` (claimed titles). An older server 404s the new routes, which the client reads
-  as "nothing pending". Tests: `npm run dbtest` (the job, Act 0, ties, per-drivetrain #1, pending →
-  claimed → equipped, the counter, silent, the cascade) and `npm test` (ids, words, queue order).
+- **`season_awards` (0045) IS RETIRED**: nothing writes it; its rows stay in the trophy case. A
+  placement both hold is one trophy-case row (`trophyCase` dedupes by `awardKey`).
+- **THE STAR**: `STARGAZER_ITEMS` (`repo.ts`) is the badge and `decal:star` on ONE grant, so they
+  arrive and leave together. The sweep's "already holds it" reads a live grant or the decal in the
+  inventory (the badge has no inventory entry). A revoke re-counts the worn badges, so the disc
+  comes off the name in the same transaction.
+- **OLD CLIENTS** never call `/api/user/rewards`, so they never see a pending grant. An older server
+  404s the new routes, which the client reads as "nothing pending". Tests: `npm run dbtest` (the
+  job, Act 0, ties, per-drivetrain #1, pending → claimed → equipped, the counter, silent, 0049,
+  the cascade) and `npm test` (keys, words, cards, queue order).
 
 **COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
 `accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;
@@ -322,6 +371,15 @@ sides. A custom one writes its row whatever the roster, and a bot room (`MatchOu
 does too but credits no `user_activity`. The Career panel's "Ranked W–L" is `m.ranked` only,
 so these add no free wins. A short roster never goes public (see UNANIMITY above), so a
 one-sided game is watchable by its players and staff only.
+**THE HOMEPAGE COUNTS GAMES AT THE SOURCE, NOT FROM `records`/`matches`** (owner, 2026-09-25:
+count custom, practice, LAN and Discord games too). `play_counts` (migration 0050) is a counter
+per UTC day × game × source (`record`/`ranked`/`custom`/`discord`/`practice`/`lan`) × mode.
+Server rooms count in `persistMatch` BEFORE the anonymous drop (`playSourceOf`), so a room with
+no signed-in player still counts. Practice and LAN run off the cloud, so the client reports them
+to the public `POST /api/played` when it is online (LAN: the host only); the route is throttled
+per hashed address and always answers 204. `getGlobalStats` folds the split for the homepage:
+Solo = record solo + practice, 1v1/2v2 = ranked only, Custom = custom + Discord + LAN. Do not
+derive the headline from the history tables again: they drop exactly the games this counts.
 **THE MATCH HISTORY LIST STAYS PUBLIC** — results, scores, W/L and rating deltas are the
 leaderboard's substance. What comes off the page is the WATCH BUTTON: `userMatchHistory` takes a
 `viewerId` and nulls `replayId` on a row that reader may not watch, so the button is absent rather
@@ -361,6 +419,22 @@ expired reset link to check their connection. The throw carries `status` and a l
 `code` (`bad_jwt`, `weak_password`, `over_email_send_rate_limit`), which is the ADAPTER’s
 vocabulary and not Better Auth’s SCREAMING_SNAKE one; `classifySdkError` speaks both, and tests
 rate limiting BEFORE the address because EMAIL is a substring of that last code.
+⚠️ **NEON AUTH VERIFIES AN ADDRESS WITH A CODE, NOT A LINK** (2026-09-25). `sendVerificationEmail`
+sends it, but the email carries a one-time code, and the SDK's own adapter refuses link-style
+verification ("Use email OTP authentication instead"). For months the app knew only the link
+path, so the email arrived and there was nowhere to type the code. It is completed through
+`emailOtp.verifyEmail({ email, otp })` (`verifyEmailCode`), rendered by `VerifyCodeForm` in the
+Profile banner, the sign-up dialog's code step, and `/account/verify`. A refused code (INVALID_OTP,
+OTP_EXPIRED, TOO_MANY_ATTEMPTS) is `invalid-code`, never the expired-LINK sentence. **No copy may
+say what an unverified address is refused**: that depends on `REQUIRE_VERIFIED_EMAIL`, which the
+client cannot see, and the banner claimed "ranked needs it" while the gate was off.
+**A GOOGLE ACCOUNT SETS A PASSWORD BY CODE** (2026-09-25, Profile ▸ Account ▸ Password). The
+client cannot call Better Auth's `setPassword` (server-scoped), but `/email-otp/reset-password`
+CREATES the `credential` account when there is none, so `requestPasswordCode`
+(`sendVerificationOtp` type `forget-password`) + `setPasswordWithCode` give a Google user an
+email+password login, and change an existing password the same way. The row reads
+`listAccounts()` (`credential` = has a password); an unreadable list is `null` and the row says
+nothing definite. The same route also marks the address verified.
 ⚠️ **`forgetPassword` IS NOT A TOP-LEVEL METHOD** on this build — only `forgetPassword.emailOtp`,
 a different flow. The top-level request is `requestPasswordReset`.
 ⚠️ **THE EMAILED TOKEN IS CAPTURED AT MODULE LOAD** (`src/ui/entryToken.ts`): App’s mount effect
@@ -371,7 +445,7 @@ ranked queue door, the record-room join door and `POST /api/practice`. Extend it
 second "is this account allowed" check. It is OFF unless `REQUIRE_VERIFIED_EMAIL=1`, because every
 email/password account that exists today is unverified and the sender domain is an owner dashboard
 action (`docs/deploy.md` §4) — default-on would refuse ranked to everybody with no way to fix it.
-`null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently.
+`null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently. When the JWT carries no claim, the answer comes from Neon Auth's own `neon_auth."user"` row in the game DB (`authEmailVerified`), then `/get-session`. ON on `dsim-alpha` since 2026-09-25.
 ⚠️ **THE RECORD GATE LIVES IN `server/index.ts`, NOT `Room.startMatch`** beside the duo-record
 guard it belongs with — `server/room.ts` is bundled into the LAN host worker and may not import
 `jose` or read `process.env`.

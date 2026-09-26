@@ -1,4 +1,5 @@
 import { DESKTOP_BUILDS, releasesUrl, appVersion, detectOS, isMobile, OS_LABEL, type DesktopBuild } from '../download';
+import { inDiscordActivity } from '../net/discordActivity';
 import { SponsorDownloadMark } from './Sponsor';
 import { trackEvent } from '../analytics';
 
@@ -51,6 +52,11 @@ export function Download() {
   }
 
   const mobile = isMobile();
+  // ⚠️ INSIDE THE DISCORD ACTIVITY THERE IS NO SHARE MENU. The page is a cross-origin iframe in
+  // Discord's own webview, which has no browser chrome to open and nothing to add to a home
+  // screen, so the mobile panel's one sentence was an instruction nobody could follow. The
+  // reader still has a way to get what the sentence was offering; it is just a different one.
+  const embedded = inDiscordActivity();
   // when we recognise the visitor's desktop OS, feature its PRIMARY build (the
   // first DESKTOP_BUILDS entry for that OS — Windows Installer / mac dmg / Linux
   // AppImage) as a one-click card at the top. `builds` still lists everything below.
@@ -64,7 +70,7 @@ export function Download() {
         // no inline margin: `.ds-main > .ds-panel` owns the panel stack now.
         <div className="ds-panel">
           <div className="ds-panel-h">
-            <h2 className="ds-panel-title">Runs in your browser</h2>
+            <h2 className="ds-panel-title">{embedded ? 'Runs inside Discord' : 'Runs in your browser'}</h2>
           </div>
           <div className="ds-panel-body">
             {/* one sentence — the one the reader can act on. "No download needed.
@@ -72,10 +78,16 @@ export function Download() {
                 "The desktop builds below are for Windows, macOS, and Linux"
                 described the section directly beneath it, which is already headed
                 by its own platform labels. */}
-            <p className="ds-hint">
-              To run full-screen, open your browser’s <b>Share</b> menu and tap{' '}
-              <b>Add to Home Screen</b>.
-            </p>
+            {embedded ? (
+              <p className="ds-hint">
+                To run full-screen, open <b>playdsim.com</b> in your phone’s browser.
+              </p>
+            ) : (
+              <p className="ds-hint">
+                To run full-screen, open your browser’s <b>Share</b> menu and tap{' '}
+                <b>Add to Home Screen</b>.
+              </p>
+            )}
           </div>
         </div>
       ) : (

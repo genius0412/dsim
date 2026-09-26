@@ -3,7 +3,7 @@ import { fetchLinks, startLink, unlinkProvider, type LinkProvider } from '../net
 
 const LABEL: Record<LinkProvider, string> = { github: 'GitHub', discord: 'Discord' };
 const WHY: Record<LinkProvider, string> = {
-  github: 'Star the repo for the Stargazer title and a star decal for your robot.',
+  github: 'Star the repo for the Stargazer badge and a star decal for your robot.',
   discord: 'Boost the Discord server and you get supporter perks while the boost is up.',
 };
 
@@ -92,11 +92,11 @@ export function LinkedAccounts() {
                 {/* ⚠️ Disconnecting GitHub takes BOTH ids the star granted — otherwise the
                     reward outlives the proof, and unlink-keep-relink is a farm. Said in the
                     row, beside the button it qualifies, and only while that button would do
-                    it; it names both because a person who reads "the title" will not expect
+                    it; it names both because a person who reads "the badge" will not expect
                     to lose the decal. */}
                 <span className="ds-hint">
                   {on && p === 'github'
-                    ? 'Disconnecting GitHub also removes the title and the decal you earned for starring.'
+                    ? 'Disconnecting GitHub also removes the badge and the decal you earned for starring.'
                     : WHY[p]}
                 </span>
               </div>

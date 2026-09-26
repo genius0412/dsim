@@ -2,26 +2,23 @@ import type { GameId } from './games/types';
 import { seasonFor } from './seasons';
 import { DRIVETRAIN_LABELS } from './ui/labelData';
 import type { DrivetrainType } from './types';
-import { awardRankWord, awardTitleText, parseAwardTitleId } from './awards';
+import { awardRankWord } from './awards';
 import { BADGE_LABELS, isBadgeId, type BadgeId } from './badges';
-import { titleLabel } from './cosmetics';
 
 /**
  * THE REWARD LEDGER'S SHARED SHAPES, and the words for them.
  *
  * The server mints `reward_grants` rows (migration 0048, `server/db/repo.ts`) as structured
  * data — WHAT is delivered (`items`) and WHY (`reason`) — and this file turns one into the
- * sentences the claim dialog shows. Same split `src/awards.ts` makes for a title: an id and a
+ * sentences the claim dialog shows. Same split `src/awards.ts` makes for an award: an id and a
  * reason are stable things that go in a database, a sentence is a thing a designer rewrites.
  *
  * DOM-free, so `scripts/smoke.ts` drives it directly.
  */
 
-/** one thing a grant delivers when it is claimed. */
-export type RewardItem =
-  | { kind: 'title'; id: string }
-  | { kind: 'badge'; id: BadgeId }
-  | { kind: 'cosmetic'; id: string };
+/** one thing a grant delivers when it is claimed. There is no `title` kind: titles folded into
+ *  badges (0049), which stripped every title item from the ledger. */
+export type RewardItem = { kind: 'badge'; id: BadgeId } | { kind: 'cosmetic'; id: string };
 
 /** one placement a record award is for. `board` is `overall` or a drivetrain. */
 export interface RecordPlacement {
@@ -75,14 +72,26 @@ export function grantBadges(g: Pick<RewardGrant, 'items'>): BadgeId[] {
   return g.items.flatMap((i) => (i.kind === 'badge' && isBadgeId(i.id) ? [i.id] : []));
 }
 
-/** the title ids a grant delivers, best first (the order the server wrote them in). */
-export function grantTitles(g: Pick<RewardGrant, 'items'>): string[] {
-  return g.items.flatMap((i) => (i.kind === 'title' ? [i.id] : []));
-}
-
 /** the cosmetic ids a grant delivers. */
 export function grantCosmetics(g: Pick<RewardGrant, 'items'>): string[] {
   return g.items.flatMap((i) => (i.kind === 'cosmetic' ? [i.id] : []));
+}
+
+/**
+ * THE CARDS A GRANT IS SHOWN AS — one per item, badges first, then cosmetics.
+ *
+ * ⚠️ ONE ITEM PER CARD (owner, 2026-09-24): the GitHub star gives a badge AND a decal, and a
+ * single "Equip now" for two different things does not say which one it wears. So each item
+ * is its own card with its own Claim and Equip now. The server still claims the GRANT once —
+ * the first card's answer delivers everything in it — and the later cards walk through what
+ * that delivered. Anything this build does not know (a newer build's item) is left out, the
+ * same tolerance `grantOut` applies on the server.
+ */
+export function grantCards(g: Pick<RewardGrant, 'items'>): RewardItem[] {
+  return [
+    ...grantBadges(g).map((id): RewardItem => ({ kind: 'badge', id })),
+    ...grantCosmetics(g).map((id): RewardItem => ({ kind: 'cosmetic', id })),
+  ];
 }
 
 /** the words for a record board — `overall record board`, `Mecanum record board`. */
@@ -100,8 +109,8 @@ export function rewardPeriod(r: RewardReason): string {
 
 /**
  * THE HEADLINE — the name of the best thing in the grant, as a player would say it.
- * An act podium is its title's words (`1v1 Champion`), a record award is its best placement's
- * (`Record Champion`, `Mecanum Record Champion`), anything else is its title's label.
+ * An act podium is its placement (`1v1 Champion`), a record award is its best placement's
+ * (`Record Champion`, `Mecanum Record Champion`), anything else is its first badge's name.
  */
 export function rewardHeadline(g: Pick<RewardGrant, 'reason' | 'items'>): string {
   const r = g.reason;
@@ -113,8 +122,8 @@ export function rewardHeadline(g: Pick<RewardGrant, 'reason' | 'items'>): string
     const dt = best.board === 'overall' ? '' : `${DRIVETRAIN_LABELS[best.board] ?? best.board} `;
     return `${dt}Record ${awardRankWord(kind, best.rank)}`;
   }
-  const t = grantTitles(g)[0];
-  return (t && titleLabel(t)) || 'Reward';
+  const b = grantBadges(g)[0];
+  return b ? BADGE_LABELS[b] : 'Reward';
 }
 
 /** the eyebrow over the headline — what ended, or where the reward came from. */
@@ -145,20 +154,6 @@ export function rewardWhy(g: Pick<RewardGrant, 'reason'>): string[] {
   }
   if (r.kind === 'stargazer') return ['You starred DSIM on GitHub. It stays while the star does.'];
   return r.note ? [r.note] : [];
-}
-
-/** a title item as words — the full sentence for an award, the label for a ledger title. The
- *  act/season a parsed award id cannot carry are filled from the grant's own reason. */
-export function rewardTitleText(id: string, reason?: RewardReason): string {
-  const a = parseAwardTitleId(id);
-  if (a) {
-    if (reason && (reason.kind === 'record_season' || reason.kind === 'ranked_act')) {
-      a.act = reason.act;
-      if (reason.kind === 'record_season') a.seasonNo = reason.seasonNo;
-    }
-    return awardTitleText(a);
-  }
-  return titleLabel(id) ?? id;
 }
 
 /** a badge item as words, with the count it reaches once this grant is claimed. */

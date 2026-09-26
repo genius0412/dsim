@@ -2,8 +2,7 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
-import { awardTitleId, parseAwardTitleId } from '../../src/awards';
-import { isTitleId } from '../../src/cosmetics';
+import { awardKey } from '../../src/awards';
 import {
   isBadgeId,
   MAX_EQUIPPED_BADGES,
@@ -19,6 +18,13 @@ import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
 import { dbEnabled, q, tx, type Tx } from './pool';
+import {
+  ACCESS_GROUPS,
+  BANNER_KINDS,
+  type AccessGroup,
+  type BannerKind,
+  type LockdownScope,
+} from '../../src/net/protocol';
 import { scrubSpecNames } from '../moderation';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
@@ -41,9 +47,36 @@ const g = (game?: Game): Game => game ?? 'decode';
  *
  * The pre-0039 rows are NOT deleted: a 2D BIOBUZZ run keeps its row, its replay and its place
  * in the player's own match history. It simply stops being ranked against 3D runs.
+ *
+ * ⚠️ **THE ERA IS A PROPERTY OF THE SEASON, NOT OF THE GAME** (owner, 2026-09-24). The LIVE
+ * season is always the game's live solve (`livePhysics`), because that is the only solve a new
+ * record can be written in. An ARCHIVED season is the solve its runs were played on: BIOBUZZ
+ * Act 1 was a 2D season, and reading it as `'3d'` emptied its board and paid its record awards
+ * to nobody. "Played on" is the era holding most of the season's rows, so the handful of 3D
+ * runs a season picks up between a deploy and the roll that closes it cannot take the board
+ * over. Still one era per board, and every reader still goes through here.
  */
-function boardPhysics(game: Game): '3d' | undefined {
+function livePhysics(game: Game): '3d' | undefined {
   return serverPhysics(simModuleFor(game)) === '3d' ? '3d' : undefined;
+}
+
+/** which era the board of `game` × `balanceVersion` is made of — see above. `current` saves the
+ *  lookup for a caller that already knows the live season. */
+export async function boardPhysics(
+  game: Game,
+  balanceVersion: number,
+  current?: number,
+): Promise<'2d' | '3d' | undefined> {
+  const live = livePhysics(game);
+  if (!live) return undefined;
+  const cur = current ?? (await currentSeasonNumber(BALANCE_VERSION, game));
+  if (balanceVersion >= cur) return live;
+  const rows = await q<{ physics: string }>(
+    `select physics from records where game = $1 and balance_version = $2
+     group by physics order by count(*) desc, physics desc limit 1`,
+    [game, balanceVersion],
+  );
+  return rows[0]?.physics === '2d' ? '2d' : live;
 }
 
 /** the robot configuration a record run used (denormalized onto the row) */
@@ -391,14 +424,8 @@ export interface PublicProfile {
    * and renders as no badge, identically to a null role.
    */
   role?: StaffRole;
-  /**
-   * the EQUIPPED TITLE id (`profiles.title`), or null — the award hexagon / ledger chip a
-   * client draws beside this name. Optional for the same "not asked / older server" reason
-   * as `supporter`/`role`: only the callers that project it set it.
-   */
-  title?: string | null;
   /** the EQUIPPED BADGES and their counters (`profiles.equipped_badges`, 0048). Optional on
-   *  the same "not asked / older server" terms as `title`. */
+   *  the same "not asked / older server" terms as `supporter`/`role`. */
   badges?: EquippedBadge[];
   /**
    * EARNED, PERMANENT cosmetic unlocks (`profiles.cosmetics`, migration 0044) — `"<axis>:<key>"`
@@ -454,22 +481,16 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
 function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
-  const title = prefix ? `"${prefix}Title"` : 'title';
   const badges = prefix ? `"${prefix}Badges"` : 'badges';
   /**
-   * ⚠️ THE EQUIPPED TITLE RIDES ALONG, AND IT COSTS NOTHING EXTRA. It is one more column
-   * off a `profiles` row this query has already joined — no second join, no per-row
-   * lookup of `season_awards`, because the title ID ENCODES the whole award
-   * (`awardTitleId`) and `parseAwardTitleId` (`src/awards.ts`) reads it back on the
-   * client. That is the reason the id is derived from the slot rather than being a
-   * surrogate key: a board can print the award without ever reading the award table.
-   *
-   * ⚠️ AND SO DO THE EQUIPPED BADGES, WITH THEIR COUNTERS (0048), on the same terms:
+   * ⚠️ THE EQUIPPED BADGES RIDE ALONG, WITH THEIR COUNTERS (0048), AND COST NOTHING EXTRA.
+   * It is one more column off a `profiles` row this query has already joined:
    * `profiles.equipped_badges` is a PROJECTION of the reward ledger kept current by
    * `refreshEquippedBadges`, so a board row carries `[{id, n}]` without aggregating
-   * `reward_grants` once per name.
+   * `reward_grants` once per name. (The equipped TITLE rode here too until titles folded
+   * into badges, 0049.)
    */
-  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}, ${a}title as ${title}, ${a}equipped_badges as ${badges}`;
+  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}, ${a}equipped_badges as ${badges}`;
 }
 
 /**
@@ -530,14 +551,13 @@ export async function getProfile(userId: string): Promise<PublicProfile | null> 
     username: string | null;
     supporter: boolean;
     role: string | null;
-    title: string | null;
     cosmetics: string[];
     equipped_badges: unknown;
   }>(
-    // `title` rides along for the reason `badgeCols` gives: this is the one profile read
-    // the room join already makes, and a roster that shows the badge but not the title
-    // reads as the title having been lost. The equipped badges (0048) likewise.
-    `select handle, username, role, title, cosmetics, equipped_badges, ${SUPPORTER_COL} from profiles where user_id = $1`,
+    // the equipped badges (0048) ride along for the reason `badgeCols` gives: this is the one
+    // profile read the room join already makes, and a roster that shows the status disc but
+    // not the badges reads as the badges having been lost
+    `select handle, username, role, cosmetics, equipped_badges, ${SUPPORTER_COL} from profiles where user_id = $1`,
     [userId],
   );
   return rows[0]
@@ -547,11 +567,34 @@ export async function getProfile(userId: string): Promise<PublicProfile | null> 
         username: rows[0].username,
         supporter: !!rows[0].supporter,
         role: asRole(rows[0].role),
-        title: rows[0].title,
         badges: asEquipped(rows[0].equipped_badges),
         cosmetics: rows[0].cosmetics ?? [],
       }
     : null;
+}
+
+/**
+ * Neon Auth's OWN record of whether this account's address is verified — the row the
+ * verification code flips. The email gate's source of truth when the JWT does not carry
+ * the claim (server/auth.ts).
+ *
+ * It can read it because Neon Auth keeps its tables in THIS database, in the
+ * `neon_auth` schema (`user`, `session`, `verification`, …; seen 2026-09-25). That is a
+ * managed schema we do not migrate, so every failure — no DB, no schema, a renamed
+ * column, an id that is not a uuid — answers null ("not told"), which the gate passes.
+ */
+export async function authEmailVerified(userId: string): Promise<boolean | null> {
+  if (!dbEnabled) return null;
+  try {
+    const rows = await q<{ v: unknown }>(
+      `select "emailVerified" as v from neon_auth."user" where id = $1`,
+      [userId],
+    );
+    const v = rows[0]?.v;
+    return typeof v === 'boolean' ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /** resolve a public username → profile (the /profile/<username> read path), or null */
@@ -875,10 +918,6 @@ export async function listSupporterGrants(
  *  grant nothing while reporting success, and must never let a free-text value land in
  *  the column and later read back as "entitled". */
 function isCosmeticId(id: string): boolean {
-  // a LEDGER TITLE lives in the same jsonb array but is not a robot-spec axis, so it has
-  // its own closed set (`TITLE_KEYS`, src/cosmetics.ts) rather than widening COSMETIC_AXES
-  // — see that constant's header for why a title must not become a spec axis.
-  if (id.startsWith('title:')) return isTitleId(id);
   const i = id.indexOf(':');
   if (i < 0) return false;
   const axis = id.slice(0, i) as keyof typeof COSMETIC_AXES;
@@ -956,7 +995,7 @@ export async function revokeCosmetic(
  *
  * Two sources feed it:
  *   · `season_awards` (0045) — RETIRED by 0048. It minted per-SEASON ranked, solo AND duo
- *     record awards; nothing writes it now, and its rows stay wearable (`earnedTitles`).
+ *     record awards; nothing writes it now, and its rows stay in the trophy case.
  *   · CLAIMED competitive grants in `reward_grants` (0048) — the current criteria, minted
  *     by `runRewardJob` (owner, 2026-09-22): ranked TOP 3 per mode at the end of each ACT,
  *     solo record OVERALL TOP 3 and PER-DRIVETRAIN #1 at the end of each SEASON, never Act 0.
@@ -975,7 +1014,7 @@ export interface SeasonAward {
   score: number | null;
 }
 
-export { awardTitleId };
+export { awardKey };
 
 /**
  * HOW DEEP EACH BOARD'S AWARD SLICE GOES — the owner's counts, in exactly one place
@@ -1015,89 +1054,17 @@ export async function userAwards(userId: string): Promise<SeasonAward[]> {
   }));
 }
 
-/**
- * EVERY TITLE THIS ACCOUNT MAY WEAR. The one resolver, and the only thing that decides.
- *
- * Three sources, unioned:
- *   · CLAIMED grants in the reward ledger (0048) — every competitive title minted since;
- *   · the RETIRED `season_awards` rows (0045), kept wearable so nothing already given is
- *     taken back;
- *   · `title:` entries in `profiles.cosmetics` (0044) — where a claimed ledger title (the
- *     GitHub star's) is written, so the entitlements payload and `revokeCosmetic` keep
- *     working exactly as they did.
- * ⚠️ A PENDING GRANT'S TITLE IS NOT HERE. That is the point of pending: nothing is worn, or
- * wearable, until the player has been shown it and claimed it.
- *
- * `query` lets a transaction ask (a revoke checks what is still earned before it clears the
- * equipped title, and must see its own uncommitted write to do that).
- */
-export async function earnedTitles(userId: string, query: Tx = q): Promise<string[]> {
-  // SEQUENTIAL, not `Promise.all`: inside a transaction all three share one connection, and
-  // a connection runs one statement at a time whatever the caller hopes.
-  const legacy = await query<{ game: Game; balance_version: number; kind: SeasonAward['kind']; mode: SeasonAward['mode']; drivetrain: string | null; rank: number }>(
-    `select game, balance_version, kind, mode, drivetrain, rank from season_awards where user_id = $1`,
-    [userId],
-  );
-  const claimed = await query<{ id: string }>(
-    `select distinct it->>'id' as id
-       from reward_grants g cross join lateral jsonb_array_elements(g.items) as it
-      where g.user_id = $1 and g.claimed_at is not null and g.revoked_at is null
-        and it->>'kind' = 'title'`,
-    [userId],
-  );
-  const rows = await query<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [userId]);
-  const fromLegacy = legacy.map((a) =>
-    awardTitleId({ game: a.game, balanceVersion: a.balance_version, kind: a.kind, mode: a.mode, drivetrain: a.drivetrain, rank: a.rank }),
-  );
-  const ledger = Array.isArray(rows[0]?.cosmetics) ? (rows[0].cosmetics as unknown[]) : [];
-  const granted = ledger.filter((v): v is string => typeof v === 'string' && v.startsWith('title:'));
-  return [...new Set([...claimed.map((r) => r.id).filter(Boolean), ...fromLegacy, ...granted])];
-}
-
-/**
- * EQUIP a title, or clear it with `null`. Validated against `earnedTitles` on WRITE —
- * 0046's column is bare `text`, so this is the only thing standing between it and an
- * unearned value. Returns false when the account has not earned `id`.
- */
-/** the equipped title id, or null. A one-column read so the title route does not have to
- *  build a whole `getUserStats` (which needs a season and a game it has no opinion about). */
-export async function getTitle(userId: string): Promise<string | null> {
-  const rows = await q<{ title: string | null }>(`select title from profiles where user_id = $1`, [userId]);
-  return rows[0]?.title ?? null;
-}
-
-export async function setTitle(userId: string, id: string | null): Promise<boolean> {
-  if (id !== null) {
-    const earned = await earnedTitles(userId);
-    if (!earned.includes(id)) return false;
-  }
-  const rows = await q<{ user_id: string }>(
-    `update profiles set title = $2, updated_at = now() where user_id = $1 returning user_id`,
-    [userId, id],
-  );
-  return rows.length > 0;
-}
-
-/**
- * CLEAR an equipped title that the account no longer holds. Called by every path that
- * takes a title away — an award reversal, `revokeCosmetic` on a `title:` id — for the
- * reason `clearUsername` exists (`docs/area/accounts.md`): the moderator takes the thing
- * away, they do not leave a dangling reference for a render path to discover.
- */
-export async function clearTitleIfEquipped(userId: string, id: string): Promise<void> {
-  await q(`update profiles set title = null, updated_at = now() where user_id = $1 and title = $2`, [userId, id]);
-}
-
 
 // ------------------------------------------------------- the reward ledger ---
 /**
- * THE REWARD LEDGER (migration 0048) — every title, badge and cosmetic an account is given.
+ * THE REWARD LEDGER (migration 0048) — every badge and cosmetic an account is given. (Titles
+ * were a third kind until they folded into badges, 0049.)
  *
  * Owner, 2026-09-22: "Whenever someone is given a title or a badge, do not just give it to
  * them without them getting anything. Titles should not ever silently get added UNLESS
  * specified." So a grant is PENDING until the player claims it through the dialog
- * (`src/ui/RewardDialog.tsx`), and a pending grant delivers NOTHING — no wearable title, no
- * counted badge, no unlocked cosmetic. Claiming applies it; "Equip now" claims and wears it.
+ * (`src/ui/RewardDialog.tsx`), and a pending grant delivers NOTHING — no counted badge, no
+ * unlocked cosmetic. Claiming applies it; "Equip now" claims and wears it.
  *
  * EVERY GRANT PATH GOES THROUGH `grantReward`. Today that is the competitive award job
  * (`runRewardJob`, run at boot and after every season roll) and the GitHub star sweep
@@ -1134,11 +1101,11 @@ function asEquipped(v: unknown): EquippedBadge[] {
   return out.slice(0, MAX_EQUIPPED_BADGES);
 }
 
-/** is this a thing a grant may deliver? The same closed sets every other write checks. */
+/** is this a thing a grant may deliver? The same closed sets every other write checks. A
+ *  `title` item (retired, 0049) is refused, and skipped wherever an old row is read back. */
 function validItem(i: RewardItem): boolean {
   if (i.kind === 'badge') return isBadgeId(i.id);
-  if (i.kind === 'cosmetic') return !i.id.startsWith('title:') && isCosmeticId(i.id);
-  if (i.kind === 'title') return parseAwardTitleId(i.id) !== null || isTitleId(i.id);
+  if (i.kind === 'cosmetic') return isCosmeticId(i.id);
   return false;
 }
 
@@ -1186,15 +1153,13 @@ export async function grantReward(input: RewardGrantInput, query: Tx = q): Promi
 }
 
 /**
- * DELIVER a claimed grant's items into the account's inventory. Cosmetics and ledger titles
- * go into `profiles.cosmetics` (so the entitlement strip and the entitlements payload see
- * them exactly as before); award titles and badges need no write — they are READ off the
- * claimed grants (`earnedTitles`, `badgeCounts`) — beyond the badge projection.
+ * DELIVER a claimed grant's items into the account's inventory. Cosmetics go into
+ * `profiles.cosmetics` (so the entitlement strip and the entitlements payload see them exactly
+ * as before); badges need no write — they are READ off the claimed grants (`badgeCounts`) —
+ * beyond the badge projection.
  */
 async function applyItems(query: Tx, userId: string, items: readonly RewardItem[]): Promise<string[]> {
-  const ids = items
-    .filter((i) => i.kind === 'cosmetic' || (i.kind === 'title' && i.id.startsWith('title:')))
-    .map((i) => i.id);
+  const ids = items.filter((i) => i.kind === 'cosmetic').map((i) => i.id);
   const added: string[] = [];
   for (const id of ids) {
     const r = await query<{ user_id: string }>(
@@ -1253,8 +1218,8 @@ export async function refreshEquippedBadges(userId: string, want?: readonly stri
 
 /**
  * WEAR these badges, in this order. Refused (null) for anything not held, a duplicate, an
- * unknown id or more than `MAX_EQUIPPED_BADGES` — the same "the server decides what is
- * earned" rule `setTitle` enforces, because a badge beside a name is a claim to have won it.
+ * unknown id or more than `MAX_EQUIPPED_BADGES` — the server decides what is earned, because a
+ * badge beside a name is a claim to have won it.
  */
 export async function setEquippedBadges(userId: string, ids: readonly string[]): Promise<EquippedBadge[] | null> {
   if (ids.length > MAX_EQUIPPED_BADGES || new Set(ids).size !== ids.length || !ids.every(isBadgeId)) return null;
@@ -1298,34 +1263,28 @@ export interface RewardState {
   /** badge id → times earned (claimed only) */
   badges: Record<string, number>;
   equippedBadges: EquippedBadge[];
-  title: string | null;
-  earnedTitles: string[];
-  /** the trophy case — the rows behind the award titles, so a picker can name the season or
-   *  act each one is from (a title id carries its season KEY, not its "Act 2 Season 3") */
+  /** the trophy case — every placement, with the act and season it is from */
   awards: SeasonAward[];
 }
 
 export async function rewardState(userId: string): Promise<RewardState> {
-  const [pending, badges, prof, titles, awards] = await Promise.all([
+  const [pending, badges, prof, awards] = await Promise.all([
     pendingRewards(userId),
     badgeCounts(userId),
-    q<{ title: string | null; equipped_badges: unknown }>(`select title, equipped_badges from profiles where user_id = $1`, [userId]),
-    earnedTitles(userId),
+    q<{ equipped_badges: unknown }>(`select equipped_badges from profiles where user_id = $1`, [userId]),
     trophyCase(userId),
   ]);
   return {
     pending,
     badges,
     equippedBadges: asEquipped(prof[0]?.equipped_badges),
-    title: prof[0]?.title ?? null,
-    earnedTitles: titles,
     awards,
   };
 }
 
 /**
- * CLAIM a grant — and with `equip`, wear it: its first (best) title becomes the equipped one
- * and each badge it carries is equipped (`withBadgeEquipped` — the oldest makes room).
+ * CLAIM a grant — and with `equip`, wear it: each badge it carries is equipped
+ * (`withBadgeEquipped` — the oldest makes room).
  *
  * One transaction: marking it claimed, delivering it and equipping it land together, so a
  * failure can never leave a grant claimed with nothing delivered. A second claim of the same
@@ -1354,10 +1313,6 @@ export async function claimReward(userId: string, grantId: string, equip: boolea
       items = (Array.isArray(cur[0].items) ? cur[0].items : []).filter(validItem);
     }
     if (equip) {
-      const title = items.find((i) => i.kind === 'title');
-      if (title) {
-        await query(`update profiles set title = $2, updated_at = now() where user_id = $1`, [userId, title.id]);
-      }
       const badges = items.filter((i) => i.kind === 'badge').map((i) => i.id);
       if (badges.length) {
         const cur = await query<{ equipped_badges: unknown }>(`select equipped_badges from profiles where user_id = $1`, [userId]);
@@ -1382,9 +1337,8 @@ export async function claimReward(userId: string, grantId: string, equip: boolea
  * REVOKE a grant by key — a withdrawn star, a disconnected GitHub account.
  *
  * Pending: it simply stops being offered. Claimed: what it delivered is taken back — its
- * cosmetics leave `profiles.cosmetics` unless another live grant also delivered them, the
- * equipped title is cleared if the account no longer holds it by any other route, and the
- * badge projection is re-counted. The row stays (`revoked_at`), so the key is still spoken
+ * cosmetics leave `profiles.cosmetics` unless another live grant also delivered them, and the
+ * badge projection is re-counted (a badge no longer held drops off the name). The row stays (`revoked_at`), so the key is still spoken
  * for. Returns whether anything was live to revoke.
  */
 export async function revokeReward(userId: string, key: string, note = 'revoked'): Promise<boolean> {
@@ -1410,19 +1364,13 @@ export async function revokeReward(userId: string, key: string, note = 'revoked'
         ).map((r) => r.id),
       );
       for (const i of items) {
-        const inventory = i.kind === 'cosmetic' || (i.kind === 'title' && i.id.startsWith('title:'));
-        if (!inventory || still.has(i.id)) continue;
+        if (i.kind !== 'cosmetic' || still.has(i.id)) continue;
         const r = await query<{ user_id: string }>(
           `update profiles set cosmetics = cosmetics - $2::text, updated_at = now()
             where user_id = $1 and cosmetics ? $2 returning user_id`,
           [userId, i.id],
         );
         if (r.length) out.push(i.id);
-      }
-      const earned = new Set(await earnedTitles(userId, query));
-      for (const i of items) {
-        if (i.kind !== 'title' || earned.has(i.id)) continue;
-        await query(`update profiles set title = null, updated_at = now() where user_id = $1 and title = $2`, [userId, i.id]);
       }
       await refreshEquippedBadges(userId, undefined, query);
     }
@@ -1447,7 +1395,7 @@ export async function liveGrantHolders(key: string): Promise<Set<string>> {
 /**
  * THE COMPETITIVE AWARDS THIS ACCOUNT HAS CLAIMED, as trophy-case rows — one per placement
  * (a record grant can carry several). Pending ones are not here: the profile shows what the
- * player has taken, the same rule the title picker follows.
+ * player has taken, the same rule the badge picker follows.
  */
 export async function competitiveAwards(userId: string): Promise<SeasonAward[]> {
   const rows = await q<{ reason: RewardReason }>(
@@ -1578,10 +1526,9 @@ async function rankedActGrants(game: Game, act: number, lastSeason: number): Pro
     rows.forEach((r, i) => {
       const rank = i + 1;
       const badge = podiumBadge(rank);
-      const items: RewardItem[] = [
-        { kind: 'title', id: awardTitleId({ game, balanceVersion: lastSeason, kind: 'ranked_act', mode, drivetrain: null, rank, act }) },
-      ];
-      if (badge) items.push({ kind: 'badge', id: badge });
+      // the badge is the whole delivery; the placement itself lives on `reason`, which the
+      // trophy case reads (`competitiveAwards`). A title rode here too until 0049.
+      const items: RewardItem[] = badge ? [{ kind: 'badge', id: badge }] : [];
       out.push({
         userId: r.userId,
         key: `ranked:${game}:act${act}:${mode}`,
@@ -1598,9 +1545,12 @@ async function rankedActGrants(game: Game, act: number, lastSeason: number): Pro
  * THE RECORD AWARDS OF ONE CLOSED SEASON: the overall board's top 3 and each drivetrain
  * board's #1, through `recordLeaderboard` with NO `physics` argument — its `boardPhysics`
  * default is the board the site shows, so the award cannot name a holder the board hides.
+ * For a closed season that default is the era the season was played in, so BIOBUZZ Act 1's
+ * 2D records pay their holders.
  *
  * ONE GRANT PER PLAYER PER SEASON, however many boards they placed on: every placement is its
- * own title, but the Record Holder badge counts SEASONS, not boards. The overall #1 is nearly
+ * own trophy-case row (off `reason.placements`), but the Record Holder badge counts SEASONS,
+ * not boards. The overall #1 is nearly
  * always #1 of their own drivetrain as well, and a badge that ticked twice for one run would
  * make the rarer reward the commoner one.
  *
@@ -1637,17 +1587,9 @@ async function recordSeasonGrants(game: Game, balanceVersion: number, act: numbe
   const out: RewardGrantInput[] = [];
   for (const [userId, placements] of byUser) {
     // the overall placement leads, then the drivetrains in registry order — the order the
-    // dialog reads them in, and the first title is the one "Equip now" wears
+    // dialog and the trophy case read them in
     placements.sort((a, b) => (a.board === 'overall' ? -1 : 0) - (b.board === 'overall' ? -1 : 0) || a.rank - b.rank);
-    const items: RewardItem[] = placements.map((p) => ({
-      kind: 'title',
-      id: awardTitleId({
-        game, balanceVersion, mode: p.mode ?? 'solo', rank: p.rank,
-        kind: p.board === 'overall' ? 'record_overall' : 'record_drivetrain',
-        drivetrain: p.board === 'overall' ? null : p.board,
-      }),
-    }));
-    items.push({ kind: 'badge', id: 'record-holder' });
+    const items: RewardItem[] = [{ kind: 'badge', id: 'record-holder' }];
     out.push({
       userId,
       key: `record:${game}:bv${balanceVersion}`,
@@ -1728,11 +1670,11 @@ export async function liveLinks(provider: LinkProvider): Promise<{ providerUserI
   return rows.map((r) => ({ providerUserId: r.provider_user_id, userId: r.user_id }));
 }
 
-/** the ledger id the GitHub star reward grants. */
-export const STARGAZER_TITLE = 'title:stargazer';
+/** the badge the GitHub star grants (a title, `title:stargazer`, until 0049). */
+export const STARGAZER_BADGE = 'stargazer';
 /**
  * …AND THE COSMETIC IT GRANTS WITH IT (owner, 2026-09-21: the star should carry something,
- * not just a decal on a name).
+ * not just a mark on a name).
  *
  * ⚠️ **IT IS AN `earned`-TIER KEY, NOT ONE OF THE SUPPORTER FILLS**, and that was the whole
  * judgement: a star is one click, so gifting a premium chassis colour for it would price a
@@ -1741,15 +1683,17 @@ export const STARGAZER_TITLE = 'title:stargazer';
  * header has been holding open for the rewards ledger since the palette shipped. It costs the
  * supporter tier nothing and is worth more for being exclusive.
  *
- * ⚠️ BOTH IDS MOVE TOGETHER, in the same direction, on the same set difference. Granting one
- * and not the other, or revoking one and not the other, is a state no sweep can repair later:
- * the ledger is what "why does this account have this?" is answered from, and half a reward
- * has no story. `STARGAZER_GRANTS` is therefore iterated rather than the two being written out
- * at each of the four sites that touch them.
+ * ⚠️ BOTH MOVE TOGETHER, in the same direction, on the same set difference, because they ride
+ * ONE grant: claiming it delivers both and revoking it takes both. Half a reward is a state no
+ * sweep can repair later, and the ledger is what "why does this account have this?" is
+ * answered from.
  */
 export const STARGAZER_DECAL = 'decal:star';
 /** everything the GitHub star is worth, in the order a person would read it. */
-export const STARGAZER_GRANTS = [STARGAZER_TITLE, STARGAZER_DECAL] as const;
+export const STARGAZER_ITEMS: readonly RewardItem[] = [
+  { kind: 'badge', id: STARGAZER_BADGE },
+  { kind: 'cosmetic', id: STARGAZER_DECAL },
+];
 
 /** every account holding one ledger id — ONE query, so a sweep does not ask per account. */
 export async function cosmeticHolders(id: string): Promise<Set<string>> {
@@ -1774,18 +1718,18 @@ export interface StarSweepResult {
  * ⚠️ **`complete: false` CHANGES NOTHING, AND THIS IS THE ENTIRE COST OF MAKING THE REWARD
  * REVOCABLE** (owner ruling, 2026-09-21: "unstarring should revoke the reward honestly").
  * Grant-only, a failed or truncated fetch meant "no new grants this cycle" and was harmless.
- * With revocation the SAME failure would strip the title from every holder at once — a
+ * With revocation the SAME failure would strip the badge from every holder at once — a
  * non-2xx, a timeout, a page loop that ended early, or a `304 Not Modified` misread as an
  * empty list. So the sweep refuses to act on a set it does not trust, and the caller must
  * pass `complete: false` rather than an empty array when anything went wrong.
  *
  * Revocation costs no extra traffic: it is the same set difference read the other way. It
- * also costs no write for an account that did not hold the title, because `revokeCosmetic`
+ * also costs no write for an account that did not hold the reward, because `revokeCosmetic`
  * is guarded by `and cosmetics ? $2`.
  *
- * ⚠️ AND IT CLEARS AN EQUIPPED TITLE. `profiles.title` may be wearing the very id being
- * taken away, and leaving it would be a dangling reference for a render path to discover —
- * the same rule `clearUsername` follows.
+ * ⚠️ AND IT TAKES THE WORN BADGE OFF THE NAME. `revokeReward` re-counts the badge projection,
+ * so a `stargazer` badge in `profiles.equipped_badges` drops out in the same transaction —
+ * the same rule `clearUsername` follows: no dangling reference for a render path to discover.
  */
 export async function sweepStargazers(
   stargazers: readonly string[],
@@ -1799,15 +1743,12 @@ export async function sweepStargazers(
    * difference decides who is granted, so a sweep where nothing changed writes nothing —
    * no grant, no audit row — rather than touching every linked account every hour.
    */
-  /* ⚠️ THE TITLE IS THE WITNESS FOR BOTH IDS. One holder set is read, not two, and the
-     reward moves as a unit — see `STARGAZER_GRANTS`. Reading a set per id would let the two
-     drift apart (an account holding the decal and not the title, which nothing would ever
-     reconcile), and it would also cost a second full-table query every sweep to learn
-     something the first one already implies. */
   /* ⚠️ HOLDING IT NOW MEANS EITHER OF TWO THINGS: a LIVE grant in the ledger (pending or
-     claimed — a pending one must not be granted again every hour), or the title already in
-     `profiles.cosmetics` (an account 0048's import somehow missed). Both sets are one query. */
-  const holders = await cosmeticHolders(STARGAZER_TITLE);
+     claimed — a pending one must not be granted again every hour), or the decal already in
+     `profiles.cosmetics` with no grant row (an account 0048's import somehow missed). The
+     decal is the inventory's witness for the whole reward, because the badge has no inventory
+     entry — it is read off the grant. Both sets are one query each. */
+  const holders = await cosmeticHolders(STARGAZER_DECAL);
   const live = await liveGrantHolders(STARGAZER_KEY);
   const granted: string[] = [];
   const revoked: string[] = [];
@@ -1816,14 +1757,14 @@ export async function sweepStargazers(
     if (stars.has(l.providerUserId)) {
       if (has) continue;
       /* ⚠️ A PENDING GRANT, NOT A WRITE TO THE INVENTORY (0048). The player is shown the
-         reward and claims it; until then the title is not wearable and the decal is locked.
-         Both ids ride ONE grant, so they arrive — and later leave — as a unit. */
+         reward and claims it; until then the badge is not counted and the decal is locked.
+         Both ride ONE grant, so they arrive — and later leave — as a unit. */
       const out = await grantReward({
         userId: l.userId,
         key: STARGAZER_KEY,
         source: 'stargazer',
         reason: { kind: 'stargazer' },
-        items: STARGAZER_GRANTS.map((id): RewardItem => (id.startsWith('title:') ? { kind: 'title', id } : { kind: 'cosmetic', id })),
+        items: [...STARGAZER_ITEMS],
       });
       if (out === 'created' || out === 'reopened') granted.push(l.userId);
     } else if (has) {
@@ -1835,20 +1776,18 @@ export async function sweepStargazers(
 
 /**
  * TAKE THE STAR REWARD BACK — an unstar, or a disconnected GitHub account. Revokes the grant
- * (which takes back what a CLAIMED one delivered), then sweeps both ids out of the inventory
- * directly as well, for an account holding them with no grant row at all.
+ * (which takes back what a CLAIMED one delivered and re-counts the worn badges), then sweeps
+ * the decal out of the inventory directly as well, for an account holding it with no grant
+ * row at all.
  *
- * ⚠️ THE EQUIPPED TITLE IS CLEARED, BUT THE EQUIPPED DECAL IS NOT — they are different kinds
- * of state. `profiles.title` is a reference TO the ledger, so a revoked id leaves it dangling.
- * A saved robot's `decal` is a plain key on a spec, and `stripUnentitledCosmetics` already
- * downgrades it at the server's live ingress on the next match.
+ * ⚠️ THE WORN BADGE COMES OFF, BUT THE EQUIPPED DECAL DOES NOT — they are different kinds of
+ * state. `profiles.equipped_badges` is a projection OF the ledger, so it is re-counted. A saved
+ * robot's `decal` is a plain key on a spec, and `stripUnentitledCosmetics` already downgrades
+ * it at the server's live ingress on the next match.
  */
 export async function revokeStargazer(userId: string, note: string): Promise<boolean> {
   let any = await revokeReward(userId, STARGAZER_KEY, note);
-  for (const id of STARGAZER_GRANTS) {
-    if (await revokeCosmetic(userId, id, 'rewards', note)) any = true;
-  }
-  await clearTitleIfEquipped(userId, STARGAZER_TITLE);
+  if (await revokeCosmetic(userId, STARGAZER_DECAL, 'rewards', note)) any = true;
   return any;
 }
 
@@ -2780,7 +2719,7 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
    * it counted, so the honest outcome is a refusal that shows up in the server log, not a row
    * quietly relabelled `'3d'` for a match that was not.
    */
-  const want = boardPhysics(g(r.game));
+  const want = livePhysics(g(r.game));
   if (want && (r.physics ?? '2d') !== want) {
     throw new Error(
       `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
@@ -2861,7 +2800,7 @@ export async function recordLeaderboard(opts: {
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
   let physFilter = '';
-  const phys = opts.physics ?? boardPhysics(g(opts.game));
+  const phys = opts.physics ?? (await boardPhysics(g(opts.game), opts.balanceVersion));
   if (phys) {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
@@ -2906,7 +2845,7 @@ export async function personalBest(
   // old 2D run would tell a player their first 3D run was not a personal best, against a row
   // they cannot see on any board and can never beat on this solve.
   const overall = drivetrain === 'overall';
-  const phys = boardPhysics(g(game));
+  const phys = await boardPhysics(g(game), balanceVersion);
   const params: unknown[] = [userId, mode, balanceVersion, g(game)];
   if (!overall) params.push(drivetrain);
   const dtFilter = overall ? '' : `and drivetrain = $${params.length}`;
@@ -2940,12 +2879,14 @@ export async function recordRank(
   // the "#3 of 57" a player is shown after a run is a position on the board they can go and
   // look at rather than a rank over a population the board does not contain.
   const overall = drivetrain === 'overall';
-  const phys = boardPhysics(g(game));
+  const phys = await boardPhysics(g(game), balanceVersion);
+  // $4 is always REFERENCED and typed: an overall read (a mixed-drivetrain duo) used to leave it
+  // out of the SQL, and Postgres refuses a parameter it cannot type, so that rank threw
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
        where balance_version = $1 and mode = $2 and game = $5
-         ${overall ? '' : 'and drivetrain = $4'}
+         and ($4::text is null or drivetrain = $4)
          ${phys ? 'and physics = $6' : ''}
        group by user_id
      ), me as (select s from best where user_id = $3)
@@ -3219,6 +3160,8 @@ export interface AccountExport {
   payments: Record<string, unknown>[];
   /** the reward ledger (0048): every grant, with its reason and what it delivered */
   rewards: Record<string, unknown>[];
+  /** access groups (0051) — the group and when; never who granted it (another account's id) */
+  accessGroups: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3438,6 +3381,10 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     rewards: await q<Record<string, unknown>>(
       `select grant_key, source, reason, items, silent, created_at, claimed_at, revoked_at
          from reward_grants where user_id = $1 order by created_at`,
+      [userId],
+    ),
+    accessGroups: await q<Record<string, unknown>>(
+      `select grp as "group", granted_at as "grantedAt" from access_members where user_id = $1 order by granted_at`,
       [userId],
     ),
   };
@@ -4679,33 +4626,68 @@ export async function eloHistoryUserStanding(opts: {
 }
 
 // -------------------------------------------------------- global stats -----
-export interface GlobalStats {
-  users: number;
-  /** total games played — COMBINED across every game (the homepage headline) */
-  games: number;
-  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
-  /** games played PER GAME (DECODE + Chain Reaction tracked separately). The
-   * homepage sums these into `games`; the split is here if a surface wants it. */
-  byGame: Record<Game, number>;
+
+/** where a game was played (migration 0050). Server rooms report the first four at match end;
+ * a client that was online reports the last two, which run off the cloud. */
+export type PlaySource = 'record' | 'ranked' | 'custom' | 'discord' | 'practice' | 'lan';
+export type PlayMode = 'solo' | 'duo' | '1v1' | '2v2';
+export const PLAY_SOURCES: readonly PlaySource[] = ['record', 'ranked', 'custom', 'discord', 'practice', 'lan'];
+export const PLAY_MODES: readonly PlayMode[] = ['solo', 'duo', '1v1', '2v2'];
+
+/** Count one game played. One upsert on today's (UTC) row; no identity is stored. */
+export async function countPlay(game: Game | undefined, source: PlaySource, mode: PlayMode): Promise<void> {
+  await q(
+    `insert into play_counts (day, game, source, mode, n)
+     values ((now() at time zone 'utc')::date, $1, $2, $3, 1)
+     on conflict (day, game, source, mode) do update set n = play_counts.n + 1`,
+    [g(game), source, mode],
+  );
 }
 
-/** site-wide totals for the homepage: registered players + games played, split
- * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
- * games) AND by game (DECODE vs Chain Reaction, recorded separately). The
- * headline `games` COMBINES every game. Cheap COUNT/GROUP BY over indexed tables. */
+/**
+ * The homepage's categories, folded from the raw split:
+ * solo = record solo + practice · duo = record duo · 1v1 / 2v2 = ranked ·
+ * custom = custom rooms + Discord rooms + LAN, any format.
+ */
+export function playCategory(source: PlaySource, mode: PlayMode): keyof GlobalStats['byCategory'] | null {
+  switch (source) {
+    case 'practice':
+      return 'solo';
+    case 'record':
+      return mode === 'duo' ? 'duo' : 'solo';
+    case 'ranked':
+      return mode === '2v2' ? '2v2' : mode === '1v1' ? '1v1' : null;
+    case 'custom':
+    case 'discord':
+    case 'lan':
+      return 'custom';
+  }
+}
+
+export interface GlobalStats {
+  users: number;
+  /** total games played — COMBINED across every game and source (the homepage headline) */
+  games: number;
+  /** the homepage's categories; see `playCategory` for what each one folds in */
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number; custom: number };
+  /** games played PER GAME, every source */
+  byGame: Record<Game, number>;
+  /** the raw split the categories are folded from: per game × source × mode */
+  detail: { game: Game; source: PlaySource; mode: PlayMode; n: number }[];
+}
+
+/** site-wide totals for the homepage: registered players + games played, from the
+ * `play_counts` counters (migration 0050). */
 /**
  * MEMOIZED, because this is a PUBLIC, UNAUTHENTICATED endpoint (`/api/stats`, api.ts) that
- * every homepage load hits, and the three queries below are unbounded aggregates: a
- * `count(*)` over all of `profiles`, and a `group by` over the whole of `records` and the
- * whole of `matches`. The group-bys can index-only-scan, but they still read every entry,
- * so the cost grows with total site history forever while the ANSWER moves by a handful of
- * rows a minute — a number rendered as "12,431 games played" does not need to be current to
- * the second.
+ * every homepage load hits. `play_counts` grows by at most games × sources × modes rows a day,
+ * so the sum is cheap, but `count(*)` over `profiles` still reads every entry, and N
+ * concurrent visitors should not be N scans of it. A number rendered as "12,431 games played"
+ * does not need to be current to the second.
  *
  * Same shape as `actCache` above and `userRoomCache` below: a module-level `{at, val}` with
  * a millisecond constant. 60s rather than something longer because this is what the
- * homepage's liveness reads as; the point is to stop N concurrent visitors becoming N full
- * scans, and that is already won at one second.
+ * homepage's liveness reads as.
  */
 const STATS_TTL_MS = 60_000;
 let statsCache: { at: number; val: GlobalStats } | null = null;
@@ -4717,25 +4699,26 @@ export function clearStatsCache(): void {
 
 export async function getGlobalStats(now = Date.now()): Promise<GlobalStats> {
   if (statsCache && now - statsCache.at < STATS_TTL_MS) return statsCache.val;
-  const [users, recRows, matchRows] = await Promise.all([
+  const [users, rows] = await Promise.all([
     q<{ n: string }>(`select count(*) as n from profiles`),
-    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from records group by game, mode`),
-    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from matches group by game, mode`),
+    q<{ game: Game; source: PlaySource; mode: PlayMode; n: string }>(
+      `select game, source, mode, sum(n) as n from play_counts group by game, source, mode order by 1, 2, 3`,
+    ),
   ]);
-  const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
-  // seeded from GAME_IDS so a new game reports 0 rather than being absent from
-  // the map (and so this stops being a place a new game has to be added)
+  const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0, custom: 0 };
+  // seeded from GAME_IDS so a new game reports 0 rather than being absent from the map
   const byGame = Object.fromEntries(GAME_IDS.map((g) => [g, 0])) as Record<Game, number>;
-  for (const r of [...recRows, ...matchRows]) {
+  const detail: GlobalStats['detail'] = [];
+  let games = 0;
+  for (const r of rows) {
     const n = Number(r.n);
-    // combined-by-category (homepage) — sums across games
-    if (r.mode in byCategory) byCategory[r.mode as keyof GlobalStats['byCategory']] += n;
-    // recorded separately per game
-    const gk = (r.game ?? 'decode') as Game;
-    if (gk in byGame) byGame[gk] += n;
+    detail.push({ game: r.game, source: r.source, mode: r.mode, n });
+    games += n;
+    const cat = playCategory(r.source, r.mode);
+    if (cat) byCategory[cat] += n;
+    if (r.game in byGame) byGame[r.game] += n;
   }
-  const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
-  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame, detail };
   statsCache = { at: now, val };
   return val;
 }
@@ -4784,7 +4767,7 @@ export interface UserStats {
    */
   activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
   /**
-   * EVERY SEASON AWARD THIS ACCOUNT HOLDS, and the title it is wearing (0045/0046).
+   * EVERY SEASON AWARD THIS ACCOUNT HOLDS (0045, and the claimed grants since 0048).
    *
    * Deliberately NOT season-scoped like `elo` and `records` above: a trophy case is a
    * fact about the account, and filtering it to the season the page happens to be
@@ -4792,8 +4775,6 @@ export interface UserStats {
    * thing an award must never do. Same reasoning as `activity` directly above.
    */
   awards?: SeasonAward[];
-  /** the equipped title id, or null — validated on write by `setTitle`. */
-  title?: string | null;
   /** the EQUIPPED badges and their counters — the header beside the name (0048). */
   badges?: EquippedBadge[];
   /** EVERY badge this account holds and how many times — the trophy case (0048). Claimed
@@ -4831,7 +4812,7 @@ export async function getUserStats(
    * the board does not contain. The value is PARAMETERISED (`$4` in both queries) — the SQL
    * fragment is chosen here, the era itself is bound.
    */
-  const phys = boardPhysics(gm);
+  const phys = await boardPhysics(gm, balanceVersion, current);
   const recPhys = phys ? 'and physics = $4' : '';
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null; supporter: boolean; role: string | null }>(
@@ -4933,11 +4914,8 @@ export async function getUserStats(
     },
     awards: await trophyCase(userId),
     ...(await (async () => {
-      const r = await q<{ title: string | null; equipped_badges: unknown }>(
-        `select title, equipped_badges from profiles where user_id = $1`,
-        [userId],
-      );
-      return { title: r[0]?.title ?? null, badges: asEquipped(r[0]?.equipped_badges) };
+      const r = await q<{ equipped_badges: unknown }>(`select equipped_badges from profiles where user_id = $1`, [userId]);
+      return { badges: asEquipped(r[0]?.equipped_badges) };
     })()),
     badgeCounts: await badgeCounts(userId),
   };
@@ -4946,7 +4924,7 @@ export async function getUserStats(
 /**
  * THE TROPHY CASE: the retired `season_awards` rows and the claimed competitive grants, one
  * row per placement. A placement both hold (a record award 0045 minted that the award job
- * then paid again under the new criteria) is ONE row — the title id is the same, so is the
+ * then paid again under the new criteria) is ONE row — the `awardKey` is the same, so is the
  * thing it names.
  */
 async function trophyCase(userId: string): Promise<SeasonAward[]> {
@@ -4954,7 +4932,7 @@ async function trophyCase(userId: string): Promise<SeasonAward[]> {
   const seen = new Set<string>();
   const out: SeasonAward[] = [];
   for (const a of [...current, ...legacy]) {
-    const key = awardTitleId(a);
+    const key = awardKey(a);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(a);
@@ -5766,13 +5744,44 @@ export interface MaintenanceWindow {
   /** ms epoch it ends; null = open-ended ("until we say otherwise") */
   endsAt: number | null;
   message: string;
+  /**
+   * WHAT IS CLOSED (0051). `matches` is the original window: no new matches. `site` closes
+   * the whole app, and the server refuses every write as well. Absent from an older
+   * console's POST, which means `matches` — what that console meant.
+   */
+  scope?: LockdownScope;
+  /** where the closed screen sends people (https only), and the button's label */
+  redirectUrl?: string | null;
+  redirectLabel?: string | null;
+  /** the ACCESS GROUPS that pass this lockdown. Admins always pass and are not listed. */
+  bypass?: AccessGroup[];
 }
 
-const NO_MAINTENANCE: MaintenanceWindow = { active: false, startsAt: null, endsAt: null, message: '' };
+export type { LockdownScope, AccessGroup, BannerKind };
+export { ACCESS_GROUPS, BANNER_KINDS };
+
+/** the groups an account can be put in (0051). Each one passes a lockdown that lists it. */
+export const isAccessGroup = (g: unknown): g is AccessGroup =>
+  typeof g === 'string' && (ACCESS_GROUPS as readonly string[]).includes(g);
+
+const NO_MAINTENANCE: MaintenanceWindow = {
+  active: false,
+  startsAt: null,
+  endsAt: null,
+  message: '',
+  scope: 'matches',
+  redirectUrl: null,
+  redirectLabel: null,
+  bypass: [],
+};
 
 export async function getMaintenance(): Promise<MaintenanceWindow> {
-  const rows = await q<{ active: boolean; starts_at: string | null; ends_at: string | null; message: string }>(
-    `select active, starts_at, ends_at, message from maintenance where id = 1`,
+  const rows = await q<{
+    active: boolean; starts_at: string | null; ends_at: string | null; message: string;
+    scope: string | null; redirect_url: string | null; redirect_label: string | null; bypass: string[] | null;
+  }>(
+    `select active, starts_at, ends_at, message, scope, redirect_url, redirect_label, bypass
+       from maintenance where id = 1`,
   );
   const r = rows[0];
   if (!r) return NO_MAINTENANCE;
@@ -5781,19 +5790,28 @@ export async function getMaintenance(): Promise<MaintenanceWindow> {
     startsAt: r.starts_at ? new Date(r.starts_at).getTime() : null,
     endsAt: r.ends_at ? new Date(r.ends_at).getTime() : null,
     message: r.message ?? '',
+    scope: r.scope === 'site' ? 'site' : 'matches',
+    redirectUrl: r.redirect_url ?? null,
+    redirectLabel: r.redirect_label ?? null,
+    bypass: (r.bypass ?? []).filter(isAccessGroup),
   };
 }
 
 export async function setMaintenance(w: MaintenanceWindow): Promise<MaintenanceWindow> {
   await q(
     `update maintenance
-        set active = $1, starts_at = $2, ends_at = $3, message = $4, updated_at = now()
+        set active = $1, starts_at = $2, ends_at = $3, message = $4, scope = $5,
+            redirect_url = $6, redirect_label = $7, bypass = $8, updated_at = now()
       where id = 1`,
     [
       w.active,
       w.startsAt ? new Date(w.startsAt).toISOString() : null,
       w.endsAt ? new Date(w.endsAt).toISOString() : null,
       w.message ?? '',
+      w.scope === 'site' ? 'site' : 'matches',
+      w.redirectUrl || null,
+      w.redirectLabel || null,
+      (w.bypass ?? []).filter(isAccessGroup),
     ],
   );
   return getMaintenance();
@@ -5813,6 +5831,233 @@ export function maintenanceBiting(w: MaintenanceWindow, now = Date.now()): boole
   if (w.startsAt && now < w.startsAt) return false;
   if (w.endsAt && now >= w.endsAt) return false;
   return true;
+}
+
+/**
+ * Does this caller get past the lockdown? Pure, so smoke and dbtest pin the same rule the
+ * server enforces. Admins always do (the person deploying must be able to test what they
+ * shipped, and the owner is an admin); otherwise membership of any group the lockdown lists.
+ * A lockdown that is not biting lets everyone through.
+ */
+export function lockdownPasses(
+  w: MaintenanceWindow,
+  who: { admin: boolean; groups: readonly AccessGroup[] },
+  now = Date.now(),
+): boolean {
+  if (!maintenanceBiting(w, now)) return true;
+  if (who.admin) return true;
+  const bypass = w.bypass ?? [];
+  return who.groups.some((g) => bypass.includes(g));
+}
+
+// -------------------------------------------------------- access groups ----
+/** one member row as the console lists it: the id is the key, the handle is today's name */
+export interface AccessMember {
+  userId: string;
+  group: AccessGroup;
+  handle: string | null;
+  username: string | null;
+  grantedBy: string;
+  grantedAt: string;
+  note: string;
+}
+
+/** the groups one account is in. The lockdown gate's read, cached per user in siteState.ts. */
+export async function accessGroupsOf(userId: string): Promise<AccessGroup[]> {
+  const rows = await q<{ grp: string }>(`select grp from access_members where user_id = $1`, [userId]);
+  return rows.map((r) => r.grp).filter(isAccessGroup);
+}
+
+/** add an account to a group. Idempotent: a second grant keeps the first date and note. */
+export async function grantAccess(
+  userId: string,
+  group: AccessGroup,
+  grantedBy: string,
+  note = '',
+): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `insert into access_members (user_id, grp, granted_by, note) values ($1, $2, $3, $4)
+     on conflict (user_id, grp) do nothing returning user_id`,
+    [userId, group, grantedBy, note.slice(0, 200)],
+  );
+  return rows.length > 0;
+}
+
+/** take an account out of a group; false if it was not in it */
+export async function revokeAccess(userId: string, group: AccessGroup): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `delete from access_members where user_id = $1 and grp = $2 returning user_id`,
+    [userId, group],
+  );
+  return rows.length > 0;
+}
+
+/** every member, or one group's, newest first. Capped here, not by the route. */
+export async function listAccessMembers(group?: AccessGroup, limit = 500): Promise<AccessMember[]> {
+  return q<AccessMember>(
+    `select a.user_id as "userId", a.grp as "group", p.handle, p.username,
+            a.granted_by as "grantedBy", a.granted_at as "grantedAt", a.note
+       from access_members a left join profiles p on p.user_id = a.user_id
+      where ($1::text is null or a.grp = $1)
+      order by a.granted_at desc, a.user_id
+      limit $2`,
+    [group ?? null, Math.min(Math.max(1, limit), 500)],
+  );
+}
+
+/**
+ * A PLAYER TAG TO AN ACCOUNT, for the grant form.
+ *
+ * Tried in order: an exact account id, an exact @username (unique), an exact display name
+ * (case-insensitive). A display name is NOT unique, so two matches are an error that names
+ * both @usernames rather than a guess. Resolved once, at grant time: membership is stored by
+ * id, so a later rename does not drop anyone out of a group.
+ */
+export type TagResolution =
+  | { ok: true; userId: string; handle: string; username: string | null }
+  | { ok: false; error: string };
+export async function resolvePlayerTag(tag: string): Promise<TagResolution> {
+  const t = tag.trim();
+  if (!t) return { ok: false, error: 'Empty tag.' };
+  const bare = t.replace(/^@/, '');
+  type Row = { user_id: string; handle: string; username: string | null };
+  const byId = await q<Row>(`select user_id, handle, username from profiles where user_id = $1`, [t]);
+  const byUsername = byId.length
+    ? byId
+    : await q<Row>(`select user_id, handle, username from profiles where username = lower($1)`, [bare]);
+  if (byUsername.length) {
+    const r = byUsername[0];
+    return { ok: true, userId: r.user_id, handle: r.handle, username: r.username };
+  }
+  const byHandle = await q<Row>(
+    `select user_id, handle, username from profiles where lower(handle) = lower($1)
+      order by user_id limit 6`,
+    [bare],
+  );
+  if (byHandle.length === 1) {
+    const r = byHandle[0];
+    return { ok: true, userId: r.user_id, handle: r.handle, username: r.username };
+  }
+  if (byHandle.length > 1) {
+    const names = byHandle.map((r) => (r.username ? `@${r.username}` : r.user_id)).join(', ');
+    return { ok: false, error: `“${t}” matches ${byHandle.length} players (${names}). Use the @username.` };
+  }
+  return { ok: false, error: `No player called “${t}”. They may need to sign in to this site once first.` };
+}
+
+// ---------------------------------------------------------------- banners ----
+/** 0052. `restart` is the countdown; the other three are admin-authored notices. */
+export const isBannerKind = (k: unknown): k is BannerKind =>
+  typeof k === 'string' && (BANNER_KINDS as readonly string[]).includes(k);
+
+export interface BannerRow {
+  id: number;
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+  revision: number;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type BannerDb = {
+  id: string; kind: string; message: string; starts_at: string | null; ends_at: string | null;
+  game: string | null; channel: string | null; revision: number; created_by: string;
+  created_at: string; updated_at: string;
+};
+const BANNER_COLS = `id, kind, message, starts_at, ends_at, game, channel, revision, created_by, created_at, updated_at`;
+const ms = (v: string | null): number | null => (v ? new Date(v).getTime() : null);
+function bannerOf(r: BannerDb): BannerRow {
+  return {
+    id: Number(r.id),
+    kind: isBannerKind(r.kind) ? r.kind : 'info',
+    message: r.message,
+    startsAt: ms(r.starts_at),
+    endsAt: ms(r.ends_at),
+    game: r.game,
+    channel: r.channel,
+    revision: r.revision,
+    createdBy: r.created_by,
+    createdAt: ms(r.created_at) ?? 0,
+    updatedAt: ms(r.updated_at) ?? 0,
+  };
+}
+
+/** every banner that has not ended, scheduled ones included (the cache filters by start) */
+export async function listOpenBanners(): Promise<BannerRow[]> {
+  const rows = await q<BannerDb>(
+    // 30 s back: a restart countdown stays up for a 20 s grace past its end (siteState.ts)
+    `select ${BANNER_COLS} from banners
+      where ends_at is null or ends_at > now() - interval '30 seconds' order by id limit 100`,
+  );
+  return rows.map(bannerOf);
+}
+
+/** the console's list: open ones and the most recently ended, newest first */
+export async function listBanners(limit = 60): Promise<BannerRow[]> {
+  const rows = await q<BannerDb>(`select ${BANNER_COLS} from banners order by id desc limit $1`, [
+    Math.min(Math.max(1, limit), 200),
+  ]);
+  return rows.map(bannerOf);
+}
+
+export interface BannerInput {
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+}
+const iso = (v: number | null): string | null => (v ? new Date(v).toISOString() : null);
+
+export async function createBanner(b: BannerInput, by: string): Promise<BannerRow> {
+  const rows = await q<BannerDb>(
+    `insert into banners (kind, message, starts_at, ends_at, game, channel, created_by)
+     values ($1, $2, $3, $4, $5, $6, $7) returning ${BANNER_COLS}`,
+    [b.kind, b.message, iso(b.startsAt), iso(b.endsAt), b.game, b.channel, by],
+  );
+  return bannerOf(rows[0]);
+}
+
+/** edit in place. Bumps `revision`, so a player who dismissed the old text sees the new one. */
+export async function updateBanner(id: number, b: BannerInput): Promise<BannerRow | null> {
+  const rows = await q<BannerDb>(
+    `update banners set kind = $2, message = $3, starts_at = $4, ends_at = $5, game = $6,
+            channel = $7, revision = revision + 1, updated_at = now()
+      where id = $1 returning ${BANNER_COLS}`,
+    [id, b.kind, b.message, iso(b.startsAt), iso(b.endsAt), b.game, b.channel],
+  );
+  return rows[0] ? bannerOf(rows[0]) : null;
+}
+
+/** end now, keeping the row for the console's history. Backdated a minute so a restart
+ *  countdown's grace (siteState.ts) does not keep it on screen. */
+export async function endBanner(id: number): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update banners set ends_at = now() - interval '1 minute', updated_at = now()
+      where id = $1 and (ends_at is null or ends_at > now() - interval '30 seconds') returning id`,
+    [id],
+  );
+  return rows.length > 0;
+}
+
+export async function deleteBanner(id: number): Promise<boolean> {
+  const rows = await q<{ id: string }>(`delete from banners where id = $1 returning id`, [id]);
+  return rows.length > 0;
+}
+
+/** end every open restart countdown — a new one replaces it, a cancel clears it */
+export async function endRestartBanners(): Promise<number> {
+  const rows = await q<{ id: string }>(
+    `update banners set ends_at = now() - interval '1 minute', updated_at = now()
+      where kind = 'restart' and (ends_at is null or ends_at > now() - interval '30 seconds') returning id`,
+  );
+  return rows.length;
 }
 
 /** aggregate presence over every machine heartbeating within `freshSeconds` (a few
@@ -7035,4 +7280,51 @@ export async function adminUserDetail(userId: string): Promise<AdminUserDetail> 
     })),
     audit: audit.rows,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Analytics history imported from Vercel Web Analytics (migration 0053)
+// ---------------------------------------------------------------------------
+
+/**
+ * REPLACE one source's imported history over the days the rows cover, in one transaction.
+ * Idempotent: running the same file twice leaves the same table, and a fresher export of an
+ * overlapping range replaces the old days rather than adding to them (the host's "Others" row
+ * shifts as its top 100 changes, so an upsert alone would leave stale values behind).
+ * Rows come from `vercelImportRows` (`server/analyticsImport.ts`).
+ */
+export async function replaceImportedAnalytics(
+  source: string,
+  rows: { day: string; dim: string; val: string; views: number; visitors: number }[],
+): Promise<{ deleted: number; inserted: number; firstDay: string | null; lastDay: string | null }> {
+  if (rows.length === 0) return { deleted: 0, inserted: 0, firstDay: null, lastDay: null };
+  const days = rows.map((r) => r.day).sort();
+  const firstDay = days[0];
+  const lastDay = days[days.length - 1];
+  return tx(async (query) => {
+    const gone = await query<{ n: string }>(
+      `with d as (delete from analytics_imported where source = $1 and day >= $2::date and day <= $3::date returning 1)
+       select count(*) as n from d`,
+      [source, firstDay, lastDay],
+    );
+    // 1000 rows a statement keeps each parameter array small; a month of history is a few thousand.
+    for (let i = 0; i < rows.length; i += 1000) {
+      const chunk = rows.slice(i, i + 1000);
+      await query(
+        `insert into analytics_imported (source, day, dim, val, views, visitors)
+         select $1, d::date, m, v, n, u
+           from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[]) as t(d, m, v, n, u)`,
+        [
+          source,
+          chunk.map((r) => r.day),
+          chunk.map((r) => r.dim),
+          chunk.map((r) => r.val),
+          chunk.map((r) => Math.round(r.views)),
+          chunk.map((r) => Math.round(r.visitors)),
+        ],
+      );
+    }
+    return { deleted: Number(gone[0]?.n ?? 0), inserted: rows.length, firstDay, lastDay };
+  });
 }

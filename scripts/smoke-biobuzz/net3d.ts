@@ -7,6 +7,8 @@ import {
   CLIENT_CAPS,
   READY3D_CAP,
   READY3D_DEADLINE_MS,
+  LOAD_HOLD_MAX_MS,
+  VIEWREADY_CAP,
   SERVER_CAPS,
   reportsPhysicsReady,
   applyBallDelta,
@@ -363,6 +365,139 @@ export function net3dChecks(check: Check): void {
     room.onMessage('n3-b1', { t: 'start' });
     check('ready3d: a DECODE room starts on START, with nobody having reported anything', seen.some((m) => m.t === 'matchStart'));
     room.advanceForTest(1);
+  }
+
+  // ═══ 2c. A STARTED 3D MATCH WAITS AT TICK 0 UNTIL EVERY SEAT CAN PLAY IT ══════════════
+  //
+  // Owner, 2026-09-24: matches still started behind the loading panel, record runs included.
+  // `physicsReady` is sent from the LOBBY and covers the physics chunk only; the 3D view is
+  // built by the game screen, which exists only after `matchStart`. So the room holds the new
+  // match at tick 0 (`loadHold`) until each `viewready` seat reports `viewReady` for THIS
+  // generation, and starts anyway at `LOAD_HOLD_MAX_MS`. Each negative is paired with the
+  // positive one message later, for the reason 2b gives.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-hold', () => {}, { kind: 'versus', game: 'biobuzz' });
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}));
+    startRoom(room, ROSTER.map((s) => s.id));
+    const ms = seen.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+    check('viewready: the match started (else nothing below proves anything)', !!ms);
+    const gen = ms?.gen ?? 0;
+    const holds = (): Extract<ServerMsg, { t: 'loadHold' }>[] =>
+      seen.filter((m): m is Extract<ServerMsg, { t: 'loadHold' }> => m.t === 'loadHold');
+    check('viewready: a started 3D match is HELD while its seats load', room.loadHoldForTest().held);
+    check(
+      'viewready: ...and every client is told, with the time left and who is loading',
+      holds().length === 1 && holds()[0].waitMs > 0 && holds()[0].waitMs <= LOAD_HOLD_MAX_MS && holds()[0].loading.length === 4,
+      JSON.stringify(holds()[0]),
+    );
+    room.pumpForTest(30);
+    check('viewready: a held match does not tick', room.tickForTest() === 0, `tick=${room.tickForTest()}`);
+    room.onMessage('n3-b1', { t: 'viewReady', gen: gen + 7 });
+    check('⚠️ viewready: a report for ANOTHER generation does not count', room.loadHoldForTest().loading.length === 4);
+    for (const s of ROSTER.slice(0, 3)) room.onMessage(s.id, { t: 'viewReady', gen });
+    room.pumpForTest(30);
+    check('viewready: three of four seats ready is still held', room.tickForTest() === 0 && room.loadHoldForTest().held);
+    check(
+      'viewready: ...and each report re-tells the room who is left',
+      holds()[holds().length - 1].loading.length === 1,
+      JSON.stringify(holds()[holds().length - 1]),
+    );
+    room.onMessage(ROSTER[3].id, { t: 'viewReady', gen });
+    room.pumpForTest(30);
+    check('viewready: the last seat reporting in releases the match', room.tickForTest() > 0 && !room.loadHoldForTest().held);
+    const rel = holds()[holds().length - 1];
+    check('viewready: ...and the release says nobody was left behind', rel.waitMs === 0 && rel.loading.length === 0, JSON.stringify(rel));
+    room.advanceForTest(1);
+  }
+
+  // THE CAP STARTS THE MATCH ANYWAY, never cancels it, and names who it left behind.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-hold-cap', () => {}, { kind: 'versus', game: 'biobuzz' });
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}));
+    startRoom(room, ROSTER.map((s) => s.id));
+    const gen = (seen.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined)?.gen ?? 0;
+    for (const s of ROSTER.slice(0, 3)) room.onMessage(s.id, { t: 'viewReady', gen });
+    room.pumpForTest(30);
+    check('viewready cap: (held first, so the start below is the cap’s)', room.tickForTest() === 0);
+    const late = room.loadHoldForTest().loading;
+    room.expireLoadHoldForTest();
+    room.pumpForTest(30);
+    check('viewready cap: the cap starts the match with a seat still loading', room.tickForTest() > 0);
+    const rel = [...seen].reverse().find((m) => m.t === 'loadHold') as Extract<ServerMsg, { t: 'loadHold' }> | undefined;
+    check(
+      'viewready cap: ...and the release names the seat it started without',
+      rel?.waitMs === 0 && rel.loading.length === 1 && rel.loading[0] === late[0],
+      JSON.stringify(rel),
+    );
+    check('viewready cap: ...and nobody is told the match was cancelled', !seen.some((m) => m.t === 'error'));
+    room.onMessage(ROSTER[3].id, { t: 'viewReady', gen });
+    check('viewready cap: the late seat reporting in afterwards changes nothing', !room.loadHoldForTest().held);
+    room.advanceForTest(1);
+  }
+
+  // WHO IS NOT WAITED ON: a dropped seat, a build without the cap, and a 2D game.
+  {
+    const room = new Room('n3-hold-drop', () => {}, { kind: 'versus', game: 'biobuzz' });
+    const clients = ROSTER.map((s) => mkClient(s, () => {}));
+    for (const c of clients) room.add(c);
+    startRoom(room, ROSTER.map((s) => s.id));
+    clients[3].connected = false; // its socket is gone; the grace decides its seat, not the hold
+    for (const c of clients.slice(0, 3)) room.onMessage(c.id, { t: 'viewReady', gen: room.loadHoldForTest().gen });
+    const gen0 = room.loadHoldForTest().loading.length;
+    room.pumpForTest(30);
+    check('viewready: a DROPPED seat does not hold the others', gen0 === 0 && room.tickForTest() > 0, `loading=${gen0} tick=${room.tickForTest()}`);
+    room.advanceForTest(1);
+  }
+  {
+    const old = CLIENT_CAPS.filter((c) => c !== VIEWREADY_CAP);
+    const room = new Room('n3-hold-old', () => {}, { kind: 'versus', game: 'biobuzz' });
+    for (const s of ROSTER) room.add(mkClient(s, () => {}, old));
+    startRoom(room, ROSTER.map((s) => s.id));
+    check('viewready: a roster with no `viewready` cap is not held, exactly as before', !room.loadHoldForTest().held);
+    room.advanceForTest(1);
+  }
+  {
+    const room = new Room('n3-hold-2d', () => {}, { kind: 'versus', game: 'decode' });
+    for (const s of ROSTER) room.add(mkClient(s, () => {}));
+    room.onMessage(ROSTER[0].id, { t: 'start' });
+    check('viewready: a DECODE match is never held', room.tickForTest() === 0 && !room.loadHoldForTest().held);
+    room.advanceForTest(1);
+  }
+
+  // THE CLIENT HALF, as source pins: `ServerSession` cannot be imported headlessly
+  // (`src/net/env.ts` reads `import.meta.env` at load). The session holds while told to, only for
+  // its own generation, reports once per generation, and cannot be stranded by a lost release;
+  // the controller reports only once physics AND view are up, and does not predict while held.
+  {
+    const sess = readFileSync('src/net/serverSession.ts', 'utf8');
+    const onHold = /if \(m\.t === 'loadHold'\) \{[\s\S]*?\r?\n {4}\}/.exec(sess)?.[0] ?? '';
+    check('viewready session: a hold for another generation is ignored', onHold.includes('m.gen !== this.gen'));
+    check(
+      '⚠️ viewready session: a running snapshot clears a hold whose release was lost',
+      sess.includes('if (this.hold && m.serverTick > 0) this.hold = null;'),
+    );
+    check('⚠️ viewready session: ...and so does the room’s own cap', /performance\.now\(\) > this\.hold\.until \+ \d+/.test(sess));
+    const vr = /\n {2}viewReady\(\): void \{[\s\S]*?\r?\n {2}\}/.exec(sess)?.[0] ?? '';
+    check('viewready session: reports once per generation, stamped with it', vr.includes('this.viewSentGen === this.gen') && vr.includes("t: 'viewReady', gen: this.gen"));
+    check('viewready session: a reclaimed seat reports again', sess.includes('if (m.ok) this.viewSentGen = -1;'));
+
+    const game = readFileSync('src/game.ts', 'utf8');
+    const step = /private stepServer\(cmd: RobotCommand\): void \{[\s\S]*?\r?\n {2}\}\r?\n/.exec(game)?.[0] ?? '';
+    const pend = step.indexOf('if (this.physicsPending)');
+    const ready = step.indexOf('if (!this.sceneLoading) s.viewReady?.()');
+    check('viewready: the controller reports only after physics, and only when the view is not loading', pend >= 0 && ready > pend);
+    check('viewready: ...and does not predict while held', step.includes('if (s.loadHeld?.())'));
+    check('viewready: this build advertises the capability', CLIENT_CAPS.includes(VIEWREADY_CAP));
+    // a seat the cap started without was LOADING, not idle: its loading ticks come off the live
+    // ticks its AFK verdict is judged against (a full ranked match is too slow to run here)
+    const roomSrc = readFileSync('server/room.ts', 'utf8');
+    check(
+      '⚠️ viewready: a late loader is not judged AFK for the ticks it spent loading',
+      roomSrc.includes('liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(rid) ?? 0)),') &&
+        /for \(const rid of this\.seatsLoading\(\)\) this\.loadingTicks\.set/.test(roomSrc),
+    );
   }
 
   // RANKED IS WHERE THE WAIT WAS WORTH BUILDING — the strategy screen (alliances + ELO) IS
@@ -1311,8 +1446,10 @@ export function net3dChecks(check: Check): void {
       !/setEra|ds-seg \$\{era/.test(board) && !/physics\.toUpperCase\(\)/.test(board),
     );
     check(
-      'ruling: ...and it drops a 2D row an OLDER server still serves',
-      /filter\(\(x\) => x\.physics !== '2d'\)/.test(board),
+      // the era is per season now (2026-09-24): keep the one the server echoes, 3D when an older
+      // server echoes none, so a 2D row that server still serves on the live board is dropped
+      'ruling: ...and it keeps only the era the server names, dropping a 2D row an OLDER server still serves',
+      /x\.physics === \(r\.physics \?\? '3d'\)/.test(board),
     );
     const api = readFileSync('src/net/api.ts', 'utf8');
     check(

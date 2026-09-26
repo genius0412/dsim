@@ -13,7 +13,7 @@ import {
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
-import { derivedRole, savedStartCap } from '../src/ui/startPositions';
+import { allianceDuo, derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
@@ -27,7 +27,13 @@ import {
 } from '../src/ui/queueKeeper';
 import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
-import { roomCodeForInstance, discordInstanceId, inDiscordActivity } from '../src/net/discordActivity';
+import {
+  roomCodeForInstance,
+  discordInstanceId,
+  inDiscordActivity,
+  launchQuery,
+  setLaunchSearchForTests,
+} from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
@@ -173,7 +179,7 @@ import {
 } from '../src/config';
 import {
   CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
-  TITLE_KEYS, TITLE_LABELS, titleLabel, cosmeticTier, stripUnentitledCosmetics,
+  cosmeticTier, stripUnentitledCosmetics,
 } from '../src/cosmetics';
 import {
   pointDepthInRobot,
@@ -184,10 +190,14 @@ import {
 } from '../src/sim/physics';
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
-import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, practiceSeatsFor, practiceSetups, switchGame, syncAudioMirrors } from '../src/settings';
+import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, hasStoredSettings, practiceSeatsFor, practiceSetups, saveSettings, switchGame, syncAudioMirrors } from '../src/settings';
+import { legalRegion, routeTarget } from '../server/routing';
 import {
   authFlowsForTesting,
   classifySdkError,
+  normalizeCode,
+  describeAuthError,
+  SITE_HOST,
   PASSWORD_MIN,
   RESET_PATH,
   VERIFY_PATH,
@@ -261,6 +271,7 @@ import {
 } from '../src/input/bindings';
 import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanels } from '../src/ui/controlsLayout';
 import {
+  TOUCH_BTN_SECONDARY,
   TOUCH_OTHER_ACTIONS,
   allTouchButtons,
   packTouchControls,
@@ -274,29 +285,28 @@ import {
 } from '../src/ui/mobileActions';
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
-import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import { GamepadInput } from '../src/input/gamepad';
 import {
-  awardBadgeRank,
+  awardBadge,
   awardBoardWord,
+  awardKey,
   awardRankWord,
-  awardShortText,
-  awardTitleText,
-  awardTitleId,
+  awardSentence,
   compareAwards,
-  parseAwardTitleId,
-  awardPodiumTier,
   type AwardRow,
 } from '../src/awards';
 import {
   BADGE_EARN,
   BADGE_KEYS,
   BADGE_LABELS,
+  BADGE_TIER,
   MAX_EQUIPPED_BADGES,
   coerceEquippedBadges,
   podiumBadge,
   withBadgeEquipped,
 } from '../src/badges';
-import { compareGrants, rewardHeadline, rewardTitleText, rewardWhy, type RewardGrant } from '../src/rewards';
+import { compareGrants, grantCards, rewardHeadline, rewardWhy, type RewardGrant } from '../src/rewards';
 import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
@@ -322,7 +332,7 @@ import {
   wrapNav,
   type NavRect,
 } from '../src/input/padNav';
-import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
+import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import {
@@ -355,7 +365,9 @@ import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
 import type { PendingRosterEntry } from '../server/matchTypes';
-import { maintenanceBiting } from '../server/db/repo';
+import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
+import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
+import type { SiteAccess, SiteBanner, SiteLockdown } from '../src/net/protocol';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
 import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
@@ -758,30 +770,8 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   );
 }
 
-// ---- LEDGER TITLES: every key is NAMED, and the reward's cosmetic is EXCLUSIVE -----------
+// ---- THE GITHUB STAR'S COSMETIC IS EXCLUSIVE ------------------------------------------------
 {
-  /**
-   * ⚠️ **A TITLE KEY IS NOT A LABEL, AND IT SHIPPED BEING USED AS ONE.** `TitlePicker` fell
-   * back to `id.replace(/^title:/, '')` for any title that was not a parseable season award,
-   * so `title:stargazer` — the only earnable title in the build — rendered as the lowercase
-   * slug `stargazer`, beside awards that read as proper sentences. `TITLE_LABELS` is the map
-   * that fixes it, and this is what stops the next key being added without one: the fallback
-   * still exists (a key from a newer build has to render as SOMETHING), so a missing label is
-   * silent, and silent is how the first one lasted.
-   */
-  check(
-    '⚠️ titles: EVERY TITLE_KEYS member has a display label — the fallback is a raw slug',
-    TITLE_KEYS.every((k) => (TITLE_LABELS[k] ?? '').length > 0),
-    TITLE_KEYS.filter((k) => !TITLE_LABELS[k]).join(',') || 'all labelled',
-  );
-  check(
-    '...and a label is not just the key with a capital — it is written for a person',
-    TITLE_KEYS.every((k) => TITLE_LABELS[k] !== k),
-  );
-  check('titles: titleLabel answers null for a season award, which renders through its own path',
-    titleLabel('title:s3:decode:elo1v1:1') === null && titleLabel('decal:star') === null);
-  check('titles: ...and for a key this build does not know', titleLabel('title:nope') === null);
-
   /**
    * ⚠️ **THE GITHUB STAR'S COSMETIC IS `earned`, NOT A SUPPORTER FILL GIVEN AWAY.** A star
    * is one click; granting one of the six premium chassis colours for it would price a Ko-fi
@@ -7331,9 +7321,15 @@ function ramOffCentreSamples(
   press(true);
   press(true);
   check('butterfly: HOLDING does not keep swapping (edge-triggered)', rb.butterflyTank === true);
+  // a 1-tick release is a dropout, not a release (`debouncedPress`, replay 1dc6eb8f)
   press(false);
   press(true);
-  check('butterfly: releasing and pressing again swaps back', rb.butterflyTank === false);
+  check('butterfly: a ONE-tick release inside a held press does not swap (debounced)', rb.butterflyTank === true);
+  press(false);
+  press(false);
+  press(false);
+  press(true);
+  check('butterfly: releasing for 3 ticks and pressing again swaps back', rb.butterflyTank === false);
   // a non-butterfly must ignore the command entirely
   const w2 = createWorld('free', 42, [
     { id: 0, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC, drivetrain: 'mecanum' }), assists: DEFAULT_ASSISTS, startIndex: 0 },
@@ -15393,6 +15389,53 @@ function pinScene(
   gapRoom.stop();
 }
 
+// ---- A MISSING INPUT TICK CANNOT INVENT A BUTTON EDGE -------------------------------
+// Inputs ride the unreliable lane. A tick with no input of its own is filled from `latest`, the
+// newest command by tick, which for a client running ahead is a FUTURE one. Its buttons used to
+// come along: a button held across the gap read released for that one tick, so the next held
+// tick was a second press and a toggle (the BIOBUZZ ramp, `driveMode`) fired twice.
+{
+  const mkC = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const room = new Room('smoke-gapfill', () => {}, { kind: 'versus' });
+  room.add(mkC('g1'));
+  room.onMessage('g1', { t: 'start' });
+  room.advanceForTest(5);
+  const t0 = room.tickForTest();
+  const held = quantizeCommand({ driveX: 0.5, driveY: 0, rotate: 0, intake: true, fire: false });
+  const up = quantizeCommand({ driveX: -0.5, driveY: 0, rotate: 0, intake: false, fire: false });
+  // held for t0+1 … t0+10 with t0+5 LOST, then released from t0+11 — all sent up front, the way
+  // a client ahead of the server has already sent them when the gap tick is stepped
+  for (let t = t0 + 1; t <= t0 + 15; t++) {
+    if (t === t0 + 5) continue;
+    room.onMessage('g1', { t: 'input', tick: t, q: t <= t0 + 10 ? held : up });
+  }
+  const intake: boolean[] = [];
+  const gapDx: number[] = [];
+  for (let i = 1; i <= 10; i++) {
+    room.advanceForTest(1);
+    const c = room.lastFrameForTest().get(0);
+    intake.push(!!c?.intake);
+    if (i === 5) gapDx.push(c?.driveX ?? NaN);
+  }
+  check(
+    'input gap: a lost tick inside a held button keeps it held (no invented release/press)',
+    intake.every(Boolean),
+    intake.map((v) => (v ? 1 : 0)).join(''),
+  );
+  check(
+    'input gap: ...while the gap tick still takes the stick from the newest command',
+    Math.abs(gapDx[0] - dequantizeCommand(up).driveX) < 1e-9,
+    `dx=${gapDx[0]}`,
+  );
+  room.stop();
+}
+
 // ---- predict/reconcile parity ----------------------------------------------
 // The client replaces its world with a server snapshot at `serverTick`, then
 // replays the local inputs it had buffered PAST that tick (remote robots default
@@ -15796,10 +15839,18 @@ const forceRoomToPost = (room: Room): void => {
   room.add(mkR('a', 'red'));
   room.add(mkR('b', 'blue'));
   room.add(mkR('c', 'blue'));
+  // MAX_ROOMS counts `holdsCapacity()`. A room in its lobby or mid-match holds a slot...
+  check('capacity: a room in its lobby counts against MAX_ROOMS', room.holdsCapacity());
   room.onMessage('a', { t: 'start' });
+  check('capacity: ...and so does a live match', room.holdsCapacity());
   forceRoomToPost(room);
   check('recycle: the match actually finished (everything below is about a FINISHED room)',
     room.worldForTest()?.match.phase === 'post', String(room.worldForTest()?.match.phase));
+  // ...but a FINISHED one does not: it has stopped stepping and only holds players on the
+  // results screen, which has no timeout. Counting it made lhr refuse every new room at "6/6"
+  // with two live matches (2026-09-25).
+  check('⚠️ capacity: a finished match on its results screen does NOT count against MAX_ROOMS',
+    !room.holdsCapacity());
 
   // THE OLD BEHAVIOUR, asserted so the reason for the feature stays on the record:
   // a room that has played is shut to everyone until its world is cleared.
@@ -15823,11 +15874,18 @@ const forceRoomToPost = (room: Room): void => {
   check('recycle: the held slot of the player who left is released',
     (lastRoster(sink.a)?.players.length ?? 0) === 2);
   check('recycle: ...so the room takes new players again', room.canJoin());
+  check('capacity: a finished room sent back to its lobby counts against MAX_ROOMS again',
+    room.holdsCapacity());
   check('recycle: nobody carries a READY into the next game',
     (lastRoster(sink.a)?.players ?? []).every((p) => !p.ready));
 
   // THE POINT OF ALL OF IT: re-pick sides, and play a full game the new roster authored.
-  room.onMessage('b', { t: 'update', patch: { alliance: 'red' } });
+  // ⚠️ AND READY UP AGAIN, because the recycle cleared it (the check directly above) and the
+  // server now HOLDS a start on a seat that has not readied — which is exactly what the
+  // lobby's own START button has always done, so the scene is the real flow rather than the
+  // one the missing server gate used to allow.
+  room.onMessage('b', { t: 'update', patch: { alliance: 'red', ready: true } });
+  room.onMessage('a', { t: 'update', patch: { ready: true } });
   room.onMessage('a', { t: 'start' });
   const start2 = [...sink.b].reverse().find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
   check('recycle: the second match is built from the roster that is here NOW, not the frozen one',
@@ -15970,6 +16028,77 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('maintenance: nothing scheduled renders nothing at all', line({}, T) === null);
   check('maintenance: the operator message is carried through to players',
     (line({ biting: true }, T) ?? '').includes('Season reset'));
+}
+
+// ---- SITE LOCKDOWN + BANNERS: the client gate and the banner filter (0051/0052) ------------
+// The rules the closed screen and the banner strip run on. Pure (`src/net/siteRules.ts`), so
+// they are pinned here; the server half (`lockdownPasses`) is pinned beside them and again
+// against a real database in dbtest.
+{
+  const T = 1_000_000;
+  const lock = (over: Partial<SiteLockdown> = {}): SiteLockdown => ({
+    scope: 'site', message: '', redirectUrl: null, redirectLabel: null, startsAt: null, endsAt: null,
+    biting: true, bypass: ['beta'], ...over,
+  });
+  const acc = (over: Partial<SiteAccess> = {}): SiteAccess => ({ userId: 'u', admin: false, groups: [], passes: false, ...over });
+
+  check('site gate: a biting SITE lockdown closes the app for a stranger', siteIsClosed({ lockdown: lock(), access: undefined }, false));
+  check('site gate: ...and opens it for an account the server says passes',
+    !siteIsClosed({ lockdown: lock(), access: acc({ groups: ['beta'], passes: true }) }, false));
+  check('site gate: a MATCHES lockdown never closes the app (menus stay; starts are refused)',
+    !siteIsClosed({ lockdown: lock({ scope: 'matches' }), access: null }, false));
+  check('site gate: a SCHEDULED site lockdown does not close anything yet',
+    !siteIsClosed({ lockdown: lock({ biting: false }), access: null }, false));
+  check('site gate: FAIL OPEN: no answer from the server is an open site', !siteIsClosed({ lockdown: null, access: undefined }, false));
+  check('site gate: a build baked CLOSED stays closed with no answer (the alpha, its server down)',
+    siteIsClosed({ lockdown: null, access: undefined }, true));
+  check('site gate: ...opens for any access group', !siteIsClosed({ lockdown: null, access: acc({ groups: ['contributor'] }) }, true));
+  check('site gate: ...and for an admin', !siteIsClosed({ lockdown: null, access: acc({ admin: true }) }, true));
+  check('site gate: ...but not for a signed-in stranger', siteIsClosed({ lockdown: null, access: acc() }, true));
+
+  check('site gate: an admin let through a closed alpha is TOLD so',
+    (siteBypassLine({ lockdown: lock(), access: acc({ admin: true, passes: true }) }, true, 'alpha') ?? '').includes('Alpha is closed to players'));
+  check('site gate: a tester sees which group let them in',
+    (siteBypassLine({ lockdown: lock(), access: acc({ groups: ['beta'], passes: true }) }, false, 'stable') ?? '').includes('beta tester'));
+  check('site gate: a matches lockdown tells an admin they can still start matches',
+    (siteBypassLine({ lockdown: lock({ scope: 'matches' }), access: acc({ admin: true, passes: true }) }, false, 'stable') ?? '').includes('still start'));
+  check('site gate: nothing to bypass, no line', siteBypassLine({ lockdown: null, access: acc({ admin: true, passes: true }) }, false, 'stable') === null);
+
+  // the server's rule, the same shape: admins always, listed groups only
+  const w = { active: true, startsAt: null, endsAt: null, message: '', scope: 'site' as const, bypass: ['dev' as const] };
+  check('lockdown: the server lets an admin through every time', lockdownPasses(w, { admin: true, groups: [] }, T));
+  check('lockdown: a listed group passes, an unlisted one does not',
+    lockdownPasses(w, { admin: false, groups: ['dev'] }, T) && !lockdownPasses(w, { admin: false, groups: ['beta'] }, T));
+
+  const b = (over: Partial<SiteBanner>): SiteBanner => ({
+    id: 1, kind: 'info', message: 'm', startsAt: null, endsAt: null, game: null, channel: null, revision: 1, ...over,
+  });
+  const set = [
+    b({ id: 1, kind: 'info' }),
+    b({ id: 2, kind: 'known-bug', game: 'biobuzz' }),
+    b({ id: 3, kind: 'warning', channel: 'alpha' }),
+    b({ id: 4, kind: 'restart', endsAt: T + 60_000 }),
+    b({ id: 5, kind: 'info', startsAt: T + 60_000 }),
+    b({ id: 6, kind: 'known-bug', endsAt: T - 1 }),
+  ];
+  const seen = (opts: { game?: string; channel?: string; dismissed?: Record<string, number> } = {}) =>
+    visibleBanners(set, { game: opts.game ?? 'decode', channel: opts.channel ?? 'stable', dismissed: opts.dismissed ?? {}, now: T }).map((x) => x.id);
+  check('banners: the restart outranks everything, then warning, known bug, notice',
+    JSON.stringify(seen({ game: 'biobuzz', channel: 'alpha' })) === '[4,3,2,1]', JSON.stringify(seen({ game: 'biobuzz', channel: 'alpha' })));
+  check('banners: a game-scoped one shows only in its game', !seen({ game: 'decode' }).includes(2) && seen({ game: 'biobuzz' }).includes(2));
+  check('banners: a channel-scoped one shows only on its site', !seen({ channel: 'stable' }).includes(3));
+  check('banners: a scheduled one waits for its start, an ended one is gone', !seen().includes(5) && !seen().includes(6));
+  check('banners: a dismissal holds at its revision', !seen({ dismissed: { '1': 1 } }).includes(1));
+  check('banners: ...and an edit (new revision) brings it back',
+    visibleBanners([b({ id: 1, revision: 2 })], { game: 'decode', channel: 'stable', dismissed: { '1': 1 }, now: T }).length === 1);
+  check('banners: a restart cannot be dismissed', seen({ dismissed: { '4': 1 } }).includes(4));
+
+  // the in-flow maintenance strip (presence) steps aside for a SITE lockdown once it bites
+  const siteLine = (over: Record<string, unknown>) =>
+    maintenanceLine({ startsAt: null, endsAt: null, message: '', biting: false, scope: 'site', ...over } as never, T);
+  check('maintenance: a biting SITE lockdown leaves the strip empty (the banner stack says it)', siteLine({ biting: true }) === null);
+  check('maintenance: a scheduled SITE lockdown says the site closes, not that games pause',
+    (siteLine({ startsAt: T + 10 * 60_000 }) ?? '').includes('site closes in 10 minutes'));
 }
 
 // ---- SOURCE GUARD: no engine-defined math anywhere the sim can reach --------
@@ -16608,7 +16737,10 @@ const recordDrive: CommandSource = (tick) => {
   const recSrc = readFileSync('src/ui/RecordRun.tsx', 'utf8');
   const protoSrc = readFileSync('src/net/protocol.ts', 'utf8');
   check("one-game refusal: the server codes it 'active_game'", /code: 'active_game',/.test(idxSrc));
-  check('one-game refusal: ...and the code is a declared ErrorCode', /\|\s*'active_game';/.test(protoSrc));
+  // NOT anchored on the union's terminating `;` any more: that made this check assert
+  // "…and it is the LAST code declared", so adding any newer code broke a rule about
+  // `active_game`. The member is what is being checked; its position never mattered.
+  check('one-game refusal: ...and the code is a declared ErrorCode', /\|\s*'active_game'\s*$/m.test(protoSrc));
   check(
     'one-game refusal: the launcher reads the code AND the sentence (older servers send none)',
     recSrc.includes("code === 'active_game'") && /already have a game in progress/i.test(recSrc),
@@ -17271,6 +17403,55 @@ const recordDrive: CommandSource = (tick) => {
     r.room.detach('p', undefined, true);
     r.room.pumpForTest(maxMatchTicks());
     check('record buzzer: a run ABANDONED mid-match is not saved, and its room is freed at once', reached && r.saved() === 0 && r.gone() === 1, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
+  }
+
+  // ⚠️ EVERY ROOM, NOT ONLY A SOLO RUN (2026-09-24, "some replays are not saving"). A custom
+  // game, a game against bots, a duo run or a ranked match whose LAST connected driver left
+  // between the buzzer and the settle froze with nobody connected and was deleted unsaved: no
+  // replay, no history row, no ELO. The results screen only appears after the settle, so
+  // pressing MENU at the buzzer is ordinary, and in a bot game the leaver is the only human.
+  const vsRun = (code: string, ids: string[]): { room: Room; saved: () => number; gone: () => number } => {
+    let saved = 0;
+    let gone = 0;
+    const room = new Room(code, () => { gone++; }, { kind: 'versus' }, () => { saved++; });
+    for (const id of ids) room.add(mkS(id));
+    room.onMessage(ids[0], { t: 'start' });
+    return { room, saved: () => saved, gone: () => gone };
+  };
+  {
+    const r = vsRun('smoke-vs-buzzer-both', ['a', 'b']);
+    forceMatch(r.room, 'post');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('b'); // a network drop first...
+    r.room.detach('a', undefined, true); // ...then the last one out presses MENU
+    r.room.pumpForTest(maxMatchTicks());
+    check('⚠️ versus buzzer: everybody leaving after the buzzer still SAVES the match', reached && r.saved() === 1, `reached=${reached} saved=${r.saved()}`);
+    check('versus buzzer: ...and frees the room once it is saved (the last close was deliberate)', r.gone() === 1, `${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-buzzer-drop', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('a');
+    r.room.pumpForTest(maxMatchTicks());
+    check('versus buzzer: a NETWORK drop after the buzzer saves it and holds the seat for the grace', r.saved() === 1 && r.gone() === 0, `saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-buzzer-abandon', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.abandonSlot('a'); // Abandon / restart from another screen, then the socket closes
+    r.room.detach('a', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('⚠️ versus buzzer: ABANDON after the buzzer still saves the match', r.saved() === 1 && r.gone() === 1, `saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-midmatch', ['a']);
+    forceMatch(r.room, 'teleop', 90);
+    runUntil(r.room, (w) => w.match.phase === 'teleop');
+    r.room.detach('a', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('versus buzzer: a match everybody left MID-MATCH is still not saved (unchanged)', r.saved() === 0, `saved=${r.saved()}`);
   }
 
   // ---- THE SETTLE: a match is finalized when the field comes to REST, not on a timer -------
@@ -18231,7 +18412,14 @@ const recordDrive: CommandSource = (tick) => {
     connected: true,
     disconnectAt: 0,
     userId,
-    caps: ['strategy'],
+    // ⚠️ `'seat'` MATTERS HERE. A seat taken by a client that advertises it is SECURED, so
+    // `reattach` demands the seat secret — and the account reclaim below has none, because it
+    // proved something stronger (a verified user id off a signed token). This scene used to
+    // build a capless client, so `seatOwner` short-circuited to true and the scene passed
+    // while the real server path silently returned null. That is the shape of the bug it
+    // missed: a signed-in player reloading during the ranked strategy window, refused their
+    // own rated match.
+    caps: ['strategy', 'seat'],
   });
   const room = new Room('smoke-strat-reload', () => {}, { kind: 'versus' });
   room.applyPending({ code: 'iad-rl', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
@@ -18256,8 +18444,17 @@ const recordDrive: CommandSource = (tick) => {
 
   // THEY COME BACK — on the ACCOUNT, which is all a reloaded page still knows.
   const seat = room.seatFor('u-blue');
-  const nc = seat ? room.reattach(seat, (m) => rec.back.push(m)) : null;
-  check('strategy reload: the seat is handed back on a fresh socket', nc !== null);
+  // the UNTRUSTED door first: an id alone must NOT reclaim a secured seat, or the whole
+  // seat-secret fix is undone by the door next to it
+  check(
+    '⚠️ strategy reload: the seat is NOT handed over on the client id alone',
+    seat ? room.reattach(seat, () => {}) === null : false,
+  );
+  // …and the server's own call, which is TRUSTED because `seatFor` matched a verified
+  // account. This is `server/index.ts`'s exact shape; calling it untrusted here is what let
+  // the production break through review.
+  const nc = seat ? room.reattach(seat, (m) => rec.back.push(m), undefined, undefined, undefined, true) : null;
+  check('strategy reload: the seat IS handed back to the verified account, on a fresh socket', nc !== null);
   const ss1 = rec.back.find((m) => m.t === 'strategyStart');
   check('strategy reload: the returning socket is re-sent strategyStart', ss1?.t === 'strategyStart');
   check(
@@ -18922,7 +19119,7 @@ const mkMM = () => {
       !!enter && enter[1].indexOf('selectGame(game)') >= 0 && enter[1].indexOf('selectGame(game)') < enter[1].indexOf('setPendingAutoJoin'),
     );
     check('discord activity: the auto-join config carries that season', !!enter && /config: \{ kind: 'versus', game \}/.test(enter[1]));
-    check('discord activity: the browser is told the player’s current season', /<DiscordLobbyList[\s\S]*?game=\{settings\.game\}/.test(app));
+    check('discord activity: the browser is told the player’s current season', /<DiscordLobbyList[^>]*game=\{settings\.game\}/.test(app));
     check('discord activity: a listed room joins under ITS season', /onEnter\(l\.code\.toUpperCase\(\), l\.game\)/.test(list));
     check('discord activity: the main lobby joins under its own season, else the player’s', /const mainGame: GameId = main\?\.game \?\? game/.test(list) && /onEnter\(mainCode, mainGame\)/.test(list));
     check('discord activity: a separate lobby is created under the player’s season', /onEnter\(generateRoomCode\(\), game\)/.test(list));
@@ -23012,6 +23209,8 @@ const dumperSetup = (): RobotSetup => {
       resetPassword: reply,
       sendVerificationEmail: reply,
       verifyEmail: reply,
+      emailOtp: { verifyEmail: reply, sendVerificationOtp: reply, resetPassword: reply },
+      listAccounts: reply,
     } as unknown as AuthFlowsClient;
   };
   const ok = stub({ data: { status: true } });
@@ -23020,7 +23219,7 @@ const dumperSetup = (): RobotSetup => {
   /* ---- the terms gate ------------------------------------------------------ */
   check(
     'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
-    LEGAL_VERSION === '2026-08-04',
+    LEGAL_VERSION === '2026-09-25',
     LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
   );
   check(
@@ -23147,6 +23346,107 @@ const dumperSetup = (): RobotSetup => {
     (await F.completeVerification(stub({ data: undefined }), 'tok')).ok,
   );
 
+  /* ---- the CODE path — what Neon Auth actually sends ------------------------
+     The email carries a one-time code and there was nowhere to type it (2026-09-25): the
+     app only knew the link flow. A refused code must say CODE, not "that link has expired". */
+  {
+    let sent: { email: string; otp: string } | null = null;
+    const spy = {
+      emailOtp: {
+        verifyEmail: async (a: { email: string; otp: string }) => {
+          sent = a;
+          return { data: { status: true }, error: null };
+        },
+      },
+    } as unknown as AuthFlowsClient;
+    const r = await F.verifyCode(spy, ' a@b.co ', '123 456');
+    check(
+      'authFlows: a code goes to emailOtp.verifyEmail with the address trimmed and the spaces stripped',
+      r.ok && sent !== null && (sent as { email: string; otp: string }).email === 'a@b.co' &&
+        (sent as { email: string; otp: string }).otp === '123456',
+      JSON.stringify(sent),
+    );
+  }
+  {
+    const r = await F.verifyCode(ok, 'a@b.co', ' - ');
+    check("authFlows: an empty code is 'invalid-code' before the call", !r.ok && r.reason === 'invalid-code');
+  }
+  {
+    const codes = await Promise.all([
+      F.verifyCode(stub({ error: { code: 'INVALID_OTP', status: 400 } }), 'a@b.co', '111111'),
+      F.verifyCode(stub({ error: { code: 'OTP_EXPIRED', status: 400 } }), 'a@b.co', '111111'),
+      F.verifyCode(stub({ error: { code: 'TOO_MANY_ATTEMPTS', status: 403 } }), 'a@b.co', '111111'),
+    ]);
+    check(
+      "⚠️ authFlows: a wrong, expired or over-tried CODE is 'invalid-code', never the link sentence",
+      codes.every((r) => !r.ok && r.reason === 'invalid-code' && /code/i.test(r.message) && !/link/i.test(r.message)),
+      codes.map((r) => (r.ok ? 'ok' : r.reason)).join(','),
+    );
+  }
+  {
+    const r = await F.verifyCode(stub('throw'), 'a@b.co', '111111');
+    check('authFlows: a thrown code call is a network result, not a throw', !r.ok && r.reason === 'network');
+  }
+  check(
+    'authFlows: normalizeCode keeps letters and digits only',
+    normalizeCode(' 12-34 5a ') === '12345a',
+  );
+
+  /* ---- a password by CODE — how a Google account gets one (2026-09-25) ------------------
+     `/email-otp/reset-password` creates the password login when there is none, so the same
+     two calls set a first password and change an existing one. */
+  {
+    const calls: unknown[] = [];
+    const spy = {
+      emailOtp: {
+        sendVerificationOtp: async (a: unknown) => (calls.push(a), { data: { success: true }, error: null }),
+        resetPassword: async (a: unknown) => (calls.push(a), { data: { success: true }, error: null }),
+      },
+    } as unknown as AuthFlowsClient;
+    const sent = await F.sendPasswordCode(spy, ' g@mail.co ');
+    const set = await F.setPassword(spy, 'g@mail.co', '12 34 56', 'longenough123');
+    check(
+      "authFlows: the password code is asked for as type 'forget-password', then spent with the password",
+      sent.ok && set.ok &&
+        JSON.stringify(calls) ===
+          JSON.stringify([
+            { email: 'g@mail.co', type: 'forget-password' },
+            { email: 'g@mail.co', otp: '123456', password: 'longenough123' },
+          ]),
+      JSON.stringify(calls),
+    );
+  }
+  {
+    const r = await F.sendPasswordCode(stub({ error: { code: 'USER_NOT_FOUND', status: 400 } }), 'x@y.co');
+    check('authFlows: asking for a password code never says whether the account exists', r.ok);
+  }
+  {
+    const short = await F.setPassword(ok, 'a@b.co', '123456', 'short');
+    const noCode = await F.setPassword(ok, 'a@b.co', '', 'longenough123');
+    const wrong = await F.setPassword(stub({ error: { code: 'INVALID_OTP', status: 400 } }), 'a@b.co', '1', 'longenough123');
+    const tooShort = await F.setPassword(stub({ error: { code: 'PASSWORD_TOO_SHORT', status: 400 } }), 'a@b.co', '1', 'longenough123');
+    check(
+      'authFlows: set-password refuses a short password and an empty code locally, and a wrong code says code',
+      !short.ok && short.reason === 'weak-password' &&
+        !noCode.ok && noCode.reason === 'invalid-code' &&
+        !wrong.ok && wrong.reason === 'invalid-code' &&
+        !tooShort.ok && tooShort.reason === 'weak-password',
+      [short, noCode, wrong, tooShort].map((r) => (r.ok ? 'ok' : r.reason)).join(','),
+    );
+  }
+  {
+    const list = (rows: unknown) => ({ listAccounts: async () => ({ data: rows, error: null }) }) as unknown as AuthFlowsClient;
+    const google = await F.hasPassword(list([{ providerId: 'google' }]));
+    const both = await F.hasPassword(list([{ providerId: 'google' }, { providerId: 'credential' }]));
+    const broken = await F.hasPassword(stub('throw'));
+    const odd = await F.hasPassword(list({ nope: 1 }));
+    check(
+      "authFlows: a password login is the 'credential' account; an unreadable list is null, never false",
+      google === false && both === true && broken === null && odd === null,
+      [google, both, broken, odd].join(','),
+    );
+  }
+
   /* ---- the SDK THROWS its failures, and that is the whole bug ---------------
      The Neon adapter's `customFetchImpl` throws a normalized `AuthApiError` on any non-2xx
      instead of letting `{data, error}` carry it, so on this build `error` is essentially
@@ -23260,6 +23560,17 @@ const dumperSetup = (): RobotSetup => {
       '⚠️ authFlows: both sub-routes are matched BEFORE the bare /account that prefixes them',
       bare > 0 && reset < bare && verify < bare,
       reset + ',' + verify + ' < ' + bare,
+    );
+    // ⚠️ GOOGLE SIGN-IN RETURNS WITH `?neon_auth_session_verifier=`, and the SDK reads it from
+    // the address bar when its first session request starts. App's mount effect strips every
+    // query to canonicalize the path, and on some loads it won that race: the player came back
+    // from Google signed out ("Sign in with Google just reloads the page", 2026-09-25).
+    const canon = app.slice(app.indexOf('const canonical = pathFor('), app.indexOf("window.history.replaceState(null, '', target"));
+    check(
+      '⚠️ auth: URL canonicalization keeps the Google sign-in verifier for the SDK',
+      /AUTH_VERIFIER_PARAM = 'neon_auth_session_verifier'/.test(app) &&
+        canon.includes('.get(AUTH_VERIFIER_PARAM)') &&
+        canon.includes('[AUTH_VERIFIER_PARAM]: verifier'),
     );
   }
 }
@@ -23591,9 +23902,11 @@ const dumperSetup = (): RobotSetup => {
       '⚠️ pageviews: the beacon touches no browser storage — it has no identifier and must not gain one',
       !/\b(local|session)Storage\s*\./.test(pv) && !/document\s*\.\s*cookie/.test(pv),
     );
+    // owner, 2026-09-25: count all traffic. Browser DNT/GPC defaults do not gate the beacon;
+    // the in-app switch does, and must keep doing so.
     check(
-      '⚠️ pageviews: doNotTrack and Global Privacy Control are honoured, not merely available',
-      /globalPrivacyControl/.test(pv) && /doNotTrack/.test(pv),
+      'pageviews: browser Do Not Track / GPC do not gate the beacon (the in-app switch does)',
+      !/globalPrivacyControl\s*===/.test(pv) && !/doNotTrack\s*\?\?/.test(pv) && /analyticsAllowed\(\)/.test(pv),
     );
   }
 
@@ -23733,6 +24046,35 @@ const dumperSetup = (): RobotSetup => {
   k = removeKey(k, 'intake', 0);
   check('keys: removeKey drops the slot', J(k.keys.intake) === J(['k']));
   check('keys: removing a slot that does not exist is a no-op', J(removeKey(k, 'intake', 3).keys.intake) === J(['k']));
+
+  // A PAD THAT VANISHES FOR ONE FRAME IS STILL HELD (replay 1dc6eb8f: an all-zero input frame
+  // mid-press toggled the ramp twice). `getGamepads()` is stubbed; the real one is restored.
+  {
+    const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+    const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+    let pads: unknown[] = [];
+    Object.defineProperty(nav, 'getGamepads', { value: () => pads, configurable: true, writable: true });
+    try {
+      const pad = { connected: true, axes: [0.9, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })) };
+      const gi = new GamepadInput();
+      pads = [pad];
+      const a = gi.sample(DEFAULT_BINDINGS.pad);
+      pads = [];
+      const gap = gi.sample(DEFAULT_BINDINGS.pad);
+      check(
+        'gamepad: a one-frame dropout holds the last sample instead of releasing everything',
+        a.driveX > 0.5 && gap.connected && gap.driveX === a.driveX,
+        `before=${a.driveX.toFixed(2)} gap=${gap.driveX.toFixed(2)} connected=${gap.connected}`,
+      );
+      const until = performance.now() + 120;
+      while (performance.now() < until) { /* past the 100-ms grace */ }
+      const gone = gi.sample(DEFAULT_BINDINGS.pad);
+      check('gamepad: ...and a pad gone past the grace reads unplugged', !gone.connected && gone.driveX === 0, `connected=${gone.connected}`);
+    } finally {
+      if (had) Object.defineProperty(nav, 'getGamepads', had);
+      else delete nav.getGamepads;
+    }
+  }
 
   // THE RESOLVER. With no combo bound the answer is the old "any bound button held", on the
   // same frame, no state: a player who never bound a combo pays nothing.
@@ -23959,6 +24301,58 @@ const dumperSetup = (): RobotSetup => {
   r3.reset();
   s = r3.resolve([4, 7, 12], pad3, 5000);
   check('resolver: reset clears consumption and timing', s.catalyst === true);
+}
+
+// ---- PAD CAPTURE: bind on release, HOLD one button to remove ------------------------
+// A pad capture takes every button and pad navigation is suspended while it is armed, so the
+// hold is the only way a controller-only player removes a bind or backs out of a capture.
+{
+  const J = JSON.stringify;
+  const S = (...b: number[]) => new Set(b);
+  const H = PAD_HOLD_REMOVE_MS;
+  // the A that armed the slot is held on frame one: ignored until released
+  let c = new PadCapture();
+  c.step(S(0), 0);
+  check('capture: a button held when the capture opened is not the bind', c.step(S(0), 16).t === 'idle' && c.step(S(0), 2000).t === 'idle');
+  c.step(S(), 2016);
+  c.step(S(7), 2032);
+  const tap = c.step(S(), 2100);
+  check('capture: a press and release binds that button', tap.t === 'commit' && J(tap.t === 'commit' && tap.chord) === J([7]), J(tap));
+  // a two-button combo commits on the first release
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  const grew = c.step(S(7, 12), 40);
+  const combo = c.step(S(7), 60);
+  check('capture: a second button joins and the combo commits on release', grew.t === 'chord' && combo.t === 'commit' && J(combo.t === 'commit' && combo.chord) === J([7, 12]), J(combo));
+  // a lone hold past the threshold reports, then removes on release
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(4), 16);
+  const before = c.step(S(4), 16 + H - 1);
+  const hold = c.step(S(4), 16 + H);
+  const rm = c.step(S(), 16 + H + 30);
+  check('capture: a lone button held past the threshold reports a hold', before.t === 'idle' && hold.t === 'hold', `${before.t} ${hold.t}`);
+  check('capture: letting go of a hold removes rather than binds', rm.t === 'remove', rm.t);
+  check('capture: nothing after the capture ends', c.step(S(4), 5000).t === 'idle');
+  // a second button joining a hold turns it back into a combo
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  c.step(S(7), 16 + H + 100);
+  c.step(S(7, 12), 16 + H + 200);
+  const late = c.step(S(12), 16 + H + 300);
+  check('capture: a slow combo is still a combo, not a remove', late.t === 'commit' && J(late.t === 'commit' && late.chord) === J([7, 12]), J(late));
+  // re-arm after a refused bind: what is still held does not restart the chord
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  c.step(S(), 40);
+  c.rearm();
+  c.step(S(), 56);
+  c.step(S(5), 72);
+  const again = c.step(S(), 90);
+  check('capture: rearm takes a fresh press', again.t === 'commit' && J(again.t === 'commit' && again.chord) === J([5]), J(again));
 }
 
 // ---- GAME-SPECIFIC KEYBINDS: the action table and the effective map ----------------
@@ -25017,8 +25411,8 @@ const dumperSetup = (): RobotSetup => {
  */
 {
   const ss = readFileSync('src/net/serverSession.ts', 'utf8');
-  const app = readFileSync('src/ui/App.tsx', 'utf8');
-  const lc = readFileSync('src/net/lobbyClient.ts', 'utf8');
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const lc = readFileSync('src/net/lobbyClient.ts', 'utf8').replace(/\r\n/g, '\n');
   const sess = readFileSync('src/net/session.ts', 'utf8');
   check('rejoin/drivers: `MatchStart` NAMES the field (a field the type omits is one nobody copies)', /drivers\?: MatchDriver\[\]/.test(lc));
   check('rejoin/drivers: ...and so does `NetSession`, which is what beginSession reads', /drivers\?: MatchDriver\[\]/.test(sess));
@@ -25204,9 +25598,9 @@ const dumperSetup = (): RobotSetup => {
   check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
 }
 
-// ---- SEASON AWARD TITLES: the sentence, and the one word that is not relative ----
-// `src/awards.ts` turns an award row into words. The server owns the KEY (`awardTitleId`)
-// and the rows; this is the half a designer rewrites, which is exactly why the sentence is
+// ---- THE TROPHY CASE: the sentence, the badge it is drawn with, and the one word that is not relative ----
+// `src/awards.ts` turns an award row into words. The server owns the rows and dedupes them by
+// `awardKey`; this is the half a designer rewrites, which is exactly why the sentence is
 // rendered rather than stored — storing it would have frozen every past award's wording at
 // the moment it was minted.
 {
@@ -25217,8 +25611,8 @@ const dumperSetup = (): RobotSetup => {
 
   check(
     'awards: the full sentence is season · act/season · board rank',
-    awardTitleText(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
-    awardTitleText(row()),
+    awardSentence(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
+    awardSentence(row()),
   );
   check(
     'awards: ranks 1..3 are Champion / Finalist / Semifinalist (owner, 2026-09-21)',
@@ -25250,16 +25644,6 @@ const dumperSetup = (): RobotSetup => {
     'awards: an unknown drivetrain falls back to its own id rather than rendering undefined',
     awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'hovercraft' }) === 'hovercraft Record',
   );
-  check(
-    'awards: the SHORT form drops the season, which is context on a chip',
-    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })) === 'Duo Record Finalist',
-    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })),
-  );
-  // the badge carries 1/2/3 and nothing else — a 12px hexagon cannot hold "#11"
-  check(
-    'awards: the badge rank clamps into 1..3',
-    awardBadgeRank({ rank: 1 }) === 1 && awardBadgeRank({ rank: 3 }) === 3 && awardBadgeRank({ rank: 11 }) === 3 && awardBadgeRank({ rank: 0 }) === 1,
-  );
   // newest season first, then the most impressive — the order you read your own trophies in
   const sorted = [
     row({ balanceVersion: 11, rank: 1 }),
@@ -25272,85 +25656,60 @@ const dumperSetup = (): RobotSetup => {
     sorted.map((a) => `${a.balanceVersion}/${a.rank}`).join(' '),
   );
   /**
-   * ⚠️ THE ID ROUND-TRIPS, WHICH IS WHAT MAKES THE LEADERBOARD CHIP FREE. A board prints
-   * the equipped title beside every name; the alternative to parsing the id is joining
-   * `season_awards` once per row on a query that already joins `profiles`. So the id
-   * carrying its own meaning is load-bearing, not a convenience, and this is the check
-   * that keeps the two functions in step.
+   * ⚠️ THE KEY IS WHAT DEDUPES THE TROPHY CASE (`trophyCase`, repo.ts): a placement the retired
+   * `season_awards` table and the award job both paid must produce ONE key, and two different
+   * placements must never share one — a collision would silently drop a row from somebody's
+   * trophy case.
    */
   {
-    for (const r of [
+    const slots = [
       row(),
-      row({ kind: 'record_overall', mode: 'duo', rank: 3 }),
-      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly', rank: 1 }),
-      row({ game: 'biobuzz', kind: 'ranked', mode: '2v2', rank: 2 }),
-    ]) {
-      const back = parseAwardTitleId(awardTitleId(r));
-      check(
-        `awards: the id round-trips — ${awardShortText(r)}`,
-        !!back &&
-          back.game === r.game &&
-          back.balanceVersion === r.balanceVersion &&
-          back.kind === r.kind &&
-          back.mode === r.mode &&
-          back.drivetrain === r.drivetrain &&
-          back.rank === r.rank,
-        `${awardTitleId(r)} -> ${JSON.stringify(back)}`,
-      );
-    }
-    // ⚠️ `act`/`seasonNo` are NOT in the key and cannot come back — they are denormalised
-    // on the row for the sentence. A parsed award is for `awardShortText`, never the full
-    // one, and the check says so rather than leaving the next caller to discover it.
-    const parsed = parseAwardTitleId(awardTitleId(row()))!;
-    check('⚠️ awards: a parsed id has NO act/season — those live on the row, not in the key', parsed.act === 0 && parsed.seasonNo === 0);
-    check(
-      'awards: a `title:` grant is not an award and parses to null (it is a registry key)',
-      parseAwardTitleId('title:stargazer') === null,
-    );
-    check(
-      'awards: malformed ids are refused rather than rendered',
-      parseAwardTitleId('award:decode:12:ranked:1v1') === null &&
-        parseAwardTitleId('award:decode:x:ranked:1v1:1') === null &&
-        parseAwardTitleId('award:decode:12:bogus:1v1:1') === null &&
-        parseAwardTitleId('award:decode:12:ranked:9v9:1') === null,
-    );
-    // a drivetrain belongs to exactly one kind, both ways round
-    check(
-      '⚠️ awards: a drivetrain on a non-drivetrain kind (and a drivetrain kind without one) are both refused',
-      parseAwardTitleId('award:decode:12:ranked:1v1:mecanum:1') === null &&
-        parseAwardTitleId('award:decode:12:record_drivetrain:solo:1') === null,
-    );
+      row({ rank: 2 }),
+      row({ mode: '2v2' }),
+      row({ balanceVersion: 13 }),
+      row({ game: 'biobuzz' }),
+      row({ kind: 'record_overall', mode: 'solo' }),
+      row({ kind: 'record_overall', mode: 'duo' }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'mecanum' }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly' }),
+      row({ kind: 'ranked_act', act: 2 }),
+      row({ kind: 'ranked_act', act: 3 }),
+    ];
+    const keys = slots.map(awardKey);
+    check('⚠️ awards: every distinct slot has a distinct key', new Set(keys).size === keys.length, keys.join(' '));
+    check('awards: the key ignores the denormalised act/season of a season award (a season is its balanceVersion)',
+      awardKey(row({ act: 9, seasonNo: 9 })) === awardKey(row()));
   }
+  // every trophy-case row is drawn with a badge that exists
+  check('awards: a ranked placement is drawn with its podium crest, a record one with the ribbon',
+    awardBadge({ kind: 'ranked_act', rank: 1 }) === 'ranked-gold' && awardBadge({ kind: 'ranked', rank: 2 }) === 'ranked-silver' &&
+      awardBadge({ kind: 'record_overall', rank: 3 }) === 'record-holder' && awardBadge({ kind: 'record_drivetrain', rank: 1 }) === 'record-holder');
+  check('awards: ...and a ranked rank past the podium still draws a real badge', BADGE_KEYS.includes(awardBadge({ kind: 'ranked', rank: 7 })));
 
   check(
     'awards: a BIOBUZZ award names BIOBUZZ, so the sentence follows the season registry',
-    awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
-    awardTitleText(row({ game: 'biobuzz' })),
+    awardSentence(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
+    awardSentence(row({ game: 'biobuzz' })),
   );
 }
 
-// ---- THE REWARD LEDGER (0048): act podium titles, badges, and the claim dialog's words ----
+// ---- THE REWARD LEDGER (0048): act podium awards, badges, and the claim dialog's words ----
 // The server mints grants as data (`reward_grants.items` / `.reason`); `src/rewards.ts` and
 // `src/badges.ts` are the client's half — the words, the counter rules, and the queue order.
 {
-  // ⚠️ AN ACT AWARD IS KEYED BY ITS ACT, and the id has to carry it: the chip beside a name
-  // names the act, and it is parsed off the id alone (no join) the way every title is.
+  // an ACT award is keyed by its act: its period is the act, not a season
   const act: AwardRow = { game: 'biobuzz', balanceVersion: 17, act: 2, seasonNo: 0, kind: 'ranked_act', mode: '1v1', drivetrain: null, rank: 2, score: 1843 };
-  const id = awardTitleId(act);
-  check('rewards: an act podium id carries the ACT, not a season', id === 'award:biobuzz:act2:ranked_act:1v1:2', id);
-  const back = parseAwardTitleId(id);
-  check('⚠️ rewards: ...and parses back WITH its act (a season award cannot, an act award must)',
-    !!back && back.kind === 'ranked_act' && back.act === 2 && back.rank === 2 && back.mode === '1v1', JSON.stringify(back));
-  check('rewards: the act sentence names the act and no season', awardTitleText(act) === 'BIOBUZZ · Act 2 · 1v1 Finalist', awardTitleText(act));
-  check('rewards: the chip form keeps the act, so it cannot read as a retired per-season title', awardShortText(back!) === 'Act 2 · 1v1 Finalist', awardShortText(back!));
-  check('rewards: an act podium title wears the metal of its placement',
-    awardPodiumTier({ kind: 'ranked_act', rank: 1 }) === 'gold' && awardPodiumTier({ kind: 'ranked_act', rank: 3 }) === 'bronze' && awardPodiumTier({ kind: 'record_overall', rank: 1 }) === null);
-  check('rewards: a malformed act id is refused', parseAwardTitleId('award:biobuzz:act:ranked_act:1v1:1') === null && parseAwardTitleId('award:biobuzz:act2:ranked_act:solo:1') === null);
-  // an OLDER client's parser reads `act2` as a number — NaN — and draws nothing: no chip, never a wrong one
-  check('rewards: an older parser would see a non-number version (graceful, not wrong)', !Number.isFinite(Number(id.split(':')[2])));
+  const id = awardKey(act);
+  check('rewards: an act podium key carries the ACT, not a season', id === 'award:biobuzz:act2:ranked_act:1v1:2', id);
+  check('rewards: the act sentence names the act and no season', awardSentence(act) === 'BIOBUZZ · Act 2 · 1v1 Finalist', awardSentence(act));
 
   // badges: the registry, the counter, the equip rule
-  check('⚠️ badges: every key has a label AND an earn sentence', BADGE_KEYS.every((k) => BADGE_LABELS[k]?.length > 0 && BADGE_EARN[k]?.length > 0));
+  check('⚠️ badges: every key has a label, an earn sentence AND an art tier', BADGE_KEYS.every((k) => BADGE_LABELS[k]?.length > 0 && BADGE_EARN[k]?.length > 0 && !!BADGE_TIER[k]));
+  /* ⚠️ THE GITHUB STAR IS A BADGE NOW (0049), not a title. The id is what 0049's SQL writes
+     into the star grant and `profiles.equipped_badges`; a rename here without a migration
+     would drop it from every account that holds it, silently (`coerceEquippedBadges`). */
+  check('⚠️ badges: `stargazer` is a badge, with its own disc art', BADGE_KEYS.includes('stargazer') && BADGE_TIER.stargazer === 'stargazer' && BADGE_LABELS.stargazer === 'Stargazer');
+  check('badges: a worn stargazer badge survives the wire', JSON.stringify(coerceEquippedBadges([{ id: 'stargazer', n: 1 }])) === JSON.stringify([{ id: 'stargazer', n: 1 }]));
   check('badges: podium placement → metal', podiumBadge(1) === 'ranked-gold' && podiumBadge(2) === 'ranked-silver' && podiumBadge(3) === 'ranked-bronze' && podiumBadge(4) === null);
   check('badges: the wire is read tolerantly — an unknown id, a bad count and a duplicate drop out',
     JSON.stringify(coerceEquippedBadges([{ id: 'ranked-gold', n: 2 }, { id: 'fake', n: 1 }, { id: 'record-holder', n: 0 }, { id: 'ranked-gold', n: 5 }, null])) === JSON.stringify([{ id: 'ranked-gold', n: 2 }]));
@@ -25366,15 +25725,21 @@ const dumperSetup = (): RobotSetup => {
   const ranked = g({});
   check('⚠️ rewards: WHY says the placement, the ladder and the period — "#2 in 1v1 ranked, BIOBUZZ Act 2."',
     rewardWhy(ranked)[0] === '#2 in 1v1 ranked, BIOBUZZ Act 2.' && rewardWhy(ranked)[1] === 'Final rating 1843.', rewardWhy(ranked).join(' | '));
-  check('rewards: the headline is the title\'s words', rewardHeadline(ranked) === '1v1 Finalist', rewardHeadline(ranked));
+  check('rewards: the headline is the placement in words', rewardHeadline(ranked) === '1v1 Finalist', rewardHeadline(ranked));
   const rec = g({ source: 'record_season', reason: { kind: 'record_season', game: 'decode', act: 1, seasonNo: 3, balanceVersion: 9,
     placements: [{ board: 'overall', rank: 1, score: 212 }, { board: 'mecanum', rank: 1, score: 212 }] } });
   check('rewards: a record award says each board it placed on', rewardWhy(rec).length === 2 && rewardWhy(rec)[1].startsWith('#1 on the Mecanum record board, DECODE Act 1 Season 3.'), rewardWhy(rec).join(' | '));
   check('rewards: ...and heads with its best placement', rewardHeadline(rec) === 'Record Champion', rewardHeadline(rec));
-  check('rewards: a record title reads with its season, filled from the grant', rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason) === 'DECODE · Act 1 Season 3 · Record Champion',
-    rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason));
-  const star = g({ source: 'stargazer', reason: { kind: 'stargazer' }, items: [{ kind: 'title', id: 'title:stargazer' }] });
-  check('rewards: a ledger reward heads with its title label', rewardHeadline(star) === 'Stargazer');
+  const star = g({ source: 'stargazer', reason: { kind: 'stargazer' }, items: [{ kind: 'badge', id: 'stargazer' }, { kind: 'cosmetic', id: 'decal:star' }] });
+  check('rewards: a non-competitive reward heads with its badge\'s name', rewardHeadline(star) === 'Stargazer', rewardHeadline(star));
+  /* ⚠️ ONE ITEM PER CARD (owner, 2026-09-24): the star gives a badge and a decal, and one
+     "Equip now" for both does not say which it wears — so each is its own card, badge first. */
+  check('⚠️ rewards: the star grant is TWO cards, badge then decal', grantCards(star).map((i) => `${i.kind}:${i.id}`).join() === 'badge:stargazer,cosmetic:decal:star',
+    grantCards(star).map((i) => `${i.kind}:${i.id}`).join());
+  check('rewards: ...a badge is carded before a cosmetic whatever order the grant lists them in',
+    grantCards(g({ items: [{ kind: 'cosmetic', id: 'decal:star' }, { kind: 'badge', id: 'ranked-gold' }] }))[0].kind === 'badge');
+  check('rewards: ...and an item this build does not know is not carded', grantCards(g({ items: [{ kind: 'badge', id: 'from-the-future' as never }] })).length === 0);
+  check('rewards: ...and one with no badge falls back to a plain word', rewardHeadline(g({ reason: { kind: 'other' }, items: [{ kind: 'cosmetic', id: 'decal:star' }] })) === 'Reward');
   // the queue: prestigious first, OLDEST first within a kind, so a backfilled counter counts up 1, 2, 3
   const q = [star, g({ id: 'late', reason: { kind: 'ranked_act', game: 'decode', act: 3, mode: '2v2', rank: 1, rating: 0 } }), rec, g({ id: 'early', reason: { kind: 'ranked_act', game: 'decode', act: 1, mode: '1v1', rank: 1, rating: 0 } })].sort(compareGrants);
   check('rewards: the queue shows the podium first, oldest act first, then records, then the rest',
@@ -25648,6 +26013,11 @@ const dumperSetup = (): RobotSetup => {
       { name: 'portrait 375x812', w: 375, h: 812 },
       { name: 'landscape 740x360', w: 740, h: 360 },
       { name: 'tablet 1024x768', w: 1024, h: 768 },
+      // the NARROW landscape band, which nothing covered until the audit swept it: 667x375 is an
+      // iPhone SE/8 held sideways and 800x360 a mid Android. Every width under 675 shrank the
+      // primary, and the shortest of them stacked the overflow onto the DRIVE base.
+      { name: 'landscape 667x375', w: 667, h: 375 },
+      { name: 'landscape 800x360', w: 800, h: 360 },
     ];
     for (const vp of views) {
       for (const g of GAME_IDS) {
@@ -25720,6 +26090,62 @@ const dumperSetup = (): RobotSetup => {
       packed.buttons.map((c) => `${c.button.action}@${Math.round(c.x)},${Math.round(c.y)}`).join(' '),
     );
     check('touch: and every button it placed there is still at least 44px', packed.buttons.every((c) => c.size >= 44));
+  }
+
+  // ── THE NARROW LANDSCAPE BAND (audit 2026-09-24) ──────────────────────────────────────────
+  // Two defects lived here because nothing swept it. The size ladder went 82 → 44 with no rung
+  // between, so on EVERY landscape viewport narrower than 675px the primary — SHOOT, the button
+  // pressed most — rendered at 29% of its area and as the SMALLEST circle on a pad of 64px
+  // secondaries. And the last resort ignored `taken` entirely, so a ten-button BIOBUZZ pad on a
+  // short phone stacked its overflow down the outer edge into the DRIVE base, where `.mobile-btn`
+  // sits ABOVE the touch layer and steals the press from the thumb that meant to drive.
+  {
+    // ten buttons: butterfly is the only drivetrain with WHEELS, and the twin turret + lift +
+    // ramp build is what adds the other three. The widest pad the app can assemble.
+    const widest = { ...mech('twinturret', true, 'ramp'), drivetrain: 'butterfly' } as RobotSpec;
+    const decodeSpec = { ...DEFAULT_SPEC, drivetrain: 'butterfly', catalystType: 'launcher' } as RobotSpec;
+    const specOf = (g: GameId): RobotSpec => (g === 'biobuzz' ? widest : decodeSpec);
+    // 568x320 is the shortest landscape phone still shipping; 844x390 a current iPhone sideways
+    const band: { w: number; h: number }[] = [];
+    for (const w of [568, 640, 667, 740, 800, 844]) for (const h of [320, 347, 360, 375, 390]) band.push({ w, h });
+
+    let shrunk = '';
+    let onStick = '';
+    let tiny = '';
+    let stacked = '';
+    for (const g of GAME_IDS) {
+      for (const vp of band) {
+        const p = packTouchControls(visibleTouchButtons(g, ctx(specOf(g))), DEFAULT_MOBILE_LAYOUT, vp);
+        const smallest = Math.min(...p.buttons.map((c) => c.size));
+        const all = [p.drive, p.turn, ...p.buttons];
+        for (const b of p.buttons) {
+          if (b.size < 44) tiny ||= `${g} ${vp.w}x${vp.h} ${b.button.action}=${b.size}`;
+          // the primary may step down to the SECONDARY size, never below it, and never below
+          // any other button sharing the pad with it
+          if (b.button.primary && (b.size < TOUCH_BTN_SECONDARY || b.size < smallest)) {
+            shrunk ||= `${g} ${vp.w}x${vp.h} ${b.button.action}=${b.size} vs smallest ${smallest}`;
+          }
+          for (const s of [p.drive, p.turn]) {
+            if (Math.hypot(b.x - s.x, b.y - s.y) < (b.size + s.size) / 2) onStick ||= `${g} ${vp.w}x${vp.h} ${b.button.action}`;
+          }
+        }
+        // 320 and 347 are a 10-button pad on a phone that genuinely has no room for one — the
+        // overflow doubles up there and always did. From 360 up, the widest build fits CLEAN.
+        if (vp.h >= 360) {
+          for (let i = 0; i < all.length; i++) {
+            for (let j = i + 1; j < all.length; j++) {
+              if (Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) < (all[i].size + all[j].size) / 2) {
+                stacked ||= `${g} ${vp.w}x${vp.h} #${i}/#${j}`;
+              }
+            }
+          }
+        }
+      }
+    }
+    check('⚠️ touch: on a narrow landscape phone the primary steps to 64px, never to the 44px floor', shrunk === '', shrunk);
+    check('⚠️ touch: no button — overflow included — ever lands on a stick base on a real phone', onStick === '', onStick);
+    check('⚠️ touch: the widest pad the app can build is overlap-free on every landscape phone 360px and taller', stacked === '', stacked);
+    check('touch: and nothing in the band is under the 44px finger floor', tiny === '', tiny);
   }
 }
 
@@ -25839,7 +26265,7 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ controls screen: ...and a pad capture the same way',
-    /const taken = padConflict\(b, game, action, sorted\);\s*if \(taken\) \{[\s\S]{0,800}?return false;\s*\}\s*onChangeRef\.current\(/.test(cs),
+    /const taken = padConflict\(b, game, capture\.action, sorted\);\s*if \(taken\) \{[\s\S]{0,800}?return false;\s*\}\s*onChangeRef\.current\(/.test(cs),
   );
   check(
     'controls screen: the old "Took C from …" steal notice is gone',
@@ -25880,6 +26306,1547 @@ const dumperSetup = (): RobotSetup => {
   check(
     "desktop oauth: ...and the callback is on the site even from the offline bundle's file:// page",
     /window\.location\.protocol === 'file:' \? SITE_URL : window\.location\.origin/.test(panel),
+  );
+}
+/**
+ * THE DISCORD ACTIVITY'S SEASON DEFAULT — BIOBUZZ in the embed, DECODE everywhere else.
+ *
+ * Both halves fail SILENTLY and in opposite directions, which is why both are pinned:
+ * seeding without the stored-settings test overrides a season the player deliberately
+ * chose, on every single launch; and moving the default into `defaultSettings()` would
+ * quietly change the season for every first-time visitor to the SITE and the desktop app,
+ * which is explicitly not what was asked for.
+ */
+{
+  const store = new Map<string, string>();
+  const stub = {
+    getItem: (k: string): string | null => (store.has(k) ? (store.get(k) as string) : null),
+    setItem: (k: string, v: string): void => {
+      store.set(k, v);
+    },
+    removeItem: (k: string): void => {
+      store.delete(k);
+    },
+  };
+  const g = globalThis as { localStorage?: unknown };
+  const had = 'localStorage' in g;
+  const prev = g.localStorage;
+  g.localStorage = stub;
+  try {
+    check(
+      'discord activity: the APP-WIDE default season is still DECODE (the site is unchanged)',
+      defaultSettings().game === 'decode',
+      defaultSettings().game,
+    );
+    check('settings: an empty origin reports no stored settings', !hasStoredSettings());
+    saveSettings(defaultSettings());
+    check('settings: a saved blob reports stored settings', hasStoredSettings());
+  } finally {
+    if (had) g.localStorage = prev;
+    else delete g.localStorage;
+  }
+
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'discord activity: the season is seeded to BIOBUZZ, and only inside the activity',
+    /inDiscordActivity\(\) && !hasStoredSettings\(\) \? switchGame\(stored, 'biobuzz'\)/.test(app),
+  );
+  check(
+    '⚠️ discord activity: the seed defers to a STORED pick, so a chosen season is never overridden',
+    /!hasStoredSettings\(\)/.test(app),
+    'without this the activity re-picks BIOBUZZ on every launch, including for somebody who chose DECODE',
+  );
+  check(
+    'discord activity: the lobby browser is still handed settings.game (no second source of truth)',
+    /<DiscordLobbyList[^>]*game=\{settings\.game\}/.test(app),
+  );
+
+  /**
+   * REJOINING YOUR OWN ROOM AFTER A MATCH HAS STARTED.
+   *
+   * Reproduced against a real server: leave/rejoin is fine while the room is still a lobby
+   * and is refused with "Room is full or a match is already in progress." the moment a match
+   * exists, clearing only when the 45s grace expires. The server's seat reclaim is gated on
+   * `if (user)`, and the embed is always signed out, so the activity must use the protocol's
+   * signed-out reclaim (`rejoin`, proved by the client id) instead. The deterministic room
+   * code means there is no second room to escape to, so without this the whole voice channel
+   * is walled out of its own lobby.
+   */
+  const enterFn = app.match(/const enterDiscordRoom = \(code: string, game: GameId\): void => \{([\s\S]*?)\n  \};/);
+  check('discord activity: the entry path is still found (the checks below are anchored on it)', !!enterFn);
+  check(
+    '⚠️ discord activity: entering a room we hold a seat in RECLAIMS it rather than joining fresh',
+    !!enterFn && /rejoinGame\(held, freshLobby\)/.test(enterFn[1]) && /loadActiveGame\(\)/.test(enterFn[1]),
+    'without it a signed-out player who left a started match is refused by the server and, because the code is deterministic, has nowhere else to go',
+  );
+  check(
+    'discord activity: the held seat must be for THIS room, compared case-insensitively',
+    !!enterFn && /held\.room\.toUpperCase\(\) === code\.toUpperCase\(\)/.test(enterFn[1]),
+  );
+  check(
+    '⚠️ discord activity: a refused reclaim falls back to a FRESH JOIN, not the dead-end dialog',
+    !!enterFn && /rejoinGame\(held, freshLobby\)/.test(enterFn[1]),
+    'a match that ENDED while the player was away leaves a stale record; "That match is over" would be a dead end about a room that is open again',
+  );
+  check(
+    'discord activity: rejoinGame accepts that fallback, and still defaults to the dialog for everyone else',
+    /const rejoinGame = \(ref: ActiveGameRef, onGone\?: \(\) => void\): void =>/.test(app) &&
+      /if \(onGone\) \{\n        onGone\(\);\n        return;\n      \}\n      setRejoinGone\(true\);/.test(app),
+  );
+}
+
+/**
+ * THE DISCORD ACTIVITY'S BOOT SCREEN AND ITS LAUNCH QUERY.
+ *
+ * Two failures that are invisible from a dev box, because both need the real embed —
+ * a cross-origin iframe at `<app-id>.discordsays.com` whose CSP allows exactly the two
+ * configured URL mappings, and whose launch URL is the ONLY carrier of `instance_id`,
+ * `frame_id` and `platform`.
+ *
+ * 1. `index.html` IS the loading screen (React clears `#root` on mount), so it is what
+ *    a participant looks at for the whole cold boot. An external anchor with no
+ *    `target` there is a SAME-FRAME navigation to a host the embed may not load, with
+ *    no back button to undo it — it can strand the activity on launch. Nothing else in
+ *    the repo checks this file's links: it ships outside tsc and outside the React tree.
+ * 2. App's first mount effect canonicalizes the address bar to a bare path, and
+ *    `pathFor` emits no query. Read live, the launch params are therefore gone by the
+ *    time anything asks for them: the Embedded App SDK's constructor threw
+ *    `frame_id query param is not defined` on EVERY launch (into a swallowed
+ *    `console.warn`, after fetching 44 KB gzip of SDK), and with third-party storage
+ *    BLOCKED the instance id vanished part-way through a single load — leaving the page
+ *    in an activity by hostname and out of one by instance id, which is what removed the
+ *    Join button and un-pinned the region on a reload. Both are fixed by capturing the
+ *    query at MODULE LOAD, the way `src/ui/entryToken.ts` captures `?token=`.
+ */
+{
+  // ── the loading screen's links ────────────────────────────────────────────────
+  const bootHtml = readFileSync('index.html', 'utf8').replace(/\r\n/g, '\n');
+  const bootAnchors = bootHtml.match(/<a\b[^>]*>/g) ?? [];
+  const bootExternal = bootAnchors.filter((a) => /href="https?:/.test(a));
+  const bootSameFrame = bootExternal
+    .filter((a) => !/target="_blank"/.test(a))
+    // the sponsor anchor is written across five lines — flatten it so the failure names it
+    .map((a) => a.replace(/\s+/g, ' '));
+  check(
+    'discord activity: the loading screen still has external links to check',
+    bootExternal.length >= 3,
+    `${bootExternal.length} found — if this dropped to 0 the check below cannot fail`,
+  );
+  check(
+    '⚠️ discord activity: NO external link on the loading screen navigates the frame itself',
+    bootSameFrame.length === 0,
+    `same-frame: ${bootSameFrame.join(' | ')}`,
+  );
+  const bootSponsor = bootExternal.find((a) => a.includes('offsetrobotics.com'));
+  // the placement and its hand-written UTM tag are a contracted obligation
+  // (docs/area/sponsor.md) — only HOW the link opens changed, so pin all three together
+  check(
+    'sponsor: the loading-screen link still renders, still carries its UTM tag, and opens out of frame',
+    !!bootSponsor &&
+      /utm_medium=loading/.test(bootSponsor) &&
+      /target="_blank"/.test(bootSponsor) &&
+      /rel="noreferrer"/.test(bootSponsor),
+    (bootSponsor ?? 'no offsetrobotics.com anchor').replace(/\s+/g, ' '),
+  );
+
+  // ── the launch query, captured at module load ─────────────────────────────────
+  // Hostname is deliberately `localhost` here: `inDiscordActivity()` then depends on the
+  // INSTANCE ID alone, which is the half that used to disappear. sessionStorage THROWS,
+  // the way a Discord-in-a-browser client with third-party storage blocked behaves — so
+  // the captured query is the only thing left that can answer.
+  const blockedStore = {
+    getItem: (): string | null => {
+      throw new Error('storage blocked');
+    },
+    setItem: (): void => {
+      throw new Error('storage blocked');
+    },
+  };
+  const gWin = globalThis as unknown as { window?: unknown };
+  const savedWin = gWin.window;
+  let idAfterCanonical = '';
+  let inAfterCanonical = false;
+  let queryAfterCanonical = '';
+  let idFromLiveUrl = '';
+  try {
+    setLaunchSearchForTests('?frame_id=fr-1&instance_id=inst-abc&platform=desktop');
+    gWin.window = {
+      location: { hostname: 'localhost', host: 'localhost:5173', search: '' },
+      sessionStorage: blockedStore,
+    };
+    idAfterCanonical = discordInstanceId();
+    inAfterCanonical = inDiscordActivity();
+    queryAfterCanonical = launchQuery();
+    // and with no captured query, the live URL is still read (what the reload/sessionStorage
+    // block above this one relies on)
+    setLaunchSearchForTests('');
+    (gWin.window as { location: { search: string } }).location.search = '?instance_id=live-1';
+    idFromLiveUrl = discordInstanceId();
+  } finally {
+    // module-scope state must NOT cross a block boundary — the shard runner bin-packs
+    // these blocks across processes in an order nobody controls
+    setLaunchSearchForTests('');
+    gWin.window = savedWin;
+  }
+  check(
+    '⚠️ discord activity: the instance id survives the router stripping the URL, with storage blocked',
+    idAfterCanonical === 'inst-abc',
+    `${idAfterCanonical || "''"} — read live, this is empty the moment App canonicalizes`,
+  );
+  check(
+    '⚠️ discord activity: ...so the page still knows it is in an activity on that same load',
+    inAfterCanonical,
+    'the host-based and instance-based answers must not disagree within one document',
+  );
+  check(
+    'discord activity: the captured query still holds the frame_id and platform the SDK needs',
+    /frame_id=fr-1/.test(queryAfterCanonical) && /platform=desktop/.test(queryAfterCanonical),
+    queryAfterCanonical || "''",
+  );
+  check(
+    'discord activity: with nothing captured, the live URL is still read',
+    idFromLiveUrl === 'live-1',
+    idFromLiveUrl || "''",
+  );
+
+  // ── the SDK is built from that query, and not paid for when there is none ─────
+  const actSrc = readFileSync('src/net/discordActivity.ts', 'utf8').replace(/\r\n/g, '\n');
+  const sdkSrc = readFileSync('src/net/discordSdk.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ discord activity: nothing constructs the SDK straight off the live URL',
+    !/new DiscordSDK\(/.test(actSrc),
+    'the stock constructor re-reads window.location.search and throws frame_id query param is not defined',
+  );
+  check(
+    'discord activity: the participants watcher builds it through the launch-query facade',
+    /createDiscordSdk\(clientId\)/.test(actSrc),
+  );
+  check(
+    '⚠️ discord activity: the facade overrides the SDK’s own search accessor with the captured query',
+    /override _getSearch\(\): string \{\n    return launchQuery\(\);\n  \}/.test(sdkSrc),
+    'src/net/discordSdk.ts — a prototype method, never an instance field: field initializers run AFTER the base constructor has already parsed the search',
+  );
+  check(
+    'discord activity: the 44 KB SDK chunk is not fetched when the launch params are gone',
+    /if \(!launchParam\('frame_id'\)\) return/.test(actSrc),
+    'a reload inside the activity has no frame_id to construct with, so the download can only throw',
+  );
+}
+
+/**
+ * THE SEAT'S SECRET — the credential `rejoin` and `abandon` are checked against.
+ *
+ * The old rule was "knowing the client id is proof", and it was false: `broadcastRoster`
+ * puts every driver's id on the wire and `broadcast` fans it out to SPECTATORS too, while
+ * `spectate` needs no account and no invitation. So anyone who could watch a match could
+ * read the ids out of the first roster frame and boot its drivers one `abandon` at a time,
+ * or `rejoin` onto a seat and drive somebody else's robot. Reproduced against a real server
+ * before the fix, and blocked after it.
+ *
+ * Structural, like the other server-door checks in this file: no harness here can drive the
+ * ws handlers. Each predicate is narrow so an ordinary edit nearby does not red the suite.
+ */
+{
+  const room = readFileSync('server/room.ts', 'utf8').replace(/\r\n/g, '\n');
+  const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  const proto = readFileSync('src/net/protocol.ts', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ seat: the token is REQUIRED to reclaim a secured seat, and the id alone is not enough',
+    /private seatOwner\(c: Client, token\?: string\): boolean \{[\s\S]{0,240}?return !!c\.seatToken && token === c\.seatToken;/.test(room),
+    'without this the client id is a bearer token that every roster frame publishes to every spectator',
+  );
+  check(
+    'seat: a pre-token seat keeps the old rule, so an older client is not locked out of its own reconnect',
+    /if \(!c\.seatSecured\) return true;/.test(room),
+  );
+  check(
+    'seat: only a client that advertises the capability gets a secured seat',
+    /client\.seatSecured = !!client\.caps\?\.includes\('seat'\);/.test(room),
+  );
+  check(
+    'seat: reattach checks it, unless the caller proved more than the token does',
+    /if \(!trusted && !this\.seatOwner\(c, token\)\) return null;/.test(room),
+  );
+  check('seat: abandonSlot checks it', /if \(!this\.seatOwner\(c, token\)\) return false;/.test(room));
+  check(
+    '⚠️ seat: the ONLY trusted reclaim is the one holding a verified account id',
+    (idx.match(/reattach\([^)]*true\)/g) ?? []).length === 1 &&
+      /seatFor\(user\.userId\)[\s\S]{0,400}?reattach\(seat, send, sendRaw, backlog, undefined, true\)/.test(idx),
+    'a trusted bypass anywhere else would undo the seat secret from the door next to it',
+  );
+  check(
+    'seat: both doors forward the frame’s token to the room',
+    /r\.reattach\(msg\.clientId, send, sendRaw, backlog, msg\.seatToken\)/.test(idx) &&
+      /abandonSlot\(msg\.clientId, msg\.seatToken\)/.test(idx),
+  );
+  check(
+    '⚠️ seat: the token is sent ONLY in `welcome`, never in a roster or any other broadcast',
+    (room.match(/seatToken/g) ?? []).length > 0 &&
+      !/t: 'roster'[\s\S]{0,400}seatToken/.test(room) &&
+      !/sanitizePlayer[\s\S]{0,300}seatToken/.test(readFileSync('src/net/sanitize.ts', 'utf8')),
+    'a token that rides a broadcast is the same bug the client id had',
+  );
+  check(
+    'seat: the capability is advertised',
+    CLIENT_CAPS.includes('seat'),
+    // behavioural, not a grep: the previous form anchored on the array's closing bracket, so it
+    // really said "'seat' is the LAST entry" and would have reddened the next capability added.
+    CLIENT_CAPS.join(','),
+  );
+  check(
+    'seat: the client sends it on both doors',
+    /t: 'rejoin'[^}]*seatToken/.test(readFileSync('src/net/serverSession.ts', 'utf8')) &&
+      /t: 'abandon'[^}]*seatToken/.test(readFileSync('src/net/serverSession.ts', 'utf8')),
+  );
+  check(
+    'seat: it survives a reload, because the active-game record carries it',
+    /seatToken\?: string;/.test(readFileSync('src/net/activeGame.ts', 'utf8')) &&
+      /seatToken: s\.seatToken,/.test(readFileSync('src/ui/App.tsx', 'utf8')),
+  );
+}
+
+/**
+ * ⚠️ THE SEAT'S SECRET SURVIVES A RECYCLE. The token arrives in `welcome` and nowhere else, and
+ * a recycled room re-sends no `welcome`: the lobby that adopts the socket was built with an empty
+ * token, the next match's session inherited it, and from a custom room's SECOND match on every
+ * rejoin, Home rejoin card and Abandon was refused for a current client (`seatSecured`). Both
+ * halves are pinned: the server re-states it in the owner's own `lobby` frame, and the client
+ * carries it through `ResumedRoom` regardless of which server it is talking to.
+ *
+ * Behavioural on the server half, through a real `Room`: `held` is exactly what the adopting
+ * lobby holds, and it has to reclaim and abandon the seat in match two. The empty-token refusal
+ * is asserted beside it so the positive cannot pass on a room that stopped checking.
+ */
+{
+  const sink: Record<string, ServerMsg[]> = { a: [], b: [] };
+  const mk = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    caps: ['recycle', 'seat'],
+    userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-seat', () => {}, { kind: 'versus' });
+  room.add(mk('a', 'red'));
+  room.add(mk('b', 'blue'));
+  const minted = (sink.a.find((m) => m.t === 'welcome') as Extract<ServerMsg, { t: 'welcome' }> | undefined)?.seatToken ?? '';
+  check('recycle seat: a secured seat is minted a token on join (anchors the checks below)', minted !== '');
+  room.onMessage('a', { t: 'start' });
+  forceRoomToPost(room);
+  room.onMessage('a', { t: 'lobby' });
+  check('recycle seat: the room went back to its lobby', room.worldForTest() === null);
+  const lobbyA = sink.a.find((m) => m.t === 'lobby') as Extract<ServerMsg, { t: 'lobby' }> | undefined;
+  const held = lobbyA?.seatToken ?? '';
+  check('⚠️ recycle seat: the owner’s `lobby` frame re-states the seat’s secret', held !== '' && held === minted, `held=${held === '' ? 'empty' : 'set'}`);
+  check(
+    'recycle seat: ...and only the owner’s: nobody else’s frame carries it',
+    !sink.b.some((m) => m.t === 'lobby' && m.seatToken === minted),
+  );
+
+  room.onMessage('a', { t: 'update', patch: { ready: true } });
+  room.onMessage('b', { t: 'update', patch: { ready: true } });
+  room.onMessage('a', { t: 'start' });
+  check('recycle seat: the second match started', room.worldForTest() !== null);
+  room.advanceForTest(20);
+  room.detach('a'); // a mid-match drop in match two
+  check(
+    'recycle seat: an EMPTY token (what the adopting lobby held before the fix) is refused',
+    room.reattach('a', () => {}, undefined, undefined, '') === null,
+  );
+  check(
+    '⚠️ recycle seat: in the SECOND match the token the client holds reclaims the seat',
+    room.reattach('a', () => {}, undefined, undefined, held) !== null,
+  );
+  check('recycle seat: an empty-token abandon is refused', room.abandonSlot('a', '') === false);
+  check('⚠️ recycle seat: ...and the held token abandons it', room.abandonSlot('a', held) === true);
+
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const lobbySrc = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const lc = readFileSync('src/net/lobbyClient.ts', 'utf8').replace(/\r\n/g, '\n');
+  const ss = readFileSync('src/net/serverSession.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ recycle seat: the client carries the token through the handover (App → ResumedRoom → LobbyClient)',
+    /seatToken: string;/.test(readFileSync('src/ui/roomReturn.ts', 'utf8')) &&
+      /setResumedRoom\(\{[^}]*seatToken: s\.seatToken \?\? '' \}\)/.test(app) &&
+      /\.resume\(resume\.code, myPlayer\(\), resume\.clientId, resume\.seatToken,/.test(lobbySrc) &&
+      /clientId: string,\n    seatToken: string,[\s\S]{0,700}?this\.seatToken = seatToken;/.test(lc),
+    'against an older server this is the only half; without it match two is built with an empty token',
+  );
+  check(
+    'recycle seat: and both clients adopt one the server re-states on `lobby`',
+    /m\.t === 'lobby'\) \{[\s\S]{0,300}?if \(m\.seatToken\) this\.seatToken = m\.seatToken;/.test(lc) &&
+      /m\.t === 'lobby'\) \{[\s\S]{0,1200}?if \(m\.seatToken\) this\.seatToken = m\.seatToken;\n      this\.lobbyCb/.test(ss),
+  );
+}
+
+/**
+ * ⚠️ A MODERATION VERDICT IS WRITTEN ONLY OVER THE VALUE IT IS ABOUT. The in-room editor patches
+ * per keystroke and a check coalesces them, so a check that started on "abc" returned while the
+ * name was already "abcd" and wrote "abc" back over it, and the queued re-check then passed the
+ * stale name. Moderation is off in this run, which is enough: the verdict on an unflagged name is
+ * the name itself, so the old code wrote the checked value back all the same.
+ */
+{
+  const sink: ServerMsg[] = [];
+  const room = new Room('smoke-mod-stale', () => {}, { kind: 'versus' });
+  room.add({
+    id: 'a',
+    send: (m) => sink.push(m),
+    player: { clientId: 'a', name: 'abc', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  // the join's check is in flight; a keystroke lands before it returns
+  room.onMessage('a', { t: 'update', patch: { name: 'abcd' } });
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  const last = [...sink].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const name = last?.players.find((p) => p.clientId === 'a')?.name;
+  check('⚠️ moderation: a rename that lands mid-check is not overwritten by the stale verdict', name === 'abcd', String(name));
+  check(
+    'moderation: the verdict is applied per field, only where the field still holds what was checked',
+    /if \(p\.name === was\.name && name !== p\.name\) \{/.test(readFileSync('server/room.ts', 'utf8')),
+  );
+}
+
+/**
+ * THE REVIEW'S CLIENT FINDINGS ON THE ROOM SCREENS — each one silent in use, so pinned in source.
+ */
+{
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const list = readFileSync('src/ui/DiscordLobbyList.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  // an in-room refusal ("Everyone has to be ready…") was silent, and it latched `refusedRef`,
+  // which then swallowed "Lost connection" for the rest of the room
+  check(
+    '⚠️ lobby: only a refusal at the DOOR marks the socket refused',
+    /if \(phaseRef\.current !== 'room'\) refusedRef\.current = true;/.test(lobby) &&
+      !/lobby\.on\('error', \(msg, code\) => \{\n      refusedRef\.current = true;/.test(lobby),
+    'latched in the room, a later drop never said "Lost connection"',
+  );
+  check(
+    'lobby: an in-room refusal is shown in the room, and the next roster clears it',
+    /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
+      /lobby\.on\('roster', \(list, host\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+  );
+  check(
+    'lobby: the "Trying again" countdown is said only where it runs (the activity)',
+    /\{joiningGroup && ` Trying again in \$\{retryIn\}s\.`\}/.test(lobby) && !/finishes\. Trying again in \{retryIn\}s\./.test(lobby),
+    'on the web an invite has no retry timer, so it read "Trying again in 0s." forever',
+  );
+  check(
+    '⚠️ lobby: TRY NOW and TRY AGAIN drop the refused socket before dialling, as the timer does',
+    (lobby.match(/lobbyRef\.current\?\.dispose\(\);[^\n]*\n\s*join\(code, autoJoinRegion\);/g) ?? []).length === 3 &&
+      !/onClick=\{\(\) => join\(code, autoJoinRegion\)\}/.test(lobby),
+    'a leaked socket’s closed handler can later clobber a working room',
+  );
+
+  const rj = app.match(/const rejoinGame = \(ref: ActiveGameRef, onGone\?: \(\) => void\): void => \{([\s\S]*?)\n  \};/);
+  const rjBody = rj?.[1] ?? '';
+  check(
+    '⚠️ rejoin: one at a time — a second click during the wait builds no second session',
+    /^\s*(\/\/[^\n]*\n\s*)*if \(rejoiningRef\.current\) return;/.test(rjBody) && /rejoiningRef\.current = s;/.test(rjBody),
+    'setSession dropped the first session without disposing it: a live socket holding the seat',
+  );
+  check(
+    '⚠️ rejoin: a session the player walked away from is disposed, unless the recycle took its socket',
+    /if \(screenRef\.current !== from\) \{[\s\S]{0,900}?if \(rejoiningRef\.current === s\) \{\n\s*s\.dispose\(\);/.test(rjBody) &&
+      /if \(rejoiningRef\.current === s\) rejoiningRef\.current = null;\n    const transport = s\.release\(\);/.test(app),
+  );
+
+  // a list read that never succeeds used to leave JOIN MAIN LOBBY disabled on CHECKING… for good
+  check(
+    'discord lobbies: a list that keeps failing unlocks JOIN MAIN LOBBY instead of spinning forever',
+    /const loading = lobbies === null && !readFailed;/.test(list) &&
+      /setReadFailed\(misses >= READ_FAILS_MAX\)/.test(list) &&
+      /disabled=\{loading \|\| mainBusy\}/.test(list),
+  );
+}
+
+// ---- THE KEYS ARE GOING SOMEWHERE ELSE, AND THE HUD SAYS SO ------------------------
+/**
+ * Embedded as a Discord Activity the game is a cross-origin iframe beside a chat box, and a
+ * non-host never clicks into a match — the session is built straight off the server's
+ * `matchStart`. So a driver who tapped that chat box to type "ready" is pulled into a live
+ * match with the focus still over there: the sim keeps stepping, W lands in Discord, the
+ * robot sits still, and nothing on screen explains it. `Keyboard` has always known (it clears
+ * every held key on the blur, because no keyup is coming); it just never said so.
+ *
+ * Driven through a fake window, like the text-field block above: the real handlers, the real
+ * state, no DOM.
+ */
+{
+  const kb = new Keyboard();
+  const listeners: Record<string, ((e: unknown) => void)[]> = {};
+  const realWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    addEventListener: (t: string, fn: (e: unknown) => void) => {
+      (listeners[t] ??= []).push(fn);
+    },
+    removeEventListener: () => {},
+  };
+  kb.attach();
+  (globalThis as { window?: unknown }).window = realWindow;
+  const fire = (type: string): void => {
+    for (const fn of listeners[type] ?? []) fn({});
+  };
+  check(
+    'focus: a keyboard with no document to ask reads as FOCUSED',
+    kb.hasFocus(),
+    'an unknown answer must never put a notice in front of somebody whose keys already work',
+  );
+  for (const fn of listeners.keydown ?? []) {
+    fn({ key: 'w', target: { tagName: 'CANVAS', isContentEditable: false }, repeat: false, preventDefault: () => {} });
+  }
+  fire('blur');
+  check(
+    '⚠️ focus: the window losing focus reads as UNFOCUSED, and still lets go of the held keys',
+    !kb.hasFocus() && !kb.held('w'),
+    `hasFocus=${kb.hasFocus()} held(w)=${kb.held('w')} — the HUD notice hangs off this bit`,
+  );
+  fire('focus');
+  check(
+    'focus: clicking back into the window clears it again',
+    kb.hasFocus(),
+    'without the focus half the notice would never go away',
+  );
+}
+
+// ---- ...and the bit reaches the screen ---------------------------------------------
+{
+  const gm = readFileSync('src/game.ts', 'utf8').replace(/\r\n/g, '\n');
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const css = readFileSync('src/ui/styles.css', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'focus: the 10 Hz HUD read carries it, off the keyboard rather than a second mechanism',
+    /windowFocused: this\.input\.keyboard\.hasFocus\(\),/.test(gm),
+    'src/game.ts getHud() — the HUD poll is the only thing GameView reads world state through',
+  );
+  // a BOUNDED slice back from the element: a lazy scan would happily find these words
+  // somewhere else in a 1,300-line component
+  const at = gv.indexOf('className="focus-hint"');
+  const cond = at < 0 ? '' : gv.slice(Math.max(0, at - 400), at);
+  check(
+    'focus: the notice renders on the unfocused bit, not on a phone, and not after the buzzer',
+    /!hud\.windowFocused/.test(cond) && /!coarsePointer/.test(cond) && /!== 'post'/.test(cond),
+    'src/ui/GameView.tsx — a phone has no keyboard to lose and nothing to click; `post` is the results overlay',
+  );
+  // slice to the first `}`, so this cannot walk into a later block and find someone else's rule
+  const decl = css.indexOf('\n.focus-hint {');
+  const block = decl < 0 ? '' : css.slice(decl, css.indexOf('}', decl));
+  check(
+    '⚠️ focus: the notice cannot swallow the very click it is asking for',
+    /pointer-events:\s*none/.test(block),
+    'src/ui/styles.css .focus-hint — it floats over the canvas, and the fix is a click ON the canvas',
+  );
+}
+
+// ---- AN AudioContext IS NOT GARBAGE-COLLECTED -------------------------------------
+/**
+ * `stopKeepAlive` closed the keep-alive context and NOTHING closed the effects one
+ * (`ensureCtx`), so every disposal of a game screen left a live audio graph behind. On the web
+ * the next page load bounds it; inside a Discord Activity the iframe is never reloaded, so the
+ * count only goes up for as long as the group keeps playing. A modest leak, not a break — and
+ * unbounded, which is the part that makes it worth a check.
+ *
+ * `MatchAudio` cannot be imported here (its constructor reads `import.meta.env` and builds
+ * `Audio` elements), so this reads the source, the way the LAN and env checks above do.
+ */
+{
+  const src = readFileSync('src/audio.ts', 'utf8').replace(/\r\n/g, '\n');
+  const gm = readFileSync('src/game.ts', 'utf8').replace(/\r\n/g, '\n');
+  // the method body alone, to the first method-level `}` — nothing lazy that could run on
+  const at = src.indexOf('\n  dispose(): void {');
+  const body = at < 0 ? '' : src.slice(at + 1, src.indexOf('\n  }', at));
+  check(
+    '⚠️ audio: MatchAudio.dispose() closes the effects AudioContext',
+    /ctx\.close\(\)/.test(body),
+    'src/audio.ts — an AudioContext is an OS-level graph the collector cannot take back',
+  );
+  check(
+    'audio: ...and drops the reference, so a late cue builds a fresh context instead of throwing',
+    /this\.ctx = null/.test(body),
+    '`tone()` and `noiseBurst()` call createOscillator() on whatever `ensureCtx` memoised, and neither catches',
+  );
+  check(
+    'audio: every context this module mints has a close that can reach it',
+    (src.match(/new AudioContext\(/g) ?? []).length === (src.match(/\.close\(\)/g) ?? []).length,
+    `${(src.match(/new AudioContext\(/g) ?? []).length} constructed, ${(src.match(/\.close\(\)/g) ?? []).length} closed — a new one needs a disposal, not just a creator`,
+  );
+  check(
+    '⚠️ audio: the game screen gives it back on the way out',
+    /this\.audio\.dispose\(\);/.test(gm) && !/this\.audio\.stopKeepAlive\(\);/.test(gm),
+    'src/game.ts dispose() — stopSpeech + stopKeepAlive left the effects context running',
+  );
+}
+
+// THE DOWNLOAD PAGE'S MOBILE PANEL MUST NOT INSTRUCT THE EMBED (audit 2026-09-24).
+// Inside the Discord activity the page is a cross-origin iframe in Discord's own webview:
+// there is no browser Share menu and no home screen to add to, so its one sentence — the
+// footer link reaches this page from inside the activity — was unfollowable. Sliced by INDEX
+// rather than matched with a lazy span, because a lazy `[\s\S]*?` across a JSX ternary will
+// happily walk out of the arm it was meant to stay inside.
+{
+  const dl = readFileSync('src/ui/Download.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const open = dl.indexOf('{embedded ? (');
+  const mid = open < 0 ? -1 : dl.indexOf(') : (', open);
+  const end = mid < 0 ? -1 : dl.indexOf(')}', mid);
+  const yes = open < 0 || mid < 0 ? '' : dl.slice(open, mid);
+  const no = mid < 0 || end < 0 ? '' : dl.slice(mid, end);
+  check(
+    'download: the mobile panel branches on inDiscordActivity()',
+    /const embedded = inDiscordActivity\(\);/.test(dl) && /from '\.\.\/net\/discordActivity'/.test(dl) && open > 0 && mid > open && end > mid,
+    `embedded=${/const embedded = inDiscordActivity\(\);/.test(dl)} ternary=${open},${mid},${end}`,
+  );
+  check(
+    '⚠️ download: the embed is never told to open a Share menu it does not have',
+    yes !== '' && !yes.includes('Share') && !yes.includes('Add to Home Screen'),
+    yes.replace(/\s+/g, ' ').trim(),
+  );
+  check(
+    'download: it is given the one thing it CAN act on instead — the site it is embedded from',
+    yes.includes('playdsim.com'),
+    yes.replace(/\s+/g, ' ').trim(),
+  );
+  check(
+    'download: and a plain mobile browser still gets the Share/Add to Home Screen sentence',
+    no.includes('Share') && no.includes('Add to Home Screen') && !no.includes('playdsim.com'),
+    no.replace(/\s+/g, ' ').trim(),
+  );
+}
+
+/**
+ * A REGION REACHES A `fly-replay` HEADER, so it is validated before it gets there.
+ *
+ * Node throws `ERR_INVALID_CHAR` on a CRLF in `writeHead`, inside the handler, where the
+ * process hook only LOGS it — the socket is then left with no response until it times out,
+ * so a loop of `?region=%0Ax` piles up hung sockets on the one machine every Discord
+ * Activity is pinned to. The upgrade path is worse: a raw `socket.write` skips Node's
+ * validation entirely. The guard is in `routeTarget` so all three call sites inherit it.
+ *
+ * ⚠️ These are BEHAVIOURAL, not a grep. The previous check for this greped the whole of
+ * `server/index.ts` for the regex and was satisfied by the ONE handler that already had it,
+ * while the other two went unguarded for months.
+ */
+{
+  const at = (q: string): string | null => routeTarget(new URL(`http://x/?${q}`), 'iad');
+
+  check('region: an ordinary region still routes', at('region=iad') === 'iad');
+  check('region: a region-coded room still routes on its prefix', at('room=iad-abc123') === 'iad');
+  check('region: a bare custom code still stays put', at('room=abc123') === null);
+  check('region: the matchmaker hint still wins', at('mm=1') === 'iad');
+
+  check(
+    '⚠️ region: a CRLF never reaches the header — it is refused, not passed through',
+    at('region=' + encodeURIComponent('iad\r\nX: y')) === null,
+    'this is the frame that hangs a socket with no response',
+  );
+  check('region: a newline alone is refused', at('region=' + encodeURIComponent('\niad')) === null);
+  check('region: an over-long value is refused', at('region=iadiad') === null);
+  check('region: an empty-ish value is refused', at('region=i') === null);
+  check('region: a region-coded ROOM prefix is validated too, not just ?region=', at('room=' + encodeURIComponent('a\r\nb') + '-abc') === null);
+  check('region: legalRegion agrees with the router', legalRegion('iad') && !legalRegion('IAD') && !legalRegion('ia') && !legalRegion('iad\n'));
+
+  const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'region: /health validates before building its replay header',
+    /legalRegion\(want\)/.test(idx),
+    'the sibling handler carried the guard and this one did not — the comment there named this exact file',
+  );
+}
+
+/**
+ * A RECONNECT CARRIES THE DISCORD GROUP, or the player is ejected from their own activity.
+ *
+ * `resume()`'s reopen frame is a full `join`, and it used to omit `group` while `join()`
+ * carried it. The server refuses a grouped room to a groupless join, so a wifi blip in a
+ * recycled lobby answered "open it from the activity" to somebody sitting inside it — and if
+ * the room had gone, the groupless join RE-CREATED it ungrouped, so it never appeared in the
+ * activity's lobby list again.
+ */
+{
+  const lc = readFileSync('src/net/lobbyClient.ts', 'utf8').replace(/\r\n/g, '\n');
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const resumeFn = lc.match(/  resume\([\s\S]*?\n  \}/);
+  check('resume: the function is still found (the checks below are anchored on it)', !!resumeFn);
+  check(
+    '⚠️ resume: its reopen frame carries the group, like join()’s does',
+    !!resumeFn && /caps: CLIENT_CAPS, channel: appChannel\(\), group/.test(resumeFn[0]),
+  );
+  check(
+    'resume: and the call site actually passes one',
+    /\.resume\(resume\.code, myPlayer\(\), resume\.clientId, resume\.seatToken, roomConfig\(\), group\)/.test(lobby),
+  );
+}
+
+/**
+ * THE ACTIVITY'S LOBBY BROWSER MUST NOT LIE ABOUT THE ROOM EVERYONE IS IN.
+ *
+ * `lobbySummary()` returned null the moment a room stopped being joinable, so a room with a
+ * match running VANISHED from `/api/lobbies` — and the browser reads absence as "nobody has
+ * opened the main lobby yet", with the Join button still enabled and labelled with the
+ * VIEWER's season. The click was then refused by the server on a different screen, for the
+ * whole match AND the whole results screen. Reproduced against a real server before the fix.
+ */
+{
+  const room = readFileSync('server/room.ts', 'utf8').replace(/\r\n/g, '\n');
+  const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  const api = readFileSync('src/net/api.ts', 'utf8').replace(/\r\n/g, '\n');
+  const list = readFileSync('src/ui/DiscordLobbyList.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ lobbies: a room that cannot be joined is still LISTED, with why',
+    /joinable: this\.canJoin\(\),/.test(room) && !/lobbySummary\(\)[\s\S]{0,200}if \(!this\.canJoin\(\)\) return null;/.test(room),
+    'returning null is what let the browser call a room mid-match non-existent',
+  );
+  check(
+    'lobbies: it reports SEATS, so a bot is not an invisible free seat',
+    /players: this\.seatsTaken,/.test(room),
+    '`canJoin` counts bots and the summary did not, so a host plus two bots read as 1/4',
+  );
+  check('lobbies: the state says which kind of busy', /state: 'lobby' \| 'strategy' \| 'match' \| 'full'/.test(room));
+  check(
+    'lobbies: the endpoint no longer filters the busy ones out',
+    !/\.filter\(\(s\): s is NonNullable<ReturnType<Room\['lobbySummary'\]>> => s !== null\)/.test(idx),
+  );
+  check(
+    '⚠️ lobbies: a FAILED read is null, not an empty list',
+    (() => {
+      // bounded to the FUNCTION. Sliced to end-of-file this matched 18 other `return null;`
+      // tails in api.ts and could not fail — the same lazy-scan bug this suite exists to stop.
+      const at = api.indexOf('export async function fetchLobbies');
+      const body = api.slice(at, api.indexOf('\n}', at));
+      return /catch \{[\s\S]*?return null;/.test(body) && !/return \[\];[\s\S]*?\n  \}\n$/.test(body);
+    })(),
+    'returning [] for a dropped poll repainted a busy activity as "nobody has opened the main lobby"',
+  );
+  check(
+    'lobbies: and the browser keeps its last good list rather than adopting the failure',
+    /if \(alive && l !== null\) setLobbies\(l\);/.test(list),
+  );
+  check(
+    'lobbies: the main-lobby button is disabled while busy AND while still loading',
+    /disabled=\{loading \|\| mainBusy\}/.test(list),
+    'the first paint used to assert nobody had opened it before any answer arrived',
+  );
+  check('lobbies: a busy row says what it is, instead of offering a join', /busy \? busyLabel\(l\) : 'Join →'/.test(list));
+  check(
+    'lobbies: an older server (no `joinable`) is still treated as joinable',
+    /l\.joinable === false/.test(list) && /main\.joinable === false/.test(list),
+    'strict === false, so an absent field keeps the old meaning rather than disabling everything',
+  );
+}
+
+/**
+ * WHAT THE EMBED MAY NOT ADVERTISE — the menu screens.
+ *
+ * Inside a Discord Activity the page is a cross-origin iframe whose CSP blocks the auth host,
+ * so the player is ALWAYS signed out, there is no local network on the other side of the frame,
+ * and every room the party plays in is a custom room. Three surfaces did not know that, and each
+ * one ends somewhere the person cannot act:
+ *
+ *  - the top bar's "?" avatar, on the FIRST screen a participant sees, whose sign-in fails with
+ *    "Check your connection and try again." — advice that can never work in the embed;
+ *  - "LAN · same network", which really does render there (`LAN_SIGNALLING` is on in production),
+ *    and whose only remedy behind the tile is the sign-in that cannot happen;
+ *  - "Watch live", whose list admits ranked matches and record runs only, so the match the voice
+ *    channel is playing can never appear in it — while the code that WOULD reach it is derived
+ *    from the instance the viewer is already inside and was printed nowhere.
+ *
+ * All three ask `inDiscordActivity()` — HOST-BASED, so a storage-blocked reload that loses the
+ * instance id cannot quietly re-advertise any of them (the split that `inActivity` exists for).
+ */
+{
+  const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const modes = readFileSync('src/ui/ModeSelect.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ discord activity: the app bar drops its auth slot in the embed',
+    /const inActivity = inDiscordActivity\(\);/.test(shell) && /\{!inActivity && right\}/.test(shell),
+    'the "?" avatar sat on the first screen a participant sees and offered a sign-in the CSP blocks',
+  );
+  check(
+    'discord activity: ...asked host-based, so a lost instance id cannot bring sign-in back',
+    /import \{ inDiscordActivity \} from '\.\.\/net\/discordActivity';/.test(shell),
+    'the party id (`discordGroup`) is empty on a storage-blocked reload; the hostname is not',
+  );
+
+  // bound the scan to the Watch live tile ITSELF — a lazy [\s\S]*? walks straight past it into
+  // the next section and is then satisfied by the LAN gate below, which cannot fail
+  const watchTile = modes.match(/onClick=\{onWatch\}[\s\S]{0,2000}?<\/button>/);
+  check('discord activity: the Watch live tile is still found (the checks below are anchored on it)', !!watchTile);
+  check(
+    '⚠️ discord activity: Watch live says this activity’s lobbies are not listed, and names the code that reaches one',
+    !!watchTile &&
+      /\{inActivity && \(/.test(watchTile[0]) &&
+      /aren’t listed/.test(watchTile[0]) &&
+      /code \$\{activityCode\}/.test(watchTile[0]),
+    'the live list admits ranked and record rooms only, so the group’s own match is never in it',
+  );
+  check(
+    'discord activity: ...and with no instance id it asks for a code instead of printing one derived from ""',
+    /const id = discordInstanceId\(\);\s*return id \? roomCodeForInstance\(id\) : '';/.test(modes),
+    'roomCodeForInstance("") answers a valid-looking code for no room at all',
+  );
+
+  check(
+    '⚠️ discord activity: the LAN tileset is not rendered in the embed',
+    /\{lanOn && !inActivity && \(/.test(modes),
+    'hosting needs an account the embed cannot get, and "same network" is not what a voice channel is',
+  );
+  check(
+    'discord activity: the mode page reads the host-based predicate, not the party id',
+    /const inActivity = useMemo\(\(\) => inDiscordActivity\(\), \[\]\);/.test(modes),
+    '`discordGroup()` is empty on a storage-blocked reload, which would silently re-offer both',
+  );
+}
+
+/**
+ * THREE THINGS THE DISCORD ACTIVITY'S ENTRY PATH OWES, none of which the web path can show.
+ *
+ * 1. `enterDiscordRoom` was the ONE room entry in the app that skipped `guardStart`, and the
+ *    server's counterpart is `if (user)`-gated — unreachable in an embed that can never sign
+ *    in. So the one-live-game lock and the new-build gate had no backstop at all here: a
+ *    player who left a live match joined a second room beside their own coasting ghost robot,
+ *    and `saveActiveGame` then overwrote the single-slot record that the seat reclaim reads.
+ *    The guard may NOT wrap the whole function — its first branch blocks on exactly the record
+ *    the reclaim is built on, so it would refuse the reclaim as "you're already in a game".
+ * 2. Nothing on the activity's own screens started the BIOBUZZ download. The player never
+ *    types a room code, so the Lobby's preload runs in the same commit as its auto-join and
+ *    the 1.1 MB fetch starts at the instant the seat does — and the RENDERER is not in the
+ *    readiness gate at all, so the room can start while a cold participant still has a blank
+ *    canvas.
+ * 3. `rejoinGame` opened the full-screen match view before the server had answered, so a stale
+ *    record flashed it and bounced — taking a WebGL context and the 3D chunk fetches with it.
+ */
+{
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const enter = app.match(/const enterDiscordRoom = \(code: string, game: GameId\): void => \{([\s\S]*?)\n  \};/);
+  const body = enter?.[1] ?? '';
+  check('discord guard: the entry path is still found (the checks below are anchored on it)', !!enter);
+  check(
+    '⚠️ discord guard: a room we hold no seat in goes through `guardStart`',
+    !!enter && /\n    guardStart\(freshLobby\);/.test(body),
+    'unguarded, "Create a separate lobby" joined a second room while the first seat was still held',
+  );
+  check(
+    'discord guard: the bare unguarded join is gone',
+    !!enter && !/\n\s*freshLobby\(\);/.test(body),
+  );
+  check(
+    '⚠️ discord guard: the seat RECLAIM stays in front of the guard, never inside it',
+    !!enter &&
+      body.indexOf('rejoinGame(held, freshLobby)') >= 0 &&
+      body.indexOf('rejoinGame(held, freshLobby)') < body.indexOf('guardStart(freshLobby)'),
+    '`guardStart` blocks on `loadActiveGame()`, which is the very record the reclaim reads — wrapping it answers "give me my seat back" with "you are already in a game"',
+  );
+  check(
+    '⚠️ discord guard: the start-pose check reads `settingsRef`, so a just-switched season is the one measured',
+    /const cur = settingsRef\.current;\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
+    'selectGame runs on the line above the guard; the render’s own `settings` would measure the season being LEFT and refuse a BIOBUZZ room over a DECODE pose',
+  );
+
+  check(
+    'discord preload: App imports the room-physics preload',
+    /import \{ preloadRoomPhysics \} from '\.\.\/net\/roomPhysics';/.test(app),
+  );
+  const pre = app.match(
+    /useEffect\(\(\) => \{\n    if \(!inActivity\) return;([\s\S]{0,400}?)\n  \}, \[inActivity, settings\.game\]\);/,
+  );
+  check('discord preload: the mount effect is still found', !!pre);
+  check(
+    '⚠️ discord preload: the activity fetches the 3D PHYSICS at mount, not at auto-join',
+    !!pre && /void preloadRoomPhysics\(settings\.game\)/.test(pre[1]),
+    'the embed types no room code, so the Lobby preload and the auto-join land in the same commit',
+  );
+  check(
+    '⚠️ discord preload: and the RENDERER too, which no readiness gate covers',
+    !!pre && /moduleFor\(settings\.game\)\s*\n?\s*\.scene\?\.\(\)/.test(pre[1]),
+    'the scene chunk and the field GLB are first requested at GameView mount, AFTER matchStart, and the canvas stays blank until they land',
+  );
+
+  const rj = app.match(/const rejoinGame = \(ref: ActiveGameRef, onGone\?: \(\) => void\): void => \{([\s\S]*?)\n  \};/);
+  const rjBody = rj?.[1] ?? '';
+  check('discord rejoin: rejoinGame is still found', !!rj);
+  check(
+    '⚠️ discord rejoin: the game screen is NOT opened on the way in any more',
+    !!rj && /setSessionCoop\(ref\.kind === 'record' && \(ref\.start\.setups\?\.length \?\? 1\) > 1\);\n  \};/.test(app),
+    'a stale record flashed the full-screen match view and bounced, orphaning a WebGL context and the 3D fetches',
+  );
+  check(
+    '⚠️ discord rejoin: it opens on PROOF the seat came back — snapshots flowing, or a bounded deadline',
+    !!rj && /if \(st\.snapHz !== null \|\| Date\.now\(\) - openedAt >= REJOIN_SHOW_MS\) show\(\);/.test(rjBody),
+    '`waitingFor` cannot stand in: a ServerSession is born `connected`',
+  );
+  check(
+    'discord rejoin: an ordinary drop still opens the match (the player really is in it)',
+    !!rj && /if \(!s\.slotRefused\(\)\) \{\n        show\(\);/.test(rjBody),
+  );
+  check(
+    'discord rejoin: a redirect that beat us (a recycled room) is not overwritten',
+    !!rj && /if \(screenRef\.current !== from\) \{/.test(rjBody),
+    '`setSession` is immediate because it wires `onLobby`, so `backToRoomLobby` can fire while we wait',
+  );
+  const iv = rjBody.match(/\n    \}, (\d+)\);/);
+  check(
+    'discord rejoin: the refusal poll is fast enough to be the thing that times it',
+    !!iv && Number(iv[1]) <= 200,
+    `poll=${iv?.[1] ?? 'none'}ms — at 400 the poll itself was most of the visible flash`,
+  );
+  check(
+    'discord rejoin: App never calls `takeSnapshot` (it is destructive — it would steal the first frame)',
+    !/takeSnapshot\(\)/.test(app),
+  );
+}
+
+/**
+ * ⚠️ A JOIN THAT LANDS IN THE SAME INSTANT AS START USED TO BE DRAGGED INTO THE MATCH.
+ *
+ * The all-ready gate was CLIENT-ONLY (`Lobby.canStart`), and the server took the `start` frame
+ * on the host's word. The window is one roster broadcast's round trip: the host clicks while
+ * their screen still shows everyone ready, a `join` lands first, and the newcomer is committed
+ * on a default alliance, a default chassis and a default start pose having seen nothing at all.
+ * A seat that has just DROPPED is the same case from the other side — `detach` clears its ready.
+ *
+ * Driven through a real `Room`, which is where the gate lives. The positive is checked one
+ * message later, or "it did not start" would pass for a room that never starts at all.
+ */
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], late: [] };
+  const mk = (id: string, ready: boolean): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const room = new Room('smoke-start-unready', () => {}, { kind: 'versus' });
+  room.add(mk('h', true));
+  room.add(mk('late', false)); // walked in while the host's screen still said everyone was ready
+  room.onMessage('h', { t: 'start' });
+  check('⚠️ start: a seat that has not readied HOLDS the match, server-side', room.worldForTest() === null);
+  check(
+    'start: ...and the host is told why, instead of the button doing nothing',
+    sink.h.some((m) => m.t === 'error' && /ready/i.test(m.message)),
+    JSON.stringify(sink.h.filter((m) => m.t === 'error')),
+  );
+  check('start: ...and the newcomer is never handed a match they never saw', !sink.late.some((m) => m.t === 'matchStart'));
+  room.onMessage('late', { t: 'update', patch: { ready: true } });
+  room.onMessage('h', { t: 'start' });
+  check('start: readying up starts the very same room (so the three checks above can fail)', room.worldForTest() !== null);
+}
+
+// ...and the ONE flow that starts a room with nobody readied is left alone: `RecordRun` opens
+// its own room and sends START off the first roster without ever sending `ready`, on every
+// build in the fleet. The host's own seat is therefore exempt from the gate above.
+{
+  const rec = new Room('smoke-start-record-solo', () => {}, { kind: 'record', record: 'solo' }, () => {});
+  rec.add({
+    id: 'p',
+    send: () => {},
+    player: { clientId: 'p', name: 'p', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, userId: 'u-p',
+  });
+  rec.onMessage('p', { t: 'start' });
+  check('start: a SOLO RECORD run still starts unreadied — it is the host, and it never readies', rec.worldForTest() !== null);
+}
+
+/**
+ * ⚠️ A RENAME IS MODERATED. ONLY THE JOIN USED TO BE.
+ *
+ * `Room.add` runs `moderatePlayerNames`; the `update` handler ran `sanitizePlayerPatch` alone,
+ * which is `coerceName` — a LENGTH clamp, no word list and no provider. So a player could join
+ * clean and then rename to anything, live, onto every roster and every in-match label. The
+ * backstops are all missing exactly where it is easiest to do: the live in-room name editor is
+ * the Discord activity's, everyone in an embed is signed out, and `resolveReport` needs a
+ * signed-in filer — so nobody in that room can report it either.
+ *
+ * Structural, like the other server-door checks in this file: `moderateName` is disabled with
+ * no `MODERATION_BLOCKLIST`/key, so a headless room cannot observe a refusal. Each predicate is
+ * narrow so an ordinary edit nearby does not red the suite.
+ */
+{
+  const room = readFileSync('server/room.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ moderation: a patch that CHANGES a name is re-moderated, on the same path the join uses',
+    /if \(Room\.nameFingerprint\(c\.player\) !== namesBefore\) this\.moderatePlayerNames\(c\);/.test(room),
+    'without it `update` is a length clamp and nothing else',
+  );
+  check(
+    'moderation: ...measured against the names as they were BEFORE the patch landed',
+    /const namesBefore = Room\.nameFingerprint\(c\.player\);\n\s*Object\.assign\(c\.player, patch\);/.test(room),
+    'read after the assign it can never differ, and the check would be dead code',
+  );
+  check(
+    'moderation: the fingerprint covers every free-text name a roster carries',
+    /private static nameFingerprint\(p: LobbyPlayer\): string \{\n\s*return \[p\.name, p\.teamName \?\? '', p\.spec\.name \?\? '', p\.spec\.teamName \?\? ''\]/.test(room),
+    'a name left out of it is a name that can be changed without being checked',
+  );
+  check(
+    'moderation: the keystroke stream is coalesced, not billed one provider call per character',
+    /if \(this\.modInFlight\.has\(client\.id\)\) \{\n\s*this\.modQueued\.add\(client\.id\);\n\s*return;/.test(room) &&
+      /if \(this\.modQueued\.delete\(client\.id\) && this\.clients\.has\(client\.id\)\) this\.moderatePlayerNames\(client\);/.test(room),
+    'the in-room editor patches on every keystroke, and the LAST value is the one that must be checked',
+  );
+  check(
+    'moderation: the join path still runs it too (the patch path is an addition, not a move)',
+    /this\.broadcastRoster\(\);\n\s*this\.moderatePlayerNames\(client\);/.test(room),
+  );
+}
+
+/**
+ * THE ROLE MODEL IS A DUO MODEL, AND IT IS ENFORCED RATHER THAN ASSERTED.
+ *
+ * `derivedRole` excluded only `allies.length < 2`, so a three- or four-strong alliance —
+ * the DEFAULT shape in a Discord activity, where every participant advertises `blue` —
+ * got 'close' for the clientId-lowest member and 'far' for everyone else, while
+ * `useRoleSwap` resolved the PARTNER by roster (join) order. Two different orders over
+ * the same alliance: a swap request from the first member fanned out to three people, one
+ * from the third set a flag nobody read, an accept half-completed, and a swap between any
+ * two moved the UNINVOLVED members' derived role — which the lobby turns into an
+ * unrequested start-position change that discards a custom pose.
+ */
+{
+  const lp = (clientId: string, over: Partial<LobbyPlayer> = {}): LobbyPlayer =>
+    ({ clientId, alliance: 'blue', hidden: false, ...over }) as unknown as LobbyPlayer;
+  const a = lp('a');
+  const b = lp('b');
+  const c = lp('c');
+  const d = lp('d');
+
+  check('duo roles: TWO allies still split close/far (the case that worked, unchanged)',
+    derivedRole([a, b], a) === 'close' && derivedRole([a, b], b) === 'far');
+  check('⚠️ duo roles: THREE on one alliance has no role model, so nobody is locked',
+    derivedRole([a, b, c], a) === undefined &&
+      derivedRole([a, b, c], b) === undefined &&
+      derivedRole([a, b, c], c) === undefined,
+    'it used to hand close to the lowest clientId and far to the other two');
+  check('⚠️ duo roles: FOUR on one alliance (the activity default) likewise',
+    derivedRole([a, b, c, d], a) === undefined && derivedRole([a, b, c, d], d) === undefined);
+  check('duo roles: a third member on the OTHER alliance leaves the duo alone',
+    derivedRole([a, b, lp('c', { alliance: 'red' })], a) === 'close');
+  check('duo roles: a HIDDEN third member leaves the duo alone',
+    derivedRole([a, b, lp('c', { hidden: true })], a) === 'close');
+
+  // the one list both halves read
+  const duoAB = allianceDuo([b, a], a); // ROSTER order deliberately not clientId order
+  check('allianceDuo: the partner comes from the clientId sort, not the roster order',
+    !!duoAB && duoAB.partner.clientId === 'b' && duoAB.mineFirst === true);
+  check('allianceDuo: and the other member agrees on the same pairing',
+    (() => {
+      const duoBA = allianceDuo([b, a], b);
+      return !!duoBA && duoBA.partner.clientId === 'a' && duoBA.mineFirst === false;
+    })());
+  check('allianceDuo: null above two, so `canSwap` is false and the swap bar never renders',
+    allianceDuo([a, b, c], a) === null && allianceDuo([a], a) === null);
+  check('allianceDuo: null when I am not one of the two (a hidden or unrostered me)',
+    allianceDuo([b, c], a) === null,
+    'otherwise a hidden member is handed somebody else’s partner and somebody else’s half of the split');
+
+  const rsSrc = readFileSync('src/ui/useRoleSwap.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('useRoleSwap: the partner is read off allianceDuo',
+    /const partner = duo\?\.partner \?\? null;/.test(rsSrc));
+  check('⚠️ useRoleSwap: and NOT off roster order any more',
+    !/players\.find\(\(p\) => p\.alliance === me\.alliance/.test(rsSrc),
+    'the roster scan and the clientId sort named different people above two members');
+}
+
+/**
+ * AN AUTO-JOIN IS NOT AN ENTRY FORM, AND A SLOW CONNECT SAYS SO.
+ *
+ * A Discord activity launch auto-joins, so the screen it landed on was the web "Custom
+ * room" form: a "Your name" field, a New room / Have a code toggle, and a disabled CTA
+ * reading CREATING… while it was joining the group's shared lobby. Worse in the ERROR
+ * state, where every control came back live and the obvious button — CREATE ROOM — mints
+ * a fresh random room AWAY from the group. And `LobbyClient` subscribes to `onMessage`
+ * and `onFail` only, so between a drop and the exhausted retry budget (~48 s) nothing at
+ * all reached the UI.
+ */
+{
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const panelMatch = lobby.match(/if \(autoEntry && phase !== 'room'\) \{[\s\S]*?\n  \}/);
+  check('auto-join: the dedicated joining panel exists (the checks below are anchored on it)',
+    !!panelMatch);
+  const panel = panelMatch ? panelMatch[0] : '';
+  check('⚠️ auto-join: it is branched on BEFORE the entry form, so it wins',
+    lobby.indexOf("if (autoEntry && phase !== 'room') {") >= 0 &&
+      lobby.indexOf("if (autoEntry && phase !== 'room') {") <
+        lobby.indexOf("if (phase === 'entry' || phase === 'connecting' || phase === 'error') {"));
+  check('auto-join: it says it is joining, rather than CREATING…',
+    /Joining the lobby…/.test(panel) && /Joining the room…/.test(panel));
+  check('⚠️ auto-join: a refusal retries THE SAME CODE, and offers no CREATE ROOM',
+    /join\(code, autoJoinRegion\)/.test(panel) && !/CREATE ROOM/.test(panel) && !/createRoom/.test(panel),
+    'CREATE ROOM on the error screen minted a fresh room away from the group');
+  check('auto-join: the panel is seeded from the props, so the form is not painted first',
+    /const \[autoEntry\] = useState\(!!autoJoin \|\| !!resume\);/.test(lobby));
+
+  check('⚠️ lobby: the transport’s own down signal reaches the screen',
+    /transport\.onDown\(\(\) => setSlowConnect\(true\)\)/.test(lobby),
+    'the lobby layer never subscribed, so a 48-second retry budget was a frozen button');
+  const roster = lobby.match(/lobby\.on\('roster',[\s\S]*?\n    \}\);/);
+  check('lobby: and a roster frame clears it again',
+    !!roster && /setSlowConnect\(false\)/.test(roster[0]));
+  check('lobby: a first attempt that neither opens nor drops is covered by a timer too',
+    /setTimeout\(\(\) => setSlowConnect\(true\), SLOW_CONNECT_MS\)/.test(lobby));
+  check('lobby: the waiting copy is ONE sentence pair, said the same on both screens',
+    (lobby.match(/Still connecting to the game server\. It keeps trying for about a minute\./g) ?? []).length === 2);
+}
+
+/**
+ * NOBODY IS "Player" DRIVING "My Robot · —" BECAUSE A BOX WAS PRE-FILLED WITH A LITERAL.
+ *
+ * Signed out and auto-joined — every Discord participant, auth being CSP-blocked in the
+ * embed — `displayName` is null and a fresh `settings.spec` carries `teamName: ''`, so the
+ * fallback landed IN the name field and four roster rows were indistinguishable. The
+ * "You" editor that fixes it sat BELOW the roster, unprompted, pre-filled with the very
+ * literals, and was echo-only, so a re-entry re-advertised them.
+ */
+{
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('⚠️ identity: the driver-name box starts EMPTY, not on the literal',
+    /useState\(initialName \|\| \(displayName \?\? settings\.spec\.teamName\) \|\| ''\)/.test(lobby),
+    '`|| \'Player\'` put the fallback in the box the player is looking at');
+  check('identity: the robot-name box starts empty while it is still the generic default',
+    /useState\(settings\.spec\.name === DEFAULT_ROBOT_NAME \? '' : settings\.spec\.name\)/.test(lobby));
+  check('identity: the fallback is applied on the frame that advertises the seat',
+    /name: name\.trim\(\) \|\| DEFAULT_DRIVER_NAME,/.test(lobby));
+  check('identity: and the two literals are placeholders now',
+    /placeholder=\{DEFAULT_DRIVER_NAME\}/.test(lobby) &&
+      /placeholder=\{DEFAULT_ROBOT_NAME\}/.test(lobby) &&
+      !/placeholder="Player"/.test(lobby) &&
+      !/placeholder="My Robot"/.test(lobby));
+  check('⚠️ identity: the edit is persisted to settings.spec, so a re-entry is not "Player" again',
+    /saveRef\.current\(\{ \.\.\.s, spec: \{ \.\.\.s\.spec, teamName: driver, name: robot \} \}\)/.test(lobby),
+    'the editor was echo-only, so relaunching the activity re-advertised the literal');
+  check('identity: one debounce writes BOTH fields, so neither drops the other',
+    /const robot = robotName\.trim\(\) \|\| DEFAULT_ROBOT_NAME;[\s\S]{0,200}?const driver = name\.trim\(\);/.test(lobby) ||
+      /const driver = name\.trim\(\);[\s\S]{0,200}?const robot = robotName\.trim\(\) \|\| DEFAULT_ROBOT_NAME;/.test(lobby));
+  check('⚠️ identity: the "You" card can sit ABOVE the roster, for somebody still unnamed',
+    /\{idFirst && youSection\}[\s\S]{0,120}<h2>Drivers<\/h2>/.test(lobby),
+    'an unprompted editor under four identical rows is not read');
+  check('identity: and below it once they are named — one card, two placements',
+    /\{!idFirst && youSection\}/.test(lobby) &&
+      (lobby.match(/idFirst && youSection\}/g) ?? []).length === 2);
+  check('identity: where it sits is decided ONCE, so it cannot move under a cursor mid-keystroke',
+    /const \[idFirst\] = useState\(/.test(lobby));
+}
+
+/**
+ * THE THREE REFUSALS THAT LEFT A DISCORD PARTICIPANT WITH NOWHERE TO GO.
+ *
+ * The activity's room code is DERIVED FROM THE INSTANCE, so it is the same on every re-entry
+ * for everybody in the voice channel: a refusal with no way forward is not an inconvenience,
+ * it is the end of the session for four people. Each of these three said something the embed
+ * could not act on.
+ *
+ * - MID-MATCH read as "Room is full or a match is already in progress." — indistinguishable
+ *   from a standing full room, though it ends on its own in a couple of minutes. The
+ *   signed-out seat hold lapses after 45 s and the account-based reclaim is `if (user)`-gated,
+ *   so a phone that backgrounded the iframe came back to what looked like a permanent wall.
+ * - AT CAPACITY said "Pick a different region and try again." — there is one region in the
+ *   embed and `DISCORD_REGION` is a constant; the picker the client hint pointed at is not
+ *   rendered at all on a single-server build.
+ * - A SEASON MISMATCH said "That code is for a different game mode." — no season named, no
+ *   code, and retrying in place refuses identically forever, because what is wrong is the
+ *   client's own setting.
+ */
+{
+  const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const proto = readFileSync('src/net/protocol.ts', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    'refusals: both new codes are declared, and `code` stays OPTIONAL (one app serves every client)',
+    /\| 'in_progress'/.test(proto) && /\| 'game_mismatch'/.test(proto) && /code\?: ErrorCode/.test(proto),
+  );
+
+  // ---- mid-match ----------------------------------------------------------
+  const busy = idx.match(/if \(!r\.canJoin\(\)\) \{([\s\S]*?)\n    \}/);
+  check('mid-match: the canJoin refusal is still found (the checks below are anchored on it)', !!busy);
+  check(
+    '⚠️ mid-match: the refusal is CODED, so the activity can wait it out instead of reading an error',
+    !!busy && /code: 'in_progress'/.test(busy[1]),
+    'without a code it is indistinguishable from a full room, which does NOT end on its own',
+  );
+  check(
+    'mid-match: the code is decided by the ROOM’s own state, the same one /api/lobbies reports',
+    !!busy && /r\.lobbySummary\(\)\.state/.test(busy[1]) && /state === 'match' \|\| state === 'strategy'/.test(busy[1]),
+  );
+  check(
+    'mid-match: full and mid-match are two different sentences now',
+    !!busy &&
+      /'This room is full\.'/.test(busy[1]) &&
+      /A match is already running in this room\. You can join when it finishes\./.test(busy[1]),
+  );
+  const retryFx = lobby.match(
+    /if \(!group \|\| !autoEntry \|\| phase !== 'error' \|\| errorCode !== 'in_progress'\) return;([\s\S]*?)\n  \}, \[group, autoEntry, phase, errorCode, code\]\);/,
+  );
+  check('mid-match: the client’s retry effect is still found (anchors the checks below)', !!retryFx);
+  check(
+    '⚠️ mid-match: the activity retries the SAME code by itself',
+    !!retryFx && /join\(code, autoJoinRegion\);\n    \}, IN_PROGRESS_RETRY_S \* 1000\)/.test(retryFx[1]),
+    'the deterministic room code means there is no other room to send them to',
+  );
+  check(
+    'mid-match: and it counts down, re-seeded per attempt and ticked (not one frozen number)',
+    !!retryFx &&
+      /setRetryIn\(IN_PROGRESS_RETRY_S\)/.test(retryFx[1]) &&
+      /setInterval\(\(\) => setRetryIn\(/.test(retryFx[1]),
+  );
+  const joinFn = lobby.match(/function join\(roomCode: string, hostRegion\?: string \| null\): void \{([\s\S]*?)\n  \}/);
+  check('mid-match: Lobby.join is still found (anchors the check below)', !!joinFn);
+  check(
+    '⚠️ mid-match: a new attempt clears the old code, so the retry loop cannot outlive its refusal',
+    !!joinFn && /setErrorCode\(undefined\)/.test(joinFn[1]),
+    'a stale `in_progress` would caption an unrelated failure AND re-arm the timer forever',
+  );
+  const waitPanel = lobby.match(
+    /phase === 'error' && errorCode === 'in_progress' \? \(([\s\S]{0,1600}?)\) : phase === 'error' \? \(/,
+  );
+  check('mid-match: the waiting panel is still found (anchors the checks below)', !!waitPanel);
+  check(
+    'mid-match: it reads as a wait, not as a failure, and shows the countdown',
+    !!waitPanel &&
+      /ds-loading/.test(waitPanel[1]) &&
+      /You’ll be able to join when it finishes\./.test(waitPanel[1]) &&
+      /\$\{retryIn\}s/.test(waitPanel[1]) &&
+      !/ds-form-err/.test(waitPanel[1]),
+  );
+
+  // ---- at capacity --------------------------------------------------------
+  const cap = idx.match(/if \(!r && MAX_ROOMS > 0 && roomsHoldingCapacity\(\) >= MAX_ROOMS\) \{([\s\S]*?)\n    \}/);
+  check('region_full: the capacity refusal is still found (anchors the checks below)', !!cap);
+  check(
+    '⚠️ region_full: a grouped joiner is not told to pick a region the embed does not have',
+    !!cap &&
+      /wantGroup \?/.test(cap[1]) &&
+      /Every server for the Discord activity is busy right now\. Try again in a minute\./.test(cap[1]),
+  );
+  check(
+    'region_full: and the ordinary web sentence is unchanged for everyone else',
+    !!cap && /This region is busy\. Pick a different region and try again\./.test(cap[1]),
+  );
+  check(
+    'region_full: the group is read BEFORE the refusal whose wording depends on it',
+    idx.indexOf('const wantGroup =') > 0 &&
+      idx.indexOf('const wantGroup =') < idx.indexOf('if (!r && MAX_ROOMS > 0 && roomsHoldingCapacity() >= MAX_ROOMS)'),
+  );
+  check(
+    '⚠️ region_full: the client hint that points AT the region picker is gated on there being one',
+    /errorCode === 'region_full' && multiServer\(\) && \(/.test(lobby),
+    'on a LAN server and in every activity `parseServers()` collapses to one entry and the picker is not rendered',
+  );
+
+  // ---- season mismatch ----------------------------------------------------
+  const mism = idx.match(
+    /if \(theirGame !== ourGame && r\.config\.kind === want\.kind && r\.config\.record === want\.record\) \{([\s\S]*?)\n      \}/,
+  );
+  check('season mismatch: the season branch is still found (anchors the checks below)', !!mism);
+  check(
+    '⚠️ season mismatch: it is coded, and the sentence NAMES both seasons',
+    !!mism &&
+      /code: 'game_mismatch'/.test(mism[1]) &&
+      /seasonFor\(theirGame\)\.name/.test(mism[1]) &&
+      /seasonFor\(ourGame\)\.name/.test(mism[1]),
+    'the old line named neither, so a player could read it twice and still not know what to pick',
+  );
+  check(
+    'season mismatch: it is asked BEFORE the generic kind/record refusal, which is unchanged',
+    idx.indexOf("code: 'game_mismatch'") > 0 &&
+      idx.indexOf("code: 'game_mismatch'") < idx.indexOf("'That code is for a different game mode.'"),
+  );
+  check(
+    'season mismatch: the embed is pointed at the one screen that switches its season for it',
+    /errorCode === 'game_mismatch' && joiningGroup && \(/.test(lobby),
+  );
+  check(
+    'season mismatch: and the web entry form says where the setting lives, since retrying cannot fix it',
+    /errorCode === 'game_mismatch' && \(\n\s*<p className="ds-hint warn">\n\s*Change the season on the home page/.test(lobby),
+  );
+}
+
+/**
+ * WHAT THE EMBED MAY NOT ADVERTISE — the ACCOUNT surfaces, and the sentence that blamed the
+ * player's wifi for a content-security policy.
+ *
+ * Inside a Discord Activity the page is a cross-origin iframe whose CSP admits only Discord's
+ * own URL mappings. The auth host is not one of them, so the sign-in fetch is refused BY THE
+ * BROWSER before a packet leaves and the participant is permanently signed out — signing in
+ * there is not slow, not flaky, impossible. Four surfaces did not know that:
+ *
+ *  - the rail's (and the home menu's) Profile destination, whose two pages are both an
+ *    account — Appearance is name/title/badges, Account is sign-in/email/password;
+ *  - the Account page itself, whose signed-out state is a Sign in button;
+ *  - the friends panel, telling four people in a voice call to sign in;
+ *  - `describeAuthError`, which reads a bare `TypeError` (exactly what a CSP refusal throws:
+ *    no status, no code) as "the transport failed" and answered "Couldn’t reach the sign-in
+ *    service. Check your connection and try again." — on a page showing a live player count.
+ *
+ * The rule the fixes follow: REMOVE what cannot work, EXPLAIN why, KEEP what still does (the
+ * Account page stays routable for its local Reset all settings, and says where the account
+ * went). The new sentence claims no cause it cannot observe — `inDiscordActivity()` answers
+ * where we are, never why one fetch failed.
+ */
+{
+  const rail = readFileSync('src/ui/NavRail.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const account = readFileSync('src/ui/Account.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const friendsSrc = readFileSync('src/ui/FriendsPanel.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ discord activity: the rail drops its Profile destination in the embed',
+    /return inActivity \? RAIL_ITEMS\.filter\(\(it\) => it\.id !== 'profile'\) : RAIL_ITEMS;/.test(rail) &&
+      /\{railItems\(inDiscordActivity\(\)\)\.map\(/.test(rail),
+    'both halves of Profile are an account, and the embed can never have one',
+  );
+  check(
+    'discord activity: ...asked host-based, so a storage-blocked reload cannot bring it back',
+    /import \{ inDiscordActivity \} from '\.\.\/net\/discordActivity';/.test(rail),
+    '`discordGroup()` is empty there; the hostname is not',
+  );
+
+  check(
+    '⚠️ discord activity: the Account page shows an explanation instead of a sign-in',
+    /\{inActivity \? <AccountInDiscord \/> : authEnabled \? <Identity \/> : <IdentityDisabled \/>\}/.test(account),
+    'the signed-out Identity panel is a Sign in button that opens AuthPanel',
+  );
+  check(
+    'discord activity: ...and the Appearance tab beside it is not offered either',
+    /\{!inActivity && <ProfileTabs active="account" onPick=\{onTab\} \/>\}/.test(account),
+    'name, title and badges are account-held too, so the strip is a second door onto the same dead end',
+  );
+  check(
+    'discord activity: every account panel on the page is gated with it, not on authEnabled alone',
+    !/\{authEnabled && </.test(account) && (account.match(/\{showAuth && </g) ?? []).length >= 5,
+    'each one mounts a session hook whose request the frame refuses',
+  );
+  {
+    // bound the scan to the explanation itself — a lazy [\s\S]*? would walk out of the
+    // component and be satisfied by the copy in its own doc comment
+    const panel = account.match(/function AccountInDiscord\(\) \{[\s\S]{0,900}?\n\}/);
+    check('discord activity: the AccountInDiscord panel is found (the checks below are anchored on it)', !!panel);
+    check(
+      '⚠️ discord activity: it names the frame and where accounts DO work, and offers no sign-in',
+      !!panel &&
+        /Accounts aren’t available inside Discord/.test(panel[0]) &&
+        /\{SITE_HOST\} in a browser/.test(panel[0]) &&
+        !/AuthPanel|Sign in</.test(panel[0]),
+      'an address the player can type, not an anchor: a bare one navigates the activity away from itself',
+    );
+  }
+  {
+    // the signed-out branch ONLY: unbounded, this matches the signed-in tree below it too
+    const empty = friendsSrc.match(/\{!signedIn \? \([\s\S]{0,2000}?\) : friends\.unavailable/);
+    check('discord activity: the friends panel’s signed-out branch is found', !!empty);
+    check(
+      '⚠️ discord activity: the friends panel stops telling the embed to sign in',
+      !!empty &&
+        /inDiscordActivity\(\)/.test(empty[0]) &&
+        /Friends aren’t available inside Discord\./.test(empty[0]) &&
+        /\$\{SITE_HOST\} in a browser/.test(empty[0]),
+      'the panel STAYS — it is where somebody notices the list is missing, so it is where the answer belongs',
+    );
+    check(
+      'discord activity: ...and still says it plainly on the web, where signing in works',
+      !!empty && /'Sign in to add friends and see who’s online\.'/.test(empty[0]),
+      'the embed branch must not cost the web its own instruction',
+    );
+  }
+
+  // ── and the sentence itself, run rather than grepped ────────────────────────
+  const gWin = globalThis as unknown as { window?: unknown };
+  const savedWin = gWin.window;
+  const thrower: AuthFlowsClient = {
+    // what a CSP refusal looks like: a bare TypeError with no status and no code
+    requestPasswordReset: () => Promise.reject(new TypeError('Failed to fetch')),
+    resetPassword: () => Promise.reject(new TypeError('Failed to fetch')),
+    sendVerificationEmail: () => Promise.reject(new TypeError('Failed to fetch')),
+    verifyEmail: () => Promise.reject(new TypeError('Failed to fetch')),
+  };
+  let embedSaid = '';
+  let embedFlow = { ok: true } as Awaited<ReturnType<typeof authFlowsForTesting.passwordReset>>;
+  let webSaid = '';
+  try {
+    gWin.window = {
+      location: { hostname: 'dsim.discordsays.com', host: 'dsim.discordsays.com', search: '' },
+      sessionStorage: { getItem: (): string | null => null, setItem: (): void => {} },
+    };
+    embedSaid = describeAuthError(new TypeError('Failed to fetch'), 'Couldn’t sign in. Try again in a moment.');
+    embedFlow = await authFlowsForTesting.passwordReset(thrower, 'a@b.co');
+  } finally {
+    // module-scope state may NOT cross a block boundary — the runner bin-packs these
+    gWin.window = savedWin;
+  }
+  webSaid = describeAuthError(new TypeError('Failed to fetch'), 'Couldn’t sign in. Try again in a moment.');
+
+  check(
+    '⚠️ discord activity: a blocked sign-in no longer blames the player’s connection',
+    !/connection/i.test(embedSaid) && /inside Discord/.test(embedSaid) && embedSaid.includes(SITE_HOST),
+    embedSaid,
+  );
+  check(
+    'discord activity: ...and the same answer reaches the four wrapped flows, reason unchanged',
+    !embedFlow.ok && embedFlow.reason === 'network' && !/connection/i.test(embedFlow.message),
+    embedFlow.ok ? 'ok' : `${embedFlow.reason}: ${embedFlow.message}`,
+  );
+  check(
+    '⚠️ discord activity: on the web the connection sentence is still the right one',
+    /Check your connection and try again\./.test(webSaid) && !/Discord/.test(webSaid),
+    webSaid,
+  );
+  check(
+    'discord activity: the address in that copy is derived from SITE_URL, not typed out',
+    SITE_HOST === 'playdsim.com' && !/https?:|www\./.test(SITE_HOST),
+    SITE_HOST,
+  );
+}
+
+/**
+ * THE LAST TWO SIGN-IN DEAD ENDS, which are the two that are reachable FIRST.
+ *
+ * The rail dropped Profile in the embed, but the HOME MENU renders its own keycaps off the
+ * same list and kept it — and the home menu is the first screen a participant sees. Behind
+ * it, Appearance still offered a live Sign in button that Discord's frame can only refuse.
+ * Both now say what is true instead of asking for something impossible.
+ */
+{
+  const home = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const appear = readFileSync('src/ui/Appearance.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ embed: the HOME keycaps use the same filter as the rail, so the two cannot drift',
+    /railItems\(inDiscordActivity\(\)\)\.map\(/.test(home) && !/\bRAIL_ITEMS\.map\(/.test(home),
+    'the rail hid Profile and the home menu kept it, which is the screen you actually land on',
+  );
+  const noUser = appear.slice(appear.indexOf('if (!user) {'), appear.indexOf('if (!user) {') + 1600);
+  check('appearance: the signed-out branch is still found (anchors the checks below)', noUser.length > 100);
+  check(
+    '⚠️ appearance: inside the activity it explains instead of offering a sign-in that cannot work',
+    /if \(inDiscordActivity\(\)\) \{/.test(noUser) &&
+      /aren’t available inside Discord/.test(noUser),
+  );
+  check(
+    'appearance: and that branch carries NO live auth control',
+    !/setAuthOpen\(true\)/.test(noUser.slice(0, noUser.indexOf('return (', noUser.indexOf('if (inDiscordActivity())')) + 700)),
+  );
+  check(
+    'appearance: it names where the account does work, from the shared constant',
+    /\{SITE_HOST\}/.test(noUser),
+  );
+  check(
+    'appearance: the WEB still gets its own offer, unchanged',
+    // pinned on the CONTROL, not on the headline: alpha reworded that copy under this check
+    // during the rebase ("…titles and badges" -> "…badges"), which is a copy edit, not a
+    // regression. What must survive is that the web branch still OFFERS a sign-in.
+    /Sign in to earn/.test(appear) && /setAuthOpen\(true\)/.test(appear),
+  );
+}
+
+/**
+ * ⚠️ `hasStoredSettings()` ANSWERS A NARROWER QUESTION THAN ITS CALLER ASKS, AND THAT IS
+ * RECORDED RATHER THAN FIXED (audit #21).
+ *
+ * It is a bare key-presence test and `App`'s first-mount effect writes that key on every load,
+ * so it answers "has this app ever mounted on this origin", not "did a human choose a season".
+ * It is left standing: the seed is sticky THROUGH the saved blob (the first load persists
+ * `game: 'biobuzz'`, and every later launch reads BIOBUZZ back out of storage rather than out
+ * of the seed), so the only players it fails are origins whose blob predates the seed — a
+ * closed set that cannot grow, since a genuinely new origin has no key by definition. A real
+ * fix is a marker written where a human actually picks, which is not in `src/settings.ts`:
+ * `switchGame` has five callers and four of them are not a choice.
+ *
+ * What is checked here is that the LIMIT stays written down next to the function, because the
+ * next person to read `hasStoredSettings()` will otherwise re-derive it as a bug — and that it
+ * is still the cheap test it claims to be, rather than having quietly grown an inference.
+ */
+{
+  const src = readFileSync('src/settings.ts', 'utf8').replace(/\r\n/g, '\n');
+  const doc = src.slice(0, src.indexOf('export function hasStoredSettings'));
+  check(
+    '⚠️ settings: the key-presence limit of hasStoredSettings() is recorded where it is defined',
+    /bare KEY-PRESENCE test/.test(doc) && /CLOSED set/.test(doc),
+    'audit #21: without this the next reader re-derives it as an unreported bug',
+  );
+  check(
+    'settings: ...including that the honest fix is a marker at the PICK, and is not made here',
+    /is not made here/.test(doc),
+  );
+  const body = src.slice(src.indexOf('export function hasStoredSettings'), src.indexOf('export function loadSettings'));
+  check(
+    'settings: and it is still one getItem, inferring nothing from what is stored',
+    /localStorage\.getItem\(STORAGE_KEY\) !== null/.test(body) && !/JSON\.parse/.test(body),
+  );
+}
+
+/**
+ * A LOCAL RENDERER NOTICE HAS TO GO IN THE LIST THIS MODE ACTUALLY DRAINS.
+ *
+ * The drain is `this.session ? this.netEvents : this.world.events` — multiplayer reads the
+ * authoritative tail — so an HDRI failure or an Auto preset line pushed onto `world.events`
+ * was written where nothing was looking, and every one of these notices was invisible in a
+ * networked match, which is the mode the Discord Activity is always in.
+ */
+{
+  const g = readFileSync('src/game.ts', 'utf8').replace(/\r\n/g, '\n');
+  const gs = readFileSync('src/ui/GraphicsSection.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ scene: a quality notice goes to the drain this mode reads, not always world.events',
+    /onQualityEvent: \(line\) => \(this\.session \? this\.netEvents : this\.world\.events\)\.push\(line\)/.test(g),
+    'pushed to world.events it is invisible in every networked match',
+  );
+  check(
+    'scene: and it still matches the drain the render loop uses',
+    /const drain = this\.session \? this\.netEvents : this\.world\.events;/.test(g),
+    'if the drain rule ever changes, this is the other half that must change with it',
+  );
+}
+
+/**
+ * WHAT REVIEW CAUGHT IN THE FIXES THEMSELVES — three ways a fix broke a non-Discord flow.
+ *
+ * All three are the same shape: a change made for the embed that was not gated to it, or a
+ * guard that assumed every refusal arrives at the door. They are pinned here because none of
+ * them is visible from the embed, which is the surface everything else was tested against.
+ */
+{
+  const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+
+  check(
+    '⚠️ lobby: a refusal that arrives while we are IN the room stays inline, it does not replace the screen',
+    /setPhase\(\(p\) => \(p === 'room' \? p : 'error'\)\);/.test(lobby),
+    "'error' is terminal — the roster only promotes from 'connecting' — so the new all-ready refusal threw the host out of a room they were still seated in",
+  );
+  // anchored on something the GATE IS NOT PART OF, so the gate check can actually disagree
+  // with the found check. Anchoring on the gate made the predicate a substring of its own
+  // anchor: it could only ever report what "is it found" already reported.
+  const retry = lobby.match(/setRetryIn\(IN_PROGRESS_RETRY_S\);[\s\S]{0,900}?\n  \}, \[[^\]]*\]\);/);
+  const retryHead = retry ? lobby.slice(Math.max(0, lobby.indexOf(retry[0]) - 400), lobby.indexOf(retry[0])) : '';
+  check('lobby: the in-progress retry effect is still found (anchors the two below)', !!retry);
+  check(
+    '⚠️ lobby: the retry is the ACTIVITY’s, not every auto-join',
+    !!retry && /if \(!group \|\| !autoEntry/.test(retryHead),
+    'a friend’s invite and a challenge also arrive as an auto-join on the web, where the player has a code box and a way out',
+  );
+  check(
+    '⚠️ lobby: each retry drops the refused socket before dialling again',
+    !!retry && /lobbyRef\.current\?\.dispose\(\);\n      join\(code, autoJoinRegion\);/.test(retry[0]),
+    'join() builds a fresh transport and only the UNMOUNT disposes the old one, so a 10s timer leaked a live socket per pass',
+  );
+
+  const showFn = app.match(/const show = \(\): void => \{[\s\S]*?\n    \};/);
+  check('rejoin: the deferred show() is still found (anchors the check below)', !!showFn);
+  check(
+    '⚠️ rejoin: show() is consumed only once it actually navigates',
+    !!showFn &&
+      showFn[0].indexOf('screenRef.current !== from') >= 0 &&
+      showFn[0].indexOf('shown = true') >= 0 &&
+      // ⚠️ BOTH must be PRESENT before comparing: with the bail deleted `indexOf` is -1, and
+      // -1 is less than any index, so the ordering test passed on the code it was written to catch.
+      showFn[0].indexOf('screenRef.current !== from') < showFn[0].indexOf('shown = true'),
+    'consumed before the bail, a player who moved during the 1.5s wait was left holding a live session and a held seat with no screen',
   );
 }
 

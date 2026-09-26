@@ -3,14 +3,12 @@ import { rangeFill } from '../../ui/rangeFill';
 import {
   BB3_HEIGHT_MAX,
   BB3_HEIGHT_MIN,
-  BB3_STOW_MAX,
   BB_DUMP_MAX_DIST,
   BB_HOOD_DEFAULT_DEG,
   BB_SIZE_STEP,
+  BB_MASS_STEP,
   BB_STORAGE_MIN,
   bbDeployedHeightIn,
-  bbStowHeightIn,
-  bbStowLegal,
 } from './config';
 import {
   BB_MOUNT_POSITIONS,
@@ -44,7 +42,6 @@ import {
 import {
   BB_INTAKE_KIND_BLURBS,
   BB_INTAKE_LABELS,
-  BB_INTAKE_MOUNT_BLURBS,
   BB_INTAKE_MOUNT_LABELS,
   BB_MODE_BLURBS,
   BB_MODE_LABELS,
@@ -276,12 +273,9 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   const intakeKind = bbIntakeKindOf(spec);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
-  // THE HEIGHT PAIR (R105.A's expanded height and R102's starting cube). Read through the
-  // resolvers rather than off the raw fields, same rule as the launcher above: `bbStowHeightIn`
-  // is where "a build over the cube folds to exactly it unless it declares otherwise" is decided.
+  // THE HEIGHT, read through the resolver rather than off the raw field (same rule as the
+  // launcher above) so an absent height shows the default.
   const deployed = bbDeployedHeightIn(spec);
-  const stow = bbStowHeightIn(spec);
-  const folds = deployed > BB3_STOW_MAX;
 
   // ── WHY EVERY EDIT RE-SENDS `scoreMode`/`shooterMount` ALONGSIDE `bbMech` ──────────────
   // The container is what `coerceBbMech` (`./coerce.ts`) resolves, and the two flat fields are
@@ -408,16 +402,16 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Mass <span className="val">{dialText(spec.massLb, 0.1)} lb</span>
+            Mass <span className="val">{dialText(spec.massLb, BB_MASS_STEP)} lb</span>
           </span>
           <input
             className="ds-range"
             type="range"
             min={dials.mass.min}
             max={dials.mass.max}
-            step={1}
+            step={BB_MASS_STEP}
             value={spec.massLb}
-            aria-valuetext={`${dialText(spec.massLb, 0.1)} pounds`}
+            aria-valuetext={`${dialText(spec.massLb, BB_MASS_STEP)} pounds`}
             style={rangeFill(spec.massLb, dials.mass.min, dials.mass.max)}
             onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
           />
@@ -446,12 +440,10 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
           />
         </label>
-        {/* HEIGHT, the third chassis dimension — R105.A's own vertical one, and the last of the
-            three to become real (the 2D pipeline never asked; the 3D chassis collider is
-            extruded to it, and the 3D preview stands this tall). It sits with LENGTH and WIDTH
-            because it is the same kind of number, and it is the one dial on this panel with a
-            RULE hanging off it: over 18 in the build has to fold to start, which is the row
-            below and the note under it. */}
+        {/* HEIGHT, the robot's TOTAL height — the third chassis dimension (the 3D chassis
+            collider is capped at it). It sits with LENGTH and WIDTH because it is the same kind
+            of number. It stops at `BB3_HEIGHT_MAX` (18), R102's starting cube, so no build has
+            to fold to start and there is no stow height to declare. */}
         <label className="ds-field">
           <span className="cap">
             Height <span className="val">{dialText(deployed, 1)}&quot;</span>
@@ -468,32 +460,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onChange={(e) => setSpec({ heightIn: Number(e.target.value) })}
           />
         </label>
-        {/* THE DECLARED STOW HEIGHT (R102) — only for a build that is over the cube, because for
-            anything at or under 18 in the answer is its own height and a slider that can only be
-            set to the value it already has is chrome. A build over the cube is MODELLED as
-            folding to exactly 18 unless it says otherwise (`bbStowHeightIn`), so that is where
-            this starts; declaring more than 18 is allowed and is REFUSED by the rule rather than
-            clamped away, which is what makes the note below able to say no. */}
-        {folds && (
-          <label className="ds-field">
-            <span className="cap">
-              Stow height <span className="val">{dialText(stow, 1)}&quot;</span>
-            </span>
-            <input
-              className="ds-range"
-              type="range"
-              min={BB3_HEIGHT_MIN}
-              max={deployed}
-              step={1}
-              value={stow}
-              aria-valuetext={`${dialText(stow, 1)} inches`}
-              style={rangeFill(stow, BB3_HEIGHT_MIN, deployed)}
-              onChange={(e) => setSpec({ stowHeightIn: Number(e.target.value) })}
-            />
-          </label>
-        )}
       </div>
-      <StowHeightNote spec={spec} />
 
       {/* ---- INTAKE ---- */}
       <h3 className="ds-subh">Intake</h3>
@@ -522,7 +489,6 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onClick={() => setSpec({ intakeMount: m })}
           >
             <span className="ot">{BB_INTAKE_MOUNT_LABELS[m]}</span>
-            {BB_INTAKE_MOUNT_BLURBS[m] ? <span className="od">{BB_INTAKE_MOUNT_BLURBS[m]}</span> : null}
           </button>
         ))}
       </div>
@@ -650,38 +616,5 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
       )}
 
     </>
-  );
-}
-
-/**
- * THE R102 STOW CHECK — the builder's half of the height rule (`docs/biobuzz/plan-3d.md` §3.3).
- *
- * R105.A lets a ROBOT stand 29 in once the MATCH has started; R102 limits the STARTING
- * CONFIGURATION to an 18-in cube. So a tall build is legal only because it FOLDS, and the moment
- * a robot has a height at all (`heightIn`, which the 3D physics extrudes its collider to) that
- * stops being a detail: a build that cannot get under the cube cannot start, and `startLegal`
- * refuses its ready-up (`sim.ts`). This is where a player finds that out — at the dial, not at
- * the lobby.
- *
- * A build INSIDE the cube says nothing at all. A line that appears under every robot to report
- * that 18 is not more than 18 is chrome, and the one thing a warning may not be is routine.
- */
-function StowHeightNote({ spec }: { spec: RobotSpec }) {
-  const deployed = bbDeployedHeightIn(spec);
-  if (deployed <= BB3_STOW_MAX) return null;
-  const stow = bbStowHeightIn(spec);
-  if (!bbStowLegal(spec)) {
-    return (
-      <p className="ds-hint">
-        Can’t start: this build stands {deployed}&quot; and stows to {stow}&quot;, over R102’s{' '}
-        {BB3_STOW_MAX}&quot; starting cube. Lower it, or declare a stow under {BB3_STOW_MAX}&quot;.
-      </p>
-    );
-  }
-  return (
-    <p className="ds-hint">
-      {deployed}&quot; deployed — stows to {stow}&quot; to start (R102), and deploys when the match
-      begins.
-    </p>
   );
 }

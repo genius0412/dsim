@@ -26,6 +26,66 @@
 import { DISCORD_INSTANCE_KEY } from '../storageKeys';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, isValidRoomCode } from './roomCode';
 
+/**
+ * THE QUERY STRING THIS DOCUMENT OPENED ON, captured at MODULE LOAD.
+ *
+ * ⚠️ IT HAS TO BE CAPTURED THIS EARLY, for exactly the reason `src/ui/entryToken.ts`
+ * exists: `App`'s first mount effect canonicalizes the address bar with
+ * `history.replaceState(null, '', pathFor(...))`, and `pathFor` emits a PATH with no
+ * query on it. Discord's launch URL is the ONLY carrier of `instance_id`, `frame_id`
+ * and `platform`, so after that effect runs `window.location.search` is empty for the
+ * rest of the document's life — and anything reading the live URL then finds nothing.
+ *
+ * Two bugs came out of reading it live:
+ *  1. The Embedded App SDK's constructor re-reads `window.location.search` ITSELF and
+ *     throws `frame_id query param is not defined` when it is empty. `App` declares the
+ *     canonicalize effect BEFORE the participants effect, so in the real embed the SDK
+ *     could never construct — the 44 KB chunk was fetched on every launch only to throw
+ *     into a swallowed `console.warn`, and the Join-Discord-Lobby button never showed a
+ *     single avatar. Invisible locally, because the watcher early-returns off-host.
+ *  2. `discordInstanceId()` fell back to sessionStorage, which THROWS on a Discord-in-a-
+ *     browser client with third-party storage blocked (blocked, not merely partitioned).
+ *     There the `catch` returned the now-empty URL value, so the instance id vanished
+ *     mid-load — the same document reported "in an activity" by host but "no group" by
+ *     instance, which is the split that removed the Join button and un-pinned the region.
+ *
+ * A module-level capture also removes the ORDERING dependency entirely: it is evaluated
+ * when `App` imports this module, which is before any render and long before any effect,
+ * so no caller has to be "early enough" any more.
+ *
+ * It can never go stale: a fresh activity launch is a fresh DOCUMENT, so a new launch
+ * re-runs this line. (A reload is also a fresh document, and legitimately has no query —
+ * that is what the sessionStorage memory below is for.)
+ */
+let launchSearch = typeof window === 'undefined' ? '' : window.location.search;
+
+/** the captured launch query (`?frame_id=…&instance_id=…&platform=…`), falling back to the
+ * live URL for the window before `App` canonicalizes it — they agree on a real launch, and
+ * the fallback only ever matters if something later re-attaches a query. */
+export function launchQuery(): string {
+  if (launchSearch) return launchSearch;
+  return typeof window === 'undefined' ? '' : window.location.search;
+}
+
+/** read one param out of the launch query, '' when absent or the query is malformed */
+function launchParam(name: string): string {
+  try {
+    return new URLSearchParams(launchQuery()).get(name) ?? '';
+  } catch {
+    return ''; // a malformed query string is an absent param, never a crash
+  }
+}
+
+/**
+ * TEST SEAM ONLY (the `setPoolForTests` pattern). The headless suite imports this module
+ * with no `window` at all and installs a stub afterwards, so the real capture above has
+ * already run against nothing and there is no second chance to observe it. Production
+ * never calls this.
+ */
+export function setLaunchSearchForTests(search: string): void {
+  launchSearch = search;
+}
+
 /** true when this page is being served through Discord's activity proxy — the
  * ONLY condition under which the `/.proxy/gs` URL is valid */
 function onDiscordHost(): boolean {
@@ -35,7 +95,16 @@ function onDiscordHost(): boolean {
 /** true when this page is running as (or emulating) a Discord Activity. The
  * `instance_id` fallback keeps the UX testable on localhost/tunnels
  * (`?instance_id=whatever`) and robust to a Discord host change — but the
- * proxy game-server URL stays keyed to the real host (see onDiscordHost). */
+ * proxy game-server URL stays keyed to the real host (see onDiscordHost).
+ *
+ * ⚠️ THIS IS THE ONE PREDICATE FOR "AM I IN AN ACTIVITY". `discordGroup()` answers a
+ * NARROWER question — "which party am I in" — and can legitimately be '' while this is
+ * true (a reload with third-party storage blocked loses the instance id and there is no
+ * carrier left to recover it from). Anything gated on being in an activity at all — the
+ * season seed, the pinned region, hiding the ranked/Compete tiles — must ask THIS, or
+ * those surfaces disagree with each other on a single screen. Anything that needs the
+ * party (the Join button, the lobby browser's `group=`) must ask `discordGroup()` and
+ * degrade when it is empty. */
 export function inDiscordActivity(): boolean {
   return onDiscordHost() || discordInstanceId() !== '';
 }
@@ -54,10 +123,16 @@ export function inDiscordActivity(): boolean {
  * always does, so a stale id can never outlive the instance it names, and
  * sessionStorage dies with the tab (the activity iframe) rather than persisting to
  * an unrelated visit the way localStorage would.
+ *
+ * ⚠️ The URL is read through `launchQuery()` — the query CAPTURED AT MODULE LOAD — not
+ * through the live `window.location.search`. The live one is empty from the moment App's
+ * canonicalize effect runs, so with storage blocked (where the `catch` below is the only
+ * path) this used to start returning '' PART-WAY THROUGH A SINGLE LOAD: the same document
+ * was in an activity by hostname and out of one by instance id. See `launchQuery`.
  */
 export function discordInstanceId(): string {
   if (typeof window === 'undefined') return '';
-  const fromUrl = new URLSearchParams(window.location.search).get('instance_id') ?? '';
+  const fromUrl = launchParam('instance_id');
   try {
     if (fromUrl) {
       window.sessionStorage.setItem(DISCORD_INSTANCE_KEY, fromUrl);
@@ -163,18 +238,29 @@ export function discordAvatarUrl(p: DiscordParticipant): string {
  * handshakes `ready()`, then reports the current participants + every update.
  * Fire-and-forget resilient: any failure simply means no avatars — the join
  * button works regardless. Returns a stop function.
+ *
+ * ⚠️ TWO GATES, not one. `onDiscordHost()` says the handshake exists at all; the
+ * `frame_id` test says the SDK can actually CONSTRUCT — its constructor throws on a
+ * missing `frame_id`/`instance_id`/`platform`, and a reload inside the activity comes
+ * back on a bare URL with none of them (sessionStorage remembers the instance id, but
+ * nothing carries the other two). Without the second gate that case still downloads
+ * 44 KB gzip of SDK in order to throw it away one line later.
  */
 export function watchDiscordParticipants(cb: (people: DiscordParticipant[]) => void): () => void {
   if (!onDiscordHost()) return () => {}; // the SDK handshake only exists in the real embed
+  if (!launchParam('frame_id')) return () => {}; // no launch params ⇒ the SDK cannot construct
   let stopped = false;
   let unsub: (() => void) | null = null;
   void (async () => {
     try {
       // via the facade so the lazy chunk is named `discordSdk-*`, not `index-*`
       // (bundleaudit routes by filename — see src/net/discordSdk.ts)
-      const { DiscordSDK } = await import('./discordSdk');
+      const { createDiscordSdk } = await import('./discordSdk');
       const clientId = window.location.hostname.split('.')[0];
-      const sdk = new DiscordSDK(clientId);
+      // ⚠️ NOT the SDK's own constructor: it reads the LIVE `window.location.search`,
+      // which App has already emptied by now — see `launchQuery` and discordSdk.ts.
+      // (Smoke greps this file for that construction, so do not spell it here either.)
+      const sdk = createDiscordSdk(clientId);
       await sdk.ready();
       if (stopped) return;
       const onUpdate = (d: { participants: DiscordParticipant[] }): void => {

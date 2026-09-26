@@ -382,6 +382,11 @@ export interface HudSnapshot {
   powerDraw: number;
   inLaunchZone: boolean;
   gamepadConnected: boolean;
+  /** FALSE while this window is not the one receiving keystrokes — the driver clicked away
+   * (in a Discord Activity, onto the chat box beside the iframe) and their keys are going
+   * somewhere else while the match runs on without them. `Keyboard` has always cleared its
+   * held keys on that edge; this is the same edge, carried to the HUD so it can say so. */
+  windowFocused: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   frontFlipped: boolean;
   /** BUTTERFLY: which wheel set is on the floor ('tank' | 'mecanum'), or null for every
@@ -1466,9 +1471,20 @@ export class GameController {
     if (!this.sceneEverShown) this.setSceneLoading(true);
     (async () => {
       const factory = await sceneFn();
-      // Auto's preset line, the slip line and an HDRI failure go to the event log, like
-      // every other thing the match wants the player to know (plan §4.6).
-      const scene = await factory(host, { onQualityEvent: (line) => this.world.events.push(line) });
+      /**
+       * Auto's preset line, the slip line and an HDRI failure go to the event log, like
+       * every other thing the match wants the player to know (plan §4.6).
+       *
+       * ⚠️ IT MUST GO TO THE DRAIN THIS MODE READS, which in a networked match is NOT
+       * `world.events`. The drain below is `this.session ? this.netEvents : this.world.events`
+       * — the authoritative tail — so a line pushed onto `world.events` during a multiplayer
+       * match was written where nothing was looking, and every one of these notices was
+       * invisible in the mode most people are in. They are LOCAL facts about this machine's
+       * renderer, not match events, so they belong in whichever list is actually being shown.
+       */
+      const scene = await factory(host, {
+        onQualityEvent: (line) => (this.session ? this.netEvents : this.world.events).push(line),
+      });
       // the view may have switched away, the controller may have been disposed, or a
       // second load may have started (rapid toggling) WHILE this one was in flight —
       // whichever result loses the race is disposed unused rather than replacing the
@@ -2114,6 +2130,10 @@ export class GameController {
       this.acc = 0;
       return;
     }
+    // THIS CLIENT CAN PLAY THE MATCH once the view is up too — built, on the 2D view, or failed
+    // back to it. The room holds a `'3d'` match at tick 0 until every seat has said so
+    // (`VIEWREADY_CAP`). Sent once per match generation; a no-op every other frame.
+    if (!this.sceneLoading) s.viewReady?.();
     // NOTE: no IN-PLACE restart in multiplayer — a local or host-authored rebuild
     // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
     // start a fresh match instead.
@@ -2161,6 +2181,24 @@ export class GameController {
       this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       this.reconcile(snap);
+    }
+
+    // THE ROOM IS HOLDING THE MATCH AT TICK 0 while a seat loads. Predicting now would run the
+    // countdown locally against a server that is not running it, and snap back on release.
+    const late = s.takeLateStart?.();
+    if (late && late.length > 0) {
+      if (late.includes(this.localRobotId)) {
+        this.netEvents.push('The match started while you were still loading.');
+      }
+      const others = late.filter((rid) => rid !== this.localRobotId);
+      if (others.length > 0) {
+        const names = others.map((rid) => s.driverName?.(rid) ?? `Robot ${rid + 1}`);
+        this.netEvents.push(`Started without ${names.join(', ')}: still loading. They join when ready.`);
+      }
+    }
+    if (s.loadHeld?.()) {
+      this.acc = 0;
+      return;
     }
 
     // SPECTATOR: no local robot to predict + nothing to send. Advance the world with the
@@ -3183,6 +3221,7 @@ export class GameController {
       powerDraw: r.powerDraw,
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
+      windowFocused: this.input.keyboard.hasFocus(),
       frontFlipped: this.frontFlipped,
       butterflyMode:
         r.spec.drivetrain === 'butterfly' ? (r.butterflyTank ? 'tank' : 'mecanum') : null,
@@ -3253,8 +3292,11 @@ export class GameController {
     // Safe during an unmount: `onPracticeRun` writes localStorage and queues an upload, and
     // sets no React state (see `keepPracticeRun` in `src/ui/App.tsx`).
     this.harvestPracticeRun(false);
-    this.audio.stopSpeech();
-    this.audio.stopKeepAlive();
+    // ...and the AUDIO, whole. This used to stop the speech and the keep-alive oscillator and
+    // leave the EFFECTS `AudioContext` running — one more per game screen, for the life of the
+    // tab, which in a Discord Activity is the life of the whole session. Same class of leak as
+    // the Rapier worlds below: the browser holds it, so nothing here reclaims it by itself.
+    this.audio.dispose();
     // the solo AI seats: the caller owns their memory, so the caller gives it back
     this.seatBots(this.world, this.soloSeed, new Map());
     cancelAnimationFrame(this.raf);

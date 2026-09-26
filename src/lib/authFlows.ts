@@ -21,6 +21,16 @@
  *           → { status: boolean }
  *   1562  verifyEmail({ query: { token: string; callbackURL?: string } })
  *           → { status: boolean } | void
+ *   1128  emailOtp.verifyEmail({ email: string; otp: string })
+ *           → { status: boolean; token: string | null; user }
+ *
+ * ⚠️ NEON AUTH VERIFIES WITH A CODE, NOT A LINK. `sendVerificationEmail` is the
+ * right call to SEND (the SDK's own Supabase adapter resends through it), but
+ * the email it produces carries a one-time code, and the SDK's adapter answers a
+ * link-style verification with "Magic link verification is not supported. Use
+ * email OTP authentication instead." So the code is completed through
+ * `emailOtp.verifyEmail`, which `verifyEmailCode` wraps. The token path stays for
+ * a project configured to send links; nothing in this build sends one today.
  *
  * ⚠️ `forgetPassword` — which the roadmap named — is NOT a top-level method on
  * this build. The only `forgetPassword` in the .d.mts is `forgetPassword.emailOtp`
@@ -43,6 +53,7 @@
  * `authClient` is already in the main chunk (App, Account and AuthPanel import it
  * statically), so this resolves to the module that is loaded either way.
  */
+import { inDiscordActivity } from '../net/discordActivity';
 import { SITE_URL } from '../seo';
 
 // ---------------------------------------------------------------- the SDK ---
@@ -77,6 +88,17 @@ export interface AuthFlowsClient {
   verifyEmail: (a: { query: { token: string; callbackURL?: string } }) => Promise<
     SdkResponse<{ status: boolean } | void>
   >;
+  emailOtp: {
+    verifyEmail: (a: { email: string; otp: string }) => Promise<SdkResponse<{ status: boolean }>>;
+    sendVerificationOtp: (a: {
+      email: string;
+      type: 'sign-in' | 'email-verification' | 'forget-password';
+    }) => Promise<SdkResponse<{ success: boolean }>>;
+    resetPassword: (a: { email: string; otp: string; password: string }) => Promise<
+      SdkResponse<{ success: boolean }>
+    >;
+  };
+  listAccounts: () => Promise<SdkResponse<{ providerId: string }[]>>;
 }
 
 /** resolved lazily — see the module note. Null when auth is off in this build. */
@@ -94,6 +116,7 @@ async function liveClient(): Promise<AuthFlowsClient | null> {
 export type AuthFlowFailure =
   | 'unavailable' // auth is not configured in this build
   | 'invalid-token' // expired, already spent, or not ours
+  | 'invalid-code' // the emailed code was wrong, expired, or tried too often
   | 'invalid-credentials' // the email/password pair was rejected — see `describeAuthError`
   | 'weak-password'
   | 'invalid-email'
@@ -116,6 +139,7 @@ const MESSAGES: Record<AuthFlowFailure, string> = {
   unavailable: 'Accounts are turned off in this build.',
   'invalid-token':
     'That link has expired or has already been used. Request a new one and open it from the newest email.',
+  'invalid-code': 'That code is wrong or has expired. Check the newest email, or send a new code.',
   'invalid-credentials': 'That email and password don’t match an account. Check both and try again.',
   'weak-password': `Passwords need at least ${PASSWORD_MIN} characters.`,
   'invalid-email': 'That doesn’t look like an email address.',
@@ -124,10 +148,44 @@ const MESSAGES: Record<AuthFlowFailure, string> = {
   unknown: 'Couldn’t complete that. Try again in a moment.',
 };
 
+/**
+ * The site's bare host, for copy that tells somebody where to go ('playdsim.com').
+ *
+ * Derived from `SITE_URL` rather than typed out, so a domain change moves ONE constant —
+ * and exported because the three embed surfaces that name it (`Account`, `FriendsPanel`
+ * and the sentence below) would otherwise each carry their own literal. It is deliberately
+ * NOT a link: `target="_blank"` is unreliable inside Discord's frame, and an anchor without
+ * a target would navigate the activity away from itself.
+ */
+export const SITE_HOST = SITE_URL.replace(/^https?:\/\/(?:www\.)?/, '');
+
+/**
+ * ⚠️ "CHECK YOUR CONNECTION" IS A LIE INSIDE A DISCORD ACTIVITY.
+ *
+ * The embed is a cross-origin iframe whose CSP admits only Discord's own URL mappings, and
+ * the auth host is not one of them — so the sign-in fetch is refused by the BROWSER, before
+ * any network is involved, and rejects with a bare `TypeError` carrying no status and no
+ * code. That is exactly the shape this module reads as "the transport failed", which is how
+ * a player sitting in a working voice call, on a page showing a live player count, was told
+ * to check their connection and try again. Retrying cannot work: signing in there is not
+ * slow or flaky, it is impossible.
+ *
+ * The replacement states what is TRUE and what to do instead, and claims no cause it cannot
+ * observe — `inDiscordActivity()` says where we are, never why a particular fetch failed.
+ * Outside the embed the original sentence is right and is kept.
+ */
+export function authUnreachableMessage(): string {
+  return inDiscordActivity()
+    ? `Accounts aren’t available inside Discord. Open ${SITE_HOST} in a browser to sign in.`
+    : MESSAGES.network;
+}
+
 const fail = (reason: AuthFlowFailure): AuthFlowResult => ({
   ok: false,
   reason,
-  message: MESSAGES[reason],
+  // the REASON is unchanged (the UI switches on it, never on the string) — only the
+  // sentence differs, because in the embed that failure has a different remedy
+  message: reason === 'network' ? authUnreachableMessage() : MESSAGES[reason],
 });
 
 /**
@@ -211,8 +269,9 @@ export function thrownAsSdkError(e: unknown): SdkError | null {
  */
 export function describeAuthError(e: unknown, fallback: string): string {
   const err = thrownAsSdkError(e);
-  // no status and no code ⇒ the transport failed, the same judgement `run` makes
-  if (!err) return MESSAGES.network;
+  // no status and no code ⇒ the transport failed, the same judgement `run` makes — and
+  // inside the embed that is the CSP refusing the host, which has its own sentence
+  if (!err) return authUnreachableMessage();
   const code = (err.code ?? '').toUpperCase();
   const status = err.status ?? 0;
   // ORDER, as in `classifySdkError`: `over_email_send_rate_limit` contains EMAIL.
@@ -223,7 +282,7 @@ export function describeAuthError(e: unknown, fallback: string): string {
   if (code.includes('EMAIL') && !code.includes('VERIF') && !code.includes('EXIST')) {
     return MESSAGES['invalid-email'];
   }
-  if (status >= 500 || status === 0) return MESSAGES.network;
+  if (status >= 500 || status === 0) return authUnreachableMessage();
   // ⚠️ AN ALREADY-TAKEN ADDRESS IS A 400 TOO, and it is not a wrong password — so it takes
   // the caller's sentence rather than the credential one. It gets no sentence of its own
   // here on purpose: "an account already uses that email" is the enumeration disclosure the
@@ -350,6 +409,113 @@ export async function requestEmailVerification(email: string): Promise<AuthFlowR
   );
 }
 
+/**
+ * A typed code, as the server wants it: digits and letters only. People paste
+ * "123 456" or "123-456" out of a mail client, and a space is not worth a
+ * round trip that answers INVALID_OTP.
+ */
+export const normalizeCode = (code: string): string => code.replace(/[^0-9A-Za-z]/g, '');
+
+/** the code's length, when the email's format is the Better Auth default. Only a
+ *  hint for the input's `maxLength`; the server decides what a valid code is. */
+export const CODE_MAX = 12;
+
+/**
+ * (5) complete verification with the code from the email — see the module note:
+ * this is the one Neon Auth sends.
+ *
+ * A 400 or 403 here means the CODE was refused (Better Auth answers INVALID_OTP,
+ * OTP_EXPIRED, or TOO_MANY_ATTEMPTS, and after the last one the code is gone),
+ * so `invalid-token` is re-labelled `invalid-code`, whose sentence says to send a
+ * new one rather than to open a link.
+ */
+export async function verifyEmailCode(email: string, code: string): Promise<AuthFlowResult> {
+  const client = await liveClient();
+  if (!client) return fail('unavailable');
+  return codeFlow(client, email, code);
+}
+
+async function codeFlow(client: AuthFlowsClient, email: string, code: string): Promise<AuthFlowResult> {
+  const otp = normalizeCode(code);
+  if (!otp) return fail('invalid-code');
+  if (!looksLikeEmail(email)) return fail('invalid-email');
+  const r = await run(() => client.emailOtp.verifyEmail({ email: email.trim(), otp }));
+  return !r.ok && r.reason === 'invalid-token' ? fail('invalid-code') : r;
+}
+
+/**
+ * (6) SET OR CHANGE A PASSWORD BY CODE — Profile ▸ Account's Password row.
+ *
+ * This is how an account that signed in with GOOGLE gets a password, so it can sign
+ * in either way. Better Auth's `/email-otp/reset-password` CREATES the `credential`
+ * account when the user has none, and updates it when they do; the client-callable
+ * `setPassword` does not exist (it is server-scoped). The code also proves the inbox,
+ * and the route marks the address verified as a side effect.
+ *
+ * The code path rather than `requestPasswordReset`'s link, because the code is what
+ * this Neon Auth project is known to deliver (the verification email is one).
+ */
+export async function requestPasswordCode(email: string): Promise<AuthFlowResult> {
+  if (!looksLikeEmail(email)) return fail('invalid-email');
+  const client = await liveClient();
+  if (!client) return fail('unavailable');
+  return sendPasswordCodeFlow(client, email);
+}
+
+async function sendPasswordCodeFlow(client: AuthFlowsClient, email: string): Promise<AuthFlowResult> {
+  return run(
+    () => client.emailOtp.sendVerificationOtp({ email: email.trim(), type: 'forget-password' }),
+    ACCOUNT_EXISTENCE,
+  );
+}
+
+export async function setPasswordWithCode(
+  email: string,
+  code: string,
+  password: string,
+): Promise<AuthFlowResult> {
+  const client = await liveClient();
+  if (!client) return fail('unavailable');
+  return setPasswordFlow(client, email, code, password);
+}
+
+async function setPasswordFlow(
+  client: AuthFlowsClient,
+  email: string,
+  code: string,
+  password: string,
+): Promise<AuthFlowResult> {
+  const otp = normalizeCode(code);
+  if (!otp) return fail('invalid-code');
+  if (password.length < PASSWORD_MIN) return fail('weak-password');
+  if (!looksLikeEmail(email)) return fail('invalid-email');
+  const r = await run(() => client.emailOtp.resetPassword({ email: email.trim(), otp, password }));
+  return !r.ok && r.reason === 'invalid-token' ? fail('invalid-code') : r;
+}
+
+/**
+ * Does this account have a password login? `true` / `false` from the account list
+ * (`credential` is Better Auth's provider id for email + password), `null` when the
+ * list could not be read — the row then offers the neutral "Set or change" wording
+ * rather than telling somebody with a password that they have none.
+ */
+export async function hasPasswordLogin(): Promise<boolean | null> {
+  const client = await liveClient();
+  if (!client) return null;
+  return passwordLoginFlow(client);
+}
+
+async function passwordLoginFlow(client: AuthFlowsClient): Promise<boolean | null> {
+  try {
+    const res = await client.listAccounts();
+    const list = res?.data;
+    if (res?.error || !Array.isArray(list)) return null;
+    return list.some((a) => a?.providerId === 'credential');
+  } catch {
+    return null;
+  }
+}
+
 /** (4) complete verification from the emailed link's token. */
 export async function completeEmailVerification(token: string): Promise<AuthFlowResult> {
   if (!token.trim()) return fail('invalid-token');
@@ -361,7 +527,7 @@ export async function completeEmailVerification(token: string): Promise<AuthFlow
 // ------------------------------------------------------------ test seam -----
 
 /**
- * Run the four flows against a STUB client instead of the real one.
+ * Run the flows against a STUB client instead of the real one.
  *
  * Exported for `scripts/smoke.ts`, which asserts the RESULT SHAPES — that a
  * rejected token comes back `{ok: false, reason: 'invalid-token'}` rather than
@@ -392,4 +558,8 @@ export const authFlowsForTesting = {
     if (!token.trim()) return fail('invalid-token');
     return run(() => client.verifyEmail({ query: { token } }));
   },
+  verifyCode: codeFlow,
+  sendPasswordCode: sendPasswordCodeFlow,
+  setPassword: setPasswordFlow,
+  hasPassword: passwordLoginFlow,
 };

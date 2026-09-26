@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { LAN_MODE } from './lanMode';
+import { authEmailVerified } from './db/repo';
 
 /**
  * Server-side Neon Auth (Better Auth) session verification. The client sends the
@@ -86,7 +87,7 @@ const REQUIRE_VERIFIED = process.env.REQUIRE_VERIFIED_EMAIL === '1';
 
 /** the one sentence, so the four refusal sites cannot drift apart */
 export const VERIFY_EMAIL_REFUSAL =
-  'Verify your email to play ranked. Open the link we sent you, or resend it from your Profile page.';
+  'Verify your email to play ranked. Enter the code we emailed you on your Profile page.';
 
 /**
  * May this user do the things that need a verified address? The ONE predicate —
@@ -112,7 +113,8 @@ export function emailGateRefusal(user: AuthedUser): string | null {
  * `email_verified` is on the token is a property of the Neon Auth project's
  * configuration rather than of this code. Both spellings are read off the payload
  * first (`email_verified` is the OIDC one, `emailVerified` the Better Auth field
- * name) and this is the fallback for a deployment whose tokens carry neither.
+ * name) and this is the fallback for a deployment whose tokens carry neither: Neon
+ * Auth's own `neon_auth."user"` row first (`authEmailVerified`), then `/get-session`.
  *
  * ONE FETCH PER TOKEN, EVER. A token is a bearer credential with an hour of life
  * and the friends poll re-verifies it roughly twice a minute per open tab, so an
@@ -120,7 +122,8 @@ export function emailGateRefusal(user: AuthedUser): string | null {
  * authenticated request — the exact cost `getAuthToken`'s cache exists to remove
  * on the client. The answer is memoized against the token STRING, including the
  * "could not tell" answer, so a failing endpoint is asked once and not once a
- * second. Entries die with the token; the map is bounded so a long-lived machine
+ * second. A player who verifies gets a NEW token (the client drops its cached one on
+ * success), so a cached `false` never outlives the state it described in that tab. Entries die with the token; the map is bounded so a long-lived machine
  * cannot accumulate them.
  */
 const verifiedByToken = new Map<string, boolean | null>();
@@ -133,14 +136,18 @@ const VERIFIED_CACHE_MAX = 2000;
 // from then on the resolved answer is served out of `verifiedByToken`.
 const verifiedInFlight = new Map<string, Promise<boolean | null>>();
 
-async function verifiedFromSession(token: string): Promise<boolean | null> {
+async function verifiedFromStore(token: string, userId: string): Promise<boolean | null> {
   const hit = verifiedByToken.get(token);
   if (hit !== undefined) return hit;
   const flying = verifiedInFlight.get(token);
   if (flying) return flying;
   const pending = (async (): Promise<boolean | null> => {
-    let answer: boolean | null = null;
-    if (AUTH_URL) {
+    // NEON AUTH'S OWN TABLE FIRST. It lives in the database this server already uses, and
+    // it is the row the verification code flips, so it needs no guess about what the
+    // project's JWT carries. The session endpoint is the fallback for a deployment whose
+    // database does not hold it (no DATABASE_URL, or auth on a different project).
+    let answer: boolean | null = await authEmailVerified(userId);
+    if (answer === null && AUTH_URL) {
       try {
         const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
           headers: { authorization: `Bearer ${token}` },
@@ -182,7 +189,7 @@ async function verifiedFromSession(token: string): Promise<boolean | null> {
 
 /** verify a client-supplied JWT → {userId, handle, emailVerified}, or null if
  *  absent/invalid. `emailVerified` is null when neither the token nor the session
- *  endpoint would say (see `verifiedFromSession`). */
+ *  endpoint would say (see `verifiedFromStore`). */
 export async function verifyAuthToken(token: string | undefined): Promise<AuthedUser | null> {
   if (!token) {
     console.log('[auth] verify: no token on join ⇒ anonymous');
@@ -209,7 +216,7 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     // to the same place (`emailGateRefusal` returns null first thing), so a round trip on the
     // join path buys nothing at all. `null` is already the honest value for "not told".
     const emailVerified =
-      typeof claim === 'boolean' ? claim : REQUIRE_VERIFIED ? await verifiedFromSession(token) : null;
+      typeof claim === 'boolean' ? claim : REQUIRE_VERIFIED ? await verifiedFromStore(token, userId) : null;
     // Deliberately NOT logged. The friends read doubles as the presence heartbeat, so
     // every signed-in browser tab re-verifies roughly twice a minute for as long as it
     // is open — a success line here meant an idle server with two users online emitted

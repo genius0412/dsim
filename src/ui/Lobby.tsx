@@ -13,7 +13,7 @@ import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { Menu } from './Menu';
 import { buildWords, teamLine } from './robotLabels';
 import { RobotCard } from './RobotCard';
@@ -34,6 +34,7 @@ import { DISCORD_REGION } from '../net/discordActivity';
 import { serverCaps } from '../net/api';
 import { activeZenithAuto } from '../auto/library';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
 import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
@@ -100,6 +101,36 @@ interface Props {
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
+
+/**
+ * WHAT A NAMELESS SEAT IS CALLED ON THE WIRE — and nothing else.
+ *
+ * These are the server's own coercion defaults, and they used to be the INITIAL VALUE of
+ * the two name boxes. Signed out and auto-joined (every Discord participant: auth is
+ * CSP-blocked in the embed, so `displayName` is always null and a fresh `settings.spec`
+ * carries `teamName: ''`), that put the literals in the fields — four roster rows reading
+ * "Player" driving "My Robot · —", with the one editor that could fix it looking already
+ * filled in. They are PLACEHOLDERS now: the box starts empty, and the fallback is applied
+ * where it belongs, on the frame that advertises the seat.
+ */
+const DEFAULT_DRIVER_NAME = 'Player';
+const DEFAULT_ROBOT_NAME = 'My Robot';
+
+/** how long a connect may take before this screen says it is still trying. `LobbyClient`
+ *  reports nothing between "socket opened" and "retry budget exhausted" (~48 s), so
+ *  without this the button simply sat disabled through a server restart that then healed. */
+const SLOW_CONNECT_MS = 5000;
+/**
+ * HOW LONG THE AUTO-JOIN PANEL WAITS BEFORE TRYING A MID-MATCH ROOM AGAIN.
+ *
+ * The server's `in_progress` refusal is the one that ends by itself, so the screen waits it
+ * out instead of handing the player a button and a dead end. A match plus its results screen
+ * is minutes long, so this is a poll, not a countdown to anything — 10 s is the same order as
+ * the lobby browser's 3 s list poll and costs one socket per attempt.
+ */
+const IN_PROGRESS_RETRY_S = 10;
+/** debounce on writing the Discord identity back to `settings.spec` (see the effect) */
+const IDENTITY_SAVE_MS = 500;
 
 /** The lobby is a full-screen surface, so it cannot use AppShell's side panel.
  * Keep the actual room UI and the shared FriendsPanel as siblings here instead.
@@ -173,6 +204,23 @@ export function Lobby({
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
   const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
   /**
+   * THIS SCREEN WAS NEVER AN ENTRY FORM FOR THIS VISIT.
+   *
+   * An auto-join — a Discord activity launch, a friend's invite, a rejoin of a recycled
+   * room — has no code to type and no room to create, but it rendered the "Custom room"
+   * form anyway: a "Your name" field, a New room / Have a code toggle, and a disabled CTA
+   * reading **CREATING…** while it was in fact joining the group's shared lobby. The
+   * damage was worst in the ERROR state, where every control came back live and the
+   * obvious button — CREATE ROOM — mints a fresh random room AWAY from the group.
+   *
+   * Seeded from the prop rather than set by the auto-join effect, so the form is not
+   * painted for one frame before the effect runs.
+   */
+  const [autoEntry] = useState(!!autoJoin || !!resume);
+  /** the connect is slow enough to need saying so: `SLOW_CONNECT_MS`, or the transport
+   *  telling us it dropped and is retrying. */
+  const [slowConnect, setSlowConnect] = useState(false);
+  /**
    * THE ROOM'S PHYSICS IS NOT A CHOICE ANY MORE (owner ruling, 2026-09-18).
    *
    * There was a 3D/2D picker here, on the create side, because `RoomConfig.physics` was the
@@ -211,7 +259,7 @@ export function Lobby({
   const [region, setRegion] = useState(autoJoinRegion || selectedServer()?.region || '');
   // the region came from an INVITE, so it is the host's and not ours to change
   const [regionLocked, setRegionLocked] = useState(!!autoJoinRegion);
-  const [name, setName] = useState(initialName || (displayName ?? settings.spec.teamName) || 'Player');
+  const [name, setName] = useState(initialName || (displayName ?? settings.spec.teamName) || '');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
   /**
@@ -245,9 +293,20 @@ export function Lobby({
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [error, setError] = useState('');
-  /** machine-readable reason for `error`, when the server gave one. Only `region_full`
-   *  today, and it is the one failure the player can fix from this screen. */
+  /**
+   * Machine-readable reason for `error`, when the server gave one — the refusals this screen
+   * can do something about rather than just read back: `region_full` (pick another region,
+   * where there is more than one), `in_progress` (the room is mid-match, so wait it out — see
+   * the retry effect) and `game_mismatch` (the room runs another season).
+   *
+   * ⚠️ CLEARED BY `join()`, not only set here. A stale code outlives the error it explained:
+   * a retry that fails for an unrelated reason would otherwise still be captioned "a match is
+   * running in this lobby", and the retry effect would keep firing on a refusal that never
+   * ends. An older server sends no code at all, so `undefined` must stay the ordinary case.
+   */
   const [errorCode, setErrorCode] = useState<ErrorCode | undefined>(undefined);
+  /** seconds until the `in_progress` retry below fires; 0 when nothing is scheduled */
+  const [retryIn, setRetryIn] = useState(0);
   // the full builder, opened from the room over the top of it (see below)
   const [building, setBuilding] = useState(false);
 
@@ -255,6 +314,9 @@ export function Lobby({
   const startedRef = useRef(false);
   /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
   const refusedRef = useRef(false);
+  /** `phase` for the handlers `wire` registers once, which would otherwise read the render that connected */
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const nameEditedRef = useRef(false);
   // which room code the auto-join effect below has already fired for (value-keyed,
   // not a one-shot boolean, so accepting a DIFFERENT invite while mounted rejoins).
@@ -286,9 +348,32 @@ export function Lobby({
    */
   useEffect(() => {
     void preloadRoomPhysics(roomGame);
+    preloadRoomView(roomGame);
   }, [roomGame]);
 
   useEscape(onCancel); // Esc leaves the lobby, same as ← Back
+
+  // The other half of the connecting signal: the FIRST attempt neither drops nor opens for
+  // a while (a cold Fly machine, a suspended iframe waking up), and `onDown` above fires
+  // only once the attempt has actually failed.
+  useEffect(() => {
+    if (phase !== 'connecting') return;
+    const t = setTimeout(() => setSlowConnect(true), SLOW_CONNECT_MS);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  /**
+   * WHERE THE "You" CARD SITS IS DECIDED ONCE, AT MOUNT.
+   *
+   * It belongs ABOVE the roster for somebody who has never named themselves — four rows
+   * reading "Player" driving "My Robot · —" are unattributable, and an unprompted editor
+   * below them is not read — and below it once they have, where it is a rarely-touched
+   * setting. Deciding it per render instead would move a section out from under the cursor
+   * on the first keystroke typed into it.
+   */
+  const [idFirst] = useState(
+    () => discordActivity && !(initialName || displayName || settings.spec.teamName),
+  );
 
   // The profile request may resolve after this screen mounts. Adopt the saved
   // DSIM display name while the player is still choosing a room, but never erase
@@ -327,7 +412,7 @@ export function Lobby({
     if (!lobby) return;
     startedRef.current = true;
     // pass the identity + room so the session can reclaim its slot on a reconnect
-    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, roomCode));
+    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, roomCode, false, lobby.seatToken));
   }
 
   /** create a brand-new room with a freshly generated code (you host it) */
@@ -365,6 +450,8 @@ export function Lobby({
     if (!roomCode) return;
     setCode(roomCode);
     refusedRef.current = false;
+    setSlowConnect(false);
+    setErrorCode(undefined); // this attempt's refusal is not the last one's — see `errorCode`
     /**
      * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
      *
@@ -419,10 +506,11 @@ export function Lobby({
     wire(transport, roomCode).join(roomCode, myPlayer(), roomConfig(), group || undefined);
   }
 
-  /** the player fields this client advertises — the same on a fresh join and on a resume */
+  /** the player fields this client advertises — the same on a fresh join and on a resume.
+   *  An untyped name becomes the literal HERE, not in the box the player is looking at. */
   function myPlayer(): Omit<LobbyPlayer, 'clientId'> {
     return {
-      name,
+      name: name.trim() || DEFAULT_DRIVER_NAME,
       teamName: settings.spec.teamName,
       teamNumber: settings.spec.teamNumber,
       // record runs are opponent-free (one alliance) — force blue, matching the server
@@ -468,10 +556,28 @@ export function Lobby({
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
 
+    /**
+     * SAY THAT IT IS STILL TRYING.
+     *
+     * `LobbyClient` subscribes to `onMessage` and `onFail` only, so between "socket
+     * dropped" and "retry budget exhausted" — 40 attempts at 1000–1400 ms, about 48
+     * seconds — nothing at all reached this screen and the CTA simply sat disabled. A
+     * restart shorter than the budget self-heals, so the COMMON case was an unexplained
+     * freeze that then worked, not the terminal error. The in-match `ServerSession` has
+     * wired `onDown` for exactly this since Phase 1; the lobby layer never did.
+     *
+     * `onDown` is free to take here: the lobby layer never registers it, and
+     * `ServerSession` replaces it when it takes the socket over — by which point this
+     * screen has handed off and unmounted.
+     */
+    transport.onDown(() => setSlowConnect(true));
+
     lobby.on('roster', (list, host) => {
       setPlayers(list);
       setHostId(host);
       setMyId(lobby.clientId);
+      setSlowConnect(false); // whatever it was, we are talking to the room again
+      setError(''); // an in-room refusal (see 'error') is answered by the room moving on
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
     lobby.on('matchStart', (m) => handleStart(m, roomCode));
@@ -487,10 +593,24 @@ export function Lobby({
       if (!isRanked) setStarting({ deadline, mode: m });
     });
     lobby.on('error', (msg, code) => {
-      refusedRef.current = true;
+      // ⚠️ ONLY A REFUSAL AT THE DOOR marks the socket refused. In the room it is a message
+      // (a START refused on readiness, a restart pending) and the socket stays seated, so a
+      // drop later in the room is still a lost connection and must be said as one.
+      if (phaseRef.current !== 'room') refusedRef.current = true;
       setError(msg);
       setErrorCode(code);
-      setPhase('error');
+      /**
+       * ⚠️ A REFUSAL WHILE WE ARE ALREADY IN THE ROOM IS A MESSAGE, NOT A SCREEN.
+       *
+       * `'error'` is terminal here: the room UI only renders at `phase === 'room'` and the
+       * roster handler promotes only FROM `'connecting'`, so nothing brings it back. That
+       * was survivable while every error arrived at the door — but the server now refuses a
+       * START whose roster is not all-ready, and losing that race is ordinary (somebody
+       * toggles ready off as the host clicks). Replacing the lobby with an error screen threw
+       * the host out of the room they were still seated in, onto a form whose obvious button
+       * makes a NEW room away from their friends. In-room refusals stay inline.
+       */
+      setPhase((p) => (p === 'room' ? p : 'error'));
       // THE REGION IS FULL, NOT BROKEN. This is the one error with a specific action
       // attached — the same code is hostable somewhere else — so the picker has to be
       // reachable to take it. Joining via a host region LOCKS the picker (both players
@@ -558,7 +678,7 @@ export function Lobby({
     }
     setPhase('room');
     setMyId(resume.clientId);
-    wire(resume.transport, resume.code).resume(resume.code, myPlayer(), resume.clientId, roomConfig());
+    wire(resume.transport, resume.code).resume(resume.code, myPlayer(), resume.clientId, resume.seatToken, roomConfig(), group);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume]);
 
@@ -580,6 +700,50 @@ export function Lobby({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoJoin]);
 
+  /**
+   * THE ONE REFUSAL THAT ENDS BY ITSELF — so wait it out instead of asking the player to.
+   *
+   * `in_progress` means the room is fine and mid-match. Everywhere else that is a shrug and a
+   * fresh room code; in a Discord activity it is a wall, because the room code is DERIVED FROM
+   * THE INSTANCE and is the same on every re-entry for everybody in the voice channel. The
+   * server's signed-out seat hold lapses after 45 s, and a room only becomes joinable again
+   * when its host recycles it — which may be minutes after the match, and never if the host is
+   * the one who dropped. So a phone that backgrounded the iframe came back to a refusal that,
+   * as far as the player could tell, was permanent.
+   *
+   * The loop is the effect itself, not a timer chain: `join()` moves `phase` to `'connecting'`,
+   * which tears this down, and the next refusal moves it back to `'error'`, which re-arms it.
+   * That also means it CANNOT spin — the moment the room admits us, or refuses us for any
+   * other reason, `errorCode` is no longer `'in_progress'` and nothing re-arms.
+   *
+   * Auto-join only. A player who typed a code chose this room this second and is looking at a
+   * button; one who was placed here by the activity has no button worth pressing.
+   */
+  useEffect(() => {
+    /**
+     * ⚠️ THE ACTIVITY ONLY. `autoJoin` is also how a friend's INVITE and a challenge land on
+     * this screen on the web, and those players have a code box, a Modes screen and a back
+     * button — they do not need a timer re-dialling for as long as the tab is open. In the
+     * embed there is nowhere else to go, which is the whole reason this exists.
+     */
+    if (!group || !autoEntry || phase !== 'error' || errorCode !== 'in_progress') return;
+    setRetryIn(IN_PROGRESS_RETRY_S);
+    const tick = setInterval(() => setRetryIn((s) => (s > 0 ? s - 1 : 0)), 1000);
+    const again = setTimeout(() => {
+      // ⚠️ DROP THE REFUSED SOCKET FIRST. `join()` builds a fresh transport and client and
+      // only the UNMOUNT disposes the old one, so a timer that fires every 10 s for the
+      // length of a match left a live socket behind on each pass — the server holds a
+      // refused connection open, so they accumulate against the game server.
+      lobbyRef.current?.dispose();
+      join(code, autoJoinRegion);
+    }, IN_PROGRESS_RETRY_S * 1000);
+    return () => {
+      clearInterval(tick);
+      clearTimeout(again);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group, autoEntry, phase, errorCode, code]);
+
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
 
@@ -589,21 +753,21 @@ export function Lobby({
   // a short debounce echoes an `update` patch the server sanitizes + re-broadcasts.
   // Echo-only (not persisted to `settings`): this is a per-match name, not a change
   // to the saved robot. Fallbacks match the server's coercion defaults.
-  const [robotName, setRobotName] = useState(settings.spec.name);
+  const [robotName, setRobotName] = useState(settings.spec.name === DEFAULT_ROBOT_NAME ? '' : settings.spec.name);
   const nameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const robotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editName = (next: string): void => {
     nameEditedRef.current = true; // don't let a late displayName adopt clobber it
     setName(next);
     if (nameTimer.current) clearTimeout(nameTimer.current);
-    nameTimer.current = setTimeout(() => lobbyRef.current?.update({ name: next.trim() || 'Player' }), 300);
+    nameTimer.current = setTimeout(() => lobbyRef.current?.update({ name: next.trim() || DEFAULT_DRIVER_NAME }), 300);
   };
   const editRobotName = (next: string): void => {
     setRobotName(next);
     if (robotTimer.current) clearTimeout(robotTimer.current);
     robotTimer.current = setTimeout(() => {
       const base = me?.spec ?? settings.spec;
-      lobbyRef.current?.update({ spec: { ...base, name: next.trim() || 'My Robot' } });
+      lobbyRef.current?.update({ spec: { ...base, name: next.trim() || DEFAULT_ROBOT_NAME } });
     }, 300);
   };
   useEffect(
@@ -613,6 +777,39 @@ export function Lobby({
     },
     [],
   );
+
+  /**
+   * AND IT SURVIVES A RE-ENTRY. The editor above was deliberately echo-only — a per-match
+   * name, not a change to the saved robot — and the cost was that leaving and relaunching
+   * the activity re-advertised "Player" again, so the one thing that makes a 2v2 roster
+   * readable had to be retyped every time. Nobody in an embed is signed in, so
+   * `settings.spec` is the only store there is, and it is exactly where the driver name is
+   * read back from on the next mount (`displayName ?? settings.spec.teamName`).
+   *
+   * ONE TIMER FOR BOTH FIELDS. Two independent debounces each wrote the spec from the
+   * render they were created in, so a robot name typed while a driver name was still
+   * pending would write a spec the name edit had not landed in and drop it.
+   *
+   * ⚠️ `onSettingsChange` AND `settings` RIDE REFS. The setter is a fresh arrow every
+   * render and App re-renders on its own every few seconds (the presence poll), so
+   * depending on either would restart this debounce on a render nobody made — the same
+   * trap the Controls screen's capture effects document.
+   */
+  const saveRef = useRef(onSettingsChange);
+  saveRef.current = onSettingsChange;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => {
+    if (!discordActivity) return;
+    const t = setTimeout(() => {
+      const s = settingsRef.current;
+      const driver = name.trim();
+      const robot = robotName.trim() || DEFAULT_ROBOT_NAME;
+      if (driver === s.spec.teamName && robot === s.spec.name) return;
+      saveRef.current({ ...s, spec: { ...s.spec, teamName: driver, name: robot } });
+    }, IDENTITY_SAVE_MS);
+    return () => clearTimeout(t);
+  }, [discordActivity, name, robotName]);
 
   /**
    * RE-PICK, in a custom room exactly as in the ranked strategy window.
@@ -676,6 +873,45 @@ export function Lobby({
   // settings with the category forced to the locked role (so the helpers write
   // memory/library into the right bucket even though the tabs are hidden)
   const sCat: GS = { ...settings, startCat: startRole ?? settings.startCat };
+  /**
+   * In-room identity editing is DISCORD-ONLY: an activity auto-join skips the entry
+   * screen's name field, so it is surfaced here. On web/Electron the entry screen already
+   * collects both, so this stays hidden rather than being a redundant editor.
+   *
+   * Held as a value because it renders in one of TWO places — above the roster while the
+   * player is still nameless, below it once they are not. See `idFirst`.
+   */
+  const youSection = discordActivity ? (
+    <section className="ds-sec">
+      <h2>You</h2>
+      {/* not a restatement of the two labels: it says where the names GO, which is the
+          reason to fill them in and the one thing the labels cannot say. */}
+      {idFirst && <p className="ds-sub">Everyone else sees these on the roster and over your robot.</p>}
+      <div className="ds-idedit">
+        <label className="ds-field">
+          <span className="cap">Your name</span>
+          <input
+            className="ds-input"
+            value={name}
+            onChange={(e) => editName(e.target.value)}
+            maxLength={24}
+            placeholder={DEFAULT_DRIVER_NAME}
+          />
+        </label>
+        <label className="ds-field">
+          <span className="cap">Robot name</span>
+          <input
+            className="ds-input"
+            value={robotName}
+            onChange={(e) => editRobotName(e.target.value)}
+            maxLength={24}
+            placeholder={DEFAULT_ROBOT_NAME}
+          />
+        </label>
+      </div>
+    </section>
+  ) : null;
+
   const roomInviteTarget: RoomInviteTarget | undefined =
     phase === 'room'
       ? {
@@ -727,6 +963,95 @@ export function Lobby({
     );
   }
 
+  /**
+   * JOINING A ROOM SOMEBODY ELSE ALREADY NAMED — the screen an auto-join gets instead of
+   * the entry form. Nothing interactive but ← Back, and, when the join is refused, one
+   * button that retries THE SAME CODE rather than the CREATE ROOM that used to sit there
+   * and mint a fresh room away from the group.
+   *
+   * Above the `entry` branch, not folded into it: the form's controls (a name field, the
+   * New room / Have a code toggle, a region picker) all act on a room that is not being
+   * chosen here, and every one of them had to be individually disabled to be honest.
+   */
+  if (autoEntry && phase !== 'room') {
+    const joiningGroup = !!group;
+    return (
+      <RoomFriendsLayout
+        signedIn={signedIn}
+        myUserId={myUserId}
+        onOpenProfile={onOpenProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={onSpectate}
+      >
+        <div className="ds-console">
+          <div className="ds-console-in narrow">
+            <ConsoleHead onBack={onCancel} title={joiningGroup ? 'Discord lobby' : 'Custom room'} />
+            <div className="ds-panel ds-panel-body stack">
+              {phase === 'error' && errorCode === 'in_progress' ? (
+                /* NOT AN ERROR, A QUEUE. The room is running a match and will open again on
+                   its own, so this reads as a wait rather than a red line — and the waiting
+                   is done for them (see the retry effect). The button is what somebody who
+                   just watched the match end presses instead of sitting through the timer. */
+                <>
+                  <p className="ds-loading">A match is running in this lobby.</p>
+                  <p className="ds-hint">
+                    {/* the countdown runs only inside the activity (the retry effect); on the
+                        web an invite has no timer, and "Trying again in 0s." would sit forever */}
+                    You’ll be able to join when it finishes.{joiningGroup && ` Trying again in ${retryIn}s.`}
+                  </p>
+                  <div className="ds-actions">
+                    <button
+                      className="ds-cta"
+                      onClick={() => {
+                        lobbyRef.current?.dispose(); // the refused socket, as the retry effect does
+                        join(code, autoJoinRegion);
+                      }}
+                    >
+                      TRY NOW
+                    </button>
+                  </div>
+                </>
+              ) : phase === 'error' ? (
+                <>
+                  <p className="ds-form-err">⚠ {error}</p>
+                  {/* The season is the client's own setting, so retrying this code fails
+                      identically forever — the way out is the lobby browser, whose rows carry
+                      each room's season and switch to it on the way in. ← Back is that door. */}
+                  {errorCode === 'game_mismatch' && joiningGroup && (
+                    <p className="ds-hint warn">
+                      Go back and open this lobby from the list. It switches you to the season the
+                      room is playing.
+                    </p>
+                  )}
+                  <div className="ds-actions">
+                    <button
+                      className="ds-cta"
+                      onClick={() => {
+                        lobbyRef.current?.dispose();
+                        join(code, autoJoinRegion);
+                      }}
+                    >
+                      TRY AGAIN
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="ds-loading">{joiningGroup ? 'Joining the lobby…' : 'Joining the room…'}</p>
+                  {slowConnect && (
+                    <p className="ds-hint">
+                      Still connecting to the game server. It keeps trying for about a minute.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </RoomFriendsLayout>
+    );
+  }
+
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
       <RoomFriendsLayout
@@ -757,6 +1082,7 @@ export function Lobby({
                   setName(e.target.value);
                 }}
                 maxLength={20}
+                placeholder={DEFAULT_DRIVER_NAME}
               />
             </label>
             {/* no region picker on a LAN server: there is one machine, and offering a
@@ -823,15 +1149,35 @@ export function Lobby({
                 <p className="ds-form-err">⚠ {error}</p>
                 {/* A FULL REGION IS NOT A FAILED CONNECTION, and saying so is the whole
                     point of the code: the room is fine, this machine is just at its
-                    cap, and the fix is one control up the page. Without this the player
-                    reads the same red line they get for a dead server and gives up. */}
-                {errorCode === 'region_full' && (
+                    cap, and the fix is one control up the page.
+
+                    ⚠️ GATED ON THE PICKER EXISTING, because it is pointing AT it. On a
+                    single-server build — a LAN server, and every Discord activity, where
+                    `parseServers()` collapses to one entry and the region is pinned to a
+                    constant — "choose another region above" named a control that is not
+                    rendered, so the one refusal with an action attached read as the one with
+                    an impossible one. The server's own sentence already covers that case. */}
+                {errorCode === 'region_full' && multiServer() && (
                   <p className="ds-hint warn">
                     Nothing is wrong with your connection. Choose another region above,
                     then try again. Whoever you are playing with needs to pick the same one.
                   </p>
                 )}
+                {/* the season is a home-page setting, not a room one, so this screen can only
+                    say where it lives — retrying the code in place refuses identically. */}
+                {errorCode === 'game_mismatch' && (
+                  <p className="ds-hint warn">
+                    Change the season on the home page, then join this code again.
+                  </p>
+                )}
               </>
+            )}
+            {/* the same signal the auto-join panel gets — a manual create/join froze on a
+                disabled CTA for the whole retry budget too. */}
+            {phase === 'connecting' && slowConnect && (
+              <p className="ds-hint">
+                Still connecting to the game server. It keeps trying for about a minute.
+              </p>
             )}
             <div className="ds-actions">
               {entryMode === 'create' ? (
@@ -937,6 +1283,8 @@ export function Lobby({
         </p>
         </div>
 
+        {idFirst && youSection}
+
         <section className="ds-sec">
           <h2>Drivers</h2>
           <div className="ds-players">
@@ -952,7 +1300,7 @@ export function Lobby({
                     {p.name}
                     {isMe ? ' (you)' : ''}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <TitleMark title={p.title} badges={p.badges} />
+                    <BadgeMarks badges={p.badges} />
                   </span>
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '—'}
@@ -1022,43 +1370,13 @@ export function Lobby({
                 )}
               </div>
               <p className="ds-hint">
-                A room with a bot in it is unrated and its result is not saved.
+                A room with a bot in it is unrated. It is still saved to Match history.
               </p>
             </>
           )}
         </section>
 
-        {/* In-room identity editing is DISCORD-ONLY: an activity auto-join skips the
-            entry screen's name field (leaving you "Player" / "My Robot"), so it's
-            surfaced here. On web/Electron the entry screen already collects both, so
-            this stays hidden to avoid a redundant editor. */}
-        {discordActivity && (
-          <section className="ds-sec">
-            <h2>You</h2>
-            <div className="ds-idedit">
-              <label className="ds-field">
-                <span className="cap">Your name</span>
-                <input
-                  className="ds-input"
-                  value={name}
-                  onChange={(e) => editName(e.target.value)}
-                  maxLength={24}
-                  placeholder="Player"
-                />
-              </label>
-              <label className="ds-field">
-                <span className="cap">Robot name</span>
-                <input
-                  className="ds-input"
-                  value={robotName}
-                  onChange={(e) => editRobotName(e.target.value)}
-                  maxLength={24}
-                  placeholder="My Robot"
-                />
-              </label>
-            </div>
-          </section>
-        )}
+        {!idFirst && youSection}
 
         {!isRecord && (
           <section className="ds-sec">
@@ -1201,6 +1519,9 @@ export function Lobby({
             </button>
           )}
         </div>
+        {/* a refusal while seated (see the 'error' handler): said here, where the host who
+            pressed START is looking, and cleared by the next roster */}
+        {error && <p className="ds-form-err">⚠ {error}</p>}
         {!startLegal && (
           <p className="ds-hint">
             ⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to

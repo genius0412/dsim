@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { authClient } from '../lib/authClient';
 import { requestEmailVerification } from '../lib/authFlows';
 import { CloseGlyph } from './FriendsPanel';
+import { VerifyCodeForm } from './VerifyCodeForm';
 
 /**
  * PER-SESSION dismissal, in `sessionStorage` rather than `localStorage`.
@@ -74,15 +75,19 @@ export function VerifyEmailBanner() {
   return (
     <div className="ds-verifybar" role="status">
       <div className="ds-verifybar-text">
+        {/* No sentence about what an unverified address is refused: that depends on a
+            server switch (REQUIRE_VERIFIED_EMAIL) this client cannot see, and the banner
+            said "ranked needs it" for months while the switch was off. The refusal
+            itself names the reason when it happens. */}
         {state === 'sent' ? (
-          <>A new link is on its way to {email}. Open it to finish verifying.</>
+          <>A new code is on its way to {email}. Enter it below.</>
         ) : (
           <>
-            <strong>Verify your email.</strong> We sent a link to {email}. Ranked and record runs
-            need a verified address; practice and casual matches do not.
+            <strong>Verify your email.</strong> Enter the code we sent to {email}.
           </>
         )}
         {state === 'error' && <span className="err"> {error}</span>}
+        {email && <VerifyCodeForm email={email} id="ds-verifybar-code" />}
       </div>
       {state !== 'sent' && (
         <button className="ds-btn small" onClick={resend} disabled={state === 'sending' || !email}>

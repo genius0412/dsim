@@ -15,6 +15,10 @@ export interface ActiveGameRef {
   /** the Fly region hosting the match, for reconnect routing (custom rooms need it) */
   region?: string;
   clientId: string;
+  /** the SEAT'S SECRET, which is what the server actually checks on a rejoin/abandon.
+   * Optional: a record written by an older build has none, and the server falls back to
+   * the pre-token rule for pre-token seats. */
+  seatToken?: string;
   /** the matchStart payload (seed/setups/yourRobotId/…) to rebuild the session */
   start: MatchStart;
   ranked: boolean;

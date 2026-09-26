@@ -164,6 +164,12 @@ function hiveWorldPoint(
   return { x: hivePivotX(alliance) + x, y, z: BB3_HIVE_PIVOT_Z + z };
 }
 
+/** an archetype build: the named intake on the named mount, no launcher or lift */
+const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
+  intakeMount: mount,
+  bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'],
+});
+
 export function sim3dChecks(check: Check): void {
   // ---- seam: physics tag + dispatch ------------------------------------------------------
   {
@@ -196,10 +202,14 @@ export function sim3dChecks(check: Check): void {
   // before the biobuzz clamp (`coerceBiobuzzSpec`, `BB3_HEIGHT_MIN`..`BB3_HEIGHT_MAX`) ever
   // saw it. `bbCoerce` is the exact chokepoint a real spec goes through.
   {
-    const kept = bbCoerce({ heightIn: 29 });
-    check('heightIn: 29 (in range) survives coerceSpec into the biobuzz clamp', kept.heightIn === 29, `got ${kept.heightIn}`);
-    const clamped = bbCoerce({ heightIn: 40 });
-    check('heightIn: 40 (over BB3_HEIGHT_MAX) clamps to 29', clamped.heightIn === 29, `got ${clamped.heightIn}`);
+    const kept = bbCoerce({ heightIn: 16 });
+    check('heightIn: 16 (in range) survives coerceSpec into the biobuzz clamp', kept.heightIn === 16, `got ${kept.heightIn}`);
+    const clamped = bbCoerce({ heightIn: 29 });
+    check(
+      `heightIn: 29 (over BB3_HEIGHT_MAX) clamps to ${BB3_HEIGHT_MAX}`,
+      clamped.heightIn === BB3_HEIGHT_MAX,
+      `got ${clamped.heightIn}`,
+    );
     const absent = bbCoerce({});
     check(
       'heightIn: absent stays absent (BB3_HEIGHT_DEFAULT applies downstream)',
@@ -1821,8 +1831,8 @@ export function sim3dChecks(check: Check): void {
       `18in final y=${y18.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
     );
     check(
-      'height: a 29-in (legal max) robot CLEARS the down cell -- the CAD tray puts its floor at ' +
-        `BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z}, above BB3_HEIGHT_MAX (${BB3_HEIGHT_MAX})`,
+      'height: a 29-in (R105.A max) robot CLEARS the down cell -- the CAD tray puts its floor at ' +
+        `BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z}, above R105.A's 29`,
       y29 > bracket.y + 5,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
@@ -1849,11 +1859,11 @@ export function sim3dChecks(check: Check): void {
       // ...and the CONTROL: the same box at the height a legal robot's own drawn roof reaches
       // finds nothing, which is the drive-under the two checks above measure.
       const hit = anyFixedAt(legacyRoof - 1.5);
-      const clear = anyFixedAt(BB3_HEIGHT_MAX - 1.5);
+      const clear = anyFixedAt(29 - 1.5);
       check(
-        'height: the down-cell clearance collider is REAL — a chassis-sized box at the old prism roof overlaps it, and the same box at BB3_HEIGHT_MAX does not',
+        'height: the down-cell clearance collider is REAL — a chassis-sized box at the old prism roof overlaps it, and the same box at R105.A’s 29 in does not',
         hit && !clear,
-        `at ${legacyRoof.toFixed(2)}in hit=${hit}, at ${BB3_HEIGHT_MAX}in hit=${clear}`,
+        `at ${legacyRoof.toFixed(2)}in hit=${hit}, at 29in hit=${clear}`,
       );
       disposeEngineFor(w);
     }
@@ -2943,7 +2953,12 @@ export function sim3dChecks(check: Check): void {
       const r = w.robots[0];
       r.fieldCentric = false;
       r.heading = Math.PI;
-      r.pos.x = -23.6; // spawned INSIDE where the old full-width box used to be solid
+      // the FRONT EDGE spawned 0.83 in INSIDE where the old full-width box used to be solid
+      // (x −24.73 … −22.75), 0.17 in short of the flange. This used to centre the robot at
+      // −23.6, which put the whole chassis across the flange: it was lifted onto the bar
+      // (z 2.15) and the check still passed, because it never read z.
+      const x0 = -23.9 + robotExtents(r).front;
+      r.pos.x = x0;
       r.pos.y = 0;
       r.vel.x = r.vel.y = 0;
       r.angVel = 0;
@@ -2951,8 +2966,8 @@ export function sim3dChecks(check: Check): void {
       const engine = engineFor(w);
       check(
         'foot bar 3d: a chassis spawned where the old box used to be solid needs no containment fix -- the floor is genuinely open',
-        engine.containmentFixes === 0 && Math.abs(r.pos.x - -23.6) < 1,
-        `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)}`,
+        engine.containmentFixes === 0 && Math.abs(r.pos.x - x0) < 1 && Math.abs(r.z ?? 0) < 0.1,
+        `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)} from ${x0.toFixed(2)}, z=${(r.z ?? 0).toFixed(3)}`,
       );
       disposeEngineFor(w);
     }
@@ -3552,10 +3567,7 @@ export function sim3dChecks(check: Check): void {
   // both predictors — see that function's own header for the geometry and
   // `docs/area/biobuzz.md`'s rewritten bullet for the summary.
   // =============================================================================================
-  const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
-    intakeMount: mount,
-    bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'],
-  });
+  // (`bbArchSpec`, module scope: the PERF lane's archetype fixture builds with it too)
 
   // (a) A side-roller robot driven into a wall stops with the WHEEL BOXES' faces on the wall —
   // frame + `bbIntakeReach` + `BB_SIDE_ROLLER_OUT` + `BB_SIDE_ROLLER_R` off — and a `sweeper`
@@ -3608,12 +3620,12 @@ export function sim3dChecks(check: Check): void {
       r.hopper = [];
       r.autoIntake = false;
       r.autoFire = false;
-      r.pos = { x: -20, y: 0 };
+      r.pos = { x: -8, y: 0 };
       r.heading = 0;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       w.balls.length = 0;
-      w.balls.push({ id: 9001, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      w.balls.push({ id: 9001, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
       run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
       const took = r.hopper.length > 0;
       disposeEngineFor(w);
@@ -3730,12 +3742,12 @@ export function sim3dChecks(check: Check): void {
       r.hopper = [];
       r.autoIntake = false;
       r.autoFire = false;
-      r.pos = { x: -20, y: 0 };
+      r.pos = { x: -8, y: 0 };
       r.heading = 0;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       w.balls.length = 0;
-      w.balls.push({ id: 9102, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      w.balls.push({ id: 9102, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: 0, y: offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
       run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
       const took = r.hopper.length > 0;
       disposeEngineFor(w);
@@ -3813,6 +3825,142 @@ export function sim3dChecks(check: Check): void {
       off.every((r) => !r.took && r.moved > 2),
       JSON.stringify(off.map((r) => [r.off.toFixed(2), r.took, r.moved.toFixed(2)])),
     );
+  }
+
+  // (c1) A RAMP ROBOT CANNOT FREEZE ITSELF ON A STATIC (replay 1dc6eb8f, 2026-09-25: frozen from
+  // 1:50 to the buzzer). Both jams are the same contact: the thin deck held VERTICALLY by a fixed
+  // body, so the solver pushes the chassis into the tiles and friction holds it there.
+  {
+    const spec = { ...bbArchSpec('ramp', 'frontback'), length: 15, width: 17 };
+    const drive = (w: World, c: Partial<RobotCommand>, n: number): void => {
+      for (let i = 0; i < n; i++) step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+    };
+    const staged = (x: number, y: number, heading: number): World => {
+      const w = mkWorld3d('match', 8140, spec);
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x, y };
+      r.heading = heading;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.autoIntake = false;
+      r.autoFire = false;
+      drive(w, {}, 1);
+      drive(w, { bbRamp: true }, 1);
+      drive(w, {}, 25);
+      return w;
+    };
+    // (i) the replay's own sequence, staged: a FOLD pressed just short of a wall at full speed.
+    // The fold's overshoot hits the wall and reverses to a deploy; the old guard stopped testing
+    // there, the robot closed 2.4 in with no ramp collider, and the ramp settled inside the wall.
+    {
+      const w = staged(-44, 0, Math.PI / 2);
+      const r = w.robots[0];
+      const ready = !!r.bbRampOut && !r.bbRampBlocked;
+      const back = { driveY: -1, leftDrive: -1, rightDrive: -1 };
+      drive(w, back, 40);
+      r.pos = { x: -44, y: -52 };
+      drive(w, back, 1);
+      drive(w, { ...back, bbRamp: true }, 6);
+      drive(w, back, 40);
+      const y0 = r.pos.y;
+      drive(w, { driveY: 1, leftDrive: 1, rightDrive: 1 }, 60);
+      check(
+        'ramp jam: a fold pressed at speed just short of a wall does not freeze the robot there',
+        ready && r.pos.y - y0 > 3 && (r.z ?? 0) > -0.05,
+        `ready=${ready} moved=${(r.pos.y - y0).toFixed(2)} z=${(r.z ?? 0).toFixed(3)} out=${r.bbRampOut}`,
+      );
+      disposeEngineFor(w);
+    }
+    // (ii) a SETTLED ramp whose deck ends up across a hive foot bar (the chassis clears the bar;
+    // only the 0.4-in blade meets it). 7 of 400 random drives froze this way before the fix.
+    {
+      const probe = bbCoerce(spec);
+      const uOut = mouthAxes(bbMouths(probe).find((m) => m.edge === 'front')!, probe.length / 2, probe.width / 2).uOut;
+      const deckMid = uOut + (BB_RAMP_IN + BB_RAMP_OUT) / 2;
+      const barX = -24.4; // the red foot bar's centreline (x −24.73 … −24.07)
+      const w = staged(-44, 34, Math.PI);
+      const r = w.robots[0];
+      const ready = !!r.bbRampOut && !r.bbRampBlocked;
+      r.pos = { x: barX + deckMid, y: 0 };
+      drive(w, {}, 5);
+      const x0 = r.pos.x;
+      let minZ = 0;
+      for (let i = 0; i < 60; i++) {
+        drive(w, { driveY: -1, leftDrive: -1, rightDrive: -1 }, 1);
+        minZ = Math.min(minZ, r.z ?? 0);
+      }
+      check(
+        'ramp jam: a settled ramp across a hive foot bar folds and the robot drives away',
+        ready && r.bbRampOut === false && r.pos.x - x0 > 3 && (r.z ?? 0) > -0.05,
+        `ready=${ready} out=${r.bbRampOut} moved=${(r.pos.x - x0).toFixed(2)} z=${(r.z ?? 0).toFixed(3)} minZ=${minZ.toFixed(3)}`,
+      );
+      disposeEngineFor(w);
+    }
+  }
+
+  // (c1b) A CHASSIS PLACED INSIDE THE HIVE FRAME. The solver's shallowest way out of a 2.15-in
+  // foot bar was UP: the robot was lifted onto the bar with the A-frame leg between its frame box
+  // and an intake arm, and never moved again (8/400 random placements, `scratch/rampstuck.ts`).
+  // `fitChassisOut` sets it down beside the frame instead. Poses are the stuck placements.
+  {
+    const spec = bbArchSpec('sweeper', 'front');
+    const drive = (w: World, c: Partial<RobotCommand>, n: number): void => {
+      for (let i = 0; i < n; i++) step3d(w, 1 / 60, new Map([[0, cmd(c)]]));
+    };
+    const staged = (x: number, y: number, headingDeg: number): World => {
+      const w = mkWorld3d('free', 8100, spec);
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x, y };
+      r.heading = (headingDeg * Math.PI) / 180;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.autoIntake = false;
+      r.autoFire = false;
+      return w;
+    };
+    const poses: [number, number, number][] = [[-22.2, 15.4, 92], [29.9, 21.5, 233], [-24.4, 10, 45], [16, -22.3, 0], [-30.1, -11.7, 0]];
+    let bad = '';
+    for (const [x, y, h] of poses) {
+      const w = staged(x, y, h);
+      const r = w.robots[0];
+      drive(w, {}, 30);
+      const z0 = r.z ?? 0;
+      const x0 = r.pos.x;
+      const y0 = r.pos.y;
+      let maxD = 0;
+      for (const c of [{ driveY: 1, leftDrive: 1, rightDrive: 1 }, { driveY: -1, leftDrive: -1, rightDrive: -1 }, { driveX: 1 }, { driveX: -1 }]) {
+        for (let k = 0; k < 40; k++) {
+          drive(w, c, 1);
+          maxD = Math.max(maxD, Math.hypot(r.pos.x - x0, r.pos.y - y0));
+        }
+      }
+      if (Math.abs(z0) > 0.1 || maxD < 12) bad += `(${x},${y},${h}°): z=${z0.toFixed(2)} moved ${maxD.toFixed(2)}; `;
+      disposeEngineFor(w);
+    }
+    check('hive frame: a chassis placed inside the frame is set down on the tiles beside it and drives away', bad === '', bad);
+
+    // ...and a chassis PARKED against the bar is left where the solver put it: a re-sync of its
+    // own pose must not move it. Driven flat into the flange's outer face from open field.
+    {
+      const w = staged(-45, 0, 0);
+      const r = w.robots[0];
+      drive(w, { driveY: 1, leftDrive: 1, rightDrive: 1 }, 180);
+      drive(w, {}, 30);
+      const x0 = r.pos.x;
+      r.pos = { x: x0 + 0.001, y: r.pos.y }; // a pose edit: forces the teleport path
+      drive(w, {}, 1);
+      const front = x0 + robotExtents(r).front;
+      check(
+        'hive frame: a chassis parked against the foot bar is not moved when its pose is re-synced',
+        Math.abs(r.pos.x - x0) < 0.05 && front > -25 && Math.abs(r.z ?? 0) < 0.1,
+        `parked x=${x0.toFixed(3)} (front edge ${front.toFixed(2)}, flange face −24.73) → ${r.pos.x.toFixed(3)} z=${(r.z ?? 0).toFixed(3)}`,
+      );
+      disposeEngineFor(w);
+    }
   }
 
   // (c2) THE RAMP EDGE NEVER MOVES THE CHASSIS (owner report 2026-09-21: "deploying the ramp is
@@ -4126,22 +4274,33 @@ export function sim3dChecks(check: Check): void {
       // and this fixture's `reach` permanently null — MEASURED (`scratch/ramp_flush_debug.ts`):
       // the branch never fired once across 500 ticks. Same fix `robot.ts`'s own
       // `openPark`-then-`flush` fixtures already use for this exact mechanic.
-      r.pos = { x: f.x - 100, y: f.y };
-      r.heading = 0;
+      // ⚠️ INFIELD of F1, not `f.x - 100`: F1 is on the LEFT wall, so that point is 100 in outside
+      // the field, and the containment net clamped the robot back in ON TOP of F1 — it deployed
+      // wherever the plates happened to eject it, and that ejection also knocked the column off
+      // the axis. Found 2026-09-25 when robots stopped meeting the ring trimesh and the swing
+      // guard, seeing the solid plates, refused that deploy. Deployed in the open, the teleport
+      // flush lands the blade on a CENTRED column (chassis lifted to z 2.1, nothing retrieved,
+      // old and new physics alike), so the column is dropped in AFTER the robot is held flush:
+      // it falls onto the blade the way a placed column does.
+      r.pos = { x: f.x + 40, y: f.y };
+      r.heading = Math.PI;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
       r.hopper = [];
       for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // press the ramp out, still in the open
+      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
+      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
       let id = 9300;
       for (let k = 0; k < 2; k++) {
         w.balls.push({ id, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'element', el: 'flower:0', slot: 0 }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 }, z: FLOWER_RING_Z.top[0] - BB_POLLEN_R, vz: 0 });
         id++;
-        for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+        for (let t = 0; t < 60; t++) {
+          flushPose(); // NOW flush, ramp already settled, held there while the column drops
+          step3d(w, 1 / 60, new Map());
+        }
       }
-      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // press the ramp out, still in the open
-      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
-      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
-      flushPose(); // NOW move flush, ramp already settled
+      flushPose();
       return w;
     };
     const wa = buildRampRetrieveWorld(8150);
@@ -4266,7 +4425,13 @@ export function sim3dChecks(check: Check): void {
     );
     disposeEngineFor(w);
   }
+}
 
+/**
+ * The absolute step budgets, run in the PERF lane (`index.ts`), which `npm test` runs on its own
+ * after every other shard: a budget in milliseconds says what the step costs on an idle machine.
+ */
+export function sim3dPerfChecks(check: Check): void {
   // ---- perf: 2v2 (4 robots), median/p95 step3d cost ----------------------------------------
   {
     const w = createBiobuzzWorld(

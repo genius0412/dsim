@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
 import { APP_NAME, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
+import { inDiscordActivity } from '../net/discordActivity';
 import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
 import { MenuAd } from './AdSlot';
@@ -99,6 +100,29 @@ export function AppShell({
   const lanOn = useLanEnabled();
   const presence = usePresence();
   const season = seasonFor(game);
+  /**
+   * ⚠️ THE AUTH SLOT IS NOT RENDERED INSIDE A DISCORD ACTIVITY, because nothing behind it
+   * can succeed there and the failure blames the wrong thing.
+   *
+   * `authEnabled` is a BUILD constant and it is true on the bundle the activity loads, so
+   * App hands this slot a `ProfileMenu` — a "?" avatar, in the top bar of the FIRST screen a
+   * participant sees, whose popover offers sign-in. Discord's CSP blocks the auth host, so the
+   * fetch rejects with a bare `TypeError`, and the sentence that reaches the player is
+   * "Couldn’t reach the sign-in service. Check your connection and try again." — advice that
+   * can never work, on a page that is at that moment showing a live player count.
+   *
+   * Dropping it is the same ruling `compete={!inActivity}` already made for the ranked tiles
+   * one call up: an account, a download and a local network are all unreachable in the embed,
+   * and advertising one is a dead end. It also matches what a build WITHOUT auth renders here —
+   * `ServerMenu`, which returns null in the activity anyway, since the proxy's URL mapping
+   * collapses the server list to one entry and there is no region to pick (the activity pins
+   * its own). So this is the no-auth bar, not a new third state.
+   *
+   * `inDiscordActivity()` and not `discordGroup()`: this is a question about being EMBEDDED,
+   * which is host-based and cannot be lost, not about which party we are in — see the note on
+   * the predicate itself, and App's `inActivity`.
+   */
+  const inActivity = inDiscordActivity();
   return (
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
@@ -132,7 +156,7 @@ export function AppShell({
             <QueueCounts className="bar" allGames />
             {presence && <PresenceChip p={presence} />}
           </span>
-          {right}
+          {!inActivity && right}
         </div>
       </header>
       {/* the maintenance window, on every menu screen. Fed by the presence poll

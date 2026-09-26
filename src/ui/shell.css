@@ -196,19 +196,18 @@
      which checks the glyph against its own FILL, while being invisible on the dark
      panel). One saturated hue carrying the rank as a NUMERAL instead: it stays legible
      on both grounds, it is one pair rather than three, and it extends to a fourth rank
-     for free. The badge is distinguished from ★ owner / ◆ admin / ♥ supporter by SHAPE
-     as well (a hexagon), which that guide also requires. */
+     for free. It was chosen for a season-award title's hexagon, which went with titles
+     (0049); it now fills the Record Holder ribbon and the stargazer disc. */
   --ds-award: #a96bff;
   --ds-award-ink: #2a1065;
   /* THE STARGAZER ★ — yellow, on the --ds-award disc, outlined in --ds-award-ink
-     (`.sup-badge.stargazer`, styles.css). CATEGORY 2, declared here only. Its own name
+     (`.badge-mark.tier-stargazer`). CATEGORY 2, declared here only. Its own name
      rather than --ds-podium-gold or --ds-gold, so neither hue picks up a second job. */
   --ds-star: #ffd23f;
-  /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge and an act
-     podium title. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
+  /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
      here only, so they do not invert. The owner asked for the metals by name (2026-09-22:
      "gold/silver/bronze by placement … make it look special"), and the trap the award note
-     above names is answered by the SHAPE (a crest, a hexagon) and by a --ds-mut RIM on every
+     above names is answered by the SHAPE (a crest) and by a --ds-mut RIM on every
      one of them: silver is ~1.9:1 on the light panel by fill alone, and the rim is what
      separates it there, the way an edge identifies a floating HUD card. The numeral on each
      fill is a pair in scripts/contrast.mjs. Not --ds-gold, which means SUPPORTER. */
@@ -1862,8 +1861,25 @@ button.ds-key:where(:not(:disabled)):active,
 }
 /* the words in the UI face; the counts carry `.ds-num`, so only the digits are mono (01-04) */
 .ds-homestats-break {
+  /* its own row under the two tiles, as two centred lines */
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-s-1);
   font-size: var(--ds-t-sm);
   color: var(--ds-mut);
+}
+.ds-homestats-break .hb-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  column-gap: var(--ds-s-4);
+  row-gap: var(--ds-s-1);
+}
+/* the count reads ahead of its label */
+.ds-homestats-break .ds-num {
+  color: var(--ds-ink);
 }
 
 /* ---- rejoin banner (an in-progress multiplayer game to return to) ---- */
@@ -2146,9 +2162,35 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-page-note {
   margin-bottom: var(--ds-s-4);
 }
-/* a panel header whose only slot is its action */
-.cl-head {
+/* a panel header whose only slot is its action. Compound, because `.ds-panel-h` is declared
+   further down this file at the same specificity and its `space-between` put the lone button on
+   the LEFT. The side padding matches `.cl-body` so the button and the notes share an edge. */
+.ds-panel-h.cl-head {
   justify-content: flex-end;
+  padding-inline: var(--ds-s-6);
+}
+/* the changelog page (Changelog.tsx) is one reading column, as wide as the notes' 68ch measure
+   plus padding: the `.ds-legal-col` approach, fit-content capped by the text's own max-width.
+   The notes themselves are styled with the modal's, in styles.css (`.ann-*`). */
+.cl-panel {
+  width: fit-content;
+  max-width: 100%;
+}
+.ds-panel-body.cl-body {
+  padding: var(--ds-s-6);
+}
+.cl-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-6);
+}
+@media (max-width: 640px) {
+  .ds-panel-h.cl-head {
+    padding-inline: var(--ds-s-4);
+  }
+  .ds-panel-body.cl-body {
+    padding: var(--ds-s-5) var(--ds-s-4);
+  }
 }
 .cl-head .ds-btn {
   display: inline-flex;
@@ -4058,7 +4100,7 @@ tr.lb-detail td {
    token in both themes and adds no pair to scripts/contrast.mjs. */
 .ds-verifybar {
   display: flex;
-  align-items: center;
+  align-items: flex-start; /* the buttons stay level with the sentence, not the code field under it */
   gap: var(--ds-s-3);
   padding: var(--ds-s-3) var(--ds-s-4);
   margin-bottom: var(--ds-s-5);
@@ -4075,6 +4117,32 @@ tr.lb-detail td {
 }
 .ds-verifybar-text .err {
   color: var(--ds-danger);
+}
+/* the code field (VerifyCodeForm.tsx): under the sentence in the bar, and alone in
+   the sign-up dialog and on /account/verify. Capped so a 6-digit code does not sit
+   in a field as wide as the page. */
+.ds-verifycode {
+  max-width: 360px;
+  margin-top: var(--ds-s-2);
+}
+.ds-input.code {
+  font-family: var(--ds-font-mono);
+  letter-spacing: var(--ds-track-caps);
+}
+/* a code is short: the row's 240px basis wrapped Verify under the field at phone width */
+/* the code form where a refusal happens: the ranked queue, the record card, Practice
+   replays (VerifyEmailInline) */
+.ds-verifyinline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  max-width: 420px;
+}
+.ds-pwform {
+  max-width: 360px;
+}
+.ds-field-row > .ds-input.code {
+  flex-basis: 120px;
 }
 /* PHONE: the buttons drop under the sentence rather than squeezing it to one word
    per line. Same rule as the rest of the shell at this breakpoint. */
@@ -7666,6 +7734,20 @@ a.ds-cta {
   stroke: var(--ds-mut);
   stroke-width: 1;
 }
+/* where Vercel's imported days end and DSIM's own count begins: dotted, so it never reads
+   as the hover cursor */
+.an-mark {
+  stroke: var(--ds-mut);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+/* "from Sep 22" beside a title or tile whose number is DSIM's own days only, while the range
+   also reaches imported ones. Sentence case inside the caps title. */
+.an-own {
+  font-family: var(--ds-font-ui);
+  letter-spacing: normal;
+  text-transform: none;
+}
 .an-legend {
   display: flex;
   flex-wrap: wrap;
@@ -8064,68 +8146,9 @@ a.ds-cta {
 }
 
 /* ====================================================================================
-   SEASON-AWARD BADGE — `src/ui/AwardBadge.tsx`. A SIBLING of `.sup-badge`, never a
-   variant of it: that one renders exactly one of owner/admin/supporter by precedence,
-   and an award is a different claim, so a champion who also pays shows both.
+   THE TROPHY CASE — `src/ui/AwardList.tsx`: one row per placement, its badge beside the
+   sentence that names it.
    ==================================================================================== */
-.award-badge {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  /* decoration BESIDE a name, never part of it — the same two reasons `.sup-badge`
-     gives: it must not be swept into a selection, and `vertical-align` is ignored on a
-     flex item, so it centres on the line instead of dropping to the baseline. */
-  user-select: none;
-  align-self: center;
-  vertical-align: middle;
-  color: var(--ds-award-ink);
-}
-/* the --ds-mut RIM is on EVERY hexagon, not only the metals: it is what bounds the family's
-   silhouettes on the panel (1.4.11), and the plain violet one went without it at 2.7:1 */
-.award-badge svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  fill: var(--ds-award);
-  stroke: var(--ds-mut);
-  stroke-width: 1.2;
-  stroke-linejoin: round;
-}
-/* the numeral sits ON the hexagon, so it is absolutely placed rather than laid out —
-   a flex sibling would push the shape aside instead of labelling it */
-.award-rank {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--ds-font-mono);
-  font-size: 0.62em;
-  font-weight: 800;
-  line-height: var(--ds-lh-tight);
-  color: var(--ds-award-ink);
-}
-/* 1em: the family's one base size — see `.sup-badge.sup-sm` */
-.award-badge.award-sm {
-  width: 1em;
-  height: 1em;
-  margin-left: 0.42em;
-}
-/* ...except in a flex name row that already spaces its children with `gap`, where the
-   margin would be added on top of it — the same exception `.sup-badge` needs. */
-.lb-name > .award-badge,
-.award-list > li > .award-badge {
-  margin-left: 0;
-}
-.award-badge.award-md {
-  width: 1.5em;
-  height: 1.5em;
-  margin-left: 0.3em;
-}
-
-/* the trophy case on a profile */
 .award-list {
   display: flex;
   flex-direction: column;
@@ -8146,56 +8169,6 @@ a.ds-cta {
   color: var(--ds-ink);
 }
 
-/* the title picker (`src/ui/TitlePicker.tsx`) is `.ds-opt` tiles; an award tile's label is
-   the numeral badge beside the board name, so the label is a flex row. */
-.title-pick-ot {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ds-s-1);
-}
-
-/* ── A LEDGER TITLE BESIDE A NAME (`ui/TitleChip.tsx`) ──────────────────────────────────────
-   The sibling of `.award-badge`, and it takes the same `--ds-award` hue on purpose: the two
-   are the same KIND of claim (earned, as against paid for), and one hue is ONE measured
-   `contrast.mjs` pair rather than a new one per reward.
-   IT CARRIES ITS NAME AS TEXT: a ledger title's message is its NAME. The one exception is
-   `title:stargazer`, which the owner asked to be a ★ badge (2026-09-24). It renders as a
-   `.sup-badge.stargazer` (styles.css) and never reaches this rule. */
-.title-chip {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  /* decoration BESIDE a name, never part of it — the same two reasons `.award-badge` gives:
-     it must not be swept into a selection, and `vertical-align` is ignored on a flex item so
-     it centres on the line instead of dropping to the baseline. */
-  user-select: none;
-  align-self: center;
-  vertical-align: middle;
-  /* the family's leading gap (`.sup-badge`/`.award-badge`/`.badge-mark` all carry it); it had
-     none, so in a non-gap row it sat hard against the badge before it (design review 06-20) */
-  margin-left: 0.42em;
-  padding: 0 6px;
-  /* full pill, like every badge (DESIGN.md Shapes) — it was the one square-cornered mark */
-  border-radius: var(--ds-round-full);
-  font-family: var(--ds-font-mono);
-  /* --ds-t-xs, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
-     than the name. A length rather than an `em` because this chip appears in rows at two
-     different name sizes and an em would make it two different chips. */
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  line-height: 18px;
-  color: var(--ds-award-ink);
-  background: var(--ds-award);
-  /* the family's --ds-mut rim, as an inset ring so it adds no width */
-  box-shadow: inset 0 0 0 1px var(--ds-mut);
-}
-/* ...except in a flex name row that already spaces its children with `gap` — the same
-   exception `.award-badge` needs (`.appr-preview > .title-chip` sits with the Appearance
-   preview's own list). It targeted `.title-pick`, a class that exists nowhere. */
-.lb-name > .title-chip {
-  margin-left: 0;
-}
-
 /* ── THE STAR REWARD HINT (`ui/StarReward.tsx`) ─────────────────────────────────────────────
    Linked GitHub but no star: one quiet sentence, no emphasis. The reward itself, when there is
    one, is the claim dialog's (`.rw-*` below). */
@@ -8203,36 +8176,11 @@ a.ds-cta {
   margin: 0;
 }
 
-/* ── AN ACT PODIUM TITLE (`AwardBadge`, `awardPodiumTier`) ──────────────────────────────────
-   The most prestigious title the ledger mints wears the podium's metal instead of the award
-   violet. The `--ds-mut` rim (on every hexagon, above) is what keeps silver visible on the light panel (~1.9:1 by fill
-   alone) — the lavender-pastel lesson in docs/area/accounts.md. */
-.award-badge.podium-gold svg {
-  fill: var(--ds-podium-gold);
-}
-.award-badge.podium-silver svg {
-  fill: var(--ds-podium-silver);
-}
-.award-badge.podium-bronze svg {
-  fill: var(--ds-podium-bronze);
-}
-.award-badge.podium-gold .award-rank,
-.award-badge.podium-silver .award-rank,
-.award-badge.podium-bronze .award-rank {
-  color: var(--ds-podium-ink);
-}
-/* the claim dialog's hero, for a grant whose lead item is a title */
-.award-badge.award-lg {
-  width: 3em;
-  height: 3em;
-  margin-left: 0;
-  font-size: var(--ds-t-xl);
-}
-
 /* ====================================================================================
-   BADGES — `src/ui/BadgeMark.tsx`, `src/badges.ts` (0048). A SIBLING of `.sup-badge` and
-   `.award-badge`, told apart from both by SHAPE: a crest for the ranked podium, a bookmark
-   ribbon for the record holder. Sized in `em` beside a name, like the two it sits with.
+   BADGES — `src/ui/BadgeMark.tsx`, `src/badges.ts` (0048). A SIBLING of `.sup-badge`, told
+   apart from it by SHAPE: a crest for the ranked podium, a bookmark ribbon for the record
+   holder. The stargazer badge is the one disc, told from the owner's ★ disc by hue and by its
+   outlined star. Sized in `em` beside a name, like the status disc it sits with.
    ==================================================================================== */
 .badge-mark {
   position: relative;
@@ -8240,7 +8188,9 @@ a.ds-cta {
   align-items: center;
   flex: 0 0 auto;
   gap: 0.12em;
-  /* decoration BESIDE a name, never part of it — `.award-badge`'s two reasons */
+  /* decoration BESIDE a name, never part of it — `.sup-badge`'s two reasons: it must not be
+     swept into a selection, and `vertical-align` is ignored on a flex item, so it centres on
+     the line instead of dropping to the baseline */
   user-select: none;
   align-self: center;
   vertical-align: middle;
@@ -8257,7 +8207,7 @@ a.ds-cta {
 /* ...except where the row already spaces its children with `gap` */
 .lb-name > .badge-mark,
 .appr-preview > .badge-mark,
-.rw-item-mark > .badge-mark,
+.award-list > li > .badge-mark,
 .appr-badge-art > .badge-mark,
 .rw-hero > .badge-mark {
   margin-left: 0;
@@ -8285,6 +8235,20 @@ a.ds-cta {
 .badge-mark.tier-record .badge-body {
   fill: var(--ds-award);
 }
+/* THE STARGAZER DISC: a yellow ★ on the award violet. Yellow on that violet is ~2.4:1, so the
+   star carries an award-ink outline — the outline is what separates it (both pairs in
+   `contrast.mjs`). Its 128 box is 5.3× the crest's 24, so the rim and outline are scaled to
+   match the 1.2 the others draw. */
+.badge-mark.tier-stargazer .badge-body {
+  fill: var(--ds-award);
+  stroke-width: 6.4;
+}
+.badge-mark .badge-star {
+  fill: var(--ds-star);
+  stroke: var(--ds-award-ink);
+  stroke-width: 6;
+  stroke-linejoin: round;
+}
 /* the crest's inner bevel — a hairline in the numeral's own ink, so it reads as struck metal */
 .badge-mark .badge-inner {
   fill: none;
@@ -8295,17 +8259,14 @@ a.ds-cta {
 .badge-mark .badge-crown {
   fill: var(--ds-award-ink);
 }
-.badge-num {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--ds-font-mono);
-  font-size: 0.6em;
-  font-weight: 800;
-  line-height: var(--ds-lh-tight);
-  color: var(--ds-podium-ink);
+/* the placement numeral: a stroked path in the crest's own box (`NUMERAL`, BadgeMark.tsx), so
+   it scales with the crest and no font metric can move it off centre */
+.badge-mark .badge-num {
+  fill: none;
+  stroke: var(--ds-podium-ink);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* THE COUNTER. Beside a name it TRAILS the glyph as `×2` — a pip on a 16px crest covers the
    crest. A badge earned once carries none. */
@@ -8353,9 +8314,6 @@ a.ds-cta {
 .badge-mark.badge-xl .badge-glyph {
   width: 96px;
   height: 96px;
-}
-.badge-mark.badge-xl .badge-num {
-  font-size: 1.15em;
 }
 
 /* ====================================================================================
@@ -8444,53 +8402,6 @@ a.ds-cta {
   line-height: var(--ds-lh-prose);
   color: var(--ds-ink);
 }
-/* WHAT IS IN IT — recessed, like the builder's own lists, so the card's claim reads as the
-   sentence above and the contents as a list of things */
-/* ONE GRID FOR THE WHOLE LIST (each row is `display: contents`), so the mark column is as wide
-   as its WIDEST mark — a "Stargazer" chip is several times a hexagon — and every label still
-   starts on one edge. A grid per row cannot do that: each row would size its own columns. */
-.rw-items {
-  align-self: stretch;
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  align-items: center;
-  gap: var(--ds-s-3) var(--ds-s-3);
-  margin: 0;
-  padding: var(--ds-s-3);
-  list-style: none;
-  text-align: left;
-  border-radius: var(--ds-round-md);
-  background: var(--ds-tile);
-}
-.rw-items > li {
-  display: contents;
-}
-.rw-item-mark {
-  display: inline-flex;
-  justify-self: center;
-  font-size: var(--ds-t-lg);
-}
-.rw-item-k {
-  font-family: var(--ds-font-mono);
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  letter-spacing: var(--ds-track-caps);
-  line-height: var(--ds-lh-tight);
-  text-transform: uppercase;
-  color: var(--ds-mut);
-}
-.rw-item-v {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-1);
-  font-size: var(--ds-t-md);
-  line-height: var(--ds-lh-prose);
-  color: var(--ds-ink);
-}
-.rw-item-sub {
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
 .rw-err {
   margin: 0;
 }
@@ -8536,8 +8447,6 @@ a.ds-cta {
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
 }
-.appr-preview > .award-badge,
-.appr-preview > .title-chip,
 .appr-preview > .sup-badge {
   margin-left: 0;
 }
@@ -9217,4 +9126,240 @@ input.admin-months {
    it and push the badge away from the name it belongs to. */
 .lb-name > .sup-badge {
   margin-left: 0;
+}
+
+/* =====================================================================
+   SITE BANNERS (src/ui/BannerStack.tsx) — the strip where the restart
+   countdown shows, now also known bugs, notices, warnings and the "you are
+   bypassing a lockdown" line. FIXED, so appearing never moves the layout,
+   and it floats over the shell AND the match, so its surfaces take
+   `--ds-hud-line` (CLAUDE.md, theming). One row shows; the rest wait
+   behind "N more".
+   ===================================================================== */
+.ds-banners {
+  position: fixed;
+  top: var(--ds-s-2);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  width: min(640px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ds-s-1);
+  pointer-events: none;
+}
+.ds-banners > * {
+  pointer-events: auto;
+}
+.ds-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+  line-height: var(--ds-lh-prose);
+  box-shadow: var(--ds-block-sm);
+}
+.ds-banner-kind {
+  flex: none;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+}
+.ds-banner.info .ds-banner-kind { color: var(--ds-accent); }
+.ds-banner.known-bug .ds-banner-kind { color: var(--ds-warn); }
+.ds-banner.warning .ds-banner-kind { color: var(--ds-danger); }
+.ds-banner-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* the restart row keeps the old notice's fixed-ink fills (category 2): one look in both
+   themes, over the match and the shell */
+.ds-banner.restart {
+  background: var(--ds-gold);
+  color: var(--ds-gold-ink);
+  border-color: transparent;
+  font-weight: 700;
+}
+.ds-banner.restart.urgent {
+  background: var(--ds-red-chip);
+  color: var(--ds-red-chip-ink);
+}
+.ds-banner-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ds-round-sm);
+  background: transparent;
+  color: var(--ds-mut);
+  cursor: pointer;
+}
+.ds-banner-x:hover {
+  color: var(--ds-ink);
+  background: var(--ds-tile);
+}
+.ds-banner-x:active {
+  transform: translateY(1px);
+}
+.ds-banner-more,
+.ds-banner-bypass {
+  align-self: center;
+  margin: 0;
+  padding: var(--ds-s-1) var(--ds-s-3);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: var(--ds-lh-tight);
+  box-shadow: var(--ds-block-sm);
+}
+.ds-banner-more {
+  font: inherit;
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-banner-more:hover {
+  background: var(--ds-tile);
+}
+.ds-banner-more:active {
+  transform: translateY(1px);
+}
+/* the staff hue, as text: off every other job, same pair as `.ds-badge.staff` */
+.ds-banner-bypass {
+  color: var(--ds-staff);
+  border-color: var(--ds-staff);
+}
+
+/* =====================================================================
+   THE CLOSED SCREEN (src/ui/ClosedScreen.tsx) — rendered in place of the
+   app while a site lockdown (or a build baked closed) keeps this viewer out.
+   ===================================================================== */
+.ds-closed {
+  box-sizing: border-box;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--ds-s-7) var(--ds-s-4);
+  background: var(--ds-bg);
+  color: var(--ds-ink);
+  font-family: var(--ds-font-ui);
+}
+.ds-closed-card {
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  padding: var(--ds-s-6) var(--ds-s-5);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-lg);
+  box-shadow: var(--ds-block);
+}
+.ds-closed-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.ds-closed-word {
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-tight);
+}
+.ds-closed-title {
+  margin: 0;
+  font-size: var(--ds-t-h1);
+  font-weight: 800;
+  line-height: var(--ds-lh-heading);
+  letter-spacing: var(--ds-track-tight);
+}
+.ds-closed-msg {
+  margin: 0;
+  font-size: var(--ds-t-lg);
+  line-height: var(--ds-lh-prose);
+}
+.ds-closed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
+.ds-closed-actions:empty {
+  display: none;
+}
+.ds-closed-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-2) var(--ds-s-3);
+  padding-top: var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-closed-note {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--ds-mut);
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+}
+.ds-closed-note b {
+  color: var(--ds-ink);
+}
+
+/* ---- admin: lockdown groups, access and banner forms ---------------- */
+/* two or three fields side by side, stacking at phone width */
+.adm-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--ds-s-3);
+}
+.adm-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2) var(--ds-s-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.adm-maint .ds-checkline {
+  font-size: var(--ds-t-md);
+}
+.adm-groups legend {
+  padding: 0;
+  margin-bottom: var(--ds-s-2);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+}
+.adm-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  margin: 0;
+  padding-left: var(--ds-s-4);
+  color: var(--ds-danger);
+  font-size: var(--ds-t-sm);
+}
+/* the banner preview sits on the tile, not the card, so the row's own edge reads */
+.adm-preview {
+  padding: var(--ds-s-3);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
 }

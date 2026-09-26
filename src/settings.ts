@@ -1,4 +1,4 @@
-import type { Alliance, GameId, GameLoadout, GameSettings, PerfDisplay, PracticeSeat, PracticeSeats } from './types';
+import type { Alliance, GameId, GameLoadout, GameSettings, PerfDisplay, PracticeSeat, PracticeSeats, RobotSpec } from './types';
 import {
   DEFAULT_ASSISTS,
   DEFAULT_SPEC,
@@ -11,6 +11,10 @@ import {
 } from './sim/spawn';
 import { MAX_SAVED_ROBOTS, MAX_SAVED_STARTS_SUPPORTER } from './config';
 import { GAME_IDS, isGameId } from './games/types';
+// the BIOBUZZ base robot, for `GAME_DEFAULT_SPEC`. `games/biobuzz/coerce.ts` is a LEAF of the
+// spawn chokepoint (its own header states the rule), so this reaches no further than the
+// `sim/spawn` import above already does.
+import { BB_DEFAULT_SPEC } from './games/biobuzz/coerce';
 import { simModuleFor } from './games/sim';
 import type { StartSel, StartPose } from './types';
 
@@ -216,11 +220,48 @@ function pickLoadout(s: GameSettings): GameLoadout {
   };
 }
 
+/**
+ * THE BASE ROBOT A GAME'S FIRST LOADOUT IS BUILT FROM — that game's own, where it has one.
+ *
+ * ⚠️ `DEFAULT_SPEC` IS DECODE'S CHASSIS, and seeding every game from it is not the same thing as
+ * seeding every game from a neutral robot. `coerceSpec(raw, base, game)` starts from `base` and
+ * overlays only the fields it reads off `raw` by name, so `coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC,
+ * 'biobuzz')` produced DECODE's numbers CLAMPED into BIOBUZZ's legal ranges — measured 14.5 × 16.5
+ * in, 500 rpm, 0.40 flywheel inertia — rather than anything BIOBUZZ chose. Legal and playable, and
+ * on tuning no one picked. `BB_DEFAULT_SPEC` exists precisely to be that seed (`games/biobuzz/
+ * coerce.ts`: "a new player's first BIOBUZZ robot should be a coherent build rather than DECODE's
+ * chassis with BIOBUZZ mechanism fields bolted on") and nothing reached it: it is only the DEFAULT
+ * PARAMETER of `coerceBiobuzzSpec`, and `coerceSpec` always passes its own `base` explicitly.
+ *
+ * ⚠️ THE IDENTITY STAYS SHARED. Only the BUILD comes from the game — the name, team name and team
+ * number stay `DEFAULT_SPEC`'s, so a first-run robot is still "My Robot" in every game rather than
+ * a preset's name the player never typed. `BB_DEFAULT_SPEC` is `{ ...DEFAULT_SPEC,
+ * ...BB_PRESETS[0] }`, and `BB_PRESETS[0]` is a preset CARD with a card's name on it.
+ *
+ * A map rather than a slot on `GameSimModule`: a per-game default spec is a seam worth adding the
+ * day a third game wants one, and adding it now would mean a new required field on every module
+ * for the sake of one entry. Chain Reaction deliberately has none — `games/chain/spawn.ts` seeds
+ * from `DEFAULT_SPEC` too, so the `??` below is its answer as much as it is the fallback.
+ */
+const GAME_DEFAULT_SPEC: Partial<Record<GameId, RobotSpec>> = {
+  biobuzz: { ...BB_DEFAULT_SPEC, name: DEFAULT_SPEC.name, teamName: DEFAULT_SPEC.teamName, teamNumber: DEFAULT_SPEC.teamNumber },
+};
+
+/** the base robot a FRESH `game` loadout is seeded from — see `GAME_DEFAULT_SPEC`. */
+function defaultSpecFor(game: GameId): RobotSpec {
+  return GAME_DEFAULT_SPEC[game] ?? DEFAULT_SPEC;
+}
+
 /** a fresh loadout for a game: its default robot + empty libraries */
 function defaultLoadout(game: GameId): GameLoadout {
   const d = defaultSettings();
+  const seed = defaultSpecFor(game);
   return {
-    spec: coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, game),
+    // BOTH arguments are the game's own seed, not just the base: `coerceSpec` builds its output
+    // from `base` plus the fields it reads off the raw input, and the BIOBUZZ arm additionally
+    // carries `bbMech`/`heightIn`/`stowHeightIn`/`bbPassTarget`/`massLb` across from the RAW
+    // object by name. Passing the seed as `base` alone would drop every one of them.
+    spec: coerceSpec(seed, seed, game),
     savedRobots: [],
     startIndex: d.startIndex,
     startPose: null,
@@ -345,6 +386,21 @@ export function coerceSettings(raw: unknown): GameSettings {
     // same legal ranges as a spoofed wire spec, so both surfaces agree exactly.
     // Spec is coerced FIRST because its drivetrain decides the active-assist fallback.
     if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec, out.game);
+    /**
+     * A BLOB THAT NAMES A GAME BUT CARRIES NO ROBOT still gets that game's OWN seed, not DECODE's
+     * — `out.spec` came from `defaultSettings()`, whose `game` is always `'decode'`.
+     *
+     * ⚠️ ONLY WHEN THERE IS NO STORED ROBOT. The branch above is untouched on purpose: for a
+     * spec that really was saved, `base` is only a source of fallbacks for fields that are absent
+     * or unreadable, and moving it would silently re-tune robots people have already built. This
+     * is the same "seed a fresh loadout" case `defaultLoadout` handles, reached by the other
+     * door: an account blob written before a game's builder was ever opened, or a hand-edited
+     * store.
+     */
+    else if (out.game !== 'decode') {
+      const seed = defaultSpecFor(out.game);
+      out.spec = coerceSpec(seed, seed, out.game);
+    }
     // ASSISTS RIDE THE ROBOT. `spec.assists` (already coerced above, defaulting all-ON) is
     // the stored preference; the flat `assists` is just its ACTIVE mirror, so the two can
     // never drift.
@@ -532,6 +588,53 @@ export function coerceSettings(raw: unknown): GameSettings {
     /* corrupt data — defaults */
   }
   return out;
+}
+
+/**
+ * Has this ORIGIN ever saved settings? — i.e. is `loadSettings()` about to hand back
+ * `defaultSettings()` because there is nothing stored, rather than a real saved pick.
+ *
+ * It exists for the Discord Activity's season default (`App.tsx`), which may override the
+ * default season but must never override a season the player chose. `loadSettings` cannot
+ * answer this itself: it returns the same object either way, so the caller cannot tell a
+ * fresh device from somebody who deliberately picked DECODE.
+ *
+ * ⚠️ ORIGIN, not device. An activity is served from `<app-id>.discordsays.com`, so its
+ * storage is a different bucket from `playdsim.com` — a web player's saved settings are
+ * invisible in there, and a first launch is always "nothing stored".
+ *
+ * ── ⚠️ WHAT IT DOES NOT ANSWER, AND WHY THAT IS LEFT STANDING ──────────────────────────────
+ * It is a bare KEY-PRESENCE test, and `App`'s first-mount effect calls `saveSettings` on every
+ * web load unconditionally. So the literal question it answers is **"has this app ever mounted
+ * on this origin"**, not "did a human choose a season" — one load, touching nothing, is enough
+ * to make it true for ever.
+ *
+ * That is very nearly the same question for the caller that has it, and deliberately so: the
+ * seed fires on the FIRST load of an origin, that load then persists `game: 'biobuzz'`, and
+ * every later launch reads BIOBUZZ back out of storage rather than out of the seed. The seed is
+ * sticky through the saved blob, so "seeded once" and "seeded every time" are the same experience
+ * — which is why this is not the fragile inference it looks like.
+ *
+ * The residue is exactly one population: an origin whose blob was written BEFORE the seed
+ * shipped. Those players are never seeded, because the key is already there. It is a CLOSED set
+ * — pre-ship testers and the shared localhost/tunnel origins the activity is emulated on — and it
+ * cannot grow, since a genuinely new origin has no key by definition. The visible symptom is that
+ * an author testing their own change can land on DECODE while a teammate lands on BIOBUZZ.
+ *
+ * FIXING IT PROPERLY MEANS A MARKER WRITTEN WHERE A HUMAN ACTUALLY PICKS, not a sharper reading
+ * of this key, and there is no such site in this file to write it from: `switchGame` is called by
+ * the season picker, but also by the URL-prefix resolver, by `popstate`, by an invite, by a
+ * challenge, and by the activity's own seed — five callers, four of which are not a choice.
+ * Inferring intent from anything stored is guesswork; the honest shape is an explicit "the player
+ * picked this" flag set by the picker's own handler. That is an `App.tsx`/`HomeMenu` change, it
+ * buys a closed and shrinking population nothing, and it is not made here.
+ */
+export function hasStoredSettings(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    return false; // storage blocked (private mode, a throwing accessor) — treat as fresh
+  }
 }
 
 /** load persisted settings from localStorage (validated field by field) */

@@ -3,6 +3,7 @@ import { gameServerHttpUrl } from '../net/env';
 import { getAuthToken } from '../lib/authClient';
 import { GAME_IDS } from '../games/types';
 import { SEASONS } from '../seasons';
+import { SPONSOR_PLACEMENTS } from '../sponsor';
 import { adminFail } from './adminCopy';
 // The console's own CSV writer, with the BOM and the quoting every other export here uses.
 import { downloadCsv } from './adminBits';
@@ -79,6 +80,36 @@ interface Report {
   events: { name: string; views: number; visitors: number }[];
   eventProps: { name: string; key: string; val: string; views: number }[];
   online: number;
+  /** first UTC day of this database's own traffic; absent from an older server */
+  historyStart?: string | null;
+  /** the grain `series` is at; a range reaching imported days comes back by day */
+  grain?: 'hour' | 'day';
+  /** which days are imported and how they entered the numbers; absent from an older server */
+  history?: History;
+}
+
+type EventRow = { name: string; views: number; visitors: number };
+type EventPropRow = { name: string; key: string; val: string; views: number };
+
+/**
+ * WHERE THE NUMBERS COME FROM (`HistoryInfo` in server/analytics.ts). Days before `ownFrom` are
+ * Vercel Web Analytics' daily totals, from before DSIM counted itself; days from it on are ours.
+ * The server folds them into every number the two share, and says what it could not fold in.
+ */
+interface History {
+  start: string | null;
+  ownFrom: string | null;
+  imported: { source: string; firstDay: string; lastDay: string; channel: string } | null;
+  inRange: boolean;
+  traffic: 'all' | 'marginal' | 'none';
+  events: boolean;
+  why: 'game' | 'filter' | null;
+  dims: string[];
+}
+
+/** "Sep 22" for a UTC day. The server's days are UTC, so they are named in UTC here too. */
+function dayName(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 interface ProductReport {
@@ -115,6 +146,8 @@ const RANGES = [
   { id: '7d', label: '7 days', hours: 24 * 7, grain: 'day' as const },
   { id: '30d', label: '30 days', hours: 24 * 30, grain: 'day' as const },
   { id: '90d', label: '90 days', hours: 24 * 90, grain: 'day' as const },
+  // the previous calendar month: the period the sponsor report is owed for
+  { id: 'month', label: 'Last month', hours: 0, grain: 'day' as const },
   { id: 'custom', label: 'Custom', hours: 0, grain: 'day' as const },
 ] as const;
 type RangeId = (typeof RANGES)[number]['id'];
@@ -164,6 +197,7 @@ const BLANK_LABEL: Record<string, string> = {
   browser: 'Unknown',
   lang: 'Unknown',
   screen: 'Unknown',
+  device: 'Unknown',
   utm_source: 'None',
   utm_medium: 'None',
   utm_campaign: 'None',
@@ -180,6 +214,8 @@ const SCREEN_LABEL: Record<string, string> = {
 
 function labelFor(dim: string, val: string): string {
   if (!val) return BLANK_LABEL[dim] ?? '—';
+  // the host's remainder past its top 100 values, on the imported days
+  if (val === 'Others') return 'Other';
   if (dim === 'screen') return SCREEN_LABEL[val] ?? val;
   if (dim === 'surface') return val === 'electron' ? 'Desktop app' : 'Web';
   return val;
@@ -209,6 +245,10 @@ export function AdminAnalytics() {
       b.setDate(b.getDate() + 1); // an end DAY is inclusive to a person and exclusive to SQL
       const days = (b.getTime() - a.getTime()) / 86_400_000;
       return { from: a, to: b, grain: (days <= 2 ? 'hour' : 'day') as 'hour' | 'day' };
+    }
+    if (rangeId === 'month') {
+      const n = new Date();
+      return { from: new Date(n.getFullYear(), n.getMonth() - 1, 1), to: new Date(n.getFullYear(), n.getMonth(), 1), grain: 'day' as const };
     }
     const end = new Date();
     return { from: new Date(end.getTime() - spec.hours * 3_600_000), to: end, grain: spec.grain };
@@ -251,7 +291,10 @@ export function AdminAnalytics() {
   // (`server/db/pool.ts`), and a page left open in a tab would otherwise pin it on by itself.
   useEffect(() => {
     if (!auto) return;
-    const t = setInterval(() => void load(), 60_000);
+    // ...and a hidden tab skips its turn, the same rule `usePolled` follows
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void load();
+    }, 60_000);
     return () => clearInterval(t);
   }, [auto, load]);
 
@@ -267,6 +310,15 @@ export function AdminAnalytics() {
   const prevBounce = prev && prev.sessions ? (prev.bounces / prev.sessions) * 100 : 0;
   const avgSession = t && t.sessions ? t.seconds / t.sessions : 0;
   const prevAvg = prev && prev.sessions ? prev.seconds / prev.sessions : 0;
+
+  // IMPORTED DAYS ARE IN THIS RANGE'S TRAFFIC. Anything the import never had (sessions, entry
+  // pages, screens) then covers fewer days than the page views beside it, and says from when.
+  const h = report?.history ?? null;
+  const mixed = !!h && h.inRange && h.traffic !== 'none' && !!h.ownFrom;
+  const ownOnly = mixed && h?.ownFrom ? `from ${dayName(h.ownFrom)}` : undefined;
+  /** the first chart bucket that is ours, when the chart shows both sources */
+  const split = mixed && h?.ownFrom ? `${h.ownFrom}T00:00:00.000Z` : undefined;
+  const shownGrain = report?.grain ?? grain;
 
   return (
     <div className="an-root">
@@ -331,19 +383,20 @@ export function AdminAnalytics() {
               ) : (
                 <>
                   This range reaches further back than the 30 days of raw data, so it is read from
-                  the daily rollups. Breakdowns still work; the filter chips do not, and visitor
-                  counts are sums of daily uniques. Events below are the last 30 days only.
+                  the daily rollups. Breakdowns and events still work; the filter chips do not, and
+                  visitor counts are sums of daily uniques.
                 </>
               )}
             </p>
           )}
 
+          <HistoryNote history={h} historyStart={report.historyStart ?? null} />
           <div className="an-tiles">
             <Tile label="Visitors" value={fmt(t?.visitors ?? 0)} change={delta(t?.visitors ?? 0, prev?.visitors ?? 0)} sub="sum of daily uniques" />
             <Tile label="Page views" value={fmt(t?.views ?? 0)} change={delta(t?.views ?? 0, prev?.views ?? 0)} />
-            <Tile label="Sessions" value={fmt(t?.sessions ?? 0)} change={delta(t?.sessions ?? 0, prev?.sessions ?? 0)} />
-            <Tile label="Bounce rate" value={fmtPct(bounceRate)} change={delta(bounceRate, prevBounce)} good="down" />
-            <Tile label="Avg. session" value={fmtDuration(avgSession)} change={delta(avgSession, prevAvg)} />
+            <Tile label="Sessions" value={fmt(t?.sessions ?? 0)} change={delta(t?.sessions ?? 0, prev?.sessions ?? 0)} sub={ownOnly} />
+            <Tile label="Bounce rate" value={fmtPct(bounceRate)} change={delta(bounceRate, prevBounce)} good="down" sub={ownOnly} />
+            <Tile label="Avg. session" value={fmtDuration(avgSession)} change={delta(avgSession, prevAvg)} sub={ownOnly} />
             <Tile label="Online now" value={fmtExact(report.online)} good="none" sub="live sockets, every region" />
           </div>
 
@@ -354,14 +407,18 @@ export function AdminAnalytics() {
                 type="button"
                 className="ds-btn ghost small"
                 onClick={() =>
-                  downloadCsv(`dsim-traffic-${stamp()}.csv`, ['bucket', 'views', 'visitors'], report.series.map((s) => [s.t, s.views, s.visitors]))
+                  downloadCsv(
+                    `dsim-traffic-${stamp()}.csv`,
+                    ['bucket', 'views', 'visitors', 'source'],
+                    report.series.map((s) => [s.t, s.views, s.visitors, split && s.t < split ? 'vercel' : 'dsim']),
+                  )
                 }
               >
                 Export CSV
               </button>
             </div>
             <div className="ds-panel-body">
-              <TimeSeries data={report.series} grain={grain} />
+              <TimeSeries data={report.series} grain={shownGrain} split={split} />
             </div>
           </section>
 
@@ -369,7 +426,10 @@ export function AdminAnalytics() {
             {Object.keys(DIM_LABELS).map((dim) => (
               <section key={dim} className="ds-panel an-panel">
                 <div className="ds-panel-h">
-                  <h2 className="ds-panel-title">{DIM_LABELS[dim]}</h2>
+                  <h2 className="ds-panel-title">
+                    {DIM_LABELS[dim]}
+                    {ownOnly && !h?.dims.includes(dim) && <span className="an-own"> {ownOnly}</span>}
+                  </h2>
                   <button
                     type="button"
                     className="ds-btn ghost small"
@@ -395,6 +455,8 @@ export function AdminAnalytics() {
           </div>
 
           <EventsPanel events={report.events} props={report.eventProps} />
+
+          <SponsorReport events={report.events} props={report.eventProps} sessions={t?.sessions ?? 0} sessionsFrom={ownOnly} />
         </>
       )}
 
@@ -498,13 +560,7 @@ function Toolbar(props: {
  * REASON. The properties are already bounded at the ingest boundary, so showing them all is
  * bounded too.
  */
-function EventsPanel({
-  events,
-  props,
-}: {
-  events: { name: string; views: number; visitors: number }[];
-  props: { name: string; key: string; val: string; views: number }[];
-}) {
+function EventsPanel({ events, props }: { events: EventRow[]; props: EventPropRow[] }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <section className="ds-panel">
@@ -574,6 +630,172 @@ function EventsPanel({
             </tbody>
           </table>
         </div>
+      )}
+    </section>
+  );
+}
+
+// ---- where the history starts -------------------------------------------------
+
+/**
+ * WHERE THE NUMBERS BEGIN, AND WHOSE THEY ARE. One line: the combined start, the day DSIM's own
+ * count takes over from the imported one (the chart marks it), and, when this range reaches the
+ * imported days, anything they could not be counted into.
+ */
+function HistoryNote({ history: h, historyStart }: { history: History | null; historyStart: string | null }) {
+  if (!h) return historyStart ? <p className="ds-hint">First-party history starts {historyStart}.</p> : null;
+  if (!h.start) return <p className="ds-hint">No traffic recorded yet.</p>;
+  let left = '';
+  if (h.imported && h.inRange && h.traffic === 'none') {
+    left =
+      h.why === 'game'
+        ? ' Those days are left out here: Vercel did not split traffic by game.'
+        : ' Those days are left out of the traffic numbers: Vercel’s counts can’t be filtered this way. Events still include them.';
+  } else if (h.imported && h.inRange && h.traffic === 'marginal' && h.dims[0]) {
+    left = ` With this filter, those days count in the totals, the chart and the ${DIM_LABELS[h.dims[0]] ?? h.dims[0]} panel.`;
+  }
+  return (
+    <p className="ds-hint">
+      History starts {dayName(h.start)}.
+      {h.imported &&
+        (h.ownFrom
+          ? ` Before ${dayName(h.ownFrom)} the numbers are Vercel Web Analytics counts.`
+          : ' These are Vercel Web Analytics counts.')}
+      {left}
+    </p>
+  );
+}
+
+// ---- the sponsor report -------------------------------------------------------
+
+/** the dwell buckets `sponsor_dwell` sends, shortest first */
+const DWELL_ORDER = ['<5s', '5-15s', '15-60s', '1-5m', '5m+'];
+
+/**
+ * THE MONTHLY SPONSOR REPORT (`docs/sponsor.md`), laid out as its lines rather than left for
+ * somebody to assemble from the events table. Pick "Last month" and export.
+ *
+ * Impressions and clicks are per placement; the dwell and format lines are distributions over
+ * all placements, because each event property is counted on its own.
+ */
+function SponsorReport({
+  events,
+  props,
+  sessions,
+  sessionsFrom,
+}: {
+  events: EventRow[];
+  props: EventPropRow[];
+  sessions: number;
+  /** "from Sep 22" when the range reaches imported days, which counted no sessions */
+  sessionsFrom?: string;
+}) {
+  const count = (name: string): number => events.find((e) => e.name === name)?.views ?? 0;
+  const values = (name: string, key: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const p of props) if (p.name === name && p.key === key) m.set(p.val, (m.get(p.val) ?? 0) + p.views);
+    return m;
+  };
+  const shown = values('sponsor_shown', 'placement');
+  const clicks = values('sponsor_click', 'placement');
+  const known: string[] = [...SPONSOR_PLACEMENTS];
+  const placements = [...known, ...[...shown.keys(), ...clicks.keys()].filter((p) => !known.includes(p))].filter(
+    (p, i, all) => all.indexOf(p) === i && ((shown.get(p) ?? 0) > 0 || (clicks.get(p) ?? 0) > 0),
+  );
+  const dwellMap = values('sponsor_dwell', 'dwell');
+  const dwell = [...DWELL_ORDER, ...[...dwellMap.keys()].filter((d) => !DWELL_ORDER.includes(d))]
+    .filter((d) => dwellMap.has(d))
+    .map((d) => ({ val: d, views: dwellMap.get(d) ?? 0, visitors: 0 }));
+  const formats = [...values('sponsor_shown', 'format')].map(([val, n]) => ({ val, views: n, visitors: 0 }));
+  const oses = [...values('desktop_download', 'os')].map(([val, n]) => ({ val, views: n, visitors: 0 }));
+  const ctr = (c: number, s: number): string => (s ? fmtPct((c / s) * 100) : '—');
+
+  const lines: [string, string, number | string][] = [
+    ...placements.map((p): [string, string, number] => ['impressions', p, shown.get(p) ?? 0]),
+    ['impressions', 'all', count('sponsor_shown')],
+    ...placements.map((p): [string, string, number] => ['clicks', p, clicks.get(p) ?? 0]),
+    ['clicks', 'all', count('sponsor_click')],
+    ...dwell.map((d): [string, string, number] => ['time on screen', d.val, d.views]),
+    ...formats.map((f): [string, string, number] => ['videos with the mark', f.val, f.views]),
+    ...oses.map((o): [string, string, number] => ['desktop downloads', o.val, o.views]),
+    ['sessions', sessionsFrom ? `site, ${sessionsFrom}` : 'site', sessions],
+    ['new players', 'player_joined', count('player_joined')],
+  ];
+
+  return (
+    <section className="ds-panel">
+      <div className="ds-panel-h">
+        <h2 className="ds-panel-title">Sponsor report</h2>
+        <button
+          type="button"
+          className="ds-btn ghost small"
+          onClick={() => downloadCsv(`dsim-sponsor-${stamp()}.csv`, ['line', 'breakdown', 'value'], lines)}
+        >
+          Export CSV
+        </button>
+      </div>
+      {count('sponsor_shown') === 0 && count('sponsor_click') === 0 ? (
+        <div className="ds-panel-body">
+          <div className="ds-empty an-empty">
+            <div className="big">No sponsor events</div>
+            Nothing from a sponsor placement was recorded in this range.
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="ds-table-scroll">
+            <table className="ds-table an-table">
+              <thead>
+                <tr>
+                  <th>Placement</th>
+                  <th className="num">Impressions</th>
+                  <th className="num">Clicks</th>
+                  <th className="num">Click-through</th>
+                </tr>
+              </thead>
+              <tbody>
+                {placements.map((p) => (
+                  <tr key={p}>
+                    <td>{p}</td>
+                    <td className="num">{fmtExact(shown.get(p) ?? 0)}</td>
+                    <td className="num">{fmtExact(clicks.get(p) ?? 0)}</td>
+                    <td className="num">{ctr(clicks.get(p) ?? 0, shown.get(p) ?? 0)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td>
+                    <b>All placements</b>
+                  </td>
+                  <td className="num">{fmtExact(count('sponsor_shown'))}</td>
+                  <td className="num">{fmtExact(count('sponsor_click'))}</td>
+                  <td className="num">{ctr(count('sponsor_click'), count('sponsor_shown'))}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="ds-panel-body">
+            <div className="an-grid">
+              <div>
+                <h3 className="ds-panel-title">Time on screen</h3>
+                <BarList rows={dwell} total={dwell.reduce((s, r) => s + r.views, 0)} empty="No dwell recorded." />
+              </div>
+              <div>
+                <h3 className="ds-panel-title">Videos with the mark</h3>
+                <BarList rows={formats} total={formats.reduce((s, r) => s + r.views, 0)} empty="No exports in this range." />
+              </div>
+              <div>
+                <h3 className="ds-panel-title">Desktop downloads</h3>
+                <BarList rows={oses} total={oses.reduce((s, r) => s + r.views, 0)} empty="No downloads in this range." />
+              </div>
+            </div>
+            <p className="ds-hint">
+              Sessions: {fmtExact(sessions)}
+              {sessionsFrom && ` (${sessionsFrom})`}.{' '}
+              New players: {fmtExact(count('player_joined'))}. An impression is a view of at least half the mark
+              for one second; videos are files exported, not views of them.
+            </p>
+          </div>
+        </>
       )}
     </section>
   );

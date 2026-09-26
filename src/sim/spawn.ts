@@ -542,6 +542,11 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // read as selected. Unvalidated like the fields above: `coerceBiobuzzSpec` re-clamps it
     // (through `clampFinite`, so NaN / Infinity / absent all still fall back to `base`).
     out.massLb = sp.massLb as RobotSpec['massLb'];
+    // ...and the SIZE, RAW, for the same reason. Step 1 sized it with DECODE's per-intake
+    // `lengthLimits`, whose ceiling (18 − reach, 15 for sloped) is DECODE's in-cube roller rule;
+    // a BIOBUZZ sweeper deploys, and `bbSizeLimits` is this game's whole envelope.
+    out.length = sp.length as RobotSpec['length'];
+    out.width = sp.width as RobotSpec['width'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;

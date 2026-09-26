@@ -51,7 +51,12 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   L, and the camera starts unbound, with the red dot on BIOBUZZ.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
-  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). The screen
+  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,
+  HOLD one button alone for `PAD_HOLD_REMOVE_MS` (1 s) and let go**: that removes the armed slot,
+  or cancels an empty one (`PadCapture`, `padChords.ts`). Pad navigation is suspended while a
+  capture is armed and every button is the bind, so before this a controller-only player could
+  neither remove a bind nor leave a capture. The same stepper runs during a KEY capture, where a
+  pad press cancels. The screen
   used to let you REPLACE a slot and never ADD one, which with sixteen buttons and twelve pad
   actions meant every rebind cascaded into an UNBOUND somewhere else.
 - **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
@@ -365,6 +370,17 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
 
 ## HUD / UX product rules
 
+- **THE BANNER STRIP** (`BannerStack.tsx`, beside `<App/>` in `main.tsx`) is where the restart
+  countdown always was, now also admin notices (info, known bug, warning) and the line that
+  tells an admin or tester they are past a lockdown. Fixed, so it never moves layout. ONE row
+  shows, most important first (restart, warning, known bug, notice); the rest sit behind "N
+  more". **In a match only the restart shows.** A player closes a banner per id + revision
+  (`BANNERS_DISMISSED_KEY`); an edit brings it back; a restart cannot be closed. Filtering is
+  client-side by the current game and the build's channel (`visibleBanners`, siteRules.ts).
+- **THE CLOSED SCREEN** (`ClosedScreen.tsx`) replaces the whole app while the site is closed
+  to this viewer, for every URL. The way out (the redirect, "Go to DSIM") is the primary action
+  and takes focus; the way in is Sign in, after which the status is asked again and the app
+  replaces the screen with no reload. Copy: DSIM or "Alpha" is closed, never a game name.
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips.
@@ -472,8 +488,9 @@ same arguments are not had again:
   what to do next.
 - **`.ds-empty` for an empty list** (`.big` headline, no period, then one sentence with
   one), **`.ds-loading` for a loading state** (9/10 already did).
-- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and,
-  since 2026-09-22, **`TitleMark` beside it**: see `docs/area/accounts.md` for the surfaces.
+- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and
+  **`BadgeMarks` beside it** (the worn badges; titles folded into badges in 0049): see
+  `docs/area/accounts.md` for the surfaces.
 - **Terminology.** DSIM is the app; DECODE and Chain Reaction are seasons. DECODE has
   ARTIFACTS, CR has PARTICLES, and a leak either way is a bug. CR's ring is a **CATALYST**
   — the **RING STAND** is a different object in the same game, so the HUD chips that said
@@ -636,6 +653,18 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   prediction panel, the server notice, the touch pad's idle labels, the score-bar
   tips and the replay-video labels, plus the results stage on `--ds-stage-bg`. A new in-match
   surface gets its pairs there.
+- **PATCH NOTES ARE READ AT `.ann-md`, NOT `.md`** (2026-09-25, owner: the card was "pretty
+  small so it is hard to read"). The "What’s new" modal, `/changelogs` and the admin preview all
+  render `AnnouncementItem`/`.ann-md`: body `--ds-t-lg` at `--ds-lh-long` and 68ch, title
+  `--ds-t-xl`, `##` a mono-caps accent label (every bullet already opens in bold, so a bold
+  heading read as one more bullet). Items are FLAT, divided by a rule: no tile inside the panel.
+  The base `.md` stays compact for everything else. The modal scrolls between a fixed action
+  bar and the panel top, so "Got it" never scrolls away. ⚠️ A class added beside a `.ds-*` one
+  (`.cl-body` on `.ds-panel-body`, `.cl-head` on `.ds-panel-h`) is written COMPOUND: at equal
+  specificity file position decides, `shell.css` loads after `styles.css`, and `.ds-panel-h` sits
+  below `.cl-head` in shell.css. `.cl-head` lost that way, and its lone GitHub button
+  sat on the left. (A compound `.ds-*` rule belongs in shell.css, or `uiaudit` counts it as
+  `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **PHONE LAYOUT.** At ≤900px `.ds-body` wraps into ONE nav row: the rail (order 1) and the

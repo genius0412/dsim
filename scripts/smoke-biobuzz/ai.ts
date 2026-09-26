@@ -17,7 +17,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SIM_DT } from '../../src/config';
-import type { RobotCommand, World } from '../../src/types';
+import type { RobotCommand, RobotSpec, World } from '../../src/types';
 import { worldHash } from '../../src/net/checksum';
 import { localizeCommand } from '../../src/net/protocol';
 import { startMatch } from '../../src/sim/match';
@@ -402,6 +402,88 @@ export function aiChecks(check: Check): void {
     );
   }
 
+  // ---- R102: THE STOW HEIGHT AND THE DEPLOY LATCH (plan §3.3) -------------------------------
+  {
+    const short = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 16 });
+    const tall = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: BB3_HEIGHT_MAX });
+    check('a build inside R102 cube stows at its own height', bbStowHeightIn(short) === 16, String(bbStowHeightIn(short)));
+    check(
+      'a build over the cube is modelled as folding to exactly the cube',
+      bbStowHeightIn(tall) === BB3_STOW_MAX && bbDeployedHeightIn(tall) === BB3_HEIGHT_MAX,
+      `${bbStowHeightIn(tall)} stowed / ${bbDeployedHeightIn(tall)} deployed`,
+    );
+    check('both are LEGAL to start', bbStowLegal(short) && bbStowLegal(tall));
+
+    /**
+     * THE RULE IS REFUSABLE, which is the whole point of not clamping the declared value to 18 in
+     * the coercer. `RobotSpec` has no `stowHeightIn` field yet (that is a `src/types.ts` edit plus
+     * a carry-across in the shared `coerceSpec`), so the declaration is read structurally and this
+     * is what proves the rule binds the day the field lands rather than becoming decoration.
+     */
+    // RAW, not coerced: the coercer caps the height at BB3_HEIGHT_MAX (18), which pulls any stow
+    // under the cube, so only a spec that skipped it (a spoofed wire spec) can still be refused
+    const declared = { ...BB_DEFAULT_SPEC, heightIn: 29, stowHeightIn: 22 } as never as RobotSpec;
+    check(
+      'a DECLARED stow over the cube is refused by R102',
+      bbStowHeightIn(declared) === 22 && !bbStowLegal(declared),
+      `stow ${bbStowHeightIn(declared)} vs cube ${BB3_STOW_MAX}`,
+    );
+    check(
+      'and `GameSimModule.startLegal` refuses it, pose or no pose',
+      BIOBUZZ_SIM.startLegal!(declared, 'blue', null) === false &&
+        BIOBUZZ_SIM.startLegal!(tall, 'blue', null) === true,
+    );
+    const over = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 16, stowHeightIn: 40 } as never);
+    check(
+      'a declared stow TALLER than the deployed height is normalized down to it',
+      bbStowHeightIn(over) === 16,
+      String(bbStowHeightIn(over)),
+    );
+
+    // THE LATCH IS A READ OF `world.match`, not a stored flag (plan §3.3).
+    const w = createBiobuzzWorld('match', 61, [seat(0, 'blue', 0, false)], undefined, '3d');
+    check('before the match a tall robot is STOWED', !bbDeployed(w) && bbHeightNow(w, tall) === BB3_STOW_MAX);
+    startMatch(w);
+    check('once the match begins it is DEPLOYED', bbDeployed(w) && bbHeightNow(w, tall) === BB3_HEIGHT_MAX);
+    check('a short robot reads the same height either side of the edge', bbHeightNow(w, short) === 16);
+
+    /**
+     * …AND THE 3D COLLIDER FOLLOWS, WITHOUT THE ROBOT MOVING. The body's centre is `z + height/2`,
+     * so a collider rebuilt at a new height with the readback still subtracting the old one makes
+     * `RobotState.z` jump by the difference on the deploy tick — a robot that visibly sinks into
+     * the tiles for a frame, and a `worldHash` that moves for no gameplay reason.
+     */
+    const dw = createBiobuzzWorld(
+      'match',
+      62,
+      [{ ...seat(0, 'blue', 0, false), spec: tall }],
+      undefined,
+      '3d',
+    );
+    const zero = new Map<number, RobotCommand>([[0, localizeCommand({ driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false })]]);
+    for (let t = 0; t < 30; t++) biobuzzStep(dw, SIM_DT, zero);
+    const zPre = dw.robots[0].z ?? 0;
+    startMatch(dw);
+    for (let t = 0; t < 30; t++) biobuzzStep(dw, SIM_DT, zero);
+    const zPost = dw.robots[0].z ?? 0;
+    check(
+      'the deploy edge rebuilds the 3D chassis collider without moving the robot',
+      Math.abs(zPost - zPre) < 0.25 && Math.abs(zPost) < 0.25,
+      `z ${zPre.toFixed(4)} -> ${zPost.toFixed(4)}`,
+    );
+  }
+}
+
+/** the lane's own file list, exported so `docaudit`-style greps and a reader can see at a glance
+ * that this lane owns no fixture of its own. */
+export const AI_LANE_SOURCES = relative(root, AI_DIR);
+
+/**
+ * The bot-driven step budget, run in the PERF lane (`index.ts`), which `npm test` runs on its own
+ * after every other shard. Run beside 17 other test processes it read p95 1.06-1.14 ms against
+ * 0.50 idle and crossed 1.5 now and then, which measured the suite's load, not `step3d`.
+ */
+export function aiPerfChecks(check: Check): void {
   // ---- PERF: `step3d` WITH BOTS DRIVING ----------------------------------------------------
   /**
    * ⚠️ **A BOT-DRIVEN 2v2 IS A DIFFERENT MEASUREMENT FROM THE SIM3D LANE'S.** That one holds four
@@ -472,77 +554,4 @@ export function aiChecks(check: Check): void {
       `bots ${thinkMedian.toFixed(3)}ms vs step ${median.toFixed(3)}ms`,
     );
   }
-
-  // ---- R102: THE STOW HEIGHT AND THE DEPLOY LATCH (plan §3.3) -------------------------------
-  {
-    const short = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 16 });
-    const tall = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: BB3_HEIGHT_MAX });
-    check('a build inside R102 cube stows at its own height', bbStowHeightIn(short) === 16, String(bbStowHeightIn(short)));
-    check(
-      'a build over the cube is modelled as folding to exactly the cube',
-      bbStowHeightIn(tall) === BB3_STOW_MAX && bbDeployedHeightIn(tall) === BB3_HEIGHT_MAX,
-      `${bbStowHeightIn(tall)} stowed / ${bbDeployedHeightIn(tall)} deployed`,
-    );
-    check('both are LEGAL to start', bbStowLegal(short) && bbStowLegal(tall));
-
-    /**
-     * THE RULE IS REFUSABLE, which is the whole point of not clamping the declared value to 18 in
-     * the coercer. `RobotSpec` has no `stowHeightIn` field yet (that is a `src/types.ts` edit plus
-     * a carry-across in the shared `coerceSpec`), so the declaration is read structurally and this
-     * is what proves the rule binds the day the field lands rather than becoming decoration.
-     */
-    const declared = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 29, stowHeightIn: 22 } as never);
-    check(
-      'a DECLARED stow over the cube is refused by R102',
-      bbStowHeightIn(declared) === 22 && !bbStowLegal(declared),
-      `stow ${bbStowHeightIn(declared)} vs cube ${BB3_STOW_MAX}`,
-    );
-    check(
-      'and `GameSimModule.startLegal` refuses it, pose or no pose',
-      BIOBUZZ_SIM.startLegal!(declared, 'blue', null) === false &&
-        BIOBUZZ_SIM.startLegal!(tall, 'blue', null) === true,
-    );
-    const over = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 20, stowHeightIn: 40 } as never);
-    check(
-      'a declared stow TALLER than the deployed height is normalized down to it',
-      bbStowHeightIn(over) === 20,
-      String(bbStowHeightIn(over)),
-    );
-
-    // THE LATCH IS A READ OF `world.match`, not a stored flag (plan §3.3).
-    const w = createBiobuzzWorld('match', 61, [seat(0, 'blue', 0, false)], undefined, '3d');
-    check('before the match a tall robot is STOWED', !bbDeployed(w) && bbHeightNow(w, tall) === BB3_STOW_MAX);
-    startMatch(w);
-    check('once the match begins it is DEPLOYED', bbDeployed(w) && bbHeightNow(w, tall) === BB3_HEIGHT_MAX);
-    check('a short robot reads the same height either side of the edge', bbHeightNow(w, short) === 16);
-
-    /**
-     * …AND THE 3D COLLIDER FOLLOWS, WITHOUT THE ROBOT MOVING. The body's centre is `z + height/2`,
-     * so a collider rebuilt at a new height with the readback still subtracting the old one makes
-     * `RobotState.z` jump by the difference on the deploy tick — a robot that visibly sinks into
-     * the tiles for a frame, and a `worldHash` that moves for no gameplay reason.
-     */
-    const dw = createBiobuzzWorld(
-      'match',
-      62,
-      [{ ...seat(0, 'blue', 0, false), spec: tall }],
-      undefined,
-      '3d',
-    );
-    const zero = new Map<number, RobotCommand>([[0, localizeCommand({ driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false })]]);
-    for (let t = 0; t < 30; t++) biobuzzStep(dw, SIM_DT, zero);
-    const zPre = dw.robots[0].z ?? 0;
-    startMatch(dw);
-    for (let t = 0; t < 30; t++) biobuzzStep(dw, SIM_DT, zero);
-    const zPost = dw.robots[0].z ?? 0;
-    check(
-      'the deploy edge rebuilds the 3D chassis collider without moving the robot',
-      Math.abs(zPost - zPre) < 0.25 && Math.abs(zPost) < 0.25,
-      `z ${zPre.toFixed(4)} -> ${zPost.toFixed(4)}`,
-    );
-  }
 }
-
-/** the lane's own file list, exported so `docaudit`-style greps and a reader can see at a glance
- * that this lane owns no fixture of its own. */
-export const AI_LANE_SOURCES = relative(root, AI_DIR);

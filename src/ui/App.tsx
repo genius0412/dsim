@@ -2,7 +2,7 @@ import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from '
 import type { ComponentType, ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
-import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
+import { hasStoredSettings, loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
   saveAccountSettings,
   fetchAdminStatus,
@@ -12,16 +12,19 @@ import {
   type Activity,
   type RoomInvite,
 } from '../net/api';
-import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
+import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
 import { tabHosting } from '../lan/hosting';
 import { GAME_IDS } from '../games/types';
 import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
 import { moduleFor } from '../games';
+import { preloadRoomPhysics } from '../net/roomPhysics';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
+import { useSiteState } from '../net/siteStatus';
+import { setShellState } from './shellState';
 /**
  * THE WHOLE ADMIN CONSOLE IS A LAZY CHUNK, and this import is the split point.
  *
@@ -37,6 +40,7 @@ import { Announcements } from './Announcements';
 import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
 import { AccountVerify } from './AccountVerify';
+import { EMAIL_VERIFIED_EVENT } from './VerifyCodeForm';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { WatchLive } from './WatchLive';
@@ -446,6 +450,10 @@ function OverlayDialog({
   );
 }
 
+/** Neon Auth's OAuth return param (`NEON_AUTH_SESSION_VERIFIER_PARAM_NAME` in the SDK, not
+ *  exported from its public entry). See the canonicalization effect in `App`. */
+const AUTH_VERIFIER_PARAM = 'neon_auth_session_verifier';
+
 export function App() {
   /* Whether the LAN entry points exist at all. Not a build constant any more: the
      server advertises it, so this flips once the shell's first presence poll lands
@@ -456,7 +464,28 @@ export function App() {
   // that game up front (switchGame swaps in its saved loadout) — do it in the
   // initializer so the very first render is already on the right game.
   const [settings, setSettings] = useState<GameSettings>(() => {
-    const s = loadSettings();
+    const stored = loadSettings();
+    /**
+     * THE DISCORD ACTIVITY OPENS ON BIOBUZZ, and only the activity does.
+     *
+     * The app-wide default in `defaultSettings()` stays DECODE — the website and the
+     * desktop app are unchanged. Inside the embed there is no game-prefixed URL to read a
+     * season from, so `settings.game` is the whole story, and the current season is the
+     * one a player dropping into a voice channel expects to land on.
+     *
+     * ⚠️ It seeds a DEFAULT, it does not pin a season. A player who picks another season
+     * in the activity has settings stored for that origin from then on, so this stops
+     * applying to them — which is why it asks `hasStoredSettings()` rather than testing
+     * whether the loaded game happens to equal the default. Those are different questions:
+     * somebody who deliberately chose DECODE would be overridden on every launch by the
+     * second one.
+     *
+     * `DiscordLobbyList` is still handed `settings.game` and still says "the season picked
+     * on the home page", both of which stay true — this only changes what that value
+     * STARTS as, so there is no second source of truth for the season.
+     */
+    const s =
+      inDiscordActivity() && !hasStoredSettings() ? switchGame(stored, 'biobuzz') : stored;
     // a SAVED game hidden on this channel is dropped as well, not just a hidden
     // URL prefix: `coerceSettings` validates `game` as a `GameId` and knows
     // nothing about channels, so a stored `biobuzz` from an alpha build (the same
@@ -495,6 +524,8 @@ export function App() {
   // `screen`/`session` directly would re-run it on every navigation instead
   const sessionRef = useRef<NetSession | null>(null);
   const screenRef = useRef<Screen>('home');
+  /** the session `rejoinGame` is still waiting to show (see its guard); null when none is */
+  const rejoiningRef = useRef<ServerSession | null>(null);
   // which flow opened the live session — only 'record' offers an in-game NEW RUN
   const [sessionKind, setSessionKind] = useState<ActiveGameRef['kind'] | null>(null);
   /**
@@ -564,8 +595,18 @@ export function App() {
     // unprefixed `/admin` canonicalizes to `/decode/admin`, which is not equal, so EVERY
     // pasted console link was rewritten to a bare path before `Admin` mounted and opened on
     // Live. The query still goes: `?token=` is consumed at module load and must not survive.
-    if (window.location.pathname + window.location.search !== canonical) {
-      window.history.replaceState(null, '', canonical + window.location.hash);
+    // ⚠️ EXCEPT THE GOOGLE SIGN-IN VERIFIER. Neon Auth returns from Google to this page with
+    // `?neon_auth_session_verifier=…`, and the SDK trades it for the session when its first
+    // `get-session` request STARTS, reading `location.search` at that moment, then deletes the
+    // param itself. This effect used to strip it first on some loads (it is a race with the
+    // session fetch), and the player landed back signed out. Someone already signed in to Google
+    // never sees Google's page, so it looked like "Sign in with Google just reloads the page".
+    const verifier = new URLSearchParams(window.location.search).get(AUTH_VERIFIER_PARAM);
+    const target = verifier
+      ? `${canonical}?${new URLSearchParams({ [AUTH_VERIFIER_PARAM]: verifier })}`
+      : canonical;
+    if (window.location.pathname + window.location.search !== target) {
+      window.history.replaceState(null, '', target + window.location.hash);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -602,6 +643,13 @@ export function App() {
     // `src/pageviews.ts`, along with every gate that decides whether anything is sent at all.
     trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
+
+  // the site gate and the banner stack live beside this component (main.tsx): tell them
+  // whether a match is on screen and which game the player is on
+  useEffect(() => {
+    setShellState({ inMatch: screen === 'game', game: settings.game });
+  }, [screen, settings.game]);
+  useEffect(() => () => setShellState({ inMatch: false }), []);
 
   /* Mirror the two pad-nav preferences into the module store the navigation layer reads. The
      layer is mounted beside `<App/>` (main.tsx) and cannot see this state; `setPadNavPrefs` is a
@@ -670,6 +718,23 @@ export function App() {
   // mount; `discordInstanceId` also remembers the id for the tab, since the router
   // canonicalizes the launch URL to a bare path and a reload would otherwise lose it.
   const discordGroupId = useMemo(() => (inDiscordActivity() ? discordGroup() : ''), []);
+  /**
+   * ⚠️ "AM I IN AN ACTIVITY" AND "WHICH PARTY AM I IN" ARE DIFFERENT QUESTIONS, and only one
+   * of them can fail.
+   *
+   * `discordGroupId` needs the INSTANCE ID, which arrives once on the launch URL and is then
+   * remembered per tab. With third-party storage blocked (not merely partitioned) a reload
+   * inside the activity loses it for good — a fresh document, a bare URL, no storage, and the
+   * SDK cannot rescue it because `instanceId` comes from the same stripped query. Gating the
+   * EMBED-SHAPED decisions on it therefore turned a blocked-storage reload into a page that
+   * re-advertised sign-in and ranked, dropped the region pin, and hid its own Join button —
+   * all things that are wrong inside an activity whether or not we know which party it is.
+   *
+   * So: anything about being EMBEDDED reads `inActivity`, which is host-based and cannot be
+   * lost; only the things that genuinely need a party (the lobby browser's scope, the room
+   * code) read `discordGroupId`, and they degrade to "no party" rather than to "not embedded".
+   */
+  const inActivity = useMemo(() => inDiscordActivity(), []);
   const discordMainCode = useMemo(
     () => (discordGroupId ? roomCodeForInstance(discordInstanceId()) : ''),
     [discordGroupId],
@@ -679,6 +744,37 @@ export function App() {
     if (!discordGroupId) return;
     return watchDiscordParticipants(setDiscordPeople);
   }, [discordGroupId]);
+  /**
+   * ⚠️ THE ACTIVITY HAS NO SCREEN TO DOWNLOAD BIOBUZZ ON, SO THE DOWNLOAD STARTS AT MOUNT.
+   *
+   * `preloadRoomPhysics`' own header states the deal: holding a match start on the 3D readiness
+   * handshake is only tolerable because the wait is normally zero, and "it is zero exactly when
+   * the chunks were fetched while the player was doing something else". On the web that is the
+   * Lobby screen — you type a code, and its preload effect has run long before you press start.
+   * In the embed the player types nothing: `enterDiscordRoom` auto-joins, so the Lobby's preload
+   * and its auto-join run in the same commit and the 1.1 MB fetch starts at the instant the seat
+   * does. BIOBUZZ is also the season the activity now OPENS on, so this is the default path, not
+   * an edge of it.
+   *
+   * Both halves, because they are fetched at different doors and only one of them is in the
+   * readiness gate: `preloadRoomPhysics` is the Rapier 3D solve the server waits for, and
+   * `scene()` is the Three.js renderer, which is first requested at GameView mount — AFTER
+   * `matchStart` — and leaves the canvas deliberately blank until it lands. With a 4-second
+   * pre-countdown a cold participant could be blind through the opening of AUTO while the room
+   * politely waited for the smaller half.
+   *
+   * Keyed on the season so a pick made inside the activity warms the right chunks, and safe to
+   * repeat: `initPhysics3d` resolves the same in-flight promise and a dynamic import is cached.
+   * Both are UNAWAITED and both swallow — nothing on screen depends on this, and the room's own
+   * gate is where a load that never lands is answered.
+   */
+  useEffect(() => {
+    if (!inActivity) return;
+    void preloadRoomPhysics(settings.game).catch(() => {});
+    void moduleFor(settings.game)
+      .scene?.()
+      .catch(() => {});
+  }, [inActivity, settings.game]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the
@@ -686,8 +782,65 @@ export function App() {
    * robot all belong to the match about to be played. */
   const enterDiscordRoom = (code: string, game: GameId): void => {
     selectGame(game);
-    setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
-    navigate('lobby');
+    /**
+     * OUR OWN SEAT FIRST, A FRESH LOBBY SECOND.
+     *
+     * Leaving a room that has STARTED A MATCH and coming back was refused outright with
+     * "Room is full or a match is already in progress." — reproduced against a real server:
+     * leave/rejoin is fine while the room is still a lobby, and refused the moment a match
+     * exists, clearing on its own only once the 45s reconnect grace expires (and not at all
+     * while somebody else is still playing in there).
+     *
+     * The server DOES hand a returning player their seat back, but that path is gated on a
+     * signed-in account (`if (user)` at the join handler), and the embed cannot sign in
+     * because Discord's CSP blocks auth. The web never feels this: its players are usually
+     * signed in, and a stuck one just makes a room with a new code. The activity has neither
+     * escape — `roomCodeForInstance` is deterministic, so every re-entry targets the one room
+     * for the whole voice channel.
+     *
+     * `rejoin` is the signed-out reclaim the protocol already has: the client id is the proof,
+     * because the server minted it and told nobody else. So if this is the room our own saved
+     * record names, reclaim the seat; if that is refused (grace expired, match over, seat
+     * taken), fall through to the ordinary join rather than a dead end — by then the room has
+     * usually recycled into a lobby anyway.
+     */
+    const freshLobby = (): void => {
+      setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
+      navigate('lobby');
+    };
+    const held = loadActiveGame();
+    if (held && held.room.toUpperCase() === code.toUpperCase()) {
+      rejoinGame(held, freshLobby);
+      return;
+    }
+    /**
+     * ⚠️ EVERYTHING THAT IS NOT THAT RECLAIM GOES THROUGH `guardStart`, and the ORDER is the
+     * whole point — this must not be wrapped around the reclaim above.
+     *
+     * `guardStart`'s first branch blocks on `loadActiveGame()`, which is exactly the record the
+     * reclaim is built on, so wrapping the whole function would answer "reclaim my seat in this
+     * room" with the "you're already in a game" dialog about that same seat. The reclaim IS the
+     * dialog's Rejoin button, taken automatically because the activity knows the room is ours.
+     *
+     * Every other way into a room is guarded (`onCustomRoom`, `onRanked`, `onRecordRun`, the
+     * results screen's Queue again); this one was not, and the server's counterpart is gated on
+     * `if (user)`, which the embed can never satisfy. Two guards therefore had NO backstop here:
+     *
+     *  • ONE LIVE GAME. "Create a separate lobby", and any other row in the browser, joined a
+     *    second room while the first seat was still held — so an alliance drove beside a
+     *    coasting ghost robot for the whole reconnect grace, nothing ever sent `abandon`, and
+     *    `saveActiveGame` then overwrote the single-slot record, losing the pointer the reclaim
+     *    above needs. The dialog offers Rejoin or Leave match, and Leave is the frame that
+     *    actually releases the seat.
+     *  • THE VERSION GATE. `join` carries no `build` (only the ranked queue segregates by one),
+     *    so a voice channel left open across a deploy puts mixed builds in one authoritative
+     *    room, predicting against different sim constants. `guardStart` is where the refresh
+     *    prompt lives.
+     *
+     * Maintenance and an illegal start pose are also covered by it, and those two the server
+     * does refuse on its own — they are a better error, not a missing one.
+     */
+    guardStart(freshLobby);
   };
   // a name typed on the LAN Play entry card, waiting to seed the Lobby screen it
   // navigates to (`initialName`). One-shot like `pendingAutoJoin` above: cleared on
@@ -913,6 +1066,7 @@ export function App() {
         room: s.room,
         region: s.region,
         clientId: s.clientId,
+        seatToken: s.seatToken,
         start: {
           seed: s.seed,
           setups: s.setups,
@@ -957,7 +1111,11 @@ export function App() {
   /** reconnect to and re-enter the match this browser last left (reclaims our held
    * server slot within its reconnect grace; fails cleanly to the "connection lost"
    * panel if the slot is already gone). */
-  const rejoinGame = (ref: ActiveGameRef): void => {
+  const rejoinGame = (ref: ActiveGameRef, onGone?: () => void): void => {
+    // ⚠️ ONE REJOIN AT A TIME. The wait below lasts up to `REJOIN_SHOW_MS` with the player
+    // still on the screen they clicked from, so a second click built a second session, and
+    // `setSession` dropped the first one without disposing it: a live socket holding the seat.
+    if (rejoiningRef.current) return;
     // the HOST's region if the ref recorded one, ours otherwise — the same rule every other
     // room-opening path uses. A bare code with no hint lands on whichever machine anycast
     // puts nearest to US, which is not where the room we are rejoining lives.
@@ -985,9 +1143,12 @@ export function App() {
      * The field has existed on the message type since Day 2 for exactly this; nothing sent it.
      */
     transport.onOpen(() =>
-      transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS })),
+      transport.send(
+        encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS, seatToken: ref.seatToken }),
+      ),
     );
-    const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
+    const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room, false, ref.seatToken ?? '');
+    rejoiningRef.current = s;
     /**
      * A REJOIN THE SERVER REFUSES GOES BACK TO THE MENU, IT DOES NOT PARK ON A DEAD CARD.
      *
@@ -1003,27 +1164,115 @@ export function App() {
      * and nothing else. The ref still goes on either, because a match we cannot reach is
      * not one to keep offering.
      */
+    /**
+     * ⚠️ THE GAME SCREEN OPENS ON AN ANSWER, NOT ON A HOPE.
+     *
+     * This used to `navigate('game')` on the line after the socket was constructed, so a STALE
+     * record — the common case, since a record outlives the match it names — threw the player
+     * into the full-screen match view and bounced them out again one round-trip later. On a
+     * fresh document that flash is not just cosmetic: mounting `GameView` starts the 3D physics
+     * and Three.js fetches and takes a WebGL context, all of it orphaned when the bounce lands.
+     * Inside the activity it is the FIRST thing a returning player sees, because JOIN MAIN
+     * LOBBY goes through the reclaim above.
+     *
+     * The proof we wait for is authoritative SNAPSHOTS FLOWING (`snapHz`), which is the one
+     * positive signal a refused rejoin can never produce: the server closes the socket on
+     * `rejoined: ok=false`. `waitingFor` cannot stand in — a session is born `connected` — and
+     * `takeSnapshot` is destructive, so reading it here would steal the first frame from the
+     * controller.
+     *
+     * `REJOIN_SHOW_MS` is the OTHER exit, and it exists so a quiet-but-alive room still opens:
+     * snapshots normally begin within a round-trip and `snapHz` lands ~100 ms later, so a
+     * second and a half is slack, not a wait anyone sits through. The poll is also what times
+     * the refusal, so it is fast enough to be one: at 400 ms it added most of the visible flash.
+     */
+    const REJOIN_SHOW_MS = 1500;
+    const openedAt = Date.now();
+    /** the screen the player is standing on while we wait — see `show` */
+    const from = screenRef.current;
+    let shown = false;
+    /** the wait is over: let the next rejoin through (the poll outlives a `show`, see below) */
+    const settle = (): void => {
+      if (rejoiningRef.current === s) rejoiningRef.current = null;
+    };
+    const show = (): void => {
+      if (shown) return;
+      /**
+       * SOMETHING ELSE MAY HAVE MOVED THEM FIRST. `setSession` below is immediate (it is what
+       * wires `onLobby`), so a room that recycled while we waited answers with `t: 'lobby'`,
+       * `backToRoomLobby` takes the player to the room's lobby, and the session is torn down.
+       * Navigating to `game` after that renders the match view over a null session.
+       */
+      if (screenRef.current !== from) {
+        /**
+         * ⚠️ AND A SESSION NOBODY WILL SHOW IS A SEAT NOBODY IS IN. A player who walked away
+         * during the wait was left holding a live socket that kept the seat, behind no screen.
+         * Unless the recycle above took it: `backToRoomLobby` released the socket to the lobby
+         * (and cleared `rejoiningRef`), and closing it would pull the lobby's connection.
+         */
+        if (rejoiningRef.current === s) {
+          s.dispose();
+          if (sessionRef.current === s) {
+            setSession(null);
+            setSessionKind(null);
+            setSessionCoop(false);
+          }
+        }
+        window.clearInterval(watch);
+        settle();
+        return;
+      }
+      // ⚠️ CONSUMED ONLY ONCE IT ACTUALLY NAVIGATES. Setting this before the bail above meant
+      // a player who moved during the wait disabled `show` for good — and `setSession` has
+      // already run, so they were left holding a live session, a live socket and a held seat
+      // with no screen showing any of it.
+      shown = true;
+      settle();
+      navigate('game');
+    };
     const watch = window.setInterval(() => {
       const st = s.status();
-      if (!st.failed) return;
+      if (!st.failed) {
+        if (st.snapHz !== null || Date.now() - openedAt >= REJOIN_SHOW_MS) show();
+        return;
+      }
       window.clearInterval(watch);
+      settle();
       clearActiveGame();
       setActiveGame(null);
-      if (!s.slotRefused()) return;
+      // an ordinary drop, not a refusal: the player really is in that match, so open it and
+      // let the HUD's own "connection lost" panel say so.
+      if (!s.slotRefused()) {
+        show();
+        return;
+      }
       setEditMobileLayout(false);
       s.dispose();
       setSession(null);
       setSessionKind(null);
       setSessionCoop(false);
+      /**
+       * A CALLER THAT HAS SOMEWHERE BETTER TO SEND THEM GETS TO. The Discord Activity
+       * does: its room code is deterministic, so a seat it cannot reclaim is a room it
+       * can simply walk back into as a fresh lobby — and a match that ENDED while the
+       * player was away is exactly that case. Told "that match is over" there, they
+       * would be reading a dead end about a room that is open again.
+       */
+      if (onGone) {
+        onGone();
+        return;
+      }
       setRejoinGone(true);
       navigate('home');
-    }, 400);
-    window.setTimeout(() => window.clearInterval(watch), 30_000);
+    }, 120);
+    window.setTimeout(() => {
+      window.clearInterval(watch);
+      settle();
+    }, 30_000);
     setSession(s);
     setSessionKind(ref.kind);
     // a duo run rejoined has more than one robot on the roster; a solo one does not
     setSessionCoop(ref.kind === 'record' && (ref.start.setups?.length ?? 1) > 1);
-    navigate('game');
   };
 
   /**
@@ -1099,6 +1348,8 @@ export function App() {
     const alliance = replay.setups[0]?.alliance ?? 'blue';
     const score = recordScore(result, alliance);
     savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // the homepage's games-played counter, signed in or not (the upload below is account-only)
+    reportPlayed(replay.game ?? 'decode', 'practice');
     // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
     // One path to the server means a run that failed on its own attempt is retried by the
     // next flush rather than being lost, and it is the same code either way.
@@ -1175,6 +1426,8 @@ export function App() {
       drivetrain: su.spec.drivetrain,
     }));
     saveLanRunLocal(info.matchId, info.replay, info.result.score, participants);
+    // the homepage's games-played counter: a LAN server has no database, so its host counts it
+    reportPlayed(info.replay.game ?? 'decode', 'lan', sess.setups.length >= 4 ? '2v2' : '1v1');
     // Same as practice: never upload THIS match directly — drain the backlog, which contains
     // it. One path to the cloud means a failure is retried by the next flush.
     void flushLanRuns();
@@ -1339,6 +1592,8 @@ export function App() {
   const backToRoomLobby = (): void => {
     const s = session;
     if (!s?.release || !s.room || !s.clientId) return;
+    // a rejoin still waiting on this session no longer owns it: the socket is the lobby's now
+    if (rejoiningRef.current === s) rejoiningRef.current = null;
     const transport = s.release();
     setEditMobileLayout(false);
     setSession(null);
@@ -1348,7 +1603,10 @@ export function App() {
     // leaving the record behind would offer Home a "rejoin your match" that cannot work.
     clearActiveGame();
     setActiveGame(null);
-    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId });
+    // ⚠️ THE SEAT'S SECRET TRAVELS WITH THE SOCKET: no `welcome` is re-sent on it, and a lobby
+    // that dropped it built the next match's session with an empty token, so every rejoin,
+    // Home rejoin card and Abandon was refused for this seat from the room's second match on.
+    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId, seatToken: s.seatToken ?? '' });
     navigate('lobby');
   };
 
@@ -1433,7 +1691,9 @@ export function App() {
   // lockdown rather than a suggestion); this stops a player from clicking into an
   // error they could have been told about first. Admins are exempt on both sides.
   const maintenance = usePresence()?.maintenance ?? null;
-  const lockedOut = !!maintenance?.biting && !isAdmin;
+  // ...and an ACCESS GROUP the lockdown lists passes too, which only the site status knows
+  const lockPasses = useSiteState().access?.passes ?? false;
+  const lockedOut = !!maintenance?.biting && !isAdmin && !lockPasses;
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [startBlocked, setStartBlocked] = useState(false);
@@ -1450,8 +1710,18 @@ export function App() {
   // spawn, the player configured it for a DIFFERENT chassis, so we refuse to start
   // anywhere and send them to fix it rather than relocating their robot silently.
   const guardStart = (go: () => void): void => {
-    // start-pose legality, per game: DECODE's G304 setup rules / CR's G04 Lab Area
-    const startOk = startSelectionLegal(settings.game, settings.spec, settings.alliance, settings.startPose);
+    /**
+     * start-pose legality, per game: DECODE's G304 setup rules / CR's G04 Lab Area.
+     *
+     * ⚠️ THROUGH `settingsRef`, NOT `settings` — a caller may have just switched season.
+     * `enterDiscordRoom` calls `selectGame(game)` on the line above this guard, because the
+     * room's season is the room's, and `selectGame` writes the ref before it queues the state
+     * update. Read from the render's `settings` instead, the guard would measure the pose of
+     * the season the player is LEAVING against that season's rules, and refuse entry to a
+     * BIOBUZZ room over a DECODE pose the player is not about to use.
+     */
+    const cur = settingsRef.current;
+    const startOk = startSelectionLegal(cur.game, cur.spec, cur.alliance, cur.startPose);
     if (loadActiveGame()) setBlockedByActive(true);
     else if (lockedOut) setStartBlocked(true);
     else if (restartPending) setStartBlocked(true);
@@ -1488,7 +1758,7 @@ export function App() {
       try {
         const t = new WebSocketTransport(gameServerUrlWith(params));
         t.onOpen(() => {
-          t.send(encodeMsg({ t: 'abandon', room: ref.room, clientId: ref.clientId }));
+          t.send(encodeMsg({ t: 'abandon', room: ref.room, clientId: ref.clientId, seatToken: ref.seatToken }));
           // let the frame leave before the socket does
           window.setTimeout(() => t.close(), 250);
         });
@@ -1556,7 +1826,14 @@ export function App() {
       void flushLanRuns();
     };
     window.addEventListener('online', onOnline);
-    return () => window.removeEventListener('online', onOnline);
+    // a verified email is the one fix for a practice save the server refused (403
+    // `email_unverified`), and that refusal left the backlog waiting
+    const onVerified = (): void => void flushPracticeRuns();
+    window.addEventListener(EMAIL_VERIFIED_EVENT, onVerified);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener(EMAIL_VERIFIED_EVENT, onVerified);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1672,7 +1949,15 @@ export function App() {
         onCancel={() => {
           setResumedRoom(null);
           setPendingLanName(null);
-          navigate('modes');
+          /**
+           * BACK GOES WHERE YOU CAME FROM, and in an activity that is the lobby browser.
+           *
+           * A participant reaches this screen from the Discord lobby list, never from Modes
+           * — the activity auto-joins. Sending them to Modes put a screen they had not used
+           * between them and the only thing they wanted, which is the other lobby, and Modes
+           * in the embed is mostly entries that need an account they cannot have.
+           */
+          navigate(inActivity && discordGroupId ? 'discordlobbies' : 'modes');
         }}
         config={auto?.config}
         signedIn={signedIn}
@@ -1684,7 +1969,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={!!discordGroupId}
+        discordActivity={inActivity}
         group={discordGroupId}
         resume={resumedRoom ?? undefined}
         initialName={pendingLanName ?? undefined}
@@ -1763,7 +2048,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={!!discordGroupId}
+        discordActivity={inActivity}
         group={discordGroupId}
       />
     );
@@ -1883,7 +2168,7 @@ export function App() {
         <HomeMenu
           settings={settings}
           multiplayer={multiplayer}
-          discord={discordGroupId ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
+          discord={inActivity ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={goNav}
           onGame={(g) => {
             update(switchGame(settings, g));
@@ -1924,7 +2209,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
-          compete={!discordGroupId}
+          compete={!inActivity}
           /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
              no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
              section rather than gaining a disabled tile. */

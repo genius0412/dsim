@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import { environmentDef, type EnvironmentDef, type EnvironmentLook } from '../graphics/environments';
+import { environmentDef, environmentDefFor, type EnvironmentDef, type EnvironmentLook } from '../graphics/environments';
 import type { EnvironmentId } from '../graphics/settings';
 
 /**
@@ -28,11 +28,27 @@ import type { EnvironmentId } from '../graphics/settings';
  *                 in the Graphics section costs nothing at all after the first of each.
  *   NEVER BUNDLED — no `public/` copy, no import, no data URI. `bundleaudit` would see it.
  *
- * ── FAILURE IS THE PROCEDURAL ROOM, NOT A BLACK SCENE ──────────────────────────────────────
+ * ── FAILURE IS A PAINTED ROOM, NOT A BLACK SCENE ───────────────────────────────────────────
  * A blocked CDN, an offline desktop build, a corporate proxy that rewrites `.hdr` to HTML: all
- * of it ends at the same place, the room that needs no network, plus one event-log line. A 3D
+ * of it ends at the same place, a surround that needs no network, plus one event-log line. A 3D
  * view that goes black because a decoration failed to download would be a far worse bug than
  * the one it is reporting.
+ *
+ * ⚠️ IT IS THE ENTRY'S OWN `hdri.fallback` NOW, NOT `'room'` — a school hall falls back to the
+ * painted school gym, a monochrome studio to the dark cyclorama. `'room'` was the flattest
+ * surround on the list and, since the venue geometry landed, it also disagreed with the room the
+ * scene was still BUILDING around the field: `renderScene` sizes the venue off the environment
+ * row, so the old path put a hall's walls, ceiling and bleachers around a field lit by three's
+ * generic box. See `graphics/environments.ts`'s `fallback`.
+ *
+ * ⚠️ AND A FAILURE IS REMEMBERED, WHICH IT WAS NOT. Only successes were cached, so every scene
+ * build and every graphics-settings change re-issued a request that had already failed — in the
+ * Discord Activity, where the CSP refuses the host outright, that was once per scene for the life
+ * of the embed. `failedHdri` below is module-scope on purpose (see it).
+ *
+ * The CSP case does not even reach here any more: `environmentDefFor` resolves an unfetchable
+ * entry to its stand-in BEFORE a loader is built, so the embed takes the ordinary painted path
+ * with no request at all. What is left for this file is the TRANSIENT failure.
  */
 
 /** what a background looks like when the environment is a photographed room: blurred enough to
@@ -63,6 +79,31 @@ const BG_INTENSITY = 0.5;
  * moment the mip chain exists, exactly as the HDRI's is. */
 const SKY_W = 768;
 const SKY_H = 384;
+
+/**
+ * IDS WHOSE `.hdr` HAS ALREADY FAILED TO LOAD IN THIS DOCUMENT.
+ *
+ * ⚠️ MODULE SCOPE, unlike the PMREM `cache` below — and the two are opposites for a reason. A
+ * generated texture belongs to ONE renderer (a PMREM is GL-context-bound, and the gallery mounts
+ * several scenes), so caching it per scene is mandatory. Whether a URL can be fetched is a
+ * property of the NETWORK and the page's CSP, so re-asking per scene only reproduces the same
+ * refusal: the failure has to outlive the scene or it is not remembered at all.
+ *
+ * ⚠️ IT COUNTS, IT DOES NOT BLACKLIST ON THE FIRST MISS. One refusal is what a mobile blip, a
+ * captive portal or a proxy hiccup looks like, and a document is a whole Electron run — so
+ * remembering it forever meant one bad second cost a player the real environment until they
+ * restarted the app. Two tries, then the stand-in: a transient failure recovers on the next
+ * scene build, a host the client genuinely cannot reach still stops being re-requested.
+ */
+const HDRI_MAX_TRIES = 2;
+const failedHdri = new Map<EnvironmentId, number>();
+/**
+ * ⚠️ AND THE COUNT EXPIRES. Two blips in one long Electron run still meant the stand-in until a
+ * restart, so a spent count is forgotten `HDRI_RETRY_MS` after its last miss (and a success clears
+ * it outright). An unreachable host is then asked once per window, not once per scene build.
+ */
+const HDRI_RETRY_MS = 5 * 60_000;
+const hdriFailedAt = new Map<EnvironmentId, number>();
 
 /**
  * ⚠️ **THE ENVIRONMENT MAP IS SAMPLED IN THREE'S OWN Y-UP FRAME AND THIS SCENE IS Z-UP.**
@@ -227,7 +268,7 @@ export function applyEnvironmentRig(
 export interface BbEnvironment {
   /**
    * Apply `id` to `scene`, replacing whatever is there. Resolves when the map is live; on a
-   * failure it resolves having applied the procedural room and called `onEvent`.
+   * failure it resolves having applied that entry's painted `fallback` and called `onEvent`.
    *
    * `lighting` is §4.4's `envLighting` row. FALSE means the map does not light anything —
    * `scene.environment` stays null — but a PROCEDURAL dome is still painted as the background,
@@ -323,6 +364,16 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
     current = def.id;
   };
 
+  /** the painted stand-in for a fetched entry we cannot have — see `EnvironmentDef.hdri.fallback`.
+   * A stand-in is required to be a PAINTED entry, and the `look` guard is the belt to that brace:
+   * a mistyped id resolves through `environmentDef` to the room, which still needs no network. */
+  const applyFallback = (def: EnvironmentDef, lighting: boolean): EnvironmentDef => {
+    const alt = environmentDef(def.hdri!.fallback);
+    if (alt.look) applySky(alt, lighting);
+    else applyRoom(lighting);
+    return alt;
+  };
+
   const applyHdri = (id: EnvironmentId, tex: THREE.Texture): void => {
     scene.environment = tex;
     // THE HDRI IS ALSO THE SURROUND. On the CAD-GLB field path there is no procedural room
@@ -347,7 +398,10 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
     async apply(id: EnvironmentId, onEvent?: (line: string) => void, lighting = true): Promise<void> {
       if (disposed) return;
       const mine = ++epoch;
-      const def = environmentDef(id);
+      // ⚠️ THE RESOLVED ROW, the same one `renderScene.applyQuality` lights and builds the venue
+      // from. On a client whose CSP forbids the HDRI host this is already the painted stand-in,
+      // so the fetch below is never even reached there — see `graphics/environments.ts`.
+      const def = environmentDefFor(id);
       if (def.look) {
         loading = false;
         applySky(def, lighting);
@@ -371,9 +425,31 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         applyHdri(id, cached);
         return;
       }
+      // ALREADY TRIED, ALREADY REFUSED. Without this the retry ran on every scene build and every
+      // graphics-settings change, because only a SUCCESS was ever cached — see `failedHdri`.
+      if (Date.now() - (hdriFailedAt.get(id) ?? 0) >= HDRI_RETRY_MS) failedHdri.delete(id);
+      if ((failedHdri.get(id) ?? 0) >= HDRI_MAX_TRIES) {
+        loading = false;
+        applyFallback(def, lighting);
+        return;
+      }
       loading = true;
       try {
-        const src = await new HDRLoader().loadAsync(def.hdri.url);
+        /**
+         * ⚠️ ONLY THE FETCH COUNTS AGAINST THE URL. Everything after it runs on the GPU, and a
+         * context loss there would have recorded a download that actually succeeded as an
+         * unreachable host — blacklisting an environment for a reason that has nothing to do
+         * with whether it can be loaded.
+         */
+        let src: THREE.DataTexture;
+        try {
+          src = await new HDRLoader().loadAsync(def.hdri.url);
+        } catch (err) {
+          failedHdri.set(id, (failedHdri.get(id) ?? 0) + 1);
+          hdriFailedAt.set(id, Date.now());
+          throw err;
+        }
+        failedHdri.delete(id); // it CAN be fetched: earlier misses were blips, not the host
         if (disposed || mine !== epoch) {
           src.dispose();
           return;
@@ -386,11 +462,13 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         cache.set(id, tex);
         applyHdri(id, tex);
       } catch (err) {
+        // the COUNT is recorded at the fetch above, even if a newer pick has landed — that
+        // record is about the URL, not about which environment is on screen right now.
         if (disposed || mine !== epoch) return;
-        applyRoom();
-        onEvent?.(`Couldn’t load the ${def.name} environment. Using the practice room.`);
+        const alt = applyFallback(def, lighting);
+        onEvent?.(`Couldn’t load the ${def.name} environment. Using ${alt.name} instead.`);
         // eslint-disable-next-line no-console
-        console.warn('BIOBUZZ 3D: HDRI environment failed to load; using the procedural room.', err);
+        console.warn(`BIOBUZZ 3D: HDRI environment failed to load; using ${alt.id} instead.`, err);
       } finally {
         if (mine === epoch) loading = false;
       }

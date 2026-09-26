@@ -38,7 +38,7 @@ import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './ren
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { environmentDef } from '../graphics/environments';
+import { environmentDefFor } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import {
   SceneUnsupportedError,
@@ -424,7 +424,13 @@ class BiobuzzScene implements GameScene {
     // `renderCore.ts`'s `SCENE_*` constants are still the DEFAULT rig's values — `BASE_RIG`
     // copies them and the RENDER lane asserts the copy — and the builder preview still lights
     // from them directly, which is what keeps a robot the same colour in both places.
-    const def = environmentDef(s.environment);
+    //
+    // ⚠️ `environmentDefFor`, NOT `environmentDef` — the RESOLVED row, which is the declared one
+    // everywhere except a client that cannot fetch an HDRI at all (the Discord Activity's CSP).
+    // The rig, the venue below and `env.apply` must all read the SAME row or the picture is a
+    // school hall lit like a cardboard box; that is exactly what the embed was rendering while
+    // the loader silently substituted the practice room under a hall's geometry.
+    const def = environmentDefFor(s.environment);
     applyEnvironmentRig(this.renderer, this.hemi, this.sun, def, s.envLighting);
     void this.env.apply(s.environment, this.onQualityEvent, s.envLighting);
 

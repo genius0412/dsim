@@ -9,9 +9,10 @@ import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
 import { CloseGlyph } from './FriendsPanel';
 import { useDialog } from './useDialog';
+import { VerifyCodeForm } from './VerifyCodeForm';
 
-/** which of the three forms the modal is showing */
-type AuthMode = 'in' | 'up' | 'forgot';
+/** which form the modal is showing. `verify` follows a sign-up: the code step. */
+type AuthMode = 'in' | 'up' | 'forgot' | 'verify';
 
 /** the panel title's element id, so `aria-labelledby` on the dialog can point at it */
 const TITLE_ID = 'ds-auth-title';
@@ -22,6 +23,7 @@ const TITLES: Record<AuthMode, string> = {
   in: 'Sign in',
   up: 'Create account',
   forgot: 'Reset your password',
+  verify: 'Verify your email',
 };
 
 /** Sign-in / sign-up modal (email+password and Google), styled to Direction A.
@@ -133,6 +135,11 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
         } catch {
           /* TermsGate is the fallback */
         }
+        // THE CODE STEP, in this dialog rather than somewhere the player has to find: the
+        // email carries a code, and this is the moment they have it open. "Later" closes,
+        // and the Profile banner takes the same code.
+        setMode('verify');
+        return;
       } else {
         await client.signIn.email({ email, password });
       }
@@ -240,7 +247,17 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
           <h2 className="ds-dialog-title" id={TITLE_ID}>{TITLES[mode]}</h2>
           <button className="ds-btn ghost small" onClick={onClose} aria-label="Close"><CloseGlyph /></button>
         </div>
-        {mode === 'forgot' ? (
+        {mode === 'verify' ? (
+          <>
+            <p className="ds-hint">
+              We sent a code to {email.trim()}. Enter it here, or later from your Profile page.
+            </p>
+            <VerifyCodeForm email={email} onVerified={onClose} id="ds-auth-code" />
+            <div className="ds-form-switch">
+              <button className="ds-btn ghost" onClick={onClose}>Later</button>
+            </div>
+          </>
+        ) : mode === 'forgot' ? (
           <>
             {resetSent ? (
               <p className="ds-hint">

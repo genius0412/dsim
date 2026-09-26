@@ -74,6 +74,11 @@ export interface NetStatus {
   /** human-readable label of the server/region hosting the match (e.g. 'US East'),
    * or null on a single-region / unknown deploy. Shown in the HUD. */
   server: string | null;
+  /**
+   * THE MATCH IS HELD WHILE A SEAT LOADS (`loadHold`, `VIEWREADY_CAP`): seconds left until the
+   * room starts anyway, and how many drivers it is still waiting on. Absent/null ⇒ not held.
+   */
+  hold?: { secs: number; waiting: number } | null;
 }
 
 /** the duo-record rematch tally, as the server reports it */
@@ -107,6 +112,9 @@ export interface NetSession {
    * persist an "active game" record so the player can REJOIN this same match later */
   readonly room?: string;
   readonly clientId?: string;
+  /** the SEAT'S SECRET — what a rejoin/abandon is actually checked against. Persisted with
+   * the active-game record so a reclaim survives a reload. */
+  readonly seatToken?: string;
   readonly region?: string;
   /** the match seed the world was built from (updated on a host restart) */
   seed: number;
@@ -178,6 +186,16 @@ export interface NetSession {
    * server's `recordResult` lands after persistence — record runs only */
   getRecordResult?(): RecordRankInfo | null;
   status(): NetStatus;
+  /**
+   * THIS CLIENT CAN PLAY THE CURRENT MATCH: physics and view are up (`VIEWREADY_CAP`). Called by
+   * the controller every frame once that is true; sends once per match generation.
+   */
+  viewReady?(): void;
+  /** is the room holding the match at tick 0 for a loading seat? The controller does not
+   *  predict while it is. */
+  loadHeld?(): boolean;
+  /** the robots a load hold started WITHOUT (its cap ran out), once, for the event log */
+  takeLateStart?(): number[] | null;
   /** how many people are watching this match, as the SERVER reports it to players
    *  (hidden admin observers excluded). 0 until the first update arrives. */
   spectatorCount?(): number;

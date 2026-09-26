@@ -17,12 +17,23 @@
  *  · The total is the SUM of the shards' own `N CHECKS` lines and is printed in the same words
  *    the serial runner uses, so `3322 CHECKS, ALL PASS` still means what it meant.
  *
+ * ── THE PERF LANE RUNS ALONE ────────────────────────────────────────────────────────────────
+ * `SOLO` lanes are never packed. They run one at a time AFTER the parallel shards have exited,
+ * because they hold the absolute wall-clock budgets (`index.ts`, the PERF lane), and a budget
+ * measured while 17 other test processes share the cores measures the load: the FULL reconcile
+ * read 9-11 ms against its 8 ms budget on nearly every `npm test`, and costs 4.0 ms alone.
+ * `--gate` holds them until STDIN CLOSES, which is how `test-all.mjs` makes them wait for the
+ * shared suite as well; it is for that caller, and on a terminal it waits for Ctrl-D/Ctrl-Z.
+ * Load from outside this run (another worktree's tests) is the lane's own business: it re-runs
+ * after a pause when a budget fails (`perfLane`, `index.ts`).
+ *
  * Zero dependencies; children are spawned through `process.execPath` with tsx's own cli, the way
  * `smokeshard.mjs` and `test-all.mjs` do it (no shell, no `.cmd` shim, no quoting).
  *
  *   node scripts/bbshard.mjs                 # all lanes, sharded
  *   node scripts/bbshard.mjs --shards=4      # narrower
  *   node scripts/bbshard.mjs --quiet         # FAIL lines and summaries only
+ *   node scripts/bbshard.mjs --gate          # hold the SOLO lanes until stdin closes
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { cpus } from 'node:os';
@@ -39,6 +50,10 @@ const arg = (name, dflt) => {
   return hit.includes('=') ? hit.slice(hit.indexOf('=') + 1) : 'true';
 };
 const QUIET = arg('quiet', 'false') === 'true';
+const GATE = arg('gate', 'false') === 'true';
+
+/** lanes that run with the machine to themselves, after everything else — see the header */
+const SOLO = new Set(['perf']);
 
 /** measured lane seconds (2026-09-20, serial run). Only the ORDER matters to the packing, so a
  *  stale number costs a slightly worse pack and nothing else. Re-read them off the footer of
@@ -46,6 +61,7 @@ const QUIET = arg('quiet', 'false') === 'true';
 const COST = {
   sim3d: 13.8, net3d: 12.7, ai: 11.3, aiplay: 10.7, field: 8.1, hive3d: 6.1, server: 4.7, flower3d: 4.2,
   tutorial: 2.9, robot: 2.6, rules: 1.5, render: 0.9, predict: 0.3, core: 0.1, sponsor: 0.1,
+  perf: 2.5, // SOLO: never packed, so its cost only matters to the median above
 };
 
 // ---- the lanes that exist, from the suite itself --------------------------------------------
@@ -66,14 +82,16 @@ const costOf = (l) => COST[l] ?? median;
 // ---- pack: longest first into the emptiest shard ---------------------------------------------
 // Six by default: past the three heavy lanes (each a shard of its own) more processes only buy
 // more tsx boots. Never more shards than lanes, never more than the box has cores to spare.
-const SHARDS = Math.max(1, Math.min(lanes.length, Number(arg('shards', String(Math.min(6, Math.max(1, cpus().length - 1)))))));
+const packed = lanes.filter((l) => !SOLO.has(l));
+const SHARDS = Math.max(1, Math.min(packed.length, Number(arg('shards', String(Math.min(6, Math.max(1, cpus().length - 1)))))));
 const shards = Array.from({ length: SHARDS }, () => ({ lanes: [], cost: 0 }));
-for (const l of [...lanes].sort((a, b) => costOf(b) - costOf(a))) {
+for (const l of [...packed].sort((a, b) => costOf(b) - costOf(a))) {
   const s = shards.reduce((m, x) => (x.cost < m.cost ? x : m));
   s.lanes.push(l);
   s.cost += costOf(l);
 }
-const placed = shards.flatMap((s) => s.lanes).sort();
+const solo = lanes.filter((l) => SOLO.has(l)).map((l) => ({ lanes: [l], cost: costOf(l) }));
+const placed = [...shards, ...solo].flatMap((s) => s.lanes).sort();
 if (placed.length !== lanes.length || placed.some((l, i) => l !== [...lanes].sort()[i])) {
   console.error('[bbshard] packing lost or duplicated a lane — refusing to run');
   process.exit(2);
@@ -91,6 +109,14 @@ const runShard = (s) =>
     child.on('error', (e) => done({ ...s, code: 1, out: `${out}\n[bbshard] could not start: ${e.message}`, ms: Date.now() - t0 }));
   });
 const results = await Promise.all(shards.filter((s) => s.lanes.length > 0).map(runShard));
+if (solo.length > 0 && GATE) {
+  await new Promise((go) => {
+    process.stdin.on('end', go);
+    process.stdin.on('error', go);
+    process.stdin.resume();
+  });
+}
+for (const s of solo) results.push(await runShard(s));
 
 // ---- report -----------------------------------------------------------------------------------
 let ran = 0;

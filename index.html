@@ -292,10 +292,22 @@
              spelled out, and the smoke lane compares the two strings so they cannot
              drift. It fires no event, for the same reason: there is no analytics
              script on the page yet. -->
+        <!-- ⚠️ `target="_blank"` IS LOAD-BEARING, NOT POLISH. dsim also runs as a Discord
+             Activity, inside a cross-origin iframe at `<app-id>.discordsays.com` whose CSP
+             allows exactly two hosts (the two URL mappings). A bare anchor is a SAME-FRAME
+             navigation: a participant who taps this — and it is on screen for the WHOLE cold
+             boot, which on a phone with the BIOBUZZ default is the longest look anyone gets
+             at this screen — navigates the activity frame itself at a host the embed may not
+             load, and there is no back button in the embed to undo it. The three external
+             links on this page therefore ALL open in a new context, the way every external
+             link in the React tree already does (`Sponsor.tsx`, `HomeMenu.tsx`). This changes
+             only HOW the link opens — the placement and its hand-written UTM tag below are a
+             contracted obligation (docs/area/sponsor.md) and are untouched. -->
         <p class="sh-presents">
           Presented by
           <a
             href="https://offsetrobotics.com/?utm_source=dsim&amp;utm_medium=loading&amp;utm_campaign=biobuzz-2026"
+            target="_blank"
             rel="noreferrer"
             >Offset Robotics</a
           >
@@ -319,8 +331,10 @@
         <p class="sh-foot">
           <a href="/decode/changelogs">Changes</a>
           <a href="/decode/contributors">Contributors</a>
-          <a href="https://github.com/genius0412/dsim" rel="noreferrer">GitHub</a>
-          <a href="https://discord.gg/YB4tXnx7Pj" rel="noreferrer">Discord</a>
+          <!-- external, so same rule as the sponsor link above: never a same-frame
+               navigation, because this markup is also the Discord Activity's boot screen -->
+          <a href="https://github.com/genius0412/dsim" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://discord.gg/YB4tXnx7Pj" target="_blank" rel="noreferrer">Discord</a>
         </p>
       </div>
     </div>

@@ -1,37 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
 import { authClient, authEnabled } from '../lib/authClient';
-import { BADGE_EARN, BADGE_TIER, type BadgeId } from '../badges';
-import { parseAwardTitleId } from '../awards';
+import { BADGE_LABELS, BADGE_TIER } from '../badges';
 import { starPoints } from '../render/drawRobot';
-import {
-  grantBadges,
-  grantCosmetics,
-  grantTitles,
-  rewardBadgeText,
-  rewardEyebrow,
-  rewardHeadline,
-  rewardTitleText,
-  rewardWhy,
-  type RewardGrant,
-} from '../rewards';
-import { AwardBadge } from './AwardBadge';
+import { grantBadges, grantCards, rewardEyebrow, rewardHeadline, rewardWhy, type RewardGrant, type RewardItem } from '../rewards';
 import { useDialog } from './useDialog';
 import { BadgeArt } from './BadgeMark';
-import { TitleChip } from './TitleChip';
-import { claimPending, loadRewards, postponeRewards, reopenRewards, useRewards } from './rewardsStore';
+import { answerCard, currentCard, loadRewards, postponeRewards, reopenRewards, useRewards } from './rewardsStore';
 
 /**
  * THE CLAIM DIALOG — every reward an account is given is shown here, once, before it is theirs
  * (owner, 2026-09-22: "Create a proper display of congratulating them for earning a title or
- * badge or decal or whatever, why, and a claim button and a equip now button").
+ * badge or decal or whatever, why, and a claim button and a equip now button"). Titles have
+ * since folded into badges (0049), so a grant is badges and cosmetics.
  *
- * WHAT IT SHOWS, for the grant at the head of the queue: what was earned, DRAWN (the title as
- * it will sit beside the name, the badge with the count it is about to reach, the decal on a
- * robot-coloured disc); WHY, as concrete sentences (`rewardWhy` — "#2 in 1v1 ranked, BIOBUZZ
- * Act 2."); and two actions. CLAIM takes it into the account. EQUIP NOW claims it and wears it —
- * the title becomes the equipped one, each badge is equipped, and a decal goes on the active
- * robot. Several pending rewards queue: the next appears when this one is taken, the
- * prestigious first and the oldest first within a kind (`compareGrants`).
+ * ONE ITEM PER CARD (owner, 2026-09-24): the GitHub star gives a badge AND a decal, and one
+ * "Equip now" for two different things does not say which it wears. So a grant is shown as a
+ * card per item (`grantCards`: badges, then cosmetics), each with its own Claim and Equip now.
+ * The first card's answer claims the whole grant on the server; the rest walk through what it
+ * delivered (`answerCard`, `rewardsStore`).
+ *
+ * WHAT A CARD SHOWS: the item, DRAWN (the badge with the count it is about to reach, the decal
+ * on a robot-coloured disc); WHY, as concrete sentences (`rewardWhy` — "#2 in 1v1 ranked,
+ * BIOBUZZ Act 2."); and two actions. CLAIM takes it into the account. EQUIP NOW also wears it —
+ * a badge beside the name, a decal on the active robot. Several pending rewards queue: the next
+ * appears when this one is taken, the prestigious first and the oldest first within a kind
+ * (`compareGrants`).
  *
  * WHEN: on the menu shell only. `App.tsx` mounts it inside `AppShell`, which a match, a lobby
  * and the ranked screen all replace outright — so it cannot appear over a field, per the "no
@@ -42,9 +35,9 @@ import { claimPending, loadRewards, postponeRewards, reopenRewards, useRewards }
  *
  * ⚠️ THE RANKED PODIUM IS THE SPECIAL ONE, AND IT LOOKS IT (owner: "the most prestigious
  * reward … make it look special"). Its card takes the metal of the placement — the card's edge
- * in the metal, a large crest, the headline a size up (no glow: design review 06-15) — while a record award is the plainer violet card, and
- * anything else is the neutral one. The difference is in the TIER class and nothing else, so
- * the three cannot drift apart structurally.
+ * in the metal, a large crest, the headline a size up (no glow: design review 06-15) — while a
+ * record award is the plainer violet card, and anything else is the neutral one. The difference
+ * is in the TIER class and nothing else, so the three cannot drift apart structurally.
  */
 export function RewardDialog({
   blocked = false,
@@ -67,29 +60,36 @@ export function RewardDialog({
     void loadRewards(userId);
   }, [userId]);
 
-  const grant = r.state?.pending[0] ?? null;
-  const showing = !!grant && !blocked && !r.postponed && r.status === 'ready';
+  const card = currentCard(r);
+  const showing = !!card && !blocked && !r.postponed && r.status === 'ready';
+  const cardKey = card ? `${card.grant.id}:${card.at}` : '';
 
   // a new card is a new question — a failure on the last one says nothing about this one
-  useEffect(() => setErr(false), [grant?.id]);
+  useEffect(() => setErr(false), [cardKey]);
 
-  if (!showing || !grant) return null;
+  if (!showing || !card) return null;
 
   const take = async (equip: boolean): Promise<void> => {
     setErr(false);
-    const ok = await claimPending(grant.id, equip);
-    if (!ok) {
+    const out = await answerCard(equip);
+    if (!out.ok) {
       setErr(true);
       return;
     }
-    if (equip) for (const id of grantCosmetics(grant)) onEquipCosmetic?.(id);
+    if (out.cosmetic) onEquipCosmetic?.(out.cosmetic);
   };
+
+  // the queue as cards: what is left of this grant, then every card of the grants behind it
+  const later = (r.state?.pending ?? []).filter((g) => g.id !== card.grant.id).reduce((n, g) => n + Math.max(1, grantCards(g).length), 0);
 
   return (
     <RewardCard
-      grant={grant}
+      grant={card.grant}
+      item={card.item}
+      first={card.at === 0}
       counts={r.state?.badges ?? {}}
-      position={{ at: 1, of: r.state?.pending.length ?? 1 }}
+      claimed={card.claimed}
+      position={{ at: card.at + 1, of: card.of + later }}
       busy={r.busy}
       error={err}
       onClaim={() => void take(false)}
@@ -103,7 +103,10 @@ export function RewardDialog({
  *  preview of an unclaimed reward, and the screenshot harness). */
 export function RewardCard({
   grant,
+  item,
+  first = true,
   counts,
+  claimed = false,
   position,
   busy = false,
   error = false,
@@ -112,8 +115,14 @@ export function RewardCard({
   onDismiss,
 }: {
   grant: RewardGrant;
-  /** badge id → times earned so far; the card shows the count it is ABOUT to reach */
+  /** the ONE thing this card is about; null only for a grant with nothing this build draws */
+  item: RewardItem | null;
+  /** the grant's first card, which carries its headline; later cards name their own item */
+  first?: boolean;
+  /** badge id → times earned so far */
   counts: Record<string, number>;
+  /** the grant is already claimed, so `counts` already includes this badge */
+  claimed?: boolean;
   position?: { at: number; of: number };
   busy?: boolean;
   error?: boolean;
@@ -126,26 +135,27 @@ export function RewardCard({
   const dialogRef = useDialog(onDismiss);
   const equipRef = useRef<HTMLButtonElement>(null);
   // focus the primary action when a card appears — a keyboard or pad user lands on it
-  useEffect(() => equipRef.current?.focus(), [grant.id]);
+  const key = `${grant.id}:${item?.kind ?? ''}:${item?.id ?? ''}`;
+  useEffect(() => equipRef.current?.focus(), [key]);
 
-  const badges = grantBadges(grant);
-  const titles = grantTitles(grant);
-  const cosmetics = grantCosmetics(grant);
-  const lead = badges[0] ?? null;
-  const tier = lead ? BADGE_TIER[lead] : grant.reason.kind === 'stargazer' ? 'plain' : 'record';
+  // the card's loudness comes from the GRANT, so every card of one reward looks alike: a
+  // podium's metal, the record violet, or the neutral card for anything else (the GitHub
+  // star's disc is a badge, but not a competitive one)
+  const lead = grantBadges(grant)[0] ?? null;
+  const leadTier = lead ? BADGE_TIER[lead] : null;
+  const tier = leadTier === 'stargazer' || (!leadTier && grant.reason.kind === 'stargazer') ? 'plain' : leadTier ?? 'record';
   const headId = `rw-h-${grant.id}`;
-  const firstAward = titles.map(parseAwardTitleId).find(Boolean) ?? null;
-  const hero = lead ? (
-    <BadgeArt id={lead} n={(counts[lead] ?? 0) + 1} size="xl" />
-  ) : firstAward ? (
-    <AwardBadge award={firstAward} size="lg" />
-  ) : cosmetics.includes('decal:star') ? (
-    <DecalPreview id="decal:star" size="xl" />
-  ) : null;
-  // THE LIST ONLY WHEN IT ADDS SOMETHING (design review 06-15): a one-item grant is already
-  // drawn by the hero and said by the headline, and listing it repeated the hero at small size.
-  // It stays when there is no hero (a lone ledger title has no large form) so nothing goes undrawn.
-  const showItems = titles.length + badges.length + cosmetics.length > 1 || !hero;
+
+  // the count THIS badge reaches — the one it is about to reach until the claim lands
+  const count = item?.kind === 'badge' ? (counts[item.id] ?? 0) + (claimed ? 0 : 1) : 0;
+  const hero =
+    item?.kind === 'badge' ? (
+      <BadgeArt id={item.id} n={Math.max(1, count)} size="xl" />
+    ) : item?.kind === 'cosmetic' ? (
+      <DecalPreview id={item.id} size="xl" />
+    ) : null;
+  const headline = first || !item ? rewardHeadline(grant) : item.kind === 'badge' ? BADGE_LABELS[item.id] : cosmeticName(item.id);
+  const lines = [...rewardWhy(grant), ...(item?.kind === 'cosmetic' ? [cosmeticWords(item.id)] : [])];
 
   return (
     <div className="ds-modal-backdrop rw-backdrop" role="presentation">
@@ -173,50 +183,13 @@ export function RewardCard({
 
         {/* no "Reward earned" kicker: the eyebrow and the headline already say it (06-15) */}
         <h2 className="ds-dialog-title rw-h" id={headId}>
-          {rewardHeadline(grant)}
+          {headline}
         </h2>
         <ul className="rw-why">
-          {rewardWhy(grant).map((line) => (
+          {lines.map((line) => (
             <li key={line}>{line}</li>
           ))}
         </ul>
-
-        {/* WHAT IS IN IT — every item, as it will actually appear */}
-        {showItems && (
-          <ul className="rw-items" aria-label="What you get">
-            {titles.map((id) => {
-              const award = parseAwardTitleId(id);
-              return (
-                <li key={id}>
-                  <span className="rw-item-mark">{award ? <AwardBadge award={award} /> : <TitleChip id={id} />}</span>
-                  <span className="rw-item-k">Title</span>
-                  <span className="rw-item-v">{rewardTitleText(id, grant.reason)}</span>
-                </li>
-              );
-            })}
-            {badges.map((id: BadgeId) => (
-              <li key={id}>
-                <span className="rw-item-mark">
-                  <BadgeArt id={id} n={(counts[id] ?? 0) + 1} />
-                </span>
-                <span className="rw-item-k">Badge</span>
-                <span className="rw-item-v">
-                  {rewardBadgeText(id, (counts[id] ?? 0) + 1)}
-                  <span className="rw-item-sub">{BADGE_EARN[id]}</span>
-                </span>
-              </li>
-            ))}
-            {cosmetics.map((id) => (
-              <li key={id}>
-                <span className="rw-item-mark">
-                  <DecalPreview id={id} size="sm" />
-                </span>
-                <span className="rw-item-k">Decal</span>
-                <span className="rw-item-v">{cosmeticWords(id)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
 
         {error && <p className="ds-hint warn rw-err">Couldn’t claim that. Check your connection and try again.</p>}
 
@@ -233,9 +206,16 @@ export function RewardCard({
   );
 }
 
-/** how a delivered cosmetic reads in the list — the builder section it lives under */
+/** a delivered cosmetic's name, for the headline of its own card */
+function cosmeticName(id: string): string {
+  if (id === 'decal:star') return 'Star decal';
+  const [axis, key] = id.split(':');
+  return `${key} ${axis}`;
+}
+
+/** how a delivered cosmetic reads under its card's headline — where it is picked */
 function cosmeticWords(id: string): string {
-  if (id === 'decal:star') return 'Star decal for your robot. Pick it in the robot builder, or Equip now.';
+  if (id === 'decal:star') return 'A star decal for your robot. Pick it in the robot builder, or Equip now.';
   const [axis, key] = id.split(':');
   return `${key} ${axis === 'decal' ? 'decal' : axis}`;
 }

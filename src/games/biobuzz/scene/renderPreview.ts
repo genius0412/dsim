@@ -264,6 +264,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   let lastDraw = 0;
   let lastT = 0;
   let raf = 0;
+  /** is the turntable on screen? rAF keeps firing for a canvas scrolled out of view, so the loop
+   * skips the draw rather than rendering a full WebGL frame nobody can see. */
+  let onScreen = true;
   let disposed = false;
   const teardown: (() => void)[] = [];
   /** the detached 2D canvas `capture()` blits into. ONE per scene, reused, so a grid of
@@ -510,7 +513,7 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   function loop(): void {
     raf = requestAnimationFrame(loop);
     const now = performance.now();
-    if (!warm || (frameInterval > 0 && now - lastDraw < frameInterval)) return;
+    if (!warm || !onScreen || (frameInterval > 0 && now - lastDraw < frameInterval)) return;
     const dt = lastT === 0 ? 0 : Math.min(0.25, (now - lastT) / 1000);
     lastT = now;
     lastDraw = now;
@@ -575,7 +578,17 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   }
 
   applyQuality();
-  if (opts.animate !== false) raf = requestAnimationFrame(loop);
+  if (opts.animate !== false) {
+    if (typeof IntersectionObserver === 'function') {
+      const io = new IntersectionObserver((entries) => {
+        onScreen = entries.some((e) => e.isIntersecting);
+        if (!onScreen) lastT = 0; // resume without a catch-up jump in the turntable
+      });
+      io.observe(host);
+      teardown.push(() => io.disconnect());
+    }
+    raf = requestAnimationFrame(loop);
+  }
 
   /**
    * A LOST CONTEXT, KEPT DELIBERATELY SIMPLE HERE — the card TEARS ITSELF DOWN and the 3D tab

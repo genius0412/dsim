@@ -1,9 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchRewards, fetchTitle } from '../net/api';
-
-/** the title the GitHub star grants — and the witness for the decal too, because the two move
- *  as a unit (`STARGAZER_GRANTS`, `server/db/repo.ts`). */
-const STAR_TITLE = 'title:stargazer';
+import { fetchRewards } from '../net/api';
 
 /**
  * WHAT HAPPENED WHEN YOU CONNECTED GITHUB — shown once, on the bounce back from the link.
@@ -18,7 +14,7 @@ const STAR_TITLE = 'title:stargazer';
  * WHAT IS LEFT is the case the dialog cannot cover: linked, but the repo is NOT starred, which
  * used to end in silence and read as a broken link. So this looks the account up — never the
  * `?link=ok` in the address bar, which says the LINK worked and nothing about the star — and
- * says what to do only when there is neither a claimed title nor a pending reward.
+ * says what to do only when there is neither a claimed stargazer badge nor a pending reward.
  */
 export function StarReward() {
   const [notStarred, setNotStarred] = useState(false);
@@ -32,17 +28,14 @@ export function StarReward() {
     fetchRewards()
       .then((s) => {
         if (!live) return;
-        const has = s.earnedTitles.includes(STAR_TITLE) || s.pending.some((p) => p.source === 'stargazer');
+        // the badge and the decal move as a unit (`STARGAZER_ITEMS`, server/db/repo.ts), so
+        // the badge's count is the witness for both
+        const has = (s.badges?.stargazer ?? 0) > 0 || s.pending.some((p) => p.source === 'stargazer');
         setNotStarred(!has);
       })
-      // an older server has no reward route: fall back to the title list, which it does have
-      .catch(() =>
-        fetchTitle()
-          .then((t) => live && setNotStarred(!t.earned.includes(STAR_TITLE)))
-          // a failed lookup shows NOTHING rather than a guess: telling somebody who just
-          // earned the reward that they did not is worse than staying quiet
-          .catch(() => {}),
-      );
+      // a failed lookup shows NOTHING rather than a guess: telling somebody who just earned the
+      // reward that they did not is worse than staying quiet
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -52,7 +45,7 @@ export function StarReward() {
   return (
     <div className="ds-panel star-reward">
       <div className="ds-panel-body stack start">
-        <p className="ds-hint">GitHub connected. Star the repo to earn the Stargazer title and the star decal.</p>
+        <p className="ds-hint">GitHub connected. Star the repo to earn the Stargazer badge and the star decal.</p>
       </div>
     </div>
   );

@@ -70,14 +70,54 @@ export class Keyboard {
     this.pressed.clear();
   };
 
+  /**
+   * IS THIS WINDOW EVEN GETTING THE KEYSTROKES?
+   *
+   * `onBlur` has always KNOWN the answer — it is the moment every held key has to be let go,
+   * because no keyup is ever coming — and nothing ever said so out loud. Embedded as a Discord
+   * Activity the game is a cross-origin iframe sitting next to a chat box, and clicking that
+   * chat box is the entire point of the surrounding app. A driver who typed "ready" there
+   * before the host pressed START is pulled into a live match without a click of their own:
+   * the sim keeps stepping, they press W, the W lands in Discord's message field and their
+   * robot sits still with nothing on screen to explain it. They lose believing the sim broke.
+   * On the web the same state costs a deliberate alt-tab and moves a whole window, so it reads
+   * as what it is; in an iframe it is one click away and invisible.
+   *
+   * So the edge is kept as STATE, read through `hasFocus()` by the 10 Hz HUD poll, which is
+   * what renders the one sentence that fixes it. No new mechanism and no polling: it is the
+   * blur the class already listened for, plus its other half.
+   */
+  private focused = true;
+
+  /** true while this window is the one receiving keystrokes (see `focused`) */
+  hasFocus(): boolean {
+    return this.focused;
+  }
+
   private onBlur = (): void => {
+    this.focused = false;
     this.down.clear();
   };
 
+  /** the other half of `onBlur`: the keyboard is ours again, so the HUD's notice goes away */
+  private onFocus = (): void => {
+    this.focused = true;
+  };
+
   attach(): void {
+    // SEED FROM THE DOCUMENT, because the blur that matters most may have happened long before
+    // this object existed — a non-host never clicks into the match at all, so there is no event
+    // left to catch. An unknown answer (the headless smoke run, any non-browser host) reads as
+    // FOCUSED on purpose: a notice shown to somebody whose keys are already working is worse
+    // than no notice at all.
+    this.focused =
+      typeof document === 'undefined' || typeof document.hasFocus !== 'function'
+        ? true
+        : document.hasFocus();
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('focus', this.onFocus);
     window.addEventListener('focusin', this.onFocusIn);
   }
 
@@ -85,6 +125,7 @@ export class Keyboard {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('focus', this.onFocus);
     window.removeEventListener('focusin', this.onFocusIn);
   }
 

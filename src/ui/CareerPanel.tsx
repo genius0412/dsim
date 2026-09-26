@@ -1,9 +1,9 @@
 import { type ReactNode } from 'react';
-import { AwardList } from './AwardBadge';
+import { AwardList } from './AwardList';
 import { compareAwards } from '../awards';
 import { type UserStats } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { averageMatch, playtimeLong, playtimeText } from '../playtime';
 
 /**
@@ -60,7 +60,7 @@ export function CareerPanel({
           {/* and the equipped title, for the same reason: this chip is the whole of "who
               you are" on this screen, and a title that shows on the board but not here
               reads as having been lost. */}
-          <TitleMark title={stats?.title} badges={stats?.badges} />
+          <BadgeMarks badges={stats?.badges} />
         </span>
         {headerAction}
       </div>

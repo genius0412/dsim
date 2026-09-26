@@ -5,6 +5,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
+import { applyPushedStatus } from './siteStatus';
 import { appChannel, appBuild } from './env';
 import {
   encodeMsg,
@@ -108,6 +109,10 @@ type Handlers = {
 
 export class LobbyClient {
   clientId = '';
+  /** THE SEAT'S SECRET — sent only to us in `welcome`, never in a roster. It, not
+   * `clientId`, is what `rejoin`/`abandon` are checked against (see protocol.ts). Empty
+   * against an older server, which simply keeps the pre-token rule. */
+  seatToken = '';
   hostId = '';
   players: LobbyPlayer[] = [];
   private readonly handlers: Partial<Handlers> = {};
@@ -161,8 +166,21 @@ export class LobbyClient {
    * the client outright rather than holding it like a mid-match one — so coming back from
    * a drop is an ordinary fresh `join`, the same frame `join()` would have sent.
    */
-  resume(room: string, player: Omit<LobbyPlayer, 'clientId'>, clientId: string, config?: RoomConfig): void {
+  resume(
+    room: string,
+    player: Omit<LobbyPlayer, 'clientId'>,
+    clientId: string,
+    seatToken: string,
+    config?: RoomConfig,
+    group?: string,
+  ): void {
     this.clientId = clientId;
+    /**
+     * ⚠️ AND THE SEAT'S SECRET, which no `welcome` will re-send on this socket either. Dropped
+     * here, the next `ServerSession` was built with an empty token, and from the room's second
+     * match on every `rejoin` and `abandon` of this secured seat was refused by the server.
+     */
+    this.seatToken = seatToken;
     /**
      * ASK FOR THE ROSTER RATHER THAN HOPING WE CAUGHT IT.
      *
@@ -178,8 +196,18 @@ export class LobbyClient {
     this.transport.onReopen(() => {
       void (async () => {
         const authToken = (await getAuthToken()) ?? undefined;
+        /**
+         * ⚠️ THE GROUP RIDES THIS FRAME TOO, OR A DISCORD PLAYER IS EJECTED FROM THEIR OWN
+         * ACTIVITY. The server refuses a grouped room to a join that names no group, so a
+         * reconnect from a recycled lobby — the wifi blip while everyone picks robots after
+         * a match — was answered with "That code belongs to a Discord activity. Open it from
+         * the activity to join." while they were sitting inside that exact activity. Worse,
+         * if the room had gone (a Fly restart drops everyone at once) the groupless join
+         * RE-CREATED it ungrouped, and it never appeared in the activity's lobby list again.
+         * The doc above says this should send the same frame `join()` would have; it now does.
+         */
         this.transport.send(
-          encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel() }),
+          encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
         );
       })();
     });
@@ -346,6 +374,7 @@ export class LobbyClient {
     if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
     if (m.t === 'welcome') {
       this.clientId = m.clientId;
+      if (m.seatToken) this.seatToken = m.seatToken;
       /* ⚠️ **THE SEAT EXISTS NOW, AND NOT ONE FRAME EARLIER.** `physicsReady` is routed
          through the socket's ROOM (`server/index.ts`), and a `join` is handled ASYNCHRONOUSLY
          — token verification, a suspension read, sometimes a staged-match lookup — so a frame
@@ -357,8 +386,10 @@ export class LobbyClient {
       this.sendPhysicsReady();
     } else if (m.t === 'lobby') {
       // a recycle that landed on a lobby rather than a session (the host recycled while
-      // we were still coming back). The id is ours either way — take it.
+      // we were still coming back). The id is ours either way — take it, and the seat's
+      // secret with it when the server sends one (an older server does not).
       this.clientId = m.clientId;
+      if (m.seatToken) this.seatToken = m.seatToken;
     } else if (m.t === 'roster') {
       this.players = m.players;
       this.hostId = m.hostId;
@@ -379,6 +410,8 @@ export class LobbyClient {
       this.handlers.standingLock?.(m.until, m.score, m.tier);
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
+    } else if (m.t === 'siteStatus') {
+      applyPushedStatus(m.lockdown ?? null, m.banners ?? []);
     }
   }
 }

@@ -9,7 +9,7 @@ import { gameServerConfigured } from '../net/env';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { ProfileFriendActions } from './ProfileFriendActions';
 import { useFriendsCtx } from './friendsContext';
 import type { CareerNav } from './Stats';
@@ -58,7 +58,7 @@ export function Profile({
         {/* the equipped title, beside the badge and never inside it — the same composition
             the leaderboard uses, so the row that sent you here and the header you land on
             say the same thing about the same person. */}
-        <TitleMark title={stats?.title} badges={stats?.badges} />
+        <BadgeMarks badges={stats?.badges} />
       </h1>
       {/* the @name only (design review 08-24): the role word repeated the badge in the h1 just
           above, and "Public profile" restated the URL. The route's own name stands in until

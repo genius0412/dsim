@@ -14,6 +14,7 @@ import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
 import { BB3D_CAP, RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
 import { serverCaps } from '../net/api';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
 import {
@@ -25,6 +26,7 @@ import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
+import { VerifyEmailInline } from './VerifyCodeForm';
 import { OptRow, ToggleRow } from './OptRow';
 import { formatLabel, type PendingChallenge } from './challenge';
 import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
@@ -143,6 +145,10 @@ export function Matchmaking({
   const [bumps, setBumps] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
+  /** the queue was refused for an unverified email (code, or the older sentence) */
+  const [unverified, setUnverified] = useState(false);
+  /** ...and the code was then accepted here */
+  const [verifiedHere, setVerifiedHere] = useState(false);
   /** what a cancelled ranked pairing cost — shown next to the cancellation itself, because
    *  a rating drop the player is not told about is the thing that makes a penalty feel
    *  arbitrary. `null` for a player who was NOT at fault, which is worth saying out loud. */
@@ -426,7 +432,7 @@ export function Matchmaking({
         startedRef.current = true;
         clearStagedMatch();
         matchFound();
-        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked', false, lobby.seatToken));
       });
       lobby.on('matchAssigned', (room) => {
         matchFound();
@@ -450,7 +456,7 @@ export function Matchmaking({
       clearStagedMatch();
       // the room code when the match is running in one, `'ranked'` on the single-region path
       onStart(
-        new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked'),
+        new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked', false, lobby.seatToken),
       );
     } else if (p.strategy) {
       const s = p.strategy;
@@ -597,7 +603,7 @@ export function Matchmaking({
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
         clearStagedMatch();
-        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room));
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room, false, lobby.seatToken));
       });
       lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
       lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
@@ -829,7 +835,10 @@ export function Matchmaking({
      * deadline rather than by refusing to queue.
      */
     void preloadRoomPhysics(queueGame);
+    preloadRoomView(queueGame);
     setError('');
+    setUnverified(false);
+    setVerifiedHere(false);
     setElapsed(0);
     setBumps(0);
     alertedRef.current = false;
@@ -857,7 +866,7 @@ export function Matchmaking({
       startedRef.current = true;
       clearStagedMatch();
       matchFound();
-      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
+      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked', false, lobby.seatToken));
     });
     // normal path: reconnect to the assigned host region to play
     lobby.on('matchAssigned', (room) => {
@@ -866,7 +875,10 @@ export function Matchmaking({
     });
     lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
     lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
-    lobby.on('error', (msg) => strategyCancelled(msg));
+    lobby.on('error', (msg, code) => {
+      strategyCancelled(msg);
+      if (code === 'email_unverified' || /verify your email/i.test(msg)) setUnverified(true);
+    });
     lobby.on('closed', () => {
       if (!startedRef.current && !assigningRef.current)
         setError('Lost connection to the game server.');
@@ -1143,7 +1155,18 @@ export function Matchmaking({
           Null while the capability read is in flight, so neither sentence flickers. */}
       {rankedPhysicsNote}
       <p className="ds-hint">{READY_WINDOW_NOTE}</p>
-      {error && <p className="ds-form-err">⚠ {error}</p>}
+      {/* the server's sentence points at the Profile page; the code form is right here */}
+      {error && <p className="ds-form-err">⚠ {unverified ? 'Verify your email to play ranked.' : error}</p>}
+      {error && unverified && (
+        <VerifyEmailInline
+          onVerified={() => {
+            setError('');
+            setUnverified(false);
+            setVerifiedHere(true);
+          }}
+        />
+      )}
+      {verifiedHere && !error && <p className="ds-hint ok">Email verified. Press FIND MATCH.</p>}
       {dodgeNote()}
       {lockNote()}
       {restartPending && (

@@ -1,13 +1,14 @@
+import { podiumBadge, type BadgeId } from './badges';
 import type { GameId } from './games/types';
 import { seasonFor } from './seasons';
 import { DRIVETRAIN_LABELS } from './ui/labelData';
 import type { DrivetrainType } from './types';
 
 /**
- * SEASON AWARDS, the client's half — the TITLE SENTENCE and the badge's rank.
+ * SEASON AWARDS, the client's half — the trophy case's SENTENCE and the badge each row shows.
  *
- * The server mints the rows (`season_awards`, migration 0045) and derives the KEY
- * (`awardTitleId`, `server/db/repo.ts`); this file turns one into words. The split is
+ * The server reads the rows (the retired `season_awards`, and the claimed competitive grants'
+ * reasons) and dedupes them by `awardKey`; this file turns one into words. The split is
  * deliberate and it is the same one `labelData.ts` exists for: an id is a stable thing that
  * goes in a database and a URL, a sentence is a thing a designer rewrites. Storing the
  * sentence would have frozen every past award's wording at the moment it was minted.
@@ -25,7 +26,7 @@ export interface AwardRow {
   /**
    * `ranked_act` is the CURRENT ranked award: a final placement on a ranked ladder when an ACT
    * ends (0048, owner 2026-09-22). `ranked` is the RETIRED per-season one 0045 minted; its
-   * titles stay wearable, so the kind stays readable, but nothing mints it any more.
+   * rows stay in the trophy case, so the kind stays readable, but nothing mints it any more.
    */
   kind: 'ranked' | 'ranked_act' | 'record_overall' | 'record_drivetrain';
   mode: '1v1' | '2v2' | 'solo' | 'duo';
@@ -61,108 +62,47 @@ export function awardBoardWord(a: Pick<AwardRow, 'kind' | 'mode' | 'drivetrain'>
 }
 
 /**
- * THE FULL SENTENCE — `DECODE · Act 2 Season 3 · 1v1 Champion`.
+ * THE FULL SENTENCE — `DECODE · Act 2 Season 3 · 1v1 Champion`, one trophy-case row.
  *
  * The separator is ` · `, which is what `seasons.ts` already uses for a period label, so an
  * award reads like the rest of the site rather than like a new kind of string.
  */
-export function awardTitleText(a: AwardRow): string {
+export function awardSentence(a: AwardRow): string {
   const season = seasonFor(a.game).name;
   // an ACT award names the act alone: the ladder it is a placement on spans every season in it
   if (a.kind === 'ranked_act') return `${season} · Act ${a.act} · ${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
   return `${season} · Act ${a.act} Season ${a.seasonNo} · ${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
 }
 
-/** the SHORT form for a chip beside a name, where the season is already context. An act
- *  award keeps its act, which its id carries (see `parseAwardTitleId`), because "1v1 Champion"
- *  alone would read the same as a retired per-season one. */
-export function awardShortText(a: AwardRow): string {
-  const words = `${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
-  return a.kind === 'ranked_act' && a.act > 0 ? `Act ${a.act} · ${words}` : words;
-}
-
 /**
- * THE PODIUM TIER OF A TITLE, or null. An act ranked title is the most prestigious thing the
- * ledger mints (owner, 2026-09-22), so its hexagon takes the podium's metal instead of the
- * award violet every other title shares — the same gold / silver / bronze its badge wears.
- */
-export function awardPodiumTier(a: Pick<AwardRow, 'kind' | 'rank'>): 'gold' | 'silver' | 'bronze' | null {
-  if (a.kind !== 'ranked_act') return null;
-  return a.rank <= 1 ? 'gold' : a.rank === 2 ? 'silver' : 'bronze';
-}
-
-/**
- * WHICH RANK THE BADGE SHOWS — 1, 2 or 3, and nothing else.
+ * THE BADGE A TROPHY-CASE ROW IS DRAWN WITH. A ranked placement is its podium crest; a record
+ * placement is the Record Holder ribbon.
  *
- * A per-drivetrain award is rank 1 of its own board, so it shows a 1. Anything past 3 is
- * not a thing any current board mints (`AWARD_DEPTH` caps at 3) and would not fit the chip;
- * it degrades to 3 rather than overflowing a 12-px hexagon with "#11".
+ * ⚠️ ART, NOT A COUNT. A retired per-season `ranked` award (0045) is drawn with the crest of
+ * its rank, but it never added to `ranked-gold`'s counter — that counts ACT podiums, and
+ * `badgeCounts` (repo.ts) reads the grants, never this.
  */
-export function awardBadgeRank(a: Pick<AwardRow, 'rank'>): 1 | 2 | 3 {
-  return a.rank <= 1 ? 1 : a.rank === 2 ? 2 : 3;
+export function awardBadge(a: Pick<AwardRow, 'kind' | 'rank'>): BadgeId {
+  if (a.kind === 'ranked' || a.kind === 'ranked_act') return podiumBadge(a.rank) ?? 'ranked-bronze';
+  return 'record-holder';
 }
 
 /**
- * THE TITLE ID FOR AN AWARD — derived from the slot, never stored as a string.
+ * ONE KEY PER AWARD SLOT — `award:<game>:<version>:<kind>:<mode>[:<dt>]:<rank>`, or
+ * `award:<game>:act<N>:ranked_act:<mode>:<rank>` for an act podium, whose period is the act.
  *
- * ⚠️ IT LIVES HERE, BESIDE `parseAwardTitleId`, AND NOT IN `repo.ts`, so the writer and the
- * reader cannot drift. The server mints ids with it and the leaderboard reads them back;
- * two copies of this format in two languages of the stack is the shape of bug that shows up
- * as a chip that silently stops rendering.
+ * It used to be the id of a wearable TITLE, and the leaderboard parsed it back; titles are gone
+ * (0049), and what is left is the trophy case's dedupe (`trophyCase`, repo.ts): a placement the
+ * retired `season_awards` table and the award job both paid is one row, because both rows
+ * produce the same key. `act` and `seasonNo` are not in it for a season award — a season is
+ * identified by its `balanceVersion`.
  */
-export function awardTitleId(
+export function awardKey(
   a: Pick<AwardRow, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'> & { act?: number },
 ): string {
-  // ⚠️ AN ACT AWARD IS KEYED BY ITS ACT, NOT A SEASON. Its period is the act, and the chip
-  // beside a name needs the act number to say which one — so the version field carries
-  // `act<N>`. An older client's parser reads that as a non-number and draws nothing, which is
-  // the graceful direction: no chip, never a wrong one.
   if (a.kind === 'ranked_act') return `award:${a.game}:act${a.act ?? 0}:ranked_act:${a.mode}:${a.rank}`;
   const dt = a.drivetrain ? `:${a.drivetrain}` : '';
   return `award:${a.game}:${a.balanceVersion}:${a.kind}:${a.mode}${dt}:${a.rank}`;
-}
-
-/**
- * READ A TITLE ID BACK INTO AN AWARD — `award:<game>:<version>:<kind>:<mode>[:<dt>]:<rank>`.
- *
- * ⚠️ THIS IS WHY THE ID IS DERIVED FROM THE SLOT RATHER THAN BEING A SURROGATE KEY. A
- * leaderboard prints the equipped title beside every name, and the alternative to parsing
- * is joining `season_awards` once per row on a board that already joins `profiles` — so
- * the id carrying its own meaning is what keeps the chip free. `badgeCols` ships the
- * column; this reads it.
- *
- * ⚠️ `act` AND `seasonNo` CANNOT BE RECOVERED and are returned as 0. They are denormalised
- * ON THE ROW for the sentence, and they are not in the key because they are not part of
- * what makes a slot unique — a season is identified by its `balanceVersion`. So a parsed
- * award renders correctly through `awardShortText` (which does not name the season) and
- * NOT through `awardTitleText`. Callers that need the full sentence read the row.
- *
- * Returns null for anything that is not a well-formed award id, including a `title:` grant
- * from the cosmetics ledger — those are registry keys, not awards, and a caller that
- * assumed otherwise would render "undefined Champion".
- */
-export function parseAwardTitleId(id: string): AwardRow | null {
-  const parts = id.split(':');
-  if (parts[0] !== 'award') return null;
-  if (parts.length !== 6 && parts.length !== 7) return null;
-  const [, game, version, kind, mode, ...rest] = parts;
-  const drivetrain = rest.length === 2 ? rest[0] : null;
-  const rank = Number(rest[rest.length - 1]);
-  // `act<N>` is an ACT award's period (see `awardTitleId`); every other kind carries a season
-  if (kind === 'ranked_act') {
-    const act = /^act(\d+)$/.exec(version);
-    if (!act || !Number.isFinite(rank) || drivetrain !== null) return null;
-    if (mode !== '1v1' && mode !== '2v2') return null;
-    return { game: game as AwardRow['game'], balanceVersion: 0, act: Number(act[1]), seasonNo: 0, kind, mode, drivetrain: null, rank, score: null };
-  }
-  const balanceVersion = Number(version);
-  if (!Number.isFinite(rank) || !Number.isFinite(balanceVersion)) return null;
-  if (kind !== 'ranked' && kind !== 'record_overall' && kind !== 'record_drivetrain') return null;
-  if (mode !== '1v1' && mode !== '2v2' && mode !== 'solo' && mode !== 'duo') return null;
-  // a drivetrain belongs to exactly one kind; anything else is a malformed id, not a
-  // tolerable variant, and letting it through would print a board word that is a lie
-  if ((kind === 'record_drivetrain') !== (drivetrain !== null)) return null;
-  return { game: game as AwardRow['game'], balanceVersion, act: 0, seasonNo: 0, kind, mode, drivetrain, rank, score: null };
 }
 
 /**

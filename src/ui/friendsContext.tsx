@@ -10,7 +10,7 @@ import { useFriends, type FriendsApi } from './useFriends';
 import { ChallengePicker, type ChallengeFormat } from './ChallengePicker';
 import { challengeLine, formatLabel, type PendingChallenge } from './challenge';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 
 /**
  * ONE shared friends store for the whole menu shell.
@@ -370,7 +370,7 @@ export function FriendToasts({
           >
             <span className="fr-toast-name">{t.from.handle}</span>
             <SupporterBadge supporter={t.from.supporter} role={t.from.role} />
-            <TitleMark title={t.from.title} badges={t.from.badges} />
+            <BadgeMarks badges={t.from.badges} />
             <span className="fr-toast-sub">
               {t.kind === 'invite'
                 ? challengeLine(t.invite?.format ?? null)

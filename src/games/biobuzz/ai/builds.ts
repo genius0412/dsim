@@ -1,5 +1,5 @@
 import type { Alliance, AssistConfig, RobotSpec } from '../../../types';
-import { BB_HOOD_DEFAULT_DEG, BB_INERTIA_DEFAULT, bbMassLimits, bbStorageMax } from '../config';
+import { BB_HOOD_DEFAULT_DEG, bbMassLimits, bbStorageMax } from '../config';
 import type { BbMechSpec } from '../mechs';
 import { bbCoerceSpec } from '../robotConfig';
 
@@ -66,7 +66,7 @@ const ROSTER: readonly Entry[] = [
     over: 3,
     spec: {
       length: 15, width: 17, intake: 'sloped', drivetrain: 'swerve', driveRpm: 470,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 16,
+      flywheelInertia: 0, canSort: false, heightIn: 16,
       scoreMode: 'turret', intakeMount: 'frontback', shooterMount: 'center',
       bbMech: { launcher: turret('center'), lift: null, intake: { kind: 'sweeper' } },
       assists: BOT_ASSISTS,
@@ -80,7 +80,7 @@ const ROSTER: readonly Entry[] = [
     over: 1,
     spec: {
       length: 14.5, width: 16, intake: 'sloped', drivetrain: 'mecanum', driveRpm: 540,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 15,
+      flywheelInertia: 0, canSort: false, heightIn: 15,
       scoreMode: 'turret', intakeMount: 'front', shooterMount: 'center',
       bbMech: { launcher: turret('center'), lift: null, intake: { kind: 'siderollers' } },
       assists: BOT_ASSISTS,
@@ -94,7 +94,7 @@ const ROSTER: readonly Entry[] = [
     over: 2,
     spec: {
       length: 15, width: 16, intake: 'sloped', drivetrain: 'xdrive', driveRpm: 520,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 17,
+      flywheelInertia: 0, canSort: false, heightIn: 17,
       scoreMode: 'twinturret', intakeMount: 'front', shooterMount: 'right',
       bbMech: {
         launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: BB_HOOD_DEFAULT_DEG },
@@ -112,7 +112,7 @@ const ROSTER: readonly Entry[] = [
     over: 2,
     spec: {
       length: 15, width: 17, intake: 'sloped', drivetrain: 'butterfly', driveRpm: 440, tankRpm: 300,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 17,
+      flywheelInertia: 0, canSort: false, heightIn: 17,
       scoreMode: 'dumper', intakeMount: 'frontback', shooterMount: 'front',
       bbMech: {
         launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG },
@@ -129,7 +129,7 @@ const ROSTER: readonly Entry[] = [
     over: 3,
     spec: {
       length: 15, width: 17, intake: 'sloped', drivetrain: 'tank', driveRpm: 420,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 15,
+      flywheelInertia: 0, canSort: false, heightIn: 15,
       scoreMode: 'dumper', intakeMount: 'front', shooterMount: 'front',
       bbMech: { launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null, intake: { kind: 'sweeper' } },
       assists: BOT_ASSISTS,
@@ -142,7 +142,7 @@ const ROSTER: readonly Entry[] = [
     over: 2,
     spec: {
       length: 15, width: 15, intake: 'sloped', drivetrain: 'mecanum', driveRpm: 480,
-      flywheelInertia: BB_INERTIA_DEFAULT, canSort: false, heightIn: 16,
+      flywheelInertia: 0, canSort: false, heightIn: 16,
       scoreMode: 'turret', intakeMount: 'side', shooterMount: 'center',
       bbMech: { launcher: turret('center'), lift: null, intake: { kind: 'sweeper' } },
       assists: BOT_ASSISTS,

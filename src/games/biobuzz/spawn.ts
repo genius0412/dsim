@@ -42,7 +42,7 @@ import { bbIntakeMountOf } from './mounts';
 import { bbSnapStart } from './start';
 import { bbWallsTouched } from './score';
 import { biobuzzPhysics, emptyBiobuzzState, type BiobuzzState } from './state';
-import { BB_HOOD_DEFAULT_DEG } from './config';
+import { BB_HOOD_DEFAULT_DEG, BB_TURRET_PITCH_REST } from './config';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf } from './mechs';
 
 /**
@@ -273,10 +273,16 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number, physics: Physics): Rob
   // A DOUBLE turret has TWO individual turrets, so its NECTAR turret (`bbTurret2Heading` /
   // `bbTurret2Pitch`) is seeded the same way. Those two fields are written ONLY for that build,
   // so no other robot carries them on the wire.
+  //
+  // THE ELEVATION IS SEEDED TOO, at `BB_TURRET_PITCH_REST` — an angle the HIVE aim actually uses.
+  // It was absent (read as 0, LEVEL), which is the hood's tallest pose and one no HIVE shot takes,
+  // so every turret sat there until its first aim tick and then swung ~69° up (owner, 2026-09-24).
+  // Turretless builds still carry no pitch at all.
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const turreted = bbIsTurreted(launcher);
   const turretHeading = turreted ? datan2(0 - pose.pos.y, 0 - pose.pos.x) : pose.heading;
-  const twin = launcher.kind === 'twinturret' ? { bbTurret2Heading: turretHeading, bbTurret2Pitch: 0 } : {};
+  const pitch = turreted ? { bbTurretPitch: BB_TURRET_PITCH_REST } : {};
+  const twin = launcher.kind === 'twinturret' ? { bbTurret2Heading: turretHeading, bbTurret2Pitch: BB_TURRET_PITCH_REST } : {};
   return {
     id: setup.id,
     alliance: setup.alliance,
@@ -286,6 +292,7 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number, physics: Physics): Rob
     vel: { x: 0, y: 0 },
     angVel: 0,
     turretHeading,
+    ...pitch,
     ...twin,
     // `catalystRail` is DELIBERATELY ABSENT. It is Chain Reaction's rail-carriage position
     // and BIOBUZZ has no catalyst; it used to be written as an INERT-BUT-PRESENT 0 only

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
 import { fetchPracticeRuns, type PracticeRun } from '../net/api';
@@ -7,8 +7,11 @@ import {
   loadPracticeReplay,
   deletePracticeRun,
   MAX_LOCAL_RUNS,
+  onPracticeUploadBlocked,
+  practiceUploadBlocked,
   type PracticeRunMeta,
 } from '../net/practiceRuns';
+import { VerifyEmailInline } from './VerifyCodeForm';
 import { SIM_DT } from '../config';
 import { fmtDay } from './fmtDate';
 
@@ -109,6 +112,8 @@ export function PracticeReplays({
   const [loading, setLoading] = useState(true);
 
   const reload = (): void => setLocal(listPracticeRuns());
+  /** the account refused the last save for an unverified email — see `practiceRuns.ts` */
+  const blocked = useSyncExternalStore(onPracticeUploadBlocked, practiceUploadBlocked);
 
   useEffect(() => {
     setLocal(listPracticeRuns());
@@ -243,6 +248,14 @@ export function PracticeReplays({
           {/* a footer BAND, like `.mh-pager`: `.ds-hint` has `margin: 0` and
               `.ds-panel` has no padding, so this sentence sat flush in the panel's
               rounded bottom-left corner while the cell above it was inset 16. */}
+          {blocked && (
+            <div className="ds-panel-foot">
+              <p className="ds-hint warn">
+                These runs are only on this device. Verify your email to save them to your account.
+              </p>
+              <VerifyEmailInline />
+            </div>
+          )}
           <p className="ds-panel-foot ds-hint">
             {signedIn
               ? `Last ${MAX_LOCAL_RUNS} runs are saved.`

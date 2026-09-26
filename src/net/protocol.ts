@@ -319,19 +319,8 @@ export interface LobbyPlayer {
    */
   role?: StaffRole;
   /**
-   * the EQUIPPED TITLE id, or null — the award hexagon / ledger chip beside this
-   * driver's name, resolved client-side by `parseAwardTitleId` without a second query.
-   *
-   * Server-authored on exactly the same terms as the two above, and for the same reason:
-   * a title is something earned, so a self-declared one is a claim to have earned it.
-   * Read once at join from the account (`getProfile`), like the badge fields, so a roster
-   * broadcast still costs no database read. Optional, so an older server that never sets
-   * it and an older client that ignores it both keep working against this build.
-   */
-  title?: string | null;
-  /**
    * the EQUIPPED BADGES and their counters, `[{id, n}]` (migration 0048, `src/badges.ts`).
-   * Server-authored on exactly the same terms as `title` above — a badge is a claim to have
+   * Server-authored on exactly the same terms as `role` above — a badge is a claim to have
    * won something — and read at join off the same `getProfile` row, so a roster broadcast
    * still costs no database read. At most three short ids, never a rendered string. Optional:
    * an older server never sets it and an older client ignores it.
@@ -434,7 +423,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat'];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -503,6 +492,43 @@ export const READY3D_DEADLINE_MS = 45000;
  *  counts as ready at once — see `READY3D_CAP`. */
 export function reportsPhysicsReady(caps: readonly string[] | undefined): boolean {
   return !!caps?.includes(READY3D_CAP);
+}
+
+/**
+ * `'viewready'` — THIS CLIENT WILL SAY WHEN IT CAN ACTUALLY PLAY THE MATCH: its 3D physics AND
+ * its view (the Three.js chunk, the field GLB, the scene build) are up.
+ *
+ * `'ready3d'` only covers the physics chunk, and it is sent from the lobby. The 3D VIEW cannot
+ * load there: the game screen, and the scene it owns, only exist once `matchStart` has arrived.
+ * So a room that waited for `physicsReady` and started still opened on a loading panel while
+ * the countdown ran. That was reported twice, and in record runs too.
+ *
+ * So a `'3d'` room HOLDS THE NEW MATCH AT TICK 0 after `matchStart` (`loadHold`), and the
+ * client sends `{ t: 'viewReady', gen }` once its controller has physics and has either
+ * built the scene or is on the 2D view. The hold ends when every connected seat that
+ * advertises this has reported for the current generation, or at `LOAD_HOLD_MAX_MS`.
+ *
+ * Degrades like `'ready3d'`: a client without it is ready at once (an older build never sends
+ * the message), and so is a dropped seat or a bot.
+ */
+export const VIEWREADY_CAP = 'viewready';
+
+/**
+ * The longest a `'3d'` room holds a started match for a seat that has not reported
+ * `viewReady`. After it the match STARTS ANYWAY, for the reasons `READY3D_DEADLINE_MS` gives:
+ * a view that has not loaded by now is not going to, the others have done nothing wrong, and
+ * cancelling would be a free dodge. The late seat joins the running match when it finishes
+ * loading, and the ticks it spent loading are not counted against it as idle
+ * (`Room.loadingTicks`).
+ *
+ * Shorter than the pre-start wait because the physics chunk is normally in hand by now
+ * (`seatWaiting3d` waited for it) and the view is a cached chunk plus one GLB.
+ */
+export const LOAD_HOLD_MAX_MS = 20000;
+
+/** does a client advertising `caps` report `viewReady`? Without it, the seat is ready at once. */
+export function reportsViewReady(caps: readonly string[] | undefined): boolean {
+  return !!caps?.includes(VIEWREADY_CAP);
 }
 
 /**
@@ -634,7 +660,7 @@ export type ClientMsg =
   // socket and the server gates a `'3d'` room on it at every door. Absent (older clients) ⇒
   // no capabilities, which is what they had before this field and refuses them only from the
   // rooms they could never have joined in the first place.
-  | { t: 'rejoin'; room: string; clientId: string; caps?: string[] }
+  | { t: 'rejoin'; room: string; clientId: string; caps?: string[]; seatToken?: string }
   /**
    * GIVE UP A HELD SLOT ON PURPOSE — the "Abandon" on the game-in-progress card.
    *
@@ -648,7 +674,7 @@ export type ClientMsg =
    * next thing the player started was refused by advice about a game the UI had just
    * told them was gone.
    */
-  | { t: 'abandon'; room: string; clientId: string }
+  | { t: 'abandon'; room: string; clientId: string; seatToken?: string }
   // SPECTATE a live match: join a room read-only. The server adds a spectator (no
   // robot slot, never counted toward capacity/roster/persistence), sends the current
   // `matchStart`, and streams the same `snapshot`s the drivers get. Input is ignored.
@@ -715,6 +741,12 @@ export type ClientMsg =
    * advertises `'zenithAuto'` (`SERVER_CAPS`).
    */
   | { t: 'zenithAuto'; auto: import('../auto/types').ZenithAutoSetup | null }
+  /**
+   * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`): physics and view are both up.
+   * `gen` is the match generation it is ready for, so a report for a match that has since been
+   * rematched does not release the new one's hold. Idempotent; an older server ignores it.
+   */
+  | { t: 'viewReady'; gen: number }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**
@@ -812,7 +844,8 @@ export type ClientMsg =
   // give up the code and drop every guest (also implied by the socket closing)
   | { t: 'lanStopHosting' }
   // ask to be introduced to a code's host
-  | { t: 'lanJoin'; code: string }
+  // `authToken` (optional): a site lockdown admits a guest only once it knows who they are
+  | { t: 'lanJoin'; code: string; authToken?: string }
   // forward one opaque blob (an SDP offer/answer, or an ICE candidate) to `peer`. The server
   // does not parse `data` — it is bounded and counted, never read.
   | { t: 'lanSignal'; peer: string; data: string };
@@ -866,10 +899,54 @@ export type ErrorCode =
    *  The client can act on it — rejoin that game or leave it — so it is worth a code
    *  instead of a screen that only reads the sentence back. Older servers send no code,
    *  so a handler must still recognise the message (see `RecordRun`). */
-  | 'active_game';
+  | 'active_game'
+  /**
+   * The room exists and is fine; it is simply MID-MATCH (or in its pre-match strategy
+   * window), so this join is refused by `canJoin`. Distinct from a full room because it
+   * ENDS ON ITS OWN: the one correct action is to wait, and the Discord activity turns this
+   * into "you'll be able to join when it finishes" with an automatic retry rather than an
+   * error screen. That matters most where it cannot be worked around — a signed-out
+   * participant past the 45 s reconnect grace has no seat left to reclaim, and the
+   * activity's room code is deterministic, so there is no second room to escape to.
+   */
+  | 'in_progress'
+  /**
+   * The room is playing a different SEASON than this client is set to. Actionable —
+   * switch season and rejoin — and the only refusal whose sentence a player could read
+   * twice and still not know which season to pick, so the message now names both and the
+   * code lets a screen offer the switch instead of just reading it back.
+   */
+  | 'game_mismatch'
+  /**
+   * The account's email address is not verified and this server requires it
+   * (`REQUIRE_VERIFIED_EMAIL`, server/auth.ts): ranked queueing, a record room, a practice
+   * save. Actionable in place — the screen shows the code form rather than TRY AGAIN, which
+   * would only be refused the same way. Older servers send the sentence alone.
+   */
+  | 'email_unverified';
 
 export type ServerMsg =
-  | { t: 'welcome'; clientId: string }
+  /**
+   * `seatToken` is the SEAT'S SECRET, and it is the credential `rejoin` and `abandon`
+   * actually check. The client id cannot be one: it rides in every `roster` frame, and a
+   * roster reaches every driver AND every spectator, and `spectate` needs no account and
+   * no invitation. So anyone who could watch a match could read the ids out of it and
+   * `abandon` its drivers one frame at a time, or `rejoin` onto their seat and drive their
+   * robot. This is sent ONLY to the client that owns the seat, and appears in no broadcast.
+   *
+   * Optional because an older server does not send one; a client that has none simply omits
+   * it and the server falls back to the pre-token rule for pre-token seats (see
+   * `Room.seatOwner`).
+   */
+  | { t: 'welcome'; clientId: string; seatToken?: string }
+  /**
+   * A `'3d'` MATCH IS HELD AT TICK 0 WHILE SEATS LOAD (`VIEWREADY_CAP`). Sent when the hold
+   * begins, whenever a seat reports in, and when it ends (`waitMs: 0`). `loading` is the robot
+   * ids still loading: on the release, a non-empty list means the cap ran out and the match
+   * started without them. `waitMs` is time left until the cap, relative, so the two clocks do
+   * not have to agree. A client that is held does not predict.
+   */
+  | { t: 'loadHold'; gen: number; waitMs: number; loading: number[] }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
@@ -878,13 +955,15 @@ export type ServerMsg =
    * immediately, so the client that adopts the socket back into a `LobbyClient` has
    * the players without asking for them. `clientId` is re-sent because the adopting
    * lobby never sends a `join` (it is already in the room) and so never gets a
-   * `welcome` of its own.
+   * `welcome` of its own. `seatToken` rides for the same reason, and like `welcome`'s it goes
+   * only to the seat's owner (each member gets its own frame; a spectator gets none).
+   * Optional: an older server does not send it, and the client keeps the token it had.
    *
    * Gated on the 'recycle' capability: the room only offers this when EVERY member
    * advertises it, because a client that ignores this message would sit on a dead
    * results screen while the room restarted around it.
    */
-  | { t: 'lobby'; clientId: string }
+  | { t: 'lobby'; clientId: string; seatToken?: string }
   /**
    * `message` is human-readable and every client since the first build shows it.
    *
@@ -1086,6 +1165,13 @@ export type ServerMsg =
   // a countdown to `until`, epoch ms) or a general info message. Shown as a banner
   // so players aren't caught off guard by a restart mid-session.
   | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number }
+  /**
+   * THE SITE STATUS CHANGED: the lockdown and the live banners, pushed by each machine when
+   * its database read differs from what it last sent (`server/siteState.ts`), and once on
+   * connect when either is set. No cap gate: an older client ignores a `t` it does not know,
+   * and keeps getting the restart countdown as `serverNotice` above.
+   */
+  | { t: 'siteStatus'; lockdown: SiteLockdown | null; banners: SiteBanner[] }
   // echo of a client `ping` (same `ts`); the client computes RTT = now − ts
   | { t: 'pong'; ts: number }
   /* ── LAN SIGNALLING ── the replies to the four client messages above. */
@@ -1283,4 +1369,68 @@ export function unslimWorld(
     robots: w.robots.map((r) => backfillRobot({ ...r, spec: specById(r.id) })),
     balls,
   };
+}
+/* ── SITE STATUS: lockdown, access groups, banners (migrations 0051/0052) ─────────────────── */
+
+/** what a lockdown closes: `matches` stops new matches; `site` closes the whole app */
+export type LockdownScope = 'matches' | 'site';
+/** the groups that can be let past a lockdown. Admins always pass and are not a group. */
+export type AccessGroup = 'beta' | 'dev' | 'contributor';
+export const ACCESS_GROUPS: readonly AccessGroup[] = ['beta', 'dev', 'contributor'];
+export const ACCESS_GROUP_LABEL: Record<AccessGroup, string> = {
+  beta: 'Beta tester',
+  dev: 'Developer',
+  contributor: 'Contributor',
+};
+
+/** the lockdown as every client sees it (no ids, nothing about who is in which group) */
+export interface SiteLockdown {
+  scope: LockdownScope;
+  message: string;
+  redirectUrl: string | null;
+  redirectLabel: string | null;
+  startsAt: number | null;
+  endsAt: number | null;
+  /** in force right now (a scheduled one is announced before it bites) */
+  biting: boolean;
+  bypass: AccessGroup[];
+}
+
+export type BannerKind = 'info' | 'known-bug' | 'warning' | 'restart';
+export const BANNER_KINDS: readonly BannerKind[] = ['info', 'known-bug', 'warning', 'restart'];
+
+/** one live banner. The CLIENT filters by `game` and `channel`, so a switch of game needs no refetch. */
+export interface SiteBanner {
+  id: number;
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  /** null = every game */
+  game: string | null;
+  /** null = every channel */
+  channel: string | null;
+  /** bumped on each edit; dismissal is remembered per id + revision */
+  revision: number;
+}
+
+/** what the server knows about the CALLER, sent only when a valid token came with the request */
+export interface SiteAccess {
+  userId: string;
+  admin: boolean;
+  groups: AccessGroup[];
+  /** passes the lockdown in force right now (true when none is) */
+  passes: boolean;
+}
+
+/** `GET /api/status` */
+export interface SiteStatus {
+  lockdown: SiteLockdown | null;
+  banners: SiteBanner[];
+  /** present only for a request that carried a valid token */
+  access?: SiteAccess | null;
+  /** the restart countdown in the legacy shape, as `/api/presence` carries it */
+  notice?: { kind: 'restart' | 'info'; message: string; until?: number } | null;
+  /** server time, so a client with a wrong clock still counts a window down correctly */
+  now?: number;
 }

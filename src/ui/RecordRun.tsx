@@ -11,8 +11,10 @@ import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { announcePhysicsReady } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
+import { VerifyEmailInline } from './VerifyCodeForm';
 
 /**
  * Record-chasing launcher (opponent-free score attack). Unlike the custom-room
@@ -52,6 +54,8 @@ export function RecordRun({
   /** the server's machine-readable reason, when it gave one (older servers give none —
    *  see the message fallback where this is set) */
   const [errorCode, setErrorCode] = useState<ErrorCode | ''>('');
+  /** the code was accepted on this card, after an `email_unverified` refusal */
+  const [verifiedHere, setVerifiedHere] = useState(false);
   /**
    * EVERY FAILURE HERE USED TO BE A DEAD END. The card offered one control — BACK TO HOME —
    * so a cold-boot timeout, a busy region and a dropped connection all cost a trip through
@@ -126,7 +130,7 @@ export function RecordRun({
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
         if (timer) window.clearTimeout(timer);
-        onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
+        onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room, false, lobby.seatToken));
       });
       lobby.on('error', (msg, code) => {
         if (/starting up/i.test(msg)) return; // startup ⇒ the retry loop handles it
@@ -176,6 +180,8 @@ export function RecordRun({
       };
     };
 
+    // the view downloads beside the physics; the room holds the run until it is built
+    preloadRoomView(settings.game);
     if (serverPhysics(moduleFor(settings.game)) === '3d' && !physics3dReady()) {
       setLoading3d(true);
       setStatus('Loading 3D physics…');
@@ -206,6 +212,7 @@ export function RecordRun({
     startedRef.current = false;
     setError('');
     setErrorCode('');
+    setVerifiedHere(false);
     setAttempt((n) => n + 1);
   };
 
@@ -236,13 +243,22 @@ export function RecordRun({
      * in place. It used to be BACK TO HOME or nothing.
      */
     const stuckInAnother = errorCode === 'active_game';
+    // the code, or the sentence from a server deployed before the code existed
+    const unverified = errorCode === 'email_unverified' || /verify your email/i.test(error);
     const canRejoin = stuckInAnother && !!onRejoinActive && !!loadActiveGame();
     // plain ink, no accent word and no ⚠: a failure is not a place for decoration (06-22)
     return page(
       <>Couldn’t start</>,
       kind,
       <>
-        <p className="ds-form-err">{error}</p>
+        {verifiedHere ? (
+          <p className="ds-hint ok">Email verified. Start your run.</p>
+        ) : (
+          // the server's sentence points at the Profile page; the code form is right here
+          <p className="ds-form-err">{unverified ? 'Verify your email to save a record run.' : error}</p>
+        )}
+        {/* TRY AGAIN would only be refused the same way: the code form is the way out */}
+        {unverified && !verifiedHere && <VerifyEmailInline onVerified={() => setVerifiedHere(true)} />}
         {stuckInAnother && !canRejoin && (
           <p className="ds-hint">
             Open that game from wherever you left it, or wait a minute for it to end on its own.
@@ -254,9 +270,10 @@ export function RecordRun({
               GO TO THAT GAME
             </button>
           ) : (
-            !stuckInAnother && (
+            !stuckInAnother &&
+            (!unverified || verifiedHere) && (
               <button className="ds-cta" onClick={retry}>
-                TRY AGAIN
+                {verifiedHere ? 'START RUN' : 'TRY AGAIN'}
               </button>
             )
           )}

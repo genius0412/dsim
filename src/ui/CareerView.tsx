@@ -63,6 +63,10 @@ export function CareerView({
     };
   }, [nav.game]);
 
+  // Keyed on WHETHER there is a not-found slot, never on the element itself: Profile builds a
+  // fresh `notFound` every render and re-renders on every friends poll, so depending on the
+  // element re-fetched the stats and flashed "Loading…" each time.
+  const hasNotFound = notFound != null;
   useEffect(() => {
     let alive = true;
     setStatus('loading');
@@ -75,7 +79,7 @@ export function CareerView({
       .catch((e: unknown) => {
         if (!alive) return;
         const msg = e instanceof Error ? e.message : String(e);
-        if (/404/.test(msg) && notFound) {
+        if (/404/.test(msg) && hasNotFound) {
           setStatus('notfound');
         } else {
           console.warn('career: load failed', e);
@@ -86,7 +90,7 @@ export function CareerView({
     return () => {
       alive = false;
     };
-  }, [loadStats, season, notFound]);
+  }, [loadStats, season, hasNotFound]);
 
   const viewing = season ?? current;
   const info = seasons.find((s) => s.season === viewing);

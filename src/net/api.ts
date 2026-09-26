@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
 import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
-import type { LiveRoom, StaffRole } from './protocol';
+import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
@@ -12,6 +12,7 @@ import { DISCORD_REGION } from './discordActivity';
 // practice upload can say that the replay container structurally cannot. It is a leaf module
 // with no React and no DOM beyond `localStorage`, guarded against storage being unavailable.
 import { getViewPref } from '../games/biobuzz/graphics/store';
+import { setPracticeUploadBlocked } from './practiceRuns';
 
 /**
  * Boards + periods are per-game. DECODE is the server's default for a MISSING
@@ -49,15 +50,9 @@ export interface BadgeFields {
   /** 'owner' | 'admin' — renders the staff badge in place of the supporter one */
   role?: StaffRole;
   /**
-   * the EQUIPPED TITLE id, or null. It rides `badgeCols` for the same reason the two
-   * above do — every surface that prints a name prints this beside it, and writing the
-   * column out by hand per query is how a board ends up quietly missing it.
-   * `parseAwardTitleId` turns it back into an award without touching `season_awards`.
-   */
-  title?: string | null;
-  /**
    * the EQUIPPED BADGES and their counters, `[{id, n}]` (0048). Rides `badgeCols` beside the
-   * title for the same reason — every name surface draws it. Absent from an older server;
+   * two above for the same reason — every surface that prints a name draws it, and writing the
+   * column out by hand per query is how a board ends up quietly missing it. Absent from an older server;
    * read through `coerceEquippedBadges`, which drops anything this build does not know.
    */
   badges?: EquippedBadge[] | null;
@@ -82,8 +77,6 @@ export interface RecordRow extends BadgeFields {
   /** the partner's own badge — a duo row prints two names, so it carries two */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
-  /** ...and the partner's equipped title, for the same reason. */
-  partnerTitle?: string | null;
   /** ...and the partner's worn badges. */
   partnerBadges?: EquippedBadge[] | null;
   score: number;
@@ -161,9 +154,17 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();
   if (!base) throw new Error('Leaderboards need the game server, and this build has none.');
   const token = await getAuthToken().catch(() => null);
-  const res = await fetch(base + path, {
+  let res = await fetch(base + path, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
+  // A signed-in player whose token could not be read, or was stale, is refused as a stranger,
+  // and their OWN match then reads as "private". Ask once more with a freshly fetched token.
+  if (res.status === 403) {
+    const fresh = await getAuthToken(true).catch(() => null);
+    if (fresh && fresh !== token) {
+      res = await fetch(base + path, { headers: { authorization: `Bearer ${fresh}` } });
+    }
+  }
   if (res.status === 403) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
     throw new ReplayPrivateError(body.message ?? 'This replay is private.');
@@ -184,7 +185,7 @@ export function fetchRecords(
   drivetrain: Board,
   season?: number,
   game?: GameId,
-): Promise<{ rows: RecordRow[] }> {
+): Promise<{ rows: RecordRow[]; physics?: string }> {
   const s = season != null ? `&season=${season}` : '';
   return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
 }
@@ -242,8 +243,6 @@ export interface UserStats {
   /** every SEASON AWARD this account holds — account-wide, never season-scoped, or a
    *  trophy case would empty itself the moment a new season opened. */
   awards?: AwardRow[];
-  /** the equipped title id, or null. */
-  title?: string | null;
   /** the worn badges and their counters (0048). */
   badges?: EquippedBadge[] | null;
   /** every badge the account holds and how many times — the trophy case (0048). */
@@ -262,17 +261,42 @@ export function fetchUserStats(userId: string, season?: number, game?: GameId): 
 
 export interface GlobalStats {
   users: number;
-  /** total games played — COMBINED across every game (the homepage headline) */
+  /** total games played — COMBINED across every game and source (the homepage headline) */
   games: number;
-  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
-  /** games played PER GAME (DECODE + Chain Reaction tracked separately); the
-   * homepage sums these into `games`. Absent from older servers. */
+  /** solo = record solo + practice · duo = record duo · 1v1 / 2v2 = ranked ·
+   * custom = custom rooms + Discord rooms + LAN. `custom` is absent from older servers,
+   * which also counted custom rooms inside 1v1 / 2v2. */
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number; custom?: number };
+  /** games played PER GAME. Absent from older servers. */
   byGame?: Partial<Record<GameId, number>>;
 }
 
 /** site-wide totals for the homepage (players + games played, by category) */
 export function fetchGlobalStats(): Promise<GlobalStats> {
   return getJson(`/api/stats`);
+}
+
+/**
+ * Count one match the cloud did not run: a finished solo PRACTICE run, or a LAN match (its
+ * host sends it; nobody else does). Server rooms count themselves. Fire-and-forget: offline,
+ * no game server, or an older server that 404s all cost nothing.
+ *
+ * `text/plain` so the POST is a simple request with no CORS preflight, and `keepalive` so a
+ * practice run harvested while the page unloads still gets its report out.
+ */
+export function reportPlayed(game: GameId, source: 'practice' | 'lan', mode?: '1v1' | '2v2'): void {
+  const base = gameServerHttpUrl();
+  if (!base) return;
+  try {
+    void fetch(`${base}/api/played`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ game, source, mode }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* fetch unavailable — nothing to count with */
+  }
 }
 
 /** every live RANKED match currently running (for the "Watch Live" list). Each
@@ -285,10 +309,17 @@ export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }>
 /** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */
 export interface DiscordLobby {
   code: string;
+  /** SEATS taken, bots included — a bot is a seat, and the browser must not offer one that
+   * is not there. Older servers send sockets only; the difference is a bot-filled room. */
   players: number;
   capacity: number;
   kind: 'versus' | 'record';
   game: GameId;
+  /** can a new driver actually walk in? Absent from an older server ⇒ treat as true, which
+   * is what that server meant: it only ever listed joinable rooms. */
+  joinable?: boolean;
+  /** why not, when it is not. Absent ⇒ unknown, render it as a plain lobby. */
+  state?: 'lobby' | 'strategy' | 'match' | 'full';
 }
 
 /**
@@ -297,7 +328,7 @@ export interface DiscordLobby {
  * Empty for an unknown/empty group — this never lists the global custom-room set.
  * In-activity `getJson` rides the same `/gs` proxy origin as every other read.
  */
-export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
+export async function fetchLobbies(group: string): Promise<DiscordLobby[] | null> {
   if (!group) return [];
   try {
     // PIN to the fixed activity region (same as the socket): the read is anycast,
@@ -307,7 +338,13 @@ export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
     const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?${q}`);
     return r.lobbies ?? [];
   } catch {
-    return []; // unreachable server / no lobbies read the same to the browser
+    /**
+     * ⚠️ NULL, NOT `[]`. A failed read and an empty activity are different facts, and
+     * returning `[]` for both let one dropped poll overwrite a good list with "nobody has
+     * opened the main lobby yet" — the browser had no error branch and no stale retention,
+     * unlike every other poller in this app. The caller keeps its last good list.
+     */
+    return null;
   }
 }
 
@@ -356,6 +393,8 @@ export interface Presence {
     endsAt: number | null;
     message: string;
     biting: boolean;
+    /** 'matches' | 'site' (0051); absent from an older server, which only had matches */
+    scope?: string;
   } | null;
   /** what THIS deploy can honour (see SERVER_CAPS in protocol.ts). One Fly app
    * serves every client build, so a new client checks here before offering
@@ -614,34 +653,17 @@ export function startLink(provider: LinkProvider): Promise<{ url: string }> {
   return authedJson(`/api/link/${provider}/start`);
 }
 
-/** disconnect. For GitHub the server also takes the star title back. */
+/** disconnect. For GitHub the server also takes the star badge and decal back. */
 export function unlinkProvider(provider: LinkProvider): Promise<{ unlinked: boolean }> {
   return authedJson(`/api/link/${provider}/unlink`, { method: 'POST' });
 }
 
-/** your equipped title and the ids you have earned (0045/0046). */
-export function fetchTitle(): Promise<{ title: string | null; earned: string[] }> {
-  return authedJson('/api/user/title');
-}
-
-/**
- * EQUIP a title, or clear it with `null`.
- *
- * ⚠️ The server re-validates against what you have actually earned and answers 403
- * otherwise — this call is the UI's convenience, never the authority. A title the client
- * could assert would be the same impersonation primitive the staff role is server-authored
- * to prevent.
- */
-export function saveTitle(title: string | null): Promise<{ title: string | null }> {
-  return authedJson('/api/user/title', {
-    method: 'POST',
-    body: JSON.stringify({ title }),
-  });
-}
-
 /**
  * THE REWARD LEDGER (0048) — everything the claim dialog and the appearance page read, in one
- * request: pending grants, badge counts, what is worn, what is wearable.
+ * request: pending grants, badge counts, what is worn, and the trophy case.
+ *
+ * The server still sends `title: null` and `earnedTitles: []` so a client from before titles
+ * folded into badges (0049) does not break; this build reads neither.
  *
  * An older server has no such route and answers 404, which `authedJson` raises as
  * `FriendsUnavailableError` — the caller reads that as "nothing pending", which is true.
@@ -650,10 +672,8 @@ export interface RewardStateDto {
   pending: RewardGrant[];
   badges: Record<string, number>;
   equippedBadges: EquippedBadge[];
-  title: string | null;
-  earnedTitles: string[];
-  /** the trophy case behind the award titles — names each one's act and season. Absent from
-   *  a server that predates the field. */
+  /** the trophy case — each placement with its act and season. Absent from a server that
+   *  predates the field. */
   awards?: AwardRow[];
 }
 
@@ -748,7 +768,15 @@ export async function uploadPracticeRun(
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ replay, score, view: getViewPref() }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // the one refusal the player can fix: say so on Practice replays (`practiceRuns.ts`)
+      if (res.status === 403) {
+        const body = (await res.json().catch(() => null)) as { code?: string } | null;
+        if (body?.code === 'email_unverified') setPracticeUploadBlocked(true);
+      }
+      return null;
+    }
+    setPracticeUploadBlocked(false);
     return ((await res.json()) as { run: PracticeRun }).run ?? null;
   } catch {
     return null;
@@ -1039,6 +1067,11 @@ export interface MaintenanceWindow {
   startsAt: number | null;
   endsAt: number | null;
   message: string;
+  /** 0051. Absent from an older server's answer, which means `matches` and no bypass. */
+  scope?: LockdownScope;
+  redirectUrl?: string | null;
+  redirectLabel?: string | null;
+  bypass?: AccessGroup[];
 }
 
 export async function adminFetchMaintenance(): Promise<{ maintenance: MaintenanceWindow; biting: boolean } | null> {
@@ -1065,6 +1098,11 @@ export async function adminSetMaintenance(w: MaintenanceWindow): Promise<boolean
   const q = new URLSearchParams({ active: w.active ? '1' : '0', msg: w.message });
   if (w.startsAt) q.set('startsAt', String(w.startsAt));
   if (w.endsAt) q.set('endsAt', String(w.endsAt));
+  // the 0051 fields; an older server ignores them and applies a matches lockdown
+  if (w.scope) q.set('scope', w.scope);
+  if (w.redirectUrl) q.set('redirect', w.redirectUrl);
+  if (w.redirectLabel) q.set('redirectLabel', w.redirectLabel);
+  if (w.bypass?.length) q.set('bypass', w.bypass.join(','));
   try {
     const res = await fetch(base + '/api/admin/maintenance?' + q.toString(), {
       method: 'POST',
@@ -1076,6 +1114,106 @@ export async function adminSetMaintenance(w: MaintenanceWindow): Promise<boolean
     return false;
   }
 }
+
+// ---- access groups (0051) and site banners (0052) ---------------------------
+
+export interface AccessMemberRow {
+  userId: string;
+  group: AccessGroup;
+  handle: string | null;
+  username: string | null;
+  grantedBy: string;
+  grantedAt: string;
+  note: string;
+}
+export interface AccessGrantResult {
+  tag: string;
+  ok: boolean;
+  userId?: string;
+  handle?: string;
+  username?: string | null;
+  added?: boolean;
+  error?: string;
+}
+
+/** one authenticated admin call; `{ ok: false, error }` for every failure, never a throw */
+async function adminCall<T extends object>(
+  path: string,
+  init: { method?: 'GET' | 'POST'; body?: string } = {},
+): Promise<(T & { ok: true }) | { ok: false; error: string }> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return { ok: false, error: 'Sign in with an admin account.' };
+  try {
+    const res = await fetch(base + path, {
+      method: init.method ?? 'GET',
+      headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'text/plain' } : {}) },
+      body: init.body,
+      cache: 'no-store',
+    });
+    if (res.status === 404 && !res.headers.get('content-type')?.includes('json')) {
+      return { ok: false, error: 'This server predates this feature.' };
+    }
+    const j = (await res.json().catch(() => null)) as (T & { ok?: boolean; error?: string }) | null;
+    if (!j) return { ok: false, error: `Server returned ${res.status}.` };
+    if (j.ok === false || !res.ok) return { ok: false, error: j.error ?? `Server returned ${res.status}.` };
+    return { ...j, ok: true };
+  } catch {
+    return { ok: false, error: 'Couldn’t reach the server.' };
+  }
+}
+
+export const adminFetchAccess = (group?: AccessGroup) =>
+  adminCall<{ members: AccessMemberRow[] }>(`/api/admin/access${group ? `?group=${group}` : ''}`);
+
+export const adminGrantAccess = (group: AccessGroup, tag: string, note = '') =>
+  adminCall<AccessGrantResult>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'grant', group, tag, note }).toString(),
+    { method: 'POST' },
+  );
+
+export const adminBulkGrantAccess = (group: AccessGroup, tags: string, note = '') =>
+  adminCall<{ results: AccessGrantResult[] }>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'bulk', group, note }).toString(),
+    { method: 'POST', body: tags },
+  );
+
+export const adminRevokeAccess = (group: AccessGroup, userId: string) =>
+  adminCall<{ removed: boolean }>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'revoke', group, userId }).toString(),
+    { method: 'POST' },
+  );
+
+export interface AdminBannerRow extends SiteBanner {
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface BannerDraft {
+  kind: Exclude<BannerKind, 'restart'>;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+}
+
+export const adminFetchBanners = () => adminCall<{ banners: AdminBannerRow[] }>('/api/admin/banners');
+
+export function adminSaveBanner(draft: BannerDraft, id?: number) {
+  const q = new URLSearchParams({ action: id ? 'update' : 'create', kind: draft.kind, msg: draft.message });
+  if (id) q.set('id', String(id));
+  if (draft.startsAt) q.set('startsAt', String(draft.startsAt));
+  if (draft.endsAt) q.set('endsAt', String(draft.endsAt));
+  if (draft.game) q.set('game', draft.game);
+  if (draft.channel) q.set('channel', draft.channel);
+  return adminCall<{ banner: AdminBannerRow }>('/api/admin/banners?' + q.toString(), { method: 'POST' });
+}
+
+export const adminEndBanner = (id: number) =>
+  adminCall<{ done: boolean }>(`/api/admin/banners?action=end&id=${id}`, { method: 'POST' });
+export const adminDeleteBanner = (id: number) =>
+  adminCall<{ done: boolean }>(`/api/admin/banners?action=delete&id=${id}`, { method: 'POST' });
 
 export async function adminFetchPresence(): Promise<AdminPresence | null> {
   const base = gameServerHttpUrl();

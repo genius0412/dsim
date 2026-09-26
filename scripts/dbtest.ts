@@ -760,6 +760,113 @@ async function main(): Promise<void> {
   check('maintenance: the row is a SINGLETON (no second window can exist)',
     (await db.query<{ c: string }>(`select count(*)::text as c from maintenance`)).rows[0].c === '1');
 
+  // ---- LOCKDOWN SCOPE, ACCESS GROUPS, BANNERS (0051/0052) -------------------
+  {
+    const m3 = await repo.setMaintenance({
+      active: true, startsAt: null, endsAt: null, message: 'Alpha is closed', scope: 'site',
+      redirectUrl: 'https://playdsim.com', redirectLabel: 'Go to DSIM', bypass: ['beta', 'dev', 'contributor'],
+    });
+    check('lockdown: a SITE lockdown round-trips scope, redirect and bypass',
+      m3.scope === 'site' && m3.redirectUrl === 'https://playdsim.com' && m3.redirectLabel === 'Go to DSIM' &&
+      JSON.stringify(m3.bypass) === '["beta","dev","contributor"]', JSON.stringify(m3));
+    check('lockdown: open-ended is allowed and bites now', repo.maintenanceBiting(m3));
+    // an OLDER console posts none of the new fields: it must still mean "matches, nobody bypasses"
+    const m4 = await repo.setMaintenance({ active: true, startsAt: null, endsAt: null, message: 'old console' });
+    check('lockdown: a write without the 0051 fields means matches with no bypass',
+      m4.scope === 'matches' && m4.bypass?.length === 0 && m4.redirectUrl === null, JSON.stringify(m4));
+    const bad = await db.query(`update maintenance set scope = 'everything' where id = 1`).then(() => false, () => true);
+    check('lockdown: the scope column refuses an unknown scope', bad);
+
+    const W = { ...m3 };
+    check('lockdown: an admin always passes', repo.lockdownPasses(W, { admin: true, groups: [] }));
+    check('lockdown: a listed group passes', repo.lockdownPasses(W, { admin: false, groups: ['beta'] }));
+    check('lockdown: nobody else does', !repo.lockdownPasses(W, { admin: false, groups: [] }));
+    check('lockdown: an unlisted group does not',
+      !repo.lockdownPasses({ ...W, bypass: ['dev'] }, { admin: false, groups: ['beta'] }));
+    check('lockdown: a lockdown that is not biting lets everyone through',
+      repo.lockdownPasses({ ...W, active: false }, { admin: false, groups: [] }));
+
+    // ---- access groups, keyed by id, granted by tag
+    await repo.ensureProfile('acc-1', 'Tester One');
+    await repo.setUsername('acc-1', 'testerone');
+    await repo.ensureProfile('acc-2', 'Twin');
+    await repo.ensureProfile('acc-3', 'Twin');
+    const byName = await repo.resolvePlayerTag('tester one');
+    check('access: a display name resolves (case-insensitive)', byName.ok && byName.userId === 'acc-1', JSON.stringify(byName));
+    const byUser = await repo.resolvePlayerTag('@TesterOne');
+    check('access: an @username resolves', byUser.ok && byUser.userId === 'acc-1');
+    const byId = await repo.resolvePlayerTag('acc-2');
+    check('access: an account id resolves', byId.ok && byId.userId === 'acc-2');
+    const twin = await repo.resolvePlayerTag('Twin');
+    check('access: a shared display name is an error, not a guess', !twin.ok && /2 players/.test(twin.ok ? '' : twin.error));
+    const none = await repo.resolvePlayerTag('nobody-here');
+    check('access: an unknown tag says so', !none.ok && /No player/.test(none.ok ? '' : none.error));
+    check('access: a first grant adds', await repo.grantAccess('acc-1', 'beta', 'admin-x', 'wave 1'));
+    check('access: a second grant is a no-op', !(await repo.grantAccess('acc-1', 'beta', 'admin-y')));
+    await repo.grantAccess('acc-1', 'dev', 'admin-x');
+    check('access: groups are read by id', JSON.stringify((await repo.accessGroupsOf('acc-1')).sort()) === '["beta","dev"]');
+    await repo.setHandle('acc-1', 'Renamed');
+    const listed = await repo.listAccessMembers('beta');
+    check('access: the list shows TODAY’s name, and a rename keeps the membership',
+      listed.length === 1 && listed[0].handle === 'Renamed' && listed[0].grantedBy === 'admin-x', JSON.stringify(listed));
+    const badGrp = await db.query(`insert into access_members (user_id, grp, granted_by) values ('acc-2', 'vip', 'x')`).then(() => false, () => true);
+    check('access: an unknown group is refused by the table', badGrp);
+    const ex = await repo.exportAccount('acc-1');
+    check('access: the export lists the groups and never who granted them',
+      (ex?.accessGroups.length ?? 0) === 2 && !JSON.stringify(ex?.accessGroups).includes('admin-x'));
+    check('access: revoke removes', await repo.revokeAccess('acc-1', 'dev'));
+    check('access: revoking twice says it was not there', !(await repo.revokeAccess('acc-1', 'dev')));
+    await repo.deleteAccount('acc-1');
+    check('access: deleting the account deletes its memberships',
+      (await db.query<{ c: string }>(`select count(*)::text as c from access_members where user_id = 'acc-1'`)).rows[0].c === '0');
+
+    // ---- banners
+    const T2 = Date.now();
+    const b1 = await repo.createBanner({ kind: 'known-bug', message: 'Ramp sticks. [Track it](https://x.y)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null }, 'admin-x');
+    const b2 = await repo.createBanner({ kind: 'info', message: 'later', startsAt: T2 + 3_600_000, endsAt: null, game: null, channel: 'alpha' }, 'admin-x');
+    check('banners: a created banner starts at revision 1', b1.revision === 1 && b1.kind === 'known-bug' && b1.game === 'biobuzz');
+    const open = await repo.listOpenBanners();
+    check('banners: the open set includes scheduled ones (the cache filters by start)',
+      open.some((b) => b.id === b1.id) && open.some((b) => b.id === b2.id));
+    const b1e = await repo.updateBanner(b1.id, { kind: 'known-bug', message: 'Ramp sticks (fixed next deploy)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null });
+    check('banners: an edit bumps the revision, so a dismissal of the old text lapses', b1e?.revision === 2);
+    check('banners: ending one takes it out of the open set',
+      (await repo.endBanner(b1.id)) && !(await repo.listOpenBanners()).some((b) => b.id === b1.id));
+    check('banners: ...and keeps it in the console history', (await repo.listBanners()).some((b) => b.id === b1.id));
+    check('banners: delete removes the row', (await repo.deleteBanner(b2.id)) && !(await repo.listBanners()).some((b) => b.id === b2.id));
+    const badKind = await db.query(`insert into banners (kind, message, created_by) values ('party', 'x', 'y')`).then(() => false, () => true);
+    check('banners: an unknown kind is refused by the table', badKind);
+
+    // ---- the cache every machine runs (server/siteState.ts), against the same database
+    const site = await import('../server/siteState');
+    await site.refreshLockdown(true);
+    check('site: a matches-scope lockdown refuses a match start', !!(await site.lockdownRefusal(null, 'match')));
+    check('site: ...but not a site-only action', (await site.lockdownRefusal(null, 'site')) === null);
+    await repo.setMaintenance({ ...m3 });
+    await site.refreshLockdown(true);
+    check('site: a site lockdown refuses a site action for a stranger', !!(await site.lockdownRefusal(null, 'site')));
+    await repo.ensureProfile('acc-9', 'Beta Nine');
+    await repo.grantAccess('acc-9', 'beta', 'admin-x');
+    site.forgetAccess('acc-9');
+    check('site: ...and lets a beta tester through', (await site.lockdownRefusal('acc-9', 'site')) === null);
+    const acc = await site.siteAccess('acc-9');
+    check('site: /api/status access says the tester passes', acc.passes && acc.groups.includes('beta') && !acc.admin);
+    check('site: the public lockdown carries the redirect and no ids',
+      site.publicLockdown()?.redirectUrl === 'https://playdsim.com' && !JSON.stringify(site.publicLockdown()).includes('acc-'));
+    await site.announceRestart('Server update', 300, 'admin-x');
+    const n1 = site.legacyNotice();
+    check('site: a restart announce is a DB row every machine reads, and the legacy notice follows it',
+      n1?.kind === 'restart' && n1.message === 'Server update' && !!n1.until && n1.until > Date.now());
+    check('site: the restart appears among the live banners', site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.cancelRestart();
+    check('site: cancel clears it at once (no grace)', site.legacyNotice() === null && !site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.announceRestart('now', 0, 'admin-x');
+    check('site: a zero-second restart still shows for its grace', site.legacyNotice()?.message === 'now');
+    await site.cancelRestart();
+    await repo.setMaintenance({ active: false, startsAt: null, endsAt: null, message: '' });
+    await site.refreshLockdown(true);
+  }
+
   // ---- guest sessions are ROWS now (0024) ---------------------------------
   await repo.upsertPresence(
     'm-iad', 'iad', 3, ['op-1'], 0, 0, [], [{ userId: 'op-1', act: 'match', room: 'r1', sessions: 2 }],
@@ -2095,6 +2202,105 @@ async function main(): Promise<void> {
     check('stats: clearStatsCache drops it regardless of the clock', cleared.users === usersAtFirst + 2);
   }
 
+  /* ---- games played, counted at the source (0050) -------------------------------------------
+     The homepage reads `play_counts`, not `records`/`matches`, so a match that never writes a
+     row (anonymous, Discord, practice, LAN) still counts. Three things to pin: the migration's
+     backfill agrees with the tables it reads, the fold into the homepage's categories, and that
+     `persistMatch` counts a room nobody signed in to. */
+  {
+    const n = async (sql: string): Promise<number> =>
+      Number((await db.query<{ n: string | number | null }>(sql)).rows[0]?.n ?? 0);
+    const counted = (where: string): Promise<number> =>
+      n(`select coalesce(sum(n), 0) as n from play_counts where ${where}`);
+
+    // the BACKFILL, re-run against a database that now has rows in every source table
+    const mig = readFileSync(join(ROOT, 'server/db/migrations/0050_play_counts.sql'), 'utf8');
+    const backfill = mig.slice(mig.indexOf('insert into play_counts'), mig.indexOf('comment on table'));
+    await db.query(`delete from play_counts`);
+    await db.query(backfill);
+    const recs = await n(`select count(*) as n from records`);
+    const ranked = await n(`select count(*) as n from matches where ranked`);
+    const custom = await n(`select count(*) as n from matches where not ranked`);
+    const practice = await n(`select count(*) as n from practice_runs`);
+    const lan = await n(`select count(*) as n from lan_runs`);
+    check('plays: the test has history to backfill from', recs > 0 && ranked + custom > 0, `records=${recs} matches=${ranked + custom}`);
+    check('plays: backfill — record runs', (await counted(`source = 'record'`)) === recs);
+    check('plays: backfill — ranked matches', (await counted(`source = 'ranked'`)) === ranked);
+    check('plays: backfill — custom rooms', (await counted(`source = 'custom'`)) === custom);
+    check('plays: backfill — practice runs', (await counted(`source = 'practice'`)) === practice);
+    check('plays: backfill — LAN matches', (await counted(`source = 'lan'`)) === lan);
+
+    // the FOLD: one of every source, on a game nothing else here touches
+    repo.clearStatsCache();
+    const before = await repo.getGlobalStats();
+    const plays: [repo.PlaySource, repo.PlayMode][] = [
+      ['record', 'solo'],
+      ['practice', 'solo'],
+      ['record', 'duo'],
+      ['ranked', '1v1'],
+      ['ranked', '2v2'],
+      ['custom', '1v1'],
+      ['discord', '2v2'],
+      ['lan', '1v1'],
+    ];
+    for (const [src, mode] of plays) await repo.countPlay('chain', src, mode);
+    await repo.countPlay('chain', 'practice', 'solo');
+    repo.clearStatsCache();
+    const after = await repo.getGlobalStats();
+    const d = (k: keyof repo.GlobalStats['byCategory']): number => after.byCategory[k] - before.byCategory[k];
+    check('plays: solo = record solo + practice', d('solo') === 3, `+${d('solo')}`);
+    check('plays: duo = record duo', d('duo') === 1, `+${d('duo')}`);
+    check('plays: 1v1 / 2v2 = ranked only', d('1v1') === 1 && d('2v2') === 1, `+${d('1v1')} / +${d('2v2')}`);
+    check('plays: custom = custom + Discord + LAN', d('custom') === 3, `+${d('custom')}`);
+    check('plays: the headline sums every source', after.games - before.games === 9, `+${after.games - before.games}`);
+    check('plays: ...and per game', after.byGame.chain - before.byGame.chain === 9);
+    check(
+      'plays: the raw split keeps each source apart',
+      after.detail.some((r) => r.game === 'chain' && r.source === 'discord' && r.mode === '2v2' && r.n >= 1) &&
+        after.detail.some((r) => r.game === 'chain' && r.source === 'practice' && r.n >= 2),
+    );
+    check(
+      'plays: a repeat increments one row per day, it does not add one',
+      (await n(`select count(*) as n from play_counts where game = 'chain' and source = 'practice'`)) === 1,
+    );
+
+    // persistMatch: classification, and an ANONYMOUS room still counts
+    const { persistMatch, playSourceOf } = await import('../server/persist');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    const part = (alliance: 'red' | 'blue', userId?: string) => ({
+      clientId: 'c',
+      userId,
+      handle: 'P',
+      alliance,
+      drivetrain: 'tank',
+      score: 0,
+      spec: DEFAULT_SPEC,
+      assists: DEFAULT_ASSISTS,
+    });
+    const outcome = (over: Partial<Parameters<typeof persistMatch>[0]>): Parameters<typeof persistMatch>[0] => ({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      result: { score: { red: 0, blue: 0 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 },
+      replay: { format: 2, balanceVersion: 4, sim: 2, game: 'decode', mode: 'match', seed: 1, ticks: 60, setups: [], tracks: {} },
+      participants: [part('red'), part('blue')],
+      ...over,
+    });
+    const src = (o: Parameters<typeof persistMatch>[0]): string => playSourceOf(o).join('/');
+    check('plays: a record duo room is record/duo', src(outcome({ config: { kind: 'record', record: 'duo' } })) === 'record/duo');
+    check('plays: a ranked room is ranked/<its mode>', src(outcome({ ranked: true, mode: '2v2' })) === 'ranked/2v2');
+    check('plays: a Discord room is discord, not custom', src(outcome({ discord: true })) === 'discord/1v1');
+    check('plays: a code room is custom', src(outcome({})) === 'custom/1v1');
+    const beforeAnon = await counted(`game = 'decode' and source = 'discord'`);
+    await persistMatch(outcome({ discord: true }));
+    let afterAnon = beforeAnon;
+    for (let i = 0; i < 50 && afterAnon === beforeAnon; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      afterAnon = await counted(`game = 'decode' and source = 'discord'`);
+    }
+    check('plays: a room with NO signed-in player is still counted', afterAnon === beforeAnon + 1, `${beforeAnon} → ${afterAnon}`);
+  }
+
   /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
      Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
      database just does progressively more work as the tables grow — so neither shows up in any
@@ -2924,6 +3130,22 @@ async function main(): Promise<void> {
     await an.runRollup(day0, day1);
     check('⚠️ analytics/rollup: re-running a bucket replaces it rather than adding to it', (await daily('*', 'total', '*'))?.views === 5);
 
+    // ⚠️ A RANGE THAT STARTS MID-BUCKET. The job rolls "the last three hours", which starts
+    // mid-hour and mid-day on every pass, and the upsert REPLACES a bucket with what the range
+    // held. 12:15–12:25 holds one of the day's five views; unaligned, it overwrote both the
+    // 12:00 bucket and the whole day with that one.
+    await an.runRollup(mins(15), mins(25));
+    const hour12 = (
+      await db.query<{ views: number }>(
+        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+      )
+    ).rows[0];
+    check(
+      '⚠️ analytics/rollup: a range starting mid-bucket re-rolls WHOLE buckets instead of overwriting them with a slice',
+      (await daily('*', 'total', '*'))?.views === 5 && hour12?.views === 4,
+      `day=${(await daily('*', 'total', '*'))?.views} hour12=${hour12?.views}`,
+    );
+
     // ---- the dashboard read ---------------------------------------------------------------
     {
       const rep = await an.analyticsReport({ from: day0, to: day1, game: '*', filters: [], grain: 'day' });
@@ -2950,6 +3172,314 @@ async function main(): Promise<void> {
       );
     }
 
+    // ---- events outlive the raw tier, properties included --------------------------------
+    // The sponsor report is read by placement, a month after the fact. Before the `evprop` rows,
+    // a range past 30 days had event names from nowhere and properties from nowhere.
+    check(
+      'analytics/rollup: event PROPERTIES are rolled up too, as name|key|value',
+      (await daily('*', 'evprop', 'support_view|placement|footer'))?.views === 1,
+    );
+    {
+      await db.query(
+        `insert into analytics_daily (day, game, dim, val, views, visitors)
+         values ('2025-01-10', '*', 'event', 'sponsor_click', 3, 2), ('2025-01-10', '*', 'evprop', 'sponsor_click|placement|game', 3, 2)`,
+      );
+      const old = await an.analyticsReport({ from: new Date('2025-01-01'), to: new Date('2025-02-01'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/report: a range past the raw tier reads events AND their properties off the rollups',
+        old.events[0]?.name === 'sponsor_click' && old.events[0].views === 3 &&
+          old.eventProps.some((p) => p.name === 'sponsor_click' && p.key === 'placement' && p.val === 'game' && p.views === 3),
+      );
+      check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
+      check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
+      check('analytics/report: no import yet means no imported span and nothing folded in', old.imported === null && old.history.imported === null && !old.history.inRange);
+      await db.query(`delete from analytics_daily where day = '2025-01-10'`);
+    }
+
+    // ---- history imported from Vercel Web Analytics (0053) ---------------------------------
+    {
+      const { vercelImportRows } = await import('../server/analyticsImport');
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      const v = (day: string, value: string | null, pageviews: number, visitors: number) => ({ day, value, pageviews, visitors });
+      const file = {
+        source: 'vercel' as const,
+        environment: 'production',
+        firstDay: '2026-09-13',
+        lastDay: '2026-09-14',
+        visits: {
+          total: [
+            { day: '2026-09-12', pageviews: 0, visitors: 0 },
+            { day: '2026-09-13', pageviews: 100, visitors: 10 },
+            { day: '2026-09-14', pageviews: 50, visitors: 5 },
+          ],
+          by: {
+            requestPath: [
+              v('2026-09-13', '/decode/profile/alice', 3, 1),
+              v('2026-09-13', '/decode/profile/bob', 2, 1),
+              v('2026-09-13', '/decode/records?token=secret', 5, 2),
+            ],
+            route: [v('2026-09-13', null, 100, 10)],
+            referrerHostname: [v('2026-09-13', null, 90, 9), v('2026-09-13', 'www.google.com', 10, 1)],
+            osName: [v('2026-09-13', 'Mac', 40, 4)],
+            browserName: [v('2026-09-13', 'Microsoft Edge', 20, 2), v('2026-09-13', 'Others', 5, 1)],
+          },
+        },
+        events: {
+          byName: [{ day: '2026-09-13', name: 'sponsor_click', count: 4, visitors: 3 }],
+          byProp: [
+            { day: '2026-09-13', name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
+            { day: '2026-09-13', name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
+          ],
+        },
+      };
+      const rows = vercelImportRows(file);
+      check(
+        '⚠️ analytics/import: paths are scrubbed like the live beacon, so no username or token lands in the table',
+        !rows.some((r) => /alice|bob|token|secret/.test(r.val)) && rows.find((r) => r.dim === 'path' && r.val === '/decode/profile/:name')?.views === 5,
+      );
+      check(
+        'analytics/import: the host’s spellings map onto ours, and a direct visit stays a blank referrer',
+        rows.some((r) => r.dim === 'os' && r.val === 'macOS') && rows.some((r) => r.dim === 'browser' && r.val === 'Edge') &&
+          rows.some((r) => r.dim === 'ref' && r.val === 'google.com') && rows.some((r) => r.dim === 'ref' && r.val === ''),
+      );
+      check(
+        'analytics/import: empty days, route rows and absent property values are left out',
+        !rows.some((r) => r.day === '2026-09-12') && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
+      );
+      const count = async (): Promise<number> =>
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported`)).rows[0].n);
+      const first = await replaceImportedAnalytics('vercel', rows);
+      const second = await replaceImportedAnalytics('vercel', rows);
+      check(
+        '⚠️ analytics/import: idempotent, a second run replaces the days instead of adding to them',
+        first.inserted === rows.length && second.deleted === rows.length && (await count()) === rows.length,
+        `inserted=${first.inserted} deleted=${second.deleted} rows=${await count()}`,
+      );
+      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === '2026-09-14'));
+      check(
+        'analytics/import: a narrower re-import replaces only the days it covers',
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
+      );
+      // Our own stable-channel count began on 2026-09-10 (the fixture above), which the import
+      // does not reach, so our count starts that day and every imported day (09-13 on) overlaps it.
+      const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check(
+        'analytics/combine: the report names the imported span and where our own count starts',
+        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === '2026-09-13' &&
+          rep.history.imported.lastDay === '2026-09-14' && rep.history.imported.channel === 'stable' && rep.history.ownFrom === '2026-09-10',
+        JSON.stringify(rep.history),
+      );
+      check(
+        '⚠️ analytics/combine: imported days on or after our first day are never read — the overlap is ours alone',
+        rep.totals.views === 0 && rep.series.length === 0 && !rep.history.inRange && rep.events.length === 0,
+        `views=${rep.totals.views} series=${rep.series.length}`,
+      );
+      check('analytics/combine: the old separate block stays in the shape, empty', rep.imported === null);
+      await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the combine: one source per day -----------------------------------------------------
+    // A preview import (the alpha channel) against our own alpha-channel traffic, dated off today
+    // so the raw tier answers. T-6..T-2 imported; ours first counted on T-4 at 15:00, a PARTIAL
+    // day the import also holds, so the import answers T-6..T-4 and ours T-3 on. The overlap
+    // days carry numbers too large to hide if either were ever read twice.
+    {
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      const T = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+      const day = (n: number): string => new Date(T - n * 86_400_000).toISOString().slice(0, 10);
+      const at = (n: number, h: number, m = 0): Date => new Date(T - n * 86_400_000 + h * 3_600_000 + m * 60_000);
+      type Row = { day: string; dim: string; val: string; views: number; visitors: number };
+      const rows: Row[] = [];
+      const imported = [
+        { n: 6, views: 100, visitors: 10 },
+        { n: 5, views: 110, visitors: 11 },
+        { n: 4, views: 120, visitors: 12 },
+        { n: 3, views: 5000, visitors: 500 },
+        { n: 2, views: 7000, visitors: 700 },
+      ];
+      for (const d of imported) {
+        const big = d.views >= 1000;
+        rows.push({ day: day(d.n), dim: 'total', val: '*', views: d.views, visitors: d.visitors });
+        rows.push({ day: day(d.n), dim: 'path', val: '/decode', views: big ? 4000 : 60, visitors: 6 });
+        rows.push({ day: day(d.n), dim: 'path', val: '/chain', views: d.views - (big ? 4000 : 60), visitors: 4 });
+        rows.push({ day: day(d.n), dim: 'country', val: 'US', views: big ? 3000 : 70, visitors: 7 });
+        rows.push({ day: day(d.n), dim: 'country', val: 'Others', views: d.views - (big ? 3000 : 70), visitors: 3 });
+        rows.push({ day: day(d.n), dim: 'event', val: 'sponsor_shown', views: big ? 999 : 10, visitors: 5 });
+        rows.push({ day: day(d.n), dim: 'evprop', val: 'sponsor_shown|placement|footer', views: big ? 999 : 10, visitors: 5 });
+      }
+      await replaceImportedAnalytics('vercel-preview', rows);
+
+      const fp = async (visitor: string, when: Date, path: string, extra: { country?: string; surface?: string } = {}): Promise<void> => {
+        await db.query(
+          `insert into analytics_pageviews (at, visitor, path, game, ref_host, country, device, os, browser, screen, lang, surface, channel, build)
+           values ($1,$2,$3,'decode','',$4,'desktop','Windows','Chrome','lg','en',$5,'alpha','abc123')`,
+          [when, visitor, path, extra.country ?? 'US', extra.surface ?? 'web'],
+        );
+      };
+      // T-4, the partial first day: ignored, the import holds the whole of it
+      await fp('cafe000000000001', at(4, 15), '/decode');
+      await fp('cafe000000000001', at(4, 15, 5), '/decode');
+      // T-3: one visitor with a 3-view session, one bounce from Germany
+      await fp('cafe000000000002', at(3, 12), '/decode');
+      await fp('cafe000000000002', at(3, 12, 5), '/decode');
+      await fp('cafe000000000002', at(3, 12, 10), '/chain');
+      await fp('cafe000000000003', at(3, 13), '/decode', { country: 'DE' });
+      // T-2: one visitor, two views
+      await fp('cafe000000000004', at(2, 12), '/chain');
+      await fp('cafe000000000004', at(2, 12, 5), '/chain');
+      await db.query(
+        `insert into analytics_events (at, visitor, name, game, path, props) values ($1,'cafe000000000002','sponsor_shown','decode','/decode','{"placement":"home"}')`,
+        [at(3, 12, 1)],
+      );
+
+      const report = (from: Date, to: Date, filters: { dim: string; val: string }[] = [], game = '*', grain: 'hour' | 'day' = 'day') =>
+        an.analyticsReport({ from, to, game, filters, grain });
+      const all = await report(at(6, 0), at(0, 0));
+      check(
+        '⚠️ analytics/combine: the start day is DERIVED — our first day was partial and imported, so ours starts the day after',
+        all.history.ownFrom === day(3) && all.history.imported?.channel === 'alpha' && all.history.inRange && all.history.traffic === 'all',
+        JSON.stringify(all.history),
+      );
+      check(
+        '⚠️ analytics/combine: totals are the imported days before the start plus ours from it, nothing twice',
+        all.totals.views === 330 + 6 && all.totals.visitors === 33 + 3,
+        `views=${all.totals.views} visitors=${all.totals.visitors}`,
+      );
+      check(
+        'analytics/combine: one series point per day, each from one source',
+        all.series.length === 5 && all.series.map((s) => s.views).join(',') === '100,110,120,4,2' &&
+          all.series[0].t === `${day(6)}T00:00:00.000Z` && all.series[3].t === `${day(3)}T00:00:00.000Z`,
+        all.series.map((s) => `${s.t.slice(0, 10)}:${s.views}`).join(' '),
+      );
+      check(
+        '⚠️ analytics/combine: sessions, bounces and their time are ours alone — the import never had them',
+        all.totals.sessions === 3 && all.totals.bounces === 1 && all.totals.seconds === 900,
+        JSON.stringify(all.totals),
+      );
+      const bd = (r: typeof all, dim: string, val: string) => r.breakdowns.find((b) => b.dim === dim && b.val === val);
+      check(
+        'analytics/combine: a breakdown sums both sources per value (pages)',
+        bd(all, 'path', '/decode')?.views === 180 + 3 && bd(all, 'path', '/chain')?.views === 150 + 3 &&
+          bd(all, 'path', '/decode')?.visitors === 18 + 2,
+        JSON.stringify(all.breakdowns.filter((b) => b.dim === 'path')),
+      );
+      check(
+        'analytics/combine: the host’s top-100 remainder stays a row of its own',
+        bd(all, 'country', 'Others')?.views === 30 + 40 + 50 && bd(all, 'country', 'US')?.views === 210 + 5 && bd(all, 'country', 'DE')?.views === 1,
+      );
+      check(
+        'analytics/combine: imported days count under their channel and the web surface',
+        bd(all, 'channel', 'alpha')?.views === 336 && bd(all, 'surface', 'web')?.views === 336 && !bd(all, 'channel', 'stable'),
+      );
+      check(
+        'analytics/combine: panels the import never had are ours alone, and the report says which are not',
+        bd(all, 'screen', 'lg')?.views === 6 && all.breakdowns.filter((b) => b.dim === 'entry').reduce((s, b) => s + b.views, 0) === 3 &&
+          ['path', 'country', 'channel', 'surface'].every((d) => all.history.dims.includes(d)) && !all.history.dims.includes('screen'),
+        JSON.stringify(all.history.dims),
+      );
+      check(
+        'analytics/combine: events and their properties fold in the same way',
+        all.events.find((e) => e.name === 'sponsor_shown')?.views === 31 &&
+          all.eventProps.find((p) => p.name === 'sponsor_shown' && p.key === 'placement' && p.val === 'footer')?.views === 30 &&
+          all.eventProps.find((p) => p.name === 'sponsor_shown' && p.key === 'placement' && p.val === 'home')?.views === 1,
+      );
+
+      // ---- filters, applied honestly -----------------------------------------------------------
+      const alpha = await report(at(6, 0), at(0, 0), [{ dim: 'channel', val: 'alpha' }, { dim: 'surface', val: 'web' }]);
+      check('analytics/combine: a chip naming what the import is keeps it', alpha.totals.views === 336 && alpha.history.traffic === 'all');
+      const stable = await report(at(6, 0), at(0, 0), [{ dim: 'channel', val: 'stable' }]);
+      check(
+        '⚠️ analytics/combine: a chip that excludes the imported channel excludes its days',
+        stable.totals.views === 0 && stable.history.traffic === 'none' && stable.history.why === 'filter' && stable.series.length === 0,
+        `views=${stable.totals.views}`,
+      );
+      check('analytics/combine: ...but events never follow the chips, on either side', stable.events.find((e) => e.name === 'sponsor_shown')?.views === 31);
+      const app = await report(at(6, 0), at(0, 0), [{ dim: 'surface', val: 'electron' }]);
+      check('analytics/combine: the desktop app was never in the import', app.totals.views === 0 && app.history.traffic === 'none');
+      const us = await report(at(6, 0), at(0, 0), [{ dim: 'country', val: 'US' }]);
+      check(
+        '⚠️ analytics/combine: one chip the import has a breakdown for is answered from that breakdown',
+        us.totals.views === 210 + 5 && us.totals.visitors === 21 + 2 && us.history.traffic === 'marginal' &&
+          us.series.slice(0, 3).map((s) => s.views).join(',') === '70,70,70',
+        `views=${us.totals.views} visitors=${us.totals.visitors}`,
+      );
+      check(
+        'analytics/combine: ...in the totals, the chart and that panel only — other panels are ours',
+        bd(us, 'country', 'US')?.views === 215 && bd(us, 'path', '/decode')?.views === 2 && bd(us, 'path', '/chain')?.views === 3 &&
+          bd(us, 'channel', 'alpha')?.views === 215 && us.history.dims.join(',') === 'country,channel,surface',
+        JSON.stringify(us.breakdowns.filter((b) => b.dim === 'path')),
+      );
+      const cross = await report(at(6, 0), at(0, 0), [{ dim: 'country', val: 'US' }, { dim: 'path', val: '/decode' }]);
+      check('analytics/combine: two such chips are a cross-filter the import cannot answer', cross.history.traffic === 'none' && cross.totals.views === 2);
+      const screen = await report(at(6, 0), at(0, 0), [{ dim: 'screen', val: 'lg' }]);
+      check('analytics/combine: a chip on a dimension the import never had leaves its days out', screen.history.traffic === 'none' && screen.totals.views === 6);
+      const game = await report(at(6, 0), at(0, 0), [], 'decode');
+      check(
+        'analytics/combine: a game pick leaves the imported days out of everything, events included',
+        game.history.why === 'game' && game.totals.views === 6 && game.events.find((e) => e.name === 'sponsor_shown')?.views === 1 && !game.history.events,
+      );
+
+      // ---- ranges -----------------------------------------------------------------------------
+      const older = await report(at(6, 0), at(3, 0));
+      check('analytics/combine: a range wholly before the start is the import alone', older.totals.views === 330 && older.totals.sessions === 0);
+      const newer = await report(at(3, 0), at(0, 0));
+      check(
+        'analytics/combine: ...and one after it is ours alone, with the imported days as its previous period',
+        newer.totals.views === 6 && !newer.history.inRange && newer.previous.views === 330,
+        `views=${newer.totals.views} prev=${newer.previous.views}`,
+      );
+      const midday = await report(at(6, 14), at(0, 0));
+      check('analytics/combine: a range starting mid-afternoon does not pull in the whole of that day', midday.totals.views === 230 + 6);
+      const hourly = await report(at(5, 6), at(3, 6), [], '*', 'hour');
+      check('analytics/combine: an hourly range that reaches imported days is drawn by day', hourly.grain === 'day' && hourly.series.length === 2);
+      check('analytics/combine: one that does not stays hourly', (await report(at(3, 0), at(2, 0), [], '*', 'hour')).grain === 'hour');
+
+      // ---- the import does not reach our first day: ours starts on it ------------------------
+      await db.query(`delete from analytics_imported where day = $1`, [day(4)]);
+      const gap = await report(at(6, 0), at(0, 0));
+      check(
+        'analytics/combine: when the import misses our partial first day, ours is used for it',
+        gap.history.ownFrom === day(4) && gap.totals.views === 210 + 8,
+        `ownFrom=${gap.history.ownFrom} views=${gap.totals.views}`,
+      );
+
+      await db.query(`delete from analytics_pageviews where visitor like 'cafe%'`);
+      await db.query(`delete from analytics_events where visitor like 'cafe%'`);
+      await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the combine on the rollup tier ------------------------------------------------------
+    {
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      await replaceImportedAnalytics('vercel-preview', [
+        { day: '2025-03-01', dim: 'total', val: '*', views: 40, visitors: 4 },
+        { day: '2025-03-02', dim: 'total', val: '*', views: 50, visitors: 5 },
+        { day: '2025-03-03', dim: 'total', val: '*', views: 900, visitors: 90 },
+        { day: '2025-03-02', dim: 'os', val: 'macOS', views: 20, visitors: 2 },
+        { day: '2025-03-02', dim: 'event', val: 'player_joined', views: 3, visitors: 3 },
+      ]);
+      await db.query(
+        `insert into analytics_daily (day, game, dim, val, views, visitors, sessions)
+         values ('2025-03-02', '*', 'total', '*', 7, 2, 2), ('2025-03-02', '*', 'channel', 'alpha', 7, 2, 2),
+                ('2025-03-03', '*', 'total', '*', 11, 3, 3), ('2025-03-03', '*', 'channel', 'alpha', 11, 3, 3),
+                ('2025-03-03', '*', 'os', 'macOS', 4, 1, 1), ('2025-03-03', '*', 'event', 'player_joined', 2, 2, 0)`,
+      );
+      const agg = await an.analyticsReport({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-08T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/combine: the rollup tier folds the import in by the same rule',
+        agg.source === 'aggregate' && agg.history.ownFrom === '2025-03-03' && agg.totals.views === 90 + 11 && agg.totals.sessions === 3,
+        `source=${agg.source} ownFrom=${agg.history.ownFrom} views=${agg.totals.views}`,
+      );
+      check(
+        'analytics/combine: ...breakdowns and events included',
+        agg.breakdowns.find((b) => b.dim === 'os' && b.val === 'macOS')?.views === 24 &&
+          agg.breakdowns.find((b) => b.dim === 'channel' && b.val === 'alpha')?.views === 101 &&
+          agg.events.find((e) => e.name === 'player_joined')?.views === 5,
+      );
+      await db.query(`delete from analytics_daily where day between '2025-03-01' and '2025-03-31'`);
+      await db.query(`delete from analytics_imported`);
+    }
+
     // ---- retention, which is where the privacy promise is either kept or not ---------------
     await db.query(`insert into analytics_pageviews (at, visitor, path) values (now() - interval '45 days', 'old0000000000001', '/old')`);
     await db.query(`insert into analytics_salt (day, salt) values ((now() at time zone 'UTC')::date - 9, 'ancient')`);
@@ -2966,6 +3496,22 @@ async function main(): Promise<void> {
       'analytics/retention: the aggregates outlive the raw rows they were built from',
       (await daily('*', 'total', '*'))?.views === 5,
     );
+
+    // ---- the maintenance pass itself ----------------------------------------------------------
+    {
+      an.stopAnalyticsJobs();
+      const advisory = async (): Promise<number> =>
+        Number((await db.query<{ n: string }>(`select count(*) as n from pg_locks where locktype = 'advisory'`)).rows[0].n);
+      await an.analyticsTick(mins(140).getTime()); // no traffic noted: must not touch the database
+      an.noteTraffic();
+      await an.analyticsTick(mins(140).getTime());
+      check(
+        'analytics/job: a pass three hours into the day leaves the day whole',
+        (await daily('*', 'total', '*'))?.views === 5,
+      );
+      check('⚠️ analytics/job: the pass gives its advisory lock back', (await advisory()) === 0);
+      an.stopAnalyticsJobs();
+    }
 
     // ---- ⚠️ THE SCHEMA ITSELF CANNOT HOLD AN IDENTIFIER ------------------------------------
     // The strongest statement this feature makes is "no account id is ever attached to
@@ -3454,7 +4000,7 @@ async function main(): Promise<void> {
   }
 
 
-  // ---- SEASON AWARDS + TITLES (0045/0046) ------------------------------------------
+  // ---- SEASON AWARDS (0045) ------------------------------------------------------------
   /**
    * The checks `docs/rewards-round2-plan.md` §7 asks for by name. The one that matters
    * most is IDEMPOTENCY: a season roll is a thing an admin can press twice, and the whole
@@ -3472,7 +4018,7 @@ async function main(): Promise<void> {
     check('awards: ...and mints nothing', (await repo.userAwards('aw-1')).length === 0);
 
     // Mint a slot by hand. 0048 RETIRED this table — nothing writes it now — so what is under
-    // test HERE is that the rows it already holds keep their contract and stay wearable.
+    // test HERE is that the rows it already holds keep their contract and stay in the trophy case.
     const mint = async (rank: number, user: string) =>
       db.query(
         `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
@@ -3499,20 +4045,10 @@ async function main(): Promise<void> {
     );
     check('⚠️ awards: a DUO rank decorates BOTH members, not whichever one inserted first', Number(duo.rows[0].n) === 2);
 
-    // titles: derived, and validated on write
-    const titles = await repo.earnedTitles('aw-1');
-    const rankedTitle = repo.awardTitleId({ game: GAME, balanceVersion: before.season, kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1 });
-    check('titles: an award yields a title id', titles.includes(rankedTitle), titles.join(', '));
-    check('titles: setTitle accepts an earned one', (await repo.setTitle('aw-1', rankedTitle)) === true);
-    check('⚠️ titles: setTitle REFUSES an unearned one (0046 has no check constraint — this is the validation)',
-      (await repo.setTitle('aw-1', 'award:decode:999:ranked:1v1:1')) === false);
-    const held = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
-    check('titles: ...and the refusal did not overwrite the equipped one', held.rows[0].title === rankedTitle);
-    check('titles: null clears it', (await repo.setTitle('aw-1', null)) === true);
-    await repo.setTitle('aw-1', rankedTitle);
-    await repo.clearTitleIfEquipped('aw-1', rankedTitle);
-    const cleared = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
-    check('titles: clearTitleIfEquipped removes it when it matches', cleared.rows[0].title === null);
+    // a retired award stays on show: the trophy case reads it (titles, which it once made
+    // wearable, went in 0049)
+    const case1 = (await repo.getUserStats('aw-1', before.season, GAME)).awards ?? [];
+    check('awards: a retired award stays in the trophy case', case1.some((x) => x.kind === 'ranked' && x.rank === 1), JSON.stringify(case1));
 
     // the FK cascades — an award decorates a name, so with no name there is nothing left
     await repo.deleteAccount('aw-2');
@@ -3524,9 +4060,9 @@ async function main(): Promise<void> {
   // ---- THE REWARD LEDGER + THE COMPETITIVE AWARD JOB (0048) -------------------------
   /**
    * Owner, 2026-09-22: ranked TOP 3 of 1v1 and 2v2 at the end of every ACT (the prestigious
-   * one: a placement title + a gold/silver/bronze podium badge), and at the end of every
-   * SEASON the record board's overall TOP 3 and each drivetrain's #1 (a title + the Record
-   * Holder badge) — never Act 0, paid for every past period NOW and automatically from here
+   * one: a gold/silver/bronze podium badge), and at the end of every SEASON the record board's
+   * overall TOP 3 and each drivetrain's #1 (the Record Holder badge; each placement is a
+   * trophy-case row off the grant's reason) — never Act 0, paid for every past period NOW and automatically from here
    * on, and never silently: every grant waits to be CLAIMED.
    *
    * The world below is built by hand on `chain` at balance versions far above anything the
@@ -3602,8 +4138,8 @@ async function main(): Promise<void> {
     check('job: the podium is three — #4 gets nothing', !(await ranked('rw-d', '1v1')));
     check('⚠️ job: an UNPLACED player is not on the board, so not on the podium', !(await ranked('rw-e', '1v1')));
     check('job: 2v2 is its own ladder with its own podium', (await ranked('rw-a', '2v2'))?.reason.kind === 'ranked_act');
-    check('job: a podium grant carries the placement title AND the metal badge',
-      !!a1 && a1.items.some((i) => i.kind === 'title' && i.id === 'award:chain:act1:ranked_act:1v1:1') && a1.items.some((i) => i.kind === 'badge' && i.id === 'ranked-gold'),
+    check('⚠️ job: a podium grant carries the metal badge and NOTHING else — no title (0049)',
+      !!a1 && a1.items.length === 1 && a1.items[0].kind === 'badge' && a1.items[0].id === 'ranked-gold',
       JSON.stringify(a1?.items));
     check('job: silver and bronze by placement', !!b1?.items.some((i) => i.id === 'ranked-silver') && !!c1?.items.some((i) => i.id === 'ranked-bronze'));
 
@@ -3612,10 +4148,10 @@ async function main(): Promise<void> {
     const aRec = await recOf('rw-a', 902);
     const dRec = await recOf('rw-d', 902);
     const cRec = await recOf('rw-c', 902);
-    check('job: the overall #1 is also #1 of their drivetrain — two titles, ONE grant, ONE badge',
+    check('job: the overall #1 is also #1 of their drivetrain — two placements, ONE grant, ONE badge',
       aRec?.reason.kind === 'record_season' && aRec.reason.placements.length === 2 &&
-        aRec.items.filter((i) => i.kind === 'title').length === 2 && aRec.items.filter((i) => i.kind === 'badge').length === 1,
-      JSON.stringify(aRec?.reason));
+        aRec.items.length === 1 && aRec.items[0].kind === 'badge' && aRec.items[0].id === 'record-holder',
+      JSON.stringify(aRec));
     check('⚠️ job: per-drivetrain #1 — 4th overall on score, but the best swerve run',
       dRec?.reason.kind === 'record_season' && dRec.reason.placements.length === 1 && dRec.reason.placements[0].board === 'swerve',
       JSON.stringify(dRec?.reason));
@@ -3626,37 +4162,34 @@ async function main(): Promise<void> {
     check('job: the live season pays nothing', !(await recOf('rw-b', 905)));
 
     // ---- pending → claimed → equipped ------------------------------------------------
-    check('⚠️ pending: an unclaimed title is NOT wearable', !(await repo.earnedTitles('rw-a')).includes('award:chain:act1:ranked_act:1v1:1'));
-    check('⚠️ pending: ...an unclaimed badge does not count', Object.keys(await repo.badgeCounts('rw-a')).length === 0);
-    check('pending: ...and setTitle refuses it', (await repo.setTitle('rw-a', 'award:chain:act1:ranked_act:1v1:1')) === false);
+    check('⚠️ pending: an unclaimed badge does not count', Object.keys(await repo.badgeCounts('rw-a')).length === 0);
+    check('pending: ...and cannot be worn', (await repo.setEquippedBadges('rw-a', ['ranked-gold'])) === null);
     const claimed = await repo.claimReward('rw-a', a1!.id, false);
-    check('claim: CLAIM delivers the title', !!claimed && claimed.earnedTitles.includes('award:chain:act1:ranked_act:1v1:1'));
-    check('claim: ...and counts the badge', claimed?.badges['ranked-gold'] === 1, JSON.stringify(claimed?.badges));
-    check('claim: ...but plain Claim wears nothing', claimed?.title === null && claimed.equippedBadges.length === 0);
+    check('claim: CLAIM counts the badge', claimed?.badges['ranked-gold'] === 1, JSON.stringify(claimed?.badges));
+    check('claim: ...but plain Claim wears nothing', !!claimed && claimed.equippedBadges.length === 0);
+    check('claim: the reward state carries no title fields (0049)', !!claimed && !('title' in claimed) && !('earnedTitles' in claimed));
     const twice = await repo.claimReward('rw-a', a1!.id, false);
     check('claim: claiming twice (two tabs, a double click) delivers nothing twice', twice?.badges['ranked-gold'] === 1);
     check('claim: somebody else\'s grant is not yours to claim', (await repo.claimReward('rw-b', a1!.id, true)) === null);
     const eq = await repo.claimReward('rw-a', (await ranked('rw-a', '2v2'))!.id, true);
-    check('⚠️ equip now: CLAIMS AND WEARS — the title', eq?.title === 'award:chain:act1:ranked_act:2v2:1', eq?.title ?? 'null');
-    check('⚠️ equip now: ...and the badge, with its COUNTER — two golds', eq?.equippedBadges.length === 1 && eq.equippedBadges[0].id === 'ranked-gold' && eq.equippedBadges[0].n === 2,
+    check('⚠️ equip now: CLAIMS AND WEARS the badge, with its COUNTER — two golds', eq?.equippedBadges.length === 1 && eq.equippedBadges[0].id === 'ranked-gold' && eq.equippedBadges[0].n === 2,
       JSON.stringify(eq?.equippedBadges));
     // jsonb re-orders an object's keys, so the projection is compared by VALUE, not by its text
     const goldTimes2 = (v: unknown): boolean =>
       Array.isArray(v) && v.length === 1 && (v[0] as { id?: string }).id === 'ranked-gold' && Number((v[0] as { n?: number }).n) === 2;
-    const wearing = await db.query<{ equipped_badges: unknown; title: string | null }>(`select equipped_badges, title from profiles where user_id = 'rw-a'`);
+    const wearing = await db.query<{ equipped_badges: unknown }>(`select equipped_badges from profiles where user_id = 'rw-a'`);
     check('equip now: the projection on profiles is what the boards will ship', goldTimes2(wearing.rows[0].equipped_badges),
       JSON.stringify(wearing.rows[0].equipped_badges));
 
     // ---- the badge counter: a second season's record award raises it, never adds a badge
     const r902 = await repo.claimReward('rw-a', aRec!.id, true);
-    check('counter: the record grant wears its best title', r902?.title === 'award:chain:902:record_overall:solo:1', r902?.title ?? '');
+    check('counter: the record grant wears its badge beside the gold', r902?.equippedBadges.map((b) => b.id).join(',') === 'ranked-gold,record-holder',
+      JSON.stringify(r902?.equippedBadges));
     const r903 = await repo.claimReward('rw-a', (await recOf('rw-a', 903))!.id, true);
     check('⚠️ counter: earning the SAME badge again INCREMENTS it — Record Holder ×2', r903?.badges['record-holder'] === 2, JSON.stringify(r903?.badges));
     check('counter: ...and the worn copy shows the new count, not a second badge',
       r903?.equippedBadges.filter((b) => b.id === 'record-holder').length === 1 && r903.equippedBadges.find((b) => b.id === 'record-holder')?.n === 2,
       JSON.stringify(r903?.equippedBadges));
-    check('⚠️ no double award: a placement 0045 already awarded is ONE title, not two',
-      (await repo.earnedTitles('rw-a')).filter((t) => t === 'award:chain:902:record_overall:solo:1').length === 1);
     const stats = await repo.getUserStats('rw-a', 905, G);
     check('trophy case: the profile lists the claimed awards once each, legacy included',
       (stats.awards ?? []).filter((x) => x.kind === 'record_overall' && x.balanceVersion === 902).length === 1 &&
@@ -3664,7 +4197,7 @@ async function main(): Promise<void> {
       JSON.stringify(stats.awards?.map((x) => `${x.kind}:${x.balanceVersion}:${x.mode}:${x.rank}`)));
     check('trophy case: ...and every badge with its count', stats.badgeCounts?.['record-holder'] === 2 && stats.badgeCounts?.['ranked-gold'] === 2);
 
-    // ---- equipping badges is validated like a title ------------------------------------
+    // ---- equipping badges is validated on the server ---------------------------------------
     check('badges: wearing one you hold takes', (await repo.setEquippedBadges('rw-a', ['record-holder']))?.length === 1);
     check('⚠️ badges: one you do NOT hold is refused', (await repo.setEquippedBadges('rw-a', ['ranked-silver'])) === null);
     check('badges: an unknown id is refused', (await repo.setEquippedBadges('rw-a', ['self-made'])) === null);
@@ -3690,12 +4223,12 @@ async function main(): Promise<void> {
     check('grant: an item outside every closed set is dropped, and a grant of nothing refused',
       (await repo.grantReward({ userId: 'rw-s', key: 'x', source: 'ranked_act', reason: { kind: 'other' }, items: [{ kind: 'badge', id: 'fake' as never }] })) === 'refused');
 
-    // ---- what was handed out BEFORE the ledger survives it -----------------------------------
+    // ---- what was handed out BEFORE the ledger survives it, and survives 0049 ------------------
     /* An account that already held the star reward in `profiles.cosmetics` and was WEARING the
-       title when 0048 landed. The migration imports it as a claimed, SILENT grant — showing a
-       "you earned this" for a thing already worn would be the dialog lying the other way — and
-       the equipped title must survive. Re-running the migration's own SQL is safe by design
-       (every statement is `if not exists` / `on conflict`), which is also what proves it. */
+       title when 0048 landed. 0048 imports it as a claimed, SILENT grant — showing a "you earned
+       this" for a thing already worn would be the dialog lying the other way. 0049 then turns
+       the title into the `stargazer` badge and WEARS it, because the player was wearing it.
+       Re-running both migrations' SQL is safe by design, which is also what proves it. */
     await repo.ensureProfile('rw-old', 'Old');
     await db.query(`update profiles set cosmetics = '["title:stargazer","decal:star"]'::jsonb, title = 'title:stargazer' where user_id = 'rw-old'`);
     await db.exec(readFileSync(join(ROOT, 'server/db/migrations/0048_reward_grants.sql'), 'utf8'));
@@ -3705,10 +4238,45 @@ async function main(): Promise<void> {
     check('⚠️ legacy: a reward given before the ledger is imported CLAIMED and SILENT — no dialog for a thing already worn',
       imported.rows.length === 1 && imported.rows[0].silent && imported.rows[0].claimed && (await repo.pendingRewards('rw-old')).length === 0,
       JSON.stringify(imported.rows));
-    const oldTitle = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'rw-old'`);
-    check('⚠️ legacy: an EQUIPPED title survives the migration, and is still wearable',
-      oldTitle.rows[0].title === 'title:stargazer' && (await repo.earnedTitles('rw-old')).includes('title:stargazer'));
-    check('legacy: ...and the migration re-runs cleanly (one row, not two)', Number((await db.query<{ n: number }>(
+
+    /* 0049's other cases, staged as they would stand before it ran: somebody wearing an act
+       podium title they hold the badge for, somebody wearing a RETIRED per-season title (0045 —
+       it never came with a badge), and a PENDING grant still carrying a title item. rw-a already
+       holds ranked-gold ×2; its worn list is emptied so there is room. */
+    await db.query(`update profiles set title = 'award:chain:act1:ranked_act:1v1:1', equipped_badges = '[]'::jsonb where user_id = 'rw-a'`);
+    await repo.ensureProfile('rw-t45', 'Retired');
+    await db.query(`update profiles set title = 'award:decode:5:ranked:1v1:1' where user_id = 'rw-t45'`);
+    await db.query(
+      `insert into reward_grants (user_id, grant_key, source, reason, items)
+       values ('rw-t45', 'old:pending', 'ranked_act', '{"kind":"other"}'::jsonb,
+               '[{"kind":"title","id":"award:decode:act1:ranked_act:1v1:1"},{"kind":"badge","id":"ranked-gold"}]'::jsonb)`,
+    );
+    const m49 = readFileSync(join(ROOT, 'server/db/migrations/0049_titles_to_badges.sql'), 'utf8');
+    await db.exec(m49);
+    await db.exec(m49); // twice: every statement must be a no-op the second time
+
+    const oldRow = await db.query<{ title: string | null; cosmetics: string[]; equipped_badges: unknown }>(
+      `select title, cosmetics, equipped_badges from profiles where user_id = 'rw-old'`,
+    );
+    const oldGrant = await db.query<{ items: unknown }>(`select items from reward_grants where user_id = 'rw-old' and grant_key = 'stargazer'`);
+    check('⚠️ 0049: the star grant delivers the stargazer BADGE (and still the decal), no title',
+      JSON.stringify(oldGrant.rows[0].items) === JSON.stringify([{ id: 'stargazer', kind: 'badge' }, { id: 'decal:star', kind: 'cosmetic' }]),
+      JSON.stringify(oldGrant.rows[0].items));
+    check('⚠️ 0049: the star\'s title leaves the inventory, the decal stays',
+      !oldRow.rows[0].cosmetics.includes('title:stargazer') && oldRow.rows[0].cosmetics.includes('decal:star'), JSON.stringify(oldRow.rows[0].cosmetics));
+    check('⚠️ 0049: whoever WORE the stargazer title now wears the badge — once, after two runs',
+      JSON.stringify(oldRow.rows[0].equipped_badges) === JSON.stringify([{ n: 1, id: 'stargazer' }]), JSON.stringify(oldRow.rows[0].equipped_badges));
+    check('0049: ...and the badge counts off the rewritten grant', (await repo.badgeCounts('rw-old')).stargazer === 1);
+    check('0049: nobody wears a title any more', Number((await db.query<{ n: number }>(`select count(*)::int as n from profiles where title is not null`)).rows[0].n) === 0);
+    const aRow = await repo.getProfile('rw-a');
+    check('⚠️ 0049: a podium title\'s wearer wears its badge, with the real count',
+      aRow?.badges?.length === 1 && aRow.badges[0].id === 'ranked-gold' && aRow.badges[0].n === 2, JSON.stringify(aRow?.badges));
+    check('0049: a retired per-season title, which never had a badge, maps to nothing',
+      ((await repo.getProfile('rw-t45'))?.badges ?? []).length === 0);
+    const oldPending = await db.query<{ items: unknown }>(`select items from reward_grants where user_id = 'rw-t45' and grant_key = 'old:pending'`);
+    check('⚠️ 0049: a PENDING grant loses its title item and keeps its badge',
+      JSON.stringify(oldPending.rows[0].items) === JSON.stringify([{ id: 'ranked-gold', kind: 'badge' }]), JSON.stringify(oldPending.rows[0].items));
+    check('legacy: ...and the 0048 import re-runs cleanly (one row, not two)', Number((await db.query<{ n: number }>(
       `select count(*)::int as n from reward_grants where user_id = 'rw-old'`)).rows[0].n) === 1);
 
     // ---- a roll pays automatically, through the same job ------------------------------------
@@ -3725,6 +4293,62 @@ async function main(): Promise<void> {
     const gone = await db.query<{ n: number }>(`select count(*)::int as n from reward_grants where user_id = 'rw-c'`);
     check('⚠️ delete: a deleted account takes its rewards with it (the FK cascades)', Number(gone.rows[0].n) === 0);
     check('delete: ...and nothing more is minted for it on the next run', (await repo.runRewardJob({ games: [G] })).grants === 0);
+  }
+
+
+  // ---- AN ARCHIVED SEASON'S BOARD IS THE SOLVE IT WAS PLAYED ON (owner, 2026-09-24) -----
+  /**
+   * BIOBUZZ Act 1 was a 2D season. With the era decided per GAME, the 3D cutover read it as
+   * `'3d'`: its board came back empty and the roll into Act 2 claimed its record awards with
+   * zero winners, for good. Built on `biobuzz` at balance versions nothing else writes:
+   *   bv 951  Act 1 · Season 1  ← closed, 2D rows plus one 3D straggler (a run set between the
+   *                                deploy and the roll)
+   *   bv 952  Act 2 · Season 1  ← live
+   */
+  {
+    const G = 'biobuzz' as const;
+    for (const u of ['era-a', 'era-b', 'era-c', 'era-x']) await repo.ensureProfile(u, u.toUpperCase());
+    for (const [bv, act] of [[951, 1], [952, 2]] as const) {
+      await db.query(
+        `insert into seasons (game, balance_version, act, active) values ($1, $2, $3, $4)
+         on conflict (game, balance_version) do update set act = excluded.act, active = excluded.active`,
+        [G, bv, act, bv === 952],
+      );
+    }
+    await db.query(`update seasons set active = false where game = $1 and balance_version <> 952`, [G]);
+    const rec = (u: string, bv: number, score: number, physics: '2d' | '3d') =>
+      db.query(`insert into records (user_id, mode, drivetrain, score, balance_version, game, physics) values ($1, 'solo', 'mecanum', $2, $3, $4, $5)`,
+        [u, score, bv, G, physics]);
+    await rec('era-a', 951, 300, '2d');
+    await rec('era-b', 951, 250, '2d');
+    await rec('era-c', 951, 200, '2d');
+    await rec('era-x', 951, 999, '3d'); // the straggler: highest score, wrong era
+    await rec('era-a', 952, 120, '3d');
+    await rec('era-b', 952, 500, '2d'); // cannot happen through submitRecord; the live board must not show it anyway
+
+    check('era: the live BIOBUZZ season is 3D', (await repo.boardPhysics(G, 952)) === '3d');
+    check('⚠️ era: an archived BIOBUZZ season is the solve most of its runs were played on', (await repo.boardPhysics(G, 951)) === '2d');
+    check('era: a one-solve game has no era filter, live or archived', (await repo.boardPhysics('decode', 1)) === undefined);
+
+    const old = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: 951, game: G });
+    check('⚠️ era: the archived Act 1 board shows its 2D runs', old.map((r) => r.userId).join(',') === 'era-a,era-b,era-c',
+      old.map((r) => `${r.userId}:${r.score}:${String(r.physics)}`).join(','));
+    const live = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: 952, game: G });
+    check('era: the live board is still 3D only', live.length === 1 && live[0].userId === 'era-a' && live[0].physics === '3d',
+      live.map((r) => `${r.userId}:${String(r.physics)}`).join(','));
+    check('era: a personal best on the archived season reads its own era', (await repo.personalBest('era-x', 'solo', 'overall', 951, G)) === null);
+    check('era: ...and so does the rank', (await repo.recordRank('era-c', 'solo', 'overall', 951, G)).rank === 3);
+
+    await repo.runRewardJob({ games: [G] });
+    const period = await db.query<{ winners: number }>(
+      `select winners from reward_periods where game = $1 and board = 'record_season' and period = 951`, [G],
+    );
+    check('⚠️ era: the closed 2D season pays its record holders instead of claiming zero winners',
+      Number(period.rows[0]?.winners) === 3, JSON.stringify(period.rows));
+    const paidTo = async (u: string) =>
+      (await repo.pendingRewards(u)).some((p) => p.reason.kind === 'record_season' && p.reason.balanceVersion === 951);
+    check('era: ...its #1 is paid', await paidTo('era-a'));
+    check('⚠️ era: ...and the 3D straggler is not', !(await paidTo('era-x')));
   }
 
 
@@ -3749,24 +4373,25 @@ async function main(): Promise<void> {
     let r = await repo.sweepStargazers(['1001'], true);
     check('star sweep: a linked stargazer is granted', r.applied && r.granted.includes('gh-1'), JSON.stringify(r));
     /* ⚠️ GRANTED IS NOT GIVEN (0048). The sweep creates a PENDING reward and delivers nothing:
-       the title is not wearable and the decal is not unlocked until the player claims it
+       the badge does not count and the decal is not unlocked until the player claims it
        through the dialog — "titles should not ever silently get added" (owner, 2026-09-22). */
     const starPending = (await repo.pendingRewards('gh-1')).find((p) => p.source === 'stargazer');
     check('⚠️ star sweep: ...as a PENDING reward, not a silent write', !!starPending, JSON.stringify(await repo.pendingRewards('gh-1')));
-    check('⚠️ star sweep: ...and a pending reward delivers NOTHING yet — no title',
-      !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('⚠️ star sweep: ...and a pending reward delivers NOTHING yet — no badge',
+      !(await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE]);
+    check('star sweep: the pending reward is the stargazer BADGE and the decal (0049)',
+      (starPending?.items ?? []).map((i) => `${i.kind}:${i.id}`).join() === repo.STARGAZER_ITEMS.map((i) => `${i.kind}:${i.id}`).join(),
+      JSON.stringify(starPending?.items));
     const unlockedEarly = await db.query<{ cosmetics: string[] }>(`select cosmetics from profiles where user_id = 'gh-1'`);
     check('⚠️ star sweep: ...and no decal', !(unlockedEarly.rows[0].cosmetics ?? []).includes(repo.STARGAZER_DECAL));
     await repo.claimReward('gh-1', starPending!.id, false);
-    check('star sweep: once CLAIMED it holds the title', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('star sweep: once CLAIMED it holds the badge', (await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE] === 1);
     check('star sweep: ...and a claimed reward leaves the pending queue', (await repo.pendingRewards('gh-1')).length === 0);
     /**
-     * ⚠️ **THE STAR GRANTS TWO IDS AND THEY MUST MOVE TOGETHER** (owner, 2026-09-21: the
-     * star should carry a cosmetic, not only a name decal). Half a reward is a state no
-     * later sweep repairs — the holder set is read off the TITLE, so an account holding the
-     * decal without the title would never be reconciled by anything. Every one of the four
-     * sites that touches the pair iterates `STARGAZER_GRANTS`; these checks are what stops a
-     * fifth being written out by hand.
+     * ⚠️ **THE STAR GRANTS A BADGE AND A DECAL AND THEY MUST MOVE TOGETHER** (owner,
+     * 2026-09-21: the star should carry a cosmetic, not only a mark on a name). Half a reward
+     * is a state no later sweep repairs. Both ride ONE grant (`STARGAZER_ITEMS`), and these
+     * checks are what stop the two drifting apart.
      */
     const cosmOf = async (u: string): Promise<string[]> => {
       const rows = await db.query<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [u]);
@@ -3774,8 +4399,9 @@ async function main(): Promise<void> {
       return Array.isArray(c) ? (c as string[]) : Object.keys((c as Record<string, unknown>) ?? {});
     };
     const held = await cosmOf('gh-1');
-    check('⚠️ star sweep: ...and the COSMETIC too — both ids, or the reward is half granted',
-      repo.STARGAZER_GRANTS.every((id) => held.includes(id)), JSON.stringify(held));
+    check('⚠️ star sweep: ...and the COSMETIC too — both, or the reward is half granted',
+      held.includes(repo.STARGAZER_DECAL), JSON.stringify(held));
+    check('star sweep: the badge is never written into the cosmetics inventory', !held.some((id) => id.includes('stargazer')), JSON.stringify(held));
     check('...and the cosmetic it grants is `earned` tier, NOT a supporter fill given away free',
       cosmeticTier(repo.STARGAZER_DECAL as CosmeticId) === 'earned', repo.STARGAZER_DECAL);
     r = await repo.sweepStargazers(['1001'], true);
@@ -3783,34 +4409,29 @@ async function main(): Promise<void> {
 
     // ⚠️ THE FAIL-SAFE. A fetch that did not finish must change NOTHING — with revocation
     // on, the same failure that used to mean "no grants this cycle" would otherwise strip
-    // the title from every holder at once.
+    // the badge from every holder at once.
     r = await repo.sweepStargazers([], false);
     check(
       '⚠️ star sweep: an INCOMPLETE fetch revokes nobody and grants nobody',
       r.applied === false && r.revoked.length === 0 && r.granted.length === 0,
     );
-    check('⚠️ star sweep: ...and the title is still held after it', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('⚠️ star sweep: ...and the badge is still held after it', (await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE] === 1);
 
-    // unstarring revokes (owner ruling 2026-09-21) — and takes the EQUIPPED title with it
-    await repo.setTitle('gh-1', repo.STARGAZER_TITLE);
-    const wearing = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
-    check('star sweep: the title can be equipped before it is taken away', wearing.rows[0].title === repo.STARGAZER_TITLE);
+    // unstarring revokes (owner ruling 2026-09-21) — and takes the WORN badge off the name
+    const wearing = await repo.setEquippedBadges('gh-1', [repo.STARGAZER_BADGE]);
+    check('star sweep: the badge can be worn before it is taken away', wearing?.[0]?.id === repo.STARGAZER_BADGE, JSON.stringify(wearing));
     r = await repo.sweepStargazers([], true);
     check('⚠️ star sweep: unstarring REVOKES (owner, 2026-09-21)', r.applied && r.revoked.includes('gh-1'), JSON.stringify(r));
-    check('star sweep: ...the ledger no longer has it', !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
-    /* ⚠️ BOTH ids, the other way. The grant side is checked above; an asymmetry here is the
-       one that LASTS — a revoke that took the title and left the decal leaves an account
-       wearing a reward it no longer qualifies for, and the holder set is read off the title,
+    check('star sweep: ...the ledger no longer counts it', !(await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE]);
+    /* ⚠️ BOTH, the other way. The grant side is checked above; an asymmetry here is the one
+       that LASTS — a revoke that took the badge and left the decal leaves an account holding a
+       reward it no longer qualifies for, and the sweep reads the decal as "already holds it",
        so no later sweep would ever look at it again. */
     const leftOver = await cosmOf('gh-1');
     check('⚠️ star sweep: ...and the COSMETIC went with it — a half-revoke is permanent',
-      repo.STARGAZER_GRANTS.every((id) => !leftOver.includes(id)), JSON.stringify(leftOver));
-    const after = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
-    check(
-      '⚠️ star sweep: ...and the EQUIPPED title was cleared, not left dangling',
-      after.rows[0].title === null,
-      `title=${after.rows[0].title}`,
-    );
+      !leftOver.includes(repo.STARGAZER_DECAL), JSON.stringify(leftOver));
+    check('⚠️ star sweep: ...and the WORN badge came off the name, not left dangling',
+      ((await repo.getProfile('gh-1'))?.badges ?? []).length === 0, JSON.stringify((await repo.getProfile('gh-1'))?.badges));
     // a RE-STAR re-opens the SAME grant — the key stays spoken for, so it is never a second row
     r = await repo.sweepStargazers(['1001'], true);
     const starRows = await db.query<{ n: number }>(`select count(*)::int as n from reward_grants where user_id = 'gh-1' and grant_key = 'stargazer'`);
@@ -3830,8 +4451,8 @@ async function main(): Promise<void> {
     );
     check('links: the original owner may relink it', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
 
-    // a ledger title is a closed set; an unknown one is refused like any cosmetic id
-    check('links: an unknown title id cannot be granted', (await repo.grantCosmetic('gh-1', 'title:selfawarded', 'rewards')) === false);
+    // a `title:` id is not a cosmetic any more (0049), so the inventory refuses every one
+    check('links: a title id cannot be granted as a cosmetic', (await repo.grantCosmetic('gh-1', 'title:stargazer', 'rewards')) === false);
 
     await repo.deleteAccount('gh-2');
     const left = await db.query<{ n: number }>(`select count(*)::int as n from provider_links where user_id = 'gh-2'`);
@@ -4084,6 +4705,40 @@ async function main(): Promise<void> {
     check('boost fetch: a non-2xx is INCOMPLETE', !got.complete);
     const swept = await boosts.sweepBoosters([], false);
     check('⚠️ boost sweep: an incomplete read pushes no floors at all', swept.applied === false && swept.floored.length === 0);
+  }
+
+  // ------------------------------------------------ the email gate's source of truth
+  /* Neon Auth keeps its tables in the game's own database (`neon_auth` schema), and the
+     verification code flips `neon_auth."user"."emailVerified"`. The gate reads it when the JWT
+     carries no claim. It is a MANAGED schema this repo does not migrate, so it is built here the
+     way Neon has it, and every way of not finding the answer must be null (the gate passes). */
+  {
+    check(
+      'email gate: no neon_auth schema is null, not a throw',
+      (await repo.authEmailVerified('00000000-0000-0000-0000-000000000001')) === null,
+    );
+    await db.exec(`create schema neon_auth;
+      create table neon_auth."user" (id uuid primary key, email text, "emailVerified" boolean not null);
+      insert into neon_auth."user" values
+        ('00000000-0000-0000-0000-000000000001', 'a@b.co', false),
+        ('00000000-0000-0000-0000-000000000002', 'c@d.co', true);`);
+    check(
+      'email gate: an unverified row reads false',
+      (await repo.authEmailVerified('00000000-0000-0000-0000-000000000001')) === false,
+    );
+    check(
+      'email gate: a verified row reads true',
+      (await repo.authEmailVerified('00000000-0000-0000-0000-000000000002')) === true,
+    );
+    check(
+      'email gate: an unknown id is null',
+      (await repo.authEmailVerified('00000000-0000-0000-0000-00000000000f')) === null,
+    );
+    check(
+      'email gate: an id that is not a uuid is null, not a throw',
+      (await repo.authEmailVerified('not-a-uuid')) === null,
+    );
+    await db.exec(`drop schema neon_auth cascade;`);
   }
 
   await db.close();

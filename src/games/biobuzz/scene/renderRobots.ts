@@ -86,6 +86,7 @@ import {
   BB_SHOOTER_PLATE_T,
   BB_TURRET_MOTOR_R,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_REST,
   BB_TURRET_PLATE_T,
   BB_TURRET_PLATE_TOP_Z,
   BB_TURRET_RING_H,
@@ -3155,6 +3156,10 @@ export function buildRobotGroup(
     group.add(d);
     group.userData.dumpArm = d.userData.dumpArm;
   }
+  // A BUILT ROBOT'S HOOD STARTS WHERE A SPAWNED ONE DOES — `BB_TURRET_PITCH_REST`, an elevation the
+  // aim solve actually produces. The match's `sync` overwrites it on its first frame; the builder
+  // preview and the saved-robot thumbnails never sync, so this is the pose they show.
+  for (const p of pitches) p.rotation.y = -BB_TURRET_PITCH_REST;
   group.userData.turretHeads = heads;
   group.userData.turretPitches = pitches;
   group.userData.launcher = launcher;

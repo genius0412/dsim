@@ -38,6 +38,13 @@
  *                                               added here is credited by construction rather
  *                                               than by somebody remembering.
  *
+ * ── AND THE ONE CLIENT WHERE "FETCHED ON DEMAND" MEANS "NEVER" ─────────────────────────────
+ * A Discord Activity is served behind a CSP that admits only dsim's two Activity URL Mappings,
+ * so neither `.hdr` above can be fetched there AT ALL — and `school-hall` is High's and Ultra's
+ * default column. `canFetchHdri` / `environmentDefFor` (below) answer that up front and hand the
+ * entry's painted `fallback` to the renderer instead, rather than letting every scene build make
+ * a request the browser refuses. Nothing is bundled and nothing is stored: see those two.
+ *
  * ── LICENCE ────────────────────────────────────────────────────────────────────────────────
  * Every Poly Haven asset is CC0 1.0 (public domain dedication): no attribution is REQUIRED.
  * It is given anyway, in full, with the author split the API reports — photography and
@@ -45,6 +52,7 @@
  * gets wrong.
  */
 
+import { inDiscordActivity } from '../../../net/discordActivity';
 import type { EnvironmentId } from './settings';
 
 /**
@@ -213,6 +221,19 @@ export interface EnvironmentDef {
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
     url: string;
+    /**
+     * THE PROCEDURAL ENTRY TO RENDER INSTEAD WHEN THIS ONE CANNOT BE FETCHED — see
+     * `environmentDefFor` below, and `scene/renderEnvironment.ts`'s failure path.
+     *
+     * Every `hdri` entry carries one, and it must be an id whose own def is PAINTED (`look`)
+     * rather than a second fetched one, or the substitution has somewhere else to fall. The
+     * old failure path applied `'room'`, which is three's `RoomEnvironment` ambient behind the
+     * THEMED letterbox colour — the flattest surround in the list and the least like either of
+     * the two photographs it was standing in for. A stand-in chosen per entry costs nothing
+     * (it is painted) and lands in the same kind of place: a school hall reads as a school
+     * gym, a monochrome studio as the dark cyclorama.
+     */
+    fallback: EnvironmentId;
     /** bytes, from the Poly Haven files API — printed in the picker so a player on a phone
      * plan knows what a pick costs before making it. */
     bytes: number;
@@ -604,6 +625,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     venue: { kind: 'hall', floor: 0x8a7352, wall: 0xaaa392, trim: 0x796f5e, lamp: 0xfff8ec, lampPower: 1.1, half: 700, ceil: 330, gridded: true },
     hdri: {
       url: PH_HDR('school_hall'),
+      // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead
+      // fittings. It is the nearest thing on the list to the photograph, and its own note
+      // ("Warm ceiling light off a wood floor") describes this hall too.
+      fallback: 'gym',
       bytes: 1_693_261,
       page: PH_PAGE('school_hall'),
       authors: [
@@ -631,6 +656,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     venue: { kind: 'studio', floor: 0x3b3e43, wall: 0x494d53, trim: 0x5b6068, lamp: 0xffffff, lampPower: 1.5, half: 660, ceil: 300 },
     hdri: {
       url: PH_HDR('monochrome_studio_02'),
+      // the painted twin of the photograph: `cyc-dark` is softboxes over a dark neutral sweep,
+      // which is what `monochrome_studio_02` IS. `cyc-light` is the same geometry with the
+      // brightness inverted, so it is the wrong one of the pair.
+      fallback: 'cyc-dark',
       bytes: 1_562_415,
       page: PH_PAGE('monochrome_studio_02'),
       authors: [{ name: 'Grzegorz Wronkowski', role: 'All' }],
@@ -642,6 +671,77 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
 
 export function environmentDef(id: EnvironmentId): EnvironmentDef {
   return BB_ENVIRONMENTS.find((e) => e.id === id) ?? BB_ENVIRONMENTS[0];
+}
+
+/**
+ * ⚠️ **CAN THIS CLIENT FETCH A CROSS-ORIGIN ASSET AT ALL?** — false inside a Discord Activity,
+ * where the answer is decided before any request is made and can never change.
+ *
+ * The activity is served through Discord's proxy at `<app-id>.discordsays.com`, whose CSP admits
+ * only the hosts that have a configured Activity URL Mapping. dsim has exactly two (`/` → the
+ * client, `/gs` → the game server — `src/net/discordActivity.ts`), and `dl.polyhaven.org` is not
+ * one of them, so an `.hdr` fetched from there is refused by the browser before it leaves.
+ *
+ * ── WHY THIS IS A DEFAULT-PATH BUG AND NOT AN EDGE ─────────────────────────────────────────
+ * `school-hall` is the `environment` column on BOTH High and Ultra (`GFX_PRESETS`), an ordinary
+ * desktop lands on one of those from `graphics/auto.ts`'s first guess, and the warm-up governor
+ * steps a laptop UP into them about two seconds into a match. So in the embed this fired on
+ * essentially every 3D match, and it fired AGAIN on every scene build and every graphics change,
+ * because only a SUCCESS is cached.
+ *
+ * ── AND WHY THE EXISTING FALLBACK WAS NOT ENOUGH ───────────────────────────────────────────
+ * Nothing broke visibly: `renderEnvironment.ts` caught the failure, applied three's
+ * `RoomEnvironment` and pushed an event line. But the line is invisible in a networked match
+ * (`src/game.ts` drains `netEvents`, not `world.events`, and `onQualityEvent` writes the latter —
+ * a separate bug), the room is the flattest surround on the list, and the picker went on offering
+ * both photographs with their download sizes. A blocked request per scene build plus a console
+ * warning is not a cost worth paying for a picture that cannot arrive.
+ *
+ * ⚠️ IT IS `inDiscordActivity()`, NOT `discordGroup()`. This is a question about the DOCUMENT —
+ * which CSP is over it — not about which party the player is in, and that file's own header says
+ * the party can legitimately be unknown while the embed is certain. See its warning.
+ *
+ * A TRANSIENT failure (offline, a captive portal, a proxy that rewrites `.hdr` to HTML) is NOT
+ * this predicate's business: it stays the loader's, which now remembers the ids that failed so it
+ * does not re-ask on every scene build either.
+ */
+export function canFetchHdri(): boolean {
+  return !inDiscordActivity();
+}
+
+/**
+ * ⚠️ **THE DEF THIS CLIENT WILL ACTUALLY RENDER — use this everywhere under `scene/`.**
+ *
+ * `environmentDef` is the declared table: id → the row as written, which is what the picker and
+ * the Contributors page want. This is the RESOLVED one: the same row, unless it is a fetched
+ * entry on a client that cannot fetch, in which case it is that entry's painted `fallback`.
+ *
+ * Resolving it HERE rather than in the loader is what keeps the picture self-consistent. Three
+ * separate things read an environment row — the light `rig`, the `venue` geometry
+ * (`scene/renderVenue.ts`) and the surround texture (`scene/renderEnvironment.ts`) — and before
+ * this they disagreed in the embed: the rig and the venue were the school hall's while the map
+ * quietly became the practice room's, so the geometry was a school hall lit by a generic box.
+ * One resolver, one answer, all three in step.
+ *
+ * It is deliberately NOT applied to the STORED setting. Nothing is rewritten, so a player who
+ * picked `school-hall` still has `school-hall` stored and gets the photograph back the moment
+ * they open the same build outside the embed. (Storage is per-ORIGIN anyway — the activity's
+ * `discordsays.com` bucket is not `playdsim.com`'s — so the two can never collide.)
+ */
+export function environmentDefFor(id: EnvironmentId): EnvironmentDef {
+  const def = environmentDef(id);
+  if (!def.hdri || canFetchHdri()) return def;
+  return environmentDef(def.hdri.fallback);
+}
+
+/**
+ * The environments worth OFFERING on this client — the whole list, minus any fetched entry whose
+ * bytes can never arrive. The picker's tiles state a download size ("1.7 MB") and the hint below
+ * them says a choice with a size "downloads once"; both are false in the embed, where picking one
+ * silently renders its painted stand-in instead. Nothing else about the list changes.
+ */
+export function pickableEnvironments(): readonly EnvironmentDef[] {
+  return canFetchHdri() ? BB_ENVIRONMENTS : BB_ENVIRONMENTS.filter((e) => !e.hdri);
 }
 
 /** every environment that costs a download — what the Contributors page credits. */

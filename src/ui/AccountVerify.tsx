@@ -7,9 +7,12 @@ import {
 } from '../lib/authFlows';
 import { AuthDisabled } from './AuthDisabled';
 import { ENTRY_TOKEN } from './entryToken';
+import { VerifyCodeForm } from './VerifyCodeForm';
 
 /**
- * `/account/verify` — where the verification email's link lands.
+ * `/account/verify` — where the verification email's link lands, and where the
+ * CODE is entered when there is no link. Neon Auth sends a code (see
+ * `authFlows.ts`), so without a token this page is the code form, not a dead end.
  *
  * It verifies on MOUNT rather than behind a button: the person already clicked
  * something, and a screen that asks them to click a second time to do the thing
@@ -40,6 +43,8 @@ function Verify({ onAccount }: { onAccount: () => void }) {
   const [result, setResult] = useState<AuthFlowResult | null>(null);
   const [resend, setResend] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [resendError, setResendError] = useState('');
+  /** the code form succeeded on this page */
+  const [coded, setCoded] = useState(false);
   const started = useRef(false);
 
   useEffect(() => {
@@ -63,34 +68,54 @@ function Verify({ onAccount }: { onAccount: () => void }) {
     }
   };
 
-  // no token at all: someone typed the URL, or a mail client ate the query string
-  if (!ENTRY_TOKEN) {
+  const sendAgainButton = email && resend !== 'sent' && (
+    <button
+      className={`ds-btn${resend === 'sending' ? ' busy' : ''}`}
+      onClick={sendAgain}
+      disabled={resend === 'sending'}
+      aria-busy={resend === 'sending'}
+    >
+      Send a new code
+    </button>
+  );
+  const resendStatus = (
+    <>
+      {resend === 'sent' && <p className="ds-hint ok">A new code is on its way to {email}.</p>}
+      {resend === 'error' && <p className="ds-hint err">{resendError}</p>}
+    </>
+  );
+
+  // no token: the code path, which is the one Neon Auth actually sends
+  if (!ENTRY_TOKEN && !coded) {
+    if (session.isPending) return <div className="ds-loading">Loading…</div>;
+    if (!email) {
+      return (
+        <div className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Sign in to verify</span>
+          </div>
+          <div className="ds-panel-body stack start">
+            <p className="ds-hint">Sign in, then enter the code from the verification email.</p>
+          </div>
+        </div>
+      );
+    }
+    if (session.data?.user?.emailVerified !== false) return <Verified email={email} onAccount={onAccount} />;
     return (
       <div className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Nothing to verify</span>
+          <span className="ds-panel-title">Enter your code</span>
         </div>
         <div className="ds-panel-body stack start">
-          <p className="ds-hint">
-            This page needs the link from the verification email. Open the newest one and follow
-            it from there.
-          </p>
-          {email && resend !== 'sent' && (
-            <button
-              className={`ds-btn${resend === 'sending' ? ' busy' : ''}`}
-              onClick={sendAgain}
-              disabled={resend === 'sending'}
-              aria-busy={resend === 'sending'}
-            >
-              Send a new link
-            </button>
-          )}
-          {resend === 'sent' && <p className="ds-hint ok">A new link is on its way to {email}.</p>}
-          {resend === 'error' && <p className="ds-hint err">{resendError}</p>}
+          <p className="ds-hint">We sent a code to {email}.</p>
+          <VerifyCodeForm email={email} onVerified={() => setCoded(true)} />
+          {sendAgainButton}
+          {resendStatus}
         </div>
       </div>
     );
   }
+  if (coded) return <Verified email={email} onAccount={onAccount} />;
 
   if (!result) {
     return (
@@ -103,24 +128,7 @@ function Verify({ onAccount }: { onAccount: () => void }) {
     );
   }
 
-  if (result.ok) {
-    return (
-      <div className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Email verified</span>
-        </div>
-        <div className="ds-panel-body stack start">
-          <p className="ds-hint">
-            {email ? `${email} is verified.` : 'Your address is verified.'} Ranked and record runs
-            are open.
-          </p>
-          <button className="ds-btn primary" onClick={onAccount}>
-            Go to Profile
-          </button>
-        </div>
-      </div>
-    );
-  }
+  if (result.ok) return <Verified email={email} onAccount={onAccount} />;
 
   return (
     <div className="ds-panel">
@@ -135,19 +143,26 @@ function Verify({ onAccount }: { onAccount: () => void }) {
             verified.
           </p>
         )}
-        {email && resend !== 'sent' && (
-          <button
-            className={`ds-btn${resend === 'sending' ? ' busy' : ''}`}
-            onClick={sendAgain}
-            disabled={resend === 'sending'}
-            aria-busy={resend === 'sending'}
-          >
-            Send a new link
-          </button>
-        )}
-        {resend === 'sent' && <p className="ds-hint ok">A new link is on its way to {email}.</p>}
-        {resend === 'error' && <p className="ds-hint err">{resendError}</p>}
+        {email && <VerifyCodeForm email={email} onVerified={() => setCoded(true)} />}
+        {sendAgainButton}
+        {resendStatus}
         <button className="ds-btn ghost" onClick={onAccount}>
+          Go to Profile
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Verified({ email, onAccount }: { email: string; onAccount: () => void }) {
+  return (
+    <div className="ds-panel">
+      <div className="ds-panel-h">
+        <span className="ds-panel-title">Email verified</span>
+      </div>
+      <div className="ds-panel-body stack start">
+        <p className="ds-hint">{email ? `${email} is verified.` : 'Your address is verified.'}</p>
+        <button className="ds-btn primary" onClick={onAccount}>
           Go to Profile
         </button>
       </div>

@@ -39,7 +39,7 @@
  */
 
 import type { Alliance, AssistConfig, DrivetrainType, RobotSpec, StartCat, Vec2, World } from '../../types';
-import { DRIVETRAIN_LIMITS, INERTIA_MASS_FLOOR, INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
+import { DRIVETRAIN_LIMITS, INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
 import { lengthLimits, widthLimits } from '../../sim/drivetrain';
 import {
@@ -1432,6 +1432,10 @@ export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
  * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
 export const BB_RAMP_DEPLOY_S = 0.3;
+/** how deep a fixed body may press a SETTLED ramp vertically before it folds (in) — the 3D jam
+ * guard in `elements3d.ts`'s `bbRampSwingStep3d`. Resting contact sits near `PHYS_ALLOWED_ERROR`
+ * (0.01); the jam in replay 1dc6eb8f was 0.13 deep, the random-drive jams 0.38–0.45. */
+export const BB_RAMP_EMBED_DEPTH = 0.05;
 export const BB_RAMP_REACH: BbFlowerReach = {
   out: [0, BB_RAMP_OUT],
   half: null, // the full mouth width
@@ -2060,6 +2064,19 @@ export const BB_TURRET_PITCH_MIN = 0;
 export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
 
 /**
+ * THE ELEVATION A TURRET SPAWNS AT, and the one the 3D builder preview draws (`renderRobots.ts`).
+ *
+ * It used to be `BB_TURRET_PITCH_MIN`: a LEVEL shot, which puts the hood's lip straight over the
+ * wheel and is the TALLEST pose the hood has. Nothing aims there. A turret re-solves at the HIVE
+ * cell every tick (`bbTurretSolution`), and a 53.5–65.6-in cell cannot be reached level. MEASURED
+ * over a 6-in field grid × four headings, 2,116 poses per turret on a double turret: min 58.6°,
+ * p25 65.0°, **p50 68.7°**, p75 74.4°, max 80.0° (the stop), the same for both exits. So a robot
+ * spawns at the median (owner, 2026-09-24: "The hood is WAY too high. It never goes that high"),
+ * and the first aim tick has ~10° to cover rather than ~69°.
+ */
+export const BB_TURRET_PITCH_REST = 69 * BB_DEG;
+
+/**
  * EVERY LAUNCHER'S TOP SPEED (in/s) — a turret's flywheel ceiling AND a dumper's, and the reason
  * a launcher's range is a number rather than an infinity. (It was `BB_TURRET_SPEED_MAX` while
  * only a turret solved its speed; the dumper solves its own per shot now too, so it is shared.)
@@ -2551,21 +2568,21 @@ export const BB_EXPANSION = BB_PRISM - ROBOT_MAX_SIZE; // 6" past the starting c
 /**
  * Chassis size range (in), BOTH axes — the range BIOBUZZ itself wants.
  *
- * The CEILING is R102's 18" starting cube less a working inch for the bumper and frame slop a
- * real build has. The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule
- * to argue a different one from: V1 sets robot size CEILINGS (R102, R105) and no minimum, and
- * its start rule (G304) is a set of pose clauses rather than a start zone a small chassis
- * would have to fill. All four are APPROX.
+ * The CEILING is R102's 18" starting cube (owner, 2026-09-24: it was 17, "a working inch for the
+ * bumper", which no rule asks for). The FLOORS are DECODE's per-intake floors, because there is
+ * no BIOBUZZ rule to argue a different one from: V1 sets robot size CEILINGS (R102, R105) and no
+ * minimum, and its start rule (G304) is a set of pose clauses rather than a start zone a small
+ * chassis would have to fill. The floors are APPROX.
  */
 export const BB_MIN_LENGTH = 13.5;
-export const BB_MAX_LENGTH = 17;
+export const BB_MAX_LENGTH = ROBOT_MAX_SIZE;
 export const BB_MIN_WIDTH = 14.5;
-export const BB_MAX_WIDTH = 17;
+export const BB_MAX_WIDTH = ROBOT_MAX_SIZE;
 
 /**
- * CHASSIS SIZE LIMITS, per build — the INTERSECTION of two envelopes.
+ * CHASSIS SIZE LIMITS, per build.
  *
- * 1. WHAT BIOBUZZ WANTS. The SWEEPER DEPLOYS, so it does not have to fit inside R102's 18"
+ * The SWEEPER DEPLOYS, so it does not have to fit inside R102's 18"
  *    starting cube alongside the chassis — that is what most real FTC intakes do. But it is
  *    real structure once deployed, so chassis + sweepers must fit R105.A's 18 × 24 EXPANSION
  *    prism, and which AXIS it eats depends on the mount, which is the whole point of having
@@ -2584,26 +2601,21 @@ export const BB_MAX_WIDTH = 17;
  *
  *    ⚠️ R105 DOES NOT SAY WHICH AXIS IS THE 24, so there are two candidate rectangles — the
  *    LENGTH axis long, or the WIDTH axis long — and the legal set is their UNION, which is not
- *    a rectangle two independent sliders can describe. One is picked PER BUILD, from the
- *    fields that do not move under the sliders (intake, intake mount, tube mount, drivetrain):
- *    a rectangle whose MINIMUM chassis fits the prism beats one whose minimum does not, then
- *    the wider pair of ranges wins, and a tie goes to the length-long one. Choosing off the
- *    size itself would make the range move as the slider moves, and a coercer that could land
- *    in a different rectangle on its second pass would not be idempotent. The price is that a
- *    few chassis legal only in the OTHER rectangle are not offered, which is the safe
- *    direction. With no tube this is byte-identical to the old single-24 envelope: every
- *    non-sweeper axis is already capped at `BB_MAX_*` 17, under the narrow side's 18.
+ *    a rectangle two independent sliders can describe. So the WIDTH RANGE DEPENDS ON THE
+ *    LENGTH: the length range is the union's, and the width range is the widest one offered by
+ *    any rectangle that holds the current length. The coercer clamps length first and then
+ *    reads the width range off the clamped length, so it is still idempotent.
  *
- * 2. WHAT THE SHARED COERCER CURRENTLY ALLOWS. `coerceSpec` has a `game === 'chain'` arm that
- *    swaps in CR's size envelope, and no BIOBUZZ arm yet (Lane B owns adding one — see
- *    `docs/biobuzz-contract.md`, `src/sim/spawn.ts` row). Until it lands, a BIOBUZZ spec is
- *    sized by DECODE's per-intake `lengthLimits`/`widthLimits`, and a builder that offered a
- *    dial the chokepoint then clamped back would be a slider that visibly snaps.
+ *    It used to pick ONE rectangle per build instead (widest pair of ranges). With the ceiling
+ *    at 17 that never cost anything that mattered; at 18 it made a front sweeper + flank tube
+ *    build pick 18 × 15.5 over 15 × 18, and shrink every saved 15 × 17 build of that shape.
  *
- * Intersecting means the builder never offers a size the coercer refuses, TODAY, and the
- * range simply widens to term 1 the moment term 2 stops binding. The intersection is also
- * what keeps `BB_PRESETS` a coercer no-op, which is what makes a preset card highlight as
- * selected — smoke asserts it.
+ * ⚠️ DECODE'S PER-INTAKE CEILINGS DO NOT APPLY (owner, 2026-09-24). `lengthLimits` caps a
+ * sloped chassis at 15 because in DECODE the roller sits INSIDE the 18" start cube (18 − reach).
+ * A BIOBUZZ sweeper deploys, so that rule capped every BIOBUZZ build at 15 long for no reason.
+ * Only their FLOORS are kept (a funnel still needs its frame). `src/sim/spawn.ts` carries the
+ * raw length and width across to `coerceBiobuzzSpec`, so this is the only size clamp a BIOBUZZ
+ * spec meets, and the builder never offers a size the coercer refuses.
  *
  * ⚠️ THE PRISM-DERIVED MAXIMUMS ARE FLOORED TO `BB_SIZE_STEP`. A corner Box Tube reaches
  * `BB_PLACE_REACH · √½` (1.669…) along each axis, so `18 − reach` is 16.331227996399747, and the
@@ -2673,46 +2685,56 @@ export function bbSnapSize(v: number): number {
   return Math.round(v / BB_SIZE_STEP) * BB_SIZE_STEP;
 }
 
-/** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
- * the chassis LENGTH), the slider limits inside it, and whether its minimum chassis fits the
- * prism at all. See `bbSizeLimits` for the rule. */
+/** the resolved envelope: the slider limits (the width range read off `spec.length`), which
+ * rectangle of R105.A holds the build at that length (`lengthLong` — the 24 runs along the
+ * chassis LENGTH), and whether any rectangle's minimum chassis fits the prism at all. See
+ * `bbSizeLimits` for the rule. */
 function bbEnvelope(spec: RobotSpec): {
   limits: { minLength: number; maxLength: number; minWidth: number; maxWidth: number };
   lengthLong: boolean;
   prismFits: boolean;
 } {
   const ext = bbEnvelopeReach(spec);
-  const shL = lengthLimits(spec.intake);
-  const shW = widthLimits(spec.intake, spec.drivetrain);
-  // ⚠️ THE GAME'S OWN FLOOR NEVER RISES ABOVE THE INTAKE'S OWN CEILING. `BB_MIN_LENGTH` (13.5)
-  // is BIOBUZZ's APPROX floor and the TRIANGLE preset's shared ceiling is 13, so the raw
-  // `Math.max` handed back an INVERTED length range for every triangle build — which made
-  // `bbMountFits` false at every mount, so the coercer silently reset a SIDE or FRONT+BACK
-  // sweeper to `front`, and then pinned the chassis to a 13.5 that is half an inch over the
-  // ceiling the intake actually allows. Nothing errored and the builder has no intake-style
-  // picker, so it only ever reached a spec carried over from DECODE or Chain Reaction.
-  const minLength = Math.min(Math.max(BB_MIN_LENGTH, shL.min), shL.max);
-  const minWidth = Math.min(Math.max(BB_MIN_WIDTH, shW.min), shW.max);
+  // the shared per-intake / per-drivetrain FLOORS only — their ceilings are DECODE's in-cube
+  // intake rule, which a deploying sweeper does not answer to (see `bbSizeLimits`)
+  const minLength = Math.max(BB_MIN_LENGTH, lengthLimits(spec.intake).min);
+  const minWidth = Math.max(BB_MIN_WIDTH, widthLimits(spec.intake, spec.drivetrain).min);
   const candidate = (lengthLong: boolean) => {
     const capL = lengthLong ? BB_PRISM : BB_PRISM_NARROW;
     const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
     const limits = {
       minLength,
-      maxLength: Math.min(BB_MAX_LENGTH, floorToSizeStep(capL - ext.length), shL.max),
+      maxLength: Math.min(BB_MAX_LENGTH, floorToSizeStep(capL - ext.length)),
       minWidth,
-      maxWidth: Math.min(BB_MAX_WIDTH, floorToSizeStep(capW - ext.width), shW.max),
+      maxWidth: Math.min(BB_MAX_WIDTH, floorToSizeStep(capW - ext.width)),
     };
     // THE MINIMUM CHASSIS, not the max: the coercer widens an inverted range UP to the floor,
     // so the floor is the size a build actually gets when nothing else fits, and it has to be
     // inside the prism for the rectangle to be honest.
     const prismFits = minLength + ext.length <= capL + 1e-9 && minWidth + ext.width <= capW + 1e-9;
-    const span = (Math.max(minLength, limits.maxLength) - minLength) + (Math.max(minWidth, limits.maxWidth) - minWidth);
-    return { limits, lengthLong, prismFits, span };
+    const usable = prismFits && limits.maxLength >= minLength && limits.maxWidth >= minWidth;
+    return { limits, lengthLong, prismFits, usable };
   };
   const a = candidate(true);
   const b = candidate(false);
-  const pick = a.prismFits !== b.prismFits ? (a.prismFits ? a : b) : b.span > a.span + 1e-9 ? b : a;
-  return { limits: pick.limits, lengthLong: pick.lengthLong, prismFits: pick.prismFits };
+  const usable = [a, b].filter((c) => c.usable);
+  // NOTHING BUILDABLE: report the rectangle whose minimum fits, if either, so `bbMountFits`
+  // sees the inverted range and says no.
+  if (usable.length === 0) {
+    const pick = !a.prismFits && b.prismFits ? b : a;
+    return { limits: pick.limits, lengthLong: pick.lengthLong, prismFits: pick.prismFits };
+  }
+  const maxLength = Math.max(...usable.map((c) => c.limits.maxLength));
+  // the length this build will actually have once clamped (a non-finite one is the coercer's to
+  // replace, so it constrains nothing here)
+  const len = Number.isFinite(spec.length) ? Math.min(Math.max(spec.length, minLength), maxLength) : minLength;
+  const holding = usable.filter((c) => len <= c.limits.maxLength + 1e-9);
+  const best = holding.reduce((x, y) => (y.limits.maxWidth > x.limits.maxWidth + 1e-9 ? y : x));
+  return {
+    limits: { minLength, maxLength, minWidth, maxWidth: best.limits.maxWidth },
+    lengthLong: best.lengthLong,
+    prismFits: true,
+  };
 }
 
 /**
@@ -2851,7 +2873,7 @@ export function bbHopperCap(spec: RobotSpec): number {
  * BARE CHASSIS (lb) — frame, wheels, drive motors, battery and the two hubs, and NOTHING that
  * touches an element. One line of reasoning each:
  *  • mecanum   four motors, four mecanum wheels, rails, battery, two hubs. THE CALIBRATION
- *              POINT: 11.5 + one sweeper + one turret + the default inertia term = 18.00 lb.
+ *              POINT: 11.5 + one sweeper (1.5) + one turret (5) = 18.00 lb.
  *  • xdrive    the same four motors and four roller wheels, turned 45° — a wash, so the same.
  *  • tank      6WD: two more wheels, the sprockets and the chain runs between them.
  *  • swerve    four steering modules and four more motors on top of the four drive ones.
@@ -2873,7 +2895,7 @@ export const BB_MASS_SWEEPER_EDGE = 1.5;
 /** a SINGLE TURRET (lb): the flywheel and its hood, the rotor ring the head yaws on, and the
  * two motors. The heaviest single mechanism in the game — it is a whole aiming assembly, not a
  * chute. APPROX. */
-export const BB_MASS_TURRET = 4;
+export const BB_MASS_TURRET = 5;
 /** the SECOND turret of a DOUBLE (lb), on top of `BB_MASS_TURRET`. A whole second assembly —
  * its own flywheel, hood, ring and motors — but it shares the hopper and the feed the first one
  * already pays for, so it is a little under a first turret. APPROX. */
@@ -2881,25 +2903,12 @@ export const BB_MASS_TURRET2 = 3.5;
 /** a DUMPER (lb): a tilting hopper on a pivot and one motor to heave it. No stored energy and
  * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
  * APPROX. */
-export const BB_MASS_DUMPER = 2.5;
-/** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates and its
- * motor, the spool, the wrist servo and the claw. APPROX. */
-export const BB_MASS_BOX_TUBE = 2.5;
-/** lb of flywheel added at `flywheelInertia` 1 — the shared `INERTIA_MASS_FLOOR`, kept rather
- * than re-spelled, because it describes the same part in both games. BIOBUZZ has no inertia
- * DIAL (`bbDials`), so in practice this is `BB_INERTIA_DEFAULT` for anything built here and a
- * carried-over value for a spec that arrived from another game. */
-export const BB_MASS_INERTIA = INERTIA_MASS_FLOOR;
-/**
- * the `flywheelInertia` every BIOBUZZ preset carries.
- *
- * ⚠️ IT IS NOT A DIAL IN THIS GAME. `bbDials` offers no inertia slider and no BIOBUZZ sim code
- * reads the field — its ONLY effect here is `BB_MASS_INERTIA · inertia` lb on the floor. Pinning
- * every preset to one value is what makes their masses comparable to each other; a build that
- * arrives from DECODE or Chain Reaction keeps whatever it had, which is why the term is in the
- * model at all rather than folded into the bases.
- */
-export const BB_INERTIA_DEFAULT = 0.25;
+export const BB_MASS_DUMPER = 3.5;
+/** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates, the
+ * spool, the wrist servo and the claw. Offset lists its 2-stage Box Tube Slide Kit at about
+ * 475 g (1.05 lb, 275 g of it moving); the wrist and claw take it to 1.5 (owner, 2026-09-24:
+ * "the whole mechanism should be somewhat light… 1.5 lbs max"). It was 2.5. */
+export const BB_MASS_BOX_TUBE = 1.5;
 
 /**
  * THE MASS RANGE THIS BUILD MAY BE DIALLED TO (lb) — the ONE model, read by the coercer
@@ -2916,6 +2925,11 @@ export const BB_INERTIA_DEFAULT = 0.25;
  * Read through `bbLauncherOf` / `bbLiftOf` / `bbIntakeMountOf` rather than off the flat mirror
  * fields: the container is authoritative.
  */
+/** the builder's MASS slider step (lb). Every part above is a whole or half pound, so every
+ * floor is on this grid, and so is a mass anywhere between. It was 1, anchored at each build's
+ * own floor, so a 19.5-lb floor put 23 off the grid and a 23.5-lb seed sat under a thumb at 24. */
+export const BB_MASS_STEP = 0.5;
+
 export function bbMassLimits(spec: RobotSpec): { min: number; max: number } {
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const mount = bbIntakeMountOf(spec);
@@ -2925,8 +2939,7 @@ export function bbMassLimits(spec: RobotSpec): { min: number; max: number } {
     edges * BB_MASS_SWEEPER_EDGE +
     (launcher.kind === 'dumper' ? BB_MASS_DUMPER : BB_MASS_TURRET) +
     (launcher.kind === 'twinturret' ? BB_MASS_TURRET2 : 0) +
-    (bbLiftOf(spec) ? BB_MASS_BOX_TUBE : 0) +
-    BB_MASS_INERTIA * clamp(spec.flywheelInertia, 0, 1);
+    (bbLiftOf(spec) ? BB_MASS_BOX_TUBE : 0);
   const max = DRIVETRAIN_LIMITS[spec.drivetrain]?.maxMass ?? DRIVETRAIN_LIMITS.mecanum.maxMass;
   return { min: Math.min(Math.round(raw * 100) / 100, max), max };
 }
@@ -3126,7 +3139,7 @@ const BB_PRESET_ASSISTS: AssistConfig = {
  * `bbMassLimits` says what a build has to weigh AT LEAST; these say what one like it really
  * does, which is a different number and a more useful one — four cards all sitting on their own
  * floor would tell a player nothing about the tradeoff between them. Each is its own floor plus
- * a whole number of pounds, so it is a position the 1-lb mass slider can return to.
+ * a whole number of pounds, so it is a position the mass slider can return to.
  *
  * ── THE RPMs ARE PER DRIVETRAIN ─────────────────────────────────────────────
  * `driveRpm` is normalised to a 104 mm reference wheel (`presets.ts` carries the conversion) and
@@ -3149,10 +3162,10 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // all-rounder wants to strafe up to a FLOWER without giving up its heading and without
     // paying for swerve, and 435 rpm because this robot spends the match crossing the field
     // rather than winning a shove.
-    //   mass: 20.5 lb of hardware, built properly, is 24.5.
+    //   mass: 19.5 lb of hardware, built properly, is 24.5.
     name: 'Pollinator', teamName: 'Turret and Box Tube · the hive and the flowers', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24.5, drivetrain: 'mecanum',
-    driveRpm: 435, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 435, flywheelInertia: 0, canSort: false,
     scoreMode: 'turret',
     intakeMount: 'front', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
@@ -3175,7 +3188,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // eight seeds, the second best on the list.
     name: 'Forager', teamName: 'Dumper · sweeps both ends, shifts to push', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 30.5, drivetrain: 'butterfly',
-    driveRpm: 420, tankRpm: 300, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 420, tankRpm: 300, flywheelInertia: 0, canSort: false,
     scoreMode: 'dumper',
     intakeMount: 'frontback', shooterMount: 'front',
     assists: BB_PRESET_ASSISTS,
@@ -3188,7 +3201,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     //   mass: two whole flywheel assemblies, and it shows.
     name: 'Skimmer', teamName: 'Double turret · both elements on the strafe', teamNumber: 0,
     length: 15, width: 16, intake: 'sloped', massLb: 27.5, drivetrain: 'xdrive',
-    driveRpm: 520, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 520, flywheelInertia: 0, canSort: false,
     scoreMode: 'twinturret',
     intakeMount: 'front', shooterMount: 'right',
     assists: BB_PRESET_ASSISTS,
@@ -3202,7 +3215,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     //   mass: four steering modules and two sweeper assemblies is a genuinely heavy chassis.
     name: 'Sniper', teamName: 'Single turret · collect driving either way', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 26.5, drivetrain: 'swerve',
-    driveRpm: 480, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 480, flywheelInertia: 0, canSort: false,
     scoreMode: 'turret',
     intakeMount: 'frontback', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
@@ -3212,7 +3225,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 /**
  * The shipped builds, with MASS and HOPPER derived rather than typed out.
  *
- * Both are FUNCTIONS of the build — the mass floor of a drivetrain × inertia × mechanism, and
+ * Both are FUNCTIONS of the build — the mass floor of a drivetrain × mechanism, and
  * the capacity of a footprint × archetype × mount — so a hard-coded number would quietly stop
  * being "the minimum" / "the maximum" the moment any of those constants moved, and a preset
  * whose value the coercer then clamps is a card that stops highlighting as selected.
@@ -3253,11 +3266,16 @@ export const BB3_HEIGHT_MIN = 12;
  * matters to the sim, not to the picture — which is why it is a number here and not a mast.
  */
 export const BB3_HEIGHT_DEFAULT = 14;
-/** `RobotSpec.heightIn` ceiling (in) — R105.A's 29-in EXPANDED sizing volume: "a 18 in. by 24
- * in. by 29 in. tall sizing volume when fully expanded", where the manual fixes the 29 as the
- * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
- * the same way). */
-export const BB3_HEIGHT_MAX = 29;
+/**
+ * `RobotSpec.heightIn` ceiling (in), the robot's TOTAL height — the builder's slider and the
+ * coercer both stop here, so they can never disagree.
+ *
+ * ⚠️ **18, NOT R105.A's 29** (owner, 2026-09-24: "height should not go up that high … total can
+ * be like 18 inches"). The manual allows 29 in fully expanded, but no mechanism here stands
+ * above the dumper's 12.85, so a 29-in dial described a robot nobody could see. 18 is also
+ * R102's starting cube (`BB3_STOW_MAX`), so the builder no longer offers a stow height.
+ */
+export const BB3_HEIGHT_MAX = 18;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3D PHYSICS — DAY 1 SIM CONSTANTS (`docs/biobuzz/plan-3d.md` §10/§13.1), appended below the
@@ -3346,7 +3364,7 @@ export const BB3_HIVE_CELL = { w: HIVE.CELL_W, d: HIVE.CELL_D, h: HIVE.CELL_H };
 export const BB3_HIVE_CELL_WALL = 0.25;
 
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
- * clears it (a robot tops out at `BB3_HEIGHT_MAX` 29 in). */
+ * clears it (R105.A lets a robot stand 29 in). */
 export const BB3_WALL_H = 40;
 
 /** one element's mass (lb) — APPROX until a set is weighed (owner action; plan §3.6). */
@@ -3757,6 +3775,22 @@ export const BB3_INTAKE_CORNER_R = 0.125;
  */
 export const BB3_INTAKE_CORNER_CLAMP = 0.8;
 
+/**
+ * A CHASSIS PLACED INSIDE A FIXED SOLID IS MOVED OUT SIDEWAYS (in) — `setChassisClear`
+ * (`sim3d/engineImpl.ts`), 3D only.
+ *
+ * A pose the solver did not produce (a new body, a teleport, a deploy-edge rebuild) can put the
+ * chassis inside the hive frame. Left to the solver, the shallowest way out of a 2.15-in foot bar
+ * under a 16-in chassis is UP, so the robot was lifted onto the bar with the A-frame leg running
+ * between its frame box and an intake arm, and could never move again (8/400 random placements,
+ * `scratch/rampstuck.ts`). `BB3_FIT_DEPTH` is the penetration that counts as inside: over the
+ * ≈0.1 in the solver leaves on a resting contact, so a wall-flush start or a robot parked against
+ * a frame part is never moved. The search walks rings `BB3_FIT_STEP` apart out to `BB3_FIT_MAX`.
+ */
+export const BB3_FIT_DEPTH = 0.25;
+export const BB3_FIT_STEP = 0.5;
+export const BB3_FIT_MAX = 24;
+
 
 /**
  * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`
@@ -4068,7 +4102,8 @@ export const PREDICT_MAX_TICKS = 40;
 // ─────────────────────────────────────────────────────────────────────────────
 // R102: THE STARTING CUBE, AND THE DEPLOY LATCH (Day 3, `docs/biobuzz/plan-3d.md` §3.3)
 //
-// `BB3_HEIGHT_MAX` above is R105.A's EXPANDED 29 in. R102 is the other half of the same pair:
+// R105.A allows 29 in EXPANDED (the dial stops at `BB3_HEIGHT_MAX`, 18, so a coerced build
+// never reaches the fold below; the rule still refuses a raw spec). R102 is the other half:
 // the STARTING CONFIGURATION is an 18-inch cube, so a build that stands taller than 18 in has
 // to fold to get under it and unfold once the match starts. Nothing in the 2D pipeline has ever
 // asked; the 3D robot is a cuboid `length × width × heightIn`, so the day the height became

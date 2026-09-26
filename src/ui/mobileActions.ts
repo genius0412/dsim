@@ -450,6 +450,21 @@ function candidates(side: 'left' | 'right', size: number, vp: Viewport, stick: P
 }
 
 /**
+ * The overflow column: the outer edge of a thumb's own side, from just under the top strip
+ * downwards. `clampOn` pulls every slot onto the screen, so a viewport too short for a whole
+ * step still yields one — the caller is never handed an empty list.
+ */
+function lastResortColumn(side: 'left' | 'right', size: number, vp: Viewport): PlacedControl[] {
+  const x = side === 'left' ? 0 : vp.w;
+  const step = size + TOUCH_GAP;
+  const top = TOUCH_TOP_RESERVE.left + size / 2;
+  const bottom = Math.max(top, vp.h - TOUCH_BOTTOM_RESERVE - size / 2);
+  const out: PlacedControl[] = [];
+  for (let y = top; y <= bottom; y += step) out.push(clampOn({ x, y, size }, vp));
+  return out;
+}
+
+/**
  * Where every control goes, this frame. Pure: the same layout, viewport and button list give
  * the same answer, which is what makes the arrangement testable without a browser.
  */
@@ -510,15 +525,22 @@ export function packTouchControls(
   // the other one before it gives up, so a short landscape phone stacks rather than drops: a
   // button that is not on screen is the bug this whole module exists to stop.
   // ⚠️ AND THEN IT SHRINKS, NEVER CENTRES (design review 18-21). With no free cell at full
-  // size it tries again at the 44 px floor, and with none at that either it goes to the top of
-  // its OWN side column — overlapping, but under the thumb. The old last resort was the middle
-  // of the screen, which on a field is on top of the robot.
-  const lastResort = { left: 0, right: 0 };
+  // size it tries again smaller, and with none at any size it goes down a thumb's outer edge —
+  // still under the thumb. The old last resort was the middle of the screen, which on a field
+  // is on top of the robot.
   for (const b of auto) {
     const full = (b.primary ? TOUCH_BTN_PRIMARY : TOUCH_BTN_SECONDARY) * scale;
     const other = b.side === 'left' ? 'right' : 'left';
     let p: PlacedControl | undefined;
-    for (const size of full > TOUCH_MIN_TARGET ? [full, TOUCH_MIN_TARGET] : [full]) {
+    // ⚠️ 82 → 64 → 44, NOT 82 → 44. The ladder used to drop the primary straight to the floor,
+    // so EVERY landscape viewport narrower than 675 px — an iPhone SE/8 class phone held
+    // sideways is 667 — rendered SHOOT, the button pressed most, at 29% of its intended area
+    // and as the SMALLEST circle on a pad whose secondaries were all 64. A 64 px cell fits
+    // wherever a secondary fits, so the middle rung is the one that almost always lands.
+    const sizes = [...new Set([TOUCH_BTN_PRIMARY * scale, TOUCH_BTN_SECONDARY * scale, TOUCH_MIN_TARGET])].filter(
+      (s) => s <= full && s >= TOUCH_MIN_TARGET,
+    );
+    for (const size of sizes.length ? sizes : [full]) {
       const cands = [
         ...candidates(b.side, size, vp, b.side === 'left' ? drive : turn),
         ...candidates(other, size, vp, other === 'left' ? drive : turn),
@@ -526,11 +548,21 @@ export function packTouchControls(
       p = cands.find((c) => !taken.some((t) => overlaps(c, t)));
       if (p) break;
     }
-    // clampOn pulls this to the outer column's edge and just under the top strip; each further
-    // last resort on that side steps one pitch down, so two never land on the same spot
+    // ⚠️ THE LAST RESORT USED TO IGNORE `taken` ALTOGETHER and just step down the edge, so a
+    // ten-button BIOBUZZ pad on a short landscape phone stacked its overflow straight through
+    // the gutter score column and into the DRIVE base — and `.mobile-btn` sits ABOVE the touch
+    // layer, so the thumb reaching to drive pressed PARK instead. Score every slot of its own
+    // edge and then the other one, exactly as the candidate search falls back, and take the
+    // cheapest. A STICK outranks every other obstacle by three orders of magnitude, because a
+    // gutter chip merely sits under a button while a stick has its press STOLEN — and among
+    // equals the first wins, so this stays a pure function. Each placement joins `taken`, which
+    // is what stops the second and third overflow landing on the first.
     if (!p) {
       const size = Math.min(full, TOUCH_MIN_TARGET);
-      p = clampOn({ x: b.side === 'left' ? 0 : vp.w, y: TOUCH_TOP_RESERVE.left + size / 2 + lastResort[b.side]++ * (size + TOUCH_GAP), size }, vp);
+      const col = [...lastResortColumn(b.side, size, vp), ...lastResortColumn(other, size, vp)];
+      const cost = (c: PlacedControl): number =>
+        ([drive, turn].some((s) => overlaps(c, s)) ? 1e3 : 0) + taken.filter((t) => overlaps(c, t)).length;
+      p = col.reduce((best, c) => (cost(c) < cost(best) ? c : best), col[0]);
     }
     taken.push(p);
     out.push({ ...p, button: b, stored: false });

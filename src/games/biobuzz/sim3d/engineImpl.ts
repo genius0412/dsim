@@ -15,7 +15,7 @@ import type { Alliance, Artifact, BallState, RobotState, World } from '../../../
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
 import {
   addChassis3dColliders,
@@ -38,7 +38,7 @@ import {
   ELEMENT_ROLL_DAMP,
   GROUP_ELEMENT,
 } from './bodies';
-import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
+import { hyp3, hypXY, quatMul, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
 import { datan2, dcos, dsin, nextRandom, rot } from '../../../math';
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
@@ -297,6 +297,178 @@ function builtHeight(engine: Engine3d, r: RobotState): number {
   return engine.robotHeights.get(r.id) ?? robotHeightIn(r.spec);
 }
 
+type Collider3 = InstanceType<Rapier3d['Collider']>;
+type Shape3 = Collider3['shape'];
+
+/** a fixed collider a placed chassis is tested against, with its world-space AABB. */
+interface FitStatic {
+  col: Collider3;
+  groups: number;
+  skin: number;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/** built once per engine: every fixed collider never moves. */
+const FIT_STATICS = new WeakMap<Engine3d, FitStatic[]>();
+
+function rotVec(q: { x: number; y: number; z: number; w: number }, v: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+  };
+}
+
+/** a radius that bounds `shape` about its own origin; Infinity for a shape it does not know. */
+function shapeRadius(shape: Shape3): number {
+  const s = shape as unknown as {
+    vertices?: Float32Array;
+    halfExtents?: { x: number; y: number; z: number };
+    radius?: number;
+    halfHeight?: number;
+    borderRadius?: number;
+  };
+  const border = s.borderRadius ?? 0;
+  if (s.vertices) {
+    let m = 0;
+    for (let i = 0; i + 2 < s.vertices.length; i += 3) m = Math.max(m, hyp3(s.vertices[i], s.vertices[i + 1], s.vertices[i + 2]));
+    return m + border;
+  }
+  if (s.halfExtents) return hyp3(s.halfExtents.x, s.halfExtents.y, s.halfExtents.z) + border;
+  if (s.radius !== undefined && s.halfHeight !== undefined) return hypXY(s.radius, s.halfHeight) + border;
+  if (s.radius !== undefined) return s.radius + border;
+  return Infinity;
+}
+
+function fitStatics(engine: Engine3d): FitStatic[] {
+  let list = FIT_STATICS.get(engine);
+  if (list) return list;
+  list = [];
+  const out = list;
+  engine.world3d.forEachCollider((col) => {
+    const p = col.parent();
+    if (!p || !p.isFixed() || col.isSensor()) return;
+    const t = col.translation();
+    const q = col.rotation();
+    const s = col.shape as unknown as { vertices?: Float32Array };
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, maxZ = -Infinity;
+    if (s.vertices) {
+      for (let i = 0; i + 2 < s.vertices.length; i += 3) {
+        const v = rotVec(q, { x: s.vertices[i], y: s.vertices[i + 1], z: s.vertices[i + 2] });
+        minX = Math.min(minX, t.x + v.x);
+        maxX = Math.max(maxX, t.x + v.x);
+        minY = Math.min(minY, t.y + v.y);
+        maxY = Math.max(maxY, t.y + v.y);
+        maxZ = Math.max(maxZ, t.z + v.z);
+      }
+    } else {
+      const he = (col.shape as unknown as { halfExtents?: { x: number; y: number; z: number } }).halfExtents;
+      const rad = shapeRadius(col.shape);
+      // an axis-aligned box keeps its exact top, which is how the floor is told apart
+      const flat = he && Math.abs(q.x) < 1e-9 && Math.abs(q.y) < 1e-9 && Math.abs(q.z) < 1e-9;
+      minX = t.x - rad;
+      maxX = t.x + rad;
+      minY = t.y - rad;
+      maxY = t.y + rad;
+      maxZ = flat ? t.z + he.z : t.z + rad;
+    }
+    // the tiles are the floor's business: a chassis rests ON them, never beside them
+    if (maxZ <= 1e-6) return;
+    out.push({ col, groups: col.collisionGroups(), skin: col.contactSkin(), minX, maxX, minY, maxY });
+  });
+  FIT_STATICS.set(engine, list);
+  return list;
+}
+
+/** a chassis collider in the body's own frame, read once per fit. */
+interface FitPart {
+  shape: Shape3;
+  t: { x: number; y: number; z: number };
+  q: { x: number; y: number; z: number; w: number };
+  groups: number;
+  skin: number;
+}
+
+function groupsMeet(a: number, b: number): boolean {
+  return ((a >>> 16) & (b & 0xffff)) !== 0 && ((b >>> 16) & (a & 0xffff)) !== 0;
+}
+
+/** does the chassis, at (x, y, centreZ) and `heading`, sit more than `BB3_FIT_DEPTH` inside a fixed solid? */
+function chassisInsideStatic(parts: FitPart[], reach: number, statics: FitStatic[], x: number, y: number, centreZ: number, heading: number): boolean {
+  const yaw = yawQuat(heading);
+  for (const s of statics) {
+    if (x + reach < s.minX || x - reach > s.maxX || y + reach < s.minY || y - reach > s.maxY) continue;
+    for (const p of parts) {
+      if (!groupsMeet(p.groups, s.groups)) continue;
+      const o = rotVec(yaw, p.t);
+      const hit = s.col.contactShape(p.shape, { x: x + o.x, y: y + o.y, z: centreZ + o.z }, quatMul(yaw, p.q), 0);
+      if (hit && hit.distance - p.skin - s.skin < -BB3_FIT_DEPTH) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * ⚠️ **A CHASSIS PLACED INSIDE THE HIVE FRAME WAS LIFTED ONTO IT AND NEVER CAME DOWN.** Runs on a
+ * pose the solver did not produce: a new body, a teleport, a deploy-edge rebuild. A chassis
+ * straddling a 2.15-in foot bar is 2.15 in deep vertically and 7+ in deep sideways, so Rapier's
+ * shallowest way out was UP (z 0.50 after ONE tick, 2.1 after a few); the A-frame leg then ran
+ * between the frame box and an intake arm, pushed from both sides (normals ±(0.83, 0.56)), and
+ * the robot could not translate or turn with the full drive wrench, even at zero friction.
+ * MEASURED (`scratch/rampstuck.ts`): every one of the 8/400 stuck runs started inside the frame,
+ * and 0/1200 runs that started clear ever climbed; a 2v2 ram probe never lifted a robot either.
+ *
+ * So a chassis more than `BB3_FIT_DEPTH` inside any fixed solid is moved SIDEWAYS, at its own
+ * height and heading, to the nearest clear spot on rings `BB3_FIT_STEP` apart — where a field
+ * crew would set it down. Fixed bodies only: they never move, so the answer does not depend on
+ * which robots or elements this sync has reached yet. No clear spot inside `BB3_FIT_MAX` leaves
+ * the pose alone. Returns true when it moved the robot.
+ *
+ * The chassis only (boxes, pocket filler, mechanism shapes), not the reach hardware: a ramp blade
+ * inside a static is the swing guard's and the embed fold's case (`elements3d.ts`), and moving
+ * the robot here would take that decision away from them.
+ */
+function setChassisClear(engine: Engine3d, body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, centreZ: number): boolean {
+  const parts: FitPart[] = [];
+  let reach = 0;
+  // the chassis boxes, pocket filler and mechanism shapes come first; the reach hardware after
+  const n = Math.min(body.numColliders(), chassis3dBaseColliderCount(r.spec, builtHeight(engine, r)));
+  for (let i = 0; i < n; i++) {
+    const c = body.collider(i);
+    if (c.isSensor()) continue;
+    const t = c.translationWrtParent() ?? { x: 0, y: 0, z: 0 };
+    const q = c.rotationWrtParent() ?? QUAT_IDENTITY;
+    const shape = c.shape;
+    const skin = c.contactSkin();
+    parts.push({ shape, t: { x: t.x, y: t.y, z: t.z }, q: { x: q.x, y: q.y, z: q.z, w: q.w }, groups: c.collisionGroups(), skin });
+    reach = Math.max(reach, hypXY(t.x, t.y) + shapeRadius(shape) + skin);
+  }
+  const statics = fitStatics(engine);
+  if (!chassisInsideStatic(parts, reach, statics, r.pos.x, r.pos.y, centreZ, r.heading)) return false;
+  const DIRS = 16;
+  for (let ring = 1; ring * BB3_FIT_STEP <= BB3_FIT_MAX + 1e-9; ring++) {
+    const d = ring * BB3_FIT_STEP;
+    for (let k = 0; k < DIRS; k++) {
+      const a = (2 * Math.PI * k) / DIRS;
+      const x = round4(r.pos.x + d * dcos(a));
+      const y = round4(r.pos.y + d * dsin(a));
+      if (Math.abs(x) > BB_HALF_X || Math.abs(y) > BB_HALF_Y) continue;
+      if (chassisInsideStatic(parts, reach, statics, x, y, centreZ, r.heading)) continue;
+      r.pos.x = x;
+      r.pos.y = y;
+      body.setTranslation({ x, y, z: centreZ }, true);
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Reconcile one robot's body to its current `RobotState` JSON. Creates the body on first use;
  * afterwards, TELEPORTS it (position, rotation, both velocities) only when the JSON has moved
@@ -315,6 +487,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
   const vz = r.vz ?? 0;
 
   let body = engine.robots.get(r.id);
+  let placed = !body;
   if (!body) {
     body = engine.world3d.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
@@ -384,7 +557,10 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
       }
       engine.robotHeights.set(r.id, heightIn);
       engine.robotRampReady.set(r.id, rampReady);
-      if (heightChanged) body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);
+      if (heightChanged) {
+        body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);
+        placed = true;
+      }
     }
   }
 
@@ -410,6 +586,19 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
     body.setRotation(yawQuat(r.heading), true);
     body.setLinvel({ x: r.vel.x, y: r.vel.y, z: vz }, true);
     body.setAngvel({ x: 0, y: 0, z: r.angVel }, true);
+  }
+  // a POSITION the solver did not produce: new, moved by gameplay, or re-built at the deploy
+  // edge. Not a heading edit: `squareUpRobotsWalls` turns every robot touching a wall a little
+  // each tick, and re-testing those let the fit move a robot that another robot was pressing
+  // into a static past 0.25 in (measured, 2v2 ram probe) — a solver state, not this case.
+  if (
+    placed ||
+    !last ||
+    Math.abs(last.x - r.pos.x) > POSE_EPS ||
+    Math.abs(last.y - r.pos.y) > POSE_EPS ||
+    Math.abs(last.z - z) > POSE_EPS
+  ) {
+    setChassisClear(engine, body, r, centreZ);
   }
   engine.lastRobot.set(r.id, {
     x: r.pos.x,

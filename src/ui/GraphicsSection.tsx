@@ -26,7 +26,7 @@ import {
   type MaxFps,
 } from '../games/biobuzz/graphics/settings';
 import { desktop, type DesktopPerfState } from '../desktop';
-import { BB_ENVIRONMENTS } from '../games/biobuzz/graphics/environments';
+import { pickableEnvironments } from '../games/biobuzz/graphics/environments';
 import {
   CAMERA_PREFS,
   getCameraPref,
@@ -809,7 +809,11 @@ export function GraphicsSection() {
             value={s.environment}
             cols="three"
             onPick={set('environment')}
-            options={BB_ENVIRONMENTS.map((e) => ({ v: e.id, t: e.name, d: e.note }))}
+            /* only what THIS client can actually fetch: inside a Discord Activity the HDRI
+               host is not one of the two URL mappings, so those tiles advertised a download
+               that cannot happen and a size that is never paid (the scene falls back to a
+               painted stand-in). `pickableEnvironments` is the same list, filtered. */
+            options={pickableEnvironments().map((e) => ({ v: e.id, t: e.name, d: e.note }))}
           />
           {/* THE ONE COST A TILE CANNOT STATE FOR ITSELF, and it does not count the rooms:
               environments arrive as DATA (`graphics/environments.ts`), so a sentence saying

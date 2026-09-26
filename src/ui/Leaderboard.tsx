@@ -19,7 +19,7 @@ import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { DRIVETRAIN_LABELS } from './labelData';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { PLACEMENT_GAMES } from '../config';
 import {
   CHAIN_MODE_LABELS,
@@ -63,7 +63,6 @@ function DriverName({
   username,
   supporter,
   role,
-  title,
   badges,
   onOpenProfile,
 }: {
@@ -71,8 +70,6 @@ function DriverName({
   username: string | null;
   supporter?: boolean;
   role?: StaffRole;
-  /** the equipped TITLE id (`badgeCols`). Parsed, never joined — see `parseAwardTitleId`. */
-  title?: string | null;
   /** the worn badges and their counters (`badgeCols`, 0048) */
   badges?: unknown;
   onOpenProfile?: (username: string) => void;
@@ -94,7 +91,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
-        <TitleMark title={title} badges={badges} />
+        <BadgeMarks badges={badges} />
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -104,8 +101,8 @@ function DriverName({
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
       {/* a row without a username (an anonymous or unclaimed run) still shows whatever
-          title it is wearing */}
-      <TitleMark title={title} badges={badges} />
+          badges it is wearing */}
+      <BadgeMarks badges={badges} />
     </>
   );
 }
@@ -321,8 +318,14 @@ export function Leaderboard({
              * the field is present; a row that carries no `physics` at all is older still and
              * is kept, because dropping it would blank the board for a game whose rows are all
              * 2D anyway (DECODE, Chain Reaction) and for pre-0039 rows that are what they are.
+             *
+             * The era kept is the one the server ECHOES, because it is per season now: an
+             * archived season is the solve it was played on (BIOBUZZ Act 1 is 2D). A server that
+             * echoes nothing predates the ruling; its board is the 3D one.
              */
-            rows: threeD ? r.rows.filter((x) => x.physics !== '2d') : r.rows,
+            rows: threeD
+              ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
+              : r.rows,
             me: null as EloStanding | null,
           }))
         : fetchElo(eloMode, s, myUserId, game);
@@ -490,7 +493,6 @@ export function Leaderboard({
                             username={r.username}
                             supporter={r.supporter}
                             role={r.role}
-                            title={r.title}
                             badges={r.badges}
                             onOpenProfile={onOpenProfile}
                           />
@@ -502,7 +504,6 @@ export function Leaderboard({
                                 username={rec.partnerUsername}
                                 supporter={rec.partnerSupporter}
                                 role={rec.partnerRole}
-                                title={rec.partnerTitle}
                                 badges={rec.partnerBadges}
                                 onOpenProfile={onOpenProfile}
                               />

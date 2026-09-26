@@ -24,4 +24,7 @@ export interface ResumedRoom {
   region?: string;
   /** our seat's id on this socket, re-sent by the server with the recycle */
   clientId: string;
+  /** THE SEAT'S SECRET (protocol.ts `welcome`). No `welcome` is re-sent on this socket, so it
+   * travels with the socket, or the room's next match is built with an empty token. */
+  seatToken: string;
 }

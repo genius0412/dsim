@@ -194,3 +194,29 @@ export function markPracticeUploaded(id: string, remoteId: string): void {
   hit.remoteId = remoteId;
   writeIndex(index);
 }
+
+/**
+ * THE ACCOUNT REFUSED A PRACTICE SAVE BECAUSE THE EMAIL IS NOT VERIFIED.
+ *
+ * Set by `uploadPracticeRun` on a 403 carrying `email_unverified`, cleared by the next upload
+ * that lands. The upload itself used to fail SILENTLY: the run stayed on the device, the
+ * backlog stopped behind it, and nothing anywhere said why. Practice replays reads this to say
+ * so and to offer the code form. IN MEMORY on purpose: every page load re-tries the backlog on
+ * sign-in, which re-learns it within a request, and a stored flag could outlive the refusal.
+ */
+let uploadBlocked = false;
+const blockedListeners = new Set<() => void>();
+export function practiceUploadBlocked(): boolean {
+  return uploadBlocked;
+}
+export function setPracticeUploadBlocked(v: boolean): void {
+  if (uploadBlocked === v) return;
+  uploadBlocked = v;
+  blockedListeners.forEach((l) => l());
+}
+export function onPracticeUploadBlocked(l: () => void): () => void {
+  blockedListeners.add(l);
+  return () => {
+    blockedListeners.delete(l);
+  };
+}

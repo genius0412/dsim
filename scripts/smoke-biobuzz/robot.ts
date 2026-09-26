@@ -3,15 +3,13 @@ import { readFileSync } from 'node:fs';
 import * as C from '../../src/config';
 import { datan2, hyp, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
-import { defaultSettings, switchGame } from '../../src/settings';
-import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
+import { coerceSettings, defaultSettings, switchGame } from '../../src/settings';
+import { coerceSpec, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_HIVE_CELL_LEN,
-  BB_INERTIA_DEFAULT,
   BB_MASS_BASE,
   BB_MASS_BOX_TUBE,
   BB_MASS_DUMPER,
-  BB_MASS_INERTIA,
   BB_MASS_SWEEPER_EDGE,
   BB_MASS_TURRET,
   BB_MASS_TURRET2,
@@ -66,6 +64,7 @@ import {
   BB_TURRET_PITCH_ACCEL,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_REST,
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
   BB_TURRET_SOLVE_PASSES,
@@ -119,6 +118,7 @@ import {
   bbPlacePoint,
   bbPlacePointLocal,
   bbRampSettled,
+  bbRampStep,
   bbRampSwingProgress,
   bbRobotSolids,
   bbSlewTurret,
@@ -501,7 +501,7 @@ export function robotChecks(check: Check): void {
       }) as unknown as Partial<RobotSpec>;
     /** a build, THROUGH the coercer, so what is measured is what would spawn. */
     const build = (o: Partial<RobotSpec>): RobotSpec =>
-      bbCoerce({ ...BB_DEFAULT_SPEC, flywheelInertia: BB_INERTIA_DEFAULT, ...o });
+      bbCoerce({ ...BB_DEFAULT_SPEC, ...o });
     const floor = (o: Partial<RobotSpec>): number => bbMassLimits(build(o)).min;
     const ONE_TURRET = { intakeMount: 'front', ...mech('turret', 'center', false) } as Partial<RobotSpec>;
 
@@ -562,15 +562,15 @@ export function robotChecks(check: Check): void {
           floor({ drivetrain: 'mecanum', ...ONE_TURRET }),
         BB_MASS_BOX_TUBE,
       ],
-      [
-        'the FLYWHEEL at full inertia',
-        floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 1 }) -
-          floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 0 }),
-        BB_MASS_INERTIA,
-      ],
     ];
     for (const [what, got, want] of deltas) {
       check(`mass: ${what} costs ${want} lb and nothing else moves`, Math.abs(got - want) < 1e-9 && want > 0, `${got}`);
+    }
+    // BIOBUZZ HAS NO INERTIA (owner, 2026-09-24). A new BIOBUZZ spec is seeded from DECODE's
+    // `DEFAULT_SPEC` (0.4), which used to price into the floor: mecanum + turret at 18.6.
+    {
+      const seeded = bbCoerce({ ...DEFAULT_SPEC, drivetrain: 'mecanum', ...ONE_TURRET });
+      check('mass: a DECODE-seeded spec coerces to no inertia and floors at 18.00', seeded.flywheelInertia === 0 && bbMassLimits(seeded).min === 18, `inertia ${seeded.flywheelInertia}, floor ${bbMassLimits(seeded).min}`);
     }
 
     // THE HEAVY END LANDS SOMEWHERE PLAUSIBLE. Not a chosen number — a sanity band on the sum,
@@ -616,7 +616,6 @@ export function robotChecks(check: Check): void {
       const light = bbCoerce({
         ...BB_DEFAULT_SPEC,
         drivetrain: 'tank',
-        flywheelInertia: BB_INERTIA_DEFAULT,
         massLb: 1,
         ...ONE_TURRET,
       });
@@ -854,6 +853,18 @@ export function robotChecks(check: Check): void {
     const flank = bbCoerce({ ...oldMax, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left' } }) });
     const fl = extent(flank);
     check('R105.A: a flank Box Tube on a maxed chassis keeps its size (18 × 24 either way round)', inPrism(flank) && flank.length === 15 && flank.width === 17, `${flank.length} × ${flank.width} → ${fl.ex.toFixed(2)} × ${fl.ey.toFixed(2)}`);
+    // THE CEILING IS R102's 18 AND THE WIDTH RANGE FOLLOWS THE LENGTH (owner, 2026-09-24). A front
+    // sweeper with no tube reaches 18 × 18; the same flank-tube build can go 18 long, and then
+    // only the length-long rectangle holds it, so its width range narrows to fit.
+    {
+      const plain = bbCoerce({ ...oldMax, length: 99, width: 99, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }) });
+      check('size: a front sweeper, no tube, dials to 18 × 18 (R102, not DECODE’s 15 or the old 17)', plain.length === 18 && plain.width === 18 && inPrism(plain), `${plain.length} × ${plain.width}`);
+      const long = bbCoerce({ ...flank, length: 18, width: 18 });
+      const ll = extent(long);
+      check('size: the flank-tube build at 18 long gets the width that rectangle allows, and stays in the prism', long.length === 18 && long.width === 15.5 && inPrism(long), `${long.length} × ${long.width} → ${ll.ex.toFixed(2)} × ${ll.ey.toFixed(2)}`);
+      check('size: ...and its dial range agrees with the coercer', bbSizeLimits(long).maxWidth === 15.5 && bbSizeLimits(flank).maxWidth === 18 && bbSizeLimits(flank).maxLength === 18, `${bbSizeLimits(long).maxWidth} / ${bbSizeLimits(flank).maxWidth} / ${bbSizeLimits(flank).maxLength}`);
+      check('size: coercion is still idempotent across the dependent range', JSON.stringify(bbCoerce(long)) === JSON.stringify(long));
+    }
     // NO 15-DIGIT SIZES (owner report, 2026-09-13): a corner tube's reach is 2.36·√½, and the
     // clamp used to land a chassis on 16.331227996399747. Every size limit sits on the slider grid.
     const onGrid = (v: number): boolean => Math.abs(v / BB_SIZE_STEP - Math.round(v / BB_SIZE_STEP)) < 1e-9;
@@ -1600,6 +1611,13 @@ export function robotChecks(check: Check): void {
     park(r, 40, 50, Math.PI); // blue, on its own cell's OPEN side
     const yaw0 = r.turretHeading;
     const pitch0 = r.bbTurretPitch ?? 0;
+    // ⚠️ A TURRET SPAWNS AT `BB_TURRET_PITCH_REST`, NOT LEVEL — level is the hood's tallest pose and
+    // one no HIVE shot uses (owner, 2026-09-24). A turretless build carries no pitch at all.
+    check('turret: spawn seeds the elevation at BB_TURRET_PITCH_REST, not level', pitch0 === BB_TURRET_PITCH_REST, `${pitch0}`);
+    {
+      const wd = mkWorld('free', 43, mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }));
+      check('turret: ...and a DUMPER spawns with no pitch field at all', wd.robots[0].bbTurretPitch === undefined && wd.robots[0].bbTurret2Pitch === undefined);
+    }
     run(w, cmd({}), 1.5);
     const target = bbAimTarget(w, r);
     check('turret: the test pose aims at the own up cell (the nearer one, from its open side)', target.pos.y > 0);
@@ -1644,7 +1662,8 @@ export function robotChecks(check: Check): void {
   {
     const w = mkWorld('free', 47, mech({ launcher: TWIN, lift: null }));
     const r = w.robots[0];
-    check('twin: spawn seeds the NECTAR turret\'s yaw and pitch', typeof r.bbTurret2Heading === 'number' && r.bbTurret2Pitch === 0, `${r.bbTurret2Heading}/${r.bbTurret2Pitch}`);
+    check('twin: spawn seeds the NECTAR turret\'s yaw and pitch', typeof r.bbTurret2Heading === 'number' && r.bbTurret2Pitch === BB_TURRET_PITCH_REST, `${r.bbTurret2Heading}/${r.bbTurret2Pitch}`);
+    check('twin: ...and the POLLEN turret spawns at the same rest elevation, not level', r.bbTurretPitch === BB_TURRET_PITCH_REST, `${r.bbTurretPitch}`);
     emptyHopper(w, r);
     park(r, 40, 50, Math.PI);
     const yaw0 = r.turretHeading;
@@ -3056,6 +3075,37 @@ export function robotChecks(check: Check): void {
       tick(w, cmd({ bbRamp: true }));
       check('flower intake: a bbRamp press during `pre` does nothing', r.bbRampOut !== true, `out=${r.bbRampOut}`);
     }
+    {
+      // DEBOUNCE (replay 1dc6eb8f, 2026-09-25): a held ramp button with a 1- or 2-tick dropout in
+      // it is ONE press. Each dropout in that match flipped the ramp twice. A 3-tick gap was the
+      // fastest real re-press in the same match, so it still counts.
+      const flipsWithGap = (gap: number): number => {
+        const { r } = pullWorld(123, 'ramp');
+        let t = 0;
+        let flips = 0;
+        let out = r.bbRampOut;
+        const hold = (on: boolean, n: number): void => {
+          for (let i = 0; i < n; i++) {
+            t += 1 / 60;
+            bbRampStep(r, cmd({ bbRamp: on }), true, t);
+            if (r.bbRampOut !== out) {
+              flips++;
+              out = r.bbRampOut;
+            }
+          }
+        };
+        hold(true, 8);
+        hold(false, gap);
+        hold(true, 8);
+        hold(false, 10);
+        return flips;
+      };
+      const f = [1, 2, 3, 6].map(flipsWithGap);
+      check('ramp debounce: a 1-tick dropout inside a held press toggles ONCE', f[0] === 1, `flips=${f[0]}`);
+      check('ramp debounce: a 2-tick dropout inside a held press toggles ONCE', f[1] === 1, `flips=${f[1]}`);
+      check('ramp debounce: a 3-tick gap is a real re-press and toggles TWICE', f[2] === 2, `flips=${f[2]}`);
+      check('ramp debounce: a 6-tick gap toggles TWICE', f[3] === 2, `flips=${f[3]}`);
+    }
   }
 
   // ── THE INTAKE ARCHETYPE: coercion and identity ───────────────────────────
@@ -3291,6 +3341,89 @@ export function robotChecks(check: Check): void {
     check('settings: ...and its saved robots', back.savedRobots.length === 1 && specKey(back.savedRobots[0]) === specKey(mine));
     check('settings: the active BIOBUZZ loadout is not ALSO left in the archive', back.loadouts?.biobuzz === undefined, `archived=${Object.keys(back.loadouts ?? {}).join(',')}`);
     check('settings: switching to the game already active is a no-op', switchGame(back, 'biobuzz') === back);
+  }
+
+  // ── A FIRST BIOBUZZ ROBOT IS BIOBUZZ'S, NOT DECODE'S CHASSIS CLAMPED (audit #29) ──────────
+  //
+  // `src/settings.ts` seeded every game's first loadout from `DEFAULT_SPEC`, which is DECODE's
+  // chassis: `coerceSpec` starts from `base` and overlays only what it reads off the raw input,
+  // so a fresh BIOBUZZ robot was DECODE's 14.5 × 16.5 / 500 rpm / 0.40 inertia bounded into this
+  // game's legal ranges. Legal and playable, on tuning nobody chose. `BB_DEFAULT_SPEC` was
+  // written to be that seed and nothing reached it — it is only `coerceBiobuzzSpec`'s default
+  // PARAMETER, and `coerceSpec` always passes its own `base` explicitly.
+  {
+    const fresh = switchGame(defaultSettings(), 'biobuzz').spec;
+    /** `BB_DEFAULT_SPEC` with the SHARED identity back on it — the seed as `src/settings.ts`
+     * builds it. Spelled out here rather than imported so the check states the contract itself. */
+    const seed = { ...BB_DEFAULT_SPEC, name: DEFAULT_SPEC.name, teamName: DEFAULT_SPEC.teamName, teamNumber: DEFAULT_SPEC.teamNumber };
+    const bb = coerceSpec(seed, seed, 'biobuzz');
+    check('settings: a first BIOBUZZ robot is the game’s own build', specKey(fresh) === specKey(bb), `${specKey(fresh)} vs ${specKey(bb)}`);
+    // the three numbers the audit measured, named so a regression says WHICH way it went
+    check(
+      'settings: ...so it is not DECODE’s frame, gearing or flywheel',
+      fresh.length === BB_DEFAULT_SPEC.length &&
+        fresh.width === BB_DEFAULT_SPEC.width &&
+        fresh.driveRpm === BB_DEFAULT_SPEC.driveRpm &&
+        fresh.flywheelInertia === BB_DEFAULT_SPEC.flywheelInertia,
+      `${fresh.length}x${fresh.width} ${fresh.driveRpm}rpm i=${fresh.flywheelInertia}`,
+    );
+    /** the seed as it WAS: DECODE's chassis as both raw input and base, bounded into BIOBUZZ. */
+    const legacy = coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, 'biobuzz');
+    check('settings: ...and it really differs from what DECODE’s chassis coerced to', specKey(fresh) !== specKey(legacy));
+    // ⚠️ THE IDENTITY IS STILL THE SHARED ONE. `BB_DEFAULT_SPEC` is `{ ...DEFAULT_SPEC,
+    // ...BB_PRESETS[0] }` and `BB_PRESETS[0]` is a preset CARD, so seeding straight from it would
+    // name a new player's own robot "Pollinator" — a name they never typed, in one game only.
+    check(
+      'settings: a first BIOBUZZ robot still carries the shared name and team',
+      fresh.name === DEFAULT_SPEC.name && fresh.teamName === DEFAULT_SPEC.teamName && fresh.teamNumber === DEFAULT_SPEC.teamNumber,
+      `${fresh.name} / ${fresh.teamName} / ${fresh.teamNumber}`,
+    );
+    /**
+     * ⚠️ THE SEED'S OWN TUNING MUST SURVIVE THE COERCER — the property that matters, and NOT
+     * "the seed is a fixed point", which is false: `coerceSpec` adds `accent`/`bbMech`/
+     * `chassisColor`/`decal`/`plate` and drops the fields BIOBUZZ does not use, so seed and
+     * coerced seed never key-compare equal. The old check compared the coerced output with
+     * ITSELF and so passed with a seed of `driveRpm: 99999`.
+     */
+    const seeded = BB_DEFAULT_SPEC;
+    check(
+      'settings: the seed’s own tuning survives coercion — it is not clamped away',
+      fresh.driveRpm === seeded.driveRpm &&
+        fresh.massLb === seeded.massLb &&
+        fresh.flywheelInertia === seeded.flywheelInertia &&
+        fresh.length === seeded.length &&
+        fresh.width === seeded.width,
+      `${fresh.driveRpm}rpm ${fresh.massLb}lb i=${fresh.flywheelInertia} ${fresh.length}x${fresh.width}`,
+    );
+    // and coercing it again changes nothing more (the builder must not rewrite it per keystroke)
+    check('settings: …and a second pass changes nothing more', specKey(bbCoerce(fresh)) === specKey(fresh));
+    // AND THE OTHER DOOR AGREES. A stored blob that names a game but carries no robot is the same
+    // "seed a fresh loadout" case reached through `coerceSettings` instead of `switchGame`.
+    check('settings: a stored blob with a game but no robot seeds the same build', specKey(coerceSettings({ game: 'biobuzz' }).spec) === specKey(fresh));
+    // ⚠️ AND AN EXISTING PLAYER'S ROBOT IS NOT RE-TUNED. The seed only applies where there is no
+    // stored spec; a saved one keeps `DEFAULT_SPEC` as its fallback base, so nothing people have
+    // already built moves under them.
+    const stored = JSON.parse(JSON.stringify({ ...switchGame(defaultSettings(), 'biobuzz'), spec: legacy })) as unknown;
+    check('settings: a robot saved under the old seed survives a load unchanged', specKey(coerceSettings(stored).spec) === specKey(legacy));
+    /**
+     * ⚠️ AND A PARTIAL ONE TOO, which is the only shape that can observe this at all. A
+     * COMPLETE stored spec makes `coerceSpec`'s BASE argument structurally unreachable, so
+     * the check above cannot see which base was used — it passed even with the seed wired in
+     * as the base, i.e. with every existing player's robot silently re-tuned. An older blob
+     * missing the fields a later build added is the real case, and it must fall back to
+     * DECODE's shared values rather than to BIOBUZZ's.
+     */
+    const partial = JSON.parse(
+      JSON.stringify({ game: 'biobuzz', spec: { driveRpm: legacy.driveRpm, massLb: legacy.massLb } }),
+    ) as unknown;
+    const loaded = coerceSettings(partial).spec;
+    check(
+      'settings: a PARTIAL saved robot falls back to the shared base, not the BIOBUZZ seed',
+      loaded.driveRpm === legacy.driveRpm &&
+        loaded.massLb === legacy.massLb &&
+        loaded.flywheelInertia === legacy.flywheelInertia,
+      `${loaded.driveRpm}rpm ${loaded.massLb}lb i=${loaded.flywheelInertia} (seed would be ${BB_DEFAULT_SPEC.flywheelInertia})`,
+    );
   }
 
   // ── THE DRAWN MOUTHS ARE THE CAPTURE AREAS ────────────────────────────────

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
-import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
+import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
@@ -12,7 +12,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { routeTarget } from './routing';
+import { legalRegion, routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
@@ -23,11 +23,30 @@ import { lockRemaining, tierOf,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
 import { handleApi } from './api';
+import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
+import {
+  refreshLockdown,
+  currentLockdown,
+  lockdownRefusal,
+  siteAccess,
+  forgetAccess,
+  refreshBanners,
+  legacyNotice,
+  siteStatus,
+  statusSignature,
+  addBanner,
+  adminBannerList,
+  editBanner,
+  endBannerNow,
+  removeBanner,
+  announceRestart,
+  cancelRestart,
+} from './siteState';
 import { serveClient, servingClient } from './static';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
-import { periodLabel } from '../src/seasons';
+import { periodLabel, seasonFor } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
@@ -79,10 +98,19 @@ import {
   getMaintenance,
   setMaintenance,
   maintenanceBiting,
+  ACCESS_GROUPS,
+  isAccessGroup,
+  isBannerKind,
+  grantAccess,
+  revokeAccess,
+  listAccessMembers,
+  resolvePlayerTag,
+  ensureProfile,
+  type AccessGroup,
+  type BannerInput,
   type PresencePlayer,
   type PresenceAnon,
   type PresenceGuest,
-  type MaintenanceWindow,
   challengeParty,
   clearRoomInvitesTo,
   syncStaffRoles,
@@ -241,6 +269,20 @@ const matchmaker = new Matchmaker(
 // userId, so multiple tabs count once).
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
+/**
+ * Has a signed-in player been on THIS machine since the last hourly reward sweep? The sweeps
+ * read Postgres, so an unconditional hourly pass on every machine wakes Neon for five billed
+ * minutes an hour, per machine, with nobody playing. A grant only matters to somebody who is
+ * here to see it, and a GitHub link sweeps on its own (`server/api.ts`), so an idle machine
+ * skips the pass. See "IDLE MEANS SILENT" below.
+ */
+const authedSinceSweep = { star: false, boost: false };
+/** consume one sweep's flag: has this machine had a signed-in player since that sweep last ran? */
+const sweepWanted = (kind: keyof typeof authedSinceSweep): boolean => {
+  const want = authedSinceSweep[kind] || authedUsers.size > 0;
+  authedSinceSweep[kind] = false;
+  return want;
+};
 /** Publish this machine's presence row RIGHT NOW. Installed by the heartbeat below;
  *  a no-op until then (and in tests, which never start it). Called on the
  *  empty -> occupied edge so the first player of a quiet period is visible to the
@@ -267,45 +309,11 @@ const userRoom = new Map<string, string>();
  */
 const liveSockets = new Map<string, { authed: boolean }>();
 
-/**
- * MAINTENANCE LOCKDOWN, cached from the database.
- *
- * Read on a timer rather than per request: this is consulted on every join/queue,
- * and a database round trip on the hot path of starting a match would be a worse
- * problem than the one it solves. A few seconds of staleness is fine — the window
- * is announced minutes ahead, which is the entire point of scheduling it.
- *
- * Admins are exempt, deliberately: the person deploying has to be able to smoke-test
- * the thing they just shipped while everyone else is still held out.
+/*
+ * MAINTENANCE / SITE LOCKDOWN and the BANNERS live in `server/siteState.ts`: a timed cache of
+ * the database rows every machine must agree on, the "who may pass" rule, and the refusal
+ * sentence. Admins always pass; access groups pass a lockdown that lists them.
  */
-const MAINT_TTL_MS = 10_000;
-let maint: MaintenanceWindow = { active: false, startsAt: null, endsAt: null, message: '' };
-let maintAt = 0;
-async function refreshMaintenance(force = false): Promise<MaintenanceWindow> {
-  if (!dbEnabled) return maint;
-  if (!force && Date.now() - maintAt < MAINT_TTL_MS) return maint;
-  try {
-    maint = await getMaintenance();
-    maintAt = Date.now();
-  } catch (e) {
-    // a DB hiccup must not lock everyone out, nor silently unlock — keep the last
-    // known answer and try again on the next tick
-    console.error('[maintenance] read failed, keeping last known state:', e);
-  }
-  return maint;
-}
-/** is the lockdown biting for THIS caller? Admins always pass. */
-function lockedOut(userId?: string | null): boolean {
-  if (userId && ADMIN_IDS.has(userId)) return false;
-  return maintenanceBiting(maint);
-}
-/** the message a locked-out client is shown */
-function lockoutMessage(): string {
-  const base = maint.message?.trim() || 'DSIM is down for maintenance.';
-  if (!maint.endsAt) return `${base} Please try again shortly.`;
-  const mins = Math.max(1, Math.round((maint.endsAt - Date.now()) / 60000));
-  return `${base} Back in about ${mins} minute${mins === 1 ? '' : 's'}.`;
-}
 /**
  * WHAT A SUSPENDED PLAYER IS TOLD AT THE DOOR (0043).
  *
@@ -439,32 +447,38 @@ async function verifyParty(
  * accepted. The matchmaker needs the number to know when the party is complete. */
 const PARTY_SIZE = 2;
 
-// accounts allowed to use the admin API (their auth-JWT `sub`/userId). Set as a
-// Fly secret: ADMIN_USER_IDS="uuid1,uuid2". Empty => admin API is locked to nobody.
-const ADMIN_LIST = (process.env.ADMIN_USER_IDS ?? '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-const ADMIN_IDS = new Set(ADMIN_LIST);
+// ADMIN_USER_IDS / OWNER_USER_ID, parsed once in server/staff.ts (siteState.ts reads them too)
+
 
 /**
- * The OWNER — one account, badged apart from the admins it otherwise sits with.
+ * PUSHING THE SITE STATUS (lockdown + banners) TO THIS MACHINE'S SOCKETS.
  *
- * Defaults to the FIRST id in `ADMIN_USER_IDS` rather than requiring a second
- * secret, because that list has always been owner-first in practice and a feature
- * that silently does nothing until someone sets an env var they were never told
- * about is worse than a documented default. Set `OWNER_USER_ID` explicitly to
- * override it.
- *
- * Owner implies admin: the gate above is `ADMIN_IDS`, and the owner is in it.
+ * The restart notice used to be a variable on whichever machine the admin POST landed on, so
+ * players on every other region never saw it. It is a database row now (0052), every machine
+ * reads the set every `SITE_PUSH_MS`, and each sends a CHANGE to its own sockets: new clients
+ * get `siteStatus`, older ones the `serverNotice` they have always understood.
  */
-const OWNER_ID = (process.env.OWNER_USER_ID ?? '').trim() || ADMIN_LIST[0] || null;
-
-// a pending admin notice (scheduled restart / info) broadcast to every client and
-// re-sent to anyone who connects while it's still live, so late joiners see it too
-let currentNotice: (ServerMsg & { t: 'serverNotice' }) | null = null;
-const noticeLive = (): boolean =>
-  !!currentNotice && (currentNotice.until === undefined || currentNotice.until > Date.now());
+let pushedSig: string | null = null;
+let pushedNotice: string | null = null;
+function pushSiteStatus(): number {
+  const now = Date.now();
+  const sig = statusSignature(now);
+  let n = 0;
+  if (sig !== pushedSig) {
+    pushedSig = sig;
+    const st = siteStatus(now);
+    n = broadcastAll({ t: 'siteStatus', lockdown: st.lockdown, banners: st.banners });
+  }
+  const notice = legacyNotice(now);
+  const nsig = notice ? JSON.stringify([notice.message, notice.until]) : '';
+  if (nsig !== pushedNotice) {
+    // an older client clears its banner on an empty message
+    if (notice || pushedNotice) broadcastAll(notice ?? { t: 'serverNotice', kind: 'info', message: '' });
+    pushedNotice = nsig;
+  }
+  return n;
+}
+const SITE_PUSH_MS = 5000;
 
 /** broadcast a message to EVERY open socket; returns how many got it */
 function broadcastAll(m: ServerMsg): number {
@@ -868,6 +882,14 @@ function snapSendGap(reset: boolean): { rooms: number; n: number; meanMs: number
   return { rooms: contributing, n, meanMs: n ? Math.round((sumMs / n) * 100) / 100 : 0, maxMs };
 }
 
+/** rooms counted against `MAX_ROOMS`: every room except one whose match has finished and is
+ *  only holding its players on the results screen (see `Room.holdsCapacity`) */
+function roomsHoldingCapacity(): number {
+  let n = 0;
+  for (const r of rooms.values()) if (r.holdsCapacity()) n++;
+  return n;
+}
+
 function localLive(): LiveRoom[] {
   return [...rooms.values()].map((r) => r.summary()).filter((s): s is LiveRoom => s !== null);
 }
@@ -906,7 +928,10 @@ const httpServer = createServer((req, res) => {
     // answers with its own x-region. Locally (REGION='') we just answer here.
     const want = new URL(req.url, 'http://x').searchParams.get('region');
     const already = !!req.headers['fly-replay-src'];
-    if (REGION && want && want !== REGION && !already) {
+    // ⚠️ VALIDATED, because this value reaches a `fly-replay` header — the same guard
+    // `/api/lobbies` carries, and the one this handler was flagged for missing. An unvalidated
+    // CRLF here throws inside the handler and leaves the socket hanging with no response.
+    if (REGION && want && legalRegion(want) && want !== REGION && !already) {
       res.writeHead(200, {
         'fly-replay': `region=${want}`,
         'access-control-allow-origin': '*',
@@ -1526,21 +1551,47 @@ const httpServer = createServer((req, res) => {
             const n = Number(v);
             return Number.isFinite(n) && n > 0 ? n : null;
           };
+          /* SCOPE, REDIRECT AND BYPASS (0051). Each is optional and ABSENT MEANS THE OLD
+             BEHAVIOUR — an older console, or the release doc's curl, posts none of them and
+             still means "no new matches, nobody bypasses". A bad value is refused rather than
+             dropped: a lockdown that silently lost its bypass list locks the testers out. */
+          const scopeRaw = u.searchParams.get('scope');
+          const redirectRaw = (u.searchParams.get('redirect') ?? '').trim();
+          const bypassRaw = (u.searchParams.get('bypass') ?? '').split(',').map((g) => g.trim()).filter(Boolean);
+          const bad = (error: string): void => {
+            res.writeHead(400, { ...cors, 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error }));
+          };
+          if (scopeRaw && scopeRaw !== 'matches' && scopeRaw !== 'site') return bad('scope must be matches or site');
+          if (redirectRaw && !/^https:\/\/[^\s]+$/i.test(redirectRaw)) return bad('redirect must be an https:// URL');
+          const unknown = bypassRaw.filter((g) => !isAccessGroup(g));
+          if (unknown.length) return bad(`unknown group(s): ${unknown.join(', ')} (use ${ACCESS_GROUPS.join(', ')})`);
           const next = await setMaintenance({
             active: u.searchParams.get('active') === '1',
             startsAt: num('startsAt'),
             endsAt: num('endsAt'),
             message: (u.searchParams.get('msg') ?? '').slice(0, 200),
+            scope: scopeRaw === 'site' ? 'site' : 'matches',
+            redirectUrl: redirectRaw ? redirectRaw.slice(0, 300) : null,
+            redirectLabel: (u.searchParams.get('redirectLabel') ?? '').trim().slice(0, 40) || null,
+            bypass: bypassRaw.filter(isAccessGroup),
           });
-          await refreshMaintenance(true); // this machine stops/starts enforcing NOW
+          await refreshLockdown(true); // this machine stops/starts enforcing NOW
+          pushSiteStatus(); // and tells its sockets; the other machines follow on their timer
           await writeAudit({
             adminId: actor,
             action: next.active ? 'maintenance.schedule' : 'maintenance.lift',
-            detail: { startsAt: next.startsAt, endsAt: next.endsAt },
+            detail: {
+              startsAt: next.startsAt,
+              endsAt: next.endsAt,
+              scope: next.scope,
+              bypass: next.bypass,
+              redirect: next.redirectUrl,
+            },
             note: next.message || undefined,
           });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, maintenance: next }));
+          res.end(JSON.stringify({ ok: true, maintenance: next, biting: maintenanceBiting(next) }));
           return;
         }
         const cur = await getMaintenance();
@@ -1556,20 +1607,25 @@ const httpServer = createServer((req, res) => {
           res.end('forbidden');
           return;
         }
+        /* A DATABASE ROW NOW (0052), so every machine shows it — see `pushSiteStatus`. This
+           machine pushes at once; the rest within `SITE_PUSH_MS`. `notified` counts this
+           machine's sockets only, which is all it ever counted. */
         if (u.searchParams.get('cancel')) {
-          currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on client
-          const n = broadcastAll(currentNotice);
-          currentNotice = null;
+          await cancelRestart();
+          const n = broadcastAll({ t: 'serverNotice', kind: 'info', message: '' }); // empty => clear on client
+          pushSiteStatus();
           await writeAudit({ adminId: actor, action: 'notice.cancel', detail: { notified: n } });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
           return;
         }
-        const seconds = Math.max(0, Number(u.searchParams.get('seconds') ?? 300));
-        const message = u.searchParams.get('msg') || 'Server restarting for an update';
-        currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
-        const notified = broadcastAll(currentNotice);
-        console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
+        const seconds = Math.min(24 * 3600, Math.max(0, Number(u.searchParams.get('seconds') ?? 300) || 0));
+        const message = (u.searchParams.get('msg') || 'Server restarting for an update').slice(0, 200);
+        const row = await announceRestart(message, seconds, actor);
+        const until = row.endsAt ?? Date.now();
+        const notified = broadcastAll({ t: 'serverNotice', kind: 'restart', message, until });
+        pushSiteStatus();
+        console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients here, every region by DB: "${message}"`);
         await writeAudit({
           adminId: actor,
           action: 'notice.restart',
@@ -1577,8 +1633,153 @@ const httpServer = createServer((req, res) => {
           note: message,
         });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
+        res.end(JSON.stringify({ ok: true, notified, until }));
         return;
+      }
+      /**
+       * ACCESS GROUPS (0051) — beta testers, developers, contributors.
+       *
+       *   GET  /api/admin/access[?group=beta]                         the members
+       *   POST /api/admin/access?action=grant&group=beta&tag=<tag>    add one (tag = display
+       *                                                               name, @username or id)
+       *   POST /api/admin/access?action=revoke&group=beta&userId=<id> remove one
+       *   POST /api/admin/access?action=bulk&group=beta  (body: tags, one per line or comma)
+       *
+       * The tag is resolved to an ACCOUNT ID here and the id is what is stored, so a rename
+       * keeps the membership. ADMIN_SECRET works, so testers can be added from a shell.
+       */
+      if (u.pathname === '/api/admin/access') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const out = (code: number, body: unknown): void => {
+          res.writeHead(code, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (!dbEnabled) return out(200, { ok: false, error: 'no database: access groups need one' });
+        const groupRaw = u.searchParams.get('group');
+        if (groupRaw && !isAccessGroup(groupRaw)) {
+          return out(400, { ok: false, error: `unknown group (use ${ACCESS_GROUPS.join(', ')})` });
+        }
+        const group = (groupRaw ?? undefined) as AccessGroup | undefined;
+        if (req.method === 'GET') return out(200, { ok: true, members: await listAccessMembers(group) });
+        if (req.method !== 'POST') return out(405, { ok: false, error: 'method not allowed' });
+        const action = u.searchParams.get('action');
+        if (!group) return out(400, { ok: false, error: 'group is required' });
+        const note = (u.searchParams.get('note') ?? '').slice(0, 200);
+        const grantOne = async (tag: string) => {
+          const r = await resolvePlayerTag(tag);
+          if (!r.ok) return { tag, ok: false as const, error: r.error };
+          const added = await grantAccess(r.userId, group, actor, note);
+          forgetAccess(r.userId);
+          if (added) {
+            await writeAudit({ adminId: actor, action: 'access.grant', targetUser: r.userId, detail: { group, tag }, note: note || undefined });
+          }
+          return { tag, ok: true as const, userId: r.userId, handle: r.handle, username: r.username, added };
+        };
+        if (action === 'grant') {
+          const tag = u.searchParams.get('tag') ?? '';
+          const r = await grantOne(tag);
+          return out(r.ok ? 200 : 404, r.ok ? { ...r } : { ok: false, error: r.error });
+        }
+        if (action === 'bulk') {
+          let body = '';
+          try {
+            body = await readAdminBody(req);
+          } catch {
+            return out(413, { ok: false, error: 'list too long (16 KB)' });
+          }
+          const tags = [...new Set(body.split(/[\n,]+/).map((t) => t.trim()).filter(Boolean))].slice(0, 200);
+          if (!tags.length) return out(400, { ok: false, error: 'no tags' });
+          const results = [];
+          for (const t of tags) results.push(await grantOne(t));
+          return out(200, { ok: true, results });
+        }
+        if (action === 'revoke') {
+          const userId = u.searchParams.get('userId') ?? '';
+          const removed = await revokeAccess(userId, group);
+          forgetAccess(userId);
+          if (removed) await writeAudit({ adminId: actor, action: 'access.revoke', targetUser: userId, detail: { group } });
+          return out(200, { ok: true, removed });
+        }
+        return out(400, { ok: false, error: 'action must be grant, revoke or bulk' });
+      }
+      /**
+       * SITE BANNERS (0052) — the lines in the strip where the restart countdown shows.
+       *
+       *   GET  /api/admin/banners                        the open set and recent history
+       *   POST /api/admin/banners?action=create&kind=known-bug&msg=…[&startsAt&endsAt&game&channel]
+       *   POST /api/admin/banners?action=update&id=N&…   same fields; bumps the revision
+       *   POST /api/admin/banners?action=end&id=N | action=delete&id=N
+       *
+       * `restart` is not created here: `/api/admin/announce` owns the countdown.
+       */
+      if (u.pathname === '/api/admin/banners') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const out = (code: number, body: unknown): void => {
+          res.writeHead(code, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (req.method === 'GET') {
+          await refreshBanners(true);
+          return out(200, { ok: true, banners: await adminBannerList() });
+        }
+        if (req.method !== 'POST') return out(405, { ok: false, error: 'method not allowed' });
+        const action = u.searchParams.get('action');
+        const id = Number(u.searchParams.get('id'));
+        const input = (): BannerInput | string => {
+          const kind = u.searchParams.get('kind') ?? 'info';
+          if (!isBannerKind(kind) || kind === 'restart') return 'kind must be info, known-bug or warning';
+          const message = (u.searchParams.get('msg') ?? '').trim();
+          if (!message) return 'message is required';
+          if (message.length > 280) return 'message is over 280 characters';
+          const t = (k: string): number | null => {
+            const n = Number(u.searchParams.get(k));
+            return Number.isFinite(n) && n > 0 ? n : null;
+          };
+          const game = u.searchParams.get('game') || null;
+          if (game && !isGameId(game)) return `unknown game ${game}`;
+          const channel = u.searchParams.get('channel') || null;
+          if (channel && channel !== 'stable' && channel !== 'alpha') return 'channel must be stable or alpha';
+          const startsAt = t('startsAt');
+          const endsAt = t('endsAt');
+          if (startsAt && endsAt && endsAt <= startsAt) return 'end must be after start';
+          return { kind, message, startsAt, endsAt, game, channel };
+        };
+        if (action === 'create' || action === 'update') {
+          const b = input();
+          if (typeof b === 'string') return out(400, { ok: false, error: b });
+          const row = action === 'create' ? await addBanner(b, actor) : await editBanner(id, b);
+          if (!row) return out(404, { ok: false, error: 'no such banner' });
+          pushSiteStatus();
+          await writeAudit({
+            adminId: actor,
+            action: action === 'create' ? 'banner.create' : 'banner.update',
+            targetId: String(row.id),
+            detail: { kind: row.kind, revision: row.revision, game: row.game, channel: row.channel, startsAt: row.startsAt, endsAt: row.endsAt },
+            note: row.message,
+          });
+          return out(200, { ok: true, banner: row });
+        }
+        if (action === 'end' || action === 'delete') {
+          const done = action === 'end' ? await endBannerNow(id) : await removeBanner(id);
+          if (done) {
+            pushSiteStatus();
+            await writeAudit({ adminId: actor, action: action === 'end' ? 'banner.end' : 'banner.delete', targetId: String(id) });
+          }
+          return out(200, { ok: true, done });
+        }
+        return out(400, { ok: false, error: 'action must be create, update, end or delete' });
       }
       // SEASONS: archive the live boards and open a fresh season, or purge the
       // replays of an archived season (frees storage; boards stay, watchability
@@ -2208,12 +2409,9 @@ const httpServer = createServer((req, res) => {
       return;
     }
     const group = (u.searchParams.get('group') ?? '').replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
-    const lobbies = group
-      ? [...rooms.values()]
-          .filter((r) => r.group === group)
-          .map((r) => r.lobbySummary())
-          .filter((s): s is NonNullable<ReturnType<Room['lobbySummary']>> => s !== null)
-      : [];
+    // every room in the group, joinable or not — the browser needs to SAY a match is running,
+    // not silently omit the room and let the client call it non-existent (see `lobbySummary`)
+    const lobbies = group ? [...rooms.values()].filter((r) => r.group === group).map((r) => r.lobbySummary()) : [];
     res.writeHead(200, {
       'content-type': 'application/json',
       'cache-control': 'no-store',
@@ -2242,7 +2440,9 @@ const httpServer = createServer((req, res) => {
       // the admission cap and whether it is currently biting. An operator debugging
       // "players say the region is full" needs both numbers in one place.
       maxRooms: MAX_ROOMS,
-      admitting: MAX_ROOMS === 0 || rooms.size < MAX_ROOMS,
+      // what the cap counts: the registry minus finished matches still showing results
+      capRooms: roomsHoldingCapacity(),
+      admitting: MAX_ROOMS === 0 || roomsHoldingCapacity() < MAX_ROOMS,
       players: onlineCount,
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       // HEAP, not just RSS. RSS alone cannot distinguish "V8 is holding freed pages it
@@ -2336,18 +2536,51 @@ const httpServer = createServer((req, res) => {
     })();
     return;
   }
+  /**
+   * GET /api/status — THE SITE STATUS every page reads at boot and on a timer: the lockdown,
+   * the live banners, the restart countdown, and (with a valid token) whether the caller gets
+   * past the lockdown. Cheap: two cached rows, plus one cached membership read per account.
+   *
+   * A signed-in caller's profile row is made here if it does not exist yet. That is what lets
+   * the owner grant a tester BY NAME on the alpha database: signing in once on the closed
+   * screen is enough for the tag to resolve.
+   */
+  if (req.method === 'GET' && new URL(req.url ?? '/', 'http://x').pathname === '/api/status') {
+    const auth = req.headers['authorization'];
+    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+    void (async () => {
+      await Promise.all([refreshLockdown(), refreshBanners()]);
+      const body: SiteStatus = siteStatus();
+      if (token) {
+        const user = await verifyAuthToken(token).catch(() => null);
+        if (user) {
+          if (dbEnabled) await ensureProfile(user.userId, user.handle).catch(() => {});
+          body.access = await siteAccess(user.userId);
+        } else {
+          body.access = null;
+        }
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify(body));
+    })().catch((e) => {
+      console.error('[status] failed:', e);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+    return;
+  }
   if (req.method === 'GET' && new URL(req.url ?? '/', 'http://x').pathname === '/api/presence') {
     // `?full=1` opts out of the idle short-circuit in `aggregatePresence` — the
     // ranked screen asks for it because its queue depth is a number people act on.
     const wantFull = new URL(req.url ?? '/', 'http://x').searchParams.get('full') === '1';
-    void refreshMaintenance(); // keep the cached window fresh off this same poll
-    // include any LIVE admin notice so the client can show the restart banner
+    // keep the cached lockdown and banners fresh off this same poll (both TTL-limited)
+    void refreshLockdown();
+    void refreshBanners();
+    // include any LIVE restart notice so the client can show the restart banner
     // (and block starting new games) on EVERY page — even disconnected ones
     // like Home/solo where no WebSocket delivers `serverNotice`.
-    const notice =
-      noticeLive() && currentNotice
-        ? { kind: currentNotice.kind, message: currentNotice.message, until: currentNotice.until }
-        : null;
+    const live = legacyNotice();
+    const notice = live ? { kind: live.kind, message: live.message, until: live.until } : null;
     const respond = (
       online: number,
       signedIn: number,
@@ -2369,8 +2602,11 @@ const httpServer = createServer((req, res) => {
       // the maintenance window rides the presence poll every page already makes, so
       // the banner reaches disconnected screens (Home, solo) too — the same reason
       // `notice` is here rather than only on the WebSocket.
-      const m = maint.active
-        ? { startsAt: maint.startsAt, endsAt: maint.endsAt, message: maint.message, biting: maintenanceBiting(maint) }
+      // `scope` is additive (0051); an older client reads the other four and treats a site
+      // lockdown as a maintenance window, which is what it can act on.
+      const w = currentLockdown();
+      const m = w.active
+        ? { startsAt: w.startsAt, endsAt: w.endsAt, message: w.message, biting: maintenanceBiting(w), scope: w.scope ?? 'matches' }
         : null;
       res.end(JSON.stringify({ region: REGION, online, signedIn, queues, gameQueues, notice, maintenance: m, caps: presenceCaps }));
     };
@@ -2711,6 +2947,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const sock = liveSockets.get(id);
     if (sock) sock.authed = true; // no longer a guest row
     authedUsers.set(userId, (authedUsers.get(userId) ?? 0) + 1);
+    authedSinceSweep.star = authedSinceSweep.boost = true;
   };
   // the one place a frame actually reaches the socket. `compress` is decided here rather
   // than by ws's `threshold` option, which is inert while context takeover is on — see
@@ -2761,7 +2998,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // hosting requires an account — see `LanSignalling.claim`, and `LAN_ANON_HOSTS` for the
       // one server that cannot ask for one
       const u = await verifyAuthToken(m.authToken).catch(() => null);
+      // a LAN match is a match: refused under either lockdown scope, like a room join
+      const locked = await lockdownRefusal(u?.userId, 'match');
       if (closed) return;
+      if (locked) {
+        send({ t: 'lanError', reason: 'auth', message: locked });
+        return;
+      }
       const hostId = u?.userId ?? (LAN_ANON_HOSTS ? `anon:${signalId}` : undefined);
       const res = lanSignals.claim(signalSocket, m.code, hostId, (c) => rooms.has(c));
       if (res.ok) {
@@ -2779,6 +3022,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (m.t === 'lanJoin') {
+      // a closed SITE also closes joining somebody's LAN room (a matches lockdown does not:
+      // the host's match was allowed to start, and its guests are part of it)
+      if (currentLockdown().active && currentLockdown().scope === 'site') {
+        const u = await verifyAuthToken(m.authToken).catch(() => null);
+        const locked = await lockdownRefusal(u?.userId, 'site');
+        if (closed) return;
+        if (locked) {
+          send({ t: 'lanError', reason: 'auth', message: locked });
+          return;
+        }
+      }
       const res = lanSignals.join(signalSocket, m.code);
       if (res.ok) send({ t: 'lanJoined', code: res.code, hostId: lanSignals.hostIdFor(res.code) ?? '' });
       else send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
@@ -2789,8 +3043,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (!res.ok) send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
     }
   };
-  // a late joiner during a pending restart still gets the countdown banner
-  if (noticeLive() && currentNotice) send(currentNotice);
+  // a late joiner still gets the countdown banner (older clients) and the site status (newer
+  // ones), from this machine's cache — sent only when there is something to show
+  {
+    const live = legacyNotice();
+    if (live) send(live);
+    const st = siteStatus();
+    if (st.lockdown || st.banners.length) send({ t: 'siteStatus', lockdown: st.lockdown, banners: st.banners });
+  }
 
   // Join (or create) a room. Async because a region-coded code may name a ranked
   // match the designated matchmaker STAGED in Postgres: the first joiner claims it
@@ -2817,7 +3077,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
-    if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
+    /**
+     * READ BEFORE THE CAPACITY REFUSAL, not just before the group guard below, because the
+     * refusal's SENTENCE depends on it: "pick a different region" is an instruction only a
+     * client with a region picker can follow, and a grouped joiner is a Discord participant
+     * who has none (`parseServers()` collapses to one entry in the embed and `DISCORD_REGION`
+     * is a constant, so every activity in the world is pinned to one machine). The guard's own
+     * reasoning is in the comment below; this is only its value moved earlier.
+     */
+    const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
+    if (!r && MAX_ROOMS > 0 && roomsHoldingCapacity() >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
       // here is always allowed, because that player's partner is already on this
       // machine and bouncing them would break a room that is under way.
@@ -2825,11 +3094,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // `code` lets a new client offer another region — the same room code is joinable
       // elsewhere, so this is a "try over there", not a dead end. `message` stays
       // self-sufficient for every client that predates the field.
-      console.warn(`[admit] refused room ${code}: at cap (${rooms.size}/${MAX_ROOMS})`);
+      //
+      // ⚠️ AND IT IS A DEAD END FOR A GROUPED JOINER, so it must not say otherwise. There is
+      // one region in the embed and the activity's room code is DETERMINISTIC, so if the first
+      // participant to open an instance's lobby is refused, nobody in that voice channel can
+      // reach a room at all. Waiting is the only move they have; the sentence says so.
+      console.warn(`[admit] refused room ${code}: at cap (${roomsHoldingCapacity()}/${MAX_ROOMS}, ${rooms.size} in registry)`);
       send({
         t: 'error',
         code: 'region_full',
-        message: 'This region is busy. Pick a different region and try again.',
+        message:
+          wantGroup ?
+            'Every server for the Discord activity is busy right now. Try again in a minute.'
+          : 'This region is busy. Pick a different region and try again.',
       });
       return;
     }
@@ -2853,8 +3130,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * ⚠️ Only for rooms that HAVE a group. Every web, LAN and matchmade room has `group === ''`
      * and is completely unaffected, which is why this is not gated on `caps`: an older client
      * has no `group` to send and could never have been in an activity room in the first place.
+     *
+     * (`wantGroup` itself is read above the capacity refusal — see the note there.)
      */
-    const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
     if (r && r.group && r.group !== wantGroup) {
       console.warn(`[admit] refused room ${code}: grouped room, group mismatch`);
       send({ t: 'error', message: 'That code belongs to a Discord activity. Open it from the activity to join.' });
@@ -2916,11 +3194,31 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // IS the joiner's.)
     if (!created) {
       const want = cfg;
-      if (
-        r.config.kind !== want.kind ||
-        r.config.record !== want.record ||
-        (r.config.game ?? 'decode') !== (want.game ?? 'decode')
-      ) {
+      const theirGame = r.config.game ?? 'decode';
+      const ourGame = want.game ?? 'decode';
+      /**
+       * ⚠️ A SEASON MISMATCH IS NOT A "GAME MODE" MISMATCH, AND SAYING SO NAMED NOTHING.
+       *
+       * One sentence used to answer both halves of this guard — a versus code typed into the
+       * duo-record box, and a BIOBUZZ client arriving at a DECODE room — and for the second it
+       * was unactionable in every word: it named neither season, carried no code, and landed
+       * on a screen with no season control. In the Discord activity that is a dead end for the
+       * whole voice channel, because the room code is deterministic: retrying in place fails
+       * identically, forever, since the client's own season is what is wrong.
+       *
+       * So the season case gets its own sentence, which NAMES BOTH SEASONS, and its own code
+       * so a client can offer the switch. `message` stays self-sufficient for every build that
+       * predates the code — it says what to change and what to change it to.
+       */
+      if (theirGame !== ourGame && r.config.kind === want.kind && r.config.record === want.record) {
+        send({
+          t: 'error',
+          code: 'game_mismatch',
+          message: `That room is playing ${seasonFor(theirGame).name}, and you are set to ${seasonFor(ourGame).name}. Switch to ${seasonFor(theirGame).name} and try again.`,
+        });
+        return; // unreachable for a just-created room — its config IS the joiner's
+      }
+      if (r.config.kind !== want.kind || r.config.record !== want.record || theirGame !== ourGame) {
         send({ t: 'error', message: 'That code is for a different game mode.' });
         return; // unreachable for a just-created room — its config IS the joiner's
       }
@@ -2959,11 +3257,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // mid-flight, and a guard anyone can skip by holding a stale tab is not one.
     // A room the matchmaker staged is exempt for the same reason it beats the
     // one-live-game guard: the server already committed those players to it.
-    await refreshMaintenance();
-    if (lockedOut(user?.userId) && !r.stagedFor(user?.userId ?? '')) {
-      send({ t: 'error', message: lockoutMessage() });
-      abandon();
-      return;
+    await refreshLockdown();
+    if (!r.stagedFor(user?.userId ?? '')) {
+      const refusal = await lockdownRefusal(user?.userId, 'match');
+      if (closed || room) {
+        abandon();
+        return;
+      }
+      if (refusal) {
+        send({ t: 'error', message: refusal });
+        abandon();
+        return;
+      }
     }
     /**
      * SUSPENSION (0043) — the door a moderator's decision actually has to reach.
@@ -3022,7 +3327,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user) {
       const seat = r.seatFor(user.userId);
       if (seat) {
-        const nc = r.reattach(seat, send, sendRaw, backlog);
+        // TRUSTED: `seatFor` matched a VERIFIED user id off the signed auth token, which
+        // proves more than the seat secret does. See the note in `Room.reattach`.
+        const nc = r.reattach(seat, send, sendRaw, backlog, undefined, true);
         if (nc !== null) {
           liveSockets.delete(id);
           id = seat; // adopt the reclaimed identity on this socket
@@ -3039,7 +3346,35 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
     }
     if (!r.canJoin()) {
-      send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+      /**
+       * ⚠️ "FULL OR MID-MATCH" IS TWO DIFFERENT ANSWERS, AND ONLY ONE OF THEM ENDS.
+       *
+       * One sentence covered both, so a client could do nothing with either. A full room is a
+       * standing state somebody has to leave; a room mid-match (or in its strategy window) is
+       * a room that WILL open again, on its own, in a couple of minutes — and in the Discord
+       * activity that difference is the whole thing. A participant whose phone backgrounded
+       * the iframe past `RECONNECT_GRACE_MS` (45 s) has no seat to reclaim any more, the
+       * account-based reclaim above is `if (user)`-gated and nobody in an embed is signed in,
+       * and the activity's room code is DETERMINISTIC — there is no other room to go to. The
+       * generic sentence left them tapping JOIN and being refused with no idea it would ever
+       * stop, until a host they may not have pressed "Back to lobby".
+       *
+       * `lobbySummary()` is the room's own answer to "what state are you in" and is already
+       * what `GET /api/lobbies` reports, so the refusal and the lobby browser cannot drift.
+       *
+       * The code is what the activity retries on; `message` stays self-sufficient for every
+       * build that predates it, as `region_full` and `active_game` already do.
+       */
+      const state = r.lobbySummary().state;
+      const busy = state === 'match' || state === 'strategy';
+      send({
+        t: 'error',
+        ...(busy ? { code: 'in_progress' as const } : {}),
+        message:
+          busy ?
+            'A match is already running in this room. You can join when it finishes.'
+          : 'This room is full.',
+      });
       abandon(); // don't leave an empty just-created room behind
       return;
     }
@@ -3065,7 +3400,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({
           t: 'error',
           message:
-            'Verify your email to save a record run. Open the link we sent you, or resend it from your Profile page.',
+            'Verify your email to save a record run. Enter the code we emailed you on your Profile page.',
+          code: 'email_unverified',
         });
         abandon();
         return;
@@ -3149,7 +3485,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         if (p?.handle) client.player.name = p.handle;
         if (p?.supporter) client.player.supporter = true;
         if (p?.role) client.player.role = p.role;
-        if (p?.title) client.player.title = p.title;
         // the worn badges and their counters (0048), on the same server-authored terms
         if (p?.badges?.length) client.player.badges = p.badges;
         client.earnedCosmetics = p?.cosmetics ?? [];
@@ -3184,6 +3519,65 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // but every older client does not, which is how an accepted challenge outlived its match.
     // Fire-and-forget, after `add` per the no-await rule above; a miss leaves the row to its TTL.
     if (dbEnabled && client.userId) void clearRoomInvitesTo(code, client.userId).catch(() => {});
+  };
+
+  /** attach this socket to a live room as a watcher (the `spectate` message, once any gate has passed) */
+  const attachSpectator = (msg: Extract<ClientMsg, { t: 'spectate' }>): void => {
+    if (room) return;
+    const r = rooms.get(msg.room.toLowerCase());
+    if (!r) {
+      send({ t: 'error', message: 'That match is no longer live.' });
+      return;
+    }
+    // ADMISSION CONTROL FOR WATCHERS. A spectator costs the same 30 Hz snapshot stream
+    // a driver does and passes none of the checks a driver does — no room cap (the room
+    // already exists), no roster slot, no sign-in — so the two caps are the only thing
+    // between a shared match link and an unbounded broadcast. Per-room first, because
+    // one popular match is the realistic shape; machine-wide as well, because
+    // `MAX_ROOMS` bounds rooms, not audiences, and the sum is what the event loop pays.
+    //
+    // NOT `region_full`: that code tells the client to try a different region, which is
+    // exactly wrong here — the room is on THIS machine and exists nowhere else. This is
+    // the plain-message refusal every client since the first build already renders.
+    if (r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM || spectatorTotal >= MAX_SPECTATORS) {
+      send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
+      return;
+    }
+    // A WATCHER STEPS THE WORLD TOO. A spectator session has no robot to predict, but it
+    // still advances the world between snapshots off the authoritative commands (see
+    // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
+    // watch it either — and the honest answer is the same sentence a driver gets.
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+      send({ t: 'error', message: BB3D_REFUSAL });
+      return;
+    }
+    const spec = {
+      id,
+      send,
+      sendRaw,
+      backlog,
+      player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
+      connected: true,
+      disconnectAt: 0,
+      caps: coerceCaps(msg.caps),
+    };
+    room = r; // route this socket's close → r.detach (drops the spectator)
+    // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
+    // The flag is NEVER taken from the message — `hidden: true` off the wire
+    // would let anyone make themselves invisible. It is set only after this
+    // server verifies the JWT and finds the subject in ADMIN_USER_IDS. Attach
+    // immediately either way so a slow/failed verify never costs the admin the
+    // start of the match; the count is corrected the moment it resolves.
+    if (typeof msg.authToken === 'string' && msg.authToken) {
+      void verifyAuthToken(msg.authToken)
+        .then((u) => {
+          if (u && ADMIN_IDS.has(u.userId)) r.hideSpectator(id);
+        })
+        .catch(() => {});
+    }
+    spectating = true;
+    spectatorTotal++;
+    r.addSpectator(spec);
   };
 
   // inbound rate bucket for this socket — see MSG_RATE_LIMIT
@@ -3228,60 +3622,20 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         void joinRoom(msg).catch((e) => console.error(`[server] join error from ${id}:`, e));
       } else if (msg.t === 'spectate') {
         if (room) return;
-        const r = rooms.get(msg.room.toLowerCase());
-        if (!r) {
-          send({ t: 'error', message: 'That match is no longer live.' });
+        /* A CLOSED SITE CLOSES WATCHING TOO. Asked only while a site lockdown is armed, so the
+           common path stays synchronous. */
+        if (currentLockdown().active && currentLockdown().scope === 'site') {
+          const m = msg;
+          void (async () => {
+            const u = await verifyAuthToken(m.authToken).catch(() => null);
+            const refusal = await lockdownRefusal(u?.userId, 'site');
+            if (closed || room) return;
+            if (refusal) send({ t: 'error', message: refusal });
+            else attachSpectator(m);
+          })();
           return;
         }
-        // ADMISSION CONTROL FOR WATCHERS. A spectator costs the same 30 Hz snapshot stream
-        // a driver does and passes none of the checks a driver does — no room cap (the room
-        // already exists), no roster slot, no sign-in — so the two caps are the only thing
-        // between a shared match link and an unbounded broadcast. Per-room first, because
-        // one popular match is the realistic shape; machine-wide as well, because
-        // `MAX_ROOMS` bounds rooms, not audiences, and the sum is what the event loop pays.
-        //
-        // NOT `region_full`: that code tells the client to try a different region, which is
-        // exactly wrong here — the room is on THIS machine and exists nowhere else. This is
-        // the plain-message refusal every client since the first build already renders.
-        if (r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM || spectatorTotal >= MAX_SPECTATORS) {
-          send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
-          return;
-        }
-        // A WATCHER STEPS THE WORLD TOO. A spectator session has no robot to predict, but it
-        // still advances the world between snapshots off the authoritative commands (see
-        // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
-        // watch it either — and the honest answer is the same sentence a driver gets.
-        if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
-          send({ t: 'error', message: BB3D_REFUSAL });
-          return;
-        }
-        const spec = {
-          id,
-          send,
-          sendRaw,
-          backlog,
-          player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
-          connected: true,
-          disconnectAt: 0,
-          caps: coerceCaps(msg.caps),
-        };
-        room = r; // route this socket's close → r.detach (drops the spectator)
-        // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
-        // The flag is NEVER taken from the message — `hidden: true` off the wire
-        // would let anyone make themselves invisible. It is set only after this
-        // server verifies the JWT and finds the subject in ADMIN_USER_IDS. Attach
-        // immediately either way so a slow/failed verify never costs the admin the
-        // start of the match; the count is corrected the moment it resolves.
-        if (typeof msg.authToken === 'string' && msg.authToken) {
-          void verifyAuthToken(msg.authToken)
-            .then((u) => {
-              if (u && ADMIN_IDS.has(u.userId)) r.hideSpectator(id);
-            })
-            .catch(() => {});
-        }
-        spectating = true;
-        spectatorTotal++;
-        r.addSpectator(spec);
+        attachSpectator(msg);
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
@@ -3294,7 +3648,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
-        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog) : null;
+        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
         if (r && nc !== null) {
           liveSockets.delete(id);
           id = msg.clientId; // adopt the reclaimed identity on this socket
@@ -3310,12 +3664,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * already left as far as it is concerned, and the only thing left is to stop the
          * server holding a lock on its behalf for the rest of the reconnect grace.
          *
-         * Not gated on `room` being null, and not on an auth token: the client id is the
-         * secret, the same one `rejoin` accepts as proof, and a wrong one simply finds no
-         * slot. Answering nothing at all is what keeps it from being a probe for which
-         * rooms and which client ids exist.
+         * ⚠️ THE CLIENT ID WAS NEVER A SECRET, AND THIS COMMENT USED TO SAY IT WAS.
+         *
+         * `broadcastRoster` puts every driver's id on the wire, `broadcast` fans it out to
+         * spectators as well, and `spectate` needs no account and no invitation — so anyone
+         * who could watch a match could read the ids out of the first roster frame and boot
+         * its drivers one frame at a time. The credential is now the SEAT TOKEN, which is
+         * sent only to its owner and appears in no broadcast (`Room.seatOwner`).
+         *
+         * Still no reply, for the original reason: answering nothing keeps it from being a
+         * probe for which rooms and which seats exist.
          */
-        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId);
+        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId, msg.seatToken);
       } else if (msg.t === 'reportScore') {
         /**
          * A MISSCORE claim from this room. No target to resolve — see the protocol note —
@@ -3414,7 +3774,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // an identity). Anonymous players can still use custom rooms, just not
         // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
         // `room` so subsequent input routes there.
-        verifyAuthToken(msg.authToken).then((u) => {
+        verifyAuthToken(msg.authToken).then(async (u) => {
           if (stale()) return;
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
@@ -3437,13 +3797,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           {
             const refusal = emailGateRefusal(u);
             if (refusal) {
-              send({ t: 'error', message: refusal });
+              send({ t: 'error', message: refusal, code: 'email_unverified' });
               return;
             }
           }
-          if (lockedOut(u.userId)) {
-            send({ t: 'error', message: lockoutMessage() });
-            return;
+          {
+            const locked = await lockdownRefusal(u.userId, 'match');
+            if (stale()) return;
+            if (locked) {
+              send({ t: 'error', message: locked });
+              return;
+            }
           }
           /**
            * ALREADY IN A RANKED MATCH THAT IS LOADING IN — its own refusal, and its own
@@ -3587,6 +3951,20 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         queueGen++; // cancels an attempt still working through its awaits
         matchmaker.remove(id);
       } else if (room) {
+        /* A NEW MATCH INSIDE A ROOM THAT ALREADY EXISTS (a lobby's start, a host restart, a
+           rematch vote) is refused under a lockdown like a join is, or a lobby formed before
+           the window opened could play straight through it. A matchmade room is exempt, as it
+           is at the join door. */
+        const newMatch = msg.t === 'start' || msg.t === 'restart' || (msg.t === 'rematch' && msg.on);
+        if (newMatch && currentLockdown().active && !(authedUserId && room.stagedFor(authedUserId))) {
+          const r0 = room;
+          const m = msg;
+          void lockdownRefusal(authedUserId, 'match').then((refusal) => {
+            if (refusal) send({ t: 'error', message: refusal });
+            else if (room === r0) r0.onMessage(id, m);
+          });
+          return;
+        }
         room.onMessage(id, msg);
       }
     } catch (e) {
@@ -3671,6 +4049,15 @@ Promise.all([initPhysics(), initPhysics3d()])
     process.exit(1);
   });
 
+/* THE SITE PUSH LOOP (see `pushSiteStatus`). Only while this machine has sockets: a machine
+   with nobody on it has nobody to tell, and an idle one must not keep the database awake. */
+setInterval(() => {
+  if (onlineCount === 0) return;
+  void Promise.all([refreshLockdown(), refreshBanners()])
+    .then(() => pushSiteStatus())
+    .catch((e) => console.error('[site] push failed:', e));
+}, SITE_PUSH_MS).unref?.();
+
 // apply DB migrations at boot (off the hot path; no-ops without DATABASE_URL). A
 // DB failure must NOT take the game server down — records just won't persist.
 migrate()
@@ -3681,6 +4068,8 @@ migrate()
     // roster queries instead of post-processed row by row (0020_staff_roles.sql).
     // Symmetric — an id removed from the env loses its role here.
     if (!dbEnabled) return;
+    // the lockdown and banners are enforced from the first join, not from the first poll
+    await Promise.all([refreshLockdown(true), refreshBanners(true)]);
     await syncStaffRoles(OWNER_ID, ADMIN_LIST);
     console.log(
       `[server] staff synced: ${OWNER_ID ? '1 owner' : 'no owner'}, ${Math.max(0, ADMIN_LIST.filter((id) => id !== OWNER_ID).length)} admin(s)`,
@@ -3763,7 +4152,9 @@ if (dbEnabled) {
  * `unref()` like every other interval here, so it never holds the process open. It is a
  * no-op with no database and a no-op until somebody has actually linked a GitHub account
  * — which is the state this sits in until the provider is enabled in the Neon Auth
- * project, so switching the feature on takes no code change here.
+ * project, so switching the feature on takes no code change here. It also skips any hour in
+ * which this machine had no signed-in player (`sweepWanted`), because even the "anyone linked?"
+ * read wakes the database.
  *
  * ⚠️ IT NEVER THROWS INTO THE TIMER. An unhandled rejection from a scheduled task is an
  * `uncaughtException` the process-level hook only logs, and a sweep that dies quietly is
@@ -3797,7 +4188,7 @@ const starBoot = setTimeout(() => {
 }, 30_000);
 starBoot.unref();
 const starSweeper = setInterval(() => {
-  if (!dbEnabled) return;
+  if (!dbEnabled || !sweepWanted('star')) return;
   void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'hourly').catch((e) =>
     console.error('[rewards] star sweep failed:', e),
   );
@@ -3811,7 +4202,7 @@ starSweeper.unref();
  */
 const BOOST_GUILD = process.env.DISCORD_GUILD_ID ?? '';
 const boostSweeper = setInterval(() => {
-  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN) return;
+  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN || !sweepWanted('boost')) return;
   void runBoostSweep(BOOST_GUILD, process.env.DISCORD_BOT_TOKEN).catch((e) =>
     console.error('[rewards] boost sweep failed:', e),
   );

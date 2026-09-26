@@ -1,5 +1,5 @@
 import type { RobotSpec } from '../../types';
-import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_INERTIA_DEFAULT, BB_PRESETS, BB_STORAGE_MAX, bbMassLimits } from './config';
+import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_PRESETS, BB_STORAGE_MAX, bbMassLimits } from './config';
 import { bbIntakeMountOf, bbShooterMountOf } from './mounts';
 import { type BbMechSpec, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbCoerceSpec } from './robotConfig';
@@ -75,16 +75,12 @@ const BB_STARTER_BUILDS: readonly RobotSpec[] = [
     // over the front, fed by a front sweeper. No Box Tube — the kit has no placement mechanism.
     //   driveRpm: a 96 mm wheel on a ~312 rpm drive gearmotor,
     //             π·(96/25.4)·312/60 = 61.7 in/s ÷ (0.20367 · 1.06 tank) = 286
-    // flywheelInertia is `BB_INERTIA_DEFAULT` like every other card: a dumper has no flywheel at
-    // all, this game's builder offers no dial for the field, and its only effect here is a term
-    // in the mass floor (`bbMassLimits`) — so one value across the list is what makes the cards'
-    // masses comparable. It was 0.5, which quietly bought this robot two pounds of nothing.
     // The launcher is modelled as a front DUMPER at the default hood: chassis-fixed, so the
     // robot turns to aim, and it carries both POLLEN and NECTAR.
     name: 'StarterBot', teamName: 'Kit robot · 6WD tank', teamNumber: 0,
     length: 15, width: 16, // APPROX — kit side rails are ~15"; no kit publishes a width
     intake: 'sloped', massLb: 0, drivetrain: 'tank',
-    driveRpm: 286, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 286, flywheelInertia: 0, canSort: false,
     scoreMode: 'dumper',
     intakeMount: 'front', shooterMount: 'front',
     ballStorage: BB_G407_CAP,
@@ -169,9 +165,6 @@ export const BB_PRESET_LIST: readonly RobotSpec[] = [
  * The shared chassis fields plus this game's whole loadout. Identity (name / team / number) is
  * excluded on purpose: applying a card keeps the player's own identity, so comparing it would
  * make every card stop reading as selected the instant it was clicked.
- *
- * `flywheelInertia` IS compared, unlike Chain Reaction's matcher — BIOBUZZ launchers store
- * energy and it is a real dial here.
  */
 export function bbSpecMatches(spec: RobotSpec, preset: RobotSpec): boolean {
   return (
@@ -181,7 +174,6 @@ export function bbSpecMatches(spec: RobotSpec, preset: RobotSpec): boolean {
     spec.drivetrain === preset.drivetrain &&
     spec.driveRpm === preset.driveRpm &&
     (spec.tankRpm ?? 0) === (preset.tankRpm ?? 0) &&
-    spec.flywheelInertia === preset.flywheelInertia &&
     spec.intake === preset.intake &&
     (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) === (preset.scoreMode ?? BB_DEFAULT_SCORE_MODE) &&
     bbIntakeMountOf(spec) === bbIntakeMountOf(preset) &&

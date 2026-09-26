@@ -70,6 +70,19 @@ pollen behaviour that looks wrong is a question about SHARED physics — write i
 BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching
 `C.BALL_MAX_SPEED` while the robot that hit it is slower, 5"-artifact rolling constants).
 
+⚠️ **A CHECK AGAINST A NUMBER OF MILLISECONDS GOES IN THE `PERF` LANE** (`scripts/smoke-biobuzz/
+index.ts`), exported from its own lane file (`predictPerfChecks`, `aiPerfChecks`,
+`sim3dPerfChecks`). `bbshard.mjs` never packs that lane beside another: it runs alone after the
+other shards, and under `npm test` after the shared suite too (`--gate`). Beside 17 other test
+processes the core itself runs slower, so even the best of 30 readings read 6.3–7.4 ms for a
+FULL reconcile that costs 4.0 ms alone, and the old best-of-5 read 9–11 against the 8 ms budget
+on nearly every run (2026-09-25). Another worktree's `npm test` is load the suite cannot keep
+off, so a lane with a failure runs again after 5, 10 and 20 s and the first attempt where every
+check held is reported (`perfLane`). A slowed reconcile (3.9 → 9.0 ms) fails all four attempts.
+Time with `performance.now()` and take the minimum of many runs. Paired ratios (FIELD, SERVER)
+compare two readings from the same moment, so they are not affected by load and stay where they
+are.
+
 ---
 
 
@@ -88,8 +101,9 @@ ranked, matchmade, custom code rooms, spectators and LAN all run `'3d'` for a ga
 it, and the custom lobby's 3D/2D picker is gone. The reason is the RECORD BOARD: two solves
 feeding one board is two boards, so `recordLeaderboard`, `personalBest`, `recordRank` and the
 career panel all filter to `'3d'` server-side (`boardPhysics`, `server/db/repo.ts`) and
-`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted — they
-simply stop appearing on a board; no season was reset. An old client without the `'bb3d'` cap is
+`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted. They
+are off the LIVE board only: an archived season shows the solve it was played on, so Act 1 is a
+2D board (`accounts.md`, "THE ERA IS PER SEASON"). An old client without the `'bb3d'` cap is
 now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via
@@ -122,6 +136,32 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
   `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
   positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLID BOXES**
+  (`groups.ts`, `GROUP_FLOWER_RING` / `GROUP_FLOWER_SOLID` / `GROUP_CHASSIS`;
+  `flowerTube.ts`, `buildFlowerSolids3d`). A trimesh has no inside. A chassis pressed past a
+  plate's outer face was pushed out through the plate's top face: up onto the 0.354-in LOWER
+  plate (a chassis cannot pitch or roll, so it was held level off the tiles) or, once the lower
+  plate was out of the way, down into the tiles under the MIDDLE one, whose top (5.254) sits
+  0.046 in under the chassis top (`BB3_CHASSIS_TOP_Z` 5.3). MEASURED (`scratch/flowersweep.ts`,
+  8,960 legal drive-ins, all four FLOWERS, eight builds; `scratch/shove.ts`, 1,472 legal shoves):
+  before, 1,025 drive-ins and 214 shoves lifted the chassis over 0.1 in and 2 drive-ins left it
+  at z 0.34 where 4 s of any drive command moved it 0.004 in; lower plate removed alone, 55
+  shoves sank it up to 1.5 in. After: 0 lifted, 0 sunk, 0 parked, deepest plate contact 0.38 in.
+  - The lower plate gets no box: the middle plate's footprint contains it and every chassis spans
+    the middle plate's z band, so it never stopped a chassis. Elements meet exactly the plates they
+    met before, and a deployed ramp meets neither the trimesh nor the solids (the swing guard's
+    query has no groups, so it does see the solids).
+  - ⚠️ **The three plates are ONE trimesh collider** so each flower still has five colliders.
+    Two extra colliders per flower, even set to meet nothing, shift every later handle, reorder
+    Rapier's pairs, and flipped two unrelated order-sensitive checks (a hive foot-bar contact
+    height, the hive settle clock).
+  - Every robot collider carries `GROUP_CHASSIS`, `GROUP_POCKET` or `GROUP_RAMP`, in `bodies.ts`
+    and `predict.ts`; one built on the default groups meets the trimesh again.
+  - A chassis TELEPORTED more than 1.4 in into a plate is still pushed into the tiles and held.
+    Nothing in play puts one there (`bbEvalStart` keeps starts off every FLOWER), but a harness
+    that drops robots at random poses will find it. `containmentPass` clamps an out-of-field robot
+    to the nearest interior point without looking at statics, which at x ±70.17 is inside a FLOWER.
+  - The FLOWER3D lane pins the lift, the hang and the shove.
 - ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON THE CONTENTS' WEIGHT** (owner report 2026-09-19:
   "it says 0 more to tip and it does not tip"). The detent used to be a breakaway the load had to
   out-torque, and no calibration can make that agree with a COUNT: measured at the shipped hold,
@@ -395,6 +435,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   too. (The Box Tube's flat cradle, drawn to 6.55 with no tall shape, was the other residual; the
   tube is a standing tower now and its stowed envelope is two collider boxes — see the Box Tube
   bullet under the shot path.)
+- ⚠️ **A CHASSIS PLACED INSIDE THE HIVE FRAME IS SET DOWN BESIDE IT, NOT ON IT** (2026-09-25).
+  `scratch/rampstuck.ts` froze 8/400 random drives (14/400 on another seed, both builds) with the
+  robot at z ≈ 2.1 on a foot bar or frame foot. Every one of them STARTED inside the frame; 0/1200
+  runs that started clear ever climbed, and a 2v2 ram probe never lifted a robot. The solver's
+  shallowest way out of a 2.15-in bar under a 16-in chassis is UP (z 0.50 after one tick), and the
+  A-frame leg then runs between the frame box and an intake arm, pushed from both sides, so no
+  drive command moves it, even with zero friction. `setChassisClear` (`engineImpl.ts`) runs on a
+  POSITION the solver did not produce (a new body, a gameplay move, the deploy-edge rebuild): a
+  chassis more than `BB3_FIT_DEPTH` (0.25 in) inside a fixed collider is moved sideways, same
+  height and heading, to the nearest clear spot (rings 0.5 in apart, out to 24 in). Rules: fixed
+  bodies only (they never move, so it is order-independent mid-sync); the chassis only, never
+  the reach hardware (a ramp blade in a static stays the swing guard's and the embed fold's call);
+  NOT on a heading-only edit, because `squareUpRobotsWalls` turns wall-touching robots every tick
+  and re-testing those moved a robot that another robot was pressing into a static past 0.25 in
+  (6 mid-match moves in 150 ram runs; 0 after). Three older
+  checks had been staging robots across the red foot bar without knowing it (the foot-bar
+  "containment" spawn and two sweeper capture probes at x −20) and passed with the robot perched;
+  they stage clear of the frame now. Smoke: "hive frame:" ×2 in `sim3d.ts`.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -1237,6 +1295,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     SETTLED footprint's own clearance margin (0 in flush) can still be caught mid-swing (3 in off
     the foot still refused; 4 in and up settle clean). The guard is catching a real transient
     collision a final-pose-only check cannot see.
+  - ⚠️ **A RAMP ROBOT MUST NOT BE ABLE TO FREEZE ITSELF** (replay 1dc6eb8f, 2026-09-25: frozen
+    from 1:50 to the buzzer). The jam is one contact: the 0.08-in deck held VERTICALLY by a fixed
+    body, so the solver pushes the chassis into the tiles, the floor pushes back, and friction on
+    that contact holds the robot. Two ways in, both closed in `bbRampSwingStep3d` (`elements3d.ts`):
+    - A fold pressed at speed just short of a wall reversed to a deploy that was never tested
+      again ("it retraces proven-clear ground"). A swinging ramp has no collider, so the robot kept
+      closing and the ramp settled 2.4 in inside the wall. Now only a reversed FOLD skips the test;
+      a reversed deploy that hits again folds for good. Standing still, nothing changes.
+    - A settled ramp driven across a hive foot bar or frame foot: the chassis clears them, only the
+      blade meets them. `rampEmbedded` reads the step's own manifolds on `GROUP_RAMP` colliders; a
+      fixed-body contact with `|n.z| > 0.5` deeper than `BB_RAMP_EMBED_DEPTH` (0.05) folds the ramp.
+      Measured: 7 of 400 random drives froze this way before, 0 after.
+    Once it was in the wall, every fold press reversed instantly, because the ramp was already
+    inside the static. That is why the fix is a fold, not a stronger guard. Smoke: "ramp jam:" ×2.
+  - ⚠️ **THE RAMP TOGGLE IS DEBOUNCED** (`debouncedPress`, `TOGGLE_DEBOUNCE_S` 2.5 ticks; `RobotState.bbRampUpAt`).
+    The same replay held the button through two 1-tick dropouts, one a whole input frame of zeros
+    (an empty gamepad read), and each flipped the ramp twice. The fastest real re-press in it was
+    3 ticks. Smoke: "ramp debounce:" ×4. Butterfly `driveMode` shares the helper.
   - ⚠️ **SIDE ROLLERS RELOCATED TO THE MOUTH'S OWN EDGES** (owner, 2026-09-20: "situated on the
     edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's
     axis is `bbSideRollerY(mouthHalf)` = `mouthHalf − BB_SIDE_ROLLER_EDGE_INSET`, not the old fixed
@@ -1630,21 +1706,19 @@ shooter.
 `bbMassLimits(spec)` (`config.ts`) is the one model, read by the coercer, by `bbDials` (the
 builder's slider) and by both preset lists. `bbMassFloorBump`, `BB_TWIN_MASS_FLOOR` and
 `BB_LIFT_MASS_FLOOR` are gone. Floor = BARE CHASSIS + one `BB_MASS_SWEEPER_EDGE` per mounted
-edge + the launcher + a Box Tube + `BB_MASS_INERTIA · flywheelInertia`, rounded to 0.01 for the
-reason `massLimits` documents. Every constant is APPROX with its reason on its own line:
+edge + the launcher + a Box Tube, rounded to 0.01 for the reason `massLimits` documents. Every constant is APPROX with its reason on its own line:
 
 | part | lb | | drivetrain (bare) | lb |
 |---|---|---|---|---|
 | sweeper edge (`frontback`/`side` pay twice) | 1.5 | | mecanum / xdrive | 11.5 |
-| single turret | 4.0 | | tank | 13.0 |
+| single turret | 5.0 | | tank | 13.0 |
 | second turret of a double | +3.5 | | swerve | 15.5 |
-| dumper | 2.5 | | butterfly | 17.0 |
-| Box Tube | 2.5 | | | |
-| flywheel at inertia 1 | 4.0 (`INERTIA_MASS_FLOOR`) | | | |
+| dumper | 3.5 | | butterfly | 17.0 |
+| Box Tube (OFFSET kit ~475 g + claw) | 1.5 | | | |
 
-Resulting floors at `BB_INERTIA_DEFAULT` (0.25): mecanum one sweeper one turret **18.00**
+Resulting floors: mecanum one sweeper one turret **18.00**
 (the calibration point, asserted EXACTLY), xdrive 18.00, tank 19.50, swerve 22.00, butterfly
-23.50; mecanum + dumper 16.50; + a tube 20.50; swerve + two sweepers + a double + a tube 29.50.
+23.50; mecanum + dumper 16.50; + a tube 19.50; swerve + two sweepers + a double + a tube 28.50.
 The CEILING is the shared per-drivetrain envelope (42, swerve 40) because **R104 sets no robot
 weight limit in BIOBUZZ** (`docs/biobuzz-reference.md` §6) — there is no rules number to use, so
 what is left is the sim's own statement of what a drivetrain can still move.
@@ -1657,10 +1731,12 @@ coercer moves is a card that can never read as selected. `out.massLb = sp.massLb
 `bbMech` / `heightIn` / pass-target carry-across lines in that arm and the game's own clamp does
 the work. Nothing outside `game === 'biobuzz'` is touched.
 
-⚠️ **`flywheelInertia` IS NOT A DIAL IN THIS GAME AND NOTHING IN THE SIM READS IT** — its only
-effect is that term. `BB_INERTIA_DEFAULT` is what every preset carries so their masses are
-comparable; a spec arriving from DECODE or Chain Reaction keeps its own value and can therefore
-be up to 4 lb heavier at the floor than any build made here.
+⚠️ **BIOBUZZ HAS NO INERTIA** (owner, 2026-09-24). `flywheelInertia` is a DECODE field on the
+shared `RobotSpec`; `coerceBiobuzzSpec` pins it to 0 and nothing in this game reads it. It used
+to feed the mass floor (`4 · flywheelInertia`), and a new BIOBUZZ spec is seeded from DECODE's
+`DEFAULT_SPEC` at 0.4, so the builder showed mecanum + turret at 18.6 and tank + turret at 20.1.
+The turret (5) and dumper (3.5) absorbed the pound the presets' old value added, so preset
+floors did not move.
 
 **THE PRESETS** are the StarterBot (`presets.ts`, the one real kit robot, still alone in front of
 the rule-off) and four demos in `config.ts`. Scored head-to-head against the StarterBot with HARD
@@ -1670,7 +1746,7 @@ StarterBot 43.0.**
 | card | build | mass | rpm | floor | score |
 |---|---|---|---|---|---|
 | StarterBot | tank · front sweeper · front dumper | 18 (ON its floor — no kit publishes a weight) | 286 | 18.00 | 43.0 |
-| **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 20.50 | 55.0 |
+| **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 19.50 | 55.0 |
 | Forager | butterfly · FRONT+BACK sweepers · front dumper | 30.5 | 420 / 300 | 23.50 | 63.6 |
 | Skimmer | xdrive · front sweeper · right+left double turret | 27.5 | 520 | 21.50 | 68.0 |
 | Sniper | swerve · FRONT+BACK sweepers · centre turret | 26.5 | 480 | 23.50 | 70.4 |
@@ -1739,10 +1815,17 @@ pinned the chassis half an inch over the ceiling. The game's own floor is capped
 own ceiling now. It only ever reached a spec carried over from another game, because the BIOBUZZ
 builder has no intake-STYLE picker.
 
-**STILL OPEN, stated rather than fixed:** `BB_MAX_LENGTH` (17) is DEAD — `src/sim/spawn.ts` still
-sizes a BIOBUZZ spec with DECODE's per-intake `lengthLimits`, so the real ceiling is 15 (sloped),
-14.5 (vector) or 13 (triangle). `bbSizeLimits`' header says term 2 stops binding "the moment the
-BIOBUZZ arm lands"; the arm landed and the size clamp was never switched over with it. Doing so
-is the same one-line shape as the mass carry-across above, but it widens every chassis and moves
-footprints, start poses and hopper volume with it. And the HOPPER slider is 1–4 for every build in
-the legal envelope, so it still tells no two builds apart (`BB_STORAGE_MAX`, owner ruling).
+**THE CHASSIS GOES TO 18 × 18** (owner, 2026-09-24: "why is max width/length 17 not 18?").
+`BB_MAX_LENGTH`/`BB_MAX_WIDTH` are `ROBOT_MAX_SIZE` (R102's cube); the 17 was a "working inch"
+no rule asks for. And length was never reaching even that: `src/sim/spawn.ts` sized a BIOBUZZ
+spec with DECODE's `lengthLimits`, whose ceiling (15 sloped) is DECODE's in-cube roller rule. The
+BIOBUZZ arm now carries the raw `length`/`width` across like `massLb`, and `bbEnvelope` keeps only
+the shared FLOORS. R105.A's prism still binds: chassis + deployed sweepers + tube fit 18 × 24.
+
+⚠️ **THE WIDTH RANGE DEPENDS ON THE LENGTH.** The legal set is the union of the two R105.A
+rectangles (24 along the length, or along the width). `bbEnvelope` used to pick ONE per build;
+at an 18 ceiling that made a front sweeper + flank tube build choose 18 × 15.5 over 15 × 18 and
+shrink every saved 15 × 17 build of that shape. Now the length range is the union's and the width
+range is the widest one any rectangle holding that length allows; `coerceBiobuzzSpec` clamps
+length first and then reads width off it. The HOPPER slider is still 1–4 for every build
+(`BB_STORAGE_MAX`, owner ruling).

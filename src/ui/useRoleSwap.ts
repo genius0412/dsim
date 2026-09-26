@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameId, StartCat } from '../types';
 import type { LobbyPlayer, PlayerPatch } from '../net/protocol';
 import { MatchAudio } from '../audio';
-import { categoryDefaultIndex, derivedRole, otherCat as other } from './startPositions';
+import { allianceDuo, categoryDefaultIndex, derivedRole, otherCat as other } from './startPositions';
 
 /**
  * 2v2 start-ROLE negotiation. An alliance fills one CLOSE and one FAR slot; the
@@ -15,7 +15,15 @@ import { categoryDefaultIndex, derivedRole, otherCat as other } from './startPos
  * setting theirs too; when BOTH are set each client flips ITS OWN role to the
  * opposite and clears its flag — race-free and convergent (they always held
  * opposite roles, so flipping both = a swap). A `enacted` ref stops a double-flip
- * during the patch→broadcast window. Only meaningful with exactly two members.
+ * during the patch→broadcast window.
+ *
+ * ⚠️ **EXACTLY TWO MEMBERS, AND IT IS ENFORCED NOW RATHER THAN ASSERTED.** This header
+ * used to say "only meaningful with exactly two members" and nothing checked it: the
+ * ROLE came from a clientId sort and the PARTNER from roster order, so on a three- or
+ * four-strong alliance the two halves named different people and the handshake came
+ * apart (see `allianceDuo`). Both halves read that one list now, and above two members
+ * `canSwap` is false, `role` is undefined and the swap bar does not render at all —
+ * everyone picks a start position freely, which is the only model that has one.
  *
  * SOUND. Both ends of the handshake are announced, because neither is something
  * you are looking at when it happens: a partner proposes while you are dragging a
@@ -54,10 +62,10 @@ export function useRoleSwap(
   game?: GameId,
   vol?: SwapVolume,
 ): RoleSwap {
+  // ONE list for both halves — the role split and the partner it is negotiated with.
+  const duo = me ? allianceDuo(players, me) : null;
   const role = me ? derivedRole(players, me) : undefined;
-  const partner = me
-    ? players.find((p) => p.alliance === me.alliance && !p.hidden && p.clientId !== me.clientId) ?? null
-    : null;
+  const partner = duo?.partner ?? null;
   const canSwap = role !== undefined && partner !== null;
   const iWant = canSwap && me?.swapReq === true;
   const partnerWants = canSwap && partner?.swapReq === true;

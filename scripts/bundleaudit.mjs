@@ -415,7 +415,10 @@ const BASELINE = {
   autos: { gzip: 55.77 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
-  admin: { gzip: 25.10 * 1000 },
+  // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown
+  // scope controls, and the analytics page's sponsor report and imported-history section. Admin
+  // only, so no player downloads it.
+  admin: { gzip: 29.75 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

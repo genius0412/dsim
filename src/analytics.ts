@@ -1,43 +1,25 @@
 /**
- * Analytics — the minimum needed to tell whether any of this monetization works.
+ * Analytics events — the funnel, and the presenting sponsor's monthly report.
  *
- * Without it there is no way to answer the only questions that matter after
- * launch: does anyone reach the Support page, does anyone click through to Ko-fi,
- * does a claim ever succeed, and do the ad columns shorten sessions. Shipping
- * ads and a paid tier with no measurement means tuning them by vibes.
+ * Every event goes to DSIM's own sink (`trackEventBeacon` in `src/pageviews.ts` →
+ * `POST /api/a/ev` → `server/analytics.ts`) and is read on the admin console's Analytics tab,
+ * next to the traffic and the product tables. Vercel Web Analytics was a second sink until
+ * September 2026; it was removed once the dashboard covered what it showed, and its history was
+ * imported (`scripts/import-vercel-analytics.ts`).
  *
- * WHY VERCEL ANALYTICS and not something hand-rolled: the site already deploys
- * on Vercel, it is cookieless and stores no personal data (so it needs no consent
- * banner and adds nothing to the privacy policy's third-party list beyond the
- * host we already name), and the alternative — a bespoke events table on the game
- * server — would mean building session attribution, bot filtering, and a
- * dashboard, all of which are solved problems.
- *
- * ⚠️ THAT ARGUMENT IS NOW HALF SPENT, and the code below says so. Session
- * attribution, bot filtering and a dashboard were all built (`server/analytics.ts`,
- * `src/pageviews.ts`, `src/ui/AdminAnalytics.tsx`) for the one thing a third-party
- * dashboard structurally cannot do: put traffic next to the PRODUCT tables in this
- * project's own database — matches per game, signups, retention, the ranked
- * distribution. So every event below now goes to BOTH, and neither is a fallback
- * for the other.
- *
- * IT IS ALSO THE SPONSOR REPORT. The presenting sponsor is owed monthly numbers —
- * clicks, sessions, new players — and they are what the deal renews on. Those come
- * from the `sponsor_*` / `player_joined` events below plus Vercel's own session
- * counts, i.e. from the measurement that already exists, rather than from a bespoke
- * events table that would have to be built, deployed, and then trusted. See
- * `docs/sponsor.md` for which filter produces which line of the report.
+ * IT IS ALSO THE SPONSOR REPORT. The presenting sponsor is owed monthly numbers (clicks,
+ * sessions, new players) and they are what the deal renews on. They come from the
+ * `sponsor_*` / `player_joined` events below plus our own session counts, and the dashboard's
+ * "Sponsor report" panel lays them out. `docs/sponsor.md` says which line is which.
  *
  * PRIVACY RULE FOR EVERY EVENT BELOW: names and ids never leave the app. The
  * properties here are counts and enum-ish strings, never a user id, username,
  * email, or Ko-fi transaction id. An analytics payload is the easiest place in a
  * codebase to leak personal data by accident, so the rule is "no identifiers",
- * not "be careful".
+ * not "be careful". `parseEvent` on the server bounds them again.
  */
-import { track } from '@vercel/analytics';
 // the opt-out is its own leaf module — see the note there for why it is not in this file
 import { analyticsAllowed } from './analyticsPref';
-// ...and the SECOND sink. See the note above `trackEvent`.
 import { trackEventBeacon } from './pageviews';
 
 /** OFF unless explicitly enabled, matching how ads and auth are gated. A
@@ -58,9 +40,8 @@ export type AnalyticsEvent =
   | 'ads_shown' // an ad unit actually rendered
   | 'account_deleted'
   // ---- presenting sponsor (src/sponsor.ts) -------------------------------
-  // These ARE the monthly attribution report. `docs/sponsor.md` names the
-  // dashboard filter that turns each into a number, so the report is read off
-  // the same events the app fires rather than assembled by hand.
+  // These ARE the monthly attribution report (`docs/sponsor.md`), read off the
+  // same events the app fires rather than assembled by hand.
   //
   // ⚠️ `sponsor_shown` MEANS VIEWABLE, NOT MOUNTED. It fires once the mark has
   // been at least half on screen for a continuous second (`src/ui/Sponsor.tsx`),
@@ -80,19 +61,8 @@ export type AnalyticsEvent =
   | 'player_joined'; // a NEW account finished signing up — "new players"
 
 /**
- * TWO SINKS, ONE CALL SITE.
- *
- * The host's dashboard is still here because it is what the sponsor report has been read off
- * since launch and because nothing about it broke. What it cannot do is sit beside the product
- * numbers — matches per game, retention, the ranked distribution — which live in this project's
- * own database and always did. So the same event also goes to `POST /api/a/ev`, and the admin
- * console's Analytics tab renders both halves on one page.
- *
- * ⚠️ THE GATES ARE NOT DUPLICATED. This function's `ENABLED`/`analyticsAllowed()` pair decides
- * whether an event exists at all; `trackEventBeacon` applies the SAME opt-out plus the two the
- * first sink has no use for — a configured cloud server to send to, and `doNotTrack`/GPC. It
- * is called after the first sink rather than before it so a change to either one cannot
- * silently mute the other.
+ * Record one event. `ENABLED`/`analyticsAllowed()` decide whether it exists at all;
+ * `trackEventBeacon` adds the gate only the network send needs (a configured cloud server).
  */
 export function trackEvent(
   event: AnalyticsEvent,
@@ -101,10 +71,5 @@ export function trackEvent(
   // `ENABLED` first, because it is a build constant: a build with analytics off never
   // touches storage at all.
   if (!ENABLED || !analyticsAllowed()) return;
-  try {
-    track(event, props);
-  } catch {
-    /* analytics must never be able to break a page it is only observing */
-  }
   trackEventBeacon(event, props);
 }

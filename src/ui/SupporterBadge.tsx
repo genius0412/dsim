@@ -47,14 +47,15 @@ export function SupporterBadge({
   return kind ? <BadgeIcon kind={kind} size={size} /> : null;
 }
 
-export type BadgeKind = keyof typeof BADGES;
+type BadgeKind = keyof typeof BADGES;
 
 /**
- * THE ONE WAY A DISC BADGE IS DRAWN — the three above, and the stargazer title
- * (`TitleChip`). Same markup, same sizing, same hover tip for all four; only the
- * glyph, the two colours and the tip's words differ by kind.
+ * THE ONE WAY A STATUS DISC IS DRAWN — owner, admin, supporter. Same markup, same
+ * sizing, same hover tip for all three; only the glyph, the two colours and the tip's
+ * words differ by kind. (The stargazer ★ disc is an EARNED badge and is drawn by
+ * `BadgeArt`, `BadgeMark.tsx`, with the rest of the ledger's badges.)
  */
-export function BadgeIcon({ kind, size = 'sm' }: { kind: BadgeKind; size?: 'sm' | 'md' }) {
+function BadgeIcon({ kind, size = 'sm' }: { kind: BadgeKind; size?: 'sm' | 'md' }) {
   const ref = useRef<SVGSVGElement>(null);
   // viewport coords of the hovered badge; null = no tip on screen
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
@@ -140,12 +141,5 @@ const BADGES = {
     title: 'Supporter · helps pay for the servers',
     glyph:
       'M64 88.7C64 88.7 38 71.4 38 55 38 46.1 45.1 39.3 53.5 39.3 58.4 39.3 62.1 41.7 64 44.5 65.9 41.7 69.6 39.3 74.5 39.3 82.9 39.3 90 46.1 90 55 90 71.4 64 88.7 64 88.7Z',
-  },
-  /* the ledger title `title:stargazer`, drawn by `TitleChip` — a bigger star than the
-     owner's, yellow on the award violet with an ink outline (`.sup-badge.stargazer`) */
-  stargazer: {
-    label: 'Stargazer',
-    title: 'Stargazer · Starred DSIM on GitHub',
-    glyph: 'M64 25.5 73.4 54.5 103.9 54.5 79.3 72.5 88.7 101.5 64 83.5 39.3 101.5 48.7 72.5 24.1 54.5 54.6 54.5Z',
   },
 } as const;

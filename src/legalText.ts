@@ -27,15 +27,12 @@
 /**
  * Last substantive revision — shown on both pages.
  *
- * ⚠️ **PENDING: MOVE THIS IN THE DEPLOY THAT TURNS FIRST-PARTY ANALYTICS ON.** The policy
- * below now describes DSIM's own cookieless measurement (`server/analytics.ts`), which is a
- * new category of processing and therefore a material change. It is deliberately NOT moved
- * here yet, because the feature is dark until `VITE_ANALYTICS=1` reaches a Vercel project and
- * the server half is deployed — and moving this date asks EVERY signed-in account to accept
- * the terms again, once, which is a product event and not a side effect of writing the prose.
- * Move it with the flag, in the same deploy, not before and not after.
+ * September 25, 2026 (owner): first-party analytics, the host's count removed, browser Do Not
+ * Track / GPC no longer gating that analytics, and the site-lockdown and tester-group text.
+ * Moving this asks EVERY signed-in account to accept the terms again, once — move it for a
+ * material change, never for a typo.
  */
-export const LEGAL_UPDATED = 'August 4, 2026';
+export const LEGAL_UPDATED = 'September 25, 2026';
 
 /**
  * THE SAME REVISION, AS A SORTABLE KEY — what an acceptance is recorded against.
@@ -238,11 +235,12 @@ week is a sum of daily counts rather than a count of people.
 **How long it is kept.** The individual page-view records are deleted after 30 days.
 What outlives them is totals — how many views a page had on a given day, how many
 visitors came from a given country — with nothing in them that refers to a visit.
+Until September 2026 our website host also counted visits for us, cookieless; that count
+is switched off, and only its daily totals of the same kind were kept.
 
 **Turning it off.** A switch under “Your data” below stops every beacon from this
-browser the moment you set it. We also honour your browser's own **Do Not Track** and
-**Global Privacy Control** signals without your having to find that switch, and the
-desktop app and self-hosted servers send nothing at any time.
+browser the moment you set it. The desktop app and self-hosted servers send nothing at
+any time.
 
 ## Live status while you are connected
 
@@ -283,8 +281,10 @@ of your activity, and the connection id gives them no way to recognise a returni
 visitor.
 
 Administrators can also put DSIM into **maintenance**, which pauses new matches for
-everyone else while an update or a season reset is applied. When one is scheduled or
-running you will see a banner saying so, with the times.
+everyone else while an update or a season reset is applied, or **close the site**, which
+shows a page saying so in place of the app. When one is scheduled or running you will see
+a banner or that page. An account can be put in a tester group (beta tester, developer or
+contributor) that may use a closed site; the group is included in your data export.
 
 Administrators can also **watch a live match without appearing in the spectator
 count** that players see. We are stating this rather than leaving it implicit: the
@@ -352,8 +352,7 @@ We use a small number of infrastructure providers, each acting on our behalf:
 - **Fly.io**: the multiplayer game servers, which is also where the usage measurement
   above is counted. It is our own software on our own servers; no analytics company
   receives it.
-- **Vercel**: hosting for the website, and a second, cookieless usage count of the
-  same kind, used for the presenting sponsor’s monthly figures.
+- **Vercel**: hosting for the website.
 - **Google AdSense**, and **Google Funding Choices** as the consent tool: advertising
   on the web version.
 - **Ko-fi** and **PayPal**: payments.
@@ -407,8 +406,7 @@ request — by then there is nothing left that refers to you.
   friendships, blocks, and invites, immediately and permanently. If that button is
   unavailable for any reason, email us and we will do exactly the same thing by hand.
 - **Turn analytics off**: a switch under “Your data” below. It stops every beacon from
-  this browser as soon as you set it, and your browser’s Do Not Track or Global Privacy
-  Control signal does the same thing without your having to come here.
+  this browser as soon as you set it.
 - **Advertising choices**: see the Advertising section above.
 - **Play anonymously**: do not sign in.
 

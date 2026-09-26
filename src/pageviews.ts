@@ -1,13 +1,7 @@
 /**
- * THE PAGEVIEW BEACON — the client half of DSIM's own analytics.
- *
- * `src/analytics.ts` measures EVENTS through the host's dashboard and says, at the top of
- * itself, that a bespoke events table would mean building session attribution, bot filtering
- * and a dashboard. All three now exist (`server/analytics.ts`, `src/ui/AdminAnalytics.tsx`),
- * because the questions the owner actually asks — which pages, from where, on what, and how
- * that lines up with matches played and accounts kept — need the traffic and the product
- * tables in one place, and only one of those two is ever going to live on somebody else's
- * host.
+ * THE PAGEVIEW AND EVENT BEACON — the client half of DSIM's own analytics, and since the host's
+ * analytics script was removed (September 2026) the only one. `server/analytics.ts` receives it
+ * and `src/ui/AdminAnalytics.tsx` reads it, next to the product tables.
  *
  * ⚠️ WHAT THIS FILE IS ALLOWED TO SEND, and the reason each line of it is here:
  *
@@ -42,10 +36,12 @@
  * `analyticsAllowed()` is read on EVERY call for the reason its own module gives — it is an
  * opt-OUT, so a second tab switching it off has to stop this one.
  *
- * ⚠️ `navigator.doNotTrack` AND GLOBAL PRIVACY CONTROL ARE HONOURED, which the event tracker
- * does not do and arguably should. They cost one expression each, they are the two signals a
- * visitor can send without finding our switch, and ignoring a request you can see is worse
- * than never having offered one.
+ * ⚠️ `navigator.doNotTrack` AND GLOBAL PRIVACY CONTROL DO NOT GATE THE BEACON (owner, 2026-09-25:
+ * "I want to be able to track all traffic"). Both are browser-wide defaults in several browsers,
+ * so honouring them undercounted real traffic against the host's old count, which ignored them.
+ * The beacon carries no identifier and never leaves our own server, so it is not the sale or
+ * sharing GPC opts out of. The in-app switch (`analyticsAllowed`) still stops everything: a
+ * visitor who went and turned it off asked us directly, and the privacy page says so.
  *
  * ⚠️ THIS MODULE MUST STAY IMPORTABLE UNDER PLAIN NODE, so `scripts/smoke.ts` can exercise
  * the scrubbers — which are the part with a privacy guarantee riding on them, and therefore
@@ -56,6 +52,10 @@
  * no extra request. Same reasoning as `src/analyticsPref.ts` being its own leaf.
  */
 import { analyticsAllowed } from './analyticsPref';
+import { normalizePath } from './pathScrub';
+
+// re-exported: `scripts/smoke.ts` tests the scrubbers through this module
+export { normalizePath };
 
 /** Vite env, or nothing at all under plain Node — see the header. */
 const ENV: Record<string, string | undefined> =
@@ -73,64 +73,6 @@ const BUILD = typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
 // ---- the scrubbers ----------------------------------------------------------
 // Pure, exported, and tested headlessly. Everything below this line that touches the network
 // depends on them having already run.
-
-/**
- * SEGMENTS THAT INTRODUCE AN ID. `/replay/<uuid>` and `/profile/<username>` are the two
- * routes DSIM has today (`parseScreen` in `src/ui/App.tsx`), and the segment after either one
- * is a value that identifies a match or a person.
- *
- * Named rather than pattern-matched because the NAME is the reliable part: a username is
- * `[a-z0-9]{4,20}`, which is indistinguishable from the word `records` by shape alone. The
- * general patterns below are the safety net for a route nobody has written yet, not the rule.
- */
-const ID_PARENTS: Record<string, string> = {
-  replay: ':id',
-  profile: ':name',
-  u: ':name',
-  user: ':id',
-  room: ':code',
-  match: ':id',
-};
-
-/** looks like an id even though nothing named it one — the net under a route added later */
-function looksLikeId(seg: string): boolean {
-  if (seg.length > 24) return true; // no static route segment in this app is near that long
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return true;
-  if (/^[0-9a-f]{12,}$/i.test(seg)) return true; // a bare hex id
-  if (/^[a-z]{3}-[a-z0-9]{4,}$/i.test(seg)) return true; // a region-coded room code (iad-abc123)
-  if (/^\d+$/.test(seg) && seg.length > 3) return true; // a numeric id, but not `/act/2`
-  return false;
-}
-
-/**
- * A URL as it may be recorded: path only, query and fragment gone, every id-like segment
- * replaced by a placeholder, capped at a length no real route reaches.
- *
- * ⚠️ THE QUERY STRING GOES FIRST AND UNCONDITIONALLY. `?token=` is how a password-reset and
- * an email-verification link arrive (`src/ui/entryToken.ts`), and `App`'s mount effect strips
- * it from the address bar specifically so it cannot reach "a copied link, a referrer, an
- * analytics beacon" — the comment there names this beacon before it existed. Reading
- * `pathname` alone would be enough today; taking a whole href and discarding everything after
- * `?` is enough whatever a caller hands over tomorrow.
- */
-export function normalizePath(raw: string): string {
-  const path = raw.split('#')[0].split('?')[0] || '/';
-  const segs = path.split('/');
-  const out: string[] = [];
-  for (let i = 0; i < segs.length; i++) {
-    const seg = segs[i];
-    if (!seg) {
-      out.push(seg);
-      continue;
-    }
-    const parent = i > 0 ? segs[i - 1].toLowerCase() : '';
-    if (parent && ID_PARENTS[parent]) out.push(ID_PARENTS[parent]);
-    else if (looksLikeId(seg)) out.push(':id');
-    else out.push(seg.slice(0, 32));
-  }
-  const joined = out.join('/') || '/';
-  return joined.length > 128 ? joined.slice(0, 128) : joined;
-}
 
 /**
  * The referrer reduced to a bare host, or '' for a direct visit.
@@ -187,26 +129,10 @@ export function utmOf(search: string): { s: string; m: string; c: string } {
  */
 const ENTRY_UTM = typeof window !== 'undefined' ? utmOf(window.location.search) : { s: '', m: '', c: '' };
 
-/**
- * DOES THE VISITOR'S BROWSER ALREADY SAY NO?
- *
- * `doNotTrack` is unreliable as a spec and is being removed from browsers; Global Privacy
- * Control is the one with legal force behind it in several US states. Both are read, neither
- * is trusted to exist, and either one answering yes is a no.
- */
-function browserOptOut(): boolean {
-  if (typeof navigator === 'undefined') return true;
-  const nav = navigator as Navigator & { doNotTrack?: string; globalPrivacyControl?: boolean; msDoNotTrack?: string };
-  if (nav.globalPrivacyControl === true) return true;
-  const dnt = nav.doNotTrack ?? nav.msDoNotTrack ?? (typeof window !== 'undefined' ? (window as unknown as { doNotTrack?: string }).doNotTrack : undefined);
-  return dnt === '1' || dnt === 'yes';
-}
-
 /** every gate, in the order that makes the cheapest one decide first */
 function allowed(): boolean {
   if (!ENABLED) return false;
   if (typeof window === 'undefined') return false;
-  if (browserOptOut()) return false;
   return analyticsAllowed();
 }
 
@@ -280,8 +206,8 @@ export function trackPageview(path: string, game: string): void {
 }
 
 /**
- * RECORD ONE NAMED EVENT — the same events `src/analytics.ts` already declares, landing here
- * as well so the funnel sits beside the traffic that produced it.
+ * RECORD ONE NAMED EVENT — the events `src/analytics.ts` declares, so the funnel sits beside
+ * the traffic that produced it.
  *
  * It takes the name as a plain string rather than importing `AnalyticsEvent`, because that
  * type lives in a module this one must not import (it reads Vite env at module scope, which

@@ -13,8 +13,10 @@ import { confirmBlock, confirmUnfriend, useFriendsCtx } from './friendsContext';
 import { challengeLine, formatLabel } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import type { GameId } from '../games/types';
+import { SITE_HOST } from '../lib/authFlows';
+import { inDiscordActivity } from '../net/discordActivity';
 import { seasonFor } from '../seasons';
 import type { RoomKind } from '../net/protocol';
 
@@ -200,7 +202,21 @@ export function FriendsPanel({
       </div>
 
       {!signedIn ? (
-        <p className="fr-empty">Sign in to add friends and see who’s online.</p>
+        /* ⚠️ "Sign in" IS NOT AN INSTRUCTION ANYONE CAN FOLLOW INSIDE A DISCORD ACTIVITY.
+           The embed's CSP admits only Discord's own URL mappings, the auth host is not one,
+           and so every participant is permanently signed out — the panel would be telling
+           four people in a voice call to do a thing their client refuses before it reaches
+           a network. The panel itself STAYS (rather than being hidden with the rail's
+           Profile item) precisely because this is where somebody notices their friends list
+           is missing, and one sentence is the cheapest place to answer that; hiding it would
+           leave the question with nowhere to land. The address is plain text on purpose:
+           `target="_blank"` is unreliable in Discord's frame and a bare anchor would
+           navigate the activity away from itself. */
+        <p className="fr-empty">
+          {inDiscordActivity()
+            ? `Friends aren’t available inside Discord. Open ${SITE_HOST} in a browser to add friends and see who’s online.`
+            : 'Sign in to add friends and see who’s online.'}
+        </p>
       ) : friends.unavailable ? (
         // the server predates this client build (one Fly app serves every client
         // version) — a plain explanation, never an error boundary
@@ -602,7 +618,7 @@ export function PersonRow({
         {/* the equipped title rides along, on the same terms as the badge: a sibling of
             `.fr-name`, which ellipsises and would truncate anything nested in it. Both
             `FriendRow` and `PublicProfile` extend `BadgeFields`, so it is already here. */}
-        <TitleMark title={p.title} badges={p.badges} />
+        <BadgeMarks badges={p.badges} />
       </span>
       <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
     </>

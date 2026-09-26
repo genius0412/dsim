@@ -79,7 +79,7 @@ export function ReportDialog({
       {drivers.length > 1 && (
         <>
           <span className="ds-report-cap" id={`${id}-who`}>Who</span>
-          {/* role=group + aria-pressed, the house spelling of a pick (TitlePicker) — 06-02 */}
+          {/* role=group + aria-pressed, the house spelling of a pick (the badge picker) — 06-02 */}
           <div className="ds-opts" role="group" aria-labelledby={`${id}-who`}>
             {drivers.map((d) => (
               <button

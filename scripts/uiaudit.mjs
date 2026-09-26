@@ -93,7 +93,9 @@ const BASELINE = {
   // → 117, 2026-09-23: design review wave 7x (replay rail/builder polish, dead server-picker CSS).
   // → 112, 2026-09-23: queue pages on the spacing tokens (console column, head, actions, strategy cards, players).
   // → 110, 2026-09-23: the phone footer's 14px/16px pad and the breakdown chip's 2px 8px on tokens.
-  'off-grid-gap': 110,
+  // → 106, 2026-09-25: the patch-note modal and /changelogs on the spacing tokens.
+  // → 105, 2026-09-25: the lockdown/banner merge put one more gap on the tokens.
+  'off-grid-gap': 105,
   // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
   // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
@@ -136,7 +138,7 @@ const BASELINE = {
   // inside `font:` shorthands.
   // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
   // → 29, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'literal-line-height': 29,
+  'literal-line-height': 28,
   // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
   // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
   // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in

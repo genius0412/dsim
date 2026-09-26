@@ -6,6 +6,11 @@ you are making today, which is why it is no longer loaded into every session. `C
 
 ---
 
+## ⚠️ URGENT: multi-core game server (owner, 2026-09-24)
+
+Do this as soon as possible after the BIOBUZZ Act 2 release. The server runs on one core per
+machine, so bigger VMs don't add room capacity. Details in `docs/capacity.md`, "MULTI-CORE".
+
 ## Owner priorities, 2026-09-18 (plan; branches named; none started unless marked)
 
 Eight items the owner asked for beside BIOBUZZ 3D. Items 1–2 need the 3D renderer and stay on
@@ -178,7 +183,7 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
 
 - **Exists.** Google Funding Choices CMP for ad consent (`loadCmp`, `showConsentSettings`), the
   footer "Privacy & cookie settings" link that hides itself when the CMP offers no revocation
-  entry, `/privacy` and `/terms` from `legalText.ts`, cookieless Vercel analytics (counts only),
+  entry, `/privacy` and `/terms` from `legalText.ts`, cookieless Vercel analytics (counts only; removed Sept 2026 for first-party analytics),
   `ads.txt` generated at build; DSIM sets no cookies of its own; 15 `decodesim.*` localStorage
   keys of which the privacy text lists a subset; no in-app data export; account deletion
   described in the text (the server cascade exists and is dbtested).

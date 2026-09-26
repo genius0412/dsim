@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
+import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
 import type { GameId } from '../games/types';
 
@@ -60,6 +61,27 @@ export function ModeSelect({
   game?: GameId;
 }) {
   const lanOn = useLanEnabled();
+  /**
+   * TWO OF THE TILES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks
+   * the question itself rather than taking a prop.
+   *
+   * `compete` IS a prop because App already had the value; this one is
+   * `inDiscordActivity()` — HOST-BASED, the one predicate for "am I in an activity",
+   * which cannot be lost the way the instance id can (see the note on it in
+   * `discordActivity.ts`, and App's own `inActivity`). Reading it here rather than
+   * threading a second boolean keeps the two answers from ever disagreeing on one screen,
+   * and it is a hostname test, so it costs nothing.
+   *
+   * ⚠️ `activityCode` is the party's MAIN lobby code, and it needs the instance id, which
+   * `inActivity` does not — a storage-blocked reload has the second and not the first. So
+   * it is computed separately and the copy below degrades to "you need a room code" rather
+   * than printing `roomCodeForInstance('')`, which is a valid-looking code for nothing.
+   */
+  const inActivity = useMemo(() => inDiscordActivity(), []);
+  const activityCode = useMemo(() => {
+    const id = discordInstanceId();
+    return id ? roomCodeForInstance(id) : '';
+  }, []);
   /**
    * READ ONCE, at mount. A lazy initializer rather than a call in the render body: the flag is
    * set by the tutorial itself, so re-reading it on every render would make the card vanish
@@ -195,6 +217,25 @@ export function ModeSelect({
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
             <span>
               <span className="t">Watch live</span>
+              {/* ⚠️ THE LIST BEHIND THIS TILE CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH.
+                  `isPublicLive` admits ranked matches and record runs only — a custom room is
+                  private to the code its host handed out — and every activity room is a custom
+                  room. So in the embed the tile opens on a page about strangers, while the match
+                  four people in this voice channel are playing is reachable the whole time, by
+                  the code box under that list.
+
+                  The code is the missing half: a participant who was not in the lobby has no way
+                  to learn it, even though it is DERIVED from the instance they are already in.
+                  Printing it here is the cheapest place to close that — the tile that needs it is
+                  the one that says it. Not a restatement of the label: it names the limit and the
+                  one thing to type. */}
+              {inActivity && (
+                <span className="d">
+                  {activityCode
+                    ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
+                    : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'}
+                </span>
+              )}
             </span>
           </button>
         </div>
@@ -205,8 +246,16 @@ export function ModeSelect({
 
           Hidden entirely where `LAN_ENABLED` is off, rather than shown disabled: a greyed tile
           advertises a mode this build will not play, and the reason it is off is that the
-          feature is being held back, not that the player is missing a prerequisite. */}
-      {lanOn && (
+          feature is being held back, not that the player is missing a prerequisite.
+
+          ⚠️ HIDDEN IN A DISCORD ACTIVITY FOR THE SAME REASON, and it is not a theoretical
+          case: `LAN_SIGNALLING` is ON in production, so this section really does render in
+          the embed. Behind it, hosting a tab needs an account (`mayTabHost`) and the embed is
+          always signed out because Discord's CSP blocks auth, and joining needs the other
+          machine to be on this network — which a cross-origin iframe in a voice channel with
+          people in four countries is not. The screen's only remedy is a sign-in that cannot
+          happen, so the tile is a dead end and is not offered, exactly like the Compete set. */}
+      {lanOn && !inActivity && (
         <section className="ds-tileset">
           <p className="ds-tileset-label">LAN · same network</p>
           <div className="ds-tiles">

@@ -208,6 +208,15 @@ const themedPairs = (t) => {
     ['--ds-accent on panel (contributor icon)', t('--ds-accent'), panel, AA],
     ['--ds-ink-dim on panel (contributor card)', t('--ds-ink-dim'), panel, AA],
 
+    // PATCH NOTES (.ann-panel modal and /changelogs, both on --ds-panel since the notes lost
+    // their --ds-tile card): body, bold leads, the mono `##` section label, the date, and the
+    // inset focus ring of the scrollable notes region
+    ['.ann-md body --ds-ink-dim on panel', t('--ds-ink-dim'), panel, AA],
+    ['.ann-md strong --ds-ink on panel', t('--ds-ink'), panel, AA],
+    ['.ann-md ## label --ds-accent on panel', t('--ds-accent'), panel, AA],
+    ['.ann-item-date --ds-mut on panel', t('--ds-mut'), panel, AA],
+    ['.ann-scroll focus ring on panel (1.4.11)', t('--ds-accent'), panel, NON_TEXT],
+
     // 1.4.11 — interactive boundaries, measured against the card behind them
     ['--ds-line-strong on panel (1.4.11)', t('--ds-line-strong'), panel, NON_TEXT],
     ['focus ring --ds-accent on bg (1.4.11)', t('--ds-accent'), bg, NON_TEXT],
@@ -375,8 +384,8 @@ const serverPairs = (t) => {
     ['SupporterBadge admin glyph', t('--ds-staff-ink'), t('--ds-staff'), AA],
     // a 12px disc is a meaningful graphic: each badge FILL has to read against the panel
     ['SupporterBadge admin disc on the panel (1.4.11)', t('--ds-staff'), panel, NON_TEXT],
-    ['AwardBadge hexagon on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
-    // the stargazer ★ (`.sup-badge.stargazer`): yellow on the award violet, and the award-ink
+    ['Award-violet badge (record ribbon, stargazer disc) on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
+    // the stargazer ★ (`.badge-mark.tier-stargazer`): yellow on the award violet, and the award-ink
     // outline is what separates the two, so the outline is checked against both
     ['Stargazer star outline on the award disc (1.4.11)', t('--ds-award-ink'), t('--ds-award'), NON_TEXT],
     ['Stargazer star on its outline (1.4.11)', t('--ds-star'), t('--ds-award-ink'), NON_TEXT],
@@ -385,9 +394,10 @@ const serverPairs = (t) => {
     ['Badge ring on the blue roster half (1.4.11)', t('--ds-on-field'), t('--ds-blue-chip'), NON_TEXT],
     // .resx-winbanner.gold, the WORLD RECORD banner, is the podium gold
     ['Results WORLD RECORD banner', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
-    // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
-    // both themes; the rank numeral is the glyph, and it is what has to stay readable.
-    ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
+    // The AWARD VIOLET (0045). Like gold it does NOT invert, so one pair covers both themes.
+    // Its ink is the record ribbon's crown now (the hexagon's rank numeral went with titles,
+    // 0049), still held to text contrast so the pair can carry a numeral again.
+    ['Award ink on the award violet (record ribbon crown)', t('--ds-award-ink'), t('--ds-award'), AA],
     // THE RANKED PODIUM (0048). Three metal fills with ONE fixed ink, declared in the light
     // block only — so, like the award pair above, each numeral is one pair for both themes.
     ['Podium badge numeral (gold)', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
@@ -555,9 +565,17 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim over a light backdrop: red-ink', s('--ds-red-ink'), cardLit, AA],
     ['3D scrim over a light backdrop: muted', s('--ds-mut'), cardLit, AA],
 
-    // the admin server notice (fixed-ink fills; floats over the match and the shell)
-    ['.server-notice (info)', t('--ds-gold-ink'), t('--ds-gold'), AA],
-    ['.server-notice.urgent', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    // the site banners (BannerStack.tsx). The restart row keeps the old notice's fixed-ink
+    // fills; the others are a panel card whose KIND label carries an inverting tone.
+    ['.ds-banner.restart', t('--ds-gold-ink'), t('--ds-gold'), AA],
+    ['.ds-banner.restart.urgent', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    ['.ds-banner body on the panel', t('--ds-ink'), t('--ds-panel'), AA],
+    ['.ds-banner.info kind label', t('--ds-accent'), t('--ds-panel'), AA],
+    ['.ds-banner.known-bug kind label', t('--ds-warn'), t('--ds-panel'), AA],
+    ['.ds-banner.warning kind label', t('--ds-danger'), t('--ds-panel'), AA],
+    ['.ds-banner-bypass (staff tone as text)', t('--ds-staff'), t('--ds-panel'), AA],
+    // the closed screen: a panel card on the page ground
+    ['.ds-closed-note on the panel', t('--ds-mut'), t('--ds-panel'), AA],
 
     // the touch pad: the joystick label is FULL opacity now, on both field grounds
     ['.mobile-joystick-label on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],

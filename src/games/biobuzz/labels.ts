@@ -123,25 +123,13 @@ export const BB_INTAKE_KIND_BLURBS: Record<BbIntakeKind, string> = {
   ramp: 'Deploy to wedge under a FLOWER’s bottom POLLEN · folded, it takes nothing',
 };
 
-/** MOUNT labels — kept SHORT, because they sit in a 4-up button grid; the tradeoff goes in
- * the blurb rather than into a label that would then wrap. */
+/** MOUNT labels — kept SHORT, because they sit in a 4-up button grid. The buttons carry no
+ * blurb (owner, 2026-09-24). */
 export const BB_INTAKE_MOUNT_LABELS: Record<BbIntakeMount, string> = {
   front: 'FRONT',
   back: 'BACK',
   side: 'SIDES',
   frontback: 'FRONT+BACK',
-};
-
-/** Blurbs are PARTIAL on purpose: a mount gets one only when it says something the label does
- * not. "FRONT · grabs from the front" is noise; the trade you are actually making is not.
- *
- * ⚠️ THESE USED TO NAME A STORAGE COST — "Least storage" / "Less storage" — and that is false:
- * the hopper is capped at 4 for every build (owner ruling 2026-09-12), so the mount multipliers
- * in `bbMountStoreMult` do not change what a robot can hold. What a mount genuinely changes is
- * WHERE the robot can collect from, which is what these say instead. */
-export const BB_INTAKE_MOUNT_BLURBS: Partial<Record<BbIntakeMount, string>> = {
-  side: 'Strafe-collect along a line',
-  frontback: 'Collect driving either way',
 };
 
 /** Position labels, short enough to sit in a 3x3 chassis-map cell. Shared by the turretless

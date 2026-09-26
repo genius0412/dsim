@@ -192,11 +192,15 @@ import {
   BB_TURRET_BRACES,
   BB_TURRET_MOTOR_R,
   BB_TURRET_PITCH_MAX,
+  BB_DEG,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_REST,
   BB_TURRET_PLATE_TOP_Z,
   BB3_HEIGHT_DEFAULT,
+  BB3_HEIGHT_MAX,
   BB3_HEIGHT_MIN,
   BB3_MOUTH_SLOT_Z,
+  BB3_STOW_MAX,
 } from '../../src/games/biobuzz/config';
 // ⚠️ THE ONE PLACE IN THIS LANE THAT REACHES INTO `scene/`, AND THE ONLY SCRIPT THAT IMPORTS
 // `three`. The chunk-boundary rules this file enforces are about `src/`; a Node smoke script is
@@ -338,7 +342,17 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
-import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments, type VenueSpec } from '../../src/games/biobuzz/graphics/environments';
+import {
+  BASE_RIG,
+  BB_ENVIRONMENTS,
+  BB_ENVIRONMENT_IDS,
+  canFetchHdri,
+  environmentDef,
+  environmentDefFor,
+  hdriEnvironments,
+  pickableEnvironments,
+  type VenueSpec,
+} from '../../src/games/biobuzz/graphics/environments';
 import { bbVenueDetail, buildBiobuzzVenue } from '../../src/games/biobuzz/scene/renderVenue';
 import { ENVIRONMENT_IDS, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
 import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerReadout';
@@ -1165,6 +1179,38 @@ export function renderChecks(check: Check): void {
       !solveShotPath(w2, w2.robots[0]) && !SHOT.made && SHOT.points === 0,
       `points=${SHOT.points}`,
     );
+
+    // ⚠️ THE HOOD A ROBOT SPAWNS WITH, AND THE BUILDER PREVIEW SHOWS, (`BB_TURRET_PITCH_REST`) IS ONE THE
+    // AIM SOLVE ACTUALLY PRODUCES. It was the level pose — the tallest the hood has, and one no
+    // HIVE shot reaches — so the builder preview drew a hood the sim never raises that far
+    // (owner, 2026-09-24). Swept over the field on a DOUBLE turret, both exits.
+    {
+      const twin = { scoreMode: 'twinturret', bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 75 }, lift: null } } as unknown as Partial<RobotSpec>;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let x = -60; x <= 60; x += 12) {
+        for (let y = -60; y <= 60; y += 12) {
+          for (const h of [0, 2.4]) {
+            const wt = mkWorld('practice', 11, twin);
+            const rt = wt.robots[0];
+            rt.pos.x = x;
+            rt.pos.y = y;
+            rt.heading = h;
+            for (const which of [0, 1] as const) {
+              const s = bbTurretSolution(rt, bbAimTarget(wt, rt), which);
+              if (!s) continue;
+              lo = Math.min(lo, s.pitch);
+              hi = Math.max(hi, s.pitch);
+            }
+          }
+        }
+      }
+      check(
+        'turret: the spawn/preview hood pose is inside the elevation band the HIVE aim solve produces',
+        BB_TURRET_PITCH_REST >= lo && BB_TURRET_PITCH_REST <= hi && lo > BB_TURRET_PITCH_MIN,
+        `show ${(BB_TURRET_PITCH_REST / BB_DEG).toFixed(1)}° vs solved ${(lo / BB_DEG).toFixed(1)}°…${(hi / BB_DEG).toFixed(1)}°`,
+      );
+    }
 
     // ⚠️ THE PATH'S VERDICT IS THE FIRE GATE'S, POSE FOR POSE (owner ruling, 2026-09-19: the path
     // is drawn "in the case that we can make the shot assuming that the hive is completely up on
@@ -2318,7 +2364,8 @@ function hoodPlateChecks(check: Check): void {
   // the four the owner's report names, in the order the release table in `config.ts` lists them
   const PITCHES: readonly [string, number][] = [
     ['min', BB_TURRET_PITCH_MIN],
-    ['default', BB_TURRET_PITCH_MIN],
+    // the pose a built robot SHOWS before anything aims it (`BB_TURRET_PITCH_REST`) — was the level pose
+    ['default', BB_TURRET_PITCH_REST],
     ['57.6°', 57.6 * DEG],
     ['80° cap', BB_TURRET_PITCH_MAX],
   ];
@@ -4249,16 +4296,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
       // ── THE HEIGHT PAIR (R102 / R105.A) ──────────────────────────────────────────────────
       check(
-        'the builder has a heightIn dial over R105.A\u2019s own 12..29 range',
+        'the builder has a heightIn dial over BB3_HEIGHT_MIN..MAX (the coercer\u2019s own range)',
         builderSrc.includes('heightIn: Number(e.target.value)') &&
           builderSrc.includes('min={BB3_HEIGHT_MIN}') &&
           builderSrc.includes('max={BB3_HEIGHT_MAX}'),
       );
       check(
-        '...and a stow declaration that appears ONLY over the 18-in cube',
-        builderSrc.includes('stowHeightIn: Number(e.target.value)') &&
-          builderSrc.includes('const folds = deployed > BB3_STOW_MAX;') &&
-          builderSrc.includes('{folds && ('),
+        '...and no stow declaration: the dial stops at the 18-in cube, so nothing has to fold',
+        BB3_HEIGHT_MAX <= BB3_STOW_MAX && !builderSrc.includes('stowHeightIn'),
+        `BB3_HEIGHT_MAX ${BB3_HEIGHT_MAX}, BB3_STOW_MAX ${BB3_STOW_MAX}`,
       );
       // the preview's stow toggle is the SAME resolver the rule reads, expressed as a spec whose
       // height IS the stow height — which is what makes the group rebuild for free
@@ -9726,6 +9772,166 @@ function environmentAndReadoutChecks(check: Check): void {
       // a CALL, not the words: the file's own header explains why the star field is hashed
       // rather than random, and the check must not fail on its own reasoning
       check('the dome is painted with no Math.random() call (an export must repaint the same sky)', !/Math\.random\(/.test(envSrc));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // THE HDRI THAT CAN NEVER ARRIVE — the Discord Activity's CSP (audit #12).
+  //
+  // The activity is served through a proxy that admits only dsim's two Activity URL Mappings, so
+  // `dl.polyhaven.org` is refused before the request leaves. `school-hall` is High's AND Ultra's
+  // `environment` column and an ordinary desktop lands on one of those, so in the embed this was
+  // the DEFAULT path: a blocked request per scene build, a silent substitution of three's generic
+  // `RoomEnvironment` under a school hall's venue geometry, and a picker still advertising two
+  // downloads that could not happen. `canFetchHdri` / `environmentDefFor` answer it up front.
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  {
+    /** run `fn` with `window` stubbed onto a host that IS (or is not) Discord's activity proxy.
+     * Node has no `window` at all, which is why `inDiscordActivity()` reads false in this suite
+     * by default — the embed branch is unreachable without this. */
+    const onHost = <T>(hostname: string, fn: () => T): T => {
+      const g = globalThis as { window?: unknown };
+      const had = Object.prototype.hasOwnProperty.call(g, 'window');
+      const prev = g.window;
+      g.window = {
+        location: { hostname, search: '' },
+        sessionStorage: { getItem: () => null, setItem: () => undefined },
+      };
+      try {
+        return fn();
+      } finally {
+        if (had) g.window = prev;
+        else delete g.window;
+      }
+    };
+
+    const fetched = BB_ENVIRONMENTS.filter((e) => e.hdri);
+
+    // EVERY FETCHED ENTRY NAMES A STAND-IN, AND THE STAND-IN COSTS NOTHING. A fallback that is
+    // itself an HDRI, or an id that does not exist, is a fallback with somewhere else to fall.
+    check(
+      'every fetched environment names a PAINTED stand-in',
+      fetched.length > 0 &&
+        fetched.every((e) => {
+          const alt = BB_ENVIRONMENTS.find((x) => x.id === e.hdri!.fallback);
+          return !!alt && !!alt.look && !alt.hdri;
+        }),
+      fetched.map((e) => `${e.id}→${e.hdri!.fallback}`).join(' '),
+    );
+    // AND IT STANDS IN THE SAME KIND OF ROOM. `renderScene` builds the VENUE off the same row it
+    // lights from, so a hall that fell back to an outdoor horizon would put a sky where the
+    // ceiling was — the substitution has to be a different picture of the same place.
+    check(
+      'a stand-in venue is the same KIND as the room it stands in for',
+      fetched.every((e) => environmentDef(e.hdri!.fallback).venue.kind === e.venue.kind),
+      fetched.map((e) => `${e.venue.kind}→${environmentDef(e.hdri!.fallback).venue.kind}`).join(' '),
+    );
+
+    // OFF-EMBED NOTHING MOVES. The photographs are still the High/Ultra default on the web and in
+    // the desktop build, and the fixed-High replay export still renders in the school hall.
+    check('outside an activity every id resolves to its own declared row', BB_ENVIRONMENT_IDS.every((id) => environmentDefFor(id) === environmentDef(id)));
+    check('outside an activity an HDRI is still fetchable', canFetchHdri());
+    check('...and the picker still offers all eleven', pickableEnvironments().length === BB_ENVIRONMENTS.length);
+    check(
+      'a plain website host is not an activity',
+      onHost('playdsim.com', () => canFetchHdri() && environmentDefFor('school-hall').id === 'school-hall'),
+    );
+
+    // IN THE EMBED THE SUBSTITUTION IS TOTAL: nothing resolves to a row that needs a download.
+    check('inside the activity an HDRI is known to be unfetchable up front', !onHost('1234.discordsays.com', () => canFetchHdri()));
+    check(
+      'inside the activity the school hall resolves to the painted school gym',
+      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id) === 'gym',
+      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id),
+    );
+    check(
+      'inside the activity the photo studio resolves to the painted dark studio',
+      onHost('1234.discordsays.com', () => environmentDefFor('monochrome-studio').id) === 'cyc-dark',
+      onHost('1234.discordsays.com', () => environmentDefFor('monochrome-studio').id),
+    );
+    check(
+      'inside the activity NO id resolves to a row that has to be downloaded',
+      onHost('1234.discordsays.com', () => BB_ENVIRONMENT_IDS.every((id) => !environmentDefFor(id).hdri)),
+    );
+    // and only the two move: a substitution that also re-pointed the painted entries would be
+    // changing the picture for a reason that has nothing to do with the CSP
+    check(
+      'inside the activity every PAINTED id is left exactly where it was',
+      onHost('1234.discordsays.com', () =>
+        BB_ENVIRONMENTS.filter((e) => !e.hdri).every((e) => environmentDefFor(e.id) === e),
+      ),
+    );
+    check(
+      'inside the activity the picker drops the two downloads and keeps the rest',
+      onHost('1234.discordsays.com', () => {
+        const list = pickableEnvironments();
+        return list.length === BB_ENVIRONMENTS.length - fetched.length && list.every((e) => !e.hdri);
+      }),
+    );
+    // NOTHING IS BUNDLED AND NOTHING IS REWRITTEN. The substitution is a read-time resolution:
+    // the stored setting still says `school-hall`, so the same profile opened outside the embed
+    // gets the photograph back, and no `.hdr` joined the repo to make this work.
+    {
+      const envDataSrc = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'environments.ts'), 'utf8').replace(/\r\n/g, '\n');
+      check('the fix stores nothing — no write of the resolved id anywhere in the data module', !/localStorage|setGraphicsSetting/.test(envDataSrc));
+      check(
+        'the two HDRIs are still fetched from Poly Haven, not from a bundled copy',
+        fetched.every((e) => /^https:\/\/dl\.polyhaven\.org\//.test(e.hdri!.url)),
+      );
+      // ⚠️ THE ONE PREDICATE. `discordGroup()` answers "which party", which can legitimately be
+      // unknown inside a live embed (a reload with third-party storage blocked); "which CSP is
+      // over this document" is `inDiscordActivity()` and only that.
+      check(
+        'the CSP question is asked of inDiscordActivity(), never of the party',
+        /export function canFetchHdri\(\): boolean \{\n\s*return !inDiscordActivity\(\);\n\}/.test(envDataSrc),
+      );
+    }
+
+    // THE RENDERER READS THE RESOLVED ROW FOR ALL THREE OF ITS JOBS. The rig, the venue and the
+    // surround come off one row; before this they disagreed in the embed, which is how a school
+    // hall's walls ended up around a field lit by three's generic box.
+    {
+      const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+      check('applyQuality lights and builds the venue from the RESOLVED row', /const def = environmentDefFor\(s\.environment\)/.test(sceneSrc));
+      check('...and nothing in the scene reads the raw declared row any more', !/\benvironmentDef\(/.test(sceneSrc));
+      const envSrc = readFileSync(join(SCENE_DIR, 'renderEnvironment.ts'), 'utf8');
+      check('the loader resolves the same way before it considers fetching', /const def = environmentDefFor\(id\)/.test(envSrc));
+      // A FAILURE IS REMEMBERED. Only successes were cached, so a refused fetch was re-issued on
+      // every scene build and every graphics-settings change.
+      check(
+        'a failed .hdr is remembered for the document, not re-requested per scene',
+        /failedHdri\.set\(id, \(failedHdri\.get\(id\) \?\? 0\) \+ 1\)/.test(envSrc) &&
+          /if \(\(failedHdri\.get\(id\) \?\? 0\) >= HDRI_MAX_TRIES\) \{/.test(envSrc),
+      );
+      check(
+        'graphics: the environment picker offers only what this client can fetch',
+        /options=\{pickableEnvironments\(\)\.map\(/.test(readFileSync('src/ui/GraphicsSection.tsx', 'utf8')) &&
+          !/options=\{BB_ENVIRONMENTS\.map\(/.test(readFileSync('src/ui/GraphicsSection.tsx', 'utf8')),
+        'in the embed the HDRI host is not a URL mapping, so those tiles advertised a download that cannot happen',
+      );
+      check('...in MODULE scope, so it outlives the scene that learned it', /^const failedHdri = new Map<EnvironmentId, number>\(\);$/m.test(envSrc));
+      check(
+        '⚠️ ...but it COUNTS, so one blip does not cost the real environment for the whole run',
+        /^const HDRI_MAX_TRIES = 2;$/m.test(envSrc),
+        'a document is a whole Electron run; blacklisting on the first miss meant one bad second lasted until a restart',
+      );
+      check(
+        '⚠️ ...and only the FETCH counts, so a GPU failure never blacklists a download that worked',
+        // exactly ONE place records a failure, and it is the catch wrapped around the FETCH.
+        // (A "no set() near a catch(err)" test cannot work: the legitimate fetch-catch is
+        // itself a `catch (err)` with the set inside it — which is how this check first went
+        // red. Counting the sites and pinning the one is the discriminator that holds.)
+        (envSrc.match(/failedHdri\.set\(/g) ?? []).length === 1 &&
+          /loadAsync\(def\.hdri\.url\);\s*\} catch \(err\) \{\s*failedHdri\.set\(/.test(envSrc),
+      );
+      check(
+        '⚠️ ...and the count does not last the whole run: a success clears it, and it expires',
+        /failedHdri\.set\([^\n]*\n\s*hdriFailedAt\.set\(id, Date\.now\(\)\);\s*throw err;\s*\}\s*failedHdri\.delete\(id\);/.test(envSrc) &&
+          /if \(Date\.now\(\) - \(hdriFailedAt\.get\(id\) \?\? 0\) >= HDRI_RETRY_MS\) failedHdri\.delete\(id\);\s*if \(\(failedHdri\.get\(id\) \?\? 0\) >= HDRI_MAX_TRIES\) \{/.test(envSrc),
+        'two blips in one Electron run used to mean the stand-in until a restart',
+      );
+      // and the failure lands on the entry's own stand-in rather than on the flattest row there is
+      check('a failed fetch falls back to the entry’s stand-in, not to `room`', /const alt = applyFallback\(def, lighting\);/.test(envSrc));
     }
   }
 

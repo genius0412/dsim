@@ -19,6 +19,12 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   (30 Hz)**. `server/room.ts` = lobby + match + host lifecycle + deterministic drop.
   `SNAPSHOT_INTERVAL` was dropped from 60 Hz after profiling (the lag was NETWORK, not CPU;
   halving snapshot bandwidth + `setNoDelay(true)` to kill Nagle was the fix).
+- ⚠️ **A MISSING INPUT TICK KEEPS THE LAST APPLIED BUTTONS** (`frameCommands`, 2026-09-25).
+  Inputs ride the unreliable lane, one tick per packet, and a tick with none of its own is filled
+  from `latest`, the newest command BY TICK. A client runs ahead, so that is usually a FUTURE
+  command. Its stick is borrowed; its `buttons` are not — they come from `held`. A future release
+  borrowed into a gap made a held button read up-down-up, and every edge-triggered toggle fired
+  twice. Smoke: "input gap:" (shared).
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).
@@ -163,6 +169,32 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - **A CUSTOM ROOM PLAYS ZENITH AUTOS** (`docs/area/autos.md`): `{ t: 'zenithAuto' }` behind the
   `'zenithAuto'` server cap, one message, never on the roster; the server's auto seat runs in
   `frameCommands` beside the bots, so its commands are recorded and ride `cmds`. Never ranked.
+- ⚠️ **THE LOAD HOLD: A STARTED `'3d'` MATCH WAITS AT TICK 0 UNTIL EVERY SEAT CAN PLAY IT**
+  (owner, 2026-09-24). The gate above was not enough and matches, record runs included, still
+  opened behind the loading panel. `physicsReady` is sent from the LOBBY and covers the physics
+  chunk only. The 3D VIEW (Three.js chunk, field GLB, scene build) cannot load there, because
+  the game screen that owns it is built from `matchStart`. So after `matchStart` the room
+  holds (`Room.beginLoadHold`, `loadHeld` in the tick loop, same clock reset as the ghost
+  freeze) until every connected seat advertising `'viewready'` has sent
+  `{ t: 'viewReady', gen }` for THIS generation. The controller sends it from `stepServer` once
+  `physicsPending` and `sceneLoading` are both false (2D view and a failed scene both count).
+  - `{ t: 'loadHold', gen, waitMs, loading }` goes out at the start, on each report, **every
+    second** while held (a lost frame must not strand a client), and on release (`waitMs: 0`).
+    A held client does not predict: running the countdown locally against a frozen server
+    snaps back on release. The session also drops a hold on any snapshot past tick 0 and at
+    its own copy of the cap, so a lost release cannot freeze it.
+  - ⚠️ **THE CAP STARTS THE MATCH; IT NEVER CANCELS ONE** (`LOAD_HOLD_MAX_MS`, 20 s), for the
+    free-dodge reason above. The release names the seats it left behind: the server logs them,
+    the others' event log says so, and the late client joins the running match when it
+    loads. Its loading ticks (`loadingTicks`) come off the live ticks its AFK verdict is judged
+    against, so a slow load is never a standing charge.
+  - Not waited on: a client without the cap, a dropped seat, a bot, any non-`'3d'` room.
+  - `preloadRoomView` (`src/net/roomView.ts`) fetches the scene chunk from the same three
+    screens as the physics preload, so the hold is usually the scene build and nothing else.
+  - Checks: `net3d.ts` §2c (hold, stale generation, release, cap, dropped seat, old client,
+    DECODE) plus source pins for the client half, since `ServerSession` cannot be imported
+    headlessly.
+
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.
@@ -213,6 +245,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   into the same situation and it bypassed detach, deleting the client and taking the room with
   it. RESTART pressed in the seconds after the buzzer therefore lost the score. The LOCK still
   goes — that is all the caller needs — and the seat is left for the close that follows.
+- ⚠️ **A DECIDED MATCH IS SAVED WHOEVER WALKS AWAY, IN EVERY ROOM** (2026-09-24, "some replays
+  are not saving"). `finishing` used to be solo-record only, so a custom game, a bot game, a
+  duo run or a ranked match whose LAST connected driver left between the buzzer and the settle
+  (up to `MATCH_SETTLE_MAX_S`, while the results screen is still waiting) froze as a ghost room
+  and was deleted unsaved: no replay, no history row, no ELO. Now `detach` sets `finishing` in
+  any room once nobody is connected inside `inFinishWindow`, and `abandonSlot` leaves the seat
+  in any room inside it. A match everybody left MID-match is still not saved. Checks:
+  `smoke.ts` "versus buzzer".
 - **THE ONE-GAME REFUSAL CARRIES `code: 'active_game'`.** It is one of the few a client can act
   on, so the record launcher offers the way back into that match instead of a dead card; the
   sentence stays self-sufficient and the launcher matches on it too, because most of the fleet
@@ -477,6 +517,30 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   **NEVER deploy with a bare `flyctl deploy`** — fly.toml expresses only ONE `[[vm]]` size, so
   a bare deploy re-applies `shared-cpu-4x` to EVERY machine and silently upsizes the cheap
   satellites. The wrapper re-shrinks them; verify with `fly machine list -a dohun-sim-decode`.
+- **SITE STATUS: LOCKDOWN, BANNERS, RESTART COUNTDOWN** (`server/siteState.ts`,
+  `src/net/siteStatus.ts`, migrations 0051/0052; the rules are in `docs/area/accounts.md`).
+  - ⚠️ **THE RESTART NOTICE USED TO REACH ONE MACHINE.** It was a variable on whichever machine
+    the admin POST landed on, so on a multi-region app most players never saw the countdown.
+    Every banner, the restart included, is a `banners` row now. Each machine re-reads the set
+    every 5 s while it has sockets (`pushSiteStatus`) and pushes a CHANGE to its own sockets:
+    `siteStatus` for new clients, the old `serverNotice` for older ones. The machine that took
+    the write pushes at once. `/api/presence` still carries `notice` and `maintenance` (with an
+    additive `scope`) for older clients.
+  - **`GET /api/status`** is the one read every page makes (boot, then `NoticePoller` every
+    20 s): lockdown, live banners, the restart notice, server time, and `access` when a token
+    came with it. An older server 404s it and the client falls back to presence for the notice.
+    `siteStatus` needs no cap: an older client ignores a `t` it does not know.
+  - A restart row stays live 20 s past its `until` (the "restarting now" beat); end and cancel
+    backdate it past that. Without a database the set lives in memory, as the notice did.
+  - **FIRST LOAD.** `main.tsx` asks for the status beside the physics init. Closed: the closed
+    screen mounts as soon as the answer lands, before the app, the lobby socket or any lazy
+    chunk. Open: the app waits at most `BOOT_WAIT_MS` (800 ms) for the answer, then opens.
+    **FAIL OPEN**: an unreachable server is not a closed site (free drive works offline; the
+    server refuses writes itself when it is up). The exception is a build baked closed
+    (`VITE_SITE_LOCKDOWN=1`, the alpha): closed until the server confirms an admin or group.
+  - **A MATCH IN PROGRESS FINISHES.** The server does not end running rooms, and the client
+    keeps the match screen until the player leaves it (`shellState.inMatch`), then shows the
+    closed screen.
 - **`api/` is the OTHER server**: Vercel serverless functions, deployed alongside the static
   client, not the Fly game server above. `api/download.ts` is an Edge-runtime proxy that streams
   a desktop-release binary from the site's own domain (via the `/download/:asset` rewrite in

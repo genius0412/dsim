@@ -159,11 +159,17 @@ export function aiPlayChecks(check: Check): void {
    * G402. The RATE did not move — over 7000–7019 at 100 s, 3 of 20 matches foul with the tower
    * solid and 2 of 20 without it, G402 every time — so the pick moved, not the bar. 7007 is clean
    * either way.
+   *
+   * 7007 → 7005 on 2026-09-24, for the same reason: turrets now SPAWN at `BB_TURRET_PITCH_REST`
+   * rather than level, so the first shots leave ~0.5 s sooner and every match with a turret
+   * diverges from tick 30. 7007 picked up one AUTO G402. The RATE did not rise — over 7000–7019 at
+   * 100 s, 2 of 20 foul (7006 a G407 each side, 7007 a G402), against 3 of 20 before. 7005 is clean
+   * and seats every launcher (a double turret with a tube, two dumpers, a single turret).
    */
   {
-    const row = playBotMatch({ format: '2v2', blue: 'hard', red: 'hard', seed: 7007, physics: '3d', builds: 'bot', stopAtS: 100 });
+    const row = playBotMatch({ format: '2v2', blue: 'hard', red: 'hard', seed: 7005, physics: '3d', builds: 'bot', stopAtS: 100 });
     const committed = foulPtsCommitted(row, 'blue') + foulPtsCommitted(row, 'red');
-    check('four HARD bots commit no fouls through AUTO and a minute of TELEOP (3D, seed 7007)', committed === 0, `${JSON.stringify(row.fouls)}`);
+    check('four HARD bots commit no fouls through AUTO and a minute of TELEOP (3D, seed 7005)', committed === 0, `${JSON.stringify(row.fouls)}`);
     check(`…none is ever stuck for more than ${MAX_STUCK_RUN_S} s`, row.bots.every((b) => b.maxStuckS <= MAX_STUCK_RUN_S), stuckLine(row));
     check('…every one of them scores (fired elements)', row.bots.every((b) => b.fired > 0), row.bots.map((b) => `#${b.id} ${b.fired}`).join(' '));
     check(

@@ -6,7 +6,7 @@ import {
   type MatchHistoryPlayer,
 } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { fmtDayTime } from './fmtDate';
 
 type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
@@ -52,7 +52,7 @@ function PlayerLink({
   const badge = (
     <>
       <SupporterBadge supporter={p.supporter} role={p.role} />
-      <TitleMark title={p.title} badges={p.badges} />
+      <BadgeMarks badges={p.badges} />
     </>
   );
   if (p.username && onOpenProfile) {

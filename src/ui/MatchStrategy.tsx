@@ -10,7 +10,7 @@ import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import type { LobbyClient } from '../net/lobbyClient';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
@@ -258,7 +258,7 @@ export function MatchStrategy({
                   <span className="pnm">
                     {p.name}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <TitleMark title={p.title} badges={p.badges} />
+                    <BadgeMarks badges={p.badges} />
                   </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
@@ -297,7 +297,7 @@ export function MatchStrategy({
                       {pl.name}
                       {isMe ? ' (you)' : ''}
                       <SupporterBadge supporter={pl.supporter} role={pl.role} />
-                      <TitleMark title={pl.title} badges={pl.badges} />
+                      <BadgeMarks badges={pl.badges} />
                     </span>
                     <span className="ptm">
                       {spec.name} · Team {pl.teamNumber || '-'}

@@ -38,18 +38,13 @@ if [ "$ALPHA" -eq 1 ]; then
   # -c pins the config: without it `fly deploy` reads fly.toml and would deploy PRODUCTION
   # under an alpha app name, quietly giving the preview production's multi-region VM block.
   deploy_rc=0
-update_rc=0 # any satellite whose re-shrink failed — reported at the end, never silent
   # --ha=false: Fly's default launches a SECOND machine for high availability, and for this
   # server that is not redundancy, it is a SPLIT. Rooms live in the process's memory and the
   # routing hints resolve to a REGION, not a machine — so two machines in one region means
   # two players can land on different ones and sit in different rooms with the same code,
   # which is exactly the cross-region bug this app just fixed, one level down.
   fly deploy --remote-only --ha=false -c "$CONFIG" -a "$APP" "$@" || deploy_rc=$?
-  if [ "$update_rc" -ne 0 ]; then
-  echo "!! AT LEAST ONE SATELLITE WAS NOT RE-SHRUNK (see above). A machine left on fly.toml's"
-  echo "   [[vm]] is running shared-cpu-4x AND MAX_ROOMS 24 — costly, and oversubscribed."
-fi
-if [ "$deploy_rc" -ne 0 ]; then
+  if [ "$deploy_rc" -ne 0 ]; then
     echo "!! fly deploy exited $deploy_rc — CHECK THE DEPLOY (fly machine list -a $APP)"
     exit "$deploy_rc"
   fi
@@ -111,22 +106,30 @@ SATELLITE_SIZES=(
   ord:performance-1x:2048
   sjc:performance-1x:2048
   lhr:performance-1x:2048
-  gru:shared-cpu-4x:1024
+  gru:performance-1x:2048
   jnb:shared-cpu-4x:1024
-  syd:shared-cpu-4x:1024
-  nrt:shared-cpu-4x:1024
+  syd:performance-1x:2048
+  nrt:performance-1x:2048
 )
+# 2026-09-24 (BIOBUZZ Act 2): gru, syd and nrt stay on the dedicated core the capacity task
+# moved them to on 09-23 (peaks 0.17-0.43 cores against shared-cpu-4x's 0.175 baseline), because
+# every online BIOBUZZ room is now a 3D solve. A bigger size does NOT help: the server is ONE
+# process on ONE core (no worker_threads/cluster). ⚠️ MULTI-CORE IS THE URGENT NEXT CAPACITY
+# ITEM — see docs/capacity.md, "MULTI-CORE".
 SATELLITES=()
 for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 
-# MAX_ROOMS for a satellite, applied to EVERY size above. The default (server/index.ts) is
-# 24 for EVERY region with FLY_REGION set, sized for iad's dedicated performance-2x core —
-# far more than any satellite here, dedicated-core or shared, is meant to carry alone.
-# 6 is a RUNAWAY GUARD (see server/index.ts), not an admission limit: most rooms are PARKED
-# (0.031 cores) rather than driven (0.075). If satellites start refusing players with
-# `region_full` while `/api/perf` shows headroom, raise this to 8-10, not back to 24 — and
-# raise it PER SIZE if the dedicated-core satellites (ord/sjc/lhr) are the ones refusing
-# while the shared-cpu-4x ones are not.
+# MAX_ROOMS for a satellite, PER SIZE. The default (server/index.ts) is 24 for EVERY region
+# with FLY_REGION set, sized for iad's dedicated performance-2x core — far more than any
+# satellite here, dedicated-core or shared, is meant to carry alone.
+# These are RUNAWAY GUARDS (see server/index.ts), not admission limits: most rooms are PARKED
+# (0.031 cores) rather than driven (0.075). A dedicated core (performance-*) gets 10, the top
+# of the 8-10-with-margin band (docs/capacity.md §4); anything shared keeps 6.
+# 2026-09-25: this was one value, 6, for every size, and lhr (performance-1x) refused every
+# new room at "6/6" with 2 live matches and 0.25 cores in use, two staged RANKED rooms among
+# them. Most of the six were finished matches on the results screen, which server/index.ts no
+# longer counts (Room.holdsCapacity); 6 was also below what a dedicated core carries. If it
+# bites again while `/api/perf` shows headroom, raise the dedicated figure toward 13, not 24.
 # ⚠️ IT MUST BE APPLIED HERE, NOT IN fly.toml. `fly deploy` regenerates machine config
 # from fly.toml, so a hand-run `fly machine update --env` reverts on the next deploy,
 # silently. A fly.toml `[env]` block is the wrong fix in the other direction: it would
@@ -139,6 +142,7 @@ for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 # unless the exemption is verified against `pending_matches` (a room CODE is client-supplied,
 # so trusting its shape would be an admission bypass).
 SATELLITE_MAX_ROOMS=6
+SATELLITE_MAX_ROOMS_DEDICATED=10
 
 echo "==> fly deploy ($APP)"
 # NOTE: do NOT let a non-zero deploy skip the re-shrink below. `fly deploy` exits
@@ -147,6 +151,7 @@ echo "==> fly deploy ($APP)"
 # the script mid-way, silently leaving the satellites on shared-cpu-4x. Observed
 # 2026-07-20. So capture the status, ALWAYS re-shrink, and re-raise at the end.
 deploy_rc=0
+update_rc=0 # any satellite whose re-shrink failed — reported at the end, never silent
 # --ha=false: the note on the ALPHA deploy line above applies here word for word, and
 # harder — production has EIGHT regions where the preview has one. Fly's default launches
 # a SECOND machine for high availability, and for this server that is not redundancy, it
@@ -160,7 +165,7 @@ deploy_rc=0
 fly deploy --remote-only --ha=false -a "$APP" "$@" || deploy_rc=$?
 [ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
-echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]}, MAX_ROOMS=$SATELLITE_MAX_ROOMS)"
+echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]}, MAX_ROOMS=$SATELLITE_MAX_ROOMS_DEDICATED dedicated / $SATELLITE_MAX_ROOMS shared)"
 ids=$(fly machine list -a "$APP" --json | node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const want = new Set(process.argv.slice(1));
@@ -196,6 +201,10 @@ while read -r region id; do
     echo "!! no size listed for $region ($id), leaving it alone"
     continue
   fi
+  case "$size" in
+    performance-*) max_rooms="$SATELLITE_MAX_ROOMS_DEDICATED" ;;
+    *) max_rooms="$SATELLITE_MAX_ROOMS" ;;
+  esac
   # --env is safe to pass alongside the size flags only because fly.toml has NO `[env]`
   # block, so there is nothing else in machine env for it to clobber (Fly SECRETS are a
   # separate mechanism and are untouched). Re-check that if an `[env]` block is ever added.
@@ -206,14 +215,18 @@ while read -r region id; do
   # `--env` is the newest flag on this line and the one most likely to be renamed or dropped by
   # a flyctl upgrade; a CLI change must degrade to a loud line, not to a silently half-resized
   # fleet. The mmsmoke check reads this SCRIPT, not the CLI, so it gives no signal here.
-  if fly machine update "$id" --vm-size "$size" --vm-memory "$memory" --env MAX_ROOMS="$SATELLITE_MAX_ROOMS" -a "$APP" -y >/dev/null; then
-    echo "   $region ($id) -> $size/${memory}MB, MAX_ROOMS=$SATELLITE_MAX_ROOMS"
+  if fly machine update "$id" --vm-size "$size" --vm-memory "$memory" --env MAX_ROOMS="$max_rooms" -a "$APP" -y >/dev/null; then
+    echo "   $region ($id) -> $size/${memory}MB, MAX_ROOMS=$max_rooms"
   else
     update_rc=1
     echo "!! $region ($id) UPDATE FAILED — it may still be on fly.toml's size/MAX_ROOMS. Check: fly machine list -a $APP"
   fi
 done <<< "$ids"
 
+if [ "$update_rc" -ne 0 ]; then
+  echo "!! AT LEAST ONE SATELLITE WAS NOT RE-SHRUNK (see above). A machine left on fly.toml's"
+  echo "   [[vm]] is running shared-cpu-4x AND MAX_ROOMS 24 — costly, and oversubscribed."
+fi
 if [ "$deploy_rc" -ne 0 ]; then
   echo "!! VM sizes re-applied, but 'fly deploy' had exited $deploy_rc — CHECK THE DEPLOY."
   echo "   Often a transient API flake with the rollout actually complete; confirm every"

@@ -15,6 +15,27 @@
  *
  * Extracted from `index.ts` so the decision can be tested without booting a listener.
  */
+/**
+ * ⚠️ A REGION REACHES A `fly-replay` HEADER, SO IT IS VALIDATED HERE AND NOWHERE ELSE.
+ *
+ * Node throws `ERR_INVALID_CHAR` when a CRLF reaches `writeHead`, and that throw happens
+ * INSIDE the request handler, where the process-level hook only logs it — the socket is left
+ * with no response until it times out, so `?region=%0Ax` in a loop is a free way to pile up
+ * hung sockets on the one machine every Discord Activity in the world is pinned to. The
+ * WebSocket upgrade path is worse: it does a raw `socket.write` of the header, which bypasses
+ * Node's validation entirely and hands attacker-authored bytes to the Fly edge.
+ *
+ * The guard lives in this function rather than at each call site because there are three of
+ * them (`/health`, `/api/lobbies`, the upgrade) and one of them was missed for months.
+ * A region is a Fly region code: three lowercase letters, nothing else.
+ */
+const LEGAL_REGION = /^[a-z]{3}$/;
+
+/** the same test, for the handlers that build their own replay header */
+export function legalRegion(r: string): boolean {
+  return LEGAL_REGION.test(r);
+}
+
 export function routeTarget(url: URL, matchmakerRegion: string): string | null {
   // ranked queueing always meets on the ONE matchmaker, or two halves of a pairing would
   // sit in different pools waiting for each other
@@ -22,11 +43,15 @@ export function routeTarget(url: URL, matchmakerRegion: string): string | null {
   // an explicit pick wins over everything below it: it is the only hint a caller sends when
   // it KNOWS where the room is (an invite's stamped region, a looked-up spectate target)
   const region = url.searchParams.get('region');
-  if (region) return region;
+  if (region) return LEGAL_REGION.test(region) ? region : null;
   const room = url.searchParams.get('room');
   if (room) {
     const dash = room.indexOf('-');
-    if (dash > 0) return room.slice(0, dash); // region-coded `<region>-<code>`
+    if (dash > 0) {
+      // the room code is untrusted too, and its prefix lands in the same header
+      const prefix = room.slice(0, dash); // region-coded `<region>-<code>`
+      return LEGAL_REGION.test(prefix) ? prefix : null;
+    }
   }
   return null; // a bare custom code — nothing to route on; stay here
 }

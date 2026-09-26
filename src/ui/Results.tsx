@@ -314,7 +314,7 @@ function RosterList({
               {/* A SIBLING of the clip, never inside it: `Marquee` MEASURES its text
                   against the clip to decide whether to marquee, so anything else in there
                   would widen the thing being measured and scroll a name that fits.
-                  Badge ONLY here — no title chip. See the note in styles.css beside
+                  Status disc ONLY here — no worn badges. See the note in styles.css beside
                   `.resx-roster-name` for the measurement that decided it. */}
               <SupporterBadge supporter={p.supporter} role={p.role} />
               {p.isLocal && <span className="resx-you">YOU</span>}
@@ -670,7 +670,7 @@ export function Results({
    *  in a roster built from `matchResult`/`practiceRun`'s recorded setups. Optional so
    *  an older caller still renders (just without the marker). */
   localRobotId?: number;
-  /** who is in each seat (`matchStart.drivers`) — the roster's badge/title source. Empty in
+  /** who is in each seat (`matchStart.drivers`) — the roster's badge source. Empty in
    *  solo, in a replay, and against a server older than the fields. */
   drivers?: readonly MatchDriver[];
 }) {

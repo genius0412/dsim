@@ -38,8 +38,10 @@ import {
   DEFAULT_ROOM_CONFIG,
   RANKED_JOIN_GRACE_MS,
   READY3D_DEADLINE_MS,
+  LOAD_HOLD_MAX_MS,
   STRATEGY_DURATION_MS,
   reportsPhysicsReady,
+  reportsViewReady,
   type BallDelta,
   type ClientMsg,
   type EloDelta,
@@ -287,6 +289,13 @@ export interface Client {
   /** protocol capabilities this client build advertised on join/queue (mixed-version
    * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
   caps?: string[];
+  /** THE SEAT'S SECRET — see the `welcome` note in protocol.ts. Minted here, sent only to
+   * its owner, never broadcast. */
+  seatToken?: string;
+  /** did this seat's client advertise `'seat'`? Only then is the token REQUIRED to reclaim
+   * it. An older client has no token to send, and refusing its own reconnect would be a
+   * worse bug than the one this closes — it ages out as clients update. */
+  seatSecured?: boolean;
   /**
    * This client has said its 3D physics chunk is loaded (`{ t: 'physicsReady' }`).
    *
@@ -298,6 +307,12 @@ export interface Client {
   ready3d?: boolean;
   /** this player's Zenith auto for a CUSTOM room's next match (`{ t: 'zenithAuto' }`), bounded */
   zenithAuto?: ZenithAutoSetup;
+  /**
+   * The match generation this client last reported `viewReady` for (`VIEWREADY_CAP`): its
+   * physics and its view are up and it can play that match. Kept across a drop like `ready3d`.
+   * Only read for a client that advertised the capability — see `seatsLoading`.
+   */
+  viewGen?: number;
   /** release channel this client build reported ('alpha' | 'stable' | …). The first
    * client to join sets the ROOM's channel; alpha rooms are never persisted. */
   channel?: string;
@@ -368,6 +383,9 @@ export interface MatchOutcome {
   mode?: '1v1' | '2v2';
   /** a bot was seated: the match and replay are kept, playtime is not credited */
   bots?: boolean;
+  /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
+   *  source in `play_counts`, folded into Custom on the homepage */
+  discord?: boolean;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -528,6 +546,21 @@ export class Room {
    */
   private ready3dDeadline = 0;
   private ready3dTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * ⚠️ THE LOAD HOLD — the epoch ms until which a started `'3d'` match stays at tick 0 while
+   * seats load their view (`VIEWREADY_CAP`). 0 ⇒ not holding. Set in `beginMatch`, released by
+   * the tick loop when every seat has reported or the cap passes (`loadHeld`). Like
+   * `ready3dDeadline` it STARTS the match on expiry and never cancels it.
+   */
+  private holdUntil = 0;
+  /** when the hold last told the room where it stood, so a lost `loadHold` is re-sent */
+  private holdSaidAt = 0;
+  /**
+   * Live ticks each robot spent with its driver still loading, after the hold ran out. They
+   * are taken off that robot's `liveTicks` in the behaviour report: a driver whose view took
+   * too long was not idle, and must not be charged as AFK for it.
+   */
+  private readonly loadingTicks = new Map<number, number>();
   /** a CUSTOM room whose host pressed START while a seat was still loading its 3D chunk: the
    *  room is in `phase === 'strategy'` with no `pendingMatch`, waiting to build the world it
    *  was already asked for. See `startMatch`. */
@@ -889,14 +922,45 @@ export class Room {
    * room is an open lobby (accepting drivers, not started) — so the browser lists
    * exactly the rooms a new arrival could walk into. Deliberately minimal: no player
    * names (a lobby list is public within an activity; the roster is seen on join). */
-  lobbySummary(): { code: string; players: number; capacity: number; kind: RoomKind; game: GameId } | null {
-    if (!this.canJoin()) return null;
+  lobbySummary(): {
+    code: string;
+    players: number;
+    capacity: number;
+    kind: RoomKind;
+    game: GameId;
+    joinable: boolean;
+    state: 'lobby' | 'strategy' | 'match' | 'full';
+  } {
+    /**
+     * ⚠️ EVERY ROOM IN THE GROUP GETS A ROW, INCLUDING ONE NOBODY CAN JOIN.
+     *
+     * This used to return null the moment `canJoin()` was false, so a room vanished from
+     * `/api/lobbies` the instant a match started in it — and the browser reads absence as
+     * NON-EXISTENCE. The result was the activity telling a latecomer "Nobody has opened the
+     * main lobby yet" about the room four of their friends were playing in, with the Join
+     * button enabled, labelled with the VIEWER's season rather than the room's, and a server
+     * refusal as the only feedback. It lasted the whole match and the whole results screen,
+     * because a room only becomes a lobby again when the host recycles it.
+     *
+     * The caller decides what to show; this says what is true.
+     *
+     * `players` counts SEATS, not sockets. A bot is a seat — `canJoin` has always counted
+     * them — so reporting `clients.size` made a host plus two bots read as "1/4" with room
+     * to spare, and the one game with bots is now the activity's default season.
+     */
+    const state: 'lobby' | 'strategy' | 'match' | 'full' =
+      this.world !== null ? 'match'
+      : this.phase === 'strategy' ? 'strategy'
+      : this.seatsTaken >= roomCapacity(this.config) ? 'full'
+      : 'lobby';
     return {
       code: this.code,
-      players: this.clients.size,
+      players: this.seatsTaken,
       capacity: roomCapacity(this.config),
       kind: this.config.kind,
       game: this.config.game ?? 'decode',
+      joinable: this.canJoin(),
+      state,
     };
   }
 
@@ -966,9 +1030,28 @@ export class Room {
    * per-client secret the server minted, and holding it is the same proof of ownership
    * `rejoin` already accepts.
    */
-  abandonSlot(clientId: string): boolean {
+  /**
+   * IS THIS FRAME FROM THE SEAT'S OWNER? — the check `rejoin` and `abandon` were missing.
+   *
+   * The old rule was "knowing the client id is proof", and the comment that said so was
+   * wrong: `broadcastRoster` puts every driver's id on the wire and `broadcast` fans it out
+   * to spectators too, so the credential was published to anyone who could watch. A seat
+   * minted for a client that advertises `'seat'` therefore requires its TOKEN, which is sent
+   * only to its owner in `welcome` and appears in no broadcast.
+   *
+   * A seat WITHOUT `seatSecured` is an older client's: it has no token to send, so it keeps
+   * the old rule rather than being locked out of its own reconnect. That window closes as
+   * clients update, and the version gate makes that fast.
+   */
+  private seatOwner(c: Client, token?: string): boolean {
+    if (!c.seatSecured) return true;
+    return !!c.seatToken && token === c.seatToken;
+  }
+
+  abandonSlot(clientId: string, token?: string): boolean {
     const c = this.clients.get(clientId);
     if (!c) return false;
+    if (!this.seatOwner(c, token)) return false;
     if (c.userId) {
       this.activeUserIds.delete(c.userId);
       this.onUserInactive?.(c.userId);
@@ -987,7 +1070,9 @@ export class Room {
      * starting another run and this one can no longer be in their way. The seat is left for
      * the close that is about to follow, where detach does the right thing with it.
      */
-    if (this.soloRecord && this.inFinishWindow()) {
+    // ...and the same holds for every room, for the reason `detach` gives: a decided match is
+    // saved whoever walked away from it, so the seat is left for the close that follows.
+    if (this.inFinishWindow()) {
       this.broadcastRoster();
       return true;
     }
@@ -1074,9 +1159,11 @@ export class Room {
     // rooms are single-channel by construction — the matchmaker segregates ranked)
     if (this.clients.size === 0 && client.channel) this.channel = client.channel;
     client.conn = ++this.connSeq;
+    if (!client.seatToken) client.seatToken = randomUUID();
+    client.seatSecured = !!client.caps?.includes('seat');
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
-    client.send({ t: 'welcome', clientId: client.id });
+    client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
     this.broadcastRoster();
     this.moderatePlayerNames(client);
   }
@@ -1091,23 +1178,68 @@ export class Room {
    * the durable record is scrubbed again at persist time regardless.
    */
   private moderatePlayerNames(client: Client): void {
+    // ONE CHECK PER SEAT AT A TIME. The in-room name editor patches on every KEYSTROKE, so
+    // a rename that goes through `update` would otherwise cost one provider round trip per
+    // character typed. A patch that lands while a check is running is remembered instead,
+    // and re-run once against the CURRENT names — so the value that ends up on the roster is
+    // always the value that was checked, at one call per round trip rather than per keystroke.
+    if (this.modInFlight.has(client.id)) {
+      this.modQueued.add(client.id);
+      return;
+    }
+    this.modInFlight.add(client.id);
     void (async () => {
       const p = client.player;
-      const [name, teamName, specName, specTeam] = await Promise.all([
-        scrubName(p.name, 'Driver'),
-        scrubName(p.teamName, ''),
-        scrubName(p.spec.name, DEFAULT_SPEC.name),
-        scrubName(p.spec.teamName, ''),
-      ]);
-      if (!this.clients.has(client.id)) return; // left before the check returned
-      if (name === p.name && teamName === p.teamName && specName === p.spec.name && specTeam === p.spec.teamName) {
-        return; // all clean (or moderation disabled) — nothing to do
+      /**
+       * ⚠️ WHAT WAS CHECKED, so a verdict is only ever written over the value it is about.
+       * A keystroke that lands mid-check moves a name on ("abc" → "abcd"); writing the verdict
+       * on "abc" back over it put the STALE name on the roster, and the queued re-check then
+       * passed that stale name. A field that moved since is left alone — the re-check owns it.
+       */
+      const was = { name: p.name, teamName: p.teamName, specName: p.spec.name, specTeam: p.spec.teamName };
+      try {
+        const [name, teamName, specName, specTeam] = await Promise.all([
+          scrubName(was.name, 'Driver'),
+          scrubName(was.teamName, ''),
+          scrubName(was.specName, DEFAULT_SPEC.name),
+          scrubName(was.specTeam, ''),
+        ]);
+        if (!this.clients.has(client.id)) return; // left before the check returned
+        let changed = false;
+        if (p.name === was.name && name !== p.name) {
+          p.name = name;
+          changed = true;
+        }
+        if (p.teamName === was.teamName && teamName !== p.teamName) {
+          p.teamName = teamName;
+          changed = true;
+        }
+        const nextSpecName = p.spec.name === was.specName ? specName : p.spec.name;
+        const nextSpecTeam = p.spec.teamName === was.specTeam ? specTeam : p.spec.teamName;
+        if (nextSpecName !== p.spec.name || nextSpecTeam !== p.spec.teamName) {
+          p.spec = { ...p.spec, name: nextSpecName, teamName: nextSpecTeam };
+          changed = true;
+        }
+        if (!changed) return; // all clean (or moderation disabled), or every field moved on
+        this.broadcastRoster();
+      } finally {
+        this.modInFlight.delete(client.id);
+        // a patch arrived mid-flight: the names on the roster now are not the ones that were
+        // checked, so check the ones that are
+        if (this.modQueued.delete(client.id) && this.clients.has(client.id)) this.moderatePlayerNames(client);
       }
-      p.name = name;
-      p.teamName = teamName;
-      p.spec = { ...p.spec, name: specName, teamName: specTeam };
-      this.broadcastRoster();
     })();
+  }
+
+  /** seats with a moderation check in flight, and seats whose names moved while one ran. */
+  private modInFlight = new Set<string>();
+  private modQueued = new Set<string>();
+
+  /** the free-text names a roster carries, as one string: the cheap "did this patch change
+   *  anything moderation cares about" test. ` ` separates the fields so text cannot slide
+   *  between two of them and hash the same. */
+  private static nameFingerprint(p: LobbyPlayer): string {
+    return [p.name, p.teamName ?? '', p.spec.name ?? '', p.spec.teamName ?? ''].join(' ');
   }
 
   /** true when this room's results must NOT be written to the leaderboard/ELO DB — an
@@ -1270,6 +1402,21 @@ export class Room {
   }
 
   /**
+   * Does this room count against `MAX_ROOMS`? Not once its match is FINALIZED.
+   *
+   * A finished room stops stepping and stops sending snapshots (both loops test
+   * `finalized`), but it stays in the registry for as long as anyone sits on the results
+   * screen, which has no timeout. Counting it made the cap bite on rooms that cost nothing:
+   * lhr on 2026-09-25 refused every new room at "6/6" with 2 live matches and 0.25 cores in
+   * use, including two staged ranked rooms. A rematch or a return to the lobby clears
+   * `finalized` and the room counts again; neither passes the admission check, the same way
+   * joining any existing room does not.
+   */
+  holdsCapacity(): boolean {
+    return !this.finalized;
+  }
+
+  /**
    * Operator snapshot of who is in this room, for the cross-region presence beat.
    *
    * Signed-in drivers are listed by ACCOUNT ID and nothing else — the caller joins
@@ -1400,10 +1547,21 @@ export class Room {
       // lose the run outright: the loop FREEZES a room with no connected driver (the ghost-room
       // guard in `startLoop`), so the match never reached finalize and the room died unsaved
       // — reported as "record runs are not updating their personal best or the leaderboard".
-      if (soloRecord && this.inFinishWindow()) {
+      //
+      // ⚠️ AND IT IS EVERY ROOM, NOT ONLY A SOLO RUN (2026-09-24). A custom game, a game against
+      // bots, a duo run and a ranked match were all lost the same way when the LAST connected
+      // driver left in the seconds between the buzzer and the field settling: no replay, no
+      // history row, no ELO. Reported as "some replays are not saving". The results screen only
+      // appears once the field settles (up to `MATCH_SETTLE_MAX_S`), so pressing MENU at the
+      // buzzer is an ordinary thing to do, and in a bot game the leaver is the only human. With
+      // somebody still connected the loop keeps running anyway, so this only matters for the
+      // last one out.
+      if (this.inFinishWindow() && !this.anyConnected()) {
         this.finishing = { reap: clean };
-        this.broadcastRoster();
-        return;
+        if (soloRecord) {
+          this.broadcastRoster();
+          return;
+        }
       }
       if (clean && soloRecord) {
         c.disconnectAt = -Infinity;
@@ -1474,9 +1632,25 @@ export class Room {
     send: (m: ServerMsg) => void,
     sendRaw?: (s: string) => void,
     backlog?: () => number,
+    token?: string,
+    trusted = false,
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
+    /**
+     * The seat's own secret, not the id that rides in every roster — see `seatOwner`.
+     *
+     * ⚠️ `trusted` IS FOR A CALLER THAT ALREADY PROVED MORE THAN THE TOKEN PROVES. The
+     * account reclaim in `server/index.ts` is the only one: it found this seat by the
+     * VERIFIED user id off a signed auth token, which is a strictly stronger claim than
+     * "holds the seat's secret" — the token only ever answers "is this the same browser".
+     * Without the bypass that path silently returned null for every seat a current client
+     * had taken, so a signed-in player reloading during the ranked strategy window was
+     * refused their own rated match, and a custom-lobby reconnect took a SECOND seat
+     * instead of reclaiming its own. Caught in review, not in testing, because the two
+     * behavioural tests for it build clients that advertise no caps.
+     */
+    if (!trusted && !this.seatOwner(c, token)) return null;
     /**
      * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
      *
@@ -1515,7 +1689,7 @@ export class Room {
     c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     this.snapAck.delete(id); // drop its stale pre-drop ack so it doesn't re-keyframe
-    send({ t: 'welcome', clientId: id });
+    send({ t: 'welcome', clientId: id, seatToken: c.seatToken });
     // SAY WHICH MATCH THE SLOT IS IN. A client returning through the Home rejoin card
     // built its session from a SAVED matchStart, so its generation is whatever that
     // record held — and an input stamped with a stale one is dropped by `onInput`, which
@@ -1523,6 +1697,7 @@ export class Room {
     // so it answers with it rather than hoping the client's copy is current.
     send({ t: 'rejoined', ok: true, gen: this.matchGen });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
+    if (this.holdUntil) this.sayHold(); // a seat back inside the load hold must hold too
     /**
      * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.
      *
@@ -1674,7 +1849,25 @@ export class Room {
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
+        const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
+        /**
+         * ⚠️ A RENAME IS MODERATED TOO — ONLY THE JOIN USED TO BE.
+         *
+         * `add` runs `moderatePlayerNames`; this path ran `sanitizePlayerPatch` and nothing
+         * else, and that is LENGTH coercion (`coerceName`) — no word list, no provider. So a
+         * player could arrive clean and then rename to anything at all, live, onto every
+         * roster and every in-match label in the room.
+         *
+         * It is worst exactly where the backstops are gone: the live in-room name editor is
+         * the Discord activity's, everybody in an embed is SIGNED OUT, and `resolveReport`
+         * needs a signed-in filer — so nobody in that room could even report it.
+         *
+         * Gated on the names having actually MOVED, so a ready toggle, a pose edit or a spec
+         * swap costs nothing; the editor's keystroke stream is coalesced inside
+         * `moderatePlayerNames` rather than billed a provider call per character.
+         */
+        if (Room.nameFingerprint(c.player) !== namesBefore) this.moderatePlayerNames(c);
         // AUTHORITATIVE ready gate: a player can't be ready with a start pose that's
         // illegal for their (possibly just-swapped) chassis — otherwise createWorld
         // would silently relocate their robot at spawn. Runs on every patch (ready
@@ -1739,10 +1932,40 @@ export class Room {
         this.broadcastRoster();
         break;
       }
+      /**
+       * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`). Only a report for THIS
+       * generation counts: one still in flight from before a rematch must not release the new
+       * match's hold. The tick loop does the releasing; this only tells the room who is left.
+       */
+      case 'viewReady':
+        if (typeof msg.gen !== 'number' || msg.gen !== this.matchGen || c.viewGen === msg.gen) break;
+        c.viewGen = msg.gen;
+        if (this.holdUntil) this.sayHold();
+        break;
       case 'start':
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null && this.phase === 'connecting') {
+          /**
+           * ⚠️ EVERYBODY ELSE HAS TO HAVE READIED, AND ONLY THE CLIENT USED TO CHECK.
+           *
+           * `Lobby` disables START until `players.every(p => p.ready)` and the server took the
+           * frame on the host's word — so a `join` landing in the same instant as the click
+           * (the window is one roster broadcast's round trip) committed somebody who had seen
+           * NOTHING: default alliance, default chassis, default start pose, straight into a
+           * match. Same window for a seat that just dropped, whose ready `detach` clears.
+           *
+           * The gate is the client's own, stated authoritatively — so it refuses nothing an
+           * up-to-date lobby would have let you press, and it is the HOST's own seat that is
+           * exempt: a solo record run (`RecordRun`) opens its room and sends `start` straight
+           * off the first roster without ever readying, on every build in the fleet. Bots are
+           * not in `this.clients` and a spectator never was.
+           */
+          const unready = [...this.clients.values()].some((o) => o.id !== this.hostId && !o.player.ready);
+          if (unready) {
+            c.send({ t: 'error', message: 'Everyone has to be ready before the match can start.' });
+            break;
+          }
           if (this.physicsReadyForRoom()) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
@@ -2103,7 +2326,70 @@ export class Room {
     this.broadcastRematch();
     // spectators already watching a lobby/strategy room get the match start too (yourRobotId -1)
     for (const c of this.spectators.values()) c.send(this.matchStartMsg(-1));
+    this.beginLoadHold();
     this.startLoop();
+  }
+
+  // ─────────────────────────────────────────────────────────── THE LOAD HOLD ──
+  //
+  // Owner, 2026-09-24: server matches still started while a driver's 3D physics and view were
+  // loading, record runs included. The start gate above (`seatWaiting3d`) only covers the
+  // physics chunk, which can load in the lobby; the VIEW cannot, because the game screen that
+  // owns it is built from `matchStart`. So a `'3d'` match now waits at tick 0 after
+  // `matchStart` until every seat says it can play, or `LOAD_HOLD_MAX_MS` passes.
+
+  /** robots whose driver is connected, reports `viewReady`, and has not yet for this match */
+  private seatsLoading(): number[] {
+    const out: number[] = [];
+    for (const c of this.clients.values()) {
+      if (!c.connected || !reportsViewReady(c.caps) || c.viewGen === this.matchGen) continue;
+      const rid = this.robotOf.get(c.id);
+      if (rid !== undefined) out.push(rid);
+    }
+    return out;
+  }
+
+  /** start holding a match that has just begun, if it is a `'3d'` one and anyone is loading */
+  private beginLoadHold(): void {
+    this.holdUntil = 0;
+    this.loadingTicks.clear();
+    if (this.physics !== '3d' || this.seatsLoading().length === 0) return;
+    this.holdUntil = Date.now() + LOAD_HOLD_MAX_MS;
+    this.sayHold();
+  }
+
+  /** tell every client and spectator where the hold stands (`waitMs: 0` ⇒ released) */
+  private sayHold(released = false): void {
+    this.holdSaidAt = Date.now();
+    this.broadcast({
+      t: 'loadHold',
+      gen: this.matchGen,
+      waitMs: released ? 0 : Math.max(1, this.holdUntil - this.holdSaidAt),
+      loading: this.seatsLoading(),
+    });
+  }
+
+  /**
+   * IS THE MATCH HELD THIS TICK? Releases the hold, and says so, when every seat has reported
+   * or the cap has passed. On a cap release the late seats are named in the log and in the
+   * release message; their clients join the running match when they finish loading.
+   */
+  private loadHeld(): boolean {
+    if (!this.holdUntil) return false;
+    const loading = this.seatsLoading();
+    const now = Date.now();
+    if (loading.length > 0 && now < this.holdUntil) {
+      if (now - this.holdSaidAt >= 1000) this.sayHold(); // a lost message must not strand anyone
+      return true;
+    }
+    if (loading.length > 0) {
+      console.warn(
+        `[room ${this.code}] load hold ran out after ${LOAD_HOLD_MAX_MS} ms; starting without robot(s) ${loading.join(', ')}`,
+      );
+    }
+    this.sayHold(true);
+    this.holdUntil = 0;
+    return false;
   }
 
   // ---- region-aware ranked: host-side build from a staged roster --------------
@@ -2635,6 +2921,14 @@ export class Room {
           this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
           return;
         }
+        // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
+        // play it (or the cap passes). Same clock reset as the freeze above.
+        if (this.loadHeld()) {
+          last = Date.now();
+          acc = 0;
+          this.lastSnapAt = 0;
+          return;
+        }
         const now = Date.now();
         acc += (now - last) / 1000;
         last = now;
@@ -2690,6 +2984,10 @@ export class Room {
       // "left the match".
       const away = this.departed.has(r.id) || !this.driverConnected(r.id);
       if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+    }
+    // a driver the load hold started without is loading, not idle — see `loadingTicks`
+    if (this.physics === '3d') {
+      for (const rid of this.seatsLoading()) this.loadingTicks.set(rid, (this.loadingTicks.get(rid) ?? 0) + 1);
     }
   }
 
@@ -2811,6 +3109,7 @@ export class Room {
         // actually fielded. See `MatchOutcome.mode`.
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
+        discord: this.group !== '',
         result,
         replay,
         participants,
@@ -2904,7 +3203,7 @@ export class Room {
       const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
       if (rid === undefined) continue;
       const kind = judgeParticipation({
-        liveTicks: this.liveTicks,
+        liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(rid) ?? 0)),
         driveTicks: this.driveTicks.get(rid) ?? 0,
         awayTicks: this.awayTicks.get(rid) ?? 0,
       });
@@ -3179,6 +3478,8 @@ export class Room {
     this.liveTicks = 0;
     this.driveTicks.clear();
     this.awayTicks.clear();
+    this.loadingTicks.clear();
+    this.holdUntil = 0;
     // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in
     // flight from the match just finished would be accepted by the next one as fresh.
 
@@ -3191,8 +3492,11 @@ export class Room {
     for (const c of this.clients.values()) c.player.ready = false;
 
     // `clientId` rides along because the client that adopts this socket back into a lobby
-    // never sends a `join`, and so never gets a `welcome` of its own.
-    for (const c of this.clients.values()) c.send({ t: 'lobby', clientId: c.id });
+    // never sends a `join`, and so never gets a `welcome` of its own. So does the seat's
+    // SECRET, for the same reason: without it the adopting lobby holds an empty token, and
+    // from the room's second match on every `rejoin`/`abandon` of a secured seat is refused.
+    // `c.send` reaches only this seat's owner, so this is not a broadcast.
+    for (const c of this.clients.values()) c.send({ t: 'lobby', clientId: c.id, seatToken: c.seatToken });
     for (const c of this.spectators.values()) c.send({ t: 'lobby', clientId: c.id });
     this.broadcastRoster();
     this.broadcastRematch();
@@ -3206,6 +3510,11 @@ export class Room {
    *  actually DID rather than only that the server accepted the frame. */
   worldForTest(): World | null {
     return this.world;
+  }
+
+  /** TEST SEAM: the commands the last step actually ran, by robot id. */
+  lastFrameForTest(): ReadonlyMap<number, RobotCommand> {
+    return this.lastFrame;
   }
 
   /** TEST / TOOL SEAM: drive an already-started match deterministically with NO
@@ -3225,9 +3534,19 @@ export class Room {
     this.stopLoop();
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       this.checkGrace();
-      if (this.clients.size === 0 || this.frozenForNobody()) return;
+      if (this.clients.size === 0 || this.frozenForNobody() || this.loadHeld()) return;
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: is a started match being held for a loading seat? */
+  loadHoldForTest(): { held: boolean; loading: number[]; gen: number } {
+    return { held: this.holdUntil !== 0, loading: this.seatsLoading(), gen: this.matchGen };
+  }
+
+  /** TEST SEAM: run the load hold's cap out now. The real one is `LOAD_HOLD_MAX_MS` away. */
+  expireLoadHoldForTest(): void {
+    if (this.holdUntil) this.holdUntil = Date.now() - 1;
   }
 
   /** the ghost-room freeze (`startLoop`): nobody connected, and nothing still owed to anyone */
@@ -3304,7 +3623,20 @@ export class Room {
         frame.set(r.id, c);
       } else if (w.tick - (this.lastRecvTick.get(r.id) ?? -HOLD_TICKS - 1) <= HOLD_TICKS) {
         // no exact input for this tick, but the client is live ⇒ apply its latest
-        const latest = this.latest.get(r.id) ?? this.held.get(r.id) ?? ZERO_CMD;
+        let latest = this.latest.get(r.id) ?? this.held.get(r.id) ?? ZERO_CMD;
+        /**
+         * ⚠️ A GAP MUST NOT INVENT A PRESS OR A RELEASE. `latest` is the newest command BY
+         * TICK, and a client runs ahead of the server, so for a lost or late packet it is
+         * usually a FUTURE one. Its stick is fine to borrow, its buttons are not: a held button
+         * that reads released for one gap tick and held the next is a second press, and every
+         * edge-triggered toggle (the BIOBUZZ ramp, `driveMode`) fires twice. So a future
+         * command keeps the buttons of the last one this robot actually ran.
+         */
+        if ((this.latestTick.get(r.id) ?? -1) > tick) {
+          const q = quantizeCommand(latest);
+          q.buttons = quantizeCommand(this.held.get(r.id) ?? ZERO_CMD).buttons;
+          latest = dequantizeCommand(q);
+        }
         this.held.set(r.id, latest);
         frame.set(r.id, latest);
       } else {
@@ -3345,6 +3677,7 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    this.holdUntil = 0; // a hold belongs to the match that is ending
     this.clearReady3d(); // nothing left to wait for; an unref'd timer still holds a closure
     // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
     // dropping the World drops the only handle without calling free(), and wasm linear memory

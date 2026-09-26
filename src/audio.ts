@@ -112,6 +112,39 @@ export class MatchAudio {
     this.keepAlive = null;
   }
 
+  /**
+   * GIVE BACK EVERYTHING THIS OBJECT OWNS.
+   *
+   * An `AudioContext` is a real audio graph held by the browser, not a JS object the collector
+   * can take back while the page still points at it. `stopKeepAlive` closed the KEEP-ALIVE
+   * context and nothing ever closed the EFFECTS one (`ensureCtx`), so a running context was
+   * left behind every time a game screen was disposed. On the web that is bounded by the next
+   * page load; inside a Discord Activity the iframe is not reloaded between matches, so the
+   * count only goes up for as long as the group keeps playing. A modest leak, not a break —
+   * but an unbounded one. `Announcements.tsx` is the shape: close it, swallow the rejection.
+   *
+   * `this.ctx` is NULLED rather than left closed: a cue arriving after a dispose would take
+   * the memoised dead context out of `ensureCtx` and call `createOscillator()` on it, which
+   * throws, and neither `tone()` nor `noiseBurst()` catches. Nulled, a late cue builds a fresh
+   * one, exactly as the first cue of a match does. The noise buffer goes with it — a buffer
+   * belongs to the context that created it and cannot be used by another.
+   */
+  dispose(): void {
+    this.stopSpeech();
+    this.stopKeepAlive();
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.noise = null;
+    if (!ctx) return;
+    try {
+      void ctx.close().catch(() => {
+        /* already closed, or the context never really started */
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** Deliberately NOT gated on volume. A browser only lets an AudioContext start
    * from a user gesture, so refusing to build one while muted would mean raising
    * the slider mid-match finds no gesture left and stays silent until a reload.

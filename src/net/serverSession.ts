@@ -3,6 +3,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, RematchVote, Snapshot } from './session';
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
+import { applyPushedStatus } from './siteStatus';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
   CLIENT_CAPS,
@@ -98,6 +99,10 @@ export class ServerSession implements NetSession {
   private restartCb: (() => void) | null = null;
   /** the room went back to its lobby — see `onLobby` */
   private lobbyCb: ((clientId: string) => void) | null = null;
+  /** the seat's secret (see protocol.ts `welcome`). Carried in, and refreshed by every
+   * `welcome` the server sends — including the one a reattach re-sends — so a reclaimed
+   * seat always holds a working credential. */
+  seatToken = '';
   /** fired once per `matchResult` — see `onMatchResult` */
   private resultCb: ((info: MatchResultInfo) => void) | null = null;
   private connected = true;
@@ -143,6 +148,16 @@ export class ServerSession implements NetSession {
   private readonly rttSamples: number[] = [];
   /** wall-clock of the previous snapshot, to time inter-arrival gaps */
   private lastSnapAt: number | null = null;
+  /**
+   * THE ROOM'S LOAD HOLD (`loadHold`): when, on OUR clock, the room will start anyway, and who
+   * it is waiting on. Null ⇒ not held. A snapshot past tick 0 also clears it, so a lost release
+   * cannot keep this client frozen in front of a running match.
+   */
+  private hold: { until: number; loading: number[] } | null = null;
+  /** robots a released hold started without, until the controller logs them */
+  private lateStart: number[] | null = null;
+  /** the match generation `viewReady` was last sent for (-1 ⇒ never, or re-send after a rejoin) */
+  private viewSentGen = -1;
   /** recent snapshot inter-arrival gaps (ms) — feeds snapHz + jitter */
   private readonly snapGaps: number[] = [];
 
@@ -168,7 +183,9 @@ export class ServerSession implements NetSession {
     readonly clientId: string,
     readonly room: string,
     spectator = false,
+    seatToken = '',
   ) {
+    this.seatToken = seatToken;
     this.spectator = spectator;
     this.game = start.game ?? 'decode';
     this.physics = start.physics ?? '2d';
@@ -211,7 +228,9 @@ export class ServerSession implements NetSession {
         this.failed = false;
         // re-advertise this build's capabilities: a reclaim arrives on a FRESH socket, and the
         // server gates a `'3d'`-physics room at every door it has.
-        transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId, caps: CLIENT_CAPS }));
+        transport.send(
+          encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId, caps: CLIENT_CAPS, seatToken: this.seatToken }),
+        );
       });
     }
     transport.onFail(() => {
@@ -353,7 +372,36 @@ export class ServerSession implements NetSession {
       quality,
       rttHistory: this.rttSamples.length ? this.rttSamples.slice() : null,
       server: this.serverLabel || null,
+      hold: this.holdStatus(),
     };
+  }
+
+  /** the hold as the HUD shows it: seconds to the cap, and the OTHER drivers still loading */
+  private holdStatus(): NetStatus['hold'] {
+    if (!this.loadHeld() || !this.hold) return null;
+    return {
+      secs: Math.ceil(Math.max(0, this.hold.until - performance.now()) / 1000),
+      waiting: this.hold.loading.filter((r) => r !== this.localRobotId).length,
+    };
+  }
+
+  viewReady(): void {
+    if (this.spectator || this.viewSentGen === this.gen || !this.connected) return;
+    this.viewSentGen = this.gen;
+    this.transport.send(encodeMsg({ t: 'viewReady', gen: this.gen }));
+  }
+
+  loadHeld(): boolean {
+    if (!this.hold) return false;
+    // the room's cap is the room's; a release we never heard about must not hold us past it
+    if (performance.now() > this.hold.until + 2000) this.hold = null;
+    return this.hold !== null;
+  }
+
+  takeLateStart(): number[] | null {
+    const late = this.lateStart;
+    this.lateStart = null;
+    return late;
   }
 
   dispose(): void {
@@ -385,7 +433,9 @@ export class ServerSession implements NetSession {
    */
   abandonSlot(): void {
     if (!this.room || !this.clientId) return;
-    this.transport.send(encodeMsg({ t: 'abandon', room: this.room, clientId: this.clientId }));
+    this.transport.send(
+      encodeMsg({ t: 'abandon', room: this.room, clientId: this.clientId, seatToken: this.seatToken }),
+    );
   }
 
   /** host only: ask the server to send this finished room back to its lobby. */
@@ -415,7 +465,18 @@ export class ServerSession implements NetSession {
       return;
     }
     if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
+    if (m.t === 'loadHold') {
+      if (m.gen !== this.gen) return; // a hold for a match this session is no longer playing
+      if (m.waitMs > 0) {
+        this.hold = { until: performance.now() + m.waitMs, loading: m.loading };
+      } else {
+        this.hold = null;
+        this.lateStart = m.loading.length ? m.loading : null;
+      }
+      return;
+    }
     if (m.t === 'snapshot') {
+      if (this.hold && m.serverTick > 0) this.hold = null;
       // discard a stale/duplicate snapshot: the client reconciles to the NEWEST
       // authoritative world, and a delta is keyed to a baseline at-or-before this
       // one, so applying an older frame after a newer one would regress the balls.
@@ -481,6 +542,8 @@ export class ServerSession implements NetSession {
       this.recordResult = m.info;
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
+    } else if (m.t === 'siteStatus') {
+      applyPushedStatus(m.lockdown ?? null, m.banners ?? []);
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups/game and rebuild
       this.seed = m.seed;
@@ -508,6 +571,8 @@ export class ServerSession implements NetSession {
       this.recordResult = null;
       this.baseBalls.clear();
       this.appliedTick = -1; // fresh world starts at tick 0; don't reject its snapshots
+      this.hold = null; // a rematch is held (or not) on its own terms; the room will say
+      this.lateStart = null;
       this.restartCb?.();
     } else if (m.t === 'roster') {
       // THE ONLY THING THIS SESSION WANTS FROM A ROSTER: who holds the crown. The room
@@ -515,6 +580,9 @@ export class ServerSession implements NetSession {
       // (`Room.passCrown`) — so without this the player who INHERITED the room would be
       // shown no host controls and the room would look stuck to everyone in it.
       this.host = m.hostId !== '' && m.hostId === this.clientId;
+    } else if (m.t === 'welcome') {
+      // a reattach re-sends this; keep the seat credential current (see the field note)
+      if (m.seatToken) this.seatToken = m.seatToken;
     } else if (m.t === 'lobby') {
       /**
        * THE ROOM IS A LOBBY AGAIN. The match this session was built around no longer
@@ -524,6 +592,8 @@ export class ServerSession implements NetSession {
        * a session that is over rather than one that is merely quiet.
        */
       this.connected = false;
+      // the recycle re-states the seat's secret (a current server); the App hands it on
+      if (m.seatToken) this.seatToken = m.seatToken;
       this.lobbyCb?.(m.clientId);
     } else if (m.t === 'rejoined') {
       if (!m.ok) {
@@ -544,6 +614,8 @@ export class ServerSession implements NetSession {
          */
         this.gen = m.gen;
       }
+      // a reclaimed seat says it can play again, in case the report was lost with the socket
+      if (m.ok) this.viewSentGen = -1;
     }
     // 'drop' is reflected in the next snapshot already; nothing to do here
   }
