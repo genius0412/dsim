@@ -6105,8 +6105,10 @@ function queueTenth(w: World): void {
   // A SETTINGS BLOB STORED BEFORE AN ACTION EXISTED MUST STILL LOAD. `mergeBindings` starts
   // from the defaults and only overwrites what it validates, so an action the blob has never
   // heard of keeps its default instead of arriving UNBOUND — which is the difference between
-  // a returning player finding the new button on the map and finding nothing there.
-  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [2] } } });
+  // a returning player finding the new button on the map and finding nothing there. The stored
+  // binds sit on a key and a button NO default uses, because a missing action whose default the
+  // blob holds elsewhere is meant to lose it (the new-action rule, checked in the ramp block).
+  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [13] } } });
   const dropped = [
     ...KEY_ACTIONS.filter(
       (a) => a !== 'fire' && JSON.stringify(stale.keys[a]) !== JSON.stringify(DEFAULT_BINDINGS.keys[a]),
@@ -24492,9 +24494,10 @@ const dumperSetup = (): RobotSetup => {
 
   // PAD: singles and combos desync TOGETHER — "the binds of Shoot on a pad in BIOBUZZ" is one
   // thing, so writing one half writes both and Sync takes both back.
-  // RS (11), a button no default uses — Y was the fixture until Flip front became a SHARED control,
-  // which a season scope may not take a button from (the refusal is checked further down)
-  let p = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]);
+  // D-DOWN (13), a button no default uses — Y was the fixture until Flip front became a SHARED
+  // control, which a season scope may not take a button from (the refusal is checked further
+  // down), and RS (11) until Deploy ramp took it on 2026-09-26
+  let p = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [13]);
   check('override/pad: a single edit desyncs the action', padDesynced(p, 'biobuzz', 'fire'));
   check(
     'override/pad: BOTH halves are written, so combos are frozen with the singles',
@@ -24505,7 +24508,7 @@ const dumperSetup = (): RobotSetup => {
   p = assignPadBindInGame(p, 'biobuzz', 'fire', 2, [5, 1]);
   check(
     'override/pad: a combo added in a game stays in that game',
-    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[11], [0], [1, 5]]) &&
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[13], [0], [1, 5]]) &&
       J(effectiveBindings(p, 'chain').pad.combos.fire) === J([]),
     J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')),
   );
@@ -24641,12 +24644,12 @@ const dumperSetup = (): RobotSetup => {
   );
   // THE PAD COLLISION IS EXACT, like every other steal: a single scrubs the single, a combo
   // scrubs the identical combo, and neither touches the other kind.
-  const padPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]); // RS
-  const padClash = assignPadBind(padPre, 'intake', 0, [11]);
+  const padPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [13]); // D-DOWN
+  const padClash = assignPadBind(padPre, 'intake', 0, [13]);
   check(
     'conflict/collision: the pad rule matches — the override loses that single',
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([0]) &&
-      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([11, 1]),
+      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13, 1]),
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons),
   );
   const comboPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [7, 12]);
@@ -25116,7 +25119,7 @@ const dumperSetup = (): RobotSetup => {
     J(syncKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire')) === J(DEFAULT_BINDINGS) &&
       J(syncPadInGame(DEFAULT_BINDINGS, 'biobuzz', 'bbPlace')) === J(DEFAULT_BINDINGS),
   );
-  const padPre = assignPadBindInGame(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]), 'biobuzz', 'bbRamp', 0, [7]);
+  const padPre = assignPadBindInGame(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [13]), 'biobuzz', 'bbRamp', 0, [7]);
   const padSynced = syncPadInGame(padPre, 'biobuzz', 'fire');
   check(
     'sync/pad: RT back on Shoot comes off Deploy ramp, which had taken it',
@@ -26251,6 +26254,45 @@ const dumperSetup = (): RobotSetup => {
     check(
       'ramp keys: ...and the camera still starts unbound when the ramp holds L (no fallback for a view key)',
       J(mergeBindings({ keys: { bbPlace: ['z'], bbRamp: ['l'] } }).keys.cameraCycle) === J([]),
+    );
+  }
+  // -- the pad ramp moved from D-DOWN (13) to R3 (11) on 2026-09-26: players reported D-DOWN
+  // restarting their run. A stored map keeps whatever it has; only a map with no ramp row takes R3,
+  // and not if the player already put R3 on something that fires in BIOBUZZ.
+  {
+    check('ramp pad: Deploy ramp defaults to R3, and D-DOWN is left unbound', J(DEFAULT_BINDINGS.pad.buttons.bbRamp) === J([11]) &&
+      !PAD_ACTIONS.some((a) => DEFAULT_BINDINGS.pad.buttons[a].includes(13)));
+    check(
+      'ramp pad: a stored map with the ramp on D-DOWN keeps D-DOWN',
+      J(mergeBindings({ pad: { buttons: { bbRamp: [13] } } }).pad.buttons.bbRamp) === J([13]),
+    );
+    check(
+      'ramp pad: a stored map with the ramp unbound keeps it unbound',
+      J(mergeBindings({ pad: { buttons: { bbRamp: [] } } }).pad.buttons.bbRamp) === J([]),
+    );
+    check(
+      'ramp pad: a map with no ramp row and R3 free takes R3',
+      J(mergeBindings({ pad: { buttons: { fire: [7, 0] } } }).pad.buttons.bbRamp) === J([11]),
+    );
+    const onPark = mergeBindings({ pad: { buttons: { park: [11] } } });
+    check(
+      'ramp pad: ...but not when the player put R3 on a BIOBUZZ action — no double-fire',
+      J(onPark.pad.buttons.bbRamp) === J([]) && J(onPark.pad.buttons.park) === J([11]),
+      J({ ramp: onPark.pad.buttons.bbRamp, park: onPark.pad.buttons.park }),
+    );
+    const inOverride = JSON.parse(J(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]))) as {
+      pad: { buttons: Record<string, number[]> };
+    };
+    delete inOverride.pad.buttons.bbRamp;
+    const ov = mergeBindings(inOverride);
+    check(
+      'ramp pad: ...nor when R3 sits in a BIOBUZZ-only override',
+      J(ov.pad.buttons.bbRamp) === J([]) && J(effectiveBindings(ov, 'biobuzz').pad.buttons.fire[0]) === J(11),
+      J({ ramp: ov.pad.buttons.bbRamp, fire: effectiveBindings(ov, 'biobuzz').pad.buttons.fire }),
+    );
+    check(
+      'ramp pad: ...while R3 on a Chain Reaction-only action does not block it',
+      J(mergeBindings({ pad: { buttons: { catalyst: [11] } } }).pad.buttons.bbRamp) === J([11]),
     );
   }
 
