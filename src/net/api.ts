@@ -464,9 +464,12 @@ export function fetchProfileByUsername(username: string): Promise<PublicProfile>
 }
 
 /** one user's full stats by username (the public profile page). Rejects on 404. */
-export function fetchUserStatsByUsername(username: string, season?: number): Promise<UserStats> {
-  const s = season != null ? `?season=${season}` : '';
-  return getJson(`/api/profile/${encodeURIComponent(username)}/stats${s}`);
+export function fetchUserStatsByUsername(username: string, season?: number, game?: GameId): Promise<UserStats> {
+  const p = new URLSearchParams();
+  if (season != null) p.set('season', String(season));
+  if (needsGameParam(game)) p.set('game', game as GameId);
+  const qs = p.toString();
+  return getJson(`/api/profile/${encodeURIComponent(username)}/stats${qs ? `?${qs}` : ''}`);
 }
 
 // ---- unified match history (Career + public profile) -----------------------
