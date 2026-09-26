@@ -49,6 +49,11 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   `setViewBindings`. `mergeBindings` gives an action newer than the stored blob its default
   only where no stored bind in a conflicting action holds that key. An old Deploy ramp on L keeps
   L, and the camera starts unbound, with the red dot on BIOBUZZ.
+  ⚠️ **A MECHANISM DOES NOT LOAD UNBOUND** (2026-09-26). A map from before the ramp (Place
+  POLLEN on its old default Z) gave Deploy ramp no key, the ramp never deployed from the
+  keyboard, and a save wrote the empty row back. An action in `FRESH_FALLBACK_KEYS` takes the
+  first free fallback instead (the ramp: G, then M), and a stored empty ramp beside Place POLLEN
+  still on exactly Z is repaired the same way. View keys have no fallback.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,
