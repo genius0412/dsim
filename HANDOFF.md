@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-26 (branch `fix/ramp-deploy-keys`: Deploy ramp loaded unbound on old keyboard maps)
+
+**State: PR into `alpha`.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: shared ALL PASS; BIOBUZZ fails only the two wall-clock perf checks (`2v2 BIOBUZZ ROOM tick <= 1.2x`, `bot-driven 2v2 step3d p95`), which fail identically on a clean `origin/alpha` on this machine. Client only, no deploy.
+
+- **Report:** for some players the deployable ramp never deployed from the keyboard, whatever key they tried.
+- **Cause:** maps saved 2026-09-12..19 hold Place POLLEN on its old default Z and no Deploy ramp. `mergeBindings` gives a new action its default only if no stored bind holds it, so the ramp got no key at all. Rebinding it to Shift, K or Z is refused (Intake, Place POLLEN). Any save since wrote `bbRamp: []` back. Pads have no such rule, so pad players were fine.
+- **Fix (`bindings.ts`):** `FRESH_FALLBACK_KEYS` — a new action whose default is taken takes the first free fallback (ramp: G, then M) instead of loading unbound. A stored empty ramp beside Place POLLEN still on exactly `['z']` is treated as new again, so players already hit are repaired on load. A ramp unbound on today's map (Place POLLEN on C) stays unbound. The camera keeps the owner's "starts unbound" rule.
+- **Checks:** five `ramp keys:` checks in `scripts/smoke.ts` beside the view-key migration checks. Verified in the app too: a seeded broken map loaded with the ramp on G, and G deployed it in 3D free drive.
+- **Owner call:** G is my pick for the fallback. The sim is not involved: every build, mount and mode deploys in a headless sweep, and the only refusals are the swing guard near walls and the hive.
+---
+
 # HANDOFF — 2026-09-25l (a player's profile shows the game you are viewing)
 
 **State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `docaudit` pass. Client only, no deploy needed (the server already honoured `?game=` on both profile routes).

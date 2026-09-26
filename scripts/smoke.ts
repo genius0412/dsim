@@ -26224,6 +26224,35 @@ const dumperSetup = (): RobotSetup => {
     'view keys: ...and a stored camera bind is kept as it is, even the old C',
     J(mergeBindings({ keys: { cameraCycle: ['c'] } }).keys.cameraCycle) === J(['c']),
   );
+  // -- a map from before the ramp (2026-09-12..19: Place POLLEN on its old default Z) used to load
+  // with Deploy ramp UNBOUND on the keyboard, and saving wrote the empty row back. Pads were fine.
+  {
+    const preRamp = mergeBindings({ keys: { bbPlace: ['z'] } });
+    check(
+      'ramp keys: a map older than the ramp, with Place POLLEN on Z, loads the ramp on G, not unbound',
+      J(preRamp.keys.bbRamp) === J(['g']) && J(preRamp.keys.bbPlace) === J(['z']) &&
+        keyConflict(preRamp, 'biobuzz', 'cameraCycle', 'g')?.action === 'bbRamp',
+      J({ ramp: preRamp.keys.bbRamp, place: preRamp.keys.bbPlace }),
+    );
+    const saved = mergeBindings({ keys: { bbPlace: ['z'], bbRamp: [] } });
+    check(
+      'ramp keys: ...and one already SAVED BACK with the ramp empty is repaired the same way',
+      J(saved.keys.bbRamp) === J(['g']) && J(effectiveBindings(saved, 'biobuzz').keys.bbRamp) === J(['g']),
+      J(saved.keys.bbRamp),
+    );
+    check(
+      'ramp keys: ...with G taken as well, the ramp takes the next fallback, M',
+      J(mergeBindings({ keys: { bbPlace: ['z'], bbPass: ['g'] } }).keys.bbRamp) === J(['m']),
+    );
+    check(
+      'ramp keys: a ramp the player unbound on TODAY\'s map (Place POLLEN on C) stays unbound',
+      J(mergeBindings({ keys: { bbPlace: ['c'], bbRamp: [] } }).keys.bbRamp) === J([]),
+    );
+    check(
+      'ramp keys: ...and the camera still starts unbound when the ramp holds L (no fallback for a view key)',
+      J(mergeBindings({ keys: { bbPlace: ['z'], bbRamp: ['l'] } }).keys.cameraCycle) === J([]),
+    );
+  }
 
   // -- the conflict query
   check(
