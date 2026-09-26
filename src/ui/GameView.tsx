@@ -28,7 +28,6 @@ import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { moduleFor } from '../games';
 import { activeZenithAuto } from '../auto/library';
-import { launchZenith } from './zenithLaunch';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType } from '../types';
@@ -460,7 +459,7 @@ export function GameView({
         !session && !runTutorial && moduleFor(settings.game).zenithAutos ? activeZenithAuto(settings.game) : null;
       if (activeAuto) {
         try {
-          zenithAuto = { ...activeAuto, module: await import('../auto/zenithAutos') };
+          zenithAuto = { ...activeAuto, module: await import('./zenithEditor') };
         } catch (err) {
           if (cancelled) return;
           // eslint-disable-next-line no-console
@@ -576,7 +575,7 @@ export function GameView({
     const mod = c?.zenithModule();
     const name = c?.getHud().auto?.name;
     if (!c || !mod || !name) return;
-    const error = launchZenith({ mod, settings, open: name, trace: c.autoTrace() ?? undefined });
+    const error = mod.launchZenith({ settings, open: name, trace: c.autoTrace() ?? undefined });
     c.logEvent(error ?? 'Zenith is open in another window with this run over the plan.');
   };
 

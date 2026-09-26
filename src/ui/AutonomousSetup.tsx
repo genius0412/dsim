@@ -9,10 +9,9 @@ import {
   type AutoLibraryEntry,
   type GameAutoLibrary,
 } from '../auto/library';
-import { launchZenith } from './zenithLaunch';
 import { ToggleRow } from './OptRow';
 
-type AutoModule = typeof import('../auto/zenithAutos');
+type AutoModule = typeof import('./zenithEditor');
 
 /**
  * THE AUTONOMOUS SECTION of Configure ▸ Match (docs/area/autos.md): the player's Zenith autos
@@ -39,7 +38,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
 
   useEffect(() => {
     let cancelled = false;
-    import('../auto/zenithAutos').then(
+    import('./zenithEditor').then(
       (m) => !cancelled && setMod(m),
       (err) => {
         // eslint-disable-next-line no-console
@@ -152,8 +151,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
 
   function editInZenith(entry: AutoLibraryEntry | null): void {
     if (!mod) return;
-    const error = launchZenith({
-      mod,
+    const error = mod.launchZenith({
       settings,
       open: entry?.name ?? null,
       onLibrary: (next, name) => {

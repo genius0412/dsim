@@ -141,8 +141,10 @@ function routeFor(file, buf) {
   // ZENITH AUTOS (docs/area/autos.md): `@horizon36596/zenith-core` + `-schema` (with zod) and
   // DSIM's auto seat, behind `src/auto/zenithAutos.ts` — a facade named so this chunk is NOT
   // `index-*` (the lazy entry was `src/auto/index.ts` once, and its chunk was then billed as
-  // main). Loaded only when a solo run plays an auto, or the Autonomous panel opens.
-  if (/^zenithAutos-[^/]*\.js$/.test(base)) return 'autos';
+  // main). Loaded only when a solo run plays an auto, or the Autonomous panel opens. The client's
+  // entry is `src/ui/zenithEditor.ts` (the facade plus the editor popup), and the robot builder's
+  // Autonomous panel (`AutonomousSetup.tsx`) is lazy beside it, so both count here too.
+  if (/^(zenithAutos|zenithEditor|AutonomousSetup)-[^/]*\.js$/.test(base)) return 'autos';
   // The admin console's chunks, by FILENAME like the three above — Vite names a lazy chunk
   // after its facade module, so `Admin-*.js` and `AdminAnalytics-*.js` are what it emits, and
   // neither renders anything a content marker would recognise. Before the content scans,
@@ -412,7 +414,12 @@ const BASELINE = {
   // DSIM" and "Drive it here") and the preview projection (`view.ts`) joined the chunk. Measured
   // rather than left to creep under the 4 KB tolerance. The UI that opens it (Autonomous section,
   // `zenithHost.ts`, the HUD line) is in main: +5.15 KB against alpha @ c4afe65's 973.24.
-  autos: { gzip: 55.77 * 1000 },
+  // 2026-09-26: 55.77 -> 59.93 (+4.16), MOVED here from main rather than grown. Merging alpha put
+  // main at 984.51 against its 982.82 ceiling (alpha alone measures 980.38), so the Autonomous
+  // panel (`AutonomousSetup.tsx`, lazy in `MatchSetup`) and the editor popup (`zenithLaunch.ts`,
+  // `zenithHost.ts`, behind the client entry `src/ui/zenithEditor.ts`) went lazy. Main is 980.94
+  // after it, +0.56 against alpha: the library read, the lobby chip and the HUD line.
+  autos: { gzip: 59.93 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown

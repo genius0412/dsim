@@ -13,7 +13,11 @@ import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { OptRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
-import { AutonomousSetup } from './AutonomousSetup';
+import { lazy } from 'react';
+import { LoadBoundary } from './LoadBoundary';
+
+/** LAZY: only a game that plays Zenith autos shows it, so the main chunk does not carry it. */
+const AutonomousSetup = lazy(() => import('./AutonomousSetup').then((m) => ({ default: m.AutonomousSetup })));
 
 /**
  * A BOT TIER, IN SENTENCE CASE. The seam's tiers are opaque lower-case strings a game owns, and
@@ -154,7 +158,11 @@ export function MatchSetup({
           )}
         </section>
 
-        {moduleFor(settings.game).zenithAutos && <AutonomousSetup settings={settings} />}
+        {moduleFor(settings.game).zenithAutos && (
+          <LoadBoundary what="the autonomous settings" fallback={<div className="ds-loading">Loading autonomous settings…</div>}>
+            <AutonomousSetup settings={settings} />
+          </LoadBoundary>
+        )}
 
       </div>
     </section>

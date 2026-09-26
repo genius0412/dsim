@@ -23,11 +23,12 @@ import type { RobotSetup } from './sim/spawn';
 import type { AutoSeatStatus, ZenithAutoSetup } from './auto/types';
 
 /**
- * A Zenith auto handed to a solo controller: the LAZY `src/auto` module (a type-only import
- * here, so the main chunk never contains Zenith) and the file to play.
+ * A Zenith auto handed to a solo controller: the LAZY `src/ui/zenithEditor` module (`src/auto`
+ * plus the editor popup; a type-only import here, so the main chunk never contains Zenith) and the
+ * file to play.
  */
 export interface GameControllerZenithAuto extends ZenithAutoSetup {
-  module: typeof import('./auto/zenithAutos');
+  module: typeof import('./ui/zenithEditor');
   name: string;
 }
 import { practiceSetups } from './settings';
@@ -1204,7 +1205,7 @@ export class GameController {
     } catch {
       /* the server validated it; the name is cosmetic */
     }
-    import('./auto/zenithAutos').then(
+    import('./ui/zenithEditor').then(
       (module) => {
         if (this.disposed) return;
         this.zenithAuto = { ...mine, name, module };

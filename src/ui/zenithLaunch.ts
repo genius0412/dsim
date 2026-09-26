@@ -4,16 +4,15 @@
  * same project and take a Save back the same way (`zenith-host/1`, `zenithHost.ts`).
  *
  * SYNCHRONOUS on purpose: `window.open` must run inside the click that asked for it or the browser
- * blocks the popup, so the caller passes the lazy auto module it already has.
+ * blocks the popup. So this file is reached only through the lazy `zenithEditor.ts` entry, which a
+ * screen has already loaded by the time its button can be clicked, and it is not in the main chunk.
  */
 import type { GameSettings } from '../types';
 import { loadAutoLibrary, saveAutoLibrary, upsertAuto, type GameAutoLibrary } from '../auto/library';
+import { autoAdapterFor, parseAutoText, runAutoHeadless } from '../auto/zenithAutos';
 import { openZenith, ZENITH_URL } from './zenithHost';
 
-type AutoModule = typeof import('../auto/zenithAutos');
-
 export interface LaunchOptions {
-  mod: AutoModule;
   settings: GameSettings;
   /** the auto to open, by library name; null starts a new one */
   open: string | null;
@@ -25,9 +24,9 @@ export interface LaunchOptions {
 
 /** Returns null when Zenith opened, or the sentence to show when it could not. */
 export function launchZenith(o: LaunchOptions): string | null {
-  const { mod, settings } = o;
+  const { settings } = o;
   const game = settings.game;
-  const adapter = mod.autoAdapterFor(game);
+  const adapter = autoAdapterFor(game);
   if (!adapter) return 'This game has no Zenith autos.';
   const lib = loadAutoLibrary(game);
   const entry = o.open === null ? null : (lib.entries.find((e) => e.name === o.open) ?? null);
@@ -53,7 +52,7 @@ export function launchZenith(o: LaunchOptions): string | null {
     ...(entry && o.trace !== undefined ? { trace: o.trace } : {}),
     onSave: async (name, text) => {
       try {
-        mod.parseAutoText(text);
+        parseAutoText(text);
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
       }
@@ -74,7 +73,7 @@ export function launchZenith(o: LaunchOptions): string | null {
     },
     onRun: async (name, text) => {
       const wp = loadAutoLibrary(game).entries.find((e) => e.name === name)?.waypoints ?? entry?.waypoints;
-      return mod.runAutoHeadless({ game, spec: settings.spec, setup: { auto: text, ...(wp ? { waypoints: wp } : {}) } }).trace;
+      return runAutoHeadless({ game, spec: settings.spec, setup: { auto: text, ...(wp ? { waypoints: wp } : {}) } }).trace;
     },
   });
   if (!session) return `Couldn’t open Zenith. Allow pop-ups for this site, or open ${ZENITH_URL} yourself.`;
