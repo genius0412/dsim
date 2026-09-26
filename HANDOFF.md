@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-26b (branch `fix/ramp-pad-default`: Deploy ramp's pad default moves to R3)
+
+**State: PR into `alpha`.** `npm test`: BIOBUZZ ALL PASS; shared result in the PR body. Client only, no deploy.
+
+- **Report:** D-pad down is the wrong default for Deploy ramp: players said it restarted their run. Separately, the owner asked for Shift on the keyboard, then chose to keep Z, because Shift is Intake in every game.
+- **Fix (`bindings.ts`):** `bbRamp` pad default `[13]` → `[11]` (R3, the one button BIOBUZZ left free). D-DOWN is now unbound by default.
+- **Existing players keep their binds (owner requirement):** a stored map with a ramp row keeps it, D-DOWN included. A map with NO ramp row takes R3, but `mergeBindings` now applies the keyboard's new-action rule to pad singles too: R3 is dropped if a conflicting action holds it in main or in a BIOBUZZ override. No pad fallback: in that case the ramp loads unbound and the player binds it.
+- **Tests:** seven `ramp pad:` checks in `scripts/smoke.ts` after the `ramp keys:` block. Four binding fixtures used R3 as their "free button"; they now use D-DOWN. The stale-blob fixture stored Shoot on X (Park's default), so the new pad rule rightly left Park unbound; it now stores D-DOWN.
+- **Known leftover:** players who saved their settings while D-DOWN was the default have `bbRamp: [13]` stored and keep it. Moving them would break "existing binds stay". They can rebind on the Controls screen.
+---
+
 # HANDOFF — 2026-09-26 (branch `fix/ramp-deploy-keys`: Deploy ramp loaded unbound on old keyboard maps)
 
 **State: PR into `alpha`.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: shared ALL PASS; BIOBUZZ fails only the two wall-clock perf checks (`2v2 BIOBUZZ ROOM tick <= 1.2x`, `bot-driven 2v2 step3d p95`), which fail identically on a clean `origin/alpha` on this machine. Client only, no deploy.
