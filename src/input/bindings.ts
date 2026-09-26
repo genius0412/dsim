@@ -475,8 +475,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
        * old any-button test, no state", so the first default combo moves EVERY player onto the
        * resolver's stateful path to give one season one button.
        *
-       * RS (11) comes free as a result, and is LEFT free — the bindings lane uses it as an
-       * "assumed unbound button" fixture in two independent tests.
+       * RS (11) comes free as a result, and Deploy ramp takes it (below).
        */
       /* PAD_ACTIONS ORDER, for the reason the keys list gives. */
       catalyst: [4], // LB
@@ -488,8 +487,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // D-LEFT. Its own direction, one step from the two other d-pad actions: two actions on
       // one index is a silent double-fire, not a conflict the rebinder reports.
       bbNectar: [14],
-      // D-DOWN — drop / fold the deployable ramp. Also momentary, so the same trade.
-      bbRamp: [13],
+      // R3 (right stick click) — drop / fold the deployable ramp. It was D-DOWN (13), and players
+      // reported that pressing it restarted their run; R3 was the one button BIOBUZZ left free.
+      // A saved map keeps its own ramp button: this only reaches a map that has never had one,
+      // and `mergeBindings` will not stack it on a button such a map already uses.
+      bbRamp: [11],
       bbPass: [10], // L3 — shared with `fling`
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
@@ -618,6 +620,8 @@ export function mergeBindings(saved: unknown): ControlBindings {
   const out = cloneBindings(DEFAULT_BINDINGS);
   if (typeof saved !== 'object' || saved === null) return out;
   const s = saved as { keys?: unknown; pad?: unknown };
+  /** pad actions the stored map has never had a button list for — see the rule after `perGame` */
+  const freshPad: PadAction[] = [];
   if (typeof s.keys === 'object' && s.keys !== null) {
     const keys = s.keys as Record<string, unknown>;
     const fresh: KeyAction[] = [];
@@ -687,6 +691,8 @@ export function mergeBindings(saved: unknown): ControlBindings {
         const v = buttons[a];
         if (Array.isArray(v) && v.every(isButtonIndex)) {
           out.pad.buttons[a] = v as number[];
+        } else if (!(a in buttons)) {
+          freshPad.push(a);
         }
       }
     }
@@ -732,6 +738,27 @@ export function mergeBindings(saved: unknown): ControlBindings {
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;
+  // THE KEYBOARD'S NEW-ACTION RULE, ON THE PAD. An action newer than the stored map takes a
+  // default button only where no conflicting action the player already has holds it — in main,
+  // or in the override of a game both actions are used in. Without it a new default lands on a
+  // button the player put elsewhere, and one press fires both (Deploy ramp moved to R3 on
+  // 2026-09-26, and a stored map can have R3 on anything). Singles only: a single never
+  // conflicts with a combo that contains it.
+  for (const a of freshPad) {
+    out.pad.buttons[a] = out.pad.buttons[a].filter(
+      (i) =>
+        !PAD_ACTIONS.some(
+          (o) =>
+            o !== a &&
+            !freshPad.includes(o) &&
+            actionsConflict(o, a) &&
+            (out.pad.buttons[o].includes(i) ||
+              GAME_IDS.some(
+                (g) => actionUsedBy(a, g) && actionUsedBy(o, g) && !!out.perGame?.[g]?.padButtons?.[o]?.includes(i),
+              )),
+        ),
+    );
+  }
   return out;
 }
 

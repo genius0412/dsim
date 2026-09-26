@@ -202,10 +202,10 @@ export function padBackButton(f: PadFamily): number {
 /**
  * The default IN-MATCH MENU button: D-RIGHT.
  *
- * It is the one standard-mapping index no default bind uses — fire 7/0, intake 6/1, catalyst 4,
- * fling 10, place NECTAR 13, place POLLEN 12, nectar 14, ramp 11, driveMode 5, flip 3, park 2,
- * start 9, restart 8. 12, 13 and 14 are the other three d-pad directions, so 15 is the gap and
- * it is next to controls a thumb already knows.
+ * It is next to controls a thumb already knows. The default binds are fire 7/0, intake 6/1,
+ * catalyst and place POLLEN 4, fling and pass 10, place NECTAR 12, nectar 14, ramp 11 (R3),
+ * driveMode 5, flip 3, park 2, start 9, restart 8. D-DOWN (13) is unbound by default; it was the
+ * ramp's until 2026-09-26.
  */
 export const PAD_MENU_BUTTON = 15;
 
