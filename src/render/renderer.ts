@@ -5,6 +5,7 @@ import { drawRobot } from './drawRobot';
 import { gameOf } from '../games';
 import { robotsEnabled } from '../sim/match';
 import type { GameModule, GameScene } from '../games/module';
+import { bbHeightNow } from '../games/biobuzz/config';
 
 /**
  * The letterbox around the field follows the app theme (the FIELD itself never does).
@@ -22,15 +23,15 @@ const backdropColor = (): string =>
 const NO_HELD: readonly Artifact[] = [];
 
 /**
- * How high above a robot's own base its name label floats, in field inches, when it is
- * projected through a 3D scene camera.
+ * How far above the top of a robot its name label floats, in field inches, when it is projected
+ * through a 3D scene camera. The top is the build's own height right now (`bbHeightNow`: stowed
+ * before the match, deployed after), which caps every mechanism on it.
  *
- * A CONSTANT rather than the build's `heightIn`: the label has to clear the tallest thing on the
- * robot (a turret and its barrel, a raised box tube), not the chassis, and a label whose height
- * tracked the chassis would bob whenever a build changed. 30 in sits above every legal BIOBUZZ
- * mechanism and still reads as attached to the robot rather than floating over the field.
+ * ⚠️ **It was a flat 30 in above the base** (owner, 2026-09-25: "WAY too high"). That number was
+ * written when a build could stand 29 in; the dial now stops at 18 and the default is 14, so the
+ * label hung a full robot-height over the robot and read as floating over the field.
  */
-const LABEL_Z = 30;
+const LABEL_CLEARANCE = 3;
 /** how far above the projected point the text is drawn, in CSS px — the 3D projection puts the
  * anchor at the top of the robot, and this lifts the baseline clear of it. */
 const LABEL_SCREEN_LIFT = 4;
@@ -287,7 +288,7 @@ export class Renderer {
     ctx.lineJoin = 'round';
     for (const r of world.robots) {
       if (r.id === localRobotId) continue;
-      project.call(scene, r.pos.x, r.pos.y, (r.z ?? 0) + LABEL_Z, out);
+      project.call(scene, r.pos.x, r.pos.y, (r.z ?? 0) + bbHeightNow(world, r.spec) + LABEL_CLEARANCE, out);
       if (!out.visible) continue;
       const label = labelFor(r, driverName);
       // the same dark outline the 2D pass gives these: a 3D scene can put any brightness behind

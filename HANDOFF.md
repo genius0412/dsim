@@ -1,3 +1,12 @@
+# HANDOFF — 2026-09-25k (3D name labels sit on the robot, not 30 in above it)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `bundleaudit` pass. Client only, no deploy needed.
+
+- **Owner:** names over other robots were "WAY too high".
+- **Cause:** the 3D overlay (`drawProjectedOverlay` in `src/render/renderer.ts`) anchored every label at a flat `LABEL_Z = 30` in above the robot's base. That dates from when a build could stand 29 in; the height dial now stops at 18 and defaults to 14.
+- **Fix:** anchor at `bbHeightNow(world, r.spec) + LABEL_CLEARANCE` (3 in), so the label sits just over the robot's own top (stowed height pre-match, deployed after). Smoke check in `scripts/smoke-biobuzz/render.ts`. The 2D label offset (14 in screen-up from the centre) is unchanged.
+- Not seen in a browser: labels only draw over OTHER robots, and offline solo practice has one.
+
 # HANDOFF — 2026-09-25i (production = alpha = `9a91323`)
 
 - **Everything on `alpha` as of 5419acb3 is on production**: `main` = `9a91323`, Vercel and every Fly machine (announced deploy, `/health` ok, satellites re-sized). Includes the combined Vercel history display, counting all traffic (DNT/GPC no longer gate), `LEGAL_UPDATED` September 25, 2026 (every signed-in account accepts once), controller hold-to-remove, and the budget-lane test change.

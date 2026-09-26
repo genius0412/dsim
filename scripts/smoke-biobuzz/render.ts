@@ -1495,6 +1495,12 @@ export function renderChecks(check: Check): void {
     // the 2D overlay pass must ASK the scene where a point is — the whole point of the hook
     const rendererSrc = readFileSync(join(root, 'src', 'render', 'renderer.ts'), 'utf8');
     check('Renderer takes a scene (setScene) and projects the overlay through it', typeof Renderer.prototype.setScene === 'function' && rendererSrc.includes('scene.project'));
+    // the name label sits just over the robot's OWN top, not a flat 30 in over its base (owner,
+    // 2026-09-25: "WAY too high" — a 14-in build had its name a whole robot-height above it)
+    check(
+      '3D name labels anchor on the robot’s current height (bbHeightNow), not a fixed height',
+      /bbHeightNow\(world, r\.spec\) \+ LABEL_CLEARANCE/.test(rendererSrc) && !/LABEL_Z = 30/.test(rendererSrc),
+    );
 
     check(
       'the camera preference defaults to auto (no localStorage in Node ⇒ never throws)',
