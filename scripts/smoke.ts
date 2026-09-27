@@ -392,6 +392,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
 import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
+import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
 import { Renderer } from '../src/render/renderer';
@@ -15651,6 +15652,36 @@ function pinScene(
   for (let i = 0; i < 20; i++) hi.sample(1040 + 2 * i, 1000 + 2 * i, 1036 + 2 * i, i * 33);
   const r = hi.rate(19 * 33);
   check('lead unit: a lead far past target SLOWS the clock, never past LEAD_MAX_SLOW', r < 0 && r >= -LEAD_MAX_SLOW, String(r));
+}
+
+// ---- CONTACT DRAW: a remote robot next to ours is drawn at our moment (src/net/contactDraw.ts) ----
+{
+  check('contact draw: far away a remote robot stays interpolated, touching it is fully predicted',
+    nearDrawWeight(CONTACT_DRAW_FAR_IN) === 0 && nearDrawWeight(200) === 0 && nearDrawWeight(CONTACT_DRAW_FULL_IN) === 1 && nearDrawWeight(0) === 1);
+  const mid = nearDrawWeight((CONTACT_DRAW_FULL_IN + CONTACT_DRAW_FAR_IN) / 2);
+  check('contact draw: ...and it blends linearly between, so no clock jumps in one frame', Math.abs(mid - 0.5) < 1e-9, String(mid));
+  check('contact draw: a NaN distance draws interpolated (never a NaN pose)', nearDrawWeight(NaN) === 0);
+  const b = blendPose({ x: 0, y: 0, heading: 3.0 }, { x: 10, y: -4, heading: -3.0 }, 0.5);
+  check('contact draw: the heading blends along the SHORT arc across ±π',
+    Math.abs(b.x - 5) < 1e-9 && Math.abs(b.y + 2) < 1e-9 && Math.abs(Math.abs(b.heading) - Math.PI) < 0.02, JSON.stringify(b));
+  // a ball held 9 in ahead of a robot facing +x, robot drawn 5 in to the left and turned 90°
+  const p = followDrawn({ x: 9, y: 0 }, { x: 0, y: 0, heading: 0 }, { x: -5, y: 0, heading: Math.PI / 2 });
+  check('contact draw: a held ball rides the robot AS DRAWN (translation and rotation)', Math.abs(p.x + 5) < 1e-9 && Math.abs(p.y - 9) < 1e-9, JSON.stringify(p));
+  const same = followDrawn({ x: 3, y: 4 }, { x: 1, y: 1, heading: 0.7 }, { x: 1, y: 1, heading: 0.7 });
+  check('contact draw: ...and does not move when the robot is drawn where the world has it', Math.abs(same.x - 3) < 1e-9 && Math.abs(same.y - 4) < 1e-9);
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('contact draw source: displayWorld blends a near remote robot toward its PREDICTED pose, 2D only',
+    game.includes('const me = predictLocal && !this.spectator && !this.interp3d()') &&
+      game.includes('const w = nearDrawWeight(d);') &&
+      game.includes('blendPose(interp, predicted, w)'));
+  const capAt = game.indexOf('preRemote.set(r.id,');
+  const adoptAt = game.indexOf('this.adoptWorld(snap.world);', capAt);
+  const setAt = game.indexOf('this.remoteSmooth.set(r.id,', adoptAt);
+  check('contact draw source: the reconcile captures remote poses BEFORE adopting the snapshot and smooths the difference',
+    capAt > 0 && adoptAt > capAt && setAt > adoptAt);
+  check('contact draw source: a 2D room draws held balls with followDrawn', game.includes('pos: followDrawn(b.pos,'));
+  check('contact draw source: a rebuilt match drops the remote offsets',
+    /this\.localSmooth = \{ x: 0, y: 0, heading: 0 \};\s*this\.remoteSmooth\.clear\(\);/.test(game));
 }
 
 // ---- the controller is what game.ts actually runs (GameController needs a DOM) -----------------

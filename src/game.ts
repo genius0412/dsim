@@ -55,6 +55,7 @@ import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
 import { LeadController } from './net/leadControl';
+import { REMOTE_SMOOTH_HALFLIFE, blendPose, followDrawn, nearDrawWeight, type Pose } from './net/contactDraw';
 import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
 
@@ -562,6 +563,9 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
+  /** each REMOTE robot's decaying correction offset, for when it is drawn from the prediction
+   *  because it is next to ours — `src/net/contactDraw.ts`. 2D rooms only. */
+  private remoteSmooth = new Map<number, Pose>();
   /**
    * ⚠️ **THE ELEMENTS' OWN `localSmooth` — AND THE BUG IT EXISTS FOR IS THE ONE PEOPLE REPORT
    * AS "the balls behave really weirdly in a server game".**
@@ -1671,6 +1675,12 @@ export class GameController {
     this.localSmooth.x *= k;
     this.localSmooth.y *= k;
     this.localSmooth.heading *= k;
+    const kr = Math.pow(2, -dtSec / REMOTE_SMOOTH_HALFLIFE);
+    for (const o of this.remoteSmooth.values()) {
+      o.x *= kr;
+      o.y *= kr;
+      o.heading *= kr;
+    }
     // solo renders the predicted world directly; the networked path renders remote
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
@@ -2574,6 +2584,11 @@ export class GameController {
     const a = span > 0 ? Math.max(0, Math.min(1, (this.renderTick - s0.tick) / span)) : 0;
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
+    // A REMOTE ROBOT NEXT TO OURS IS DRAWN AT OUR MOMENT, not at the interpolation clock —
+    // `src/net/contactDraw.ts`. 2D rooms only: a 3D room's prediction carries no remote robot.
+    const me = predictLocal && !this.spectator && !this.interp3d()
+      ? this.world.robots.find((x) => x.id === this.localRobotId)
+      : undefined;
 
     // ONLY remote robots interpolate in a 2D-physics world. Balls there are rendered
     // straight from the predicted sim: they're fast, spawn/despawn (launches), and collide —
@@ -2585,6 +2600,23 @@ export class GameController {
       const p = r0.get(r.id);
       const q = r1.get(r.id);
       if (!p || !q) return r; // just spawned/left the buffer — fall back to predicted
+      if (me) {
+        const o = this.remoteSmooth.get(r.id);
+        const predicted = { x: r.pos.x + (o?.x ?? 0), y: r.pos.y + (o?.y ?? 0), heading: r.heading + (o?.heading ?? 0) };
+        const interp = { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a), heading: lerpAngle(p.heading, q.heading, a) };
+        // the NEARER of the two readings decides, so a robot closing fast is handed over before
+        // its stale interpolated pose reaches ours, and one moving away is let go only once both
+        // readings agree it has gone
+        const d = Math.min(
+          Math.hypot(predicted.x - me.pos.x, predicted.y - me.pos.y),
+          Math.hypot(interp.x - me.pos.x, interp.y - me.pos.y),
+        );
+        const w = nearDrawWeight(d);
+        if (w > 0) {
+          const b = blendPose(interp, predicted, w);
+          return { ...r, pos: { x: b.x, y: b.y }, heading: b.heading };
+        }
+      }
       return {
         ...r,
         pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
@@ -2595,7 +2627,23 @@ export class GameController {
         heading: lerpAngle(p.heading, q.heading, a),
       };
     });
-    if (!this.interp3d()) return { ...this.world, robots };
+    if (!this.interp3d()) {
+      // A HELD BALL RIDES ITS ROBOT AS DRAWN. The predicted world places it on the robot's
+      // PREDICTED pose, which for a remote robot is not where the chassis is drawn — so every
+      // correction to that prediction jumped the hopper (`contactDraw.ts`).
+      const drawnById = new Map(robots.map((r) => [r.id, r] as const));
+      const worldById = new Map(this.world.robots.map((r) => [r.id, r] as const));
+      let moved = false;
+      const balls = this.world.balls.map((b) => {
+        if (b.state.kind !== 'held') return b;
+        const drawn = drawnById.get(b.state.robot);
+        const at = worldById.get(b.state.robot);
+        if (!drawn || !at || drawn === at) return b;
+        moved = true;
+        return { ...b, pos: followDrawn(b.pos, { x: at.pos.x, y: at.pos.y, heading: at.heading }, { x: drawn.pos.x, y: drawn.pos.y, heading: drawn.heading }) };
+      });
+      return moved ? { ...this.world, robots, balls } : { ...this.world, robots };
+    }
 
     /**
      * ELEMENTS, in a 3D-physics world only.
@@ -2768,6 +2816,17 @@ export class GameController {
     const preX = pre ? pre.pos.x + this.localSmooth.x : 0;
     const preY = pre ? pre.pos.y + this.localSmooth.y : 0;
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
+    // ...and every REMOTE robot's predicted pose, the same way: in a 2D room one standing next
+    // to ours is DRAWN from the prediction (`contactDraw.ts`), so its correction needs the same
+    // glide. A 3D room predicts no remote robot at all, and `this.world` there does not move.
+    const preRemote = new Map<number, Pose>();
+    if (!this.predicted3d() && !this.spectator) {
+      for (const r of this.world.robots) {
+        if (r.id === this.localRobotId) continue;
+        const o = this.remoteSmooth.get(r.id);
+        preRemote.set(r.id, { x: r.pos.x + (o?.x ?? 0), y: r.pos.y + (o?.y ?? 0), heading: r.heading + (o?.heading ?? 0) });
+      }
+    }
 
     this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
@@ -2792,6 +2851,16 @@ export class GameController {
     if (this.predicted3d()) this.replayThroughPredictor(snap.serverTick);
     else for (const b of this.inputBuf) this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
 
+    this.remoteSmooth.clear();
+    for (const r of this.world.robots) {
+      const p0 = preRemote.get(r.id);
+      if (!p0) continue;
+      const dx = p0.x - r.pos.x;
+      const dy = p0.y - r.pos.y;
+      // past SMOOTH_MAX_DIST it snaps, exactly like the local robot's correction below
+      if (Math.hypot(dx, dy) > SMOOTH_MAX_DIST) continue;
+      this.remoteSmooth.set(r.id, { x: dx, y: dy, heading: Math.atan2(Math.sin(p0.heading - r.heading), Math.cos(p0.heading - r.heading)) });
+    }
     const post = this.world.robots.find((r) => r.id === this.localRobotId);
     if (pre && post) {
       let dx = preX - post.pos.x;
@@ -2842,6 +2911,7 @@ export class GameController {
     this.snapBuf = [];
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };
+    this.remoteSmooth.clear();
     this.clearElementSmoothing();
     // A REMATCH IS A NEW MATCH, so it gets a new probe and a new slip window. The predictor is
     // dropped rather than reset: `reset` re-seats bodies against a world, and the world it was

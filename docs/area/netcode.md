@@ -46,6 +46,18 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   showed a 60 Hz display zero ticks one frame and two the next on 7–26% of frames (solo: 0.3%) —
   "online feels juddery" at any ping. Both drivers read one `lastSimT`, so a hand-over neither
   loses nor double-counts time, and the timer still feeds the room from a backgrounded tab.
+- ⚠️ **IN A 2D ROOM, A REMOTE ROBOT NEXT TO YOURS IS DRAWN AT YOUR MOMENT** (`src/net/contactDraw.ts`,
+  2026-09-27). Running ahead put the local robot a full round trip further from the
+  interpolated remotes, so a shove drew one chassis sunk into the other: drawn centres p95
+  4.2 in closer than the server's at 66 ms and 6.1 in at 130 ms (max 13.4), measured on server
+  contact frames only. Within `CONTACT_DRAW_FAR_IN` a remote is blended toward its PREDICTED
+  pose (it is already stepped there on its held command and collides with yours), carrying its
+  own decaying offset (`remoteSmooth`, `REMOTE_SMOOTH_HALFLIFE`) the way `localSmooth` carries
+  yours. And a HELD ball rides its robot AS DRAWN (`followDrawn`): the predicted world placed a
+  remote robot's hopper on its predicted pose while the chassis was drawn interpolated, so every
+  correction jumped the balls (127 pops > 6 in a minute at 130 ms, zero after). Cost: a little
+  remote wobble when the other driver changes stick mid-shove. A 3D room is untouched — its
+  predictor carries no remote robot (`sim3d/predict.ts` holds them at the snapshot pose).
 - **`HOLD_TICKS` is 36 (600 ms)**: a TCP retransmit stalls the input stream 200–500 ms, and at 15 the
   room stopped a robot whose driver was still holding the stick (10.6 in yank at 500 ms, 0.03 now).
   ⚠️ Server constant: deploy it.
