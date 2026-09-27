@@ -42,7 +42,8 @@ import { Keyboard } from '../src/input/keyboard';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
-import { startMatch } from '../src/sim/match';
+import { allocBallId } from '../src/sim/ballIds';
+import { clockExpired, startMatch, stepMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
 import { muxMp4 } from '../src/ui/mp4';
 import { hudLabels } from '../src/ui/replayOverlay';
@@ -177,6 +178,9 @@ import {
   PLACEMENT_GAMES,
   ENDGAME_START,
   PRE_COUNTDOWN,
+  AUTO_DURATION,
+  TRANSITION_DURATION,
+  TELEOP_DURATION,
   COLORS,
 } from '../src/config';
 import {
@@ -520,6 +524,13 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
     'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
   },
+  // exact phase lengths (`clockExpired`) and never-reused artifact ids (`World.nextBallId`)
+  5: {
+    'decode solo': ['2d126b8eff58a52e', '69880a216f5edbfc', '43fec73b03b36692', 'be59a3d52ce6c79c', 'a366239b68377195', '523dd1a09e25d9a6'],
+    'decode 2v2': ['d1e10ae4eb1eb754', '0268bfb161f239ee', '153e7f9302d261fd', 'a0f96d948180a358', 'ef853ad4231bd6ac', 'a55fda447a2e2538'],
+    'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
+    'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', '8f1d9ee3c6ffd79b', '6bb8a0fb51fd7790'],
+  },
 };
 const goldenArmed = (w: World): World => {
   // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
@@ -618,6 +629,75 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     every: 400,
   });
   check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- match clocks: every phase is exactly its duration in ticks ------------
+{
+  // The clocks count down by `-= 1/60`, which is inexact: after 1800 subtractions from 30 the
+  // remainder was +4e-13, so a plain `> 0` gave every phase one extra tick (AUTO 1801, the
+  // transition 481, DRIVER-CONTROLLED 7201) and the countdown too. `clockExpired` ends them on
+  // the tick grid.
+  const w = createWorld('match', 3, []);
+  w.match.preCountdown = PRE_COUNTDOWN;
+  const lengths: Record<string, number> = {};
+  let guard = 0;
+  while (w.match.phase !== 'post' && guard++ < 20000) {
+    const ph = w.match.phase;
+    stepMatch(w, SIM_DT);
+    lengths[ph] = (lengths[ph] ?? 0) + 1;
+  }
+  const want = { pre: PRE_COUNTDOWN * 60, auto: AUTO_DURATION * 60, transition: TRANSITION_DURATION * 60, teleop: TELEOP_DURATION * 60 };
+  check(
+    'match clock: countdown, AUTO, transition and DRIVER-CONTROLLED each last exactly duration x 60 ticks',
+    Object.entries(want).every(([k, v]) => lengths[k] === v),
+    JSON.stringify(lengths),
+  );
+  check('clockExpired: a remainder of float noise is out, a whole tick is not', clockExpired(4e-13) && clockExpired(0) && clockExpired(-1e-3) && !clockExpired(SIM_DT));
+
+  // Chain Reaction runs its own phase machine off the same helper
+  const cw = simModuleFor('chain').createWorld('match', 3, []);
+  cw.match.phase = 'auto';
+  cw.match.phaseTimeLeft = AUTO_DURATION;
+  let n = 0;
+  while (cw.match.phase === 'auto' && n < 4000) {
+    simModuleFor('chain').step(cw, SIM_DT, new Map());
+    n++;
+  }
+  check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
+}
+
+// ---- artifact ids are never reused within a match ---------------------------
+{
+  // The human player can collect the stray holding the HIGHEST id and place a fresh artifact in
+  // the same call. With `max(id) + 1` the fresh one got the collected one's id, and every table
+  // keyed by artifact id (the penalty engine's per-(robot, artifact) clocks, pinnedArtifacts,
+  // the snapshot delta) carried over to a different ball.
+  const w = createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  w.match.phase = 'teleop';
+  w.robots[0].pos = { x: 0, y: 0 };
+  const z = loadZone('blue');
+  const slots = loadSlots('blue');
+  w.balls = w.balls.filter((b) => !(b.state.kind === 'ground' && b.pos.x > z.x0 - 10 && b.pos.x < z.x1 + 10 && b.pos.y > z.y0 - 10 && b.pos.y < z.y1 + 10));
+  // the stray is the newest artifact on the field, so it holds the highest id there
+  const strayId = allocBallId(w);
+  const cx = (z.x0 + z.x1) / 2;
+  const cy = (z.y0 + z.y1) / 2;
+  let spot = { x: cx, y: cy };
+  for (const dx of [-8, 8, 0]) for (const dy of [-8, 8, 0]) {
+    const q = { x: cx + dx, y: cy + dy };
+    if (slots.every((sl) => Math.hypot(q.x - sl.x, q.y - sl.y) > 8)) spot = q;
+  }
+  w.balls.push({ id: strayId, color: 'green', state: { kind: 'ground' }, pos: spot, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  w.humanPlayers.blue.box = ['purple'];
+  w.humanPlayers.blue.nextPlaceAt = 0;
+  w.humanPlayers.red.nextPlaceAt = 1e9;
+  const before = w.balls.length;
+  updateHumanPlayers(w);
+  const placed = w.balls.find((b) => b.color === 'purple' && slots.some((sl) => sl.x === b.pos.x && sl.y === b.pos.y));
+  check('ball ids: the scene really collected the stray and placed a new artifact in one call', !w.balls.some((b) => b.id === strayId && b.color === 'green') && w.balls.length === before && !!placed, `${w.balls.length} vs ${before}`);
+  check('ball ids: the placed artifact does NOT reuse the collected one\'s id', !!placed && placed.id !== strayId && !w.balls.some((b) => b.id === strayId), `placed #${placed?.id}, collected #${strayId}`);
+  const ids = w.balls.map((b) => b.id);
+  check('ball ids: every id on the field is distinct', new Set(ids).size === ids.length);
 }
 
 // ---- untrusted-input edges that must not move a valid input ----------------
