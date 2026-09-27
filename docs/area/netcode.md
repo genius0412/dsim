@@ -19,6 +19,50 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   (30 Hz)**. `server/room.ts` = lobby + match + host lifecycle + deterministic drop.
   `SNAPSHOT_INTERVAL` was dropped from 60 Hz after profiling (the lag was NETWORK, not CPU;
   halving snapshot bandwidth + `setNoDelay(true)` to kill Nagle was the fix).
+- ⚠️ **ROOMS CAN RUN ON WORKER THREADS (`SIM_WORKERS`, 2026-09-27).** One Node process is one JS
+  thread, so every room on a machine used to share one core. `server/roomHost.ts` (socket
+  thread), `server/roomWorker.ts` (a worker) and `server/roomThreads.ts` (the messages between
+  them). Unset or `0`: `createRoom` returns a plain `Room` and nothing else runs, the old server.
+  `auto`: one worker per vCPU beyond the first. Production sets `auto` in `fly.toml`, so a
+  performance-1x still runs in-process. Sockets, matchmaker, DB pool, presence and the registry
+  stay on the socket thread; routing is unchanged.
+  - `index.ts` talks to a room only through `RoomHandle`, which `Room` satisfies. A worker room
+    is a `RemoteRoom`: writes are posted in order; `reattach`, `applyPending` and the two report
+    resolvers return promises, and `index.ts` awaits only when handed one, so an in-process room
+    keeps its synchronous timing. Every synchronous READ comes from `RoomFacts`, a mirror the
+    worker re-sends when the room may have changed (any op but `input`, any broadcast but a
+    snapshot, and a 1 s sweep for the live clock and score).
+  - ⚠️ **THE MIRROR IS A MESSAGE BEHIND, SO THE READS THAT ADMIT PEOPLE COUNT WHAT IS IN
+    FLIGHT.** An `add` posted and not yet acknowledged (`RoomFacts.ack`) is a seat for `canJoin`
+    and `seatFor`, and a room with anything in flight is never abandonable. Without that, two
+    joins inside a millisecond both fit a one-seat room, and `abandon()` disposes a room under a
+    joiner.
+  - **WIDENING `Room`'S PUBLIC SURFACE:** a method `index.ts` calls needs `RoomHandle`,
+    `RemoteRoom`, an `Op` and a case in the worker; a synchronous read needs a `RoomFacts` field;
+    a constructor callback needs a `CB_*` bit and a worker event. `Client` crosses by structured
+    clone, so `send`/`sendRaw`/`backlog` are its only functions and the worker rebuilds them
+    around the SOCKET KEY (`registerSocket`). A worker room's `conn` in `index.ts` is that key
+    (spectators get one too, from `addSpectator`); the worker maps it to the room's own stamp.
+  - `Client.backlog` crosses as a report, in 16 KB steps, re-read every 50 ms while non-zero —
+    a room skipping a backed-up socket writes nothing to it, so nothing else would report it
+    drained.
+  - A worker that dies closes its rooms' sockets (1011), releases their one-game locks, drops
+    their codes and respawns (not if it never loaded physics, or after 5 deaths in 10 min). With
+    no live worker `createRoom` falls back to in-process. A late joiner adding itself to a room
+    its worker already disposed REVIVES it, as an in-process `Room` would take them.
+  - `room.ts` stays browser-safe for the LAN tab host; worker plumbing lives in `roomWorker.ts`.
+    The image builds TWO entries (`index.js`, `roomWorker.js`); the single-file LAN bundle has no
+    worker and runs in-process.
+  - `/api/perf` adds `workers[]` (rooms, loop lag, busy share over the last second) and
+    `loopBusy` for the socket thread, whose `loopLagMs` no longer measures the simulation.
+  - Measured on the Windows dev box: 30 driven 1v1 DECODE rooms in-process, snapshot gap p50/p99
+    79/280 ms; on 4 workers, 33/49 ms. 60 rooms on 8 workers, 33/51 ms with each worker ~40%
+    busy. The next ceiling is the socket thread, ~0.3% busy per client (38% at 120 clients),
+    mostly `writev` and zlib; worker plumbing is under 2% of a worker's time. One worker against
+    none at 20 rooms: socket thread 78% → 14% busy, RTT p99 10 → 3 ms.
+  - Checks: `npm run test:workers` (`scripts/workersmoke.ts`) — the pool with fake sockets (a
+    killed worker, backlog, dispose, revive, the awaited calls), then the same scenarios against a
+    real server in-process and on two workers. Kept out of `npm test`.
 - ⚠️ **A MISSING INPUT TICK KEEPS THE LAST APPLIED BUTTONS** (`frameCommands`, 2026-09-25).
   Inputs ride the unreliable lane, one tick per packet, and a tick with none of its own is filled
   from `latest`, the newest command BY TICK. A client runs ahead, so that is usually a FUTURE

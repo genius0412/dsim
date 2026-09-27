@@ -113,9 +113,10 @@ SATELLITE_SIZES=(
 )
 # 2026-09-24 (BIOBUZZ Act 2): gru, syd and nrt stay on the dedicated core the capacity task
 # moved them to on 09-23 (peaks 0.17-0.43 cores against shared-cpu-4x's 0.175 baseline), because
-# every online BIOBUZZ room is now a 3D solve. A bigger size does NOT help: the server is ONE
-# process on ONE core (no worker_threads/cluster). ⚠️ MULTI-CORE IS THE URGENT NEXT CAPACITY
-# ITEM — see docs/capacity.md, "MULTI-CORE".
+# every online BIOBUZZ room is now a 3D solve. 2026-09-27: rooms can now use more than one core
+# (SIM_WORKERS=auto in fly.toml, docs/scaling-multicore.md), so a bigger size DOES add rooms now —
+# but a performance-1x has one vCPU and runs in-process as before. Upsizing a satellite means
+# raising its MAX_ROOMS below with it, or the cap binds before the cores do.
 SATELLITES=()
 for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 

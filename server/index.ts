@@ -1,9 +1,19 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import v8 from 'node:v8';
-import { Room, type Client } from './room';
+import type { Client } from './room';
+import {
+  createRoom,
+  registerSocket,
+  resetWorkerPerf,
+  simWorkerCount,
+  startRoomWorkers,
+  unregisterSocket,
+  workerPerf,
+  type RoomHandle,
+} from './roomHost';
 import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
@@ -152,7 +162,7 @@ import {
 enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
-const rooms = new Map<string, Room>();
+const rooms = new Map<string, RoomHandle>();
 /**
  * LAN rendezvous, kept deliberately apart from `rooms`.
  *
@@ -546,6 +556,15 @@ function coresInUse(): number {
   cpuMarkAt = now;
   if (elapsedUs <= 0) return 0;
   return (d.user + d.system) / elapsedUs;
+}
+/** share of the time since the previous call that THIS thread's loop was busy (0..1) —
+ *  sampling resets the window, like `coresInUse`. With room workers it is the socket thread's
+ *  own load, which `cores` (the whole process) cannot show. */
+let eluMark = performance.eventLoopUtilization();
+function loopBusy(): number {
+  const e = performance.eventLoopUtilization(eluMark);
+  eluMark = performance.eventLoopUtilization();
+  return Math.round(e.utilization * 1000) / 1000;
 }
 // stable per-machine id for the shared presence table (unique per Fly machine)
 const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
@@ -2436,6 +2455,7 @@ const httpServer = createServer((req, res) => {
       machine: MACHINE,
       uptimeS: Math.round(process.uptime()),
       cores: Math.round(coresInUse() * 1000) / 1000,
+      loopBusy: loopBusy(),
       rooms: live.length,
       // the admission cap and whether it is currently biting. An operator debugging
       // "players say the region is full" needs both numbers in one place.
@@ -2487,10 +2507,17 @@ const httpServer = createServer((req, res) => {
       // ⚠️ NOT `snapshotGapMs` — `scripts/loadsummary.ts` reads a CLIENT-side field of that
       // name out of this same JSON.
       snapSendGapMs: snapSendGap(gapReset),
+      // THE ROOM WORKERS (SIM_WORKERS, server/roomHost.ts): per worker, the rooms it holds, its
+      // own loop lag and how busy its loop was over the last second. With workers, `loopLagMs`
+      // above is the SOCKET thread, and these are the loops that step the simulation. Absent
+      // when rooms run in-process. Lag resets with `?reset=1` like the socket thread's; `busy`
+      // is always the last second, and like `snapSendGapMs` it is up to a second old.
+      workers: workerPerf(),
     };
     if (new URL(req.url, 'http://x').searchParams.get('reset')) {
       loopDelay.reset();
       loopDelaySince = Date.now();
+      resetWorkerPerf();
     }
     res.writeHead(200, {
       'content-type': 'application/json',
@@ -2703,7 +2730,9 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 // one process is one core, and a core carries ~13 driven rooms; a machine therefore holds
 // tens of sockets, not a thousand. At 20 sockets, 15/8 costs 5 MB and 13/6 costs 1.3 MB,
 // so the memory axis the knee was chosen on is not a real constraint in any reachable
-// topology. Measured end to end (`scripts/zz-deflate-cost.ts`), the difference is large:
+// topology. (Room workers, 2026-09-27, lift a machine to ~250 sockets, where the socket thread
+// saturates: ~64 MB of windows, still no constraint on any size in use.) Measured end to end
+// (`scripts/zz-deflate-cost.ts`), the difference is large:
 //
 //                       13/6              15/8
 //   decode-solo   15.2 KB/s (-83%)   12.5 KB/s (-88%)
@@ -2896,7 +2925,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const edgeRegion = replaySrcRegion(req);
 
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
-  let room: Room | null = null;
+  let room: RoomHandle | null = null;
   // the owning-connection stamp this socket was issued for its slot (0 until it
   // joins/rejoins). Passed to detach on close so a stale socket that a newer
   // reconnect already superseded can't knock the live player offline.
@@ -2910,6 +2939,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    * socket nobody is holding. See `joinRoom`.
    */
   let closed = false;
+  /** a `rejoin` is waiting on a room worker's answer (never set for an in-process room) */
+  let rejoining = false;
   /**
    * Which ranked-queue ATTEMPT is the live one.
    *
@@ -2967,6 +2998,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   /** what this socket still owes the kernel. The room reads it to coalesce snapshots for
    *  a client that has stopped draining — see `Client.backlog` in room.ts. */
   const backlog = (): number => ws.bufferedAmount;
+  // a room on a worker names this socket by key rather than holding it (server/roomHost.ts).
+  // Nothing happens here without SIM_WORKERS.
+  registerSocket(send, { write, backlog, close: (code, reason) => ws.close(code, reason) });
 
   /**
    * This socket's identity FOR SIGNALLING, and the reason it is not `id`.
@@ -3139,7 +3173,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (!r) {
-      r = new Room(
+      r = createRoom(
         code,
         () => rooms.delete(code),
         cfg,
@@ -3183,7 +3217,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * STAGED ranked match must reap itself on its own grace instead (see room.ts).
      */
     const abandon = (): void => {
-      if (created && rooms.get(code) === theRoom && theRoom.isAbandonable()) rooms.delete(code);
+      if (created && rooms.get(code) === theRoom && theRoom.isAbandonable()) {
+        rooms.delete(code);
+        theRoom.release?.(); // a room on a worker: nothing here holds it any more
+      }
     };
     // Room codes are KIND-SCOPED: a custom (versus) code must never admit a
     // duo-record joiner, or vice-versa (both mint codes from the same generator, so
@@ -3225,7 +3262,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);
-      if (pending) r.applyPending(pending);
+      if (pending) {
+        // a room on a worker answers once the roster is in, so every read below sees it
+        const applied = r.applyPending(pending);
+        if (applied instanceof Promise) await applied;
+      }
     }
     /**
      * THE `'bb3d'` GATE — asked here, after the room's physics is knowable and before a seat
@@ -3329,7 +3370,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (seat) {
         // TRUSTED: `seatFor` matched a VERIFIED user id off the signed auth token, which
         // proves more than the seat secret does. See the note in `Room.reattach`.
-        const nc = r.reattach(seat, send, sendRaw, backlog, undefined, true);
+        const reclaim = r.reattach(seat, send, sendRaw, backlog, undefined, true);
+        // a room on a worker answers later; an in-process one answers now and keeps its timing
+        const nc = reclaim instanceof Promise ? await reclaim : reclaim;
+        if (nc !== null && (closed || room)) {
+          // only reachable across that await: the socket went, or another frame seated it,
+          // while the worker was answering. The seat goes back to its reconnect grace.
+          r.detach(seat, nc, false);
+          return;
+        }
         if (nc !== null) {
           liveSockets.delete(id);
           id = seat; // adopt the reclaimed identity on this socket
@@ -3577,7 +3626,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     spectating = true;
     spectatorTotal++;
-    r.addSpectator(spec);
+    const key = r.addSpectator(spec);
+    if (typeof key === 'number') conn = key; // a room on a worker: what this socket's detach carries
   };
 
   // inbound rate bucket for this socket — see MSG_RATE_LIMIT
@@ -3637,7 +3687,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         }
         attachSpectator(msg);
       } else if (msg.t === 'rejoin') {
-        if (room) return;
+        if (room || rejoining) return;
         const r = rooms.get(msg.room.toLowerCase());
         // THE THIRD DOOR. A seat in a `'3d'` room can only have been taken by a client that
         // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
@@ -3648,16 +3698,33 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
-        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
-        if (r && nc !== null) {
-          liveSockets.delete(id);
-          id = msg.clientId; // adopt the reclaimed identity on this socket
-          liveSockets.set(id, { authed: !!authedUserId });
-          room = r;
-          conn = nc; // this socket now owns the slot (supersedes the dropped one)
-        } else {
-          send({ t: 'rejoined', ok: false });
-        }
+        const res = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
+        const clientId = msg.clientId;
+        const settle = (nc: number | null): void => {
+          if (r && nc !== null) {
+            if (closed || room) {
+              // only reachable when a worker answered — see the reclaim in `joinRoom`
+              r.detach(clientId, nc, false);
+              return;
+            }
+            liveSockets.delete(id);
+            id = clientId; // adopt the reclaimed identity on this socket
+            liveSockets.set(id, { authed: !!authedUserId });
+            room = r;
+            conn = nc; // this socket now owns the slot (supersedes the dropped one)
+          } else {
+            send({ t: 'rejoined', ok: false });
+          }
+        };
+        // a room on a worker answers later, and a second `rejoin` in the meantime must not race
+        // the first for the same seat; an in-process room answers now, exactly as before
+        if (res instanceof Promise) {
+          rejoining = true;
+          void res.then((nc) => {
+            rejoining = false;
+            settle(nc);
+          });
+        } else settle(res);
       } else if (msg.t === 'abandon') {
         /**
          * ABANDON A HELD SLOT FROM OUTSIDE THE ROOM. One frame, no reply: the client has
@@ -3688,17 +3755,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * opened the replay, and the only standing that ever moves for it is the SMITE that
          * follows a rejection.
          */
-        const sc = room ? room.resolveScoreReport(id) : null;
         const detail = typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX).trim() : '';
-        if (sc && detail && dbEnabled) {
-          void submitScoreReport({
-            reporterId: sc.reporterId,
-            matchId: sc.matchId,
-            roomCode: sc.roomCode,
-            game: room!.gameId,
-            detail,
-          }).catch((e) => console.error('[report] score report failed:', e));
-        }
+        const fileScore = (sc: Awaited<ReturnType<RoomHandle['resolveScoreReport']>>): void => {
+          if (sc && detail && dbEnabled) {
+            void submitScoreReport({
+              reporterId: sc.reporterId,
+              matchId: sc.matchId,
+              roomCode: sc.roomCode,
+              game: room!.gameId,
+              detail,
+            }).catch((e) => console.error('[report] score report failed:', e));
+          }
+        };
+        // a room on a worker resolves the filer later; the reply below never waits for it
+        const sc = room ? room.resolveScoreReport(id) : null;
+        if (sc instanceof Promise) void sc.then(fileScore);
+        else fileScore(sc);
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'report') {
         /**
@@ -3711,13 +3783,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * by design. Telling them apart would turn the button into a probe for who is
          * signed in and who has already been reported.
          */
-        const r = room && isReportReason(msg.reason) ? room.resolveReport(id, msg.robotId) : null;
-        if (r && dbEnabled) {
+        const m = msg;
+        const fileReport = (r: Awaited<ReturnType<RoomHandle['resolveReport']>>): void => {
+          if (!r || !dbEnabled || !isReportReason(m.reason)) return;
           void submitReport({
             reportedId: r.reportedId,
             reporterId: r.reporterId,
-            reason: msg.reason,
-            detail: typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX) : null,
+            reason: m.reason,
+            detail: typeof m.detail === 'string' ? m.detail.slice(0, REPORT_DETAIL_MAX) : null,
             roomCode: room!.code,
             game: room!.gameId,
           })
@@ -3737,7 +3810,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               );
             })
             .catch((e) => console.error('[report] write failed:', e));
-        }
+        };
+        // as for a score report: a room on a worker resolves the target later
+        const found = room && isReportReason(msg.reason) ? room.resolveReport(id, msg.robotId) : null;
+        if (found instanceof Promise) void found.then(fileReport);
+        else fileReport(found);
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
@@ -3987,6 +4064,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     queueGen++; // an in-flight queue attempt must not enqueue a socket that is gone
     matchmaker.remove(id); // drop from any ranked queue
+    unregisterSocket(send); // frames a room worker has not delivered yet are dropped, as ws would
     lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
@@ -4042,6 +4120,16 @@ console.log(
  * await on the path that stages a ranked match, where a slow or failed load becomes a
  * cancelled pairing and a dodge charge for four people who did nothing.
  */
+/**
+ * THE ROOM WORKERS (`SIM_WORKERS`, `server/roomHost.ts`, docs/scaling-multicore.md). Unset or 0:
+ * every room runs on this thread, as it always has. Otherwise rooms are spread over that many
+ * `worker_threads`, each loading both physics backends for itself, and this thread keeps the
+ * sockets, the matchmaker, the database and the registry. This thread still loads physics
+ * below: a room is created in-process whenever no worker is alive to take it.
+ */
+const roomWorkers = startRoomWorkers(simWorkerCount());
+if (roomWorkers > 0) console.log(`[server] ${roomWorkers} room worker thread(s): rooms step off the socket thread`);
+
 Promise.all([initPhysics(), initPhysics3d()])
   .then(() => console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled'))
   .catch((e) => {

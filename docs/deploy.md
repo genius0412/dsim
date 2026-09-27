@@ -402,18 +402,16 @@ Measured 2026-09-10; full method and caveats in `docs/capacity.md`.
 matches an idle control run almost exactly and is ~2.4× cheaper than a room with people actually
 driving in it. **Size on 0.075.**
 
-⚠️ **A BIGGER VM DOES NOT BUY PROPORTIONALLY MORE ROOMS.** Node is single-threaded: the room
-loop, snapshot encoding and socket writes all run on one event loop, so one server process is
-capped at roughly one core no matter how many vCPUs the machine has. Going `shared-cpu-4x` →
-`shared-cpu-8x` buys almost nothing. The levers that work are more *processes* (see below) or
-cheaper rooms.
-
-**The audit behind "more processes" is `docs/scaling-multicore.md`**, and it is where this
-question actually gets answered rather than only warned about: ~75% of a busy server is
-simulation that can leave the socket thread, `Room` already talks exclusively through callbacks,
-and the recommendation is `worker_threads` behind a `SIM_WORKERS` variable defaulting to 0.
-**Nothing of it is built** — `SIM_WORKERS` and `worker_threads` appear nowhere in the source — so
-until it is, the row above is the honest ceiling and a bigger VM is still the wrong purchase.
+**A BIGGER VM BUYS ROOMS NOW, THROUGH `SIM_WORKERS`** (2026-09-27). Node is single-threaded,
+so until then one server process was capped at about one core however many vCPUs the machine
+had. Rooms now run on `worker_threads` (`server/roomHost.ts`, `docs/scaling-multicore.md`), and
+`fly.toml` sets `SIM_WORKERS=auto`: one worker per vCPU beyond the first. A `performance-1x`
+therefore runs in-process exactly as before; iad's `performance-2x` gets one worker. `/api/perf`
+lists each worker (`workers[]`: rooms, loop lag, busy share) and the socket thread's `loopBusy`.
+Rollback: `SIM_WORKERS = '0'` in `fly.toml`, redeploy. Measured ceilings are in
+`docs/capacity.md`, "MULTI-CORE": the next limit is the socket thread, near ~250 clients per
+machine. Upsizing a satellite needs its `MAX_ROOMS` raised in `scripts/fly-deploy.sh`, or the
+cap binds before the cores do. The table below predates the change and describes one core.
 
 | size | est. driven DECODE rooms, with margin |
 |---|---|
