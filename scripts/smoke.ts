@@ -21207,6 +21207,78 @@ const dumperSetup = (): RobotSetup => {
         `errOn=${errOn.toFixed(2)} errOff=${errOff.toFixed(2)}`,
       );
     }
+
+    // ...AND IT TURNS A TANK. The shared drive model steers a tank (and a butterfly in tank mode)
+    // only from `leftDrive`/`rightDrive` and ignores `rotate`, and the assist used to write only
+    // `rotate` — so a tank drum held on the fire button never turned, the fire gate never opened
+    // and it never fired at all (measured: 0.00 rad and 0 of 5 over two seconds, facing away).
+    // BIOBUZZ found the same thing; the assist now writes the side drives too.
+    {
+      const tankAim = (drivetrain: 'tank' | 'butterfly') => {
+        const s = chainSetup(0, 'blue');
+        s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain };
+        s.assists = { ...DEFAULT_ASSISTS, autoFire: false, autoIntake: false };
+        const gw = createChainWorld('match', 991, [s]);
+        gw.match.phase = 'teleop';
+        gw.match.phaseTimeLeft = 120;
+        const rob = gw.robots[0];
+        if (drivetrain === 'butterfly') rob.butterflyTank = true;
+        rob.pos = { x: -30, y: 0 };
+        rob.heading = Math.PI / 2; // 90° off the goal (+x)
+        rob.hopper = Array(5).fill('green');
+        runChain(gw, cmd({ fire: true }), 2);
+        return { err: Math.abs(wrapAngle(rob.heading - chainGoalAimHeading(rob))), left: rob.hopper.length };
+      };
+      for (const dt of ['tank', 'butterfly'] as const) {
+        const { err, left } = tankAim(dt);
+        check(
+          `chain aim assist: a ${dt === 'tank' ? 'TANK' : 'BUTTERFLY (tank mode)'} drum held on fire turns onto the goal and fires`,
+          err < 0.1 && left === 0,
+          `heading error ${err.toFixed(2)} rad, ${left} of 5 left`,
+        );
+      }
+
+      // A REPLAY OF IT RE-SIMULATES. The side drives the assist writes are derived from the
+      // recorded command every tick, so they are not stored — which is exactly why this is
+      // worth a check: a tank run that hunts on its side drives, then holds fire so the assist
+      // takes the sticks, must come back identical through the recorder and a JSON trip. Not
+      // vacuous: it has to have scored (before the fix a manual-fire tank scored nothing).
+      const setup: RobotSetup = {
+        id: 0,
+        alliance: 'blue',
+        spec: coerceSpec({ ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain: 'tank' }, DEFAULT_SPEC, 'chain'),
+        assists: { ...DEFAULT_ASSISTS, fieldCentric: false, autoIntake: true, autoFire: false },
+        startIndex: 0,
+      };
+      const src: CommandSource = (_tick, w) => {
+        const me = w.robots[0];
+        let target: { x: number; y: number } | null = me.hopper.length >= 3 ? { x: CHAIN_HALF_X, y: 0 } : null;
+        if (!target) {
+          let bestD = Infinity;
+          for (const b of w.balls) {
+            if (b.state.kind !== 'ground') continue;
+            const d = hyp(b.pos.x - me.pos.x, b.pos.y - me.pos.y);
+            if (d < bestD) { bestD = d; target = b.pos; }
+          }
+        }
+        const err = target ? wrapAngle(datan2(target.y - me.pos.y, target.x - me.pos.x) - me.heading) : 0;
+        const turn = Math.max(-0.8, Math.min(0.8, err * 1.5));
+        const loaded = me.hopper.length >= 3;
+        return new Map([[0, cmd({ leftDrive: (loaded ? 0.2 : 0.7) - turn, rightDrive: (loaded ? 0.2 : 0.7) + turn, intake: true, fire: loaded })]]);
+      };
+      const run = runRecordMatch(33, [setup], src, { mode: 'free', stopTick: 1500, game: 'chain' });
+      const scored = run.world.chain!.scored.blue;
+      check('replay/tank drum, manual fire: the recorded run actually scored', scored > 0, `scored=${scored}`);
+      check(
+        'replay/tank drum, manual fire: re-simulating the replay reproduces the run exactly',
+        worldHash(simulateReplay(run.replay)) === worldHash(run.world),
+      );
+      const stored: Replay = JSON.parse(JSON.stringify(run.replay));
+      check(
+        'replay/tank drum, manual fire: survives the JSON round-trip a stored replay takes',
+        worldHash(simulateReplay(stored)) === worldHash(run.world) && stored.setups[0].spec.drivetrain === 'tank',
+      );
+    }
   }
 
   // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
