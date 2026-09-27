@@ -4895,6 +4895,25 @@ async function main(): Promise<void> {
       /await tx\(async \(query\)/.test(rankedSrc) && /getRatingsFull\(.*, game, query, true\)/.test(rankedSrc),
     );
 
+    // ---- a standing charge takes its DELTA, not a stale absolute score -------------------
+    await repo.ensureProfile('st-race', 'StRace');
+    await db.query(`insert into account_standing (user_id, score, healed_at) values ('st-race', 50, now())`);
+    const verdict = {
+      kind: 'leave' as never, points: 8, scoreBefore: 50, scoreAfter: 42, tierBefore: 'good', tierAfter: 'good',
+      rung: 0, cooldownMin: 0, restrictedUntil: null, ratingCharge: 0, nextCooldownMin: 0,
+    } as never;
+    // a clean-match heal lands between the charge's read (50) and its write
+    await db.query(`update account_standing set score = 55 where user_id = 'st-race'`);
+    const storedScore = await repo.writeStandingEvent('st-race', verdict);
+    const ledger = await db.query<{ score_after: number }>(
+      `select score_after from standing_events where user_id = 'st-race' order by id desc limit 1`,
+    );
+    check(
+      '⚠️ standing: a heal that landed after the read is KEPT (55 − 8, not the stale 42)',
+      storedScore === 47 && ledger.rows[0]?.score_after === 47,
+      `stored ${storedScore}, ledger ${ledger.rows[0]?.score_after}`,
+    );
+
   }
 
   await db.close();
