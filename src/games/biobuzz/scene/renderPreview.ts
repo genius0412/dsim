@@ -172,8 +172,13 @@ export interface RobotPreviewScene {
    * task as the `render()` that filled it, which is the trick `Gallery.tsx`'s 3D stills already
    * use. Asking for the attribute instead would slow every frame of a live preview down to make
    * a call that happens three times a session cheaper.
+   *
+   * With a `spec`, it shoots THAT build and puts the one on show back, all inside this one task,
+   * so a live turntable never presents a frame of the card's robot. That is how the saved-robot
+   * thumbnails draw through the builder's own scene instead of opening a second WebGL context.
+   * The pose is always the display-stand angle, whatever the turntable was spun or dragged to.
    */
-  capture(size: number): string;
+  capture(size: number, spec?: RobotSpec, alliance?: Alliance): string;
   /** resolves once the first build's shaders are compiled — see `warmUp`. A thumbnail batch
    * awaits it before its first `capture`, which is synchronous and would otherwise block on the
    * compile itself. */
@@ -436,6 +441,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
    *  caller handing the spec back — the wheel tessellation is baked at build time (see
    *  `bbWheelDetail`) and is the one setting this preview cannot apply in place. */
   let builtSpec: RobotSpec | null = null;
+  /** the spec last handed to `setSpec` — what `capture(size, spec)` puts back. Not `builtSpec`:
+   *  `fit` reads the dimensions of every call, including the ones that rebuild nothing. */
+  let shownSpec: RobotSpec | null = null;
 
   /**
    * THE FIRST BUILD'S SHADERS COMPILE OFF THE MAIN THREAD. A first `render()` compiles every
@@ -601,6 +609,7 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     element: canvas,
     setSpec(next: RobotSpec, nextAlliance: Alliance): void {
       if (disposed) return;
+      shownSpec = next;
       const nextKey = `${bbSpecKey(next)}|${nextAlliance}`;
       // the FIT is arithmetic over three numbers and depends only on the dimensions, so it is
       // re-run unconditionally; the GROUP is the expensive half and only a key change earns one
@@ -638,14 +647,21 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       hostDpr = Math.min(dpr, 2);
       syncSize();
     },
-    capture(size: number): string {
+    capture(size: number, spec?: RobotSpec, shotAlliance?: Alliance): string {
       if (disposed) return '';
+      const shown = shownSpec;
+      const shownAlliance = alliance;
+      if (spec) api.setSpec(spec, shotAlliance ?? alliance);
       const prevW = cssW;
       const prevH = cssH;
       const prevDpr = hostDpr;
+      const prevPose = [yaw, elev, zoom] as const;
       cssW = Math.max(1, Math.round(size));
       cssH = cssW;
       hostDpr = 1;
+      yaw = TURN_YAW_START;
+      elev = TURN_ELEV_DEFAULT;
+      zoom = 1;
       syncSize();
       draw(0);
       shot ??= document.createElement('canvas');
@@ -661,7 +677,12 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       cssW = prevW;
       cssH = prevH;
       hostDpr = prevDpr;
+      [yaw, elev, zoom] = prevPose;
       syncSize();
+      if (spec && shown) api.setSpec(shown, shownAlliance);
+      // the resize cleared the drawing buffer; a live turntable redraws now or it presents an
+      // empty frame before its next rAF
+      if (opts.animate !== false) draw(0);
       return url;
     },
     ready(): Promise<void> {

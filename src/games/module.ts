@@ -630,8 +630,9 @@ export interface RobotPreviewScene {
   /** fix or release the quality tier (`null` follows the device preference again). */
   setQuality(tier: 'low' | 'medium' | 'high' | 'ultra' | null): void;
   resize(width: number, height: number, dpr: number): void;
-  /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL. */
-  capture(size: number): string;
+  /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL — of `spec` when
+   * given, with the build on show put back before the task ends. */
+  capture(size: number, spec?: RobotSpec, alliance?: Alliance): string;
   /** resolves once the first build's shaders are compiled off the main thread */
   ready(): Promise<void>;
   dispose(): void;

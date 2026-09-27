@@ -4268,6 +4268,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           slotCode.includes('await scene.ready()') &&
           slotCode.includes('await idle()'),
       );
+      // and it opens no second WebGL context when the hero's turntable is up (2026-09-26): the
+      // cards shoot through it, one task per card, with the hero's build put back in that task
+      check(
+        'the thumbnail batch draws through the live turntable when one is mounted',
+        slotCode.includes('liveTurntable = sc;') &&
+          slotCode.includes('const scene = shared ?? own;') &&
+          slotCode.includes('scene.capture(THUMB_CAPTURE_PX, req.spec, req.alliance)') &&
+          slotCode.includes('own?.dispose()'),
+      );
+      check(
+        '...and capture(size, spec) puts the build on show back and redraws a live turntable',
+        /if \(spec && shown\) api\.setSpec\(shown, shownAlliance\);\s*(\/\/.*\s*)*if \(opts\.animate !== false\) draw\(0\);/.test(previewSrc),
+      );
       check(
         'the preview scene warms its shaders with compileAsync and draws nothing until then',
         previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
