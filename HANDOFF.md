@@ -98,7 +98,7 @@
 
 # HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
 
-**State: committed on branch `claude/drop-vercel-analytics` (off alpha 96225a0a), NOT pushed.** `build`, `server:check`, `dbtest` (ALL PASS, 17 new checks), `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only wall-clock timing flakes (predict budget / step3d p95), lanes pass alone. ⚠️ **Server change + migration 0053** (renumbered at merge: 0051/0052 are lockdown/banners).
+**State: committed on branch `drop-vercel-analytics` (off alpha 96225a0a), NOT pushed.** `build`, `server:check`, `dbtest` (ALL PASS, 17 new checks), `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only wall-clock timing flakes (predict budget / step3d p95), lanes pass alone. ⚠️ **Server change + migration 0053** (renumbered at merge: 0051/0052 are lockdown/banners).
 
 - **Owner:** first-party analytics is extensive enough; pull Vercel's data in and remove Vercel Analytics.
 - **Removed:** `@vercel/analytics` (package.json + lockfile), `<Analytics />` in `main.tsx`, the `track` sink in `src/analytics.ts`. Events now go only to `/api/a/ev`, so DNT/GPC now also stops events (it did not for Vercel's). No CSP/vercel.json entries existed for it.
@@ -130,7 +130,7 @@
 - `scratch/rampstuck.ts` (overlap spawns included): 0/400 on seeds 2/3 sweeper and 2/4 ramp, from 8/14/11/10.
 - **Patch notes**: `docs/releases/2026-09-25-stuck-robot-fixes.md`, three notes (BIOBUZZ, DECODE, Chain Reaction) with the publishing block. Publish AFTER the production deploy. The What's New modal and `/changelogs` were restyled for reading (15-px body, 68ch measure, fixed button bar).
 - **Also merged into this release from another session:** homepage play counts (`0050_play_counts`) and the room-cap fix that was waiting on `main`.
-- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0053 after the merge; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; merged too: its migrations are 0051/0052.
+- **Open, separate branches (second release):** `drop-vercel-analytics` (`b94531fa`; its migration is 0053 after the merge; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; merged too: its migrations are 0051/0052.
 - A flower-side note from that agent: `containmentPass` clamps an out-of-field robot to x ±70.17 without checking statics. `setChassisClear` now catches the resulting overlap on the next sync.
 
 # HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)
@@ -761,7 +761,7 @@ Gotchas:
 **State: green.** `npm test` (2288 + 4972, ALL PASS, no flakes hit), `npm run build`, `server:check`,
 `uiaudit` (baselines: `literal-radius` 13→12, `off-scale-font-size` 46→45), `docaudit`, `contrast`
 (247), `bundleaudit` (`scene` baseline 216.61→221.06, real geometry, note in the file), `test:mm`,
-`dbtest`. One commit on `claude/biobuzz-ui-physics-fixes-2745b9`, branched from alpha.
+`dbtest`. One commit on `biobuzz-ui-physics-fixes-2745b9`, branched from alpha.
 
 ⚠️ **THIS IS A SERVER CHANGE** — G402/G407 billing, `bbMassLimits` in the coercer, the new default
 spec, and `LobbyPlayer.title` / `MatchDriver.supporter|role` on the wire. Deploy the game server
@@ -1619,7 +1619,7 @@ baseline, none moved), `contrast` (235) and `docaudit` are green.
 Gates on this tree: `npm test` ALL PASS (**2,165** shared + **4,494** biobuzz),
 `build`, `server:check`, `uiaudit` (ALL AT BASELINE), `docaudit`, `contrast` (235). The tree is
 `.claude/worktrees/alpha-flower-intake-plate-930ef5`, branch
-`claude/alpha-flower-intake-plate-930ef5`, which sits on alpha's tip.
+`alpha-flower-intake-plate-930ef5`, which sits on alpha's tip.
 
 A previous round of agents stopped mid-flight at 12:30 — the gate logs in `scratch/`
 (`npmtest.log`, `gate-build.log`, `gate-server.log`) are stamped 12:26–12:27 and three pad-nav
@@ -1676,7 +1676,7 @@ was the working note and `scratch/` is gitignored, so the guide is the only copy
 ## Next
 
 - **Not pushed, and alpha is not advanced.** The commit is on
-  `claude/alpha-flower-intake-plate-930ef5`, which was level with `alpha`/`origin/alpha` at
+  `alpha-flower-intake-plate-930ef5`, which was level with `alpha`/`origin/alpha` at
   `eb6c9ac`. Fast-forwarding alpha and pushing is a one-liner when you want it.
 - **Untried at the real surface: the pad itself.** Every rule above is verified by `npm test` on
   synthetic rects or by measurement in a browser; nothing has been driven with a physical
@@ -3410,7 +3410,7 @@ Four commits on top of `8d3cde4`, every gate green:
 `/privacy`, `/terms` and `/contributors`).
 
 Three lanes had been left UNCOMMITTED in the worktree `.claude/worktrees/alpha-main-divergence-7a6134`
-(branch `claude/3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
+(branch `3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
 replayed onto alpha's tip with `git apply --3way` and finished here. **The originating worktree was not
 touched** — it still holds the abandoned copy, so it is safe to delete once these land.
 
@@ -4472,7 +4472,7 @@ demoted section below).
   as before — this spike's own chunk-size measurement is the number that makes that concrete
   (≈1.09 MB gzip if it ever leaked into a chunk every player loads).
 - Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
-  `claude/biobuzz-3d-worktree-…` that is unrelated). Do not `cd` into them; the stash stack is
+  `biobuzz-3d-worktree-…` that is unrelated). Do not `cd` into them; the stash stack is
   shared.
 - CLAUDE.md still has headroom (26,670 / 27,000 bytes) — unchanged this session, nothing here
   touched it.
@@ -4565,7 +4565,7 @@ and the **courtesy note to FIRST** (the owner sends it; draft below).
 - CLAUDE.md has **330 bytes of headroom**: the spec's two sentences (game table row, the
   client-bundle rule) must fit or the rule moves to `docs/area/biobuzz.md` with a pointer.
 - Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
-  `claude/biobuzz-3d-worktree-…` that is a main-merge branch unrelated to this work). Do not
+  `biobuzz-3d-worktree-…` that is a main-merge branch unrelated to this work). Do not
   `cd` into them; the stash stack is shared.
 - The spec compares against a comparable third-party 3D sim only generically; keep it that way.
 - The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete.
@@ -5139,7 +5139,7 @@ built from alpha by mistake, was live for about 5 minutes around 01:19Z and was 
 
 # HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
 
-Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
+Branch **`hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
 `src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
 `server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
 end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
