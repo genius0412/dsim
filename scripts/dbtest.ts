@@ -4802,6 +4802,99 @@ async function main(): Promise<void> {
     const clean = await db.query(`select 1 from account_tombstones where user_id = 'tomb-clean'`);
     check('tombstone: a clean account leaves nothing behind — only a sanction is carried', clean.rows.length === 0);
 
+    // ---- the behaviour charge is arithmetic on the stored row --------------------------
+    await repo.ensureProfile('race-a', 'RaceA');
+    await repo.upsertRating('race-a', '1v1', 5, 1200, 80, 0.06, 'decode');
+    // the ranked write lands AFTER any read the charge could have made, and must survive it
+    await repo.upsertRating('race-a', '1v1', 5, 1215, 78, 0.06, 'decode');
+    const ch = await repo.chargeRatingForBehaviour('race-a', '1v1', 5, 50, 100, 'decode');
+    const afterCharge = await repo.getRatingFull('race-a', '1v1', 5, 'decode');
+    check(
+      '⚠️ rating charge: subtracts from what is STORED (1215 − 50), reporting the real before/after',
+      afterCharge.rating === 1165 && ch.before === 1215 && ch.after === 1165,
+      `${JSON.stringify(ch)} stored ${afterCharge.rating}`,
+    );
+    // ...and INTERLEAVED with a write in flight: the queries of the two promises alternate on
+    // PGlite's one connection, which is exactly where the old read-then-write lost one of them
+    await db.query(`update elo_ratings set rating = 1200 where user_id = 'race-a' and mode = '1v1' and act = 5`);
+    await Promise.all([
+      repo.chargeRatingForBehaviour('race-a', '1v1', 5, 50, 100, 'decode'),
+      db.query(`update elo_ratings set rating = rating + 15 where user_id = 'race-a' and mode = '1v1' and act = 5`),
+    ]);
+    const both = (await repo.getRatingFull('race-a', '1v1', 5, 'decode')).rating;
+    check('\u26a0\ufe0f rating charge: a concurrent result write and the charge BOTH land (1200 + 15 \u2212 50)', both === 1165, `stored ${both}`);
+    await db.query(`update elo_ratings set rating = 1165 where user_id = 'race-a' and mode = '1v1' and act = 5`);
+    const gamesKept = await db.query<{ games: number; rd: number }>(
+      `select games, rd from elo_ratings where user_id = 'race-a' and mode = '1v1' and act = 5 and game = 'decode'`,
+    );
+    check('rating charge: ...leaving games and RD alone', gamesKept.rows[0].games === 2 && Number(gamesKept.rows[0].rd) === 78);
+    await repo.chargeRatingForBehaviour('race-a', '1v1', 5, 5000, 100, 'decode');
+    check('rating charge: floored', (await repo.getRatingFull('race-a', '1v1', 5, 'decode')).rating === 100);
+    await db.query(`update elo_ratings set rating = 60 where user_id = 'race-a' and mode = '1v1' and act = 5`);
+    const under = await repo.chargeRatingForBehaviour('race-a', '1v1', 5, 10, 100, 'decode');
+    check(
+      'rating charge: a charge never RAISES a rating already under the floor',
+      under.after === 60 && (await repo.getRatingFull('race-a', '1v1', 5, 'decode')).rating === 60,
+      JSON.stringify(under),
+    );
+    await repo.ensureProfile('race-b', 'RaceB');
+    const seeded = await repo.chargeRatingForBehaviour('race-b', '2v2', 5, 30, 100, 'decode');
+    const seedRow = await db.query<{ rating: number; games: number }>(
+      `select rating, games from elo_ratings where user_id = 'race-b' and mode = '2v2' and act = 5`,
+    );
+    check(
+      'rating charge: a player with no row is seeded at the charged default, games 0',
+      seeded.before === 1000 && seeded.after === 970 && Number(seedRow.rows[0]?.rating) === 970 && seedRow.rows[0]?.games === 0,
+      JSON.stringify(seedRow.rows[0]),
+    );
+
+    // ---- the ranked result lands whole or not at all -----------------------------------
+    await repo.ensureSeason(640, 'chain', 1);
+    const actC = await repo.actForSeason(640, 'chain');
+    await repo.ensureProfile('atom-ok', 'AtomOk');
+    const part = (userId: string, alliance: 'red' | 'blue') => ({
+      clientId: userId, userId, handle: userId, alliance, drivetrain: 'tank' as const,
+      score: alliance === 'red' ? 90 : 40, spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS,
+    });
+    const atomOutcome = {
+      game: 'chain' as const,
+      config: { kind: 'versus' as const },
+      ranked: true,
+      mode: '1v1' as const,
+      result: { score: { red: 90, blue: 40 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 },
+      replay: { format: 2, balanceVersion: 4, sim: 2, game: 'chain' as const, mode: 'match' as const, seed: 1, ticks: 60, setups: [], tracks: {} },
+      participants: [part('atom-ok', 'red'), part('atom-ghost', 'blue')],
+    };
+    const matchesBefore = (await db.query<{ n: number }>(`select count(*)::int as n from matches`)).rows[0].n;
+    // `atom-ghost` has no profile: the FIRST player's rating write succeeds, the second's is an
+    // FK violation — the exact half-written result the transaction exists to prevent
+    const threw = await persistVersusMatch(
+      atomOutcome.participants as never, atomOutcome as never, 640, null as unknown as string, true, 'chain',
+    ).then(() => false, () => true);
+    const okRow = await db.query(`select 1 from elo_ratings where user_id = 'atom-ok' and act = $1 and game = 'chain'`, [actC]);
+    const matchesAfter = (await db.query<{ n: number }>(`select count(*)::int as n from matches`)).rows[0].n;
+    check(
+      '⚠️ ranked result: a failure part-way moves NOBODY’s rating and writes no match row',
+      threw && okRow.rows.length === 0 && matchesAfter === matchesBefore,
+      `threw=${threw} okRows=${okRow.rows.length} matches ${matchesBefore}->${matchesAfter}`,
+    );
+    await repo.ensureProfile('atom-ghost', 'AtomGhost');
+    const ids: { matchId?: string } = {};
+    const elo = await persistVersusMatch(
+      atomOutcome.participants as never, atomOutcome as never, 640, null as unknown as string, true, 'chain', ids,
+    );
+    const parts2 = await db.query<{ n: number }>(`select count(*)::int as n from match_participants where match_id = $1`, [ids.matchId]);
+    check(
+      'ranked result: ...and the same result with both profiles writes ratings, match and participants together',
+      elo.length === 2 && !!ids.matchId && parts2.rows[0].n === 2 && elo.every((e) => e.games === 1),
+      JSON.stringify(elo),
+    );
+    const rankedSrc = readFileSync(join(ROOT, 'server/ranked.ts'), 'utf8');
+    check(
+      'ranked result: the ratings are READ LOCKED inside the transaction (the guard against a concurrent write)',
+      /await tx\(async \(query\)/.test(rankedSrc) && /getRatingsFull\(.*, game, query, true\)/.test(rankedSrc),
+    );
+
   }
 
   await db.close();

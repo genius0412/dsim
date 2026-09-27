@@ -3610,14 +3610,32 @@ export async function getRatingsFull(
   mode: '1v1' | '2v2',
   act: number,
   game?: Game,
+  /** a transaction to read in. With `lock`, the rows are LOCKED for the rest of it — see below */
+  query: Tx = q,
+  lock = false,
 ): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
   const out = new Map<string, { rating: number; rd: number; vol: number }>();
-  const ids = [...new Set(userIds.filter(Boolean))];
+  // sorted, so two transactions locking overlapping rosters take the locks in the same order
+  const ids = [...new Set(userIds.filter(Boolean))].sort();
   for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
   if (!ids.length) return out;
-  const rows = await q<{ user_id: string; rating: number; rd: number; vol: number }>(
+  if (lock) {
+    /* READ-MODIFY-WRITE NEEDS A ROW TO LOCK. A player with no row yet has nothing for
+       `for update` to hold, so two transactions could both read the default and the second
+       write would erase the first. Seeding the defaults first (games 0 — the same thing an
+       absent row means everywhere) makes the second one wait on the first's insert. It rolls
+       back with the transaction if the result is never written. */
+    await query(
+      `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
+       select id, $2, $3, $4, 1000, 350, 0.06, 0 from unnest($1::text[]) as id
+       on conflict (user_id, mode, game, act) do nothing`,
+      [ids, mode, act, g(game)],
+    );
+  }
+  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number }>(
     `select user_id, rating, rd, vol from elo_ratings
-      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4`,
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
+      order by user_id${lock ? ' for update' : ''}`,
     [ids, mode, act, g(game)],
   );
   for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
@@ -3650,8 +3668,9 @@ export async function upsertRating(
   rd: number,
   vol: number,
   game?: Game,
+  query: Tx = q,
 ): Promise<number> {
-  const rows = await q<{ games: number }>(
+  const rows = await query<{ games: number }>(
     `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
      values ($1, $2, $3, $4, $5, $6, $7, 1)
      on conflict (user_id, mode, game, act)
@@ -3689,20 +3708,43 @@ export async function chargeRatingForBehaviour(
   floor: number,
   game?: Game,
 ): Promise<{ before: number; after: number }> {
-  const cur = await getRatingFull(userId, mode, act, game);
-  const before = Math.round(cur.rating);
-  const after = Math.max(floor, before - Math.max(0, Math.round(charge)));
-  if (after === before) return { before, after };
-  // upsert WITHOUT touching games/rd/vol (see above). A player with no rating row on this
-  // board yet gets one seeded at the charged value, games still 0.
-  await q(
-    `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
-     values ($1, $2, $3, $4, $5, $6, $7, 0)
-     on conflict (user_id, mode, game, act)
-       do update set rating = excluded.rating, updated_at = now()`,
-    [userId, mode, act, g(game), after, cur.rd, cur.vol],
+  const c = Math.max(0, Math.round(charge));
+  if (c === 0) {
+    const r = Math.round((await getRatingFull(userId, mode, act, game)).rating);
+    return { before: r, after: r };
+  }
+  /* ⚠️ ONE STATEMENT, SUBTRACTING FROM WHATEVER IS STORED — never a value read earlier.
+     This runs at the SAME moment as the match's own rating write: the room fires the
+     behaviour report and the result side by side, and both used to read the rating, work in
+     JS, and write an absolute number back. Whichever wrote second erased the other — measured,
+     a +15 result and a −50 charge stored 1150 where 1165 was owed, while the match history and
+     the results screen said 1215. Arithmetic on the row itself cannot lose an update, and the
+     ranked write locks the rows it reads (`persistVersusMatch`), so either order now adds up.
+
+     Upsert WITHOUT touching games/rd/vol (see above). A player with no rating row on this board
+     yet gets one seeded at the charged value, games still 0. `least(current, …)` so a charge
+     can never RAISE a rating that already sits under the floor, and the `where` skips a write
+     that would change nothing — `updated_at` is what `lastRankedBoard` sorts by. */
+  const rows = await q<{ before: number; after: number }>(
+    `with prev as (
+       select round(rating)::int as r from elo_ratings
+        where user_id = $1 and mode = $2 and act = $3 and game = $4
+     ),
+     up as (
+       insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
+       values ($1, $2, $3, $4, least(1000, greatest($6::int, 1000 - $5::int)), 350, 0.06, 0)
+       on conflict (user_id, mode, game, act) do update
+         set rating = least(round(elo_ratings.rating), greatest($6::int, round(elo_ratings.rating) - $5::int)),
+             updated_at = now()
+         where least(round(elo_ratings.rating), greatest($6::int, round(elo_ratings.rating) - $5::int))
+               <> round(elo_ratings.rating)
+       returning round(rating)::int as r
+     )
+     select coalesce((select r from prev), 1000) as before,
+            coalesce((select r from up), (select r from prev), 1000) as after`,
+    [userId, mode, act, g(game), c, Math.round(floor)],
   );
-  return { before, after };
+  return { before: Number(rows[0]?.before ?? 1000), after: Number(rows[0]?.after ?? 1000) };
 }
 
 /**
@@ -4660,8 +4702,9 @@ export async function upsertEloHistory(
   vol: number,
   games: number,
   game?: Game,
+  query: Tx = q,
 ): Promise<void> {
-  await q(
+  await query(
     `insert into elo_history (user_id, mode, game, balance_version, rating, rd, vol, games)
      values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (user_id, mode, game, balance_version)
@@ -5091,8 +5134,9 @@ export async function saveMatch(
   game?: Game,
   /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
   physics?: string,
+  query: Tx = q,
 ): Promise<string> {
-  const rows = await q<{ id: string }>(
+  const rows = await query<{ id: string }>(
     `insert into matches (mode, balance_version, replay_id, ranked, game, physics) values ($1, $2, $3, $4, $5, $6) returning id`,
     [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d'],
   );
@@ -5138,9 +5182,10 @@ export async function addMatchParticipants(
     ratingBefore: number | null;
     ratingAfter: number | null;
   }[],
+  query: Tx = q,
 ): Promise<void> {
   if (!ps.length) return;
-  await q(
+  await query(
     `insert into match_participants
        (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
      select $1, u, a, d, s, w, rb, ra
