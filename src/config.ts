@@ -23,6 +23,10 @@ export const TELEOP_DURATION = 120;
 export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
+/** how close to zero a match clock may be and still count as run out — `clockExpired`
+ *  (sim/match.ts). Far above the ~1e-11 a phase's worth of `-= 1/60` accumulates, far below a
+ *  tick. */
+export const PHASE_TIME_EPS = 1e-6;
 // WHEN A MATCH IS OVER after the buzzer is decided by the field coming to rest, not by a fixed
 // delay — see `src/sim/settle.ts` (`MATCH_SETTLE_HOLD_S`, `MATCH_SETTLE_MAX_S`). The old
 // `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` 2.8 s timer is gone on purpose.
