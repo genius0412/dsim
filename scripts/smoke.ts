@@ -28309,5 +28309,54 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * STALE STATE ACROSS A CHANGE THE SCREEN OUTLIVES — each of these read the wrong value silently.
+ */
+{
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const gv = rd('src/ui/GameView.tsx');
+  const bootAt = gv.indexOf('controllerRef.current = controller;');
+  const bootTail = gv.slice(bootAt, bootAt + 1400);
+  check(
+    '⚠️ game view: boot registers the practice-run and restart callbacks itself',
+    /controller\.setRestartRequest\(restartRunRef\.current \?\? null\);/.test(bootTail) &&
+      /controller\.onPracticeRun = practiceRunRef\.current/.test(bootTail),
+    'the effects that keep them current ran before an async (3D) boot built the controller, and registered nothing',
+  );
+  check(
+    'game view: Escape leaves through the live onExit, not the mount-time copy',
+    /if \(e\.key === 'Escape'\) exitRef\.current\(\);/.test(gv) && !/if \(e\.key === 'Escape'\) onExit\(\);/.test(gv),
+  );
+  for (const [file, gameExpr] of [
+    ['src/ui/Leaderboard.tsx', 'game'],
+    ['src/ui/CareerView.tsx', 'nav.game'],
+  ] as const) {
+    const src = rd(file);
+    const esc = gameExpr.replace('.', '\\.');
+    check(
+      `⚠️ ${file.split('/').pop()}: switching game drops the selected period during render`,
+      new RegExp(`if \\(periodGame !== ${esc}\\) \\{\\s*setPeriodGame\\(${esc}\\);\\s*setSeason\\(null\\);`).test(src),
+      'an archived DECODE period was sent as a Chain Reaction query',
+    );
+  }
+  check(
+    'practice replays: the cloud list is cleared when the account or game changes',
+    /setLocal\(listPracticeRuns\(\)\);[\s\S]{0,300}?setRemote\(\[\]\);[\s\S]{0,40}?if \(!signedIn\)/.test(rd('src/ui/PracticeReplays.tsx')),
+  );
+  const app = rd('src/ui/App.tsx');
+  check(
+    'practice flush: a trigger that arrives mid-flush asks for another pass instead of being dropped',
+    /if \(flushingPractice\.current\) \{\s*flushPracticeAgain\.current = true;\s*return;/.test(app) &&
+      /\} while \(flushPracticeAgain\.current && signedInRef\.current\);/.test(app),
+  );
+  const spe = rd('src/ui/StartPositionEditor.tsx');
+  const onMove = spe.match(/const onMove = \(e: React\.PointerEvent\) => \{[\s\S]*?\n  \};/);
+  check(
+    'start editor: a drag saves on release, not on every pointermove',
+    !!onMove && !/\bedit\(|commit\(/.test(onMove[0]) && /setDraft\(next\)/.test(onMove[0]),
+    'each save is a whole-settings localStorage write',
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

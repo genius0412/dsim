@@ -309,6 +309,11 @@ export function GameView({
    */
   const exitRef = useRef(onExit);
   exitRef.current = onExit;
+  /** the latest restart / practice-run callbacks, for `boot` — see where it registers them */
+  const restartRunRef = useRef(onRestartRun);
+  restartRunRef.current = onRestartRun;
+  const practiceRunRef = useRef(onPracticeRun);
+  practiceRunRef.current = onPracticeRun;
   useEffect(() => {
     suspendPadNav('match');
     setPadMenuHandler(() => exitRef.current());
@@ -491,12 +496,23 @@ export function GameView({
         zenithAuto,
       });
       controllerRef.current = controller;
+      /* REGISTER THE TWO CALLBACKS HERE TOO, through refs. The effects below that keep them
+         current run on mount — and when the 3D physics chunk is still loading, `boot` has not
+         built a controller by then, so they found `controllerRef.current` null and registered
+         nothing. Until App happened to re-render, a practice run finished (or walked out of) in
+         that window was handed to nobody and lost. */
+      controller.setRestartRequest(restartRunRef.current ?? null);
+      controller.onPracticeRun = practiceRunRef.current
+        ? (r, res) => practiceRunRef.current?.(r, res)
+        : null;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise
       hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
       onKey = (e: KeyboardEvent) => {
         // Escape is reserved (never rebindable); restart is handled by the
         // InputManager through the user's bindings
-        if (e.key === 'Escape') onExit();
+        // through the ref: this handler is registered once, and `onExit` closes over App's
+        // session state, which a mount-time copy would read stale
+        if (e.key === 'Escape') exitRef.current();
       };
       window.addEventListener('keydown', onKey);
       // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),

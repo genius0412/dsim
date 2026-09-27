@@ -271,6 +271,20 @@ export function Leaderboard({
   const [seasons, setSeasons] = useState<SeasonInfo[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [season, setSeason] = useState<number | null>(null);
+  /**
+   * A PERIOD BELONGS TO ONE GAME. Records stays mounted across /decode/records → /chain/records,
+   * so an archived DECODE period number rode along and was sent as a Chain Reaction query — an
+   * empty board, and a picker showing a value that is not in its list. Reset DURING RENDER
+   * (React's derived-state pattern) rather than in an effect, so the board's fetch effect never
+   * runs once with the other game's period first.
+   */
+  const [periodGame, setPeriodGame] = useState(game);
+  if (periodGame !== game) {
+    setPeriodGame(game);
+    setSeason(null);
+    setSeasons([]);
+    setCurrent(null);
+  }
 
   const configured = gameServerConfigured();
 

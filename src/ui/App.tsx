@@ -922,6 +922,8 @@ export function App() {
   const signedInRef = useRef(false);
   /** one flush at a time — a sign-in and a finished run can land together */
   const flushingPractice = useRef(false);
+  /** a flush was asked for while one was running — the running one takes another pass */
+  const flushPracticeAgain = useRef(false);
   /** the same guard for the LAN backlog, which drains on exactly the same two triggers */
   const flushingLan = useRef(false);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
@@ -1370,16 +1372,31 @@ export function App() {
    * the backlog for next time.
    */
   const flushPracticeRuns = async (): Promise<void> => {
-    if (!signedInRef.current || flushingPractice.current) return;
+    if (!signedInRef.current) return;
+    /* A TRIGGER THAT ARRIVES MID-FLUSH IS NOT DROPPED. The running pass iterates the backlog it
+       read when it STARTED, so a run finished while it was uploading (or a second trigger,
+       e.g. `online` right after sign-in) used to wait for the NEXT trigger — which, for a run
+       played offline, might be the next match. It asks for one more pass instead. */
+    if (flushingPractice.current) {
+      flushPracticeAgain.current = true;
+      return;
+    }
     flushingPractice.current = true;
     try {
-      for (const meta of pendingPracticeUploads()) {
-        const replay = loadPracticeReplay(meta.id);
-        if (!replay) continue; // body evicted by the local cap — nothing left to send
-        const run = await uploadPracticeRun(replay, meta.score, meta.game);
-        if (!run) break;
-        markPracticeUploaded(meta.id, run.id);
-      }
+      do {
+        flushPracticeAgain.current = false;
+        for (const meta of pendingPracticeUploads()) {
+          const replay = loadPracticeReplay(meta.id);
+          if (!replay) continue; // body evicted by the local cap — nothing left to send
+          const run = await uploadPracticeRun(replay, meta.score, meta.game);
+          // stop on the first failure, and do not spin: a rerun asked for now would fail too
+          if (!run) {
+            flushPracticeAgain.current = false;
+            break;
+          }
+          markPracticeUploaded(meta.id, run.id);
+        }
+      } while (flushPracticeAgain.current && signedInRef.current);
     } finally {
       flushingPractice.current = false;
     }
