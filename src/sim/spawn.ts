@@ -580,13 +580,31 @@ export function coerceAssists(raw: unknown, base: AssistConfig = DEFAULT_ASSISTS
 /** clamp a single path point's coordinates to the field (finite, in-bounds) so a
  * spoofed auto path can never teleport a robot out of the world or to NaN */
 function coercePathPoint(p: PathPoint): PathPoint {
-  const out: PathPoint = { ...p };
-  out.x = clampFinite(p.x, -C.FIELD_HALF, C.FIELD_HALF, 0);
-  out.y = clampFinite(p.y, -C.FIELD_HALF, C.FIELD_HALF, 0);
+  // an ALLOWLIST, not a spread: the path rides `RobotState`, every snapshot and every replay,
+  // so a key the sim never reads is only a way to smuggle bulk (or junk) into all three. Every
+  // field `pathTraversal` reads is kept exactly as it was read before — including a `heading`
+  // outside the enum, which is dropped rather than replaced, because an unknown heading and a
+  // missing one take the same fallback branch there.
+  const src = (typeof p === 'object' && p !== null ? p : {}) as Partial<PathPoint>;
+  const out = {
+    x: clampFinite(src.x, -C.FIELD_HALF, C.FIELD_HALF, 0),
+    y: clampFinite(src.y, -C.FIELD_HALF, C.FIELD_HALF, 0),
+  } as PathPoint;
+  if (src.heading === 'linear' || src.heading === 'constant' || src.heading === 'tangential') out.heading = src.heading;
   for (const k of ['startDeg', 'endDeg', 'degrees'] as const) {
-    if (out[k] !== undefined) out[k] = clampFinite(out[k], -720, 720, 0);
+    if (src[k] !== undefined) out[k] = clampFinite(src[k], -720, 720, 0);
   }
+  // read for its truthiness only, so its truthiness is what survives
+  if (src.reverse !== undefined) out.reverse = !!src.reverse;
   return out;
+}
+
+/** a path line or sequence id: `pathTraversal` matches them with `===`, so a string or a finite
+ *  number is kept as is (bounded), and anything else is dropped */
+function coercePathId(v: unknown): string | number | undefined {
+  if (typeof v === 'string') return v.slice(0, 120);
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return undefined;
 }
 
 /** Auto-path size bounds. An auto path arrives from a hand-editable file picker AND
@@ -613,8 +631,11 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
       fileName: d.fileName.slice(0, 120),
       startPoint: coercePathPoint(d.startPoint as PathPoint),
       lines: (d.lines as PathLine[]).slice(0, PATH_MAX_LINES).map((line) => {
-        const l: PathLine = { ...line };
-        l.endPoint = coercePathPoint(line.endPoint);
+        // an ALLOWLIST — see `coercePathPoint`. A null line still throws below and refuses the
+        // whole path, as it always did.
+        const l = { endPoint: coercePathPoint(line.endPoint) } as PathLine;
+        const lineIdKept = coercePathId(line.id);
+        if (lineIdKept !== undefined) l.id = lineIdKept as string;
         if (Array.isArray(line.controlPoints)) {
           // ⚠️ NEVER slice to 2. `renderer.ts` and `pathTraversal` both read LENGTH as the
           // curve order (1 ⇒ quadratic, 2 ⇒ cubic, 0 ⇒ straight), so truncating a long list
@@ -628,22 +649,28 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
         // every wait reaches `robot.pathWaitTimer` — all THREE of them, or the cap is
         // incoherent (see the sequence `durationMs` below)
         for (const k of ['waitBeforeMs', 'waitAfterMs'] as const) {
-          if (l[k] !== undefined) l[k] = clampFinite(l[k], 0, PATH_MAX_WAIT_MS, 0);
+          if (line[k] !== undefined) l[k] = clampFinite(line[k], 0, PATH_MAX_WAIT_MS, 0);
         }
-        // unread anywhere outside the importer — do not carry them into the world, a
-        // snapshot or a stored replay
-        delete l.waitBeforeName;
-        delete l.waitAfterName;
+        // `waitBeforeName`/`waitAfterName` are unread anywhere outside the importer, so the
+        // allowlist leaves them out — they never reach the world, a snapshot or a stored replay
         return l;
       }),
       // `shapes` is DROPPED, not capped: nothing reads it — no renderer, no sim, no HUD.
       // It was carried from the .pp importer through the coercer, the mirror and every
       // snapshot for nothing. Deletion beats a bound.
       sequence: Array.isArray(d.sequence)
-        ? (d.sequence as SequenceItem[]).slice(0, PATH_MAX_SEQUENCE).map((it) => {
-            const item: SequenceItem = { ...it };
-            if (item.durationMs !== undefined) {
-              item.durationMs = clampFinite(item.durationMs, 0, PATH_MAX_WAIT_MS, 0);
+        ? (d.sequence as SequenceItem[]).slice(0, PATH_MAX_SEQUENCE).map((raw) => {
+            const it = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<SequenceItem>;
+            // an allowlist too. A `kind` outside the enum is dropped: `pathTraversal` skips
+            // anything that is neither 'wait' nor 'path', absent or not.
+            const item = {} as SequenceItem;
+            if (it.kind === 'path' || it.kind === 'wait' || it.kind === 'action') item.kind = it.kind;
+            const itemId = coercePathId(it.id);
+            if (itemId !== undefined) item.id = itemId as string;
+            const lineId = coercePathId(it.lineId);
+            if (lineId !== undefined) item.lineId = lineId as string;
+            if (it.durationMs !== undefined) {
+              item.durationMs = clampFinite(it.durationMs, 0, PATH_MAX_WAIT_MS, 0);
             }
             return item;
           })
