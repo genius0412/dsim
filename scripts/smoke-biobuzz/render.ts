@@ -4281,6 +4281,13 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         '...and capture(size, spec) puts the build on show back and redraws a live turntable',
         /if \(spec && shown\) api\.setSpec\(shown, shownAlliance\);\s*(\/\/.*\s*)*if \(opts\.animate !== false\) draw\(0\);/.test(previewSrc),
       );
+      // and the chunk itself is fetched on idle from whatever screen comes first, not when the
+      // turntable mounts — gated by preloadRoomView on a scene-bearing game and the 3D view
+      check(
+        'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
+        /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game\]\);/.test(readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8')) &&
+          readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8').includes('const warm = (): void => preloadRoomView(settings.game);'),
+      );
       check(
         'the preview scene warms its shaders with compileAsync and draws nothing until then',
         previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
