@@ -293,14 +293,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     }
     renderer.shadowMap.needsUpdate = true;
     hemi.intensity = s.envLighting ? SCENE_HEMI_INTENSITY : SCENE_HEMI_INTENSITY_NO_IBL;
-    if (s.envLighting) {
-      void env.apply(s.environment);
-    } else {
-      // and no HDRI is fetched at all — an environment map that is not lighting anything is a
-      // 1.7 MB download for nothing at all here, since this scene shows no background
-      void env.apply('room');
-      scene.environment = null;
-    }
+    // the match scene's own call. With the lighting off no HDRI is fetched (a 1.7 MB download for
+    // nothing, since this scene shows no background) and no PMREM is built at all.
+    void env.apply(s.environment, undefined, s.envLighting);
     tuneMaterials();
     syncSize();
   }

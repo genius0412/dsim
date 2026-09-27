@@ -9775,6 +9775,24 @@ function environmentAndReadoutChecks(check: Check): void {
         /applySky\(def, lighting\)/.test(envSrc) && /scene\.environment = lighting \? tex : null/.test(envSrc),
       );
       check('an HDRI with the lighting off is still NOT fetched', /if \(!lighting\) \{[\s\S]{0,120}applyRoom\(false\);/.test(envSrc));
+      // ENTRY LAG (2026-09-26): the constructor built a room PMREM (69 ms on entering Configure ▸
+      // Robot) that Low and Medium, lighting off, threw away unused. Construction generates
+      // nothing; the HDRI path compiles its shader during the fetch and lights the room meanwhile.
+      {
+        const ctor = envSrc.slice(envSrc.indexOf('export function createEnvironment('), envSrc.search(/\r?\n  return \{\r?\n    get current\(\)/));
+        check(
+          'createEnvironment builds no PMREM at construction (applyRoom(false), no eager equirect compile)',
+          /\n  applyRoom\(false\);\r?\n/.test(ctor) && !/\n  applyRoom\(\);/.test(ctor) && !/\n  pmrem\.compileEquirectangularShader\(\)/.test(ctor),
+        );
+        check(
+          '...and the HDRI path lights the room while it downloads and compiles the equirect shader then',
+          /if \(!scene\.environment\) applyRoom\(true\);\s*pmrem\.compileEquirectangularShader\(\);\s*try \{/.test(envSrc),
+        );
+        check(
+          'the builder preview hands envLighting to env.apply, as the match scene does',
+          readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8').includes('env.apply(s.environment, undefined, s.envLighting)'),
+        );
+      }
       // a CALL, not the words: the file's own header explains why the star field is hashed
       // rather than random, and the check must not fail on its own reasoning
       check('the dome is painted with no Math.random() call (an export must repaint the same sky)', !/Math\.random\(/.test(envSrc));
