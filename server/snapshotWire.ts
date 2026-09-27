@@ -1,26 +1,33 @@
 /**
  * THE SNAPSHOT ENCODER'S HOT HALF: which balls changed since the last broadcast, and the
- * wire string of each. `Room.broadcastSnapshot` decides WHO gets WHICH baseline; this file
- * only makes the expensive step cheap, and its output is BYTE-IDENTICAL to what the room
+ * snapshot body built from them. `Room.broadcastSnapshot` decides WHO gets WHICH baseline; this
+ * file only makes the two expensive steps cheap, and its output is BYTE-IDENTICAL to what the room
  * produced before (`npm test`, "snapshot wire:", drives real rooms of every game through both).
  *
  * WHY IT EXISTS (measured, `docs/capacity.md` "Snapshot encode"): the diff key used to be
  * `JSON.stringify(ball, round3)` for EVERY ball on EVERY broadcast, and a replacer function
  * turns V8's fast serializer off and calls back into JS for every key and value. On a Chain
  * Reaction room that was 0.81 ms of a 0.97 ms broadcast, i.e. ~40% of the room's whole CPU, to
- * find that ~37 of 300 particles had moved.
+ * find that ~37 of 300 particles had moved. Then the body stringified the changed balls AGAIN.
  *
- * **A SHADOW, NOT A STRING, DECIDES "CHANGED".** Each ball keeps `JSON.parse` of its last
- * rounded serialization, and `sameR3` walks the live ball against it applying the SAME
- * rounding the replacer applies. Equal walk ⇔ equal string, so the change set is the one the
- * string compare produced (asserted on every ball of every smoke frame). Only a ball that DID
- * change is stringified — and it had to be anyway, because it is going on the wire.
+ * 1. **A SHADOW, NOT A STRING, DECIDES "CHANGED".** Each ball keeps `JSON.parse` of its last
+ *    rounded serialization, and `sameR3` walks the live ball against it applying the SAME
+ *    rounding the replacer applies. Equal walk ⇔ equal string, so the change set is the one the
+ *    string compare produced (asserted on every ball of every smoke frame). Only a ball that DID
+ *    change is stringified — and it had to be anyway, because it is going on the wire.
+ * 2. **THE BODY SPLICES THOSE STRINGS.** After the diff, `wire(id)` is exactly
+ *    `JSON.stringify(ball, round3)` for every ball in the world (a changed one was just
+ *    re-stringified; an unchanged one is, by the definition of unchanged, the same bytes), so
+ *    `upd` for ANY baseline is a join of cached strings. The replacer is still applied to the
+ *    slim world, the only part of the body whose numbers it can touch: `serverTick` and the id
+ *    `order` are integers, and `cmds` goes through it anyway (it is a few integers).
  *
  * ⚠️ A LEAF (imports only `wire.ts` and types), and free of `node:` imports: `server/room.ts`
  * is bundled for a browser tab too (`src/lan/hostWorker.ts`).
  */
 import { round3 } from './wire';
 import type { Artifact } from '../src/types';
+import type { QCommand } from '../src/net/protocol';
 
 const hasOwn = Object.prototype.hasOwnProperty;
 
@@ -133,6 +140,38 @@ export class BallWireCache {
   }
 }
 
+/**
+ * The shared snapshot body — `{"t":"snapshot",…,"cmds":[…]` WITHOUT its closing brace, so each
+ * recipient's `ackInputTick` tail can be appended. Byte-identical to
+ * `JSON.stringify({ t, serverTick, w: slim, balls: { order, upd }, cmds }, round3).slice(0, -1)`.
+ * `upd` must be balls present at the last `cache.diff`, carrying their current data.
+ */
+export function snapshotBody(
+  serverTick: number,
+  slimJson: string,
+  orderJson: string,
+  upd: readonly Artifact[],
+  cmdsJson: string,
+  cache: BallWireCache,
+): string {
+  let u = '';
+  for (let i = 0; i < upd.length; i++) u += (i ? ',' : '') + cache.wire(upd[i].id);
+  return `{"t":"snapshot","serverTick":${serverTick},"w":${slimJson},"balls":{"order":${orderJson},"upd":[${u}]},"cmds":${cmdsJson}`;
+}
+
+/** the three per-broadcast JSON fragments `snapshotBody` splices, computed once per frame */
+export function snapshotParts(slim: unknown, order: readonly number[], cmds: readonly QCommand[]): {
+  slimJson: string;
+  orderJson: string;
+  cmdsJson: string;
+} {
+  return {
+    slimJson: JSON.stringify(slim, round3),
+    orderJson: JSON.stringify(order),
+    cmdsJson: JSON.stringify(cmds, round3),
+  };
+}
+
 // ─── TEST-ONLY REFERENCE ─────────────────────────────────────────────────────
 // The encoder exactly as `Room.broadcastSnapshot` wrote it before this file existed. Nothing in
 // production calls these; `npm test` ("snapshot wire:") runs real rooms with the check switched
@@ -148,4 +187,15 @@ export function referenceChanged(
   const changed: number[] = [];
   for (const b of balls) if (cur.get(b.id) !== prev.get(b.id)) changed.push(b.id);
   return { cur, changed };
+}
+
+/** the old body: one `JSON.stringify` of the whole partial message under the replacer */
+export function referenceBody(
+  serverTick: number,
+  slim: unknown,
+  order: readonly number[],
+  upd: readonly Artifact[],
+  cmds: readonly QCommand[],
+): string {
+  return JSON.stringify({ t: 'snapshot', serverTick, w: slim, balls: { order, upd }, cmds }, round3).slice(0, -1);
 }

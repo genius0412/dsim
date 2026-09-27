@@ -60,7 +60,7 @@ import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
-import { BallWireCache, referenceChanged } from './snapshotWire';
+import { BallWireCache, referenceBody, referenceChanged, snapshotBody, snapshotParts } from './snapshotWire';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
    A value import here would drag a Postgres driver into the browser bundle — see
@@ -459,7 +459,7 @@ export class Room {
   // `server/snapshotWire.ts`) + clients holding a baseline
   private readonly ballWire = new BallWireCache();
   /** TEST ONLY (`checkWireForTest`): the pre-`BallWireCache` encoder, run beside the live one */
-  private wireCheck: { prev: Map<number, string>; frames: number; mismatches: string[] } | null = null;
+  private wireCheck: { prev: Map<number, string>; frames: number; bodies: number; mismatches: string[] } | null = null;
   /** `serverTick` of the last broadcast snapshot — the baseline a RELIABLE recipient holds */
   private prevSnapTick = -1;
   /** which ball ids changed on each of the last `SNAP_HISTORY_FRAMES` broadcasts, oldest
@@ -3534,14 +3534,15 @@ export class Room {
   }
 
   /**
-   * TEST SEAM: run the PRE-`BallWireCache` snapshot encoder beside the live one on every
-   * broadcast from now on, and report every disagreement. The first call switches it on (the
+   * TEST SEAM: run the PRE-`snapshotWire` encoder (the per-ball string diff AND the one-shot
+   * body stringify) beside the live one on every broadcast from now on, and report every
+   * disagreement — change sets and every body, keyframes and lossy baselines included. The first call switches it on (the
    * reference starts from an empty baseline, so call it before the first snapshot or it will
    * disagree once, honestly); later calls read the tally. `npm test` "snapshot wire:".
    */
-  checkWireForTest(): { frames: number; mismatches: string[] } {
-    if (!this.wireCheck) this.wireCheck = { prev: new Map(), frames: 0, mismatches: [] };
-    return { frames: this.wireCheck.frames, mismatches: [...this.wireCheck.mismatches] };
+  checkWireForTest(): { frames: number; bodies: number; mismatches: string[] } {
+    if (!this.wireCheck) this.wireCheck = { prev: new Map(), frames: 0, bodies: 0, mismatches: [] };
+    return { frames: this.wireCheck.frames, bodies: this.wireCheck.bodies, mismatches: [...this.wireCheck.mismatches] };
   }
 
   /** TEST SEAM: pump the way the REAL loop does — grace reaping and the ghost-room freeze
@@ -3786,16 +3787,24 @@ export class Room {
       // is what every delta has always carried
       return w.balls.filter((b) => ids.has(b.id));
     };
+    /** the slim world / id order / cmds as JSON, once per broadcast and only if someone needs it */
+    let parts: ReturnType<typeof snapshotParts> | null = null;
     const bodyFor = (base: number): string => {
       const cached = bodies.get(base);
       if (cached !== undefined) return cached;
-      const balls: BallDelta = { order, upd: base === KEYFRAME ? w.balls : updSince(base) };
-      // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
-      // missing the one required field each recipient supplies for itself.
-      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds }, round3);
-      // drop the closing brace so the per-client tail can be appended. `whole` always
-      // has at least one key, so it is never the degenerate `{}`.
-      const body = whole.slice(0, -1);
+      const upd = base === KEYFRAME ? w.balls : updSince(base);
+      // SPLICED, not stringified: every ball's rounded wire string is already in `ballWire`
+      // (`diff` just refreshed the ones that moved), so only the slim world meets the replacer.
+      // Byte-identical to the old `JSON.stringify({ t, serverTick, w, balls, cmds }, round3)`
+      // minus its closing brace — see `snapshotBody`, and "snapshot wire:" in `npm test`.
+      // Still a PARTIAL snapshot: the one per-recipient field is appended by `sendTo`.
+      if (!parts) parts = snapshotParts(slim, order, cmds);
+      const body = snapshotBody(w.tick, parts.slimJson, parts.orderJson, upd, parts.cmdsJson, this.ballWire);
+      if (this.wireCheck) {
+        const ref = referenceBody(w.tick, slim, order, upd, cmds);
+        if (ref !== body) this.wireCheck.mismatches.push(`tick ${w.tick} base ${base}: body differs from the reference`);
+        this.wireCheck.bodies++;
+      }
       bodies.set(base, body);
       return body;
     };
