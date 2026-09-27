@@ -1235,6 +1235,20 @@ export function net3dChecks(check: Check): void {
       'predict: Auto probes with `probeFullReconcileMs` and the plan’s budget',
       /probeFullReconcileMs\(/.test(game) && /PREDICT_FULL_BUDGET_MS/.test(game),
     );
+    // AUTO PICKED LIGHT ON FAST MACHINES (owner, 2026-09-27): its one probe was the COLD first
+    // run, 35-37 ms against warm runs of 4-7 on a fast desktop. These pin the three halves of the fix.
+    check(
+      '⚠️ predict: Auto throws away the cold first probe run and judges the BEST of the rest',
+      game.includes('const warm = this.autoProbeSamples.slice(1)') && game.includes('Math.min(...warm)') && /AUTO_PROBE_RUNS = [3-9]/.test(game),
+    );
+    check(
+      '⚠️ predict: a client that never got to probe (joined after the countdown) starts on FULL, not Light',
+      game.includes("best === null || best <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light'"),
+    );
+    check(
+      '⚠️ predict: the slip rule steps down on the MEDIAN reconcile, not a p95 a few GC pauses decide',
+      game.includes('const median = sorted[Math.floor(sorted.length / 2)]') && game.includes('if (median <= PREDICT_FULL_BUDGET_MS) return;'),
+    );
     check(
       'predict: Off renders the local robot interpolated (displayWorld stops exempting it)',
       /const predictLocal = !\(this\.predicted3d\(\) && this\.predictionMode === 'off'\)/.test(game),

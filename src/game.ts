@@ -130,13 +130,28 @@ const RAF_STALE_MS = 100;
 /**
  * HOW MANY RECONCILES AUTO WATCHES BEFORE IT DECIDES FULL IS TOO SLOW (plan §5's slip rule).
  *
- * Snapshots arrive at 30 Hz, so 60 of them is two seconds of evidence. Short enough that a
- * machine that cannot hold the budget is dropped early in the match rather than at the buzzer;
- * long enough that one GC pause, one tab focus change or one ad creative finishing its load
- * cannot move a p95 on its own. Auto steps down ONCE and then stops measuring — see
- * `autoDropped`.
+ * Snapshots arrive at 30 Hz, so 90 of them is three seconds of evidence, and the verdict is the
+ * MEDIAN of them, not the p95. The p95 of 60 is the third-worst reconcile in two seconds, and a
+ * busy 3D page produces three GC pauses or a shader compile in that time on any machine — so a
+ * fast desktop was being stepped down to Light for the rest of the match on noise (owner,
+ * 2026-09-27: "even with great machines, prediction seems to default to light"). A machine that
+ * genuinely cannot hold the budget misses it on most reconciles, which the median sees. Auto
+ * steps down ONCE and then stops measuring — see `autoDropped`.
  */
-const PREDICT_SLIP_WINDOW = 60;
+const PREDICT_SLIP_WINDOW = 90;
+
+/**
+ * HOW MANY TIMES AUTO RUNS THE FULL PROBE IN THE COUNTDOWN — one per frame, the FIRST thrown away.
+ *
+ * ⚠️ **THE FIRST RUN IS COLD, AND IT USED TO BE THE ONLY ONE.** Nothing has JIT-compiled the
+ * predictor or touched its wasm yet, so the first forty-tick run cost 35–37 ms on a fast desktop
+ * whose warm runs cost 4–7 ms — measured, three processes, every time. Against the 8 ms budget
+ * that one number sent nearly every machine to Light. Now the first run warms the path and is
+ * discarded, and the verdict is the BEST of the rest: the work is deterministic, so anything
+ * slower than the fastest run is other load (a GC, the scene's shader compile), never the
+ * reconcile itself — the same reason the PERF lane reads the minimum of many timings.
+ */
+const AUTO_PROBE_RUNS = 6;
 
 /**
  * The 3D predictor's shape, WITHOUT importing `sim3d/predict`.
@@ -690,6 +705,10 @@ export class GameController {
   /** Auto has already stepped Full down to Light once. It does not step back up: a machine
    *  that missed the budget under load will miss it again, and flapping is worse than Light. */
   private autoDropped = false;
+  /** the countdown's probe runs so far, the first of them cold — see `AUTO_PROBE_RUNS` */
+  private autoProbeSamples: number[] = [];
+  /** the probe THREW, which is the one thing that still sends Auto to Light unmeasured */
+  private autoProbeFailed = false;
   /** recent reconcile costs in ms (Full only), the window the slip rule takes a p95 over. */
   private reconcileMs: number[] = [];
   /**
@@ -2259,6 +2278,8 @@ export class GameController {
       if (!initial) {
         this.autoProbed = false;
         this.autoDropped = false;
+        this.autoProbeSamples = [];
+        this.autoProbeFailed = false;
       }
       this.setPredictionMode(this.autoProbed ? this.predictionMode : 'light');
       return;
@@ -2463,23 +2484,41 @@ export class GameController {
   private maybeProbeAuto(): void {
     if (this.autoProbed || this.predictionPref !== 'auto' || !this.predicted3d()) return;
     if (this.world.match.phase !== 'pre') {
-      if (this.gotSnapshot) {
-        this.autoProbed = true;
-        this.setPredictionMode('light');
-      }
+      // past the countdown with the probe unfinished: a rejoin, a mid-match join, or a countdown
+      // that ended first. Decide on whatever was measured; with nothing, FULL (see below).
+      if (this.gotSnapshot) this.finishAutoProbe();
       return;
     }
     if (!physics3dReady()) return; // still loading; the countdown is 3 s and this is idempotent
-    this.autoProbed = true;
     let ms = Number.POSITIVE_INFINITY;
     try {
       ms = physics3dImpl().probeFullReconcileMs(this.world, this.localRobotId, () => performance.now());
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('BIOBUZZ 3D prediction probe threw; taking Light.', err);
+      this.autoProbeFailed = true;
+      this.finishAutoProbe();
+      return;
     }
-    this.autoProbeMs = Number.isFinite(ms) ? ms : null;
-    this.setPredictionMode(ms <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light');
+    this.autoProbeSamples.push(ms);
+    if (this.autoProbeSamples.length >= AUTO_PROBE_RUNS) this.finishAutoProbe();
+  }
+
+  /**
+   * Auto's verdict: the BEST warm probe run against the budget (`AUTO_PROBE_RUNS` says why the
+   * first run is dropped and why the best). With no warm run at all — the client arrived after
+   * the countdown, where probing would spend the very budget it protects — it takes FULL: the
+   * warm cost on an ordinary desktop is a fraction of the budget, most machines are that, and the
+   * slip rule steps a genuinely slow one down within seconds. Only a probe that THREW takes Light.
+   */
+  private finishAutoProbe(): void {
+    this.autoProbed = true;
+    const warm = this.autoProbeSamples.slice(1).filter(Number.isFinite);
+    const best = warm.length ? Math.min(...warm) : null;
+    this.autoProbeMs = best;
+    this.autoProbeSamples = [];
+    if (this.autoProbeFailed) this.setPredictionMode('light');
+    else this.setPredictionMode(best === null || best <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light');
   }
 
   /**
@@ -2489,9 +2528,10 @@ export class GameController {
    * ⚠️ **ONLY WHEN THE MODE WAS AUTO'S TO PICK.** A player who chose Full explicitly keeps it,
    * however slow it gets — the plan's words are "the player's explicit choice is never
    * overridden", and silently undoing a setting somebody opened a menu to change is worse than
-   * a few dropped frames. The window is `PREDICT_SLIP_WINDOW` reconciles (~2 s at 30 Hz) so one
-   * GC pause cannot trigger it, and it never steps back up: a machine that missed the budget
-   * under load will miss it again, and a mode that flaps is worse than the cheaper one.
+   * a few dropped frames. The verdict is the MEDIAN of `PREDICT_SLIP_WINDOW` reconciles (~3 s at
+   * 30 Hz), so GC pauses cannot trigger it, and it never steps back up: a machine that missed the
+   * budget on most reconciles will miss it again, and a mode that flaps is worse than the cheaper
+   * one.
    */
   private notePredictionCost(ms: number): void {
     this.lastReconcileMs = ms;
@@ -2502,8 +2542,8 @@ export class GameController {
     if (this.autoDropped || this.predictionPref !== 'auto') return;
     if (w.length < PREDICT_SLIP_WINDOW) return;
     const sorted = [...w].sort((a, b) => a - b);
-    const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    if (p95 <= PREDICT_FULL_BUDGET_MS) return;
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (median <= PREDICT_FULL_BUDGET_MS) return;
     this.autoDropped = true;
     this.setPredictionMode('light');
     this.netEvents.push('Prediction stepped down to Light — full prediction is too slow here.');
@@ -2953,6 +2993,8 @@ export class GameController {
     this.autoProbed = false;
     this.autoProbeMs = null;
     this.autoDropped = false;
+    this.autoProbeSamples = [];
+    this.autoProbeFailed = false;
     this.disposePredictor();
     if (this.predictionPref === 'auto') this.predictionMode = 'light';
     this.seedActionAudio();

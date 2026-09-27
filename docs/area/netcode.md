@@ -64,6 +64,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   far shot or a rolling POLLEN is drawn at the local robot's moment instead of a median 13 ticks
   behind it (owner: "balls in server-required games are all very laggy and behind"). Elements
   seated in a HIVE or FLOWER stay on the interpolation clock with the tray they sit in.
+- ⚠️ **AUTO PREDICTION JUDGES WARM RUNS, AND DEFAULTS TO FULL** (`maybeProbeAuto`, 2026-09-27; owner:
+  "even with great machines, prediction seems to default to light"). Its one probe used to be
+  the COLD first run of the Full predictor — 35–37 ms on a fast desktop whose warm runs cost 4–7
+  — so nearly everyone missed the 8 ms budget. Now it probes once per countdown frame, drops
+  the first run and takes the BEST of the rest (`AUTO_PROBE_RUNS`); a client that arrives after
+  the countdown starts on Full instead of Light; and the slip rule steps down on the MEDIAN of
+  `PREDICT_SLIP_WINDOW` reconciles, not a p95 three GC pauses decide. Only a probe that throws
+  sends Auto to Light unmeasured.
 - **`HOLD_TICKS` is 36 (600 ms)**: a TCP retransmit stalls the input stream 200–500 ms, and at 15 the
   room stopped a robot whose driver was still holding the stick (10.6 in yank at 500 ms, 0.03 now).
   ⚠️ Server constant: deploy it.
