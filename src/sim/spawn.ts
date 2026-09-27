@@ -717,7 +717,10 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
   const raw = coerceStartPose(s.startPose);
   if (raw) startPose = mod.startSnap ? mod.startSnap(spec, alliance, raw) : raw;
   return {
-    id: s.id,
+    // the command-map key and the spawn sort key: a finite integer, whatever arrived. Callers
+    // that can refuse a bad id (`sanitizeReplay`) do so before this; a NaN here used to reach
+    // `createWorld`'s `p.id - q.id` sort comparator and every `Map<number, …>` keyed by it.
+    id: typeof s.id === 'number' && Number.isFinite(s.id) ? Math.round(s.id) : 0,
     alliance,
     spec,
     assists: coerceAssists(s.assists),
@@ -731,7 +734,8 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
     // the same rule as `autoPath`: a game that cannot play one never carries one
     zenithAuto: mod.zenithAutos ? coerceZenithAuto(s.zenithAuto) : undefined,
-    passive: s.passive,
+    // a boolean or absent — a truthy object here used to switch the robot's actions off
+    passive: typeof s.passive === 'boolean' ? s.passive : undefined,
   };
 }
 
