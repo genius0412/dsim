@@ -21,6 +21,12 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'biobuzz 2v2 (2d)': ['926a9efb3a6fd405', '5964243fef3a0eef', 'b218de7d9d7aa585', '7c02693b304f497e', '88861b0b6bf62b48', '68a0d4a30bce61db'],
     'biobuzz solo (3d)': ['e8a9e6d3c4cdd1f3', 'b30ba035341ddf1d', '3be4e047934c6014'],
   },
+  // exact phase lengths (`clockExpired`, also in BIOBUZZ's own phase machine); the 3D solo scene
+  // ends inside AUTO, so it is unchanged
+  5: {
+    'biobuzz 2v2 (2d)': ['926a9efb3a6fd405', '5964243fef3a0eef', 'b218de7d9d7aa585', '7c02693b304f497e', '189be45478536668', '3c417f5af59e0691'],
+    'biobuzz solo (3d)': ['e8a9e6d3c4cdd1f3', 'b30ba035341ddf1d', '3be4e047934c6014'],
+  },
 };
 
 /** the shared driver plus BIOBUZZ's own buttons, pulsed on their own rhythms */

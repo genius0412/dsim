@@ -222,8 +222,22 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      trimesh (`buildFlowerSolids3d`, `GROUP_CHASSIS`), so a chassis is no longer lifted onto the
  *      0.35-in lower lip or pushed into the tiles; the three plate trimeshes are one collider now,
  *      which moves Rapier's pair order. Elements meet the same surfaces as before.
+ * 5: TWO OFF-BY-ONES IN THE SHARED STEP, both found by review and both pinned by the golden
+ *    scenes (`scripts/simGolden.ts`), which is how a bump is now proven necessary rather than
+ *    remembered:
+ *    · EVERY PHASE ENDS ON ITS TICK (`clockExpired`, sim/match.ts). The clocks count down by
+ *      `-= 1/60`, which is inexact, and the `> 0` test ran AUTO 1801 ticks, the transition 481,
+ *      DRIVER-CONTROLLED 7201 and the countdown one long too, in all three games. Output moves
+ *      from the end of AUTO onward;
+ *    · ARTIFACT IDS ARE NEVER REUSED (`allocBallId`, `World.nextBallId`). `max(id) + 1` handed a
+ *      fresh artifact the id of one the human player had just collected in the same call, and
+ *      the penalty clocks keyed by id moved onto the new ball. The world carries the new field
+ *      from tick 0, and ids differ wherever one would have been reused.
+ *    BALANCE_VERSION is NOT bumped with it: the owner declined a balance bump on 2026-09-17 (see
+ *    the note under BALANCE_VERSION), and neither change is a balance decision. Every replay
+ *    stamped 4 plays as `behaviour` DRIFT on a 5 build.
  */
-export const SIM_VERSION = 4;
+export const SIM_VERSION = 5;
 
 /** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
  * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,

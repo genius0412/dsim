@@ -524,6 +524,13 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
     'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
   },
+  // exact phase lengths (`clockExpired`) and never-reused artifact ids (`World.nextBallId`)
+  5: {
+    'decode solo': ['2d126b8eff58a52e', '69880a216f5edbfc', '43fec73b03b36692', 'be59a3d52ce6c79c', 'a366239b68377195', '523dd1a09e25d9a6'],
+    'decode 2v2': ['d1e10ae4eb1eb754', '0268bfb161f239ee', '153e7f9302d261fd', 'a0f96d948180a358', 'ef853ad4231bd6ac', 'a55fda447a2e2538'],
+    'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
+    'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', '8f1d9ee3c6ffd79b', '6bb8a0fb51fd7790'],
+  },
 };
 const goldenArmed = (w: World): World => {
   // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
