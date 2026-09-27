@@ -1144,8 +1144,7 @@ export function scatterBalls(a: Artifact, b: Artifact, time: number): void {
 /** push a point out of `rect` inflated by an artifact radius, the shallowest way that does
  * not put it outside the field (the classifier's outer edge IS the side wall, so the only
  * valid exits are into the field). Returns the point unchanged if it is already clear. */
-function clampOutOfRect(p: Vec2, rect: Rect): Vec2 {
-  const R = C.BALL_RADIUS;
+function clampOutOfRect(p: Vec2, rect: Rect, R: number = C.BALL_RADIUS): Vec2 {
   if (!(p.x > rect.x0 - R && p.x < rect.x1 + R && p.y > rect.y0 - R && p.y < rect.y1 + R)) {
     return p;
   }
@@ -1207,7 +1206,9 @@ export function clampBallPosToStatics(p: Vec2, radius: number = C.BALL_RADIUS): 
       out.y += g.n.y * pen;
     }
   }
-  for (const g of statics) out = clampOutOfRect(out, g.classifier);
+  // at the artifact's OWN radius, like the walls and the goal faces above — this used the flat
+  // `C.BALL_RADIUS` whatever it was asked, which is the same number for every DECODE artifact
+  for (const g of statics) out = clampOutOfRect(out, g.classifier, radius);
   return out;
 }
 
