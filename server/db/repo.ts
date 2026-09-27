@@ -5826,6 +5826,9 @@ export interface UserLiveRoom {
    *  spectate socket opened without this lands on the wrong machine */
   region: string;
   ranked: boolean;
+  /** a SOLO record run: the one kind of match the single-game lock lets its owner walk away
+   *  from (`remoteLiveConflict` in server/admission.ts). Absent reads false. */
+  soloRecord?: boolean;
 }
 
 const USER_ROOM_TTL_MS = 3_000;
@@ -5858,20 +5861,36 @@ export async function liveRoomsByUser(freshSeconds = 15): Promise<Map<string, Us
   );
   const out = new Map<string, UserLiveRoom>();
   for (const r of rows) {
-    const live = new Map<string, { ranked: boolean; region?: string }>();
+    const live = new Map<string, { ranked: boolean; region?: string; soloRecord: boolean }>();
     for (const s of Array.isArray(r.rooms) ? r.rooms : []) {
-      const lr = s as { room?: string; ranked?: boolean; region?: string };
-      if (lr?.room) live.set(lr.room.toLowerCase(), { ranked: lr.ranked === true, region: lr.region });
+      const lr = s as { room?: string; ranked?: boolean; region?: string; kind?: string; mode?: string };
+      if (lr?.room) {
+        live.set(lr.room.toLowerCase(), {
+          ranked: lr.ranked === true,
+          region: lr.region,
+          soloRecord: lr.kind === 'record' && lr.mode === 'solo',
+        });
+      }
     }
     for (const p of Array.isArray(r.players) ? r.players : []) {
       if (p.act !== 'match' || !p.room) continue;
       const hit = live.get(p.room.toLowerCase());
       if (!hit) continue; // holding a socket in a room whose match is over
-      out.set(p.userId, { room: p.room, region: hit.region ?? r.region, ranked: hit.ranked });
+      out.set(p.userId, {
+        room: p.room,
+        region: hit.region ?? r.region,
+        ranked: hit.ranked,
+        ...(hit.soloRecord ? { soloRecord: true } : {}),
+      });
     }
   }
   userRoomCache = { at: now, val: out };
   return out;
+}
+
+/** test seam: forget the cached `liveRoomsByUser` answer so the next call reads the table */
+export function resetLiveRoomsCacheForTests(): void {
+  userRoomCache = null;
 }
 
 /** every live room across EVERY region with a fresh heartbeat. This is what makes

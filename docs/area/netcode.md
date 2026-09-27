@@ -303,6 +303,24 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   any room once nobody is connected inside `inFinishWindow`, and `abandonSlot` leaves the seat
   in any room inside it. A match everybody left MID-match is still not saved. Checks:
   `smoke.ts` "versus buzzer".
+- ⚠️ **THE ONE-GAME LOCK IS PER PROCESS, SO THE DOORS ALSO READ THE HEARTBEAT.** `userRoom`
+  lives in one machine's memory, and a record run (selected region), a custom room (host region)
+  and the ranked queue (matchmaker) are routinely on different machines, which is how an account
+  in a live versus was admitted to a record run elsewhere. The join and queue doors now also ask
+  `liveRoomsByUser()` (the presence heartbeat, cached 3 s) through `remoteLiveConflict`
+  (`server/admission.ts`), keeping the local exemptions: a room staged for the account, and (join
+  only) a solo record run of its own. It fails open, and it can refuse for up to ~8 s after a
+  remote match reaches `post` (one beat plus the cache). A staged-but-unclaimed room on another
+  region is still invisible to it.
+- **ABUSE GUARDS AT THE DOOR** (all named constants with their reasons in `server/index.ts` /
+  `server/room.ts`): room codes must match `ROOM_CODE_RE` and room kinds are coerced to their
+  enums; a network (salted hash of `fly-client-ip`) may host `MAX_HOSTED_PER_IP` (12) rooms that
+  are not live matches with a signed-in driver; spectating needs a world and is capped per
+  network; a lobby idle for `LOBBY_IDLE_MINUTES` (20) is closed; a socket that a reconnect
+  REPLACED no longer drives the seat (`Room.onMessage` compares `conn`); report rows are
+  de-duplicated per room before Postgres; `update` bursts collapse into one leading and one
+  trailing roster broadcast (`UPDATE_ROSTER_MIN_MS`); a room whose tick throws continuously is
+  stopped. All refusals are plain `error` messages every client already renders.
 - **THE ONE-GAME REFUSAL CARRIES `code: 'active_game'`.** It is one of the few a client can act
   on, so the record launcher offers the way back into that match instead of a dead card; the
   sentence stays self-sufficient and the launcher matches on it too, because most of the fleet
