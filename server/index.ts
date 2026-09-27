@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
+import { RoomPool, isPromise, simWorkers, type RoomLike, type SinkHooks } from './roomPool';
 import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
@@ -153,7 +154,32 @@ import {
 enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
-const rooms = new Map<string, Room>();
+const rooms = new Map<string, RoomLike>();
+/**
+ * ROOMS IN WORKER THREADS (`server/roomPool.ts`, docs/scaling-multicore.md). OFF unless
+ * `SIM_WORKERS` is a positive integer: with it unset or 0 this is null and every room below is
+ * the in-process `new Room(...)` it has always been, stepped on this thread.
+ *
+ * ⚠️ SET `UV_THREADPOOL_SIZE` WITH IT, IN THE ENVIRONMENT. permessage-deflate runs zlib on the
+ * libuv threadpool, the pool is per process and 4 threads by default, and a process carrying
+ * several cores' worth of rooms compresses that many rooms' snapshots on it. libuv sizes the pool
+ * at its first use, which happens before this module's body runs, so it cannot be raised from
+ * here — only warned about.
+ */
+const SIM_WORKERS = simWorkers(process.env.SIM_WORKERS);
+const roomPool: RoomPool | null = SIM_WORKERS > 0 ? new RoomPool(SIM_WORKERS) : null;
+if (roomPool) {
+  const uv = Number(process.env.UV_THREADPOOL_SIZE ?? 4);
+  console.log(`[server] SIM_WORKERS=${SIM_WORKERS}: rooms run in ${SIM_WORKERS} worker thread(s)`);
+  if (!(uv >= SIM_WORKERS * 2)) {
+    console.warn(
+      `[server] UV_THREADPOOL_SIZE is ${uv}: with ${SIM_WORKERS} sim workers, set it to at least ${SIM_WORKERS * 2} (e.g. ${Math.max(8, SIM_WORKERS * 4)}) in the environment, or compression becomes the bottleneck`,
+    );
+  }
+}
+/** `new Room(...)`, or its twin in a worker — the same arguments either way */
+const makeRoom = (...a: ConstructorParameters<typeof Room>): RoomLike =>
+  roomPool ? roomPool.createRoom(...a) : new Room(...a);
 /**
  * LAN rendezvous, kept deliberately apart from `rooms`.
  *
@@ -2438,6 +2464,8 @@ const httpServer = createServer((req, res) => {
       uptimeS: Math.round(process.uptime()),
       cores: Math.round(coresInUse() * 1000) / 1000,
       rooms: live.length,
+      // rooms per sim worker thread, only when `SIM_WORKERS` is on (absent otherwise)
+      ...(roomPool ? { simWorkers: roomPool.load() } : {}),
       // the admission cap and whether it is currently biting. An operator debugging
       // "players say the region is full" needs both numbers in one place.
       maxRooms: MAX_ROOMS,
@@ -2897,7 +2925,28 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const edgeRegion = replaySrcRegion(req);
 
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
-  let room: Room | null = null;
+  let room: RoomLike | null = null;
+  /**
+   * What a WORKER room (`SIM_WORKERS`) may tell this socket later. A refused add is the worker's
+   * capacity re-check winning a race the mirror lost (the error is already sent); an eviction is
+   * the worker dying (the error is already written) and the socket is closed so the client's own
+   * reconnect finds out the match is gone. An in-process `Room` never calls either.
+   */
+  const roomHooks: SinkHooks = {
+    onRefused: () => {
+      room = null;
+      conn = 0;
+    },
+    onEvicted: () => {
+      room = null;
+      conn = 0;
+      try {
+        ws.close(1011, 'room lost');
+      } catch {
+        /* already closing */
+      }
+    },
+  };
   // the owning-connection stamp this socket was issued for its slot (0 until it
   // joins/rejoins). Passed to detach on close so a stale socket that a newer
   // reconnect already superseded can't knock the live player offline.
@@ -3140,7 +3189,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (!r) {
-      r = new Room(
+      r = makeRoom(
         code,
         () => rooms.delete(code),
         cfg,
@@ -3184,7 +3233,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * STAGED ranked match must reap itself on its own grace instead (see room.ts).
      */
     const abandon = (): void => {
-      if (created && rooms.get(code) === theRoom && theRoom.isAbandonable()) rooms.delete(code);
+      if (created && rooms.get(code) === theRoom && theRoom.isAbandonable()) {
+        rooms.delete(code);
+        theRoom.dispose?.(); // a worker room is told; an in-process one has nothing to free
+      }
     };
     // Room codes are KIND-SCOPED: a custom (versus) code must never admit a
     // duo-record joiner, or vice-versa (both mint codes from the same generator, so
@@ -3226,7 +3278,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);
-      if (pending) r.applyPending(pending);
+      if (pending) {
+        // a worker room answers once the staged roster is applied and mirrored back, so the
+        // reads just below see the staged room; an in-process room applies it synchronously
+        const applied = r.applyPending(pending);
+        if (isPromise(applied)) await applied;
+      }
     }
     /**
      * THE `'bb3d'` GATE — asked here, after the room's physics is knowable and before a seat
@@ -3330,7 +3387,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (seat) {
         // TRUSTED: `seatFor` matched a VERIFIED user id off the signed auth token, which
         // proves more than the seat secret does. See the note in `Room.reattach`.
-        const nc = r.reattach(seat, send, sendRaw, backlog, undefined, true);
+        const got = r.reattach(seat, send, sendRaw, backlog, undefined, true, roomHooks);
+        const nc = isPromise(got) ? await got : got;
+        // (worker rooms only: the reattach was a round trip, and the socket may have gone in it —
+        // the close handler found `room` still null, so hand the seat straight back)
+        if (nc !== null && closed) {
+          r.detach(seat, nc, false);
+          return;
+        }
         if (nc !== null) {
           liveSockets.delete(id);
           id = seat; // adopt the reclaimed identity on this socket
@@ -3510,7 +3574,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       abandon();
       return;
     }
-    room.add(client);
+    room.add(client, roomHooks);
     conn = client.conn ?? 0; // remember which socket-generation owns our slot
     room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
     // A CHALLENGE IS SPENT THE MOMENT ITS RECIPIENT JOINS THE ROOM IT NAMED. Scoped to the joiner
@@ -3578,7 +3642,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     spectating = true;
     spectatorTotal++;
-    r.addSpectator(spec);
+    r.addSpectator(spec, roomHooks);
   };
 
   // inbound rate bucket for this socket — see MSG_RATE_LIMIT
@@ -3649,15 +3713,28 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
-        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
-        if (r && nc !== null) {
-          liveSockets.delete(id);
-          id = msg.clientId; // adopt the reclaimed identity on this socket
-          liveSockets.set(id, { authed: !!authedUserId });
-          room = r;
-          conn = nc; // this socket now owns the slot (supersedes the dropped one)
+        const got = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken, false, roomHooks) : null;
+        const settle = (nc: number | null): void => {
+          if (r && nc !== null) {
+            liveSockets.delete(id);
+            id = msg.clientId; // adopt the reclaimed identity on this socket
+            liveSockets.set(id, { authed: !!authedUserId });
+            room = r;
+            conn = nc; // this socket now owns the slot (supersedes the dropped one)
+          } else {
+            send({ t: 'rejoined', ok: false });
+          }
+        };
+        if (isPromise(got)) {
+          // a worker room answers after a round trip; a socket that left (or was placed some
+          // other way) meanwhile hands the seat straight back rather than holding it
+          const rr = r;
+          void got.then((nc) => {
+            if (nc !== null && rr && (closed || room)) rr.detach(msg.clientId, nc, false);
+            else if (!closed && !room) settle(nc);
+          });
         } else {
-          send({ t: 'rejoined', ok: false });
+          settle(got);
         }
       } else if (msg.t === 'abandon') {
         /**
@@ -3689,17 +3766,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * opened the replay, and the only standing that ever moves for it is the SMITE that
          * follows a rejection.
          */
-        const sc = room ? room.resolveScoreReport(id) : null;
+        const scRoom = room;
+        const scGot = scRoom ? scRoom.resolveScoreReport(id) : null;
         const detail = typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX).trim() : '';
-        if (sc && detail && dbEnabled) {
-          void submitScoreReport({
-            reporterId: sc.reporterId,
-            matchId: sc.matchId,
-            roomCode: sc.roomCode,
-            game: room!.gameId,
-            detail,
-          }).catch((e) => console.error('[report] score report failed:', e));
-        }
+        const fileScore = (sc: Awaited<typeof scGot>): void => {
+          if (sc && detail && dbEnabled) {
+            void submitScoreReport({
+              reporterId: sc.reporterId,
+              matchId: sc.matchId,
+              roomCode: sc.roomCode,
+              game: scRoom!.gameId,
+              detail,
+            }).catch((e) => console.error('[report] score report failed:', e));
+          }
+        };
+        if (isPromise(scGot)) void scGot.then(fileScore);
+        else fileScore(scGot);
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'report') {
         /**
@@ -3712,15 +3794,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * by design. Telling them apart would turn the button into a probe for who is
          * signed in and who has already been reported.
          */
-        const r = room && isReportReason(msg.reason) ? room.resolveReport(id, msg.robotId) : null;
-        if (r && dbEnabled) {
+        const repRoom = room;
+        const reason = msg.reason;
+        const repDetail = typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX) : null;
+        const repGot = repRoom && isReportReason(reason) ? repRoom.resolveReport(id, msg.robotId) : null;
+        const fileReport = (r: Awaited<typeof repGot>): void => {
+          if (!(r && dbEnabled && repRoom)) return;
           void submitReport({
             reportedId: r.reportedId,
             reporterId: r.reporterId,
-            reason: msg.reason,
-            detail: typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX) : null,
-            roomCode: room!.code,
-            game: room!.gameId,
+            reason,
+            detail: repDetail,
+            roomCode: repRoom.code,
+            game: repRoom.gameId,
           })
             .then((fresh) => {
               // A NEW report (not a duplicate) nudges the reported player's standing. It is
@@ -3729,16 +3815,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               // and is capped per match inside `applyStandingEvent`. What it is really for is
               // SURFACING someone to a moderator; the moderator upholding it is what bites.
               if (!fresh) return;
-              return distinctReporters(r.reportedId, room!.code).then((count) =>
+              return distinctReporters(r.reportedId, repRoom.code).then((count) =>
                 chargeStanding(r.reportedId, 'report', {
-                  game: room!.gameId,
-                  roomCode: room!.code,
+                  game: repRoom.gameId,
+                  roomCode: repRoom.code,
                   count,
                 }),
               );
             })
             .catch((e) => console.error('[report] write failed:', e));
-        }
+        };
+        // a worker room resolves the robot id after a round trip; an in-process one at once
+        if (isPromise(repGot)) void repGot.then(fileReport);
+        else fileReport(repGot);
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
@@ -4050,7 +4139,9 @@ Promise.all([initPhysics(), initPhysics3d()])
     // real player on a freshly woken machine does not pay for V8 compiling the sim (their match
     // cost 30-60% more CPU, with 100-390 ms ticks). Sliced and yielding: `/health` and joins are
     // served throughout, nothing waits on it. `WARMUP=0` turns it off.
-    if (!warmupEnabled(process.env.WARMUP)) return;
+    // with SIM_WORKERS each worker warms itself (`server/roomWorker.ts`); this thread runs no
+    // rooms apart from the matchmaker's no-database dev fallback, so there is nothing to warm
+    if (!warmupEnabled(process.env.WARMUP) || roomPool) return;
     const cpu0 = process.cpuUsage();
     void warmUp().then((r) => {
       const cpu = process.cpuUsage(cpu0);
