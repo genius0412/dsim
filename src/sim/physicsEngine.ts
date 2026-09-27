@@ -76,17 +76,31 @@ function statics(desc: RAPIER.ColliderDesc, groups?: number, friction: number = 
 
 /** build a game's static field colliders (perimeter walls + structures) onto the
  * fresh world, in the module's stable spec order (determinism). The geometry math
- * is memoized in the game module (`FieldColliders.statics`). */
+ * is memoized in the game module (`FieldColliders.statics`).
+ *
+ * ...AND SO ARE THE DESCRIPTORS. A `ColliderDesc` is plain JS data that `createCollider` only
+ * READS (it copies every field into WASM and keeps nothing it could write back), so the same
+ * descriptors are handed to every fresh world instead of being rebuilt — shape, translation,
+ * rotation and the four setters — twice a tick. Keyed on the colliders object (a game's
+ * `statics` array is fixed at module load) and on the group/friction pair each solve asks for,
+ * so a world gets exactly the colliders it used to, in the same order. */
+const STATIC_DESCS = new WeakMap<FieldColliders, Map<string, readonly RAPIER.ColliderDesc[]>>();
 function buildStatics(rw: RAPIER.World, colliders: FieldColliders, groups?: number, friction?: number): void {
-  for (const s of colliders.statics) {
-    rw.createCollider(
+  let byKind = STATIC_DESCS.get(colliders);
+  if (!byKind) STATIC_DESCS.set(colliders, (byKind = new Map()));
+  const key = `${groups}|${friction}`;
+  let descs = byKind.get(key);
+  if (!descs) {
+    descs = colliders.statics.map((s) =>
       statics(
         RAPIER.ColliderDesc.cuboid(s.hx, s.hy).setTranslation(s.tx, s.ty).setRotation(s.rot),
         groups,
         friction,
       ),
     );
+    byKind.set(key, descs);
   }
+  for (const d of descs) rw.createCollider(d);
 }
 
 /** a fresh Rapier world with our inch-scale tolerances + the static field
@@ -634,8 +648,15 @@ export function solveArtifacts(
    * byte-identical.
    */
   radius: number = C.BALL_RADIUS,
+  /**
+   * the ground artifacts, in `world.balls` order, when the caller already has that list — the
+   * DECODE step builds it once at the top of the tick and nothing in between changes an
+   * artifact's kind, so it hands it over rather than have every round re-filter. Absent ⇒ built
+   * here, exactly as before.
+   */
+  ground?: readonly Artifact[],
 ): void {
-  const groundBalls = world.balls.filter((b) => b.state.kind === 'ground');
+  const groundBalls = ground ?? world.balls.filter((b) => b.state.kind === 'ground');
   if (groundBalls.length === 0) return;
 
   const rw = makeWorld(
@@ -767,13 +788,25 @@ export function fieldPushback(p: Vec2, radius: number = C.BALL_RADIUS): Vec2 | n
   };
   const c = clampBallPosToStatics(p, radius);
   if (c.x !== p.x || c.y !== p.y) return back(p, c);
+  const probes = pushbackProbes();
   for (let k = 0; k < 8; k++) {
-    const a = (k * Math.PI) / 4;
-    const q = { x: p.x + dcos(a) * eps, y: p.y + dsin(a) * eps };
+    const q = { x: p.x + probes[k].c * eps, y: p.y + probes[k].s * eps };
     const r = clampBallPosToStatics(q, radius);
     if (r.x !== q.x || r.y !== q.y) return back(q, r);
   }
   return null;
+}
+
+/** the eight probe directions `fieldPushback` walks, `(dcos, dsin)` of `k·π/4`: the same values it
+ *  used to compute on every call, computed once */
+let PUSHBACK_PROBES: readonly { c: number; s: number }[] | null = null;
+function pushbackProbes(): readonly { c: number; s: number }[] {
+  return (PUSHBACK_PROBES ??= Object.freeze(
+    [0, 1, 2, 3, 4, 5, 6, 7].map((k) => {
+      const a = (k * Math.PI) / 4;
+      return Object.freeze({ c: dcos(a), s: dsin(a) });
+    }),
+  ));
 }
 
 function supported(

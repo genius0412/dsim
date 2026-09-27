@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
-import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, viewAngleOf, type Rect } from './field';
+import { classifierRect, footprintExtents, goalFaceNormal, goalFacePoints, goalLineValue, viewAngleOf, type Rect } from './field';
 import { dot, rot, clamp, hyp, datan2, dcos, dsin } from '../math';
 import { robotPenetration, type RobotSolids } from './artifactSolids';
 import { activeDrive, driveParams } from './drivetrain';
@@ -1194,20 +1194,42 @@ function clampOutOfRect(p: Vec2, rect: Rect): Vec2 {
  * the radius of the artifact it is a probe FOR.
  */
 export function clampBallPosToStatics(p: Vec2, radius: number = C.BALL_RADIUS): Vec2 {
+  const statics = fieldStatics();
   const f = C.FIELD_HALF - radius;
   let out = { x: clamp(p.x, -f, f), y: clamp(p.y, -f, f) };
-  for (const a of ALLIANCES) {
-    const dist = goalLineValue(out, a); // perpendicular distance behind the face
+  for (const g of statics) {
+    // perpendicular distance behind the face — `goalLineValue`, term for term
+    const dist = g.n.x * (g.far.x - out.x) + g.n.y * (g.far.y - out.y);
     const pen = dist + radius;
     // from ANY depth: a ground artifact behind a goal face is inside the goal, wherever it is
     if (pen > 0) {
-      const n = goalFaceNormal(a);
-      out.x += n.x * pen;
-      out.y += n.y * pen;
+      out.x += g.n.x * pen;
+      out.y += g.n.y * pen;
     }
   }
-  for (const a of ALLIANCES) out = clampOutOfRect(out, classifierRect(a));
+  for (const g of statics) out = clampOutOfRect(out, g.classifier);
   return out;
+}
+
+/**
+ * The field's CONSTANT geometry, per alliance in `ALLIANCES` order, built once. The clamp above
+ * runs several times per artifact per tick (the containment clamp, `fieldPushback`'s nine probes,
+ * the pin test, `supported`'s walk), and each call used to rebuild the goal face points, its
+ * normal and the classifier rect from scratch. These are the same objects those functions
+ * return, computed by them, so every number is the one the clamp used to compute inline.
+ * Frozen: a caller that mutated one would move a wall for every artifact after it.
+ */
+let FIELD_STATICS: readonly { n: Vec2; far: Vec2; classifier: Rect }[] | null = null;
+function fieldStatics(): readonly { n: Vec2; far: Vec2; classifier: Rect }[] {
+  return (FIELD_STATICS ??= Object.freeze(
+    ALLIANCES.map((a) =>
+      Object.freeze({
+        n: Object.freeze(goalFaceNormal(a)),
+        far: Object.freeze(goalFacePoints(a)[0]),
+        classifier: Object.freeze(classifierRect(a)),
+      }),
+    ),
+  ));
 }
 
 /** Ball↔robot contact (world frame) or null if not touching. FLAT-front intakes
