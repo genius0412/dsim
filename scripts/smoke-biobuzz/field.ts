@@ -157,6 +157,26 @@ const STEP_BUDGET = 1.8;
 const ROOM_BUDGET = 1.2;
 
 /**
+ * ⚠️ THE CHAIN REACTION SIDE OF BOTH RATIOS IS RE-ANCHORED TO WHAT CR COST WHEN THE BUDGETS
+ * WERE WRITTEN (2026-09-27). Both budgets are "BIOBUZZ may cost N x a Chain Reaction room",
+ * calibrated against CR as it was — and CR then got cheaper for reasons that have nothing to do
+ * with BIOBUZZ: its particle separation became a flat cell list and its intake test a
+ * per-robot frame, byte-identical, which halved a CR STEP and took 7-9% off a CR ROOM tick
+ * (the room is mostly the snapshot of 300 particles, which did not change). Left alone, a
+ * BIOBUZZ that had not moved at all read ~1.9x against a 1.8 budget and failed.
+ *
+ * The fix is NOT a bigger budget and NOT an absolute millisecond number: the ratio is paired
+ * and same-run precisely so that it is load-proof (see the step check), and a budget in ms
+ * would give that up. So the CR measurement is scaled back up by the SPEEDUP ITSELF, measured
+ * PAIRED in one process against the old CR code, same scenarios as these checks: new/old
+ * 0.50-0.55 for the step and 0.91-0.93 for the room over 9- and 15-round medians. The factors
+ * take the SMALL end of each (1/0.55, 1/0.93), so the threshold is never looser than the one
+ * that stood before. Re-measure and move them if CR's own cost moves again.
+ */
+const CR_STEP_REANCHOR = 1.8;
+const CR_ROOM_REANCHOR = 1.07;
+
+/**
  * How many PAIRED rounds a perf check runs. Five is the smallest odd count whose median still
  * survives two bad rounds, which is the failure this is built around: a laptop that thermally
  * throttles, or a gallery capture running in another process, contaminates a CONTIGUOUS stretch
@@ -2971,11 +2991,11 @@ export function fieldChecks(check: Check): void {
       // numbers — see the block comment.
       const cr = window_(sides[0]);
       const bb = window_(sides[1]);
-      rounds.push({ cr, bb, ratio: bb / cr });
+      rounds.push({ cr, bb, ratio: bb / (cr * CR_STEP_REANCHOR) });
     }
     const ratio = median(rounds.map((x) => x.ratio));
     check(
-      `perf: a 2v2 BIOBUZZ step costs <= ${STEP_BUDGET}x a 2v2 Chain Reaction step`,
+      `perf: a 2v2 BIOBUZZ step costs <= ${STEP_BUDGET}x a 2v2 Chain Reaction step (CR re-anchored x${CR_STEP_REANCHOR}, see CR_STEP_REANCHOR)`,
       ratio <= STEP_BUDGET,
       `median paired ratio=${ratio.toFixed(2)} of [${rounds.map((x) => x.ratio.toFixed(2)).join(', ')}] ` +
         `· bb median ${median(rounds.map((x) => x.bb)).toFixed(3)}ms · cr median ${median(rounds.map((x) => x.cr)).toFixed(3)}ms`,
@@ -4041,11 +4061,11 @@ export function roomChecks(check: Check): void {
     for (let k = 0; k < 3; k++) {
       const cr = roomWindow(sides[0], k);
       const bb = roomWindow(sides[1], k);
-      rounds.push({ cr, bb, ratio: bb / cr });
+      rounds.push({ cr, bb, ratio: bb / (cr * CR_ROOM_REANCHOR) });
     }
     const ratio = median(rounds.map((x) => x.ratio));
     check(
-      `perf: a 2v2 BIOBUZZ ROOM tick costs <= ${ROOM_BUDGET}x a 2v2 Chain Reaction room tick`,
+      `perf: a 2v2 BIOBUZZ ROOM tick costs <= ${ROOM_BUDGET}x a 2v2 Chain Reaction room tick (CR re-anchored x${CR_ROOM_REANCHOR}, see CR_STEP_REANCHOR)`,
       ratio <= ROOM_BUDGET,
       `median paired ratio=${ratio.toFixed(2)} of [${rounds.map((x) => x.ratio.toFixed(2)).join(', ')}] ` +
         `· bb median ${median(rounds.map((x) => x.bb)).toFixed(3)}ms · cr median ${median(rounds.map((x) => x.cr)).toFixed(3)}ms`,
