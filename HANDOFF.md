@@ -1,3 +1,15 @@
+# HANDOFF — 2026-09-27f (ranked: team expectation, margin, calibration RD, partner absence, 2v2 balance)
+
+**State: pushed on `main` and `alpha`.** `npm test`, `test:mm` (222), `dbtest`, `server:check`, `build`, `docaudit` pass. ⚠️ **Server change + migration 0056** (nullable `match_participants.premade`). No ranked reset: no stored rating is rewritten, `BALANCE_VERSION`/`SIM_VERSION` untouched. Rules in `docs/area/accounts.md` ("RATING ADJUSTMENTS AND 2v2 BALANCE").
+
+- **Owner's three complaints:** 2v2 alliances not balanced by combined skill; unlucky placements take too long to recover even with huge wins; a bad or disconnected partner costs too much.
+- **Rating (`server/ranked.ts`):** 2v2 expectation from the alliance mean (1v1 unchanged); margin multiplier ×0.8–×1.5 at one `DECISIVE_MARGIN` 0.30, damped for favourites, ×1 for a rated 1v1 challenge; calibration RD floor `max(60, 250 − 9.5·games)` and idle RD growth (cap 150), both read-time; wide premade (>400 apart) at half.
+- **Partner absence (`server/room.ts` → `persist`):** the room reports each ranked driver's away share, "missing the first 20 s" and party token. Missing from the start voids a 2v2 for the others (nothing written, ±0 shown); later absence scales a teammate's loss by `clamp(1 − 2a, 0, 1)` and the opponents' win by `1 − a`. Your own premade never protects you.
+- **Matchmaking (`server/matchmaking.ts`):** 2v2 gated on the best split's `|E − 0.5|` (0.10, widening, unbounded at 6 s) instead of the rating span; balancing always runs, unplaced 2v2 players seeded from their placed 1v1 rating; entries wait up to 1.5 s for their rating read; premade vs premade preferred.
+- **Rejected by the owner:** a winning-streak RD boost (exploitable), a longer calibration window, per-game margins, a separate premade queue (pool too small; 0056 records the data to decide later).
+- **Not built:** a results-screen line explaining a voided or protected result (the delta just reads ±0 / smaller). Would need a cap-gated `EloDelta` field and client copy.
+- **Watch after deploy:** the podium awards at the next act rollover will reflect the new deltas from today on.
+
 # HANDOFF — 2026-09-27e (Prediction: Balanced is a pickable middle level)
 
 **State: pushed on `main` and `alpha`.** `build`, `uiaudit` (ui-components regenerated), `docaudit`, `npm test` pass. Client only.

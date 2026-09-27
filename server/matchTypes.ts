@@ -40,6 +40,12 @@ export interface PendingRosterEntry {
    * reason: no schema column, and every entry in one staged match shares the value.
    * Absent ⇒ '2d', which is every pairing staged before Day 2. */
   physics?: Physics;
+  /** the verified challenge token this player queued under, if any — the same jsonb trick.
+   * The rating update reads it at match end: a premade partner who walks out does not
+   * protect you, a wide premade moves at half, and a rated 1v1 challenge (one token on both
+   * alliances) takes no margin multiplier. Absent ⇒ queued solo, which is also what a roster
+   * staged by an older matchmaker reads as. */
+  party?: string;
 }
 
 export interface PendingMatch {

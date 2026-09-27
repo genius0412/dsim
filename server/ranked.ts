@@ -4,6 +4,7 @@ import type { MatchOutcome, MatchParticipant } from './room';
 import {
   actForSeason,
   addMatchParticipants,
+  dropUntouchedRatings,
   getRatingsFull,
   saveMatch,
   upsertEloHistory,
@@ -42,8 +43,19 @@ const expect = (mu: number, muj: number, phij: number): number =>
   1 / (1 + Math.exp(-gphi(phij) * (mu - muj)));
 
 /** one Glicko-2 update for a player against a single (possibly team-aggregate)
- * opponent, given the game score s (1 win / 0.5 draw / 0 loss). Pure. */
-export function glicko2Update(player: Glicko, oppRating: number, oppRd: number, s: number): Glicko {
+ * opponent, given the game score s (1 win / 0.5 draw / 0 loss). Pure.
+ *
+ * `expRating` is the rating the EXPECTED score is computed from. It defaults to the
+ * player's own, which is plain Glicko-2; in a 2v2 it is the player's ALLIANCE mean (see
+ * `computeGlicko`), so the question asked is "how surprising was this result for your
+ * team", while the answer still moves the player's own rating by their own RD. */
+export function glicko2Update(
+  player: Glicko,
+  oppRating: number,
+  oppRd: number,
+  s: number,
+  expRating = player.rating,
+): Glicko {
   const mu = (player.rating - CENTER) / SCALE;
   const phi = player.rd / SCALE;
   const sigma = player.vol;
@@ -51,7 +63,7 @@ export function glicko2Update(player: Glicko, oppRating: number, oppRd: number, 
   const phij = oppRd / SCALE;
 
   const gj = gphi(phij);
-  const e = expect(mu, muj, phij);
+  const e = expect((expRating - CENTER) / SCALE, muj, phij);
   const v = 1 / (gj * gj * e * (1 - e));
   const delta = v * gj * (s - e);
 
@@ -102,6 +114,17 @@ export interface EloParticipant {
   userId: string;
   alliance: Alliance;
   rating: Glicko;
+  /** games on this board BEFORE this match. Drives the calibration RD floor; absent ⇒ no
+   *  floor (treated as established), which is what every pre-existing caller gets. */
+  games?: number;
+  /** whole days since this board's rating last changed. Drives the idle RD growth. */
+  idleDays?: number;
+  /** the verified challenge token this player queued under (a premade, or a rated 1v1) */
+  party?: string;
+  /** share of the live match this driver was away for, 0..1 (1 = AFK). See `room.ts`. */
+  away?: number;
+  /** absent for the whole opening window (`EARLY_ABSENT_TICKS`) or never connected */
+  early?: boolean;
 }
 
 export interface EloBoardUpdate {
@@ -110,6 +133,83 @@ export interface EloBoardUpdate {
   after: number; // rating after, rounded
   rd: number; // new RD, rounded (drives the provisional "?" indicator)
   state: Glicko; // full new state to persist
+  /** the match did not count for this player (a partner absent from the start): nothing is
+   *  written — no rating, no RD, no game on the board */
+  voided?: boolean;
+}
+
+/*
+ * ── RATING ADJUSTMENTS (2026-09-27 ranked review) ────────────────────────────────────
+ *
+ * Plain Glicko-2 with one game per rating period had three measured failures:
+ *
+ *  - A strong player who lost early took ~40–60 straight wins to reach their level. RD had
+ *    collapsed below 180 by the end of placement, and VOLATILITY NEVER MOVES with one-game
+ *    periods (it sat at exactly 0.060 through 39 straight wins) — Glickman designed the
+ *    update for 10–15 games a period. Lichess, which also rates per game, keeps RD in a band
+ *    instead; so do we: a CALIBRATION FLOOR that decays with games, and idle growth.
+ *  - A win was a win: 550–300 moved the rating exactly as much as 301–300. A MARGIN
+ *    multiplier, ×0.8 for a close result up to ×1.5 at the DECISIVE_MARGIN, with 538's
+ *    damping so a favourite's blowout adds little and ratings don't inflate.
+ *  - In 2v2 each player was scored on THEIR OWN rating against the opposing mean, so a 1500
+ *    carrying a 900 lost −23 while the 900 lost −4 (and a win paid +4 / +23). The expected
+ *    score is now the ALLIANCE's (TrueSkill/OpenSkill's team model), and a partner who
+ *    walked out reduces or voids the loss (LoL / Overwatch 2 / Rocket League), never when that
+ *    partner is your own premade.
+ *
+ * None of it rewrites a stored row: the floor and the idle growth are applied when the
+ * rating is READ, so an existing account is affected from its next game and no standing
+ * resets.
+ */
+
+/** the margin (|R−B| / (R+B)) at which a win or loss counts in full. One number for every
+ *  game (owner, 2026-09-27): 550–300 in BIOBUZZ, 0.29, is "a massive margin". */
+export const DECISIVE_MARGIN = 0.3;
+/** the multiplier on a result at a zero margin, and at DECISIVE_MARGIN or wider */
+export const MOV_MIN = 0.8;
+export const MOV_MAX = 1.5;
+/** calibration RD floor: `max(RD_FLOOR_MIN, RD_FLOOR_START − RD_FLOOR_PER_GAME · games)`,
+ *  which reaches the minimum at game 20. The minimum is Lichess's per-game floor. */
+export const RD_FLOOR_START = 250;
+export const RD_FLOOR_PER_GAME = 9.5;
+export const RD_FLOOR_MIN = 60;
+/** idle RD growth: after IDLE_GRACE_DAYS, `√(RD² + IDLE_RD_PER_DAY² · days)`, capped at
+ *  IDLE_RD_CAP so a returning player is loosened without swinging like a new account */
+export const IDLE_GRACE_DAYS = 14;
+export const IDLE_RD_PER_DAY = 15;
+export const IDLE_RD_CAP = 150;
+export const RD_MAX = 350;
+/** a premade whose two ratings are further apart than this moves at WIDE_PREMADE_MULT —
+ *  team expectation otherwise makes carrying a friend up the ladder cheap (Valorant's party
+ *  rank-disparity rule, Overwatch 2's wide groups) */
+export const WIDE_PREMADE_GAP = 400;
+export const WIDE_PREMADE_MULT = 0.5;
+/** below this share of the match, an absence is a connection blip, not a partner leaving */
+export const ABSENT_MIN = 0.05;
+
+/** the RD a board's rating is rated at: the stored RD, grown by idleness and held up by
+ *  the calibration floor. Pure. */
+export function effectiveRd(rd: number, games = Infinity, idleDays = 0): number {
+  let r = rd;
+  if (idleDays > IDLE_GRACE_DAYS) {
+    const grown = Math.sqrt(r * r + IDLE_RD_PER_DAY * IDLE_RD_PER_DAY * (idleDays - IDLE_GRACE_DAYS));
+    // never LOWER an RD that is already above the cap (a new account's 350)
+    r = Math.max(r, Math.min(IDLE_RD_CAP, grown));
+  }
+  const floor = Math.max(RD_FLOOR_MIN, RD_FLOOR_START - RD_FLOOR_PER_GAME * games);
+  return Math.min(RD_MAX, Math.max(r, floor));
+}
+
+/** the margin-of-victory multiplier for one match. `eWinner` is the winning alliance's
+ *  expected score going in; the part above ×1 is scaled by `2·(1 − eWinner)`, so an even
+ *  match pays the full bonus and a 90% favourite a fifth of it. A draw is ×1. Pure. */
+export function marginMultiplier(red: number, blue: number, eWinner: number): number {
+  if (red === blue) return 1;
+  const total = red + blue;
+  const m = total > 0 ? Math.abs(red - blue) / total : 1;
+  let k = MOV_MIN + (MOV_MAX - MOV_MIN) * Math.min(1, m / DECISIVE_MARGIN);
+  if (k > 1) k = 1 + (k - 1) * Math.min(1, 2 * (1 - eWinner));
+  return k;
 }
 
 /** the OVERALL-board rating change for one player, returned to the room so it can
@@ -124,12 +224,36 @@ export interface EloOutcome {
   games: number;
 }
 
-/** Glicko-2 team update: each player is scored against the OPPOSING alliance as a
- * single aggregate opponent (mean rating, RMS rating-deviation). Winner = higher
- * alliance score (equal ⇒ draw). Returns per-board rating + RD changes. */
+/** a participant's absence share, with a connection blip read as none */
+const awayOf = (p: EloParticipant): number => {
+  const a = Math.min(1, Math.max(0, p.away ?? 0));
+  return a < ABSENT_MIN ? 0 : a;
+};
+
+/**
+ * Glicko-2 team update. Winner = higher alliance score (equal ⇒ draw). Returns one update
+ * per participant.
+ *
+ * Each player is rated against the OPPOSING alliance as one aggregate opponent (mean
+ * rating, RMS RD), with the EXPECTED score taken from their own alliance's mean — in 1v1
+ * that is their own rating, so 1v1 is plain Glicko-2. Then, in order:
+ *
+ *  1. RD is raised to `effectiveRd` (calibration floor, idle growth) before the update.
+ *  2. The change is scaled by `marginMultiplier` — except a rated 1v1 challenge (a closed
+ *     party: the same token on both alliances), which could otherwise farm blowouts.
+ *  3. A WIDE premade (partners more than WIDE_PREMADE_GAP apart) moves at half.
+ *  4. PARTNER ABSENCE, 2v2 only:
+ *     - somebody absent from the start (`early`, or a seat with nobody in it at all) VOIDS
+ *       the match for everyone else, and the absentee takes a loss;
+ *     - otherwise a LOSS is scaled by `clamp(1 − 2a, 0, 1)` for the teammate of a partner
+ *       away for share `a` — never when that partner is their own premade, and never for
+ *       somebody who was away at least as long themselves — and the OPPONENTS' win over a
+ *       short-handed alliance by `1 − a`. A win is never reduced for the one who stayed.
+ */
 export function computeGlicko(
   participants: EloParticipant[],
   scores: Record<Alliance, number>,
+  opts: { mode?: '1v1' | '2v2' } = {},
 ): EloBoardUpdate[] {
   const sRed = scores.red > scores.blue ? 1 : scores.red < scores.blue ? 0 : 0.5;
   const updates: EloBoardUpdate[] = [];
@@ -137,26 +261,93 @@ export function computeGlicko(
   const red = participants.filter((p) => p.alliance === 'red');
   const blue = participants.filter((p) => p.alliance === 'blue');
   if (!red.length || !blue.length) return updates;
+  const mode = opts.mode ?? eloMode(participants.length);
+  const rdOf = (p: EloParticipant): number => effectiveRd(p.rating.rd, p.games, p.idleDays);
   const agg = (ps: EloParticipant[]): { rating: number; rd: number } => ({
     rating: ps.reduce((s, p) => s + p.rating.rating, 0) / ps.length,
-    rd: Math.sqrt(ps.reduce((s, p) => s + p.rating.rd * p.rating.rd, 0) / ps.length),
+    rd: Math.sqrt(ps.reduce((s, p) => s + rdOf(p) * rdOf(p), 0) / ps.length),
   });
-  const oppOfRed = agg(blue);
-  const oppOfBlue = agg(red);
+  const team = { red: agg(red), blue: agg(blue) };
+  const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
+  const members = { red, blue };
+
+  // a CLOSED party (a rated 1v1 challenge) is one token on both alliances
+  const closed = participants.some(
+    (a) => a.party && participants.some((b) => b.alliance !== a.alliance && b.party === a.party),
+  );
+  let k = 1;
+  if (!closed && sRed !== 0.5) {
+    const w: Alliance = sRed === 1 ? 'red' : 'blue';
+    const eWinner = expect(
+      (team[w].rating - CENTER) / SCALE,
+      (team[other(w)].rating - CENTER) / SCALE,
+      team[other(w)].rd / SCALE,
+    );
+    k = marginMultiplier(scores.red, scores.blue, eWinner);
+  }
+
+  // a 2v2 with somebody missing from the start is voided for everybody who was there
+  const voided =
+    mode === '2v2' && (red.length < 2 || blue.length < 2 || participants.some((p) => p.early));
+  // the share of the match each alliance was short-handed for
+  const shortBy = (a: Alliance): number => Math.max(0, ...members[a].map(awayOf));
+
   for (const p of participants) {
-    const s = p.alliance === 'red' ? sRed : 1 - sRed;
-    const opp = p.alliance === 'red' ? oppOfRed : oppOfBlue;
-    const cur = p.rating;
-    const next = glicko2Update(cur, opp.rating, opp.rd, s);
+    const before = p.rating.rating;
+    if (voided && !p.early) {
+      updates.push({
+        userId: p.userId,
+        before: Math.round(before),
+        after: Math.round(before),
+        rd: Math.round(p.rating.rd),
+        state: p.rating,
+        voided: true,
+      });
+      continue;
+    }
+    // an early absentee in a voided match concedes it, whatever the score said
+    const s = voided ? 0 : p.alliance === 'red' ? sRed : 1 - sRed;
+    const opp = team[other(p.alliance)];
+    const cur: Glicko = { rating: before, rd: rdOf(p), vol: p.rating.vol };
+    const next = glicko2Update(cur, opp.rating, opp.rd, s, team[p.alliance].rating);
+
+    let mult = voided ? 1 : k;
+    const mates = members[p.alliance].filter((q) => q !== p);
+    if (!voided) {
+      const wide = mates.some(
+        (q) => p.party && q.party === p.party && Math.abs(q.rating.rating - before) > WIDE_PREMADE_GAP,
+      );
+      if (wide) mult *= WIDE_PREMADE_MULT;
+      if (mode === '2v2' && s === 0) {
+        const mine = awayOf(p);
+        let protect = 1;
+        for (const q of mates) {
+          if (p.party && q.party === p.party) continue; // your own premade: no protection
+          const a = awayOf(q);
+          if (a > mine) protect = Math.min(protect, Math.max(0, 1 - 2 * a));
+        }
+        mult *= protect;
+      }
+      if (mode === '2v2' && s === 1) mult *= 1 - shortBy(other(p.alliance));
+    }
+
+    const after = before + mult * (next.rating - before);
     updates.push({
       userId: p.userId,
-      before: Math.round(cur.rating),
-      after: Math.round(next.rating),
+      before: Math.round(before),
+      after: Math.round(after),
       rd: Math.round(next.rd),
-      state: next,
+      state: { rating: after, rd: next.rd, vol: next.vol },
     });
   }
   return updates;
+}
+
+/** did this player queue as a premade with somebody on their OWN alliance? (A rated 1v1
+ *  challenge shares its token with the opponent, which is not a premade.) */
+type PartyView = Pick<MatchParticipant, 'userId' | 'alliance' | 'party'>;
+export function isPremade(p: PartyView, all: readonly PartyView[]): boolean {
+  return !!p.party && all.some((q) => q.userId !== p.userId && q.alliance === p.alliance && q.party === p.party);
 }
 
 /* `eloMode` now lives in `./eloMode` so `server/room.ts` can have it without importing
@@ -228,13 +419,29 @@ export async function persistVersusMatch(
       // ONE query for every player's rating, not one per player. Glicko-2's sequencing lives
       // in `computeGlicko`, which takes the whole set at once.
       const ratingsBefore = await getRatingsFull(authed.map((p) => p.userId!), mode, act, game, query, true);
-      const parts: EloParticipant[] = authed.map((p) => ({
-        userId: p.userId!,
-        alliance: p.alliance,
-        rating: ratingsBefore.get(p.userId!)!,
-      }));
-      updates = computeGlicko(parts, outcome.result.score);
+      const parts: EloParticipant[] = authed.map((p) => {
+        const r = ratingsBefore.get(p.userId!)!;
+        return {
+          userId: p.userId!,
+          alliance: p.alliance,
+          rating: { rating: r.rating, rd: r.rd, vol: r.vol },
+          games: r.games,
+          idleDays: r.idleDays,
+          party: p.party,
+          away: p.away,
+          early: p.early,
+        };
+      });
+      updates = computeGlicko(parts, outcome.result.score, { mode });
+      // a voided player gets nothing written — including the default row the lock seeded
+      const voided = updates.filter((u) => u.voided).map((u) => u.userId);
+      await dropUntouchedRatings(voided, mode, act, game, query);
       for (const u of updates) {
+        if (u.voided) {
+          // the match did not count for this player: nothing is written to their board
+          gamesAfter.set(u.userId, ratingsBefore.get(u.userId)?.games ?? 0);
+          continue;
+        }
         const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game, query);
         gamesAfter.set(u.userId, games);
         // snapshot the post-match rating for THIS SEASON — freezes into the season's final
@@ -260,6 +467,7 @@ export async function persistVersusMatch(
           won: p.alliance === 'red' ? red > blue : blue > red,
           ratingBefore: u ? u.before : null,
           ratingAfter: u ? u.after : null,
+          premade: ranked ? isPremade(p, authed) : null,
         };
       }),
       query,

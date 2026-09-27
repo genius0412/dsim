@@ -4956,6 +4956,72 @@ async function main(): Promise<void> {
       /await tx\(async \(query\)/.test(rankedSrc) && /getRatingsFull\(.*, game, query, true\)/.test(rankedSrc),
     );
 
+    // ---- 2026-09-27 ranked review: what the rating update reads and writes ----------------
+    // idle days come from `updated_at`, games from the row; a voided player's row is not
+    // touched; the premade flag (0056) lands on the participant rows.
+    for (const u of ['rv-a', 'rv-b', 'rv-c', 'rv-d']) await repo.ensureProfile(u, u);
+    await repo.upsertRating('rv-a', '2v2', actC, 1300, 80, 0.06, 'chain');
+    await db.query(
+      `update elo_ratings set updated_at = now() - interval '30 days', games = 12
+        where user_id = 'rv-a' and mode = '2v2' and act = $1 and game = 'chain'`,
+      [actC],
+    );
+    const rv = await repo.getRatingsFull(['rv-a', 'rv-nobody'], '2v2', actC, 'chain');
+    check('ranked review: getRatingsFull reads games and whole idle days off the row',
+      rv.get('rv-a')?.games === 12 && rv.get('rv-a')?.idleDays === 30, JSON.stringify(rv.get('rv-a')));
+    check('ranked review: ...and a player with no row reads games 0, idle 0',
+      rv.get('rv-nobody')?.games === 0 && rv.get('rv-nobody')?.idleDays === 0, JSON.stringify(rv.get('rv-nobody')));
+
+    const rvOutcome = (early: boolean) => ({
+      game: 'chain' as const,
+      config: { kind: 'versus' as const },
+      ranked: true,
+      mode: '2v2' as const,
+      result: { score: { red: 90, blue: 40 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 },
+      replay: { format: 2, balanceVersion: 4, sim: 2, game: 'chain' as const, mode: 'match' as const, seed: 1, ticks: 60, setups: [], tracks: {} },
+      participants: [
+        { ...part('rv-a', 'red'), party: 'rv-tok' },
+        { ...part('rv-b', 'red'), party: 'rv-tok', early, away: early ? 1 : 0 },
+        part('rv-c', 'blue'),
+        part('rv-d', 'blue'),
+      ],
+    });
+    const before = await db.query<{ user_id: string; rating: number; games: number }>(
+      `select user_id, rating, games from elo_ratings where user_id in ('rv-a','rv-c') and act = $1 and game = 'chain' and mode = '2v2'`,
+      [actC],
+    );
+    const rvIds: { matchId?: string } = {};
+    const voidElo = await persistVersusMatch(
+      rvOutcome(true).participants as never, rvOutcome(true) as never, 640, null as unknown as string, true, 'chain', rvIds,
+    );
+    const after = await db.query<{ user_id: string; rating: number; games: number }>(
+      `select user_id, rating, games from elo_ratings where user_id in ('rv-a','rv-b','rv-c') and act = $1 and game = 'chain' and mode = '2v2'`,
+      [actC],
+    );
+    const row = (id: string, rows: { user_id: string; rating: number; games: number }[]) => rows.find((r) => r.user_id === id);
+    check('ranked review: a partner missing from the start leaves the others’ boards untouched',
+      row('rv-a', after.rows)?.rating === row('rv-a', before.rows)?.rating &&
+        row('rv-a', after.rows)?.games === 12 && !row('rv-c', after.rows),
+      JSON.stringify(after.rows));
+    await repo.ensureProfile('rv-charged', 'RvCharged');
+    await repo.chargeRatingForBehaviour('rv-charged', '2v2', actC, 30, 100, 'chain');
+    await repo.dropUntouchedRatings(['rv-charged'], '2v2', actC, 'chain');
+    const charged = await db.query(`select 1 from elo_ratings where user_id = 'rv-charged' and act = $1 and game = 'chain'`, [actC]);
+    check('ranked review: ...but a row a behaviour charge made is history, not a seed, and stays',
+      charged.rows.length === 1);
+    check('ranked review: ...the absentee takes the loss and the game',
+      Number(row('rv-b', after.rows)?.rating) < 1000 && row('rv-b', after.rows)?.games === 1, JSON.stringify(row('rv-b', after.rows)));
+    check('ranked review: ...and the reveal shows the others a zero change, games unchanged',
+      voidElo.filter((e) => e.userId !== 'rv-b').every((e) => e.before === e.after) &&
+        voidElo.find((e) => e.userId === 'rv-a')?.games === 12,
+      JSON.stringify(voidElo));
+    const pm = await db.query<{ user_id: string; premade: boolean | null }>(
+      `select user_id, premade from match_participants where match_id = $1 order by user_id`, [rvIds.matchId],
+    );
+    check('ranked review: 0056 records the premade pair and the solo opponents',
+      pm.rows.length === 4 && pm.rows.every((r) => r.premade === (r.user_id === 'rv-a' || r.user_id === 'rv-b')),
+      JSON.stringify(pm.rows));
+
     // ---- a standing charge takes its DELTA, not a stale absolute score -------------------
     await repo.ensureProfile('st-race', 'StRace');
     await db.query(`insert into account_standing (user_id, score, healed_at) values ('st-race', 50, now())`);

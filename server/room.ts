@@ -55,7 +55,7 @@ import {
 import { sanitizePlayerPatch } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
-import { chargedForParticipation, judgeParticipation } from '../src/standing';
+import { absenceOf, chargedForParticipation, EARLY_ABSENT_TICKS, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
@@ -360,6 +360,14 @@ export interface MatchParticipant {
   /** the full robot config this driver used (for record-board display) */
   spec: RobotSpec;
   assists: AssistConfig;
+  /** RANKED ONLY — what the rating update needs about this driver (see `computeGlicko`):
+   * the challenge token they queued under (from the staged roster), the share of the live
+   * match they were away for (1 = sat AFK), and whether they were missing for the whole
+   * opening window. Absent from a LAN upload or an older caller, which reads as "present,
+   * queued solo" — exactly the old rating. */
+  party?: string;
+  away?: number;
+  early?: boolean;
 }
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
@@ -890,6 +898,9 @@ export class Room {
   private liveTicks = 0;
   private readonly driveTicks = new Map<number, number>();
   private readonly awayTicks = new Map<number, number>();
+  /** away ticks inside the OPENING window only (`EARLY_ABSENT_TICKS`) — a partner missing for
+   *  all of it voids a ranked 2v2 for the rest of the roster (`absenceOf`) */
+  private readonly earlyAwayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
    * game lock). Registered at match begin — and, for a ranked pairing, from the
@@ -2928,6 +2939,9 @@ export class Room {
       // "left the match".
       const away = this.departed.has(r.id) || !this.driverConnected(r.id);
       if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+      if (away && this.liveTicks <= EARLY_ABSENT_TICKS) {
+        this.earlyAwayTicks.set(r.id, (this.earlyAwayTicks.get(r.id) ?? 0) + 1);
+      }
     }
     // a driver the load hold started without is loading, not idle — see `loadingTicks`
     if (this.physics === '3d') {
@@ -3023,6 +3037,7 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: c.player.assists,
+          ...this.rankedPresence(robot.id, c.userId),
         });
       }
       // include authed players who LEFT mid-match (their robot is still in the
@@ -3041,6 +3056,7 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: d.assists,
+          ...this.rankedPresence(robot.id, d.userId),
         });
       }
       this.reportBehaviour(participants);
@@ -3181,6 +3197,23 @@ export class Room {
       game: this.game,
       roomCode: this.code,
     });
+  }
+
+  /**
+   * What the rating update is told about one driver of a RANKED match: their party token
+   * from the staged roster, and how present they were (`absenceOf`). Nothing for any other
+   * room, so a custom game's outcome is exactly what it was.
+   */
+  private rankedPresence(robotId: number, userId?: string): Pick<MatchParticipant, 'party' | 'away' | 'early'> {
+    if (!this.ranked) return {};
+    const party = userId ? this.pendingMatch?.roster.find((r) => r.userId === userId)?.party : undefined;
+    const { away, early } = absenceOf({
+      liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(robotId) ?? 0)),
+      driveTicks: this.driveTicks.get(robotId) ?? 0,
+      awayTicks: this.awayTicks.get(robotId) ?? 0,
+      earlyAwayTicks: this.earlyAwayTicks.get(robotId) ?? 0,
+    });
+    return { party, away, early };
   }
 
   /** the robot a DEPARTED user was driving (their client is gone, so `robotOf` cannot
@@ -3422,6 +3455,7 @@ export class Room {
     this.liveTicks = 0;
     this.driveTicks.clear();
     this.awayTicks.clear();
+    this.earlyAwayTicks.clear();
     this.loadingTicks.clear();
     this.holdUntil = 0;
     // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in

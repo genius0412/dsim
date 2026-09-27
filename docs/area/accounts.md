@@ -514,11 +514,47 @@ cancels the row; dismiss stays a silent clear), the sender SEES their outgoing c
 (`listFriends`'s `snt` CTE → `sent`) and can cancel it, and one live challenge per direction
 (`inviteToRoom` replaces — stacked rated rows would let someone accept an abandoned token).
 `src/ui/challenge.ts` `challengeOf` is the ONE place deciding lobby-vs-queue. Tests:
-**`npm run test:mm`** (`scripts/mmsmoke.ts`, 186 checks, injected clock + `stage`, no DB) —
+**`npm run test:mm`** (`scripts/mmsmoke.ts`, injected clock + `stage`, no DB) —
 party pairing fails SILENTLY, so it is covered there rather than by a live two-account run.
 NOTE `enqueue` matches synchronously but STAGES asynchronously; assertions must await a
 microtask flush. Rated friend games are farmable by a colluding pair and deliberately
-unmitigated (as chess.com); damp repeat-opponent deltas in `ranked.ts` if it shows up.
+unmitigated (as chess.com), except that a rated 1v1 challenge takes no margin multiplier
+(below); damp repeat-opponent deltas in `ranked.ts` if it shows up.
+
+**RATING ADJUSTMENTS AND 2v2 BALANCE (2026-09-27, owner-approved, NO ranked reset).** Plain
+Glicko-2 with one game per rating period had three measured failures, and each fix is applied
+when a rating is READ or COMPUTED, never by rewriting stored rows:
+- **Placement luck.** RD fell below 180 by the end of placement and volatility NEVER moves
+  with one-game periods (0.060 through 39 straight wins). `effectiveRd` holds RD at
+  `max(60, 250 − 9.5·games)` (gone by game 20) and grows it after 14 idle days, capped at
+  150. It reads `games` and `updated_at`, so an existing account is affected from its next
+  game. A streak rule was measured and REJECTED by the owner as exploitable; do not add one.
+- **Margin.** `marginMultiplier`: ×0.8 for a one-point result up to ×1.5 at
+  `DECISIVE_MARGIN` 0.30 of `|R−B|/(R+B)` — ONE number for every game (owner: 550–300 in
+  BIOBUZZ is "massive"). The part above ×1 is scaled by `2·(1 − E_winner)` (538's damping,
+  so favourites don't inflate). A rated 1v1 challenge (one token on both alliances) is ×1.
+- **2v2 carry.** The EXPECTED score is the player's ALLIANCE mean against the other's; their
+  own rating moves, sized by their own RD. 1v1 is unchanged by this. A premade whose partners
+  are more than 400 apart moves at half (the boosting guard team expectation needs).
+- **Partner absence** (`MatchParticipant.away/early/party`, measured by the room —
+  `absenceOf` in `src/standing.ts`). A driver away for ALL of the first 20 s of live play, or a
+  seat nobody filled, VOIDS a ranked 2v2 for everyone else: nothing is written to their board
+  (the lock's seed row is dropped, `dropUntouchedRatings`) and the reveal shows ±0; the
+  absentee takes a loss. Later, a teammate's LOSS is scaled by `clamp(1 − 2a, 0, 1)` and the
+  opponents' WIN by `1 − a`. **Never protected by your own premade** (League / Overwatch 2's
+  rule); a blip under 5% is not an absence. The leaver's deterrent stays in STANDING, not
+  rating.
+- **Matchmaking.** 1v1 keeps the span gate. A 2v2 is gated on the TEAMS: the best
+  party-respecting split (`bestSplit`) must be within `|E_red − 0.5| ≤ 0.10`, widening every
+  3 s and unbounded at 6 s. `bestSplit` ALWAYS runs: an unplaced 2v2 player is balanced on
+  their placed 1v1 rating (`QueueEntry.seed`), else 1000, and the gate is off unless all four
+  have a real number. A new entry sits out while its rating read is in flight, up to 1.5 s.
+  A premade anchor takes another premade before two solos (a tie-break after latency).
+- **`match_participants.premade`** (0056): true / false for a ranked row, NULL for custom and
+  older rows. It exists to decide, at a future act rollover, whether premades need their own
+  queue (owner, 2026-09-27: not now, the pool is too small).
+Tests: `npm test` (the ranked blocks in `scripts/smoke.ts`, incl. a real room reporting
+presence), `npm run test:mm`, `npm run dbtest` ("ranked review:").
 
 
 ---

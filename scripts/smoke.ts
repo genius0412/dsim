@@ -365,7 +365,7 @@ import {
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
-import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
+import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport, type MatchOutcome } from '../server/room';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
@@ -376,14 +376,18 @@ import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blockli
 import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
 import { bestHost } from '../server/regions';
 import type { PendingMatch } from '../server/matchTypes';
-import { computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant } from '../server/ranked';
+import {
+  computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant,
+  marginMultiplier, effectiveRd, isPremade, MOV_MIN, MOV_MAX, DECISIVE_MARGIN, RD_FLOOR_MIN,
+  IDLE_RD_CAP, RD_MAX,
+} from '../server/ranked';
 import { isReportReason, REPORT_REASONS } from '../src/report';
 import {
   STANDING_MAX, STANDING_COST, STANDING_TIERS, REPORT_CAP, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH,
   COOLDOWN_LADDER, RATING_LADDER, WINDOW_HOURS, ladderRung,
   tierOf, healed, clampScore, repeatMult, applyStandingEvent, queueLocked, lockRemaining,
   judgeParticipation, MIN_JUDGED_TICKS, AFK_DRIVE_FRACTION, LEAVE_AWAY_FRACTION,
-  RED_CARD_MULT, chargedForParticipation,
+  RED_CARD_MULT, chargedForParticipation, absenceOf, EARLY_ABSENT_TICKS,
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
@@ -18143,6 +18147,196 @@ const recordDrive: CommandSource = (tick) => {
   check('favored winner gains modestly', aT.after - aT.before > 0 && aT.after - aT.before < 40, `+${aT.after - aT.before}`);
 }
 
+// ---- ranked rating adjustments (2026-09-27 ranked review) -----------------
+// Team expectation, the margin multiplier, the calibration/idle RD, wide premades and
+// partner absence. All pure (`computeGlicko`, `marginMultiplier`, `effectiveRd`,
+// `absenceOf`), so these are exact. Established players (games 100, RD 70) unless a check
+// is about calibration, so the floor stays out of the way.
+{
+  const P = (
+    userId: string,
+    alliance: 'red' | 'blue',
+    rating = 1200,
+    extra: Partial<EloParticipant> = {},
+  ): EloParticipant => ({ userId, alliance, rating: { rating, rd: 70, vol: 0.06 }, games: 100, ...extra });
+  const d = (us: ReturnType<typeof computeGlicko>, id: string): number => {
+    const u = us.find((x) => x.userId === id)!;
+    return u.after - u.before;
+  };
+
+  // MARGIN: the multiplier's shape
+  const kBig = marginMultiplier(550, 300, 0.5);
+  check('margin: 550–300 (a decisive BIOBUZZ win) pays close to the full ×1.5',
+    kBig > 1.45 && kBig <= MOV_MAX, kBig.toFixed(3));
+  check('margin: at or past DECISIVE_MARGIN it is exactly MOV_MAX',
+    marginMultiplier(100, 0, 0.5) === MOV_MAX && marginMultiplier(65, 35, 0.5) === MOV_MAX,
+    `${marginMultiplier(100, 0, 0.5)} / ${marginMultiplier(65, 35, 0.5)} (m=${DECISIVE_MARGIN})`);
+  check('margin: a one-point win is close to ×0.8', Math.abs(marginMultiplier(301, 300, 0.5) - MOV_MIN) < 0.01,
+    marginMultiplier(301, 300, 0.5).toFixed(3));
+  check('margin: a draw is ×1', marginMultiplier(40, 40, 0.5) === 1);
+  check('margin: 0–0 is a draw, not a division by zero', marginMultiplier(0, 0, 0.5) === 1);
+  check('margin: a wider margin never pays less',
+    marginMultiplier(100, 90, 0.5) < marginMultiplier(100, 70, 0.5) &&
+      marginMultiplier(100, 70, 0.5) <= marginMultiplier(100, 40, 0.5));
+  const kFav = marginMultiplier(550, 300, 0.9);
+  check('margin: a 90% favourite gets a fifth of the bonus (538 damping)',
+    Math.abs(kFav - (1 + (kBig - 1) * 0.2)) < 1e-9, kFav.toFixed(3));
+  check('margin: damping never pushes a result below ×1 or a close one above it',
+    marginMultiplier(550, 300, 0.99) >= 1 && marginMultiplier(301, 300, 0.1) < 1);
+
+  // 1v1 is plain Glicko-2 times the margin
+  const one = computeGlicko([P('a', 'red'), P('b', 'blue')], { red: 550, blue: 300 });
+  const plain = glicko2Update({ rating: 1200, rd: 70, vol: 0.06 }, 1200, 70, 1).rating - 1200;
+  check('1v1: team expectation changes nothing — a 1v1 is plain Glicko-2 × the margin',
+    Math.abs(d(one, 'a') - Math.round(plain * kBig)) <= 1, `${d(one, 'a')} vs ${(plain * kBig).toFixed(1)}`);
+  const close = computeGlicko([P('a', 'red'), P('b', 'blue')], { red: 301, blue: 300 });
+  check('1v1: a blowout win gains more than a one-point win', d(one, 'a') > d(close, 'a'),
+    `${d(one, 'a')} vs ${d(close, 'a')}`);
+  check('1v1: and a blowout loss costs more than a one-point loss', d(one, 'b') < d(close, 'b'),
+    `${d(one, 'b')} vs ${d(close, 'b')}`);
+  // a rated 1v1 challenge (one token on both alliances) takes no margin multiplier
+  const chal = computeGlicko(
+    [P('a', 'red', 1200, { party: 'tok' }), P('b', 'blue', 1200, { party: 'tok' })],
+    { red: 550, blue: 300 },
+  );
+  check('1v1: a rated friend challenge is ×1 whatever the margin (no blowout farming)',
+    Math.abs(d(chal, 'a') - Math.round(plain)) <= 1, `${d(chal, 'a')} vs ${plain.toFixed(1)}`);
+
+  // TEAM EXPECTATION: a carry and the carried move together
+  const carryLoss = computeGlicko(
+    [P('c', 'red', 1500), P('w', 'red', 900), P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 50, blue: 60 },
+  );
+  check('2v2: a 1500 and a 900 losing to 1200+1200 lose the SAME amount (equal RD)',
+    d(carryLoss, 'c') === d(carryLoss, 'w') && d(carryLoss, 'c') < 0,
+    `${d(carryLoss, 'c')} / ${d(carryLoss, 'w')}`);
+  check('2v2: ...and the carry no longer pays the old −23-for-an-even-match',
+    d(carryLoss, 'c') > -20, `${d(carryLoss, 'c')}`);
+  const carryWin = computeGlicko(
+    [P('c', 'red', 1500), P('w', 'red', 900), P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 60, blue: 50 },
+  );
+  check('2v2: a win is shared the same way', d(carryWin, 'c') === d(carryWin, 'w') && d(carryWin, 'c') > 0,
+    `${d(carryWin, 'c')} / ${d(carryWin, 'w')}`);
+  const mixedRd = computeGlicko(
+    [P('c', 'red', 1400), P('n', 'red', 1000, { rating: { rating: 1000, rd: 250, vol: 0.06 }, games: 3 }),
+      P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 50, blue: 60 },
+  );
+  check('2v2: the less certain teammate absorbs more of the correction',
+    d(mixedRd, 'n') < d(mixedRd, 'c') && d(mixedRd, 'c') < 0, `${d(mixedRd, 'n')} / ${d(mixedRd, 'c')}`);
+
+  // CALIBRATION + IDLE RD
+  check('rd: a fresh board is held at 250 or more', effectiveRd(100, 0) === 250, `${effectiveRd(100, 0)}`);
+  check('rd: the floor is gone by game 20', effectiveRd(100, 20) === 100, `${effectiveRd(100, 20)}`);
+  check('rd: and never below RD_FLOOR_MIN', effectiveRd(40, 500) === RD_FLOOR_MIN, `${effectiveRd(40, 500)}`);
+  check('rd: no games count given ⇒ no floor (every older caller)', effectiveRd(70) === 70);
+  check('rd: two idle weeks change nothing', effectiveRd(70, 100, 14) === 70);
+  const idle60 = effectiveRd(70, 100, 60);
+  check('rd: two idle months loosen it, under the cap', idle60 > 70 && idle60 < IDLE_RD_CAP, idle60.toFixed(1));
+  check('rd: a long absence stops at IDLE_RD_CAP', effectiveRd(70, 100, 5000) === IDLE_RD_CAP);
+  check('rd: idle growth never LOWERS a new account’s 350', effectiveRd(350, 0, 5000) === RD_MAX);
+  const early6 = computeGlicko(
+    [P('a', 'red', 1200, { rating: { rating: 1200, rd: 90, vol: 0.06 }, games: 6 }), P('b', 'blue')],
+    { red: 60, blue: 50 },
+  );
+  const settled6 = computeGlicko(
+    [P('a', 'red', 1200, { rating: { rating: 1200, rd: 90, vol: 0.06 }, games: 100 }), P('b', 'blue')],
+    { red: 60, blue: 50 },
+  );
+  check('rd: a player six games in moves more than an established one on the same result',
+    d(early6, 'a') > d(settled6, 'a') * 1.5, `${d(early6, 'a')} vs ${d(settled6, 'a')}`);
+
+  // WIDE PREMADE
+  const noParty = computeGlicko(
+    [P('p1', 'red', 1800), P('p2', 'red', 1000), P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  const wide = computeGlicko(
+    [P('p1', 'red', 1800, { party: 'pp' }), P('p2', 'red', 1000, { party: 'pp' }),
+      P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  check('premade: partners 800 apart move at half',
+    Math.abs(d(wide, 'p2') - d(noParty, 'p2') / 2) <= 1, `${d(wide, 'p2')} vs ${d(noParty, 'p2')}`);
+  check('premade: ...and their opponents are unaffected', d(wide, 'x') === d(noParty, 'x'));
+  const narrow = computeGlicko(
+    [P('p1', 'red', 1450, { party: 'pp' }), P('p2', 'red', 1350, { party: 'pp' }),
+      P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  const narrowSolo = computeGlicko(
+    [P('p1', 'red', 1450), P('p2', 'red', 1350), P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  check('premade: a narrow premade rates exactly like two solos', d(narrow, 'p1') === d(narrowSolo, 'p1'));
+
+  // PARTNER ABSENCE (2v2)
+  const roster = (red2: Partial<EloParticipant>, red1: Partial<EloParticipant> = {}): EloParticipant[] => [
+    P('r1', 'red', 1200, red1), P('r2', 'red', 1200, red2), P('b1', 'blue'), P('b2', 'blue'),
+  ];
+  const lost = { red: 50, blue: 60 };
+  const base = computeGlicko(roster({}), lost);
+  const half = computeGlicko(roster({ away: 0.5 }), lost);
+  check('absence: a partner gone half the match waives the loss', d(half, 'r1') === 0, `${d(half, 'r1')}`);
+  check('absence: ...the one who left takes the full loss', d(half, 'r2') === d(base, 'r2'));
+  check('absence: ...and the opponents’ win over a short-handed alliance is halved',
+    Math.abs(d(half, 'b1') - d(base, 'b1') / 2) <= 1, `${d(half, 'b1')} vs ${d(base, 'b1')}`);
+  const quarter = computeGlicko(roster({ away: 0.25 }), lost);
+  check('absence: a partner gone a quarter of it halves the loss',
+    Math.abs(d(quarter, 'r1') - d(base, 'r1') / 2) <= 1, `${d(quarter, 'r1')} vs ${d(base, 'r1')}`);
+  const blip = computeGlicko(roster({ away: 0.03 }), lost);
+  check('absence: a connection blip is not an absence', d(blip, 'r1') === d(base, 'r1') && d(blip, 'b1') === d(base, 'b1'));
+  const ownPremade = computeGlicko(roster({ away: 0.5, party: 'pp' }, { party: 'pp' }), lost);
+  check('absence: YOUR OWN premade walking out protects nothing', d(ownPremade, 'r1') === d(base, 'r1'),
+    `${d(ownPremade, 'r1')} vs ${d(base, 'r1')}`);
+  const bothGone = computeGlicko(roster({ away: 0.5 }, { away: 0.5 }), lost);
+  check('absence: somebody away as long as their partner is not protected by them',
+    d(bothGone, 'r1') === d(base, 'r1'), `${d(bothGone, 'r1')}`);
+  const wonAnyway = computeGlicko(roster({ away: 0.5 }), { red: 60, blue: 50 });
+  const baseWin = computeGlicko(roster({}), { red: 60, blue: 50 });
+  check('absence: winning 1v2 keeps the full win', d(wonAnyway, 'r1') === d(baseWin, 'r1'));
+  check('absence: and the opponents losing to one robot lose in full', d(wonAnyway, 'b1') === d(baseWin, 'b1'));
+
+  // EARLY ABSENCE VOIDS
+  const voided = computeGlicko(roster({ early: true, away: 1 }), { red: 60, blue: 50 });
+  const others = voided.filter((u) => u.userId !== 'r2');
+  check('void: a partner missing from the start voids the match for the other three',
+    others.length === 3 && others.every((u) => u.voided && u.after === u.before), JSON.stringify(others.map((u) => u.after - u.before)));
+  check('void: a voided player’s stored state is untouched (RD too)',
+    others.every((u) => u.state.rd === 70 && u.state.rating === 1200));
+  check('void: the absentee concedes, even though their alliance won', d(voided, 'r2') < 0 && !voided.find((u) => u.userId === 'r2')!.voided,
+    `${d(voided, 'r2')}`);
+  const shortSeat = computeGlicko([P('r1', 'red'), P('b1', 'blue'), P('b2', 'blue')], lost, { mode: '2v2' });
+  check('void: a 2v2 with a seat nobody ever filled is voided for everyone',
+    shortSeat.length === 3 && shortSeat.every((u) => u.voided), `${shortSeat.map((u) => u.voided).join(',')}`);
+  const oneEarly = computeGlicko([P('a', 'red', 1200, { early: true }), P('b', 'blue')], { red: 50, blue: 60 });
+  check('void: 1v1 has no void rule (the opponent is simply handed the win)', oneEarly.every((u) => !u.voided));
+
+  // WHAT THE ROOM REPORTS
+  const L = 3 * 60 * 60; // a three-minute match
+  const present = absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: 0, earlyAwayTicks: 0 });
+  check('presence: a driver who played is away 0, not early', present.away === 0 && !present.early);
+  const gone = absenceOf({ liveTicks: L, driveTicks: L / 4, awayTicks: L / 2, earlyAwayTicks: 0 });
+  check('presence: away half the match reads 0.5', gone.away === 0.5, `${gone.away}`);
+  const afk = absenceOf({ liveTicks: L, driveTicks: 10, awayTicks: 0, earlyAwayTicks: 0 });
+  check('presence: sitting AFK reads as fully away', afk.away === 1, `${afk.away}`);
+  check('presence: missing the whole opening window is EARLY',
+    absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: EARLY_ABSENT_TICKS, earlyAwayTicks: EARLY_ABSENT_TICKS }).early);
+  check('presence: back one tick before it closes is not',
+    !absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: EARLY_ABSENT_TICKS - 1, earlyAwayTicks: EARLY_ABSENT_TICKS - 1 }).early);
+  check('presence: a match that never went live reports nothing',
+    absenceOf({ liveTicks: 0, driveTicks: 0, awayTicks: 0, earlyAwayTicks: 0 }).away === 0);
+
+  // THE PREMADE FLAG written to match_participants (0056)
+  const pv = (userId: string, alliance: 'red' | 'blue', party?: string) => ({ userId, alliance, party });
+  const four = [pv('a', 'red', 't'), pv('b', 'red', 't'), pv('c', 'blue'), pv('d', 'blue')];
+  check('premade flag: two partners on one alliance are premades', isPremade(four[0], four) && isPremade(four[1], four));
+  check('premade flag: their solo opponents are not', !isPremade(four[2], four));
+  const chal1 = [pv('a', 'red', 't'), pv('b', 'blue', 't')];
+  check('premade flag: a rated 1v1 challenge is not a premade (the token is the opponent)', !isPremade(chal1[0], chal1));
+}
+
 
 // ---- ACCOUNT STANDING: competitive integrity, separate from skill -----------
 // Pure derivation, so these are exact. The rules being asserted are the PRODUCT ones — the
@@ -18597,6 +18791,59 @@ const recordDrive: CommandSource = (tick) => {
     `${eloOf(starts()[1], 0)} / ${eloOf(starts()[1], 1)}`,
   );
   room.advanceForTest(1); // stops the rematch's real-time loop
+}
+
+// ---- a RANKED outcome tells the rating update who was there (2026-09-27) ----
+// `computeGlicko` voids or reduces a result on a partner's absence, and it can only do that
+// on what the ROOM measured: each driver's share of the live match away, whether they missed
+// the whole opening window, and the party token from the staged roster.
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, teamNumber: number): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: {
+      clientId: id, name: id, teamName: 'T', teamNumber, alliance: 'red', startIndex: 0, ready: false,
+      spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  let seen: MatchOutcome | null = null;
+  const room = new Room('smoke-presence', () => {}, { kind: 'versus' }, (o) => {
+    seen = o;
+  });
+  room.applyPending({
+    code: 'iad-presence',
+    hostRegion: 'iad',
+    mode: '1v1',
+    seed: 7,
+    ranked: true,
+    roster: [
+      { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200, party: 'tok-p' },
+      { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+    ],
+  });
+  room.add(mkC('red', 'u-red', 111));
+  room.add(mkC('blue', 'u-blue', 222));
+  room.maybeStartRanked();
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  // blue's connection drops before the match goes live and stays down (inside the grace)
+  room.detach('blue');
+  room.advanceForTest(EARLY_ABSENT_TICKS + 600);
+  forceRoomToPost(room);
+  const out = seen as MatchOutcome | null;
+  const red = out?.participants.find((p) => p.userId === 'u-red');
+  const blue = out?.participants.find((p) => p.userId === 'u-blue');
+  check('presence: a ranked outcome carries the party token from the staged roster', red?.party === 'tok-p' && blue?.party === undefined,
+    `${red?.party} / ${blue?.party}`);
+  check('presence: the driver who stayed is present and not early', red?.away === 0 && red?.early === false,
+    `${red?.away} ${red?.early}`);
+  check('presence: the one gone from the start reads early and away', blue?.early === true && (blue?.away ?? 0) > 0.5,
+    `${blue?.away} ${blue?.early}`);
 }
 
 // ---- pre-match STRATEGY window: reveal / re-pick / ready gate / redaction ----

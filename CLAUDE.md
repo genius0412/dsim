@@ -108,7 +108,7 @@ future session read it.
     invalidate one entry rather than all of them, and a stale table only packs worse.
   - **~22s is the FLOOR** at any width: one block costs 22.4s on its own and a block cannot be
     split across processes. More shards past 12 buy nothing.
-- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 197 checks, no DB or
+- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 222 checks, no DB or
   sockets — injected clock + `stage`). Run after ANY change to `server/matchmaking.ts`. Kept
   out of `npm test` on purpose, same reasoning as `contrast`: a red `npm test` must keep
   meaning "physics broke".

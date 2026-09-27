@@ -122,6 +122,41 @@ export function skillCeiling(waitedMs: number, expandBumps: number): number {
 }
 
 /**
+ * THE 2v2 GATE IS ON THE TEAMS, NOT ON THE PLAYERS (2026-09-27 ranked review).
+ *
+ * A 2v2 is rated alliance against alliance (`computeGlicko` takes each side's MEAN), so the
+ * question a 2v2 pairing has to answer is how far the better split of the four sits from an
+ * even match — `|E_red − 0.5|` — and not how far apart the best and worst player are.
+ * (1500, 1000) against (1500, 1000) is a dead-even game the old span gate refused for six
+ * seconds; (1500, 1450) against (1050, 1000) is a rout it let straight through.
+ *
+ * 0.10 is a 60/40 match, about a 70-point gap between the alliance means. It widens on the
+ * radius clock and goes unbounded at `SKILL_OPEN_STEPS`, like the 1v1 band, so it can delay a
+ * match and never prevent one. 1v1 keeps the span gate: with one player a side the span IS
+ * the team gap.
+ */
+export const TEAM_BAND_BASE = 0.1;
+export const TEAM_BAND_STEP = 0.1;
+
+export function teamBandCeiling(waitedMs: number, expandBumps: number): number {
+  const steps = Math.floor(Math.max(0, waitedMs) / RADIUS_INTERVAL_MS) + expandBumps;
+  return steps >= SKILL_OPEN_STEPS ? Infinity : TEAM_BAND_BASE + TEAM_BAND_STEP * steps;
+}
+
+/**
+ * How long a new entry is held out of pairing while its rating read is in flight.
+ *
+ * Without it, the first second of the queue paired people with no number at all, and a 2v2
+ * with no numbers cannot be balanced. The read usually lands well inside this; a database
+ * that does not answer costs a second and a half, then the entry pairs unrated as it always
+ * could.
+ */
+export const RATING_WAIT_MS = 1500;
+
+/** Glicko-2's rating scale (`server/ranked.ts` — not imported: that module brings the DB) */
+const GLICKO_SCALE = 173.7178;
+
+/**
  * The rating spread of a trial group: max − min over its RATED members.
  *
  * A max over members rather than a pairwise distance, mirroring how `spread` treats
@@ -243,6 +278,14 @@ export interface QueueEntry {
    * match on and still has to get a game.
    */
   placed?: boolean;
+  /**
+   * A number to BALANCE on when this board has none: an unplaced 2v2 player's PLACED 1v1
+   * rating. Used only to split alliances and by the 2v2 team gate, never shown and never
+   * written anywhere. Server-stamped with `rating`, for the same reason.
+   */
+  seed?: number;
+  /** the rating read is in flight — see `RATING_WAIT_MS` */
+  ratingPending?: boolean;
   /** DEV FALLBACK only: told which local Room this connection landed in */
   onRoom?: (room: Room) => void;
 }
@@ -264,7 +307,7 @@ export type RatingFn = (
   userId: string,
   mode: QueueMode,
   game: GameId | undefined,
-) => Promise<{ rating: number; placed: boolean } | null>;
+) => Promise<{ rating: number; placed: boolean; seed?: number } | null>;
 
 export interface MatchmakerDeps {
   /** injectable clock (tests control widening); when set, the auto-widen timer is off */
@@ -303,7 +346,14 @@ export class Matchmaker {
             try {
               const act = await actFor(game);
               const s = await getSkill(userId, mode, act, game);
-              return { rating: s.rating, placed: s.placed };
+              // an unplaced 2v2 player is balanced on their 1v1 rating when they have one:
+              // the 2v2 board starts empty every act, and most of a young pool is unplaced on it
+              let seed: number | undefined;
+              if (!s.placed && mode === '2v2') {
+                const other = await getSkill(userId, '1v1', act, game);
+                if (other.placed) seed = other.rating;
+              }
+              return { rating: s.rating, placed: s.placed, seed };
             } catch {
               return null; // fail open — see RatingFn
             }
@@ -350,17 +400,23 @@ export class Matchmaker {
     const read = this.rating;
     if (!read || !entry.userId) return;
     const { id, mode, game, userId } = entry;
-    void read(userId, mode, game)
-      .then((s) => {
-        if (!s) return; // unknown skill — leave unrated, which means "do not gate"
-        const live = this.queues[mode].find((e) => e.id === id);
-        if (!live || live.userId !== userId) return; // left, or re-queued since
+    entry.ratingPending = true;
+    // Whatever the read did — a rating, null, a throw — the entry stops waiting on it and gets
+    // a pairing attempt NOW rather than at the next tick: it may have a partner it could not
+    // be matched to while it waited.
+    const settle = (s: { rating: number; placed: boolean; seed?: number } | null): void => {
+      const live = this.queues[mode].find((e) => e.id === id);
+      if (!live || live.userId !== userId) return; // left, or re-queued since
+      live.ratingPending = false;
+      if (s) {
         live.rating = s.rating;
         live.placed = s.placed;
-        // a rating that lands between ticks should not wait up to a second for the
-        // next one — this entry may now have a partner it could not be matched to
-        this.tryMatch(mode);
-      })
+        live.seed = s.seed;
+      } // else unknown skill — leave unrated, which means "do not gate"
+      this.tryMatch(mode);
+    };
+    void read(userId, mode, game)
+      .then(settle, () => settle(null))
       .catch(() => {
         /* fail open: an unrated entry pairs on latency alone */
       });
@@ -445,6 +501,11 @@ export class Matchmaker {
     return skillCeiling(now - e.enqueuedAt, e.expandBumps);
   }
 
+  /** this entry's 2v2 team-balance tolerance (same clock, same `noWiden` reasoning) */
+  private teamBandOf(e: QueueEntry, now: number): number {
+    return teamBandCeiling(now - e.enqueuedAt, e.expandBumps);
+  }
+
   private tryMatch(mode: QueueMode): void {
     let m = this.findMatch(mode);
     while (m) {
@@ -511,10 +572,14 @@ export class Matchmaker {
     const need = QUEUE_NEED[mode];
     const units = this.units(mode);
     const now = this.now();
+    // an entry whose rating read is still in flight sits out, for at most RATING_WAIT_MS
+    const waiting = (u: QueueEntry[]): boolean =>
+      u.some((e) => e.ratingPending && now - e.enqueuedAt < RATING_WAIT_MS);
     for (let i = 0; i < units.length; i++) {
       const anchor = units[i];
       if (anchor.length > need) continue; // malformed party — never stage it
       if (!partyReady(anchor)) continue; // still waiting on its other member
+      if (waiting(anchor)) continue;
       const group = [...anchor];
       if (anchor.some((e) => e.partyOnly)) {
         // a CLOSED party (rated 1v1): it is the whole match or it waits. No
@@ -545,8 +610,10 @@ export class Matchmaker {
       // then never be found once the radius widened, and a PARTY whose members all sit
       // in the anchor's region is a zero-spread candidate that lives in a different pool.
       let homeRegion = freeRegion(anchor);
+      // a premade anchor prefers another premade over two solos (see the comparison below)
+      const anchorParty = anchor.length > 1;
       while (group.length < need) {
-        let pick: { j: number; unit: QueueEntry[]; spread: number; span: number } | null = null;
+        let pick: { j: number; unit: QueueEntry[]; spread: number; pm: number; span: number } | null = null;
         for (let j = 0; j < units.length; j++) {
           if (taken.has(j)) continue;
           const cand = units[j];
@@ -554,6 +621,7 @@ export class Matchmaker {
           if (cand.some((e) => e.partyOnly)) continue;
           // and a half-arrived party is not available to be taken
           if (!partyReady(cand)) continue;
+          if (waiting(cand)) continue;
           // all-or-nothing: a party that doesn't fit in the remaining slots is skipped
           if (group.length + cand.length > need) continue;
           // never pair across compatibility buckets (channel + build) — different
@@ -576,8 +644,25 @@ export class Matchmaker {
           // first and only then asked whether the match would be one-sided, so a
           // same-region opponent is never passed over for a better-rated distant one.
           // Both schedules saturate together at 6s, so neither gate outlives the other.
-          const span = ratingSpan(group, cand);
-          if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
+          //
+          // 1v1 gates on the rating SPAN. A 2v2 gates on the TEAMS, and only once the
+          // candidate completes the four (`TEAM_BAND_BASE`); until then `span` only orders
+          // the fill, so similar players still tend to be drawn together.
+          let span = ratingSpan(group, cand);
+          if (mode === '1v1') {
+            if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
+          } else if (group.length + cand.length === need) {
+            const trial = [...group, ...cand];
+            const split = bestSplit(allianceOrder(trial));
+            if (split.known) {
+              let band = Infinity;
+              for (const e of trial) band = Math.min(band, this.teamBandOf(e, now));
+              if (split.dev > band) continue;
+            }
+            // among completing candidates the more EVEN match wins the tie
+            span = split.dev;
+          }
+          const pm = anchorParty && cand.length > 1 ? 0 : 1;
           // STRICTLY closer to displace the incumbent, so an equally-close unit never
           // jumps the queue ahead of one that has been waiting longer. THE TIEBREAK IS
           // WRITTEN OUT rather than left to iteration order, because roster order is
@@ -587,13 +672,17 @@ export class Matchmaker {
           // inside one region every spread is 0, so today's nearest-first degenerates to
           // pure FIFO and skill fills a total order that was previously arbitrary. A
           // strict refinement — it never reorders a pair that spread alone separated.
+          // PREMADE AGAINST PREMADE comes right after latency: when a party anchors the group
+          // and another eligible party exists, it is taken before two solos. Only ever a
+          // tie-break among candidates that passed every gate, so it never adds a wait.
           if (
             !pick ||
             spread < pick.spread ||
-            (spread === pick.spread && span < pick.span) ||
-            (spread === pick.spread && span === pick.span && j < pick.j)
+            (spread === pick.spread && pm < pick.pm) ||
+            (spread === pick.spread && pm === pick.pm && span < pick.span) ||
+            (spread === pick.spread && pm === pick.pm && span === pick.span && j < pick.j)
           ) {
-            pick = { j, unit: cand, spread, span };
+            pick = { j, unit: cand, spread, pm, span };
           }
         }
         if (!pick) break;
@@ -666,7 +755,7 @@ export class Matchmaker {
 
   /** stage the roster for the host region + tell each client to reconnect there */
   private async assign(mode: QueueMode, rawGroup: QueueEntry[], hostRegion: string): Promise<void> {
-    const group = balanceAlliances(allianceOrder(rawGroup));
+    const group = bestSplit(allianceOrder(rawGroup)).group;
     const half = group.length / 2;
     const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
     const code = `${hostRegion}-${mode}${roomSeq++}${rand6()}`;
@@ -687,6 +776,8 @@ export class Matchmaker {
         game: e.game,
         // ...and the physics, the same way and for the same reason (no schema column)
         physics: Matchmaker.stagedPhysics(e.game),
+        // ...and the party token, which the rating update reads at match end
+        party: e.party,
       })),
     );
     await this.stage!({
@@ -721,7 +812,7 @@ export class Matchmaker {
    * STRATEGY window runs in dev too — dev clients may be anonymous, so synthesize a
    * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, rawGroup: QueueEntry[]): void {
-    const group = balanceAlliances(allianceOrder(rawGroup));
+    const group = bestSplit(allianceOrder(rawGroup)).group;
     const code = `mm-${mode}-${roomSeq++}`;
     const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus', game: group[0].game }, persistMatch, undefined, undefined, persistDodges, (b) => void persistBehaviour(b));
     this.rooms.add(room);
@@ -867,36 +958,38 @@ export class Matchmaker {
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
 
+/** the number an entry is balanced on: its rating when placed on this board, else its seed
+ *  (an unplaced 2v2 player's placed 1v1 rating), else nothing known */
+export function mmNumber(e: QueueEntry): number | undefined {
+  if (e.rating !== undefined && e.placed) return e.rating;
+  return e.seed;
+}
+
 /**
- * EVEN THE TWO ALLIANCES UP, once the group is chosen.
+ * EVEN THE TWO ALLIANCES UP, once the group is chosen, and say how even it came out.
  *
- * `ratingSpan` gates how wide a MATCH may be, and cannot say anything about how that
- * width is distributed across the two sides. Both of these have a span of 500:
+ * The split is positional (`i < half` is red), so this only ever SWAPS a red index with a
+ * blue one, after `allianceOrder`, and never moves a player who belongs to a PARTY: keeping a
+ * premade on one alliance is the whole point of `allianceOrder`.
  *
- *   (1500, 1450) vs (1050, 1000)   — a rout
- *   (1500, 1000) vs (1500, 1000)   — dead even
+ * It picks the split whose alliance MEANS are closest, which for two a side is the split
+ * closest to an even match under the rating model (`computeGlicko` rates alliance mean
+ * against alliance mean). `dev` is that match's `|E_red − 0.5|`; `known` says every player
+ * had a real number (`mmNumber`), which is when the 2v2 gate may act on `dev`.
  *
- * so 2v2 needs a second, separate step. This one does not choose WHO plays — that is
- * settled — only which side of a decided match each player stands on, which is free.
- *
- * It runs AFTER `allianceOrder` and preserves everything that function established: the
- * split is positional (`i < half` is red), so this only ever SWAPS a red index with a
- * blue one, and it refuses to move a player who belongs to a PARTY. Keeping a premade
- * on one alliance is the whole point of `allianceOrder`, and a balance pass that broke
- * it would silently undo the feature it runs after.
- *
- * Only for a full 2v2 of placed players. With anyone unrated there is no number to
- * balance on, and inventing one from the 1000 default would put unplaced players on a
- * side for a reason that is not real.
+ * IT ALWAYS RUNS, unrated players included, at 1000. It used to return early the moment
+ * anyone was unplaced, and the 2v2 board starts empty every act, so in a young pool it almost
+ * never ran. Splitting two unknowns evenly is at worst neutral; refusing to split the KNOWN
+ * players because an unknown was present was the harm. Only the GATE stays off without
+ * numbers, so a missing rating still delays nobody.
  */
-function balanceAlliances(group: QueueEntry[]): QueueEntry[] {
-  const half = group.length / 2;
-  if (group.length !== 4) return group; // 1v1 has nothing to distribute
-  if (group.some((e) => e.rating === undefined || !e.placed)) return group;
-  const rating = (e: QueueEntry): number => e.rating as number;
-  const gap = (g: QueueEntry[]): number =>
-    Math.abs(rating(g[0]) + rating(g[1]) - (rating(g[2]) + rating(g[3])));
+export function bestSplit(group: QueueEntry[]): { group: QueueEntry[]; dev: number; known: boolean } {
+  const known = group.every((e) => mmNumber(e) !== undefined);
+  if (group.length !== 4) return { group, dev: 0, known }; // 1v1 has nothing to distribute
+  const num = (e: QueueEntry): number => mmNumber(e) ?? 1000;
+  const gap = (g: QueueEntry[]): number => Math.abs(num(g[0]) + num(g[1]) - (num(g[2]) + num(g[3])));
   const movable = (i: number): boolean => group[i].party === undefined;
+  const half = group.length / 2;
 
   let best = group;
   let bestGap = gap(group);
@@ -915,7 +1008,9 @@ function balanceAlliances(group: QueueEntry[]): QueueEntry[] {
       }
     }
   }
-  return best;
+  // the alliance MEANS differ by half the sums' gap
+  const e = 1 / (1 + Math.exp(-bestGap / 2 / GLICKO_SCALE));
+  return { group: best, dev: e - 0.5, known };
 }
 
 /** every member of this unit sits in region `r` */

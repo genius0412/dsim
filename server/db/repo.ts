@@ -3655,6 +3655,16 @@ export async function getRating(
   return rows[0]?.rating ?? 1000;
 }
 
+/** one board row as the rating update reads it. `idleDays` is whole days since the row last
+ *  changed (`updated_at`), which drives the idle RD growth in `server/ranked.ts`. */
+export interface RatingRow {
+  rating: number;
+  rd: number;
+  vol: number;
+  games: number;
+  idleDays: number;
+}
+
 /** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
  * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
 /**
@@ -3677,11 +3687,11 @@ export async function getRatingsFull(
   /** a transaction to read in. With `lock`, the rows are LOCKED for the rest of it — see below */
   query: Tx = q,
   lock = false,
-): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
-  const out = new Map<string, { rating: number; rd: number; vol: number }>();
+): Promise<Map<string, RatingRow>> {
+  const out = new Map<string, RatingRow>();
   // sorted, so two transactions locking overlapping rosters take the locks in the same order
   const ids = [...new Set(userIds.filter(Boolean))].sort();
-  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
+  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06, games: 0, idleDays: 0 });
   if (!ids.length) return out;
   if (lock) {
     /* READ-MODIFY-WRITE NEEDS A ROW TO LOCK. A player with no row yet has nothing for
@@ -3696,14 +3706,50 @@ export async function getRatingsFull(
       [ids, mode, act, g(game)],
     );
   }
-  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number }>(
-    `select user_id, rating, rd, vol from elo_ratings
+  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number; games: number; idle_days: number }>(
+    `select user_id, rating, rd, vol, games,
+            greatest(0, floor(extract(epoch from (now() - updated_at)) / 86400))::int as idle_days
+       from elo_ratings
       where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
       order by user_id${lock ? ' for update' : ''}`,
     [ids, mode, act, g(game)],
   );
-  for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
+  for (const r of rows) {
+    out.set(r.user_id, {
+      rating: r.rating,
+      rd: r.rd,
+      vol: r.vol,
+      games: Number(r.games),
+      idleDays: Number(r.idle_days),
+    });
+  }
   return out;
+}
+
+/**
+ * Undo the LOCK SEED for players a rated match did not count for (a voided 2v2, see
+ * `computeGlicko`). `getRatingsFull(…, lock)` inserts a default row so there is something to
+ * lock; for a player whose result is then voided nothing is written over it, and an empty row
+ * is not the same as no row everywhere else — `eloUserStanding` answers "0 games" instead of
+ * "never played", and `lastRankedBoard` would pick it as their most recent board.
+ *
+ * Only a row still EXACTLY the seed goes: 1000 / RD 350 / 0 games. A row a behaviour charge
+ * created (games 0, rating under 1000) is real history and stays.
+ */
+export async function dropUntouchedRatings(
+  userIds: string[],
+  mode: '1v1' | '2v2',
+  act: number,
+  game: Game | undefined,
+  query: Tx = q,
+): Promise<void> {
+  if (!userIds.length) return;
+  await query(
+    `delete from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
+        and games = 0 and rating = 1000 and rd = 350`,
+    [userIds, mode, act, g(game)],
+  );
 }
 
 export async function getRatingFull(
@@ -5257,16 +5303,18 @@ export async function addMatchParticipants(
     won: boolean;
     ratingBefore: number | null;
     ratingAfter: number | null;
+    /** queued as a premade with their alliance partner (0056); null = unknown / custom */
+    premade?: boolean | null;
   }[],
   query: Tx = q,
 ): Promise<void> {
   if (!ps.length) return;
   await query(
     `insert into match_participants
-       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
-     select $1, u, a, d, s, w, rb, ra
-       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[])
-            as t(u, a, d, s, w, rb, ra)
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after, premade)
+     select $1, u, a, d, s, w, rb, ra, pm
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[], $9::bool[])
+            as t(u, a, d, s, w, rb, ra, pm)
      on conflict (match_id, user_id) do nothing`,
     [
       matchId,
@@ -5277,6 +5325,7 @@ export async function addMatchParticipants(
       ps.map((p) => p.won),
       ps.map((p) => p.ratingBefore),
       ps.map((p) => p.ratingAfter),
+      ps.map((p) => p.premade ?? null),
     ],
   );
 }
