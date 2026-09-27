@@ -4914,6 +4914,37 @@ async function main(): Promise<void> {
       `stored ${storedScore}, ledger ${ledger.rows[0]?.score_after}`,
     );
 
+    // ---- Ko-fi: a stored transaction under a new message id -------------------------------
+    await repo.ensureProfile('kofi-dup', 'KofiDup');
+    await db.query(`update profiles set kofi_email = 'dup@pay.er' where user_id = 'kofi-dup'`);
+    const dupEvt = {
+      messageId: 'dup-m1', kind: 'Subscription', email: 'dup@pay.er', transactionId: 'DUP-TXN',
+      amount: '3.00', currency: 'USD', isSubscription: true, tierName: 'Supporter', months: 1,
+    };
+    await repo.recordKofiPayment(dupEvt);
+    const second = await repo.recordKofiPayment({ ...dupEvt, messageId: 'dup-m2' }).catch((e: Error) => e);
+    const dupGrants = await db.query<{ n: number }>(
+      `select count(*)::int as n from supporter_grants where user_id = 'kofi-dup' and source = 'kofi'`,
+    );
+    check(
+      '⚠️ kofi: a known transaction under a NEW message id is a quiet duplicate, not a 500 Ko-fi retries forever',
+      !(second instanceof Error) && second.fresh === false && dupGrants.rows[0].n === 1,
+      second instanceof Error ? second.message : `fresh=${second.fresh} grants=${dupGrants.rows[0].n}`,
+    );
+
+    // ---- supporter extension and its audit row are one write ------------------------------
+    await repo.ensureProfile('sup-atom', 'SupAtom');
+    await db.exec(`alter table supporter_grants add constraint dbtest_no_boom check (note is distinct from 'boom')`);
+    const boom = await repo.grantSupporter('sup-atom', 3, 'admin', 'boom').then(() => false, () => true);
+    const supAfter = await db.query<{ supporter_until: string | null }>(
+      `select supporter_until from profiles where user_id = 'sup-atom'`,
+    );
+    await db.exec(`alter table supporter_grants drop constraint dbtest_no_boom`);
+    check(
+      'supporter: a grant whose audit row fails does not extend the membership either',
+      boom && supAfter.rows[0]?.supporter_until === null,
+    );
+
   }
 
   await db.close();
