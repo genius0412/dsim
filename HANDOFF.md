@@ -9,6 +9,7 @@
 - **Rejected by the owner:** a winning-streak RD boost (exploitable), a longer calibration window, per-game margins, a separate premade queue (pool too small; 0056 records the data to decide later).
 - **Not built:** a results-screen line explaining a voided or protected result (the delta just reads ±0 / smaller). Would need a cap-gated `EloDelta` field and client copy.
 - **Watch after deploy:** the podium awards at the next act rollover will reflect the new deltas from today on.
+- **Migration runner fix (found deploying this):** `migrate()` took a SESSION advisory lock through Neon's transaction-mode pooler, where the unlock can land on a different backend and leak the lock. `dsim-alpha`'s boot then waited on it indefinitely: 0056 unapplied, no "database ready", no staff sync or award job. It now takes `pg_advisory_xact_lock` per migration (new key `MIG2`) and re-checks `schema_migrations` under it. `dbtest` asserts no advisory lock survives `migrate()`. The analytics job's `pg_try_advisory_lock` has the same pooler problem (it can only skip runs, not hang); not fixed here.
 
 # HANDOFF — 2026-09-27e (Prediction: Balanced is a pickable middle level)
 

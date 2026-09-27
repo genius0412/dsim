@@ -123,6 +123,14 @@ async function main(): Promise<void> {
   // re-running must be a no-op, not an error — every regional machine boots this
   await migrate();
   check('migrations: a second run is a clean no-op', true);
+  // ⚠️ AND IT HOLDS NOTHING AFTERWARDS. The runner used a SESSION advisory lock, which Neon's
+  // transaction-mode pooler can leak onto a backend another client keeps alive — the next
+  // boot then waited on it forever (dsim-alpha, 2026-09-27). The lock is per-transaction now.
+  const migLocks = await db.query<{ n: string }>(`select count(*) as n from pg_locks where locktype = 'advisory'`);
+  check('migrations: no advisory lock is left held after migrate()', Number(migLocks.rows[0].n) === 0, migLocks.rows[0].n);
+  check('migrations: the runner takes a TRANSACTION lock, never a session one',
+    /pg_advisory_xact_lock/.test(readFileSync(join(ROOT, 'server/db/migrate.ts'), 'utf8')) &&
+      !/pg_advisory_lock\(/.test(readFileSync(join(ROOT, 'server/db/migrate.ts'), 'utf8')));
 
   // ------------------------------------------------------------ tier policy
   const tip = { kind: 'Donation', amount: '1.00', currency: 'USD', isSubscription: false, tierName: null };
