@@ -3,7 +3,7 @@ import { dcos, dsin, hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { driveIntent, robotCorners } from '../../sim/physics';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
-import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
+import { type ControlGeometry, controlKeyLive, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
@@ -264,8 +264,8 @@ function bbControlGeometry(world: World): ControlGeometry {
   };
 }
 
-function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
-  return controlledArtifacts(world, r, dt, intaking, bbControlGeometry(world));
+function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean, geom: ControlGeometry): number {
+  return controlledArtifacts(world, r, dt, intaking, geom);
 }
 
 /**
@@ -290,24 +290,20 @@ function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean
  */
 function bbSweepControlClocks(world: World): void {
   const pen = world.penalties;
-  const live = new Set<string>();
   // ⚠️ THE SAME PREDICATE THE COUNT USES, and it has to be: a sweep that is stricter than the
   // count deletes the clock of an element the count is still looking at. That is precisely what
   // `kind === 'ground'` did here under the 3D solve — see `bbLooseElement`.
-  const isLoose = bbLooseElement(world);
-  for (const r of world.robots) {
-    for (const b of world.balls) if (isLoose(b)) live.add(`${r.id}:${b.id}`);
-  }
+  const live = controlKeyLive(world, bbLooseElement(world));
   pen.ballCarry ??= {};
   for (const key of Object.keys(pen.ballHold)) {
-    if (!live.has(key)) {
+    if (!live(key)) {
       delete pen.ballHold[key];
       delete pen.ballAnchor[key];
       delete pen.ballCarry[key];
     }
   }
-  for (const key of Object.keys(pen.ballAnchor)) if (!live.has(key)) delete pen.ballAnchor[key];
-  for (const key of Object.keys(pen.ballCarry)) if (!live.has(key)) delete pen.ballCarry[key];
+  for (const key of Object.keys(pen.ballAnchor)) if (!live(key)) delete pen.ballAnchor[key];
+  for (const key of Object.keys(pen.ballCarry)) if (!live(key)) delete pen.ballCarry[key];
 }
 
 /**
@@ -494,6 +490,8 @@ export function updateBiobuzzPenalties(
    */
   bbSweepControlClocks(world);
   const pen = world.penalties;
+  // one geometry for the tick — it reads only the world's physics tag and each robot at call time
+  const geom = bbControlGeometry(world);
   for (const r of world.robots) {
     /**
      * THE COUNT AND BOTH STRATEGIC CLOCKS RUN FOR EVERY ROBOT, passive included, and only the
@@ -505,7 +503,7 @@ export function updateBiobuzzPenalties(
      * its clocks still drain like anyone else's.
      */
     const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
-    const controlled = bbControlled(world, r, dt, intaking);
+    const controlled = bbControlled(world, r, dt, intaking, geom);
 
     // THE 5+ STREAK — rule (B)'s underlying instance count. One continuous stretch of
     // controlling 5+; the INSTANCE is counted the tick the stretch crosses MOMENTARY, exactly
