@@ -28295,5 +28295,19 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * BINDING THE LEFT MOUSE BUTTON FINISHES. The free-camera capture binds on `mousedown`, and the
+ * same press's `click` then landed on the tile that armed it — whose toggle saw no capture and
+ * armed it again.
+ */
+{
+  const gs = readFileSync('src/ui/GraphicsSection.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ free camera: the press that was bound is swallowed before the capture clears',
+    /bindFreeCamCustom\(cur\.custom, capture, b\) \}\);\s*swallowRestOfPress\(\);\s*setCapture\(null\);/.test(gs) &&
+      /function swallowRestOfPress\(\)[\s\S]{0,700}?'click', 'auxclick', 'contextmenu'/.test(gs),
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

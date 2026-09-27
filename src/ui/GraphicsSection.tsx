@@ -547,6 +547,31 @@ const CUSTOM_GESTURES: readonly { g: FreeCamGesture; label: string }[] = [
  * otherwise start Windows' autoscroll and a right press would open the context menu — over a
  * settings screen, not a canvas, so there is no other handler to be polite to.
  */
+/**
+ * EAT THE REST OF THE PRESS THAT WAS JUST BOUND.
+ *
+ * The capture binds on `mousedown`, but the same press still ends in a `click` (or `auxclick` /
+ * `contextmenu`) on whatever is under the pointer — usually the tile that armed the capture,
+ * whose toggle then saw no capture and ARMED IT AGAIN, so binding the left button never finished.
+ * On another tile it armed that one, and on a link it navigated. The swallowers go on the
+ * press's `mouseup`, one task later, which is after every event that press can still produce.
+ */
+function swallowRestOfPress(): void {
+  const kinds = ['click', 'auxclick', 'contextmenu'] as const;
+  const eat = (e: Event): void => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  const done = (): void => {
+    window.removeEventListener('mouseup', done, true);
+    window.setTimeout(() => {
+      for (const k of kinds) window.removeEventListener(k, eat, true);
+    }, 0);
+  };
+  for (const k of kinds) window.addEventListener(k, eat, true);
+  window.addEventListener('mouseup', done, true);
+}
+
 function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
   const [capture, setCapture] = useState<FreeCamGesture | null>(null);
   const navRef = useRef(nav);
@@ -562,6 +587,7 @@ function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
       const b = { button, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       const cur = navRef.current;
       setFreeCamNav({ ...cur, custom: bindFreeCamCustom(cur.custom, capture, b) });
+      swallowRestOfPress();
       setCapture(null);
     };
     const swallow = (e: Event): void => e.preventDefault();
