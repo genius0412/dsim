@@ -475,19 +475,5 @@ export async function recordFast(opts: FastRecordOpts): Promise<Blob | null> {
  *  no H.264 encoder) */
 export const realtimeMime = (): string | null => mp4Mime();
 
-/**
- * Hand a finished blob to the browser as a download.
- *
- * Shared by the video and the JSON export so the object-URL lifetime is handled in ONE place:
- * the URL pins the blob in memory until revoked, and `a.click()` is synchronous only as far as
- * STARTING the download — revoking immediately can cut it off before the browser has taken the
- * handle, so it waits a tick.
- */
-export function saveBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
+/** re-exported so the replay viewer's import stays where it was; the one copy is `saveBlob.ts` */
+export { saveBlob } from './saveBlob';

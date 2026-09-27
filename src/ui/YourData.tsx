@@ -14,6 +14,7 @@ import { authClient, authEnabled } from '../lib/authClient';
 import { ExportUnavailableError, fetchMyExport } from '../net/api';
 import { LEGAL_CONTACT } from '../legalText';
 import { DeleteAccount } from './Account';
+import { saveBlob } from './saveBlob';
 
 /**
  * "YOUR DATA" — the working half of the privacy page.
@@ -306,15 +307,12 @@ function ExportRow() {
     if (busy) return;
     setBusy(true);
     setMsg(null);
-    let url: string | null = null;
     try {
       const data = await fetchMyExport();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `dsim-export-${today()}.json`;
-      a.click();
+      // `saveBlob` owns the object URL's lifetime: revoking it here, right after the click,
+      // could cut the download off before the browser had taken the blob
+      saveBlob(blob, `dsim-export-${today()}.json`);
       setMsg({ text: 'Downloaded.', err: false });
     } catch (e) {
       // Only the rate limit's own sentence is written for a person; anything else is logged
@@ -329,7 +327,6 @@ function ExportRow() {
             : `Couldn’t build the export. Email ${LEGAL_CONTACT} and you will be sent one.`;
       setMsg({ text, err: true });
     } finally {
-      if (url) URL.revokeObjectURL(url);
       setBusy(false);
     }
   };
