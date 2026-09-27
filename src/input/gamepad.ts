@@ -2,17 +2,59 @@ import type { PadBindings } from './bindings';
 import { PadChordResolver } from './padChords';
 import { applyPadMask, clearPadMask } from './padNav';
 
-/** deadzone + sensitivity curve: below `deadzone` reads as dead center; past
+/** deadzone + sensitivity curve for ONE axis: below `deadzone` reads as dead center; past
  * it, the remaining travel is rescaled to 0-1 and raised to `curve` (1 =
  * linear, higher = softer near center / more precise low-speed control,
  * still reaching full deflection at the stick's edge — the classic RC/gaming
- * "expo" curve), then given back the original sign. */
-const shape = (v: number, deadzone: number, curve: number): number => {
+ * "expo" curve), then given back the original sign. Used where only one axis of a stick is
+ * read (the turn axis, the two tank sticks). */
+export const shape = (v: number, deadzone: number, curve: number): number => {
   const av = Math.abs(v);
   if (av < deadzone) return 0;
-  const scaled = (av - deadzone) / (1 - deadzone);
+  const scaled = Math.min(1, (av - deadzone) / (1 - deadzone));
   return Math.sign(v) * Math.pow(scaled, curve);
 };
+
+/**
+ * THE SAME DEADZONE AND CURVE, applied to a WHOLE STICK — RADIALLY, as `PadBindings.deadzone`
+ * has always been documented ("radial stick deadzone").
+ *
+ * It was applied per AXIS, which is a cross-shaped deadzone: the small component of any
+ * near-cardinal push fell inside it and was zeroed, so a stick pushed a few degrees off straight
+ * ahead drove dead straight — the default 0.12 swallowed every angle under ~7° at full throw.
+ * Here the MAGNITUDE is shaped and the direction is kept exactly, so every angle is reachable.
+ * A square-gated stick's corners read past 1; the magnitude is capped at 1 so a corner gives a
+ * unit vector rather than more than full speed on each axis.
+ */
+export function shapeStick(x: number, y: number, deadzone: number, curve: number): [number, number] {
+  const m = Math.hypot(x, y);
+  if (m <= deadzone || m === 0) return [0, 0];
+  const scaled = Math.pow(Math.min(1, (Math.min(1, m) - deadzone) / (1 - deadzone)), curve);
+  const k = scaled / m;
+  return [x * k, y * k];
+}
+
+/** the standard mapping's two ANALOG triggers — the buttons `triggerThreshold` governs */
+const TRIGGERS = new Set([6, 7]);
+
+/**
+ * IS THIS BUTTON DOWN? For a TRIGGER, that is the player's threshold and nothing else.
+ *
+ * It was `pressed || value > threshold`, and Chrome reports an analog trigger `pressed` from
+ * about 0.12 of its travel — so the setting could only make triggers MORE sensitive, and
+ * raising it did nothing at all. `pressed` is kept for a trigger that reports no value (a
+ * digital one reads 0 there while down), and for every other button, where a digital press is
+ * the whole story.
+ */
+export function padButtonDown(
+  b: { pressed: boolean; value: number } | null | undefined,
+  index: number,
+  threshold: number,
+): boolean {
+  if (!b) return false;
+  if (TRIGGERS.has(index)) return b.value > threshold || (b.pressed && b.value === 0);
+  return b.pressed || b.value > threshold;
+}
 
 export interface GamepadSample {
   connected: boolean;
@@ -105,8 +147,7 @@ export class GamepadInput {
     }
     const raw: number[] = [];
     for (let i = 0; i < pad.buttons.length; i++) {
-      const b = pad.buttons[i];
-      if (b && (b.pressed || b.value > bindings.triggerThreshold)) raw.push(i);
+      if (padButtonDown(pad.buttons[i], i, bindings.triggerThreshold)) raw.push(i);
     }
     /* THE MASK, before the resolver sees anything. A button spent on opening or closing the
        in-match menu is dead until it is released, so the press that got the player out of the
@@ -118,10 +159,13 @@ export class GamepadInput {
     // left stick = axes 0/1, right stick = axes 2/3
     const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
     const rotAxis = bindings.driveStick === 'left' ? 2 : 0;
+    // the TRANSLATION stick is shaped as one 2D vector (radial deadzone); the turn axis and the
+    // tank sticks are single axes and keep the 1D shape
+    const [dx, dy] = shapeStick(pad.axes[drive[0]] ?? 0, pad.axes[drive[1]] ?? 0, bindings.deadzone, bindings.curve);
     const sampleOut: GamepadSample = {
       connected: true,
-      driveX: ax(drive[0]),
-      driveY: -ax(drive[1]),
+      driveX: dx,
+      driveY: -dy,
       rotate: -ax(rotAxis),
       leftY: -ax(1),
       rightY: -ax(3),

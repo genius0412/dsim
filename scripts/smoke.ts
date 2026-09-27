@@ -288,7 +288,7 @@ import {
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
-import { GamepadInput } from '../src/input/gamepad';
+import { GamepadInput, padButtonDown, shape as padShape, shapeStick } from '../src/input/gamepad';
 import {
   awardBadge,
   awardBoardWord,
@@ -28216,6 +28216,46 @@ const dumperSetup = (): RobotSetup => {
   send('keydown', 'Meta', 'MetaLeft', true);
   send('keyup', 'Meta', 'MetaLeft');
   check('keyboard: ...but a key already held before ⌘ keeps driving', kb.held('w'));
+}
+
+/**
+ * THE STICK AND TRIGGER SETTINGS DO WHAT THEY SAY (a feel change, on purpose).
+ *
+ * - The deadzone is documented as RADIAL and was applied per AXIS — a cross-shaped deadzone
+ *   that zeroed the small component of any near-cardinal push, so at the default 0.12 no angle
+ *   under ~7° off straight ahead was reachable at full throw.
+ * - The trigger threshold was `pressed || value > threshold`, and Chrome reports an analog
+ *   trigger `pressed` from ~0.12 of travel, so raising the threshold did nothing.
+ */
+{
+  const DZ = DEFAULT_BINDINGS.pad.deadzone;
+  // 5° off straight ahead, full throw
+  const a = (5 * Math.PI) / 180;
+  const [x, y] = shapeStick(Math.sin(a), Math.cos(a), DZ, 1);
+  const perAxisX = padShape(Math.sin(a), DZ, 1);
+  check(
+    '⚠️ gamepad: a push 5° off straight ahead keeps its sideways component (radial deadzone)',
+    x > 0.05 && perAxisX === 0 && Math.abs(Math.atan2(x, y) - a) < 1e-9,
+    `radial x=${x.toFixed(3)} (per-axis gave ${perAxisX})`,
+  );
+  check(
+    'gamepad: inside the deadzone in any direction is dead centre',
+    shapeStick(DZ * 0.7, DZ * 0.7, DZ, 1).every((v) => v === 0) && shapeStick(0, 0, DZ, 1).every((v) => v === 0),
+  );
+  const [cx, cy] = shapeStick(1, 1, DZ, 1.8); // a square gate's corner reads past 1
+  check('gamepad: a square-gate corner is capped at full deflection, not more', Math.abs(Math.hypot(cx, cy) - 1) < 1e-9);
+  const [hx] = shapeStick(0.5, 0, DZ, 1);
+  check('gamepad: along an axis the radial shape equals the old 1D one', Math.abs(hx - padShape(0.5, DZ, 1)) < 1e-12);
+
+  const thr = 0.6;
+  check(
+    '⚠️ gamepad: a trigger Chrome calls "pressed" at 0.2 is NOT down under a 0.6 threshold',
+    !padButtonDown({ pressed: true, value: 0.2 }, 7, thr) && padButtonDown({ pressed: true, value: 0.7 }, 7, thr),
+  );
+  check(
+    'gamepad: a digital trigger (value 0 while pressed) and every other button still read pressed',
+    padButtonDown({ pressed: true, value: 0 }, 6, thr) && padButtonDown({ pressed: true, value: 0.2 }, 0, thr),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
