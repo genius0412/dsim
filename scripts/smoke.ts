@@ -37,6 +37,7 @@ import {
 import { step } from '../src/sim/world';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
+import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
@@ -27924,6 +27925,131 @@ const dumperSetup = (): RobotSetup => {
       showFn[0].indexOf('screenRef.current !== from') < showFn[0].indexOf('shown = true'),
     'consumed before the bail, a player who moved during the 1.5s wait was left holding a live session and a held seat with no screen',
   );
+}
+
+/**
+ * THE AUTHENTICATED-REQUEST RULES (`src/net/authFetch.ts`). All three fail SILENTLY when wrong:
+ *
+ * - `readAccountSettings` — `null` licenses `AccountSync` to SEED the account from this device.
+ *   It used to be `null` on any failure too, so a sign-in while the server cold-booted (a 502)
+ *   overwrote the account's real bindings, robots and starts with a fresh device's defaults.
+ * - `sendWithTokenRetry` — the once-on-401 retry `authedJson` always had and the ~35 helpers
+ *   that called `fetch` themselves never did.
+ * - `createTokenCache` — concurrent callers share one `/token` fetch, and a fetch that started
+ *   before a sign-out never lands in the cache after it.
+ */
+{
+  const resp = (ok: boolean, status: number, body: unknown) => ({ ok, status, json: async () => body });
+  const throws = async (p: Promise<unknown>): Promise<boolean> => p.then(() => false, () => true);
+  check(
+    '⚠️ account settings: a failed read THROWS, it never reads as "never saved"',
+    (await throws(readAccountSettings(resp(false, 502, {})))) &&
+      (await throws(readAccountSettings(resp(false, 401, { error: 'x' })))) &&
+      (await throws(readAccountSettings(null))),
+    'null here makes AccountSync seed the account from this device, overwriting it',
+  );
+  check(
+    'account settings: a real answer reads through, and an account with none reads null',
+    JSON.stringify(await readAccountSettings(resp(true, 200, { settings: { game: 'chain' } }))) === '{"game":"chain"}' &&
+      (await readAccountSettings(resp(true, 200, {}))) === null,
+  );
+
+  // the retry: one send on success, exactly one more on a 401 with a NEW token, none otherwise
+  const run = async (statuses: number[], fresh: string | null) => {
+    const sent: string[] = [];
+    const forced: boolean[] = [];
+    let n = 0;
+    const res = await sendWithTokenRetry(
+      'old',
+      async (force) => {
+        forced.push(!!force);
+        return fresh;
+      },
+      async (t) => {
+        sent.push(t);
+        return { status: statuses[Math.min(n++, statuses.length - 1)] };
+      },
+    );
+    return { sent, forced, status: res.status };
+  };
+  const ok = await run([200], 'new');
+  check('auth retry: a 200 is sent once and never refreshes', ok.sent.join() === 'old' && ok.forced.length === 0);
+  const re = await run([401, 200], 'new');
+  check(
+    '⚠️ auth retry: a 401 retries ONCE with a force-refreshed token',
+    re.sent.join() === 'old,new' && re.forced.join() === 'true' && re.status === 200,
+    `sent=${re.sent.join()} forced=${re.forced.join()}`,
+  );
+  const twice = await run([401, 401], 'new');
+  check('auth retry: ...and only once, however the retry is answered', twice.sent.length === 2 && twice.status === 401);
+  const gone = await run([401], null);
+  const same = await run([401], 'old');
+  check(
+    'auth retry: signed out, or the same token back, returns the 401 as-is without resending',
+    gone.sent.length === 1 && gone.status === 401 && same.sent.length === 1,
+  );
+
+  // the token cache
+  let fetches = 0;
+  const pending: ((t: string | null) => void)[] = [];
+  const cache = createTokenCache(
+    () =>
+      new Promise<string | null>((res) => {
+        fetches++;
+        pending.push(res);
+      }),
+    () => 1_000_000,
+  );
+  const a = cache.get();
+  const b = cache.get();
+  const c = cache.get();
+  pending.shift()!('tok-1');
+  const got = await Promise.all([a, b, c]);
+  check(
+    '⚠️ token cache: three callers on an empty cache share ONE /token fetch',
+    fetches === 1 && got.every((t) => t === 'tok-1'),
+    `fetches=${fetches}`,
+  );
+  const hit = await cache.get();
+  check('token cache: ...and the next caller is served from the cache', fetches === 1 && hit === 'tok-1');
+  const forcedGet = cache.get(true);
+  check('token cache: a forced get goes to the network', fetches === 2);
+  pending.shift()!('tok-2');
+  await forcedGet;
+  // a fetch that started under the OLD identity and lands after clear()
+  const stale = cache.get(true);
+  cache.clear();
+  const afterClear = cache.get();
+  check('token cache: a get after clear() does not join the old identity’s fetch', fetches === 4);
+  pending.shift()!('old-user');
+  pending.shift()!('new-user');
+  const [staleTok, freshTok] = await Promise.all([stale, afterClear]);
+  const next = await cache.get();
+  check(
+    '⚠️ token cache: a token fetched before a sign-out is never CACHED after it',
+    staleTok === 'old-user' && freshTok === 'new-user' && next === 'new-user' && fetches === 4,
+    `stale=${staleTok} fresh=${freshTok} next=${next} fetches=${fetches}`,
+  );
+  // a token with no readable `exp` is still served from the cache for its fallback TTL
+  let clock = 0;
+  let plainFetches = 0;
+  const plain = createTokenCache(async () => {
+    plainFetches++;
+    return 'no-exp';
+  }, () => clock);
+  await plain.get();
+  clock = 30_000;
+  await plain.get();
+  check(
+    'token cache: a token with no readable exp is cached, not refetched on every call',
+    plainFetches === 1,
+    `fetches=${plainFetches} (the fallback TTL equalled the refresh skew, so it expired on arrival)`,
+  );
+  // a network failure is not a miss: the cache keeps what it had
+  const flaky = createTokenCache(async () => {
+    throw new Error('offline');
+  });
+  check('token cache: a network failure reads as no token, never a throw', (await flaky.get()) === null);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
