@@ -98,8 +98,24 @@ export function StartPositionEditor({
     : presetPose(startIndex, alliance, spec);
   const pose = draft ?? base; // display the working draft if any, else the saved pose
 
-  // a stale draft from another alliance/category must not linger after a switch
+  /**
+   * A DRAG SAVES ONCE, ON RELEASE — not on every pointermove. Each save is a full settings
+   * write (a `JSON.stringify` of the whole blob into localStorage, plus re-arming the account
+   * sync), and a drag used to make one per move. The pose shown while dragging is the draft;
+   * `lastLegal` remembers the last legal pose the drag passed through, which is what a drop on
+   * an illegal spot still saves (snap off), exactly as the per-move saves used to leave it.
+   */
+  const lastLegal = useRef<StartPose | null>(null);
+  /** the canonical pose this editor just saved while KEEPING its draft on screen (see below) */
+  const keepDraftFor = useRef<StartPose | null>(null);
+
+  // a stale draft from another alliance/category must not linger after a switch — but the
+  // editor's own "save the last legal pose, leave the robot where it was dropped" must not
+  // wipe the draft it deliberately kept
   useEffect(() => {
+    const kept = keepDraftFor.current;
+    keepDraftFor.current = null;
+    if (kept && value && kept.x === value.x && kept.y === value.y && kept.headingDeg === value.headingDeg) return;
     setDraft(null);
   }, [alliance, cat, startIndex, value]);
 
@@ -180,8 +196,10 @@ export function StartPositionEditor({
   }, [world, pose.x, pose.y, pose.headingDeg, spec, alliance, legality.legal, size]);
 
   // commit an ACTUAL-frame pose back to the parent as canonical (SAVE)
-  const commit = (p: StartPose) => {
-    onChange(mirrorStartPose(p, alliance)); // mirror is self-inverse: actual → canonical
+  const commit = (p: StartPose, keepDraft = false) => {
+    const canonical = mirrorStartPose(p, alliance); // mirror is self-inverse: actual → canonical
+    keepDraftFor.current = keepDraft ? canonical : null;
+    onChange(canonical);
   };
 
   // edit the working pose: always show it (draft), but only SAVE it when legal —
@@ -213,6 +231,7 @@ export function StartPositionEditor({
     const h = handleWorld();
     const onHandle = Math.hypot(w.x - h.x, w.y - h.y) < 6;
     drag.current = onHandle ? 'rotate' : 'move';
+    lastLegal.current = null;
     (e.target as Element).setPointerCapture?.(e.pointerId);
     e.preventDefault();
   };
@@ -220,27 +239,37 @@ export function StartPositionEditor({
     if (!drag.current) return;
     const w = pointerWorld(e);
     if (!w) return;
+    let next: StartPose;
     if (drag.current === 'move') {
-      edit({ x: w.x, y: w.y, headingDeg: pose.headingDeg });
+      next = { x: w.x, y: w.y, headingDeg: pose.headingDeg };
     } else {
       let deg = (Math.atan2(w.y - pose.y, w.x - pose.x) * 180) / Math.PI;
       if (deg < 0) deg += 360;
-      edit({ x: pose.x, y: pose.y, headingDeg: Math.round(deg) });
+      next = { x: pose.x, y: pose.y, headingDeg: Math.round(deg) };
     }
+    // shown at once, saved on release (see `lastLegal`)
+    setDraft(next);
+    if (evalStartPose(spec, next, alliance).legal) lastLegal.current = next;
   };
   const endDrag = (e: React.PointerEvent) => {
     if (!drag.current) return;
     drag.current = null;
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     const cur = draft ?? base;
+    const passed = lastLegal.current;
+    lastLegal.current = null;
     if (evalStartPose(spec, cur, alliance).legal) {
-      setDraft(null); // legal end: the saved pose already matches
+      commit(cur); // legal end: save where it was dropped
+      setDraft(null);
     } else if (snapOn) {
       commit(snapStartToLegal(spec, cur, alliance)); // opt-in: snap to nearest legal
       setDraft(null);
+    } else if (passed) {
+      // snap OFF + illegal → leave the robot exactly where it was dropped (previewed red,
+      // "won't save") — no snap, no jump — and save the last LEGAL pose the drag passed through
+      commit(passed, true);
     }
-    // else: snap OFF + illegal → leave the robot exactly where it was dropped
-    // (previewed red, "won't save") — no snap, no jump. The last LEGAL pose stays saved.
+    // (an illegal drop that never passed through a legal pose leaves the saved pose untouched)
   };
 
   const setField = (k: 'x' | 'y' | 'headingDeg', v: number) => {
