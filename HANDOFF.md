@@ -1,4 +1,11 @@
-# HANDOFF — 2026-09-27 (history rewritten; the lag fix on main with contact + BIOBUZZ prediction)
+# HANDOFF — 2026-09-27b (BIOBUZZ 3D: an element on the floor in a FLOWER's retrieval opening is not in the FLOWER)
+
+**State: pushed on `main` and `alpha`, deployed.** `npm test` (5141), `build`, `server:check` pass. Silent patch: no patch notes, no `SIM_VERSION` bump (owner).
+
+- **Bug:** in 3D, `derive.ts` adopted any element whose centre was inside a FLOWER's bore, so a POLLEN or NECTAR pushed across the tiles into the retrieval opening became the stack's bottom element. `flowerStackZ` then seats a bottom NECTAR on the middle ring, so a floor NECTAR paid the 5-point Bottom NECTAR Bonus, could take ownership, and billed a false G410 MAJOR during the lock.
+- **Fix:** a flower latch like the cells' — an element stays in the flower it is already tagged into, and a new one is admitted only while its centre is above the opening's top (`BB_FLOWER_RETRIEVE_Z[1]`), i.e. it came in through the top (§10.5.2). Smoke: FLOWER3D "pushed into the retrieval opening along the floor" (bonus/owner/stack) and "bills no G410", both failing before the fix.
+
+# 2026-09-27 (history rewritten; the lag fix on main with contact + BIOBUZZ prediction)
 
 **State: pushed on `main` and `alpha`; PRODUCTION DEPLOYED 2026-09-27 08:30 UTC** (announced 5 min; one machine per region, all on the new image, migrations ran at boot, `/health` ok). Gates pass on both branches. `alpha.playdsim.com` still serves an old build: Vercel's alpha builds need the owner (Zenith vendor env), as the section below says.
 

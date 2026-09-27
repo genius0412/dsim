@@ -185,6 +185,47 @@ export function flower3dChecks(check: Check): void {
     );
   }
 
+  // ---- an element on the FLOOR in the retrieval opening is NOT in the flower -----------------
+  //
+  // §10.5.2: scoring elements enter through the TOP. A NECTAR pushed into the opening across the
+  // tiles used to be adopted as the stack's bottom element, paid the Bottom NECTAR Bonus, and
+  // billed G410 while entry was locked. Run in a MATCH with the lock on so G410 is live.
+  for (const kind of ['pollen', 'nectar'] as const) {
+    const w = mkWorld3d('match', kind === 'pollen' ? 902 : 903);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    w.balls.length = 0;
+    const f = BB_FLOWERS[F];
+    const r = kind === 'pollen' ? BB_POLLEN_R : BB_NECTAR_R;
+    const el = {
+      id: 1,
+      color: kind === 'pollen' ? 'yellow' : 'red',
+      state: { kind: 'ground' },
+      pos: { x: f.x, y: f.y },
+      vel: { x: 0, y: 0 },
+      // a POLLEN fits the lower bore and stands on the tiles; a NECTAR rests on the lower plate's rim
+      z: kind === 'pollen' ? 0 : BB_FLOWER_LOW_Z,
+      vz: 0,
+      r,
+    } as Artifact;
+    w.balls.push(el);
+    const centreIn = flowerTubeOf(el.pos.x, el.pos.y, el.z + r) === F;
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    const fs = flowerScore(w.biobuzz!.flowers[F].stack, kindOfIn(w));
+    check(
+      `a ${kind} pushed into the retrieval opening along the floor is NOT in the FLOWER (§10.5.2, top only)`,
+      centreIn && w.biobuzz!.flowers[F].stack.length === 0 && el.state.kind !== 'element' && fs.bonusAlliance === null && fs.owner === null,
+      `centre in bore ${centreIn}; stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}, state ${el.state.kind}, ` +
+        `bonus ${fs.bonusAlliance}, owner ${fs.owner}, at (${(el.pos.x - f.x).toFixed(2)}, ${(el.pos.y - f.y).toFixed(2)}, z ${el.z.toFixed(2)})`,
+    );
+    const g410 = w.events.filter((e) => e.includes('G410'));
+    check(
+      `...and a ${kind} on the floor in the opening bills no G410 while entry is locked`,
+      g410.length === 0,
+      JSON.stringify(g410),
+    );
+  }
+
   // ---- the 2D model and the 3D column, compared ON PURPOSE ----------------------------------
   //
   // `flowerScore` is the shared rule over the MODEL's heights and stays the scoring authority for
