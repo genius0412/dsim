@@ -121,8 +121,18 @@ export async function ensureSeason(
   // No baked-in name — the structured "Act X · Season Y" label is derived in
   // listSeasons. A brand-new game's first row seeds `initialAct` (Chain Reaction
   // starts at Act 1); on conflict we only re-activate — act is left untouched.
+  //
+  // ⚠️ `initialAct` IS FOR THE FIRST ROW ONLY ("the act this game's very first period opens
+  // in", src/games/types.ts). A code BALANCE_VERSION bump also lands here with a season number
+  // no row has yet, and seeding THAT row with `initialAct` dropped a game in Act 2 back into its
+  // beta act: every rating is keyed by act, so the whole ladder moved to the old board, and the
+  // real act never counted as closed for the reward job. So a new row CONTINUES the latest act
+  // the game has, and `initialAct` is only the fallback when there is none.
   await q(
-    `insert into seasons (game, balance_version, act, active) values ($1, $2, $3, true)
+    `insert into seasons (game, balance_version, act, active)
+     values ($1, $2,
+             coalesce((select act from seasons where game = $1 order by balance_version desc limit 1), $3),
+             true)
      on conflict (game, balance_version) do update set active = true`,
     [g(game), balanceVersion, initialAct],
   );
@@ -131,6 +141,7 @@ export async function ensureSeason(
     balanceVersion,
   ]);
   seasonEnsured.add(key);
+  clearSeasonsCache();
 }
 
 /**
@@ -213,6 +224,32 @@ export async function listSeasons(game?: Game): Promise<SeasonRow[]> {
   }));
 }
 
+/**
+ * `listSeasons` for the PUBLIC season picker, memoized per game.
+ *
+ * `/api/seasons` runs on every visit to Records, and `listSeasons` counts every record and
+ * every match of every season to fill two columns — a scan of both history tables per page
+ * view that grows with everything ever played, unauthenticated. The list changes when a season
+ * rolls (dropped below, and by `ensureSeason` seeding a new row) and otherwise only in its
+ * counts, which a picker does not need to the second. Same `{at, val}` shape as `statsCache`.
+ * The reward job and the admin console keep calling `listSeasons` directly: they want it exact.
+ */
+const SEASONS_TTL_MS = 60_000;
+const seasonsCache = new Map<string, { at: number; val: SeasonRow[] }>();
+
+export async function listSeasonsCached(game?: Game, now = Date.now()): Promise<SeasonRow[]> {
+  const hit = seasonsCache.get(g(game));
+  if (hit && now - hit.at < SEASONS_TTL_MS) return hit.val;
+  const val = await listSeasons(game);
+  seasonsCache.set(g(game), { at: now, val });
+  return val;
+}
+
+/** drop the memo — a roll, a newly seeded season, and tests */
+export function clearSeasonsCache(): void {
+  seasonsCache.clear();
+}
+
 /** Archive the live season and open a fresh one (admin action). The new
  * balance_version is one past the current, so its boards start empty; old
  * seasons stay fully queryable. `bumpAct` opens a new ACT (act++, its season
@@ -253,6 +290,7 @@ export async function startNewSeason(
     );
     return Number(cnt[0]?.n ?? 1);
   });
+  clearSeasonsCache();
 
   /**
    * THE CLOSED PERIODS ARE PAID OUT NOW, BY THE SAME JOB THE BOOT BACKFILL RUNS
