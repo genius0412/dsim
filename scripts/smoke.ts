@@ -372,6 +372,7 @@ import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners 
 import type { SiteAccess, SiteBanner, SiteLockdown } from '../src/net/protocol';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
+import { takeProviderBudget, resetProviderBudgetForTests, MODERATION_BUDGET_PER_MIN } from '../server/moderation';
 import {
   ACCESS_MS_MAX,
   coerceAccessMs,
@@ -382,6 +383,7 @@ import {
   legalRoomCode,
   remoteLiveConflict,
 } from '../server/admission';
+import { sweepGate } from '../server/sweepGate';
 import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
 import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
 import { bestHost } from '../server/regions';
@@ -28886,6 +28888,33 @@ const dumperSetup = (): RobotSetup => {
   check('wiring: the old socket’s close only deletes its own liveSockets row', idx.includes('if (liveSockets.get(id) === mySock) liveSockets.delete(id);'));
 }
 
+// ---- REQUEST-PATH LOAD: rate-limit sweeps and the moderation provider budget --------------
+{
+  // the request-path limiters sweep at most once per interval (server/sweepGate.ts)
+  const due = sweepGate(1000);
+  check('sweepGate: the first call sweeps', due(10_000));
+  check('sweepGate: a call inside the interval does not', !due(10_500));
+  check('sweepGate: the next interval sweeps again', due(11_000));
+
+  // the moderation provider budget (server/moderation.ts)
+  resetProviderBudgetForTests();
+  let took = 0;
+  const t0 = 1_000_000;
+  for (let i = 0; i < MODERATION_BUDGET_PER_MIN + 5; i++) if (takeProviderBudget(t0)) took++;
+  check('moderation budget: at most the per-minute budget of hosted calls', took === MODERATION_BUDGET_PER_MIN, `${took}/${MODERATION_BUDGET_PER_MIN}`);
+  check('moderation budget: it refills after a minute', takeProviderBudget(t0 + 60_000));
+  resetProviderBudgetForTests();
+
+  const idx = readFileSync(pathResolve('server/index.ts'), 'utf8');
+  check('wiring: the /api/perf reset needs the operator secret on Fly', /const gapReset =[\s\S]{0,200}perfQs\.get\('secret'\) === process\.env\.ADMIN_SECRET/.test(idx));
+  check('wiring: the admin body reader stops at its cap (the shared readBody)', idx.includes('return readBody(req, 16 * 1024);'));
+  check('wiring: the presence and live-rooms reads are shared while in flight', idx.includes('if (!presenceInFlight) {') && idx.includes('if (!liveInFlight) {'));
+  const site = readFileSync(pathResolve('server/siteState.ts'), 'utf8');
+  check('wiring: the lockdown and banner reads are shared while in flight', site.includes('if (!force && lockInFlight) return lockInFlight;') && site.includes('if (!force && bannersInFlight) return bannersInFlight;'));
+  const auth = readFileSync(pathResolve('server/auth.ts'), 'utf8');
+  check('wiring: a missing token is not logged (the ordinary anonymous case)', !auth.includes('no token on join'));
+  check('wiring: a failed verify is logged at a bounded rate', auth.includes('logVerifyFailure(e);') && auth.includes('VERIFY_FAIL_LOG_MS'));
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

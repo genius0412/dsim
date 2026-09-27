@@ -187,18 +187,36 @@ async function verifiedFromStore(token: string, userId: string): Promise<boolean
 }
 
 
+/**
+ * A FAILED VERIFY IS STILL LOGGED — it is the line that explains a player being silently
+ * signed out — but at most once per `VERIFY_FAIL_LOG_MS`, with a count of the ones folded in.
+ * Any socket can send a garbage token in every frame it is allowed, and a line per frame was
+ * a free way to flood the log.
+ */
+const VERIFY_FAIL_LOG_MS = 10_000;
+let verifyFailLoggedAt = 0;
+let verifyFailSuppressed = 0;
+function logVerifyFailure(e: unknown): void {
+  const now = Date.now();
+  if (now - verifyFailLoggedAt < VERIFY_FAIL_LOG_MS) {
+    verifyFailSuppressed++;
+    return;
+  }
+  const more = verifyFailSuppressed ? ` (+${verifyFailSuppressed} more since the last line)` : '';
+  verifyFailLoggedAt = now;
+  verifyFailSuppressed = 0;
+  console.log(`[auth] verify FAILED${more}:`, e instanceof Error ? e.message : e);
+}
+
 /** verify a client-supplied JWT → {userId, handle, emailVerified}, or null if
  *  absent/invalid. `emailVerified` is null when neither the token nor the session
  *  endpoint would say (see `verifiedFromStore`). */
 export async function verifyAuthToken(token: string | undefined): Promise<AuthedUser | null> {
-  if (!token) {
-    console.log('[auth] verify: no token on join ⇒ anonymous');
-    return null;
-  }
-  if (!jwks) {
-    console.log('[auth] verify: JWKS not configured ⇒ anonymous');
-    return null;
-  }
+  // SILENT: a missing token is the ordinary anonymous case (every signed-out join, queue attempt
+  // and `/api/standing` read), and a line per call was pure log bill.
+  if (!token) return null;
+  // silent too: the boot line above already says auth is not configured, once
+  if (!jwks) return null;
   try {
     const { payload } = await jwtVerify(token, jwks);
     const userId = typeof payload.sub === 'string' ? payload.sub : undefined;
@@ -231,7 +249,7 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     };
   } catch (e) {
     // expired / bad signature / unreachable-or-wrong JWKS ⇒ anonymous. Log why.
-    console.log('[auth] verify FAILED:', e instanceof Error ? e.message : e);
+    logVerifyFailure(e);
     return null;
   }
 }

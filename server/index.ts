@@ -22,7 +22,7 @@ import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
-import { handleApi } from './api';
+import { handleApi, readBody } from './api';
 import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
 import {
   refreshLockdown,
@@ -507,17 +507,11 @@ function broadcastAll(m: ServerMsg): number {
 }
 
 /** read a small request body (admin POSTs) with a hard cap so a bad client can't
- * exhaust memory. Rejects past 16KB — announcements are tiny. */
+ * exhaust memory. Rejects past 16KB — announcements are tiny. `readBody` STOPS at the cap
+ * (detaches and destroys the request); the local copy this replaced rejected and then went on
+ * appending every later chunk to the same string for as long as the sender kept writing. */
 function readAdminBody(req: import('node:http').IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c) => {
-      data += c;
-      if (data.length > 16 * 1024) reject(new Error('body too large'));
-    });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
+  return readBody(req, 16 * 1024);
 }
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
@@ -898,12 +892,27 @@ function operatorSnapshot(): {
   };
 }
 
+/**
+ * THE READ IN FLIGHT, shared. The cache above is written only when a query RETURNS, so every
+ * request that arrived while it was expired used to start its own copy of the same query — at
+ * this endpoint's poll rate that is several identical reads per expiry against a pool of five.
+ * Concurrent callers now await the one already running.
+ */
+let presenceInFlight: Promise<GlobalPresence> | null = null;
 async function aggregatePresence(full = false): Promise<GlobalPresence> {
   const now = Date.now();
   if (presenceCache && now - presenceCache.at < presenceTtl(full)) return withLocal(presenceCache.val);
-  const val = await globalPresence();
-  presenceCache = { at: now, val };
-  return withLocal(val);
+  if (!presenceInFlight) {
+    presenceInFlight = globalPresence()
+      .then((val) => {
+        presenceCache = { at: Date.now(), val };
+        return val;
+      })
+      .finally(() => {
+        presenceInFlight = null;
+      });
+  }
+  return withLocal(await presenceInFlight);
 }
 
 /**
@@ -916,12 +925,22 @@ async function aggregatePresence(full = false): Promise<GlobalPresence> {
  */
 const LIVE_TTL_MS = 3_000;
 let liveCache: { at: number; val: unknown[] } | null = null;
+/** the live-rooms read in flight, shared by every caller (see `presenceInFlight`) */
+let liveInFlight: Promise<unknown[]> | null = null;
 async function aggregateLive(): Promise<unknown[]> {
   const now = Date.now();
   if (liveCache && now - liveCache.at < LIVE_TTL_MS) return liveCache.val;
-  const val = await globalLiveRooms();
-  liveCache = { at: now, val };
-  return val;
+  if (!liveInFlight) {
+    liveInFlight = globalLiveRooms()
+      .then((val) => {
+        liveCache = { at: Date.now(), val };
+        return val;
+      })
+      .finally(() => {
+        liveInFlight = null;
+      });
+  }
+  return liveInFlight;
 }
 
 /** every match running on THIS machine, unfiltered (see `Room.summary`) */
@@ -2495,7 +2514,16 @@ const httpServer = createServer((req, res) => {
     const live = localLive();
     // read once, up front: `snapSendGap` DRAINS each room's accumulator when asked to, and it
     // runs while the body is being built, i.e. before the `?reset=1` branch below
-    const gapReset = !!new URL(req.url, 'http://x').searchParams.get('reset');
+    //
+    // ⚠️ THE RESET IS AN OPERATOR ACTION, so on Fly it needs the ADMIN_SECRET the other operator
+    // routes take. The endpoint is public (read-only numbers, no player data), and a public
+    // reset let anyone wipe the lag histogram and the snapshot-gap window an operator was in the
+    // middle of reading. Off Fly (`REGION` unset: dev, the load harness, a LAN box) it stays
+    // open. An unauthorised `?reset=1` is simply a read.
+    const perfQs = new URL(req.url, 'http://x').searchParams;
+    const gapReset =
+      !!perfQs.get('reset') &&
+      (!REGION || (!!process.env.ADMIN_SECRET && perfQs.get('secret') === process.env.ADMIN_SECRET));
     const ms = (n: number): number => Math.round((n / 1e6) * 100) / 100; // ns → ms
     const heap = v8.getHeapStatistics();
     const mb = (n: number): number => Math.round(n / 1048576);
@@ -2556,7 +2584,7 @@ const httpServer = createServer((req, res) => {
       // name out of this same JSON.
       snapSendGapMs: snapSendGap(gapReset),
     };
-    if (new URL(req.url, 'http://x').searchParams.get('reset')) {
+    if (gapReset) {
       loopDelay.reset();
       loopDelaySince = Date.now();
     }
