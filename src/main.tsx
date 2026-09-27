@@ -13,7 +13,7 @@ import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { adoptLanFromOrigin } from './net/lanAdopt';
 import { CHUNK_RELOAD_KEY } from './storageKeys';
-import { appBuild } from './net/env';
+import { appBuild, probePrimary } from './net/env';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -74,6 +74,7 @@ window.addEventListener('vite:preloadError', (e) => {
  *  - otherwise the app waits for the answer at most BOOT_WAIT_MS from here, then opens (FAIL
  *    OPEN: an unreachable server is not a closed site). A later answer can still close it.
  */
+probePrimary();
 const statusRead = loadSiteStatus();
 const statusOrTimeout = Promise.race([statusRead, new Promise<void>((r) => setTimeout(r, BOOT_WAIT_MS))]);
 

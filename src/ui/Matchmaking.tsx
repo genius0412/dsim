@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { gameServerUrl, gameServerUrlWith, gameServerHttpUrl, multiServer } from '../net/env';
+import { gameServerUrl, gameServerUrlWith, multiServer, nearestHttpUrl } from '../net/env';
 import { probeHome } from '../net/ping';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
@@ -848,7 +848,7 @@ export function Matchmaking({
     searchingRef.current = true;
     // measure our home region + access latency (best-effort — the matchmaker falls
     // back to its own region if we can't report one)
-    const home = await probeHome(gameServerHttpUrl());
+    const home = await probeHome(nearestHttpUrl());
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(gameServerUrlWith({ mm: '1' }));

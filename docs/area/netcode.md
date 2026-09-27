@@ -1,4 +1,4 @@
-<!-- governs: server/**, api/**, src/net/**, src/lan/**, src/game.ts, src/sim/replay.ts, src/replaySavePolicy.ts, src/ui/ReplayView.tsx, src/ui/ReplayRail.tsx, src/ui/replayVideo.ts, src/ui/replayOverlay.ts, src/ui/webm.ts, src/ui/mp4.ts -->
+<!-- governs: server/**, api/**, router/**, src/net/**, src/lan/**, src/game.ts, src/sim/replay.ts, src/replaySavePolicy.ts, src/ui/ReplayView.tsx, src/ui/ReplayRail.tsx, src/ui/replayVideo.ts, src/ui/replayOverlay.ts, src/ui/webm.ts, src/ui/mp4.ts -->
 # Netcode — server authority, prediction, snapshots, replays, deploy
 
 The authoritative loop, delta snapshots, reconcile, interpolation, replay containers and video export, LAN, and the Fly deploy protocol. ⚠️ One app serves every client version, so protocol changes must stay backward-compatible.

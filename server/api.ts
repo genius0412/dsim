@@ -88,6 +88,7 @@ import {
   analyticsReport,
   classify,
   clientIp,
+  siteHost,
   countryForTimezone,
   currentSalt,
   dimColumn,
@@ -530,7 +531,7 @@ async function handleAnalytics(
     // The HOST HEADER, not `url.host` — `handleApi` parses the request against a fixed
     // `http://localhost` base, so that would be the same constant for every deployment and the
     // `site` term in the hash would do nothing at all.
-    const site = (req.headers.host ?? '').slice(0, 64);
+    const site = siteHost(req).slice(0, 64);
     const visitor = visitorHash(salt, ip, ua, site);
     // The per-ADDRESS key is a hash under the same rotating salt, so the limiter never becomes
     // the one place raw addresses are kept. `ip:` keeps the two key spaces apart.
@@ -861,7 +862,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (env) return env.replace(/\/$/, '');
       const xf = r.headers['x-forwarded-proto'];
       const proto = (Array.isArray(xf) ? xf[0] : xf)?.split(',')[0] ?? 'https';
-      const host = r.headers.host ?? 'localhost';
+      // `siteHost`, so a start that came through the primary router still names this app
+      const host = siteHost(r) || 'localhost';
       return `${proto}://${host}`;
     };
     const linkMatch = url.pathname.match(/^\/api\/link\/(github|discord)\/(start|callback|unlink)$/);

@@ -22,14 +22,35 @@
 set -euo pipefail
 
 ALPHA=0
+ROUTER=0
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --alpha) ALPHA=1 ;;
+    --router) ROUTER=1 ;;
     *) ARGS+=("$arg") ;;
   esac
 done
 set -- ${ARGS+"${ARGS[@]}"}
+
+# THE PRIMARY ROUTER (router/, src/net/primaryHost.ts): a separate tiny app, pinned to iad, that
+# fly-replays every request to the game app's primary machine so idle tabs never start a
+# satellite. `--router` deploys it (production's dsim-primary, or dsim-alpha-primary with
+# --alpha) and nothing else. One machine, iad only: a router machine anywhere else would sit
+# nearest some players and start for their polls.
+if [ "$ROUTER" -eq 1 ]; then
+  if [ "$ALPHA" -eq 1 ]; then RCONFIG=fly.alpha.toml; else RCONFIG=fly.toml; fi
+  RAPP=$(sed -n "s/^app = '\(.*\)'/\1/p" "router/$RCONFIG")
+  echo "==> primary router deploy ($RAPP, router/$RCONFIG)"
+  if ! fly status -a "$RAPP" >/dev/null 2>&1; then
+    echo "==> creating app $RAPP"
+    fly apps create "$RAPP" --org "${FLY_ORG:-personal}"
+  fi
+  (cd router && fly deploy --remote-only --ha=false -c "$RCONFIG" -a "$RAPP" "$@")
+  echo "==> done. verify: curl -sI https://$RAPP.fly.dev/health  (x-region: iad)"
+  echo "    machines:     fly machine list -a $RAPP  (one, iad)"
+  exit 0
+fi
 
 if [ "$ALPHA" -eq 1 ]; then
   APP="${FLY_ALPHA_APP:-dsim-alpha}"

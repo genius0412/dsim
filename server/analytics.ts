@@ -99,6 +99,23 @@ export function clientIp(req: IncomingMessage): string {
 }
 
 /**
+ * The Host a request is counted under, with the PRIMARY ROUTER folded into this app.
+ *
+ * New clients reach the HTTP APIs through a separate router app (`router/`,
+ * `src/net/primaryHost.ts`) that `fly-replay`s to this one, and a replayed request keeps the
+ * router's Host. Any `*.fly.dev` name that reaches this process is this app, so it counts as
+ * `<FLY_APP_NAME>.fly.dev`, the name older clients send; otherwise one visitor would hash to
+ * two ids for the day while old and new clients mix. Other hosts (localhost, a LAN box) pass
+ * through unchanged.
+ */
+export function siteHost(req: IncomingMessage): string {
+  const host = (req.headers.host ?? '').toLowerCase();
+  const app = process.env.FLY_APP_NAME;
+  if (app && /^[a-z0-9-]+\.fly\.dev$/.test(host)) return `${app}.fly.dev`;
+  return host;
+}
+
+/**
  * THE COUNTRY, from a header the edge already added, or nothing.
  *
  * Checked in the order of how much each is worth here: Fly is where the beacon actually lands,

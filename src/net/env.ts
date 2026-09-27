@@ -29,6 +29,7 @@
 
 import { parseLanAddress } from './lanAddress';
 import { discordGameServerUrl } from './discordActivity';
+import { primaryWsBase } from './primaryHost';
 
 export interface GameServer {
   /** stable id used to persist the player's preference */
@@ -264,8 +265,58 @@ export function roomServerUrlWith(params: Record<string, string>): string {
  * itself. A LAN box has none of those, so a version of this that followed the socket would
  * point a signed-in player's whole account at a laptop, and the first self-hosted match
  * would be uploaded into a void.
+ *
+ * It goes through the PRIMARY router when the server has one (`primaryHost.ts`), so a menu
+ * tab's polls reach iad and never start the player's nearest satellite. `nearestHttpUrl()`
+ * is the Anycast host, for the two reads that are about the nearest region.
  */
-export const gameServerHttpUrl = (): string => httpOf(selectedServer()?.url);
+export const gameServerHttpUrl = (): string => httpOf(primaryUrl() || selectedServer()?.url);
+
+/**
+ * The CLOUD server over HTTP through the Anycast host, i.e. the region NEAREST the player,
+ * never the primary router. Only for a request that is about that region: the `/health`
+ * latency probe (`ping.ts`) and the region-pinned `/api/lobbies` read. Everything else uses
+ * `gameServerHttpUrl()`, which does not wake a satellite (see `primaryHost.ts`).
+ */
+export const nearestHttpUrl = (): string => httpOf(selectedServer()?.url);
+
+/**
+ * The PRIMARY router's ws(s):// base, or '' (no router for this server, a Discord Activity,
+ * or the boot probe found it unreachable). See `primaryHost.ts`.
+ */
+let primaryDown = false;
+function primaryUrl(): string {
+  if (primaryDown) return '';
+  const url = selectedServer()?.url;
+  if (!url || selectedServer()?.id === 'discord') return '';
+  return primaryWsBase(url, (import.meta.env.VITE_GAME_PRIMARY_URL as string | undefined) ?? '');
+}
+
+/** the cloud WebSocket for a socket that must NOT wake a satellite (LAN signalling). The
+ *  primary router when there is one, else the Anycast host. Never a match or room socket:
+ *  those have to reach the room's own region. */
+export const primaryWsUrl = (): string => primaryUrl() || gameServerUrl();
+
+/**
+ * Check once per page that the router answers, and fall back to the Anycast host for the rest
+ * of the page if it does not (the router app down, or a build pointed at one that was never
+ * created). Requests made before the answer go to the router, and a failure there is handled
+ * like any other failed read. Called from `main.tsx`.
+ */
+export function probePrimary(timeoutMs = 8000): void {
+  const base = httpOf(primaryUrl());
+  if (!base || typeof fetch === 'undefined') return;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  fetch(base + '/health', { cache: 'no-store', signal: ctl.signal })
+    .then((r) => {
+      if (!r.ok) primaryDown = true;
+    })
+    .catch(() => {
+      primaryDown = true;
+    })
+    .finally(() => clearTimeout(timer));
+}
 
 /** ws(s):// → http(s):// for any server's url */
 export const httpOf = (wsUrl: string | undefined): string =>

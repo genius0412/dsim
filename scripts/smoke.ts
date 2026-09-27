@@ -16,6 +16,7 @@ import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { allianceDuo, derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
+import { PRIMARY_HOSTS, primaryWsBase } from '../src/net/primaryHost';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
 import { enforceLanPolicy } from '../server/lanMode';
@@ -7917,6 +7918,47 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- the primary router: idle polls must not start a satellite -------------------------
+  /**
+   * The game host is Anycast, so a poll lands on the nearest region and starts it. The HTTP
+   * APIs go to a router app pinned to iad instead (src/net/primaryHost.ts). These pin the
+   * mapping and that each routed host has a router config replaying to the right app, in iad.
+   */
+  {
+    check(
+      'primary router: production and alpha map to their routers, wss kept',
+      primaryWsBase('wss://dohun-sim-decode.fly.dev') === 'wss://dsim-primary.fly.dev' &&
+        primaryWsBase('wss://dsim-alpha.fly.dev') === 'wss://dsim-alpha-primary.fly.dev',
+    );
+    check(
+      'primary router: an unknown host, a LAN box or a bad URL has none',
+      primaryWsBase('wss://example.com') === '' &&
+        primaryWsBase('ws://192.168.1.20:8080') === '' &&
+        primaryWsBase('not a url') === '',
+    );
+    check(
+      'primary router: the build override wins, and `off` disables it',
+      primaryWsBase('wss://dohun-sim-decode.fly.dev', 'https://r.example.dev/') === 'wss://r.example.dev' &&
+        primaryWsBase('wss://dohun-sim-decode.fly.dev', 'off') === '',
+    );
+    const configs = readdirSync('router')
+      .filter((f) => f.endsWith('.toml'))
+      .map((f) => readFileSync(joinPath('router', f), 'utf8'));
+    const field = (toml: string, key: string): string =>
+      new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*'([^']*)'`, 'm').exec(toml)?.[1] ?? '';
+    for (const [game, router] of Object.entries(PRIMARY_HOSTS)) {
+      const app = router.replace(/\.fly\.dev$/, '');
+      const cfg = configs.find((t) => field(t, 'app') === app);
+      check(
+        `primary router: ${app} has a config replaying to ${game} in iad`,
+        !!cfg &&
+          field(cfg, 'TARGET_APP') === game.replace(/\.fly\.dev$/, '') &&
+          field(cfg, 'TARGET_REGION') === 'iad' &&
+          field(cfg, 'primary_region') === 'iad',
+      );
+    }
+  }
+
   // ---- LAN: what address may be joined, and from which page --------------
   /**
    * AN https PAGE CANNOT OPEN A ws:// SOCKET, AND IT FAILS SILENTLY.
@@ -8827,8 +8869,8 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        the same trap the lan launcher checks above fell into. */
     const sigCode = sigc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     check(
-      'lan signal client: the rendezvous is always the CLOUD, never a LAN address',
-      /gameServerUrl\(\)/.test(sigCode) && !/lanServerUrl/.test(sigCode),
+      'lan signal client: the rendezvous is always the CLOUD (the primary router), never a LAN address',
+      /primaryWsUrl\(\)/.test(sigCode) && !/lanServerUrl|roomServerUrl/.test(sigCode),
     );
     check(
       'lan signal client: the host token is read here, so a caller cannot assert one',
