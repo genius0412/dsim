@@ -15407,7 +15407,8 @@ function pinScene(
 
 // ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
 // `server/snapshotWire.ts` replaced a `JSON.stringify(ball, round3)` per ball per broadcast with
-// a shadow walk (`sameR3`) that only stringifies what moved. It is a pure CPU change, so the one
+// a shadow walk (`sameR3`) that only stringifies what moved, and builds the body by splicing
+// those cached strings instead of re-serializing the balls. It is a pure CPU change, so the one
 // thing to prove is that NOTHING on the wire moved: the room runs the old encoder beside the new
 // one on every broadcast (`checkWireForTest`) and every disagreement is reported. Real rooms,
 // every game, driven and shooting, with the recipients that take the unusual paths — a LOSSY one
@@ -15487,8 +15488,9 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   const upd = snaps.reduce((n, m) => n + m.balls.upd.length, 0);
   const deltas = snaps.filter((m) => m.balls.upd.length < m.balls.order.length).length;
   check(`snapshot wire/${game}: the room broadcast and the reference ran on every frame`, res.frames >= 300, `${res.frames} frames`);
-  check(`snapshot wire/${game}: ...and moved real ball data, in deltas as well as keyframes (not vacuous)`, upd > 0 && deltas > 100, `${upd} ball updates, ${deltas} delta frames`);
-  check(`snapshot wire/${game}: every change set matches the old per-ball string diff`, res.mismatches.length === 0, res.mismatches.slice(0, 3).join(' | '));
+  check(`snapshot wire/${game}: ...and moved real ball data, in deltas as well as keyframes (not vacuous)`, upd > 0 && deltas > 100 && snaps.length - deltas >= 4, `${upd} ball updates, ${deltas} delta frames, ${snaps.length - deltas} keyframes`);
+  check(`snapshot wire/${game}: bodies were compared for more baselines than frames (keyframes + lossy acks, not just the shared delta)`, res.bodies > res.frames, `${res.bodies} bodies over ${res.frames} frames`);
+  check(`snapshot wire/${game}: every change set AND every body is byte-identical to the old encoder`, res.mismatches.length === 0, res.mismatches.slice(0, 3).join(' | '));
   room.stop();
 }
 

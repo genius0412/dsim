@@ -57,7 +57,7 @@ import { slimWorld, quantizeCommand, localizeCommand, type BallDelta } from '../
 // must not be able to disagree with the server about. (`server/wire.ts` is a LEAF module for
 // exactly that reason — see its header.)
 import { round3 } from '../server/wire';
-import { BallWireCache } from '../server/snapshotWire';
+import { BallWireCache, snapshotBody, snapshotParts } from '../server/snapshotWire';
 import * as C from '../src/config';
 // BIOBUZZ's own leaf modules. `coerce.ts` is a dependency of the shared `coerceSpec` and
 // imports nothing that reaches back to it, so pulling it (and the constants it already reads)
@@ -451,7 +451,10 @@ async function measure(s: Scenario): Promise<Measured> {
         cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0, s))),
         ackInputTick: world.tick,
       };
-      const frame = JSON.stringify(payload, round3);
+      // the room's encoder, spliced from the per-ball strings `diff` just refreshed — the
+      // same bytes as `JSON.stringify(payload, round3)` ("snapshot wire:" in npm test)
+      const parts = snapshotParts(slim, delta.order, payload.cmds);
+      const frame = `${snapshotBody(world.tick, parts.slimJson, parts.orderJson, delta.upd, parts.cmdsJson, wireCache)},"ackInputTick":${world.tick}}`;
       frames.push(frame);
       snapBytes += Buffer.byteLength(frame, 'utf8');
       snaps++;
