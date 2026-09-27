@@ -366,6 +366,7 @@ import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
 import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
 import { clockMembers } from '../server/tickScheduler';
+import { warmUp, warmupEnabled } from '../server/warmup';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
@@ -15458,6 +15459,26 @@ function pinScene(
   cadence.advanceForTest(20);
   check('clock: a room driven by advanceForTest is OFF the clock and keeps the old even-tick cadence', clockMembers() === before && seen.length > 0 && seen.every((t) => t % 2 === 0), `${seen}`);
   cadence.stop();
+}
+
+// ---- BOOT JIT WARM-UP (`server/warmup.ts`) -----------------------------------------
+// A headless busy match per game after physics init, so the first real player on a woken
+// machine does not pay for V8 compiling the sim. It must warm EVERY game (on its server
+// physics), leave nothing behind (no room on the clock, no user lock), and have a kill switch
+// that honours the spellings an operator reaches for under pressure.
+{
+  await initPhysics3d();
+  check('warmup: on by default, and WARMUP=0/false/no/off turns it off', warmupEnabled(undefined) && warmupEnabled('1') && ['0', 'false', 'NO', ' off '].every((v) => !warmupEnabled(v)));
+  const before = clockMembers();
+  const r = await warmUp(60);
+  check('warmup: every registered game is warmed', r.games.join() === GAME_IDS.join(), `${r.games} of ${GAME_IDS}`);
+  check('warmup: it actually stepped each game (not vacuous)', r.ticks === 60 * GAME_IDS.length, `${r.ticks} ticks`);
+  check('warmup: nothing is left on the room clock afterwards', clockMembers() === before, `${clockMembers() - before}`);
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check(
+    'warmup: the server starts it only after physics init and does not await it (joins and /health are never gated)',
+    /initPhysics3d\(\)\]\)[\s\S]{0,800}void warmUp\(\)/.test(idx) && !/await warmUp\(/.test(idx),
+  );
 }
 
 // ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
