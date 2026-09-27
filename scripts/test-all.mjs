@@ -84,6 +84,15 @@ if (SERIAL) {
   results.push(...(await Promise.all([shared.done, bb.done])));
 }
 
+/**
+ * THE SIM-WORKER SEAM (`SIM_WORKERS`, `scripts/workersmoke.ts`) — real worker threads, fake
+ * sockets. AFTER both suites, alone: it starts two worker threads (a Rapier init each) and times
+ * snapshot streams in real time, which is the kind of check an oversubscribed box fails for the
+ * wrong reason.
+ */
+const TSX = resolve(ROOT, 'node_modules/tsx/dist/cli.mjs');
+results.push(await run('workers', TSX, [resolve(ROOT, 'scripts/workersmoke.ts')]).done);
+
 for (const r of results) process.stdout.write(r.out);
 
 console.log('');
