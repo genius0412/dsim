@@ -28358,5 +28358,28 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * THREE LOOPS THAT KEPT RUNNING, OR STOPPED, FOR THE WRONG REASON.
+ */
+{
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const main = rd('src/main.tsx');
+  check(
+    '⚠️ stale chunk: the reload guard is once PER BUILD, not once per tab forever',
+    /if \(sessionStorage\.getItem\(CHUNK_RELOAD_KEY\) === build\) return;\s*sessionStorage\.setItem\(CHUNK_RELOAD_KEY, build\);/.test(main),
+    "a bare '1' never cleared: a long-lived tab reloaded for the first deploy and showed the error page for every one after",
+  );
+  const aa = rd('src/ui/AdminAnalytics.tsx');
+  check(
+    'admin analytics: an older load landing after a newer one is discarded',
+    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*setReport\(r\);/.test(aa),
+  );
+  const wl = rd('src/ui/WatchLive.tsx');
+  check(
+    'watch live: an unattended page does not poll /api/live, and catches up when someone is back',
+    /const load = \(\): void => \{[\s\S]{0,600}?if \(userIdle\(\)\) return;/.test(wl) && /onUserActive\(load\)/.test(wl),
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -13,6 +13,7 @@ import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { adoptLanFromOrigin } from './net/lanAdopt';
 import { CHUNK_RELOAD_KEY } from './storageKeys';
+import { appBuild } from './net/env';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -45,12 +46,19 @@ const lanReady = adoptLanFromOrigin().catch(() => false);
 
 // A STALE CHUNK AFTER A DEPLOY. A tab opened before a deploy still asks for the old hashed
 // `assets/<name>-<hash>.js`, which is gone, and Vite fires this before the lazy import rejects.
-// Reload ONCE to pick up the new build; the session flag stops a loop when the file is missing
-// for some other reason (offline), which `LoadBoundary` then reports on the page.
+// Reload ONCE PER BUILD to pick up the new one; the session entry stops a loop when the file is
+// missing for some other reason (offline), which `LoadBoundary` then reports on the page.
+//
+// ⚠️ PER BUILD, not once per tab. The entry used to be a bare '1' that nothing ever cleared, so
+// a long-lived tab — the desktop shell loading the live site, a Discord Activity — reloaded for
+// the FIRST deploy and then showed the error page for every deploy after it. It now records the
+// build that reloaded: the same build failing again is the loop being stopped, while the NEW
+// build it reloaded into going stale at the next deploy is a fresh case and reloads once more.
 window.addEventListener('vite:preloadError', (e) => {
+  const build = appBuild();
   try {
-    if (sessionStorage.getItem(CHUNK_RELOAD_KEY) === '1') return;
-    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1');
+    if (sessionStorage.getItem(CHUNK_RELOAD_KEY) === build) return;
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, build);
   } catch {
     return; // no storage, no loop guard: let LoadBoundary show the error instead
   }
