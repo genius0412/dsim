@@ -83,6 +83,16 @@ function useFieldColliders(): boolean {
 }
 
 /**
+ * WHAT `buildStatics3d` WILL BUILD, as a cache key — the one input that is not a module
+ * constant (the test override above) plus the friction it is handed. `engineImpl.ts` keys its
+ * snapshot of the finished static world on this, so a lane that flips the override gets a fresh
+ * build rather than the other field's statics restored.
+ */
+export function statics3dKey(wallFriction: number): string {
+  return `${useFieldColliders() ? 'cad' : 'legacy'}|${wallFriction}`;
+}
+
+/**
  * THE SAME SHAPE OF OVERRIDE FOR `BB3_HIVE_DYNAMIC`, and it exists for two callers that are not
  * production: `scripts/hive-calibrate.ts`, which has to build a DYNAMIC tray in order to measure
  * the thing that decides whether the constant may be true at all, and the HIVE3D smoke lane,
