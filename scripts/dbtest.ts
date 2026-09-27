@@ -4964,6 +4964,12 @@ async function main(): Promise<void> {
     const invRows = await db.query<{ room: string }>(`select room from room_invites where from_user_id = 'inv-a' and to_user_id = 'inv-b'`);
     check('challenge: a re-send REPLACES, one live token', invRows.rows.length === 1 && invRows.rows[0].room === 'TOKEN2');
 
+    // ---- query-string junk is a 404 / a default, not a Postgres cast error -----------------
+    check('replay: a non-uuid id is MISSING, not a throw', (await repo.replayAccess('abc', null)).access === 'missing');
+    check('replay: ...and getReplay answers null for it', (await repo.getReplay('not-a-uuid')) === null);
+    const nanPage = await repo.userMatchHistory('inv-a', { balanceVersion: 1, limit: NaN, offset: NaN }).catch(() => null);
+    check('history: a NaN limit/offset falls back to the defaults', nanPage?.limit === 25 && nanPage?.offset === 0);
+
   }
 
   await db.close();
