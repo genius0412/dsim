@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-26c (branch `bb-preview-entry-perf`: faster entry to BIOBUZZ Configure ▸ Robot in 3D)
+
+**State: PR into `alpha`.** `build`, `npm test` (shared + 5141 BIOBUZZ PASS), `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Client only, no deploy.
+
+- **Report:** opening /biobuzz/configure/robot lags while the 3D robot renders.
+- **Fix, three commits:** (1) `createEnvironment` no longer builds a room PMREM or compiles the equirect shader at construction. Low/Medium have lighting off, so that 69 ms of work was thrown away; the HDRI path compiles during its fetch and lights the room meanwhile. The builder preview passes `envLighting` to `apply` like the match. (2) Saved-robot thumbnails draw through the live turntable via `capture(size, spec)`, which swaps the build, shoots at the default pose, swaps back and redraws in one task. There is no second WebGL context now; the offscreen scene stays as the fallback. (3) `App.tsx` warms the scene chunk on idle through `preloadRoomView` (3D view + scene-bearing game only).
+- **Measured** (`scratch/perf.cjs`, now with `GFX=<tier>` and `MBPS=<n>` throttle): long tasks Medium 90–147 → ~62 ms, High 211–219 → ~105 (median of 5). At 10 Mbit/s, click-to-ready 400 → 200 ms. Numbers are in `docs/area/ui.md`.
+- **Checked by eye:** thumbnails show their own builds and the hero is undisturbed. A 3D free drive on Medium (room, no IBL) and High (school-hall HDRI) lights as before.
+- **Not done, on purpose:** keeping the turntable's context alive between visits (the rule against holding a context the match wants) and saving thumbnails in storage (`Preview3D.tsx` explains why). Revisit if revisits still measure slow.
+---
+
 # HANDOFF — 2026-09-26b (branch `fix/ramp-pad-default`: Deploy ramp's pad default moves to R3)
 
 **State: PR into `alpha`.** `npm test`: BIOBUZZ ALL PASS; shared result in the PR body. Client only, no deploy.
