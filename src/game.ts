@@ -66,6 +66,7 @@ import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
+import { LeadController } from './net/leadControl';
 import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
 
@@ -553,6 +554,8 @@ export class GameController {
   /** multiplayer sim-step timer (survives tab backgrounding); 0 = solo */
   private simTimer = 0;
   private lastSimT = 0;
+  /** how far ahead of the server the predicted clock runs — see `src/net/leadControl.ts` */
+  private readonly lead = new LeadController();
   /** predict/reconcile input buffer: local commands not yet folded into a server
    * snapshot, replayed forward after each reconcile (keyed by the tick produced) */
   private inputBuf: { tick: number; cmd: RobotCommand }[] = [];
@@ -1763,7 +1766,11 @@ export class GameController {
     }
     this.lastCmd = cmd;
 
-    this.acc += Math.min(dtMs / 1000, 0.25);
+    // ONLINE, the accumulator runs a few percent fast or slow while the lead controller slews
+    // the prediction onto its target (`src/net/leadControl.ts`). Solo adds exactly `dt`, as it
+    // always has — the branch, not a multiply by one, keeps it bit-identical.
+    const dtS = Math.min(dtMs / 1000, 0.25);
+    this.acc += this.session ? dtS * (1 + this.lead.rate(performance.now())) : dtS;
     // TWO `performance.now()` CALLS AND ONE RING WRITE, always on. This is the number the
     // read-out's SIM row prints, and it is the only way to tell "my machine cannot draw this"
     // from "my machine cannot step this" — which are the two completely different answers a
@@ -2181,6 +2188,12 @@ export class GameController {
     if (snap) {
       this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
+      // the LEAD, read against this snapshot BEFORE the reconcile moves the clock. A spectator
+      // sends nothing, so it has no lead to keep.
+      if (!this.spectator) {
+        const clock = this.predicted3d() ? this.predictTick : this.world.tick;
+        this.lead.sample(clock, snap.serverTick, snap.ackInputTick, performance.now());
+      }
       this.reconcile(snap);
     }
 
@@ -2223,9 +2236,11 @@ export class GameController {
     // AUTO's one measurement, taken in the countdown and nowhere else (plan §5).
     this.maybeProbeAuto();
 
-    // predict a small amount ahead in real time (the local robot stays responsive;
-    // the server accepts our slightly-late inputs by applying our latest command,
-    // so we do NOT fast-forward the whole world — that flung the balls around)
+    // predict ahead in real time. HOW FAR is the lead controller's job: just enough that each
+    // input reaches the room before the tick it is stamped for (`src/net/leadControl.ts`). It
+    // gets there by running the accumulator a few percent fast or slow — never by stepping a
+    // burst: we do NOT fast-forward the whole world, which re-simulates every ball and remote
+    // from a stale state in one frame and flung the balls around on the next snapshot.
     if (this.acc > 0.25) this.acc = 0.25;
     let steps = 0;
     // A 3D ROOM PREDICTS ONE ROBOT, NOT A WORLD — see the prediction block's header.
@@ -2958,6 +2973,7 @@ export class GameController {
     this.remoteCmds = new Map();
     this.lastServerTick = 0;
     this.gotSnapshot = false;
+    this.lead.reset();
     this.shownEventCount = 0;
     this.netEvents = [];
     this.snapBuf = [];
