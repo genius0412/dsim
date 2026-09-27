@@ -75,7 +75,7 @@ import {
   recordKofiPayment,
   deleteAccount,
   exportAccount,
-  listSeasons,
+  listSeasonsCached,
   recordLeaderboard,
   saveUserSettings,
   setHandle,
@@ -1779,7 +1779,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // module owns that number, so a third game does not land in DECODE's bucket
       const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : BALANCE_VERSION;
       if (dbEnabled) await ensureSeason(current, game, simModuleFor(game).initialAct);
-      const seasons = dbEnabled ? await listSeasons(game) : [];
+      const seasons = dbEnabled ? await listSeasonsCached(game) : [];
       return json(200, { current, seasons, game }), true;
     }
 

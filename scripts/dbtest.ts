@@ -4970,6 +4970,27 @@ async function main(): Promise<void> {
     const nanPage = await repo.userMatchHistory('inv-a', { balanceVersion: 1, limit: NaN, offset: NaN }).catch(() => null);
     check('history: a NaN limit/offset falls back to the defaults', nanPage?.limit === 25 && nanPage?.offset === 0);
 
+    // ---- a new season continues the game's act; initialAct is for the FIRST row only -------
+    await db.query(`insert into seasons (game, balance_version, act, active) values ('chain', 700, 3, true)`);
+    await repo.ensureSeason(701, 'chain', 1); // what a code BALANCE_VERSION bump does
+    check(
+      '⚠️ seasons: a season seeded by a balance bump stays in the CURRENT act, not the game’s initial one',
+      (await repo.actForSeason(701, 'chain')) === 3,
+      `act ${await repo.actForSeason(701, 'chain')}`,
+    );
+
+    // ---- the public season list memo ---------------------------------------------------------
+    repo.clearSeasonsCache();
+    const t0 = 5_000_000;
+    const firstList = await repo.listSeasonsCached('chain', t0);
+    await db.query(`insert into seasons (game, balance_version, act, active) values ('chain', 702, 3, false)`);
+    const cachedList = await repo.listSeasonsCached('chain', t0 + 30_000);
+    check('seasons: a second picker read inside the TTL is served from the memo', cachedList.length === firstList.length);
+    const laterList = await repo.listSeasonsCached('chain', t0 + 120_000);
+    check('seasons: ...and past the TTL it re-reads', laterList.length === firstList.length + 1);
+    await repo.ensureSeason(703, 'chain', 1);
+    const afterSeed = await repo.listSeasonsCached('chain', t0 + 130_000);
+    check('seasons: seeding a new season drops the memo at once', afterSeed.some((x) => x.season === 703));
   }
 
   await db.close();
