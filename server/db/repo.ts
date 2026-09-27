@@ -3900,27 +3900,39 @@ export async function writeStandingEvent(
   userId: string,
   v: StandingVerdict,
   ctx: { game?: Game; mode?: string; roomCode?: string } = {},
-): Promise<void> {
-  await tx(async (query) => {
-    await query(
+): Promise<number> {
+  /* ⚠️ THE EXISTING ROW TAKES THE DELTA, NOT THE VERDICT'S ABSOLUTE SCORE. The verdict was
+     worked out from a snapshot read a few round trips earlier (`chargeStanding` reads, looks up
+     the rung, maybe charges rating, then writes), and writing `scoreAfter` back verbatim erased
+     anything that landed in between: a clean-match heal from the same match end, a moderator's
+     `adminEditStanding`, or a second charge. Subtracting what THIS offence costs from whatever
+     is stored now keeps every one of them. A brand-new row has nothing to race with, so it
+     takes the verdict as computed (its base was the full score). Returns what was stored, which
+     the ledger row records and the caller reports. */
+  const delta = Math.max(0, v.scoreBefore - v.scoreAfter);
+  return tx(async (query) => {
+    const stored = await query<{ score: number }>(
       `insert into account_standing (user_id, score, restricted_until, healed_at, updated_at)
        values ($1, $2, $3, now(), now())
        on conflict (user_id) do update
-         set score = excluded.score,
+         set score = greatest(0, least($5::int, account_standing.score - $4::int)),
              restricted_until = greatest(
                coalesce(account_standing.restricted_until, to_timestamp(0)),
                coalesce(excluded.restricted_until, to_timestamp(0))
              ),
              healed_at = now(),
-             updated_at = now()`,
-      [userId, v.scoreAfter, v.restrictedUntil ? new Date(v.restrictedUntil).toISOString() : null],
+             updated_at = now()
+       returning score`,
+      [userId, v.scoreAfter, v.restrictedUntil ? new Date(v.restrictedUntil).toISOString() : null, delta, STANDING_MAX],
     );
+    const scoreAfter = Number(stored[0]?.score ?? v.scoreAfter);
     await query(
       `insert into standing_events (user_id, kind, points, score_after, cooldown_min, rating_charge, game, mode, room_code)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [userId, v.kind, v.points, v.scoreAfter, v.cooldownMin, v.ratingCharge,
+      [userId, v.kind, v.points, scoreAfter, v.cooldownMin, v.ratingCharge,
        ctx.game ? g(ctx.game) : null, ctx.mode ?? null, ctx.roomCode ?? null],
     );
+    return scoreAfter;
   });
 }
 
