@@ -4,8 +4,8 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
-import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { rapier3d, prebuildPhysics3dFor } from '../../src/games/biobuzz/sim3d/engine';
+import { disposeEngineFor, engineFor, robotBodyOf, syncElements, __clearStaticSnapshotForTests, __staticSnapshotCachedForTests } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadStatics, cadTrayRefTheta, cadTrayRiders, fieldColliders3d, type FieldStatic } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
@@ -2499,6 +2499,52 @@ export function sim3dChecks(check: Check): void {
       'one field: no DRAWN tape strip runs onto a perimeter wall',
       touching.length === 0,
       `${touching.length} of ${drawn.length} reach ${wallFaceAbs.toFixed(3)}`,
+    );
+  }
+
+  // ---- THE STATIC FIELD IS A SNAPSHOT, AND A ROOM MAY BUILD ITS ENGINE BEFORE TICK 1 --------
+  //
+  // `engineImpl.ts` builds the static field (floor, walls, CAD hulls, flower TRIMESHES) once per
+  // process and RESTORES every later engine's statics from a Rapier snapshot, and the server
+  // builds a 3D match's engine when the room builds the world (`prebuildPhysics3dFor`) rather
+  // than inside its first tick. Both are cost moves only: the SAME match must come out
+  // byte-identical whichever way its engine was built. Two robots driving, intaking and
+  // firing for ten seconds, so there are contacts, captures and shots in it.
+  {
+    const play = (w: World): string => {
+      w.match.preCountdown = 0.05;
+      for (let t = 0; t < 600; t++) {
+        const p = t / 60;
+        step3d(
+          w,
+          C.SIM_DT,
+          new Map([
+            [0, cmd({ driveX: Math.sin(p), driveY: Math.cos(p * 0.7), rotate: 0.4 * Math.sin(p * 1.3), intake: true, fire: t % 90 > 20 })],
+            [1, cmd({ driveX: Math.cos(p * 0.8), driveY: Math.sin(p * 0.6), rotate: -0.3, intake: true, fire: t % 70 > 30 })],
+          ]),
+        );
+      }
+      const out = JSON.stringify(w);
+      disposeEngineFor(w);
+      return out;
+    };
+    __clearStaticSnapshotForTests();
+    const built = play(mkWorld3dPair('match', 11));
+    const cached = __staticSnapshotCachedForTests();
+    const restored = play(mkWorld3dPair('match', 11));
+    const early = mkWorld3dPair('match', 11);
+    prebuildPhysics3dFor(early);
+    const prebuilt = play(early);
+    check('statics snapshot: the first engine in a process BUILDS the static field and caches it', cached);
+    check(
+      'statics snapshot: a match whose statics were RESTORED from the snapshot is byte-identical to one that built them',
+      built === restored,
+      `${built.length} vs ${restored.length} chars`,
+    );
+    check(
+      'statics snapshot: a match whose engine the room built BEFORE tick 1 is byte-identical to one built inside it',
+      built === prebuilt,
+      `${built.length} vs ${prebuilt.length} chars`,
     );
   }
 

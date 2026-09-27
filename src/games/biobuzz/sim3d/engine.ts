@@ -31,6 +31,7 @@
 
 // TYPE-ONLY, so it costs the chunk nothing — the light-seam rule above is about VALUE imports.
 import type { World } from '../../../types';
+import { biobuzzPhysics } from '../state';
 
 /** the resolved module's shape — `typeof import(...)`, so every caller gets the package's own
  * types without a second, hand-maintained copy of them. */
@@ -121,3 +122,16 @@ export function disposePhysics3dFor(world: World): void {
   if (!impl) return;
   impl.disposeEngineFor(world);
 }
+
+/**
+ * BUILD A 3D MATCH'S ENGINE WHEN THE ROOM BUILDS ITS WORLD, not inside its first tick. The
+ * engine is persistent per `World` (`engineImpl.ts`), so building it here is the same build
+ * `step3d` would do on tick 1 from the same JSON — measured byte-identical — moved out of the
+ * 60 Hz loop that every room on the server shares. A no-op for a 2D world, for any other game,
+ * and before `initPhysics3d()` has resolved (the light gate, like `disposePhysics3dFor`).
+ */
+export function prebuildPhysics3dFor(world: World): void {
+  if (!impl || world.game !== 'biobuzz' || biobuzzPhysics(world) !== '3d') return;
+  impl.engineFor(world);
+}
+
