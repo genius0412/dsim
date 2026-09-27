@@ -9,8 +9,10 @@ import {
   hivePivotX,
   hiveTrayComW,
   hiveTrayMassProps,
+  trayHullPoints,
   useHiveDynamic,
 } from '../../src/games/biobuzz/sim3d/bodies';
+import { cadTrayHulls } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveContentsTorque, hiveHoldTorque, hiveTiltAngle, insideCell } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
@@ -34,6 +36,7 @@ import {
   BB3_HIVE_TIP_CREEP_W,
   BB3_HIVE_TRAY_MASS,
   BB3_REST_SPEED,
+  BB3_TRAY_OUTER_SKIN,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
@@ -1581,6 +1584,97 @@ function settleChecks(check: Check): void {
         `onTiles=${r.onTiles}, finalZ=${r.z.toFixed(3)}`,
       );
     }
+  }
+
+  /**
+   * ⚠️ **A NECTAR BEHIND THE HIVE FALLS THROUGH TO THE TILES** (owner report 2026-09-27: "nectar
+   * get stuck on top of the main beam that connects two CELLs and does not fall off").
+   *
+   * The drawn gap between the DOWN cell's closed end and the ACM panel below the pivot is 4.2 in,
+   * and a NECTAR is 3.6. The exporter pads every tray slab 1.5 in outward, which put the back
+   * slab's bottom edge, then the floor slab's bottom corner, 3.3 in from the panel: a NECTAR sat in
+   * that V on two narrow hulls, the vibration gave up after 30 ticks and froze it. A POLLEN (2.8)
+   * fell through. MEASURED, NECTAR on a 2-in grid over both hives: 110/675 stuck before, 0/675
+   * after; POLLEN over the blue tray on a 1-in grid 22/625 → 0/625. The drop points are where the
+   * old tray held them, one per hive (the trays rest on opposite stops, so the wedges mirror).
+   */
+  {
+    const dropNectar = (x: number, y: number, patch?: number): { onTiles: number | null; z: number } => {
+      const w = mkWorld3d('free', 1);
+      if (patch !== undefined) w.simPatch = patch;
+      w.balls.length = 0;
+      w.balls.push({
+        id: 1,
+        color: 'blue',
+        state: { kind: 'flight', target: 'blue' },
+        pos: { x, y },
+        vel: { x: 0, y: 0 },
+        z: 60,
+        vz: 0,
+        r: BB_NECTAR_R,
+      } as Artifact);
+      let onTiles: number | null = null;
+      for (let t = 0; t < 600 && onTiles === null; t++) {
+        step3d(w, 1 / 60, new Map());
+        const b = w.balls[0];
+        if (b.z <= 0.05 && b.state.kind === 'ground') onTiles = t;
+      }
+      return { onTiles, z: w.balls[0].z };
+    };
+    for (const [a, x, y] of [['blue', 7.7, -4.2], ['red', -7.7, 4.2]] as const) {
+      const now = dropNectar(x, y);
+      check(
+        `HIVE3D (3D): a NECTAR dropped behind ${a}'s DOWN cell falls past the ACM panel to the tiles`,
+        now.onTiles !== null,
+        `onTiles=${now.onTiles}, finalZ=${now.z.toFixed(3)}`,
+      );
+      // ...and a replay recorded before `SIM_PATCH` 2 still wedges it, on the tray it was played
+      // on. This is also what keeps the check above from being vacuous.
+      const old = dropNectar(x, y, 1);
+      check(
+        `HIVE3D (3D): ...under SIM_PATCH 1 (an older replay) the same NECTAR still wedges there (${a})`,
+        old.onTiles === null && old.z > 30,
+        `onTiles=${old.onTiles}, finalZ=${old.z.toFixed(3)}`,
+      );
+    }
+    // THE RULE, on the collider set itself: a floor or back slab stands exactly
+    // `BB3_TRAY_OUTER_SKIN` out past its CAD face and keeps the face; every other hull is as exported.
+    let worst = 0;
+    let touched = 0;
+    let untouchedMoved = 0;
+    for (const al of ['red', 'blue'] as const) {
+      for (const h of cadTrayHulls(al)) {
+        const built = trayHullPoints(h.name, h.points, BB3_TRAY_OUTER_SKIN);
+        const m = /^cell_(north|south)_(back|floor)$/.exec(h.name);
+        if (!m) {
+          if (built.some((v, i) => v !== h.points[i])) untouchedMoved++;
+          continue;
+        }
+        touched++;
+        const axis = m[2] === 'back' ? 1 : 2;
+        const span = (pts: readonly number[]): [number, number] => {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let i = axis; i < pts.length; i += 3) {
+            lo = Math.min(lo, pts[i]);
+            hi = Math.max(hi, pts[i]);
+          }
+          return [lo, hi];
+        };
+        const [lo0, hi0] = span(h.points);
+        const [lo1, hi1] = span(built);
+        // the CAD face is the one nearer the cell: |v| larger for a back, w larger for a floor
+        const faceHi = axis === 2 || m[1] === 'north';
+        const face0 = faceHi ? hi0 : lo0;
+        const face1 = faceHi ? hi1 : lo1;
+        worst = Math.max(worst, Math.abs(face1 - face0), Math.abs(hi1 - lo1 - BB3_TRAY_OUTER_SKIN));
+      }
+    }
+    check(
+      'HIVE3D (3D): every cell floor and back collider keeps its CAD face and stands BB3_TRAY_OUTER_SKIN outside it; no other tray hull moves',
+      touched === 8 && worst < 1e-9 && untouchedMoved === 0,
+      `slabs=${touched} worst=${worst.toExponential(2)} other hulls moved=${untouchedMoved}`,
+    );
   }
 
   /**

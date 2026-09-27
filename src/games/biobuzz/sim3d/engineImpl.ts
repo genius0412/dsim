@@ -28,6 +28,7 @@ import {
 } from './bodies';
 import {
   buildHiveTray3d,
+  trayOuterSkin,
   buildStatics3d,
   elementMass,
   hiveTrayRefTheta,
@@ -193,8 +194,9 @@ function buildEngine(world: World): Engine3d {
   // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
   // upright and then rotated into place is a body that falls for one tick, and an engine rebuilt
   // mid-swing (a reconcile, a scene restart) has to resume the swing, not restart it.
-  const trayRed = buildHiveTray3d(RAPIER, world3d, 'red', hiveTiltAngle(world, 'red'));
-  const trayBlue = buildHiveTray3d(RAPIER, world3d, 'blue', hiveTiltAngle(world, 'blue'));
+  const skin = trayOuterSkin(world);
+  const trayRed = buildHiveTray3d(RAPIER, world3d, 'red', hiveTiltAngle(world, 'red'), skin);
+  const trayBlue = buildHiveTray3d(RAPIER, world3d, 'blue', hiveTiltAngle(world, 'blue'), skin);
   const hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>> = {
     red: trayRed.body,
     blue: trayBlue.body,

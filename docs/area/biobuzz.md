@@ -287,6 +287,20 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   because an element can chain through several perches on the way down and each restarts its own
   budget. `step3d` perf unaffected (measured 0.305 ms/tick with five perched elements, budget
   1.5); two-run determinism holds. Checks in `scripts/smoke-biobuzz/hive3d.ts`.
+- ⚠️ **A CELL'S FLOOR AND BACK COLLIDERS STAND 0.5 IN OUTSIDE THE CAD FACE, NOT 1.5** (owner
+  report 2026-09-27: "nectar get stuck on top of the main beam that connects two CELLs").
+  `convert.py` pads every tray facet slab 1.5 in outward. Behind the DOWN cell that narrowed the
+  drawn 4.2-in gap to the ACM panel below the pivot to 3.3 in, so a 3.6-in NECTAR sat in the V
+  between the panel and the back slab's (then the floor slab's) bottom edge. Both are narrow
+  hulls, so the vibration gave up after 30 ticks and froze it; a 2.8-in POLLEN fell through.
+  `trayHullPoints` (`sim3d/bodies.ts`) moves the outer face of `cell_*_floor` / `cell_*_back` to
+  `BB3_TRAY_OUTER_SKIN`. MEASURED (`scratch/nectarrain.ts`, `scratch/tunnel.ts`): NECTAR dropped
+  over both hives 110/675 stuck → 0/675 (still stuck at 1.0 in, clear at 0.75); no shot tunnels
+  at any skin down to 0.02 (CCD); turret 62/75 → 62/75 over 25 stands. The dumper's close edge
+  moved: at 24 in a FRONT+BACK build scores 4/4 where the bottom row used to clip the padding
+  under the mouth lip (22 in still scores 0). Gated on `SIM_PATCH` 2: `trayOuterSkin(world)` builds
+  the old 1.5-in slabs for an older replay, and three bot matches recorded on the previous build
+  replay to the same world hash; forced onto the new rules one of them goes from 265–263 to 60–85.
 - ⚠️ **THE HIVE FOOT BAR IS A CHANNEL, NOT A SOLID BLOCK** (owner, 2026-09-20, second report the
   SAME day as the strafe-catch fix above: "balls are able to get stuck on top of the biobuzz
   panel with seemingly nothing actually holding it up" / "an invisible wall/bump wherever the

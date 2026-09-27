@@ -1,5 +1,5 @@
 import type { Rapier3d } from './engine';
-import type { Alliance, RobotSpec } from '../../../types';
+import type { Alliance, RobotSpec, World } from '../../../types';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_ELEMENT_FRICTION,
@@ -17,6 +17,7 @@ import {
   BB3_HIVE_PIVOT_Z,
   BB3_HIVE_TRAY_MASS,
   BB3_NECTAR_MASS_RATIO,
+  BB3_TRAY_OUTER_SKIN,
   BB3_WALL_H,
   BB_FLOWER_TOP_Z,
   BB_HALF_X,
@@ -621,11 +622,54 @@ export function hiveTrayMassProps(alliance: Alliance): { mass: number; comW: num
   return { mass, comW, inertia };
 }
 
+/**
+ * THE OUTER SKIN OF A CELL'S FLOOR AND BACK SLABS, for this world: `BB3_TRAY_OUTER_SKIN`, or
+ * `undefined` (the exporter's own 1.5 in) for a REPLAY recorded before `SIM_PATCH` 2.
+ */
+export function trayOuterSkin(world: World): number | undefined {
+  return world.simPatch === undefined || world.simPatch >= 2 ? BB3_TRAY_OUTER_SKIN : undefined;
+}
+
+/**
+ * One CAD facet slab with its OUTER face moved to `skin` from the CAD surface. The slab is a box
+ * along `axis` (1 = v, 2 = w) with one face ON the surface and one padded outward; the surface is
+ * the face nearer `interior`, a coordinate inside the cell.
+ */
+function thinSlab(points: readonly number[], axis: 1 | 2, interior: number, skin: number): number[] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = axis; i < points.length; i += 3) {
+    lo = Math.min(lo, points[i]);
+    hi = Math.max(hi, points[i]);
+  }
+  const surfaceHi = Math.abs(interior - hi) < Math.abs(interior - lo);
+  const mid = (lo + hi) / 2;
+  const out = points.slice();
+  for (let i = axis; i < out.length; i += 3) {
+    if (surfaceHi && out[i] < mid) out[i] = hi - skin;
+    if (!surfaceHi && out[i] > mid) out[i] = lo + skin;
+  }
+  return out;
+}
+
+/** a tray hull as built: `cell_<side>_floor` / `_back` with their outer skin at `skin`, and every
+ * other hull exactly as exported. */
+export function trayHullPoints(name: string, points: readonly number[], skin: number | undefined): readonly number[] {
+  if (skin === undefined) return points;
+  const m = /^cell_(north|south)_(back|floor)$/.exec(name);
+  if (!m) return points;
+  const side = m[1] === 'north' ? 1 : -1;
+  return m[2] === 'back'
+    ? thinSlab(points, 1, side * BB3_HIVE_ARM, skin)
+    : thinSlab(points, 2, BB3_HIVE_CELL.h / 2, skin);
+}
+
 export function buildHiveTray3d(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   alliance: Alliance,
   startTheta: number,
+  outerSkin: number | undefined,
 ): { body: InstanceType<Rapier3d['RigidBody']>; joint: InstanceType<Rapier3d['ImpulseJoint']> | null } {
   const px = hivePivotX(alliance);
   /**
@@ -671,7 +715,7 @@ export function buildHiveTray3d(
           { x: 0, y: 0, z: 0, w: 1 },
         ),
     );
-    buildTrayColliders(RAPIER, world3d, body, alliance);
+    buildTrayColliders(RAPIER, world3d, body, alliance, outerSkin);
     const anchor = world3d.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(px, 0, BB3_HIVE_PIVOT_Z),
     );
@@ -688,7 +732,7 @@ export function buildHiveTray3d(
       .setTranslation(px, 0, BB3_HIVE_PIVOT_Z)
       .setRotation({ x: 0, y: 0, z: 0, w: 1 }),
   );
-  buildTrayColliders(RAPIER, world3d, body, alliance);
+  buildTrayColliders(RAPIER, world3d, body, alliance, outerSkin);
   return { body, joint: null };
 }
 
@@ -697,6 +741,7 @@ function buildTrayColliders(
   world3d: InstanceType<Rapier3d['World']>,
   body: InstanceType<Rapier3d['RigidBody']>,
   alliance: Alliance,
+  outerSkin: number | undefined,
 ): void {
   // rotation is set through `setNextKinematicRotation` immediately after creation (engine.ts),
   // not baked into the desc, so the very first sync's "did the pose change outside the solve"
@@ -749,7 +794,7 @@ function buildTrayColliders(
     // rotation, no re-boxing -- which is the whole point: the collider the element rests on and
     // the triangle the GLB draws are the same plane.
     for (const h of hulls) {
-      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(h.points));
+      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(trayHullPoints(h.name, h.points, outerSkin)));
       if (!desc) continue; // degenerate point set -- Rapier returns null rather than throwing
       world3d.createCollider(
         zeroDensity(desc)

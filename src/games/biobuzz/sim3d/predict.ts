@@ -22,6 +22,7 @@ import { bbRampSettled } from '../robot';
 import { rapier3d, type Rapier3d } from './engine';
 import {
   buildHiveTray3d,
+  trayOuterSkin,
   buildStatics3d,
   chassisBoxDesc,
   chassisMechDesc,
@@ -447,8 +448,8 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
   // the trays are KINEMATIC here whatever `BB3_HIVE_DYNAMIC` says — see the header.
   const trays = {
-    red: buildKinematicTray(RAPIER, world3d, 'red'),
-    blue: buildKinematicTray(RAPIER, world3d, 'blue'),
+    red: buildKinematicTray(RAPIER, world3d, 'red', trayOuterSkin(world)),
+    blue: buildKinematicTray(RAPIER, world3d, 'blue', trayOuterSkin(world)),
   };
 
   let localBody: InstanceType<Rapier3d['RigidBody']> | null = null;
@@ -695,11 +696,12 @@ function buildKinematicTray(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   alliance: 'red' | 'blue',
+  outerSkin: number | undefined,
 ): InstanceType<Rapier3d['RigidBody']> {
   // `buildHiveTray3d` honours `BB3_HIVE_DYNAMIC`; a prediction world always wants the kinematic
   // shape, so the dynamic branch's joint is simply discarded and the body driven by hand. That
   // is cheaper than a second collider builder and cannot drift from the real tray's geometry.
-  const built = buildHiveTray3d(RAPIER, world3d, alliance, 0);
+  const built = buildHiveTray3d(RAPIER, world3d, alliance, 0, outerSkin);
   return built.body;
 }
 

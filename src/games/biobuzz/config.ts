@@ -3363,6 +3363,19 @@ export const BB3_HIVE_CELL = { w: HIVE.CELL_W, d: HIVE.CELL_D, h: HIVE.CELL_H };
  * (floor, back, two sides, divider). */
 export const BB3_HIVE_CELL_WALL = 0.25;
 
+/**
+ * HOW FAR A CELL'S FLOOR AND BACK COLLIDERS STAND OUT PAST THE CAD SURFACE, on the OUTSIDE of the
+ * cell (in). The exporter pads every tray facet slab 1.5 in outward; for these two it narrowed the
+ * gap between the DOWN cell's closed end and the ACM panel below the pivot from 4.2 in drawn to
+ * 3.3, so a 3.6-in NECTAR falling behind the hive wedged there for good while a 2.8-in POLLEN fell
+ * through (owner report 2026-09-27: "nectar get stuck on top of the main beam that connects two
+ * CELLs"). MEASURED (`scratch/nectarrain.ts`, NECTAR dropped on a 1-in grid over the tray):
+ * 194/625 stuck at 1.5, still stuck at 1.0, 0/625 at 0.75 and below. No shot tunnels even at
+ * 0.02 (`scratch/tunnel.ts`, 540 shots up to 400 in/s into both up cells; CCD catches them), so
+ * 0.5 keeps clear of the wedge with room to spare. Gated on `SIM_PATCH` 2 (`trayOuterSkin`).
+ */
+export const BB3_TRAY_OUTER_SKIN = 0.5;
+
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
  * clears it (R105.A lets a robot stand 29 in). */
 export const BB3_WALL_H = 40;

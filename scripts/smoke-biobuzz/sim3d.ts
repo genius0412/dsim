@@ -712,8 +712,12 @@ export function sim3dChecks(check: Check): void {
 
     // AT REST ON STRUCTURE IS `ground`, NOT `flight` FOREVER. `capturePollen` and the AI's
     // element scan both read `ground` only, so the old tag put such an element out of play.
+    // ⚠️ ON THE PATCH-1 TRAY: this drop rested in the wedge `BB3_TRAY_OUTER_SKIN` removed, and the
+    // current hive has no perch left (NECTAR and POLLEN rained over both hives: 0/675). The tag
+    // rule does not read the geometry, so the old tray is still a fair place to test it.
     {
       const w = mkWorld3d('free', 31);
+      w.simPatch = 1;
       w.balls.length = 0;
       w.robots[0].hopper.length = 0;
       w.robots[0].pos = { x: 0, y: -60 };
@@ -1435,6 +1439,14 @@ export function sim3dChecks(check: Check): void {
      * the close edge shifted one step and everything from 26 in out is untouched. The TURRET, which
      * is what the shooter accuracy checks measure, is unchanged-to-better: 72→73, 68→70 and 68→68
      * of 80 over the three-archetype stand sweep (`scratch/shotsweep.ts`), nothing ever unlaunched.
+     *
+     * ⚠️ **AND IT BECAME A CLEAN STEP ON 2026-09-27 (`SIM_PATCH` 2).** The bottom row was clipping
+     * the cell floor's 1.5-in collider padding under the mouth lip, where the drawn floor is a thin
+     * plate; `BB3_TRAY_OUTER_SKIN` cut it to 0.5. MEASURED, this build (`scratch/dumprange.ts`),
+     * scored of 4, patch 1 → 2: 22: 0→0 · **24: 2→4** · 26…34: 4→4 (a front-only sweeper: 20: 2→2 ·
+     * **22: 2→4** · 24…: 4→4). A turret is untouched: 62/75 → 62/75 over three builds and 25
+     * stands, no stand changed (`scratch/shotsweep.ts`). So the edge is now asserted as 22 scores
+     * nothing and 24 scores the whole bucket.
      */
     {
       // ⚠️ THE INTAKE MOUNT IS PINNED TO WHAT THE RANGE TABLE WAS MEASURED ON. The dumper fires
@@ -1443,26 +1455,31 @@ export function sim3dChecks(check: Check): void {
       // MEASURED on the new default's front-only sweeper, same seed and stand: 4 of 4 clear at
       // 24 in, i.e. the close limit is a build fact and this fixture states its build rather than
       // inheriting one. (Nothing else moves it: swerve/mecanum and width 16.5/17 all score 4.)
-      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', { ...DUMPER, intakeMount: 'frontback' })], undefined, '3d');
-      const r = w.robots[0];
-      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 24 };
-      r.heading = Math.PI / 2;
-      r.vel = { x: 0, y: 0 };
-      r.angVel = 0;
-      const mine = new Set(
-        w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
-      );
-      const load = r.hopper.length;
-      const fire = new Map([[0, cmd({ fire: true })]]);
-      let best = 0;
-      for (let t = 0; t < 300; t++) {
-        step3d(w, 1 / 60, fire);
-        best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
-      }
+      const volley = (dist: number): { load: number; best: number } => {
+        const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', { ...DUMPER, intakeMount: 'frontback' })], undefined, '3d');
+        const r = w.robots[0];
+        r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + dist };
+        r.heading = Math.PI / 2;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const mine = new Set(
+          w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
+        );
+        const load = r.hopper.length;
+        const fire = new Map([[0, cmd({ fire: true })]]);
+        let best = 0;
+        for (let t = 0; t < 300; t++) {
+          step3d(w, 1 / 60, fire);
+          best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
+        }
+        return { load, best };
+      };
+      const near = volley(22);
+      const edge = volley(24);
       check(
-        'dump 3d: at 24 in the TOP row scores and the BOTTOM row clips — the documented close limit',
-        load === 4 && best > 0 && best < load,
-        `load=${load} scored=${best}`,
+        'dump 3d: at 22 in nothing scores and at 24 in the whole bucket does — the documented close limit',
+        near.load === 4 && near.best === 0 && edge.load === 4 && edge.best === edge.load,
+        `22 in: load=${near.load} scored=${near.best} · 24 in: load=${edge.load} scored=${edge.best}`,
       );
     }
 

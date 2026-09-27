@@ -235,8 +235,11 @@ export const SIM_VERSION = 4;
  *
  *   1  BIOBUZZ 3D: an element joins a FLOWER through the top only (`sim3d/derive.ts`).
  *      Live on the site 2026-09-27 08:34:35Z, on the game server 17:14–17:16Z.
+ *   2  BIOBUZZ 3D: a hive cell's floor and back colliders stand `BB3_TRAY_OUTER_SKIN` (0.5 in)
+ *      out past the CAD surface instead of 1.5, so a NECTAR no longer wedges between the down
+ *      cell and the ACM panel (`sim3d/bodies.ts`, `trayOuterSkin`).
  */
-export const SIM_PATCH = 1;
+export const SIM_PATCH = 2;
 
 /** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
  * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,
