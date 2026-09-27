@@ -2,6 +2,21 @@ import type { World } from '../types';
 import * as C from '../config';
 import { assessAutoPattern, assessLeave, assessMatchEnd } from './scoring';
 
+/**
+ * HAS A MATCH CLOCK RUN OUT? Within `C.PHASE_TIME_EPS` of zero counts as out.
+ *
+ * The clocks count down by subtracting `dt` (1/60) every tick, and 1/60 is not exact in binary:
+ * after 1800 subtractions from 30 the remainder is +4e-13, not 0, so a plain `> 0` test gave
+ * AUTO 1801 ticks, the transition 481 and DRIVER-CONTROLLED 7201 — every phase one tick long,
+ * and the countdown the same. The accumulated error over a whole phase is ~1e-11, the tolerance
+ * is 1e-6, and a tick is 1.7e-2, so this ends each phase on exactly `duration × 60` ticks.
+ * Every game's phase machine reads it (DECODE here, Chain Reaction and BIOBUZZ in their own
+ * `step.ts`).
+ */
+export function clockExpired(left: number): boolean {
+  return left <= C.PHASE_TIME_EPS;
+}
+
 /** begin the match (pre -> auto) */
 export function startMatch(world: World): void {
   if (world.match.phase !== 'pre') return;
@@ -17,7 +32,7 @@ export function stepMatch(world: World, dt: number): void {
   if (m.phase === 'pre') {
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
-    if (m.preCountdown <= 0) {
+    if (clockExpired(m.preCountdown)) {
       m.preCountdown = undefined;
       m.phase = 'auto';
       m.phaseTimeLeft = C.AUTO_DURATION;
@@ -41,7 +56,7 @@ export function stepMatch(world: World, dt: number): void {
   // TELEOP start, whichever first — track the settling classifier stack every
   // transition tick; the final value is locked when TELEOP begins (below).
   if (m.phase === 'transition') assessAutoPattern(world);
-  if (m.phaseTimeLeft > 0) return;
+  if (!clockExpired(m.phaseTimeLeft)) return;
   switch (m.phase) {
     case 'auto':
       assessLeave(world); // Rule E: LEAVE assessed at the end of AUTO

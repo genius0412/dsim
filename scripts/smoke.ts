@@ -42,7 +42,7 @@ import { Keyboard } from '../src/input/keyboard';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
-import { startMatch } from '../src/sim/match';
+import { clockExpired, startMatch, stepMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
 import { muxMp4 } from '../src/ui/mp4';
 import { hudLabels } from '../src/ui/replayOverlay';
@@ -177,6 +177,9 @@ import {
   PLACEMENT_GAMES,
   ENDGAME_START,
   PRE_COUNTDOWN,
+  AUTO_DURATION,
+  TRANSITION_DURATION,
+  TELEOP_DURATION,
   COLORS,
 } from '../src/config';
 import {
@@ -618,6 +621,41 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     every: 400,
   });
   check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- match clocks: every phase is exactly its duration in ticks ------------
+{
+  // The clocks count down by `-= 1/60`, which is inexact: after 1800 subtractions from 30 the
+  // remainder was +4e-13, so a plain `> 0` gave every phase one extra tick (AUTO 1801, the
+  // transition 481, DRIVER-CONTROLLED 7201) and the countdown too. `clockExpired` ends them on
+  // the tick grid.
+  const w = createWorld('match', 3, []);
+  w.match.preCountdown = PRE_COUNTDOWN;
+  const lengths: Record<string, number> = {};
+  let guard = 0;
+  while (w.match.phase !== 'post' && guard++ < 20000) {
+    const ph = w.match.phase;
+    stepMatch(w, SIM_DT);
+    lengths[ph] = (lengths[ph] ?? 0) + 1;
+  }
+  const want = { pre: PRE_COUNTDOWN * 60, auto: AUTO_DURATION * 60, transition: TRANSITION_DURATION * 60, teleop: TELEOP_DURATION * 60 };
+  check(
+    'match clock: countdown, AUTO, transition and DRIVER-CONTROLLED each last exactly duration x 60 ticks',
+    Object.entries(want).every(([k, v]) => lengths[k] === v),
+    JSON.stringify(lengths),
+  );
+  check('clockExpired: a remainder of float noise is out, a whole tick is not', clockExpired(4e-13) && clockExpired(0) && clockExpired(-1e-3) && !clockExpired(SIM_DT));
+
+  // Chain Reaction runs its own phase machine off the same helper
+  const cw = simModuleFor('chain').createWorld('match', 3, []);
+  cw.match.phase = 'auto';
+  cw.match.phaseTimeLeft = AUTO_DURATION;
+  let n = 0;
+  while (cw.match.phase === 'auto' && n < 4000) {
+    simModuleFor('chain').step(cw, SIM_DT, new Map());
+    n++;
+  }
+  check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
 }
 
 // ---- untrusted-input edges that must not move a valid input ----------------
