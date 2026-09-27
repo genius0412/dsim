@@ -4,6 +4,99 @@
 capacity model (`docs/capacity.md` §5) says 1,000 concurrent players needs **70–90 machines**
 under today's topology, and that is not a number anyone wants to operate.
 
+## ⚠️ BUILT — Option A, behind `SIM_WORKERS`, OFF BY DEFAULT (2026-09-27)
+
+`SIM_WORKERS=N` (N ≥ 1) runs every room in N `worker_threads`; unset or `0` is exactly the server
+this document was written about, `new Room(...)` on the socket thread. The rest of this file is
+the audit that led here and is kept as written.
+
+**How to enable** — both at once, in the environment, because libuv sizes its threadpool at
+first use, before any of our code runs:
+
+```sh
+fly secrets set SIM_WORKERS=4 UV_THREADPOOL_SIZE=16 -a dohun-sim-decode   # restarts machines
+```
+
+The server logs `SIM_WORKERS=N: rooms run in N worker thread(s)` at boot, one
+`[workers] worker i ready (warm-up …)` per worker, and warns if `UV_THREADPOOL_SIZE` is under
+2 × N. `/api/perf` gains `simWorkers: [rooms per worker]`; its `cores` is process-wide, so it can
+now read above 1. **Rollback is unsetting it** (`fly secrets unset SIM_WORKERS UV_THREADPOOL_SIZE`)
+— no deploy, no client change, nothing on the wire changes either way.
+
+**Where it lives**
+
+| file | thread | job |
+|---|---|---|
+| `server/roomPool.ts` | main | `RoomPool` (spawns workers, least-loaded placement, crash replacement, backlog reports) and `RoomHandle`, the `RoomLike` main holds instead of a `Room` |
+| `server/roomHost.ts` | worker | hosts the real `Room`s; turns main's messages into their public methods and their callbacks into messages |
+| `server/roomWorker.ts` | worker | entry: physics, JIT warm-up, message loop (`roomWorker.dev.mjs` bootstraps it under `tsx`) |
+| `server/roomWire.ts` | both | the whole message vocabulary + `RoomMirror` |
+
+**The seam, as built**
+
+- `server/index.ts` changed only at its `Room` call sites: `makeRoom` (pool or `new Room`), and the
+  three calls whose RESULT the join path needs (`reattach`, `applyPending`, the report resolvers)
+  are awaited **only if they return a Promise** — an in-process `Room` never does, so the default
+  path gains no tick.
+- **Reads are a mirror.** Each worker pushes a `RoomMirror` per room after anything that can change
+  it and every 250 ms; `canJoin`, `lobbySummary`, `summary`, `presenceSnapshot`, `seatFor`,
+  `holdsCapacity`, `snapGapStats`… answer from it without a round trip. `stagedFor` is exact (main
+  handed over the roster itself). **A stale mirror can only refuse**: the worker re-checks
+  `canJoin` on `add` and refuses with the door's own sentence (`onRefused`), and `isAbandonable`
+  is false while a seat-taking post is unacknowledged.
+- **Main writes bytes.** A worker encodes every frame (`encodeMsg`, and the snapshot encoder) and
+  posts `{key, string}`; main hands it to the socket unchanged, so the wire is byte-identical.
+  `backlog()` is reported worker-ward every 100 ms for sockets that have one.
+- **`conn` is a main-minted sink key**, set on `client.conn` synchronously by `add` like
+  `Room.add` does; the worker maps key → the room's conn, and keeps the mapping, so a superseded
+  socket's late close is still ignored.
+- **Callbacks are messages.** `onResult`/`onDodge` are requests main answers after the DB work
+  (so the record/ELO reveal runs as before); the lock and behaviour callbacks are events.
+- **Batching**: main posts once per event-loop turn (`setImmediate`), a worker once per clock
+  turn (microtask) — a turn's snapshots for every room it holds travel in one message.
+- **A worker that dies** takes only its rooms: each socket is sent `error` and closed (1011), so
+  the client's own reconnect learns the match is gone; their single-game locks are released;
+  the directory forgets them; a replacement starts in the same slot. Uncaught exceptions inside a
+  worker are logged, not fatal, the same as on main.
+
+**Measured** (Linux, 4 vCPU, `npm run costprobe`-style harness: N driven DECODE solo record rooms,
+fake sockets on main, snapshot arrival spacing; "sustained" = ≥ 29 snapshots/s per room with the
+median gap under 36 ms):
+
+| rooms | `SIM_WORKERS=0` | `SIM_WORKERS=2` | `SIM_WORKERS=4` |
+|---|---|---|---|
+| 10 | sustained, 0.59 cores | sustained, 0.82 cores | sustained, 0.97 cores |
+| 20 | sustained, p99 58 ms, main loop lag p99 44 ms | sustained, p99 40 ms | sustained, p99 40 ms |
+| 30 | **shedding: 6.4 snapshots/s** | sustained, p99 45 ms | sustained, p99 44 ms |
+| 40 | shedding (4.6/s) | edge: 28.6/s, p99 84 ms | sustained, p99 46 ms |
+| 60 | shedding (3.2/s) | shedding (6.2/s) | **sustained**, p99 73 ms, 3.2 cores |
+| 30 MIXED (10 DECODE, 10 CR, 10 BIOBUZZ 3D) | shedding (5.9/s) | edge: 27.6/s, p99 80 ms | **sustained**, p99 59 ms, 2.5 cores |
+
+So on this box **~20 → ~30 → ~60 rooms**, and the socket thread's own event-loop lag stayed at
+p99 2–6 ms throughout (it was 44 ms at 20 in-process rooms). The price is ~0.02 cores per room of
+messaging and mirror upkeep (10 rooms: 0.59 → 0.82 cores). Two full record runs (DECODE and
+BIOBUZZ 3D, each with a mid-match drop and rejoin) were played end to end over real WebSockets
+against the bundled server (`node dist-server/index.js`) with `SIM_WORKERS=2`: snapshot gap p50
+33 ms, p99 36–37 ms, `matchResult` delivered, `persistMatch` run on main.
+
+**What is NOT covered, and why**
+
+- **The matchmaker's no-database dev fallback** (`Matchmaker.startMatch` building a `Room` itself)
+  stays in-process on main. Production always has a database and stages through the join path,
+  which does go to the workers.
+- **The LAN bundle** (`npm run server:bundle`, one file) has no worker entry beside it, so
+  `SIM_WORKERS` must stay unset there. The tab host (`src/lan/hostWorker.ts`) is unaffected: it
+  builds `Room` directly.
+- **Not load-tested on Fly.** The numbers above are this box; the first real reading is
+  `/api/perf` on one satellite with `SIM_WORKERS=2` under normal traffic, then a sweep per
+  `docs/launch-load-test.md`. Keep `MAX_ROOMS` as it is until then — raising it is what turns a
+  worker pool into admitted players, and it should follow a measurement.
+- **One process is still one socket thread.** At ~60 rooms here the main thread was nowhere near
+  busy, but compression runs on the libuv pool (hence `UV_THREADPOOL_SIZE`), and past a few
+  hundred sockets the socket thread itself becomes the next ceiling (§5, Option B).
+
+---
+
 The short version: **one server process is capped at about one core because Node runs JavaScript
 on a single thread, but the code is already shaped for the fix.** `Room` has no socket and no
 database in it — it talks through callbacks — which is exactly the seam a worker needs. Moving
@@ -202,7 +295,7 @@ Being explicit, because it would be easy to read this as "the scaling problem is
 
 ---
 
-## 8. Recommendation
+## 8. Recommendation (as written 2026-09-11 — now built, see the top of this file)
 
 **Prototype Option A behind a `SIM_WORKERS` environment variable, defaulting to 0 (today's
 behaviour).** In that order and for that reason: the seam already exists, no routing changes, every
