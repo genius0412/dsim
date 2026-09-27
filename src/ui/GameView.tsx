@@ -627,7 +627,13 @@ export function GameView({
     let lastTouchEnd = 0;
     const onTouchEnd = (e: TouchEvent): void => {
       const now = Date.now();
-      if (now - lastTouchEnd <= 300) e.preventDefault(); // double-tap zoom
+      /* A CONTROL IS NOT A DOUBLE-TAP. `preventDefault` on a touchend also cancels the click it
+         would have synthesized, so lifting a joystick thumb and tapping MENU, RESET or REMATCH
+         within 300 ms did nothing at all. Zoom is only ever a risk on the field and the chrome
+         around it; a button's own tap is always let through (and still resets the clock). */
+      const el = e.target as Element | null;
+      const onControl = !!el?.closest?.('button, a, input, select, textarea, [role="button"]');
+      if (!onControl && now - lastTouchEnd <= 300) e.preventDefault(); // double-tap zoom
       lastTouchEnd = now;
     };
     // passive:false is required for preventDefault to take effect

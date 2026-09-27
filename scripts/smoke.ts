@@ -28250,5 +28250,23 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * THE DOUBLE-TAP-ZOOM GUARD LETS A BUTTON'S TAP THROUGH. `preventDefault` on a touchend cancels
+ * the click it would have synthesized, so a thumb lifted off the joystick followed by a tap on
+ * MENU / RESET / REMATCH within 300 ms did nothing. (`touch-action: none` on the game surface
+ * and the touch pad is what keeps a control from zooming.)
+ */
+{
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const fn = gv.match(/const onTouchEnd = \(e: TouchEvent\): void => \{[\s\S]*?\n    \};/);
+  check(
+    '⚠️ touch: the double-tap guard skips buttons, links and form controls',
+    !!fn &&
+      /closest\?\.\('button, a, input, select, textarea, \[role="button"\]'\)/.test(fn[0]) &&
+      /if \(!onControl && now - lastTouchEnd <= 300\) e\.preventDefault\(\)/.test(fn[0]),
+    'a tap on MENU within 300 ms of lifting a joystick thumb was swallowed',
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
