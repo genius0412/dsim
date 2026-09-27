@@ -21673,6 +21673,37 @@ const dumperSetup = (): RobotSetup => {
     rob.vel = { x: 0, y: 0 };
     beamBlock(w);
     check('chain beams: a robot that cannot clear a beam is pushed off it', !robotIntersectsRect(rob, beam.rect));
+    // ...and a FRONT-ONLY intake is held off it by its own footprint, not by a radius about the
+    // chassis centre. The intake grows one end only, so the footprint's centre sits ahead of
+    // `r.pos`; measured from `r.pos`, a nose-first drive parked the intake a full inch OVER the
+    // beam (footprint top +0.5 against the beam's near face at -0.5). Nose-in and tail-in must
+    // now stop at the SAME gap, which is what a symmetric keep-out about the footprint means.
+    {
+      const stopAt = (heading: number, dir: 1 | -1): number => {
+        const spec = coerceSpec({ ...DEFAULT_SPEC, groundClearance: 0.5, intakeMount: 'front' }, DEFAULT_SPEC, 'chain');
+        const bw = createChainWorld('free', 1, [{ ...chainSetup(0, 'blue'), spec, assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
+        bw.balls.length = 0;
+        const br = bw.robots[0];
+        br.pos = { x: 44, y: -20 };
+        br.heading = heading;
+        br.vel = { x: 0, y: 0 };
+        const drive = cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
+        for (let i = 0; i < 180; i++) chainStep(bw, SIM_DT, new Map([[br.id, drive]]));
+        check(
+          `chain beams: a front-intake robot that cannot clear a beam stops OFF it (${dir > 0 ? 'nose' : 'tail'} first)`,
+          !robotIntersectsRect(br, CHAIN_BEAMS[0].rect),
+          `footprint top ${Math.max(...robotCorners(br).map((q) => q.y)).toFixed(3)} vs beam ${CHAIN_BEAMS[0].rect.y0}`,
+        );
+        return Math.max(...robotCorners(br).map((q) => q.y));
+      };
+      const nose = stopAt(Math.PI / 2, 1);
+      const tail = stopAt(-Math.PI / 2, -1);
+      check(
+        'chain beams: ...and nose-first and tail-first stop at the same gap from the beam',
+        Math.abs(nose - tail) < 0.01,
+        `nose ${nose.toFixed(3)} tail ${tail.toFixed(3)}`,
+      );
+    }
   }
 
   // ---- CATALYST MECHANISMS: three archetypes, configurable type AND mount ----------
