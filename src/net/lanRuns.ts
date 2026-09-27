@@ -1,5 +1,5 @@
 import type { GameId } from '../types';
-import type { Replay } from '../sim/replay';
+import { withLocalPatch, type Replay } from '../sim/replay';
 import type { LanParticipant } from './api';
 
 /**
@@ -104,7 +104,7 @@ export function listLocalLanRuns(): LanRunMeta[] {
 export function loadLanReplay(id: string): Replay | null {
   try {
     const raw = localStorage.getItem(bodyKey(id));
-    return raw ? (JSON.parse(raw) as Replay) : null;
+    return raw ? withLocalPatch(JSON.parse(raw) as Replay, readIndex().find((m) => m.id === id)?.at) : null;
   } catch {
     return null;
   }

@@ -1036,6 +1036,9 @@ export interface World {
   time: number;
   tick: number;
   rngState: number;
+  /** the `SIM_PATCH` a REPLAY was recorded under, set only by `ReplayPlayer`. Absent (every
+   * live world) ⇒ the current rules. See `SIM_PATCH` in `config.ts`. */
+  simPatch?: number;
   motif: Motif;
   robots: RobotState[];
   balls: Artifact[];

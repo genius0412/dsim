@@ -70,6 +70,9 @@ export interface Replay {
    * be replayed accurately on this build".
    */
   sim?: number;
+  /** C.SIM_PATCH when recorded — a behaviour fix inside one `sim` that keeps older replays
+   * playable (see `SIM_PATCH`). ABSENT ⇒ 0. */
+  patch?: number;
   /** which game this replay is of — picks the sim module to re-simulate it (createWorld
    * + step). Absent on old replays ⇒ DECODE. */
   game?: GameId;
@@ -88,6 +91,19 @@ export interface Replay {
   ticks: number;
   /** per-robot-id command track (absent id ⇒ ZERO the whole match) */
   tracks: Record<number, CommandTrack>;
+}
+
+/** when `SIM_PATCH` 1 reached the site — a build from then on ran it but did not stamp it */
+const PATCH1_SITE_AT = Date.parse('2026-09-27T08:34:35Z');
+
+/**
+ * A replay the BROWSER kept (a local practice run or LAN archive) and saved at `savedAt`: an
+ * unstamped one saved after patch 1 reached the site ran patch 1. Stored server rows are
+ * backfilled by migration 0055 instead.
+ */
+export function withLocalPatch(r: Replay, savedAt: number | undefined): Replay {
+  if (r.patch !== undefined || savedAt === undefined || savedAt < PATCH1_SITE_AT) return r;
+  return { ...r, patch: 1 };
 }
 
 function packKey(q: QCommand): string {
@@ -156,6 +172,7 @@ export class ReplayRecorder {
       format: REPLAY_FORMAT,
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
+      patch: C.SIM_PATCH,
       game: this.game,
       // OMITTED when it is `'2d'`, never written as the string: absent already READS `'2d'`
       // everywhere, and a container that gained a key would no longer be byte-identical to
@@ -352,6 +369,8 @@ export class ReplayPlayer {
       replay.physics ?? '2d',
     );
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
+    // the rules this log was RECORDED under — an unstamped replay predates `SIM_PATCH` 1
+    this.world.simPatch = replay.patch ?? 0;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
 

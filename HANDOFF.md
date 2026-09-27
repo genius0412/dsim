@@ -1,4 +1,13 @@
-# HANDOFF — 2026-09-27d (BIOBUZZ online: FULL predicts everything)
+# HANDOFF — 2026-09-27e (replays: SIM_PATCH keeps pre-fix BIOBUZZ 3D replays exact)
+
+**State: pushed on `main` and `alpha`.** `npm test` (5147), `build`, `server:check`, `dbtest`, `bundleaudit`, `docaudit` pass. SERVER CHANGE + MIGRATION 0055: deploy.
+
+- **What broke:** the floor-element fix (27b) changed `step()` output and shipped with no replay gate, so every BIOBUZZ 3D replay recorded before it re-simulated into a different match. Measured on production: the top eight records replayed at 55–186 against a real 674–726. DECODE was unaffected.
+- **Fix:** `SIM_PATCH` (`src/config.ts`, monotonic). The recorder stamps `Replay.patch`, `ReplayPlayer` sets `world.simPatch`, and `derive.ts` runs the old membership rule when it is below 1. Live worlds carry no field (nothing new on the wire). All eight production records now replay to their stored score exactly.
+- **Replays saved between the fix and the stamp:** migration 0055 adds `replays.sim_patch` and backfills BIOBUZZ 3D sim-4 rows: client-recorded (practice/LAN) from 08:34:35Z, the site go-live; server-recorded from 17:16:30Z, after the last machine restarted. Column default 1 covers inserts from the old build during the rolling restart. Unstamped uploads read as patch 1 (`sanitizeReplay`); local browser runs use their save time (`withLocalPatch`).
+- **Not covered:** a replay FILE downloaded between 08:34Z and this deploy plays with the old rule.
+
+# 2026-09-27d (BIOBUZZ online: FULL predicts everything)
 
 **State: pushed on `main` and `alpha`.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` (main baseline raised with attribution), `test:mm`, `npm test` pass. Client only, no server deploy.
 
@@ -7,7 +16,7 @@
 - **Measured (harness, 3 seeds, vs the old Full):** own shots appear on the frame fired (was 117–233 ms, 11–25 in into the flight); moving elements 0 ticks behind (was median 2–4, p95 18–27); corrections equal or smaller; 64–84% of snapshots skip the replay; sim CPU 68–200 ms per second of play vs 25–96. Real browser (100 ms RTT): Auto picks the world tier, 60 fps, replays p95 5.5–7.2 ms, no errors.
 - **Watch:** CPU on slow machines. Auto probes a settled copy of the match against `PREDICT_WORLD_BUDGET_MS` (12) and the slip rule steps world → predictor → Light; the in-match read-out's stats carry `tier` and `worldProbeMs`.
 
-# HANDOFF — 2026-09-27b (BIOBUZZ 3D: an element on the floor in a FLOWER's retrieval opening is not in the FLOWER)
+# 2026-09-27b (BIOBUZZ 3D: an element on the floor in a FLOWER's retrieval opening is not in the FLOWER)
 
 **State: pushed on `main` and `alpha`; DEPLOYED 2026-09-27** to production (announced 5 min, all 8 machines healthy) and to `dsim-alpha`. `npm test`, `build`, `server:check` pass. Silent patch: no patch notes, no `SIM_VERSION` bump (owner). The alpha deploy needs `ZENITH_VENDOR_REPO=Horizon-36596/zenith-dev` with the token from `.env`.
 

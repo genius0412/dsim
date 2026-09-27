@@ -9,7 +9,8 @@ import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/f
 import { bbFootprint, bbMouths, bbPlacePointLocal, bbRampSettled, mouthAxes } from '../../src/games/biobuzz/robot';
 import { retrieveFromFlower, bbFlowerAtIntakeMouth } from '../../src/games/biobuzz/play';
 import { BB_INTAKE_KINDS, type BbIntakeKind } from '../../src/games/biobuzz/mechs';
-import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
+import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT, SIM_PATCH } from '../../src/config';
+import { ReplayPlayer, ReplayRecorder } from '../../src/sim/replay';
 import {
   BB3_FLOWER_NECTAR_SORT_D,
   BB3_FLOWER_CAGE_SEGMENTS,
@@ -223,6 +224,34 @@ export function flower3dChecks(check: Check): void {
       `...and a ${kind} on the floor in the opening bills no G410 while entry is locked`,
       g410.length === 0,
       JSON.stringify(g410),
+    );
+  }
+
+  // ---- ...but a REPLAY recorded before SIM_PATCH 1 keeps the old rule ------------------------
+  //
+  // Otherwise every earlier 3D replay re-simulates into a different match (measured: the top
+  // eight records replayed at 55–186 against a real 674–726).
+  {
+    const w = mkWorld3d('free', 904);
+    w.balls.length = 0;
+    w.simPatch = 0; // what `ReplayPlayer` writes for an unstamped replay
+    const f = BB_FLOWERS[F];
+    w.balls.push({
+      id: 1, color: 'red', state: { kind: 'ground' }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 },
+      z: BB_FLOWER_LOW_Z, vz: 0, r: BB_NECTAR_R,
+    } as Artifact);
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    check(
+      'patch 0 (a replay recorded before SIM_PATCH 1): a floor NECTAR in the opening is adopted, as it was',
+      JSON.stringify(w.biobuzz!.flowers[F].stack) === '[1]',
+      `stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
+    );
+    const rep = new ReplayRecorder(1, [], 'match', 'biobuzz', '3d').finish();
+    check('patch: the recorder stamps the current SIM_PATCH', rep.patch === SIM_PATCH, String(rep.patch));
+    const { patch: _drop, ...bare } = rep;
+    check(
+      'patch: the player runs an UNSTAMPED replay as patch 0, and a stamped one as its own',
+      new ReplayPlayer(bare).world.simPatch === 0 && new ReplayPlayer(rep).world.simPatch === SIM_PATCH,
     );
   }
 

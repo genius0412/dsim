@@ -1514,6 +1514,67 @@ async function main(): Promise<void> {
   }
 
   /**
+   * ------------------------------------------------ replays: SIM_PATCH (0055) ----
+   *
+   * The rules a replay re-simulates under. An unstamped row is patch 0 and must read back
+   * ABSENT; the backfill stamps exactly the BIOBUZZ 3D rows recorded after patch 1 went live,
+   * with the site's go-live time for client-recorded rows and the server's for the rest.
+   */
+  {
+    const { REPLAY_FORMAT } = await import('../src/sim/replay');
+    const base = {
+      format: REPLAY_FORMAT, balanceVersion: 4, sim: 4, game: 'biobuzz' as const, physics: '3d' as const,
+      mode: 'match' as const, seed: 99, ticks: 60, setups: [] as never[], tracks: {},
+    };
+    const stamped = await repo.saveReplay({ ...base, patch: 1 }, SEASON, 'biobuzz');
+    check('patch: a stamped replay round-trips its patch', (await repo.getReplay(stamped))?.patch === 1);
+    const bare = await repo.saveReplay(base, SEASON, 'biobuzz');
+    check(
+      'patch: an UNSTAMPED replay reads back absent (patch 0), not the column default',
+      (await repo.getReplay(bare))?.patch === undefined,
+    );
+    const older = await db.query<{ sim_patch: number | null }>(
+      `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics)
+       values (2, 1, 4, 4, 7, 10, '[]'::jsonb, '{}'::jsonb, 'biobuzz', '3d') returning sim_patch`,
+    );
+    check(
+      "patch: an insert from the previous server build (no column named) lands as patch 1 — that build ran it",
+      older.rows[0].sim_patch === 1,
+      String(older.rows[0].sim_patch),
+    );
+
+    // the BACKFILL, re-run over rows placed around the two go-live times
+    const row = async (at: string, game = 'biobuzz', physics = '3d'): Promise<string> =>
+      (
+        await db.query<{ id: string }>(
+          `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch, created_at)
+           values (2, 1, 4, 4, 7, 10, '[]'::jsonb, '{}'::jsonb, $1, $2, null, $3) returning id`,
+          [game, physics, at],
+        )
+      ).rows[0].id;
+    const cases: [string, string, boolean][] = [
+      ['server row before the site had it', await row('2026-09-27T08:00:00Z'), false],
+      ['server row after the site, before the server restart', await row('2026-09-27T12:00:00Z'), false],
+      ['server row after the restart', await row('2026-09-27T17:20:00Z'), true],
+      ['2D row after the restart', await row('2026-09-27T17:20:00Z', 'biobuzz', '2d'), false],
+      ['DECODE row after the restart', await row('2026-09-27T17:20:00Z', 'decode', '2d'), false],
+    ];
+    await repo.ensureProfile('patch-a', 'Patcher');
+    const practice = await row('2026-09-27T12:00:00Z');
+    await db.query(
+      `insert into practice_runs (user_id, game, balance_version, score, ticks, replay_id, physics) values ('patch-a', 'biobuzz', 1, 0, 10, $1, '3d')`,
+      [practice],
+    );
+    cases.push(['PRACTICE row after the site, before the server restart', practice, true]);
+    const mig = readFileSync(join(ROOT, 'server/db/migrations/0055_replay_sim_patch.sql'), 'utf8');
+    await db.exec(mig.slice(mig.indexOf('update replays'), mig.indexOf(';', mig.indexOf('update replays')) + 1));
+    for (const [what, id, want] of cases) {
+      const got = (await db.query<{ sim_patch: number | null }>(`select sim_patch from replays where id = $1`, [id])).rows[0].sim_patch;
+      check(`patch backfill: ${what} → ${want ? 'patch 1' : 'unstamped'}`, (got === 1) === want, String(got));
+    }
+  }
+
+  /**
    * --------------------------------------------- self-hosted LAN matches ----
    *
    * The SECOND table a client writes to, and the less trusted of the two: a practice run at

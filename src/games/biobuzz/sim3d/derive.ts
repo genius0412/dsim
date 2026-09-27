@@ -239,8 +239,14 @@ export function deriveTick(world: World, engine: Engine3d): void {
        * (`BB_FLOWER_RETRIEVE_Z[1]`), which only an element that came down the tube can be.
        * Placed and staged elements are tagged `flower:i` before their first tick and a shot is
        * seen well above the middle ring on its way down, so neither is affected.
+       *
+       * ⚠️ A REPLAY RECORDED BEFORE THIS RULE KEEPS THE OLD ONE (`SIM_PATCH` 1, `config.ts`).
+       * Changing which elements are in a FLOWER changes the match that follows, and without the
+       * gate every earlier 3D replay re-simulated into a different game — measured, the top
+       * eight BIOBUZZ records replayed at 55–186 against their real 674–726.
        */
-      const entered = i !== null && (latched === `flower:${i}` || centreZ > BB_FLOWER_RETRIEVE_Z[1]);
+      const topOnly = world.simPatch === undefined || world.simPatch >= 1;
+      const entered = i !== null && (!topOnly || latched === `flower:${i}` || centreZ > BB_FLOWER_RETRIEVE_Z[1]);
       if (i !== null && entered && i < flowerIds.length) {
         b.state = { kind: 'element', el: `flower:${i}`, slot: 0 }; // `slot` is set below, by z
         flowerIds[i].push({ id: b.id, z: centreZ });

@@ -1,5 +1,5 @@
 import type { GameId } from '../types';
-import type { Replay, ReplayResult } from '../sim/replay';
+import { withLocalPatch, type Replay, type ReplayResult } from '../sim/replay';
 import { getViewPref } from '../games/biobuzz/graphics/store';
 
 /**
@@ -108,7 +108,7 @@ export function listPracticeRuns(): PracticeRunMeta[] {
 export function loadPracticeReplay(id: string): Replay | null {
   try {
     const raw = localStorage.getItem(bodyKey(id));
-    return raw ? (JSON.parse(raw) as Replay) : null;
+    return raw ? withLocalPatch(JSON.parse(raw) as Replay, readIndex().find((m) => m.id === id)?.at) : null;
   } catch {
     return null;
   }

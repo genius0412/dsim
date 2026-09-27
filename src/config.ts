@@ -221,6 +221,23 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  */
 export const SIM_VERSION = 4;
 
+/**
+ * A BEHAVIOUR FIX SMALL ENOUGH NOT TO RETIRE EVERY REPLAY. `SIM_VERSION` refuses every older
+ * replay in every game; a patch keeps them playing by re-running the OLD rule for them. A
+ * replay carries the patch it was recorded under (`Replay.patch`, absent ⇒ 0), `ReplayPlayer`
+ * copies it onto its world (`World.simPatch`), and each gated rule asks
+ * `world.simPatch === undefined || world.simPatch >= n`. A LIVE world never carries the field,
+ * so it always runs the current rules and nothing new rides the wire.
+ *
+ * ⚠️ MONOTONIC: never reset it, including at a `SIM_VERSION` bump — a gate reads `>= n`, and a
+ * reset would send new replays down an old branch. After a bump the old branches are dead code
+ * (their replays are refused) and may be deleted.
+ *
+ *   1  BIOBUZZ 3D: an element joins a FLOWER through the top only (`sim3d/derive.ts`).
+ *      Live on the site 2026-09-27 08:34:35Z, on the game server 17:14–17:16Z.
+ */
+export const SIM_PATCH = 1;
+
 /** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
  * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,
  * counts; a 1–2-tick dropout does not. */

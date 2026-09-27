@@ -401,6 +401,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     `fieldCentric: false` and assert the robot MOVED and SCORED). And `worldHash` covers robots,
     balls, scores and counts but **NOT `match.phase` or `phaseTimeLeft`**, so two runs that
     started the match 200 ticks apart hash identically — compare the clock too.
+- ⚠️ **ANY CHANGE TO WHAT `step()` PRODUCES CHANGES EVERY REPLAY RECORDED BEFORE IT**, a scoring
+  or membership rule included: a replay is inputs, so one element behaving differently turns the
+  rest of the match into a different game. Measure it (re-simulate stored replays against their
+  stored scores) before shipping. Two ways to ship one: bump `SIM_VERSION` (retires every older
+  replay in every game), or gate the new rule on `SIM_PATCH` (`src/config.ts`), which replays
+  each log under the rules it was recorded with. Patch 1 (2026-09-27) shipped ungated first and
+  sent the top eight BIOBUZZ 3D records to 55–186 against a real 674–726; migration 0055 stores
+  the patch and backfilled the rows recorded in between.
 - **A SIM BUMP RETIRES OLDER REPLAYS, ON PURPOSE — and that is why you can DOWNLOAD one.**
   `replayPlayable` refuses a version mismatch rather than warning about it: a replay is an
   input log, so a changed sim produces a DIFFERENT game from the same inputs, and playing it

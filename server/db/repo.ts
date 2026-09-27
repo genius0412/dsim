@@ -2175,8 +2175,8 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
     replay.setups.map(async (s) => ({ ...s, spec: await scrubSpecNames(s.spec) })),
   );
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
@@ -2194,6 +2194,9 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       // absent tag is written as the string that default already means rather than as null —
       // playback DISPATCHES on this, and one nullable spelling of '2d' is one too many.
       replay.physics ?? '2d',
+      // ...and the SIM_PATCH it ran (0055). Written explicitly, never left to the column's
+      // default: an unstamped container is patch 0 and must read back as the old rules.
+      replay.patch ?? null,
     ],
   );
   return rows[0].id;
@@ -2217,8 +2220,9 @@ export async function getReplay(id: string): Promise<Replay | null> {
     setups: Replay['setups'];
     tracks: Replay['tracks'];
     physics: string | null;
+    sim_patch: number | null;
   }>(
-    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics, sim_patch
        from replays where id = $1`,
     [id],
   );
@@ -2235,6 +2239,8 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // rather than `behaviour`, so the viewer says "recorded before we tracked this" instead of
     // naming a version the recorder never claimed. Undefined, not 0, is what carries that.
     sim: r.behaviour_version ?? undefined,
+    // the rules it re-simulates under (0055); NULL ⇒ absent ⇒ patch 0, the old rules
+    patch: r.sim_patch ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     // WHICH SOLVE to re-simulate it on. Left UNDEFINED for anything that is not the one known
     // non-default value — a pre-0039 row, a null, or a string this build does not know — every
