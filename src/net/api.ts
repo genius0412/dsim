@@ -7,6 +7,7 @@ import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
+import { readAccountSettings, sendWithTokenRetry } from './authFetch';
 import { DISCORD_REGION } from './discordActivity';
 // the per-DEVICE view preference (localStorage, never `GameSettings`) — the one thing a
 // practice upload can say that the replay container structurally cannot. It is a leaf module
@@ -116,6 +117,25 @@ export type EloMode = '1v1' | '2v2';
 /** a record board: a specific drivetrain or the cross-drivetrain 'overall'.
  * RANKED (ELO) is NOT split by drivetrain — only the record boards are. */
 export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'butterfly' | 'overall';
+
+/**
+ * An authenticated request with the SAME 401 retry `authedJson` makes — every helper below that
+ * sends a Bearer token goes through this rather than `fetch`, so none of them is left broken by
+ * a session revoked server-side (see `sendWithTokenRetry` for the rule, and why it is once).
+ *
+ * `token` is the one the caller already fetched: callers keep their own "no token" answer
+ * (`null`, `false`, a signed-out shape), which is why this takes a token rather than finding
+ * one. The request and response are otherwise untouched, and the retry re-sends `init` as
+ * given — every body here is a string, so it can be sent twice.
+ */
+function fetchAuthed(token: string, url: string, init: RequestInit = {}): Promise<Response> {
+  return sendWithTokenRetry(token, getAuthToken, (t) =>
+    fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${t}` } }),
+  );
+}
+
+/** what an account action says when it has no token to send (UI COPY: a failure, then the fix) */
+const SIGN_IN_AGAIN = 'Couldn’t confirm your sign-in. Sign in again, then retry.';
 
 async function getJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();
@@ -575,29 +595,29 @@ export async function updateUsername(username: string): Promise<{ username: stri
   const base = gameServerHttpUrl();
   if (!base) throw new Error('Setting a username needs the game server, and this build has none.');
   const token = await getAuthToken();
-  if (!token) throw new Error('Please sign in again.');
-  const res = await fetch(base + '/api/user/username', {
+  if (!token) throw new Error(SIGN_IN_AGAIN);
+  const res = await fetchAuthed(token, base + '/api/user/username', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: username.trim().toLowerCase() }),
   });
   const data = (await res.json().catch(() => ({}))) as { username?: string; error?: string };
-  if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
+  if (!res.ok) throw new Error(data.error ?? `Couldn’t save the username (error ${res.status}). Try again in a moment.`);
   return { username: data.username ?? username.trim().toLowerCase() };
 }
 
-/** fetch the signed-in user's synced settings blob (null if never saved) */
+/**
+ * fetch the signed-in user's synced settings blob. `null` ONLY when the account has never saved
+ * one (or this build has no game server); anything that is not a successful answer THROWS,
+ * because `AccountSync` answers `null` by seeding the account from this device — see
+ * `readAccountSettings` for the overwrite that used to cause.
+ */
 export async function fetchAccountSettings(): Promise<unknown | null> {
   const base = gameServerHttpUrl();
   if (!base) return null;
   const token = await getAuthToken();
-  if (!token) return null;
-  const res = await fetch(base + '/api/user/settings', {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) return null;
-  const data = (await res.json().catch(() => ({}))) as { settings?: unknown };
-  return data.settings ?? null;
+  const res = token ? await fetchAuthed(token, base + '/api/user/settings') : null;
+  return readAccountSettings(res);
 }
 
 /** save the signed-in user's settings blob (best-effort; server verifies JWT) */
@@ -606,11 +626,14 @@ export async function saveAccountSettings(settings: unknown): Promise<void> {
   if (!base) return;
   const token = await getAuthToken();
   if (!token) return;
-  await fetch(base + '/api/user/settings', {
+  const res = await fetchAuthed(token, base + '/api/user/settings', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ settings }),
-  });
+  }).catch(() => null);
+  // best-effort by design (the next edit saves again), but not SILENT: a refused save is the
+  // one way the account copy drifts from this device without anybody noticing
+  if (res && !res.ok) console.warn(`[settings] account save refused (${res.status})`);
 }
 
 /** set the signed-in user's OWN display name (server verifies the Neon Auth JWT) */
@@ -618,14 +641,14 @@ export async function updateHandle(handle: string): Promise<{ userId: string; ha
   const base = gameServerHttpUrl();
   if (!base) throw new Error('Changing your name needs the game server, and this build has none.');
   const token = await getAuthToken();
-  if (!token) throw new Error('Please sign in again.');
-  const res = await fetch(base + '/api/user/handle', {
+  if (!token) throw new Error(SIGN_IN_AGAIN);
+  const res = await fetchAuthed(token, base + '/api/user/handle', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ handle }),
   });
   const data = (await res.json().catch(() => ({}))) as { handle?: string; error?: string };
-  if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
+  if (!res.ok) throw new Error(data.error ?? `Couldn’t change your name (error ${res.status}). Try again in a moment.`);
   return { userId: '', handle: data.handle ?? handle };
 }
 
@@ -766,9 +789,9 @@ export async function uploadPracticeRun(
      * An older server ignores the extra key entirely, which is what makes this safe to send
      * unconditionally — one Fly app serves every client version.
      */
-    const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
+    const res = await fetchAuthed(token, `${base}/api/practice?game=${game ?? 'decode'}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ replay, score, view: getViewPref() }),
     });
     if (!res.ok) {
@@ -793,8 +816,7 @@ export async function fetchPracticeRuns(game?: GameId): Promise<PracticeRun[] | 
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/practice?game=${game ?? 'decode'}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -860,9 +882,9 @@ export async function uploadLanRun(
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
+    const res = await fetchAuthed(token, `${base}/api/lan?game=${game ?? 'decode'}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ matchId, replay, score, participants }),
     });
     // 409: the match belongs to another host. 400: this body will never be accepted. Both are
@@ -883,8 +905,7 @@ export async function fetchLanRuns(game?: GameId): Promise<LanRun[] | null> {
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/lan?game=${game ?? 'decode'}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -933,9 +954,9 @@ export async function adminPublishAnnouncement(input: {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const res = await fetch(base + '/api/admin/announcement', {
+  const res = await fetchAuthed(token, base + '/api/admin/announcement', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
   });
   if (!res.ok) return null;
@@ -948,10 +969,9 @@ export async function adminDeleteAnnouncement(id: string): Promise<boolean> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return false;
-  const res = await fetch(base + '/api/admin/announcement/delete?id=' + encodeURIComponent(id), {
+  const res = await fetchAuthed(token, base + '/api/admin/announcement/delete?id=' + encodeURIComponent(id), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   return res.ok;
 }
 
@@ -986,7 +1006,7 @@ export async function fetchAdminStatus(): Promise<{ isAdmin: boolean; userId: st
   const token = await getAuthToken();
   if (!base || !token) return { isAdmin: false, userId: null };
   try {
-    const res = await fetch(base + '/api/admin/status', { headers: { authorization: `Bearer ${token}` } });
+    const res = await fetchAuthed(token, base + '/api/admin/status');
     if (!res.ok) return { isAdmin: false, userId: null };
     return (await res.json()) as { isAdmin: boolean; userId: string | null };
   } catch {
@@ -1082,8 +1102,7 @@ export async function adminFetchMaintenance(): Promise<{ maintenance: Maintenanc
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(base + '/api/admin/maintenance', {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, base + '/api/admin/maintenance', {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1107,10 +1126,9 @@ export async function adminSetMaintenance(w: MaintenanceWindow): Promise<boolean
   if (w.redirectLabel) q.set('redirectLabel', w.redirectLabel);
   if (w.bypass?.length) q.set('bypass', w.bypass.join(','));
   try {
-    const res = await fetch(base + '/api/admin/maintenance?' + q.toString(), {
+    const res = await fetchAuthed(token, base + '/api/admin/maintenance?' + q.toString(), {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
-    });
+      });
     if (!res.ok) return false;
     return ((await res.json()) as { ok: boolean }).ok === true;
   } catch {
@@ -1148,9 +1166,9 @@ async function adminCall<T extends object>(
   const token = await getAuthToken();
   if (!base || !token) return { ok: false, error: 'Sign in with an admin account.' };
   try {
-    const res = await fetch(base + path, {
+    const res = await fetchAuthed(token, base + path, {
       method: init.method ?? 'GET',
-      headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'text/plain' } : {}) },
+      headers: { ...(init.body ? { 'content-type': 'text/plain' } : {}) },
       body: init.body,
       cache: 'no-store',
     });
@@ -1223,8 +1241,7 @@ export async function adminFetchPresence(): Promise<AdminPresence | null> {
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(base + '/api/admin/presence', {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, base + '/api/admin/presence', {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1259,8 +1276,7 @@ export async function adminFetchMatches(limit = 40, game?: GameId): Promise<Admi
   const qs = new URLSearchParams({ limit: String(limit) });
   if (game) qs.set('game', game);
   try {
-    const res = await fetch(`${base}/api/admin/matches?${qs.toString()}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/matches?${qs.toString()}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1308,8 +1324,7 @@ export async function fetchStanding(): Promise<{ standing: StandingInfo | null; 
   const token = await getAuthToken();
   if (!base || !token) return { standing: null, events: [] };
   try {
-    const res = await fetch(`${base}/api/standing`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/standing`, {
       cache: 'no-store',
     });
     if (!res.ok) return { standing: null, events: [] };
@@ -1325,8 +1340,7 @@ export async function adminFetchReports(): Promise<ReportedUser[] | null> {
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/admin/reports`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/reports`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1348,8 +1362,7 @@ export async function adminFetchReportedUser(userId: string): Promise<{
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/admin/reports?user=${encodeURIComponent(userId)}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/reports?user=${encodeURIComponent(userId)}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1384,9 +1397,10 @@ export async function adminSetReportStatus(
   const token = await getAuthToken();
   if (!base || !token) return false;
   try {
-    const res = await fetch(
+    const res = await fetchAuthed(
+      token,
       `${base}/api/admin/reports?user=${encodeURIComponent(userId)}&status=${status}`,
-      { method: 'POST', headers: { authorization: `Bearer ${token}` } },
+      { method: 'POST' },
     );
     return res.ok;
   } catch {
@@ -1421,8 +1435,7 @@ export async function adminFetchScoreReports(status = 'open'): Promise<ScoreRepo
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/admin/score-reports?status=${encodeURIComponent(status)}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/score-reports?status=${encodeURIComponent(status)}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1449,10 +1462,9 @@ export async function adminResolveScoreReport(
   if (!base || !token) return false;
   const q = new URLSearchParams({ id, verdict, smite: String(Math.max(0, Math.round(smite))) });
   try {
-    const res = await fetch(`${base}/api/admin/score-reports?${q.toString()}`, {
+    const res = await fetchAuthed(token, `${base}/api/admin/score-reports?${q.toString()}`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
-    });
+      });
     return res.ok;
   } catch {
     return false;
@@ -1498,8 +1510,7 @@ export async function adminFetchMatch(matchId: string): Promise<AdminMatch | nul
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/admin/match?id=${encodeURIComponent(matchId)}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/match?id=${encodeURIComponent(matchId)}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1532,10 +1543,9 @@ export async function adminCorrectMatchScore(
   });
   if (note) q.set('note', note);
   try {
-    const res = await fetch(`${base}/api/admin/match?${q.toString()}`, {
+    const res = await fetchAuthed(token, `${base}/api/admin/match?${q.toString()}`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
-    });
+      });
     if (!res.ok) return null;
     return (await res.json()) as { redBefore: number; blueBefore: number; redAfter: number; blueAfter: number };
   } catch {
@@ -1558,8 +1568,7 @@ export async function adminFetchStanding(userId: string): Promise<AdminStanding 
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(`${base}/api/admin/standing?user=${encodeURIComponent(userId)}`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, `${base}/api/admin/standing?user=${encodeURIComponent(userId)}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -1592,10 +1601,9 @@ export async function adminEditStanding(
   else if (typeof opts.lock === 'number') q.set('lock', String(Math.max(0, Math.round(opts.lock))));
   if (opts.note) q.set('note', opts.note);
   try {
-    const res = await fetch(`${base}/api/admin/standing?${q.toString()}`, {
+    const res = await fetchAuthed(token, `${base}/api/admin/standing?${q.toString()}`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
-    });
+      });
     if (!res.ok) return null;
     return (await res.json()) as { scoreBefore: number; scoreAfter: number; pardoned: number };
   } catch {
@@ -1609,10 +1617,9 @@ export async function adminAnnounce(seconds: number, message: string): Promise<b
   const token = await getAuthToken();
   if (!base || !token) return false;
   const q = new URLSearchParams({ seconds: String(Math.max(0, Math.round(seconds))), msg: message });
-  const res = await fetch(base + '/api/admin/announce?' + q.toString(), {
+  const res = await fetchAuthed(token, base + '/api/admin/announce?' + q.toString(), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   return res.ok;
 }
 
@@ -1621,10 +1628,9 @@ export async function adminCancelNotice(): Promise<boolean> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return false;
-  const res = await fetch(base + '/api/admin/announce?cancel=1', {
+  const res = await fetchAuthed(token, base + '/api/admin/announce?cancel=1', {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   return res.ok;
 }
 
@@ -1641,10 +1647,9 @@ export async function adminStartSeason(
   if (name && name.trim()) params.set('name', name.trim());
   if (opts?.newAct) params.set('act', 'new');
   const qs = params.toString() ? `?${params.toString()}` : '';
-  const res = await fetch(base + '/api/admin/season/start' + qs, {
+  const res = await fetchAuthed(token, base + '/api/admin/season/start' + qs, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => ({}))) as { season?: number };
   return data.season ?? null;
@@ -1657,10 +1662,9 @@ export async function adminPurgeReplays(season?: number): Promise<number | null>
   const token = await getAuthToken();
   if (!base || !token) return null;
   const q = season != null ? '?season=' + season : '';
-  const res = await fetch(base + '/api/admin/season/purge-replays' + q, {
+  const res = await fetchAuthed(token, base + '/api/admin/season/purge-replays' + q, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => ({}))) as { freed?: number };
   return data.freed ?? 0;
@@ -1690,9 +1694,8 @@ export async function adminFetchRecords(
   const token = await getAuthToken();
   if (!base || !token) return [];
   const q = new URLSearchParams({ mode, drivetrain, game, limit: String(limit) });
-  const res = await fetch(base + '/api/admin/records?' + q.toString(), {
-    headers: { authorization: `Bearer ${token}` },
-  });
+  const res = await fetchAuthed(token, base + '/api/admin/records?' + q.toString(), {
+    });
   if (!res.ok) return [];
   const data = (await res.json().catch(() => ({}))) as { rows?: AdminRecordRow[] };
   return data.rows ?? [];
@@ -1703,10 +1706,9 @@ export async function adminDeleteRecord(id: string): Promise<boolean> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return false;
-  const res = await fetch(base + '/api/admin/record/delete?id=' + encodeURIComponent(id), {
+  const res = await fetchAuthed(token, base + '/api/admin/record/delete?id=' + encodeURIComponent(id), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   return res.ok;
 }
 
@@ -1715,10 +1717,9 @@ export async function adminClearUserRecords(userId: string): Promise<number | nu
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const res = await fetch(base + '/api/admin/user/records/clear?userId=' + encodeURIComponent(userId), {
+  const res = await fetchAuthed(token, base + '/api/admin/user/records/clear?userId=' + encodeURIComponent(userId), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => ({}))) as { removed?: number };
   return data.removed ?? 0;
@@ -1757,9 +1758,8 @@ export async function adminSearchUsers(
   const q = new URLSearchParams({ q: query.trim() });
   if (opts.limit) q.set('limit', String(opts.limit));
   if (opts.offset) q.set('offset', String(opts.offset));
-  const res = await fetch(base + '/api/admin/users?' + q.toString(), {
-    headers: { authorization: `Bearer ${token}` },
-  });
+  const res = await fetchAuthed(token, base + '/api/admin/users?' + q.toString(), {
+    });
   if (!res.ok) return { users: [], more: false };
   const data = (await res.json().catch(() => ({}))) as { users?: AdminUserRow[]; more?: boolean };
   return { users: data.users ?? [], more: data.more === true };
@@ -1770,10 +1770,9 @@ async function adminPost<T>(path: string, params: Record<string, string>): Promi
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const res = await fetch(base + path + '?' + new URLSearchParams(params).toString(), {
+  const res = await fetchAuthed(token, base + path + '?' + new URLSearchParams(params).toString(), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   if (!res.ok) return null;
   return (await res.json().catch(() => null)) as T | null;
 }
@@ -1814,10 +1813,7 @@ export async function adminSupporterHistory(userId: string): Promise<SupporterGr
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return [];
-  const res = await fetch(
-    base + '/api/admin/supporter/history?userId=' + encodeURIComponent(userId),
-    { headers: { authorization: `Bearer ${token}` } },
-  );
+  const res = await fetchAuthed(token, base + '/api/admin/supporter/history?userId=' + encodeURIComponent(userId));
   if (!res.ok) return [];
   const data = (await res.json().catch(() => ({}))) as { grants?: SupporterGrantRow[] };
   return data.grants ?? [];
@@ -1829,10 +1825,9 @@ export async function adminRenameUser(userId: string, handle: string): Promise<s
   const token = await getAuthToken();
   if (!base || !token) return null;
   const q = new URLSearchParams({ userId, handle: handle.trim() });
-  const res = await fetch(base + '/api/admin/user/rename?' + q.toString(), {
+  const res = await fetchAuthed(token, base + '/api/admin/user/rename?' + q.toString(), {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  });
+    });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => ({}))) as { handle?: string };
   return data.handle ?? null;
@@ -1989,27 +1984,21 @@ async function authedJson<T>(path: string, init?: RequestInit): Promise<T> {
   const base = gameServerHttpUrl();
   if (!base) throw new FriendsUnavailableError();
 
-  const send = async (force: boolean): Promise<Response> => {
-    const token = await getAuthToken(force);
-    if (!token) throw new Error('Please sign in again.');
-    return fetch(base + path, {
-      ...init,
-      headers: {
-        ...(init?.body ? { 'content-type': 'application/json' } : {}),
-        authorization: `Bearer ${token}`,
-        ...init?.headers,
-      },
-    });
-  };
-
   // The token is cached in memory until it nears expiry (see getAuthToken), which
   // is what keeps a polling client off Neon Auth — and therefore off the database
   // it reads. The one case a cache can't predict is a session revoked server-side:
   // the token is still unexpired but no longer accepted. A 401 is exactly that
-  // signal, so retry ONCE with a forced refresh before surfacing an error. Only
-  // once, so a genuinely signed-out client fails fast instead of looping.
-  let res = await send(false);
-  if (res.status === 401) res = await send(true);
+  // signal, so `fetchAuthed` retries ONCE with a forced refresh before surfacing an
+  // error. Only once, so a genuinely signed-out client fails fast instead of looping.
+  const token = await getAuthToken();
+  if (!token) throw new Error(SIGN_IN_AGAIN);
+  const res = await fetchAuthed(token, base + path, {
+    ...init,
+    headers: {
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
+  });
 
   // 404 = this server predates the friends API. Distinguished from other errors
   // so the caller can degrade instead of showing a failure.
@@ -2342,8 +2331,7 @@ export async function adminFetchAudit(
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(opts)) if (v) q.set(k, String(v));
   try {
-    const res = await fetch(base + '/api/admin/audit?' + q.toString(), {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, base + '/api/admin/audit?' + q.toString(), {
       cache: 'no-store',
     });
     // 404 is an OLD SERVER, not a failure: the tab shows its empty state rather than
@@ -2363,8 +2351,7 @@ export async function adminFetchAuditActions(): Promise<string[]> {
   const token = await getAuthToken();
   if (!base || !token) return [];
   try {
-    const res = await fetch(base + '/api/admin/audit?actions=1', {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, base + '/api/admin/audit?actions=1', {
       cache: 'no-store',
     });
     if (!res.ok) return [];
@@ -2466,8 +2453,7 @@ export async function adminFetchUser(userId: string): Promise<AdminUserDetail | 
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
-    const res = await fetch(base + '/api/admin/user?id=' + encodeURIComponent(userId), {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await fetchAuthed(token, base + '/api/admin/user?id=' + encodeURIComponent(userId), {
       cache: 'no-store',
     });
     if (!res.ok) return null;
