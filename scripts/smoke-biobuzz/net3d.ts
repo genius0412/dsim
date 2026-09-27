@@ -1243,7 +1243,7 @@ export function net3dChecks(check: Check): void {
     );
     check(
       '⚠️ predict: a client that never got to probe (joined after the countdown) starts on FULL, not Light',
-      game.includes("best === null || best <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light'"),
+      game.includes('if (!this.autoProbeFailed && (best === null || best <= PREDICT_WORLD_BUDGET_MS)) {'),
     );
     check(
       '⚠️ predict: the slip rule steps down on the MEDIAN reconcile, not a p95 a few GC pauses decide',

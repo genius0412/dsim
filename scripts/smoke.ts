@@ -15705,7 +15705,11 @@ function pinScene(
   check('world digest: a remote stick drifting inside AGREE_STICK is the same command, a turn past it is not', cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 0.5 }) && !cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 2 }));
   check('world digest: ...and any button changing is a different command', !cmdsAgree(c, { ...c, fire: true }) && !cmdsAgree(c, { ...c, intake: false }) && !cmdsAgree(c, undefined));
   const game = readFileSync('src/game.ts', 'utf8');
-  check('world predict source: FULL in a 3D room is the WHOLE game step unless Auto stepped it to the predictor', game.includes("this.predictionMode === 'full' && this.fullTier === 'world'") && game.includes("if (pref === 'full') this.fullTier = 'world';"));
+  check('world predict source: FULL in a 3D room is the WHOLE game step; BALANCED is the sim3d/predict world',
+    game.includes("return this.predicted3d() && this.predictionMode === 'full' && physics3dReady();") &&
+      game.replace(/\r\n/g, '\n').includes("want === 'balanced'\n          ? impl.createFullPredictor("));
+  check('world predict source: Auto and the slip rule step Full, then Balanced, then Light',
+    game.includes("this.setPredictionMode('balanced');") && game.includes("? 'balanced' : 'light'") && game.includes("this.setPredictionMode('full');"));
   check('world predict source: adoptWorld REWINDS the 3D engine in the world tier instead of throwing it away', game.includes('this.worldPredicted() && physics3dImpl().rewindEngineTo(prev, next)'));
   check('world predict source: a snapshot that agrees skips the replay, and a full resync is still forced every FULL_RESYNC_EVERY', game.includes('if (this.worldPredicted() && !firstSnap && this.snapshotAgrees(snap))') && game.includes('if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;'));
   check('world predict source: Auto probes the world step FIRST, then the predictor only if that does not fit', game.includes("this.autoStage === 'world'") && game.includes('this.probeWorldReconcileMs()'));

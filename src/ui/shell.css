@@ -4436,6 +4436,11 @@ tr.lb-detail td {
 .ds-opts.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+/* LEAD: the first tile spans the row, a default above the choices it picks between (Prediction:
+   Auto over Off/Light/Balanced/Full), so five in two columns do not strand the fifth alone. */
+.ds-opts.lead > :first-child {
+  grid-column: 1 / -1;
+}
 .ds-opts.four {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }

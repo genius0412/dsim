@@ -45,6 +45,7 @@ export function NetworkSection() {
         <OptRow<PredictionPref>
           value={prediction}
           cols="two"
+          lead
           onPick={setPredictionPref}
           options={PREDICTION_PREFS.map((p) => ({ v: p, t: PREDICTION_LABELS[p], d: PREDICTION_BLURBS[p] }))}
         />

@@ -1,3 +1,12 @@
+# HANDOFF — 2026-09-27e (Prediction: Balanced is a pickable middle level)
+
+**State: pushed on `main` and `alpha`.** `build`, `uiaudit` (ui-components regenerated), `docaudit`, `npm test` pass. Client only.
+
+- **Owner:** "old full should also be an option. Maybe make a middle tier as a pickable option."
+- The old `sim3d/predict` Full is now **Balanced**, a real `PredictionMode` (the hidden `fullTier` is gone): Off, Light, Balanced, Full, plus Auto. Auto picks Full → Balanced → Light; the slip rule steps down one level at a time. A stored `'full'` still means the whole-field Full.
+- Network screen: Auto spans the top row (`OptRow lead`, `.ds-opts.lead`), the four levels below it in order. Checked in light, dark and at 390 px.
+- Measured on one match and seed: CPU per second of play Light ~2 ms, Balanced ~40, Full ~80; corrections p95 ~2.7 / ~0.35 / ~0.26 in.
+
 # HANDOFF — 2026-09-27e (replays: SIM_PATCH keeps pre-fix BIOBUZZ 3D replays exact)
 
 **State: pushed on `main` and `alpha`.** `npm test` (5147), `build`, `server:check`, `dbtest`, `bundleaudit`, `docaudit` pass. DEPLOYED to production and `dsim-alpha`; 0055 applied. Verified on production: the top eight pre-fix records and the two records saved after 17:16:30Z (backfilled to patch 1) all re-simulate to their stored scores.

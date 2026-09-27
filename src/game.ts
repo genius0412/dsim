@@ -714,14 +714,6 @@ export class GameController {
   private predictor: Predictor | null = null;
   /** which kind `this.predictor` is, so a mode change rebuilds and a repeat does not. */
   private predictorKind: PredictionMode | null = null;
-  /**
-   * WHICH FULL: `'world'` steps the WHOLE game with the real `step3d` — every robot on its held
-   * command, every element, launches, captures, the HIVE trays — exactly what a 2D room has always
-   * done (owner, 2026-09-27: "FULL should predict EVERYTHING"). `'predictor'` is the older, cheaper
-   * `sim3d/predict` world, kept for Auto to fall back to on a machine whose world step does not fit
-   * the budget. An explicit Full pick is always `'world'`. See `worldPredicted`.
-   */
-  private fullTier: 'world' | 'predictor' = 'world';
   /** Auto's probe stage: the world step first, then (only if that does not fit) the predictor */
   private autoStage: 'world' | 'predictor' = 'world';
   /** the throwaway world the world-step probe runs on (its own engine, disposed after) */
@@ -730,7 +722,7 @@ export class GameController {
   private autoProbed = false;
   /** what that probe measured, in ms — shown in the in-match panel, null before it runs. */
   private autoProbeMs: number | null = null;
-  /** Auto has already stepped Full down to Light once. It does not step back up: a machine
+  /** Auto has already stepped down to Light once. It does not step back up: a machine
    *  that missed the budget under load will miss it again, and flapping is worse than Light. */
   private autoDropped = false;
   /** the countdown's probe runs so far, the first of them cold — see `AUTO_PROBE_RUNS` */
@@ -2304,10 +2296,10 @@ export class GameController {
    * snapshot (`rewindEngineTo`) instead of throwing it away, because building one is 15–40 ms.
    */
   private worldPredicted(): boolean {
-    return this.predicted3d() && this.predictionMode === 'full' && this.fullTier === 'world' && physics3dReady();
+    return this.predicted3d() && this.predictionMode === 'full' && physics3dReady();
   }
 
-  /** a 3D room whose local robot comes from `sim3d/predict` (Light, or Full's predictor tier) */
+  /** a 3D room whose local robot comes from `sim3d/predict` (Light or Balanced) */
   private usesPredictor(): boolean {
     return this.predicted3d() && !this.worldPredicted();
   }
@@ -2347,13 +2339,11 @@ export class GameController {
         this.autoProbeSamples = [];
         this.autoProbeFailed = false;
         this.autoStage = 'world';
-        this.fullTier = 'world';
         this.disposeProbeWorld();
       }
       this.setPredictionMode(this.autoProbed ? this.predictionMode : 'light');
       return;
     }
-    if (pref === 'full') this.fullTier = 'world';
     this.setPredictionMode(pref);
   }
 
@@ -2363,14 +2353,6 @@ export class GameController {
     this.withTierTransition(() => this.setPredictionModeInner(mode));
   }
 
-  /** FULL's tier (see `fullTier`), with the same transition handling as a mode change. */
-  private setFullTier(tier: 'world' | 'predictor'): void {
-    this.withTierTransition(() => {
-      this.fullTier = tier;
-      this.reconcileMs.length = 0;
-      this.ensurePredictor();
-    });
-  }
 
   /**
    * MOVING BETWEEN THE WORLD STEP AND A PREDICTOR MID-MATCH. The two keep the predicted clock in
@@ -2427,20 +2409,22 @@ export class GameController {
     if (!physics3dReady()) return;
     try {
       const impl = physics3dImpl();
+      // BALANCED is `sim3d/predict`'s FULL world (the local robot, the other robots on their held
+      // commands, the near and moving elements); FULL itself is the real game step and builds none
       this.predictor =
-        want === 'full'
+        want === 'balanced'
           ? impl.createFullPredictor(this.world, this.localRobotId)
           : impl.createLightPredictor(this.world, this.localRobotId);
       this.predictorKind = want;
     } catch (err) {
-      // A FULL predictor builds ~80 Rapier colliders and can fail where Light cannot. Fall to
+      // BALANCED builds ~80 Rapier colliders and can fail where Light cannot. Fall to
       // Light rather than to nothing: a room with no prediction at all is a worse answer than
       // the cheaper one, and Off is a choice the player makes, never an outcome they are given.
       // eslint-disable-next-line no-console
       console.warn('BIOBUZZ 3D prediction failed to build; falling back to Light.', err);
       this.predictor = null;
       this.predictorKind = null;
-      if (want === 'full') {
+      if (want === 'balanced') {
         this.predictionMode = 'light';
         this.ensurePredictor();
       }
@@ -2692,7 +2676,6 @@ export class GameController {
       if (!this.autoProbeFailed && (best === null || best <= PREDICT_WORLD_BUDGET_MS)) {
         this.autoProbed = true;
         this.autoProbeMs = best;
-        this.fullTier = 'world';
         this.setPredictionMode('full');
         return;
       }
@@ -2704,14 +2687,13 @@ export class GameController {
     }
     this.autoProbed = true;
     this.autoProbeMs = best;
-    this.fullTier = 'predictor';
     if (this.autoProbeFailed) this.setPredictionMode('light');
-    else this.setPredictionMode(best === null || best <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light');
+    else this.setPredictionMode(best === null || best <= PREDICT_FULL_BUDGET_MS ? 'balanced' : 'light');
   }
 
   /**
-   * THE SLIP RULE (plan §5): if Full's reconcile p95 climbs past the budget in a match, Auto
-   * drops to Light ONCE and says so.
+   * THE SLIP RULE (plan §5): if the reconciles cost more than the mode's budget in a match, Auto
+   * steps down ONE level and says so: Full → Balanced → Light.
    *
    * ⚠️ **ONLY WHEN THE MODE WAS AUTO'S TO PICK.** A player who chose Full explicitly keeps it,
    * however slow it gets — the plan's words are "the player's explicit choice is never
@@ -2723,7 +2705,7 @@ export class GameController {
    */
   private notePredictionCost(ms: number): void {
     this.lastReconcileMs = ms;
-    if (this.predictorKind !== 'full' && !this.worldPredicted()) return;
+    if (this.predictorKind !== 'balanced' && !this.worldPredicted()) return;
     const w = this.reconcileMs;
     w.push(ms);
     if (w.length > PREDICT_SLIP_WINDOW) w.shift();
@@ -2733,14 +2715,14 @@ export class GameController {
     const median = sorted[Math.floor(sorted.length / 2)];
     if (median <= (this.worldPredicted() ? PREDICT_WORLD_BUDGET_MS : PREDICT_FULL_BUDGET_MS)) return;
     if (this.worldPredicted()) {
-      // the world step does not fit this machine in THIS match: keep Full, on the predictor
-      this.setFullTier('predictor');
-      this.netEvents.push('Prediction stepped down — predicting your robot and the play near it, not the whole field.');
+      // the whole-field step does not fit this machine in THIS match: one level down
+      this.setPredictionMode('balanced');
+      this.netEvents.push('Prediction stepped down to Balanced. Full is too slow on this machine.');
       return;
     }
     this.autoDropped = true;
     this.setPredictionMode('light');
-    this.netEvents.push('Prediction stepped down to Light — full prediction is too slow here.');
+    this.netEvents.push('Prediction stepped down to Light. Balanced is too slow on this machine.');
   }
 
   /**
@@ -2760,10 +2742,8 @@ export class GameController {
     reconcileMs: number;
     /** p95 reconcile cost over the recent window, or null before the window fills */
     reconcileP95: number | null;
-    /** Auto stepped Full down to Light this match */
+    /** Auto stepped down to Light this match */
     stepped: boolean;
-    /** FULL's tier: the whole game step (`world`) or the cheaper predictor */
-    tier: 'world' | 'predictor' | null;
     /** the world-step probe's verdict, ms per reconcile */
     worldProbeMs: number | null;
   } | null {
@@ -2782,7 +2762,6 @@ export class GameController {
       reconcileMs: this.lastReconcileMs,
       reconcileP95: p95,
       stepped: this.autoDropped,
-      tier: this.predictionMode === 'full' ? this.fullTier : null,
       worldProbeMs: this.worldProbeMs,
     };
   }
@@ -3250,7 +3229,6 @@ export class GameController {
     this.autoProbeSamples = [];
     this.autoProbeFailed = false;
     this.autoStage = 'world';
-    this.fullTier = 'world';
     this.worldProbeMs = null;
     this.disposeProbeWorld();
     this.disposePredictor();

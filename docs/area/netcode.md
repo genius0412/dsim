@@ -82,10 +82,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
   11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
   of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against
-  25–96. The old `sim3d/predict` Full is kept as Auto's fallback TIER (`fullTier: 'predictor'`):
-  Auto probes the world step first (a settled throwaway copy, warm runs, against
-  `PREDICT_WORLD_BUDGET_MS`), then the predictor; the slip rule steps world → predictor → Light.
-  An explicit Full pick is always the world step.
+  25–96. The old `sim3d/predict` Full is now its own pickable mode, **BALANCED** (owner: "old full
+  should also be an option"), between Light and Full on the Network screen. Auto probes the world
+  step first (a settled throwaway copy, warm runs, against `PREDICT_WORLD_BUDGET_MS`), then
+  Balanced; the slip rule steps Full → Balanced → Light, one level at a time, and never back up.
+  Measured on one match and seed: Light ~2 ms of CPU per second of play, Balanced ~40, Full ~80.
 - ⚠️ **AUTO PREDICTION JUDGES WARM RUNS, AND DEFAULTS TO FULL** (`maybeProbeAuto`, 2026-09-27; owner:
   "even with great machines, prediction seems to default to light"). Its one probe used to be
   the COLD first run of the Full predictor — 35–37 ms on a fast desktop whose warm runs cost 4–7
