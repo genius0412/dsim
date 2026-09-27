@@ -427,9 +427,28 @@ cheaper rooms.
 **The audit behind "more processes" is `docs/scaling-multicore.md`**, and it is where this
 question actually gets answered rather than only warned about: ~75% of a busy server is
 simulation that can leave the socket thread, `Room` already talks exclusively through callbacks,
-and the recommendation is `worker_threads` behind a `SIM_WORKERS` variable defaulting to 0.
-**Nothing of it is built** — `SIM_WORKERS` and `worker_threads` appear nowhere in the source — so
-until it is, the row above is the honest ceiling and a bigger VM is still the wrong purchase.
+and the recommendation was `worker_threads` behind a `SIM_WORKERS` variable defaulting to 0.
+**That is now built, and OFF by default** (2026-09-27): with `SIM_WORKERS` unset the rows above
+are still the ceiling and a bigger VM is still the wrong purchase.
+
+**`SIM_WORKERS=N`** moves every room into N worker threads (the main thread keeps sockets, HTTP,
+the matchmaker, the DB and presence). Set it WITH `UV_THREADPOOL_SIZE` — libuv sizes that pool at
+first use, so it cannot be raised from code, and permessage-deflate for all N workers' rooms runs
+on it:
+
+```sh
+fly secrets set SIM_WORKERS=2 UV_THREADPOOL_SIZE=8 -a dohun-sim-decode   # restarts the machines
+fly secrets unset SIM_WORKERS UV_THREADPOOL_SIZE -a dohun-sim-decode     # the rollback
+```
+
+Only worth it on a machine with more than one core it can actually use: a `performance-2x` or
+larger, with N = cores (the socket thread is light). Measured on a 4-vCPU Linux box, driven DECODE
+solo rooms held at 30 snapshots/s: **~20 in-process, ~30 with 2 workers, ~60 with 4**
+(`docs/scaling-multicore.md`, top). ⚠️ Not yet measured on Fly — enable it on ONE machine first,
+read `/api/perf` (`simWorkers` = rooms per worker, `cores` is now process-wide and can exceed 1,
+`snapSendGapMs` is the health signal), and raise `MAX_ROOMS` only after that. The bundle ships two
+files (`dist-server/index.js` + `roomWorker.js`); the single-file LAN bundle has no worker, so
+leave `SIM_WORKERS` unset there.
 
 | size | est. driven DECODE rooms, with margin |
 |---|---|
