@@ -28160,5 +28160,63 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * A KEY IS RELEASED AS THE PHYSICAL KEY IT WENT DOWN AS.
+ *
+ * `e.key` depends on the modifiers held at that moment, and Shift is the default INTAKE. Press
+ * `1`, hold Shift, let go of `1`: the keyup says `!`, and the old handler deleted `!` — so `1`
+ * stayed held, driving or firing, until the window lost focus. And macOS sends no keyup at all
+ * for a key released while ⌘ is down.
+ */
+{
+  const kb = new Keyboard();
+  const listeners: Record<string, ((e: unknown) => void)[]> = {};
+  const realWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    addEventListener: (t: string, fn: (e: unknown) => void) => {
+      (listeners[t] ??= []).push(fn);
+    },
+    removeEventListener: () => {},
+  };
+  kb.attach();
+  (globalThis as { window?: unknown }).window = realWindow;
+  const target = { tagName: 'CANVAS', isContentEditable: false };
+  const send = (type: string, key: string, code?: string, metaKey = false) => {
+    for (const fn of listeners[type] ?? []) fn({ key, code, metaKey, target, repeat: false, preventDefault: () => {} });
+  };
+  send('keydown', '1', 'Digit1');
+  send('keydown', 'Shift', 'ShiftLeft');
+  send('keyup', '!', 'Digit1'); // the same physical key, reported under the modifier now held
+  check(
+    '⚠️ keyboard: a digit released while Shift is held is RELEASED, not stuck down',
+    !kb.held('1') && kb.held('shift'),
+    `held(1)=${kb.held('1')} held(shift)=${kb.held('shift')}`,
+  );
+  send('keyup', 'Shift', 'ShiftLeft');
+  // the other order: pressed UNDER Shift, released after it
+  send('keydown', 'Shift', 'ShiftLeft');
+  send('keydown', '?', 'Slash');
+  send('keyup', 'Shift', 'ShiftLeft');
+  send('keyup', '/', 'Slash');
+  check('keyboard: ...and one pressed under Shift and released after it lets go too', !kb.held('?') && !kb.held('/'));
+  // no `code` at all (a synthetic event): the old by-key release still works
+  send('keydown', 'w');
+  send('keyup', 'w');
+  check('keyboard: an event with no code still releases by key', !kb.held('w'));
+  // ⌘ swallows the keyup of anything released under it
+  send('keydown', 'Meta', 'MetaLeft', true);
+  send('keydown', 'k', 'KeyK', true);
+  send('keyup', 'Meta', 'MetaLeft');
+  check(
+    'keyboard: a key pressed under ⌘ is let go when ⌘ is (macOS never sends its keyup)',
+    !kb.held('k') && !kb.held('meta'),
+    `held(k)=${kb.held('k')}`,
+  );
+  send('keydown', 'w', 'KeyW');
+  send('keydown', 'Meta', 'MetaLeft', true);
+  send('keyup', 'Meta', 'MetaLeft');
+  check('keyboard: ...but a key already held before ⌘ keeps driving', kb.held('w'));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
