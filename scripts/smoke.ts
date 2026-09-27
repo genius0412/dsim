@@ -12,7 +12,7 @@ import {
 } from '../src/replaySavePolicy';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
-import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { sanitizePlayer, sanitizePlayerPatch, sanitizeReplay } from '../src/net/sanitize';
 import { allianceDuo, derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
@@ -35,7 +35,8 @@ import {
   setLaunchSearchForTests,
 } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
-import { judgeGolden, runGolden, type GoldenScene } from './simGolden';
+import { clampBallPosToStatics as clampToStatics } from '../src/sim/physics';
+import { canonicalWorld, judgeGolden, runGolden, type GoldenScene } from './simGolden';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { updatePenalties } from '../src/sim/penalties';
@@ -617,6 +618,72 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     every: 400,
   });
   check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- untrusted-input edges that must not move a valid input ----------------
+{
+  // sanitizeReplay: an id is an INTEGER slot. It used to test the raw value for duplicates and
+  // round afterwards, so 0.6 and 1.4 were two robots that both spawned as robot 1.
+  const base = { format: REPLAY_FORMAT, mode: 'match', seed: 5, ticks: 10, balanceVersion: BALANCE_VERSION, sim: SIM_VERSION, tracks: {} };
+  const s0 = { alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 };
+  check('sanitizeReplay refuses fractional robot ids (0.6 and 1.4 both rounded to 1)', sanitizeReplay({ ...base, setups: [{ ...s0, id: 0.6 }, { ...s0, id: 1.4, alliance: 'red' }] }) === null);
+  const ok = sanitizeReplay({ ...base, setups: [{ ...s0, id: 0 }, { ...s0, id: 1, alliance: 'red' }] });
+  check('...and still takes integer ids unchanged', !!ok && ok.setups.map((x) => x.id).join() === '0,1', `${ok?.setups.map((x) => x.id)}`);
+
+  // coerceSetup: the id and `passive` are forced to their types; valid values pass unchanged
+  const cs = coerceSetup({ ...s0, id: NaN, passive: { yes: 1 } } as never);
+  check('coerceSetup forces a NaN id to a finite integer and a non-boolean passive to absent', cs.id === 0 && cs.passive === undefined, `${cs.id} ${cs.passive}`);
+  const cv = coerceSetup({ ...s0, id: 3, passive: true } as never);
+  check('...and keeps a valid id and passive flag exactly', cv.id === 3 && cv.passive === true);
+
+  // the registries answer OWN keys only: "constructor" is not a game
+  check('simModuleFor("constructor") falls back to DECODE, not Object', simModuleFor('constructor' as never).id === 'decode');
+  check('moduleFor("toString") falls back to DECODE too', moduleFor('toString' as never).id === 'decode');
+  check('...and a real id still resolves', simModuleFor('chain').id === 'chain' && moduleFor('chain').id === 'chain');
+
+  // the classifier clamp runs at the artifact's own radius, like the walls and goal faces: a
+  // point hugging the classifier's field-side face is cleared by exactly the radius asked for
+  const cr = classifierRect('red');
+  const probe = { x: cr.x0 - 0.5, y: (cr.y0 + cr.y1) / 2 };
+  const small = clampToStatics(probe, 1.5);
+  const big = clampToStatics(probe);
+  check(
+    'clampBallPosToStatics clears the classifier by the radius it is given (1.5 vs the default 2.5)',
+    Math.abs(small.x - (cr.x0 - 1.5)) < 1e-9 && Math.abs(big.x - (cr.x0 - BALL_RADIUS)) < 1e-9,
+    `${small.x.toFixed(3)} / ${big.x.toFixed(3)} vs face ${cr.x0}`,
+  );
+
+  // coerceAutoPath is an ALLOWLIST: a valid path comes through field for field, and a key the
+  // sim never reads does not ride into the world, every snapshot and every replay
+  const valid = {
+    fileName: 'p.pp',
+    startPoint: { x: 10, y: -20, heading: 'linear', startDeg: 0, endDeg: 90 },
+    lines: [
+      { id: 'a', endPoint: { x: 30, y: -20, heading: 'tangential', reverse: true }, controlPoints: [{ x: 20, y: -30 }], waitBeforeMs: 200 },
+      { id: 'b', endPoint: { x: 30, y: 10, heading: 'constant', degrees: 45 }, waitAfterMs: 100 },
+    ],
+    sequence: [{ kind: 'path', lineId: 'a' }, { kind: 'wait', id: 'w', durationMs: 500 }, { kind: 'path', lineId: 'b' }],
+    version: '1',
+    timestamp: 't',
+  };
+  const round = coerceAutoPath(JSON.parse(JSON.stringify(valid)));
+  check(
+    'coerceAutoPath passes a valid path through field for field',
+    !!round && canonicalWorld(round as never) === canonicalWorld(valid as never),
+    round ? '' : 'refused',
+  );
+  const junk = coerceAutoPath({
+    ...valid,
+    startPoint: { ...valid.startPoint, heading: 'sideways', blob: 'x'.repeat(1000) },
+    lines: [{ ...valid.lines[0], color: 'red', meta: { deep: [1, 2, 3] } }],
+    sequence: [{ kind: 'dance', lineId: 'a', extra: 1 }],
+  })!;
+  check(
+    'coerceAutoPath drops keys the sim never reads, and a heading/kind outside its enum',
+    !('blob' in junk.startPoint) && !('heading' in junk.startPoint) && !('color' in junk.lines[0]) && !('meta' in junk.lines[0]) &&
+      !('extra' in (junk.sequence?.[0] ?? {})) && !('kind' in (junk.sequence?.[0] ?? {})) && junk.sequence?.[0].lineId === 'a',
+    JSON.stringify(junk).slice(0, 200),
+  );
 }
 
 // ---- spawn sanity ----------------------------------------------------------
