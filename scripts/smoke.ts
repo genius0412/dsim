@@ -42,6 +42,7 @@ import { Keyboard } from '../src/input/keyboard';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
+import { allocBallId } from '../src/sim/ballIds';
 import { clockExpired, startMatch, stepMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
 import { muxMp4 } from '../src/ui/mp4';
@@ -656,6 +657,40 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     n++;
   }
   check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
+}
+
+// ---- artifact ids are never reused within a match ---------------------------
+{
+  // The human player can collect the stray holding the HIGHEST id and place a fresh artifact in
+  // the same call. With `max(id) + 1` the fresh one got the collected one's id, and every table
+  // keyed by artifact id (the penalty engine's per-(robot, artifact) clocks, pinnedArtifacts,
+  // the snapshot delta) carried over to a different ball.
+  const w = createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  w.match.phase = 'teleop';
+  w.robots[0].pos = { x: 0, y: 0 };
+  const z = loadZone('blue');
+  const slots = loadSlots('blue');
+  w.balls = w.balls.filter((b) => !(b.state.kind === 'ground' && b.pos.x > z.x0 - 10 && b.pos.x < z.x1 + 10 && b.pos.y > z.y0 - 10 && b.pos.y < z.y1 + 10));
+  // the stray is the newest artifact on the field, so it holds the highest id there
+  const strayId = allocBallId(w);
+  const cx = (z.x0 + z.x1) / 2;
+  const cy = (z.y0 + z.y1) / 2;
+  let spot = { x: cx, y: cy };
+  for (const dx of [-8, 8, 0]) for (const dy of [-8, 8, 0]) {
+    const q = { x: cx + dx, y: cy + dy };
+    if (slots.every((sl) => Math.hypot(q.x - sl.x, q.y - sl.y) > 8)) spot = q;
+  }
+  w.balls.push({ id: strayId, color: 'green', state: { kind: 'ground' }, pos: spot, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  w.humanPlayers.blue.box = ['purple'];
+  w.humanPlayers.blue.nextPlaceAt = 0;
+  w.humanPlayers.red.nextPlaceAt = 1e9;
+  const before = w.balls.length;
+  updateHumanPlayers(w);
+  const placed = w.balls.find((b) => b.color === 'purple' && slots.some((sl) => sl.x === b.pos.x && sl.y === b.pos.y));
+  check('ball ids: the scene really collected the stray and placed a new artifact in one call', !w.balls.some((b) => b.id === strayId && b.color === 'green') && w.balls.length === before && !!placed, `${w.balls.length} vs ${before}`);
+  check('ball ids: the placed artifact does NOT reuse the collected one\'s id', !!placed && placed.id !== strayId && !w.balls.some((b) => b.id === strayId), `placed #${placed?.id}, collected #${strayId}`);
+  const ids = w.balls.map((b) => b.id);
+  check('ball ids: every id on the field is distinct', new Set(ids).size === ids.length);
 }
 
 // ---- untrusted-input edges that must not move a valid input ----------------

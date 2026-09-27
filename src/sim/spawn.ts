@@ -1000,6 +1000,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     events: [],
     rrContacts: [],
     pinnedArtifacts: [],
+    // past every ball spawned above — see `allocBallId`
+    nextBallId: id,
     penalties: {
       episodes: {},
       pins: {},
