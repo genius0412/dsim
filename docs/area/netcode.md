@@ -41,6 +41,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   lead every snapshot, ~6 steps at 66 ms (a few ms of DECODE, half that for Chain Reaction; a 3D
   room replays through the predictor). Smoke: "lead:" (shared), with a real UPLINK — the older
   latency probes delivered inputs instantly, which is why this never showed.
+- ⚠️ **ONLINE, rAF STEPS THE SIM; THE TIMER IS ONLY THE HIDDEN-TAB FALLBACK** (`RAF_STALE_MS`).
+  Stepping on a 16 ms `setInterval` and drawing on rAF, with nothing interpolating the local robot,
+  showed a 60 Hz display zero ticks one frame and two the next on 7–26% of frames (solo: 0.3%) —
+  "online feels juddery" at any ping. Both drivers read one `lastSimT`, so a hand-over neither
+  loses nor double-counts time, and the timer still feeds the room from a backgrounded tab.
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).

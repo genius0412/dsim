@@ -125,6 +125,20 @@ const INTERP_EASE_HALFLIFE = 0.11; // s
 const MAX_PREDICT_LEAD = 40; // ticks
 
 /**
+ * ⚠️ **ONLINE, THE SIM STEPS IN THE SAME FRAME IT IS DRAWN IN.** The networked sim used to be
+ * driven ONLY by a 16 ms `setInterval` while rAF drew, and nothing interpolated the local robot
+ * between ticks. A browser truncates `setInterval(16.67)` to 16 ms and jitters it, so against a
+ * 60 Hz display a frame regularly showed zero ticks of motion and the next one two — measured,
+ * 7% of frames at 0–2 ms of timer jitter and 26% at 0–6 ms, where solo (stepped inside rAF)
+ * shows 0.3%. At 85 in/s one tick is 1.4 in, and it read as "online feels juddery, practice does
+ * not" at ANY ping. So while the tab is visible rAF drives `frameLogic` exactly as solo does,
+ * and the timer — which is what keeps a BACKGROUNDED tab feeding the server — only steps once
+ * rAF has been silent this long. Both share `lastSimT`, so a hand-over neither loses nor
+ * double-counts time.
+ */
+const RAF_STALE_MS = 100;
+
+/**
  * HOW MANY RECONCILES AUTO WATCHES BEFORE IT DECIDES FULL IS TOO SLOW (plan §5's slip rule).
  *
  * Snapshots arrive at 30 Hz, so 60 of them is two seconds of evidence. Short enough that a
@@ -554,6 +568,8 @@ export class GameController {
   /** multiplayer sim-step timer (survives tab backgrounding); 0 = solo */
   private simTimer = 0;
   private lastSimT = 0;
+  /** when rAF last drove the networked sim — see `RAF_STALE_MS` */
+  private lastRafAt = 0;
   /** how far ahead of the server the predicted clock runs — see `src/net/leadControl.ts` */
   private readonly lead = new LeadController();
   /** predict/reconcile input buffer: local commands not yet folded into a server
@@ -1802,6 +1818,17 @@ export class GameController {
     const dtMs = this.lastT ? t - this.lastT : 16;
     this.lastT = t;
     if (!this.session) this.frameLogic(dtMs);
+    else {
+      // online: step in the frame that draws it (`RAF_STALE_MS`). Guarded, because an exception
+      // here would end the render loop, where the timer that used to own this simply fired again.
+      this.lastRafAt = performance.now();
+      try {
+        this.netTick();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('net sim step failed', err);
+      }
+    }
     // decay the local robot's error-smoothing offset toward 0 (frame-rate independent)
     const dtSec = Math.min(dtMs / 1000, 0.1);
     const k = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
@@ -1951,11 +1978,18 @@ export class GameController {
    * stepping and feeding inputs to its peers instead of freezing the match */
   private simStep = (): void => {
     if (this.disposed) return;
+    // rAF is driving (a visible tab) — see `RAF_STALE_MS`
+    if (performance.now() - this.lastRafAt < RAF_STALE_MS) return;
+    this.netTick();
+  };
+
+  /** one networked sim advance, from whichever driver is live; both read the one `lastSimT`. */
+  private netTick(): void {
     const now = performance.now();
     const dtMs = this.lastSimT ? now - this.lastSimT : 8;
     this.lastSimT = now;
     this.frameLogic(dtMs);
-  };
+  }
 
   /** solo stepping: local keypress start/restart, one local command per tick */
   private stepSolo(cmd: RobotCommand): void {

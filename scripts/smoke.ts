@@ -15668,6 +15668,9 @@ function pinScene(
     /this\.acc \+= this\.session \? dtS \* \(1 \+ this\.lead\.rate\(performance\.now\(\)\)\) : dtS;/.test(game));
   check('lead source: a rebuilt match resets the controller', /this\.gotSnapshot = false;\s*this\.lead\.reset\(\);/.test(game));
   check('lead source: MAX_PREDICT_LEAD is still the hard cap', /const MAX_PREDICT_LEAD = 40;/.test(game));
+  check('raf source: online, rAF drives the sim and the timer steps only once rAF has gone quiet',
+    /if \(performance\.now\(\) - this\.lastRafAt < RAF_STALE_MS\) return;/.test(game) &&
+      /this\.lastRafAt = performance\.now\(\);\s*try \{\s*this\.netTick\(\);/.test(game));
 }
 
 // ---- predict/reconcile parity ----------------------------------------------
