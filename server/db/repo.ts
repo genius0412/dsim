@@ -2161,7 +2161,13 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
   return rows[0].id;
 }
 
+/** a replay id is a uuid column. Anything else is answered as absent here, rather than handed to
+ *  Postgres to refuse as a cast error — `/api/replay/<id>` takes `[\w-]+`, so a mistyped or
+ *  truncated link was a 500 and a stack trace in the log instead of a 404. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getReplay(id: string): Promise<Replay | null> {
+  if (!UUID_RE.test(id)) return null;
   const rows = await q<{
     format: number;
     balance_version: number;
@@ -2268,6 +2274,7 @@ export async function replayAccess(
   replayId: string,
   viewerId: string | null,
 ): Promise<ReplayAccessResult> {
+  if (!UUID_RE.test(replayId)) return { access: 'missing', kind: null };
   // the owner fan-out and "does this id exist at all" are separate questions, and both are
   // primary-key lookups. Asking them together lets a MISSING replay come back as 404 rather
   // than as a privacy refusal — a purged season's dead link is not somebody keeping a secret.
@@ -5291,8 +5298,10 @@ export async function userMatchHistory(
     viewerIsStaff?: boolean;
   },
 ): Promise<MatchHistoryPage> {
-  const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
-  const offset = Math.max(0, opts.offset ?? 0);
+  // FINITE first: these arrive from a query string, and `Math.max(1, NaN)` is NaN, which reached
+  // Postgres as `limit 'NaN'` and came back as a 500
+  const limit = Math.min(100, Math.max(1, Math.floor(Number.isFinite(opts.limit) ? opts.limit! : 25)));
+  const offset = Math.max(0, Math.floor(Number.isFinite(opts.offset) ? opts.offset! : 0));
 
   const conds: string[] = [];
   switch (opts.type) {
