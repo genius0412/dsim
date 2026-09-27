@@ -1,5 +1,5 @@
 /**
- * DRAWING A REMOTE ROBOT NEXT TO YOURS, IN A 2D ROOM — the display half of running ahead.
+ * DRAWING A REMOTE ROBOT NEXT TO YOURS — the display half of running ahead.
  *
  * The local robot is drawn from the PREDICTION, which runs a round trip ahead of the server
  * (`leadControl.ts`). A remote robot is drawn INTERPOLATED, `INTERP_DELAY_TICKS` behind the
@@ -23,8 +23,10 @@
  * chassis was drawn somewhere else, and every correction to that prediction jumped the balls:
  * 127 "pops" of more than 6 in a minute at 130 ms, all `held` → `held` on a snapshot. Zero with it.
  *
- * DOM-free, so the smoke run checks it directly. BIOBUZZ online predicts ONE robot (see
- * `sim3d/predict.ts`), so a 3D room has no predicted remote to draw and never reaches this.
+ * DOM-free, so the smoke run checks it directly. A 2D room reads the predicted remote pose off
+ * its predicted world; a BIOBUZZ 3D room reads it off the FULL predictor, which steps every remote
+ * robot on its held command (`Predictor.robots`, `sim3d/predict.ts`); LIGHT steps them too,
+ * with a footprint push-out instead of a solver (`separateLight`).
  */
 
 export interface Pose {

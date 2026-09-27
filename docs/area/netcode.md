@@ -46,7 +46,7 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   showed a 60 Hz display zero ticks one frame and two the next on 7–26% of frames (solo: 0.3%) —
   "online feels juddery" at any ping. Both drivers read one `lastSimT`, so a hand-over neither
   loses nor double-counts time, and the timer still feeds the room from a backgrounded tab.
-- ⚠️ **IN A 2D ROOM, A REMOTE ROBOT NEXT TO YOURS IS DRAWN AT YOUR MOMENT** (`src/net/contactDraw.ts`,
+- ⚠️ **A REMOTE ROBOT NEXT TO YOURS IS DRAWN AT YOUR MOMENT** (`src/net/contactDraw.ts`,
   2026-09-27). Running ahead put the local robot a full round trip further from the
   interpolated remotes, so a shove drew one chassis sunk into the other: drawn centres p95
   4.2 in closer than the server's at 66 ms and 6.1 in at 130 ms (max 13.4), measured on server
@@ -56,8 +56,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   yours. And a HELD ball rides its robot AS DRAWN (`followDrawn`): the predicted world placed a
   remote robot's hopper on its predicted pose while the chassis was drawn interpolated, so every
   correction jumped the balls (127 pops > 6 in a minute at 130 ms, zero after). Cost: a little
-  remote wobble when the other driver changes stick mid-shove. A 3D room is untouched — its
-  predictor carries no remote robot (`sim3d/predict.ts` holds them at the snapshot pose).
+  remote wobble when the other driver changes stick mid-shove. A BIOBUZZ 3D room does the same off
+  the FULL predictor, whose remote robots are now DYNAMIC and driven on their held commands
+  (`Predictor.robots`, corrections via `noteRemoteCorrection`); they used to be KINEMATIC at the
+  snapshot pose, an immovable wall a round trip out of date once the client ran ahead. The same
+  predictor now carries EVERY MOVING ELEMENT, not only those within `PREDICT_ELEMENT_RADIUS`, so a
+  far shot or a rolling POLLEN is drawn at the local robot's moment instead of a median 13 ticks
+  behind it (owner: "balls in server-required games are all very laggy and behind"). Elements
+  seated in a HIVE or FLOWER stay on the interpolation clock with the tray they sit in.
 - **`HOLD_TICKS` is 36 (600 ms)**: a TCP retransmit stalls the input stream 200–500 ms, and at 15 the
   room stopped a robot whose driver was still holding the stick (10.6 in yank at 500 ms, 0.03 now).
   ⚠️ Server constant: deploy it.

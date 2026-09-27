@@ -149,6 +149,7 @@ const PREDICT_SLIP_WINDOW = 60;
  */
 type Predictor = ReturnType<ReturnType<typeof physics3dImpl>['createLightPredictor']>;
 type PredictedPose = ReturnType<Predictor['step']>;
+type PredictedRobot = NonNullable<ReturnType<Predictor['robots']>>[number];
 /** one element the FULL predictor is carrying — same derivation, same no-imports reason. */
 type PredictedElement = NonNullable<ReturnType<Predictor['elements']>>[number];
 
@@ -2138,7 +2139,7 @@ export class GameController {
       if (pred) {
         this.predictTick = tick;
         // Off writes no pose; the local robot then renders interpolated, like a remote.
-        const pose = this.predictor?.step(local);
+        const pose = this.predictor?.step(local, this.remoteCmds);
         if (pose) this.applyPredictedPose(pose);
       } else {
         this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
@@ -2381,12 +2382,36 @@ export class GameController {
     // element a tick behind for the rest of the match (measured: it put the artifact straight
     // back, p95 8.1 in against 0.99).
     const before = p.elements();
+    const robotsBefore = p.robots();
     p.reset(this.world, serverTick);
     let pose: PredictedPose | null = null;
-    for (const b of this.inputBuf) pose = p.step(b.cmd);
+    for (const b of this.inputBuf) pose = p.step(b.cmd, this.remoteCmds);
     if (pose) this.applyPredictedPose(pose);
     if (before) this.noteElementCorrection(before, p.elements());
+    this.noteRemoteCorrection(robotsBefore, p.robots());
     this.notePredictionCost(performance.now() - t0);
+  }
+
+  /**
+   * A 3D room's twin of the remote half of `reconcile`: each predicted REMOTE robot's pose before
+   * and after the replay, both at the same predicted tick, so what is left is the prediction
+   * error. It becomes that robot's `remoteSmooth` offset (`src/net/contactDraw.ts`).
+   */
+  private noteRemoteCorrection(before: PredictedRobot[] | null, after: PredictedRobot[] | null): void {
+    const prev = new Map(this.remoteSmooth);
+    this.remoteSmooth.clear();
+    if (!before || !after) return;
+    const was = new Map(before.map((r) => [r.id, r] as const));
+    for (const r of after) {
+      const w = was.get(r.id);
+      if (!w) continue;
+      const o = prev.get(r.id);
+      const dx = w.x + (o?.x ?? 0) - r.x;
+      const dy = w.y + (o?.y ?? 0) - r.y;
+      if (Math.hypot(dx, dy) > SMOOTH_MAX_DIST) continue;
+      const h = w.heading + (o?.heading ?? 0) - r.heading;
+      this.remoteSmooth.set(r.id, { x: dx, y: dy, heading: Math.atan2(Math.sin(h), Math.cos(h)) });
+    }
   }
 
   /** accumulate each predicted element's re-seat correction into its visual offset, so the
@@ -2585,8 +2610,12 @@ export class GameController {
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
     // A REMOTE ROBOT NEXT TO OURS IS DRAWN AT OUR MOMENT, not at the interpolation clock —
-    // `src/net/contactDraw.ts`. 2D rooms only: a 3D room's prediction carries no remote robot.
-    const me = predictLocal && !this.spectator && !this.interp3d()
+    // `src/net/contactDraw.ts`. A 2D room reads its predicted pose off `this.world`; a 3D room off
+    // the FULL predictor, which steps it on its held command (LIGHT carries none: no blend).
+    const predictedRemotes = this.interp3d()
+      ? new Map((this.predictor?.robots() ?? []).map((x) => [x.id, x] as const))
+      : null;
+    const me = predictLocal && !this.spectator && (!predictedRemotes || predictedRemotes.size > 0)
       ? this.world.robots.find((x) => x.id === this.localRobotId)
       : undefined;
 
@@ -2600,9 +2629,10 @@ export class GameController {
       const p = r0.get(r.id);
       const q = r1.get(r.id);
       if (!p || !q) return r; // just spawned/left the buffer — fall back to predicted
-      if (me) {
+      const src = predictedRemotes ? predictedRemotes.get(r.id) : { x: r.pos.x, y: r.pos.y, heading: r.heading };
+      if (me && src) {
         const o = this.remoteSmooth.get(r.id);
-        const predicted = { x: r.pos.x + (o?.x ?? 0), y: r.pos.y + (o?.y ?? 0), heading: r.heading + (o?.heading ?? 0) };
+        const predicted = { x: src.x + (o?.x ?? 0), y: src.y + (o?.y ?? 0), heading: src.heading + (o?.heading ?? 0) };
         const interp = { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a), heading: lerpAngle(p.heading, q.heading, a) };
         // the NEARER of the two readings decides, so a robot closing fast is handed over before
         // its stale interpolated pose reaches ours, and one moving away is let go only once both
@@ -2614,7 +2644,7 @@ export class GameController {
         const w = nearDrawWeight(d);
         if (w > 0) {
           const b = blendPose(interp, predicted, w);
-          return { ...r, pos: { x: b.x, y: b.y }, heading: b.heading };
+          return { ...r, pos: { x: b.x, y: b.y }, heading: b.heading, ...(this.interp3d() ? { z: lerp(p.z, q.z, a) } : null) };
         }
       }
       return {
@@ -2851,7 +2881,8 @@ export class GameController {
     if (this.predicted3d()) this.replayThroughPredictor(snap.serverTick);
     else for (const b of this.inputBuf) this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
 
-    this.remoteSmooth.clear();
+    // a 3D room set its remote offsets inside `replayThroughPredictor` (`noteRemoteCorrection`)
+    if (!this.predicted3d()) this.remoteSmooth.clear();
     for (const r of this.world.robots) {
       const p0 = preRemote.get(r.id);
       if (!p0) continue;

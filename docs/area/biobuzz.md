@@ -898,6 +898,20 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     lives in the channel between two side plates and the outer plate is solid but for three
     lightening holes. `scripts/scene-preview/main.ts`'s `?wheelrig=1` stands the five real parts on
     bare tiles for that; `?drivetrain=` and `?gfx=` are the other two params this pass added.
+- ⚠️ **THE FULL PREDICTOR DRIVES THE OTHER ROBOTS AND CARRIES EVERY MOVING ELEMENT** (2026-09-27, with
+  the netcode lead controller). Once the client runs a round trip AHEAD of the server
+  (`src/net/leadControl.ts`), two old simplifications stopped holding:
+  - Remote robots were KINEMATIC at the snapshot pose. Intercepting a moving robot then meant
+    hitting a wall a round trip out of date: correction p95 0.6 → 2.8 in, drawn error 0.6 → 5.4 in
+    (66 ms). They are now DYNAMIC and driven on their HELD command (`snapshot.cmds`) through the
+    same wrench path as the local robot — the guess a 2D room has always made — and `displayWorld`
+    draws one next to yours from `Predictor.robots()` (`src/net/contactDraw.ts`).
+  - Only elements within `PREDICT_ELEMENT_RADIUS` were carried, so every other MOVING one was drawn
+    on the interpolation clock, a median 13 ticks (≈220 ms) behind the local robot (owner: "balls in
+    server-required games are all very laggy and behind"). Every moving element is carried now.
+    Seated ones (HIVE/FLOWER) stay interpolated with their tray.
+  LIGHT carries the remote robots too (held commands, a mass-split footprint push-out and an
+  inelastic normal, `separateLight` — no wasm), but still no elements. Checks: `net3d.ts` §16.
 - **THE SHOT PATH IS ONE PREDICTOR AND TWO DRAWINGS** (owner playtest feedback 2026-09-18, items
   5–6). `src/games/biobuzz/shotPath.ts` — NOT under `scene/`, because nothing outside `scene/` may
   import from it — answers "would this shot go in, and what does it fly through". `drawShot.ts`

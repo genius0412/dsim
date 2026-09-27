@@ -15671,7 +15671,7 @@ function pinScene(
   check('contact draw: ...and does not move when the robot is drawn where the world has it', Math.abs(same.x - 3) < 1e-9 && Math.abs(same.y - 4) < 1e-9);
   const game = readFileSync('src/game.ts', 'utf8');
   check('contact draw source: displayWorld blends a near remote robot toward its PREDICTED pose, 2D only',
-    game.includes('const me = predictLocal && !this.spectator && !this.interp3d()') &&
+    game.includes('const me = predictLocal && !this.spectator && (!predictedRemotes || predictedRemotes.size > 0)') &&
       game.includes('const w = nearDrawWeight(d);') &&
       game.includes('blendPose(interp, predicted, w)'));
   const capAt = game.indexOf('preRemote.set(r.id,');

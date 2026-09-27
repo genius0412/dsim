@@ -482,6 +482,65 @@ export function predictChecks(check: Check): void {
     }
     check('⚠️ predict: a full hopper driven into a wall row of POLLEN does not lift the predicted robot', ok, rows.join(' · '));
   }
+
+  /**
+   * THE OTHER ROBOTS RIDE THEIR HELD COMMANDS (2026-09-27). Once the client runs a round trip
+   * ahead, an opponent frozen at the snapshot pose is a wall a round trip out of date, so both
+   * predictors now step it on the command the server last said it ran. Checked against the real
+   * `step3d` with the same two commands, and against the old frozen guess so the check is not
+   * vacuous (the opponent has to actually go somewhere).
+   */
+  {
+    const mk = (): World => {
+      const w = mkWorld3dPair('free', 777);
+      w.balls.length = 0;
+      const [a, b] = w.robots;
+      a.pos.x = -40; a.pos.y = -30; a.heading = 0;
+      b.pos.x = -10; b.pos.y = 30; b.heading = Math.PI / 2;
+      for (const r of [a, b]) { r.vel.x = 0; r.vel.y = 0; r.angVel = 0; r.hopper.length = 0; }
+      return w;
+    };
+    const cLocal = cmd({ driveY: 0.6, leftDrive: 0.6, rightDrive: 0.6 });
+    const cRemote = cmd({ driveX: 0.8, driveY: 0.8, leftDrive: 1, rightDrive: 1 });
+    const TICKS = 24;
+    const auth = mk();
+    const start = { ...auth.robots[1].pos };
+    const both = new Map([[0, cLocal], [1, cRemote]]);
+    for (let i = 0; i < TICKS; i++) step3d(auth, SIM_DT, both);
+    const truth = auth.robots[1];
+    const travelled = Math.hypot(truth.pos.x - start.x, truth.pos.y - start.y);
+    const rows: string[] = [];
+    let ok = travelled > 5;
+    for (const kind of ['full', 'light'] as const) {
+      const w = mk();
+      const p = kind === 'full' ? createFullPredictor(w, LOCAL) : createLightPredictor(w, LOCAL);
+      for (let i = 0; i < TICKS; i++) p.step(cLocal, new Map([[1, cRemote]]));
+      const got = (p.robots() ?? []).find((r) => r.id === 1);
+      p.dispose();
+      const err = got ? Math.hypot(got.x - truth.pos.x, got.y - truth.pos.y) : Infinity;
+      if (!(err < 1.5)) ok = false;
+      rows.push(`${kind}: remote off by ${err.toFixed(2)} in`);
+    }
+    check('predict: FULL and LIGHT step a remote robot on its held command, to within 1.5 in of step3d',
+      ok, `it travelled ${travelled.toFixed(1)} in (a frozen guess would be off by that much) · ${rows.join(' · ')}`);
+  }
+
+  /** LIGHT has no solver, so it separates two robots' footprints itself (`separateLight`). */
+  {
+    const w = mkWorld3dPair('free', 778);
+    w.balls.length = 0;
+    const [a, b] = w.robots;
+    a.pos.x = 0; a.pos.y = 0; a.heading = 0;
+    b.pos.x = 10; b.pos.y = 0; b.heading = 0; // ~5 in of overlap for an 18 in chassis
+    for (const r of [a, b]) { r.vel.x = 0; r.vel.y = 0; r.angVel = 0; }
+    const p = createLightPredictor(w, LOCAL);
+    const pose = p.step(cmd({}), new Map());
+    const other = (p.robots() ?? []).find((r) => r.id === 1);
+    p.dispose();
+    const gap = other ? other.x - pose.pos.x : 0;
+    check('predict: LIGHT pushes two overlapping robots apart instead of driving through',
+      gap > 12, `centres ${gap.toFixed(2)} in apart after one tick (started 10)`);
+  }
 }
 
 /**

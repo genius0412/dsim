@@ -1646,7 +1646,11 @@ export function net3dChecks(check: Check): void {
    * balls on the field keep teleporting"). The client draws a predicted element on the
    * prediction's clock and every other one ~10 ticks behind it, so a shot dropped from the near
    * set mid-flight jumped back 14–25 in the frame it changed clocks. Each negative is paired with
-   * its positive: kept while moving, dropped once at rest, and never ADDED from outside.
+   * its positive: kept while moving, dropped once at rest.
+   * Since 2026-09-27 a moving element is carried WHEREVER it is (owner: "balls in server-required
+   * games are all very laggy and behind" — a far one was drawn on the interpolation clock, a
+   * median 13 ticks behind the local robot once the prediction ran a round trip ahead), so the
+   * stranger moving far away is now IN the set; a resting far one is still out.
    */
   {
     const w = mkWorld3d('match', 4243);
@@ -1688,8 +1692,9 @@ export function net3dChecks(check: Check): void {
       keptMoving && droppedAtRest,
     );
     check(
-      'predict: ...and a moving element that was never in the set is not added from outside it',
-      !strangerAtStart && !strangerStill,
+      'predict: a MOVING element far from the robot is carried too, so it is drawn on the local robot clock',
+      strangerAtStart && strangerStill,
+      `at start ${strangerAtStart}, after a reset ${strangerStill}`,
     );
   }
 }

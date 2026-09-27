@@ -55,13 +55,13 @@ import { GROUP_CHASSIS, GROUP_NECTAR } from './groups';
  * So this file offers two cheaper worlds that answer the ONE question a reconcile actually asks:
  * **where is MY robot after re-stepping these inputs?**
  *
- *  · **LIGHT** — the shared drive model and the walls, and nothing else. No wasm, no elements, no
- *    other robots. Exact on open floor, which is where a driver spends the match; the server
+ *  · **LIGHT** — the shared drive model and the walls, plus the other robots on their held
+ *    commands with a footprint push-out between them (`separateLight`). No wasm, no elements. Exact on open floor, which is where a driver spends the match; the server
  *    corrects the moment they touch something.
  *  · **FULL** — a small persistent Rapier 3D world re-seated from each snapshot: the statics, the
- *    trays at their snapshot angle, the other robots kinematic where the snapshot puts them, the
- *    elements within `PREDICT_ELEMENT_RADIUS` dynamic, and the local robot dynamic. Right through
- *    a push, at the cost of the physics chunk and ~15 bodies.
+ *    trays at their snapshot angle, the other robots dynamic on their held commands, the
+ *    elements within `PREDICT_ELEMENT_RADIUS` plus every MOVING one dynamic, and the local robot
+ *    dynamic. Right through a push, at the cost of the physics chunk and ~15 bodies.
  *
  * ── THE CONTRACT (`Predictor`) ──────────────────────────────────────────────────────────────
  * `reset(authoritativeWorld, serverTick)` adopts a snapshot; `step(cmd)` re-steps ONE buffered
@@ -88,6 +88,14 @@ export interface PredictedPose {
   angVel: number;
   z: number;
   vz: number;
+}
+
+/** one predicted REMOTE robot's pose (`Predictor.robots`). */
+export interface PredictedRobot {
+  id: number;
+  x: number;
+  y: number;
+  heading: number;
 }
 
 /** one predicted element, in the SAME frame `Artifact` uses: `z` is the sphere's BOTTOM. */
@@ -120,8 +128,18 @@ export interface Predictor {
   /** adopt an authoritative snapshot. Cheap for LIGHT (one pose copy); for FULL this is where
    * the bodies are re-seated and the near-element set is rebuilt. */
   reset(world: World, serverTick: number): void;
-  /** re-step ONE buffered input and return the local robot's predicted pose. */
-  step(cmd: RobotCommand): PredictedPose;
+  /**
+   * re-step ONE buffered input and return the local robot's predicted pose. `others` is each
+   * REMOTE robot's held command — the one the server last said it ran (`snapshot.cmds`), which is
+   * the same guess a 2D room steps its remote robots on. A remote with no entry gets ZERO.
+   */
+  step(cmd: RobotCommand, others?: ReadonlyMap<number, RobotCommand>): PredictedPose;
+  /**
+   * THE OTHER ROBOTS at this predictor's current tick — `null` when it carries none (LIGHT). A
+   * RENDER read, like `elements()`: `displayWorld` draws a remote robot next to the local one from
+   * here, so the two are the same moment (`src/net/contactDraw.ts`).
+   */
+  robots(): PredictedRobot[] | null;
   /** free any wasm world. Idempotent; a disposed predictor must not be stepped again. */
   dispose(): void;
 }
@@ -171,8 +189,8 @@ const liveCmd = (w: World, cmd: RobotCommand): RobotCommand => (robotsEnabled(w)
  * empty `balls` and its own empty `rrContacts`; everything else is shared by reference and never
  * written.
  */
-function scratchWorld(from: World, local: RobotState): World {
-  return { ...from, robots: [local], balls: [], rrContacts: [] } as World;
+function scratchWorld(from: World, local: RobotState, others: RobotState[] = []): World {
+  return { ...from, robots: [local, ...others], balls: [], rrContacts: [] } as World;
 }
 
 /** a deep-enough copy of one robot: every field the drive model writes gets its own object, the
@@ -226,6 +244,74 @@ function clampToField(r: RobotState): void {
   }
 }
 
+/** one robot, one tick of the Light model: the drive wrench integrated by hand (see LIGHT). */
+function integrateLight(scratch: World, r: RobotState, cmd: RobotCommand): void {
+  const wr = updateRobot(scratch, r, liveCmd(scratch, cmd), SIM_DT);
+  const m = shoveMass(r.spec, r.butterflyTank, r.powerDraw);
+  const inertia = chassisInertia(m, r.spec);
+  r.vel.x += (wr.fx / m) * SIM_DT;
+  r.vel.y += (wr.fy / m) * SIM_DT;
+  r.angVel += (wr.tau / inertia) * SIM_DT;
+  r.pos.x += r.vel.x * SIM_DT;
+  r.pos.y += r.vel.y * SIM_DT;
+  r.heading += r.angVel * SIM_DT;
+}
+
+/** the `robotExtents` footprint as a centre, two unit axes and two half-extents */
+function footprint(r: RobotState): { cx: number; cy: number; ux: number; uy: number; hx: number; hy: number } {
+  const fe = robotExtents(r);
+  const c = dcos(r.heading);
+  const sn = dsin(r.heading);
+  const forward = (fe.front - fe.rear) / 2;
+  return { cx: r.pos.x + forward * c, cy: r.pos.y + forward * sn, ux: c, uy: sn, hx: (fe.front + fe.rear) / 2, hy: fe.half };
+}
+
+/**
+ * TWO ROBOTS' FOOTPRINTS PUSHED APART, split by mass, and their closing speed along the contact
+ * normal removed (perfectly inelastic, momentum kept). LIGHT has no solver; without this it drove
+ * the local robot straight through a remote one, and once the prediction ran a round trip ahead
+ * that drew one chassis ~10 in inside the other. Separating-axis on the four footprint axes; the
+ * shallowest one is the normal.
+ */
+function separateLight(a: RobotState, b: RobotState): void {
+  const A = footprint(a);
+  const B = footprint(b);
+  const dx = A.cx - B.cx;
+  const dy = A.cy - B.cy;
+  let best = Infinity;
+  let nx = 0;
+  let ny = 0;
+  for (const [ax, ay] of [[A.ux, A.uy], [-A.uy, A.ux], [B.ux, B.uy], [-B.uy, B.ux]]) {
+    const ra = A.hx * Math.abs(A.ux * ax + A.uy * ay) + A.hy * Math.abs(-A.uy * ax + A.ux * ay);
+    const rb = B.hx * Math.abs(B.ux * ax + B.uy * ay) + B.hy * Math.abs(-B.uy * ax + B.ux * ay);
+    const d = dx * ax + dy * ay;
+    const overlap = ra + rb - Math.abs(d);
+    if (overlap <= 0) return; // a separating axis: not touching
+    if (overlap < best) {
+      best = overlap;
+      const sgn = d >= 0 ? 1 : -1; // the normal points from B to A
+      nx = ax * sgn;
+      ny = ay * sgn;
+    }
+  }
+  const ma = shoveMass(a.spec, a.butterflyTank, a.powerDraw);
+  const mb = shoveMass(b.spec, b.butterflyTank, b.powerDraw);
+  const wa = mb / (ma + mb);
+  const wb = ma / (ma + mb);
+  a.pos.x += nx * best * wa;
+  a.pos.y += ny * best * wa;
+  b.pos.x -= nx * best * wb;
+  b.pos.y -= ny * best * wb;
+  const vn = (a.vel.x - b.vel.x) * nx + (a.vel.y - b.vel.y) * ny;
+  if (vn < 0) {
+    const j = -vn / (1 / ma + 1 / mb);
+    a.vel.x += (j / ma) * nx;
+    a.vel.y += (j / ma) * ny;
+    b.vel.x -= (j / mb) * nx;
+    b.vel.y -= (j / mb) * ny;
+  }
+}
+
 /**
  * LIGHT — the shared drive model, integrated, plus the walls.
  *
@@ -243,6 +329,8 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
   let local: RobotState | null = null;
   let scratch: World | null = null;
   let tick = 0;
+  /** the other robots, on their held commands — see `separateLight` for why LIGHT carries them */
+  const remotes = new Map<number, RobotState>();
 
   const self: Predictor = {
     kind: 'light',
@@ -252,26 +340,38 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
     // LIGHT has no elements at all — the shared drive model and the walls, nothing else. `null`
     // rather than an empty list, so a caller can tell "I carry none" from "none are near".
     elements: () => null,
+    robots(): PredictedRobot[] | null {
+      if (remotes.size === 0) return null;
+      const out: PredictedRobot[] = [];
+      for (const r of remotes.values()) out.push({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading });
+      return out;
+    },
     reset(w: World, serverTick: number): void {
       const src = w.robots.find((r) => r.id === localRobotId);
       local = src ? cloneRobot(src) : null;
-      scratch = local ? scratchWorld(w, local) : null;
+      remotes.clear();
+      for (const r of w.robots) if (r.id !== localRobotId) remotes.set(r.id, cloneRobot(r));
+      scratch = local ? scratchWorld(w, local, [...remotes.values()]) : null;
       tick = serverTick;
     },
-    step(cmd: RobotCommand): PredictedPose {
+    step(cmd: RobotCommand, otherCmds?: ReadonlyMap<number, RobotCommand>): PredictedPose {
       if (!local || !scratch) return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
-      const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
-      const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
-      const inertia = chassisInertia(m, local.spec);
-      local.vel.x += (wr.fx / m) * SIM_DT;
-      local.vel.y += (wr.fy / m) * SIM_DT;
-      local.angVel += (wr.tau / inertia) * SIM_DT;
-      local.pos.x += local.vel.x * SIM_DT;
-      local.pos.y += local.vel.y * SIM_DT;
-      local.heading += local.angVel * SIM_DT;
+      for (const r of remotes.values()) preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
+      integrateLight(scratch, local, cmd);
+      for (const r of remotes.values()) integrateLight(scratch, r, otherCmds?.get(r.id) ?? ZERO_CMD);
       squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
+      for (const r of remotes.values()) separateLight(local, r);
       clampToField(local);
+      for (const r of remotes.values()) {
+        clampToField(r);
+        r.pos.x = round4(r.pos.x);
+        r.pos.y = round4(r.pos.y);
+        r.heading = round4(r.heading);
+        r.vel.x = round4(r.vel.x);
+        r.vel.y = round4(r.vel.y);
+        r.angVel = round4(r.angVel);
+      }
       /**
        * ROUNDED EVERY TICK, the way the real pipeline's readback rounds — not just on the way
        * out. `step3d` writes `round4` into the JSON after every step, so the state the NEXT tick's
@@ -291,6 +391,7 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
     dispose(): void {
       local = null;
       scratch = null;
+      remotes.clear();
     },
   };
   // SEEDED, so a caller that creates one and steps it without waiting for a snapshot gets the
@@ -315,11 +416,19 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
  *  · **the two hive TRAYS**, KINEMATIC at the snapshot's own `hives[a].angle`. Kinematic because
  *    a client has no business predicting a TIP — the server decides that, and a tray the client
  *    swung independently would fight every snapshot.
- *  · **the other ROBOTS**, KINEMATIC at their snapshot pose. A remote robot's future inputs are
- *    unknown, so holding it still for 0.67 s is the only honest guess; the local robot still
- *    feels it as a solid, which is the point.
- *  · **ELEMENTS within `PREDICT_ELEMENT_RADIUS`**, dynamic. Further ones cannot reach the robot
- *    inside the window.
+ *  · **the other ROBOTS**, DYNAMIC, each driven on its HELD command through the same drive model
+ *    and wrench the local robot uses. They used to be KINEMATIC at the snapshot pose — "holding
+ *    it still is the only honest guess" — which was harmless while the client's clock sat on the
+ *    server's. Once the prediction runs a round trip AHEAD (`src/net/leadControl.ts`), a frozen
+ *    opponent is an immovable wall a full round trip out of date: intercepting a moving robot,
+ *    the local robot's correction went p95 0.6 → 2.8 in and its drawn error 0.6 → 5.4 in (66 ms).
+ *    The held command is the guess a 2D room has always made (`GameController.cmdMap`), and a
+ *    DYNAMIC body is the authority's own model of a robot, so a shove resolves at both masses
+ *    instead of against infinite mass.
+ *  · **ELEMENTS within `PREDICT_ELEMENT_RADIUS`**, dynamic, **and every MOVING element wherever it
+ *    is** — a far one cannot reach the robot inside the window, but it is DRAWN from here, and
+ *    drawn from the interpolation it sat a round trip plus `INTERP_DELAY_TICKS` behind the local
+ *    robot (see the carried-set loop in `reset`).
  */
 export function createFullPredictor(world: World, localRobotId: number): Predictor {
   const RAPIER = rapier3d();
@@ -357,6 +466,8 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   let localRampReady = false;
   const otherRampReady = new Map<number, boolean>();
   const others = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
+  /** each remote robot's own copy, stepped by the drive model exactly like `local` */
+  const remotes = new Map<number, RobotState>();
   /** the near elements, plus the RADIUS each body was built with — the readback subtracts it to
    *  get back to `Artifact.z` (the sphere's BOTTOM), the same way the chassis readback subtracts
    *  the half-height it added. */
@@ -389,12 +500,20 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       }
       return out;
     },
+    robots(): PredictedRobot[] | null {
+      if (disposed || remotes.size === 0) return null;
+      const out: PredictedRobot[] = [];
+      for (const r of remotes.values()) out.push({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading });
+      return out;
+    },
     reset(w: World, serverTick: number): void {
       if (disposed) return;
       tick = serverTick;
       const src = w.robots.find((r) => r.id === localRobotId);
       local = src ? cloneRobot(src) : null;
-      scratch = local ? scratchWorld(w, local) : null;
+      remotes.clear();
+      for (const r of w.robots) if (r.id !== localRobotId) remotes.set(r.id, cloneRobot(r));
+      scratch = local ? scratchWorld(w, local, [...remotes.values()]) : null;
 
       for (const a of ['red', 'blue'] as const) {
         trays[a].setNextKinematicRotation(tiltQuatX(hiveTiltAngle(w, a)));
@@ -416,14 +535,14 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         }
         seatRobot(localBody, local, localHeight);
       }
-      // the others: kinematic, created on first sight, re-fitted and re-seated every reset.
-      for (const r of w.robots) {
-        if (r.id === localRobotId) continue;
+      // the others: DYNAMIC (see the header), created on first sight, re-fitted and re-seated
+      // every reset.
+      for (const r of remotes.values()) {
         const h = bbHeightNow(w, r.spec);
         const ramp = bbRampSettled(r, w.time);
         let body = others.get(r.id);
         if (!body) {
-          body = makeRobotBody(RAPIER, world3d, r, false, h, ramp);
+          body = makeRobotBody(RAPIER, world3d, r, true, h, ramp);
           others.set(r.id, body);
           otherRampReady.set(r.id, ramp);
         } else {
@@ -434,11 +553,15 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         seatRobot(body, r, h);
       }
 
-      // the near elements: replaced outright. Fifteen-ish bodies is cheaper to rebuild than to
-      // diff, and a diff would have to answer "did this id leave the radius" anyway.
-      // One that was carried last window and is still MOVING is kept wherever it is — see
-      // `PREDICT_ELEMENT_KEEP_SPEED` for the jump dropping it mid-flight put on screen.
-      const kept = new Set(elements.keys());
+      // the carried elements: replaced outright. Fifteen-ish bodies is cheaper to rebuild than to
+      // diff, and a diff would have to answer "did this id leave the set" anyway.
+      // ⚠️ EVERY MOVING ELEMENT IS CARRIED, WHEREVER IT IS — not only the near ones. A far element
+      // is drawn from the INTERPOLATION, and once the prediction runs a round trip ahead
+      // (`src/net/leadControl.ts`) that clock is the lead plus `INTERP_DELAY_TICKS` behind the
+      // local robot: measured through a real `Room` at 66 ms, a moving element was drawn a median
+      // 13 ticks (≈220 ms) and 4–10 in behind where it was at the local robot's moment (owner,
+      // 2026-09-27: "balls in server-required games are all very laggy and behind"). A resting
+      // far element does not move, so the clock it is drawn at cannot show; it stays interpolated.
       clearElements();
       if (local) {
         const r2 = PREDICT_ELEMENT_RADIUS * PREDICT_ELEMENT_RADIUS;
@@ -448,7 +571,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
           const dx = b.pos.x - local.pos.x;
           const dy = b.pos.y - local.pos.y;
           const moving = b.vel.x * b.vel.x + b.vel.y * b.vel.y + b.vz * b.vz > keep2;
-          if (dx * dx + dy * dy > r2 && !(moving && kept.has(b.id))) continue;
+          if (dx * dx + dy * dy > r2 && !moving) continue;
           /**
            * ⚠️ A STRUCTURE-SEATED ELEMENT IS KINEMATIC, FOR THE REASON THE TRAYS AND THE REMOTE
            * ROBOTS ARE — and it used to be DYNAMIC, which put every one of them in FREE FALL.
@@ -480,11 +603,25 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         }
       }
     },
-    step(cmd: RobotCommand): PredictedPose {
+    step(cmd: RobotCommand, otherCmds?: ReadonlyMap<number, RobotCommand>): PredictedPose {
       if (disposed || !local || !scratch || !localBody) {
         return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       }
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
+      // the remote robots first, on their HELD commands, through the same wrench path
+      for (const r of remotes.values()) {
+        const body = others.get(r.id);
+        if (!body) continue;
+        preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
+        const rw = updateRobot(scratch, r, liveCmd(scratch, otherCmds?.get(r.id) ?? ZERO_CMD), SIM_DT);
+        const rm = shoveMass(r.spec, r.butterflyTank, r.powerDraw);
+        const ri = chassisInertia(rm, r.spec);
+        body.setAdditionalMassProperties(rm, { x: 0, y: 0, z: 0 }, { x: ri, y: ri, z: ri }, QUAT_IDENTITY, true);
+        body.resetForces(true);
+        body.resetTorques(true);
+        if (rw.fx !== 0 || rw.fy !== 0) body.addForce({ x: rw.fx, y: rw.fy, z: 0 }, true);
+        if (rw.tau !== 0) body.addTorque({ x: 0, y: 0, z: rw.tau }, true);
+      }
       const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
       const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
       const inertia = chassisInertia(m, local.spec);
@@ -512,10 +649,29 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       local.vel.y = round4(v.y);
       local.vz = round4(v.z);
       local.angVel = round4(av.z);
+      for (const r of remotes.values()) {
+        const body = others.get(r.id);
+        if (!body) continue;
+        const h = otherHeights.get(r.id) ?? 0;
+        const rt = body.translation();
+        const rv = body.linvel();
+        r.pos.x = round4(rt.x);
+        r.pos.y = round4(rt.y);
+        r.z = round4(rt.z - h / 2);
+        r.heading = round4(yawOfQuat(body.rotation()));
+        r.vel.x = round4(rv.x);
+        r.vel.y = round4(rv.y);
+        r.vz = round4(rv.z);
+        r.angVel = round4(body.angvel().z);
+      }
       // the SAME stage 8b the real pipeline runs, for the same reason: a wall-flush robot's
       // contact torque comes from this pass and not from the solver.
       squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
       seatRobot(localBody, local, localHeight);
+      for (const r of remotes.values()) {
+        const body = others.get(r.id);
+        if (body) seatRobot(body, r, otherHeights.get(r.id) ?? 0);
+      }
       tick++;
       return poseOf(local);
     },
@@ -528,6 +684,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       local = null;
       scratch = null;
       others.clear();
+      remotes.clear();
     },
   };
   self.reset(world, world.tick); // seeded, same reasoning as the LIGHT predictor's
