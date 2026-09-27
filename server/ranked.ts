@@ -9,6 +9,7 @@ import {
   upsertEloHistory,
   upsertRating,
 } from './db/repo';
+import { tx } from './db/pool';
 
 /**
  * Ranked ratings — Glicko-2 (the chess.com model). Beyond a single Elo number,
@@ -200,55 +201,72 @@ export async function persistVersusMatch(
 
   let updates: EloBoardUpdate[] = [];
   const gamesAfter = new Map<string, number>(); // userId -> board games after this match
-  if (ranked) {
-    // ELO is keyed by ACT (persists across seasons); resolve this season's act once.
-    const act = await actForSeason(balanceVersion, game);
-    // ONE query for every player's rating, not one per player. Glicko-2's sequencing lives in
-    // `computeGlicko`, which takes the whole set at once — the READS feeding it were never
-    // order-dependent, and issuing them serially cost a round trip per player at the end of
-    // every ranked match, on the path the players are watching for their rating change.
-    const ratingsBefore = await getRatingsFull(authed.map((p) => p.userId!), mode, act, game);
-    const parts: EloParticipant[] = authed.map((p) => ({
-      userId: p.userId!,
-      alliance: p.alliance,
-      rating: ratingsBefore.get(p.userId!)!,
-    }));
-    updates = computeGlicko(parts, outcome.result.score);
-    // Each player's two writes stay ORDERED against each other — `upsertEloHistory` records
-    // the games count `upsertRating` returns — but different players share no row, so the
-    // pairs run concurrently instead of 2N round trips end to end.
-    await Promise.all(
-      updates.map(async (u) => {
-        const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game);
+  // ELO is keyed by ACT (persists across seasons); resolve this season's act once, OUTSIDE the
+  // transaction — it is a read of `seasons`, and nothing here writes that table.
+  const act = ranked ? await actForSeason(balanceVersion, game) : 0;
+
+  /**
+   * ONE TRANSACTION for the ratings, the season snapshot, the match row and its participants.
+   *
+   * They used to be separate `q()` calls, several of them racing in a `Promise.all`, and any
+   * failure part-way — a pool timeout, a Neon wake error, one participant's FK — left some
+   * players' ratings moved with NO match row behind them, no history entry and no reveal, with
+   * `persistMatch` swallowing the throw. Now the result lands whole or not at all.
+   *
+   * ⚠️ AND THE RATING ROWS ARE LOCKED FROM THE READ TO THE WRITE (`getRatingsFull(…, lock)`).
+   * Glicko-2 is read → compute → write an absolute number, and two writers meet on the same row
+   * more often than it looks: the behaviour charge fires at the same instant as this (see
+   * `chargeRatingForBehaviour`), and a player who left one ranked match — still rated, as
+   * `departed` — can finish another one around the time the first ends. Unlocked, the later
+   * write erased the earlier one.
+   *
+   * Sequential inside, on the one connection a transaction owns: that costs a few round trips
+   * the old `Promise.all` did not, which is the price of the result being atomic.
+   */
+  const matchId = await tx(async (query) => {
+    if (ranked) {
+      // ONE query for every player's rating, not one per player. Glicko-2's sequencing lives
+      // in `computeGlicko`, which takes the whole set at once.
+      const ratingsBefore = await getRatingsFull(authed.map((p) => p.userId!), mode, act, game, query, true);
+      const parts: EloParticipant[] = authed.map((p) => ({
+        userId: p.userId!,
+        alliance: p.alliance,
+        rating: ratingsBefore.get(p.userId!)!,
+      }));
+      updates = computeGlicko(parts, outcome.result.score);
+      for (const u of updates) {
+        const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game, query);
         gamesAfter.set(u.userId, games);
         // snapshot the post-match rating for THIS SEASON — freezes into the season's final
         // standings once it rolls (the live act board keeps evolving in elo_ratings).
-        await upsertEloHistory(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, games, game);
-      }),
-    );
-  }
+        await upsertEloHistory(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, games, game, query);
+      }
+    }
 
-  // TAGGED WITH THE SOLVE THAT PRODUCED IT (0039), read off the replay the room just recorded
-  // rather than from a room flag: the container is what a later re-simulation will run, so
-  // taking both facts from one place means the row can never disagree with its own replay.
-  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics);
+    // TAGGED WITH THE SOLVE THAT PRODUCED IT (0039), read off the replay the room just recorded
+    // rather than from a room flag: the container is what a later re-simulation will run, so
+    // taking both facts from one place means the row can never disagree with its own replay.
+    const id = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics, query);
+    // one multi-row insert rather than one per player — same rows, same conflict handling
+    await addMatchParticipants(
+      id,
+      authed.map((p) => {
+        const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
+        return {
+          userId: p.userId!,
+          alliance: p.alliance,
+          drivetrain: p.drivetrain,
+          score: p.score,
+          won: p.alliance === 'red' ? red > blue : blue > red,
+          ratingBefore: u ? u.before : null,
+          ratingAfter: u ? u.after : null,
+        };
+      }),
+      query,
+    );
+    return id;
+  });
   if (out) out.matchId = String(matchId);
-  // one multi-row insert rather than one per player — same rows, same conflict handling
-  await addMatchParticipants(
-    matchId,
-    authed.map((p) => {
-      const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
-      return {
-        userId: p.userId!,
-        alliance: p.alliance,
-        drivetrain: p.drivetrain,
-        score: p.score,
-        won: p.alliance === 'red' ? red > blue : blue > red,
-        ratingBefore: u ? u.before : null,
-        ratingAfter: u ? u.after : null,
-      };
-    }),
-  );
 
   // the rating change per player, for the results-screen reveal (ranked only;
   // custom returns nothing so no reveal fires)
