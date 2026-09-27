@@ -366,6 +366,9 @@ import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
+import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
+import { clockMembers } from '../server/tickScheduler';
+import { warmUp, warmupEnabled } from '../server/warmup';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
@@ -15404,6 +15407,169 @@ function pinScene(
   gapRoom.snapGapStats(true);
   check('snapshot spacing: a reset drains the window (a second read is not the same numbers)', gapRoom.snapGapStats().n === 0);
   gapRoom.stop();
+}
+
+// ---- ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`) ------------------------
+// Rooms used to own a `setInterval` each; they now take turns on one self-correcting 60 Hz
+// deadline and are split across two snapshot PARITIES. This is the one block that runs rooms
+// on REAL timers (everything else pumps `advanceForTest`), so it proves the live path steps at
+// all, at the right rate, broadcasts on the parity it was given, and lets the clock go idle.
+{
+  const sends: Record<string, { at: number; tick: number }[]> = { k1: [], k2: [] };
+  const mk = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => {
+      if (str.startsWith('{"t":"snapshot"')) sends[id].push({ at: performance.now(), tick: (JSON.parse(str) as { serverTick: number }).serverTick });
+    },
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const before = clockMembers();
+  const a = new Room('smoke-clock-a', () => {}, { kind: 'record', record: 'solo' });
+  const b = new Room('smoke-clock-b', () => {}, { kind: 'record', record: 'solo' });
+  a.add(mk('k1'));
+  b.add(mk('k2'));
+  a.onMessage('k1', { t: 'start' });
+  b.onMessage('k2', { t: 'start' });
+  check('clock: a started room is ON the shared clock (one member per live room)', clockMembers() === before + 2, `${clockMembers() - before}`);
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, 1000));
+  const ticks = a.tickForTest();
+  const secs = (performance.now() - t0) / 1000;
+  // generous below: this box also runs other shards, and the first second of a match is a cold
+  // JIT. The claims are "it steps" and "it never runs ahead of the wall clock" — not a latency
+  // number (docs/capacity.md §0 on what a loaded dev box can measure).
+  check('clock: a live room steps off the shared clock, never faster than 60 Hz', ticks > 10 * secs && ticks <= 60 * secs + 2, `${ticks} ticks in ${secs.toFixed(2)} s`);
+  // parity is read off the rooms rather than off their snapshot ticks: a turn that catches up
+  // several ticks (a cold JIT, a loaded box) broadcasts at its NEWEST tick, whatever its parity
+  const phase = (r: Room): number => (r as unknown as { snapPhase: number }).snapPhase;
+  check('clock: both live rooms broadcast (the clock drives the snapshot path, not just the step)', sends.k1.length > 0 && sends.k2.length > 0, `${sends.k1.length} / ${sends.k2.length}`);
+  // only asserted from an EMPTY clock: a block earlier in this shard that left a room running
+  // would skew the counts the parity is balanced against
+  if (before === 0) {
+    check('clock: two rooms on an empty clock get OPPOSITE snapshot parities, so their encodes land on different ticks', phase(a) !== phase(b), `${phase(a)} / ${phase(b)}`);
+  }
+  a.stop();
+  b.stop();
+  check('clock: stopped rooms leave it (an idle machine sleeps, nothing keeps stepping)', clockMembers() === before, `${clockMembers() - before}`);
+  check('clock: a stopped room is reset to the old even-tick parity', phase(a) === 0 && phase(b) === 0);
+  const cadence = new Room('smoke-clock-c', () => {}, { kind: 'record', record: 'solo' });
+  const seen: number[] = [];
+  cadence.add({ ...mk('k3'), sendRaw: (str) => { if (str.startsWith('{"t":"snapshot"')) seen.push((JSON.parse(str) as { serverTick: number }).serverTick); } });
+  cadence.onMessage('k3', { t: 'start' });
+  cadence.advanceForTest(20);
+  check('clock: a room driven by advanceForTest is OFF the clock and keeps the old even-tick cadence', clockMembers() === before && seen.length > 0 && seen.every((t) => t % 2 === 0), `${seen}`);
+  cadence.stop();
+}
+
+// ---- BOOT JIT WARM-UP (`server/warmup.ts`) -----------------------------------------
+// A headless busy match per game after physics init, so the first real player on a woken
+// machine does not pay for V8 compiling the sim. It must warm EVERY game (on its server
+// physics), leave nothing behind (no room on the clock, no user lock), and have a kill switch
+// that honours the spellings an operator reaches for under pressure.
+{
+  await initPhysics3d();
+  check('warmup: on by default, and WARMUP=0/false/no/off turns it off', warmupEnabled(undefined) && warmupEnabled('1') && ['0', 'false', 'NO', ' off '].every((v) => !warmupEnabled(v)));
+  const before = clockMembers();
+  const r = await warmUp(60);
+  check('warmup: every registered game is warmed', r.games.join() === GAME_IDS.join(), `${r.games} of ${GAME_IDS}`);
+  check('warmup: it actually stepped each game (not vacuous)', r.ticks === 60 * GAME_IDS.length, `${r.ticks} ticks`);
+  check('warmup: nothing is left on the room clock afterwards', clockMembers() === before, `${clockMembers() - before}`);
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check(
+    'warmup: the server starts it only after physics init and does not await it (joins and /health are never gated)',
+    /initPhysics3d\(\)\]\)[\s\S]{0,800}void warmUp\(\)/.test(idx) && !/await warmUp\(/.test(idx),
+  );
+}
+
+// ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
+// `server/snapshotWire.ts` replaced a `JSON.stringify(ball, round3)` per ball per broadcast with
+// a shadow walk (`sameR3`) that only stringifies what moved, and builds the body by splicing
+// those cached strings instead of re-serializing the balls. It is a pure CPU change, so the one
+// thing to prove is that NOTHING on the wire moved: the room runs the old encoder beside the new
+// one on every broadcast (`checkWireForTest`) and every disagreement is reported. Real rooms,
+// every game, driven and shooting, with the recipients that take the unusual paths — a LOSSY one
+// keyed to stale acks, one that backs up and is unprimed, and a reattach mid-match.
+//
+// ⚠️ NOT VACUOUS: a room where nothing moves agrees with any encoder, so each game asserts that
+// the frames carried real ball updates and that deltas (not only keyframes) were compared.
+{
+  // the leaf rules first, on hand-built values: each is a way the walk could disagree with the string
+  const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a, round3) === JSON.stringify(b, round3);
+  const cases: [unknown, unknown][] = [
+    [{ x: 1.0004, y: 2 }, { x: 1.0001, y: 2 }], // same after rounding
+    [{ x: 1.0006, y: 2 }, { x: 1.0001, y: 2 }], // not
+    [{ x: -0.0001 }, { x: 0 }], // -0 prints as 0
+    [{ x: NaN }, { x: null }], [{ x: Infinity }, { x: NaN }],
+    [{ a: 1, b: 2 }, { b: 2, a: 1 }], // key ORDER is part of the string
+    [{ a: 1, u: undefined }, { a: 1 }], // an undefined property is omitted
+    [{ a: [1, undefined] }, { a: [1, null] }], // ...and is null in an array
+    [{ s: { kind: 'held', robot: 1 } }, { s: { kind: 'held', robot: 2 } }],
+    [{ s: { kind: 'ground' } }, { s: { kind: 'flight', target: 'red' } }],
+    [{ a: [1, 2] }, { a: [1, 2, 3] }], [{ a: [] }, { a: {} }], [{ a: 'x' }, { a: 'y' }], [{ a: true }, { a: false }],
+  ];
+  let bad = 0;
+  for (const [prev, cur] of cases) {
+    const shadow = JSON.parse(JSON.stringify(prev, round3));
+    if (sameR3(shadow, cur) !== eq(prev, cur)) bad++;
+  }
+  check('snapshot wire: sameR3 agrees with the rounded string on every edge case (rounding, -0, NaN, key order, undefined)', bad === 0, `${bad}/${cases.length}`);
+  // a ball that LEAVES and comes back identical must read as changed — the client dropped it
+  const c = new BallWireCache();
+  const ball = (id: number, x: number): Artifact => ({ id, color: 'purple', state: { kind: 'ground' }, pos: { x, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 }) as Artifact;
+  c.diff([ball(1, 0), ball(2, 5)]);
+  c.diff([ball(1, 0)]);
+  const back = c.diff([ball(1, 0), ball(2, 5)]);
+  const ref = referenceChanged(referenceChanged(new Map(), [ball(1, 0)]).cur, [ball(1, 0), ball(2, 5)]).changed;
+  check('snapshot wire: a ball that left the world and returned unchanged is SENT again (as the old diff did)', back.join() === '2' && ref.join() === '2', `[${back}] vs [${ref}]`);
+}
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  if (serverPhysics(simModuleFor(game)) === '3d') await initPhysics3d();
+  const got: Record<string, string[]> = { r1: [], b1: [], l1: [] };
+  let backed = false;
+  const mk = (id: string, alliance: Alliance, extra: Partial<Client> = {}): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => got[id].push(str),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+    ...extra,
+  });
+  const room = new Room('smoke-wire-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('r1', 'red'));
+  room.add(mk('b1', 'blue', { backlog: () => (backed ? 1 << 30 : 0) }));
+  room.add(mk('l1', 'blue', { lossy: true }));
+  room.checkWireForTest(); // on BEFORE the first snapshot, so the reference shares the baseline
+  room.onMessage('r1', { t: 'start' });
+  room.advanceForTest(1);
+  const gen = (room as unknown as { matchGen: number }).matchGen;
+  let lastSnap = 0;
+  for (let i = 0; i < 700; i++) {
+    const w = room.worldForTest();
+    if (!w) break;
+    const t = w.tick + 1;
+    const p = t / 60;
+    const drive = (seat: number): RobotCommand => cmd({ driveX: Math.sin(p * 0.9 + seat), driveY: Math.cos(p * 0.7 + seat), rotate: Math.sin(p * 1.3) * 0.5, intake: true, fire: t % 90 > 20 });
+    room.onMessage('r1', { t: 'input', tick: t, q: quantizeCommand(drive(0)), ack: lastSnap, gen });
+    room.onMessage('b1', { t: 'input', tick: t, q: quantizeCommand(drive(1)), ack: lastSnap, gen });
+    // the lossy recipient confirms only every ~7th frame, so its deltas are cut against old baselines
+    if (i % 14 === 0) room.onMessage('l1', { t: 'input', tick: t, q: quantizeCommand(cmd({})), ack: lastSnap, gen });
+    backed = i >= 200 && i < 206; // a backed-up socket is skipped and unprimed, then keyframed
+    if (i === 400) room.detach('r1');
+    if (i === 430) room.reattach('r1', () => {}, (str) => got.r1.push(str), undefined, undefined, true);
+    room.advanceForTest(1);
+    lastSnap = room.worldForTest()?.tick ?? lastSnap;
+  }
+  const res = room.checkWireForTest();
+  const snaps = [...got.r1, ...got.b1, ...got.l1].filter((x) => x.startsWith('{"t":"snapshot"')).map((x) => JSON.parse(x) as Extract<ServerMsg, { t: 'snapshot' }>);
+  const upd = snaps.reduce((n, m) => n + m.balls.upd.length, 0);
+  const deltas = snaps.filter((m) => m.balls.upd.length < m.balls.order.length).length;
+  check(`snapshot wire/${game}: the room broadcast and the reference ran on every frame`, res.frames >= 300, `${res.frames} frames`);
+  check(`snapshot wire/${game}: ...and moved real ball data, in deltas as well as keyframes (not vacuous)`, upd > 0 && deltas > 100 && snaps.length - deltas >= 4, `${upd} ball updates, ${deltas} delta frames, ${snaps.length - deltas} keyframes`);
+  check(`snapshot wire/${game}: bodies were compared for more baselines than frames (keyframes + lossy acks, not just the shared delta)`, res.bodies > res.frames, `${res.bodies} bodies over ${res.frames} frames`);
+  check(`snapshot wire/${game}: every change set AND every body is byte-identical to the old encoder`, res.mismatches.length === 0, res.mismatches.slice(0, 3).join(' | '));
+  room.stop();
 }
 
 // ---- A MISSING INPUT TICK CANNOT INVENT A BUTTON EDGE -------------------------------
