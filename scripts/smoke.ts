@@ -28276,5 +28276,24 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+/**
+ * ONE OWNER FOR A DOWNLOAD'S OBJECT URL (`src/ui/saveBlob.ts`). `a.click()` only starts a
+ * download; the account export and the admin CSVs revoked the URL on the very next line, which
+ * can cut the transfer off before the browser has taken the blob.
+ */
+{
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory() ? walk(joinPath(dir, d.name)) : /\.tsx?$/.test(d.name) ? [joinPath(dir, d.name)] : [],
+    );
+  const revokers = walk('src').filter((f) => /revokeObjectURL/.test(readFileSync(f, 'utf8')));
+  const sb = readFileSync('src/ui/saveBlob.ts', 'utf8');
+  check(
+    '⚠️ downloads: only saveBlob revokes an object URL, and it waits well past the hand-off',
+    revokers.length === 1 && /saveBlob\.ts$/.test(revokers[0]) && /setTimeout\(\(\) => URL\.revokeObjectURL\(url\), BLOB_URL_TTL_MS\)/.test(sb),
+    revokers.join(', '),
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
