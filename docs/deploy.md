@@ -77,6 +77,22 @@ only the single URL leaves the preview talking to the production servers.
 
 These are baked in at build time, so redeploy the branch after changing them.
 
+**6. Zenith autos on alpha** (until a Zenith release on npm carries host mode — see
+`docs/area/autos.md`, Vendoring). Same scope, the `alpha` git branch:
+
+| Variable | Value |
+| --- | --- |
+| `ZENITH_VENDOR_REPO` | the `owner/repo` holding the vendored tarballs (`vendor/zenith/*.tgz`) |
+| `ZENITH_VENDOR_TOKEN` | fine-grained token, **Contents: read** on that repository only |
+| `ZENITH_VENDOR_REF` | optional, default `dsim-vendor` |
+| `VITE_ZENITH_URL` | the Zenith web app that has host mode, e.g. its gated deployment's URL ending in `/` |
+
+The first three are read by `scripts/fetch-zenith.mjs` in `vercel.json`'s `installCommand`;
+without them an alpha build with `file:` Zenith deps stops at install with a message naming what
+is unset. `VITE_ZENITH_URL` is baked in at build time like the others, and its ORIGIN is the one
+DSIM pins its `postMessage`s to. A Fly deploy from a checkout without the tarballs needs the three
+`ZENITH_VENDOR_*` in the shell (`scripts/fly-deploy.sh` runs the same fetch first).
+
 ### Deploying afterwards
 
 ```bash

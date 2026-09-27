@@ -1,4 +1,4 @@
-<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/vendor-zenith.mjs -->
+<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs -->
 # AUTOS: Zenith `*.auto.json` routines, driven by an auto seat
 
 A Zenith auto is the file a team's robot plays (`Horizon-36596/biobuzz` runs it through its
@@ -95,15 +95,32 @@ landed after it. So until a release carries them, `vendor/zenith/*.tgz` are `fil
 `node scripts/vendor-zenith.mjs ../zenith` from a Zenith checkout holding those commits (it records
 the commit in `vendor/zenith/SOURCE.md`, takes the version from Zenith's `package.json`, and
 reinstalls the tarballs: ⚠️ plain `npm install` keeps a changed tarball's OLD integrity hash, and
-`npm ci` then refuses it). Neither Vercel nor the Fly image can build this branch until then. The
-Dockerfile copies `vendor/` before `npm ci`.
+`npm ci` then refuses it). The Dockerfile copies `vendor/` before `npm ci`.
+
+**A BUILD WITH NO ZENITH CHECKOUT** (Vercel alpha, a Fly deploy from a fresh clone) runs
+`node scripts/fetch-zenith.mjs` first: `vercel.json`'s `installCommand` and `scripts/fly-deploy.sh`
+both do. It downloads each missing tarball from a private repository's branch through the GitHub
+contents API and writes it only if its sha512 is the one `package-lock.json` pins, so a stale or
+tampered tarball stops the build instead of installing. It needs, in the build's environment:
+
+| variable | value |
+|---|---|
+| `ZENITH_VENDOR_REPO` | `owner/repo` holding `vendor/zenith/*.tgz` (not named here: this repository is public) |
+| `ZENITH_VENDOR_REF` | branch or commit; default `dsim-vendor` |
+| `ZENITH_VENDOR_TOKEN` | a fine-grained token with **Contents: read** on that one repository and nothing else |
+
+It is a no-op when every tarball is already present and matching (a dev box that ran
+`vendor-zenith.mjs`) or when no Zenith dependency is `file:`. ⚠️ **Re-vendoring changes the
+lockfile's hashes**, so the tarballs on that branch must be replaced with the same bytes in the same
+push, or every build that fetches will refuse them (which is the point).
 
 **THE DAY A RELEASE CARRIES THEM** (check: `npm view @horizon36596/zenith-core@<v>` and grep its
 `dist` for `createLiveRun`):
 1. `npm install @horizon36596/zenith-core@^<v> @horizon36596/zenith-schema@^<v>
    @horizon36596/zenith-season-biobuzz@^<v>`, which replaces the `file:` specs and the lockfile rows.
-2. Delete `vendor/`, `scripts/vendor-zenith.mjs`, the Dockerfile's `COPY vendor` line, the
-   `vendor/zenith/*.tgz` line in `.gitignore`, and this section down to this list; drop the script
-   from this guide's `governs:`.
+2. Delete `vendor/`, `scripts/vendor-zenith.mjs`, `scripts/fetch-zenith.mjs` (and its lines in
+   `vercel.json`'s `installCommand` and `scripts/fly-deploy.sh`), the Dockerfile's `COPY vendor`
+   line, the `vendor/zenith/*.tgz` line in `.gitignore`, the three `ZENITH_VENDOR_*` Vercel env vars,
+   and this section down to this list; drop both scripts from this guide's `governs:`.
 3. `rm -rf node_modules && npm ci`, then `npm run build`, `server:check`, `npm run test:bb -- --lane
    AUTO`, `npm test`, `bundleaudit`, `docaudit`. Then the branch builds anywhere.

@@ -20,6 +20,7 @@
       "destination": "/index.html"
     }
   ],
+  "installCommand": "node scripts/fetch-zenith.mjs && npm install",
   "ignoreCommand": "bash -c 'case \"$VERCEL_GIT_COMMIT_REF\" in main|alpha) exit 1;; *) echo \"skipping build for branch $VERCEL_GIT_COMMIT_REF (only main and alpha build)\"; exit 0;; esac'",
   "git": {
     "deploymentEnabled": {
