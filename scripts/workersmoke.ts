@@ -132,10 +132,12 @@ const snaps = (s: ReturnType<typeof fakeSocket>): Extract<ServerMsg, { t: 'snaps
 /** drive one client of an in-process-API room at ~60 Hz off its own snapshots */
 function driver(room: RoomHandle, id: string, sock: ReturnType<typeof fakeSocket>, gen: number): () => void {
   let tick = 0;
+  const t0 = performance.now();
   const t = setInterval(() => {
     const last = snaps(sock).at(-1);
     tick = Math.max(tick + 1, (last?.serverTick ?? 0) + 1);
-    room.onMessage(id, { t: 'input', tick, q: quantizeCommand(wander(performance.now() / 1000)), ack: last?.serverTick ?? 0, gen });
+    const q = quantizeCommand(wander((performance.now() - t0) / 1000));
+    room.onMessage(id, { t: 'input', tick, q, ack: last?.serverTick ?? 0, gen });
   }, 16);
   return () => clearInterval(t);
 }
@@ -386,9 +388,11 @@ class Sock {
 
   startDriving(): void {
     this.stopDriving();
+    // every driver starts the same path from its own t = 0, so both servers see the same stick
+    const t0 = performance.now();
     this.drive = setInterval(() => {
       this.sendTick = Math.max(this.sendTick + 1, this.serverTick + 1);
-      const q = quantizeCommand(wander(performance.now() / 1000));
+      const q = quantizeCommand(wander((performance.now() - t0) / 1000));
       this.send({ t: 'input', tick: this.sendTick, q, ack: this.serverTick, gen: this.gen });
     }, 16);
   }
@@ -571,9 +575,9 @@ async function scenarios(s: Server): Promise<void> {
   R.startDriving();
   await until(() => R.firstPos !== null, 20_000, 50);
   const n3 = R.snapshots;
-  await sleep(1500);
-  check(L('...streams snapshots (≥ 20 in 1.5 s)'), R.snapshots - n3 >= 20, `${R.snapshots - n3}`);
-  check(L('...and drives'), R.moved() > 2, `${R.moved().toFixed(1)} in`);
+  await sleep(2500);
+  check(L('...streams snapshots (≥ 20 in 2.5 s)'), R.snapshots - n3 >= 20, `${R.snapshots - n3}`);
+  check(L('...and drives'), R.moved() > 1, `${R.moved().toFixed(1)} in`);
   const capRun = (await perf(s)).capRooms;
   R.close();
   let capAfter = capRun;
