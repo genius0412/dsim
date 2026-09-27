@@ -851,10 +851,14 @@ export async function grantSupporter(
   note?: string,
 ): Promise<string | null> {
   const n = Math.max(1, Math.floor(months));
-  const rows = await q<{ until: string }>(EXTEND_SQL, [userId, String(n)]);
-  const until = rows[0]?.until ?? null;
-  if (rows[0]) await logGrant(userId, source, n, until, note ?? null);
-  return until;
+  // the extension and its audit row in ONE transaction, like the two Ko-fi paths: "every write
+  // to `supporter_until` logs a row" is only true if a failed log also undoes the write
+  return tx(async (query) => {
+    const rows = await query<{ until: string }>(EXTEND_SQL, [userId, String(n)]);
+    const until = rows[0]?.until ?? null;
+    if (rows[0]) await logGrant(userId, source, n, until, note ?? null, query);
+    return until;
+  });
 }
 
 /**
@@ -866,15 +870,17 @@ export async function grantSupporter(
  * that was. Returns false if there was nothing to revoke.
  */
 export async function revokeSupporter(userId: string, note?: string): Promise<boolean> {
-  const rows = await q<{ user_id: string }>(
-    `update profiles set supporter_until = null, updated_at = now()
-      where user_id = $1 and supporter_until is not null
-      returning user_id`,
-    [userId],
-  );
-  if (rows.length === 0) return false;
-  await logGrant(userId, 'revoke', 0, null, note ?? null);
-  return true;
+  return tx(async (query) => {
+    const rows = await query<{ user_id: string }>(
+      `update profiles set supporter_until = null, updated_at = now()
+        where user_id = $1 and supporter_until is not null
+        returning user_id`,
+      [userId],
+    );
+    if (rows.length === 0) return false;
+    await logGrant(userId, 'revoke', 0, null, note ?? null, query);
+    return true;
+  });
 }
 
 /**
@@ -897,27 +903,29 @@ export async function revokeSupporter(userId: string, note?: string): Promise<bo
  * when something really changed, so the sweep's own count is honest too.
  */
 export async function ensureSupporterFloor(userId: string, days: number): Promise<boolean> {
-  const rows = await q<{ until: string; moved: boolean }>(
-    /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
-       row AFTER the update, so `supporter_until < now() + grace` compared there is always
-       false — which silently made "did the floor move?" answer NO on every sweep including
-       the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
-    `with prev as (select supporter_until as before from profiles where user_id = $1)
-     update profiles p
-        set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
-            updated_at = now()
-       from prev
-      where p.user_id = $1
-      returning p.supporter_until as until,
-                (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
-    [userId, String(days)],
-  );
-  const row = rows[0];
-  if (!row) return false;
-  if (!row.moved) return false;
-  // months = 0 is a real, meaningful value here and 0019 already defines it as one.
-  await logGrant(userId, 'boost', 0, row.until, 'discord server boost');
-  return true;
+  return tx(async (query) => {
+    const rows = await query<{ until: string; moved: boolean }>(
+      /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
+         row AFTER the update, so `supporter_until < now() + grace` compared there is always
+         false — which silently made "did the floor move?" answer NO on every sweep including
+         the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
+      `with prev as (select supporter_until as before from profiles where user_id = $1)
+       update profiles p
+          set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
+              updated_at = now()
+         from prev
+        where p.user_id = $1
+        returning p.supporter_until as until,
+                  (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
+      [userId, String(days)],
+    );
+    const row = rows[0];
+    if (!row) return false;
+    if (!row.moved) return false;
+    // months = 0 is a real, meaningful value here and 0019 already defines it as one.
+    await logGrant(userId, 'boost', 0, row.until, 'discord server boost', query);
+    return true;
+  });
 }
 
 async function logGrant(
@@ -926,8 +934,9 @@ async function logGrant(
   months: number,
   until: string | null,
   note: string | null,
+  query: Tx = q,
 ): Promise<void> {
-  await q(
+  await query(
     `insert into supporter_grants (user_id, source, months, until, note)
      values ($1, $2, $3, $4, $5)`,
     [userId, source, months, until, note],
@@ -1888,7 +1897,11 @@ export async function recordKofiPayment(p: KofiEventRow): Promise<KofiRecordResu
          (message_id, kind, email, transaction_id, amount, currency,
           is_subscription, tier_name, months)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       on conflict (message_id) do nothing
+       -- NO conflict target, on purpose: the TRANSACTION id is unique too (0018), and an event
+       -- carrying a stored transaction under a new message id hit that index as an error. The
+       -- webhook answered 500, Ko-fi retried it forever, and the event was never recorded. The
+       -- same payment is a duplicate whichever key says so, and a duplicate grants nothing.
+       on conflict do nothing
        returning message_id`,
       [
         p.messageId,
