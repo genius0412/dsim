@@ -38,6 +38,7 @@ import { step } from '../src/sim/world';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
+import { startPollLoop } from '../src/ui/pollLoop';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
@@ -28050,6 +28051,78 @@ const dumperSetup = (): RobotSetup => {
     throw new Error('offline');
   });
   check('token cache: a network failure reads as no token, never a throw', (await flaky.get()) === null);
+}
+
+/**
+ * THE FRIENDS POLL, WOKEN THREE TIMES AT ONCE (`src/ui/pollLoop.ts`).
+ *
+ * A tab coming forward fires `visibilitychange`, `focus` and the idle detector's wake together.
+ * The inline loop ran a poll per wake while one was already in flight, and each finished poll
+ * armed a timer over the handle of the last, so every return to the tab left another poll chain
+ * running forever against `/api/friends`. Driven here with a fake clock: whatever the wakes, one
+ * request in flight and one timer pending.
+ */
+{
+  let nextId = 1;
+  const timers = new Map<number, () => void>();
+  let requests = 0;
+  const settle: (() => void)[] = [];
+  const loop = startPollLoop<number>({
+    run: () => {
+      requests++;
+      return new Promise<number>((res) => settle.push(() => res(20_000)));
+    },
+    setTimer: (fn) => {
+      const id = nextId++;
+      timers.set(id, fn);
+      return id;
+    },
+    clearTimer: (id) => void timers.delete(id),
+    fallbackMs: 20_000,
+  });
+  check('poll loop: it polls once on start', requests === 1 && timers.size === 0);
+  loop.wake();
+  loop.wake();
+  loop.wake();
+  check(
+    '⚠️ poll loop: three wakes while a poll is in flight start NO second request',
+    requests === 1,
+    `requests=${requests}`,
+  );
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  check('poll loop: the answer arms exactly ONE timer', timers.size === 1, `timers=${timers.size}`);
+  loop.wake();
+  loop.wake();
+  check(
+    '⚠️ poll loop: a wake between polls cancels the pending timer and polls once',
+    requests === 2 && timers.size === 0,
+    `requests=${requests} timers=${timers.size}`,
+  );
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const [fire] = [...timers.values()];
+  timers.clear();
+  fire();
+  check('poll loop: the timer firing polls again', requests === 3);
+  loop.stop();
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  loop.wake();
+  check('poll loop: once stopped, nothing re-arms and a wake does nothing', timers.size === 0 && requests === 3);
+  // an idle page makes no request and just re-checks later
+  const idleTimers: number[] = [];
+  const idle = startPollLoop<number>({
+    run: () => 5_000,
+    setTimer: (_fn, ms) => (idleTimers.push(ms), idleTimers.length),
+    clearTimer: () => {},
+    fallbackMs: 20_000,
+  });
+  idle.stop();
+  check('poll loop: a synchronous answer (no request) just reschedules', idleTimers.join() === '5000');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
