@@ -118,8 +118,18 @@ const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, 
  * so the ~50% more frames over 20 Hz is cheap. */
 const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
- * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
-const HOLD_TICKS = 15;
+ * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO.
+ *
+ * ⚠️ 36 (600 ms), NOT 15. The WebSocket is TCP, so one lost segment stalls the input stream for
+ * a retransmit — routinely 200–500 ms on Wi-Fi — and every input sent during it arrives late in
+ * one burst. At 15 ticks the robot was stopped 250 ms into that stall while the driver's client
+ * kept predicting it driving, and the snapshot after it yanked the robot back. Measured through
+ * a real solo record room at 50 ms RTT with the stick HELD through the stall: 1.5 in for 300 ms
+ * and 10.6 in for 500 ms at 15 ticks, 0.03 in for both at 36. (A driver who CHANGED the stick
+ * during a stall is still corrected, and nothing here can help that — those inputs were not in
+ * the room in time.) A driver who has genuinely gone is still stopped, 0.35 s later than
+ * before; a closed socket is the reconnect grace's business, not this timer's. */
+const HOLD_TICKS = 36;
 /**
  * How far AHEAD of the live tick a buffered input may be stamped.
  *

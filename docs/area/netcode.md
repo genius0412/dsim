@@ -46,6 +46,9 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   showed a 60 Hz display zero ticks one frame and two the next on 7–26% of frames (solo: 0.3%) —
   "online feels juddery" at any ping. Both drivers read one `lastSimT`, so a hand-over neither
   loses nor double-counts time, and the timer still feeds the room from a backgrounded tab.
+- **`HOLD_TICKS` is 36 (600 ms)**: a TCP retransmit stalls the input stream 200–500 ms, and at 15 the
+  room stopped a robot whose driver was still holding the stick (10.6 in yank at 500 ms, 0.03 now).
+  ⚠️ Server constant: deploy it.
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).
