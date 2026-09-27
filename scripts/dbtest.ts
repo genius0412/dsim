@@ -685,6 +685,24 @@ async function main(): Promise<void> {
   check('live rooms: a stale machine’s rooms drop out with it', ((await repo.globalLiveRooms()) as unknown[]).length === 1);
   await repo.upsertPresence('m-nrt', 'nrt', 2, ['op-2'], 0, 0, [{ room: 'nrt-b2' }], [{ userId: 'op-2', act: 'menu', queue: '1v1', queuedS: 42 }], { total: 1, inMatch: 0, inLobby: 0, idle: 1 });
 
+  // WHERE AN ACCOUNT IS PLAYING, ACROSS MACHINES — what the join and queue doors read to
+  // enforce one live game per account when the other game is on another region. A solo record
+  // run is flagged, because that is the one kind the lock lets its owner walk away from.
+  await repo.upsertPresence(
+    'm-syd', 'syd', 1, ['op-3'], 0, 0,
+    [{ room: 'rec-abc', kind: 'record', mode: 'solo', ranked: false }],
+    [{ userId: 'op-3', act: 'match', room: 'rec-abc' }],
+    { total: 0, inMatch: 0, inLobby: 0, idle: 0 },
+  );
+  repo.resetLiveRoomsCacheForTests();
+  const byUser = await repo.liveRoomsByUser();
+  check('live by user: an account in a live match elsewhere is found, with its region', byUser.get('op-1')?.room === 'iad-a1' && byUser.get('op-1')?.region === 'iad');
+  check('live by user: a versus/ranked room is not flagged a solo record run', !byUser.get('op-1')?.soloRecord);
+  check('live by user: a solo record run IS flagged', byUser.get('op-3')?.soloRecord === true, JSON.stringify(byUser.get('op-3')));
+  check('live by user: an account in the menus has no entry', !byUser.has('op-2'));
+  await db.query(`delete from presence where machine = 'm-syd'`);
+  repo.resetLiveRoomsCacheForTests();
+
   const opRows = await repo.adminPresence();
   const allPlayers = opRows.flatMap((r) => r.players);
   check('operator view: every region is reported', opRows.length === 2, JSON.stringify(opRows.map((r) => r.region)));

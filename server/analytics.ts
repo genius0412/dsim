@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
+import { RATE_SWEEP_EVERY_MS, sweepGate } from './sweepGate';
 import { dbEnabled, pool, q, type DbClient } from './db/pool';
 
 /**
@@ -360,11 +361,12 @@ const RATE_WINDOW_MS = 10 * 60_000;
 export const VISITOR_LIMIT = 90;
 export const ADDRESS_LIMIT = 400;
 const hits = new Map<string, { n: number; until: number }>();
+const hitsSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 export function rateOk(key: string, max: number, now = Date.now()): boolean {
-  // Swept unconditionally on the way past — `lanRateOk` in `server/api.ts` spells out why a
-  // size-gated sweep never runs in the one burst that would justify it.
-  for (const [k, v] of hits) if (v.until <= now) hits.delete(k);
+  // Swept at most once per interval (`sweepGate` says why an every-request walk was the wrong
+  // fix for the size-gated one before it); the read below already treats an expired row as absent.
+  if (hitsSweepDue(now)) for (const [k, v] of hits) if (v.until <= now) hits.delete(k);
   const hit = hits.get(key);
   if (!hit || hit.until <= now) {
     hits.set(key, { n: 1, until: now + RATE_WINDOW_MS });

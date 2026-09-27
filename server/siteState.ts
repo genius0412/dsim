@@ -49,16 +49,35 @@ const OFF: MaintenanceWindow = {
 let lock: MaintenanceWindow = OFF;
 let lockAt = 0;
 
+/**
+ * THE READ IN FLIGHT, shared by every unforced caller — every join, `/api/status` and
+ * `/api/presence` ask for this, and when the TTL lapsed each of them used to start its own
+ * copy of the same query. A FAILED read also now waits out the TTL before it is retried:
+ * leaving `lockAt` alone on failure meant a database outage was retried on every single call,
+ * which is the moment the pool can least afford it. A forced read (an admin write, boot) never
+ * rides along with an older one; it must see the row as it is now.
+ */
+let lockInFlight: Promise<MaintenanceWindow> | null = null;
 export async function refreshLockdown(force = false): Promise<MaintenanceWindow> {
   if (!dbEnabled) return lock;
   if (!force && Date.now() - lockAt < TTL_MS) return lock;
-  try {
-    lock = await getMaintenance();
+  if (!force && lockInFlight) return lockInFlight;
+  const run = (async (): Promise<MaintenanceWindow> => {
+    try {
+      lock = await getMaintenance();
+    } catch (e) {
+      console.error('[lockdown] read failed, keeping last known state:', e);
+    }
     lockAt = Date.now();
-  } catch (e) {
-    console.error('[lockdown] read failed, keeping last known state:', e);
+    return lock;
+  })();
+  if (!force) {
+    lockInFlight = run;
+    void run.finally(() => {
+      if (lockInFlight === run) lockInFlight = null;
+    });
   }
-  return lock;
+  return run;
 }
 
 /** the cached window (refreshed by `refreshLockdown`) */
@@ -155,6 +174,7 @@ let banners: BannerRow[] = [];
 let bannersAt = 0;
 let memId = 0;
 
+let bannersInFlight: Promise<BannerRow[]> | null = null;
 export async function refreshBanners(force = false): Promise<BannerRow[]> {
   if (!dbEnabled) {
     const now = Date.now();
@@ -162,13 +182,24 @@ export async function refreshBanners(force = false): Promise<BannerRow[]> {
     return banners;
   }
   if (!force && Date.now() - bannersAt < TTL_MS) return banners;
-  try {
-    banners = await listOpenBanners();
+  // shared and backed off exactly like `refreshLockdown` (see there)
+  if (!force && bannersInFlight) return bannersInFlight;
+  const run = (async (): Promise<BannerRow[]> => {
+    try {
+      banners = await listOpenBanners();
+    } catch (e) {
+      console.error('[banners] read failed, keeping last known set:', e);
+    }
     bannersAt = Date.now();
-  } catch (e) {
-    console.error('[banners] read failed, keeping last known set:', e);
+    return banners;
+  })();
+  if (!force) {
+    bannersInFlight = run;
+    void run.finally(() => {
+      if (bannersInFlight === run) bannersInFlight = null;
+    });
   }
-  return banners;
+  return run;
 }
 
 const toPublic = (b: BannerRow): SiteBanner => ({

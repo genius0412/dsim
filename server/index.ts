@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type IncomingMessage } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
@@ -22,7 +22,7 @@ import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
-import { handleApi } from './api';
+import { handleApi, readBody } from './api';
 import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
 import {
   refreshLockdown,
@@ -124,7 +124,18 @@ import {
   adminUserDetail,
   addAdminNote,
   deleteAdminNote,
+  liveRoomsByUser,
 } from './db/repo';
+import { clientIp } from './analytics';
+import {
+  coerceAccessMs,
+  coerceHomeRegion,
+  coerceRoomKind,
+  hostedBy,
+  isQueueMode,
+  legalRoomCode,
+  remoteLiveConflict,
+} from './admission';
 
 /**
  * Authoritative DECODE game server (Phase 0). One WebSocket per client; rooms are
@@ -496,17 +507,11 @@ function broadcastAll(m: ServerMsg): number {
 }
 
 /** read a small request body (admin POSTs) with a hard cap so a bad client can't
- * exhaust memory. Rejects past 16KB — announcements are tiny. */
+ * exhaust memory. Rejects past 16KB — announcements are tiny. `readBody` STOPS at the cap
+ * (detaches and destroys the request); the local copy this replaced rejected and then went on
+ * appending every later chunk to the same string for as long as the sender kept writing. */
 function readAdminBody(req: import('node:http').IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c) => {
-      data += c;
-      if (data.length > 16 * 1024) reject(new Error('body too large'));
-    });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
+  return readBody(req, 16 * 1024);
 }
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
@@ -645,6 +650,63 @@ const MAX_SPECTATORS_PER_ROOM = spectatorCap('MAX_SPECTATORS_PER_ROOM', 24);
 const MAX_SPECTATORS = spectatorCap('MAX_SPECTATORS', 192);
 /** attached spectators across every room on this machine (see the caps above) */
 let spectatorTotal = 0;
+
+/**
+ * PER-NETWORK HOSTING CAP — how many rooms one client address may be HOSTING at once.
+ *
+ * `MAX_ROOMS` bounds a machine and nothing bounded who fills it: a room is created by any
+ * socket that sends `join` with a new code, signed in or not, and an idle lobby held a slot
+ * forever — so 24 anonymous sockets from one address refused every new room in the region,
+ * and the Discord activity (pinned to one machine) with it.
+ *
+ * GENEROUS ON PURPOSE, because FTC teams play from a school or venue where everybody shares
+ * one NAT address. And it never counts a room playing a live match with a signed-in driver in
+ * it (`Room.countsTowardHostCap`): a building full of real matches is the traffic this must
+ * never touch, and one account can only be seated in one live match anyway. What it counts is
+ * lobbies and anonymous runs — the things that cost a slot and prove nothing. Only a room this
+ * attempt CREATED is checked, after a staged ranked pairing has been claimed (a staged room is
+ * never refused here: that would charge four people a dodge for somebody else's lobbies).
+ *
+ * Off by default off Fly (`REGION` unset), like `MAX_ROOMS`: the load harness opens its whole
+ * sweep from one address. `0` disables; env-overridable.
+ */
+const MAX_HOSTED_PER_IP = spectatorCap('MAX_HOSTED_PER_IP', REGION ? 12 : 0);
+/**
+ * PER-NETWORK SPECTATOR CAP — watchers one client address may have attached at once, across
+ * every room on this machine. Without it the machine-wide `MAX_SPECTATORS` was one address's to
+ * fill. 48 is two full rooms' worth of watchers from one building. Off by default off Fly for
+ * the harness, `0` disables, env-overridable.
+ */
+const MAX_SPECTATORS_PER_IP = spectatorCap('MAX_SPECTATORS_PER_IP', REGION ? 48 : 0);
+/**
+ * IDLE LOBBY REAPER — a lobby (no world, no staged pairing, no start window) with no DRIVER
+ * activity for this long is closed. A room held a `MAX_ROOMS` slot for as long as one socket
+ * sat in it, with no limit at all. Twenty minutes is far past any real wait for friends; a
+ * join, a ready toggle or any roster patch resets it, and pings do not (they never reach the
+ * room), so an unattended tab does not keep a lobby alive on its own. `LOBBY_IDLE_MINUTES`
+ * overrides; `0` disables.
+ */
+const LOBBY_IDLE_MS = ((): number => {
+  const raw = Number(process.env.LOBBY_IDLE_MINUTES ?? 20);
+  return Number.isFinite(raw) && raw >= 0 ? raw * 60_000 : 20 * 60_000;
+})();
+/** how often the idle-lobby sweep runs (a sweep is one pass over this machine's rooms) */
+const LOBBY_REAP_EVERY_MS = 60_000;
+const LOBBY_IDLE_MESSAGE = `This lobby was closed after ${Math.round(LOBBY_IDLE_MS / 60_000)} minutes without activity. Start or join a new one.`;
+
+/**
+ * WHICH NETWORK A SOCKET CAME FROM, as a salted hash. The caps above need to group sockets by
+ * address, and the analytics rule (`server/analytics.ts`) is that nothing here holds a raw IP:
+ * the salt is per process and never leaves it, so the key is useless outside this machine and
+ * dies with it. `fly-client-ip` is set by the Fly edge; off Fly the caps default off.
+ */
+const NET_SALT = randomBytes(16).toString('hex');
+const netKeyOf = (req: IncomingMessage): string =>
+  createHash('sha256').update(NET_SALT).update(clientIp(req)).digest('hex').slice(0, 16);
+/** the network that CREATED each room (for `MAX_HOSTED_PER_IP`) */
+const roomHost = new WeakMap<Room, string>();
+/** attached spectators per network (for `MAX_SPECTATORS_PER_IP`) */
+const spectatorsByNet = new Map<string, number>();
 
 /**
  * INBOUND MESSAGE RATE, per socket, per second.
@@ -830,12 +892,27 @@ function operatorSnapshot(): {
   };
 }
 
+/**
+ * THE READ IN FLIGHT, shared. The cache above is written only when a query RETURNS, so every
+ * request that arrived while it was expired used to start its own copy of the same query — at
+ * this endpoint's poll rate that is several identical reads per expiry against a pool of five.
+ * Concurrent callers now await the one already running.
+ */
+let presenceInFlight: Promise<GlobalPresence> | null = null;
 async function aggregatePresence(full = false): Promise<GlobalPresence> {
   const now = Date.now();
   if (presenceCache && now - presenceCache.at < presenceTtl(full)) return withLocal(presenceCache.val);
-  const val = await globalPresence();
-  presenceCache = { at: now, val };
-  return withLocal(val);
+  if (!presenceInFlight) {
+    presenceInFlight = globalPresence()
+      .then((val) => {
+        presenceCache = { at: Date.now(), val };
+        return val;
+      })
+      .finally(() => {
+        presenceInFlight = null;
+      });
+  }
+  return withLocal(await presenceInFlight);
 }
 
 /**
@@ -848,12 +925,22 @@ async function aggregatePresence(full = false): Promise<GlobalPresence> {
  */
 const LIVE_TTL_MS = 3_000;
 let liveCache: { at: number; val: unknown[] } | null = null;
+/** the live-rooms read in flight, shared by every caller (see `presenceInFlight`) */
+let liveInFlight: Promise<unknown[]> | null = null;
 async function aggregateLive(): Promise<unknown[]> {
   const now = Date.now();
   if (liveCache && now - liveCache.at < LIVE_TTL_MS) return liveCache.val;
-  const val = await globalLiveRooms();
-  liveCache = { at: now, val };
-  return val;
+  if (!liveInFlight) {
+    liveInFlight = globalLiveRooms()
+      .then((val) => {
+        liveCache = { at: Date.now(), val };
+        return val;
+      })
+      .finally(() => {
+        liveInFlight = null;
+      });
+  }
+  return liveInFlight;
 }
 
 /** every match running on THIS machine, unfiltered (see `Room.summary`) */
@@ -2427,7 +2514,16 @@ const httpServer = createServer((req, res) => {
     const live = localLive();
     // read once, up front: `snapSendGap` DRAINS each room's accumulator when asked to, and it
     // runs while the body is being built, i.e. before the `?reset=1` branch below
-    const gapReset = !!new URL(req.url, 'http://x').searchParams.get('reset');
+    //
+    // ⚠️ THE RESET IS AN OPERATOR ACTION, so on Fly it needs the ADMIN_SECRET the other operator
+    // routes take. The endpoint is public (read-only numbers, no player data), and a public
+    // reset let anyone wipe the lag histogram and the snapshot-gap window an operator was in the
+    // middle of reading. Off Fly (`REGION` unset: dev, the load harness, a LAN box) it stays
+    // open. An unauthorised `?reset=1` is simply a read.
+    const perfQs = new URL(req.url, 'http://x').searchParams;
+    const gapReset =
+      !!perfQs.get('reset') &&
+      (!REGION || (!!process.env.ADMIN_SECRET && perfQs.get('secret') === process.env.ADMIN_SECRET));
     const ms = (n: number): number => Math.round((n / 1e6) * 100) / 100; // ns → ms
     const heap = v8.getHeapStatistics();
     const mb = (n: number): number => Math.round(n / 1048576);
@@ -2488,7 +2584,7 @@ const httpServer = createServer((req, res) => {
       // name out of this same JSON.
       snapSendGapMs: snapSendGap(gapReset),
     };
-    if (new URL(req.url, 'http://x').searchParams.get('reset')) {
+    if (gapReset) {
       loopDelay.reset();
       loopDelaySince = Date.now();
     }
@@ -2927,9 +3023,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
   let spectating = false;
+  /** true once this socket is counted in `spectatorsByNet` (decremented exactly once on close) */
+  let spectatingNet = false;
   const wasEmpty = onlineCount === 0;
   onlineCount++;
-  liveSockets.set(id, { authed: false });
+  /**
+   * THIS socket's row in `liveSockets`, held by reference. The map is keyed by the client id,
+   * and a reclaim (`rejoin`, or an account taking its own seat back) moves a NEW socket onto
+   * the id the old one still has — so the old socket's close used to delete the new socket's
+   * row, and a player who reconnected vanished from the operator view. Only our own row is
+   * ever deleted now (see `ws.on('close')`).
+   */
+  const mySock = { authed: false };
+  liveSockets.set(id, mySock);
+  /** the client network this socket came from, hashed (see `netKeyOf`) */
+  const netKey = netKeyOf(req);
   // FIRST arrival after a quiet spell: publish immediately rather than waiting up to
   // 5s for the next tick, and drop the cached answer — it was computed when this
   // machine was empty, so serving it again would report a zero we already know is
@@ -2944,8 +3052,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const markAuthed = (userId: string): void => {
     if (authedUserId) return; // count each connection's user exactly once
     authedUserId = userId;
-    const sock = liveSockets.get(id);
-    if (sock) sock.authed = true; // no longer a guest row
+    mySock.authed = true; // no longer a guest row
     authedUsers.set(userId, (authedUsers.get(userId) ?? 0) + 1);
     authedSinceSweep.star = authedSinceSweep.boost = true;
   };
@@ -3059,13 +3166,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // slot by user id. The registry slot is claimed synchronously (before any await) so
   // a racing second joiner finds the same room instead of creating a duplicate.
   const joinRoom = async (msg: Extract<ClientMsg, { t: 'join' }>): Promise<void> => {
-    const code = msg.room.toLowerCase();
+    // THE CODE IS VALIDATED BEFORE IT CAN NAME A ROOM (see `ROOM_CODE_RE` for every format it
+    // admits). It used to be taken verbatim: a 60 KB code, or one with a newline in it, became a
+    // room, a presence row and an `[admit]` log line.
+    const code = typeof msg.room === 'string' ? msg.room.toLowerCase() : '';
+    if (!legalRoomCode(code)) {
+      send({ t: 'error', message: 'That room code isn’t valid. Check it and try again.' });
+      return;
+    }
     let r = rooms.get(code);
     let created = false;
     // sanitize the untrusted room game to a known id (unknown ⇒ 'decode'); the room
     // resolves its sim module from this, and a mismatched joiner is refused below.
     const cfg: RoomConfig = {
-      ...(msg.config ?? DEFAULT_ROOM_CONFIG),
+      // KIND and RECORD forced to their enums (`coerceRoomKind` says what went wrong before)
+      ...coerceRoomKind(msg.config ?? DEFAULT_ROOM_CONFIG),
       game: coerceGameId(msg.config?.game),
       // the untrusted physics, forced to the enum. Anything that is not the one known
       // non-default value becomes ABSENT, i.e. `'2d'` — a room is a thing the server has to
@@ -3139,9 +3254,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (!r) {
-      r = new Room(
+      const created0: Room = new Room(
         code,
-        () => rooms.delete(code),
+        // ONLY IF THE REGISTRY STILL NAMES *THIS* ROOM. A room can empty twice — a cancelled
+        // staging calls `onEmpty` with its clients still attached, and their later leave empties
+        // it again — and by then a reconnecting client may have opened a NEW room under the same
+        // code, which an unconditional delete dropped out of the registry while it was in use.
+        () => {
+          if (rooms.get(code) === created0) rooms.delete(code);
+        },
         cfg,
         persistMatch,
         (uid) => userRoom.set(uid, code),
@@ -3153,6 +3274,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // every one of them was dead in production while the DB-off dev path ran them fine.
         (b) => void persistBehaviour(b),
       );
+      r = created0;
+      roomHost.set(created0, netKey); // who is hosting it, for MAX_HOSTED_PER_IP
       // tag a freshly-created room with the creator's group (the Discord Activity
       // instance) so the lobby browser can list this activity's rooms. Sanitized:
       // the id is untrusted, so clamp to a bounded, safe token. Only set on
@@ -3226,6 +3349,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);
       if (pending) r.applyPending(pending);
+    }
+    /**
+     * THE PER-NETWORK HOSTING CAP (`MAX_HOSTED_PER_IP` says why, and why it is generous).
+     * Only for a room THIS attempt created, and only AFTER the staged-pairing claim above: a
+     * ranked room is never refused for somebody else's lobbies on the same school network.
+     * The plain refusal every client renders — NOT `region_full`, which would tell them to try
+     * another region, and the cap follows them there.
+     */
+    if (created && MAX_HOSTED_PER_IP > 0 && !r.staging()) {
+      const hosting = hostedBy(rooms.values(), netKey, (x) => roomHost.get(x), (x) => x !== theRoom && x.countsTowardHostCap());
+      if (hosting >= MAX_HOSTED_PER_IP) {
+        console.warn(`[admit] refused room ${code}: network already hosting ${hosting}/${MAX_HOSTED_PER_IP}`);
+        send({
+          t: 'error',
+          message: 'Too many rooms are open from your network right now. Close one you are not using and try again.',
+        });
+        abandon();
+        return;
+      }
     }
     /**
      * THE `'bb3d'` GATE — asked here, after the room's physics is knowable and before a seat
@@ -3331,18 +3473,47 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // proves more than the seat secret does. See the note in `Room.reattach`.
         const nc = r.reattach(seat, send, sendRaw, backlog, undefined, true);
         if (nc !== null) {
-          liveSockets.delete(id);
+          if (liveSockets.get(id) === mySock) liveSockets.delete(id);
           id = seat; // adopt the reclaimed identity on this socket
-          liveSockets.set(id, { authed: true });
+          liveSockets.set(id, mySock);
           room = r;
           conn = nc;
           markAuthed(user.userId);
           // the lock follows the seat: this room owns it again (registration is by user
-          // id, so re-asserting it here is idempotent)
-          userRoom.set(user.userId, code);
+          // id, so re-asserting it here is idempotent) — BUT ONLY IF THE ROOM HOLDS ONE. A
+          // lobby seat never did, and writing it anyway left a lock nothing would release
+          // (the lobby leave path has no lock to hand back), refusing the account every
+          // other game for as long as the lobby existed.
+          if (r.holdsLockFor(user.userId)) userRoom.set(user.userId, code);
           r.maybeStartRanked(); // they may have been the last one missing
           return;
         }
+      }
+    }
+    /**
+     * ONE LIVE GAME PER ACCOUNT, ACROSS MACHINES (see `remoteLiveConflict`).
+     *
+     * The local guard further down only knows this machine's rooms, so an account in a live
+     * versus match hosted in another region was admitted here — the "live versus admitted to a
+     * new solo record room" gap. The heartbeat is the server's own record and is cached for a
+     * few seconds, so this is one shared read, not one per join. Same exemptions as the local
+     * guard: a room the matchmaker staged for this account, and a solo record run of its own.
+     * FAILS OPEN: a database that cannot answer must not lock everybody out of every room.
+     */
+    if (user && dbEnabled && !r.stagedFor(user.userId)) {
+      const live = await liveRoomsByUser().catch(() => null);
+      if (closed || room) {
+        abandon();
+        return;
+      }
+      if (live && remoteLiveConflict(live.get(user.userId), code, (c) => rooms.has(c), true)) {
+        send({
+          t: 'error',
+          message: 'You already have a game in progress - rejoin or leave it first.',
+          code: 'active_game',
+        });
+        abandon();
+        return;
       }
     }
     if (!r.canJoin()) {
@@ -3524,8 +3695,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   /** attach this socket to a live room as a watcher (the `spectate` message, once any gate has passed) */
   const attachSpectator = (msg: Extract<ClientMsg, { t: 'spectate' }>): void => {
     if (room) return;
-    const r = rooms.get(msg.room.toLowerCase());
-    if (!r) {
+    const r = typeof msg.room === 'string' ? rooms.get(msg.room.toLowerCase()) : undefined;
+    // NO WORLD, NOTHING TO WATCH. Spectating used to attach to any room at all, lobbies
+    // included, which made an idle lobby a free place to park watchers against the spectator
+    // caps. The same sentence a vanished room gets: from outside, a lobby is not a match.
+    if (!r || !r.hasWorld) {
       send({ t: 'error', message: 'That match is no longer live.' });
       return;
     }
@@ -3539,7 +3713,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // NOT `region_full`: that code tells the client to try a different region, which is
     // exactly wrong here — the room is on THIS machine and exists nowhere else. This is
     // the plain-message refusal every client since the first build already renders.
-    if (r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM || spectatorTotal >= MAX_SPECTATORS) {
+    if (
+      r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM ||
+      spectatorTotal >= MAX_SPECTATORS ||
+      (MAX_SPECTATORS_PER_IP > 0 && (spectatorsByNet.get(netKey) ?? 0) >= MAX_SPECTATORS_PER_IP)
+    ) {
       send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
       return;
     }
@@ -3577,6 +3755,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     spectating = true;
     spectatorTotal++;
+    spectatingNet = true;
+    spectatorsByNet.set(netKey, (spectatorsByNet.get(netKey) ?? 0) + 1);
     r.addSpectator(spec);
   };
 
@@ -3650,9 +3830,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
         const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
         if (r && nc !== null) {
-          liveSockets.delete(id);
+          if (liveSockets.get(id) === mySock) liveSockets.delete(id);
           id = msg.clientId; // adopt the reclaimed identity on this socket
-          liveSockets.set(id, { authed: !!authedUserId });
+          liveSockets.set(id, mySock);
           room = r;
           conn = nc; // this socket now owns the slot (supersedes the dropped one)
         } else {
@@ -3690,7 +3870,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          */
         const sc = room ? room.resolveScoreReport(id) : null;
         const detail = typeof msg.detail === 'string' ? msg.detail.slice(0, REPORT_DETAIL_MAX).trim() : '';
-        if (sc && detail && dbEnabled) {
+        // one row per reporter per match reaches the database (`Room.claimReportSlot`)
+        if (sc && detail && dbEnabled && room!.claimReportSlot(`score|${sc.reporterId}|${sc.matchId ?? ''}`)) {
           void submitScoreReport({
             reporterId: sc.reporterId,
             matchId: sc.matchId,
@@ -3712,7 +3893,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * signed in and who has already been reported.
          */
         const r = room && isReportReason(msg.reason) ? room.resolveReport(id, msg.robotId) : null;
-        if (r && dbEnabled) {
+        // one row per (reporter, target, reason) per room reaches the database — the key the
+        // table's unique index would have dropped the repeat on anyway (`Room.claimReportSlot`)
+        if (r && dbEnabled && room!.claimReportSlot(`player|${r.reporterId}|${r.reportedId}|${msg.reason}`)) {
           void submitReport({
             reportedId: r.reportedId,
             reporterId: r.reporterId,
@@ -3741,6 +3924,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
+        // a mode the matchmaker has no pool for used to throw inside `enqueue` AFTER it had
+        // already evicted this account's other queue entries, leaving a silent dead search
+        if (!isQueueMode(msg.mode)) {
+          send({ t: 'error', message: 'Couldn’t join the queue. Refresh the page and try again.' });
+          return;
+        }
         /**
          * THE FOURTH DOOR, and the only one that refuses before a room exists.
          *
@@ -3770,6 +3959,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
          *  seated in a room — while one of its awaits was outstanding? */
         const stale = (): boolean => closed || room !== null || gen !== queueGen;
+        /** a queue step that THREW (a database error mid-chain). It used to surface only as an
+         *  unhandledRejection line while the player sat on a search that did not exist. */
+        const queueFailed = (e: unknown): void => {
+          console.error(`[server] queue attempt from ${id} failed:`, e);
+          if (!stale()) send({ t: 'error', message: 'Couldn’t join the queue. Try again in a moment.' });
+        };
         // ranked REQUIRES a verified account (ELO/leaderboard only make sense with
         // an identity). Anonymous players can still use custom rooms, just not
         // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
@@ -3832,6 +4027,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (activeElsewhere(u.userId, '')) {
             send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
             return;
+          }
+          // ...and in a live match on ANOTHER machine: the matchmaker lives on one region and
+          // a custom game or record run is usually somewhere else, so the line above cannot see
+          // it. Fails open, like the join-path twin of this check.
+          if (dbEnabled) {
+            const live = await liveRoomsByUser().catch(() => null);
+            if (stale()) return;
+            if (live && remoteLiveConflict(live.get(u.userId), '', (c) => rooms.has(c), false)) {
+              send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
+              return;
+            }
           }
           markAuthed(u.userId);
           const enqueueNow = (): void => {
@@ -3896,8 +4102,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // SERVER-OBSERVED source region from fly-replay-src before defaulting to
             // THIS instance's region (iad) — otherwise every unprobed player lands on
             // iad and every match hosts one-sided.
-            homeRegion: msg.homeRegion || edgeRegion || REGION,
-            accessMs: msg.accessMs ?? 0,
+            homeRegion: coerceHomeRegion(msg.homeRegion) || edgeRegion || REGION,
+            // BOUNDED (`coerceAccessMs`): it steers the host pick, and an unbounded value let one
+            // player pin every match they were in to their own region
+            accessMs: coerceAccessMs(msg.accessMs),
             noWiden: msg.noWiden ?? false,
             caps: coerceCaps(msg.caps),
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
@@ -3916,7 +4124,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               room = r; // dev/no-DB local fallback only
             },
             });
-          });
+          }).catch(queueFailed);
           };
           // ACCOUNT STANDING gate — checked HERE rather than in the matchmaker, because a
           // locked player must never enter the pool at all. Refusing them at PAIRING time
@@ -3943,8 +4151,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                   `- your account standing is ${tier.name.toLowerCase()}.`,
               });
             }
-          });
-        });
+          }).catch(queueFailed);
+        }).catch(queueFailed);
       } else if (msg.t === 'expandSearch') {
         matchmaker.expand(id);
       } else if (msg.t === 'leaveQueue') {
@@ -3961,11 +4169,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           const m = msg;
           void lockdownRefusal(authedUserId, 'match').then((refusal) => {
             if (refusal) send({ t: 'error', message: refusal });
-            else if (room === r0) r0.onMessage(id, m);
+            else if (room === r0) r0.onMessage(id, m, conn || undefined);
           });
           return;
         }
-        room.onMessage(id, msg);
+        // `conn` so a socket a reconnect has REPLACED no longer drives the seat (Room.onMessage).
+        // 0 is "never stamped" (the dev matchmaker's local fallback seats a socket without one),
+        // which keeps the old behaviour rather than dropping every frame.
+        room.onMessage(id, msg, conn || undefined);
       }
     } catch (e) {
       console.error(`[server] error handling ${msg.t} from ${id}:`, e);
@@ -3979,7 +4190,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       spectating = false;
       spectatorTotal = Math.max(0, spectatorTotal - 1);
     }
-    liveSockets.delete(id);
+    if (liveSockets.get(id) === mySock) liveSockets.delete(id);
+    if (spectatingNet) {
+      spectatingNet = false;
+      const left = (spectatorsByNet.get(netKey) ?? 1) - 1;
+      if (left <= 0) spectatorsByNet.delete(netKey);
+      else spectatorsByNet.set(netKey, left);
+    }
     if (authedUserId) {
       const n = (authedUsers.get(authedUserId) ?? 1) - 1;
       if (n <= 0) authedUsers.delete(authedUserId);
@@ -4057,6 +4274,25 @@ setInterval(() => {
     .then(() => pushSiteStatus())
     .catch((e) => console.error('[site] push failed:', e));
 }, SITE_PUSH_MS).unref?.();
+
+/* THE IDLE-LOBBY SWEEP (see `LOBBY_IDLE_MS`). One pass over this machine's rooms a minute; a
+   room is closed only while it is a plain lobby, so a match, a results screen, a start window
+   and a staged ranked room are all untouched. Snapshot the list first: closing a room deletes
+   it from the registry mid-iteration. */
+if (LOBBY_IDLE_MS > 0) {
+  setInterval(() => {
+    const now = Date.now();
+    for (const r of [...rooms.values()]) {
+      if (r.idleLobbyMs(now) < LOBBY_IDLE_MS) continue;
+      console.log(`[admit] closing idle lobby ${r.code} after ${Math.round(r.idleLobbyMs(now) / 60_000)} min`);
+      try {
+        r.closeIdleLobby(LOBBY_IDLE_MESSAGE);
+      } catch (e) {
+        console.error(`[admit] closing idle lobby ${r.code} failed:`, e);
+      }
+    }
+  }, LOBBY_REAP_EVERY_MS).unref?.();
+}
 
 // apply DB migrations at boot (off the hot path; no-ops without DATABASE_URL). A
 // DB failure must NOT take the game server down — records just won't persist.

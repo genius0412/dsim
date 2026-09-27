@@ -12,6 +12,7 @@ import { sanitizeReplay } from '../src/net/sanitize';
 import { moderateName, scrubName } from './moderation';
 import { LAN_UPLOADS } from './lanUploads';
 import { dbEnabled } from './db/pool';
+import { RATE_SWEEP_EVERY_MS, sweepGate } from './sweepGate';
 import {
   acceptFriendRequest,
   actForSeason,
@@ -227,7 +228,7 @@ const CORS = {
  * the promise settles EXACTLY once either way (`settled`), because a destroy raises `error`
  * and a double-settle would otherwise be the norm rather than the exception.
  */
-function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
+export function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     let settled = false;
@@ -285,6 +286,7 @@ const LAN_MAX_PER_WINDOW = 30;
 const LAN_MAX_IN_FLIGHT = 4;
 let lanInFlight = 0;
 const lanRate = new Map<string, { n: number; until: number }>();
+const lanSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function uploadRateOk(bucket: string, userId: string): boolean {
   const key = `${bucket}:${userId}`;
@@ -295,7 +297,9 @@ function uploadRateOk(bucket: string, userId: string): boolean {
   // exactly the case where no entry is expired yet and the sweep frees nothing anyway. Sweeping
   // every call keeps the map to "accounts seen in the last minute", which is small enough that
   // the O(n) walk is cheaper than the branch was worth.
-  for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  // TIME-GATED (`sweepGate`): an unconditional walk made every request O(rows); a stale row is
+  // harmless because the read below treats an expired one as absent
+  if (lanSweepDue(now)) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
   const hit = lanRate.get(key);
   if (!hit || hit.until <= now) {
     lanRate.set(key, { n: 1, until: now + LAN_WINDOW_MS });
@@ -319,13 +323,14 @@ function uploadRateOk(bucket: string, userId: string): boolean {
  */
 const EXPORT_WINDOW_MS = 60_000;
 const exportRate = new Map<string, number>();
+const exportSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function exportRateOk(userId: string): boolean {
   const now = Date.now();
   // unconditional, for the reason spelled out in `lanRateOk`: a size-gated sweep never runs
   // until 1000 rows have accumulated, and the one burst that would justify it — 1001 distinct
   // accounts inside a single window — is the burst in which nothing has expired to sweep.
-  for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  if (exportSweepDue(now)) for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
   const until = exportRate.get(userId);
   if (until && until > now) return false;
   exportRate.set(userId, now + EXPORT_WINDOW_MS);
@@ -341,14 +346,16 @@ function exportRateOk(userId: string): boolean {
 const PLAYED_WINDOW_MS = 10 * 60_000;
 const PLAYED_MAX_PER_WINDOW = 30;
 const playedRate = new Map<string, { n: number; until: number }>();
+const playedSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function playedRateOk(ip: string): boolean {
   const key = createHash('sha256').update(ip).digest('hex').slice(0, 16);
   const now = Date.now();
-  // swept on the way past, unconditionally — see `uploadRateOk`
-  for (const [k, v] of playedRate) if (v.until <= now) playedRate.delete(k);
+  // swept at most once per interval — see `uploadRateOk`; the read below treats an expired row
+  // as absent (it used to rely on the per-request sweep having removed it)
+  if (playedSweepDue(now)) for (const [k, v] of playedRate) if (v.until <= now) playedRate.delete(k);
   const hit = playedRate.get(key);
-  if (!hit) {
+  if (!hit || hit.until <= now) {
     playedRate.set(key, { n: 1, until: now + PLAYED_WINDOW_MS });
     return true;
   }
