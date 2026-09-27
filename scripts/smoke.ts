@@ -367,6 +367,7 @@ import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client,
 import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
 import { clockMembers } from '../server/tickScheduler';
 import { warmUp, warmupEnabled } from '../server/warmup';
+import { simWorkers } from '../server/roomPool';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
@@ -15461,6 +15462,22 @@ function pinScene(
   cadence.stop();
 }
 
+// ---- SIM WORKERS ARE OFF UNLESS ASKED FOR (`server/roomPool.ts`) --------------------
+// The worker seam itself is exercised by `scripts/workersmoke.ts` (real threads; `npm test` runs
+// it after this suite). What belongs HERE is the promise that the default is untouched: with
+// `SIM_WORKERS` unset every room is the in-process `new Room(...)` it always was.
+{
+  check('sim workers: unset, empty, 0, negative and garbage all mean OFF', [undefined, '', '0', '-2', 'four', ' '].every((v) => simWorkers(v) === 0));
+  check('sim workers: a positive count is honoured and clamped to 16', simWorkers('2') === 2 && simWorkers(' 4 ') === 4 && simWorkers('99') === 16);
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check(
+    'sim workers: index.ts builds a pool ONLY for a positive SIM_WORKERS, and otherwise the plain in-process Room',
+    /const roomPool: RoomPool \| null = SIM_WORKERS > 0 \? new RoomPool\(SIM_WORKERS\) : null;/.test(idx) &&
+      /roomPool \? roomPool\.createRoom\(\.\.\.a\) : new Room\(\.\.\.a\)/.test(idx),
+  );
+  check('sim workers: no other `new Room(` in index.ts bypasses the factory', (idx.match(/new Room\(\.\.\.a\)|new Room\(\s*code/g) ?? []).length === 1);
+}
+
 // ---- BOOT JIT WARM-UP (`server/warmup.ts`) -----------------------------------------
 // A headless busy match per game after physics init, so the first real player on a woken
 // machine does not pay for V8 compiling the sim. It must warm EVERY game (on its server
@@ -26821,13 +26838,15 @@ const dumperSetup = (): RobotSetup => {
   check('seat: abandonSlot checks it', /if \(!this\.seatOwner\(c, token\)\) return false;/.test(room));
   check(
     '⚠️ seat: the ONLY trusted reclaim is the one holding a verified account id',
-    (idx.match(/reattach\([^)]*true\)/g) ?? []).length === 1 &&
-      /seatFor\(user\.userId\)[\s\S]{0,400}?reattach\(seat, send, sendRaw, backlog, undefined, true\)/.test(idx),
+    // (the trailing `roomHooks` is the SIM_WORKERS seam's eviction hook — `server/roomPool.ts` —
+    // and changes nothing about who is trusted)
+    (idx.match(/reattach\([^)]*\btrue\b[^)]*\)/g) ?? []).length === 1 &&
+      /seatFor\(user\.userId\)[\s\S]{0,400}?reattach\(seat, send, sendRaw, backlog, undefined, true(, roomHooks)?\)/.test(idx),
     'a trusted bypass anywhere else would undo the seat secret from the door next to it',
   );
   check(
     'seat: both doors forward the frame’s token to the room',
-    /r\.reattach\(msg\.clientId, send, sendRaw, backlog, msg\.seatToken\)/.test(idx) &&
+    /r\.reattach\(msg\.clientId, send, sendRaw, backlog, msg\.seatToken(, false, roomHooks)?\)/.test(idx) &&
       /abandonSlot\(msg\.clientId, msg\.seatToken\)/.test(idx),
   );
   check(
