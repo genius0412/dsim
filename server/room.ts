@@ -60,6 +60,7 @@ import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
+import { joinClock, leaveClock, type Turn } from './tickScheduler';
 import { BallWireCache, referenceBody, referenceChanged, snapshotBody, snapshotParts } from './snapshotWire';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
@@ -454,7 +455,15 @@ export class Room {
   private readonly lastRecvTick = new Map<number, number>();
   private readonly ackTick = new Map<string, number>(); // clientId -> newest input tick
   private readonly dropped = new Set<number>();
-  private loop: ReturnType<typeof setInterval> | null = null;
+  /** this room's turn on the shared 60 Hz clock (`server/tickScheduler.ts`), while on it */
+  private loop: Turn | null = null;
+  /**
+   * SNAPSHOT PARITY: this room broadcasts on ticks where `(tick + snapPhase) % 2 === 0`. Handed
+   * out by the clock so half a machine's rooms encode on odd ticks and half on even ones; 0
+   * (every even tick, the old cadence) whenever the room is not on the clock — which is also
+   * every test that drives ticks itself (`advanceForTest` drops the room off the clock first).
+   */
+  private snapPhase: 0 | 1 = 0;
   // delta-snapshot state: each ball's wire form as of the last broadcast (see
   // `server/snapshotWire.ts`) + clients holding a baseline
   private readonly ballWire = new BallWireCache();
@@ -2875,89 +2884,89 @@ export class Room {
 
   private startLoop(): void {
     this.stopLoop(); // NOT `stop()` — the locks `startMatch` just took must survive this
-    let last = Date.now();
-    let acc = 0;
     // ⚠️ RESET THE SPACING CLOCK HERE, not only in the ghost-freeze branch below. `beginMatch`
     // is this method's only caller and it runs on EVERY REMATCH, so without this the results
     // screen plus the whole rematch-vote window lands in `maxMs` and stays there for the life
     // of the machine — one number that makes every reading after it a lie.
     this.lastSnapAt = 0;
-    this.loop = setInterval(() => {
-      // a throw here would otherwise kill the whole process (every room) and Fly
-      // would report "app not listening" — contain it to this tick instead
-      try {
-        this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
-        if (this.clients.size === 0) return; // room emptied (loop already stopped)
-        // GHOST ROOM: every driver has dropped but none has been gone long enough for
-        // `checkGrace` to reap them, so the slots are still held and the room keeps
-        // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
-        // 0.906 cores with 0 players (docs/capacity.md §7).
-        //
-        // Freezing loses NOTHING, which is the part worth knowing before changing it: a
-        // match nobody returns to is never finalized at all — when the last grace lapses
-        // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
-        // on that path. So these ticks can only ever be thrown away.
-        //
-        // And when somebody DOES come back, resuming where they left is the better
-        // outcome anyway. It is what makes a whole-region restart survivable: today both
-        // sides of a ranked match return to a world that ran 45 s without either of them,
-        // which is unplayable and effectively a double forfeit.
-        //
-        // `last`/`acc` are reset so the resume does not fast-forward the frozen
-        // wall-clock — without that, the catch-up clamp would burn 0.25 s of sim in one
-        // turn the moment the first player reconnects.
-        //
-        // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
-        // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
-        // region blip costs the match no game time at all, on purpose (that is the whole
-        // "survivable restart" argument above). Two consequences that are POLICY and not
-        // accidents, stated here because neither is visible from the code:
-        //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
-        //     clock restarts for all four the moment the first of them is back, while the
-        //     other three are still inside their reconnect grace;
-        //   · a match therefore takes longer in wall-clock time than its own clock says,
-        //     which anything reading `Date.now()` around a match (the grace timers, the
-        //     post-match settle) does not see.
-        // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
-        // a player who never comes back is still reaped on schedule.
-        if (this.frozenForNobody()) {
-          last = Date.now();
-          acc = 0;
-          this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
-          return;
-        }
-        // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
-        // play it (or the cap passes). Same clock reset as the freeze above.
-        if (this.loadHeld()) {
-          last = Date.now();
-          acc = 0;
-          this.lastSnapAt = 0;
-          return;
-        }
-        const now = Date.now();
-        acc += (now - last) / 1000;
-        last = now;
-        if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
-        let n = 0;
-        let due = false;
-        while (acc >= C.SIM_DT && n < 8 && !this.finalized) {
-          if (this.stepOnce()) due = true;
-          acc -= C.SIM_DT;
-          n++;
-        }
-        // COALESCE snapshots: send AT MOST ONE per timer fire, at the newest tick.
-        // When a scheduling hitch / GC pause delays this timer, the loop catches up
-        // several ticks in one turn — and the old "broadcast inside stepOnce on every
-        // interval crossing" then flushed a BURST of snapshots back-to-back down the
-        // same socket. The client received them with ~0 ms spacing followed by a gap,
-        // which reads as snapshot jitter → the exact stutter/rubberband being chased
-        // (CPU is idle; it's timing, not load). One send per fire keeps outbound
-        // spacing even and hands the client a single freshest world to reconcile to.
-        if (due && !this.finalized) this.broadcastSnapshot();
-      } catch (e) {
-        console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+    // ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`), not a `setInterval` per room: the
+    // per-room timer fired every ~16.3 ms against a 16.67 ms tick, so its accumulator ran 0 or
+    // 2 steps on some fires and a lone room's snapshots went out 16/48 ms apart (7.7% of gaps).
+    const turn: Turn = (steps) => this.runTurn(steps);
+    this.loop = turn;
+    this.snapPhase = joinClock(turn);
+  }
+
+  /**
+   * ONE TURN ON THE SHARED CLOCK: `steps` ticks are due (1 normally; up to
+   * `MAX_STEPS_PER_TURN` after a stall, the clock having already forgiven anything past a
+   * quarter second). Everything the old per-room timer did per fire, in the same order.
+   */
+  private runTurn(steps: number): void {
+    // a throw here would otherwise kill the whole process (every room) and Fly
+    // would report "app not listening" — contain it to this tick instead
+    try {
+      this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
+      if (this.clients.size === 0) return; // room emptied (loop already stopped)
+      // GHOST ROOM: every driver has dropped but none has been gone long enough for
+      // `checkGrace` to reap them, so the slots are still held and the room keeps
+      // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
+      // 0.906 cores with 0 players (docs/capacity.md §7).
+      //
+      // Freezing loses NOTHING, which is the part worth knowing before changing it: a
+      // match nobody returns to is never finalized at all — when the last grace lapses
+      // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
+      // on that path. So these ticks can only ever be thrown away.
+      //
+      // And when somebody DOES come back, resuming where they left is the better
+      // outcome anyway. It is what makes a whole-region restart survivable: today both
+      // sides of a ranked match return to a world that ran 45 s without either of them,
+      // which is unplayable and effectively a double forfeit.
+      //
+      // Nothing to reset for the resume: the shared clock hands out ticks as they fall due,
+      // so a room that sat out some turns simply steps from where it stopped. (With a
+      // per-room accumulator the old loop had to zero `last`/`acc` here, or the catch-up
+      // clamp would have burned 0.25 s of sim in one turn the moment a player reconnected.)
+      //
+      // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
+      // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
+      // region blip costs the match no game time at all, on purpose (that is the whole
+      // "survivable restart" argument above). Two consequences that are POLICY and not
+      // accidents, stated here because neither is visible from the code:
+      //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
+      //     clock restarts for all four the moment the first of them is back, while the
+      //     other three are still inside their reconnect grace;
+      //   · a match therefore takes longer in wall-clock time than its own clock says,
+      //     which anything reading `Date.now()` around a match (the grace timers, the
+      //     post-match settle) does not see.
+      // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
+      // a player who never comes back is still reaped on schedule.
+      if (this.frozenForNobody()) {
+        this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
+        return;
       }
-    }, 1000 * C.SIM_DT);
+      // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
+      // play it (or the cap passes). Same treatment as the freeze above.
+      if (this.loadHeld()) {
+        this.lastSnapAt = 0;
+        return;
+      }
+      let due = false;
+      for (let n = 0; n < steps && !this.finalized; n++) {
+        if (this.stepOnce()) due = true;
+      }
+      // COALESCE snapshots: send AT MOST ONE per turn, at the newest tick.
+      // When a scheduling hitch / GC pause delays this timer, the loop catches up
+      // several ticks in one turn — and the old "broadcast inside stepOnce on every
+      // interval crossing" then flushed a BURST of snapshots back-to-back down the
+      // same socket. The client received them with ~0 ms spacing followed by a gap,
+      // which reads as snapshot jitter → the exact stutter/rubberband being chased
+      // (CPU is idle; it's timing, not load). One send per turn keeps outbound
+      // spacing even and hands the client a single freshest world to reconcile to.
+      if (due && !this.finalized) this.broadcastSnapshot();
+    } catch (e) {
+      console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+    }
   }
 
   /**
@@ -3017,7 +3026,7 @@ export class Room {
     simModuleFor(this.game).step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
-    const due = w.tick % SNAPSHOT_INTERVAL === 0;
+    const due = (w.tick + this.snapPhase) % SNAPSHOT_INTERVAL === 0; // see `snapPhase`
     // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
     // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
     // Keep stepping (and recording) until the game says nothing left can change the score, so
@@ -3525,7 +3534,7 @@ export class Room {
 
   /** TEST / TOOL SEAM: drive an already-started match deterministically with NO
    * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
-   * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
+   * shared 60 Hz clock (`server/tickScheduler.ts`); this lets smoke/tools run a full room match reproducibly. */
   advanceForTest(maxTicks: number): void {
     this.stopLoop(); // drop the real-time timer — the test pumps synchronously
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
@@ -3688,9 +3697,10 @@ export class Room {
    */
   private stopLoop(): void {
     if (this.loop) {
-      clearInterval(this.loop);
+      leaveClock(this.loop);
       this.loop = null;
     }
+    this.snapPhase = 0;
   }
 
   private stop(): void {

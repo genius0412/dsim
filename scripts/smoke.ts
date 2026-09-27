@@ -365,6 +365,7 @@ import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
 import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
+import { clockMembers } from '../server/tickScheduler';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
@@ -15403,6 +15404,60 @@ function pinScene(
   gapRoom.snapGapStats(true);
   check('snapshot spacing: a reset drains the window (a second read is not the same numbers)', gapRoom.snapGapStats().n === 0);
   gapRoom.stop();
+}
+
+// ---- ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`) ------------------------
+// Rooms used to own a `setInterval` each; they now take turns on one self-correcting 60 Hz
+// deadline and are split across two snapshot PARITIES. This is the one block that runs rooms
+// on REAL timers (everything else pumps `advanceForTest`), so it proves the live path steps at
+// all, at the right rate, broadcasts on the parity it was given, and lets the clock go idle.
+{
+  const sends: Record<string, { at: number; tick: number }[]> = { k1: [], k2: [] };
+  const mk = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => {
+      if (str.startsWith('{"t":"snapshot"')) sends[id].push({ at: performance.now(), tick: (JSON.parse(str) as { serverTick: number }).serverTick });
+    },
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const before = clockMembers();
+  const a = new Room('smoke-clock-a', () => {}, { kind: 'record', record: 'solo' });
+  const b = new Room('smoke-clock-b', () => {}, { kind: 'record', record: 'solo' });
+  a.add(mk('k1'));
+  b.add(mk('k2'));
+  a.onMessage('k1', { t: 'start' });
+  b.onMessage('k2', { t: 'start' });
+  check('clock: a started room is ON the shared clock (one member per live room)', clockMembers() === before + 2, `${clockMembers() - before}`);
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, 1000));
+  const ticks = a.tickForTest();
+  const secs = (performance.now() - t0) / 1000;
+  // generous below: this box also runs other shards, and the first second of a match is a cold
+  // JIT. The claims are "it steps" and "it never runs ahead of the wall clock" — not a latency
+  // number (docs/capacity.md §0 on what a loaded dev box can measure).
+  check('clock: a live room steps off the shared clock, never faster than 60 Hz', ticks > 10 * secs && ticks <= 60 * secs + 2, `${ticks} ticks in ${secs.toFixed(2)} s`);
+  // parity is read off the rooms rather than off their snapshot ticks: a turn that catches up
+  // several ticks (a cold JIT, a loaded box) broadcasts at its NEWEST tick, whatever its parity
+  const phase = (r: Room): number => (r as unknown as { snapPhase: number }).snapPhase;
+  check('clock: both live rooms broadcast (the clock drives the snapshot path, not just the step)', sends.k1.length > 0 && sends.k2.length > 0, `${sends.k1.length} / ${sends.k2.length}`);
+  // only asserted from an EMPTY clock: a block earlier in this shard that left a room running
+  // would skew the counts the parity is balanced against
+  if (before === 0) {
+    check('clock: two rooms on an empty clock get OPPOSITE snapshot parities, so their encodes land on different ticks', phase(a) !== phase(b), `${phase(a)} / ${phase(b)}`);
+  }
+  a.stop();
+  b.stop();
+  check('clock: stopped rooms leave it (an idle machine sleeps, nothing keeps stepping)', clockMembers() === before, `${clockMembers() - before}`);
+  check('clock: a stopped room is reset to the old even-tick parity', phase(a) === 0 && phase(b) === 0);
+  const cadence = new Room('smoke-clock-c', () => {}, { kind: 'record', record: 'solo' });
+  const seen: number[] = [];
+  cadence.add({ ...mk('k3'), sendRaw: (str) => { if (str.startsWith('{"t":"snapshot"')) seen.push((JSON.parse(str) as { serverTick: number }).serverTick); } });
+  cadence.onMessage('k3', { t: 'start' });
+  cadence.advanceForTest(20);
+  check('clock: a room driven by advanceForTest is OFF the clock and keeps the old even-tick cadence', clockMembers() === before && seen.length > 0 && seen.every((t) => t % 2 === 0), `${seen}`);
+  cadence.stop();
 }
 
 // ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
