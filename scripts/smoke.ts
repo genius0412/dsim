@@ -28125,5 +28125,32 @@ const dumperSetup = (): RobotSetup => {
   check('poll loop: a synchronous answer (no request) just reschedules', idleTimers.join() === '5000');
 }
 
+/**
+ * THE REPLAY VIEWER FREES THE 3D WORLDS IT STOPS USING.
+ *
+ * A `'3d'` replay's world is solved in a Rapier world that lives in wasm linear memory, and the
+ * `WeakMap` holding it cannot return it (`disposeEngineFor`). The viewer built a fresh
+ * `ReplayPlayer` on every backward scrub, "play again", restart and video export, and dropped
+ * the old one — a whole 3D world leaked each time. Every swap now goes through ONE helper.
+ */
+{
+  const rv = readFileSync('src/ui/ReplayView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const assigns = rv.match(/player\.current = /g) ?? [];
+  check(
+    '⚠️ replay viewer: the on-screen player is only ever swapped through replacePlayer',
+    assigns.length === 1 && /const replacePlayer = [\s\S]{0,200}?player\.current = next;[\s\S]{0,120}?disposePhysics3dFor\(prev\.world\)/.test(rv),
+    `${assigns.length} direct assignments (a bare one drops a 3D world without freeing it)`,
+  );
+  check(
+    'replay viewer: ...the export frees its own player, and leaving frees the on-screen one',
+    /disposePhysics3dFor\(shot\.world\)/.test(rv) && /\(\) => \(\) => \{\n\s*\/\/[^\n]*\n\s*replacePlayer\(null\);/.test(rv),
+  );
+  check(
+    'replay viewer: a PRELOADED replay still gets the unmount guard its async load relies on',
+    /use\(preloadReplay\);[\s\S]{0,200}?return \(\) => \{\s*dead = true;/.test(rv),
+    'the bare return left `dead` false, so a 3D chunk landing after the viewer closed built a player on a dead screen',
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
