@@ -64,6 +64,28 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   far shot or a rolling POLLEN is drawn at the local robot's moment instead of a median 13 ticks
   behind it (owner: "balls in server-required games are all very laggy and behind"). Elements
   seated in a HIVE or FLOWER stay on the interpolation clock with the tray they sit in.
+- ⚠️ **IN A BIOBUZZ 3D ROOM, FULL PREDICTS EVERYTHING** (2026-09-27, owner: "Ideally, FULL should
+  predict EVERYTHING"; reported first as "when I shoot balls on high ping, they appear mid flight
+  after a delay"). Full runs the real `step3d` for the whole field on the client — every robot on
+  its held command, every element, launches, captures, the HIVE trays — the same thing a 2D room
+  has always done (`worldPredicted`). Two pieces make it affordable:
+  - **`rewindEngineTo`** (`sim3d/engineImpl.ts`): `adoptWorld` moves the ONE persistent 3D engine onto
+    each snapshot and re-seats only the bodies whose state differs (the trays from
+    `hives[a].angle`), instead of rebuilding it — a rebuild is 15–40 ms, 30 times a second.
+    Replaying a snapshot through a rewound engine reproduces the server's run to 0.08 in on
+    robots and 0.2 in on elements, closer than a fresh engine does.
+  - **Replay only on disagreement** (`src/net/worldDigest.ts`): the client keeps a digest of its own
+    predicted world per tick, and a snapshot that matches it (robots `AGREE_POS_IN`, elements
+    `AGREE_BALL_IN`, same element states, hoppers, scores, phase; remote sticks within
+    `AGREE_STICK`, every button equal) skips the rewind and replay. 64–84% of snapshots skip;
+    `FULL_RESYNC_EVERY` forces the full path anyway.
+  Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
+  11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
+  of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against
+  25–96. The old `sim3d/predict` Full is kept as Auto's fallback TIER (`fullTier: 'predictor'`):
+  Auto probes the world step first (a settled throwaway copy, warm runs, against
+  `PREDICT_WORLD_BUDGET_MS`), then the predictor; the slip rule steps world → predictor → Light.
+  An explicit Full pick is always the world step.
 - ⚠️ **AUTO PREDICTION JUDGES WARM RUNS, AND DEFAULTS TO FULL** (`maybeProbeAuto`, 2026-09-27; owner:
   "even with great machines, prediction seems to default to light"). Its one probe used to be
   the COLD first run of the Full predictor — 35–37 ms on a fast desktop whose warm runs cost 4–7

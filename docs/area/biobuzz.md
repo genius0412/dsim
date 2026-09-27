@@ -898,6 +898,11 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     lives in the channel between two side plates and the outer plate is solid but for three
     lightening holes. `scripts/scene-preview/main.ts`'s `?wheelrig=1` stands the five real parts on
     bare tiles for that; `?drivetrain=` and `?gfx=` are the other two params this pass added.
+- ⚠️ **ONLINE "FULL" IS NOW THE REAL `step3d` ON THE CLIENT** (2026-09-27, owner: "FULL should predict
+  EVERYTHING"), on one engine REWOUND onto each snapshot (`rewindEngineTo`), replayed only when the
+  snapshot disagrees with the prediction — `docs/area/netcode.md` has the rule and the numbers.
+  `sim3d/predict`'s FULL below survives as Auto's fallback tier for a machine whose world step does
+  not fit `PREDICT_WORLD_BUDGET_MS`, and LIGHT is unchanged.
 - ⚠️ **THE FULL PREDICTOR DRIVES THE OTHER ROBOTS AND CARRIES EVERY MOVING ELEMENT** (2026-09-27, with
   the netcode lead controller). Once the client runs a round trip AHEAD of the server
   (`src/net/leadControl.ts`), two old simplifications stopped holding:

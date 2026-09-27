@@ -321,11 +321,23 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               both need, so it cannot be lazy the way the 3D chunk is.
  *   Every other route identical to clean alpha to 0.01 KB.
  *
+ * ── RE-MEASURED 2026-09-27, FULL PREDICTS EVERYTHING (BIOBUZZ online, `src/game.ts`) ──────────
+ *   Both trees built the same minute, same machine: clean `origin/main` (8edbe69c) against the
+ *   change on top of it.
+ *   main        984.28 KB — RAISED from 963.55. Clean main builds 982.64, so **+1.64 is this
+ *               change**: the world-tier routing, the snapshot-agreement digest
+ *               (`src/net/worldDigest.ts`) and the world-step probe. It is client prediction the
+ *               render loop runs every frame, so it cannot be lazy the way the 3D chunk is; the
+ *               engine rewind itself is in the lazy physics3d chunk. The other +19.09 is drift
+ *               since 2026-09-22 (the lag fix, contact drawing, Auto, and alpha's own merges),
+ *               which had crept to within 0.18 KB of the tolerance; called out here, not folded in
+ *               silently.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 963.55 * 1000 },
+  main: { gzip: 984.28 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.

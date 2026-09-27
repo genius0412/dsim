@@ -2,6 +2,7 @@ import type { Check } from './harness';
 import { cmd, mkWorld3d, mkWorld3dPair } from './harness';
 import { bbBotBuildByKey } from '../../src/games/biobuzz/ai/builds';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
+import { disposeEngineFor, rewindEngineTo } from '../../src/games/biobuzz/sim3d/engineImpl';
 import {
   createFullPredictor,
   createLightPredictor,
@@ -540,6 +541,54 @@ export function predictChecks(check: Check): void {
     const gap = other ? other.x - pose.pos.x : 0;
     check('predict: LIGHT pushes two overlapping robots apart instead of driving through',
       gap > 12, `centres ${gap.toFixed(2)} in apart after one tick (started 10)`);
+  }
+
+  /**
+   * FULL PREDICTS EVERYTHING by running the real `step3d` on the client, on ONE persistent engine
+   * REWOUND onto each snapshot (`rewindEngineTo`) — a rebuild is 15–40 ms and a snapshot lands 30
+   * times a second. The rewind has to reproduce what the server does from that snapshot: here a
+   * world is run on past a snapshot (the truth), then its engine is rewound onto the snapshot and
+   * the same inputs replayed. Measured when written: robots within 0.06 in, elements within
+   * 1.07 in, the HIVE trays exact — and a FRESH engine built from the same snapshot does worse on
+   * elements (0.45–4.4 in), because it loses the bodies' sleep and contact history.
+   */
+  {
+    const clone = (w: World): World => JSON.parse(JSON.stringify(w)) as World;
+    const cmdsAt = (t: number) => new Map([0, 1].map((id) => [id, cmd({ driveX: Math.sin(t / 40 + id) * 0.8, driveY: Math.cos(t / 55 + id) * 0.8, intake: true, fire: t % 90 < 20 })]));
+    const W = mkWorld3dPair('match', 11);
+    W.match.phase = 'teleop';
+    W.match.phaseTimeLeft = 110;
+    let t = 0;
+    for (; t < 400; t++) step3d(W, SIM_DT, cmdsAt(t));
+    let rob = 0, ball = 0, hive = 0, travelled = 0, allOk = true;
+    let live = W;
+    for (let trial = 0; trial < 4; trial++) {
+      for (let i = 0; i < 37; i++, t++) step3d(live, SIM_DT, cmdsAt(t));
+      const snap = clone(live);
+      const k = t;
+      const before = live.robots.map((r) => ({ ...r.pos }));
+      for (let i = 0; i < 12; i++) step3d(live, SIM_DT, cmdsAt(k + i));
+      const truth = clone(live);
+      live.robots.forEach((r, i) => { travelled = Math.max(travelled, Math.hypot(r.pos.x - before[i].x, r.pos.y - before[i].y)); });
+      const S = clone(snap);
+      allOk = rewindEngineTo(live, S) && allOk;
+      for (let i = 0; i < 12; i++) step3d(S, SIM_DT, cmdsAt(k + i));
+      for (const r of truth.robots) { const q = S.robots.find((x) => x.id === r.id)!; rob = Math.max(rob, Math.hypot(r.pos.x - q.pos.x, r.pos.y - q.pos.y)); }
+      for (const b of truth.balls) { const q = S.balls.find((x) => x.id === b.id)!; ball = Math.max(ball, Math.hypot(b.pos.x - q.pos.x, b.pos.y - q.pos.y, b.z - q.z)); }
+      for (const a of ['red', 'blue'] as const) hive = Math.max(hive, Math.abs((truth.biobuzz!.hives[a].angle ?? 0) - (S.biobuzz!.hives[a].angle ?? 0)));
+      live = S; // carry on from the rewound world, as the client does
+      t = k + 12;
+    }
+    disposeEngineFor(live);
+    check('⚠️ world predict: a rewound engine replays a snapshot the way the server ran it (robots < 0.2 in, elements < 2 in, trays exact)',
+      allOk && travelled > 3 && rob < 0.2 && ball < 2 && hive < 1e-4,
+      `robots ${rob.toFixed(4)} in, elements ${ball.toFixed(3)} in, trays ${hive.toExponential(1)} rad, robots travelled ${travelled.toFixed(1)} in per window`);
+    const A = mkWorld3dPair('match', 12);
+    step3d(A, SIM_DT, new Map());
+    const B = clone(A);
+    B.robots.pop();
+    check('world predict: a rewind onto a different robot set refuses (engineFor rebuilds instead)', !rewindEngineTo(A, B));
+    disposeEngineFor(B);
   }
 }
 

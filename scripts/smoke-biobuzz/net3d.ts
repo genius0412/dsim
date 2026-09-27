@@ -1221,7 +1221,7 @@ export function net3dChecks(check: Check): void {
     const game = readFileSync('src/game.ts', 'utf8');
     check(
       'predict: reconcile still replays `mod.step` for a room that is not predicted-3D',
-      /if \(this\.predicted3d\(\)\) this\.replayThroughPredictor\([\s\S]{0,80}else for \(const b of this\.inputBuf\) this\.mod\.step\(/.test(game),
+      /if \(this\.usesPredictor\(\)\) this\.replayThroughPredictor\([\s\S]{0,120}else \{[\s\S]{0,400}for \(const b of this\.inputBuf\) \{\s*this\.mod\.step\(/.test(game),
       'the 2D reconcile branch is not where it was',
     );
     check(
@@ -1247,7 +1247,7 @@ export function net3dChecks(check: Check): void {
     );
     check(
       '⚠️ predict: the slip rule steps down on the MEDIAN reconcile, not a p95 a few GC pauses decide',
-      game.includes('const median = sorted[Math.floor(sorted.length / 2)]') && game.includes('if (median <= PREDICT_FULL_BUDGET_MS) return;'),
+      game.includes('const median = sorted[Math.floor(sorted.length / 2)]') && game.includes('if (median <= (this.worldPredicted() ? PREDICT_WORLD_BUDGET_MS : PREDICT_FULL_BUDGET_MS)) return;'),
     );
     check(
       'predict: Off renders the local robot interpolated (displayWorld stops exempting it)',

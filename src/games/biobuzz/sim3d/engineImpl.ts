@@ -1058,6 +1058,83 @@ export function applyHiveTilt(world: World, engine: Engine3d): void {
   }
 }
 
+/**
+ * REWIND a live engine onto a SNAPSHOT — the client's FULL prediction, which runs this very step
+ * on its own copy of the world and must restart from every authoritative snapshot 30 times a
+ * second (`GameController.reconcile`). `engineFor` would REBUILD here, because the tick went
+ * backwards and the snapshot is a new `World` object, and a rebuild is the ~80 static colliders
+ * and the trimeshes: 15–40 ms, every snapshot. This keeps the statics and re-seats the bodies.
+ *
+ * The engine moves from `from` to `to`. Every body whose LIVE state differs from `to`'s JSON
+ * loses its last-readback record, which is exactly the condition the next `syncRobot` /
+ * `syncElement` reads as "teleported" — so it is seated from the JSON by the same code that
+ * seats one on the server. A body that already matches keeps its record and, with it, its
+ * sleep: waking every resting element would make the client's field twitch where the server's
+ * is still. The HIVE TRAYS are the one pose the sync never writes (on the server nothing but the
+ * solver moves them), so they are seated here from `hives[a].angle` / `angVel`, the inverse of
+ * `readback`'s own write.
+ *
+ * Returns false (and leaves `engineFor` to build fresh) when there is no engine to move or the
+ * robot set changed, which is `engineFor`'s own rebuild rule.
+ *
+ * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveHeld`) are not in the JSON and are
+ * kept: they are the prediction's own, a few ticks ahead of the server's. A client prediction is
+ * allowed to be slightly wrong — the next snapshot corrects it — and it is never authoritative.
+ */
+export function rewindEngineTo(from: World, to: World): boolean {
+  const e = ENGINES.get(from);
+  if (!e) return false;
+  ENGINES.delete(from);
+  const ids = to.robots.map((r) => r.id);
+  if (ids.length !== e.robots.size || !ids.every((id) => e.robots.has(id))) {
+    disposeEngine(e);
+    return false;
+  }
+  ENGINES.set(to, e);
+  e.lastTick = to.tick;
+  for (const r of to.robots) {
+    const body = e.robots.get(r.id);
+    if (!body) continue;
+    const h = e.robotHeights.get(r.id) ?? 0;
+    const t = body.translation();
+    const v = body.linvel();
+    const same =
+      Math.abs(t.x - r.pos.x) <= POSE_EPS &&
+      Math.abs(t.y - r.pos.y) <= POSE_EPS &&
+      Math.abs(t.z - ((r.z ?? 0) + h / 2)) <= POSE_EPS &&
+      Math.abs(yawOfQuat(body.rotation()) - r.heading) <= POSE_EPS &&
+      Math.abs(v.x - r.vel.x) <= POSE_EPS &&
+      Math.abs(v.y - r.vel.y) <= POSE_EPS &&
+      Math.abs(body.angvel().z - r.angVel) <= POSE_EPS;
+    if (!same) e.lastRobot.delete(r.id);
+  }
+  for (const b of to.balls) {
+    const body = e.elements.get(b.id);
+    if (!body) continue; // the next sync creates it (or leaves it out) from the JSON
+    const rad = b.r ?? BB_POLLEN_R;
+    const t = body.translation();
+    const v = body.linvel();
+    const same =
+      Math.abs(t.x - b.pos.x) <= POSE_EPS &&
+      Math.abs(t.y - b.pos.y) <= POSE_EPS &&
+      Math.abs(t.z - (b.z + rad)) <= POSE_EPS &&
+      Math.abs(v.x - b.vel.x) <= POSE_EPS &&
+      Math.abs(v.y - b.vel.y) <= POSE_EPS &&
+      Math.abs(v.z - b.vz) <= POSE_EPS;
+    if (!same) e.lastElement.delete(b.id);
+  }
+  if (useHiveDynamic() && to.biobuzz) {
+    for (const a of ['red', 'blue'] as const) {
+      const hv = to.biobuzz.hives[a];
+      const tray = e.hiveTrays[a];
+      if (hv.angle === undefined) continue;
+      tray.setRotation(tiltQuatX(hv.angle), true);
+      tray.setAngvel({ x: hv.angVel ?? 0, y: 0, z: 0 }, true);
+    }
+  }
+  return true;
+}
+
 /** the tray body's live tilt (rad) -- a pure x-axis rotation, since the revolute joint removes
  * every other freedom, so the same one-term read `yawOfQuat` does for a chassis about z. */
 export function trayTilt(body: InstanceType<Rapier3d['RigidBody']>): number {

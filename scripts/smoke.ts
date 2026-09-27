@@ -393,6 +393,7 @@ import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
 import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
 import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
+import { AGREE_BALL_IN, AGREE_POS_IN, AGREE_STICK, cmdsAgree, digestsAgree, worldDigest } from '../src/net/worldDigest';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
 import { Renderer } from '../src/render/renderer';
@@ -15684,11 +15685,36 @@ function pinScene(
     /this\.localSmooth = \{ x: 0, y: 0, heading: 0 \};\s*this\.remoteSmooth\.clear\(\);/.test(game));
 }
 
+// ---- FULL (world tier) skips a replay only when the snapshot AGREES (src/net/worldDigest.ts) ----
+{
+  const w = createWorld('match', 5, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }, { id: 1, alliance: 'red', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  const copy = (): World => JSON.parse(JSON.stringify(w)) as World;
+  const base = worldDigest(w);
+  check('world digest: the same world agrees with itself', digestsAgree(base, worldDigest(copy())));
+  const r1 = copy(); r1.robots[0].pos.x += AGREE_POS_IN * 0.5;
+  const r2 = copy(); r2.robots[0].pos.x += AGREE_POS_IN * 2;
+  check('world digest: a robot inside the tolerance agrees, one outside it does not', digestsAgree(base, worldDigest(r1)) && !digestsAgree(base, worldDigest(r2)));
+  const b1 = copy(); b1.balls[0].pos.y += AGREE_BALL_IN * 0.8;
+  const b2 = copy(); b2.balls[0].pos.y += AGREE_BALL_IN * 1.5;
+  check('world digest: an element gets its own, looser tolerance', digestsAgree(base, worldDigest(b1)) && !digestsAgree(base, worldDigest(b2)) && AGREE_BALL_IN > AGREE_POS_IN);
+  const k = copy(); k.balls[0].state = { kind: 'flight', target: 'blue' };
+  const h = copy(); h.robots[0].hopper.push('purple');
+  const sc = copy(); sc.match.scores.blue.total += 1;
+  check('world digest: an element changing state, a hopper or a score never agrees, however close the poses', !digestsAgree(base, worldDigest(k)) && !digestsAgree(base, worldDigest(h)) && !digestsAgree(base, worldDigest(sc)));
+  const c = { driveX: 0.5, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: false };
+  check('world digest: a remote stick drifting inside AGREE_STICK is the same command, a turn past it is not', cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 0.5 }) && !cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 2 }));
+  check('world digest: ...and any button changing is a different command', !cmdsAgree(c, { ...c, fire: true }) && !cmdsAgree(c, { ...c, intake: false }) && !cmdsAgree(c, undefined));
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('world predict source: FULL in a 3D room is the WHOLE game step unless Auto stepped it to the predictor', game.includes("this.predictionMode === 'full' && this.fullTier === 'world'") && game.includes("if (pref === 'full') this.fullTier = 'world';"));
+  check('world predict source: adoptWorld REWINDS the 3D engine in the world tier instead of throwing it away', game.includes('this.worldPredicted() && physics3dImpl().rewindEngineTo(prev, next)'));
+  check('world predict source: a snapshot that agrees skips the replay, and a full resync is still forced every FULL_RESYNC_EVERY', game.includes('if (this.worldPredicted() && !firstSnap && this.snapshotAgrees(snap))') && game.includes('if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;'));
+  check('world predict source: Auto probes the world step FIRST, then the predictor only if that does not fit', game.includes("this.autoStage === 'world'") && game.includes('this.probeWorldReconcileMs()'));
+}
 // ---- the controller is what game.ts actually runs (GameController needs a DOM) -----------------
 {
   const game = readFileSync('src/game.ts', 'utf8');
   check('lead source: stepServer samples the lead BEFORE the reconcile, off the 3D clock in a 3D room',
-    /const clock = this\.predicted3d\(\) \? this\.predictTick : this\.world\.tick;\s*this\.lead\.sample\(clock, snap\.serverTick, snap\.ackInputTick, performance\.now\(\)\);\s*\}\s*this\.reconcile\(snap\);/.test(game));
+    /const clock = this\.usesPredictor\(\) \? this\.predictTick : this\.world\.tick;\s*this\.lead\.sample\(clock, snap\.serverTick, snap\.ackInputTick, performance\.now\(\)\);\s*\}\s*this\.reconcile\(snap\);/.test(game));
   check('lead source: frameLogic folds the rate in ONLINE only, so solo adds exactly dt',
     /this\.acc \+= this\.session \? dtS \* \(1 \+ this\.lead\.rate\(performance\.now\(\)\)\) : dtS;/.test(game));
   check('lead source: a rebuilt match resets the controller', /this\.gotSnapshot = false;\s*this\.lead\.reset\(\);/.test(game));

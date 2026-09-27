@@ -4090,6 +4090,17 @@ export const PREDICT_ELEMENT_KEEP_SPEED = 12;
  */
 export const PREDICT_FULL_BUDGET_MS = 8;
 
+/**
+ * The budget for one REPLAY of FULL's world tier — the real `step3d` re-run for the lead after a
+ * snapshot the prediction disagreed with (`src/net/worldDigest.ts`). Larger than
+ * `PREDICT_FULL_BUDGET_MS` because it is paid on far fewer snapshots: the world tier skips the
+ * replay whenever a snapshot agrees, measured at 64–84% of them, so the per-second cost at this
+ * budget is still under the predictor's at its own. What binds is ONE frame: a replay plus the
+ * render has to fit in 16.7 ms, and 12 leaves ~4.7 for the render and the frame's own step.
+ * Measured in a real browser on a desktop: replays p95 7.6 ms at 100 ms RTT, 60 fps held.
+ */
+export const PREDICT_WORLD_BUDGET_MS = 12;
+
 /** the budget one LIGHT reconcile of 40 ticks may cost (ms). It has no wasm, no contacts and one
  * body, so this is a sanity floor rather than a threshold anything chooses on. */
 export const PREDICT_LIGHT_BUDGET_MS = 1;
