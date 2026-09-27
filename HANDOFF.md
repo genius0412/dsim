@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-27d (review lane 9: server correctness, PR #104)
+
+**State: PR #104 open against `alpha`, not merged, not deployed. SERVER CHANGE: it needs `./scripts/fly-deploy.sh` once merged.** It is the server-correctness lane of the 09-27 repo review, the one lane that was not yet on GitHub when history was rewritten. It was ported onto post-rewrite `alpha` by cherry-picking (new commits, no Claude signature, authored by the session user), never pushed from a pre-rewrite worktree.
+
+- **What:** one live game per account ACROSS MACHINES (join/queue read `liveRoomsByUser`, fail open), `server/admission.ts` (room-code regex, per-network hosting/spectator caps, idle-lobby close), lock/seat fixes (a lobby reclaim leaked a lock that refused the account every game), and bounded request-path costs (rate-limit sweeps, body cap, single-flight site reads, moderation budget, `/api/perf?reset` behind `ADMIN_SECRET`). New optional env vars: `MAX_HOSTED_PER_IP`, `MAX_SPECTATORS_PER_IP`, `LOBBY_IDLE_MINUTES`, `MODERATION_MAX_PER_MINUTE`.
+- ⚠️ **#104 and #99 conflict in ONE hunk of `server/room.ts`** (the loop's `catch`). Take #99's side of that hunk only, then make `runTurn`'s catch call `this.noteTickError(e)`. Not `--theirs` on the file (drops #104's room code), and not a search-and-replace of the `console.error` line: the same line lives inside `noteTickError`, and replacing it there is infinite recursion that still typechecks. The PR body has the verified resolution.
+- **Gates** were run against an untouched `alpha` baseline with local stub Zenith packages, since this sandbox cannot fetch the private tarballs: shared 2883 ALL PASS (baseline 2793), `test:mm` 205, `dbtest` ALL PASS, `server:check` identical to baseline. The one BIOBUZZ failure is the known `fieldDims.gen.ts` drift, identical on both.
+- The BIOBUZZ-vs-CR ROOM perf ratio (SERVER lane, prints only on failure) read 1.24 once under the full parallel suite and 0.84–0.96 alone, on both #99 alone and #99 + #104. It is load-sensitive, not a regression.
+
+---
+
 # HANDOFF — 2026-09-27b (BIOBUZZ 3D: an element on the floor in a FLOWER's retrieval opening is not in the FLOWER)
 
 **State: pushed on `main` and `alpha`. ⚠️ SERVER CHANGE NOT YET DEPLOYED** to production (the announce step needs the owner) or to `dsim-alpha` (`fly-deploy.sh --alpha` stops on the missing vendored Zenith tarballs). `npm test` (5141), `build`, `server:check` pass. Silent patch: no patch notes, no `SIM_VERSION` bump (owner).
