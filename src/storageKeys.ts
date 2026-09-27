@@ -188,7 +188,7 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'session',
     category: 'necessary',
     purpose:
-      'That this tab has already reloaded once to pick up a new version of the site, so a missing file cannot make it reload forever.',
+      'Which version of the site this tab last reloaded from to pick up a new one, so a missing file cannot make it reload forever.',
     retention: 'Ends with this browser tab.',
   },
   {

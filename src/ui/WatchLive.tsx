@@ -5,6 +5,7 @@ import { gameServerConfigured } from '../net/env';
 import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { seasonFor } from '../seasons';
 import { fmtTime } from './timerPanel';
+import { onUserActive, userIdle } from './userActivity';
 
 /**
  * "Watch Live" — the games currently in progress on the game server.
@@ -36,6 +37,11 @@ export function WatchLive({
     if (!configured) return;
     let alive = true;
     const load = (): void => {
+      // AN UNATTENDED PAGE DOES NOT POLL — hidden, or nobody at the keyboard (userActivity.ts),
+      // the rule `usePresence`, `useFriends` and `NoticePoller` already follow. A 4-second poll
+      // left open in a background tab otherwise kept the auto-stopping Fly machine awake for as
+      // long as the tab lived. The wake below catches it up the moment somebody is back.
+      if (userIdle()) return;
       fetchLiveRooms()
         .then((r) => {
           if (!alive) return;
@@ -52,9 +58,16 @@ export function WatchLive({
     };
     load();
     const t = window.setInterval(load, 4000); // live matches change fast — refresh often
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const unwake = onUserActive(load);
     return () => {
       alive = false;
       window.clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+      unwake();
     };
   }, [configured]);
 
