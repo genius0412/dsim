@@ -4945,6 +4945,25 @@ async function main(): Promise<void> {
       boom && supAfter.rows[0]?.supporter_until === null,
     );
 
+    // ---- friends / challenges serialize per pair ------------------------------------------
+    const repoSrc = readFileSync(join(ROOT, 'server/db/repo.ts'), 'utf8');
+    const fnBody = (name: string): string => {
+      const at = repoSrc.indexOf(`export async function ${name}(`);
+      return repoSrc.slice(at, repoSrc.indexOf('\n}\n', at));
+    };
+    check(
+      'friends: request, block and challenge each take the pair lock (a mirror request raced to two rows without it)',
+      ['sendFriendRequest', 'blockUser', 'inviteToRoom'].every((f) => fnBody(f).includes('lockPair(')),
+    );
+    await repo.ensureProfile('inv-a', 'InvA');
+    await repo.ensureProfile('inv-b', 'InvB');
+    check('friends: a request still works under the lock', (await repo.sendFriendRequest('inv-a', 'inv-b')) === 'sent');
+    check('friends: ...and the mirror still folds into an accept', (await repo.sendFriendRequest('inv-b', 'inv-a')) === 'accepted');
+    await repo.inviteToRoom('inv-a', 'inv-b', 'TOKEN1', 'decode', 'versus', null, 'rated1v1');
+    await repo.inviteToRoom('inv-a', 'inv-b', 'TOKEN2', 'decode', 'versus', null, 'rated1v1');
+    const invRows = await db.query<{ room: string }>(`select room from room_invites where from_user_id = 'inv-a' and to_user_id = 'inv-b'`);
+    check('challenge: a re-send REPLACES, one live token', invRows.rows.length === 1 && invRows.rows[0].room === 'TOKEN2');
+
   }
 
   await db.close();

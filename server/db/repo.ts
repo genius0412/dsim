@@ -6626,9 +6626,23 @@ export type RequestOutcome = 'sent' | 'accepted' | 'already-friends' | 'blocked'
  * up with two pending requests and no friendship, each looking at a request
  * they can't tell is already reciprocated.
  */
+/**
+ * SERIALIZE every friendship write about one PAIR. A transaction alone does not: under READ
+ * COMMITTED, A and B pressing Add at the same moment each looked for the other's request, found
+ * nothing yet committed, and each inserted their own — two pending mirror requests and no
+ * friendship, which is the exact case `sendFriendRequest` exists to fold into an accept. A block
+ * landing between a request's block check and its insert let the request through the same way.
+ * One transaction-scoped advisory lock per unordered pair makes them queue instead.
+ */
+async function lockPair(query: Tx, a: string, b: string, scope = 'pair'): Promise<void> {
+  const [low, high] = a < b ? [a, b] : [b, a];
+  await query(`select pg_advisory_xact_lock(hashtext($1))`, [`${scope}:${low}:${high}`]);
+}
+
 export async function sendFriendRequest(fromId: string, toId: string): Promise<RequestOutcome> {
   if (fromId === toId) return 'duplicate';
   return tx(async (query) => {
+    await lockPair(query, fromId, toId);
     // a block in EITHER direction stops the request. The handler reports this
     // the same way as an ordinary failure — telling a sender they were blocked
     // is itself the signal that lets someone confirm they were blocked.
@@ -6727,6 +6741,7 @@ export async function removeFriend(callerId: string, otherId: string): Promise<b
 export async function blockUser(callerId: string, targetId: string): Promise<boolean> {
   if (callerId === targetId) return false;
   return tx(async (query) => {
+    await lockPair(query, callerId, targetId);
     await query(
       `insert into friend_blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing`,
       [callerId, targetId],
@@ -6817,12 +6832,18 @@ export async function inviteToRoom(
   // own party token, so the recipient could accept a stale one and sit in a
   // private queue waiting for a challenger who is already waiting under a
   // different token. Replacing keeps exactly one token in play.
-  await q(`delete from room_invites where from_user_id = $1 and to_user_id = $2`, [fromId, toId]);
-  await q(
-    `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format, region)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [fromId, toId, room, game, kind, record, format, region || null],
-  );
+  //
+  // ...and the replace is ONE locked transaction, or it is not a replace: as two bare `q()`s, a
+  // double click ran both deletes before either insert and left two rows, two live tokens.
+  await tx(async (query) => {
+    await lockPair(query, fromId, toId, `invite>${fromId}`);
+    await query(`delete from room_invites where from_user_id = $1 and to_user_id = $2`, [fromId, toId]);
+    await query(
+      `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format, region)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [fromId, toId, room, game, kind, record, format, region || null],
+    );
+  });
   return 'sent';
 }
 
