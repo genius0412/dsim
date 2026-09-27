@@ -57,6 +57,7 @@ import { slimWorld, quantizeCommand, localizeCommand, type BallDelta } from '../
 // must not be able to disagree with the server about. (`server/wire.ts` is a LEAF module for
 // exactly that reason — see its header.)
 import { round3 } from '../server/wire';
+import { BallWireCache } from '../server/snapshotWire';
 import * as C from '../src/config';
 // BIOBUZZ's own leaf modules. `coerce.ts` is a dependency of the shared `coerceSpec` and
 // imports nothing that reaches back to it, so pulling it (and the constants it already reads)
@@ -406,11 +407,12 @@ async function measure(s: Scenario): Promise<Measured> {
    * and `b` were the SAME OBJECT every frame, nothing ever compared unequal, `upd` was always
    * empty and the measured snapshot was a fraction of the real one.
    *
-   * Room's four lines, copied rather than exported: pulling a shared `ballDiff` out of
-   * `server/room.ts` would make this instrument import the whole room/server graph for four
-   * lines. Same algorithm AND the same CPU profile — the per-ball stringify is the cost.
+   * The room's diff lives in `server/snapshotWire.ts` (`BallWireCache`), a LEAF module, so
+   * this imports the real thing rather than a copy — importing `server/room.ts` would drag the
+   * whole room/server graph in. Same algorithm AND the same CPU profile: a shadow walk per ball,
+   * a rounded stringify only for the balls that moved.
    */
-  let prevBalls = new Map<number, string>();
+  const wireCache = new BallWireCache();
   /** every snapshot frame, deflated after the CPU window closes (see `wireBytes`) */
   const frames: string[] = [];
   /** the SAME frames with `s.fields` deleted off each robot — the counterfactual stream. Empty
@@ -432,13 +434,12 @@ async function measure(s: Scenario): Promise<Measured> {
     rec.record(world.tick, local);
     // SNAPSHOT_INTERVAL is 2 in server/room.ts, i.e. 30Hz
     if (world.tick % 2 === 0) {
-      const cur = new Map<number, string>();
-      for (const b of world.balls) cur.set(b.id, JSON.stringify(b, round3));
-      const changed: Artifact[] = [];
-      for (const b of world.balls) if (cur.get(b.id) !== prevBalls.get(b.id)) changed.push(b);
+      const first = snaps === 0;
+      const ids = new Set(wireCache.diff(world.balls));
+      const changed: Artifact[] = world.balls.filter((b) => ids.has(b.id));
       // the server sends a KEYFRAME to a client it has not primed yet; steady state is the
       // delta, which is what a long-running room costs
-      const delta: BallDelta = { order: world.balls.map((b) => b.id), upd: prevBalls.size ? changed : world.balls };
+      const delta: BallDelta = { order: world.balls.map((b) => b.id), upd: first ? world.balls : changed };
       // held separately from the stringify so the field pricing below can re-serialize the
       // EXACT same object with two keys removed — a difference of one variable, not of a scene
       const slim = slimWorld(world);
@@ -468,7 +469,6 @@ async function measure(s: Scenario): Promise<Measured> {
         bare.push(stripped);
         bareBytes += Buffer.byteLength(stripped, 'utf8');
       }
-      prevBalls = cur;
     }
     // each client sends its own command every tick
     upBytes += Buffer.byteLength(

@@ -60,6 +60,7 @@ import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
+import { BallWireCache, referenceChanged } from './snapshotWire';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
    A value import here would drag a Postgres driver into the browser bundle — see
@@ -454,8 +455,11 @@ export class Room {
   private readonly ackTick = new Map<string, number>(); // clientId -> newest input tick
   private readonly dropped = new Set<number>();
   private loop: ReturnType<typeof setInterval> | null = null;
-  // delta-snapshot state: last-sent balls (id -> JSON) + clients holding a baseline
-  private prevBalls = new Map<number, string>();
+  // delta-snapshot state: each ball's wire form as of the last broadcast (see
+  // `server/snapshotWire.ts`) + clients holding a baseline
+  private readonly ballWire = new BallWireCache();
+  /** TEST ONLY (`checkWireForTest`): the pre-`BallWireCache` encoder, run beside the live one */
+  private wireCheck: { prev: Map<number, string>; frames: number; mismatches: string[] } | null = null;
   /** `serverTick` of the last broadcast snapshot — the baseline a RELIABLE recipient holds */
   private prevSnapTick = -1;
   /** which ball ids changed on each of the last `SNAP_HISTORY_FRAMES` broadcasts, oldest
@@ -2250,7 +2254,8 @@ export class Room {
     this.lastRecvTick.clear();
     this.ackTick.clear();
     this.dropped.clear();
-    this.prevBalls.clear();
+    this.ballWire.reset();
+    if (this.wireCheck) this.wireCheck.prev = new Map();
     this.prevSnapTick = -1;
     this.snapChanged.length = 0;
     this.snapHistoryFrom = -1;
@@ -3471,7 +3476,8 @@ export class Room {
     this.latestTick.clear();
     this.lastRecvTick.clear();
     this.ackTick.clear();
-    this.prevBalls = new Map();
+    this.ballWire.reset();
+    if (this.wireCheck) this.wireCheck.prev = new Map();
     this.snapPrimed.clear();
     this.snapAck.clear();
     this.lastFrame = new Map();
@@ -3525,6 +3531,17 @@ export class Room {
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /**
+   * TEST SEAM: run the PRE-`BallWireCache` snapshot encoder beside the live one on every
+   * broadcast from now on, and report every disagreement. The first call switches it on (the
+   * reference starts from an empty baseline, so call it before the first snapshot or it will
+   * disagree once, honestly); later calls read the tally. `npm test` "snapshot wire:".
+   */
+  checkWireForTest(): { frames: number; mismatches: string[] } {
+    if (!this.wireCheck) this.wireCheck = { prev: new Map(), frames: 0, mismatches: [] };
+    return { frames: this.wireCheck.frames, mismatches: [...this.wireCheck.mismatches] };
   }
 
   /** TEST SEAM: pump the way the REAL loop does — grace reaping and the ghost-room freeze
@@ -3717,10 +3734,18 @@ export class Room {
     // within a thousandth of an inch still read as CHANGED and are re-sent every frame — which
     // is precisely the 54% the rounding was supposed to save. (A bandwidth property, not a
     // correctness one: over-sending desyncs nobody.)
-    const cur = new Map<number, string>();
-    for (const b of w.balls) cur.set(b.id, JSON.stringify(b, round3));
-    const changedIds: number[] = [];
-    for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changedIds.push(b.id);
+    // ...and it is now decided WITHOUT stringifying the balls that did not move: a shadow walk
+    // with the same rounding, then a string only for what changed (`BallWireCache.diff`). Same
+    // set, in the same order, as comparing a fresh `JSON.stringify(b, round3)` per ball.
+    const changedIds = this.ballWire.diff(w.balls);
+    if (this.wireCheck) {
+      const ref = referenceChanged(this.wireCheck.prev, w.balls);
+      this.wireCheck.prev = ref.cur;
+      this.wireCheck.frames++;
+      if (ref.changed.join(',') !== changedIds.join(',')) {
+        this.wireCheck.mismatches.push(`tick ${w.tick}: changed [${changedIds}] vs reference [${ref.changed}]`);
+      }
+    }
     // Push THIS frame's change set before anything reads the history, so a delta keyed to an
     // older baseline includes what moved on this very tick as well as everything in between.
     this.snapChanged.push({ tick: w.tick, ids: changedIds });
@@ -3792,7 +3817,7 @@ export class Room {
        * WHICH BASELINE THIS RECIPIENT IS KNOWN TO HOLD — the thing a delta must be keyed to.
        *
        * On an ordered reliable lane that is the PREVIOUS BROADCAST: it arrived or the socket
-       * is gone, so the cheapest correct delta is the one against `prevBalls`.
+       * is gone, so the cheapest correct delta is the one against the previous broadcast.
        *
        * ⚠️ ON A LOSSY LANE IT IS NOT, AND ASSUMING IT WAS CORRUPTED LAN GUESTS SILENTLY. A tab
        * host's guests take snapshots over an unordered `maxRetransmits: 0` DataChannel, so
@@ -3826,7 +3851,6 @@ export class Room {
     };
     for (const c of this.clients.values()) sendTo(c);
     for (const s of this.spectators.values()) sendTo(s); // read-only watchers get the same stream
-    this.prevBalls = cur;
     this.prevSnapTick = w.tick;
   }
 
