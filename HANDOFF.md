@@ -1,3 +1,33 @@
+# HANDOFF — 2026-09-27 (Zenith autos on `alpha`, vendored, no Zenith release)
+
+**READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta` is merged into `alpha` and pushed.
+The owner asked for an end-to-end test on alpha WITHOUT a Zenith 0.1.2, so alpha still installs the
+Zenith packages as `file:` tarballs. ⚠️ **Zenith releases only on the owner's explicit go in the
+same conversation** (Zenith's `CLAUDE.md` rule 11): never bump, tag or publish from a DSIM session.
+
+**State.** `build`, `server:check`, `docaudit`, `bundleaudit` pass; `smoke.ts` ALL PASS; BIOBUZZ
+AUTO lane 54/54, the one failure is still the `fieldDims.gen.ts` drift (fails the same on clean
+alpha). Browser-checked through Zenith's REAL password gate (its local dev server) from a
+cross-site DSIM: New in Zenith -> login -> host mode -> Ctrl S -> the auto is in DSIM's library;
+a second open while signed in skips the password.
+
+- **How alpha gets the tarballs.** `scripts/fetch-zenith.mjs`, run by `vercel.json`'s
+  `installCommand` and by `fly-deploy.sh`, downloads them from a private branch and checks each
+  against the lockfile's sha512 (`docs/area/autos.md` › Vendoring). Needs `ZENITH_VENDOR_REPO`,
+  `ZENITH_VENDOR_TOKEN` (and optionally `ZENITH_VENDOR_REF`) in Vercel's alpha env; without them
+  the alpha build stops at install and the last good alpha deployment keeps serving.
+- **`VITE_ZENITH_URL`** on alpha must point at a Zenith deployment WITH host mode (the gated
+  Vercel one, built from the Zenith dev branch); the default public URL has no host mode.
+- **Zenith's gate** now returns to the page it interrupted (`?host=dsim` survives the login) and
+  bounces a cross-site open through one same-site reload so the `SameSite=Strict` cookie is sent.
+
+**Next.** (1) Owner: set the four alpha env vars (`docs/deploy.md` step 6) and redeploy alpha;
+point a Zenith Vercel deployment with host mode at the Zenith dev branch. (2) Owner tests. (3) On a
+Zenith release that carries host mode: the npm switch in `docs/area/autos.md` › Vendoring, which
+also deletes `fetch-zenith.mjs`. (4) Online custom rooms: `./scripts/fly-deploy.sh --alpha`.
+
+---
+
 # HANDOFF — 2026-09-26 (same branch: alpha merged in, Zenith 0.1.1 re-vendored, waiting on a Zenith release)
 
 **READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta`, pushed, **alpha merged in**
