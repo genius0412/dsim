@@ -101,6 +101,12 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   not the place for a private note — that is `admin_notes`, and the console says so beside the
   box. Format it with `suspensionLeft`, never `lockRemaining`: that one is the standing lock's
   minutes-and-hours scale and rendered a one-week ban as "168 hours".
+  ⚠️ **A SANCTION OUTLIVES ACCOUNT DELETION** (`account_tombstones`, 0054). Deleting DSIM's data
+  does not delete the Neon Auth identity, so the same id is signed in again a second later; a
+  suspended or ranked-locked player used to be one DELETE away from a clean slate. `deleteAccount`
+  leaves an opaque-id row (suspension deadline, standing score, lock — no reason text, no PII)
+  only when there is a sanction to carry, `getSuspension` / `getStanding` answer from it while
+  no profile exists, and `ensureProfile` re-applies and deletes it when the profile is re-created.
 - **The other four things a moderator can now do**, all on the account panel, all audited:
   **clear an abusive @username** (`clearUsername` — CLEARED, not set, so the account goes back
   through `UsernameGate` and the moderator is not choosing somebody's permanent public name);

@@ -384,16 +384,67 @@ export async function deleteAnnouncement(id: string): Promise<boolean> {
  * were provably no-ops. Bounded by the distinct users a machine sees before it
  * auto-stops; a restart simply re-learns them.
  */
-const profileEnsured = new Set<string>();
+const profileEnsured = new Map<string, number>();
 
-export async function ensureProfile(userId: string, handle: string): Promise<void> {
-  if (profileEnsured.has(userId)) return;
-  await q(
+/**
+ * ⚠️ THE MEMO EXPIRES, BECAUSE A PROFILE ROW CAN STOP EXISTING. "Can never do anything again"
+ * above is true only while the row lives, and `deleteAccount` removes it while the Neon Auth
+ * identity — and so the same user id — stays signed in. With a permanent memo every machine
+ * that had seen the account skipped the insert until it restarted, and every write keyed to the
+ * profile then failed: an FK violation in the middle of a ranked result (the opponents' ratings
+ * written, no match row), a record run thrown away, and `setUsername` / `saveUserSettings`
+ * updating zero rows while reporting success. `deleteAccount` drops its own machine's entry;
+ * the TTL bounds how long any OTHER machine can be wrong, and still collapses a 6-second poll
+ * to one insert per ten minutes.
+ */
+const PROFILE_MEMO_MS = 10 * 60_000;
+
+/**
+ * Create the profile row if it is missing. `fresh` skips the memo — for the writes that cannot
+ * afford a stale one (the match-end persist, a payment claim), which run once per event rather
+ * than once per poll.
+ */
+export async function ensureProfile(userId: string, handle: string, fresh = false): Promise<void> {
+  const at = profileEnsured.get(userId);
+  if (!fresh && at !== undefined && Date.now() - at < PROFILE_MEMO_MS) return;
+  const made = await q<{ user_id: string }>(
     `insert into profiles (user_id, handle) values ($1, $2)
-     on conflict (user_id) do nothing`,
+     on conflict (user_id) do nothing
+     returning user_id`,
     [userId, handle],
   );
-  profileEnsured.add(userId);
+  // a row that did not exist a moment ago may be a DELETED account coming back (0054)
+  if (made.length) await restoreTombstone(userId);
+  profileEnsured.set(userId, Date.now());
+}
+
+/**
+ * RE-APPLY A DELETED ACCOUNT'S SANCTIONS to its re-created profile, and drop the tombstone
+ * (0054). ONE statement, so two machines creating the same profile cannot both restore — only
+ * the insert that actually made the row gets here — and a half-applied restore cannot exist.
+ *
+ * A suspension or lock that has run out in the meantime is not re-applied; the standing score
+ * keeps its ORIGINAL `healed_at`, so the idle days since the deletion heal it on the next read
+ * exactly as they would have had the account never left.
+ */
+async function restoreTombstone(userId: string): Promise<void> {
+  await q(
+    `with t as (delete from account_tombstones where user_id = $1 returning *),
+     s as (
+       update profiles p set suspended_until = t.suspended_until, updated_at = now()
+         from t
+        where p.user_id = t.user_id and t.suspended_until > now()
+       returning 1
+     )
+     insert into account_standing (user_id, score, restricted_until, healed_at, updated_at)
+     select t.user_id, least($2::int, coalesce(t.standing_score, $2::int)),
+            case when t.restricted_until > now() then t.restricted_until end,
+            coalesce(t.standing_healed_at, now()), now()
+       from t
+      where t.standing_score is not null or t.restricted_until > now()
+     on conflict (user_id) do nothing`,
+    [userId, STANDING_MAX],
+  );
 }
 
 export async function setHandle(userId: string, handle: string): Promise<void> {
@@ -3093,8 +3144,36 @@ export async function deleteAccount(userId: string): Promise<boolean> {
       `update kofi_payments set email = null where claimed_by = $1`,
       [userId],
     );
+    /* THE SANCTIONS STAY (0054). Deleting DSIM's data does not delete the Neon Auth identity,
+       so without this a suspended or ranked-locked player was one DELETE away from a clean
+       slate — `getSuspension` reads a missing profile as "not suspended" and `getStanding` a
+       missing row as a full score. Written only when there is something to carry, and before
+       the profile delete below cascades `account_standing` away. On conflict the STRICTER of
+       the two wins, so deleting twice cannot launder anything either. */
+    await query(
+      `insert into account_tombstones (user_id, suspended_until, standing_score, standing_healed_at, restricted_until)
+       select p.user_id,
+              case when p.suspended_until > now() then p.suspended_until end,
+              case when s.score < $2::int then s.score end,
+              case when s.score < $2::int then s.healed_at end,
+              case when s.restricted_until > now() then s.restricted_until end
+         from profiles p left join account_standing s on s.user_id = p.user_id
+        where p.user_id = $1
+          and (p.suspended_until > now() or s.score < $2::int or s.restricted_until > now())
+       on conflict (user_id) do update set
+         suspended_until = greatest(account_tombstones.suspended_until, excluded.suspended_until),
+         standing_score = least(account_tombstones.standing_score, excluded.standing_score),
+         standing_healed_at = coalesce(excluded.standing_healed_at, account_tombstones.standing_healed_at),
+         restricted_until = greatest(account_tombstones.restricted_until, excluded.restricted_until),
+         deleted_at = now()`,
+      [userId, STANDING_MAX],
+    );
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
+  }).then((gone) => {
+    // this machine's memo would otherwise skip re-creating the row (see `PROFILE_MEMO_MS`)
+    profileEnsured.delete(userId);
+    return gone;
   });
 }
 
@@ -3700,6 +3779,17 @@ export async function getStanding(userId: string): Promise<StandingSnapshot> {
     [userId, STANDING_MAX],
   );
   if (fast.length && !fast[0].heal_due) return snap(fast[0]);
+  if (!fast.length) {
+    // A DELETED account with a sanction to carry (0054) has no row here, and cannot be given
+    // one (the FK needs a profile). Answer READ-ONLY from the tombstone — the ranked lock is
+    // what `rankedLock` asks this for — and let `ensureProfile` re-apply it for real.
+    const tomb = await q<{ score: number | null; restricted_until: string | null }>(
+      `select standing_score as score, restricted_until from account_tombstones
+        where user_id = $1 and not exists (select 1 from profiles where user_id = $1)`,
+      [userId],
+    );
+    if (tomb.length) return snap({ score: tomb[0].score ?? STANDING_MAX, restricted_until: tomb[0].restricted_until });
+  }
 
   return tx(async (query) => {
     await query(
@@ -6999,12 +7089,19 @@ const NOT_SUSPENDED: Suspension = { until: null, reason: null };
 
 /** Is this account suspended RIGHT NOW? Read at the room-join and ranked-queue doors, so it
  *  answers `NOT_SUSPENDED` for an id with no profile row and for an expired deadline — a gate
- *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). */
+ *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). The one
+ *  exception is a DELETED account's tombstone (0054): that id is not unknown, it is banned. */
 export async function getSuspension(userId: string): Promise<Suspension> {
   if (!dbEnabled) return NOT_SUSPENDED;
+  // A DELETED account answers from its tombstone (0054) until its profile is re-created — the
+  // gap between a self-delete and the next API call is exactly when a banned player would try
+  // the door. The profile wins whenever it exists.
   const rows = await q<{ until: string | null; reason: string | null }>(
-    `select suspended_until as until, suspended_reason as reason
-       from profiles where user_id = $1`,
+    `select case when p.user_id is not null then p.suspended_until else t.suspended_until end as until,
+            p.suspended_reason as reason
+       from (select $1::text as id) x
+       left join profiles p on p.user_id = x.id
+       left join account_tombstones t on t.user_id = x.id`,
     [userId],
   );
   const until = rows[0]?.until ? new Date(rows[0].until).getTime() : null;

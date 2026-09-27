@@ -1282,7 +1282,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (typeof txn !== 'string' || !txn.trim()) {
         return json(400, { error: 'transaction id required' }), true;
       }
-      await ensureProfile(user.userId, user.handle);
+      // `fresh`: the claim writes `claimed_by`, an FK — a stale memo must not fail a payment
+      await ensureProfile(user.userId, user.handle, true);
       const r = await claimKofiPayment(user.userId, txn.trim());
       if (r.outcome === 'not-found') {
         return (

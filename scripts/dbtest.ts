@@ -4741,6 +4741,69 @@ async function main(): Promise<void> {
     await db.exec(`drop schema neon_auth cascade;`);
   }
 
+  /* ---- persistence hardening (races, atomicity, deleted accounts) ----------------------
+     Each block pins one fix. PGlite is ONE connection, so the row locks themselves cannot be
+     raced here; what is asserted is what a single connection CAN prove — the statement is
+     arithmetic on the row, the transaction rolls back whole, the delta survives a write that
+     landed after the read — plus, where the guard is a call that could be tidied away, the
+     source. */
+  {
+    const { persistVersusMatch } = await import('../server/ranked');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+
+    // ---- 0054: a deleted account's sanctions outlive it --------------------------------
+    await repo.ensureProfile('tomb-ban', 'Banned');
+    await db.query(
+      `update profiles set suspended_until = now() + interval '30 days', suspended_reason = 'names @someone'
+        where user_id = 'tomb-ban'`,
+    );
+    await db.query(
+      `insert into account_standing (user_id, score, restricted_until, healed_at)
+       values ('tomb-ban', 40, now() + interval '2 hours', now())`,
+    );
+    await repo.deleteAccount('tomb-ban');
+    const tomb = await db.query<Record<string, unknown>>(`select * from account_tombstones where user_id = 'tomb-ban'`);
+    check('tombstone: deleting a suspended, locked account leaves ONE tombstone row', tomb.rows.length === 1);
+    check(
+      'tombstone: ...holding no free text — the moderator’s reason does not survive the deletion',
+      tomb.rows.length === 1 && !('suspended_reason' in tomb.rows[0]) && Number(tomb.rows[0].standing_score) === 40,
+      JSON.stringify(Object.keys(tomb.rows[0] ?? {})),
+    );
+    check(
+      '⚠️ tombstone: the deleted id is STILL SUSPENDED before any profile exists (the self-delete ban evasion)',
+      (await repo.getSuspension('tomb-ban')).until !== null,
+    );
+    const tombStanding = await repo.getStanding('tomb-ban');
+    check(
+      'tombstone: ...and still ranked-locked at its old score, answered read-only',
+      tombStanding.score === 40 && tombStanding.restrictedUntil !== null,
+      JSON.stringify(tombStanding),
+    );
+    // the same process that ran the delete: its profile memo must not skip the re-create
+    await repo.ensureProfile('tomb-ban', 'Back again');
+    const back = await db.query<{ suspended_until: string | null }>(
+      `select suspended_until from profiles where user_id = 'tomb-ban'`,
+    );
+    check('⚠️ memo: ensureProfile re-creates a profile this process just deleted', back.rows.length === 1);
+    check('tombstone: ...and re-applies the suspension to it', !!back.rows[0]?.suspended_until);
+    const reStanding = await db.query<{ score: number; restricted_until: string | null }>(
+      `select score, restricted_until from account_standing where user_id = 'tomb-ban'`,
+    );
+    check(
+      'tombstone: ...and the standing score and lock',
+      Number(reStanding.rows[0]?.score) === 40 && !!reStanding.rows[0]?.restricted_until,
+      JSON.stringify(reStanding.rows[0]),
+    );
+    const spent = await db.query(`select 1 from account_tombstones where user_id = 'tomb-ban'`);
+    check('tombstone: ...and is spent by the restore', spent.rows.length === 0);
+
+    await repo.ensureProfile('tomb-clean', 'Clean');
+    await repo.deleteAccount('tomb-clean');
+    const clean = await db.query(`select 1 from account_tombstones where user_id = 'tomb-clean'`);
+    check('tombstone: a clean account leaves nothing behind — only a sanction is carried', clean.rows.length === 0);
+
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
