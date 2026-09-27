@@ -46,6 +46,8 @@ primary_region = 'iad'
   # ungated rendezvous would have opened tab hosting in production while LAN is held back.
   # Set here for the same reason as the line above, and deliberately NOT in fly.toml.
   LAN_SIGNALLING = '1'
+  # multi-core rooms, as in fly.toml (docs/scaling-multicore.md): shared-cpu-2x gets one worker
+  SIM_WORKERS = 'auto'
 
 [http_service]
   internal_port = 8080
