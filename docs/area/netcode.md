@@ -25,6 +25,22 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   command. Its stick is borrowed; its `buttons` are not — they come from `held`. A future release
   borrowed into a gap made a held button read up-down-up, and every edge-triggered toggle fired
   twice. Smoke: "input gap:" (shared).
+- ⚠️ **THE CLIENT RUNS AHEAD BY THE ROUND TRIP, AND NOT BY A TICK MORE** (`src/net/leadControl.ts`,
+  2026-09-27, owner: "lag / rubberbanding" in a solo record run at 50 ms). The reconcile keeps
+  only inputs stamped past the snapshot, so the clock came out as `max(own, newest snapshot)`,
+  about a downlink BEHIND the room: **0% of inputs reached the room on their tick** at 50 ms, every
+  tick ran `latest` a round trip late, and the "prediction" was the server's robot plus a tick.
+  Nothing ever lowered the clock either, so a server stall past its 0.25 s clamp left the client
+  further ahead for good, toward the forty-tick replay cap (22 ms of DECODE replay per snapshot,
+  and a freeze at the cap). `LeadController` reads `lead − (ackInputTick − serverTick)` (the round
+  trip in ticks) at each snapshot, aims for its worst over ~2 s plus one tick, clamped to 24, and
+  gets there by running the accumulator at most 6% fast or 15% slow — **never a burst**: stepping
+  the whole world forward in one frame re-simulates every ball from a stale state and flings them
+  on the next snapshot. `MAX_PREDICT_LEAD` stays the hard cap; a snapshot gap zeroes the rate; an
+  older server with no `ackInputTick` leaves the clock as it was. Cost: the reconcile replays the
+  lead every snapshot, ~6 steps at 66 ms (a few ms of DECODE, half that for Chain Reaction; a 3D
+  room replays through the predictor). Smoke: "lead:" (shared), with a real UPLINK — the older
+  latency probes delivered inputs instantly, which is why this never showed.
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).
