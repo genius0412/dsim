@@ -389,6 +389,7 @@ import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle, clamp } from '../src/mat
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
+import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
 import { Renderer } from '../src/render/renderer';
@@ -15449,6 +15450,224 @@ function pinScene(
     `dx=${gapDx[0]}`,
   );
   room.stop();
+}
+
+// ---- THE PREDICTION LEAD: every input reaches the room BEFORE its tick -------------------
+// The reconcile keeps only inputs stamped past the snapshot, so the client clock came out as
+// `max(own clock, newest snapshot tick)` — about a downlink BEHIND the room. Every input then
+// landed a round trip after its tick had been stepped, the room's exact-tick buffer never hit,
+// and the prediction was the server's robot plus a tick or two. Worse, nothing ever LOWERED the
+// clock, so a server stall left the client further ahead for good, toward the forty-tick replay
+// cap. `LeadController` (src/net/leadControl.ts) slews the clock onto "the round trip plus a
+// tick" by running the accumulator a few percent fast or slow.
+//
+// This drives a REAL solo record `Room` against a client that restates `stepServer` +
+// `reconcile` (GameController needs a DOM), over a network with a real UPLINK — the existing
+// latency probes deliver inputs instantly, which is exactly why this never showed. Each input
+// carries a per-tick stick value, so "the room applied tick k's command on tick k" is a direct
+// comparison rather than an inference from arrival times.
+{
+  type Snap = { serverTick: number; world: World; cmds: Map<number, RobotCommand>; ack: number };
+  const LAT_MS = 33; // one-way: a 66 ms round trip
+  const runLead = (opts: { control: boolean; seconds: number; stallAt?: number; stallMs?: number }) => {
+    let now = 0;
+    let s = 99;
+    const rnd = (): number => ((s = (s * 1664525 + 1013904223) >>> 0), s / 2 ** 32);
+    const oneWay = (): number => LAT_MS + rnd() * 4;
+    const down: { at: number; m: ServerMsg }[] = [];
+    const up: { at: number; tick: number; q: ReturnType<typeof quantizeCommand> }[] = [];
+    let lastDown = 0;
+    let lastUp = 0;
+    let setups: RobotSetup[] = [];
+    let seedW = 0;
+    const c: Client = {
+      id: 'lead-1',
+      send: (m) => {
+        if (m.t === 'matchStart') {
+          setups = m.setups;
+          seedW = m.seed;
+        }
+        lastDown = Math.max(lastDown, now + oneWay()); // one TCP stream: in order
+        down.push({ at: lastDown, m: JSON.parse(JSON.stringify(m, round3)) as ServerMsg });
+      },
+      player: { clientId: 'lead-1', name: 'lead', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+    };
+    const room = new Room('smoke-lead', () => {}, { kind: 'record', record: 'solo' });
+    room.add(c);
+    room.onMessage('lead-1', { t: 'start' });
+    room.advanceForTest(0); // drops the real-time timer; this loop owns the ticks
+    const mod = simModuleFor('decode');
+    const ctrl = new LeadController();
+    // the command a tick was stamped with, so the room's frame can be compared against it
+    const stamped = new Map<number, number>();
+    const stickFor = (tick: number): number => Math.round((((tick * 37) % 255) - 127)) / 127;
+    const ran = new Map<number, number>();
+    let world: World | null = null;
+    const baseBalls = new Map<number, Artifact>();
+    let applied = -1;
+    let pending: Snap | null = null;
+    let buf: { tick: number; cmd: RobotCommand }[] = [];
+    let lastServerTick = 0;
+    let got = false;
+    let acc = 0;
+    let cLast = 0;
+    let cNext = 0;
+    let sDue = 0;
+    const leads: { at: number; lead: number }[] = [];
+    const predictOne = (): void => {
+      const w = world as World;
+      const tick = w.tick + 1;
+      const cmd: RobotCommand = { driveX: stickFor(tick), driveY: 0.6, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
+      lastUp = Math.max(lastUp, now + oneWay());
+      up.push({ at: lastUp, tick, q: quantizeCommand(cmd) });
+      stamped.set(tick, localizeCommand(cmd).driveX);
+      const local = localizeCommand(cmd);
+      buf.push({ tick, cmd: local });
+      mod.step(w, SIM_DT, new Map([[0, local]]));
+    };
+    const endMs = opts.seconds * 1000;
+    for (now = 0; now < endMs; now++) {
+      while (up.length && up[0].at <= now) {
+        const u = up.shift()!;
+        room.onMessage('lead-1', { t: 'input', tick: u.tick, q: u.q, ack: applied >= 0 ? applied : undefined });
+      }
+      // the room: 60 Hz, a stall that freezes it, and the real loop's 0.25 s catch-up clamp
+      const stalled = opts.stallAt !== undefined && now >= opts.stallAt && now < opts.stallAt + (opts.stallMs ?? 0);
+      if (!stalled) {
+        if (now - sDue > 250) sDue = now - 250;
+        while (now >= sDue) {
+          room.advanceForTest(1);
+          // judged after the run: an uncontrolled client stamps a tick AFTER the room steps it
+          if (now > 5000) ran.set(room.tickForTest(), room.lastFrameForTest().get(0)?.driveX ?? NaN);
+          sDue += 1000 / 60;
+        }
+      }
+      while (down.length && down[0].at <= now) {
+        const m = down.shift()!.m;
+        if (m.t === 'matchStart' && !world) {
+          world = mod.createWorld('match', seedW, setups);
+          world.match.preCountdown = C_PRE_COUNTDOWN;
+          cLast = now;
+          cNext = now;
+        } else if (m.t === 'snapshot' && m.serverTick > applied) {
+          const balls = applyBallDelta(baseBalls, m.balls);
+          const w = unslimWorld(m.w, balls, (id) => (setups.find((x) => x.id === id) ?? setups[0]).spec);
+          pending = { serverTick: m.serverTick, world: w, cmds: new Map(), ack: m.ackInputTick };
+          applied = m.serverTick;
+        }
+      }
+      if (world && now >= cNext) {
+        const dtS = Math.min((now - cLast) / 1000, 0.25);
+        cLast = now;
+        cNext = now + 16 + Math.floor(rnd() * 3);
+        if (pending) {
+          const snap = pending as Snap;
+          pending = null;
+          if (opts.control) ctrl.sample(world.tick, snap.serverTick, snap.ack, now);
+          leads.push({ at: now, lead: world.tick - snap.serverTick });
+          world = snap.world;
+          lastServerTick = snap.serverTick;
+          got = true;
+          buf = buf.filter((b) => b.tick > snap.serverTick);
+          if (buf.length > 40) buf.splice(0, buf.length - 40);
+          for (const b of buf) mod.step(world, SIM_DT, new Map([[0, b.cmd]]));
+        }
+        acc += opts.control ? dtS * (1 + ctrl.rate(now)) : dtS;
+        let steps = 0;
+        while (acc >= SIM_DT && steps < 30) {
+          if (got && world.tick - lastServerTick >= 40) {
+            acc = 0;
+            break;
+          }
+          predictOne();
+          acc -= SIM_DT;
+          steps++;
+        }
+      }
+    }
+    room.stop();
+    let exact = 0;
+    let judged = 0;
+    for (const [t, dx] of ran) {
+      const want = stamped.get(t);
+      if (want === undefined) continue;
+      judged++;
+      if (Math.abs(dx - want) < 1e-9) exact++;
+    }
+    const leadAt = (from: number, to: number): number => {
+      const xs = leads.filter((l) => l.at >= from && l.at < to).map((l) => l.lead);
+      return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
+    };
+    return { onTime: judged ? exact / judged : 0, judged, leadAt, target: ctrl.target };
+  };
+
+  const off = runLead({ control: false, seconds: 7 });
+  const on = runLead({ control: true, seconds: 7 });
+  check(
+    'lead: WITHOUT the controller almost no input reaches the room on its own tick (the bug, non-vacuous)',
+    off.judged > 60 && off.onTime < 0.1,
+    `${(off.onTime * 100).toFixed(1)}% of ${off.judged} ticks at 66 ms RTT`,
+  );
+  check(
+    'lead: WITH it, >90% of ticks run the exact command the client stamped for them at 66 ms RTT',
+    on.judged > 60 && on.onTime > 0.9,
+    `${(on.onTime * 100).toFixed(1)}% of ${on.judged} ticks (was ${(off.onTime * 100).toFixed(1)}%)`,
+  );
+  check(
+    'lead: ...and it aims for the round trip plus a tick, not for the hard cap',
+    on.target !== null && on.target >= 4 && on.target <= 8 && on.leadAt(5000, 7000) <= 9,
+    `target ${on.target}, mean lead ${on.leadAt(5000, 7000).toFixed(1)} ticks over the last 2 s`,
+  );
+
+  // a 400 ms server freeze: the room's 0.25 s clamp throws away ~9 ticks it never gets back
+  const stallOff = runLead({ control: false, seconds: 10, stallAt: 5500, stallMs: 400 });
+  const stallOn = runLead({ control: true, seconds: 10, stallAt: 5500, stallMs: 400 });
+  const before = stallOn.leadAt(4500, 5500);
+  check(
+    'lead: WITHOUT the controller a server stall leaves the client permanently further ahead (non-vacuous)',
+    stallOff.leadAt(8500, 10000) - stallOff.leadAt(4500, 5500) >= 6,
+    `lead ${stallOff.leadAt(4500, 5500).toFixed(1)} before, ${stallOff.leadAt(8500, 10000).toFixed(1)} after`,
+  );
+  check(
+    'lead: WITH it, the lead comes back down within ~3 s of a server stall',
+    Number.isFinite(before) && stallOn.leadAt(8500, 10000) <= before + 2,
+    `lead ${before.toFixed(1)} before, ${stallOn.leadAt(8500, 10000).toFixed(1)} after (${stallOff.leadAt(8500, 10000).toFixed(1)} uncontrolled)`,
+  );
+}
+
+// ---- LeadController: its limits, as a unit --------------------------------------------------
+{
+  const k = new LeadController();
+  // a 600 ms round trip: the target clamps, well under the forty-tick hard cap
+  for (let i = 0; i < 40; i++) k.sample(1000 + i * 2, 1000 + i * 2, 1000 + i * 2 - 36, i * 33);
+  check('lead unit: the target never exceeds LEAD_TARGET_MAX, which sits under MAX_PREDICT_LEAD (40)', k.target === LEAD_TARGET_MAX && LEAD_TARGET_MAX < 40, String(k.target));
+  check('lead unit: ...and speeding up is capped at LEAD_MAX_FAST', k.rate(40 * 33) === LEAD_MAX_FAST, String(k.rate(40 * 33)));
+  check('lead unit: no snapshot for LEAD_GAP_MS ⇒ rate 0 (a stall is not chased)', k.rate(40 * 33 + LEAD_GAP_MS + 1) === 0);
+  const old = new LeadController();
+  for (let i = 0; i < 10; i++) old.sample(100 + i, 100 + i, undefined, i * 33);
+  check('lead unit: a server that sends no ackInputTick leaves the clock alone (rate 0)', old.rate(10 * 33) === 0 && old.target === null);
+  const gap = new LeadController();
+  for (let i = 0; i < 10; i++) gap.sample(100 + 2 * i, 100 + 2 * i, 104 + 2 * i, i * 33);
+  gap.sample(200, 150, 190, 9 * 33 + 400); // after a 400 ms hole: a stall reading, not a sample
+  check('lead unit: the snapshot after a gap is not taken as a sample', gap.rate(9 * 33 + 401) === 0);
+  // a lead far above target slows the clock, bounded by LEAD_MAX_SLOW
+  const hi = new LeadController();
+  for (let i = 0; i < 20; i++) hi.sample(1040 + 2 * i, 1000 + 2 * i, 1036 + 2 * i, i * 33);
+  const r = hi.rate(19 * 33);
+  check('lead unit: a lead far past target SLOWS the clock, never past LEAD_MAX_SLOW', r < 0 && r >= -LEAD_MAX_SLOW, String(r));
+}
+
+// ---- the controller is what game.ts actually runs (GameController needs a DOM) -----------------
+{
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('lead source: stepServer samples the lead BEFORE the reconcile, off the 3D clock in a 3D room',
+    /const clock = this\.predicted3d\(\) \? this\.predictTick : this\.world\.tick;\s*this\.lead\.sample\(clock, snap\.serverTick, snap\.ackInputTick, performance\.now\(\)\);\s*\}\s*this\.reconcile\(snap\);/.test(game));
+  check('lead source: frameLogic folds the rate in ONLINE only, so solo adds exactly dt',
+    /this\.acc \+= this\.session \? dtS \* \(1 \+ this\.lead\.rate\(performance\.now\(\)\)\) : dtS;/.test(game));
+  check('lead source: a rebuilt match resets the controller', /this\.gotSnapshot = false;\s*this\.lead\.reset\(\);/.test(game));
+  check('lead source: MAX_PREDICT_LEAD is still the hard cap', /const MAX_PREDICT_LEAD = 40;/.test(game));
 }
 
 // ---- predict/reconcile parity ----------------------------------------------
