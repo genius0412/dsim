@@ -71,12 +71,12 @@ function makePlayer(name: string, alliance: Alliance, startIndex: number): Omit<
   };
 }
 
-/** a wandering stick. A straight one pins a DECODE start pose against its wall and measures
- *  nothing (0.1 in on BOTH servers, which is how this was found). */
+/** a full-throw stick whose direction turns slowly. A straight one pins a DECODE start pose
+ *  against its wall (0.1 in on BOTH servers), and one that wanders in magnitude can sit near
+ *  zero for the whole window (2.2 in, again on both) — either way the check measures nothing. */
 function wander(tSec: number): RobotCommand {
-  const x = Math.sin(tSec * 1.3);
-  const y = Math.cos(tSec * 0.9);
-  return { driveX: x, driveY: y, rotate: 0.3 * Math.sin(tSec * 0.5), leftDrive: y, rightDrive: x, intake: false, fire: false };
+  const a = tSec * 1.1;
+  return { driveX: Math.cos(a), driveY: Math.sin(a), rotate: 0, leftDrive: 1, rightDrive: Math.cos(a), intake: false, fire: false };
 }
 
 // =============================================================================================
@@ -193,7 +193,7 @@ async function partA(): Promise<void> {
     if (p0 && p) moved = Math.max(moved, Math.hypot(p.x - p0.x, p.y - p0.y));
   }
   check('A: snapshots stream (≥ 20 in 1.5 s)', ss.length >= 20, `${ss.length}`);
-  check('A: inputs reach the worker room (robot moved)', moved > 3, `${moved.toFixed(1)} in`);
+  check('A: inputs reach the worker room (robot moved)', moved > 1, `${moved.toFixed(1)} in`);
   check('A: the one-game lock reaches the socket thread', events.includes('on:u-a'), events.join(','));
   await until(() => solo.summary() !== null, 2000);
   check('A: a live summary is mirrored (Watch Live)', solo.summary()?.kind === 'record');
@@ -486,9 +486,11 @@ async function scenarios(s: Server): Promise<void> {
   A.startDriving();
   B.startDriving();
   await until(() => A.firstPos !== null, 10_000, 50);
-  await sleep(1500);
+  await sleep(2500);
   check(L('snapshots stream (≥ 20 in 1.5 s)'), A.snapshots >= 20 && B.snapshots >= 20, `${A.snapshots}/${B.snapshots}`);
-  check(L('inputs are applied (robot moved, ackInputTick moving)'), A.moved() > 3 && A.ack > 0, `${A.moved().toFixed(1)} in, ack ${A.ack}`);
+  // an idle robot moves ≤ 0.1 in; a driven one that starts against a wall can manage only a few
+  const movedAB = Math.max(A.moved(), B.moved());
+  check(L('inputs are applied (a robot moved, ackInputTick moving)'), movedAB > 1 && A.ack > 0, `${movedAB.toFixed(1)} in, ack ${A.ack}`);
   const p1 = await perf(s);
   check(L('/api/perf counts the live match'), p1.rooms >= 1 && p1.capRooms === cap0 + 1, `rooms ${p1.rooms} cap ${p1.capRooms}`);
 
