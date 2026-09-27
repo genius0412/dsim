@@ -20,7 +20,7 @@ import {
 } from '../games/biobuzz/graphics/store';
 import { installViewKey, toggleViewPref, viewKeyName } from '../games/biobuzz/graphics/viewKey';
 // the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
-import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
+import { disposePhysics3dFor, initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { resolveReplayView } from './replayViewMode';
@@ -312,7 +312,7 @@ export function ReplayView({
       ensurePhysics(r).then(
         () => {
           if (dead) return;
-          player.current = new ReplayPlayer(r);
+          replacePlayer(new ReplayPlayer(r));
           renderer.current = new Renderer();
           setTotal(Math.max(1, r.ticks));
           setTick(0);
@@ -331,7 +331,11 @@ export function ReplayView({
     };
     if (preloadReplay) {
       use(preloadReplay);
-      return;
+      // the 3D chunk may still be loading when the viewer is left: the `dead` guard in `use`
+      // only works if something sets it
+      return () => {
+        dead = true;
+      };
     }
     if (!replayId) {
       setError('No replay specified.');
@@ -554,6 +558,8 @@ export function ReplayView({
    */
   useEffect(
     () => () => {
+      // the on-screen player's 3D world, if it has one (see `replacePlayer`)
+      replacePlayer(null);
       abortCapture.current = true;
       discard.current = true;
       const cur = recorder.current;
@@ -684,10 +690,24 @@ export function ReplayView({
     playingRef.current = v;
     setPlaying(v);
   };
+  /**
+   * SWAP THE PLAYER, FREEING THE ONE IT REPLACES.
+   *
+   * A `'3d'` replay's world is solved in a Rapier world that lives in wasm linear memory, and
+   * only `disposePhysics3dFor` returns it — the `WeakMap` holding it cannot (see
+   * `disposeEngineFor`). Every backward scrub, "play again" and restart used to build a fresh
+   * player and drop the old one, leaking a whole 3D world each time for the life of the tab.
+   * A no-op for a 2D replay, and before the 3D chunk has ever loaded.
+   */
+  const replacePlayer = (next: ReplayPlayer | null): void => {
+    const prev = player.current;
+    player.current = next;
+    if (prev && prev !== next) disposePhysics3dFor(prev.world);
+  };
   const rebuild = (): void => {
     if (!replay.current) return;
     scrubTo.current = null;
-    player.current = new ReplayPlayer(replay.current);
+    replacePlayer(new ReplayPlayer(replay.current));
     sync();
   };
   /** run it out to the recorded end — how a moderator gets the FINAL score the misscore claim
@@ -705,7 +725,7 @@ export function ReplayView({
     let p = player.current!;
     if (target < p.world.tick) {
       p = new ReplayPlayer(r);
-      player.current = p;
+      replacePlayer(p);
     }
     while (p.world.tick < target && !p.done) p.stepOnce();
     sync();
@@ -999,6 +1019,9 @@ export function ReplayView({
       rend.setScene(null);
       scene?.dispose();
       sceneHost?.remove();
+      // ...and nor does the export's own player: a 3D replay's world is wasm memory that only
+      // this returns (see `replacePlayer`)
+      disposePhysics3dFor(shot.world);
     }
 
     setCapturing(null);
