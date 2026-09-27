@@ -88,7 +88,9 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     // o.replay.balanceVersion here; saveReplay takes the season (and game) separately.
     const bv = await currentSeasonNumber(o.replay.balanceVersion, game);
     await ensureSeason(bv, game, simModuleFor(game).initialAct);
-    for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player');
+    // `fresh`: past the memo. A deleted account that is still signed in has no row, and a stale
+    // memo here turned that into an FK violation in the middle of everybody's result.
+    for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player', true);
     const replayId = await saveReplay(o.replay, bv, game);
 
     /**
