@@ -219,6 +219,15 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   - `server/warmup.ts`: a headless busy match per game after physics init, so a woken satellite's
     first player does not pay for the JIT (their match cost 30–60% more). Sliced and never
     awaited — `/health` and joins are served throughout. `WARMUP=0` is the kill switch.
+- ⚠️ **`SIM_WORKERS=N` RUNS THE ROOMS IN WORKER THREADS; UNSET (THE DEFAULT) IS THE OLD SERVER**
+  (2026-09-27, `docs/scaling-multicore.md` top). Main keeps sockets/HTTP/matchmaker/DB/presence
+  and holds a `RoomHandle` (`server/roomPool.ts`) where it used to hold a `Room`; the worker
+  (`server/roomHost.ts`) runs the unchanged `Room`. Rules for anyone touching a `Room` call site
+  in `server/index.ts`: go through `makeRoom`; a synchronous READ is answered from the worker's
+  pushed `RoomMirror` (a new one needs a field there); a call whose RESULT you need may be a
+  Promise (`isPromise`, and await it only then so the in-process path stays synchronous); and a
+  new constructor callback needs a message in `server/roomWire.ts`. Set `UV_THREADPOOL_SIZE` in
+  the environment with it. Checks: `npm run test:workers` (real threads, run by `npm test`).
 - **CONNECTION-QUALITY HUD**: `ping`/`pong` probe → smoothed RTT; snapshot arrival rate +
   inter-arrival JITTER measured client-side → SMOOTH/OK/CHOPPY dot. **Jitter is the real
   choppiness signal** — surface it when diagnosing lag reports.

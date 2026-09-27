@@ -5,7 +5,13 @@ Measured 2026-09-10 on branch `perf-load`, against the real server (`npm run ser
 exactly as `game.ts` does. Raw JSON in `.loadtest-out/`, reproduced by `scripts/loadsweep.sh` and
 tabulated by `scripts/loadsummary.ts`.
 
-## ⚠️ MULTI-CORE — URGENT, NOT STARTED (owner, 2026-09-24)
+## ⚠️ MULTI-CORE — BUILT, OFF BY DEFAULT (2026-09-27; was "URGENT, NOT STARTED" 2026-09-24)
+
+`SIM_WORKERS=N` + `UV_THREADPOOL_SIZE` move rooms into worker threads — see the top of
+`docs/scaling-multicore.md` for how, the rollback, and the measurement (4-vCPU Linux: ~20 driven
+rooms in-process → ~30 with 2 workers → ~60 with 4). Unset, everything below still describes the
+server exactly. The paragraph that follows is the 2026-09-24 state, kept for the record.
+
 
 The game server is ONE Node process on ONE core: nothing in `server/` uses `worker_threads` or
 `cluster`. Every room on a machine shares that core, so a bigger VM (`shared-cpu-4x`, a
