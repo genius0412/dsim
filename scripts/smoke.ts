@@ -21207,6 +21207,78 @@ const dumperSetup = (): RobotSetup => {
         `errOn=${errOn.toFixed(2)} errOff=${errOff.toFixed(2)}`,
       );
     }
+
+    // ...AND IT TURNS A TANK. The shared drive model steers a tank (and a butterfly in tank mode)
+    // only from `leftDrive`/`rightDrive` and ignores `rotate`, and the assist used to write only
+    // `rotate` — so a tank drum held on the fire button never turned, the fire gate never opened
+    // and it never fired at all (measured: 0.00 rad and 0 of 5 over two seconds, facing away).
+    // BIOBUZZ found the same thing; the assist now writes the side drives too.
+    {
+      const tankAim = (drivetrain: 'tank' | 'butterfly') => {
+        const s = chainSetup(0, 'blue');
+        s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain };
+        s.assists = { ...DEFAULT_ASSISTS, autoFire: false, autoIntake: false };
+        const gw = createChainWorld('match', 991, [s]);
+        gw.match.phase = 'teleop';
+        gw.match.phaseTimeLeft = 120;
+        const rob = gw.robots[0];
+        if (drivetrain === 'butterfly') rob.butterflyTank = true;
+        rob.pos = { x: -30, y: 0 };
+        rob.heading = Math.PI / 2; // 90° off the goal (+x)
+        rob.hopper = Array(5).fill('green');
+        runChain(gw, cmd({ fire: true }), 2);
+        return { err: Math.abs(wrapAngle(rob.heading - chainGoalAimHeading(rob))), left: rob.hopper.length };
+      };
+      for (const dt of ['tank', 'butterfly'] as const) {
+        const { err, left } = tankAim(dt);
+        check(
+          `chain aim assist: a ${dt === 'tank' ? 'TANK' : 'BUTTERFLY (tank mode)'} drum held on fire turns onto the goal and fires`,
+          err < 0.1 && left === 0,
+          `heading error ${err.toFixed(2)} rad, ${left} of 5 left`,
+        );
+      }
+
+      // A REPLAY OF IT RE-SIMULATES. The side drives the assist writes are derived from the
+      // recorded command every tick, so they are not stored — which is exactly why this is
+      // worth a check: a tank run that hunts on its side drives, then holds fire so the assist
+      // takes the sticks, must come back identical through the recorder and a JSON trip. Not
+      // vacuous: it has to have scored (before the fix a manual-fire tank scored nothing).
+      const setup: RobotSetup = {
+        id: 0,
+        alliance: 'blue',
+        spec: coerceSpec({ ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain: 'tank' }, DEFAULT_SPEC, 'chain'),
+        assists: { ...DEFAULT_ASSISTS, fieldCentric: false, autoIntake: true, autoFire: false },
+        startIndex: 0,
+      };
+      const src: CommandSource = (_tick, w) => {
+        const me = w.robots[0];
+        let target: { x: number; y: number } | null = me.hopper.length >= 3 ? { x: CHAIN_HALF_X, y: 0 } : null;
+        if (!target) {
+          let bestD = Infinity;
+          for (const b of w.balls) {
+            if (b.state.kind !== 'ground') continue;
+            const d = hyp(b.pos.x - me.pos.x, b.pos.y - me.pos.y);
+            if (d < bestD) { bestD = d; target = b.pos; }
+          }
+        }
+        const err = target ? wrapAngle(datan2(target.y - me.pos.y, target.x - me.pos.x) - me.heading) : 0;
+        const turn = Math.max(-0.8, Math.min(0.8, err * 1.5));
+        const loaded = me.hopper.length >= 3;
+        return new Map([[0, cmd({ leftDrive: (loaded ? 0.2 : 0.7) - turn, rightDrive: (loaded ? 0.2 : 0.7) + turn, intake: true, fire: loaded })]]);
+      };
+      const run = runRecordMatch(33, [setup], src, { mode: 'free', stopTick: 1500, game: 'chain' });
+      const scored = run.world.chain!.scored.blue;
+      check('replay/tank drum, manual fire: the recorded run actually scored', scored > 0, `scored=${scored}`);
+      check(
+        'replay/tank drum, manual fire: re-simulating the replay reproduces the run exactly',
+        worldHash(simulateReplay(run.replay)) === worldHash(run.world),
+      );
+      const stored: Replay = JSON.parse(JSON.stringify(run.replay));
+      check(
+        'replay/tank drum, manual fire: survives the JSON round-trip a stored replay takes',
+        worldHash(simulateReplay(stored)) === worldHash(run.world) && stored.setups[0].spec.drivetrain === 'tank',
+      );
+    }
   }
 
   // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
@@ -21673,6 +21745,37 @@ const dumperSetup = (): RobotSetup => {
     rob.vel = { x: 0, y: 0 };
     beamBlock(w);
     check('chain beams: a robot that cannot clear a beam is pushed off it', !robotIntersectsRect(rob, beam.rect));
+    // ...and a FRONT-ONLY intake is held off it by its own footprint, not by a radius about the
+    // chassis centre. The intake grows one end only, so the footprint's centre sits ahead of
+    // `r.pos`; measured from `r.pos`, a nose-first drive parked the intake a full inch OVER the
+    // beam (footprint top +0.5 against the beam's near face at -0.5). Nose-in and tail-in must
+    // now stop at the SAME gap, which is what a symmetric keep-out about the footprint means.
+    {
+      const stopAt = (heading: number, dir: 1 | -1): number => {
+        const spec = coerceSpec({ ...DEFAULT_SPEC, groundClearance: 0.5, intakeMount: 'front' }, DEFAULT_SPEC, 'chain');
+        const bw = createChainWorld('free', 1, [{ ...chainSetup(0, 'blue'), spec, assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
+        bw.balls.length = 0;
+        const br = bw.robots[0];
+        br.pos = { x: 44, y: -20 };
+        br.heading = heading;
+        br.vel = { x: 0, y: 0 };
+        const drive = cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
+        for (let i = 0; i < 180; i++) chainStep(bw, SIM_DT, new Map([[br.id, drive]]));
+        check(
+          `chain beams: a front-intake robot that cannot clear a beam stops OFF it (${dir > 0 ? 'nose' : 'tail'} first)`,
+          !robotIntersectsRect(br, CHAIN_BEAMS[0].rect),
+          `footprint top ${Math.max(...robotCorners(br).map((q) => q.y)).toFixed(3)} vs beam ${CHAIN_BEAMS[0].rect.y0}`,
+        );
+        return Math.max(...robotCorners(br).map((q) => q.y));
+      };
+      const nose = stopAt(Math.PI / 2, 1);
+      const tail = stopAt(-Math.PI / 2, -1);
+      check(
+        'chain beams: ...and nose-first and tail-first stop at the same gap from the beam',
+        Math.abs(nose - tail) < 0.01,
+        `nose ${nose.toFixed(3)} tail ${tail.toFixed(3)}`,
+      );
+    }
   }
 
   // ---- CATALYST MECHANISMS: three archetypes, configurable type AND mount ----------
