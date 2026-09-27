@@ -41,13 +41,16 @@ export function Profile({
   // is always rendered inside AppShell's FriendsProvider
   const friends = useFriendsCtx();
   const isOwnProfile = signedIn && viewerUsername != null && viewerUsername === username;
+  // THE GAME GOES ON BOTH FETCHES, as it does on My Stats: without it the server falls back to
+  // DECODE, so a BIOBUZZ profile showed the player's DECODE career
+  const game = nav.game;
   const loadStats = useCallback(
-    (season?: number) => fetchUserStatsByUsername(username, season),
-    [username],
+    (season?: number) => fetchUserStatsByUsername(username, season, game),
+    [username, game],
   );
   const fetchPage = useCallback(
-    (opts: MatchHistoryOpts) => fetchUserMatchesByUsername(username, opts),
-    [username],
+    (opts: MatchHistoryOpts) => fetchUserMatchesByUsername(username, { ...opts, game }),
+    [username, game],
   );
 
   const head = (stats: UserStats | null) => (

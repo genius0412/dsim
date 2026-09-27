@@ -91,6 +91,46 @@ works; until then set `VITE_ZENITH_URL`.
   mirror `constant`/`linear`/`facePoint` headings for the other alliance. DSIM mirrors them.
 
 ---
+
+# HANDOFF — 2026-09-26b (branch `fix/ramp-pad-default`: Deploy ramp's pad default moves to R3)
+
+**State: PR into `alpha`.** `npm test`: BIOBUZZ ALL PASS; shared result in the PR body. Client only, no deploy.
+
+- **Report:** D-pad down is the wrong default for Deploy ramp: players said it restarted their run. Separately, the owner asked for Shift on the keyboard, then chose to keep Z, because Shift is Intake in every game.
+- **Fix (`bindings.ts`):** `bbRamp` pad default `[13]` → `[11]` (R3, the one button BIOBUZZ left free). D-DOWN is now unbound by default.
+- **Existing players keep their binds (owner requirement):** a stored map with a ramp row keeps it, D-DOWN included. A map with NO ramp row takes R3, but `mergeBindings` now applies the keyboard's new-action rule to pad singles too: R3 is dropped if a conflicting action holds it in main or in a BIOBUZZ override. No pad fallback: in that case the ramp loads unbound and the player binds it.
+- **Tests:** seven `ramp pad:` checks in `scripts/smoke.ts` after the `ramp keys:` block. Four binding fixtures used R3 as their "free button"; they now use D-DOWN. The stale-blob fixture stored Shoot on X (Park's default), so the new pad rule rightly left Park unbound; it now stores D-DOWN.
+- **Known leftover:** players who saved their settings while D-DOWN was the default have `bbRamp: [13]` stored and keep it. Moving them would break "existing binds stay". They can rebind on the Controls screen.
+---
+
+# HANDOFF — 2026-09-26 (branch `fix/ramp-deploy-keys`: Deploy ramp loaded unbound on old keyboard maps)
+
+**State: PR into `alpha`.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: shared ALL PASS; BIOBUZZ fails only the two wall-clock perf checks (`2v2 BIOBUZZ ROOM tick <= 1.2x`, `bot-driven 2v2 step3d p95`), which fail identically on a clean `origin/alpha` on this machine. Client only, no deploy.
+
+- **Report:** for some players the deployable ramp never deployed from the keyboard, whatever key they tried.
+- **Cause:** maps saved 2026-09-12..19 hold Place POLLEN on its old default Z and no Deploy ramp. `mergeBindings` gives a new action its default only if no stored bind holds it, so the ramp got no key at all. Rebinding it to Shift, K or Z is refused (Intake, Place POLLEN). Any save since wrote `bbRamp: []` back. Pads have no such rule, so pad players were fine.
+- **Fix (`bindings.ts`):** `FRESH_FALLBACK_KEYS` — a new action whose default is taken takes the first free fallback (ramp: G, then M) instead of loading unbound. A stored empty ramp beside Place POLLEN still on exactly `['z']` is treated as new again, so players already hit are repaired on load. A ramp unbound on today's map (Place POLLEN on C) stays unbound. The camera keeps the owner's "starts unbound" rule.
+- **Checks:** five `ramp keys:` checks in `scripts/smoke.ts` beside the view-key migration checks. Verified in the app too: a seeded broken map loaded with the ramp on G, and G deployed it in 3D free drive.
+- **Owner call:** G is my pick for the fallback. The sim is not involved: every build, mount and mode deploys in a headless sweep, and the only refusals are the swing guard near walls and the hive.
+---
+
+# HANDOFF — 2026-09-25l (a player's profile shows the game you are viewing)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `docaudit` pass. Client only, no deploy needed (the server already honoured `?game=` on both profile routes).
+
+- **Owner:** opening someone's BIOBUZZ career showed their DECODE one.
+- **Cause:** the public profile page (`src/ui/Profile.tsx`) sent no `game` on its stats or match-history fetch, and the server falls back to DECODE. My Stats always passed it; `App.tsx` never handed Profile the game.
+- **Fix:** `fetchUserStatsByUsername` takes a `game`, Profile passes `nav.game` to both fetches, App passes `settings.game`. Smoke check in `scripts/smoke.ts` ("profile: stats and match history…").
+
+# HANDOFF — 2026-09-25k (3D name labels sit on the robot, not 30 in above it)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `bundleaudit` pass. Client only, no deploy needed.
+
+- **Owner:** names over other robots were "WAY too high".
+- **Cause:** the 3D overlay (`drawProjectedOverlay` in `src/render/renderer.ts`) anchored every label at a flat `LABEL_Z = 30` in above the robot's base. That dates from when a build could stand 29 in; the height dial now stops at 18 and defaults to 14.
+- **Fix:** anchor at `bbHeightNow(world, r.spec) + LABEL_CLEARANCE` (3 in), so the label sits just over the robot's own top (stowed height pre-match, deployed after). Smoke check in `scripts/smoke-biobuzz/render.ts`. The 2D label offset (14 in screen-up from the centre) is unchanged.
+- Not seen in a browser: labels only draw over OTHER robots, and offline solo practice has one.
+
 # HANDOFF — 2026-09-25i (production = alpha = `9a91323`)
 
 - **Everything on `alpha` as of 5419acb3 is on production**: `main` = `9a91323`, Vercel and every Fly machine (announced deploy, `/health` ok, satellites re-sized). Includes the combined Vercel history display, counting all traffic (DNT/GPC no longer gate), `LEGAL_UPDATED` September 25, 2026 (every signed-in account accepts once), controller hold-to-remove, and the budget-lane test change.

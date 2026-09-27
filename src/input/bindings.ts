@@ -475,8 +475,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
        * old any-button test, no state", so the first default combo moves EVERY player onto the
        * resolver's stateful path to give one season one button.
        *
-       * RS (11) comes free as a result, and is LEFT free — the bindings lane uses it as an
-       * "assumed unbound button" fixture in two independent tests.
+       * RS (11) comes free as a result, and Deploy ramp takes it (below).
        */
       /* PAD_ACTIONS ORDER, for the reason the keys list gives. */
       catalyst: [4], // LB
@@ -488,8 +487,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // D-LEFT. Its own direction, one step from the two other d-pad actions: two actions on
       // one index is a silent double-fire, not a conflict the rebinder reports.
       bbNectar: [14],
-      // D-DOWN — drop / fold the deployable ramp. Also momentary, so the same trade.
-      bbRamp: [13],
+      // R3 (right stick click) — drop / fold the deployable ramp. It was D-DOWN (13), and players
+      // reported that pressing it restarted their run; R3 was the one button BIOBUZZ left free.
+      // A saved map keeps its own ramp button: this only reaches a map that has never had one,
+      // and `mergeBindings` will not stack it on a button such a map already uses.
+      bbRamp: [11],
       bbPass: [10], // L3 — shared with `fling`
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
@@ -508,6 +510,17 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     menuButton: PAD_MENU_BUTTON,
     navEnabled: true,
   },
+};
+
+/**
+ * WHERE A NEW ACTION GOES WHEN ITS DEFAULT KEY IS TAKEN in a stored map (`mergeBindings`), tried
+ * in order. An action not listed here loads UNBOUND in that case, which is right for a view key
+ * (the camera still works on its own) and wrong for a mechanism: an unbound Deploy ramp is a
+ * part of the robot the player cannot use, with nothing on screen saying why. G sits by the
+ * mechanism row, and no BIOBUZZ action has ever defaulted to it.
+ */
+const FRESH_FALLBACK_KEYS: Partial<Record<KeyAction, readonly string[]>> = {
+  bbRamp: ['g', 'm'],
 };
 
 export function cloneBindings(b: ControlBindings): ControlBindings {
@@ -607,6 +620,8 @@ export function mergeBindings(saved: unknown): ControlBindings {
   const out = cloneBindings(DEFAULT_BINDINGS);
   if (typeof saved !== 'object' || saved === null) return out;
   const s = saved as { keys?: unknown; pad?: unknown };
+  /** pad actions the stored map has never had a button list for — see the rule after `perGame` */
+  const freshPad: PadAction[] = [];
   if (typeof s.keys === 'object' && s.keys !== null) {
     const keys = s.keys as Record<string, unknown>;
     const fresh: KeyAction[] = [];
@@ -618,13 +633,39 @@ export function mergeBindings(saved: unknown): ControlBindings {
         fresh.push(a);
       }
     }
+    /* ⚠️ THE RAMP'S CASUALTIES, REPAIRED (2026-09-26). Maps saved 2026-09-12..19 carry Place
+       POLLEN on its OLD default Z and no Deploy ramp at all, so the rule below gave the ramp no
+       key: Z was taken, and nothing else was offered. Pads were never touched, which is why
+       only keyboard players reported "the ramp never deploys". Any save since then wrote that
+       `[]` back, so the blob no longer looks older than the ramp. A stored empty ramp beside
+       Place POLLEN still on exactly ['z'] is that casualty, not a choice, and is re-treated as
+       new here. A player on today's map who unbinds the ramp has Place POLLEN on C, and keeps
+       their empty row. */
+    if (
+      !fresh.includes('bbRamp') &&
+      out.keys.bbRamp.length === 0 &&
+      out.keys.bbPlace.length === 1 &&
+      out.keys.bbPlace[0] === 'z'
+    ) {
+      out.keys.bbRamp = [...DEFAULT_BINDINGS.keys.bbRamp];
+      fresh.push('bbRamp');
+    }
     // AN ACTION NEWER THAN THE BLOB takes its default only where no bind the player MADE holds
     // it. BIOBUZZ's Deploy ramp used to default to L, the camera's key now: a player still on
     // that map keeps L on the ramp, and the camera starts unbound (a red dot on BIOBUZZ).
-    for (const a of fresh) {
-      out.keys[a] = out.keys[a].filter(
-        (k) => !KEY_ACTIONS.some((o) => o !== a && !fresh.includes(o) && actionsConflict(o, a) && out.keys[o].includes(k)),
+    // ...unless it names a `FRESH_FALLBACK_KEYS` entry: a mechanism with no key is a dead robot
+    // part, so it takes the first free fallback instead of loading unbound.
+    const takenFor = (a: KeyAction, k: string, skipFresh: boolean): boolean =>
+      KEY_ACTIONS.some(
+        (o) => o !== a && !(skipFresh && fresh.includes(o)) && actionsConflict(o, a) && out.keys[o].includes(k),
       );
+    for (const a of fresh) {
+      out.keys[a] = out.keys[a].filter((k) => !takenFor(a, k, true));
+    }
+    for (const a of fresh) {
+      if (out.keys[a].length > 0) continue;
+      const k = FRESH_FALLBACK_KEYS[a]?.find((f) => !takenFor(a, f, false));
+      if (k !== undefined) out.keys[a] = [k];
     }
   }
   if (typeof s.pad === 'object' && s.pad !== null) {
@@ -650,6 +691,8 @@ export function mergeBindings(saved: unknown): ControlBindings {
         const v = buttons[a];
         if (Array.isArray(v) && v.every(isButtonIndex)) {
           out.pad.buttons[a] = v as number[];
+        } else if (!(a in buttons)) {
+          freshPad.push(a);
         }
       }
     }
@@ -695,6 +738,27 @@ export function mergeBindings(saved: unknown): ControlBindings {
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;
+  // THE KEYBOARD'S NEW-ACTION RULE, ON THE PAD. An action newer than the stored map takes a
+  // default button only where no conflicting action the player already has holds it — in main,
+  // or in the override of a game both actions are used in. Without it a new default lands on a
+  // button the player put elsewhere, and one press fires both (Deploy ramp moved to R3 on
+  // 2026-09-26, and a stored map can have R3 on anything). Singles only: a single never
+  // conflicts with a combo that contains it.
+  for (const a of freshPad) {
+    out.pad.buttons[a] = out.pad.buttons[a].filter(
+      (i) =>
+        !PAD_ACTIONS.some(
+          (o) =>
+            o !== a &&
+            !freshPad.includes(o) &&
+            actionsConflict(o, a) &&
+            (out.pad.buttons[o].includes(i) ||
+              GAME_IDS.some(
+                (g) => actionUsedBy(a, g) && actionUsedBy(o, g) && !!out.perGame?.[g]?.padButtons?.[o]?.includes(i),
+              )),
+        ),
+    );
+  }
   return out;
 }
 

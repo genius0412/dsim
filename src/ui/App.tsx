@@ -2371,7 +2371,7 @@ export function App() {
           username={route.username}
           signedIn={signedIn}
           viewerUsername={viewerUsername}
-          nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
+          nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile }}
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
