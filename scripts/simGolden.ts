@@ -15,7 +15,8 @@
  *
  *  · a change meant to be BYTE-IDENTICAL (a refactor, a speed-up) proves itself: same hashes;
  *  · a change that moves output cannot land silently under an old SIM_VERSION: the check fails
- *    and says to bump the number (which retires older replays, deliberately) and add a row.
+ *    and says to bump the number (older replays then play as `behaviour` DRIFT, labelled, which
+ *    is the point) and add a row.
  *
  * WHAT IS HASHED: every field of the world, keys SORTED (so reordering an object literal is not
  * a change), numbers at full precision (`JSON.stringify` writes the shortest round-trip form, so
@@ -140,7 +141,7 @@ export function judgeGolden(
     false,
     `step() output CHANGED under SIM_VERSION ${simVersion} (first divergence by tick ${tick}). ` +
       `If this change was meant to be byte-identical, it is not: find the regression. If it is a ` +
-      `real behaviour change, bump SIM_VERSION in src/config.ts (that retires older replays — ` +
+      `real behaviour change, bump SIM_VERSION in src/config.ts (older replays then play as drift — ` +
       `say so in the commit) and add a new row to ${tableFile}:  ${paste}`,
   ];
 }
