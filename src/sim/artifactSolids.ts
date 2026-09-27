@@ -48,6 +48,32 @@ export interface RobotSolids {
   /** artifacts the robot is carrying, at their storage slots. Solid to everything except the
    *  artifact a gate is expelling into the mouth (see `world.ts`). */
   held: SolidShape[];
+  /**
+   * The radius, about the robot's origin, of a circle containing every shape above — so a caller
+   * can skip an artifact that cannot possibly reach the robot without asking each shape
+   * (`robotPenetration`). A CACHE of the shapes, not a description of the robot: it is filled by
+   * `robotSolids` from the shapes it has just built, and a producer that leaves it out (a game's
+   * own `artifactSolids`) simply gets no early-out. Anything that edits the shape lists after
+   * construction must refresh it with `solidsBound` or delete it.
+   */
+  bound?: number;
+}
+
+/** the farthest any point of a shape lies from the robot origin (robot frame) */
+function shapeReach(sh: SolidShape): number {
+  if (sh.kind === 'circle') return hyp(sh.cx, sh.cy) + sh.r;
+  if (sh.kind === 'box') return hyp(Math.abs(sh.cx) + sh.hx, Math.abs(sh.cy) + sh.hy);
+  let m = 0;
+  for (const q of sh.pts) m = Math.max(m, hyp(q.x, q.y));
+  return m;
+}
+
+/** see `RobotSolids.bound` */
+export function solidsBound(s: Pick<RobotSolids, 'chassis' | 'structure' | 'held'>): number {
+  let m = shapeReach(s.chassis);
+  for (const sh of s.structure) m = Math.max(m, shapeReach(sh));
+  for (const sh of s.held) m = Math.max(m, shapeReach(sh));
+  return m;
 }
 
 /**
@@ -126,7 +152,9 @@ export function robotSolids(
     if (b.state.kind !== 'held' || b.state.robot !== r.id) continue;
     held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: b.r ?? radius });
   }
-  return { chassis: { kind: 'box', cx: 0, cy: 0, hx: hl, hy: hw }, structure, held };
+  const out: RobotSolids = { chassis: { kind: 'box', cx: 0, cy: 0, hx: hl, hy: hw }, structure, held };
+  out.bound = solidsBound(out);
+  return out;
 }
 
 export interface Penetration {
@@ -231,18 +259,46 @@ export function robotPenetration(
    *  can ask 'is it still resting against the robot' — by default only real penetration */
   floor = 0,
 ): RobotPenetration | null {
-  const local = rot({ x: p.x - r.pos.x, y: p.y - r.pos.y }, -r.heading);
-  let best: RobotPenetration | null = null;
-  const consider = (sh: SolidShape, part: RobotPenetration['part']) => {
+  const dx = p.x - r.pos.x;
+  const dy = p.y - r.pos.y;
+  /**
+   * TOO FAR TO TOUCH ANYTHING: the answer is null without asking a single shape. Every point of
+   * every shape is within `bound` of the robot origin, so the artifact's skin is at least
+   * `|d| - bound - R` clear of all of them, and a shape only counts when it is inside by more
+   * than `floor`. The slack covers the last-bit difference between `|d|` and the rotated `local`
+   * the shape tests measure (rotation by `dsin`/`dcos` is length-preserving to rounding), so this
+   * can only skip work whose result was already null — the answer is byte-identical.
+   * Most artifacts are nowhere near most robots, and this is called robots × artifacts times in
+   * several passes a tick.
+   */
+  if (solids.bound !== undefined) {
+    const lim = R + solids.bound - floor + 1e-6;
+    if (lim > 0 && dx * dx + dy * dy > lim * lim) return null;
+  }
+  const local = rot({ x: dx, y: dy }, -r.heading);
+  let best: Penetration | null = null;
+  let part: RobotPenetration['part'] = 'chassis';
+  if (!skipChassis) {
+    const q = shapePenetration(solids.chassis, local, R);
+    if (q.pen > floor) best = q;
+  }
+  for (const sh of solids.structure) {
     const q = shapePenetration(sh, local, R);
-    if (q.pen <= floor) return;
-    if (!best || q.pen > best.pen) best = { ...q, part };
-  };
-  if (!skipChassis) consider(solids.chassis, 'chassis');
-  for (const sh of solids.structure) consider(sh, 'structure');
-  if (!skipHeld) for (const sh of solids.held) consider(sh, 'held');
+    if (q.pen > floor && (!best || q.pen > best.pen)) {
+      best = q;
+      part = 'structure';
+    }
+  }
+  if (!skipHeld) {
+    for (const sh of solids.held) {
+      const q = shapePenetration(sh, local, R);
+      if (q.pen > floor && (!best || q.pen > best.pen)) {
+        best = q;
+        part = 'held';
+      }
+    }
+  }
   if (!best) return null;
-  const b = best as RobotPenetration;
-  const nw = rot({ x: b.nx, y: b.ny }, r.heading);
-  return { ...b, nx: nw.x, ny: nw.y };
+  const nw = rot({ x: best.nx, y: best.ny }, r.heading);
+  return { pen: best.pen, nx: nw.x, ny: nw.y, buried: best.buried, part };
 }
