@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-27f (ranked: team expectation, margin, calibration RD, partner absence, 2v2 balance)
 
-**State: pushed on `main` and `alpha`.** `npm test`, `test:mm` (222), `dbtest`, `server:check`, `build`, `docaudit` pass. ⚠️ **Server change + migration 0056** (nullable `match_participants.premade`). No ranked reset: no stored rating is rewritten, `BALANCE_VERSION`/`SIM_VERSION` untouched. Rules in `docs/area/accounts.md` ("RATING ADJUSTMENTS AND 2v2 BALANCE").
+**State: pushed on `main` and `alpha`; DEPLOYED 2026-09-27** to production (announced 5 min, 8 machines healthy, satellite sizes re-applied, 0056 applied by iad 21:25Z) and to `dsim-alpha`. `npm test`, `test:mm` (222), `dbtest`, `server:check`, `build`, `docaudit` pass. ⚠️ **Server change + migration 0056** (nullable `match_participants.premade`). No ranked reset: no stored rating is rewritten, `BALANCE_VERSION`/`SIM_VERSION` untouched. Rules in `docs/area/accounts.md` ("RATING ADJUSTMENTS AND 2v2 BALANCE").
 
 - **Owner's three complaints:** 2v2 alliances not balanced by combined skill; unlucky placements take too long to recover even with huge wins; a bad or disconnected partner costs too much.
 - **Rating (`server/ranked.ts`):** 2v2 expectation from the alliance mean (1v1 unchanged); margin multiplier ×0.8–×1.5 at one `DECISIVE_MARGIN` 0.30, damped for favourites, ×1 for a rated 1v1 challenge; calibration RD floor `max(60, 250 − 9.5·games)` and idle RD growth (cap 150), both read-time; wide premade (>400 apart) at half.
