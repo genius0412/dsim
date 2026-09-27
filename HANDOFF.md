@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-27e (replays: SIM_PATCH keeps pre-fix BIOBUZZ 3D replays exact)
 
-**State: pushed on `main` and `alpha`.** `npm test` (5147), `build`, `server:check`, `dbtest`, `bundleaudit`, `docaudit` pass. SERVER CHANGE + MIGRATION 0055: deploy.
+**State: pushed on `main` and `alpha`.** `npm test` (5147), `build`, `server:check`, `dbtest`, `bundleaudit`, `docaudit` pass. DEPLOYED to production and `dsim-alpha`; 0055 applied. Verified on production: the top eight pre-fix records and the two records saved after 17:16:30Z (backfilled to patch 1) all re-simulate to their stored scores.
 
 - **What broke:** the floor-element fix (27b) changed `step()` output and shipped with no replay gate, so every BIOBUZZ 3D replay recorded before it re-simulated into a different match. Measured on production: the top eight records replayed at 55–186 against a real 674–726. DECODE was unaffected.
 - **Fix:** `SIM_PATCH` (`src/config.ts`, monotonic). The recorder stamps `Replay.patch`, `ReplayPlayer` sets `world.simPatch`, and `derive.ts` runs the old membership rule when it is below 1. Live worlds carry no field (nothing new on the wire). All eight production records now replay to their stored score exactly.
