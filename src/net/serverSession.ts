@@ -5,6 +5,7 @@ import type { Transport } from './transport';
 import { setServerNotice } from './notice';
 import { applyPushedStatus } from './siteStatus';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
+import { restoreWireClocks } from './wireClocks';
 import {
   CLIENT_CAPS,
   encodeMsg,
@@ -487,6 +488,8 @@ export class ServerSession implements NetSession {
       // order (shared codec so it can't drift from the server's encoder)
       const balls = applyBallDelta(this.baseBalls, m.balls);
       const world = unslimWorld(m.w, balls, this.specById);
+      // the wire rounded the clocks; the prediction compares them tick by tick (wireClocks.ts)
+      restoreWireClocks(world);
       // each robot's command this tick, so the controller can predict remotes.
       // tolerate an older server that doesn't send cmds (remotes just won't be
       // predicted forward — no crash) so a version mismatch degrades gracefully

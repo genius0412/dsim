@@ -193,6 +193,8 @@ type PredictedElement = NonNullable<ReturnType<Predictor['elements']>>[number];
 const isCarried = (kind: string): boolean => kind === 'held' || kind === 'stock';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+/** the tick a `lastFireAt`/`lastIntakeAt` stamp was taken on (see `handleActionAudio`) */
+const actionTick = (t: number): number => Math.round(t / C.SIM_DT);
 /** shortest-arc angle lerp */
 const lerpAngle = (a: number, b: number, t: number): number =>
   a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
@@ -557,9 +559,9 @@ export class GameController {
   private frontFlipped = false;
   /** park mode: caps drive command magnitude to settings.parkSpeedPct while on */
   private parked = false;
-  // action-SFX edge trackers per robot id (seeded in seedActionAudio)
-  private prevFireAt: Record<number, number> = {};
-  private prevIntakeAt: Record<number, number> = {};
+  // action-SFX edge trackers per robot id, in TICKS (seeded in seedActionAudio)
+  private prevFireTick: Record<number, number> = {};
+  private prevIntakeTick: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
   private prevBeamOn: Record<number, number> = {}; // wheels-on-a-beam per robot (CR terrain SFX)
 
@@ -1532,13 +1534,13 @@ export class GameController {
   /** align the SFX edge trackers with a freshly created world so world
    * creation/restart never plays a phantom shoot/intake/gate cue */
   private seedActionAudio(): void {
-    this.prevFireAt = {};
-    this.prevIntakeAt = {};
+    this.prevFireTick = {};
+    this.prevIntakeTick = {};
     this.prevBeamOn = {};
     const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
-      this.prevFireAt[r.id] = r.lastFireAt;
-      this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      this.prevFireTick[r.id] = actionTick(r.lastFireAt);
+      this.prevIntakeTick[r.id] = actionTick(r.lastIntakeAt);
       this.prevBeamOn[r.id] = chain ? beamRide(r).onCount : 0;
     }
     this.prevGateOpen = {
@@ -1575,13 +1577,18 @@ export class GameController {
       // predicted shot's `lastFireAt` goes FORWARD, back to the server's value, and forward
       // again — and `!==` fired on every one of those, re-cueing the same shot two or three
       // times per reconcile. The mark only ever rises, so the replay's re-fire is silent and
-      // the next genuine shot (a later `world.time`) still sounds.
-      if (r.lastFireAt > (this.prevFireAt[r.id] ?? 0)) {
-        this.prevFireAt[r.id] = r.lastFireAt;
+      // the next genuine shot (a later tick) still sounds.
+      // ⚠️ AND IN TICKS, NOT SECONDS. A replay from a snapshot whose clock was rounded on the wire
+      // re-fires the same shot at a `world.time` a hair later, which cleared a mark in seconds
+      // on nearly every snapshot of the lead window (`src/net/wireClocks.ts`).
+      const fired = actionTick(r.lastFireAt);
+      if (fired > (this.prevFireTick[r.id] ?? 0)) {
+        this.prevFireTick[r.id] = fired;
         this.audio.sfxShoot();
       }
-      if (r.lastIntakeAt > (this.prevIntakeAt[r.id] ?? 0)) {
-        this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      const took = actionTick(r.lastIntakeAt);
+      if (took > (this.prevIntakeTick[r.id] ?? 0)) {
+        this.prevIntakeTick[r.id] = took;
         this.audio.sfxIntake();
       }
       // CR terrain: a "thunk" whenever a wheel newly mounts a beam (rising edge of the count)

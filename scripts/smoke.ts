@@ -396,6 +396,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
 import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
+import { restoreWireClocks } from '../src/net/wireClocks';
 import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
 import { AGREE_BALL_IN, AGREE_POS_IN, AGREE_STICK, cmdsAgree, digestsAgree, worldDigest } from '../src/net/worldDigest';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
@@ -8130,9 +8131,9 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'sfx: the fire/intake cues are HIGH-WATER MARKS, so a reconcile replay cannot re-cue a shot',
-      /r\.lastFireAt > \(this\.prevFireAt/.test(gm) &&
-        /r\.lastIntakeAt > \(this\.prevIntakeAt/.test(gm) &&
-        !/lastFireAt !== this\.prevFireAt/.test(gm),
+      /fired > \(this\.prevFireTick/.test(gm) &&
+        /took > \(this\.prevIntakeTick/.test(gm) &&
+        !/!== this\.prevFireTick/.test(gm),
     );
     // A PUBLIC PROFILE IS PER GAME. The server falls back to DECODE when `?game=` is absent, so
     // a profile that dropped the game showed a player's DECODE career on /biobuzz/profile/<name>
@@ -15730,6 +15731,180 @@ function pinScene(
   check('raf source: online, rAF drives the sim and the timer steps only once rAF has gone quiet',
     /if \(performance\.now\(\) - this\.lastRafAt < RAF_STALE_MS\) return;/.test(game) &&
       /this\.lastRafAt = performance\.now\(\);\s*try \{\s*this\.netTick\(\);/.test(game));
+}
+
+// ---- WIRE CLOCKS: a snapshot's rounded clocks come back exactly (src/net/wireClocks.ts) ---------
+// The server rounds every non-integer to 3 decimals and the prediction compares clocks tick by
+// tick, so a client stepping on from rounded ones fired shots a tick off the room's and re-cued
+// the same shot on most snapshots of its lead (owner: "spams the shooting sound a ton").
+{
+  const w = createWorld('match', 9, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  w.match.preCountdown = C_PRE_COUNTDOWN;
+  const hold = new Map([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: true } as RobotCommand]]);
+  const wire = (x: World): World => unslimWorld(JSON.parse(JSON.stringify(slimWorld(x), round3)), x.balls, () => DEFAULT_SPEC);
+  const clocks = (x: World): number[] => [x.time, x.match.preCountdown ?? -1, x.match.phaseTimeLeft, ...x.robots.flatMap((r) => [r.lastFireAt, r.lastIntakeAt])];
+  const same = (a: number[], b: number[]): boolean => a.every((v, i) => Object.is(v, b[i]));
+  let exact = true;
+  let rounded = 0;
+  const phases = new Set<string>();
+  for (let t = 1; t <= 2700; t++) {
+    step(w, SIM_DT, hold);
+    if (t % 13 !== 0) continue;
+    const got = wire(w);
+    if (!same(clocks(got), clocks(w))) rounded++;
+    restoreWireClocks(got);
+    if (!same(clocks(got), clocks(w))) exact = false;
+    phases.add(w.match.phase);
+  }
+  check('wire clocks: time, both countdowns and the shot stamps come back bit for bit through round3',
+    exact && rounded > 100 && w.robots[0].lastFireAt > 0 && ['pre', 'auto', 'transition', 'teleop'].every((p) => phases.has(p)),
+    `${rounded} rounded samples, phases ${[...phases].join('/')}, lastFireAt ${w.robots[0].lastFireAt}`);
+  const off = wire(w);
+  off.robots[0].lastFireAt = 12.3456;
+  restoreWireClocks(off);
+  const bad = wire(w);
+  const t0 = bad.time;
+  bad.tick = 1e12;
+  restoreWireClocks(bad);
+  check('wire clocks: a clock off the tick grid, and a snapshot with an absurd tick, are left alone',
+    off.robots[0].lastFireAt === 12.3456 && bad.time === t0);
+  const session = readFileSync('src/net/serverSession.ts', 'utf8');
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('wire clocks source: every snapshot world is restored as it is decoded',
+    /const world = unslimWorld\(m\.w, balls, this\.specById\);[\s\S]{0,160}restoreWireClocks\(world\);/.test(session));
+  check('wire clocks source: the shot and intake cues are high-water marks in TICKS',
+    /const fired = actionTick\(r\.lastFireAt\);\s*if \(fired > \(this\.prevFireTick\[r\.id\] \?\? 0\)\)/.test(game) &&
+      /const took = actionTick\(r\.lastIntakeAt\);\s*if \(took > \(this\.prevIntakeTick\[r\.id\] \?\? 0\)\)/.test(game));
+}
+
+// ---- ...and through a real Room: every shot is cued once, on the tick the room fired it ----------
+// A solo DECODE record room at 66 ms RTT and a client that restates `stepServer`, `reconcile` and
+// `handleActionAudio`. Without the fix the three preloads were cued six times, the first two a
+// tick before the room fired them (AUTO started a tick early off a rounded `preCountdown`).
+{
+  type Snap = { serverTick: number; world: World; ack: number };
+  const runShots = (fix: boolean): { cues: number[]; shots: number[] } => {
+    let now = 0;
+    let s = 7;
+    const rnd = (): number => ((s = (s * 1664525 + 1013904223) >>> 0), s / 2 ** 32);
+    const oneWay = (): number => 33 + (rnd() < 0.9 ? rnd() * 6 : rnd() * 40);
+    const down: { at: number; m: ServerMsg }[] = [];
+    const up: { at: number; tick: number; q: ReturnType<typeof quantizeCommand>; ack?: number }[] = [];
+    let lastDown = 0;
+    let lastUp = 0;
+    let setups: RobotSetup[] = [];
+    let seedW = 0;
+    const c: Client = {
+      id: 'shot-1',
+      send: (m) => {
+        if (m.t === 'matchStart') {
+          setups = m.setups;
+          seedW = m.seed;
+        }
+        lastDown = Math.max(lastDown, now + oneWay());
+        down.push({ at: lastDown, m: JSON.parse(JSON.stringify(m, round3)) as ServerMsg });
+      },
+      player: { clientId: 'shot-1', name: 'shot', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+    };
+    const room = new Room('smoke-shots', () => {}, { kind: 'record', record: 'solo' });
+    room.add(c);
+    room.onMessage('shot-1', { t: 'start' });
+    room.advanceForTest(0);
+    const mod = simModuleFor('decode');
+    const lead = new LeadController();
+    const cmd: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: true };
+    const mark = (t: number): number => (fix ? Math.round(t / SIM_DT) : t);
+    const baseBalls = new Map<number, Artifact>();
+    const cues: number[] = [];
+    const shots: number[] = [];
+    let world: World | null = null;
+    let pending: Snap | null = null;
+    let buf: { tick: number; cmd: RobotCommand }[] = [];
+    let applied = -1;
+    let lastServerTick = 0;
+    let got = false;
+    let acc = 0;
+    let cLast = 0;
+    let cNext = 0;
+    let sDue = 0;
+    let prev = 0;
+    let srvFire = -10;
+    for (now = 0; now < 7000; now++) {
+      while (up.length && up[0].at <= now) {
+        const u = up.shift()!;
+        room.onMessage('shot-1', { t: 'input', tick: u.tick, q: u.q, ack: u.ack });
+      }
+      if (now - sDue > 250) sDue = now - 250;
+      while (now >= sDue) {
+        room.advanceForTest(1);
+        const r = room.worldForTest()?.robots[0];
+        if (r && r.lastFireAt !== srvFire) {
+          srvFire = r.lastFireAt;
+          if (r.lastFireAt > 0) shots.push(Math.round(r.lastFireAt / SIM_DT));
+        }
+        sDue += 1000 / 60;
+      }
+      while (down.length && down[0].at <= now) {
+        const m = down.shift()!.m;
+        if (m.t === 'matchStart' && !world) {
+          world = mod.createWorld('match', seedW, setups);
+          world.match.preCountdown = C_PRE_COUNTDOWN;
+          prev = mark(world.robots[0].lastFireAt);
+          cLast = now;
+          cNext = now;
+        } else if (m.t === 'snapshot' && m.serverTick > applied) {
+          const w = unslimWorld(m.w, applyBallDelta(baseBalls, m.balls), (id) => (setups.find((x) => x.id === id) ?? setups[0]).spec);
+          if (fix) restoreWireClocks(w);
+          pending = { serverTick: m.serverTick, world: w, ack: m.ackInputTick };
+          applied = m.serverTick;
+        }
+      }
+      if (!world || now < cNext) continue;
+      const dtS = Math.min((now - cLast) / 1000, 0.25);
+      cLast = now;
+      cNext = now + 16 + Math.floor(rnd() * 3);
+      if (pending) {
+        const snap: Snap = pending;
+        pending = null;
+        lead.sample(world.tick, snap.serverTick, snap.ack, now);
+        world = snap.world;
+        lastServerTick = snap.serverTick;
+        got = true;
+        buf = buf.filter((b) => b.tick > snap.serverTick);
+        for (const b of buf) mod.step(world, SIM_DT, new Map([[0, b.cmd]]));
+      }
+      acc = Math.min(acc + dtS * (1 + lead.rate(now)), 0.25);
+      for (let n = 0; acc >= SIM_DT && n < 30; n++) {
+        if (got && world.tick - lastServerTick >= 40) {
+          acc = 0;
+          break;
+        }
+        const tick = world.tick + 1;
+        lastUp = Math.max(lastUp, now + oneWay());
+        up.push({ at: lastUp, tick, q: quantizeCommand(cmd), ack: applied >= 0 ? applied : undefined });
+        buf.push({ tick, cmd: localizeCommand(cmd) });
+        mod.step(world, SIM_DT, new Map([[0, localizeCommand(cmd)]]));
+        acc -= SIM_DT;
+      }
+      const r = world.robots[0];
+      if (mark(r.lastFireAt) > prev) {
+        prev = mark(r.lastFireAt);
+        cues.push(Math.round(r.lastFireAt / SIM_DT));
+      }
+    }
+    room.stop();
+    return { cues, shots };
+  };
+  const before = runShots(false);
+  const after = runShots(true);
+  check('shot cues: WITHOUT the restore, rounded snapshots cue the same shots more than once (non-vacuous)',
+    before.shots.length >= 3 && before.cues.length > before.shots.length,
+    `${before.cues.length} cues (ticks ${before.cues.join(' ')}) for ${before.shots.length} shots (${before.shots.join(' ')})`);
+  check('shot cues: WITH it, each shot is cued once, on the tick the room fired it',
+    after.shots.length >= 3 && after.cues.length === after.shots.length && after.cues.every((k, i) => k === after.shots[i]),
+    `${after.cues.length} cues (ticks ${after.cues.join(' ')}) for ${after.shots.length} shots (${after.shots.join(' ')})`);
 }
 
 // ---- predict/reconcile parity ----------------------------------------------

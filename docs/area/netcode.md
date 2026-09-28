@@ -85,6 +85,20 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   lead every snapshot, ~6 steps at 66 ms (a few ms of DECODE, half that for Chain Reaction; a 3D
   room replays through the predictor). Smoke: "lead:" (shared), with a real UPLINK — the older
   latency probes delivered inputs instantly, which is why this never showed.
+- ⚠️ **A SNAPSHOT'S CLOCKS ARE PUT BACK EXACTLY BEFORE ANYTHING STEPS FROM THEM**
+  (`src/net/wireClocks.ts`, 2026-09-27; owner: "spams the shooting sound a ton and fakes the
+  shooting animation but it never launches"). `round3` rounds `world.time`, the two countdowns and
+  the shot stamps to 1 ms, and the sim compares them every tick. Running a round trip ahead, every
+  snapshot in the lead window re-decided each shot from rounded clocks: the same shot came out at a
+  `world.time` a hair later (cued again), or a tick early (a launch that jumped back). Measured
+  through a real `Room` with the game's own bot driving: 1.7–2.5 cues per real shot at 66–150 ms,
+  up to four per dumper fling; after, 1.00–1.16. `ServerSession` rebuilds `world.time` from the
+  tick, `lastFireAt`/`lastIntakeAt` onto the tick grid and `preCountdown`/`phaseTimeLeft` from
+  their start, bit for bit, and leaves any value the rounding could not explain. The shot and
+  intake cues are high-water marks in TICKS (`handleActionAudio`). `fireReadyAt` cannot be rebuilt
+  and stays rounded; sending it unrounded (a server change, ~11 bytes per robot per snapshot) would
+  remove the rest. Chain Reaction keeps ~10% extra cues with no rounding at all: its particle
+  prediction misses some shots by a tick. Smoke: "wire clocks:", "shot cues:" (shared).
 - ⚠️ **ONLINE, rAF STEPS THE SIM; THE TIMER IS ONLY THE HIDDEN-TAB FALLBACK** (`RAF_STALE_MS`).
   Stepping on a 16 ms `setInterval` and drawing on rAF, with nothing interpolating the local robot,
   showed a 60 Hz display zero ticks one frame and two the next on 7–26% of frames (solo: 0.3%) —
