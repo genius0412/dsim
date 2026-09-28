@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-27g (multi-core: rooms on worker threads, `SIM_WORKERS`)
 
-**State: committed on `main` (not yet deployed).** `server:check`, `build`, `npm test` (shared + BIOBUZZ 5149), `test:mm` (222), `docaudit`, and the new `npm run test:workers` (83) pass. ⚠️ **SERVER CHANGE: needs a deploy** (`./scripts/fly-deploy.sh` from a `main` worktree). No protocol change, no migration, no sim change.
+**State: pushed on `main` and `alpha`. DEPLOYED to `dsim-alpha` 2026-09-28 00:00Z: one worker, ready, clean boot on Linux. Production NOT deployed (blocked by the permission classifier; the owner runs `scripts/announce-deploy.sh` from a `main` worktree).** `server:check`, `build`, `npm test` (shared + BIOBUZZ 5149), `test:mm` (222), `docaudit`, and the new `npm run test:workers` (83) pass. ⚠️ **SERVER CHANGE: needs a deploy** (`./scripts/fly-deploy.sh` from a `main` worktree). No protocol change, no migration, no sim change.
 
 - **Owner:** make the server use more than one core, off `main`, deployable soon (urgent since 2026-09-24).
 - **What:** rooms run on `worker_threads` (`server/roomWorker.ts`), sockets/matchmaker/DB/registry stay on the main thread (`server/roomHost.ts`, messages in `server/roomThreads.ts`). `SIM_WORKERS` unset/0 = the old in-process server, untouched; `auto` = one worker per vCPU beyond the first. **`fly.toml` now sets `SIM_WORKERS = 'auto'`**: iad (performance-2x) gets 1 worker, jnb (shared-cpu-4x) 3, performance-1x satellites 0 (in-process, as before). Rollback: `'0'` and redeploy.
@@ -9,7 +9,6 @@
 - **Measured (Windows box, `scripts/loadtest.ts`):** 30 driven 1v1 DECODE rooms in-process: snapshot gap p50/p99 79/280 ms (saturated); on 4 workers 33/49 ms. 60 rooms on 8 workers 33/51 ms, workers ~40% busy. One worker vs none at 20 rooms: socket thread 78% → 14% busy, RTT p99 10 → 3 ms. Table in `docs/capacity.md` "MULTI-CORE".
 - **Next ceiling:** the socket thread, ~0.3% busy per client (writev + zlib), so ~250 clients per machine; 240 clients on 8 workers saturated it (RTT 13 s, heartbeat reaped sockets).
 - **Next steps (owner's call):** deploy; watch `/api/perf` `workers[]` and `loopBusy` on iad under real matches; re-measure on Linux; then resize machines (a bigger VM now adds rooms) and raise `MAX_ROOMS` with the size (`scripts/fly-deploy.sh`), or the cap binds first. `UV_THREADPOOL_SIZE` was not raised: no latency at 120 clients with the default 4.
-- **Not on `alpha` yet** unless the section above this one says so.
 - `/api/perf` gained `workers[]` and `loopBusy` (additive; `loadsummary.ts` unaffected).
 
 # HANDOFF — 2026-09-27f (ranked: team expectation, margin, calibration RD, partner absence, 2v2 balance)
