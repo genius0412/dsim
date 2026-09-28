@@ -152,6 +152,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     save (~1.2 MB), 1.1 ms per rollback rewind, against a 0.8 ms `step3d`; about 30–40 ms of CPU per
     second of play. Full reconciles halve, because the prediction agrees more often. Auto's world
     probe counts the saves.
+    ⚠️ The save also keeps the world's kinematic JSON, and a snapshot within the wire's rounding of
+    it gets that JSON back exactly. The JSON a step ends on is not the bodies' readback
+    (`groundRoll3d` damps velocities, `derive.ts` zeroes a resting element's), and rewriting it
+    from the bodies replayed every rollback without the room's damping: 264 of 266 replays off the
+    room's poses, 5 captures wrong on one seed. Now 0.
   Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
   11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
   of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against

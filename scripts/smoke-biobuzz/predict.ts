@@ -621,7 +621,14 @@ export function predictChecks(check: Check): void {
       if (W.tick % 2 === 0) past.set(W.tick, clone(W));
     }
     disposeEngineFor(W);
-    const run = (saves: boolean): { rewinds: number; captures: number; shots: number; taken: number } => {
+    // every pose the step writes, exactly: the rollback must end where the room did, not near it
+    const poses = (w: World): string =>
+      JSON.stringify([
+        w.robots.map((r) => [r.pos, r.z, r.heading, r.vel, r.vz, r.angVel]),
+        w.balls.map((b) => [b.id, b.pos, b.z, b.vel, b.vz]),
+        w.biobuzz?.hives,
+      ]);
+    const run = (saves: boolean): { rewinds: number; captures: number; shots: number; off: number; taken: number } => {
       let C = make();
       const save = (): void => {
         if (saves && C.tick % 2 === 0) saveEngineState(C, C.tick - LEAD);
@@ -629,6 +636,7 @@ export function predictChecks(check: Check): void {
       let rewinds = 0;
       let captures = 0;
       let shots = 0;
+      let off = 0;
       for (let S = 60; S + LEAD < 600; S += 2) {
         while (C.tick < S + LEAD) {
           step3d(C, SIM_DT, new Map([[0, cmds[C.tick + 1]]]));
@@ -645,10 +653,11 @@ export function predictChecks(check: Check): void {
         rewinds++;
         if (C.robots[0].lastIntakeAt !== truth.robots[0].lastIntakeAt) captures++;
         if (C.robots[0].lastFireAt !== truth.robots[0].lastFireAt) shots++;
+        if (poses(C) !== poses(truth)) off++;
       }
       disposeEngineFor(C);
       const taken = past.get(598)!.robots[0].lastIntakeAt;
-      return { rewinds, captures, shots, taken };
+      return { rewinds, captures, shots, off, taken };
     };
     const without = run(false);
     const withSaves = run(true);
@@ -658,6 +667,13 @@ export function predictChecks(check: Check): void {
     check("⚠️ world predict: WITH the client's own save, every rewound replay ends on the room's captures and shots",
       withSaves.rewinds === without.rewinds && withSaves.captures === 0 && withSaves.shots === 0,
       `${withSaves.captures} captures and ${withSaves.shots} shots differ over ${withSaves.rewinds} rewinds`);
+    // The step's JSON is not the bodies' readback (`groundRoll3d` damps it, `derive.ts` zeroes a
+    // resting element's velocity), so a rewind that rewrote it from the bodies replayed without the
+    // room's damping: 264 of 266 replays ended off the room's poses, while the capture count above
+    // stayed 0 on most seeds.
+    check("⚠️ world predict: WITH the client's own save, every rewound replay ends on the room's exact poses (robots, elements, trays)",
+      withSaves.off === 0 && without.off > 0,
+      `${withSaves.off} of ${withSaves.rewinds} off with saves, ${without.off} without`);
   }
 }
 

@@ -1072,6 +1072,20 @@ interface SavedEngine {
   lastElement: Map<number, LastElement>;
   robotHeights: Map<number, number>;
   robotRampReady: Map<number, boolean>;
+  /** the world's own kinematic JSON at the save, which is NOT the bodies' (see `rewindEngineTo`) */
+  robotJson: Map<number, RobotJson>;
+  elementJson: Map<number, LastElement>;
+  hiveJson: Record<Alliance, { angle?: number; angVel?: number }> | null;
+}
+interface RobotJson {
+  x: number;
+  y: number;
+  z?: number;
+  heading: number;
+  vx: number;
+  vy: number;
+  vz?: number;
+  angVel: number;
 }
 const SAVED = new WeakMap<Engine3d, Map<number, SavedEngine>>();
 
@@ -1082,7 +1096,8 @@ const SAVED = new WeakMap<Engine3d, Map<number, SavedEngine>>();
  * before the newest one applied is coming.
  *
  * A save is Rapier's whole world (`takeSnapshot`, ~1.2 MB, ~0.5 ms on a desktop) plus the engine's
- * own maps. The bodies are kept as HANDLES: a restored world is a new object with the same handles.
+ * own maps and the world's kinematic JSON. The bodies are kept as HANDLES: a restored world is a
+ * new object with the same handles.
  */
 export function saveEngineState(world: World, keepFrom: number): void {
   const e = ENGINES.get(world);
@@ -1103,7 +1118,25 @@ export function saveEngineState(world: World, keepFrom: number): void {
     lastElement: new Map([...e.lastElement].map(([id, r]) => [id, { ...r }])),
     robotHeights: new Map(e.robotHeights),
     robotRampReady: new Map(e.robotRampReady),
+    robotJson: new Map(
+      world.robots.map((r) => [
+        r.id,
+        { x: r.pos.x, y: r.pos.y, z: r.z, heading: r.heading, vx: r.vel.x, vy: r.vel.y, vz: r.vz, angVel: r.angVel },
+      ]),
+    ),
+    elementJson: new Map(world.balls.map((b) => [b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz }])),
+    hiveJson: world.biobuzz
+      ? {
+          red: { angle: world.biobuzz.hives.red.angle, angVel: world.biobuzz.hives.red.angVel },
+          blue: { angle: world.biobuzz.hives.blue.angle, angVel: world.biobuzz.hives.blue.angVel },
+        }
+      : null,
   });
+}
+
+/** within the wire's rounding; an absent field reads 0, as the sync reads it */
+function nearWire(a: number | undefined, b: number | undefined): boolean {
+  return Math.abs((a ?? 0) - (b ?? 0)) <= REWIND_EPS;
 }
 
 function restoreSaved(e: Engine3d, s: SavedEngine): void {
@@ -1165,6 +1198,15 @@ function restoreSaved(e: Engine3d, s: SavedEngine): void {
  * A body inside that rounding keeps its live state, contacts and sleep, and its JSON and readback
  * record are written the way `readback` writes them, so the next sync sees no edit and the next
  * readback no motion.
+ *
+ * ⚠️ **AFTER A RESTORE, "MATCHES" IS JSON AGAINST THE SAVED JSON, NOT AGAINST THE BODY.** The
+ * JSON a step ends on is not the bodies' readback: `groundRoll3d` damps an element's velocity after
+ * it, `derive.ts` zeroes a resting one's, `squareUpRobotsWalls` edits a robot's. The next sync reads
+ * that difference as the edit to apply. Writing the body's own values back (the no-save rule)
+ * erased it, so every rollback replayed without the room's damping: 264 of 266 replays in the
+ * `predict.ts` check ended off the room's poses (up to 3.5 in), and on one seed 5 captures
+ * differed. So the save keeps the world's kinematic JSON too, and a snapshot within the wire's
+ * rounding of it gets it back exactly, with the save's readback records: 0 of 266.
  */
 const REWIND_EPS = 1e-3;
 export function rewindEngineTo(from: World, to: World): boolean {
@@ -1186,6 +1228,32 @@ export function rewindEngineTo(from: World, to: World): boolean {
   for (const r of to.robots) {
     const body = e.robots.get(r.id);
     if (!body) continue;
+    if (own) {
+      const k = own.robotJson.get(r.id);
+      if (
+        k &&
+        nearWire(k.x, r.pos.x) &&
+        nearWire(k.y, r.pos.y) &&
+        nearWire(k.z, r.z) &&
+        nearWire(k.heading, r.heading) &&
+        nearWire(k.vx, r.vel.x) &&
+        nearWire(k.vy, r.vel.y) &&
+        nearWire(k.vz, r.vz) &&
+        nearWire(k.angVel, r.angVel)
+      ) {
+        r.pos.x = k.x;
+        r.pos.y = k.y;
+        r.z = k.z;
+        r.heading = k.heading;
+        r.vel.x = k.vx;
+        r.vel.y = k.vy;
+        r.vz = k.vz;
+        r.angVel = k.angVel;
+      } else {
+        e.lastRobot.delete(r.id);
+      }
+      continue;
+    }
     const h = e.robotHeights.get(r.id) ?? 0;
     const t = body.translation();
     const v = body.linvel();
@@ -1215,6 +1283,28 @@ export function rewindEngineTo(from: World, to: World): boolean {
   for (const b of to.balls) {
     const body = e.elements.get(b.id);
     if (!body) continue; // the next sync creates it (or leaves it out) from the JSON
+    if (own) {
+      const k = own.elementJson.get(b.id);
+      if (
+        k &&
+        nearWire(k.x, b.pos.x) &&
+        nearWire(k.y, b.pos.y) &&
+        nearWire(k.z, b.z) &&
+        nearWire(k.vx, b.vel.x) &&
+        nearWire(k.vy, b.vel.y) &&
+        nearWire(k.vz, b.vz)
+      ) {
+        b.pos.x = k.x;
+        b.pos.y = k.y;
+        b.z = k.z;
+        b.vel.x = k.vx;
+        b.vel.y = k.vy;
+        b.vz = k.vz;
+      } else {
+        e.lastElement.delete(b.id);
+      }
+      continue;
+    }
     const rad = b.r ?? BB_POLLEN_R;
     const t = body.translation();
     const v = body.linvel();
@@ -1242,12 +1332,21 @@ export function rewindEngineTo(from: World, to: World): boolean {
       const hv = to.biobuzz.hives[a];
       const tray = e.hiveTrays[a];
       if (hv.angle === undefined) continue;
-      const tilt = trayTilt(tray);
-      const spin = tray.angvel().x;
-      if (Math.abs(tilt - hv.angle) <= REWIND_EPS && Math.abs(spin - (hv.angVel ?? 0)) <= REWIND_EPS) {
-        hv.angle = round4(tilt);
-        hv.angVel = round4(spin);
-        continue;
+      const k = own?.hiveJson?.[a];
+      if (own && k?.angle !== undefined) {
+        if (nearWire(k.angle, hv.angle) && nearWire(k.angVel, hv.angVel)) {
+          hv.angle = k.angle;
+          hv.angVel = k.angVel;
+          continue;
+        }
+      } else {
+        const tilt = trayTilt(tray);
+        const spin = tray.angvel().x;
+        if (Math.abs(tilt - hv.angle) <= REWIND_EPS && Math.abs(spin - (hv.angVel ?? 0)) <= REWIND_EPS) {
+          hv.angle = round4(tilt);
+          hv.angVel = round4(spin);
+          continue;
+        }
       }
       tray.setRotation(tiltQuatX(hv.angle), true);
       tray.setAngvel({ x: hv.angVel ?? 0, y: 0, z: 0 }, true);
