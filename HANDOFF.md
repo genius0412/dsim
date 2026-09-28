@@ -1,3 +1,12 @@
+# HANDOFF — 2026-09-27o (Zenith robot file: no team's numbers in a public repository)
+
+**State: branch `fix/zenith-robot-no-horizon-constants`, PR against `alpha`.** `npm test`, `build`, `server:check`, `docaudit` pass. Client only, no deploy.
+
+- **Problem:** `src/games/biobuzz/auto/index.ts` carried a team robot's measured Pedro gains (`CARRIED OVER`), and the AUTO fixtures a copy of that team's real auto and waypoints. This repository is public.
+- **Fix:** the follower runs on Pedro v3's defaults, except `headingPowerPerRad` 3 (`SET FROM SIM`): at Pedro's 1.5 the P-only heading loop ends a 90° turn ~15° short, past the lane's 0.25 rad bound; 2 passes by 0.8°, 3 leaves 8-12°. `defaultPathSpeedFraction` 0.8 is `SET BY HAND`. `close.auto.json` is replaced by `preload-park.auto.json` (same coverage: waypoint refs inlined, mirrored, preload fired) over placeholder test poses. Docs no longer describe a team's robot or code.
+- **Guard:** the AUTO lane fails any robot-file provenance that is not `SET FROM SIM: DSIM …` or `SET BY HAND: …`, and any mention of a team repository (checked against the old file: fails, naming the labels).
+- **Not undone:** git history still holds the old values (commits 230bd7ef, 9ad37072, 888b79da on `alpha`). A rewrite is the owner's call. The command names (`shootAll`, `setIntake` FRONT/BACK/BOTH, `relocalize`, …) are unchanged; they are the contract a robot repository registers.
+
 # HANDOFF — 2026-09-27n (BIOBUZZ Full: the reconcile is a rollback, so the client stops firing elements it never picked up)
 
 **State: pushed on `alpha`.** `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass. Client only, no deploy. **Not on `main`** (owner's call).

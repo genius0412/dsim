@@ -1,0 +1,13 @@
+{
+  "formatVersion": 3,
+  "name": "preload-park",
+  "title": "Preload, then park, by waypoint",
+  "description": "A test routine for the AUTO lane: every pose is a waypoint reference, so the file only plays once its refs are inlined.",
+  "alliance": "RED",
+  "start": { "pose": { "ref": "start" }, "holds": { "pollen": 4 } },
+  "steps": [
+    { "id": "toShoot", "kind": "path", "segments": [{ "kind": "line", "from": { "ref": "start" }, "to": { "ref": "shoot" } }], "heading": { "mode": "linear", "fromRad": 1.5708, "toRad": 3.1416 } },
+    { "id": "preload", "kind": "command", "name": "shootAll", "args": { "count": 4 }, "timeoutS": 4 },
+    { "id": "park", "kind": "path", "segments": [{ "kind": "bezier", "from": { "ref": "shoot" }, "control": [{ "xIn": -50, "yIn": -40 }, { "xIn": -54, "yIn": 10 }], "to": { "ref": "park" } }], "heading": { "mode": "tangent" } }
+  ]
+}
