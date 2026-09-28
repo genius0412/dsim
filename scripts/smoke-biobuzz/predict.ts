@@ -2,7 +2,8 @@ import type { Check } from './harness';
 import { cmd, mkWorld3d, mkWorld3dPair } from './harness';
 import { bbBotBuildByKey } from '../../src/games/biobuzz/ai/builds';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { disposeEngineFor, rewindEngineTo } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { disposeEngineFor, rewindEngineTo, saveEngineState } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { BIOBUZZ_BOT } from '../../src/games/biobuzz/ai';
 import {
   createFullPredictor,
   createLightPredictor,
@@ -589,6 +590,74 @@ export function predictChecks(check: Check): void {
     B.robots.pop();
     check('world predict: a rewind onto a different robot set refuses (engineFor rebuilds instead)', !rewindEngineTo(A, B));
     disposeEngineFor(B);
+  }
+
+  /**
+   * ⚠️ A REWIND ONTO A TICK THE CLIENT SAVED IS A ROLLBACK, AND ONLY THAT REPRODUCES THE ROOM'S
+   * CAPTURES (owner: "it just doesn't shoot sometimes" — the client fired elements it had wrongly
+   * picked up). The room W runs a bot with fire held most of the time; the client C runs the SAME
+   * commands 8 ticks ahead and is rewound onto an exact copy of W every 2 ticks, as the FULL world
+   * tier is. Without saves the rewind keeps a lead's worth of future contact state and replays end
+   * on a different capture or shot than W's; with `saveEngineState` on the snapshot ticks they
+   * never do.
+   */
+  {
+    const clone = (w: World): World => JSON.parse(JSON.stringify(w)) as World;
+    const LEAD = 8;
+    const make = (): World => {
+      const w = mkWorld3d('match', 5, bbBotBuildByKey('pollinator'));
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      return w;
+    };
+    const W = make();
+    const bot = BIOBUZZ_BOT.create(W, 0, 'hard', 7);
+    const cmds: RobotCommand[] = [];
+    const past = new Map<number, World>();
+    for (let t = 0; t < 600; t++) {
+      const c = bot.step(W);
+      cmds[W.tick + 1] = { ...c, fire: c.fire || t % 72 < 50 };
+      step3d(W, SIM_DT, new Map([[0, cmds[W.tick + 1]]]));
+      if (W.tick % 2 === 0) past.set(W.tick, clone(W));
+    }
+    disposeEngineFor(W);
+    const run = (saves: boolean): { rewinds: number; captures: number; shots: number; taken: number } => {
+      let C = make();
+      const save = (): void => {
+        if (saves && C.tick % 2 === 0) saveEngineState(C, C.tick - LEAD);
+      };
+      let rewinds = 0;
+      let captures = 0;
+      let shots = 0;
+      for (let S = 60; S + LEAD < 600; S += 2) {
+        while (C.tick < S + LEAD) {
+          step3d(C, SIM_DT, new Map([[0, cmds[C.tick + 1]]]));
+          save();
+        }
+        const snap = clone(past.get(S)!);
+        if (!rewindEngineTo(C, snap)) break;
+        C = snap;
+        for (let k = S + 1; k <= S + LEAD; k++) {
+          step3d(C, SIM_DT, new Map([[0, cmds[k]]]));
+          save();
+        }
+        const truth = past.get(S + LEAD)!;
+        rewinds++;
+        if (C.robots[0].lastIntakeAt !== truth.robots[0].lastIntakeAt) captures++;
+        if (C.robots[0].lastFireAt !== truth.robots[0].lastFireAt) shots++;
+      }
+      disposeEngineFor(C);
+      const taken = past.get(598)!.robots[0].lastIntakeAt;
+      return { rewinds, captures, shots, taken };
+    };
+    const without = run(false);
+    const withSaves = run(true);
+    check('⚠️ world predict: WITHOUT a save, rewound replays end on a different capture or shot than the room (non-vacuous)',
+      without.rewinds > 200 && without.captures + without.shots > 0 && without.taken > 0,
+      `${without.captures} captures and ${without.shots} shots differ over ${without.rewinds} rewinds`);
+    check("⚠️ world predict: WITH the client's own save, every rewound replay ends on the room's captures and shots",
+      withSaves.rewinds === without.rewinds && withSaves.captures === 0 && withSaves.shots === 0,
+      `${withSaves.captures} captures and ${withSaves.shots} shots differ over ${withSaves.rewinds} rewinds`);
   }
 }
 

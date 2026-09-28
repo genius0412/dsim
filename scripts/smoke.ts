@@ -15716,6 +15716,9 @@ function pinScene(
   check('world predict source: Auto and the slip rule step Full, then Balanced, then Light',
     game.includes("this.setPredictionMode('balanced');") && game.includes("? 'balanced' : 'light'") && game.includes("this.setPredictionMode('full');"));
   check('world predict source: adoptWorld REWINDS the 3D engine in the world tier instead of throwing it away', game.includes('this.worldPredicted() && physics3dImpl().rewindEngineTo(prev, next)'));
+  check('world predict source: FULL saves its engine on the snapshot ticks while predicting AND while replaying, so a reconcile is a rollback',
+    (game.match(/this\.noteDigest\(\);\s*this\.saveForRollback\(\);/g) ?? []).length === 2 &&
+      game.includes('physics3dImpl().saveEngineState(this.world, this.lastServerTick + 1)'));
   check('world predict source: a snapshot that agrees skips the replay, and a full resync is still forced every FULL_RESYNC_EVERY', game.includes('if (this.worldPredicted() && !firstSnap && this.snapshotAgrees(snap))') && game.includes('if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;'));
   check('world predict source: Auto probes the world step FIRST, then the predictor only if that does not fit', game.includes("this.autoStage === 'world'") && game.includes('this.probeWorldReconcileMs()'));
 }

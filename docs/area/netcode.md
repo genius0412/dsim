@@ -137,6 +137,21 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     `AGREE_BALL_IN`, same element states, hoppers, scores, phase; remote sticks within
     `AGREE_STICK`, every button equal) skips the rewind and replay. 64–84% of snapshots skip;
     `FULL_RESYNC_EVERY` forces the full path anyway.
+  - ⚠️ **THE REWIND IS A ROLLBACK: THE CLIENT SAVES ITS OWN ENGINE ON THE SNAPSHOT TICKS**
+    (`saveEngineState`, `GameController.saveForRollback`; 2026-09-27, owner: "it just doesn't shoot
+    sometimes"). Moving each body back from the predicted tick kept a lead's worth of FUTURE
+    Rapier contact state, so even from an exact snapshot with identical inputs 9.8% of replays
+    ended on a different capture than the room and 7.3% on a different shot. The client then
+    picked up elements the room did not, predicted them early (p10 −6 to −12 ticks), and fired
+    them: 24–75 shots per 150 s that never happened (bot driving, fire held, 100 ms). Restoring
+    position, spin and sleep per body got 9.8% to 8.7%; restoring Rapier's whole world
+    (`takeSnapshot`) got it to 0%, and over a real `Room` the phantom shots to 0–2 (5 on a dumper at
+    150 ms with stalls, all aim-gate calls, not pickups). The client saves every even tick it
+    predicts or replays (the room snapshots every other tick) and `rewindEngineTo` restores the save
+    for the snapshot's tick before comparing bodies. Cost in Chrome on a 4-robot field: 0.6 ms per
+    save (~1.2 MB), 1.1 ms per rollback rewind, against a 0.8 ms `step3d`; about 30–40 ms of CPU per
+    second of play. Full reconciles halve, because the prediction agrees more often. Auto's world
+    probe counts the saves.
   Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
   11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
   of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against

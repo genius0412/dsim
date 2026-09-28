@@ -1058,29 +1058,115 @@ export function applyHiveTilt(world: World, engine: Engine3d): void {
   }
 }
 
+/** the client's own engine at one tick, for `rewindEngineTo` (see `saveEngineState`) */
+interface SavedEngine {
+  bytes: Uint8Array;
+  robots: [number, number][];
+  elements: [number, number][];
+  trays: Record<Alliance, number>;
+  joints: Record<Alliance, number | null>;
+  restTicks: Map<number, number>;
+  narrowVibeTicks: Map<number, number>;
+  hiveHeld: Record<Alliance, boolean>;
+  lastRobot: Map<number, LastRobot>;
+  lastElement: Map<number, LastElement>;
+  robotHeights: Map<number, number>;
+  robotRampReady: Map<number, boolean>;
+}
+const SAVED = new WeakMap<Engine3d, Map<number, SavedEngine>>();
+
+/**
+ * SAVE `world`'s engine as it stands at `world.tick`, so a later `rewindEngineTo` onto a snapshot
+ * of that tick can restore it. The client's FULL world tier calls this on the ticks the room sends
+ * snapshots for; nothing on the server does. Saves before `keepFrom` are dropped: no snapshot at or
+ * before the newest one applied is coming.
+ *
+ * A save is Rapier's whole world (`takeSnapshot`, ~1.2 MB, ~0.5 ms on a desktop) plus the engine's
+ * own maps. The bodies are kept as HANDLES: a restored world is a new object with the same handles.
+ */
+export function saveEngineState(world: World, keepFrom: number): void {
+  const e = ENGINES.get(world);
+  if (!e) return;
+  let saved = SAVED.get(e);
+  if (!saved) SAVED.set(e, (saved = new Map()));
+  for (const t of saved.keys()) if (t < keepFrom) saved.delete(t);
+  saved.set(world.tick, {
+    bytes: e.world3d.takeSnapshot(),
+    robots: [...e.robots].map(([id, b]) => [id, b.handle]),
+    elements: [...e.elements].map(([id, b]) => [id, b.handle]),
+    trays: { red: e.hiveTrays.red.handle, blue: e.hiveTrays.blue.handle },
+    joints: { red: e.hiveJoints.red?.handle ?? null, blue: e.hiveJoints.blue?.handle ?? null },
+    restTicks: new Map(e.restTicks),
+    narrowVibeTicks: new Map(e.narrowVibeTicks),
+    hiveHeld: { ...e.hiveHeld },
+    lastRobot: new Map([...e.lastRobot].map(([id, r]) => [id, { ...r }])),
+    lastElement: new Map([...e.lastElement].map(([id, r]) => [id, { ...r }])),
+    robotHeights: new Map(e.robotHeights),
+    robotRampReady: new Map(e.robotRampReady),
+  });
+}
+
+function restoreSaved(e: Engine3d, s: SavedEngine): void {
+  const next = rapier3d().World.restoreSnapshot(s.bytes);
+  e.world3d.free();
+  e.world3d = next;
+  e.robots = new Map(s.robots.map(([id, h]) => [id, next.getRigidBody(h)]));
+  e.elements = new Map(s.elements.map(([id, h]) => [id, next.getRigidBody(h)]));
+  e.hiveTrays = { red: next.getRigidBody(s.trays.red), blue: next.getRigidBody(s.trays.blue) };
+  e.hiveJoints = {
+    red: s.joints.red === null ? null : next.getImpulseJoint(s.joints.red),
+    blue: s.joints.blue === null ? null : next.getImpulseJoint(s.joints.blue),
+  };
+  e.restTicks = s.restTicks;
+  e.narrowVibeTicks = s.narrowVibeTicks;
+  e.hiveHeld = s.hiveHeld;
+  e.lastRobot = s.lastRobot;
+  e.lastElement = s.lastElement;
+  e.robotHeights = s.robotHeights;
+  e.robotRampReady = s.robotRampReady;
+  FIT_STATICS.delete(e); // its colliders belonged to the world just freed
+}
+
 /**
  * REWIND a live engine onto a SNAPSHOT — the client's FULL prediction, which runs this very step
  * on its own copy of the world and must restart from every authoritative snapshot 30 times a
  * second (`GameController.reconcile`). `engineFor` would REBUILD here, because the tick went
  * backwards and the snapshot is a new `World` object, and a rebuild is the ~80 static colliders
- * and the trimeshes: 15–40 ms, every snapshot. This keeps the statics and re-seats the bodies.
+ * and the trimeshes: 15–40 ms, every snapshot. This keeps the statics.
  *
- * The engine moves from `from` to `to`. Every body whose LIVE state differs from `to`'s JSON
- * loses its last-readback record, which is exactly the condition the next `syncRobot` /
- * `syncElement` reads as "teleported" — so it is seated from the JSON by the same code that
- * seats one on the server. A body that already matches keeps its record and, with it, its
- * sleep: waking every resting element would make the client's field twitch where the server's
- * is still. The HIVE TRAYS are the one pose the sync never writes (on the server nothing but the
- * solver moves them), so they are seated here from `hives[a].angle` / `angVel`, the inverse of
- * `readback`'s own write.
+ * ⚠️ **IT IS A ROLLBACK WHEN IT CAN BE ONE.** When the client saved its own engine at the
+ * snapshot's tick (`saveEngineState`), that save is restored first: every body, Rapier's contact
+ * and solver state, the timers. Without it the engine was moved back from its predicted tick body
+ * by body and kept a lead's worth of FUTURE contact state, and the replay did not reproduce the
+ * room even from an exact snapshot: measured with no network at all (identical inputs, unrounded
+ * snapshots, lead 8), 9.8% of replays ended on a different capture than the room's and 7.3% on a
+ * different shot; restoring each body's position, spin and sleep got that to 8.7%, the full save
+ * to 0%. Through a real `Room` at 100 ms with the bot driving and fire held, captures the client
+ * showed that the room never made went from 24–75 to 1–6 per 150 s (owner: "it just doesn't shoot
+ * sometimes" — the client fired elements it had wrongly picked up). With no save for the tick (a
+ * new engine, a tier switch) the bodies are moved as before.
+ *
+ * Then every body whose state differs from `to`'s JSON loses its last-readback record, which is
+ * exactly the condition the next `syncRobot` / `syncElement` reads as "teleported" — so it is
+ * seated from the JSON by the same code that seats one on the server. The HIVE TRAYS are the one
+ * pose the sync never writes (on the server nothing but the solver moves them), so a tray that
+ * differs is seated here from `hives[a].angle` / `angVel`, the inverse of `readback`'s own write.
  *
  * Returns false (and leaves `engineFor` to build fresh) when there is no engine to move or the
  * robot set changed, which is `engineFor`'s own rebuild rule.
  *
- * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveHeld`) are not in the JSON and are
- * kept: they are the prediction's own, a few ticks ahead of the server's. A client prediction is
- * allowed to be slightly wrong — the next snapshot corrects it — and it is never authoritative.
+ * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveHeld`) are not in the JSON. Without
+ * a save they are kept from the predicted tick, a few ticks ahead of the server's.
+ *
+ * ⚠️ "DIFFERS" MEANS BY MORE THAN THE WIRE'S ROUNDING (`REWIND_EPS`), NOT `POSE_EPS`. A snapshot's
+ * numbers are rounded to 1e-3 (`server/wire.ts`), so against `POSE_EPS` (1e-4) every body
+ * "differed" on every reconcile and was teleported and woken from the rounded JSON: a POLLEN
+ * lying still in the room dropped 0.04 in and read `flight` for a tick in the client's replay.
+ * A body inside that rounding keeps its live state, contacts and sleep, and its JSON and readback
+ * record are written the way `readback` writes them, so the next sync sees no edit and the next
+ * readback no motion.
  */
+const REWIND_EPS = 1e-3;
 export function rewindEngineTo(from: World, to: World): boolean {
   const e = ENGINES.get(from);
   if (!e) return false;
@@ -1091,6 +1177,11 @@ export function rewindEngineTo(from: World, to: World): boolean {
     return false;
   }
   ENGINES.set(to, e);
+  const saves = SAVED.get(e);
+  const own = saves?.get(to.tick);
+  if (own) restoreSaved(e, own);
+  // every other save belongs to the prediction this rewind replaces; the replay saves again
+  saves?.clear();
   e.lastTick = to.tick;
   for (const r of to.robots) {
     const body = e.robots.get(r.id);
@@ -1099,14 +1190,27 @@ export function rewindEngineTo(from: World, to: World): boolean {
     const t = body.translation();
     const v = body.linvel();
     const same =
-      Math.abs(t.x - r.pos.x) <= POSE_EPS &&
-      Math.abs(t.y - r.pos.y) <= POSE_EPS &&
-      Math.abs(t.z - ((r.z ?? 0) + h / 2)) <= POSE_EPS &&
-      Math.abs(yawOfQuat(body.rotation()) - r.heading) <= POSE_EPS &&
-      Math.abs(v.x - r.vel.x) <= POSE_EPS &&
-      Math.abs(v.y - r.vel.y) <= POSE_EPS &&
-      Math.abs(body.angvel().z - r.angVel) <= POSE_EPS;
-    if (!same) e.lastRobot.delete(r.id);
+      Math.abs(t.x - r.pos.x) <= REWIND_EPS &&
+      Math.abs(t.y - r.pos.y) <= REWIND_EPS &&
+      Math.abs(t.z - ((r.z ?? 0) + h / 2)) <= REWIND_EPS &&
+      Math.abs(yawOfQuat(body.rotation()) - r.heading) <= REWIND_EPS &&
+      Math.abs(v.x - r.vel.x) <= REWIND_EPS &&
+      Math.abs(v.y - r.vel.y) <= REWIND_EPS &&
+      Math.abs(v.z - (r.vz ?? 0)) <= REWIND_EPS &&
+      Math.abs(body.angvel().z - r.angVel) <= REWIND_EPS;
+    if (!same) {
+      e.lastRobot.delete(r.id);
+      continue;
+    }
+    r.pos.x = round4(t.x);
+    r.pos.y = round4(t.y);
+    r.z = round4(t.z - builtHeight(e, r) / 2);
+    r.heading = round4(yawOfQuat(body.rotation()));
+    r.vel.x = round4(v.x);
+    r.vel.y = round4(v.y);
+    r.vz = round4(v.z);
+    r.angVel = round4(body.angvel().z);
+    e.lastRobot.set(r.id, { x: r.pos.x, y: r.pos.y, z: r.z, heading: r.heading, vx: r.vel.x, vy: r.vel.y, vz: r.vz, angVel: r.angVel });
   }
   for (const b of to.balls) {
     const body = e.elements.get(b.id);
@@ -1115,19 +1219,36 @@ export function rewindEngineTo(from: World, to: World): boolean {
     const t = body.translation();
     const v = body.linvel();
     const same =
-      Math.abs(t.x - b.pos.x) <= POSE_EPS &&
-      Math.abs(t.y - b.pos.y) <= POSE_EPS &&
-      Math.abs(t.z - (b.z + rad)) <= POSE_EPS &&
-      Math.abs(v.x - b.vel.x) <= POSE_EPS &&
-      Math.abs(v.y - b.vel.y) <= POSE_EPS &&
-      Math.abs(v.z - b.vz) <= POSE_EPS;
-    if (!same) e.lastElement.delete(b.id);
+      Math.abs(t.x - b.pos.x) <= REWIND_EPS &&
+      Math.abs(t.y - b.pos.y) <= REWIND_EPS &&
+      Math.abs(t.z - (b.z + rad)) <= REWIND_EPS &&
+      Math.abs(v.x - b.vel.x) <= REWIND_EPS &&
+      Math.abs(v.y - b.vel.y) <= REWIND_EPS &&
+      Math.abs(v.z - b.vz) <= REWIND_EPS;
+    if (!same) {
+      e.lastElement.delete(b.id);
+      continue;
+    }
+    b.pos.x = round4(t.x);
+    b.pos.y = round4(t.y);
+    b.z = round4(t.z - rad);
+    b.vel.x = round4(v.x);
+    b.vel.y = round4(v.y);
+    b.vz = round4(v.z);
+    e.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz });
   }
   if (useHiveDynamic() && to.biobuzz) {
     for (const a of ['red', 'blue'] as const) {
       const hv = to.biobuzz.hives[a];
       const tray = e.hiveTrays[a];
       if (hv.angle === undefined) continue;
+      const tilt = trayTilt(tray);
+      const spin = tray.angvel().x;
+      if (Math.abs(tilt - hv.angle) <= REWIND_EPS && Math.abs(spin - (hv.angVel ?? 0)) <= REWIND_EPS) {
+        hv.angle = round4(tilt);
+        hv.angVel = round4(spin);
+        continue;
+      }
       tray.setRotation(tiltQuatX(hv.angle), true);
       tray.setAngvel({ x: hv.angVel ?? 0, y: 0, z: 0 }, true);
     }

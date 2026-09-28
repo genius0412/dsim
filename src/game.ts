@@ -2211,7 +2211,10 @@ export class GameController {
         if (pose) this.applyPredictedPose(pose);
       } else {
         this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
-        if (this.worldPredicted()) this.noteDigest();
+        if (this.worldPredicted()) {
+          this.noteDigest();
+          this.saveForRollback();
+        }
       }
       this.acc -= C.SIM_DT;
       steps++;
@@ -2656,7 +2659,12 @@ export class GameController {
     const t0 = performance.now();
     for (let i = 0; i < WORLD_PROBE_TICKS; i++) this.mod.step(w, C.SIM_DT, cmds);
     const perTick = (performance.now() - t0) / WORLD_PROBE_TICKS;
-    return perTick * Math.max(WORLD_PROBE_MIN_WINDOW, (this.lead.target ?? 0) + 2);
+    // a reconcile also restores one save and saves every other tick it replays (`saveForRollback`)
+    const s0 = performance.now();
+    physics3dImpl().saveEngineState(w, w.tick);
+    const save = performance.now() - s0;
+    const span = Math.max(WORLD_PROBE_MIN_WINDOW, (this.lead.target ?? 0) + 2);
+    return perTick * span + save * (span / 2 + 1);
   }
 
   private disposeProbeWorld(): void {
@@ -3069,6 +3077,16 @@ export class GameController {
     }
   }
 
+  /**
+   * FULL (world tier): save the engine on the ticks the room sends snapshots for, so reconciling
+   * onto one is a rollback rather than moving each body back (`saveEngineState`, which has the
+   * measurement). The room snapshots every other tick; the parity is read off the last snapshot.
+   */
+  private saveForRollback(): void {
+    if ((this.world.tick - this.lastServerTick) % 2 !== 0) return;
+    physics3dImpl().saveEngineState(this.world, this.lastServerTick + 1);
+  }
+
   /** does this snapshot say exactly what the prediction already said for its tick? */
   private snapshotAgrees(snap: Snapshot): boolean {
     if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;
@@ -3127,6 +3145,7 @@ export class GameController {
       }
     }
 
+    const tAdopt = performance.now();
     this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
     this.lastServerTick = snap.serverTick;
@@ -3149,15 +3168,18 @@ export class GameController {
      */
     if (this.usesPredictor()) this.replayThroughPredictor(snap.serverTick);
     else {
-      const t0 = performance.now();
       const world = this.worldPredicted();
       if (world) this.predictedDigests.clear();
       for (const b of this.inputBuf) {
         this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
-        if (world) this.noteDigest();
+        if (world) {
+          this.noteDigest();
+          this.saveForRollback();
+        }
       }
-      // FULL's world tier is measured like the predictor is — the slip rule reads it
-      if (this.worldPredicted()) this.notePredictionCost(performance.now() - t0);
+      // FULL's world tier is measured like the predictor is — the slip rule reads it. From the
+      // adopt, because the rollback's restore happens there.
+      if (this.worldPredicted()) this.notePredictionCost(performance.now() - tAdopt);
     }
     if (preBalls) this.noteWorldBallCorrection(preBalls);
 

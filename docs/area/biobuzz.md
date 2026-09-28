@@ -901,6 +901,9 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
 - ⚠️ **ONLINE "FULL" IS NOW THE REAL `step3d` ON THE CLIENT** (2026-09-27, owner: "FULL should predict
   EVERYTHING"), on one engine REWOUND onto each snapshot (`rewindEngineTo`), replayed only when the
   snapshot disagrees with the prediction — `docs/area/netcode.md` has the rule and the numbers.
+  The rewind restores the client's own saved engine for the snapshot's tick when it has one
+  (`saveEngineState`): without Rapier's contact state it did not reproduce the room's captures.
+  Checks: `predict.ts` "world predict: WITHOUT a save" / "WITH the client's own save".
   `sim3d/predict`'s FULL below is the pickable **Balanced** mode (and Auto's step down from Full),
   and LIGHT is unchanged.
 - ⚠️ **THE FULL PREDICTOR DRIVES THE OTHER ROBOTS AND CARRIES EVERY MOVING ELEMENT** (2026-09-27, with
