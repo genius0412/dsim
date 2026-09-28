@@ -901,7 +901,7 @@ export function Menu({ settings, onChange }: Props) {
                           value={spec.flywheelInertia}
                           style={rangeFill(spec.flywheelInertia, 0, 1)}
                           // a bigger flywheel weighs more: setSpec raises the mass floor
-                          // and pulls mass up with it so the loadout stays legal
+                          // and pulls mass up with it so the loadout stays legal, and clamps inertia to 0..1
                           onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
                         />
                       </label>
