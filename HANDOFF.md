@@ -1,6 +1,18 @@
+# HANDOFF — 2026-09-27o (phantom-shot fixes on `main`; a rollback restores the saved JSON)
+
+**State: pushed on `main` and `alpha`.** On `main`: 27m, 27n and this fix, cherry-picked onto the multi-core release. `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass on `main`; the predict lane passes on `alpha`. Client only: the server code that changed is a comment in `server/wire.ts` and client-only paths in `engineImpl.ts`, so production Fly was not redeployed. The production client deploys from `main` (Vercel).
+
+- **Owner:** merge the phantom-shots fix to `main` and deploy.
+- **Found merging:** 27n's own check ("WITH the client's own save … captures and shots") failed on `main`: 5 captures wrong over 266 rewinds. On `alpha` it read 0, but only by luck of the geometry (alpha has the 27f tray skin, `main` does not). With saves, 262 of 266 replays still ended off the room's poses on both branches, up to 3.5 in.
+- **Cause:** the JSON a step ends on is not the bodies' readback. `groundRoll3d` damps velocities after readback, `derive.ts` zeroes a resting element's, `squareUpRobotsWalls` edits a robot's, and the next sync applies that difference. The rewind's "matches the snapshot" branch rewrote the JSON from the bodies, so every rollback replayed without the room's damping.
+- **Fix (`engineImpl.ts`):** `saveEngineState` also keeps the world's kinematic JSON (robots, elements, trays). After a restore, a snapshot within the wire's rounding of it gets that JSON back exactly, with the save's readback records. The no-save path is unchanged.
+- **Measured:** seeds 1, 2, 3, 5 on `main`: 0 of 266 replays off the room's poses, 0 captures or shots wrong. New check "… ends on the room's exact poses" fails without the change (264 of 266).
+- **Not re-measured:** the real-`Room` phantom-shot counts in 27n (that probe is not committed). They should only improve; re-run it if someone reports misses again.
+- `alpha`'s 27f NECTAR tray fix (`SIM_PATCH` 2) is still not on `main`. It is a server change and needs a production Fly deploy.
+
 # HANDOFF — 2026-09-27n (BIOBUZZ Full: the reconcile is a rollback, so the client stops firing elements it never picked up)
 
-**State: pushed on `alpha`.** `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass. Client only, no deploy. **Not on `main`** (owner's call).
+**State: on `main` and `alpha` since 27o.** `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass. Client only. Its own smoke check failed on `main` until 27o; see there.
 
 - **Owner:** after 27m, "Not just replaying sound tho. It just doesnt shoot sometimes."
 - **Cause:** not lost packets. Every miss had an EMPTY room hopper: the client had predicted picking up an element the room never picked up, then fired it. `rewindEngineTo` moved each body back from the predicted tick but kept a lead's worth of future Rapier contact state, so a replay did not reproduce the room even from an exact snapshot (no network, identical inputs: 9.8% of replays on a different capture, 7.3% on a different shot). Captures came out early (p10 −6 to −12 ticks) and the client showed ~2x the room's pickups.
@@ -12,7 +24,7 @@
 
 # HANDOFF — 2026-09-27m (online: one shot sound per shot; a snapshot's rounded clocks rebuilt)
 
-**State: pushed on `alpha`.** `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass. Client only, no deploy. **Not on `main`** (a push there is a production client deploy; owner's call).
+**State: on `main` and `alpha` since 27o.** `npm test`, `build`, `server:check`, `bundleaudit`, `docaudit` pass. Client only.
 
 - **Owner:** "with the new prediction, it spams the shooting sound a ton and fakes the shooting animation but it never launches".
 - **Cause:** `round3` rounds `world.time`, the match countdowns and the shot stamps to 1 ms on the wire, and the sim compares them every tick. With the client a round trip ahead (`leadControl.ts`), every snapshot in the lead window re-decided each shot from rounded clocks: the same shot at a `world.time` a hair later (re-cued past the high-water mark), or a tick early (launched, then jumped back when the room fired a tick later).
