@@ -2419,12 +2419,28 @@ export function gateRestAngle(d: number): number {
   const R = BALL_RADIUS;
   const xb = CLASSIFIER_W - RAMP_RAIL_INSET; // the rail's distance from the hinge
   const W = GATE_PIVOT_Z - R;
-  const M = Math.hypot(xb, W);
+  const g = gateRestConsts(xb, W);
   const rhs = xb * xb + d * d + W * W - R * R;
   if (rhs < 0) return GATE_LIFT; // the hinge is inside the artifact — nothing to solve
-  const q = Math.sqrt(rhs) / M;
+  const q = Math.sqrt(rhs) / g.M;
   if (q > 1) return 0; // out of reach: the stick falls past it entirely
-  return Math.max(0, Math.acos(q) - Math.atan2(W, xb));
+  return Math.max(0, Math.acos(q) - g.tilt);
+}
+
+/**
+ * `hypot(xb, W)` and `atan2(W, xb)` for `gateRestAngle` — pure functions of constants, so they
+ * are computed ONCE (lazily, so this does not depend on where in the file the inputs are
+ * declared) with the very calls the function used to make per artifact per tick. Same engine,
+ * same bits.
+ *
+ * ⚠️ `Math.hypot`, `Math.atan2` and the `Math.acos` still in `gateRestAngle` are not correctly
+ * rounded and differ between JavaScript engines, so a browser that is not V8 can disagree with
+ * the Node server here in the last bit. Replacing `acos` (e.g. with `datan2`) changes output and
+ * needs a SIM_VERSION bump; the hoist above does not.
+ */
+let GATE_REST_CONSTS: { M: number; tilt: number } | null = null;
+function gateRestConsts(xb: number, W: number): { M: number; tilt: number } {
+  return (GATE_REST_CONSTS ??= { M: Math.hypot(xb, W), tilt: Math.atan2(W, xb) });
 }
 
 /**
