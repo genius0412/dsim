@@ -10,7 +10,7 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-317 classes · 125 families · 0 with no reference found.
+317 classes · 125 families · 1 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
@@ -266,7 +266,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-acct-email` | src/ui/shell.css:2224 | 1 |
-| `.ds-acct-id` | src/ui/shell.css:2241 | 1 |
+| `.ds-acct-id` | src/ui/shell.css:2241 | 0 |
 | `.ds-acct-row` | src/ui/shell.css:2214 | 2 |
 | `.ds-acct-uuid` | src/ui/shell.css:2246 | 1 |
 
@@ -428,15 +428,15 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-fold` | src/ui/shell.css:4312 | 15 |
-| `.ds-fold-body` | src/ui/shell.css:2241 | 7 |
+| `.ds-fold` | src/ui/shell.css:4312 | 13 |
+| `.ds-fold-body` | src/ui/shell.css:2241 | 6 |
 
 ## `ds-head` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-head` | src/ui/shell.css:4228 | 11 |
-| `.ds-head-spacer` | src/ui/shell.css:4255 | 10 |
+| `.ds-head` | src/ui/shell.css:4228 | 12 |
+| `.ds-head-spacer` | src/ui/shell.css:4255 | 11 |
 
 ## `ds-hint` — 2
 

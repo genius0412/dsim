@@ -473,29 +473,18 @@ function Identity() {
             </button>
           </div>
           {user.email && <PasswordRow email={user.email} />}
-          {/* a SUPPORT identifier, not an identity fact — it folds (ui.md "rare controls fold") */}
-          <details className="ds-fold inset">
-            <summary>Support details</summary>
-            <div className="ds-fold-body ds-acct-id">
-            <p className="ds-hint">Account ID</p>
-            <div className="ds-field-row">
-              {/* not clickable: the Copy button beside it is the control (a click-only
-                  <code> was mouse-only) */}
-              <code className="ds-acct-uuid">
-                {user.id}
-              </code>
-              <button
-                type="button"
-                className="ds-btn ghost small"
-                onClick={copyId}
-                title="Copy Account ID"
-                aria-label="Copy Account ID"
-              >
-                {copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            </div>
-          </details>
+
+          <div className="ds-field-row">
+            <span className="ds-hint">Account ID</span>
+            <code className="ds-acct-uuid" title="Click to copy" onClick={copyId}>
+              {user.id}
+            </code>
+            <span className="ds-head-spacer" />
+            <button className="ds-btn ghost small" onClick={copyId} title="Copy Account ID">
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+
         </div>
       ) : (
         <div className="ds-panel-body row">

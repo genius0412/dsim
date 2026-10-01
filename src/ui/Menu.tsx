@@ -472,7 +472,7 @@ export function Menu({ settings, onChange }: Props) {
     // server / spawn (coerceSpec), so the live spec can never hold an out-of-range
     // size, mass, speed, or inertia — length is clamped per intake preset, width to
     // the 18" cube, mass to the drivetrain×inertia floor/ceiling, rpm to the
-    // drivetrain range, inertia to 0..1. Identity TEXT (name/team) is kept as typed;
+    // drivetrain range, identity TEXT (name/team) is kept as typed;
     // it is length-capped on save, not mid-keystroke.
     const merged = { ...settings.spec, ...patch };
     const next: GameSettings['spec'] = {
@@ -756,7 +756,7 @@ export function Menu({ settings, onChange }: Props) {
                 keyboard or a phone. Screen-reader text rather than a visible line, because the
                 reason flips on and off with every edit and a line appearing would move the panel. */}
             <button
-              className="ds-btn small"
+              className="ds-btn primary small"
               disabled={!!saveBlocked}
               title={saveBlocked}
               aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
@@ -901,7 +901,7 @@ export function Menu({ settings, onChange }: Props) {
                           value={spec.flywheelInertia}
                           style={rangeFill(spec.flywheelInertia, 0, 1)}
                           // a bigger flywheel weighs more: setSpec raises the mass floor
-                          // and pulls mass up with it so the loadout stays legal
+                          // and pulls mass up with it so the loadout stays legal, and clamps inertia to 0..1
                           onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
                         />
                       </label>
