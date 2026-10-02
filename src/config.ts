@@ -238,8 +238,16 @@ export const SIM_VERSION = 4;
  *   2  BIOBUZZ 3D: a hive cell's floor and back colliders stand `BB3_TRAY_OUTER_SKIN` (0.5 in)
  *      out past the CAD surface instead of 1.5, so a NECTAR no longer wedges between the down
  *      cell and the ACM panel (`sim3d/bodies.ts`, `trayOuterSkin`).
+ *   3  (`alpha`, not on this branch) BIOBUZZ 3D: the wall square-up is a turn the solve makes.
+ *   4  (`alpha`, not on this branch) FIXED LAUNCHERS: the aim assist turns with `fixedAimTurn`.
+ *      The numbers are shared across branches so a replay means the same thing on both. A replay
+ *      this branch stamps 5 did NOT run 3 or 4; `alpha` carries `SIM_VERSION` 5, so once it lands
+ *      here every replay stamped 4 plays as DRIFT anyway, which is the honest label for that.
+ *   5  BIOBUZZ 3D: a loose element the narrow-hull vibration cannot free from HIVE structure is
+ *      SHED off it (a hashed hop, `BB3_HIVE_SHED_*`) instead of frozen on top of the HIVE for the
+ *      rest of the match (`sim3d/engineImpl.ts`, `groundRoll3d`).
  */
-export const SIM_PATCH = 2;
+export const SIM_PATCH = 5;
 
 /** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
  * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,
