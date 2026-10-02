@@ -4,6 +4,7 @@ import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
 import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
+import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
@@ -1388,23 +1389,29 @@ export interface ModMatch {
   won: boolean | null;
 }
 
-/** triage every OPEN report against a player */
+/**
+ * Triage every OPEN report against a player. The two messages are a moderator's own words: to
+ * the players who REPORTED them (sent with either verdict), and to the reported player (sent
+ * only with an upheld one, beside what it cost them). An older server ignores both.
+ */
 export async function adminSetReportStatus(
   userId: string,
   status: 'reviewed' | 'dismissed',
-): Promise<boolean> {
+  messages: { reporters?: string; player?: string } = {},
+): Promise<{ notified: number | null } | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
-  if (!base || !token) return false;
+  if (!base || !token) return null;
+  const q = new URLSearchParams({ user: userId, status });
+  if (messages.reporters?.trim()) q.set('reporterMessage', messages.reporters.trim());
+  if (messages.player?.trim()) q.set('playerMessage', messages.player.trim());
   try {
-    const res = await fetchAuthed(
-      token,
-      `${base}/api/admin/reports?user=${encodeURIComponent(userId)}&status=${status}`,
-      { method: 'POST' },
-    );
-    return res.ok;
+    const res = await fetchAuthed(token, `${base}/api/admin/reports?${q.toString()}`, { method: 'POST' });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { notified?: number };
+    return { notified: typeof body.notified === 'number' ? body.notified : null };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1428,6 +1435,8 @@ export interface ScoreReport {
    *  rejected. The pattern is what separates a mistake from a habit before anyone smites. */
   reporterFiled: number;
   reporterRejected: number;
+  /** the match has already been corrected. Absent from an older server. */
+  corrected?: boolean;
 }
 
 export async function adminFetchScoreReports(status = 'open'): Promise<ScoreReport[] | null> {
@@ -1456,11 +1465,14 @@ export async function adminResolveScoreReport(
   id: string,
   verdict: 'upheld' | 'rejected',
   smite = 0,
+  /** the moderator's own words to the filer, sent with the verdict */
+  message?: string,
 ): Promise<boolean> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return false;
   const q = new URLSearchParams({ id, verdict, smite: String(Math.max(0, Math.round(smite))) });
+  if (message?.trim()) q.set('message', message.trim());
   try {
     const res = await fetchAuthed(token, `${base}/api/admin/score-reports?${q.toString()}`, {
       method: 'POST',
@@ -1502,6 +1514,12 @@ export interface AdminMatch {
     note: string | null;
     at: string;
   }[];
+  /** what the match was first recorded as; the rating was computed from it (absent: older server) */
+  original?: { red: number; blue: number };
+  /** rating already given back on this match */
+  refunds?: { userId: string; points: number; at: string }[];
+  /** ranked, on the ladder that is live now — the only kind a refund can reach */
+  liveBoard?: boolean;
 }
 
 /** who played a match, what it scored, and every correction already applied to it */
@@ -1523,16 +1541,27 @@ export async function adminFetchMatch(matchId: string): Promise<AdminMatch | nul
 /**
  * Set a finished match's alliance scores.
  *
- * The win/loss flag is re-derived by the server from the new numbers; the RATINGS are not
- * touched, because Glicko-2 is sequential and re-rating one match in the middle means
- * re-rating every match since. Returns the before/after pair, or null if it did not land.
+ * The win/loss flag is re-derived by the server from the new numbers. Ratings are NOT
+ * recalculated (Glicko-2 is sequential); with `refund`, a player whose result got better gets
+ * back the rating the wrong result cost them, once. Every player in the match is told (0057),
+ * with `note` as the moderator's message. Returns the before/after pair, or null if it did not
+ * land.
  */
 export async function adminCorrectMatchScore(
   matchId: string,
   red: number,
   blue: number,
   note?: string,
-): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  refund = false,
+): Promise<{
+  redBefore: number;
+  blueBefore: number;
+  redAfter: number;
+  blueAfter: number;
+  /** absent from an older server */
+  refunds?: { userId: string; points: number }[];
+  notified?: number;
+} | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -1542,12 +1571,16 @@ export async function adminCorrectMatchScore(
     blue: String(Math.max(0, Math.round(blue))),
   });
   if (note) q.set('note', note);
+  if (refund) q.set('refund', '1');
   try {
     const res = await fetchAuthed(token, `${base}/api/admin/match?${q.toString()}`, {
       method: 'POST',
       });
     if (!res.ok) return null;
-    return (await res.json()) as { redBefore: number; blueBefore: number; redAfter: number; blueAfter: number };
+    return (await res.json()) as {
+      redBefore: number; blueBefore: number; redAfter: number; blueAfter: number;
+      refunds?: { userId: string; points: number }[]; notified?: number;
+    };
   } catch {
     return null;
   }
@@ -2006,6 +2039,39 @@ async function authedJson<T>(path: string, init?: RequestInit): Promise<T> {
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
   return data as T;
+}
+
+/**
+ * THE NOTICE INBOX (0057): what moderators told this account, newest first.
+ *
+ * ⚠️ AN OLDER SERVER HAS NO ROUTE and answers 404 (`FriendsUnavailableError`), which is an
+ * empty inbox — a server from before the inbox never wrote one.
+ */
+export async function fetchNotices(): Promise<Notice[]> {
+  try {
+    return (await authedJson<{ notices?: Notice[] }>('/api/user/notices')).notices ?? [];
+  } catch (e) {
+    if (e instanceof FriendsUnavailableError) return [];
+    throw e;
+  }
+}
+
+/** mark these notices read, or every unread one */
+export async function markNoticesRead(ids: string[] | 'all'): Promise<void> {
+  await authedJson('/api/user/notices/read', {
+    method: 'POST',
+    body: JSON.stringify(ids === 'all' ? { all: true } : { ids }),
+  });
+}
+
+/** the reports this account filed and their status; [] from an older server */
+export async function fetchFiledReports(): Promise<FiledReport[]> {
+  try {
+    return (await authedJson<{ reports?: FiledReport[] }>('/api/user/reports')).reports ?? [];
+  } catch (e) {
+    if (e instanceof FriendsUnavailableError) return [];
+    throw e;
+  }
 }
 
 /** the caller's friends, requests and blocks. This request also records the

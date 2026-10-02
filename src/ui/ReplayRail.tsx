@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { adminCorrectMatchScore, adminFetchMatch, type AdminMatch } from '../net/api';
 import { adminFail } from './adminCopy';
+import { NOTICE_MESSAGE_MAX, ratingRefund } from '../notices';
 import type { PenaltyLine } from '../sim/penaltyLog';
 import type { MatchPhase } from '../types';
 import { ENDGAME_START } from '../config';
@@ -156,6 +157,10 @@ export function PenaltyLog({
  * NOTHING SAVES WITHOUT A VISIBLE CONSEQUENCE: the winner line re-derives from the edited
  * numbers as they are typed, so "this makes it a tie" or "this flips the match" is on screen
  * before the button is pressed rather than discovered afterwards in someone's history.
+ *
+ * EVERY PLAYER IN THE MATCH IS TOLD (0057), with the old and new totals and the message typed
+ * here, and on a ranked match whose result flips, the rating the wrong result cost is given
+ * back (`ratingRefund`). The refund is previewed per player before saving, like the winner.
  */
 export function ScoreEditor({
   matchId,
@@ -173,6 +178,8 @@ export function ScoreEditor({
   const [red, setRed] = useState('');
   const [blue, setBlue] = useState('');
   const [note, setNote] = useState('');
+  /** the moderator UNticked the refund; it is on by default wherever one is owed */
+  const [noRefund, setNoRefund] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -207,26 +214,47 @@ export function ScoreEditor({
   const winner = nextRed === nextBlue ? 'Tie' : nextRed > nextBlue ? 'Red wins' : 'Blue wins';
   const storedWinner = match.red === match.blue ? 'Tie' : match.red > match.blue ? 'Red wins' : 'Blue wins';
 
+  /* WHO WOULD GET RATING BACK — judged against what the match was FIRST recorded as (the rating
+     came from that), never against an earlier correction, and never twice for one player. The
+     server re-derives all of it; this is the preview. An older server sends no `original`, and
+     then nothing is offered. */
+  const already = new Set((match.refunds ?? []).map((r) => r.userId));
+  const owed = match.original
+    ? match.participants
+        .map((p) => ({ p, points: ratingRefund(p, match.original!, { red: nextRed, blue: nextBlue }) }))
+        .filter((x) => x.points > 0 && !already.has(x.p.userId))
+    : [];
+  const refundOn = changed && match.liveBoard === true && owed.length > 0 && !noRefund;
+  const nameOf = (p: { username: string | null; handle: string }): string => (p.username ? `@${p.username}` : p.handle);
+
   const save = async (): Promise<void> => {
     if (
       !window.confirm(
         `Record this match as RED ${nextRed} — BLUE ${nextBlue}? ` +
-          'It changes both players’ match history. Ratings are not recalculated.',
+          `It changes ${match.participants.length === 1 ? 'the player’s' : 'every player’s'} match history, and they are told. ` +
+          (refundOn
+            ? `Rating given back: ${owed.map((x) => `${nameOf(x.p)} +${x.points}`).join(', ')}.`
+            : 'No rating changes.'),
       )
     )
       return;
     setBusy(true);
-    const done = await adminCorrectMatchScore(matchId, nextRed, nextBlue, note.trim() || undefined);
+    const done = await adminCorrectMatchScore(matchId, nextRed, nextBlue, note.trim() || undefined, refundOn);
     setBusy(false);
     if (!done) {
       setStatus({ ok: false, text: adminFail('correct the score') });
       return;
     }
+    const back = done.refunds ?? [];
     setStatus({
       ok: true,
-      text: `Saved. Red ${done.redBefore} → ${done.redAfter}, blue ${done.blueBefore} → ${done.blueAfter}.`,
+      text:
+        `Saved. Red ${done.redBefore} → ${done.redAfter}, blue ${done.blueBefore} → ${done.blueAfter}.` +
+        (back.length ? ` Rating given back to ${back.length} player${back.length === 1 ? '' : 's'}.` : '') +
+        (typeof done.notified === 'number' ? ` ${done.notified} told.` : ''),
     });
     setNote('');
+    setNoRefund(false);
     load();
   };
 
@@ -306,17 +334,29 @@ export function ScoreEditor({
         {changed && storedWinner !== winner && '. This changes the result.'}
       </p>
 
+      {/* SHOWN TO THE PLAYERS (0057), quoted as the moderator's note on the notice every player
+          in the match gets. It is also the correction's audit reason. */}
       <label className="rr-field wide">
-        <span className="rr-cap">Why</span>
-        <input
-          type="text"
+        <span className="rr-cap">Why (the players see this)</span>
+        <textarea
           className="ds-input"
+          rows={2}
           value={note}
-          maxLength={300}
+          maxLength={NOTICE_MESSAGE_MAX}
           placeholder="What the replay shows"
           onChange={(e) => setNote(e.target.value)}
         />
       </label>
+
+      {/* THE REFUND, offered only where one is owed: a ranked match on the live ladder whose
+          corrected result is better for somebody who lost rating in it. Ticked by default,
+          because that is the case it exists for; the names and amounts are on screen. */}
+      {changed && match.liveBoard === true && owed.length > 0 && (
+        <label className="ds-checkline rr-refund">
+          <input type="checkbox" checked={!noRefund} onChange={(e) => setNoRefund(!e.target.checked)} />
+          Give back rating: {owed.map((x) => `${nameOf(x.p)} +${x.points}`).join(', ')}
+        </label>
+      )}
 
       <button className="ds-btn primary" disabled={!changed || busy} onClick={() => void save()}>
         {busy ? 'Saving…' : 'Save score'}
@@ -324,11 +364,11 @@ export function ScoreEditor({
 
       {/* SAID OUT LOUD, every time. Glicko-2 is sequential — every match since this one was
           rated against the numbers it produced — so correcting one match in the middle cannot
-          re-rate it without re-rating everything after it for everyone involved. A moderator
-          who assumed either way would be wrong half the time. */}
+          re-rate it without re-rating everything after it for everyone involved. What it CAN
+          do is give a wrongly-recorded loss back, which is what VALORANT and lichess do. */}
       <p className="rr-note">
-        Ratings are not recalculated. The result and the win are corrected; the rating both
-        players left this match with stands.
+        Ratings are not recalculated. A player whose result gets better can be given back the
+        rating this match cost them, once. Nobody loses rating. Every player is told.
       </p>
 
       {/* a failed save in the error colour, not the success one (design review 09-11) */}
@@ -348,6 +388,8 @@ export function ScoreEditor({
             {p.ratingAfter !== null && (
               <span className="rr-elo ds-muted">
                 {p.ratingBefore} → {p.ratingAfter}
+                {already.has(p.userId) &&
+                  ` · +${match.refunds!.find((r) => r.userId === p.userId)!.points} given back`}
               </span>
             )}
           </li>

@@ -32,6 +32,8 @@ import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
+import { cleanMessage, ratingRefund } from '../src/notices';
+import { noticeCorrection, noticeMisscore, noticeReportTriage, noticeStandingEdit, costOf } from './notices';
 import { handleApi } from './api';
 import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
 import {
@@ -105,6 +107,7 @@ import {
   resolveScoreReport,
   submitScoreReport,
   setReportsStatus,
+  refundMatchRatings,
   userRecentMatches,
   getMaintenance,
   setMaintenance,
@@ -1275,6 +1278,7 @@ const httpServer = createServer((req, res) => {
        *   GET  /api/admin/reports                  the queue (one row per reported player)
        *   GET  /api/admin/reports?user=<id>        that player's reports + recent matches
        *   POST /api/admin/reports?user=<id>&status=reviewed|dismissed
+       *        [&reporterMessage=…][&playerMessage=…]
        *
        * The per-user GET returns the MATCHES alongside the reports deliberately. A report
        * for cheating or throwing cannot be judged from its text — the moderator has to
@@ -1302,26 +1306,36 @@ const httpServer = createServer((req, res) => {
             res.end('bad request');
             return;
           }
-          const n = await setReportsStatus(target, status, user?.userId ?? 'admin');
+          const closed = await setReportsStatus(target, status, user?.userId ?? 'admin');
+          const n = closed.length;
           // UPHELD is the only event in the standing system a human has actually verified,
           // so it is the only one big enough to move a player two tiers — and unlike the raw
           // reports it replaces, it restricts. DISMISSED deliberately does nothing: the raw
           // nudges those reports already applied heal off on their own, and reversing them
           // would need a per-report ledger to undo exactly, which is a lot of machinery for
           // a few points that expire anyway.
-          if (status === 'reviewed' && n > 0) {
-            void chargeStanding(target, 'reportUpheld', {}).catch((e) =>
-              console.error('[standing] upheld charge failed:', e),
-            );
-          }
+          // AWAITED (0057): the penalty notice tells the player what was actually stored, so it
+          // needs the verdict. `chargeStanding` never throws; a null is "nothing charged".
+          const verdict =
+            status === 'reviewed' && n > 0 ? await chargeStanding(target, 'reportUpheld', {}) : null;
+          // THE PEOPLE IT CONCERNS ARE TOLD (0057): each reporter learns the outcome of their
+          // own report, and on an upheld verdict the player learns what it cost and why.
+          const reporterMessage = cleanMessage(u.searchParams.get('reporterMessage'));
+          const playerMessage = status === 'reviewed' ? cleanMessage(u.searchParams.get('playerMessage')) : null;
+          const notified = await noticeReportTriage({
+            target, status, closed, verdict, reporterMessage, playerMessage,
+          });
           await writeAudit({
             adminId: actor,
             action: status === 'reviewed' ? 'report.uphold' : 'report.dismiss',
             targetUser: target,
-            detail: { reports: n },
+            detail: { reports: n, notified },
+            note: [reporterMessage && `to reporters: ${reporterMessage}`, playerMessage && `to player: ${playerMessage}`]
+              .filter(Boolean)
+              .join(' | ') || undefined,
           });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, updated: n }));
+          res.end(JSON.stringify({ ok: true, updated: n, notified }));
           return;
         }
         if (target) {
@@ -1357,7 +1371,7 @@ const httpServer = createServer((req, res) => {
        * history — how many they have filed and how many were rejected — because that history
        * is what separates an honest confusion from a habit before anyone reaches for a smite.
        *
-       * POST ?id=&verdict=upheld|rejected&smite=N. The smite is standing points taken off the
+       * POST ?id=&verdict=upheld|rejected&smite=N[&message=…]. The smite is standing points taken off the
        * REPORTER for a claim found malicious, and it goes through the ordinary standing ledger
        * (`falseReport`) rather than a private one, so the player sees it where they see every
        * other penalty and the tier/cooldown machinery treats it like any other offence.
@@ -1387,12 +1401,23 @@ const httpServer = createServer((req, res) => {
           // right; charging them for being right is the failure mode this whole feature is
           // supposed to guard against, so the server refuses it rather than trusting the UI
           // to never offer it.
-          if (done && verdict === 'rejected' && smite > 0) {
-            void chargeStanding(done.reporterId, 'falseReport', {
-              roomCode: done.roomCode,
-              points: smite,
-            }).catch((e) => console.error('[standing] smite failed:', e));
-          }
+          const charged =
+            done && verdict === 'rejected' && smite > 0
+              ? await chargeStanding(done.reporterId, 'falseReport', { roomCode: done.roomCode, points: smite })
+              : null;
+          // THE FILER IS TOLD (0057): upheld with the corrected numbers when the match has been
+          // corrected, rejected with what the smite cost. `message` is the moderator's own words.
+          const message = cleanMessage(u.searchParams.get('message'));
+          const notified = done
+            ? await noticeMisscore({
+                reporterId: done.reporterId,
+                matchId: done.matchId,
+                game: done.game,
+                verdict,
+                cost: costOf(charged),
+                message,
+              })
+            : 0;
           if (done) {
             // the TARGET of this row is the REPORTER, not the match: a misscore claim is
             // resolved against a person only when it is smitten, and "what has been done to
@@ -1402,11 +1427,12 @@ const httpServer = createServer((req, res) => {
               action: `misscore.${verdict}`,
               targetUser: smite > 0 ? done.reporterId : null,
               targetId: id,
-              detail: { verdict, smite, roomCode: done.roomCode },
+              detail: { verdict, smite, roomCode: done.roomCode, notified },
+              note: message ?? undefined,
             });
           }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: Boolean(done) }));
+          res.end(JSON.stringify({ ok: Boolean(done), notified }));
           return;
         }
         const reports = await listScoreReports({ status: u.searchParams.get('status') ?? undefined });
@@ -1418,7 +1444,7 @@ const httpServer = createServer((req, res) => {
        * GET/POST /api/admin/match — READ or CORRECT one finished match's score.
        *
        *   GET  ?id=<matchId>                       who played, what it says, what has been done
-       *   POST ?id=<matchId>&red=N&blue=N&note=…   correct it
+       *   POST ?id=<matchId>&red=N&blue=N&note=…[&refund=1]   correct it
        *
        * This is the half the misscore queue was missing. Upholding a claim recorded that the
        * sim got a result wrong and then left the wrong number on the match, in both players'
@@ -1453,17 +1479,45 @@ const httpServer = createServer((req, res) => {
             res.end('bad score');
             return;
           }
-          const done = await correctMatchScore(
-            id,
-            { red, blue },
-            user?.userId ?? 'admin',
-            u.searchParams.get('note') ?? undefined,
-          );
+          // the note is SHOWN TO THE PLAYERS now (0057), so it goes through the same cleaning as
+          // every other moderator message
+          const note = cleanMessage(u.searchParams.get('note'));
+          const done = await correctMatchScore(id, { red, blue }, user?.userId ?? 'admin', note ?? undefined);
+          let refunds: { userId: string; points: number }[] = [];
+          let notified = 0;
           if (done) {
             console.log(
               `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
                 `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
             );
+            const after = { red: done.redAfter, blue: done.blueAfter };
+            const match = await matchScoreDetail(id);
+            /* RATING GIVEN BACK, when the moderator asked for it (VALORANT's ranked rollback,
+               lichess's refund). `ratingRefund` judges each player against the result the
+               rating was computed from, gives back only a LOSS, and only to a player whose
+               result got better; `refundMatchRatings` applies each once and only on a live
+               ladder. Nobody's rating goes down here. */
+            if (match && u.searchParams.get('refund') === '1' && match.liveBoard) {
+              const want = match.participants.map((p) => ({
+                userId: p.userId,
+                points: ratingRefund(p, match.original, after),
+              }));
+              refunds = await refundMatchRatings(id, want, user?.userId ?? 'admin').catch((e) => {
+                console.error('[admin] rating refund failed:', e);
+                return [];
+              });
+            }
+            // EVERY PLAYER IN THE MATCH IS TOLD (0057): the old and new totals, whether their
+            // result changed, and any rating given back.
+            if (match) {
+              notified = await noticeCorrection({
+                match,
+                before: { red: done.redBefore, blue: done.blueBefore },
+                after,
+                refunds,
+                message: note,
+              });
+            }
             await writeAudit({
               adminId: actor,
               action: 'match.rescore',
@@ -1471,12 +1525,14 @@ const httpServer = createServer((req, res) => {
               detail: {
                 before: `${done.redBefore}-${done.blueBefore}`,
                 after: `${done.redAfter}-${done.blueAfter}`,
+                refunds: refunds.map((r) => `${r.userId}:+${r.points}`),
+                notified,
               },
-              note: u.searchParams.get('note') ?? undefined,
+              note: note ?? undefined,
             });
           }
           res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
+          res.end(JSON.stringify(done ? { ok: true, ...done, refunds, notified } : { error: 'no such match' }));
           return;
         }
         const match = await matchScoreDetail(id);
@@ -1531,12 +1587,23 @@ const httpServer = createServer((req, res) => {
               : rawLock === 'clear'
                 ? (false as const)
                 : Math.max(0, Math.round(Number(rawLock) || 0));
+          const note = cleanMessage(u.searchParams.get('note'));
           const out = await adminEditStanding(target, user?.userId ?? 'admin', {
             score,
             pardonAll: pardon === 'all',
             pardonIds: pardon && pardon !== 'all' ? pardon.split(',').filter(Boolean) : undefined,
             lock,
-            note: u.searchParams.get('note') ?? undefined,
+            note: note ?? undefined,
+          });
+          // the ledger row already carries the note; the notice is what makes the player SEE it
+          // the next time they are in the menus, rather than when they next open their career
+          const notified = await noticeStandingEdit({
+            target,
+            scoreBefore: out.scoreBefore,
+            scoreAfter: out.scoreAfter,
+            pardoned: out.pardoned,
+            lock,
+            note,
           });
           console.log(
             `[standing] ${target} edited by ${user?.userId ?? 'admin'}: ` +
@@ -1553,11 +1620,12 @@ const httpServer = createServer((req, res) => {
               scoreAfter: out.scoreAfter,
               pardoned: out.pardoned,
               lock: lock === false ? 'cleared' : lock,
+              notified,
             },
-            note: u.searchParams.get('note') ?? undefined,
+            note: note ?? undefined,
           });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, ...out }));
+          res.end(JSON.stringify({ ok: true, ...out, notified }));
           return;
         }
         const [standings, events, profile] = await Promise.all([

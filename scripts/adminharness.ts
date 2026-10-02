@@ -159,6 +159,9 @@ async function main(): Promise<void> {
 async function seed(repo: any, db: PGlite): Promise<void> {
   await repo.ensureProfile(ADMIN_ID, 'Harness Owner');
   await repo.setUsername(ADMIN_ID, 'harnessowner');
+  // the owner has accepted the current terms, so the console is not behind the terms gate
+  const { LEGAL_VERSION } = await import('../src/legalText');
+  await repo.acceptTerms(ADMIN_ID, LEGAL_VERSION);
 
   const people: [string, string, string | null][] = [
     ['u-ada', 'Ada Lovelace', 'ada'],
@@ -215,6 +218,26 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     const mid = await repo.saveMatch('1v1', SEASON, replay, true, 'decode');
     await repo.addMatchParticipant({ matchId: mid, userId: id, alliance: 'red', drivetrain: 'mecanum', score: 120 - i * 7, won: i % 2 === 0, ratingBefore: 1500, ratingAfter: 1512 });
     await repo.addMatchParticipant({ matchId: mid, userId: 'u-alan', alliance: 'blue', drivetrain: 'tank', score: 90, won: i % 2 !== 0, ratingBefore: 1500, ratingAfter: 1488 });
+  }
+
+  // NOTICES (0057). The OWNER lost a ranked match, filed a misscore claim on it and reported the
+  // opponent, so working those three through the console (correct the score from the replay with
+  // the refund ticked, uphold the claim, uphold the reports against Alan) sends notices to the
+  // account this harness is signed in as, and the pop-up shows them on the way back to the menus.
+  {
+    const act = await repo.actFor('decode');
+    const replay = await repo.saveReplay(
+      { format: 2, balanceVersion: SEASON, sim: 3, game: 'decode', mode: 'match', seed: 57, ticks: 9000, setups: [], tracks: {} },
+      SEASON,
+      'decode',
+    );
+    const mid = await repo.saveMatch('1v1', SEASON, replay, true, 'decode');
+    await repo.addMatchParticipant({ matchId: mid, userId: ADMIN_ID, alliance: 'red', drivetrain: 'mecanum', score: 40, won: false, ratingBefore: 1500, ratingAfter: 1482 });
+    await repo.addMatchParticipant({ matchId: mid, userId: 'u-alan', alliance: 'blue', drivetrain: 'tank', score: 55, won: true, ratingBefore: 1500, ratingAfter: 1518 });
+    await repo.upsertRating(ADMIN_ID, '1v1', act, 1482, 120, 0.06, 'decode');
+    await repo.upsertRating('u-alan', '1v1', act, 1518, 120, 0.06, 'decode');
+    await repo.submitScoreReport({ reporterId: ADMIN_ID, matchId: mid, roomCode: 'iad-n057', game: 'decode', detail: 'two artifacts went in at the buzzer and did not count' });
+    await repo.submitReport({ reportedId: 'u-alan', reporterId: ADMIN_ID, reason: 'throwing', roomCode: 'iad-n057', detail: 'parked in front of our goal' });
   }
 
   // a heartbeat from a SECOND region, so the Live table has rows the local snapshot does not

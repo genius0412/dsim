@@ -63,6 +63,9 @@ import {
   revokeStargazer,
   rewardState,
   setEquippedBadges,
+  listNotices,
+  markNoticesRead,
+  reportsFiledBy,
   unlinkProvider,
   type LinkProvider,
   getUserSettings,
@@ -142,6 +145,9 @@ const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
  *   GET  /api/user/rewards                   — pending rewards + badges + trophy case (JWT)
  *   POST /api/user/rewards/claim {id,equip}  — claim one, and with equip wear it (Bearer JWT)
  *   POST /api/user/badges {badges}           — wear these badges, in order (Bearer JWT)
+ *   GET  /api/user/notices                   — what moderators told you, newest first (JWT)
+ *   POST /api/user/notices/read {ids|all}    — mark them read (Bearer JWT)
+ *   GET  /api/user/reports                   — the reports you filed and their status (JWT)
  *   GET  /api/link/<p>/start                 — the authorize URL for github|discord (JWT)
  *   GET  /api/link/<p>/callback              — the provider's redirect; 302s into /account
  *   POST /api/link/<p>/unlink                — drop the link and its reward (Bearer JWT)
@@ -827,6 +833,46 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const worn = await setEquippedBadges(user.userId, ids);
       if (!worn) return json(403, { error: 'You have not earned one of those badges.' }), true;
       return json(200, { equippedBadges: worn }), true;
+    }
+
+    /**
+     * THE NOTICE INBOX (0057) — what a moderator did about your report, your match, or you.
+     *
+     * NEW ROUTES, like the reward ledger's: an older client never asks, and an older server
+     * answers 404, which the client reads as an empty inbox. GET is self-only by construction
+     * (no user parameter); read marks are only ever applied to the caller's own rows.
+     */
+    if (url.pathname === '/api/user/notices' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { notices: [] }), true;
+      return json(200, { notices: await listNotices(user.userId) }), true;
+    }
+    if (url.pathname === '/api/user/notices/read' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { marked: 0 }), true;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      const ids =
+        body.all === true
+          ? ('all' as const)
+          : Array.isArray(body.ids)
+            ? body.ids.filter((x): x is string => typeof x === 'string').slice(0, 100)
+            : null;
+      if (!ids) return json(400, { error: 'ids must be a list of notice ids, or all: true' }), true;
+      return json(200, { marked: await markNoticesRead(user.userId, ids) }), true;
+    }
+    /** the reports you FILED and where each one is (Epic's "My reports") */
+    if (url.pathname === '/api/user/reports' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { reports: [] }), true;
+      return json(200, { reports: await reportsFiledBy(user.userId) }), true;
     }
 
     /** what this account has linked, and which providers the server can actually offer. */

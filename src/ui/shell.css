@@ -3683,6 +3683,13 @@ tr.lb-detail td {
   line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
+/* the refund line names players and amounts, so it wraps; the box stays on its first line */
+.ds-checkline.rr-refund {
+  align-items: flex-start;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+}
 .rr-players,
 .rr-hist {
   list-style: none;
@@ -7094,6 +7101,130 @@ a.ds-cta {
 }
 .ds-standing-cost { font: 600 11px/1.4 var(--ds-font-mono); }
 
+/* =====================================================================
+   MODERATOR NOTICES (0057) — the pop-up (`NoticeDialog`) and the career page's Messages and
+   Your reports lists (`NoticeInbox`). One item component serves both, so a notice reads the
+   same in the dialog that announced it and in the list that keeps it.
+
+   TONE is a 3px strip drawn with an INSET SHADOW down the leading edge, never a wider border:
+   a border width is layout (ui-standard §1.4, §4). Good news is the ok ink, a penalty is the
+   danger ink, and plain information carries no strip. The words always say which, so the
+   colour is never the only signal.
+   ===================================================================== */
+.ds-modal.nt-card {
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-modal.nt-card .ds-dialog-title { margin: 0; }
+.nt-eyebrow {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.nt-list {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+/* the dialog's list has no panel padding of its own to lose */
+.nt-card .nt-list { padding: 0; }
+.nt-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+}
+.nt-item.tone-good { box-shadow: inset 3px 0 0 var(--ds-ok-ink); }
+.nt-item.tone-bad { box-shadow: inset 3px 0 0 var(--ds-danger); }
+/* an UNREAD row in the career list: an accent edge, a colour change only */
+.nt-inbox .nt-item.unread { border-color: var(--ds-accent); }
+.nt-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+.nt-title {
+  margin: 0;
+  font-size: var(--ds-t-control);
+  font-weight: 750;
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-ink);
+}
+.nt-meta {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-mut);
+}
+.nt-line {
+  margin: 0;
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+}
+/* THE MODERATOR'S OWN WORDS — quoted, labelled as theirs, and set apart from the facts above
+   them, because they are a person speaking rather than the system reporting */
+.nt-msg {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+}
+.nt-msg-cap {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.nt-msg-text {
+  margin: 0;
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* the second list's header needs the rule the first one's gets from the panel's top edge */
+.nt-inbox .ds-panel-body + .ds-panel-h { border-top: 1px solid var(--ds-line); }
+.nt-filed {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.nt-filed-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+.nt-filed-what {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
+  overflow-wrap: anywhere;
+}
+
 /* the standing pill in the moderation queue is `.ds-badge.ok|warn|danger`, by tier */
 
 /* REPORT a player — the post-match dialog. Lives inside the results panel, which is itself
@@ -7290,6 +7421,16 @@ a.ds-cta {
   justify-content: flex-end;
   margin-top: 12px;
 }
+/* the messages a verdict sends (0057): the explanation, the two boxes and the result line,
+   stacked above the Dismiss / Uphold row that sends them */
+.adm-tell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  margin-bottom: var(--ds-s-3);
+}
+/* a misscore row's message to its filer, between the claim and the verdict buttons */
+.sr-msg { margin-top: var(--ds-s-2); }
 /* phone: the queue head stacks rather than crushing five columns into 320px */
 @media (max-width: 560px) {
   .adm-report-head {

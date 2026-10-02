@@ -2017,6 +2017,300 @@ async function main(): Promise<void> {
   }
 
   /* ========================================================================
+     PLAYER NOTICES AND RATING REFUNDS (0057)
+     ========================================================================
+
+     Every moderation outcome now writes a notice to the people it concerns, and a corrected
+     ranked result can give back the rating it cost. What only a real database can show: a
+     batch with a deleted recipient still lands for everyone else, read marks never cross
+     accounts, triage returns exactly the reports it closed (so nobody is told twice), and a
+     refund is ONCE per player per match — the primary key, not the caller, guarantees it.
+  */
+  {
+    await repo.ensureProfile('nt-red', 'Notice Red');
+    await repo.ensureProfile('nt-blue', 'Notice Blue');
+    await repo.ensureProfile('nt-rep', 'Reporter');
+    await repo.ensureProfile('nt-rep2', 'Reporter Two');
+    await repo.ensureProfile('nt-bad', 'Reported');
+
+    // ---- the inbox
+    const sent = await repo.addNotices([
+      { userId: 'nt-red', kind: 'match.corrected', game: 'decode', data: { refund: 20 }, message: 'two artifacts uncounted' },
+      { userId: 'nt-gone', kind: 'report.closed', data: {} },
+      { userId: 'nt-red', kind: 'standing.edited', data: { scoreBefore: 60, scoreAfter: 100 } },
+    ]);
+    check('notices: a recipient with no profile is skipped, not a failed batch', sent === 2, String(sent));
+    const inbox = await repo.listNotices('nt-red');
+    check(
+      'notices: the inbox reads newest first, with the facts and the message intact',
+      inbox.length === 2 &&
+        inbox[0].kind === 'standing.edited' &&
+        inbox[1].message === 'two artifacts uncounted' &&
+        inbox[1].data.refund === 20 &&
+        inbox.every((n) => n.readAt === null),
+      JSON.stringify(inbox),
+    );
+    check('notices: nobody else can mark your notices read', (await repo.markNoticesRead('nt-blue', [inbox[0].id])) === 0);
+    check('notices: marking one read marks exactly that one', (await repo.markNoticesRead('nt-red', [inbox[0].id])) === 1);
+    check(
+      'notices: an id that is not a number is ignored rather than reaching the query',
+      (await repo.markNoticesRead('nt-red', ['1; drop table player_notices'])) === 0,
+    );
+    check('notices: "all" marks the rest', (await repo.markNoticesRead('nt-red', 'all')) === 1);
+    check('notices: ...and then nothing is unread', (await repo.listNotices('nt-red')).every((n) => n.readAt !== null));
+
+    // ---- triage returns who to tell
+    await repo.submitReport({ reportedId: 'nt-bad', reporterId: 'nt-rep', reason: 'throwing', roomCode: 'NT1', game: 'decode' });
+    await repo.submitReport({ reportedId: 'nt-bad', reporterId: 'nt-rep', reason: 'afk', roomCode: 'NT1', game: 'decode' });
+    await repo.submitReport({ reportedId: 'nt-bad', reporterId: 'nt-rep2', reason: 'afk', roomCode: 'NT1', game: 'decode' });
+    const closed = await repo.setReportsStatus('nt-bad', 'reviewed', 'admin-1');
+    check(
+      'notices: triage returns every report it closed, with who filed it and why',
+      closed.length === 3 && new Set(closed.map((c) => c.reporterId)).size === 2 && closed.some((c) => c.reason === 'throwing'),
+      JSON.stringify(closed),
+    );
+    check(
+      'notices: a second triage closes nothing, so nobody is told twice',
+      (await repo.setReportsStatus('nt-bad', 'dismissed', 'admin-2')).length === 0,
+    );
+
+    // ---- what you filed (Epic's "My reports")
+    await repo.submitScoreReport({ reporterId: 'nt-rep', roomCode: 'NT1', detail: 'blue scored after the buzzer' });
+    const filed = await repo.reportsFiledBy('nt-rep');
+    check(
+      'notices: "your reports" lists both kinds, the reported player named, the claim not',
+      filed.length === 3 &&
+        filed.filter((f) => f.kind === 'player').every((f) => f.subject === 'Reported' && f.status === 'reviewed') &&
+        filed.some((f) => f.kind === 'score' && f.status === 'open' && f.subject === null),
+      JSON.stringify(filed),
+    );
+    check('notices: ...and only the filer’s own', (await repo.reportsFiledBy('nt-bad')).length === 0);
+    const claim = (await repo.listScoreReports({ status: 'open' })).find((r) => r.reporterId === 'nt-rep');
+    const ruled = await repo.resolveScoreReport(claim!.id, 'upheld', 'admin-1');
+    check('notices: a ruling hands back the match to word the filer’s notice from (null when none)', ruled !== null && ruled.matchId === null);
+
+    // ---- the refund
+    const { BALANCE_VERSION } = await import('../src/config');
+    const { ratingRefund } = await import('../src/notices');
+    repo.clearActCache();
+    const liveBv = await repo.currentSeasonNumber(BALANCE_VERSION, 'decode');
+    const act = await repo.actFor('decode');
+    const rid = await repo.saveReplay(
+      { format: 2, balanceVersion: liveBv, sim: 3, game: 'decode', mode: 'match', seed: 11, ticks: 10, setups: [], tracks: {} },
+      liveBv,
+      'decode',
+    );
+    const mid = String(await repo.saveMatch('1v1', liveBv, rid, true, 'decode'));
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'nt-red', alliance: 'red', drivetrain: 'tank', score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'nt-blue', alliance: 'blue', drivetrain: 'mecanum', score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+    await repo.upsertRating('nt-red', '1v1', act, 980, 200, 0.06, 'decode');
+    await repo.upsertRating('nt-blue', '1v1', act, 1020, 200, 0.06, 'decode');
+
+    const pre = await repo.matchScoreDetail(mid);
+    check(
+      'refund: an uncorrected ranked match is its own original, on the live ladder, refunded nothing yet',
+      pre?.original.red === 40 && pre?.original.blue === 55 && pre?.liveBoard === true && pre?.refunds.length === 0,
+      JSON.stringify({ o: pre?.original, live: pre?.liveBoard }),
+    );
+    await repo.correctMatchScore(mid, { red: 62, blue: 55 }, 'admin-1');
+    await repo.correctMatchScore(mid, { red: 63, blue: 55 }, 'admin-1');
+    const post = await repo.matchScoreDetail(mid);
+    check(
+      'refund: after two corrections the original is still what the rating came from',
+      post?.original.red === 40 && post?.original.blue === 55 && post?.red === 63,
+      JSON.stringify(post?.original),
+    );
+    const want = post!.participants.map((p) => ({ userId: p.userId, points: ratingRefund(p, post!.original, { red: 63, blue: 55 }) }));
+    const applied = await repo.refundMatchRatings(mid, want, 'admin-1');
+    check(
+      'refund: only the player whose loss became a win gets rating back, exactly the loss',
+      applied.length === 1 && applied[0].userId === 'nt-red' && applied[0].points === 20,
+      JSON.stringify(applied),
+    );
+    const redNow = await repo.getRatingFull('nt-red', '1v1', act, 'decode');
+    const blueNow = await repo.getRatingFull('nt-blue', '1v1', act, 'decode');
+    check(
+      'refund: the rating moved by the refund, and the wrongly-awarded winner kept theirs',
+      Math.round(redNow.rating) === 1000 && Math.round(blueNow.rating) === 1020,
+      `${redNow.rating} ${blueNow.rating}`,
+    );
+    const again = await repo.refundMatchRatings(mid, [{ userId: 'nt-red', points: 20 }], 'admin-1');
+    check(
+      'refund: ONCE per player per match — a later correction cannot refund the same loss twice',
+      again.length === 0 && Math.round((await repo.getRatingFull('nt-red', '1v1', act, 'decode')).rating) === 1000,
+    );
+    check(
+      'refund: the match records who was given what',
+      (await repo.matchScoreDetail(mid))?.refunds.some((r) => r.userId === 'nt-red' && r.points === 20) === true,
+    );
+
+    const cmid = String(await repo.saveMatch('1v1', liveBv, rid, false, 'decode'));
+    await repo.addMatchParticipant({
+      matchId: cmid, userId: 'nt-blue', alliance: 'red', drivetrain: 'tank', score: 1, won: false, ratingBefore: null, ratingAfter: null,
+    });
+    check(
+      'refund: a custom match is on no ladder and refunds nothing',
+      (await repo.refundMatchRatings(cmid, [{ userId: 'nt-blue', points: 5 }], 'admin-1')).length === 0 &&
+        (await repo.matchScoreDetail(cmid))?.liveBoard === false,
+    );
+    // a player with no row on that ladder: nothing is given, and no refund row claims it was
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'nt-rep2', alliance: 'red', drivetrain: 'tank', score: 40, won: false, ratingBefore: 1000, ratingAfter: 990,
+    });
+    const noRow = await repo.refundMatchRatings(mid, [{ userId: 'nt-rep2', points: 10 }], 'admin-1');
+    check(
+      'refund: no ladder row means no refund AND no record of one',
+      noRow.length === 0 && !(await repo.matchScoreDetail(mid))?.refunds.some((r) => r.userId === 'nt-rep2'),
+    );
+
+    // ---- the account's own data
+    await repo.addNotices([{ userId: 'nt-blue', kind: 'match.corrected', game: 'decode', data: {}, message: null }]);
+    const ex = await repo.exportAccount('nt-blue');
+    check('notices: they are in the account’s data export', (ex?.notices.length ?? 0) === 1);
+    await repo.deleteAccount('nt-red');
+    const left = await db.query<{ n: string }>(
+      `select (select count(*) from player_notices where user_id = 'nt-red')
+            + (select count(*) from rating_refunds where user_id = 'nt-red') as n`,
+    );
+    check('notices: deleting the account deletes its inbox and its refund rows', Number(left.rows[0].n) === 0);
+  }
+
+  /* ------------------------------------------------------------------------
+     WHO IS TOLD WHAT — `server/notices.ts`, the layer the admin routes call, against the real
+     tables, and every notice it writes read back through the client's own wording
+     (`noticeView`). The routes themselves are pinned by name in `npm test`.
+  */
+  {
+    const nt = await import('../server/notices');
+    const { noticeView } = await import('../src/notices');
+    await repo.ensureProfile('wt-red', 'Who Red');
+    await repo.ensureProfile('wt-blue', 'Who Blue');
+    await repo.ensureProfile('wt-rep', 'Who Reporter');
+    await repo.ensureProfile('wt-bad', 'Who Reported');
+    await repo.setUsername('wt-bad', 'whobad');
+    const words = async (userId: string) =>
+      (await repo.listNotices(userId)).map((n) => ({ n, v: noticeView(n, () => 'Sep 30') }));
+
+    // a corrected match: both players, each from their own side
+    const { BALANCE_VERSION } = await import('../src/config');
+    const bv = await repo.currentSeasonNumber(BALANCE_VERSION, 'decode');
+    const rid = await repo.saveReplay(
+      { format: 2, balanceVersion: bv, sim: 3, game: 'decode', mode: 'match', seed: 12, ticks: 10, setups: [], tracks: {} },
+      bv,
+      'decode',
+    );
+    const mid = String(await repo.saveMatch('1v1', bv, rid, true, 'decode'));
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'wt-red', alliance: 'red', drivetrain: 'tank', score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'wt-blue', alliance: 'blue', drivetrain: 'tank', score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+    await repo.correctMatchScore(mid, { red: 62, blue: 55 }, 'admin-1', 'two artifacts uncounted');
+    const match = (await repo.matchScoreDetail(mid))!;
+    const told = await nt.noticeCorrection({
+      match,
+      before: { red: 40, blue: 55 },
+      after: { red: 62, blue: 55 },
+      refunds: [{ userId: 'wt-red', points: 20 }],
+      message: 'two artifacts uncounted',
+    });
+    const red = (await words('wt-red'))[0];
+    const blue = (await words('wt-blue'))[0];
+    check('who: a correction tells every player in the match', told === 2);
+    check(
+      'who: ...the one it helped hears the new result and the refund',
+      red?.v?.lines.includes('You’re now recorded as the winner.') === true &&
+        red?.v?.lines.includes('+20 rating given back for the loss.') === true &&
+        red?.n.message === 'two artifacts uncounted',
+      JSON.stringify(red?.v),
+    );
+    check(
+      'who: ...the other hears it lost, and keeps its rating',
+      blue?.v?.lines.includes('You’re now recorded as losing it.') === true &&
+        blue?.v?.lines.includes('Your rating stays where it was.') === true,
+      JSON.stringify(blue?.v),
+    );
+
+    // a misscore claim upheld after the correction: the filer sees the original → now
+    await nt.noticeMisscore({ reporterId: 'wt-rep', matchId: mid, game: 'decode', verdict: 'upheld', cost: null, message: 'good catch' });
+    const up = (await words('wt-rep'))[0];
+    check(
+      'who: the filer of an upheld claim is told the corrected numbers, and the moderator’s note',
+      up?.n.kind === 'misscore.upheld' &&
+        up.v?.lines[0] === 'The score was corrected: Red 40, Blue 55 → Red 62, Blue 55.' &&
+        up.n.message === 'good catch',
+      JSON.stringify(up),
+    );
+    await nt.noticeMisscore({
+      reporterId: 'wt-rep', matchId: null, game: 'decode', verdict: 'rejected',
+      cost: { points: 40, scoreAfter: 60, cooldownMin: 120, ratingCharge: 0 }, message: null,
+    });
+    const rej = (await words('wt-rep'))[0];
+    check(
+      'who: a smitten filer is told what it cost',
+      rej?.n.kind === 'misscore.rejected' && rej.v?.tone === 'bad' && rej.v?.lines.includes('Standing −40, now 60 (Warning).') === true,
+      JSON.stringify(rej?.v),
+    );
+
+    // reports upheld: each reporter once, the reported player with the cost and their own message
+    const sentTriage = await nt.noticeReportTriage({
+      target: 'wt-bad',
+      status: 'reviewed',
+      closed: [
+        { reporterId: 'wt-rep', reason: 'throwing', game: 'decode' },
+        { reporterId: 'wt-rep', reason: 'afk', game: 'decode' },
+        { reporterId: 'wt-red', reason: 'afk', game: 'decode' },
+      ],
+      verdict: {
+        kind: 'reportUpheld', points: 25, scoreBefore: 75, scoreAfter: 50, tierBefore: 'warning', tierAfter: 'restricted',
+        rung: 1, cooldownMin: 1440, restrictedUntil: null, ratingCharge: 20, nextCooldownMin: 4320,
+      },
+      reporterMessage: 'thanks, we watched it',
+      playerMessage: 'you parked in your base for two minutes',
+    });
+    check('who: an upheld verdict tells each reporter once and the reported player once', sentTriage === 3, String(sentTriage));
+    const act = (await words('wt-rep'))[0];
+    check(
+      'who: the reporter hears action was taken against the name they reported, not the penalty',
+      act?.n.kind === 'report.actioned' && /@whobad/.test(act.v!.lines[0]) && act.n.message === 'thanks, we watched it' &&
+        !act.v!.lines.some((l) => /standing|rating|locked/i.test(l)),
+      JSON.stringify(act?.v),
+    );
+    const pen = (await words('wt-bad'))[0];
+    check(
+      'who: the reported player hears how many, for what, what it cost, and the moderator’s words',
+      pen?.n.kind === 'penalty' &&
+        /from 2 players/.test(pen.v!.lines[0]) &&
+        pen.v!.lines.includes('Ranked is locked for 1 day.') &&
+        pen.n.message === 'you parked in your base for two minutes',
+      JSON.stringify(pen),
+    );
+    const dismissed = await nt.noticeReportTriage({
+      target: 'wt-bad', status: 'dismissed', closed: [{ reporterId: 'wt-rep', reason: 'afk', game: 'decode' }],
+      verdict: null, reporterMessage: null, playerMessage: 'never sent',
+    });
+    check(
+      'who: a dismissal tells the reporter and NOT the reported player',
+      dismissed === 1 && (await words('wt-bad')).length === 1 && (await words('wt-rep'))[0]?.n.kind === 'report.closed',
+    );
+
+    // a moderator's standing edit
+    await nt.noticeStandingEdit({ target: 'wt-bad', scoreBefore: 50, scoreAfter: 80, pardoned: 1, lock: false, note: 'the room crashed' });
+    const ed = (await words('wt-bad'))[0];
+    check(
+      'who: a standing edit tells the player, with the reason the moderator typed',
+      ed?.n.kind === 'standing.edited' && ed.v?.title === 'A moderator restored your standing' &&
+        ed.v.lines.includes('Your ranked lock was lifted.') && ed.n.message === 'the room crashed',
+      JSON.stringify(ed),
+    );
+  }
+
+  /* ========================================================================
      STANDING, EDITED BY A MODERATOR — the pardon and what it does to escalation.
      ========================================================================
 

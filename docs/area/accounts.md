@@ -1,4 +1,4 @@
-<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
+<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/notices.ts, server/notices.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
 # Accounts, ranked, leaderboards, records, staff roles
 
 Glicko-2, per-game boards and periods, the badge rules, challenges and the party token, and the background ranked queue.
@@ -487,6 +487,40 @@ takeover silently never fired (the bar still looked right — it repaints on its
 `import.meta.env.DEV`-only; a shipped bundle must never carry a handle that can
 cancel a stranger's queue. **NOT yet validated end-to-end** — that needs two
 signed-in accounts completing a rated match.
+
+**MODERATION OUTCOMES ARE TOLD TO THE PEOPLE THEY CONCERN (migration 0057, 2026-10-02).** Owner:
+"a clear message when a score updates or an elo update happens or a standing update happens or
+a reported player got punished … PLUS admins can send an extra message back to the reporter."
+Before this every outcome stopped at the moderator. `player_notices` is the inbox; a row holds
+FACTS (`data`) and the moderator's own words (`message`), and `src/notices.ts` words them on the
+client (`noticeView`), so copy changes need no migration. `server/notices.ts` decides who is
+told what, AFTER the outcome is committed, and never throws into a route.
+- **Who gets what.** Score corrected (`/api/admin/match`): every player in the match, from their
+  own side (old → new totals, a flipped result, any refund), with the editor's "Why" as the
+  message — it is SHOWN TO PLAYERS now. Misscore ruled: the filer (upheld with original → now
+  when the match was corrected; rejected with the smite's cost). Reports triaged: each reporter
+  once (`report.actioned` / `report.closed`, the reported player named, the penalty NOT), and on
+  uphold the reported player (`penalty`: how many reported, for what, standing/lock/rating cost).
+  A dismissal tells the reported player nothing. Standing edited: the player, with the note.
+  Two optional messages on triage (`reporterMessage`, `playerMessage`), one on a misscore
+  (`message`). `setReportsStatus` returns the rows it closed so a second triage tells nobody.
+- **The pattern is other games'**: Riot's in-client penalty notice (the punished player sees it
+  on return), Overwatch/League/VALORANT report feedback (a reporter hears action was taken, never
+  the size), Epic's "My reports" (`GET /api/user/reports`, the career page's Your reports list),
+  VALORANT ranked rollback / lichess refunds (the exact amount given back).
+- ⚠️ **A CORRECTION CAN GIVE RATING BACK, AND ONLY GIVE.** "Ratings are not recalculated" still
+  holds (Glicko-2 is sequential). With `refund=1`, `ratingRefund` returns a player's LOSS in the
+  match when their corrected result beats the ORIGINAL one (`MatchScoreRow.original`, the oldest
+  correction's before, because the rating came from it). The wrongly-awarded winner keeps their
+  gain: the misscore was the sim's fault. `rating_refunds` (PK match+player) makes it ONCE, and a
+  refund reaches only the LIVE ladder (`liveBoard`): a closed act was paid out by `runRewardJob`.
+  Arithmetic on the row; `updated_at` untouched because `effectiveRd` reads it as last played.
+- **Delivery.** `NoticeDialog` is mounted beside `RewardDialog` (menus only, same `blocked`) and
+  waits for it, so two backdrops never stack. Escape counts as read; `NoticeInbox` on the career
+  page keeps everything. Old server: the routes 404 and the client reads an empty inbox; an old
+  client never asks. Notices are in the account export and cascade on deletion.
+Tests: `npm test` ("notices:" — wording, copy rules, the refund rule, the route wiring) and
+`npm run dbtest` ("notices:", "refund:", "who:").
 
 **PLAY A FRIEND — challenges (chess.com's model), DONE.** A challenge (`room_invites` +
 migration `0019`) carries a **`format`**: `casual1v1`/`casual2v2` (a `versus` room),

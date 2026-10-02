@@ -79,6 +79,7 @@ import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { Appearance } from './Appearance';
 import { RewardDialog } from './RewardDialog';
+import { NoticeDialog } from './NoticeDialog';
 import type { ProfileTab } from './ProfileTabs';
 import { authEnabled } from '../lib/authClient';
 import { useLanEnabled } from './useLanEnabled';
@@ -2176,6 +2177,12 @@ export function App() {
             <RewardDialog
               blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
               onEquipCosmetic={equipCosmetic}
+            />
+            {/* THE NOTICE POP-UP (0057): what a moderator did about this player's report, match
+                or standing. Same place and the same waits as the claim dialog, and it yields to
+                that dialog too, so the two backdrops never stack. */}
+            <NoticeDialog
+              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
             />
           </UsernameGate>
         </TermsGate>

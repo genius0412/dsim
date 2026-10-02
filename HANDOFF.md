@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-02b (moderation outcomes reach the players: notices, report feedback, rating refunds)
+
+**State: on `main` and `alpha`.** `npm test` (5152), `build`, `server:check`, `dbtest`, `test:workers`, `uiaudit`, `docaudit`, `bundleaudit` pass. **Server change** (migration 0057 + routes): production Fly was NOT redeployed, so until it is, the new client reads an empty inbox and the console's message boxes are ignored by the old server.
+
+- **Owner:** "a clear message when a score updates or an elo update happens or a standing update happens or a reported player got punished … PLUS admins can send an extra message back to the reporter. Research ways other games handle this."
+- **Built:** `player_notices` inbox (0057). `server/notices.ts` writes a notice after each outcome: score corrected → every player in the match (old → new, flipped result, refund); misscore ruled → the filer (corrected numbers, or the smite's cost); reports triaged → each reporter once (action taken / no action, never the penalty) and, on uphold, the reported player (cost, lock, rating, reasons); standing edited → the player. Moderator messages: two boxes on report triage, one per misscore row, and the score editor's "Why" (now shown to players).
+- **Rating refund** (VALORANT ranked rollback / lichess shape): ticking it on a correction gives a player back the rating a wrongly-recorded loss cost, once (`rating_refunds` PK), live ladder only, never takes rating. Judged against the ORIGINAL result. Rules in `docs/area/accounts.md`.
+- **Player side:** `NoticeDialog` pop-up on return to the menus (waits for the reward dialog), and Messages + Your reports (Epic's "My reports") on the career page.
+- **Verified** in `npm run adminharness` end to end: corrected the owner's seeded match with refund (+18, 2 told), upheld the claim and Alan's reports with messages, dismissed Annie's (status line "1 person told"), pop-up and career lists rendered. The harness now seeds a match/claim/report for the owner and the owner's terms acceptance.
+- **Not done:** privacy text does not list notices (they are in the export and deleted with the account). Changing it would move `LEGAL_UPDATED` and re-gate every account, so that is the owner's call. The pop-up reads the inbox on mount and on tab refocus only; no polling, to keep idle machines asleep.
+- **Gotcha:** the harness's seeded replays 404, so the score editor cannot be opened there; drive `/api/admin/match` directly.
+
 # HANDOFF — 2026-10-02 (satellites: why they never stopped, and the fixes)
 
 **State: on `main` and `alpha`; production Fly redeployed from `main`.** `npm test`, `test:mm`, `test:workers`, `build`, `server:check`, `docaudit`, `uiaudit` pass.
