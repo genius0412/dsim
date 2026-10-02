@@ -22162,6 +22162,30 @@ const dumperSetup = (): RobotSetup => {
     check('chain: particles never overlap on top of each other', minD >= 2 * CHAIN_PARTICLE_R - 0.25, `minD=${minD.toFixed(2)}`);
   }
 
+  // ...including a pair the separation grid does not cover. The pass buckets particles in a
+  // dense cell list over the field and falls back to a keyed map for anything past it (a
+  // particle can land beyond a wall for one tick before the clamp). Two overlapping particles
+  // far outside it, one above the other, must still be pushed apart by exactly half the
+  // overlap each, the same as anywhere else.
+  {
+    const w = createChainWorld('free', 3, [chainSetup(0, 'blue')]);
+    w.balls = w.balls.slice(0, 2);
+    for (const [i, b] of w.balls.entries()) {
+      b.state = { kind: 'ground' };
+      b.pos = { x: 200, y: 10 + i };
+      b.vel = { x: 0, y: 0 };
+      b.z = 0;
+      b.vz = 0;
+    }
+    runChain(w, cmd({}), 1 / 60);
+    const [a, b] = w.balls;
+    check(
+      'chain: separation still resolves an overlapping pair OUTSIDE its dense grid',
+      Math.abs(a.pos.y - (10 - (2 * CHAIN_PARTICLE_R - 1) / 2)) < 1e-9 && Math.abs(b.pos.y - (11 + (2 * CHAIN_PARTICLE_R - 1) / 2)) < 1e-9,
+      `y ${a.pos.y.toFixed(4)} / ${b.pos.y.toFixed(4)}`,
+    );
+  }
+
   // FOUR hooks per goal ⇒ all four catalysts seated gives ×5 points/particle
   {
     const gw = createChainWorld('match', 42, [chainSetup(0, 'blue')]);

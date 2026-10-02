@@ -97,6 +97,8 @@ export function drawChainBalls(ctx: CanvasRenderingContext2D, world: World, scre
   // it's clear an action is available and where.
   if (world.chain) {
     for (const r of world.robots) {
+      // a practice dummy never acts (`updateChain` skips it), so it has no action to hint
+      if (r.passive) continue;
       const p = chainCatalystPrompt(world.chain, r);
       if (!p) continue;
       const gold = '#f5c518';

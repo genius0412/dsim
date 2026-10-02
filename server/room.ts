@@ -15,7 +15,7 @@ import { serverPhysics } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
-import { physics3dReady, disposePhysics3dFor } from '../src/games/biobuzz/sim3d/engine';
+import { physics3dReady, disposePhysics3dFor, prebuildPhysics3dFor } from '../src/games/biobuzz/sim3d/engine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
   Alliance,
@@ -2263,6 +2263,8 @@ export class Room {
     // settings bag is what every server-side build already passed.
     const world = simModuleFor(this.game).createWorld('match', seed, setups, undefined, this.physics);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
+    // a 3D match's persistent engine, built now rather than inside tick 1 (no-op otherwise)
+    prebuildPhysics3dFor(world);
     this.world = world;
     this.pending.clear();
     this.held.clear();

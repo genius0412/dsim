@@ -8,7 +8,7 @@
 // source STEP : FIRST field CAD v26-27.2 (2026-09-15), sha256 5e768b731f1ec8dcd14debba53225c43718877923c351ce08504305f68f7fe00
 //               captured 2026-09-17 from https://ftc-resources.firstinspires.org/ftc/archive/2027/field/field-cad-step
 // measured by : scripts/field-cad/convert.py → public/models/biobuzz/field-measurements.json
-//               sha256 5555b9fd7bf0171b3c76796964858c7a1db450f94e5889a763067503f10cb65b
+//               sha256 3d8c1d4097bfb7536aadc925fc1efcc0e00b612678c41488ca6a40eebd9da6f0
 // frame       : the sim frame — inches, origin at the field centre on the tile top surface,
 //               +x audience right, +y away from the audience. Rounded to 1e-3 in.
 //

@@ -278,7 +278,9 @@ export function deriveTick(world: World, engine: Engine3d): void {
         // rather than dropped, so a snapshot mid-flight still round-trips the same shape).
         b.state = b.state.kind === 'flight' ? b.state : { kind: 'flight', target: (b.color === 'red' || b.color === 'blue') ? b.color : 'red' };
       } else {
-        b.state = { kind: 'ground' };
+        // a fresh `{ kind: 'ground' }` for every resting element every tick was pure garbage:
+        // the ground state carries no other field, so an element already tagged keeps its own
+        if (b.state.kind !== 'ground') b.state = { kind: 'ground' };
       }
     }
   }

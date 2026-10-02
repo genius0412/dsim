@@ -30,6 +30,7 @@ import {
   buildHiveTray3d,
   trayOuterSkin,
   buildStatics3d,
+  statics3dKey,
   elementMass,
   hiveTrayRefTheta,
   robotHeightIn,
@@ -118,6 +119,9 @@ export interface Engine3d {
    * tick, not only once at the `pre` boundary.
    */
   robotRampReady: Map<number, boolean>;
+  /** element ids whose body was ASLEEP at the last `readback`. An element asleep then AND now
+   * has not moved in between, so `readback` has nothing to write for it (see there). */
+  asleepAtReadback: Set<number>;
   /** `world.tick` as of the last `engineFor` call -- a SMALLER tick next time means a restart
    * or a reseed (a fresh world reusing the same JS object is not a case that arises here, but a
    * scene or a smoke fixture rebuilding `world.tick` back to 0 on the SAME `World` object is),
@@ -159,8 +163,39 @@ export function disposeEngineFor(world: World): void {
   disposeEngine(e);
 }
 
-function buildEngine(world: World): Engine3d {
-  const RAPIER = rapier3d();
+/**
+ * ⚠️ **THE STATIC FIELD IS BUILT ONCE PER PROCESS AND RESTORED FROM A SNAPSHOT AFTER THAT.**
+ *
+ * `buildStatics3d` is the same world every time — the floor, four walls, the CAD hulls and the
+ * flower ring TRIMESHES, whose BVH build is most of it — and it cost 8–17 ms warm (95–150 ms on
+ * a cold process) on the FIRST TICK of every 3D match. The server runs every room on one
+ * thread, so each record run or restart froze every other room for that long.
+ * `World.restoreSnapshot` of the finished static world costs ~1 ms and is the SAME world, arena
+ * handles, integration parameters and all — measured byte-identical over whole matches against
+ * a fresh build (and asserted by the SIM3D lane).
+ *
+ * The snapshot is taken BEFORE the trays, robots and elements exist, i.e. of exactly what
+ * `buildEngine` used to build inline, so everything after it runs unchanged. Keyed on
+ * `statics3dKey` so a test override that swaps the field is never served the other one.
+ */
+let staticSnapshot: { key: string; bytes: Uint8Array } | null = null;
+
+/** drop the cached static world, so the next engine builds its statics from scratch (tests). */
+export function __clearStaticSnapshotForTests(): void {
+  staticSnapshot = null;
+}
+
+/** is a static-field snapshot cached, i.e. will the next engine RESTORE rather than build (tests). */
+export function __staticSnapshotCachedForTests(): boolean {
+  return staticSnapshot !== null;
+}
+
+function freshStaticWorld(RAPIER: Rapier3d): InstanceType<Rapier3d['World']> {
+  const key = statics3dKey(PHYS_WALL_FRICTION);
+  if (staticSnapshot && staticSnapshot.key === key) {
+    const restored = RAPIER.World.restoreSnapshot(staticSnapshot.bytes);
+    if (restored) return restored;
+  }
   const world3d = new RAPIER.World({ x: 0, y: 0, z: -GRAVITY });
   world3d.integrationParameters.lengthUnit = 10; // matches the Day 0 spike's inches convention
   // THE SAME SOLVER TUNING AS THE 2D ROBOT SOLVE (`physicsEngine.ts`'s `makeWorld`), not
@@ -191,6 +226,13 @@ function buildEngine(world: World): Engine3d {
   world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  staticSnapshot = { key, bytes: world3d.takeSnapshot() };
+  return world3d;
+}
+
+function buildEngine(world: World): Engine3d {
+  const RAPIER = rapier3d();
+  const world3d = freshStaticWorld(RAPIER);
   // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
   // upright and then rotated into place is a body that falls for one tick, and an engine rebuilt
   // mid-swing (a reconcile, a scene restart) has to resume the swing, not restart it.
@@ -218,6 +260,7 @@ function buildEngine(world: World): Engine3d {
     lastElement: new Map(),
     robotHeights: new Map(),
     robotRampReady: new Map(),
+    asleepAtReadback: new Set(),
     lastTick: world.tick,
     containmentFixes: 0,
   };
@@ -239,8 +282,8 @@ function buildEngine(world: World): Engine3d {
 export function engineFor(world: World): Engine3d {
   let e = ENGINES.get(world);
   if (e) {
-    const idsNow = world.robots.map((r) => r.id);
-    const idsMatch = idsNow.length === e.robots.size && idsNow.every((id) => e!.robots.has(id));
+    let idsMatch = world.robots.length === e.robots.size;
+    for (let i = 0; idsMatch && i < world.robots.length; i++) idsMatch = e.robots.has(world.robots[i].id);
     if (world.tick < e.lastTick || !idsMatch) {
       disposeEngine(e);
       e = undefined;
@@ -655,6 +698,7 @@ function removeElementBody(engine: Engine3d, id: number): void {
   engine.lastElement.delete(id);
   engine.restTicks.delete(id);
   engine.narrowVibeTicks.delete(id);
+  engine.asleepAtReadback.delete(id);
 }
 
 /**
@@ -1428,9 +1472,23 @@ export function readback(world: World, engine: Engine3d): void {
       world.biobuzz.hives[a].angVel = round4(body.angvel().x);
     }
   }
+  const asleep = engine.asleepAtReadback;
   for (const b of world.balls) {
     const body = engine.elements.get(b.id);
     if (!body) continue;
+    // ASLEEP AT THE LAST READBACK AND ASLEEP NOW ⇒ NOTHING TO READ. A body that stays asleep
+    // through a step does not move, the last readback already wrote its rounded pose and a zero
+    // velocity (a sleeping body's velocity IS zero), and every path that edits an element's
+    // POSITION or gives it a velocity wakes the body (`syncElement`, `containmentPass`); the only
+    // unwoken writes are zeroing ones (`syncElement`'s REST SNAP, `groundRoll3d`), which leave
+    // the JSON at the zero this would have written. So skipping writes exactly what it would
+    // have — minus three wasm reads and their allocations, for most of the field most of the time.
+    if (body.isSleeping()) {
+      if (asleep.has(b.id)) continue;
+      asleep.add(b.id);
+    } else {
+      asleep.delete(b.id);
+    }
     const t = body.translation();
     const v = body.linvel();
     const r = b.r ?? BB_POLLEN_R;
@@ -1598,6 +1656,9 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     const speed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
     const onFloor = b.z <= BB3_ROLL_FLOOR_Z;
 
+    // ASLEEP AND ALREADY AT REST: every write below would be a zero onto a zero (a sleeping
+    // body's velocity is zero, and none of them wake it), so skip the three wasm calls.
+    if (onFloor && speed === 0 && b.vz === 0 && body.isSleeping()) continue;
     if (onFloor) {
       // the 2D law, verbatim: constant deceleration, then the hard snap.
       let ns = speed - BB3_ROLL_DECEL * dt;
@@ -1680,6 +1741,8 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     };
     if (b.state.kind === 'element') {
       engine.narrowVibeTicks.delete(b.id);
+      // the same zero-onto-zero skip as the floor branch above
+      if (speed === 0 && b.vz === 0 && body.isSleeping()) continue;
       freeze();
       continue;
     }
