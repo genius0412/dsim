@@ -704,6 +704,22 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   name against a strict allowlist before fetching anything, forwards Range/HEAD so downloads can
   resume, and never caches a response (a cached partial served for a different request would
   hand someone a truncated file).
+- **SATELLITES ARE CHEAP ONLY WHILE STOPPED, AND ANY REQUEST STARTS ONE.** A satellite stops a
+  few minutes after its last request, so one request every couple of minutes keeps it up all
+  day. Measured 2026-10-02, after the router moved the menu polls to iad: satellites still ran
+  10-22 h a day. Four causes, four fixes:
+  - the router fallback (`probePrimary`, env.ts) was PERMANENT for the tab after one failed
+    boot probe. It is a backoff now (`PrimaryHealth`: 30 s doubling to 5 min, offline does not
+    count, `online` re-probes);
+  - a results screen or lobby held its socket forever, pinging every 300 ms. A satellite closes a
+    socket that is outside a live match and has sent nothing but `ping`/`input` for 15 min
+    (`IDLE_RELEASE_MS`, close code `4002`, which `transport.ts` never reconnects), and a clean
+    leave from a FINISHED room frees the seat at once (`Room.detach`), so an old client's
+    reconnect is refused instead of taking the seat back;
+  - `/health?region=` fly-replayed to the named region, booting it. It is answered locally;
+  - two `usePresence` pollers ran per tab. There is one shared poller now.
+  Each satellite logs `[wake] N req/60s: …` once a minute it took HTTP requests (route, page
+  host, browser family; nothing per client). Read it before guessing what keeps one up.
 - **The one Fly app serves EVERY client version** (alpha/beta/main bake the same
   `VITE_GAME_SERVER_URL`), so protocol changes MUST stay backward-compatible. New clients
   advertise `caps` (`CLIENT_CAPS`) on `join`/`queue` and the server feature-gates on them.

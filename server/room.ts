@@ -1583,6 +1583,21 @@ export class Room {
         return;
       }
       /**
+       * A CLEAN LEAVE FROM A FINISHED MATCH FREES THE SEAT NOW. The score is saved and the
+       * client closed on purpose (MENU from the results, or the server releasing an idle
+       * socket — see `IDLE_RELEASE_MS` in index.ts). Holding the seat for the grace let the
+       * client's auto-reconnect reclaim it a second later, so a results screen left open in
+       * a background tab kept its satellite machine running all night. A dropped network
+       * (1006) or a closing tab (1001) is not clean and still keeps the grace.
+       */
+      if (clean && this.finalized) {
+        c.disconnectAt = -Infinity;
+        this.refreshRematch();
+        this.checkGrace();
+        if (this.clients.size > 0) this.broadcastRoster();
+        return;
+      }
+      /**
        * A HOST WHO LEAVES A FINISHED MATCH TAKES THE ROOM WITH THEM UNLESS THE CROWN MOVES.
        *
        * Their slot is still HELD — the match is over but they may well reconnect to read the

@@ -48,3 +48,48 @@ export function primaryWsBase(serverUrl: string, override = ''): string {
   if (!host) return '';
   return `${u.protocol === 'ws:' ? 'ws' : 'wss'}://${host}`;
 }
+
+/**
+ * WHETHER TO USE THE ROUTER RIGHT NOW — and, above all, for how long NOT to.
+ *
+ * The router is checked once at boot (`probePrimary` in env.ts) and the page falls back to the
+ * Anycast host if it does not answer. That fallback used to be PERMANENT for the life of the tab,
+ * and a failed boot probe is ordinary: a laptop restoring its tabs before the Wi-Fi is up, a
+ * phone waking a backgrounded tab, a captive portal, eight slow seconds on a bad connection.
+ * Every one of those tabs then sent its presence, status and friends polls to the player's
+ * NEAREST region for as long as it stayed open — measured on 2026-10-02, ord answered one to
+ * twenty such requests every one to three minutes with no socket and no match, which is enough
+ * to keep a satellite from ever auto-stopping.
+ *
+ * So a failure now means "not for a while": the Anycast host is used for a backoff window
+ * (30 s, doubling to 5 min) and the router is tried again after it. A probe that fails while
+ * the browser says it is OFFLINE does not count at all — it says nothing about the router —
+ * and the next `online` event re-probes (env.ts).
+ */
+export class PrimaryHealth {
+  private downUntil = 0;
+  private backoffMs = 0;
+
+  constructor(
+    private readonly minMs = 30_000,
+    private readonly maxMs = 5 * 60_000,
+  ) {}
+
+  /** may requests go through the router at `now`? */
+  usable(now: number): boolean {
+    return now >= this.downUntil;
+  }
+
+  /** the router did not answer at `now`; returns when to try it again */
+  failed(now: number): number {
+    this.backoffMs = this.backoffMs ? Math.min(this.backoffMs * 2, this.maxMs) : this.minMs;
+    this.downUntil = now + this.backoffMs;
+    return this.downUntil;
+  }
+
+  /** the router answered: use it, and start any later backoff from the bottom again */
+  ok(): void {
+    this.downUntil = 0;
+    this.backoffMs = 0;
+  }
+}

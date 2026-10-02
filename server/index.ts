@@ -22,7 +22,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { legalRegion, routeTarget } from './routing';
+import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
@@ -61,6 +61,7 @@ import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
 import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
+import { WakeTally } from './wakeLog';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -523,6 +524,48 @@ function readAdminBody(req: import('node:http').IncomingMessage): Promise<string
 // while the WebSocket upgrade rides the same port
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 
+/**
+ * THIS MACHINE AUTO-STOPS WHEN IDLE: a satellite, not the always-warm primary (Fly sets
+ * `PRIMARY_REGION` from fly.toml's `primary_region`, and `min_machines_running` holds only
+ * that one up). A satellite is cheap only while it is stopped, so two things below apply to
+ * satellites alone: the idle-socket release and the wake log. Off locally and on a
+ * single-region deploy, where nothing auto-stops.
+ */
+const AUTO_STOPS = !!REGION && !!process.env.PRIMARY_REGION && REGION !== process.env.PRIMARY_REGION;
+
+/**
+ * A SOCKET THAT IS NOT IN A LIVE MATCH AND HAS SAID NOTHING FOR THIS LONG IS CLOSED (satellites
+ * only). A results screen or a lobby left open in a background tab held its socket — and the
+ * session pings every 300 ms on top — so the machine never went idle and ran all night for a
+ * game that had ended hours before. "Said nothing" ignores `ping` and `input`, which a client
+ * sends on a timer whether anybody is there or not. Closed with `IDLE_CLOSE_CODE`, which a
+ * current client treats as final (`transport.ts`); an older one reconnects once, finds its
+ * finished-room seat already freed (`Room.detach`, clean), is refused, and closes.
+ */
+const IDLE_RELEASE_MS = 15 * 60_000;
+const IDLE_CLOSE_CODE = 4002;
+/** every open socket's idle state, for the sweep below (satellites only) */
+const idleWatch = new Map<WebSocket, { saidAt: () => number; busy: () => boolean; release: () => void }>();
+if (AUTO_STOPS) {
+  const t = setInterval(() => {
+    const now = Date.now();
+    for (const s of [...idleWatch.values()]) {
+      if (!s.busy() && now - s.saidAt() > IDLE_RELEASE_MS) s.release();
+    }
+  }, 60_000);
+  t.unref?.();
+}
+
+/** see `server/wakeLog.ts` — one line a minute naming the HTTP requests a satellite answered */
+const wakeTally = new WakeTally();
+if (AUTO_STOPS) {
+  const t = setInterval(() => {
+    const line = wakeTally.drain(60);
+    if (line) console.log(line);
+  }, 60_000);
+  t.unref?.();
+}
+
 // ---- perf probe (GET /api/perf) ---------------------------------------------
 // Sizing evidence. The question "can this machine run on a SHARED cpu?" is not
 // answered by average cpu% — the room loop is a FIXED 60Hz step that must finish
@@ -941,24 +984,21 @@ function unionLive(local: LiveRoom[], global: unknown[]): unknown[] {
 }
 
 const httpServer = createServer((req, res) => {
-  if (req.method === 'GET' && req.url?.startsWith('/health')) {
-    // `?region=<code>` lets the client ping a SPECIFIC region (the picker) or read
-    // its home region: on Fly we fly-replay the GET to that region's machine, which
-    // answers with its own x-region. Locally (REGION='') we just answer here.
-    const want = new URL(req.url, 'http://x').searchParams.get('region');
-    const already = !!req.headers['fly-replay-src'];
-    // ⚠️ VALIDATED, because this value reaches a `fly-replay` header — the same guard
-    // `/api/lobbies` carries, and the one this handler was flagged for missing. An unvalidated
-    // CRLF here throws inside the handler and leaves the socket hanging with no response.
-    if (REGION && want && legalRegion(want) && want !== REGION && !already) {
-      res.writeHead(200, {
-        'fly-replay': `region=${want}`,
-        'access-control-allow-origin': '*',
-        'cache-control': 'no-store',
-      });
-      res.end();
-      return;
+  // what woke / is keeping this satellite up (see wakeLog.ts). The platform's own health
+  // check (a `/health` with no Origin) and the operator's `/api/perf` are not callers.
+  if (AUTO_STOPS && req.url) {
+    const operator = req.url.startsWith('/api/perf') || (req.url.startsWith('/health') && !req.headers.origin);
+    if (!operator) {
+      wakeTally.add(req.method ?? '?', req.url, req.headers.origin, req.headers.referer, req.headers['user-agent']);
     }
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/health')) {
+    // `?region=<code>` USED to fly-replay this probe to that region's machine (the old
+    // per-region ping picker). It is answered HERE now, whatever it asks for: a replay BOOTS
+    // the target region (auto_start), so every client still running that picker woke every
+    // satellite on each visit. No current client sends it (`ping.ts` measures the home
+    // region and estimates the rest); an old one now reads its own region's latency for
+    // every row, which is a worse estimate and costs nothing.
     // CORS so the web client (different origin) can time this for the pre-connect
     // ping picker. Includes the region so a client can confirm which one answered.
     // `expose-headers` is REQUIRED for that: a cross-origin fetch can only read
@@ -2958,6 +2998,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
   let spectating = false;
+  /** the last time this socket sent something other than `ping`/`input` (see IDLE_RELEASE_MS) */
+  let saidAt = Date.now();
+  /** a LAN host waits on this socket for guests; it is not idle while it does */
+  let lanHosting = false;
+  /** the server closed this socket for idleness — its detach is a clean leave */
+  let idleReleased = false;
+  if (AUTO_STOPS) {
+    idleWatch.set(ws, {
+      saidAt: () => saidAt,
+      // in a LIVE match (driving or watching), or hosting a LAN room: never idle
+      busy: () => lanHosting || (room !== null && room.summary() !== null),
+      release: () => {
+        if (idleReleased) return;
+        idleReleased = true;
+        console.log(`[idle] releasing ${id} (${room ? `room ${room.code}` : 'no room'}) after ${Math.round((Date.now() - saidAt) / 60_000)} min`);
+        ws.close(IDLE_CLOSE_CODE, 'idle');
+      },
+    });
+  }
   const wasEmpty = onlineCount === 0;
   onlineCount++;
   liveSockets.set(id, { authed: false });
@@ -3655,6 +3714,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     } catch {
       return; // ignore malformed frames
     }
+    // a person did something (timers send `ping` and `input` whether anyone is there or not)
+    if (msg.t !== 'ping' && msg.t !== 'input') saidAt = now;
+    if (msg.t === 'lanHost') lanHosting = true;
+    else if (msg.t === 'lanStopHosting') lanHosting = false;
     // never let a bad message take down the process (and every other room)
     try {
       if (msg.t === 'ping') {
@@ -4051,6 +4114,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   ws.on('close', (code: number) => {
     closed = true; // an in-flight async join must stop and hand its room back
+    idleWatch.delete(ws);
     onlineCount--;
     if (spectating) {
       spectating = false;
@@ -4071,7 +4135,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // 1000/1005 is the client closing on purpose (`transport.close()`: a restart, back to
     // the menu); a dropped network is 1006 and a closing tab 1001, both of which keep the
     // grace — a phone that backgrounds the tab may send 1001 and come straight back.
-    room?.detach(id, conn, code === 1000 || code === 1005);
+    // An idle release (IDLE_CLOSE_CODE) is clean too: nobody was there, and holding the seat
+    // for the grace only let the client's auto-reconnect take it straight back.
+    room?.detach(id, conn, code === 1000 || code === 1005 || idleReleased);
   });
 
   ws.on('error', () => {

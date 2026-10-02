@@ -16,7 +16,8 @@ import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { allianceDuo, derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
-import { PRIMARY_HOSTS, primaryWsBase } from '../src/net/primaryHost';
+import { PRIMARY_HOSTS, primaryWsBase, PrimaryHealth } from '../src/net/primaryHost';
+import { WakeTally, wakeAgent, wakeRoute, wakeSource } from '../server/wakeLog';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
 import { enforceLanPolicy } from '../server/lanMode';
@@ -7957,6 +7958,57 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
           field(cfg, 'primary_region') === 'iad',
       );
     }
+    // ⚠️ A FAILED ROUTER PROBE IS A BACKOFF, NOT A VERDICT FOR THE LIFE OF THE TAB (2026-10-02).
+    // It was permanent, so a tab restored before the Wi-Fi came up polled the nearest
+    // satellite all day and kept it from ever auto-stopping.
+    const h = new PrimaryHealth(30_000, 300_000);
+    const t0 = 1_000_000;
+    const ok0 = h.usable(t0);
+    const retry1 = h.failed(t0);
+    const down1 = !h.usable(t0 + 29_999);
+    const up1 = h.usable(t0 + 30_000);
+    const retry2 = h.failed(retry1);
+    let retry = retry2;
+    for (let i = 0; i < 10; i++) retry = h.failed(retry);
+    const capped = h.failed(retry) - retry;
+    check(
+      '⚠️ primary router: a failed probe falls back for a WINDOW, then the router is used again',
+      ok0 && retry1 === t0 + 30_000 && down1 && up1,
+      `retry1=${retry1 - t0} down=${down1} up=${up1}`,
+    );
+    check('primary router: repeated failures back off (doubling, capped at 5 min)', retry2 - retry1 === 60_000 && capped === 300_000, `second=${retry2 - retry1} capped=${capped}`);
+    h.ok();
+    check('primary router: one good answer resets the backoff', h.usable(0) && h.failed(t0) === t0 + 30_000);
+  }
+
+  // ---- the satellite wake log: which requests keep an auto-stopping machine up ------------
+  {
+    check(
+      'wake log: routes drop the query and collapse ids',
+      wakeRoute('/api/presence?full=1') === '/api/presence' &&
+        wakeRoute('/api/user/2f7c9a10-0d0e-4c0b-9b52-1d2e3f4a5b6c') === '/api/user/:id' &&
+        wakeRoute('/') === '/',
+    );
+    check(
+      'wake log: the source is the page host, never a path or an address',
+      wakeSource('https://www.playdsim.com', undefined) === 'www.playdsim.com' &&
+        wakeSource(undefined, 'https://abc.discordsays.com/.proxy/x?y=1') === 'abc.discordsays.com' &&
+        wakeSource('null', undefined) === '-' &&
+        wakeSource(undefined, undefined) === '-',
+    );
+    check(
+      'wake log: the agent is a family, not the user-agent string',
+      wakeAgent('Mozilla/5.0 (Windows NT 10.0) Chrome/130') === 'browser' && wakeAgent('curl/8.4.0') === 'curl' && wakeAgent(undefined) === '-',
+    );
+    const t = new WakeTally();
+    for (let i = 0; i < 3; i++) t.add('GET', '/api/presence', 'https://www.playdsim.com', undefined, 'Mozilla/5.0');
+    t.add('GET', '/health', undefined, undefined, 'curl/8');
+    const line = t.drain(60) ?? '';
+    check(
+      'wake log: one line per window, busiest first, then reset',
+      line.startsWith('[wake] 4 req/60s: GET /api/presence ← www.playdsim.com browser ×3') && t.drain(60) === null,
+      line,
+    );
   }
 
   // ---- LAN: what address may be joined, and from which page --------------
@@ -17969,6 +18021,32 @@ const recordDrive: CommandSource = (tick) => {
     r.room.pumpForTest(maxMatchTicks());
     check('versus buzzer: a match everybody left MID-MATCH is still not saved (unchanged)', r.saved() === 0, `saved=${r.saved()}`);
   }
+  // ⚠️ A CLEAN LEAVE FROM A FINISHED MATCH FREES THE SEAT AT ONCE (2026-10-02). Holding it for
+  // the grace let the client's auto-reconnect take it straight back, so a results screen left
+  // in a background tab held its satellite awake all night — and the server's idle release
+  // (IDLE_RELEASE_MS) is a clean close, so it relies on exactly this.
+  {
+    const r = vsRun('smoke-vs-results-clean', ['a', 'b']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.pumpForTest(maxMatchTicks()); // settled and finalized: the results are up
+    const savedFirst = r.saved();
+    r.room.detach('a', undefined, true);
+    const back = r.room.reattach('a', () => {});
+    check('⚠️ results: a CLEAN leave from a finished match frees the seat at once (a reconnect is refused)', savedFirst === 1 && back === null, `saved=${savedFirst} reattach=${String(back)}`);
+    check('results: ...without closing the room on the driver still reading it', r.gone() === 0, `${r.gone()}`);
+    r.room.detach('b', undefined, true);
+    check('results: ...and the last clean leave frees the room without waiting out the grace', r.gone() === 1, `${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-results-drop', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.pumpForTest(maxMatchTicks());
+    r.room.detach('a'); // a network drop, not a leave
+    const back = r.room.reattach('a', () => {});
+    check('results: a NETWORK drop from a finished match still keeps the seat for the reconnect', typeof back === 'number', `${String(back)}`);
+  }
 
   // ---- THE SETTLE: a match is finalized when the field comes to REST, not on a timer -------
   // The buzzer ends driving, not scoring. The server (and solo practice) finalize once the game
@@ -27780,10 +27858,13 @@ const dumperSetup = (): RobotSetup => {
   check('region: legalRegion agrees with the router', legalRegion('iad') && !legalRegion('IAD') && !legalRegion('ia') && !legalRegion('iad\n'));
 
   const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  // /health no longer fly-replays at all (2026-10-02): a replay booted the named region, so an
+  // old per-region ping picker woke every satellite. With no replay there is no header to guard.
+  const health = idx.slice(idx.indexOf("req.url?.startsWith('/health')"), idx.indexOf("res.end('ok');"));
   check(
-    'region: /health validates before building its replay header',
-    /legalRegion\(want\)/.test(idx),
-    'the sibling handler carried the guard and this one did not — the comment there named this exact file',
+    'region: /health is answered where it lands and never builds a replay header',
+    health.length > 0 && !/fly-replay/.test(health.replace(/\/\/.*$/gm, '')),
+    'a /health?region= replay boots that region (auto_start) for a latency number',
   );
 }
 
