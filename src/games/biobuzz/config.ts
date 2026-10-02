@@ -3377,6 +3377,33 @@ export const BB3_HIVE_CELL_WALL = 0.25;
  */
 export const BB3_TRAY_OUTER_SKIN = 0.5;
 
+/**
+ * THE HIVE SHED — what `groundRoll3d` (`sim3d/engineImpl.ts`) does with a loose element its
+ * narrow-hull vibration could not free from HIVE structure, instead of freezing it there.
+ *
+ * The case it was written for (found capturing the 3D reel, 2026-10-01): a POLLEN that lands on
+ * the tray's centre bar between the cells rolls down the up side's bar into the pivot and stops on
+ * the two `goal_pivot_bracket` plates, 1.07 in apart, against the damper holder. Two parallel
+ * edges under a 2.8-in ball are a CRADLE, stable sideways: to roll over one the centre has to rise
+ * ~0.11 in, which needs ~9 in/s, and the vibration kicks at 2–5. It gave up after
+ * `BB3_VIBE_GIVEUP_TICKS` and froze the ball on top of the HIVE for the rest of the match.
+ *
+ * `AFTER` is how many vibration kicks a HIVE perch gets before the hop (the general budget is
+ * `BB3_VIBE_GIVEUP_TICKS`, 30: each kick waits out `BB3_REST_TICKS` again, so 30 held a cradled
+ * ball ~290 ticks). `SPEED` is the horizontal hop (in/s) and `VZ` the lift (in/s) that clears
+ * the rail. `MAX` bounds the attempts per perch, after which the element
+ * freezes exactly as before: a true multi-hull cage has to lose eventually or `bbSettled` never
+ * closes (the reason `BB3_VIBE_GIVEUP_TICKS` exists). `REGION_X`/`_Y` is the HIVE frame's
+ * footprint (|x|, |y|, in) — a FIXED narrow hull is HIVE structure only inside it; a hull on a
+ * tray body always is. Gated on `SIM_PATCH` 3 (`hiveShedOn`).
+ */
+export const BB3_HIVE_SHED_AFTER = 4;
+export const BB3_HIVE_SHED_SPEED = 14;
+export const BB3_HIVE_SHED_VZ = 10;
+export const BB3_HIVE_SHED_MAX = 8;
+export const BB3_HIVE_SHED_REGION_X = 26;
+export const BB3_HIVE_SHED_REGION_Y = 22.5;
+
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
  * clears it (R105.A lets a robot stand 29 in). */
 export const BB3_WALL_H = 40;
