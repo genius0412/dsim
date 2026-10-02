@@ -125,7 +125,7 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # `fly machine update` is undone by the next deploy.
 SATELLITE_SIZES=(
   ord:shared-cpu-8x:2048
-  sjc:shared-cpu-8x:2048
+  sjc:performance-1x:2048
   lhr:shared-cpu-8x:2048
   gru:shared-cpu-4x:1024
   jnb:shared-cpu-4x:1024
