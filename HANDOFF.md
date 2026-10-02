@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-01 (BIOBUZZ 3D: nothing loose stays on the HIVE's pivot beam)
+
+**State: branch `fix/biobuzz-hive-beam-shed`, PR into `alpha`, not merged.** `npm test` 5389/5391 — the two red checks are the machine-dependent wall-clock perf pair (`FULL reconciles 40 ticks` 8.43 ms vs 8, bot-driven `step3d` p95 2.2 ms vs 1.5) and fail the same way on a clean `origin/alpha` checkout on this machine (9.21 ms, p95 3.79). `build`, `server:check`, `docaudit` pass. **SIM change**: `SIM_PATCH` 2 → 3, so a live room only gets it once the game server is deployed; no wire change, deploy order free.
+
+- **Found capturing the 3D reel:** in a 3-bot practice match a POLLEN sat on the blue HIVE between the cups from 11 s to the buzzer, another on red's for 18 s, `flight` at zero velocity then `ground` at z ≈ 40–45.
+- **Mechanism:** a ball on the tray's centre bar between the pivot and a cell's back wall rolls down the up side's bar onto the two `goal_pivot_bracket` plates (1.07 in apart) against the damper holder. Two parallel edges are a cradle; the 2–5 in/s vibration can't lift it over a rail (~9 in/s) and its 30 kicks took ~290 ticks before the freeze.
+- **Fix (`groundRoll3d`):** on HIVE structure (tray body, or a fixed hull inside `BB3_HIVE_SHED_REGION_*`) the give-up comes after `BB3_HIVE_SHED_AFTER` 4 kicks and is a hop (14 in/s across the tray axis / hashed angle, alternating, + 10 in/s up), up to 8 per perch (`engine.hiveSheds`, saved/restored with the other timers), then the old freeze. Gated on `SIM_PATCH` 3. Rejected: reshaping the beam/bracket colliders (changes every shot that grazes the pivot), and re-tagging a stalled `flight` ball (cosmetic once the ball leaves).
+- **Measured:** staged on the bar top (both alliances, both tray poses, x −0.6..0.6, |v| 4..9) POLLEN 38/480 perched → 0/480, NECTAR 0/480. Staged perch leaves in 148–164 ticks. Zero-velocity rain over the footprint never finds the perch (0/598 either rule) — shots reach it sideways.
+- **Checks:** HIVE3D lane, three perches × (leaves within 300 ticks, ≤ 60 ticks `flight` going nowhere, still stuck under `SIM_PATCH` 2) + two-run `worldHash` determinism.
+- **Probes (not committed, `scratch/`):** `barprobe.ts`, `hiverain.ts`, `shedtrace.ts`, `matchperch.ts`.
+
 # HANDOFF — 2026-09-28b (BIOBUZZ robots: no z-fighting, no dressing through mechanisms)
 
 **State: pushed on `alpha`.** `npm test` (shared 2870, BIOBUZZ 5381), `build`, `server:check`, `bundleaudit` (scene baseline raised 221.06 → 226.59 KB for the keep-outs and the rest-pose search), `docaudit`, `uiaudit` pass. Client only (the 2D sprite's marks changed with the 3D ones; nothing the sim reads). Not on `main`.
