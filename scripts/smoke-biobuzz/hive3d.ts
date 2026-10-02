@@ -1587,6 +1587,124 @@ function settleChecks(check: Check): void {
   }
 
   /**
+   * ⚠️ **NOTHING LOOSE STAYS ON THE HIVE'S PIVOT BEAM** (found capturing the 3D reel, 2026-10-01: in
+   * a 3-bot practice match a POLLEN sat on the blue HIVE between the cups from 11 s to the buzzer,
+   * another on red's for 18 s, reading `flight` at zero velocity and then `ground` at z ≈ 40–45).
+   *
+   * The perch: a POLLEN on the tray's centre bar between the pivot and a cell's back wall rolls down
+   * the UP side's bar into the pivot and stops on the two `goal_pivot_bracket` plates (1.07 in
+   * apart) against the damper holder — a CRADLE, stable sideways, where the 2–5 in/s vibration
+   * cannot lift it over a rail and gave up after 30 ticks. MEASURED (`scratch/barprobe.ts`, a ball
+   * staged on the bar top at tray-local x −0.6..0.6, |v| 4..9, both alliances, both tray poses):
+   * POLLEN 38/480 perched for good before the shed, 0/480 after; NECTAR 0/480 after.
+   *
+   * Each scene stages the ball ON the bar, so it needs no drop to find the perch. A ball counts as
+   * off the beam on the tiles (`ground`, bottom at the floor) or counted into a cell (`element`).
+   * The STALLED-FLIGHT clause is the second half of the report: an element tagged `flight` that is
+   * off the tiles and has moved under `STALL_DIST` in the last `STALL_WINDOW` ticks is not flying,
+   * something is holding it up. Speed alone cannot see it — the vibration keeps a perched ball
+   * above `BB3_REST_SPEED` half the time — so it is read off displacement, and the old rule is run
+   * through the same counter to show the counter can fail.
+   */
+  {
+    const BAR_TOP_W = -1.71; // `bar_north` / `bar_south` top face, tray-local (field-colliders.json)
+    const OFF_BY = 300; // ticks — 5 s; measured 148–164 (printed in each detail)
+    const STALL_MAX = 60;
+    const STALL_WINDOW = 30;
+    const STALL_DIST = 1;
+    const onBeam = (al: Alliance, up: 'north' | 'south', x: number, v: number, patch?: number) => {
+      const w = mkWorld3d('free', 1);
+      if (patch !== undefined) w.simPatch = patch;
+      w.balls.length = 0;
+      const hive = w.biobuzz!.hives[al];
+      hive.up = up;
+      delete hive.angle;
+      const theta = hiveTiltAngle(w, al);
+      const p = rotate2(v, BAR_TOP_W + BB_POLLEN_R + 0.05, theta);
+      w.balls.push({
+        id: 1,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'red' },
+        pos: { x: hivePivotX(al) + x, y: p.a },
+        vel: { x: 0, y: 0 },
+        z: BB3_HIVE_PIVOT_Z + p.b - BB_POLLEN_R,
+        vz: 0,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      let off: number | null = null;
+      let stalled = 0;
+      const trail: { x: number; y: number; z: number }[] = [];
+      for (let t = 0; t < OFF_BY && off === null; t++) {
+        step3d(w, 1 / 60, new Map());
+        const b = w.balls[0];
+        trail.push({ x: b.pos.x, y: b.pos.y, z: b.z });
+        const then = trail.length > STALL_WINDOW ? trail[trail.length - 1 - STALL_WINDOW] : null;
+        if (then && b.state.kind === 'flight' && b.z > 0.5 && Math.hypot(b.pos.x - then.x, b.pos.y - then.y, b.z - then.z) < STALL_DIST) stalled++;
+        if (b.state.kind === 'element' || (b.state.kind === 'ground' && b.z <= 0.05)) off = t;
+      }
+      const b = w.balls[0];
+      return { off, stalled, kind: b.state.kind, pos: `(${b.pos.x.toFixed(2)}, ${b.pos.y.toFixed(2)}, z ${b.z.toFixed(2)})` };
+    };
+    // the three measured perches: blue's north bar and south bar (one per tray pose), and red's.
+    const scenes = [
+      ['blue', 'north', 0.3, 5.5],
+      ['blue', 'south', 0, -5],
+      ['red', 'south', 0, -5],
+    ] as const;
+    for (const [al, up, x, v] of scenes) {
+      const now = onBeam(al, up, x, v);
+      check(
+        `HIVE3D (3D): a POLLEN on ${al}'s pivot beam (up ${up}, v ${v}) leaves it — tiles or a cell within ${OFF_BY} ticks`,
+        now.off !== null,
+        `off at ${now.off}, ended ${now.kind} at ${now.pos}`,
+      );
+      check(
+        `HIVE3D (3D): ...and it spends at most ${STALL_MAX} ticks tagged \`flight\` while going nowhere (${al}, up ${up})`,
+        now.stalled <= STALL_MAX,
+        `stalled-flight ticks ${now.stalled}`,
+      );
+      // ...and a replay recorded before `SIM_PATCH` 5 still freezes it there, which is also what
+      // keeps the two checks above from being vacuous.
+      const old = onBeam(al, up, x, v, 2);
+      check(
+        `HIVE3D (3D): ...under SIM_PATCH 2 (an older replay) the same POLLEN still stays on the beam, stalled in \`flight\` past ${STALL_MAX} ticks (${al}, up ${up})`,
+        old.off === null && old.kind !== 'element' && old.stalled > STALL_MAX,
+        `off at ${old.off}, ended ${old.kind} at ${old.pos}, stalled-flight ticks ${old.stalled}`,
+      );
+    }
+    // DETERMINISM THROUGH A SHED: the hop's direction is the vibration's hash of (id, tick,
+    // rngState), so two runs of the same perch agree at every sampled tick.
+    const hashes = (): string[] => {
+      const w = mkWorld3d('free', 1);
+      w.balls.length = 0;
+      const p = rotate2(5, BAR_TOP_W + BB_POLLEN_R + 0.05, hiveTiltAngle(w, 'blue'));
+      w.balls.push({
+        id: 1,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'red' },
+        pos: { x: hivePivotX('blue') + 0.3, y: p.a },
+        vel: { x: 0, y: 0 },
+        z: BB3_HIVE_PIVOT_Z + p.b - BB_POLLEN_R,
+        vz: 0,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      const out: string[] = [];
+      for (let t = 0; t < 300; t++) {
+        step3d(w, 1 / 60, new Map());
+        if (t % 30 === 0) out.push(worldHash(w));
+      }
+      return out;
+    };
+    const h1 = hashes();
+    const h2 = hashes();
+    check(
+      'HIVE3D (3D): two runs of a pivot-beam shed agree at every sampled tick (worldHash)',
+      h1.length === h2.length && h1.every((h, i) => h === h2[i]),
+      `${h1.length} samples, first mismatch ${h1.findIndex((h, i) => h !== h2[i])}`,
+    );
+  }
+
+  /**
    * ⚠️ **A NECTAR BEHIND THE HIVE FALLS THROUGH TO THE TILES** (owner report 2026-09-27: "nectar
    * get stuck on top of the main beam that connects two CELLs and does not fall off").
    *

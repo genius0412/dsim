@@ -250,8 +250,12 @@ export const SIM_VERSION = 5;
  *      and leads only translation; DECODE releases inside `decodeFixedAimTol` and a tank's forward
  *      yields to the turn; the feed clock reads through `flyFeedDue` with `FLY_FEED_TIME_EPS`. Before
  *      it: the `*_PRE4` constants (`fixedShot.ts`, `biobuzz/play.ts`, `biobuzz/robot.ts`).
+ *   5  BIOBUZZ 3D: a loose element the narrow-hull vibration cannot free from HIVE structure is
+ *      SHED off it (a hashed hop, `BB3_HIVE_SHED_*`) instead of frozen on top of the HIVE for the
+ *      rest of the match (`sim3d/engineImpl.ts`, `groundRoll3d`). On `main` from 2026-10-03
+ *      without 3 and 4, so a `main` replay stamped 5 did not run them.
  */
-export const SIM_PATCH = 4;
+export const SIM_PATCH = 5;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

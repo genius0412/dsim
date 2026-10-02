@@ -287,6 +287,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   because an element can chain through several perches on the way down and each restarts its own
   budget. `step3d` perf unaffected (measured 0.305 ms/tick with five perched elements, budget
   1.5); two-run determinism holds. Checks in `scripts/smoke-biobuzz/hive3d.ts`.
+- ⚠️ **ON HIVE STRUCTURE THE VIBRATION'S GIVE-UP IS A HOP, NOT A FREEZE** (found capturing the 3D
+  reel, 2026-10-01: a POLLEN sat on the blue HIVE's pivot from 11 s to the buzzer, another on
+  red's for 18 s, reading `flight` at zero velocity, then `ground` at z ≈ 40–45). A POLLEN on the
+  tray's centre bar between a cell's back wall and the pivot rolls down the UP side's bar and stops
+  on the two `goal_pivot_bracket` plates (1.07 in apart) against the damper holder — a CRADLE:
+  stable sideways, ~9 in/s to roll over a rail, against the vibration's 2–5. And 30 kicks is ~290
+  ticks, because each one waits out `BB3_REST_TICKS` again. `groundRoll3d` now gives an untagged
+  element touching only narrow hulls on HIVE structure (a tray body, or a FIXED hull inside the
+  frame footprint `BB3_HIVE_SHED_REGION_*`) `BB3_HIVE_SHED_AFTER` (4) kicks, then a hop of
+  `BB3_HIVE_SHED_SPEED` 14 in/s + `BB3_HIVE_SHED_VZ` 10 in/s up — across the tray axis (world x)
+  on even attempts, the vibration's hashed angle on odd ones — at most `BB3_HIVE_SHED_MAX` (8)
+  times per perch (`engine.hiveSheds`), then the old 30-kick budget and freeze, so a true cage
+  still lets `bbSettled` close. MEASURED (`scratch/barprobe.ts`: a ball staged on the bar top at
+  tray-local x −0.6..0.6, |v| 4..9, both alliances, both tray poses): POLLEN 38/480 perched for
+  good → 0/480, NECTAR 0/480; a staged perch leaves in 148–164 ticks and reads `flight` going
+  nowhere for 16–26 (old rule 184–231 and never leaves). A zero-velocity rain over the whole
+  footprint never finds this perch either side (0/598 POLLEN) — it is reached by shots arriving
+  sideways. Gated on `SIM_PATCH` 5 (`hiveShedOn`); the HIVE3D lane runs each scene under 2 too.
 - ⚠️ **A CELL'S FLOOR AND BACK COLLIDERS STAND 0.5 IN OUTSIDE THE CAD FACE, NOT 1.5** (owner
   report 2026-09-27: "nectar get stuck on top of the main beam that connects two CELLs").
   `convert.py` pads every tray facet slab 1.5 in outward. Behind the DOWN cell that narrowed the
