@@ -22,6 +22,7 @@ import type { QueueMode, ServerMsg } from '../src/net/protocol';
 import { DEPLOY_REGIONS, RTT_UNKNOWN, bestHost, interRegionMs } from '../server/regions';
 import {
   SKILL_BASE, skillCeiling, bestSplit, mmNumber, RATING_WAIT_MS, TEAM_BAND_BASE, teamBandCeiling,
+  skillFromRows, PRIOR_ACT_WEIGHT, type SkillRow,
 } from '../server/matchmaking';
 import { readFileSync } from 'node:fs';
 
@@ -954,6 +955,97 @@ const namesOf = (m: PendingMatch | undefined): string =>
   check('seed: the split uses it — the two 1600s end up on opposite alliances',
     red === 'ac' || red === 'ad' || red === 'bc' || red === 'bd', red);
   check('seed: ...and a four known through seeds counts as known for the gate', split.known);
+}
+// ---- the seed reads every board the player has played (2026-10-02) ----------
+// It used to be the placed 1v1 rating only. The 2v2 board starts empty every act and placing
+// takes five games, so most of a young 2v2 pool had no number, read 1000 each, and the queue
+// order was the split.
+{
+  const ACT = 3;
+  const row = (mode: QueueMode, act: number, rating: number, games: number): SkillRow => ({ mode, act, rating, games });
+  const placed2 = skillFromRows('2v2', ACT, [row('2v2', ACT, 1320, 7), row('1v1', ACT, 900, 30)]);
+  check('seed rows: a placed 2v2 board is the number, with no seed',
+    placed2.rating === 1320 && placed2.placed && placed2.seed === undefined, JSON.stringify(placed2));
+  const prov = skillFromRows('2v2', ACT, [row('2v2', ACT, 1240, 3)]);
+  check('seed rows: three 2v2 games and nothing else seed at that provisional rating',
+    !prov.placed && prov.rating === 1240 && prov.seed === 1240, JSON.stringify(prov));
+  const blend = skillFromRows('2v2', ACT, [row('2v2', ACT, 1240, 3), row('1v1', ACT, 1000, 12)]);
+  check('seed rows: ...blended with the 1v1 board by games, each capped at placement (3:5)',
+    blend.seed === (3 * 1240 + 5 * 1000) / 8, String(blend.seed));
+  const only1 = skillFromRows('2v2', ACT, [row('1v1', ACT, 1600, 9)]);
+  check('seed rows: no 2v2 games and a placed 1v1 reads the 1v1 rating, as before', only1.seed === 1600, String(only1.seed));
+  const prior = skillFromRows('2v2', ACT, [row('2v2', ACT, 1100, 2), row('2v2', ACT - 1, 1500, 40), row('2v2', ACT - 2, 700, 40)]);
+  check('seed rows: the latest earlier act counts at PRIOR_ACT_WEIGHT, older acts not at all',
+    Math.abs((prior.seed ?? 0) - (2 * 1100 + 5 * PRIOR_ACT_WEIGHT * 1500) / (2 + 5 * PRIOR_ACT_WEIGHT)) < 1e-9, String(prior.seed));
+  const fresh = skillFromRows('2v2', ACT, [row('2v2', ACT - 1, 1450, 20)]);
+  check('seed rows: a fresh act seeds from the last one', fresh.seed === 1450 && fresh.rating === 1000, JSON.stringify(fresh));
+  const none = skillFromRows('2v2', ACT, [row('2v2', ACT, 950, 0)]);
+  check('seed rows: a 0-game row is not evidence, and its rating still reads (a behaviour charge)',
+    none.seed === undefined && none.rating === 950 && !none.placed, JSON.stringify(none));
+  check('seed rows: nobody at all has no seed', skillFromRows('2v2', ACT, []).seed === undefined);
+  const one = skillFromRows('1v1', ACT, [row('1v1', ACT, 1180, 2), row('2v2', ACT, 1500, 9)]);
+  check('seed rows: a 1v1 entry never takes a seed', one.seed === undefined && one.rating === 1180 && !one.placed,
+    JSON.stringify(one));
+}
+{
+  // THE REPORTED MATCH: four players with three 2v2 games each and no 1v1 placement. Before,
+  // all four read 1000, nothing moved, and red was 1240+1180 against 900+880.
+  const ACT = 3;
+  const prov: Record<string, number> = { a: 1240, b: 1180, c: 900, d: 880 };
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => skillFromRows('2v2', ACT, [{ mode: '2v2', act: ACT, rating: prov[userId.slice(2)], games: 3 }]),
+  });
+  for (const id of Object.keys(prov)) mm.enqueue(entry(id, '2v2'));
+  await new Promise((res) => setTimeout(res, 0));
+  await new Promise((res) => setTimeout(res, 0));
+  const al = alliancesOf(staged[0]);
+  const sum = (a: string): number => Object.keys(prov).filter((x) => al[x] === a).reduce((n, x) => n + prov[x], 0);
+  check('provisional: four unplaced 2v2 players pair at once', staged.length === 1, `${staged.length}`);
+  check('provisional: ...with the two strongest on opposite alliances', !!al['a'] && al['a'] !== al['b'], JSON.stringify(al));
+  check('provisional: ...and the alliance sums within 70', Math.abs(sum('red') - sum('blue')) <= 70,
+    `red ${sum('red')} blue ${sum('blue')}`);
+}
+{
+  // a provisional four that cannot be evened up is now gated like a placed one
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const ACT = 3;
+  const prov: Record<string, number> = { p1: 1500, p2: 1450, s1: 1000, s2: 980 };
+  const mm = new Matchmaker({
+    now: () => t,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => skillFromRows('2v2', ACT, [{ mode: '2v2', act: ACT, rating: prov[userId.slice(2)], games: 2 }]),
+  });
+  mm.enqueue(entry('p1', '2v2', { party: 'pp', partySize: 2 }));
+  mm.enqueue(entry('p2', '2v2', { party: 'pp', partySize: 2 }));
+  mm.enqueue(entry('s1', '2v2'));
+  mm.enqueue(entry('s2', '2v2'));
+  await new Promise((res) => setTimeout(res, 0));
+  await new Promise((res) => setTimeout(res, 0));
+  check('provisional: a lopsided premade four waits on the opening band', staged.length === 0, `${staged.length}`);
+  t = 6000;
+  mm.tick();
+  await new Promise((res) => setTimeout(res, 0));
+  check('provisional: ...and still pairs once the band opens', staged.length === 1, `${staged.length}`);
+}
+{
+  // THE FILL DRAWS TOGETHER BY THE SAME NUMBERS THE SPLIT USES. Five seeded players, one low.
+  // The old fill only saw PLACED ratings, so every span read 0 and it went FIFO: 1500, 1000,
+  // 1490, 1480, which no split can even up, waited out the band and was staged at 6 s as
+  // 1500+1000 against 1490+1480. The four highs are a dead-even match and pair at once.
+  const seeded = (seed: number): Partial<QueueEntry> => ({ rating: 1000, placed: false, seed } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('A', '2v2', seeded(1500)),
+    entry('low', '2v2', seeded(1000)),
+    entry('C', '2v2', seeded(1490)),
+    entry('D', '2v2', seeded(1480)),
+    entry('E', '2v2', seeded(1470)),
+  ]);
+  check('fill: a 2v2 fill draws the four closest seeded players together at once',
+    staged.length === 1 && namesOf(staged[0]) === 'A,C,D,E', `${staged.length} ${namesOf(staged[0])}`);
 }
 {
   // THE SEED IS STAMPED BY THE SERVER, like the rating

@@ -1,6 +1,7 @@
 import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { actFor, getRating, getSkill, createPendingMatch, clearRoomInvites } from './db/repo';
+import { actFor, getRating, getSkillRows, createPendingMatch, clearRoomInvites } from './db/repo';
+import { PLACEMENT_GAMES } from '../src/config';
 import { dbEnabled } from './db/pool';
 import type { GameId, Physics } from '../src/types';
 import { simModuleFor } from '../src/games/sim';
@@ -156,33 +157,45 @@ export const RATING_WAIT_MS = 1500;
 /** Glicko-2's rating scale (`server/ranked.ts` — not imported: that module brings the DB) */
 const GLICKO_SCALE = 173.7178;
 
+/** a 1v1 entry's number: its rating once placed on this board, else none */
+const placedRating = (e: QueueEntry): number | undefined =>
+  e.rating !== undefined && e.placed ? e.rating : undefined;
+
 /**
- * The rating spread of a trial group: max − min over its RATED members.
+ * The rating spread of a trial group: max − min over the members that have a number.
  *
  * A max over members rather than a pairwise distance, mirroring how `spread` treats
  * latency — and, like it, monotone under adding a member, which is what lets the greedy
  * fill trust a partial group's number.
  *
- * UNRATED MEMBERS ARE NOT COUNTED, they are not refused. An unplaced player (fewer than
- * PLACEMENT_GAMES on this board) and a player whose rating read has not landed are the
- * same situation — no number to match on — and the answer to that is to let them play,
- * not to hold them out. A DB outage, a dev box, a fresh act and everybody's first five
- * games all therefore degrade to exactly the latency-only pairing that shipped before
- * this, which is the correct floor and by some margin the most likely state of a young
- * ladder.
+ * MEMBERS WITH NO NUMBER ARE NOT COUNTED, they are not refused. An unplaced 1v1 player and a
+ * player whose rating read has not landed are the same situation — no number to match on —
+ * and the answer to that is to let them play, not to hold them out. A DB outage, a dev box, a
+ * fresh act and everybody's first five games all therefore degrade to exactly the
+ * latency-only pairing that shipped before this, which is the correct floor and by some
+ * margin the most likely state of a young ladder.
+ *
+ * `num` is `placedRating` for a 1v1 and `mmNumber` for a 2v2, so a 2v2 fill draws together
+ * players by the same numbers `bestSplit` balances them on.
  */
-function ratingSpan(group: QueueEntry[], extra: QueueEntry[]): number {
+function ratingSpan(
+  group: QueueEntry[],
+  extra: QueueEntry[],
+  num: (e: QueueEntry) => number | undefined = placedRating,
+): number {
   let lo = Infinity;
   let hi = -Infinity;
   for (const e of group) {
-    if (e.rating === undefined || !e.placed) continue;
-    if (e.rating < lo) lo = e.rating;
-    if (e.rating > hi) hi = e.rating;
+    const r = num(e);
+    if (r === undefined) continue;
+    if (r < lo) lo = r;
+    if (r > hi) hi = r;
   }
   for (const e of extra) {
-    if (e.rating === undefined || !e.placed) continue;
-    if (e.rating < lo) lo = e.rating;
-    if (e.rating > hi) hi = e.rating;
+    const r = num(e);
+    if (r === undefined) continue;
+    if (r < lo) lo = r;
+    if (r > hi) hi = r;
   }
   return hi < lo ? 0 : hi - lo; // nobody rated ⇒ nothing to gate on
 }
@@ -279,9 +292,10 @@ export interface QueueEntry {
    */
   placed?: boolean;
   /**
-   * A number to BALANCE on when this board has none: an unplaced 2v2 player's PLACED 1v1
-   * rating. Used only to split alliances and by the 2v2 team gate, never shown and never
-   * written anywhere. Server-stamped with `rating`, for the same reason.
+   * A number to BALANCE on when this board has not placed the player: an unplaced 2v2
+   * player's estimate from every board they have played (`skillFromRows`). Used only to split
+   * alliances and by the 2v2 team gate, never shown and never written anywhere.
+   * Server-stamped with `rating`, for the same reason.
    */
   seed?: number;
   /** the rating read is in flight — see `RATING_WAIT_MS` */
@@ -345,15 +359,7 @@ export class Matchmaker {
         ? async (userId, mode, game) => {
             try {
               const act = await actFor(game);
-              const s = await getSkill(userId, mode, act, game);
-              // an unplaced 2v2 player is balanced on their 1v1 rating when they have one:
-              // the 2v2 board starts empty every act, and most of a young pool is unplaced on it
-              let seed: number | undefined;
-              if (!s.placed && mode === '2v2') {
-                const other = await getSkill(userId, '1v1', act, game);
-                if (other.placed) seed = other.rating;
-              }
-              return { rating: s.rating, placed: s.placed, seed };
+              return skillFromRows(mode, act, await getSkillRows(userId, act, game));
             } catch {
               return null; // fail open — see RatingFn
             }
@@ -648,7 +654,7 @@ export class Matchmaker {
           // 1v1 gates on the rating SPAN. A 2v2 gates on the TEAMS, and only once the
           // candidate completes the four (`TEAM_BAND_BASE`); until then `span` only orders
           // the fill, so similar players still tend to be drawn together.
-          let span = ratingSpan(group, cand);
+          let span = ratingSpan(group, cand, mode === '1v1' ? placedRating : mmNumber);
           if (mode === '1v1') {
             if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
           } else if (group.length + cand.length === need) {
@@ -959,10 +965,66 @@ export class Matchmaker {
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
 
 /** the number an entry is balanced on: its rating when placed on this board, else its seed
- *  (an unplaced 2v2 player's placed 1v1 rating), else nothing known */
+ *  (`skillFromRows`), else nothing known */
 export function mmNumber(e: QueueEntry): number | undefined {
   if (e.rating !== undefined && e.placed) return e.rating;
   return e.seed;
+}
+
+/** one played board, as `getSkillRows` returns it */
+export interface SkillRow {
+  mode: QueueMode;
+  act: number;
+  rating: number;
+  games: number;
+}
+
+/** what an earlier act's board counts for, game for game, against this act's */
+export const PRIOR_ACT_WEIGHT = 0.5;
+
+/**
+ * A player's rating, placement and 2v2 BALANCING NUMBER, from every board they have played.
+ *
+ * `rating`/`placed` are this act's board for `mode`, exactly what `getSkill` reads. The seed
+ * is for a 2v2 player who has not placed on it yet, and it uses what there is: the games they
+ * HAVE played on this board, their 1v1 board, and each mode's latest earlier act. Each board
+ * counts `min(games, PLACEMENT_GAMES)` games (an earlier act's at `PRIOR_ACT_WEIGHT`) and the
+ * seed is the weighted mean. No games anywhere ⇒ no seed: unknown skill, not 1000.
+ *
+ * WHY (2026-10-02): the seed used to be the placed 1v1 rating and nothing else. The 2v2 board
+ * starts empty every act and placing takes five games, so most of a young 2v2 pool had no
+ * number at all; four of them read 1000 each, `bestSplit` had nothing to move, and the queue
+ * order WAS the split. Four players with three 2v2 games each at 1240, 1180, 900 and 880 were
+ * staged 1240+1180 against 900+880, while the intro cards showed exactly those numbers.
+ */
+export function skillFromRows(
+  mode: QueueMode,
+  act: number,
+  rows: SkillRow[],
+): { rating: number; placed: boolean; seed?: number } {
+  const here = rows.find((r) => r.mode === mode && r.act === act);
+  const games = here?.games ?? 0;
+  const rating = here?.rating ?? 1000;
+  const placed = games >= PLACEMENT_GAMES;
+  if (placed || mode !== '2v2') return { rating, placed };
+  let sum = 0;
+  let weight = 0;
+  const add = (r: SkillRow | undefined, scale: number): void => {
+    if (!r || r.games <= 0) return;
+    const w = Math.min(r.games, PLACEMENT_GAMES) * scale;
+    sum += r.rating * w;
+    weight += w;
+  };
+  const latestBefore = (m: QueueMode): SkillRow | undefined => {
+    let best: SkillRow | undefined;
+    for (const r of rows) if (r.mode === m && r.act < act && r.games > 0 && (!best || r.act > best.act)) best = r;
+    return best;
+  };
+  add(here, 1);
+  add(rows.find((r) => r.mode === '1v1' && r.act === act), 1);
+  add(latestBefore('2v2'), PRIOR_ACT_WEIGHT);
+  add(latestBefore('1v1'), PRIOR_ACT_WEIGHT);
+  return weight > 0 ? { rating, placed, seed: sum / weight } : { rating, placed };
 }
 
 /**
@@ -981,7 +1043,8 @@ export function mmNumber(e: QueueEntry): number | undefined {
  * anyone was unplaced, and the 2v2 board starts empty every act, so in a young pool it almost
  * never ran. Splitting two unknowns evenly is at worst neutral; refusing to split the KNOWN
  * players because an unknown was present was the harm. Only the GATE stays off without
- * numbers, so a missing rating still delays nobody.
+ * numbers, so a missing rating still delays nobody. "Unknown" is rare since 2026-10-02: an
+ * unplaced player with any ranked games in this game has a seed (`skillFromRows`).
  */
 export function bestSplit(group: QueueEntry[]): { group: QueueEntry[]; dev: number; known: boolean } {
   const known = group.every((e) => mmNumber(e) !== undefined);

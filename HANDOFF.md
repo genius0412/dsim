@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-02c (2v2 balance: unplaced players are balanced on what they have played)
+
+**State: committed on this worktree's branch; see the commit for where it was pushed.** `test:mm` (237), `dbtest`, `server:check`, `build`, `docaudit` pass. **Server change, no migration**: it takes effect only after a production Fly deploy.
+
+- **Owner:** the 2v2 fairness work (27f) is on `main` and deployed, "yet it is still not fair".
+- **Cause:** `bestSplit` balanced on a player's 2v2 rating only once PLACED (5 games this act), else on a PLACED 1v1 rating, else 1000. The 2v2 boards reset every act (BIOBUZZ Act 2 rolled 09-24), so most of the pool had no number: four players at 1240/1180/900/880 provisional (3 games each) read 1000 each, nothing moved, and they were staged 1240+1180 against 900+880 in queue order, with no gate. The intro cards showed those numbers.
+- **Fix (`server/matchmaking.ts`):** `skillFromRows` seeds an unplaced 2v2 player from every board they have played in that game: this act's 2v2 games, this act's 1v1, and each mode's latest earlier act, weighted `min(games, 5)` with an earlier act at half (`PRIOR_ACT_WEIGHT`). One query, `getSkillRows` (`repo.ts`), replaces the two `getSkill` reads. The 2v2 fill's tie-break span uses the same numbers (`mmNumber`), so a queue of 1500/1000/1490/1480/1470 pairs the four highs at once instead of waiting 6 s and staging 1500+1000 against 1490+1480. 1v1 is unchanged.
+- **Effect on waits:** the team gate now applies whenever all four have any ranked games in the game (it was off for nearly every 2v2). It still opens fully at 6 s.
+- **Not measured on production data:** the read-only query of recent 2v2 matches was blocked by the permission classifier. The cause is reproduced in `test:mm` ("provisional:"); confirm on real matches by comparing `match_participants.rating_before` per alliance before and after the deploy.
+- **Still unfair by design:** a strong premade against two solos pairs after 6 s when nobody else is queued. The owner rejected a separate premade queue on 09-27; 0056's `premade` column is there to revisit it.
+
 # HANDOFF — 2026-10-02b (moderation outcomes reach the players: notices, report feedback, rating refunds)
 
 **State: on `main` and `alpha`.** `npm test` (5152), `build`, `server:check`, `dbtest`, `test:workers`, `uiaudit`, `docaudit`, `bundleaudit` pass. **Server change** (migration 0057 + routes): production Fly was NOT redeployed, so until it is, the new client reads an empty inbox and the console's message boxes are ignored by the old server.

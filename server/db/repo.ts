@@ -3650,6 +3650,30 @@ export async function getSkill(
   };
 }
 
+/**
+ * Every board row this player has in one game, up to and including `act`: both modes, this
+ * act and the earlier ones, newest act first. One query.
+ *
+ * The matchmaker reads it (`skillFromRows` in `server/matchmaking.ts`). A player who has not
+ * placed on the 2v2 board yet still has evidence of their skill: the games they have played
+ * on it, their 1v1 board, and the act before. `getSkill` reads one board and cannot see any of
+ * that. Rows with 0 games are kept: a behaviour charge writes one with a rating under 1000,
+ * and that is the rating the intro card shows.
+ */
+export async function getSkillRows(
+  userId: string,
+  act: number,
+  game?: Game,
+): Promise<{ mode: '1v1' | '2v2'; act: number; rating: number; games: number }[]> {
+  const rows = await q<{ mode: '1v1' | '2v2'; act: number; rating: number; games: number }>(
+    `select mode, act, rating, games from elo_ratings
+     where user_id = $1 and game = $2 and act <= $3
+     order by act desc`,
+    [userId, g(game), act],
+  );
+  return rows.map((r) => ({ mode: r.mode, act: Number(r.act), rating: Number(r.rating), games: Number(r.games) }));
+}
+
 export async function getRating(
   userId: string,
   mode: '1v1' | '2v2',
