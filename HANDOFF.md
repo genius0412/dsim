@@ -1,6 +1,6 @@
 # HANDOFF — 2026-10-02c (2v2 balance: unplaced players are balanced on what they have played)
 
-**State: on `alpha` (2ca9c6e9), DEPLOYED to `dsim-alpha` 2026-10-03 01:51Z (one machine, healthy). NOT on `main`: the push was blocked by the permission classifier; `main` needs it pushed (commit cd262975 on branch `claude/2v2-matchmaking-fairness-40d167` fast-forwards `main`) and then a production Fly deploy.** `test:mm` (237), `dbtest`, `server:check`, `build`, `docaudit` pass. **Server change, no migration**: it takes effect only after a production Fly deploy.
+**State: on `main` (d6b75a62) and `alpha`; DEPLOYED 2026-10-03 to `dsim-alpha` (01:51Z) and to PRODUCTION from `main` (01:56Z, 2-minute announcement, all 8 machines on the new image, satellite sizes re-applied).** `npm test` (5152), `test:mm` (237), `dbtest`, `server:check`, `build`, `docaudit` pass. Server change, no migration.
 
 - **Owner:** the 2v2 fairness work (27f) is on `main` and deployed, "yet it is still not fair".
 - **Cause:** `bestSplit` balanced on a player's 2v2 rating only once PLACED (5 games this act), else on a PLACED 1v1 rating, else 1000. The 2v2 boards reset every act (BIOBUZZ Act 2 rolled 09-24), so most of the pool had no number: four players at 1240/1180/900/880 provisional (3 games each) read 1000 each, nothing moved, and they were staged 1240+1180 against 900+880 in queue order, with no gate. The intro cards showed those numbers.
