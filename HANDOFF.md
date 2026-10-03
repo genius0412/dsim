@@ -1,3 +1,11 @@
+# HANDOFF — 2026-10-03b (2v2 is balanced on the 2v2 rating only)
+
+**State: committed; see the commit for where it was pushed.** `test:mm` (234), `npm test`, `dbtest`, `server:check`, `build`, `docaudit` pass. **Server change, no migration**: production needs a Fly deploy to pick it up.
+
+- **Owner:** "I think it is using 1v1 ranked ELO to balance out people in 2v2 or something. It is still weird."
+- **Confirmed** on production data (read-only): 59 of 216 player slots in Act 2's 2v2s were balanced mostly on a 1v1 rating, not the 2v2 rating on the card. Zeyad Gomaa lost four straight 2v2s (card 1000 → 763) and was still balanced as ~1000-1150 off a 1190 1v1. Over the 54 decided 2v2s the card predicted results better than the blend (log-loss 0.5659 vs 0.5929).
+- **Fix:** `skillOf` in `server/matchmaking.ts`: a 2v2 is balanced on the 2v2 rating, provisional from one game; no 2v2 game reads 1000 with the gate off. `getSkillRows` and the 1v1/earlier-act blend are gone.
+
 # HANDOFF — 2026-10-03 (ranked: new rating rules, 10/7 placement, BIOBUZZ Act 2 recalculation)
 
 **State: on `main` (550a955a) and `alpha`; DEPLOYED 2026-10-03 to `dsim-alpha` and to PRODUCTION from `main` (03:00Z, 2-minute announcement, all 8 machines on the new image). BIOBUZZ Act 2 RECALCULATED on production: the dry run reproduced all 1636 stored results of 764 matches (13 played after the export), the apply rewrote 252 boards, 252 snapshots and 1636 match rows and sent 252 notices; a re-check dry run changes nothing. Rehearsed first on `dsim-alpha` (dry run, apply, repeat apply).** `npm test`, `test:mm` (237), `dbtest`, `server:check`, `build`, `uiaudit`, `docaudit`, `bundleaudit` pass. Migration 0058. Rules in `docs/area/accounts.md` ("RULE SETS AND THE RECALCULATION").

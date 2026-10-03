@@ -582,18 +582,19 @@ when a rating is READ or COMPUTED, never by rewriting stored rows:
   rating.
 - **Matchmaking.** 1v1 keeps the span gate. A 2v2 is gated on the TEAMS: the best
   party-respecting split (`bestSplit`) must be within `|E_red − 0.5| ≤ 0.10`, widening every
-  3 s and unbounded at 6 s. `bestSplit` ALWAYS runs. A player placed on the 2v2 board is
-  balanced on that rating; an unplaced one on `QueueEntry.seed` (`skillFromRows`, one query,
-  `getSkillRows`): a mean of their 2v2 games so far, their 1v1 board and each mode's latest
-  earlier act, each board weighted `min(games, 5)` and an earlier act at half. No ranked games
-  in that game at all reads 1000 and turns the gate off. The 2v2 fill's tie-break span uses
-  the same numbers, so the four closest players are drawn together. A new entry sits out while
-  its rating read is in flight, up to 1.5 s. A premade anchor takes another premade before two
-  solos (a tie-break after latency).
-  ⚠️ **Until 2026-10-02 the seed was the placed 1v1 rating only.** Placing takes five games and
-  the 2v2 board starts empty every act, so most of the pool had no number: four players at
-  1240/1180/900/880 provisional read 1000 each and were staged 1240+1180 against 900+880, in
-  queue order, with no gate. Do not narrow the seed back to placed boards.
+  3 s and unbounded at 6 s. `bestSplit` ALWAYS runs, on the **2v2 RATING ONLY** — the number
+  on the intro card, provisional from one game (`skillOf`); a player with no 2v2 game reads 1000
+  and turns the gate off. The 2v2 fill's tie-break span uses the same numbers, so the four
+  closest players are drawn together. A new entry sits out while its rating read is in flight,
+  up to 1.5 s. A premade anchor takes another premade before two solos (a tie-break after
+  latency).
+  ⚠️ **No 1v1 rating, no earlier act.** 09-27 seeded an unplaced 2v2 player from their placed
+  1v1 rating and 10-02 blended the 1v1 board in; the owner found the splits weird (10-03), and
+  over BIOBUZZ Act 2's 54 decided 2v2s the card predicted results better than the blend
+  (log-loss 0.5659 vs 0.5929). One player lost four straight 2v2s (card 1000 → 763) and was
+  still balanced as ~1000-1150 off a 1190 1v1 rating. And before 10-02 a provisional 2v2 rating
+  was ignored altogether: four players at 1240/1180/900/880 read 1000 each and were staged
+  1240+1180 against 900+880 in queue order.
 - **`match_participants.premade`** (0056): true / false for a ranked row, NULL for custom and
   older rows. It exists to decide, at a future act rollover, whether premades need their own
   queue (owner, 2026-09-27: not now, the pool is too small).

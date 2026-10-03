@@ -465,20 +465,6 @@ async function main(): Promise<void> {
     const otherGame = await repo.getSkill('badge-own', '1v1', act, 'chain');
     check('skill: ...nor across games', otherGame.placed === false);
 
-    // getSkillRows: what the 2v2 matchmaker seeds an unplaced player from — both modes of ONE
-    // game, this act and earlier ones, never a later act or another game
-    await repo.ensureProfile('skill-rows', 'Rows');
-    for (let i = 0; i < 3; i++) await repo.upsertRating('skill-rows', '2v2', act, 1240, 250, 0.06, 'decode');
-    await repo.upsertRating('skill-rows', '1v1', act, 1100, 250, 0.06, 'decode');
-    await repo.upsertRating('skill-rows', '2v2', act - 1, 1400, 100, 0.06, 'decode');
-    await repo.upsertRating('skill-rows', '2v2', act + 1, 1900, 100, 0.06, 'decode');
-    await repo.upsertRating('skill-rows', '2v2', act, 1700, 100, 0.06, 'chain');
-    const rows = await repo.getSkillRows('skill-rows', act, 'decode');
-    const key = rows.map((r) => `${r.mode}@${r.act - act}:${r.rating}x${r.games}`).sort().join(' ');
-    check('skill rows: both modes, this act and the one before, with their games',
-      key === '1v1@0:1100x1 2v2@-1:1400x1 2v2@0:1240x3', key);
-    check('skill rows: ...newest act first', rows[rows.length - 1]?.act === act - 1, JSON.stringify(rows));
-    check('skill rows: a player with no rows reads none', (await repo.getSkillRows('badge-nobody', act, 'decode')).length === 0);
 
     // actFor collapses currentSeasonNumber + actForSeason and MEMOIZES them: reading a
     // rating was three sequential round trips, which is fine once per staged match and
