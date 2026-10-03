@@ -20,6 +20,7 @@
 import { REPORT_LABELS, type ReportReason } from './report';
 import { tierOf } from './standing';
 import { SEASONS } from './seasons';
+import { RANKED_PLACEMENT } from './config';
 
 export const NOTICE_KINDS = [
   /** to every player in a match whose score a moderator corrected */
@@ -34,6 +35,8 @@ export const NOTICE_KINDS = [
   'penalty',
   /** to a player whose standing a moderator edited by hand */
   'standing.edited',
+  /** to every player whose rating a recalculation of the act moved (`server/ratingRecalc.ts`) */
+  'rating.recalculated',
 ] as const;
 
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
@@ -119,6 +122,13 @@ export interface StandingEditedData {
   pardoned: number;
   /** 'cleared', a new lock in minutes, or null when the lock was left alone */
   lock: 'cleared' | number | null;
+}
+
+/** a recalculation moved this board's rating */
+export interface RatingRecalculatedData {
+  mode: '1v1' | '2v2';
+  before: number;
+  after: number;
 }
 
 export type MatchResult = 'win' | 'loss' | 'tie';
@@ -340,6 +350,22 @@ export function noticeView(
         meta: null,
         lines,
         tone: worse ? 'bad' : better ? 'good' : 'info',
+      };
+    }
+    case 'rating.recalculated': {
+      const before = num(d.before);
+      const after = num(d.after);
+      const mode = d.mode === '2v2' ? '2v2' : '1v1';
+      const g = gameName(n.game);
+      return {
+        title: 'Ranked ratings were recalculated',
+        meta: g ? `Ranked ${mode} · ${g}` : `Ranked ${mode}`,
+        lines: [
+          `Your ${mode} rating: ${before} → ${after}.`,
+          'Every ranked match this act was re-rated under the new rules: a player’s first games no longer swing the rating as far.',
+          `To be ranked on the board you now need ${RANKED_PLACEMENT[mode]} ${mode} matches.`,
+        ],
+        tone: after > before ? 'good' : 'info',
       };
     }
     default:

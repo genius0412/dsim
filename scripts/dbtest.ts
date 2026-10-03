@@ -418,12 +418,12 @@ async function main(): Promise<void> {
   const act = await repo.actForSeason(SEASON, 'decode');
 
   // RANKED — the board that shipped bare. Placement gates the board, so each
-  // player needs PLACEMENT_GAMES rated results before they appear at all.
-  for (let i = 0; i < 5; i++) {
+  // player needs the board's 10 rated 1v1 results (`boardMinGames`) before they appear at all.
+  for (let i = 0; i < 10; i++) {
     await repo.upsertRating('badge-own', '1v1', act, 1600, 60, 0.06, 'decode');
     await repo.upsertRating('badge-nil', '1v1', act, 1400, 60, 0.06, 'decode');
   }
-  await repo.upsertEloHistory('badge-own', '1v1', SEASON, 1600, 60, 0.06, 5, 'decode');
+  await repo.upsertEloHistory('badge-own', '1v1', SEASON, 1600, 60, 0.06, 10, 'decode');
   const eloRows = await repo.eloLeaderboard({ mode: '1v1', act, game: 'decode' });
   const eloOwn = eloRows.find((r) => r.userId === 'badge-own');
   const eloNil = eloRows.find((r) => r.userId === 'badge-nil');
@@ -443,8 +443,8 @@ async function main(): Promise<void> {
   {
     const placed = await repo.getSkill('badge-own', '1v1', act, 'decode');
     check('skill: a played board returns the real rating', placed.rating === 1600, String(placed.rating));
-    check('skill: ...and the games count that decides placement', placed.games === 5, String(placed.games));
-    check('skill: 5 games is PLACED', placed.placed === true);
+    check('skill: ...and the games count that decides placement', placed.games === 10, String(placed.games));
+    check('skill: past the matchmaker’s 5 games is PLACED', placed.placed === true);
 
     // the ambiguity the matcher must not fall into: an ACCOUNT WITH NO ROW reads
     // 1000, and that must surface as UNPLACED so a matcher declines to gate on it
@@ -5435,6 +5435,155 @@ async function main(): Promise<void> {
     await repo.ensureSeason(703, 'chain', 1);
     const afterSeed = await repo.listSeasonsCached('chain', t0 + 130_000);
     check('seasons: seeding a new season drops the memo at once', afterSeed.some((x) => x.season === 703));
+  }
+
+  // ---- RATING RECALCULATION (0058, server/ratingRecalc.ts) -------------------------------------
+  // An act played through the real `persistVersusMatch`, with a behaviour charge, a corrected
+  // score, a forgiven 2v2 loss and a voided 2v2 (both with their absence un-stored, as before
+  // 0058), then re-rated: the dry run writes nothing, the as-rated replay must be exact, the
+  // apply rewrites boards, snapshots and match rows together, a second run is a no-op, and a
+  // board the log does not explain is refused.
+  {
+    const { persistVersusMatch, RULES_TEAM_0927, RATING_RULES } = await import('../server/ranked');
+    const { recalcAct } = await import('../server/ratingRecalc');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    const G = 'biobuzz' as const;
+    await repo.ensureSeason(950, G, 9);
+    repo.clearActCache();
+    const act = await repo.actFor(G);
+    check('recalc: the test act is the one season 950 sits in', act === (await repo.actForSeason(950, G)), String(act));
+    const P = ['rc-a', 'rc-b', 'rc-c', 'rc-d'];
+    for (const u of P) await repo.ensureProfile(u, u);
+    const mid: string[] = [];
+    const play = async (
+      mode: '1v1' | '2v2',
+      red: { id: string; away?: number; early?: boolean }[],
+      blue: { id: string }[],
+      score: { red: number; blue: number },
+    ): Promise<string> => {
+      const part = (x: { id: string; away?: number; early?: boolean }, alliance: 'red' | 'blue') => ({
+        clientId: x.id, userId: x.id, handle: x.id, alliance, drivetrain: 'tank' as const,
+        score: score[alliance], spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, away: x.away, early: x.early,
+      });
+      const outcome = {
+        game: G, config: { kind: 'versus' as const }, ranked: true, mode,
+        result: { score, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 },
+        replay: { format: 2, balanceVersion: 4, sim: 2, game: G, mode: 'match' as const, seed: 1, ticks: 60, setups: [], tracks: {} },
+        participants: [...red.map((x) => part(x, 'red')), ...blue.map((x) => part(x, 'blue'))],
+      };
+      const ids: { matchId?: string } = {};
+      await persistVersusMatch(outcome.participants as never, outcome as never, 950, null as unknown as string, true, G, ids);
+      mid.push(ids.matchId!);
+      return ids.matchId!;
+    };
+    await play('1v1', [{ id: 'rc-a' }], [{ id: 'rc-b' }], { red: 550, blue: 300 });
+    await play('1v1', [{ id: 'rc-a' }], [{ id: 'rc-c' }], { red: 400, blue: 390 });
+    await play('1v1', [{ id: 'rc-b' }], [{ id: 'rc-c' }], { red: 500, blue: 200 });
+    // a behaviour charge on rc-c's 1v1 board, logged the way `chargeStanding` logs it
+    const ch = await repo.chargeRatingForBehaviour('rc-c', '1v1', act, 10, 400, G);
+    await db.query(
+      `insert into standing_events (user_id, kind, points, score_after, rating_charge, game, mode) values ('rc-c', 'dodge', 10, 90, $1, $2, '1v1')`,
+      [ch.before - ch.after, G],
+    );
+    const flipped = await play('1v1', [{ id: 'rc-c' }], [{ id: 'rc-a' }], { red: 300, blue: 250 });
+    await repo.correctMatchScore(flipped, { red: 200, blue: 250 }, 'admin-x', 'replay says blue');
+    await play('2v2', [{ id: 'rc-a' }, { id: 'rc-b', away: 0.25 }], [{ id: 'rc-c' }, { id: 'rc-d' }], { red: 100, blue: 300 });
+    const forgiven = mid[mid.length - 1];
+    await play('2v2', [{ id: 'rc-a' }, { id: 'rc-b', early: true, away: 1 }], [{ id: 'rc-c' }, { id: 'rc-d' }], { red: 100, blue: 300 });
+    const voided = mid[mid.length - 1];
+    await play('1v1', [{ id: 'rc-d' }], [{ id: 'rc-a' }], { red: 410, blue: 400 });
+    // a fixed timeline, a minute apart, so the charge sits between the 3rd and 4th match on any
+    // clock (PGlite's can stamp two quick transactions with the same millisecond)
+    for (let i = 0; i < mid.length; i++) {
+      await db.query(`update matches set created_at = now() - interval '1 hour' + $2 * interval '1 minute' where id = $1`, [mid[i], i]);
+    }
+    await db.query(
+      `update standing_events set at = now() - interval '1 hour' + interval '150 seconds' where user_id = 'rc-c' and game = $1`, [G],
+    );
+    // ...inside the act: a charge stamped before the act began went to the previous act's board
+    await db.query(`update seasons set started_at = now() - interval '2 hours' where game = $1 and balance_version = 950`, [G]);
+    // the two 2v2s as an older room left them: absence not stored
+    await db.query(`update match_participants set away = null, early = null where match_id = any($1::uuid[])`, [[forgiven, voided]]);
+    const stamped = await db.query<{ n: number }>(`select count(*)::int as n from matches where id = any($1::uuid[]) and rating_rules = $2`, [mid, RATING_RULES.id]);
+    check('recalc: a ranked match is stamped with the rule set that rated it (0058)', stamped.rows[0].n === mid.length, String(stamped.rows[0].n));
+    const away = await db.query<{ away: number | null; early: boolean | null }>(
+      `select away, early from match_participants where match_id = $1 and user_id = 'rc-d'`, [mid[mid.length - 1]],
+    );
+    check('recalc: ...and each result with the absence the update was given', away.rows[0]?.away === 0 && away.rows[0]?.early === false, JSON.stringify(away.rows[0]));
+
+    const snap = async () =>
+      (await db.query<{ user_id: string; mode: string; rating: number; games: number; rd: number }>(
+        `select user_id, mode, rating, games, rd from elo_ratings where game = $1 and act = $2 order by mode, user_id`, [G, act],
+      )).rows;
+    const before = await snap();
+    const dry = await recalcAct({ game: G, apply: false, adminId: 'test', rules: RULES_TEAM_0927 });
+    check('recalc: the as-rated replay explains every stored result (reproduced, or a forgiven loss)',
+      dry.validation.ok && dry.validation.reproduced + dry.validation.absenceAdjusted === dry.validation.results,
+      JSON.stringify(dry.validation));
+    check('recalc: ...inferring the un-stored void and the forgiven loss', dry.validation.voidedInferred === 1 && dry.validation.absenceAdjusted >= 1,
+      JSON.stringify(dry.validation));
+    check('recalc: a dry run changes nothing', JSON.stringify(await snap()) === JSON.stringify(before) && !dry.applied);
+    check('recalc: ...but says what would', dry.changed.boards > 0 && dry.rows.length === before.length, JSON.stringify(dry.changed));
+
+    const run = await recalcAct({ game: G, apply: true, adminId: 'test', rules: RULES_TEAM_0927 });
+    const after = await snap();
+    check('recalc: an applied run writes the boards it planned', run.applied &&
+      after.every((r) => run.rows.find((x) => x.userId === r.user_id && x.mode === r.mode)?.after === Number(r.rating)),
+      JSON.stringify({ rows: run.rows, after }));
+    check('recalc: ...games unchanged', after.every((r, i) => r.games === before[i].games));
+    const mp = await db.query<{ user_id: string; rating_before: number; rating_after: number; match_id: string }>(
+      `select match_id, user_id, rating_before, rating_after from match_participants where match_id = any($1::uuid[])`, [mid],
+    );
+    // the last match each player played ends on the board's new rating
+    const lastAfter = new Map<string, number>();
+    for (const id of mid) for (const r of mp.rows.filter((x) => x.match_id === id)) lastAfter.set(r.user_id + (mid.indexOf(id) >= 4 && mid.indexOf(id) <= 5 ? '|2v2' : '|1v1'), Number(r.rating_after));
+    check('recalc: the match rows are rewritten to add up to the new boards',
+      after.filter((r) => r.mode === '1v1').every((r) => lastAfter.get(`${r.user_id}|1v1`) === Number(r.rating)),
+      JSON.stringify({ lastAfter: [...lastAfter], after }));
+    const voidRows = mp.rows.filter((r) => r.match_id === voided && r.user_id !== 'rc-b');
+    check('recalc: ...a voided 2v2 stays a zero for everyone who was there', voidRows.length === 3 && voidRows.every((r) => r.rating_before === r.rating_after),
+      JSON.stringify(voidRows));
+    const hist = await db.query<{ n: number }>(
+      `select count(*)::int as n from elo_history h join elo_ratings e using (user_id, mode, game)
+        where h.game = $1 and h.balance_version = 950 and e.act = $2 and h.rating = e.rating`, [G, act],
+    );
+    check('recalc: ...and the season snapshots', hist.rows[0].n === after.length, `${hist.rows[0].n}/${after.length}`);
+    const rr = await db.query<{ rules: string; backup: { boards: unknown[]; participants: unknown[] } }>(`select rules, backup from rating_recalcs where game = $1`, [G]);
+    check('recalc: the run is recorded with every value it overwrote', rr.rows.length === 1 && rr.rows[0].rules === RULES_TEAM_0927.id &&
+      rr.rows[0].backup.boards.length === run.changed.boards && rr.rows[0].backup.participants.length === run.changed.participants);
+    const restamped = await db.query<{ n: number }>(`select count(*)::int as n from matches where id = any($1::uuid[]) and rating_rules = $2`, [mid, RULES_TEAM_0927.id]);
+    check('recalc: ...and every match now names the rules it was re-rated under', restamped.rows[0].n === mid.length);
+    const told = await db.query<{ n: number }>(`select count(*)::int as n from player_notices where kind = 'rating.recalculated' and game = $1`, [G]);
+    check('recalc: each player whose rating moved is told', run.notices > 0 && told.rows[0].n === run.notices &&
+      run.notices === run.rows.filter((r) => r.before !== r.after).length, `${run.notices} / ${told.rows[0].n}`);
+
+    const again = await recalcAct({ game: G, apply: true, adminId: 'test', rules: RULES_TEAM_0927 });
+    check('recalc: a second run under the same rules validates and changes nothing',
+      again.applied && again.validation.ok && again.changed.boards === 0 && again.changed.participants === 0 && again.notices === 0,
+      JSON.stringify({ v: again.validation, c: again.changed }));
+    // a match played AFTER a recalculation rates on top of it, and the next run still validates
+    await play('1v1', [{ id: 'rc-b' }], [{ id: 'rc-a' }], { red: 300, blue: 290 });
+    const back = await recalcAct({ game: G, apply: true, adminId: 'test' });
+    check('recalc: ...a match after it, then back to today’s rules, validates and applies', back.applied && back.validation.ok && back.rules === RATING_RULES.id,
+      JSON.stringify(back.validation));
+
+    // a rating the log cannot explain: refused, nothing written
+    await db.query(`update elo_ratings set rating = rating + 5 where user_id = 'rc-a' and mode = '1v1' and game = $1 and act = $2`, [G, act]);
+    const tampered = await snap();
+    const refused = await recalcAct({ game: G, apply: true, adminId: 'test', rules: RULES_TEAM_0927 });
+    check('⚠️ recalc: a board the log does not explain is REFUSED, and nothing is written',
+      !refused.applied && !refused.validation.ok && refused.validation.problemCount > 0 && JSON.stringify(await snap()) === JSON.stringify(tampered),
+      JSON.stringify(refused.validation.problems.slice(0, 3)));
+    const recSrc = readFileSync(join(ROOT, 'server/ratingRecalc.ts'), 'utf8');
+    check('recalc: an applied run holds the rating tables locked from before it reads the log',
+      /lock table elo_ratings, elo_history, match_participants in share row exclusive mode[\s\S]*readLog\(query/.test(recSrc));
+
+    // the board minimums (owner, 2026-10-03): live 10 / 7, archived seasons keep 5
+    check('board: 1v1 needs 10 games, 2v2 needs 7', repo.boardMinGames('1v1', G) === 10 && repo.boardMinGames('2v2', G) === 7);
+    check('board: an archived season before the change keeps 5', repo.boardMinGames('1v1', 'decode', 6) === 5 && repo.boardMinGames('2v2', G, 4) === 5);
+    check('board: ...the season it shipped in and later take the new rule', repo.boardMinGames('1v1', 'decode', 7) === 10 && repo.boardMinGames('2v2', G, 5) === 7);
+    const lb = await repo.eloLeaderboard({ mode: '1v1', act, game: G });
+    check('board: nobody with under 10 1v1 games is on the board', lb.length === 0, JSON.stringify(lb));
   }
 
   await db.close();

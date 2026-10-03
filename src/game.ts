@@ -3439,6 +3439,8 @@ export class GameController {
   getEloResults(): EloResultRow[] | null {
     const s = this.session;
     if (!s || !s.ranked || s.eloResults.length === 0) return null;
+    // a ranked roster is 2 or 4 (ROSTER_SIZE); placement is per mode
+    const need = C.placementGamesFor(s.setups.length >= 4 ? '2v2' : '1v1');
     const rows = s.eloResults.map((d) => {
       const su = s.setups.find((x) => x.id === d.robotId);
       return {
@@ -3448,7 +3450,7 @@ export class GameController {
         before: d.before,
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
-        provisional: d.games < C.PLACEMENT_GAMES, // still in placements (games-based)
+        provisional: d.games < need, // still in placements (games-based)
         games: d.games,
       };
     });

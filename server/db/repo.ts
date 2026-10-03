@@ -1,7 +1,7 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
-import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { BALANCE_VERSION, PLACEMENT_GAMES, RANKED_PLACEMENT } from '../../src/config';
 import { awardKey } from '../../src/awards';
 import {
   isBadgeId,
@@ -5036,8 +5036,24 @@ export interface EloBoardRow {
   role?: StaffRole;
 }
 
+/** the placement every season of a game before this one was played under: 5 for both modes */
+const LEGACY_PLACEMENT = 5;
+/** each game's first season on `RANKED_PLACEMENT` — the live season when it shipped (2026-10-03).
+ *  Earlier seasons were ranked and AWARDED at 5 games, and their archived boards stay that way. */
+const PLACEMENT_FROM_SEASON: Readonly<Record<string, number>> = { decode: 7, chain: 5, biobuzz: 5 };
+
+/**
+ * The games a player needs on a board to be RANKED on it: on the leaderboard, with a rank on
+ * their profile, and in the act's podium awards. `season` is given for an ARCHIVED board, which
+ * keeps the rule it was played under; the live board always takes `RANKED_PLACEMENT`.
+ */
+export function boardMinGames(mode: '1v1' | '2v2', game?: Game, season?: number): number {
+  if (season !== undefined && season < (PLACEMENT_FROM_SEASON[g(game)] ?? 0)) return LEGACY_PLACEMENT;
+  return RANKED_PLACEMENT[mode];
+}
+
 /** The public leaderboard for an ACT's board — PLACED players only (games >=
- * PLACEMENT_GAMES). Players still in placements are intentionally omitted;
+ * `boardMinGames`). Players still in placements are intentionally omitted;
  * `eloUserStanding` reports the viewer's own standing separately. */
 export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
@@ -5054,7 +5070,7 @@ export async function eloLeaderboard(opts: {
      -- award computed off this board (rankedActGrants) names the same person the board does
      order by e.rating desc, e.games desc, e.user_id
      limit $3`,
-    [opts.act, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.act, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game), g(opts.game)],
   );
 }
 
@@ -5079,7 +5095,7 @@ export async function eloUserStanding(opts: {
      from elo_ratings e
      left join placed p on p.user_id = e.user_id
      where e.act = $1 and e.mode = $2 and e.game = $5 and e.user_id = $4`,
-    [opts.act, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.act, opts.mode, boardMinGames(opts.mode, opts.game), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -5126,7 +5142,7 @@ export async function eloHistoryLeaderboard(opts: {
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.games >= $4
      order by h.rating desc, h.games desc, h.user_id
      limit $3`,
-    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game, opts.balanceVersion), g(opts.game)],
   );
 }
 
@@ -5148,7 +5164,7 @@ export async function eloHistoryUserStanding(opts: {
      from elo_history h
      left join placed p on p.user_id = h.user_id
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.user_id = $4`,
-    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.balanceVersion, opts.mode, boardMinGames(opts.mode, opts.game, opts.balanceVersion), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -5354,13 +5370,20 @@ export async function getUserStats(
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from ${eloTable}
-         where ${eloKeyCol} = $1 and game = $4 and games >= $3
+         where ${eloKeyCol} = $1 and game = $4
+           and games >= case mode when '2v2' then $5::int else $3::int end
        )
        select e.mode, e.rating, e.games, p.rnk
        from ${eloTable} e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
        where e.${eloKeyCol} = $1 and e.game = $4 and e.user_id = $2`,
-      [eloKeyVal, userId, PLACEMENT_GAMES, gm],
+      [
+        eloKeyVal,
+        userId,
+        boardMinGames('1v1', gm, isLive ? undefined : balanceVersion),
+        gm,
+        boardMinGames('2v2', gm, isLive ? undefined : balanceVersion),
+      ],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
@@ -5532,10 +5555,13 @@ export async function saveMatch(
   /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
   physics?: string,
   query: Tx = q,
+  /** the rule set that rated it (0058, `RULE_SETS`); null for a custom match */
+  ratingRules: string | null = null,
 ): Promise<string> {
   const rows = await query<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game, physics) values ($1, $2, $3, $4, $5, $6) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d'],
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules)
+     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules],
   );
   return rows[0].id;
 }
@@ -5580,16 +5606,20 @@ export async function addMatchParticipants(
     ratingAfter: number | null;
     /** queued as a premade with their alliance partner (0056); null = unknown / custom */
     premade?: boolean | null;
+    /** the absence the rating update was given (0058); null = custom, or before 0058 */
+    away?: number | null;
+    early?: boolean | null;
   }[],
   query: Tx = q,
 ): Promise<void> {
   if (!ps.length) return;
   await query(
     `insert into match_participants
-       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after, premade)
-     select $1, u, a, d, s, w, rb, ra, pm
-       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[], $9::bool[])
-            as t(u, a, d, s, w, rb, ra, pm)
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after, premade, away, early)
+     select $1, u, a, d, s, w, rb, ra, pm, aw, ea
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[], $9::bool[],
+                   $10::real[], $11::bool[])
+            as t(u, a, d, s, w, rb, ra, pm, aw, ea)
      on conflict (match_id, user_id) do nothing`,
     [
       matchId,
@@ -5601,6 +5631,8 @@ export async function addMatchParticipants(
       ps.map((p) => p.ratingBefore),
       ps.map((p) => p.ratingAfter),
       ps.map((p) => p.premade ?? null),
+      ps.map((p) => p.away ?? null),
+      ps.map((p) => p.early ?? null),
     ],
   );
 }

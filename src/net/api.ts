@@ -106,7 +106,7 @@ export interface EloRow extends BadgeFields {
 }
 
 /** the viewing player's own standing on a board (placed or not). `rank` is null
- * while still in placements; derive placement from `games` against PLACEMENT_GAMES. */
+ * while still in placements; derive placement from `games` against the board's `minGames`. */
 export interface EloStanding {
   rank: number | null;
   rating: number;
@@ -216,9 +216,10 @@ export function fetchElo(
   season?: number,
   me?: string | null,
   game?: GameId,
-): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
+): Promise<{ rows: EloRow[]; me: EloStanding | null; minGames?: number }> {
   const s = season != null ? `&season=${season}` : '';
   const m = me ? `&me=${encodeURIComponent(me)}` : '';
+  // `minGames`: the games this board needs (absent from a server older than 2026-10-03)
   return getJson(`/api/elo?mode=${mode}${s}${m}${gameParam(game)}`);
 }
 

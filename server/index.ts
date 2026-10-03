@@ -34,6 +34,7 @@ import { lockRemaining, tierOf,
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
 import { cleanMessage, ratingRefund } from '../src/notices';
 import { noticeCorrection, noticeMisscore, noticeReportTriage, noticeStandingEdit, costOf } from './notices';
+import { recalcAct } from './ratingRecalc';
 import { handleApi } from './api';
 import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
 import {
@@ -1651,6 +1652,49 @@ const httpServer = createServer((req, res) => {
        * announces the window to everyone without locking anyone out yet, which is
        * the difference between scheduled maintenance and an outage.
        */
+      /**
+       * POST /api/admin/rating-recalc?game=biobuzz[&apply=1] — re-rate the game's current act
+       * under today's rules (`server/ratingRecalc.ts`).
+       *
+       * Without `apply` it is a DRY RUN: one read-only snapshot, nothing written, every board
+       * row old → new and whether the log replays exactly as it was rated. With `apply=1` it
+       * does the same under a lock on the rating tables and writes, refusing (409) unless that
+       * replay was exact. ADMIN_SECRET is accepted so the run can be driven from a shell.
+       */
+      if (req.method === 'POST' && u.pathname === '/api/admin/rating-recalc') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, cors);
+          res.end('database disabled');
+          return;
+        }
+        const game = coerceGameId(u.searchParams.get('game'));
+        const apply = u.searchParams.get('apply') === '1';
+        try {
+          const r = await recalcAct({ game, apply, adminId: actor });
+          if (r.applied) {
+            await writeAudit({
+              adminId: actor,
+              action: 'rating.recalc',
+              detail: { game: r.game, act: r.act, rules: r.rules, changed: r.changed, notices: r.notices },
+            });
+          }
+          const refused = apply && !r.applied;
+          res.writeHead(refused ? 409 : 200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(r));
+        } catch (e) {
+          console.error('[recalc] failed:', e);
+          res.writeHead(500, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: String((e as Error)?.message ?? e) }));
+        }
+        return;
+      }
       if (u.pathname === '/api/admin/maintenance') {
         // ADMIN_SECRET is accepted here, like the restart notice, the season roll and the
         // announcement routes. A deploy is scripted end to end (scripts/announce-deploy.sh),

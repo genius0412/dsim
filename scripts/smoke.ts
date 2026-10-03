@@ -381,7 +381,8 @@ import type { PendingMatch } from '../server/matchTypes';
 import {
   computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant,
   marginMultiplier, effectiveRd, isPremade, MOV_MIN, MOV_MAX, DECISIVE_MARGIN, RD_FLOOR_MIN,
-  IDLE_RD_CAP, RD_MAX,
+  IDLE_RD_CAP, RD_MAX, RD_FLOOR_START, RATING_RULES, RULE_SETS, RULES_PLAIN_0925, RULES_TEAM_0927,
+  RULES_TEAM_1003, TEAM_0927_FROM, ruleSetAt,
 } from '../server/ranked';
 import { isReportReason, REPORT_REASONS } from '../src/report';
 import {
@@ -18529,7 +18530,9 @@ const recordDrive: CommandSource = (tick) => {
     d(mixedRd, 'n') < d(mixedRd, 'c') && d(mixedRd, 'c') < 0, `${d(mixedRd, 'n')} / ${d(mixedRd, 'c')}`);
 
   // CALIBRATION + IDLE RD
-  check('rd: a fresh board is held at 250 or more', effectiveRd(100, 0) === 250, `${effectiveRd(100, 0)}`);
+  check('rd: a fresh board is held at RD_FLOOR_START (200) or more', effectiveRd(100, 0) === RD_FLOOR_START && RD_FLOOR_START === 200,
+    `${effectiveRd(100, 0)}`);
+  check('rd: a new board seeded at 350 is RATED at RD_MAX (250)', effectiveRd(350, 0) === 250 && RD_MAX === 250, `${effectiveRd(350, 0)}`);
   check('rd: the floor is gone by game 20', effectiveRd(100, 20) === 100, `${effectiveRd(100, 20)}`);
   check('rd: and never below RD_FLOOR_MIN', effectiveRd(40, 500) === RD_FLOOR_MIN, `${effectiveRd(40, 500)}`);
   check('rd: no games count given ⇒ no floor (every older caller)', effectiveRd(70) === 70);
@@ -18537,7 +18540,7 @@ const recordDrive: CommandSource = (tick) => {
   const idle60 = effectiveRd(70, 100, 60);
   check('rd: two idle months loosen it, under the cap', idle60 > 70 && idle60 < IDLE_RD_CAP, idle60.toFixed(1));
   check('rd: a long absence stops at IDLE_RD_CAP', effectiveRd(70, 100, 5000) === IDLE_RD_CAP);
-  check('rd: idle growth never LOWERS a new account’s 350', effectiveRd(350, 0, 5000) === RD_MAX);
+  check('rd: idle growth never lifts an RD past RD_MAX', effectiveRd(350, 0, 5000) === RD_MAX);
   const early6 = computeGlicko(
     [P('a', 'red', 1200, { rating: { rating: 1200, rd: 90, vol: 0.06 }, games: 6 }), P('b', 'blue')],
     { red: 60, blue: 50 },
@@ -29209,6 +29212,36 @@ const dumperSetup = (): RobotSetup => {
 }
 
 /**
+ * RATING RULE SETS (2026-10-03) — ranked rates under `team-2026-10-03`; the two older sets are
+ * kept so `server/ratingRecalc.ts` can replay a match exactly as it was rated.
+ */
+{
+  const fresh = (userId: string, alliance: 'red' | 'blue', rating = 1000): EloParticipant =>
+    ({ userId, alliance, rating: { rating, rd: 350, vol: 0.06 }, games: 0 });
+  const opp = (userId: string, alliance: 'red' | 'blue', rating: number): EloParticipant =>
+    ({ userId, alliance, rating: { rating, rd: 80, vol: 0.06 }, games: 30 });
+  check('rules: ranked rates under team-2026-10-03', RATING_RULES === RULES_TEAM_1003 && RATING_RULES.id === 'team-2026-10-03');
+  check('rules: every set has its own id', new Set(RULE_SETS.map((r) => r.id)).size === RULE_SETS.length);
+  check('rules: a stamped match replays under its stamp', ruleSetAt('team-2026-10-03', 0) === RULES_TEAM_1003);
+  check('rules: an unstamped match before the 09-27 deploy was plain Glicko-2',
+    ruleSetAt(null, TEAM_0927_FROM - 1) === RULES_PLAIN_0925);
+  check('rules: ...and one after it the 09-27 team rules', ruleSetAt(null, TEAM_0927_FROM) === RULES_TEAM_0927);
+  check('rules: an unknown stamp falls back to the date', ruleSetAt('nope', TEAM_0927_FROM + 1) === RULES_TEAM_0927);
+  // a brand-new player's decisive first win over an established 1226 (BIOBUZZ Act 2's #1, 09-29)
+  const first = (rules = RATING_RULES) =>
+    computeGlicko([fresh('n', 'red'), opp('o', 'blue', 1226)], { red: 583, blue: 383 }, { mode: '1v1', rules }).find((u) => u.userId === 'n')!;
+  const was = first(RULES_TEAM_0927).after - 1000;
+  const now = first().after - 1000;
+  check('rules: the 09-27 rules paid that first win about +412', Math.abs(was - 412) <= 2, `+${was}`);
+  check('rules: today it pays well under that', now > 150 && now < 300, `+${now}`);
+  // the plain set is exactly the pre-09-27 update: each player against the opposing mean, stored RD
+  const plain = computeGlicko([opp('a', 'red', 1200), opp('b', 'blue', 1100)], { red: 550, blue: 300 }, { mode: '1v1', rules: RULES_PLAIN_0925 });
+  const direct = glicko2Update({ rating: 1200, rd: 80, vol: 0.06 }, 1100, 80, 1);
+  check('rules: plain-2026-09-25 is Glicko-2 at the stored RD, no margin',
+    Math.abs(plain.find((u) => u.userId === 'a')!.state.rating - direct.rating) < 1e-9);
+}
+
+/**
  * MODERATOR NOTICES (0057) — the words a player reads after a moderation outcome, and the one
  * rule that moves a rating: the refund after a corrected result.
  */
@@ -29248,6 +29281,7 @@ const dumperSetup = (): RobotSetup => {
     'report.closed': { subject: '@ada', reasons: ['afk'] },
     penalty: { points: 25, scoreAfter: 50, cooldownMin: 1440, ratingCharge: 20, reasons: ['throwing', 'afk'], reporters: 3 },
     'standing.edited': { scoreBefore: 60, scoreAfter: 100, pardoned: 2, lock: 'cleared' },
+    'rating.recalculated': { mode: '1v1', before: 1685, after: 1491 },
   };
   for (const k of NOTICE_KINDS) {
     const v = view(k, samples[k] ?? {});
@@ -29257,6 +29291,10 @@ const dumperSetup = (): RobotSetup => {
     check(`notices: ${k} follows the copy rules`, !/'/.test(text) && !/\bELO\b/i.test(text) && !/!/.test(text), text);
   }
   check('notices: an unknown kind (a newer server) is skipped, not drawn blank', view('something.new', {}) === null);
+  const recalc = view('rating.recalculated', samples['rating.recalculated'], 'biobuzz')!;
+  check('notices: a recalculation says the board, old → new, and the new placement',
+    recalc.lines[0] === 'Your 1v1 rating: 1685 → 1491.' && recalc.meta === 'Ranked 1v1 · BIOBUZZ' &&
+      recalc.lines.some((l) => l.includes('10 1v1 matches')), JSON.stringify(recalc));
   check('notices: a malformed correction is skipped rather than printing undefined', view('match.corrected', { alliance: 'red' }) === null);
 
   // ---- what each one actually says

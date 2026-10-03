@@ -243,14 +243,22 @@ export const SIM_PATCH = 1;
  * counts; a 1–2-tick dropout does not. */
 export const TOGGLE_DEBOUNCE_S = 2.5 / 60;
 
-/** Ranked PLACEMENT: a player is "in placements" until they've completed this
- * many ranked games on a board (counted per mode).
- * Until placed they are HIDDEN from the leaderboard and shown a "?" plus an
- * "N matches until placement" line. This REPLACES the old RD-based provisional
- * flag (`rd > 110`), which stayed set far too long in a young pool: Glicko RD
- * shrinks only slowly when opponents are themselves uncertain, so players kept
- * the "?" for dozens of games. RD is still used INTERNALLY by Glicko-2 to size
- * how hard each result swings the rating — it just no longer drives the UI. */
+/** Ranked PLACEMENT, per mode: a player is "in placements" until they've completed this many
+ * ranked games on a board. Until placed they are HIDDEN from the leaderboard (and from the
+ * act's podium awards, which read it), and shown a "?" plus an "N matches until placement"
+ * line. Games-based, not RD-based: Glicko RD shrinks only slowly when opponents are themselves
+ * uncertain, so an RD test kept the "?" for dozens of games.
+ *
+ * 10 and 7 since 2026-10-03 (owner), up from 5 for both: a player 5-0 at RD ~200 topped the
+ * BIOBUZZ board over people with 30 games. Archived seasons keep 5 (`boardMinGames` in
+ * server/db/repo.ts), so a past board still names the players its awards did. */
+export const RANKED_PLACEMENT: Readonly<Record<'1v1' | '2v2', number>> = { '1v1': 10, '2v2': 7 };
+export const placementGamesFor = (mode: '1v1' | '2v2'): number => RANKED_PLACEMENT[mode];
+
+/** The games a rating needs before the MATCHMAKER trusts it: the 1v1 skill gate and the 2v2
+ * seed's weights (`server/matchmaking.ts`). Was also the player-facing placement until
+ * 2026-10-03 (see `RANKED_PLACEMENT`); the matchmaker kept 5 because it is a statistical
+ * threshold, not a public one. */
 export const PLACEMENT_GAMES = 5;
 
 /** Ratings never print below this. Glicko has no floor of its own, so a long enough losing

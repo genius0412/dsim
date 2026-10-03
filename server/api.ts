@@ -44,6 +44,7 @@ import {
   unblockUser,
   type Activity,
   type PresenceStatus,
+  boardMinGames,
   eloLeaderboard,
   eloHistoryLeaderboard,
   eloHistoryUserStanding,
@@ -1879,7 +1880,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         rows = await eloHistoryLeaderboard({ mode, balanceVersion: season, limit, game });
         me = meId ? await eloHistoryUserStanding({ userId: meId, mode, balanceVersion: season, game }) : null;
       }
-      return json(200, { season, mode, rows, me, game, historical: !isLive }), true;
+      // the games this board needs (`boardMinGames`), so the page says "after 10 ranked matches"
+      // for the board it is showing; an older client ignores the field
+      const minGames = boardMinGames(mode, game, isLive ? undefined : season);
+      return json(200, { season, mode, rows, me, game, historical: !isLive, minGames }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)

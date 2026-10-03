@@ -20,7 +20,10 @@ import { PeriodPicker } from './PeriodPicker';
 import { DRIVETRAIN_LABELS } from './labelData';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
-import { PLACEMENT_GAMES } from '../config';
+import { RANKED_PLACEMENT } from '../config';
+
+/** what a server older than 2026-10-03 places at, for both modes (it sends no `minGames`) */
+const OLD_SERVER_PLACEMENT = 5;
 import {
   CHAIN_MODE_LABELS,
   CHAIN_INTAKE_LABELS,
@@ -190,7 +193,7 @@ function ConfigSummary({ cfg, game }: { cfg: RecordConfig; game?: GameId }) {
  * once PLACED, or a "matches until placement" progress line while still in
  * placements. Only placed players appear in the table above, so this is the one
  * place a not-yet-placed (or off-page) player sees where they stand. */
-function MyStanding({ me }: { me: EloStanding }) {
+function MyStanding({ me, need }: { me: EloStanding; need: number }) {
   const placed = me.rank != null;
   if (placed) {
     return (
@@ -202,7 +205,7 @@ function MyStanding({ me }: { me: EloStanding }) {
       </div>
     );
   }
-  const remaining = Math.max(0, PLACEMENT_GAMES - me.games);
+  const remaining = Math.max(0, need - me.games);
   return (
     <div className="lb-standing placing">
       <span className="lb-standing-badge">?</span>
@@ -211,10 +214,10 @@ function MyStanding({ me }: { me: EloStanding }) {
           <strong>{remaining}</strong> {remaining === 1 ? 'match' : 'matches'} until placement
         </span>
         <span className="lb-standing-sub">
-          {me.games}/{PLACEMENT_GAMES} placement matches played
+          {me.games}/{need} placement matches played
         </span>
         <span className="lb-standing-bar" aria-hidden>
-          <span style={{ width: `${Math.min(100, (me.games / PLACEMENT_GAMES) * 100)}%` }} />
+          <span style={{ width: `${Math.min(100, (me.games / need) * 100)}%` }} />
         </span>
       </div>
     </div>
@@ -262,6 +265,8 @@ export function Leaderboard({
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
+  // the games the shown board needs, as the server says (an archived season keeps its own)
+  const [minGames, setMinGames] = useState<number>(RANKED_PLACEMENT[eloMode]);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   /** bumped by Try again: re-runs the fetch effect */
   const [retry, setRetry] = useState(0);
@@ -344,10 +349,11 @@ export function Leaderboard({
           }))
         : fetchElo(eloMode, s, myUserId, game);
     req
-      .then(({ rows, me }) => {
+      .then((r) => {
         if (!alive) return;
-        setRows(rows);
-        setMe(me);
+        setRows(r.rows);
+        setMe(r.me);
+        setMinGames('minGames' in r && typeof r.minGames === 'number' ? r.minGames : OLD_SERVER_PLACEMENT);
         setStatus('ok');
       })
       .catch((e: unknown) => {
@@ -432,7 +438,7 @@ export function Leaderboard({
         )}
 
         {/* not while refetching: the standing sits outside the faded rows and would name the old mode */}
-        {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
+        {!isRecords && status === 'ok' && me && <MyStanding me={me} need={minGames} />}
 
         {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
         {status === 'error' &&
@@ -460,7 +466,7 @@ export function Leaderboard({
             <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
             {isRecords
               ? 'Be the first to set a score on this board.'
-              : `Players appear here after ${PLACEMENT_GAMES} ranked matches.`}
+              : `Players appear here after ${minGames} ranked matches.`}
           </div>
         )}
         {(status === 'ok' || refetching) && rows.length > 0 && (
