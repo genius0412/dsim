@@ -1,6 +1,6 @@
 # HANDOFF — 2026-10-03b (2v2 is balanced on the 2v2 rating only)
 
-**State: committed; see the commit for where it was pushed.** `test:mm` (234), `npm test`, `dbtest`, `server:check`, `build`, `docaudit` pass. **Server change, no migration**: production needs a Fly deploy to pick it up.
+**State: on `main` (15798a41) and `alpha`; DEPLOYED 2026-10-03 to `dsim-alpha` and to PRODUCTION from `main` (2-minute announcement, all 8 machines on the new image).** `test:mm` (234), `npm test`, `dbtest`, `server:check`, `build`, `docaudit` pass. Server change, no migration.
 
 - **Owner:** "I think it is using 1v1 ranked ELO to balance out people in 2v2 or something. It is still weird."
 - **Confirmed** on production data (read-only): 59 of 216 player slots in Act 2's 2v2s were balanced mostly on a 1v1 rating, not the 2v2 rating on the card. Zeyad Gomaa lost four straight 2v2s (card 1000 → 763) and was still balanced as ~1000-1150 off a 1190 1v1. Over the 54 decided 2v2s the card predicted results better than the blend (log-loss 0.5659 vs 0.5929).
