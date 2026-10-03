@@ -157,6 +157,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     (`groundRoll3d` damps velocities, `derive.ts` zeroes a resting element's), and rewriting it
     from the bodies replayed every rollback without the room's damping: 264 of 266 replays off the
     room's poses, 5 captures wrong on one seed. Now 0.
+    ⚠️ **"0" ABOVE IS FOR A CLIENT ENGINE WITH THE ROOM'S HISTORY, AND A REAL ONE NEVER HAS IT.** The
+    checks build both engines from tick 0. A real client builds its engine from a snapshot, so its
+    contact state (warm starts, pair order — not on the wire) is its own for the whole match, and
+    the save it restores is its own too: with the client's engine built from JSON at tick 30, 310
+    of 310 rewinds ended off the room's poses. Mostly by thousandths; at walls and impacts by up to
+    2.5 in / 15° — the online "invisible bump" (2026-10-02, see `docs/area/biobuzz.md`, the wall
+    square-up). Giving the robot a fresh body on a divergent rewind made it worse (cold contacts
+    differ from the room's warm ones more than stale ones do).
   Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
   11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
   of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against

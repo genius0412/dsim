@@ -53,6 +53,12 @@ session and this is not needed by most of them. The `governs:` line above is rea
      robot to exist), which is how a robot held against a wall by an opponent feels that
      opponent's load in the STATIC pass. Rapier resolves the contact but does not tell the
      bespoke wall aligner who is leaning on whom.
+- **A PERSISTENT SOLVER TAKES THE WALL SQUARE-UP AS SPIN, NOT AS A WRITTEN HEADING.**
+  `squareUpTurnsWalls` returns the turn `squareUpRobotsWalls` would write, without writing it, and
+  `recordRobotContacts` is the record half. BIOBUZZ 3D uses the pair (`SIM_PATCH` 8; 3 on `alpha`): its Rapier
+  world persists, and a heading written after the solve came back as a rotation teleport the solver
+  fought every tick — the online wall bump, `docs/area/biobuzz.md`. The 2D solves rebuild their
+  world each tick and keep the post-solve write; DECODE and Chain Reaction step byte-identically.
 - **THE PAIR PASS ACCUMULATES; IT DOES NOT WRITE** (`ContactAcc`). It used to rotate both chassis
   before the walls / goal faces / classifier / gate arm were asked anything, so those surfaces
   worked out their geometry against a robot an opponent had already turned — the exact

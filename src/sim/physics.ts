@@ -922,6 +922,52 @@ export function squareUpRobotsWalls(
   applyAcc(world, acc);
 }
 
+/**
+ * WHAT `squareUpRobotsWalls` WOULD TURN EACH ROBOT BY, WITHOUT TURNING IT — the change to
+ * `heading` and to `angVel`, for robots it would change. Nothing is written: not the robots, not
+ * `world.rrContacts`.
+ *
+ * For a pipeline whose solver must make the turn itself. BIOBUZZ 3D (`sim3d/step3dImpl.ts`) runs a
+ * PERSISTENT Rapier world, and a heading written after its solve reaches the body next tick as a
+ * rotation teleport of up to `CONTACT_ALIGN_RATE_MAX` — a corner moved ~0.2 in into or off the wall,
+ * which the solver pushes back, and the two alternate every tick while a robot squares up. Its
+ * outcome then hangs on contact state the snapshot does not carry, so the client's prediction and
+ * the room part ways at walls: the "invisible bump" (2026-10-02). There the turn is handed to the
+ * solve as spin instead. The 2D solves rebuild their world every tick and keep the post-solve write.
+ */
+export function squareUpTurnsWalls(
+  world: World,
+  preVels: Map<number, Vec2>,
+  halfX: number,
+  halfY: number,
+): Map<number, { dHeading: number; dAngVel: number }> {
+  const acc = newAcc();
+  // the pair pass also RECORDS contacts; this is not the tick's record, so it writes to a copy
+  squareUpPairs({ ...world, rrContacts: [] }, preVels, acc);
+  const out = new Map<number, { dHeading: number; dAngVel: number }>();
+  for (const r of world.robots) {
+    if (r.autoPathActive) continue;
+    squareUpWalls(r, preVels.get(r.id), halfX, halfY, accList(acc, r.id), acc.ext.get(r.id));
+    const deltas = acc.deltas.get(r.id);
+    if (!deltas || deltas.length === 0) continue;
+    // `sumTurn` writes `heading` and `angVel` and nothing else, so a shallow copy takes the turn
+    const t = { ...r };
+    sumTurn(t, deltas);
+    const dHeading = t.heading - r.heading;
+    const dAngVel = t.angVel - r.angVel;
+    if (dHeading !== 0 || dAngVel !== 0) out.set(r.id, { dHeading, dAngVel });
+  }
+  return out;
+}
+
+/** the RECORD half of `squareUpRobotsWalls` — `rrContacts` and the end-of-phase speed guard, no
+ * turn — for a pipeline that took the turn inside its solve (`squareUpTurnsWalls`) */
+export function recordRobotContacts(world: World, preVels: Map<number, Vec2>): void {
+  const acc = newAcc();
+  squareUpPairs(world, preVels, acc);
+  applyAcc(world, { deltas: new Map(), ext: acc.ext });
+}
+
 // ------------------------------------------------------------ ball steps ----
 
 /** rolling friction + rest-snap for a ground ball, velocity ONLY. Rapier owns

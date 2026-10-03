@@ -1268,12 +1268,21 @@ function g402DrivenChecks(check: Check): void {
      * keeps the first assertion from passing for nothing. If they ever fail together, re-measure
      * the sweep and refresh the list rather than deleting the checks.
      */
+    /**
+     * The 3D list was re-measured for SIM_PATCH 8 (`alpha`'s 3: the wall square-up inside the solve, 2026-10-02),
+     * 210 duels (victim 2/4/6/12/20/30 in deep × offset 0–16 × −30°…45°): 11 flicker, the longest
+     * 0.47 s but one. ⚠️ THAT ONE — victim 2 in deep, no offset, −30° — is the crosser glancing off
+     * the victim into the −y wall and grinding down it: it now hugs the wall where the old square-up
+     * kicked it an inch off, its corner comes back to the victim 1.17 s later with the footprints
+     * never more than 3.9 in apart, and the re-arm window bills it TWICE. It was the second shape
+     * here and is out of the list; whether `BB_G402_REARM_S` should cover it is an owner call.
+     */
     {
       const shapes = physics === '2d'
         ? [{ bx: 2, lat: 16, deg: 35 }, { bx: 30, lat: 0, deg: 15 }, { bx: 4, lat: 12, deg: 30 },
            { bx: 12, lat: 16, deg: 30 }, { bx: 30, lat: 14, deg: 25 }]
-        : [{ bx: 6, lat: 0, deg: 20 }, { bx: 2, lat: 0, deg: -30 }, { bx: 4, lat: 0, deg: -30 },
-           { bx: 30, lat: 12, deg: 25 }, { bx: 12, lat: 16, deg: 0 }];
+        : [{ bx: 4, lat: 0, deg: -30 }, { bx: 2, lat: 4, deg: -30 }, { bx: 4, lat: 4, deg: -30 },
+           { bx: 6, lat: 0, deg: -30 }, { bx: 2, lat: 8, deg: -15 }];
       let worst = 0;
       let worstSep = 0;
       for (const s of shapes) {

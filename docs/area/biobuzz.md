@@ -499,6 +499,31 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   they stage clear of the frame now. Smoke: "hive frame:" ×2 in `sim3d.ts`.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
+- ⚠️ **THE WALL SQUARE-UP IS A TURN THE 3D SOLVE MAKES, NOT A HEADING WRITTEN AFTER IT**
+  (`SIM_PATCH` 8, `alpha`'s 3; `step3dImpl.ts` stage 6b; owner, 2026-10-02: "sometimes in online games, when I
+  drive against the wall, there seems to be an invisible bump"). Written after readback, the turn
+  reached the body next tick as a rotation teleport the solver pushed back, and a robot squaring up
+  alternated every tick (yaw rate 0 / −0.75 / 0 / −0.82 rad/s at 16°). Now `squareUpTurnsWalls`
+  works the same turn out before the step, it rides one solve as extra yaw rate, and stage 8a takes
+  that rate off the read-back `angVel`; stage 8b only records (`recordRobotContacts`). The Balanced
+  and Light predictors do the same. A world stamped before the rule (an older replay) runs the old
+  order; `main` stamped 5 before it arrived, hence 8 there.
+  - **Why it showed up online only:** online BIOBUZZ is always 3D, and the FULL client's engine is
+    built from a snapshot, so it never holds the room's contact state (warm starts, pair order).
+    Copying the bodies' exact poses into a client engine did not stop it parting from the room on
+    the first tick; restoring Rapier's whole world did. Near a wall that difference was amplified
+    into reconcile snaps. DECODE and Chain Reaction online measured clean (2D, stateless solve).
+  - **Measured.** Through a real `Room` at 66 ms with the FULL client restated (3 × 120 s of a
+    wall-heavy driver): wall corrections p99 0.12–0.25 → 0.02–0.04 in, worst heading snap
+    1.2–2.8° → 0.6–1.0°, corrections over 0.25 in 7 → 1. Offline, `scripts/zz-bb3d-wall-rollback.ts`
+    (client engine built from JSON, 12 seeds × 60 s; `PATCH=2` for the old rule on `alpha`, `PATCH=5` on `main`): over 0.1 in or
+    0.5° 101 → 58, over 0.25 in or 1.5° 48 → 32, worst 2.46 → 0.87 in. **NOT ZERO:** a 3D wall
+    IMPACT turns a 5e-5 rad heading difference into 0.65° within a second on two fresh engines
+    (2D: 0.014°), under either rule, so a few degrees after a fast angled hit remain.
+  - **G402 side effect:** in the 210-duel chatter sweep one shape (victim 2 in deep, no offset,
+    −30°) now grinds down the −y wall instead of being kicked off it, has a 1.17 s gap with the
+    footprints within 3.9 in, and is billed TWICE under `BB_G402_REARM_S` (1.0 s). Every other gap
+    is ≤ 0.47 s. Widening the window is an owner call; `rules.ts` documents it.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
   `npm run field-cad` (cache OUTSIDE the repo at `%LOCALAPPDATA%/dsim/field-cad/`: the sha-pinned
   STEP v26-27.2 zip, a CadQuery venv) writes `public/models/biobuzz/{field.glb, field-low.glb,

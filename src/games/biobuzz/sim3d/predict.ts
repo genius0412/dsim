@@ -4,7 +4,7 @@ import { updateRobot } from '../../../sim/robot';
 import { robotsEnabled } from '../../../sim/match';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
+import { robotExtents, squareUpTurnsWalls } from '../../../sim/physics';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
@@ -323,8 +323,9 @@ function separateLight(a: RobotState, b: RobotState): void {
  * real body (`shoveMass`, `chassisInertia`). So on open floor Light is not an approximation of
  * the 3D solve — it IS the 3D solve, with the parts that only matter in contact left out.
  *
- * `squareUpRobotsWalls` runs after, exactly as `step3d` stage 8b runs it, so a robot driving
- * along a wall gets the same contact torque the real pipeline gives it.
+ * The wall square-up is worked out on the pose the tick starts from and added after the
+ * integration, which is what `step3d` stage 6b's extra yaw rate comes to with no contacts in the
+ * way, so a robot driving along a wall gets the same contact torque the real pipeline gives it.
  */
 export function createLightPredictor(world: World, localRobotId: number): Predictor {
   let local: RobotState | null = null;
@@ -359,9 +360,15 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
       if (!local || !scratch) return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
       for (const r of remotes.values()) preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
+      const turns = squareUpTurnsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
       integrateLight(scratch, local, cmd);
       for (const r of remotes.values()) integrateLight(scratch, r, otherCmds?.get(r.id) ?? ZERO_CMD);
-      squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
+      for (const r of [local, ...remotes.values()]) {
+        const t = turns.get(r.id);
+        if (!t) continue;
+        r.heading += t.dHeading;
+        r.angVel += t.dAngVel;
+      }
       for (const r of remotes.values()) separateLight(local, r);
       clampToField(local);
       for (const r of remotes.values()) {
@@ -623,6 +630,9 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         if (rw.fx !== 0 || rw.fy !== 0) body.addForce({ x: rw.fx, y: rw.fy, z: 0 }, true);
         if (rw.tau !== 0) body.addTorque({ x: 0, y: 0, z: rw.tau }, true);
       }
+      // the wall square-up as one solve's extra yaw rate, worked out on the pose this tick starts
+      // from — `step3d` stage 6b, same reason
+      const turns = squareUpTurnsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
       const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
       const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
       const inertia = chassisInertia(m, local.spec);
@@ -637,6 +647,14 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       localBody.resetTorques(true);
       if (wr.fx !== 0 || wr.fy !== 0) localBody.addForce({ x: wr.fx, y: wr.fy, z: 0 }, true);
       if (wr.tau !== 0) localBody.addTorque({ x: 0, y: 0, z: wr.tau }, true);
+      const squareRate = new Map<number, number>();
+      for (const [id, t] of turns) {
+        const body = id === local.id ? localBody : others.get(id);
+        if (!body) continue;
+        const rate = t.dHeading / SIM_DT;
+        body.setAngvel({ x: 0, y: 0, z: body.angvel().z + t.dAngVel + rate }, true);
+        if (rate !== 0) squareRate.set(id, rate);
+      }
       world3d.step();
       const t = localBody.translation();
       const v = localBody.linvel();
@@ -665,9 +683,12 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         r.vz = round4(rv.z);
         r.angVel = round4(body.angvel().z);
       }
-      // the SAME stage 8b the real pipeline runs, for the same reason: a wall-flush robot's
-      // contact torque comes from this pass and not from the solver.
-      squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
+      // the SAME stage 8a the real pipeline runs: the square-up's rate turned this tick's
+      // chassis and is not spin. (`seatRobot` below puts the result on the bodies.)
+      for (const r of [local, ...remotes.values()]) {
+        const rate = squareRate.get(r.id);
+        if (rate !== undefined) r.angVel = round4(r.angVel - rate);
+      }
       seatRobot(localBody, local, localHeight);
       for (const r of remotes.values()) {
         const body = others.get(r.id);

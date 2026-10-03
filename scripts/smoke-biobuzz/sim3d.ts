@@ -960,6 +960,56 @@ export function sim3dChecks(check: Check): void {
     }
 
     /**
+     * ⚠️ **THE WALL SQUARE-UP IS A TURN THE SOLVE MAKES** (`SIM_PATCH` 8 here, `alpha`'s 3;
+     * `step3dImpl.ts` stage 6b; owner, 2026-10-02: "an invisible bump" against the wall, online).
+     * Written after the solve, the square-up's heading reached the body next tick as a rotation
+     * teleport the solver pushed back, and a robot squaring up against a wall alternated tick by
+     * tick — MEASURED at 16° in: yaw rate 0 / −0.75 / 0 / −0.82 rad/s. That limit cycle is what
+     * turned a client's small engine-state difference into a reconcile snap. The ZIGZAG is the sum,
+     * over every tick where the change in yaw rate reverses, of the smaller of the two changes,
+     * taken until the chassis is within 0.5° of flush; the old rule is run beside it (a world
+     * stamped 5, i.e. a replay recorded on this branch before the rule) so the check is not
+     * vacuous, and the new one must reach flush no later than the old one did.
+     */
+    {
+      const square = (patch?: number): { zig: number; flushAt: number } => {
+        const w = createBiobuzzWorld('match', 3, [setup(0, 'blue')], undefined, '3d');
+        if (patch !== undefined) w.simPatch = patch;
+        w.match.phase = 'teleop';
+        w.match.phaseTimeLeft = 1000;
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.heading = Math.PI / 2 + (16 * Math.PI) / 180;
+        r.pos.x = 0;
+        r.pos.y = BB_HALF_Y - robotExtents(r).front - 3;
+        const c = new Map([[0, cmd({ driveY: 0.8, driveX: 0.3 })]]);
+        const ws: number[] = [];
+        let flushAt = -1;
+        for (let t = 1; t <= 120; t++) {
+          step3d(w, 1 / 60, c);
+          const off = Math.abs(wrapAngle(r.heading - Math.PI / 2));
+          if (off > (0.5 * Math.PI) / 180) ws.push(r.angVel);
+          if (flushAt < 0 && off < (0.1 * Math.PI) / 180) flushAt = t;
+        }
+        disposeEngineFor(w);
+        let zig = 0;
+        for (let i = 2; i < ws.length; i++) {
+          const a = ws[i - 1] - ws[i - 2];
+          const b = ws[i] - ws[i - 1];
+          if (a * b < 0) zig += Math.min(Math.abs(a), Math.abs(b));
+        }
+        return { zig, flushAt };
+      };
+      const before = square(5);
+      const now = square();
+      check('wall square-up 3d: under the OLD rule (a replay stamped 5) the yaw rate zigzags while squaring up (non-vacuous)',
+        before.zig > 1, `zigzag ${before.zig.toFixed(3)} rad/s`);
+      check('wall square-up 3d: taken inside the solve it does not, and the chassis still reaches flush as soon as before',
+        now.zig < 0.5 && now.flushAt > 0 && now.flushAt <= before.flushAt + 1,
+        `zigzag ${now.zig.toFixed(3)} rad/s (was ${before.zig.toFixed(3)}), flush at tick ${now.flushAt} (was ${before.flushAt})`);
+    }
+
+    /**
      * ⚠️ **THE OWNER'S CORNER CATCH** ("I can get stuck on a corner"). Driving at full stick
      * past the LEFT FLOWER's support column with the flank 0.35 in past the column's field-side
      * face, the robot used to lose the corner and yaw about it: **0.32 of a free run** and 107

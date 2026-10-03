@@ -633,6 +633,20 @@ export function robotBodyOf(engine: Engine3d, id: number): InstanceType<Rapier3d
 }
 
 /**
+ * Put a robot's JSON `angVel` back on its body AND its readback record, after something outside
+ * the solve changed it on purpose — the wall square-up's one-tick spin (`step3dImpl.ts`, stage
+ * 8a). Writing the record too is what keeps the next `syncRobot` from reading the change as an
+ * edit and re-seating the whole pose from the rounded JSON.
+ */
+export function setRobotSpin(engine: Engine3d, r: RobotState): void {
+  const body = engine.robots.get(r.id);
+  if (!body) return;
+  body.setAngvel({ x: 0, y: 0, z: r.angVel }, true);
+  const last = engine.lastRobot.get(r.id);
+  if (last) last.angVel = r.angVel;
+}
+
+/**
  * Does this `BallState` want a DYNAMIC sphere body? Everything except `held` and `stock`.
  *
  * WARNING -- **A FLOWER-PARKED ELEMENT IS DYNAMIC SINCE DAY 2**, and that is the whole
