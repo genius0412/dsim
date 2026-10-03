@@ -5511,6 +5511,10 @@ async function main(): Promise<void> {
     );
     check('recalc: ...and each result with the absence the update was given', away.rows[0]?.away === 0 && away.rows[0]?.early === false, JSON.stringify(away.rows[0]));
 
+    // a board with games and nothing in the log behind it (seeded by hand, as alpha's harness does)
+    await repo.ensureProfile('rc-orphan', 'Orphan');
+    await repo.upsertRating('rc-orphan', '2v2', act, 1235, 250, 0.06, G);
+    await repo.upsertEloHistory('rc-orphan', '2v2', 950, 1235, 250, 0.06, 1, G);
     const snap = async () =>
       (await db.query<{ user_id: string; mode: string; rating: number; games: number; rd: number }>(
         `select user_id, mode, rating, games, rd from elo_ratings where game = $1 and act = $2 order by mode, user_id`, [G, act],
@@ -5522,15 +5526,19 @@ async function main(): Promise<void> {
       JSON.stringify(dry.validation));
     check('recalc: ...inferring the un-stored void and the forgiven loss', dry.validation.voidedInferred === 1 && dry.validation.absenceAdjusted >= 1,
       JSON.stringify(dry.validation));
+    check('recalc: a board nothing in the log touches is kept, not refused', dry.validation.ok && dry.validation.kept.join() === '2v2|rc-orphan',
+      JSON.stringify(dry.validation.kept));
     check('recalc: a dry run changes nothing', JSON.stringify(await snap()) === JSON.stringify(before) && !dry.applied);
-    check('recalc: ...but says what would', dry.changed.boards > 0 && dry.rows.length === before.length, JSON.stringify(dry.changed));
+    check('recalc: ...but says what would, for every board but the kept one',
+      dry.changed.boards > 0 && dry.rows.length === before.length - dry.validation.kept.length, JSON.stringify(dry.changed));
 
     const run = await recalcAct({ game: G, apply: true, adminId: 'test', rules: RULES_TEAM_0927 });
     const after = await snap();
     check('recalc: an applied run writes the boards it planned', run.applied &&
-      after.every((r) => run.rows.find((x) => x.userId === r.user_id && x.mode === r.mode)?.after === Number(r.rating)),
+      after.filter((r) => r.user_id !== 'rc-orphan').every((r) => run.rows.find((x) => x.userId === r.user_id && x.mode === r.mode)?.after === Number(r.rating)),
       JSON.stringify({ rows: run.rows, after }));
     check('recalc: ...games unchanged', after.every((r, i) => r.games === before[i].games));
+    check('recalc: ...and the kept board exactly as it was', after.find((r) => r.user_id === 'rc-orphan')?.rating === 1235);
     const mp = await db.query<{ user_id: string; rating_before: number; rating_after: number; match_id: string }>(
       `select match_id, user_id, rating_before, rating_after from match_participants where match_id = any($1::uuid[])`, [mid],
     );

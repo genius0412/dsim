@@ -307,6 +307,8 @@ export interface Validation {
   absenceAdjusted: number;
   /** pre-0058 2v2s found to have been voided for a partner absent from the start */
   voidedInferred: number;
+  /** stored boards no event in the log touches, left exactly as they are (`mode|userId`) */
+  kept: string[];
   /** how many, and the first 50 */
   problemCount: number;
   problems: string[];
@@ -387,18 +389,25 @@ export function replayAsRated(log: RecalcLog): { validation: Validation; adjust:
       problems.push(`${new Date(e.at).toISOString()} ${e.m.mode} ${p.userId}: stored ${p.before}->${p.after}, replay ${p.before}->${computed} (${rules.id})`);
     }
   }
-  // the boards it ends on must be the boards that are stored, row for row
+  // the boards it ends on must be the boards that are stored, row for row — except a board NO
+  // event in the log touches. Nothing here can re-derive it, and since it met nobody in the log,
+  // re-rating everyone else cannot move it either: it is kept as stored, and counted.
+  const kept: string[] = [];
   for (const [k, s] of log.boards) {
     const r = out.boards.get(k);
-    // a lock seed nothing was ever written over (1000 / 350 / 0 games) has nothing to replay
-    if (!r && s.games === 0 && s.rating === 1000 && Math.abs(s.rd - 350) < 0.5) continue;
+    if (!r) {
+      kept.push(k);
+      continue;
+    }
     if (!r || r.rating !== s.rating || r.games !== s.games || Math.abs(r.rd - s.rd) > 0.5) {
       problems.push(`board ${k}: stored ${s.rating}/${s.games}g/rd ${s.rd.toFixed(1)}, replay ${r ? `${r.rating}/${r.games}g/rd ${r.rd.toFixed(1)}` : 'none'}`);
     }
   }
   for (const k of out.boards.keys()) if (!log.boards.has(k)) problems.push(`board ${k}: replayed but not stored`);
   // ...and so must the season snapshots
+  const keptUsers = new Set(kept);
   for (const [k, s] of log.history) {
+    if (keptUsers.has(`${s.mode}|${s.userId}`) && !out.history.has(k)) continue;
     const r = out.history.get(k);
     if (!r || r.rating !== s.rating || r.games !== s.games) {
       problems.push(`season snapshot ${k}: stored ${s.rating}/${s.games}g, replay ${r ? `${r.rating}/${r.games}g` : 'none'}`);
@@ -411,6 +420,7 @@ export function replayAsRated(log: RecalcLog): { validation: Validation; adjust:
       closedChallenges: adjust.closed.size,
       absenceAdjusted: absence,
       voidedInferred: voids,
+      kept,
       problemCount: problems.length,
       problems: problems.slice(0, 50),
     },
