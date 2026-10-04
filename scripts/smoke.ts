@@ -31228,6 +31228,26 @@ function impPlayCheck(g: GameId): void {
   const dc = em.buildFromCad('decode', { ...DEFAULT_SPEC, intake: 'sloped' }, { intake: null, launcher: { at: [-1, 0, 10], turret: false } });
   check('cad build: DECODE with no roller is loaded by hand, and a flywheel without a ring is a fixed launcher', !!dc && dc.spec.intake === 'none' && decodeFixedLauncher(dc.spec), J(dc?.set));
   check('cad build: Chain Reaction is left alone', em.buildFromCad('chain', DEFAULT_SPEC, cad) === null);
+  // a Gecko wheel modelled fin by fin: a round core to 1.4 in on its pin, fin tips as 0.09 in slivers
+  // standing 0.03 in past it, and a frame screw beside it at 1.9 in
+  {
+    const fins = Array.from({ length: 12 }, (_, k) => {
+      const a = (2 * Math.PI * k) / 12;
+      const x = 7.5 + 1.385 * Math.cos(a);
+      const y = 6 + 1.385 * Math.sin(a);
+      return synth.box(`fin${k}`, G, x - 0.045, x + 0.045, y - 0.045, y + 0.045, 1.4, 1.6);
+    });
+    const prisms = [
+      synth.cylZ('core', G, 7.5, 6, 1.4, 1.0, 2.0, 32),
+      synth.cylZ('pin', G, 7.5, 6, 0.1, 0.6, 2.4, 8),
+      ...fins,
+      synth.box('frame_screw', G, 9.35, 9.45, 5.95, 6.05, 1.2, 1.8),
+    ];
+    const parts = mk(prisms);
+    const got = motion.coaxialBodies(parts, 0, 'roller').map((b) => prisms[b].name);
+    check('cad build: a roller takes the fin slivers standing just past its core, and not a screw beside it',
+      fins.every((f) => got.includes(f.name)) && got.includes('pin') && !got.includes('frame_screw'), J(got));
+  }
   check('cad build: the note lists what was set', /^Set from the model: side rollers at the front, a fixed shooter and no box tube\./.test((await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set)), (await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set));
 }
 

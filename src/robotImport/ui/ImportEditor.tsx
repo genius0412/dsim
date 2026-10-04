@@ -11,7 +11,7 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { defaultImportSetup, isFullDetail, orientKey, transformParts } from '../geometry';
+import { defaultImportSetup, isFullDetail, orientKey, transformParts, type MeshPart } from '../geometry';
 import { coaxialBodies, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
@@ -733,9 +733,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- moving parts ----------------------------------------------------------------------------
   const motion = doc?.setup.motion;
+  /** what the finders and a click read: EVERY triangle at Full detail (the mesh the match turns), not
+   *  the simplified copy measured for the footprint, where a gearbox face can sit 7 mm off and a
+   *  Gecko wheel's fins lose their tips (goBILDA's BIOBUZZ mecanum bot, 2026-10-04) */
+  const detectParts = (): MeshPart[] => (normalised ? (normalised.shownParts ?? normalised.modelParts) : []);
   const findWheels = (): MotionGroup[] =>
     normalised && baseWheels && doc
-      ? findWheelGroups(normalised.modelParts, baseWheels, doc.setup.drive.drivetrain, wheelDiameterMm(doc.setup.drive.wheel) / 25.4)
+      ? findWheelGroups(detectParts(), baseWheels, doc.setup.drive.drivetrain, wheelDiameterMm(doc.setup.drive.wheel) / 25.4)
       : [];
   /**
    * EVERY KIND OF MOVING PART the model shows, among the bodies `have` does not hold: the drive wheels
@@ -745,7 +749,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
    */
   const findAll = (have: readonly MotionGroup[]): MotionGroup[] => {
     if (!normalised || !doc) return [];
-    const parts = normalised.modelParts;
+    const parts = detectParts();
     const out: MotionGroup[] = [];
     const taken = (): Set<number> => new Set([...have, ...out].flatMap((g) => g.bodies));
     // a wheel per corner no row has yet (a player's own wheel row keeps its corner); a 6WD's middle
@@ -793,7 +797,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // default in for that build, and this runs again to find the moving parts from them
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const r = buildFromCad(game, doc.spec, readBuild(normalised.modelParts, wheels));
+      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels));
       update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: null } : {}) }));
       return;
     }
@@ -823,7 +827,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       setActiveMotion(null);
       return;
     }
-    const parts = normalised.modelParts;
+    const parts = detectParts();
     const take = shift ? [body] : isSpin(g.role) ? coaxialBodies(parts, body, g.role) : mountedBodies(parts, body);
     const leaving = g.bodies.includes(body);
     const set = new Set(take);

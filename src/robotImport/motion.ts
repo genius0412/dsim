@@ -495,10 +495,13 @@ function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: number[];
       if (Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]) >= FASTENER_IN) continue;
       const bd = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
       const bal = dot(bd, axis);
-      if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top) inner.add(b);
+      if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top + Math.max(0.05, 0.03 * top)) inner.add(b);
     }
+    // the radius with a little slack: a Gecko wheel modelled fin by fin has its fin tips as slivers
+    // 0.09 in long that stand ~0.03 in past the round part they belong to, and at 0.02 a side roller
+    // kept 20 of its 140 bodies (goBILDA's BIOBUZZ mecanum bot, 2026-10-04)
     for (const [b, f] of axleFits(parts, st, inner, pivot, axis)) {
-      if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + 0.02)) res.add(b);
+      if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + Math.max(0.05, 0.03 * r.rMax))) res.add(b);
     }
   }
   return { bodies: [...res].sort((a, b) => a - b), motor: false };

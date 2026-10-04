@@ -180,7 +180,8 @@ const intakes = cfg.mech?.intakes ?? [];
 if (intakes.length) found.push(...time('rollers', () => motion.findRollerGroups(modelParts, intakes, taken())));
 const shooter = cfg.mech?.shooter;
 if (shooter) {
-  const at: V3 = [shooter.x, shooter.y, shooter.z];
+  // as the editor: the flywheel `readBuild` saw, else the launcher's placed point
+  const at: V3 = build.launcher ? build.launcher.at : [shooter.x, shooter.y, shooter.z];
   if (cfg.turret) {
     const tg = time('turret', () => motion.findTurretGroup(modelParts, at, taken()));
     if (tg) found.push(tg);

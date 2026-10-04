@@ -458,6 +458,16 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   re-read keep the build. Measured: goBILDA BIOBUZZ 6WD and mecanum side rollers at the front and a
   fixed shooter; goBILDA DECODE and REV DUO no intake and a fixed launcher; AndyMark Robits ×3 a
   front sweeper and a fixed shooter.
+- ⚠️ **THE FINDERS AND A CLICK READ EVERY TRIANGLE** (`detectParts`: `shownParts` at Full detail), not the
+  ~250k copy measured for the footprint: the copy keeps every body's id but not its shape, and on
+  goBILDA's BIOBUZZ mecanum bot 296 bodies sat more than 1 mm off (a gearbox face 7 mm, a motor base
+  9.5 mm). Same ids either way, so the stored mesh turns exactly the bodies the editor found. A small
+  body inside a turning part's cylinder joins it with radial slack `max(0.05, 0.03 R)`: a Gecko wheel
+  modelled fin by fin has its fin tips as 0.09 in slivers standing ~0.03 in past its hub, and at 0.02
+  a side roller kept 20 of its 284 bodies (the hub turned, the fins stood still). Measured: main roller
+  123 → 879 bodies (all 847 of its Gecko fins), side rollers 46 → 284; no motor or servo body in any
+  group on the seven bots; the editor's Play frames change only on the wheels, the gear, the rollers and
+  the flywheel.
 - **Finder versions** (`MOTION_FINDER`, `ImportSetup.motionFinder`). A draft whose `found` rows came
   from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
   drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
