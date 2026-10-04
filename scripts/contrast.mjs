@@ -89,9 +89,9 @@ const TILE = '#2c3038'; // COLORS.tile, the lightest ground an on-field LABEL cr
  * token still clears AA.
  */
 const TILE3D = '#454545';
-/* `TILE_LINE`, the seam's light lip — LIGHTER than the mat, so it is the tighter cap of the
-   two and it is measured on its own. #565656 read 3.89 here and was backed out for it. */
-const TILE3D_LIP = '#4c4c4c';
+/* The 3D seam used to carry a LIGHT lip (`#4c4c4c`) measured here as a second cap. Since
+   2026-09-28 the joint is a dark hairline (`TILE_JOINT`), darker than every tile, so the mat is
+   the lightest ground on the 3D field again and the only cap. */
 const BACKDROP = '#f9faf7'; // COLORS.backdrop — the LIGHT letterbox a far-wall robot's label lands on
 // the driver-name labels over remote robots (src/render/renderer.ts, COLORS.*Label)
 const LABEL_RED = '#f87171';
@@ -317,7 +317,6 @@ const hudPairs = (t) => {
        non-text and takes 1.4.11's 3:1 rather than 4.5. */
     ['canvas countdown on the 3D mat', t('--ds-on-field'), TILE3D, AA],
     ['canvas on-field text on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],
-    ['canvas on-field text on the 3D seam lip', t('--ds-on-field-dim'), TILE3D_LIP, AA],
     ['pad focus ring on the 3D mat', t('--ds-on-field-accent'), TILE3D, NON_TEXT],
     /* ⚠️ THERE IS DELIBERATELY NO “STROKE vs 3D MAT” PAIR, AND IT WAS TRIED. It reads
        1.89:1, and asserting it at 1.4.11's 3:1 is inventing a requirement: the halo's OUTER

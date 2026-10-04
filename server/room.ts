@@ -4,6 +4,9 @@
    on Node 19+ and in every browser DSIM supports. */
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
+import { coerceZenithAuto } from '../src/auto/coerce';
+import type { ZenithAutoSetup } from '../src/auto/types';
+import { AutoLoadError, autoAdapterFor, autoStartPose, createAutoSeat, loadZenithAuto, parseAutoText, type AutoSeat } from '../src/auto/zenithAutos';
 import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
@@ -53,16 +56,28 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
+import {
+  IMPORT_START_REFUSED,
+  hasImportCap,
+  importAdmission,
+  importIdOf,
+  isImportedSpec,
+  setupsHaveImported,
+  stripImported,
+  stripTune,
+  type ImportRoomState,
+} from '../src/net/imported';
+import { VisualRelay } from './importVisuals';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
-import { chargedForParticipation, judgeParticipation } from '../src/standing';
+import { absenceOf, chargedForParticipation, EARLY_ABSENT_TICKS, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
    A value import here would drag a Postgres driver into the browser bundle — see
    `server/eloMode.ts` and `docs/lan-webrtc.md` §5. */
 import type { EloOutcome } from './ranked';
-import type { PendingMatch } from './matchTypes';
+import type { CompetitionTag, PendingMatch } from './matchTypes';
 
 /** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO
  *  failed and HOW; the penalty scale and the rolling window live outside it. */
@@ -75,6 +90,9 @@ export interface DodgeReport {
   /** the room it died in — recorded on the standing ledger so a moderator reading a
    *  player's history can line an offence up against the match it came from */
   roomCode: string;
+  /** a competition room's call that never became a match: charged to nobody's standing, and
+   *  reported to the competition instead (`competitionCallFailed`) */
+  competition?: CompetitionTag;
 }
 
 /**
@@ -118,8 +136,18 @@ const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, 
  * so the ~50% more frames over 20 Hz is cheap. */
 const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
- * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
-const HOLD_TICKS = 15;
+ * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO.
+ *
+ * ⚠️ 36 (600 ms), NOT 15. The WebSocket is TCP, so one lost segment stalls the input stream for
+ * a retransmit — routinely 200–500 ms on Wi-Fi — and every input sent during it arrives late in
+ * one burst. At 15 ticks the robot was stopped 250 ms into that stall while the driver's client
+ * kept predicting it driving, and the snapshot after it yanked the robot back. Measured through
+ * a real solo record room at 50 ms RTT with the stick HELD through the stall: 1.5 in for 300 ms
+ * and 10.6 in for 500 ms at 15 ticks, 0.03 in for both at 36. (A driver who CHANGED the stick
+ * during a stall is still corrected, and nothing here can help that — those inputs were not in
+ * the room in time.) A driver who has genuinely gone is still stopped, 0.35 s later than
+ * before; a closed socket is the reconnect grace's business, not this timer's. */
+const HOLD_TICKS = 36;
 /**
  * How far AHEAD of the live tick a buffered input may be stamped.
  *
@@ -302,6 +330,8 @@ export interface Client {
    * clearing it could only hold a returning driver up for something already done.
    */
   ready3d?: boolean;
+  /** this player's Zenith auto for a CUSTOM room's next match (`{ t: 'zenithAuto' }`), bounded */
+  zenithAuto?: ZenithAutoSetup;
   /**
    * The match generation this client last reported `viewReady` for (`VIEWREADY_CAP`): its
    * physics and its view are up and it can play that match. Kept across a drop like `ready3d`.
@@ -337,6 +367,14 @@ export interface Client {
    * `[]` for a guest or when the lookup found nothing.
    */
   earnedCosmetics?: string[];
+  /**
+   * WHO PAYS for this client's imported-robot visuals (`server/importVisuals.ts`): a 32-bit hash
+   * of its account (`u:<id>`) or, signed out, its address (`ip:<addr>`), taken by the socket
+   * thread at the door (`visualSourceKey`). The process budget is charged per key as well as in
+   * all, so one source cannot hold the whole budget. Never the address itself: only the hash
+   * crosses into a room. Absent (the LAN tab host, a test) ⇒ the client id is the source.
+   */
+  budgetKey?: number;
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -350,6 +388,14 @@ export interface MatchParticipant {
   /** the full robot config this driver used (for record-board display) */
   spec: RobotSpec;
   assists: AssistConfig;
+  /** RANKED ONLY — what the rating update needs about this driver (see `computeGlicko`):
+   * the challenge token they queued under (from the staged roster), the share of the live
+   * match they were away for (1 = sat AFK), and whether they were missing for the whole
+   * opening window. Absent from a LAN upload or an older caller, which reads as "present,
+   * queued solo" — exactly the old rating. */
+  party?: string;
+  away?: number;
+  early?: boolean;
 }
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
@@ -381,6 +427,9 @@ export interface MatchOutcome {
   /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
    *  source in `play_counts`, folded into Custom on the homepage */
   discord?: boolean;
+  /** a competition match: the result is the competition's as well as the archive's
+   *  (`competitionMatchPlayed`, called by `persistMatch`) */
+  competition?: CompetitionTag;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -401,6 +450,25 @@ export class Room {
   // READ-ONLY watchers: receive every broadcast (roster/matchStart/snapshot/result)
   // but hold no robot slot and never count toward capacity/roster/persistence.
   private readonly spectators = new Map<string, Client>();
+  /**
+   * IMPORTED ROBOTS' LOOKS (docs/area/netcode.md, VISUALS RELAY): the pictures and meshes a seat
+   * uploaded, held in THIS room's memory and streamed to the viewers that ask. It hangs off the
+   * room because the room knows who is seated, which robot each seat holds, and when either
+   * changes — and so that on a worker room the bytes and their validation stay on the worker.
+   * Freed with the seat, the robot, or the room (`emptied`).
+   */
+  private readonly visuals = new VisualRelay({
+    allows: () => this.allowsImportedRobots(),
+    find: (id) => this.clients.get(id) ?? this.spectators.get(id),
+    importId: (id) => this.clients.get(id)?.player.spec.imported?.id,
+    recipients: () => [...this.clients.values(), ...this.spectators.values()],
+    live: () => this.world !== null && this.phase === 'match' && !this.finalized,
+  });
+  /** the room has no one left: the registry may drop it, and the relay gives its bytes back */
+  private emptied(): void {
+    this.visuals.dispose();
+    this.onEmpty();
+  }
   private hostId = '';
   /** the seat `reserveHost` named, or '' for every room the cloud runs — see `detach` */
   private reservedHost = '';
@@ -715,6 +783,8 @@ export class Room {
   /** live AI drivers for the match in flight, keyed by robot id. Built in `beginMatch`,
    *  disposed in `stop`. Empty in every room with no bot seat, which is nearly all of them. */
   private readonly botDrivers = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
+  /** the Zenith auto seats of the match being played, by robot id (`beginMatch`) */
+  private readonly autoSeats = new Map<number, AutoSeat>();
   /** the tier each bot ROBOT plays at, resolved at `startMatch` when seats become robot ids. */
   private readonly botTiers = new Map<number, string>();
   /** a bot has been seated here at some point — latched, so removing one before START does not
@@ -880,6 +950,9 @@ export class Room {
   private liveTicks = 0;
   private readonly driveTicks = new Map<number, number>();
   private readonly awayTicks = new Map<number, number>();
+  /** away ticks inside the OPENING window only (`EARLY_ABSENT_TICKS`) — a partner missing for
+   *  all of it voids a ranked 2v2 for the rest of the roster (`absenceOf`) */
+  private readonly earlyAwayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
    * game lock). Registered at match begin — and, for a ranked pairing, from the
@@ -1080,6 +1153,8 @@ export class Room {
       this.broadcast({ t: 'drop', robotId: rid, tick: this.world.tick });
     }
     this.clients.delete(c.id);
+    this.visuals.freeOwner(c.id);
+    this.visuals.dropRecipient(c.id);
     this.snapPrimed.delete(c.id);
     this.snapAck.delete(c.id);
     this.robotOf.delete(c.id);
@@ -1089,7 +1164,7 @@ export class Room {
     this.refreshRematch();
     if (this.clients.size === 0) {
       this.stop();
-      this.onEmpty();
+      this.emptied();
     }
     return true;
   }
@@ -1148,9 +1223,27 @@ export class Room {
   }
 
   add(client: Client): void {
+    /**
+     * THE ROOM'S OWN IMPORTED-ROBOT CHECK, behind the join door's (`server/index.ts`), which asks
+     * a mirror that can be a message behind when this room runs on a worker, and which the LAN
+     * tab host does not have at all (`src/lan/hostWorker.ts` calls this directly). Refused with
+     * the sentence and NOT seated: a robot this room may not field, a client that cannot play
+     * the one it holds, or a robot whose id another seat already holds, is not a seat.
+     */
+    const refusal = importAdmission(this.importState(client.id), {
+      imported: isImportedSpec(client.player.spec),
+      caps: client.caps,
+      id: importIdOf(client.player.spec),
+    });
+    if (refusal) {
+      client.send({ t: 'error', message: refusal });
+      return;
+    }
     // the first client to land defines the room's release channel (custom/record
-    // rooms are single-channel by construction — the matchmaker segregates ranked)
-    if (this.clients.size === 0 && client.channel) this.channel = client.channel;
+    // rooms are single-channel by construction — the matchmaker segregates ranked).
+    // NOT a competition room's: its result belongs to the competition on this server's
+    // database whatever build a driver arrived on, and the server's own sim decided it.
+    if (this.clients.size === 0 && client.channel && !this.pendingMatch?.competition) this.channel = client.channel;
     client.conn = ++this.connSeq;
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
@@ -1159,6 +1252,7 @@ export class Room {
     client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
     this.broadcastRoster();
     this.moderatePlayerNames(client);
+    this.visuals.greet(client);
   }
 
   /**
@@ -1246,6 +1340,13 @@ export class Room {
    * robot id of -1) + a live snapshot immediately, then every broadcast. Never joins
    * the roster / capacity / persistence, and its messages are ignored. */
   addSpectator(client: Client): void {
+    // A WATCHER STEPS THE WORLD, so one on a build without imports cannot watch a match that
+    // holds an imported robot (see `importState`). The door asks the same question first.
+    const refusal = importAdmission(this.importState(), { imported: false, caps: client.caps });
+    if (refusal) {
+      client.send({ t: 'error', message: refusal });
+      return;
+    }
     this.spectators.set(client.id, client);
     client.send({ t: 'welcome', clientId: client.id });
     if (this.world && this.phase === 'match') {
@@ -1254,6 +1355,7 @@ export class Room {
     }
     this.broadcastRoster();
     this.broadcastSpectators();
+    this.visuals.greet(client);
   }
 
   /**
@@ -1343,6 +1445,16 @@ export class Room {
       spectators: this.visibleSpectators(),
       kind: record ? 'record' : 'versus',
       region: SERVER_REGION || undefined,
+      // a competition match is public (its page links here) and says which match it is
+      ...(this.pendingMatch?.competition
+        ? {
+            competition: {
+              slug: this.pendingMatch.competition.slug,
+              name: this.pendingMatch.competition.name,
+              label: this.pendingMatch.competition.label,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1447,6 +1559,7 @@ export class Room {
       this.spectators.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
+      this.visuals.dropRecipient(id);
       this.broadcastRoster();
       this.broadcastSpectators();
       return;
@@ -1507,7 +1620,25 @@ export class Room {
         this.broadcastRoster();
         return;
       }
+      /**
+       * A COMPETITION ROOM HOLDS ITS SEATS WHILE IT WAITS FOR ITS DRIVERS, clean close or not.
+       *
+       * The wait is minutes, not the ranked seconds, and a driver going back to the competition
+       * page or reloading the join screen is the ordinary way to spend it. Deleting the seat (and
+       * with the last one the ROOM) left the call claimed with no room behind it: every later join
+       * was refused as a match that was over. Nothing is charged here, so holding costs nobody
+       * anything, and the wait is bounded already — the call's own grace (`pendingTimer`) cancels
+       * the match and reports whoever never came back (`absentRoster` counts a held seat as absent).
+       */
+      if (this.pendingMatch?.competition && this.phase === 'connecting') {
+        c.connected = false;
+        c.disconnectAt = Date.now();
+        this.broadcastRoster();
+        return;
+      }
       this.clients.delete(id);
+      this.visuals.freeOwner(id);
+      this.visuals.dropRecipient(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
       this.passCrown(id);
@@ -1516,7 +1647,7 @@ export class Room {
       this.refreshRematch(); // the tally is against CONNECTED drivers
       if (this.clients.size === 0) {
         this.stop();
-        this.onEmpty();
+        this.emptied();
       } else if (this.customStart) {
         // the seat we were holding the start for has left: it cannot report in any more, so
         // re-ask rather than waiting out a deadline for somebody who is gone
@@ -1559,6 +1690,21 @@ export class Room {
       if (clean && soloRecord) {
         c.disconnectAt = -Infinity;
         this.checkGrace();
+        return;
+      }
+      /**
+       * A CLEAN LEAVE FROM A FINISHED MATCH FREES THE SEAT NOW. The score is saved and the
+       * client closed on purpose (MENU from the results, or the server releasing an idle
+       * socket — see `IDLE_RELEASE_MS` in index.ts). Holding the seat for the grace let the
+       * client's auto-reconnect reclaim it a second later, so a results screen left open in
+       * a background tab kept its satellite machine running all night. A dropped network
+       * (1006) or a closing tab (1001) is not clean and still keeps the grace.
+       */
+      if (clean && this.finalized) {
+        c.disconnectAt = -Infinity;
+        this.refreshRematch();
+        this.checkGrace();
+        if (this.clients.size > 0) this.broadcastRoster();
         return;
       }
       /**
@@ -1627,6 +1773,7 @@ export class Room {
     backlog?: () => number,
     token?: string,
     trusted = false,
+    caps?: string[],
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
@@ -1644,6 +1791,23 @@ export class Room {
      * behavioural tests for it build clients that advertise no caps.
      */
     if (!trusted && !this.seatOwner(c, token)) return null;
+    /**
+     * THE RETURNING SOCKET'S BUILD IS THE ONE THAT WILL PLAY, so its capabilities replace the ones
+     * the seat joined with (`caps`, from `rejoin` or the account reclaim; absent from a caller that
+     * has none to give, which keeps the old ones). It used to keep the join's: a tab that came back
+     * on an older build still read as able to play an imported robot, so a later `update` to one
+     * was admitted and that client predicted a rectangle. A build without the import capability
+     * coming back to a room that holds an imported robot (its own seat's included) is refused, as
+     * the door refuses it; `seatSecured` stays what the join made it.
+     */
+    if (caps !== undefined) {
+      const refusal = importAdmission(this.importState(), { imported: false, caps });
+      if (refusal) {
+        send({ t: 'error', message: refusal });
+        return null;
+      }
+      c.caps = caps;
+    }
     /**
      * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
      *
@@ -1713,10 +1877,12 @@ export class Room {
         intros: p ? this.intros : [],
         game: this.game,
         ...(p ? {} : { ranked: false }),
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster();
     this.refreshRematch(); // they are required again, and get the current tally
+    this.visuals.greet(c); // a new socket has been told nothing about what the room holds
     return c.conn;
   }
 
@@ -1783,6 +1949,8 @@ export class Room {
         this.onUserInactive?.(c.userId);
       }
       this.clients.delete(c.id);
+      this.visuals.freeOwner(c.id);
+      this.visuals.dropRecipient(c.id);
       this.snapPrimed.delete(c.id);
       this.snapAck.delete(c.id);
       this.robotOf.delete(c.id);
@@ -1791,7 +1959,7 @@ export class Room {
     }
     if (this.clients.size === 0) {
       this.stop();
-      this.onEmpty();
+      this.emptied();
     }
   }
 
@@ -1818,6 +1986,12 @@ export class Room {
   }
 
   onMessage(id: string, msg: ClientMsg): void {
+    // THE RELAY'S TWO MESSAGES come from a seat (an upload) or a seat or a watcher (a download),
+    // so they are answered before the lookup below, which a watcher would not pass.
+    if (msg.t === 'visualPut' || msg.t === 'visualGet') {
+      if (!this.cancelled) this.visuals.onMessage(id, msg);
+      return;
+    }
     const c = this.clients.get(id);
     if (!c) return;
     // a late message into a cancelled room (a ready landing after the deadline) must not
@@ -1825,9 +1999,15 @@ export class Room {
     if (this.cancelled) return;
     switch (msg.t) {
       case 'update': {
+        // an import is admitted or refused on the RAW patch, BEFORE anything is coerced: a refused
+        // one never reaches `coerceSpec` (see `vetImportedPatch`)
+        const raw = this.vetImportedPatch(c, msg.patch);
         // sanitize the patch against this player's current config: a spoofed
         // spec/size/assist patch is clamped to legal ranges before it applies
-        const patch = sanitizePlayerPatch(msg.patch, c.player, this.game);
+        const patch = sanitizePlayerPatch(raw, c.player, this.game);
+        // the sent spec has no import ⇒ the robot is standard, whatever the patch's base held
+        // (`coerceSpec` starts from the seat's CURRENT spec)
+        if (patch.spec && !isImportedSpec((raw as { spec?: unknown } | null)?.spec)) patch.spec = stripImported(patch.spec);
         // ENTITLEMENT STRIP (docs/cosmetics-plan.md §3.3), AFTER the shape clamp above and
         // BEFORE it lands on the roster: a re-pick is the other live point (besides join)
         // where a client DECLARES a spec, and `sanitizePlayerPatch` only shape-validated it
@@ -1844,6 +2024,7 @@ export class Room {
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
         const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
+        this.visuals.specChanged(c.id); // a seat's assets stay only while it holds the robot they are for
         /**
          * ⚠️ A RENAME IS MODERATED TOO — ONLY THE JOIN USED TO BE.
          *
@@ -1896,6 +2077,36 @@ export class Room {
         }
         break;
       /**
+       * A PLAYER'S ZENITH AUTO for the next match (docs/area/autos.md). Stored, bounded, on the
+       * client record, not the roster; its name goes on the roster. Refused (with a line saying
+       * why) outside a custom room, and validated with Zenith's own schema so a bad file is
+       * refused here, in the lobby, rather than standing a robot still through AUTO.
+       */
+      case 'zenithAuto': {
+        if (msg.auto === null) {
+          delete c.zenithAuto;
+        } else {
+          if (!this.playsZenithAutos()) {
+            c.send({ t: 'error', message: 'Autos run in custom rooms only.' });
+            break;
+          }
+          const z = coerceZenithAuto(msg.auto);
+          if (!z) {
+            c.send({ t: 'error', message: 'That auto is too large to send.' });
+            break;
+          }
+          try {
+            parseAutoText(z.auto);
+          } catch (e) {
+            c.send({ t: 'error', message: e instanceof AutoLoadError ? e.message : 'That is not a Zenith auto file.' });
+            break;
+          }
+          c.zenithAuto = z;
+        }
+        this.broadcastRoster();
+        break;
+      }
+      /**
        * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`). Only a report for THIS
        * generation counts: one still in flight from before a rematch must not release the new
        * match's hold. The tick loop does the releasing; this only tells the room who is left.
@@ -1946,12 +2157,14 @@ export class Room {
         if (typeof msg.seat === 'string') this.removeBot(msg.seat);
         break;
       case 'rematch':
+        // a competition room plays its one match: a second would be a result nobody called
+        if (this.pendingMatch?.competition) break;
         this.voteRematch(id, msg.on === true);
         break;
       case 'lobby':
         // host only, exactly like `start` — the room is shared state and one player must
         // not tear the results screen out from under the rest of it.
-        if (id === this.hostId) this.returnToLobby();
+        if (id === this.hostId && !this.pendingMatch?.competition) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -1965,6 +2178,38 @@ export class Room {
       case 'join':
         break; // join is handled at the connection layer
     }
+  }
+
+  /**
+   * AN `update` PATCH THAT ADDS AN IMPORTED ROBOT (docs/area/netcode.md, IMPORTED ROBOTS), decided
+   * on what the client actually SENT, BEFORE `sanitizePlayerPatch` runs. Returns the patch to
+   * sanitize: the raw one, or — refused — a copy without its spec.
+   *
+   *  · the sent spec has one ⇒ it is allowed only where `importAdmission` says (a custom or LAN
+   *    room, a client with the cap, nobody in the room without it, no other seat holding its id).
+   *    Refused, the whole spec part of the patch is dropped and the seat keeps the robot it had;
+   *    the rest of the patch (ready, pose, name) still applies, and the seat is told why.
+   *  · ⚠️ BEFORE, NOT AFTER, THE COERCION. A refused import used to be coerced first and dropped
+   *    after, so a ranked or record room paid `coerceImported` for a robot it was about to refuse,
+   *    and a hostile one (16 bands of 256 far-off points, 62 KB) cost 70 ms of the thread every
+   *    room on it shares. The coercer is bounded now too; this keeps a refusal free.
+   *
+   * The other half (a sent spec WITHOUT an import makes the robot standard, whatever the seat's
+   * current spec held) is applied by the caller on the sanitised patch.
+   */
+  private vetImportedPatch(c: Client, rawPatch: unknown): unknown {
+    if (typeof rawPatch !== 'object' || rawPatch === null || !('spec' in rawPatch)) return rawPatch;
+    const sent = (rawPatch as { spec?: unknown }).spec;
+    if (!isImportedSpec(sent)) return rawPatch;
+    const refusal = importAdmission(this.importState(c.id), { imported: true, caps: c.caps, id: importIdOf(sent) });
+    if (!refusal) return rawPatch;
+    c.send({ t: 'error', message: refusal });
+    // the team fields ride the spec when one is sent, so they go with it
+    const rest = { ...(rawPatch as Record<string, unknown>) };
+    delete rest.spec;
+    delete rest.teamName;
+    delete rest.teamNumber;
+    return rest;
   }
 
   private onInput(id: string, tick: number, q: unknown, ack?: number, gen?: number): void {
@@ -2062,6 +2307,20 @@ export class Room {
         return;
       }
     }
+    /**
+     * AN IMPORTED ROBOT IN THE LINE-UP, AND A SEAT OR WATCHER WHO CANNOT PLAY IT (docs/area/netcode.md,
+     * IMPORTED ROBOTS). The doors keep that combination from forming; this is the last gate before
+     * a world exists, so a mirror that was a message behind, or a client that changed under us,
+     * still cannot start a match one side would predict wrongly. A room that does not ALLOW
+     * imports is not refused here — `beginMatch` strips them, so what starts is standard.
+     */
+    {
+      const st = this.importState();
+      if (st.allows && st.hasImport && st.capless) {
+        this.broadcast({ t: 'error', message: IMPORT_START_REFUSED });
+        return;
+      }
+    }
     // Refuse to start if any driver's start pose is illegal for their chassis — we
     // block-and-warn rather than let createWorld silently relocate the robot. The
     // ready gate (case 'update') already prevents this in normal flow; this also
@@ -2150,15 +2409,20 @@ export class Room {
         si = (si + 1) % anchors;
       }
       used[alliance].add(si);
+      const spec = (c.tier !== null ? drv?.build?.({ seed, robotId: i, tier: c.tier, alliance }) : undefined) ?? c.player.spec;
+      // A ZENITH AUTO (custom rooms): the robot starts where the auto does, as it would at a field
+      const za = c.tier === null && this.playsZenithAutos() ? this.clients.get(c.key)?.zenithAuto : undefined;
+      const autoStart = za ? zenithStartPose(za, alliance, spec, this.game) : null;
       setups.push({
         id: i,
         alliance,
-        spec: (c.tier !== null ? drv?.build?.({ seed, robotId: i, tier: c.tier, alliance }) : undefined) ?? c.player.spec,
+        spec,
         assists: c.player.assists,
         startIndex: si,
         // a custom pose overrides the de-conflicted startIndex; createWorld snaps
         // it G304-legal. Old clients omit it → the preset is used.
-        startPose: c.player.startPose ?? undefined,
+        startPose: autoStart ?? c.player.startPose ?? undefined,
+        ...(za ? { zenithAuto: za } : {}),
       });
       // A BOT HAS NO SOCKET, so it takes no `robotOf` entry: that map is what `onInput` resolves
       // a client id through, and a bot must never be a thing an input can be addressed to.
@@ -2179,6 +2443,22 @@ export class Room {
     // regardless of what a client advertised. Local session-less practice, which
     // never reaches Room, keeps running auto client-side.
     setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
+    // ...and a ZENITH auto only survives into a custom room (`playsZenithAutos`). A staged or
+    // rematch path that somehow carried one elsewhere loses it here, at the one chokepoint.
+    if (!this.playsZenithAutos()) setups = setups.map((s) => (s.zenithAuto ? { ...s, zenithAuto: undefined } : s));
+    // ...and an IMPORTED ROBOT only survives into a room that allows one (`allowsImportedRobots`:
+    // custom and LAN). A staged ranked room, a record room, a rematch or any path that somehow
+    // carried one elsewhere is fielded as the standard robot its parametric fields describe.
+    // The same chokepoint as the two lines above, for the same reason.
+    if (!this.allowsImportedRobots()) {
+      setups = setups.map((s) => (isImportedSpec(s.spec) ? { ...s, spec: stripImported(s.spec) } : s));
+      this.visuals.reconcile();
+    }
+    // ...and an import's PRACTICE TUNING never plays in a room, any room (`stripTune`)
+    setups = setups.map((s) => {
+      const spec = s.spec ? stripTune(s.spec) : s.spec;
+      return spec === s.spec ? s : { ...s, spec };
+    });
     this.phase = 'match';
     this.matchGen++; // any input stamped with an older generation is now stale
     this.rematchVotes.clear();
@@ -2233,6 +2513,27 @@ export class Room {
       for (const [rid, tier] of this.botTiers) {
         this.botDrivers.set(rid, drv.create(world, rid, tier, (seed ^ ((rid + 1) * 0x9e3779b1)) >>> 0));
       }
+    }
+    /**
+     * SEAT THE ZENITH AUTOS, beside the bots and on the same contract: stepped once per tick in
+     * `frameCommands`, before the step, so their commands are recorded, ride the snapshot's
+     * `cmds`, and a replay needs no seat. A seat drives only in AUTO; from TELEOP it hands the
+     * driver's own command back.
+     */
+    for (const seat of this.autoSeats.values()) seat.dispose();
+    this.autoSeats.clear();
+    for (const s of setups) {
+      if (!s.zenithAuto) continue;
+      const adapter = autoAdapterFor(this.game);
+      if (!adapter) continue;
+      const seat = createAutoSeat(world, s.id, s.zenithAuto, adapter);
+      if (seat.status().state === 'error') {
+        for (const c of this.clients.values()) {
+          if (this.robotOf.get(c.id) === s.id) c.send({ t: 'error', message: `Your auto is off: ${seat.status().error ?? 'it could not be loaded'}` });
+        }
+        continue;
+      }
+      this.autoSeats.set(s.id, seat);
     }
     this.finalized = false;
     this.settle = newSettleClock();
@@ -2333,7 +2634,10 @@ export class Room {
    * player reconnects (`maybeStartRanked`) or cancels after the join grace. */
   applyPending(p: PendingMatch): void {
     this.pendingMatch = p;
-    this.ranked = true;
+    // a COMPETITION match is staged exactly like a ranked pairing and rates nobody: no ELO, no
+    // standing, no dodge charge. What a no-show costs is the competition's call, made through the
+    // same dodge report (see `cancelPending`).
+    this.ranked = !p.competition;
     // the matchmaker groups a single channel; carry it so an alpha ranked match
     // is segregated + unpersisted just like custom/record alpha rooms
     if (p.channel) this.channel = p.channel;
@@ -2365,10 +2669,13 @@ export class Room {
     this.pendingTimer = setTimeout(
       () =>
         this.cancelPending(
-          'Match cancelled - an opponent did not connect.',
+          p.competition
+            ? 'The match didn’t start: not every driver connected in time. The referee will call it again.'
+            : 'Match cancelled - an opponent did not connect.',
           this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
         ),
-      RANKED_JOIN_GRACE_MS,
+      // a competition's call carries its own wait, what is left of it when the room was built
+      p.competition ? Math.max(30_000, p.competition.graceMs) : RANKED_JOIN_GRACE_MS,
     );
     if (this.pendingTimer.unref) this.pendingTimer.unref();
     this.maybeStartRanked(); // in case everyone is already here
@@ -2458,16 +2765,19 @@ export class Room {
       // the staged autoPath is a serialized string (and in practice unset); coerce it
       // to the AutoPathData shape RobotSetup expects (createWorld re-coerces anyway).
       const autoPath = coerceAutoPath(r.autoPath) ?? undefined;
+      const c = r.userId ? byUser.get(r.userId) : undefined;
+      // a competition stages a placeholder robot (it cannot know anyone's build when it calls
+      // the match), so the driver's own build from the join is the one that plays
+      const live = p.competition && c ? c.player : null;
       setups.push({
         id: i,
         alliance: r.alliance,
-        spec: r.spec,
-        assists: r.assists,
+        spec: live ? live.spec : r.spec,
+        assists: live ? live.assists : r.assists,
         startIndex: r.startIndex,
         autoPath,
         autoPathEnabled: autoPath ? r.autoPathEnabled === true : false,
       });
-      const c = r.userId ? byUser.get(r.userId) : undefined;
       if (c) this.robotOf.set(c.id, i);
     });
     this.beginMatch(setups, p.seed);
@@ -2503,9 +2813,20 @@ export class Room {
         mode: p.mode,
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
+  }
+
+  /**
+   * What a competition room adds to `strategyStart`: which competition and which match, so the
+   * window can say so and drop the rating column. ADDITIVE: an older client ignores it and shows
+   * the ranked window with "Unranked" chips, which is wrong in a word and right in every action.
+   */
+  private competitionWire(): { competition?: { slug: string; name: string; label: string } } {
+    const t = this.pendingMatch?.competition;
+    return t ? { competition: { slug: t.slug, name: t.name, label: t.label } } : {};
   }
 
   /**
@@ -2599,6 +2920,7 @@ export class Room {
         mode: p?.mode ?? '1v1',
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     return true;
@@ -2622,7 +2944,11 @@ export class Room {
     const p = this.pendingMatch;
     if (!p || this.phase !== 'strategy' || this.world !== null) return;
     const connected = [...this.clients.values()].filter((c) => c.connected);
-    if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+    // A COMPETITION MATCH STARTS WHEN THE CLOCK SAYS SO, ready or not, as a field does: every
+    // driver is here, and re-calling the match because one of them did not press a button would
+    // cost the whole event the time the window was meant to bound.
+    const allHere = connected.length === p.roster.length;
+    if (allHere && (p.competition || connected.every((c) => c.player.ready))) {
       // a seat still loading its 3D chunk buys the window more time, once, up to the same
       // 45 s cap — see `extendStrategyForReady3d`
       if (this.extendStrategyForReady3d()) return;
@@ -2733,7 +3059,10 @@ export class Room {
      * sockets are still open at this point; `stop()` below closes them, so this has to fire
      * first and the verdict is relayed from the async reply.
      */
-    if (p && this.ranked && culprits.length && this.onDodge) {
+    /* A COMPETITION ROOM REPORTS THROUGH THE SAME DOOR, with its tag, and the persistence layer
+       routes it to the competition instead of the standing ledger (`persistDodges`). Always, even
+       with no culprit named: the competition has to learn that its call is over either way. */
+    if (p && (this.ranked ? culprits.length > 0 : !!p.competition) && this.onDodge) {
       const listeners = [...this.clients.values()].filter((c) => c.connected);
       void Promise.resolve(
         this.onDodge({
@@ -2742,6 +3071,7 @@ export class Room {
           game: this.game,
           rosterUserIds: p.roster.map((r) => r.userId).filter((u): u is string => !!u),
           roomCode: this.code,
+          ...(p.competition ? { competition: p.competition } : {}),
         }),
       )
         .then((verdicts) => {
@@ -2756,7 +3086,7 @@ export class Room {
     }
     this.broadcast({ t: 'error', message });
     this.stop();
-    this.onEmpty();
+    this.emptied();
   }
 
   /** roster members who are NOT currently connected here — the no-show set. */
@@ -2918,6 +3248,9 @@ export class Room {
       // "left the match".
       const away = this.departed.has(r.id) || !this.driverConnected(r.id);
       if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+      if (away && this.liveTicks <= EARLY_ABSENT_TICKS) {
+        this.earlyAwayTicks.set(r.id, (this.earlyAwayTicks.get(r.id) ?? 0) + 1);
+      }
     }
     // a driver the load hold started without is loading, not idle — see `loadingTicks`
     if (this.physics === '3d') {
@@ -3013,6 +3346,7 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: c.player.assists,
+          ...this.rankedPresence(robot.id, c.userId),
         });
       }
       // include authed players who LEFT mid-match (their robot is still in the
@@ -3031,6 +3365,7 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: d.assists,
+          ...this.rankedPresence(robot.id, d.userId),
         });
       }
       this.reportBehaviour(participants);
@@ -3044,6 +3379,7 @@ export class Room {
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
         discord: this.group !== '',
+        ...(this.pendingMatch?.competition ? { competition: this.pendingMatch.competition } : {}),
         result,
         replay,
         participants,
@@ -3173,6 +3509,23 @@ export class Room {
     });
   }
 
+  /**
+   * What the rating update is told about one driver of a RANKED match: their party token
+   * from the staged roster, and how present they were (`absenceOf`). Nothing for any other
+   * room, so a custom game's outcome is exactly what it was.
+   */
+  private rankedPresence(robotId: number, userId?: string): Pick<MatchParticipant, 'party' | 'away' | 'early'> {
+    if (!this.ranked) return {};
+    const party = userId ? this.pendingMatch?.roster.find((r) => r.userId === userId)?.party : undefined;
+    const { away, early } = absenceOf({
+      liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(robotId) ?? 0)),
+      driveTicks: this.driveTicks.get(robotId) ?? 0,
+      awayTicks: this.awayTicks.get(robotId) ?? 0,
+      earlyAwayTicks: this.earlyAwayTicks.get(robotId) ?? 0,
+    });
+    return { party, away, early };
+  }
+
   /** the robot a DEPARTED user was driving (their client is gone, so `robotOf` cannot
    *  answer) — without this, walking out would erase the evidence of walking out */
   private robotIdOfUser(userId: string): number | undefined {
@@ -3218,6 +3571,8 @@ export class Room {
   }
 
   private broadcastRematch(): void {
+    // no vote to show in a competition room (see the `rematch` case)
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     const votes = ids.filter((i) => this.rematchVotes.has(i)).length;
     /**
@@ -3271,6 +3626,7 @@ export class Room {
   }
 
   private maybeRematch(): void {
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
@@ -3370,6 +3726,8 @@ export class Room {
     for (const c of [...this.clients.values()]) {
       if (c.connected) continue;
       this.clients.delete(c.id);
+      this.visuals.freeOwner(c.id);
+      this.visuals.dropRecipient(c.id);
       this.snapPrimed.delete(c.id);
       this.snapAck.delete(c.id);
       this.ackTick.delete(c.id);
@@ -3412,6 +3770,7 @@ export class Room {
     this.liveTicks = 0;
     this.driveTicks.clear();
     this.awayTicks.clear();
+    this.earlyAwayTicks.clear();
     this.loadingTicks.clear();
     this.holdUntil = 0;
     // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in
@@ -3437,7 +3796,7 @@ export class Room {
 
     // the last driver may have closed their tab on the results screen; with the world gone
     // there is no loop and no grace reaper left to notice an empty room.
-    if (this.clients.size === 0) this.onEmpty();
+    if (this.clients.size === 0) this.emptied();
   }
 
   /** TEST SEAM: the live world, read-only. Lets a test assert what an input
@@ -3578,6 +3937,11 @@ export class Room {
       }
       // consumed / past inputs will never be needed again
       if (buf) for (const t of buf.keys()) if (t <= tick) buf.delete(t);
+    }
+    // THE ZENITH AUTOS, last: each takes its driver's command for this tick (what the loop above
+    // resolved) and hands it back outside AUTO, or replaces it with its own inside
+    for (const [rid, seat] of this.autoSeats) {
+      frame.set(rid, localizeCommand(seat.step(w, frame.get(rid) ?? ZERO_CMD)));
     }
     return frame;
   }
@@ -3812,8 +4176,58 @@ export class Room {
    * does not exist and will never end.
    */
   private rosterPlayer(c: Client): LobbyPlayer {
-    if (this.physics !== '3d' || !reportsPhysicsReady(c.caps)) return c.player;
-    return { ...c.player, ready3d: !!c.ready3d };
+    const autoName = c.zenithAuto ? autoNameOf(c.zenithAuto) : undefined;
+    const p = autoName ? { ...c.player, autoName } : c.player;
+    if (this.physics !== '3d' || !reportsPhysicsReady(c.caps)) return p;
+    return { ...p, ready3d: !!c.ready3d };
+  }
+
+  /**
+   * DOES THIS ROOM PLAY ZENITH AUTOS? Custom rooms only (owner, 2026-09-25): never a ranked or
+   * matchmade room, whose AUTO points would be a player's file rather than their hands, and
+   * never a record run, whose replay is leaderboard proof. And only a game that plays them.
+   */
+  private playsZenithAutos(): boolean {
+    return !this.ranked && !this.pendingMatch && this.config.kind !== 'record' && simModuleFor(this.game).zenithAutos === true;
+  }
+
+  /**
+   * MAY AN IMPORTED ROBOT PLAY IN THIS ROOM? (docs/area/netcode.md, IMPORTED ROBOTS.) A custom
+   * room, and a LAN room, which is the same `Room`: never a matchmaker-staged ranked room, never
+   * a record room, whose replay is leaderboard proof. `playsZenithAutos`' shape without the game
+   * flag, because every game can have an imported robot.
+   *
+   * `config.kind === 'versus'` is spelled out rather than "not record" so a third room kind is
+   * refused until somebody decides otherwise: this list errs toward refusing.
+   */
+  allowsImportedRobots(): boolean {
+    return !this.ranked && !this.pendingMatch && this.config.kind === 'versus';
+  }
+
+  /**
+   * WHAT THE ROOM HOLDS, as far as imported robots go (`importAdmission` reads it). `hasImport`
+   * looks at every seat's CURRENT robot and, while a match is being played, at the match's own
+   * setups: a spectator arriving mid-match steps those, not the lobby's. After a match ends the
+   * lobby's robots are what a rejoin will field, so the setups stop counting.
+   *
+   * ⚠️ `capless` is over seats AND spectators — a spectator steps the world like a driver's
+   * client does, so one on a build without imports would draw and predict a standard robot too.
+   *
+   * `ids` are the robot ids the seats hold, held seats included; `except` leaves one seat's out (a
+   * seat re-picking may keep its own id).
+   */
+  importState(except?: string): ImportRoomState {
+    let hasImport = this.phase === 'match' && setupsHaveImported(this.matchSetups);
+    let capless = false;
+    const ids: string[] = [];
+    for (const c of this.clients.values()) {
+      if (isImportedSpec(c.player.spec)) hasImport = true;
+      if (!hasImportCap(c.caps)) capless = true;
+      const id = c.id === except ? undefined : importIdOf(c.player.spec);
+      if (id !== undefined) ids.push(id);
+    }
+    for (const s of this.spectators.values()) if (!hasImportCap(s.caps)) capless = true;
+    return { allows: this.allowsImportedRobots(), hasImport, capless, ids };
   }
 
   private broadcastRoster(): void {
@@ -3946,5 +4360,25 @@ export class Room {
       'Match cancelled - an opponent did not connect.',
       this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
     );
+  }
+}
+/** The `name` an auto file declares, for the roster; never throws. */
+function autoNameOf(z: ZenithAutoSetup): string | undefined {
+  try {
+    const name = (JSON.parse(z.auto) as { name?: unknown }).name;
+    return typeof name === 'string' ? name.slice(0, 60) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The canonical start pose that seats a robot where its auto starts, or null when it cannot load. */
+function zenithStartPose(z: ZenithAutoSetup, alliance: Alliance, spec: RobotSpec, game: GameId): StartPose | null {
+  const adapter = autoAdapterFor(game);
+  if (!adapter) return null;
+  try {
+    return autoStartPose(loadZenithAuto(z, alliance, spec, adapter), alliance, adapter);
+  } catch {
+    return null;
   }
 }

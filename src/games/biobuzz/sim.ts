@@ -128,6 +128,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   startAnchorName: bbAnchorName,
   // BIOBUZZ's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
   autoPaths: false,
+  // Zenith `*.auto.json` autos, driven by an auto seat (docs/area/autos.md)
+  zenithAutos: true,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzSimWorld,

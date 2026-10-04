@@ -4,14 +4,14 @@ import {
   DEFAULT_SPEC,
   coerceSpec,
   coerceAssists,
-  coerceAutoPath,
   coerceStartPose,
   defaultAssistsFor,
   PLAYER_ASSISTS,
   type RobotSetup,
 } from './sim/spawn';
-import { MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS_SUPPORTER } from './config';
+import { MAX_SAVED_ROBOTS, MAX_SAVED_STARTS_SUPPORTER } from './config';
 import { GAME_IDS, isGameId } from './games/types';
+import { isImportedSpec } from './net/imported';
 // the BIOBUZZ base robot, for `GAME_DEFAULT_SPEC`. `games/biobuzz/coerce.ts` is a LEAF of the
 // spawn chokepoint (its own header states the rule), so this reaches no further than the
 // `sim/spawn` import above already does.
@@ -140,6 +140,12 @@ export function practiceSeatsFor(s: GameSettings, game: GameId): PracticeSeats {
  * driver is None, the same way the Practice card does not offer one there. An AI seat in FREE
  * DRIVE plays as it would in teleop: there is no clock for it to read, only the field.
  *
+ * `playerIndex` is the anchor the player is really on. It is `s.startIndex` unless something
+ * else seats the player: a Zenith auto puts the robot where the file starts, and the partner has
+ * to take the anchor away from THAT (the controller asks the auto adapter's `defaultStartNear`).
+ * Reading the setting there put the partner on the auto's own start, and the two robots spawned
+ * inside each other.
+ *
  * Returns the setups to append after the player's (id 0) and, per AI robot id, the tier its
  * driver is to be seated at.
  */
@@ -147,11 +153,12 @@ export function practiceSetups(
   s: GameSettings,
   game: GameId,
   seed: number,
+  playerIndex: number = s.startIndex,
 ): { setups: RobotSetup[]; botTiers: Map<number, string> } {
   const botDriver = simModuleFor(game).bot;
   const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
   const places: [id: number, alliance: Alliance, startIndex: number][] = [
-    [1, s.alliance, s.startIndex === 1 ? 0 : 1],
+    [1, s.alliance, playerIndex === 1 ? 0 : 1],
     [2, opp, 0],
     [3, opp, Math.min(1, startPoseCount(game) - 1)],
   ];
@@ -212,6 +219,7 @@ function cloneMobileLayout(l: GameSettings['mobileLayout']): GameSettings['mobil
 function pickLoadout(s: GameSettings): GameLoadout {
   return {
     spec: s.spec,
+    lastStandardSpec: s.lastStandardSpec,
     savedRobots: s.savedRobots,
     startIndex: s.startIndex,
     startPose: s.startPose ?? null,
@@ -253,6 +261,74 @@ function defaultSpecFor(game: GameId): RobotSpec {
   return GAME_DEFAULT_SPEC[game] ?? DEFAULT_SPEC;
 }
 
+// ---- THE STANDARD ROBOT (imported robots play in custom rooms only) ---------------------------
+//
+// Ranked, rated challenges and record runs refuse an imported robot (`server/index.ts`, and
+// `docs/area/netcode.md` IMPORTED ROBOTS). Refusing at the door is the server's job; these are the
+// client's half, so a player whose ACTIVE robot is an import is never sent to a door that will
+// turn them away. They play the most recent standard robot this game had, and the picker offers
+// standard robots only.
+
+/** a robot read off storage or the account that must be a STANDARD one: coerced like any robot,
+ *  and dropped (not repaired) if it carries an import, since the point of the field is to hold one
+ *  that does not */
+function coerceStandardSpec(raw: unknown, game: GameId): RobotSpec | undefined {
+  if (typeof raw !== 'object' || raw === null || isImportedSpec(raw)) return undefined;
+  const spec = coerceSpec(raw, undefined, game);
+  return isImportedSpec(spec) ? undefined : spec;
+}
+
+/** the build a picker compares robots by (the six fields `MatchStrategy` always has) plus the name */
+export const sameBuild = (a: RobotSpec, b: RobotSpec): boolean =>
+  a.name === b.name &&
+  a.length === b.length &&
+  a.width === b.width &&
+  a.intake === b.intake &&
+  a.drivetrain === b.drivetrain &&
+  a.driveRpm === b.driveRpm &&
+  a.massLb === b.massLb;
+
+/**
+ * Keep `lastStandardSpec` current as the settings change. Called from `App`'s `update()`, the one
+ * choke point every settings write passes through:
+ *  · the active robot is standard ⇒ it IS the last standard robot;
+ *  · it just became an import, and nothing was remembered yet ⇒ keep the standard one it replaced.
+ * Returns `next` itself when there is nothing to change.
+ */
+export function rememberStandardRobot(prev: GameSettings, next: GameSettings): GameSettings {
+  if (!isImportedSpec(next.spec)) {
+    return next.lastStandardSpec === next.spec ? next : { ...next, lastStandardSpec: next.spec };
+  }
+  if (!next.lastStandardSpec && prev.game === next.game && !isImportedSpec(prev.spec)) {
+    return { ...next, lastStandardSpec: prev.spec };
+  }
+  return next;
+}
+
+/** the STANDARD robots this game offers where an import is not allowed: the last standard one
+ *  first (the preselected card), then the active robot if it is standard, then the saved robots */
+export function standardRobotChoices(s: GameSettings): RobotSpec[] {
+  const out: RobotSpec[] = [];
+  const add = (r: RobotSpec | undefined): void => {
+    if (r && !isImportedSpec(r) && !out.some((o) => sameBuild(o, r))) out.push(r);
+  };
+  add(s.lastStandardSpec);
+  add(s.spec);
+  for (const r of s.savedRobots) add(r);
+  return out;
+}
+
+/**
+ * THE ROBOT TO PLAY WHERE AN IMPORT IS NOT ALLOWED (ranked, record runs, a custom room on a server
+ * without imports): the active robot when it is standard, else the last standard one, else a saved
+ * standard robot, else this game's default. Always a standard spec.
+ */
+export function standardRobotFor(s: GameSettings): RobotSpec {
+  if (!isImportedSpec(s.spec)) return s.spec;
+  const seed = defaultSpecFor(s.game);
+  return standardRobotChoices(s)[0] ?? coerceSpec(seed, seed, s.game);
+}
+
 /** a fresh loadout for a game: its default robot + empty libraries */
 function defaultLoadout(game: GameId): GameLoadout {
   const d = defaultSettings();
@@ -263,6 +339,9 @@ function defaultLoadout(game: GameId): GameLoadout {
     // carries `bbMech`/`heightIn`/`stowHeightIn`/`bbPassTarget`/`massLb` across from the RAW
     // object by name. Passing the seed as `base` alone would drop every one of them.
     spec: coerceSpec(seed, seed, game),
+    // KEY PRESENT, value absent: `switchGame` spreads this over the flat settings, and an absent KEY
+    // would leave the game it just left holding its standard robot in this one
+    lastStandardSpec: undefined,
     savedRobots: [],
     startIndex: d.startIndex,
     startPose: null,
@@ -303,6 +382,7 @@ function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
     : {};
   return {
     spec: r.spec !== undefined ? coerceSpec(r.spec, DEFAULT_SPEC, game) : d.spec,
+    lastStandardSpec: coerceStandardSpec(r.lastStandardSpec, game),
     savedRobots: Array.isArray(r.savedRobots)
       ? r.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((x) => coerceSpec(x, undefined, game))
       : d.savedRobots,
@@ -415,16 +495,17 @@ export function coerceSettings(raw: unknown): GameSettings {
       out.spec = { ...out.spec, assists: coerceAssists(s.assists, PLAYER_ASSISTS) };
     }
     out.assists = coerceAssists(out.spec.assists, PLAYER_ASSISTS);
+    // the last STANDARD robot (ranked / record fall back to it while the active one is imported):
+    // coerced like any robot, and dropped, not repaired, if it is an import
+    const lastStandard = coerceStandardSpec(s.lastStandardSpec, out.game);
+    if (lastStandard) out.lastStandardSpec = lastStandard;
     // saved libraries: validate each entry through the same coercers, cap the count
     if (Array.isArray(s.savedRobots)) {
       out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r, undefined, out.game));
     }
-    if (Array.isArray(s.savedAutos)) {
-      out.savedAutos = s.savedAutos
-        .map((a) => coerceAutoPath(a))
-        .filter((a): a is NonNullable<typeof a> => a !== null)
-        .slice(0, MAX_SAVED_AUTOS);
-    }
+    // `savedAutos` (the `.pp` library) is NOT read back: that import is gone (owner, 2026-09-25),
+    // so a stored library is dropped here and never reaches a world. Autos are Zenith files now
+    // (`src/auto/library.ts`, device-local).
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, startPoseCount(out.game) - 1);
     }
@@ -585,20 +666,8 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     out.bindings = mergeBindings(s.bindings);
 
-    // Load autoPath and autoPathEnabled (validated + field-clamped by coerceAutoPath)
-    const autoPath = coerceAutoPath(s.autoPath);
-    if (autoPath) {
-      out.autoPath = autoPath;
-      // If autoPathEnabled is not explicitly set or is invalid, enable it if a path is loaded
-      if (typeof s.autoPathEnabled === 'boolean') {
-        out.autoPathEnabled = s.autoPathEnabled;
-      } else {
-        out.autoPathEnabled = true;
-      }
-    } else {
-      out.autoPath = null;
-      out.autoPathEnabled = false;
-    }
+    // `autoPath` / `autoPathEnabled` are not read back either (see `savedAutos` above): the
+    // defaults stand, no path and off.
 
   } catch {
     /* corrupt data — defaults */

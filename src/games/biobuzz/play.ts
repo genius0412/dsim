@@ -1,6 +1,6 @@
-import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
-import { clamp, hyp, nextRandom, rot, wrapAngle } from '../../math';
+import { clamp, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
 import { simModuleFor } from '../sim';
 import { stepGroundBall } from '../../sim/physics';
@@ -8,6 +8,7 @@ import { robotSolids, type RobotSolids } from '../../sim/artifactSolids';
 import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
+  BB_FIXED_AIM_TOL_PRE4,
   BB_FLOWERS,
   BB_FLOWER_RETRIEVE_S,
   BB_FLOWER_UNLOCK_S,
@@ -15,7 +16,6 @@ import {
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HOOD_DEFAULT_DEG,
-  BB_LAUNCH_Z0,
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
@@ -23,7 +23,7 @@ import {
   bbFlowerReachOf,
   bbHopperCap,
   bbLoadingZoneSpot,
-  bbSideRollerY,
+  BB_SIDE_ROLLER_PROTRUDE,
   type BbFlowerReach,
 } from './config';
 import { biobuzzColliders } from './colliders';
@@ -36,6 +36,7 @@ import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './element
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbDumpZ, bbSideRollerOffsets, importSideRollersPre6 } from './importMech';
 import {
   type BbMouthAxes,
   type BbShot,
@@ -53,11 +54,16 @@ import {
   bbRampSwingProgress,
   bbSlewTurret,
   bbTurretRelease,
+  bbFixedRelease,
+  bbFixedFacing,
+  bbFootprint,
   bbTurretOnTarget,
   bbTurretSolution,
   mouthAxes,
 } from './robot';
 import { type BiobuzzState, type ScoreTarget, type Vec3 } from './state';
+import { flyExitSpeed, flyStep } from '../../sim/flywheel';
+import { fixedAimTurn } from '../../sim/aimTurn';
 
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
@@ -735,7 +741,15 @@ export function updateBiobuzz(
     const pretend = bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(bbAimTarget(world, rob)));
     // `lands` is read only while the driver is holding fire (or pass), so only then is it predicted.
     const asking = enabled && ((cmds.get(rob.id)?.fire ?? false) || passing) && rob.hopper.length > 0;
-    if (bbIsTurreted(launcher)) {
+    // A SETPOINT FLYWHEEL ramps, and its preset button steps, every tick (nothing for any other
+    // build). BEFORE the landing prediction, so it predicts the speed the wheel has this tick.
+    flyStep(rob, cmds.get(rob.id), enabled, world.time, dt);
+    if (launcher.kind === 'fixed') {
+      // A FIXED LAUNCHER lands when the release it would make NOW — at this tick's wheel speed,
+      // along the chassis it does not aim — runs forward into the pretend-up cell. The assist
+      // turns the chassis while fire is held (step.ts); nothing here can change the arc's reach.
+      shots.set(rob.id, { target, speed: [], lands: [asking && bbFixedShotEnters(pretend, rob, dt)] });
+    } else if (bbIsTurreted(launcher)) {
       // EVERY TURRET: one for a single turret, both for a double (POLLEN turret 0, NECTAR 1).
       const speed: (number | undefined)[] = [];
       const lands: boolean[] = [];
@@ -983,30 +997,54 @@ export interface BbFlowerIntakeHit {
   ax: BbMouthAxes;
 }
 
-export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFlowerIntakeHit | null {
+/**
+ * How the gate is asked. `pre6`: a replay recorded before `SIM_PATCH` 6 (`importSideRollersPre6`),
+ * which places an import's side rollers by the standard rule and measures them from the roller
+ * line in 2D too. `twoD`: the caller is 2D's `retrieveFromFlower`.
+ */
+export interface BbFlowerGateOpts {
+  pre6?: boolean;
+  twoD?: boolean;
+}
+
+export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach, opts: BbFlowerGateOpts = {}): BbFlowerIntakeHit | null {
   const mouths = bbMouths(r.spec);
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
+  const pre6 = opts.pre6 ?? false;
   for (let i = 0; i < BB_FLOWERS.length; i++) {
     const f = BB_FLOWERS[i];
     const local = rot({ x: f.x - r.pos.x, y: f.y - r.pos.y }, -r.heading);
     for (const m of mouths) {
       const ax = mouthAxes(m, hl, hw);
-      const v = local.x * ax.p.x + local.y * ax.p.y;
+      const v = local.x * ax.p.x + local.y * ax.p.y - ax.vc;
       const u = local.x * ax.n.x + local.y * ax.n.y - ax.uOut;
       if (reach.edgeGrip !== undefined) {
         // SIDE ROLLERS ARE A SOLID WHEEL NOW, SO THE GATE IS CONTACT, NOT A LATERAL BAND PLUS A
         // SEPARATE X-BITE (owner, 2026-09-20: "it should also be colliding with everything. It
         // is a physical thing"). `reach.out`'s own midpoint is the wheel's axis past the tip
-        // line; each wheel sits at `±bbSideRollerY(ax.half)` off the centreline; the POLLEN is
+        // line; each wheel sits at `±bbSideRollerY(ax.half)` off the centreline (an IMPORT's
+        // inside its own hull, `bbSideRollerOffsets`); the POLLEN is
         // gripped when its centre is within `edgeGrip` (a RADIUS — `BB_SIDE_ROLLER_GRIP`) of
         // EITHER wheel's own axis, in the full (u, v) plane. Same predicate in 2D (which has no
         // solid wheel, so the robot CAN overlap) and 3D (`flowerRetrieve3d` calls this same
         // function) — see `config.ts`'s own header on `BB_SIDE_ROLLER_R` for why the box-BITE
         // test this replaced stopped matching a real drive-in once the wheel became solid.
-        const wy = bbSideRollerY(ax.half);
-        const uw = (reach.out[0] + reach.out[1]) / 2;
-        const near = Math.min(hyp(u - uw, v - wy), hyp(u - uw, v + wy));
+        const [wl, wr] = bbSideRollerOffsets(r.spec, ax, pre6);
+        let uw = (reach.out[0] + reach.out[1]) / 2;
+        /**
+         * ⚠️ **AN IMPORT IN 2D IS MEASURED FROM ITS HULL'S FRONT** (`SIM_PATCH` 6). The 2D FLOWER
+         * foot is one solid rectangle, with no retrieval window in it. A standard robot's 2D
+         * footprint ends at the roller line and its wheel (drawing only) overlaps the foot by
+         * `BB_SIDE_ROLLER_PROTRUDE`; an import's hull HOLDS its CAD wheels, so the hull's front,
+         * `BB_SIDE_ROLLER_PROTRUDE` past the roller line, is what meets the foot, and the wheel
+         * axis then sat 3.88 in from the ring axis against a 3.25 grip: 2D took a POLLEN only
+         * when a yawed corner happened to swing a wheel in. In 3D the body ends at the roller line
+         * and the wheel goes that far into the window (`bbImportClipReach`), so 2D credits the
+         * same depth.
+         */
+        if (opts.twoD && !pre6 && r.spec.imported) uw += BB_SIDE_ROLLER_PROTRUDE;
+        const near = Math.min(hyp(u - uw, v - wl), hyp(u - uw, v + wr));
         if (near > reach.edgeGrip) continue;
         return { i, ax };
       }
@@ -1017,8 +1055,8 @@ export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFl
   return null;
 }
 
-export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | null {
-  return bbFlowerAtIntakeMouth(r, reach)?.i ?? null;
+export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach, opts: BbFlowerGateOpts = {}): number | null {
+  return bbFlowerAtIntakeMouth(r, reach, opts)?.i ?? null;
 }
 
 /**
@@ -1053,7 +1091,7 @@ export function retrieveFromFlower(
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
   const reach = bbFlowerReachOf(bbIntakeKindOf(rob.spec), bbRampSettled(rob, world.time));
   if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
-  const i = bbFlowerAtIntake(rob, reach);
+  const i = bbFlowerAtIntake(rob, reach, { pre6: importSideRollersPre6(world), twoD: true });
   if (i === null) return false;
   const flower = bb.flowers[i];
   const { id } = flowerRetrieve(flower.stack, kindOf);
@@ -1094,7 +1132,7 @@ export function retrieveFromFlower(
 function bbRampFootprintCorners(rob: RobotState, ax: BbMouthAxes): Vec2[] {
   const corners: Vec2[] = [];
   for (const u of [ax.uOut, ax.uOut + BB_RAMP_OUT]) {
-    for (const v of [-ax.half, ax.half]) {
+    for (const v of [ax.vc - ax.half, ax.vc + ax.half]) {
       const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
       const w = rot(local, rob.heading);
       corners.push({ x: rob.pos.x + w.x, y: rob.pos.y + w.y });
@@ -1275,6 +1313,80 @@ export function bbTurretShotEnters(
 }
 
 /**
+ * WOULD A FIXED LAUNCHER'S SHOT GO IN — the release it would make NOW (`bbFixedRelease`, at the
+ * speed the wheel is turning this tick) run forward through the flight stage. Stage 5b, 3D's stage
+ * 11 and `shotPath.ts` all ask this one predicate, the `bbTurretShotEnters` rule.
+ */
+export function bbFixedShotEnters(
+  hive: BiobuzzState['hives'][Alliance],
+  r: RobotState,
+  dt: number,
+  trace?: BbFlightTrace,
+): boolean {
+  const rel = bbFixedRelease(r, flyExitSpeed(r));
+  return bbFlightEnters(hive, r.alliance, rel.origin, rel.z, rel.vel, dt, trace);
+}
+
+/** one band per BUILD (`bbFixedBand`) — a pure function of the spec, measured once */
+const FIXED_BAND_CACHE = new Map<string, readonly [number, number] | null>();
+
+/**
+ * WHERE A FIXED LAUNCHER SCORES FROM — the range of distances (robot centre to cell centre, on the
+ * cell's mouth axis, the robot facing it, parked, the wheel at its first setpoint) from which the
+ * shot enters a settled up-cell: the run nearest the cell, or `null` when it scores from nowhere.
+ * Measured by running `bbFixedShotEnters` itself at every inch, so it is the fire gate's own
+ * answer and not a second ballistics. The AI stands in it (`ai/policy.ts`); smoke prints it.
+ *
+ * Cached per build, keyed on everything the release reads. Pure, so the cache cannot make two
+ * machines disagree.
+ */
+export function bbFixedBand(spec: RobotSpec): readonly [number, number] | null {
+  const l = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  if (l.kind !== 'fixed') return null;
+  const key = JSON.stringify([spec.length, spec.width, l, spec.flywheel, spec.imported?.hull, spec.imported?.mech, spec.imported?.heightIn]);
+  const hit = FIXED_BAND_CACHE.get(key);
+  if (hit !== undefined) return hit;
+  const hive: BiobuzzState['hives'][Alliance] = { up: 'north', contents: [], tips: 0, tipping: 0, released: false };
+  const cell = hiveCellTarget('blue', 'north');
+  const face = bbFixedFacing(spec);
+  const rpm = spec.flywheel?.rpm[0] ?? 0;
+  // ...and only where the robot fits on the field: past the wall is a pose nobody can drive to.
+  // The footprint's reach toward the wall (+y) at the pose the robot is parked in: its rear for a
+  // front launcher, its FRONT (the sweeper's reach included) for a back one, a flank for a side one.
+  const fp = bbFootprint(spec);
+  const heading = -Math.PI / 2 - face;
+  const sh = dsin(heading);
+  const ch = dcos(heading);
+  let toWall = 0;
+  for (const [x, y] of [[fp.front, fp.half], [fp.front, -fp.half], [-fp.rear, fp.half], [-fp.rear, -fp.half]]) {
+    toWall = Math.max(toWall, x * sh + y * ch);
+  }
+  let lo = -1;
+  let hi = -1;
+  for (let d = 4; cell.pos.y + d + toWall <= BB_HALF_Y + 1e-9; d++) {
+    const r = {
+      id: -1,
+      alliance: 'blue',
+      spec,
+      pos: { x: cell.pos.x, y: cell.pos.y + d },
+      heading,
+      vel: { x: 0, y: 0 },
+      angVel: 0,
+      flyRpm: rpm,
+    } as unknown as RobotState;
+    if (bbFixedShotEnters(hive, r, C.SIM_DT)) {
+      if (lo < 0) lo = d;
+      hi = d;
+    } else if (lo >= 0) {
+      break;
+    }
+  }
+  const band = lo < 0 ? null : ([lo, hi] as const);
+  FIXED_BAND_CACHE.set(key, band);
+  return band;
+}
+
+/**
  * WOULD THIS DUMP GO IN — every element of it, which is the same verdict a dump gets when it is
  * fired: one arc short is a dump that drops elements on the tiles.
  *
@@ -1311,7 +1423,7 @@ export function bbDumpShotEnters(
   if (!throws || throws.length === 0) return false;
   const mid = (throws.length - 1) >> 1;
   for (let i = 0; i < throws.length; i++) {
-    const ok = bbFlightEnters(hive, r.alliance, throws[i].origin, BB_LAUNCH_Z0, throws[i].vel, dt, i === mid ? traceMid : undefined);
+    const ok = bbFlightEnters(hive, r.alliance, throws[i].origin, bbDumpZ(r.spec), throws[i].vel, dt, i === mid ? traceMid : undefined);
     if (!ok) return false;
   }
   return true;
@@ -1407,9 +1519,12 @@ function traceWrite(t: BbFlightTrace, x: number, y: number, z: number): void {
  * 2). A turret aims itself and never gets an override — steering the chassis for a turret
  * would fight the driver for no benefit.
  *
- * A P-controller on the heading error, dead-banded by `BB_AIM_TOL` so a robot already lined up
- * does not oscillate. It steers toward `bbAimTarget` — the nearer own cell, whichever way the
- * HIVE is tilted — exactly the cell stage 5b asks the dump to land in.
+ * A DUMPER: a P-controller on the heading error, dead-banded by `BB_AIM_TOL` so a robot already
+ * lined up does not oscillate. A FIXED launcher: the shared chassis-aim controller
+ * (`fixedAimTurn`, DECODE's fixed launcher uses the same one), which brakes onto the heading and
+ * holds it — its arc is not re-solved for where the robot points, so it has to stand ON the line,
+ * not somewhere inside a dead band. Both steer toward `bbAimTarget` — the nearer own cell,
+ * whichever way the HIVE is tilted — exactly the cell stage 5b asks the shot to land in.
  */
 export function bbAimAssist(
   world: World,
@@ -1418,10 +1533,15 @@ export function bbAimAssist(
   enabled: boolean,
 ): number | null {
   if (!enabled || !cmd.fire || !r.aimAssist) return null;
-  const want = bbAimHeading(r, bbAimTarget(world, r));
+  // a replay recorded before `SIM_PATCH` 4 keeps the fixed launcher's old aim: led by the muzzle's
+  // spin velocity too, and the dumper's P-controller dead-banded at `BB_FIXED_AIM_TOL_PRE4`
+  const pre4 = !C.simPatchAtLeast(world, 4);
+  const want = bbAimHeading(r, bbAimTarget(world, r), pre4);
   if (want === null) return null; // turreted: the turret does this
   const err = wrapAngle(want - r.heading);
-  if (Math.abs(err) < BB_AIM_TOL) return 0; // lined up — hold still rather than hunt
+  const fixed = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG).kind === 'fixed';
+  if (fixed && !pre4) return fixedAimTurn(r, err);
+  if (Math.abs(err) < (fixed ? BB_FIXED_AIM_TOL_PRE4 : BB_AIM_TOL)) return 0; // lined up — hold still rather than hunt
   return clamp(err * BB_AIM_GAIN, -1, 1);
 }
 

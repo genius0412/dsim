@@ -17,10 +17,13 @@
  * "physics broke"), so this is its own script.
  */
 import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueEntry } from '../server/matchmaking';
-import type { PendingMatch } from '../server/matchTypes';
+import { isStagedRoomCode, type PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
 import { DEPLOY_REGIONS, RTT_UNKNOWN, bestHost, interRegionMs } from '../server/regions';
-import { SKILL_BASE, skillCeiling } from '../server/matchmaking';
+import {
+  SKILL_BASE, skillCeiling, bestSplit, mmNumber, RATING_WAIT_MS, TEAM_BAND_BASE, teamBandCeiling,
+  skillOf,
+} from '../server/matchmaking';
 import { readFileSync } from 'node:fs';
 
 let passed = 0;
@@ -139,10 +142,13 @@ const namesOf = (m: PendingMatch | undefined): string =>
   check('open 1v1: two waiters pair', staged.length === 1);
   check('open 1v1: staged ranked', staged[0]?.ranked === true);
   check('open 1v1: one per alliance', new Set(staged[0]?.roster.map((r) => r.alliance)).size === 2);
+  // the join path refuses a dead room by this shape, so every minted code has to have it
+  check('open 1v1: the room code is a matchmaker code', isStagedRoomCode(staged[0]?.code ?? ''), staged[0]?.code);
 }
 {
   const { staged } = await pair(['a', 'b', 'c', 'd'].map((id) => entry(id, '2v2')));
   check('open 2v2: four waiters pair', staged.length === 1);
+  check('open 2v2: the room code is a matchmaker code', isStagedRoomCode(staged[0]?.code ?? ''), staged[0]?.code);
   check('open 2v2: two per alliance', staged[0]?.roster.filter((r) => r.alliance === 'red').length === 2);
 }
 {
@@ -556,7 +562,8 @@ const namesOf = (m: PendingMatch | undefined): string =>
   const mm = new Matchmaker({
     now: () => 0,
     stage: async (m) => { staged.push(m); },
-    rating: async (userId) => ({ rating: userId === 'u-i1' ? 1234 : 1567, placed: true }),
+    // inside the opening skill band of each other, so the gate is not what this is about
+    rating: async (userId) => ({ rating: userId === 'u-i1' ? 1234 : 1300, placed: true }),
   });
   mm.enqueue(entry('i1', '1v1', { userId: 'u-i1' }));
   await new Promise((r) => setTimeout(r, 0)); // the first player's rating lands
@@ -565,11 +572,11 @@ const namesOf = (m: PendingMatch | undefined): string =>
   const elos = (staged[0]?.roster ?? []).map((r) => r.introElo);
   check('rating: the intro card is served from the stamp, not a fresh query',
     elos.includes(1234), JSON.stringify(elos));
-  // and the SECOND player, who paired before their own read resolved, falls through to
-  // the DB path — null here, because this harness has no database. That is the fallback
-  // working: an absent stamp must read as "Unranked", never as a fabricated 1000.
-  check('rating: an unstamped player falls back rather than inventing a rating',
-    elos.length === 2 && elos.includes(null), JSON.stringify(elos));
+  // and the SECOND player no longer pairs before their own read resolves: they are held
+  // for it (RATING_WAIT_MS), so both intro cards come from a stamp and nothing falls
+  // through to the DB path at all
+  check('rating: the second player waited for their own stamp too',
+    elos.length === 2 && elos.includes(1300) && !elos.includes(null), JSON.stringify(elos));
 }
 
 // ---- the fleet and the code must name the same regions ----------------------
@@ -861,11 +868,13 @@ const namesOf = (m: PendingMatch | undefined): string =>
   // the feature it runs after — a friend queue that puts the two friends on opposite sides.
   const r = (rating: number, extra: Partial<QueueEntry> = {}): Partial<QueueEntry> =>
     ({ rating, placed: true, ...extra } as Partial<QueueEntry>);
+  // inside the opening team band as the premade stands (means 1125 v 1090), while the split
+  // p1+s2 / p2+s1 (2230 v 2200) would be closer still
   const { staged } = await pair([
     entry('p1', '2v2', r(1150, { party: 'tok', partySize: 2 })),
     entry('p2', '2v2', r(1100, { party: 'tok', partySize: 2 })),
-    entry('s1', '2v2', r(1000)),
-    entry('s2', '2v2', r(980)),
+    entry('s1', '2v2', r(1100)),
+    entry('s2', '2v2', r(1080)),
   ]);
   const al = alliancesOf(staged[0]);
   check('balance: a premade stays on ONE alliance even when splitting it would be fairer',
@@ -879,6 +888,218 @@ const namesOf = (m: PendingMatch | undefined): string =>
   ]);
   check('balance: an unrated 2v2 is staged untouched', staged.length === 1 &&
     (staged[0]?.roster ?? []).length === 4, `${staged.length}`);
+}
+
+// ---- 2v2 is gated on the TEAMS, and balanced on everyone (2026-09-27) --------
+// A 2v2 is rated alliance mean against alliance mean, so the pairing question is how even
+// the best split is, not how far apart the best and worst player are.
+{
+  check('team band: opens at TEAM_BAND_BASE', teamBandCeiling(0, 0) === TEAM_BAND_BASE);
+  check('team band: widens on the radius clock', teamBandCeiling(3000, 0) > TEAM_BAND_BASE);
+  check('team band: and goes unbounded with the skill band, so nobody starves',
+    teamBandCeiling(6000, 0) === Infinity);
+}
+{
+  // (1500, 1000) against (1500, 1000) is dead even. The old span gate (500 > 200) held it for
+  // six seconds; the team gate takes it at once and splits it evenly.
+  const r = (rating: number): Partial<QueueEntry> => ({ rating, placed: true } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('h1', '2v2', r(1500)), entry('h2', '2v2', r(1500)),
+    entry('l1', '2v2', r(1000)), entry('l2', '2v2', r(1000)),
+  ]);
+  const al = alliancesOf(staged[0]);
+  check('team gate: a wide but EVEN four pairs at once', staged.length === 1, `${staged.length}`);
+  check('team gate: ...split one high and one low a side',
+    !!al['h1'] && al['h1'] !== al['h2'] && al['l1'] !== al['l2'], JSON.stringify(al));
+}
+{
+  // a premade of two 1800s cannot be evened up by two 1000 solos: that waits for the band
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  const r = (rating: number, extra: Partial<QueueEntry> = {}): Partial<QueueEntry> =>
+    ({ rating, placed: true, ...extra } as Partial<QueueEntry>);
+  mm.enqueue(entry('p1', '2v2', r(1800, { party: 'big', partySize: 2 })));
+  mm.enqueue(entry('p2', '2v2', r(1800, { party: 'big', partySize: 2 })));
+  mm.enqueue(entry('s1', '2v2', r(1000)));
+  mm.enqueue(entry('s2', '2v2', r(1000)));
+  await new Promise((res) => setTimeout(res, 0));
+  check('team gate: a lopsided four (1800+1800 premade v 1000+1000) does not pair on the opening band',
+    staged.length === 0, `${staged.length}`);
+  t = 6000;
+  mm.tick();
+  await new Promise((res) => setTimeout(res, 0));
+  check('team gate: ...and pairs once the band opens, so it can delay but never prevent',
+    staged.length === 1, `${staged.length}`);
+}
+{
+  // no numbers ⇒ no gate: two unrated players in a four still pair at once
+  const r = (rating: number): Partial<QueueEntry> => ({ rating, placed: true } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('k1', '2v2', r(1800)), entry('k2', '2v2', r(1800)), entry('u1', '2v2'), entry('u2', '2v2'),
+  ]);
+  check('team gate: a four with unrated players is not gated', staged.length === 1, `${staged.length}`);
+  const al = alliancesOf(staged[0]);
+  check('balance: ...and is STILL balanced — the known players are split, the unknowns too',
+    !!al['k1'] && al['k1'] !== al['k2'], JSON.stringify(al));
+}
+{
+  // THE SEED: an unplaced 2v2 player is balanced on their placed 1v1 rating
+  const seeded = (seed: number): Partial<QueueEntry> => ({ rating: 1000, placed: false, seed } as Partial<QueueEntry>);
+  const placedAt = (rating: number): Partial<QueueEntry> => ({ rating, placed: true } as Partial<QueueEntry>);
+  check('seed: a placed rating wins over a seed', mmNumber(entry('x', '2v2', { rating: 1300, placed: true, seed: 900 } as Partial<QueueEntry>)) === 1300);
+  check('seed: an unplaced player reads their seed', mmNumber(entry('x', '2v2', seeded(1600))) === 1600);
+  check('seed: nothing known reads undefined, never the 1000 default', mmNumber(entry('x', '2v2', { rating: 1000, placed: false } as Partial<QueueEntry>)) === undefined);
+  const split = bestSplit([
+    entry('a', '2v2', placedAt(1600)), entry('b', '2v2', seeded(1600)),
+    entry('c', '2v2', placedAt(1000)), entry('d', '2v2', seeded(1000)),
+  ]);
+  const red = split.group.slice(0, 2).map((e) => e.id).sort().join('');
+  check('seed: the split uses it — the two 1600s end up on opposite alliances',
+    red === 'ac' || red === 'ad' || red === 'bc' || red === 'bd', red);
+  check('seed: ...and a four known through seeds counts as known for the gate', split.known);
+}
+// ---- a 2v2 is balanced on the 2v2 rating, the card's number (2026-10-03) ---------
+// The seed was the placed 1v1 rating (09-27), then a blend with the 1v1 board (10-02). The owner
+// found the splits weird, and over BIOBUZZ Act 2's 2v2s the card predicted results better.
+{
+  check('seed: a placed 2v2 board is the number, with no seed', JSON.stringify(skillOf('2v2', { rating: 1320, games: 7 })) === JSON.stringify({ rating: 1320, placed: true }));
+  const prov = skillOf('2v2', { rating: 1240, games: 3 });
+  check('seed: three 2v2 games balance at that provisional rating', !prov.placed && prov.seed === 1240, JSON.stringify(prov));
+  check('seed: no 2v2 game yet is no number (1000 in the split, no gate), whatever the 1v1 board says',
+    skillOf('2v2', { rating: 1000, games: 0 }).seed === undefined);
+  check('seed: a 0-game row a behaviour charge made still reads its rating', skillOf('2v2', { rating: 950, games: 0 }).rating === 950);
+  check('seed: a 1v1 entry never takes a seed', skillOf('1v1', { rating: 1180, games: 2 }).seed === undefined);
+  // THE REPORTED CASE: four straight 2v2 losses, card 1000 → 763, with a 1190 1v1 board. The
+  // balancer must see 763, as the card does, not ~1000.
+  const loser = entry('z', '2v2', skillOf('2v2', { rating: 763, games: 4 }) as Partial<QueueEntry>);
+  check('seed: four 2v2 losses balance at the card’s 763', mmNumber(loser) === 763, String(mmNumber(loser)));
+}
+{
+  // THE REPORTED MATCH: four players with three 2v2 games each and no 1v1 placement. Before,
+  // all four read 1000, nothing moved, and red was 1240+1180 against 900+880.
+  const prov: Record<string, number> = { a: 1240, b: 1180, c: 900, d: 880 };
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => skillOf('2v2', { rating: prov[userId.slice(2)], games: 3 }),
+  });
+  for (const id of Object.keys(prov)) mm.enqueue(entry(id, '2v2'));
+  await new Promise((res) => setTimeout(res, 0));
+  await new Promise((res) => setTimeout(res, 0));
+  const al = alliancesOf(staged[0]);
+  const sum = (a: string): number => Object.keys(prov).filter((x) => al[x] === a).reduce((n, x) => n + prov[x], 0);
+  check('provisional: four unplaced 2v2 players pair at once', staged.length === 1, `${staged.length}`);
+  check('provisional: ...with the two strongest on opposite alliances', !!al['a'] && al['a'] !== al['b'], JSON.stringify(al));
+  check('provisional: ...and the alliance sums within 70', Math.abs(sum('red') - sum('blue')) <= 70,
+    `red ${sum('red')} blue ${sum('blue')}`);
+}
+{
+  // a provisional four that cannot be evened up is now gated like a placed one
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const prov: Record<string, number> = { p1: 1500, p2: 1450, s1: 1000, s2: 980 };
+  const mm = new Matchmaker({
+    now: () => t,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => skillOf('2v2', { rating: prov[userId.slice(2)], games: 2 }),
+  });
+  mm.enqueue(entry('p1', '2v2', { party: 'pp', partySize: 2 }));
+  mm.enqueue(entry('p2', '2v2', { party: 'pp', partySize: 2 }));
+  mm.enqueue(entry('s1', '2v2'));
+  mm.enqueue(entry('s2', '2v2'));
+  await new Promise((res) => setTimeout(res, 0));
+  await new Promise((res) => setTimeout(res, 0));
+  check('provisional: a lopsided premade four waits on the opening band', staged.length === 0, `${staged.length}`);
+  t = 6000;
+  mm.tick();
+  await new Promise((res) => setTimeout(res, 0));
+  check('provisional: ...and still pairs once the band opens', staged.length === 1, `${staged.length}`);
+}
+{
+  // THE FILL DRAWS TOGETHER BY THE SAME NUMBERS THE SPLIT USES. Five seeded players, one low.
+  // The old fill only saw PLACED ratings, so every span read 0 and it went FIFO: 1500, 1000,
+  // 1490, 1480, which no split can even up, waited out the band and was staged at 6 s as
+  // 1500+1000 against 1490+1480. The four highs are a dead-even match and pair at once.
+  const seeded = (seed: number): Partial<QueueEntry> => ({ rating: 1000, placed: false, seed } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('A', '2v2', seeded(1500)),
+    entry('low', '2v2', seeded(1000)),
+    entry('C', '2v2', seeded(1490)),
+    entry('D', '2v2', seeded(1480)),
+    entry('E', '2v2', seeded(1470)),
+  ]);
+  check('fill: a 2v2 fill draws the four closest seeded players together at once',
+    staged.length === 1 && namesOf(staged[0]) === 'A,C,D,E', `${staged.length} ${namesOf(staged[0])}`);
+}
+{
+  // THE SEED IS STAMPED BY THE SERVER, like the rating
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => ({ rating: 1000, placed: false, seed: userId.endsWith('hi') ? 1700 : 1100 }),
+  });
+  for (const id of ['s-hi', 't-hi', 's-lo', 't-lo']) mm.enqueue(entry(id, '2v2', { userId: `u-${id}` }));
+  await new Promise((res) => setTimeout(res, 0));
+  await new Promise((res) => setTimeout(res, 0));
+  const al = alliancesOf(staged[0]);
+  check('seed: a stamped seed balances a real pairing', staged.length === 1 && al['s-hi'] !== al['t-hi'],
+    JSON.stringify(al));
+}
+{
+  // THE RATING WAIT. An entry whose read is still in flight sits out, then pairs unrated.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => t,
+    stage: async (m) => { staged.push(m); },
+    rating: () => new Promise(() => {}), // a database that never answers
+  });
+  mm.enqueue(entry('w1', '1v1', { userId: 'u-w1' }));
+  mm.enqueue(entry('w2', '1v1', { userId: 'u-w2' }));
+  await new Promise((res) => setTimeout(res, 0));
+  check('rating wait: nobody pairs while their rating read is in flight', staged.length === 0, `${staged.length}`);
+  t = RATING_WAIT_MS;
+  mm.tick();
+  await new Promise((res) => setTimeout(res, 0));
+  check('rating wait: ...and a read that never lands costs RATING_WAIT_MS, not the match',
+    staged.length === 1, `${staged.length}`);
+}
+{
+  // PREMADE AGAINST PREMADE. Every rating read hangs, so the whole queue sits out until
+  // RATING_WAIT_MS and then comes onto the table AT ONCE: the premade anchor has two solos
+  // and another premade to choose from.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => t,
+    stage: async (m) => { staged.push(m); },
+    rating: () => new Promise(() => {}),
+  });
+  mm.enqueue(entry('P1', '2v2', { party: 'pa', partySize: 2 }));
+  mm.enqueue(entry('P2', '2v2', { party: 'pa', partySize: 2 }));
+  mm.enqueue(entry('s1', '2v2'));
+  mm.enqueue(entry('s2', '2v2'));
+  mm.enqueue(entry('Q1', '2v2', { party: 'qa', partySize: 2 }));
+  mm.enqueue(entry('Q2', '2v2', { party: 'qa', partySize: 2 }));
+  await new Promise((res) => setTimeout(res, 0));
+  t = RATING_WAIT_MS;
+  mm.tick();
+  await new Promise((res) => setTimeout(res, 0));
+  check('premade v premade: a premade anchor takes the other premade over two solos',
+    namesOf(staged[0]) === 'P1,P2,Q1,Q2', namesOf(staged[0]));
+  const al = alliancesOf(staged[0]);
+  check('premade v premade: ...one premade a side', al['P1'] === al['P2'] && al['Q1'] === al['Q2'] && al['P1'] !== al['Q1'],
+    JSON.stringify(al));
+  check('premade v premade: the staged roster carries each premade’s token for the rating update',
+    (staged[0]?.roster ?? []).every((r) => r.party === (r.name.startsWith('P') ? 'pa' : 'qa')),
+    (staged[0]?.roster ?? []).map((r) => `${r.name}:${r.party}`).join(','));
+}
+{
+  const { staged } = await pair([entry('solo1', '1v1'), entry('solo2', '1v1')]);
+  check('roster: a solo queuer stages with no party token', (staged[0]?.roster ?? []).every((r) => r.party === undefined));
 }
 
 // ---- WHICH PHYSICS A STAGED ROOM RUNS ON -----------------------------------

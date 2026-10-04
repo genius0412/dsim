@@ -18,6 +18,8 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
 import { flywheelSpinTarget } from '../sim/field';
+import { ROBOT_IMPORT_CAP } from './imported';
+import { IMPORT_VISUALS_CAP, type VisualKind, type VisualRefusal } from './importVisuals';
 
 /**
  * Wire protocol for the SERVER-AUTHORITATIVE netcode (Phase 0). All messages are
@@ -79,6 +81,10 @@ const BTN_BBRAMP = 256;
 // new client NOTHING against an old server: the packet is accepted, the bit is simply
 // ignored by a step that has no pass in it.
 const BTN_BBPASS = 512;
+// A SETPOINT FLYWHEEL'S PRESET STEP (DECODE + BIOBUZZ, `RobotCommand.flyPreset`), an EDGE like
+// `driveMode`. Bit 1024, inside the 16 bits every sanitizer since 2026-09-20 admits, so an older
+// server accepts the packet and ignores the bit — on a build that has no presets to step.
+const BTN_FLYPRESET = 1024;
 /** the widest `buttons` an honest sender can produce — every bit above is refused. */
 const BUTTONS_MAX = 0xffff;
 
@@ -97,7 +103,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbPlace ? BTN_BBPLACE : 0) |
       (c.bbNectar ? BTN_BBNECTAR : 0) |
       (c.bbRamp ? BTN_BBRAMP : 0) |
-      (c.bbPass ? BTN_BBPASS : 0),
+      (c.bbPass ? BTN_BBPASS : 0) |
+      (c.flyPreset ? BTN_FLYPRESET : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -162,6 +169,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
     bbRamp: (q.buttons & BTN_BBRAMP) !== 0,
     bbPass: (q.buttons & BTN_BBPASS) !== 0,
+    flyPreset: (q.buttons & BTN_FLYPRESET) !== 0,
   };
 }
 
@@ -279,6 +287,12 @@ export interface LobbyPlayer {
    * ways, so no `caps` gate — an older client ignores the key and renders no chip.
    */
   ready3d?: boolean;
+  /**
+   * The NAME of the Zenith auto this player will run in AUTO, server-authored from their
+   * `zenithAuto` message, so the lobby can show who has one. Only the name: the file itself never
+   * rides the roster. Absent = none (or an older server). Custom rooms only.
+   */
+  autoName?: string;
   spec: RobotSpec;
   assists: AssistConfig;
   // NOTE: no `autoPath` here. Autonomous does not run in a server-authoritative
@@ -417,7 +431,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -592,9 +606,35 @@ export const SERVER_CAPS: string[] = [
    * apart from one that is done.
    */
   'ready3d',
+  /**
+   * `'zenithAuto'` — THIS DEPLOY PLAYS A PLAYER'S ZENITH AUTO IN A CUSTOM ROOM'S AUTO.
+   *
+   * The client sends `{ t: 'zenithAuto' }` only to a server that says this, because an older one
+   * would silently drop the file and the driver would stand still through AUTO wondering why.
+   */
+  'zenithAuto',
+  /**
+   * `'robotImport'` — THIS DEPLOY ADMITS AN IMPORTED ROBOT TO A CUSTOM ROOM, and refuses it
+   * everywhere else (`src/net/imported.ts`).
+   *
+   * An older server's `coerceSpec` drops `spec.imported` without a word, so the client would
+   * predict one robot while the room stepped another. The client sends an imported spec to a
+   * room only when the server says this, and plays a standard robot otherwise. The mirror of the
+   * client capability of the same name, which is the one that is a HARD gate.
+   */
+  ROBOT_IMPORT_CAP,
+  /**
+   * `'importVisuals'` — THIS DEPLOY RELAYS AN IMPORTED ROBOT'S LOOK (its top picture, and its mesh
+   * for BIOBUZZ's 3D view) between the players of a custom or LAN room (`src/net/importVisuals.ts`).
+   *
+   * An older server ignores `visualPut`/`visualGet` without a word, so an owner would upload 1.3 MB
+   * into the void; the client sends them only to a server that says this. Everything it does is
+   * additive: a viewer on a build without the cap is sent none of it and sees the footprint.
+   */
+  IMPORT_VISUALS_CAP,
 ];
 
-/** the formats a "play a friend" challenge can be issued in. Shared so the API's
+/** the formats a "play a friend" challenge can be issued in.Shared so the API's
  * allowlist, the matchmaker's gate, and the picker's tiles can't drift apart. */
 export const CHALLENGE_FORMATS = [
   'casual1v1',
@@ -718,6 +758,28 @@ export type ClientMsg =
    * message rather than refusing it — so there is no `SERVER_CAPS` gate on sending it.
    */
   | { t: 'physicsReady' }
+  /**
+   * THIS PLAYER'S ZENITH AUTO for the next match of a CUSTOM room (docs/area/autos.md), or null
+   * to clear it. Sent once from the lobby, never on the roster (a file is up to 64 KiB and the
+   * roster is broadcast on every change): the server keeps it on the client record, puts its
+   * name on the roster (`LobbyPlayer.autoName`), and at match start puts it into that robot's
+   * setup, where the server's auto seat drives it through AUTO. A ranked, staged or record room
+   * ignores it. An older server ignores the message, so send it only when the server
+   * advertises `'zenithAuto'` (`SERVER_CAPS`).
+   */
+  | { t: 'zenithAuto'; auto: import('../auto/types').ZenithAutoSetup | null }
+  /**
+   * ONE CHUNK OF THE OWNER'S IMPORTED ROBOT'S LOOK (`IMPORT_VISUALS_CAP`, `src/net/importVisuals.ts`):
+   * a PNG top picture (`kind: 'top'`) or a GLB mesh (`'mesh'`) for the robot whose `spec.imported.id`
+   * is `id`. `total` is the whole asset's byte length and `seq` counts chunks from 0; `data` is
+   * base64 of the next `VISUAL_CHUNK_BYTES` bytes. Held in the room's memory for the room's life,
+   * never persisted, never in a replay. Ignored by an older server, so the client sends it only to
+   * one that advertises `'importVisuals'`.
+   */
+  | { t: 'visualPut'; kind: VisualKind; id: string; total: number; seq: number; data: string }
+  /** ASK FOR another seat's asset: `owner` is its roster `clientId`, `id` the robot id the roster
+   *  names. The room answers with a `visualChunk` stream, or a `visualRefused`. */
+  | { t: 'visualGet'; owner: string; id: string; kind: VisualKind }
   /**
    * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`): physics and view are both up.
    * `gen` is the match generation it is ready for, so a report for a match that has since been
@@ -859,6 +921,16 @@ export interface LiveRoom {
   /** which Fly region is hosting, for the admin's cross-region list. Absent on a
    *  single-region/dev deploy. */
   region?: string;
+  /** a competition match (0059): always public, and labelled with its event and match */
+  competition?: CompetitionRef;
+}
+
+/** a competition match, as a room describes itself to a client */
+export interface CompetitionRef {
+  slug: string;
+  name: string;
+  /** "Q12", "SF1-2" */
+  label: string;
 }
 
 // ---- server → client --------------------------------------------------------
@@ -900,7 +972,14 @@ export type ErrorCode =
    * save. Actionable in place — the screen shows the code form rather than TRY AGAIN, which
    * would only be refused the same way. Older servers send the sentence alone.
    */
-  | 'email_unverified';
+  | 'email_unverified'
+  /**
+   * A join named a matchmaker room code (`isStagedRoomCode`) whose match is already over: no
+   * live room and no staged row. An older server created an empty custom room instead and the
+   * ranked client waited in it forever. The client raises it itself when a staged room never
+   * answers (`LobbyClient.watchStagedStart`).
+   */
+  | 'match_gone';
 
 export type ServerMsg =
   /**
@@ -924,6 +1003,18 @@ export type ServerMsg =
    * not have to agree. A client that is held does not predict.
    */
   | { t: 'loadHold'; gen: number; waitMs: number; loading: number[] }
+  /**
+   * `owner`'s ASSET IS IN THE ROOM and may be asked for (`visualGet`). Sent, to clients that
+   * advertise `IMPORT_VISUALS_CAP` and only to them, when an upload completes, and again for each
+   * stored asset to a client that attaches later (a joiner, a spectator, a reclaimed seat). `owner`
+   * may be the recipient itself: that is the room confirming it holds their upload.
+   */
+  | { t: 'visualReady'; owner: string; id: string; kind: VisualKind; bytes: number }
+  /** ONE CHUNK of an asset a client asked for, in order from `seq` 0. Never sent unasked. */
+  | { t: 'visualChunk'; owner: string; id: string; kind: VisualKind; total: number; seq: number; data: string }
+  /** A `visualPut` or `visualGet` was refused (`reason`), with a plain sentence. The viewer keeps
+   *  the footprint; the owner is told so it stops sending. */
+  | { t: 'visualRefused'; op: 'put' | 'get'; owner: string; id: string; kind: VisualKind; reason: VisualRefusal; message: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
@@ -1082,6 +1173,9 @@ export type ServerMsg =
       intros: PlayerIntro[];
       game?: GameId;
       ranked?: boolean;
+      /** a COMPETITION match's window (0059): which competition and which match. The ready gate is
+       *  the ranked one, the rating column is not (nobody is rated). Absent from an older server. */
+      competition?: CompetitionRef;
     }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)

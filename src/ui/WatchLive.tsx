@@ -5,12 +5,13 @@ import { gameServerConfigured } from '../net/env';
 import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { seasonFor } from '../seasons';
 import { fmtTime } from './timerPanel';
+import { onUserActive, userIdle } from './userActivity';
 
 /**
  * "Watch Live" — the games currently in progress on the game server.
  *
  * The LIST is everything live EXCEPT custom rooms (the server decides that; see
- * `isPublicLive`) — ranked matches and record runs both appear. A custom room is
+ * `isPublicLive`) — ranked matches, record runs and competition matches all appear. A custom room is
  * somebody's private game reached by a code they chose to hand out, so publishing
  * it here would hand that code to every visitor. They are still fully spectatable
  * — by CODE, in the box below, which is the same key that lets you join one.
@@ -36,6 +37,11 @@ export function WatchLive({
     if (!configured) return;
     let alive = true;
     const load = (): void => {
+      // AN UNATTENDED PAGE DOES NOT POLL — hidden, or nobody at the keyboard (userActivity.ts),
+      // the rule `usePresence`, `useFriends` and `NoticePoller` already follow. A 4-second poll
+      // left open in a background tab otherwise kept the auto-stopping Fly machine awake for as
+      // long as the tab lived. The wake below catches it up the moment somebody is back.
+      if (userIdle()) return;
       fetchLiveRooms()
         .then((r) => {
           if (!alive) return;
@@ -52,9 +58,16 @@ export function WatchLive({
     };
     load();
     const t = window.setInterval(load, 4000); // live matches change fast — refresh often
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const unwake = onUserActive(load);
     return () => {
       alive = false;
       window.clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+      unwake();
     };
   }, [configured]);
 
@@ -105,7 +118,8 @@ export function WatchLive({
                 <span className="od">
                   {[
                     seasonFor(r.game).name,
-                    `${r.kind === 'record' ? 'Record' : 'Ranked'} ${r.mode}`,
+                    // a competition match names its event and match (0059); older servers send no field
+                    r.competition ? `${r.competition.name} · ${r.competition.label}` : `${r.kind === 'record' ? 'Record' : 'Ranked'} ${r.mode}`,
                     r.timeLeft > 0 ? `${phaseLabel(r.phase)} ${fmtTime(r.timeLeft)}` : phaseLabel(r.phase),
                     r.spectators > 0 ? `${r.spectators} watching` : null,
                   ]

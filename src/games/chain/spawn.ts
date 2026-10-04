@@ -30,7 +30,7 @@ import {
   CHAIN_PARTICLE_SIM,
   CHAIN_START_POSES,
 } from './config';
-import { accelSide, chainSnapStartPose, emptyChainState, onRingStand, ringStands, type ChainCatalyst } from './state';
+import { accelSide, chainFitAnchor, chainSnapStartPose, emptyChainState, onRingStand, ringStands, type ChainCatalyst } from './state';
 
 /**
  * Chain Reaction world spawn — a PLAYABLE match.
@@ -68,12 +68,18 @@ function chainStartPose(
         // wider than the 24" Lab and has no legal spot at all, so snapping only its
         // position would leave it overlapping the corner assembly and it would be flung
         // on tick one. `chainSnapStartPose` squares it up first.
-        const p = chainSnapStartPose(spec, custom);
+        const p = chainSnapStartPose(spec, custom, alliance);
         return { pos: { x: p.x, y: p.y }, heading: (p.headingDeg * Math.PI) / 180 };
       })()
     : (() => {
         const n = CHAIN_START_POSES.length;
         const p = CHAIN_START_POSES[((index % n) + n) % n];
+        // the anchors are legal BY CONSTRUCTION for a standard chassis centred on its origin; an
+        // IMPORT's anchor is fitted to its hull (`chainFitAnchor`, which the editor draws too)
+        if (spec.imported) {
+          const f = chainFitAnchor(spec, { x: p.pos.x, y: p.pos.y, headingDeg: (p.heading * 180) / Math.PI }, alliance);
+          return { pos: { x: f.x, y: f.y }, heading: (f.headingDeg * Math.PI) / 180 };
+        }
         return { pos: { ...p.pos }, heading: p.heading };
       })();
   if (alliance === 'blue') return { pos: { ...base.pos }, heading: base.heading };

@@ -1,4 +1,4 @@
-<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
+<!-- governs: server/db/**, server/ranked.ts, server/ratingRecalc.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/notices.ts, server/notices.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
 # Accounts, ranked, leaderboards, records, staff roles
 
 Glicko-2, per-game boards and periods, the badge rules, challenges and the party token, and the background ranked queue.
@@ -101,6 +101,12 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   not the place for a private note — that is `admin_notes`, and the console says so beside the
   box. Format it with `suspensionLeft`, never `lockRemaining`: that one is the standing lock's
   minutes-and-hours scale and rendered a one-week ban as "168 hours".
+  ⚠️ **A SANCTION OUTLIVES ACCOUNT DELETION** (`account_tombstones`, 0054). Deleting DSIM's data
+  does not delete the Neon Auth identity, so the same id is signed in again a second later; a
+  suspended or ranked-locked player used to be one DELETE away from a clean slate. `deleteAccount`
+  leaves an opaque-id row (suspension deadline, standing score, lock — no reason text, no PII)
+  only when there is a sanction to carry, `getSuspension` / `getStanding` answer from it while
+  no profile exists, and `ensureProfile` re-applies and deletes it when the profile is re-created.
 - **The other four things a moderator can now do**, all on the account panel, all audited:
   **clear an abusive @username** (`clearUsername` — CLEARED, not set, so the account goes back
   through `UsernameGate` and the moderator is not choosing somebody's permanent public name);
@@ -385,6 +391,26 @@ leaderboard's substance. What comes off the page is the WATCH BUTTON: `userMatch
 `viewerId` and nulls `replayId` on a row that reader may not watch, so the button is absent rather
 than present and answering 403. The flag rides along on the participant fan-out's existing
 `profiles` join, so the gate costs no extra query there.
+**SETTINGS SYNC: AN OLDER BUILD'S SAVE IS MERGED, NOT STORED AS SENT** (2026-10-02,
+`src/net/settingsKeep.ts`, `repo.saveSettingsFromClient`). `profiles.settings` is the blob the client
+sends, and a build that predates a field rebuilds the blob without it, so ONE save from main or
+pre-import alpha deleted the account's imported robot on every device. This build sends
+`{ settings, caps: ['robotImport'] }`; a save without the cap is merged per game with the stored blob
+in one transaction (`select … for update`): the stored IMPORTED robot is kept when the incoming one
+is it minus what the older build cannot read (every field sent equals the stored one), with its
+`lastStandardSpec`; a game the older build sent nothing for keeps its stored loadout if it holds an
+import; anything the older build CHANGED stands. The same two rules keep a STANDARD DECODE robot
+that carries what an older build cannot read (`carriesNew`: a fixed launcher, hood or setpoint
+wheel, or NO intake); the older build's rewrite of `intake: 'none'` (the sloped preset, the length
+clamped to 15, the width raised to 14.5, measured on alpha's coercer) counts as "not read"
+(`olderReading`), not as a change. A save WITH the cap is stored as sent, so a new
+build that drops the import on purpose is never "repaired". Backward-compatible both ways (an older
+server ignores `caps`). `npm run dbtest` "settings:" drives the write on PGlite; smoke "settings
+keep:" holds the rules, including the one robot an older build rewrites rather than strips (a
+BIOBUZZ fixed launcher reads as a turret there) and so is not re-attached. A second cap,
+`importTune` (2026-10-03), does the same for an import's practice tuning: a save from an import
+build without it keeps the stored `imported.tune` when the robot is otherwise the stored one
+(`keepTuneFromOlderClient`).
 ⚠️ **THE FLAG COULD NOT LIVE IN `profiles.settings`.** That blob is client-shaped,
 client-validated and opaque to the server — nothing in SQL reads it — so a privacy bit stored
 there would be enforced only by asking the client, which is not enforcement. It is a real column,
@@ -482,6 +508,40 @@ takeover silently never fired (the bar still looked right — it repaints on its
 cancel a stranger's queue. **NOT yet validated end-to-end** — that needs two
 signed-in accounts completing a rated match.
 
+**MODERATION OUTCOMES ARE TOLD TO THE PEOPLE THEY CONCERN (migration 0057, 2026-10-02).** Owner:
+"a clear message when a score updates or an elo update happens or a standing update happens or
+a reported player got punished … PLUS admins can send an extra message back to the reporter."
+Before this every outcome stopped at the moderator. `player_notices` is the inbox; a row holds
+FACTS (`data`) and the moderator's own words (`message`), and `src/notices.ts` words them on the
+client (`noticeView`), so copy changes need no migration. `server/notices.ts` decides who is
+told what, AFTER the outcome is committed, and never throws into a route.
+- **Who gets what.** Score corrected (`/api/admin/match`): every player in the match, from their
+  own side (old → new totals, a flipped result, any refund), with the editor's "Why" as the
+  message — it is SHOWN TO PLAYERS now. Misscore ruled: the filer (upheld with original → now
+  when the match was corrected; rejected with the smite's cost). Reports triaged: each reporter
+  once (`report.actioned` / `report.closed`, the reported player named, the penalty NOT), and on
+  uphold the reported player (`penalty`: how many reported, for what, standing/lock/rating cost).
+  A dismissal tells the reported player nothing. Standing edited: the player, with the note.
+  Two optional messages on triage (`reporterMessage`, `playerMessage`), one on a misscore
+  (`message`). `setReportsStatus` returns the rows it closed so a second triage tells nobody.
+- **The pattern is other games'**: Riot's in-client penalty notice (the punished player sees it
+  on return), Overwatch/League/VALORANT report feedback (a reporter hears action was taken, never
+  the size), Epic's "My reports" (`GET /api/user/reports`, the career page's Your reports list),
+  VALORANT ranked rollback / lichess refunds (the exact amount given back).
+- ⚠️ **A CORRECTION CAN GIVE RATING BACK, AND ONLY GIVE.** "Ratings are not recalculated" still
+  holds (Glicko-2 is sequential). With `refund=1`, `ratingRefund` returns a player's LOSS in the
+  match when their corrected result beats the ORIGINAL one (`MatchScoreRow.original`, the oldest
+  correction's before, because the rating came from it). The wrongly-awarded winner keeps their
+  gain: the misscore was the sim's fault. `rating_refunds` (PK match+player) makes it ONCE, and a
+  refund reaches only the LIVE ladder (`liveBoard`): a closed act was paid out by `runRewardJob`.
+  Arithmetic on the row; `updated_at` untouched because `effectiveRd` reads it as last played.
+- **Delivery.** `NoticeDialog` is mounted beside `RewardDialog` (menus only, same `blocked`) and
+  waits for it, so two backdrops never stack. Escape counts as read; `NoticeInbox` on the career
+  page keeps everything. Old server: the routes 404 and the client reads an empty inbox; an old
+  client never asks. Notices are in the account export and cascade on deletion.
+Tests: `npm test` ("notices:" — wording, copy rules, the refund rule, the route wiring) and
+`npm run dbtest` ("notices:", "refund:", "who:").
+
 **PLAY A FRIEND — challenges (chess.com's model), DONE.** A challenge (`room_invites` +
 migration `0019`) carries a **`format`**: `casual1v1`/`casual2v2` (a `versus` room),
 `duorecord` (a `record`/`duo` room), or the two RATED ones. Rating is only ever applied to a
@@ -508,11 +568,92 @@ cancels the row; dismiss stays a silent clear), the sender SEES their outgoing c
 (`listFriends`'s `snt` CTE → `sent`) and can cancel it, and one live challenge per direction
 (`inviteToRoom` replaces — stacked rated rows would let someone accept an abandoned token).
 `src/ui/challenge.ts` `challengeOf` is the ONE place deciding lobby-vs-queue. Tests:
-**`npm run test:mm`** (`scripts/mmsmoke.ts`, 186 checks, injected clock + `stage`, no DB) —
+**`npm run test:mm`** (`scripts/mmsmoke.ts`, injected clock + `stage`, no DB) —
 party pairing fails SILENTLY, so it is covered there rather than by a live two-account run.
 NOTE `enqueue` matches synchronously but STAGES asynchronously; assertions must await a
 microtask flush. Rated friend games are farmable by a colluding pair and deliberately
-unmitigated (as chess.com); damp repeat-opponent deltas in `ranked.ts` if it shows up.
+unmitigated (as chess.com), except that a rated 1v1 challenge takes no margin multiplier
+(below); damp repeat-opponent deltas in `ranked.ts` if it shows up.
+
+**RATING ADJUSTMENTS AND 2v2 BALANCE (2026-09-27, owner-approved, NO ranked reset).** Plain
+Glicko-2 with one game per rating period had three measured failures, and each fix is applied
+when a rating is READ or COMPUTED, never by rewriting stored rows:
+- **Placement luck.** RD fell below 180 by the end of placement and volatility NEVER moves
+  with one-game periods (0.060 through 39 straight wins). `effectiveRd` holds RD at
+  `max(60, 200 − 7·games)` (gone by game 20; it was `250 − 9.5·games` until 2026-10-03), never
+  rates above `RD_MAX` 250 (a new row is still SEEDED at 350 and read down), and grows it after
+  14 idle days, capped at 150. It reads `games` and `updated_at`, so an existing account is
+  affected from its next game. A streak rule was measured and REJECTED by the owner as
+  exploitable; do not add one.
+- **Margin.** `marginMultiplier`: ×0.8 for a one-point result up to ×1.5 at
+  `DECISIVE_MARGIN` 0.30 of `|R−B|/(R+B)` — ONE number for every game (owner: 550–300 in
+  BIOBUZZ is "massive"). The part above ×1 is scaled by `2·(1 − E_winner)` (538's damping,
+  so favourites don't inflate). A rated 1v1 challenge (one token on both alliances) is ×1.
+- **2v2 carry.** The EXPECTED score is the player's ALLIANCE mean against the other's; their
+  own rating moves, sized by their own RD. 1v1 is unchanged by this. A premade whose partners
+  are more than 400 apart moves at half (the boosting guard team expectation needs).
+- **Partner absence** (`MatchParticipant.away/early/party`, measured by the room —
+  `absenceOf` in `src/standing.ts`). A driver away for ALL of the first 20 s of live play, or a
+  seat nobody filled, VOIDS a ranked 2v2 for everyone else: nothing is written to their board
+  (the lock's seed row is dropped, `dropUntouchedRatings`) and the reveal shows ±0; the
+  absentee takes a loss. Later, a teammate's LOSS is scaled by `clamp(1 − 2a, 0, 1)` and the
+  opponents' WIN by `1 − a`. **Never protected by your own premade** (League / Overwatch 2's
+  rule); a blip under 5% is not an absence. The leaver's deterrent stays in STANDING, not
+  rating.
+- **Matchmaking.** 1v1 keeps the span gate. A 2v2 is gated on the TEAMS: the best
+  party-respecting split (`bestSplit`) must be within `|E_red − 0.5| ≤ 0.10`, widening every
+  3 s and unbounded at 6 s. `bestSplit` ALWAYS runs, on the **2v2 RATING ONLY** — the number
+  on the intro card, provisional from one game (`skillOf`); a player with no 2v2 game reads 1000
+  and turns the gate off. The 2v2 fill's tie-break span uses the same numbers, so the four
+  closest players are drawn together. A new entry sits out while its rating read is in flight,
+  up to 1.5 s. A premade anchor takes another premade before two solos (a tie-break after
+  latency).
+  ⚠️ **No 1v1 rating, no earlier act.** 09-27 seeded an unplaced 2v2 player from their placed
+  1v1 rating and 10-02 blended the 1v1 board in; the owner found the splits weird (10-03), and
+  over BIOBUZZ Act 2's 54 decided 2v2s the card predicted results better than the blend
+  (log-loss 0.5659 vs 0.5929). One player lost four straight 2v2s (card 1000 → 763) and was
+  still balanced as ~1000-1150 off a 1190 1v1 rating. And before 10-02 a provisional 2v2 rating
+  was ignored altogether: four players at 1240/1180/900/880 read 1000 each and were staged
+  1240+1180 against 900+880 in queue order.
+- **`match_participants.premade`** (0056): true / false for a ranked row, NULL for custom and
+  older rows. It exists to decide, at a future act rollover, whether premades need their own
+  queue (owner, 2026-09-27: not now, the pool is too small).
+Tests: `npm test` (the ranked blocks in `scripts/smoke.ts`, incl. a real room reporting
+presence), `npm run test:mm`, `npm run dbtest` ("ranked review:").
+
+**RULE SETS AND THE RECALCULATION (2026-10-03, owner-approved).** BIOBUZZ Act 2's 1v1 #1 was
+5-0 at 1685 (RD ~200) over players with 30 games at ~1490: the 09-27 rules rated a new board at
+RD 350 with the full margin bonus, so its first win over a 1226 paid +413. Replayed over the
+act's 751 real matches (exported read-only, the replay reproduced all 1608 stored results and
+all 246 boards), 453 rule variants were scored on ONLINE log-loss (each match predicted from
+the ratings before it). The winner, `team-2026-10-03`, is RD ≤ 250 and the floor 200 → 60 over
+20 games; 1v1 log-loss 0.5500 → 0.5405 (better in 99.7% of bootstrap resamples). Rejected: a
+per-game cap (no gain), no margin bonus (worse), start RD ≤ 200 (worse), a ×2 margin (fits
+slightly better, but makes a blowout swing more). 2v2 (53 matches) read worse and is too small
+to decide on.
+- **`RatingRules`** (`server/ranked.ts`): `plain-2026-09-25`, `team-2026-09-27`,
+  `team-2026-10-03`; `RATING_RULES` is the live one. `matches.rating_rules` (0058) stamps the
+  set that rated each match; an unstamped row is dated by `ruleSetAt` (09-27 went live 21:25Z,
+  measured). **Add a set, never edit one**: a stamp pointing at edited numbers replays wrong.
+  0058 also stores `match_participants.away/early`, the absence the update was given.
+- **`server/ratingRecalc.ts`** + `POST /api/admin/rating-recalc?game=…[&apply=1]` (admin or
+  `ADMIN_SECRET`). Re-rates a game's CURRENT ACT in order under `RATING_RULES`. It replays the
+  log twice: AS RATED (each match under its own set, charges and refunds at their times, the
+  score each match was last rated on) — this must reproduce every stored before/after, board
+  and season snapshot, else it REFUSES (409) and lists where — then under the new rules from the
+  corrected scores. Inferred only where the rows are silent: a rated challenge (×1 margin) and,
+  for a 2v2 with no stored absence, a void (named by the one player whose rating moved) or a
+  forgiven share. A dry run is one REPEATABLE READ snapshot and writes nothing. An apply takes
+  SHARE ROW EXCLUSIVE on `elo_ratings`, `elo_history` and `match_participants` BEFORE reading
+  the log, so every match finished before it is in it and one finishing during it waits and rates
+  on top; it rewrites boards (never games), snapshots, every match's before/after and stamp,
+  stores the overwritten values in `rating_recalcs.backup`, and sends `rating.recalculated` to
+  each player whose rating moved, all in that one transaction. A second run is a no-op.
+- **Placement is per mode: 10 games for 1v1, 7 for 2v2** (`RANKED_PLACEMENT`, owner
+  2026-10-03), for the live board, the profile rank, the in-match "?" and the act podium.
+  Archived seasons keep 5 (`boardMinGames`, from each game's live season that day: DECODE 7,
+  Chain Reaction 5, BIOBUZZ 5) so a past board names who its awards named. `/api/elo` returns
+  the board's `minGames`. `PLACEMENT_GAMES` (5) is now the MATCHMAKER's trust threshold only.
 
 
 ---

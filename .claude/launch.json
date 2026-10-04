@@ -59,6 +59,19 @@
       "port": 5179
     },
     {
+      "name": "robot-import-harness",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "scripts/robot-import/harness",
+        "--port",
+        "5191",
+        "--strictPort"
+      ],
+      "port": 5191,
+      "autoPort": false
+    },
+    {
       "name": "dev-b",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

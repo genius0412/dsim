@@ -5,6 +5,8 @@ import type { Transport } from './transport';
 import { setServerNotice } from './notice';
 import { applyPushedStatus } from './siteStatus';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
+import { restoreWireClocks } from './wireClocks';
+import { importVisuals } from './importVisualsClient';
 import {
   CLIENT_CAPS,
   encodeMsg,
@@ -202,6 +204,10 @@ export class ServerSession implements NetSession {
     this.serverLabel = deriveServerLabel(start.region, room);
     // take over routing + reconnection handling from the LobbyClient
     transport.onMessage((d) => this.onMessage(d));
+    // the imported-robot visuals relay rides this same connection (docs/area/netcode.md, VISUALS RELAY);
+    // the lobby's transport is the one bound already, so a hand-off keeps what it received
+    importVisuals.bind(transport);
+    importVisuals.setGame(this.game);
     transport.onDown(() => {
       this.connected = false; // HUD shows "reconnecting"; prediction keeps running
     });
@@ -406,6 +412,7 @@ export class ServerSession implements NetSession {
 
   dispose(): void {
     if (this.pingTimer) clearInterval(this.pingTimer);
+    importVisuals.release(this.transport);
     this.transport.close();
   }
 
@@ -465,6 +472,10 @@ export class ServerSession implements NetSession {
       return;
     }
     if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
+    if (m.t === 'visualReady' || m.t === 'visualChunk' || m.t === 'visualRefused') {
+      importVisuals.handle(m);
+      return;
+    }
     if (m.t === 'loadHold') {
       if (m.gen !== this.gen) return; // a hold for a match this session is no longer playing
       if (m.waitMs > 0) {
@@ -487,6 +498,8 @@ export class ServerSession implements NetSession {
       // order (shared codec so it can't drift from the server's encoder)
       const balls = applyBallDelta(this.baseBalls, m.balls);
       const world = unslimWorld(m.w, balls, this.specById);
+      // the wire rounded the clocks; the prediction compares them tick by tick (wireClocks.ts)
+      restoreWireClocks(world);
       // each robot's command this tick, so the controller can predict remotes.
       // tolerate an older server that doesn't send cmds (remotes just won't be
       // predicted forward — no crash) so a version mismatch degrades gracefully
@@ -548,7 +561,10 @@ export class ServerSession implements NetSession {
       // a host restart: adopt the new seed/setups/game and rebuild
       this.seed = m.seed;
       this.setups = m.setups;
-      if (m.game) this.game = m.game;
+      if (m.game) {
+        this.game = m.game;
+        importVisuals.setGame(m.game);
+      }
       // ALWAYS re-read, never `if (m.physics)`: a restart may take a room from '3d' back to
       // absent, and a stale '3d' here would have the client predict a pipeline the server is
       // no longer running. Absent means '2d', so read it as such.
@@ -580,9 +596,12 @@ export class ServerSession implements NetSession {
       // (`Room.passCrown`) — so without this the player who INHERITED the room would be
       // shown no host controls and the room would look stuck to everyone in it.
       this.host = m.hostId !== '' && m.hostId === this.clientId;
+      // ...and, for the visuals relay, who holds an imported robot (a watcher or a late joiner learns it here)
+      importVisuals.noteRoster(this.clientId, m.players);
     } else if (m.t === 'welcome') {
       // a reattach re-sends this; keep the seat credential current (see the field note)
       if (m.seatToken) this.seatToken = m.seatToken;
+      importVisuals.onWelcome(m.clientId);
     } else if (m.t === 'lobby') {
       /**
        * THE ROOM IS A LOBBY AGAIN. The match this session was built around no longer

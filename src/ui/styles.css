@@ -1774,6 +1774,15 @@ button {
   font-weight: 600;
 }
 
+/* THE PRE-MATCH PANEL'S AUTO LINE (GameView, `autoHud.ts`) when the auto is off or Zenith flags
+   it. A Zenith finding is a whole sentence, and unwrapped it stretched the panel across the
+   field; it wraps at `.overlay-sub`'s reading width and stays centred like the rest of the panel. */
+.overlay-panel > .ds-hint.warn,
+.overlay-panel > .ds-hint.err {
+  max-width: 42ch;
+  margin-inline: auto;
+}
+
 /* SHELL dialogs are sentence case, matching `.ann-actions`' own "Got it". The 1.5px
    tracking that suits GameView's all-caps match overlays reads as gaps between letters
    in sentence case, so it is relaxed here only. */
@@ -3038,6 +3047,7 @@ button {
    utilities every season carries. Dimmer than the scoring buttons beside them, because a
    thumb that is hunting mid-match is hunting for SHOOT, not for PARK. */
 .mobile-btn.fling,
+.mobile-btn.flypreset,
 .mobile-btn.flip,
 .mobile-btn.drivemode,
 .mobile-btn.park {
@@ -3223,6 +3233,26 @@ button {
     min-width: 44px;
   }
 }
+/* PORTRAIT PHONES: the status cluster, captured at 390 × 844 with a coarse pointer (2026-10-02).
+   (1) BELOW THE TOP ROW AS IT REALLY IS. MENU / RESET and the sponsor chip share one row that a
+       390-px screen squeezes: each label breaks onto two lines and the row is ~48px tall, not the
+       36 the `+ 38px` above assumes, so the card's top ran under the sponsor chip.
+   (2) A ROW, like the landscape gutter's: the `.sub-hud` (a fixed shooter's flywheel line, a
+       butterfly's wheel set) and the performance read-out sit BESIDE the card instead of under
+       it, where the three of them stacked onto the field's top edge. */
+@media (orientation: portrait) and (pointer: coarse) {
+  .status-wrap {
+    top: calc(max(6px, env(safe-area-inset-top)) + 56px);
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  /* BIOBUZZ's 2D/3D cap holds the corner: the row stops short of it on the left too */
+  .game-root:has(.mobile-view-btn) .status-wrap {
+    max-width: calc(100vw - 24px - 44px - var(--ds-s-2));
+  }
+}
+
 /* LANDSCAPE is height-starved — squeeze the score menu harder + drop the breakdown row
    nearly onto the scorebar so the map claims the vertical space. */
 @media (orientation: landscape) and (pointer: coarse), (orientation: landscape) and (max-height: 460px) {
@@ -3352,6 +3382,15 @@ button {
   /* the words go; the glyph and its `aria-label` stay. "REVERSED" beside the card is wider
      than the gutter, and a second line of it is height this gutter does not have. */
   .sub-hud-lbl {
+    display: none;
+  }
+  /* ...except an item that IS its words (a fixed shooter's flywheel: no glyph). It was an EMPTY
+     pill here (captured 2026-10-02, 844 × 390). Its state stays, READY / SPIN UP and a presets
+     wheel's SPEED n; the rpm goes. */
+  .sub-hud-lbl.keep {
+    display: inline;
+  }
+  .sub-hud-rpm {
     display: none;
   }
   /* one line only: a wrapped second row is height the chips below it do not leave */

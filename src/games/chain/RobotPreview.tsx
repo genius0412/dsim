@@ -12,9 +12,12 @@ import {
   CHAIN_ARM_DRAW,
   CHAIN_CORNER_BODY_INSET,
 } from './config';
-import { catalystRailHalf, chainIntakeMouths } from './state';
-import { EDGE_ANGLE, MOUNT_ANGLE, catalystDrawPos, catalystMountOf, catalystSwingOf, edgeGeom, intakeMouthFrame, isEdgePos, mountOrigin, shooterEdgeOf, turretLocal, turretRadius } from './mounts';
+import { catalystOrigin, catalystRailHalf, chainIntakeMouths } from './state';
+import { launcherFrame } from './drawRobot';
+import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, MOUNT_ANGLE, catalystDrawPos, catalystMountOf, catalystSwingOf, edgeGeom, intakeMouthFrame, isEdgePos, mountOrigin, shooterEdgeOf, turretLocal, turretRadius } from './mounts';
 import { footprintExtents } from '../../sim/field';
+import { FootprintSvg, importedFootprintLabel } from '../../ui/FootprintSvg';
+import { useImportedTopUrl } from '../../ui/useImportedAssets';
 
 /** dimension-label type size, in the viewBox's inch units */
 const DIM_FONT = 1.7;
@@ -37,6 +40,9 @@ export function ChainRobotPreview({
   /** print the dimension line under the robot (see `RobotPreview`'s prop of the same name) */
   caption?: boolean;
 }) {
+  // AN IMPORTED ROBOT is its hull, not this schematic's box: the footprint, with the marks where
+  // this game's accessors put its mechanisms (the same ones the sprite and the sim read)
+  if (spec.imported) return <ImportedChainPreview spec={spec} size={size} caption={caption} />;
   const w = spec.width;
   const len = spec.length;
 
@@ -589,6 +595,41 @@ export function ChainRobotPreview({
         </text>
       )}
     </svg>
+  );
+}
+
+/** the builder preview of an IMPORTED Chain Reaction robot — see `ui/FootprintSvg.tsx` */
+function ImportedChainPreview({ spec, size, caption }: { spec: RobotSpec; size: number; caption: boolean }) {
+  const imp = spec.imported;
+  const image = useImportedTopUrl(imp?.id, imp);
+  if (!imp) return null;
+  const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  const turrets = mode === 'turret' || mode === 'twinturret' ? [{ ...turretLocal(spec), r: turretRadius(spec) }] : [];
+  // the catalyst mechanism works from where the sim measures its reach (`catalystOrigin`)
+  const pos = catalystDrawPos(catalystMountOf(spec), catalystSwingOf(spec));
+  const place = pos === 'center' ? mountOrigin(spec, pos) : catalystOrigin(spec, pos);
+  // a drum or catapult releases along a LINE (`launcherFrame`, the sim's `chainImportLaunchLine`)
+  const lines = [];
+  if (mode === 'drum' || mode === 'dumper') {
+    const edge = shooterEdgeOf(spec);
+    const f = launcherFrame(spec, edge);
+    const n = EDGE_DIR[edge];
+    const p = EDGE_PERP[edge];
+    const h = f.span * CHAIN_LAUNCH_LINE_FRAC;
+    const cx = n.x * f.dist + p.x * f.lateral;
+    const cy = n.y * f.dist + p.y * f.lateral;
+    lines.push({ x0: cx - p.x * h, y0: cy - p.y * h, x1: cx + p.x * h, y1: cy + p.y * h });
+  }
+  return (
+    <FootprintSvg
+      imported={imp}
+      drivetrain={spec.drivetrain}
+      marks={{ mouths: chainIntakeMouths(spec), turrets, place, lines }}
+      image={image}
+      size={size}
+      caption={caption}
+      label={importedFootprintLabel(imp)}
+    />
   );
 }
 

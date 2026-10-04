@@ -30,8 +30,9 @@
  * so sim-adjacent code (`net/practiceRuns.ts`) and the UI can both take it.
  */
 
-/** which store: `localStorage` outlives the browser closing, `sessionStorage` dies with the tab */
-export type StorageKind = 'local' | 'session';
+/** which store: `localStorage` outlives the browser closing, `sessionStorage` dies with the tab,
+ *  `indexeddb` is a database on this device for things too big for either (the key is its name) */
+export type StorageKind = 'local' | 'session' | 'indexeddb';
 
 /**
  * WHAT THE KEY IS FOR, in the three buckets a consent standard recognises.
@@ -116,6 +117,12 @@ export const VERIFY_BANNER_KEY = 'decodesim.verifyBanner.v1';
  * lose the party (`net/discordActivity.ts`)
  */
 export const DISCORD_INSTANCE_KEY = 'decodesim.discordInstance.v1';
+/** the Zenith auto library (`src/auto/library.ts`): auto files for AUTO, per game, this device only */
+export const ZENITH_AUTOS_KEY = 'decodesim.zenithAutos.v1';
+/** the IndexedDB database holding imported robots (`src/robotImport/library.ts`): mesh, pictures, setup */
+export const ROBOT_LIBRARY_DB = 'decodesim.robots';
+/** show other players’ imported robots as their real picture/model (default on), or as an outline — per device */
+export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -160,6 +167,23 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
       'The last 10 are kept; the oldest goes first past that. Deleting a run removes it at once.',
   },
   {
+    key: ROBOT_LIBRARY_DB,
+    storage: 'indexeddb',
+    category: 'necessary',
+    purpose:
+      'Robots you imported from CAD: a simplified 3D model of each, its pictures, and the setup that makes it drive like the real one. An import you have not saved yet is kept here too, so a reload does not lose it. The models stay on this device; only a robot’s measurements travel with your settings. When you play an imported robot in a custom or LAN room, its top picture (and, in BIOBUZZ, a lighter copy of its model) is also sent to the other people in that room, kept in memory only for as long as the room lasts.',
+    retention:
+      'Until you delete a robot from your imported robots or clear your browser data. An unsaved import goes when you save or discard it, or after 30 days.',
+  },
+  {
+    key: ZENITH_AUTOS_KEY,
+    storage: 'local',
+    category: 'necessary',
+    purpose:
+      'Your autonomous routines: the Zenith auto files you imported or edited, which one is on, and whether it plays in AUTO. They stay on this device and are not synced to your account, because an auto file is too big for the settings that sync.',
+    retention: 'Until you delete an auto from the Autonomous panel or clear your browser data.',
+  },
+  {
     key: SETTINGS_KEY,
     storage: 'local',
     category: 'necessary',
@@ -188,7 +212,7 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'session',
     category: 'necessary',
     purpose:
-      'That this tab has already reloaded once to pick up a new version of the site, so a missing file cannot make it reload forever.',
+      'Which version of the site this tab last reloaded from to pick up a new one, so a missing file cannot make it reload forever.',
     retention: 'Ends with this browser tab.',
   },
   {
@@ -249,6 +273,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     category: 'preference',
     purpose:
       'The 3D quality preset for this machine. Kept per device rather than per account, because a graphics card is a property of the computer in front of you.',
+    retention: 'Until you clear your browser data.',
+  },
+  {
+    key: IMPORT_VISUALS_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Whether you see other players’ imported robots as the real thing (their picture, and their 3D model in BIOBUZZ) or as an outline. Off means nothing is downloaded for them.',
     retention: 'Until you clear your browser data.',
   },
   {

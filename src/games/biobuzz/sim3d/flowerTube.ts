@@ -3,6 +3,8 @@ import { datan2, dcos, dsin } from '../../../math';
 import {
   BB_FLOWERS,
   BB_FLOWER_MID_HOLE,
+  BB_FLOWER_PLATE_OUTLINE,
+  FLOWER_MOUTH,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_RETRIEVE_Z,
   BB_FLOWER_TOP_Z,
@@ -193,6 +195,7 @@ export function buildFlowerTubes3d(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   friction: number,
+  plateOutlines = true,
 ): number {
   let built = 0;
   for (let i = 0; i < BB_FLOWERS.length; i++) {
@@ -219,14 +222,16 @@ export function buildFlowerTubes3d(
     }
     built += buildFlowerCage3d(RAPIER, world3d, body, rings, friction);
     built += buildNectarSorter3d(RAPIER, world3d, body, rings, friction);
-    built += buildFlowerSolids3d(RAPIER, world3d, body, rings, friction);
+    built += buildFlowerSolids3d(RAPIER, world3d, body, rings, friction, plateOutlines ? FLOWER_MOUTH[BB_FLOWERS[i].wall] : null);
   }
   return built;
 }
 
 /**
- * What a ROBOT meets of a FLOWER's plates: the MIDDLE and TOP plates as solid boxes over their own
- * measured footprint and z band, and nothing for the LOWER plate. `GROUP_FLOWER_SOLID` in
+ * What a ROBOT meets of a FLOWER's plates: the MIDDLE and TOP plates as solids over their own
+ * measured outline (`BB_FLOWER_PLATE_OUTLINE`, turned to the flower's `mouth`) and z band, and nothing
+ * for the LOWER plate. With no `mouth` (a replay recorded before `SIM_PATCH` 7), boxes over the
+ * plate's bounding rectangle, whose corners stand up to 0.7 in past the real plate's. `GROUP_FLOWER_SOLID` in
  * `groups.ts` has why a robot must not meet the trimesh (it has no inside) and why the lower
  * plate needs no box. Elements and a deployed ramp never meet these. The ramp swing guard's query
  * carries no groups, so it sees them: a swing through a plate's inside is refused, where the
@@ -238,6 +243,7 @@ export function buildFlowerSolids3d(
   body: InstanceType<Rapier3d['RigidBody']>,
   rings: readonly FieldFlowerRing[],
   friction: number,
+  mouth: { readonly x: number; readonly y: number } | null = null,
 ): number {
   let built = 0;
   for (const ring of rings) {
@@ -246,6 +252,21 @@ export function buildFlowerSolids3d(
     const [y0, y1] = ring.rect.y;
     const [zLo, zHi] = ring.z;
     if (!(x1 > x0 && y1 > y0 && zHi > zLo)) continue;
+    if (mouth) {
+      // the outline is FLOWER 1's (field side +x); a quarter turn to this flower's mouth is exact
+      const pts: number[] = [];
+      for (const [px, py] of BB_FLOWER_PLATE_OUTLINE[ring.id]) {
+        const x = ring.bore[0] + px * mouth.x - py * mouth.y;
+        const y = ring.bore[1] + px * mouth.y + py * mouth.x;
+        pts.push(x, y, zLo, x, y, zHi);
+      }
+      const hull = RAPIER.ColliderDesc.convexHull(new Float32Array(pts));
+      if (hull) {
+        world3d.createCollider(hull.setFriction(friction).setRestitution(0).setCollisionGroups(GROUP_FLOWER_SOLID), body);
+        built++;
+        continue;
+      }
+    }
     const desc = RAPIER.ColliderDesc.cuboid((x1 - x0) / 2, (y1 - y0) / 2, (zHi - zLo) / 2)
       .setTranslation((x0 + x1) / 2, (y0 + y1) / 2, (zLo + zHi) / 2)
       .setFriction(friction)

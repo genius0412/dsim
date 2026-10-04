@@ -702,6 +702,27 @@ export function clearPanelPresence(
   return { mirror, body, veil: clearPanelVeilAt(veil, baseOpacity, cosTheta) };
 }
 
+/**
+ * A CEILING ON A CLEAR PANEL'S OUTPUT, raw linear radiance, SHARED by every panel material (one
+ * uniform object, so a write reaches all of them with no recompile). Its resting value is far
+ * above anything the half-float scene target holds in practice, so the clamp is a no-op and the
+ * picture is what it always was.
+ *
+ * It exists for BLOOM (Extreme, `renderPost.ts`). The sheen above un-attenuates the specular by
+ * up to `PANEL_SHEEN_MAX`, and a perimeter wall facing a studio's key light is then a whole
+ * wall of pixels at 5–10× the bloom threshold: measured on `monochrome-studio`'s driver view,
+ * 0.7 % of the frame, and the blur turned it into a white haze over the far robots. The match
+ * scene lowers the cap to HALF the bloom threshold for its own pass while bloom is on and puts
+ * it back after (`renderScene.ts`, `BLOOM_PANEL_CAP` in `renderPost.ts` for why half), so a lit
+ * panel still reads as a bright sheet and stops feeding the glow.
+ */
+const PANEL_OUTPUT_CAP_OFF = 1e4;
+const PANEL_OUTPUT_CAP = { value: PANEL_OUTPUT_CAP_OFF };
+/** set the clear panels' output ceiling (raw linear), or `null` to lift it. See `PANEL_OUTPUT_CAP`. */
+export function setClearPanelCap(raw: number | null): void {
+  PANEL_OUTPUT_CAP.value = raw ?? PANEL_OUTPUT_CAP_OFF;
+}
+
 /** the one clear-plastic material this file builds, for both the perimeter and the cell skins —
  * exported because `scene/renderField.ts`'s constants-built FALLBACK field draws the same
  * polycarbonate and used to build a material of its own, which is how the two paths came to
@@ -730,6 +751,8 @@ export function clearPanelMaterial(opacity: number, veil = 0): THREE.Material {
   mat.customProgramCacheKey = () =>
     `bb-clear-panel|${PANEL_GRAZE_OPACITY}|${PANEL_SHEEN_MAX}|${PANEL_ENV_SPEC_RESTORE}|${PANEL_PATH_MIN_COS}|${veil}`;
   mat.onBeforeCompile = (shader) => {
+    shader.uniforms.bbPanelCap = PANEL_OUTPUT_CAP;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', 'uniform float bbPanelCap;\n#include <common>');
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       [
@@ -758,6 +781,11 @@ export function clearPanelMaterial(opacity: number, veil = 0): THREE.Material {
               `outgoingLight += vec3( ${veilRgb.r.toFixed(4)}, ${veilRgb.g.toFixed(4)}, ${veilRgb.b.toFixed(4)} ) * ${veil.toFixed(4)} * bbVeilT * bbVeilG;`,
             ]
           : []),
+        // the bloom ceiling (`PANEL_OUTPUT_CAP`), a no-op at its resting value. Divided by alpha
+        // because the blend multiplies by it: what is capped is the panel's share ON SCREEN, so a
+        // capped sheet lands at the threshold and not a third of it (the first spelling capped
+        // the pre-blend value and the lit wall went visibly grey under bloom).
+        'outgoingLight = min( outgoingLight, vec3( bbPanelCap / max( diffuseColor.a, 0.02 ) ) );',
         '#include <opaque_fragment>',
       ].join('\n'),
     );

@@ -106,7 +106,13 @@ export async function chargeStanding(
       final.scoreAfter = Math.max(0, Math.min(STANDING_MAX, final.scoreBefore - points));
       final.tierAfter = tierOf(final.scoreAfter).key;
     }
-    await writeStandingEvent(userId, final, { game: ctx.game, mode: ctx.mode, roomCode: ctx.roomCode });
+    // what was actually STORED, which differs from the verdict when a heal or another write
+    // landed after the read above — the player is told the number the ledger holds
+    const stored = await writeStandingEvent(userId, final, { game: ctx.game, mode: ctx.mode, roomCode: ctx.roomCode });
+    if (stored !== final.scoreAfter) {
+      final.scoreAfter = stored;
+      final.tierAfter = tierOf(stored).key;
+    }
     console.log(
       `[standing] ${userId} ${kind}${ctx.count && ctx.count > 1 ? `x${ctx.count}` : ''} ` +
         `#${priorSameKind + 1}/${WINDOW_HOURS[kind]}h (rung ${final.rung}): ${final.scoreBefore} -> ${final.scoreAfter} ` +

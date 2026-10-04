@@ -9,6 +9,8 @@ interface ImportMetaEnv {
   /** presenting-sponsor KILL SWITCH — the exact string `0` removes every
    *  placement. Anything else (including absent) leaves the sponsorship on, so a
    *  typo cannot silently void the deal. See `src/sponsor.ts`. */
+  /** the Zenith web editor DSIM opens for "Edit in Zenith" (`src/ui/zenithHost.ts`); default the public app */
+  readonly VITE_ZENITH_URL?: string;
   readonly VITE_SPONSOR?: string;
   /** override the sponsor artwork without touching the repo — any URL, any format.
    *  `-LIGHT` is the cut for a LIGHT SURFACE (dark ink) and `-DARK` the reverse;

@@ -27,13 +27,14 @@ import { AdminReports, type WatchReplay } from './AdminReports';
 import { AdminAudit } from './AdminAudit';
 import { AdminAccess } from './AdminAccess';
 import { AdminBanners } from './AdminBanners';
+import { AdminCompetitions } from './AdminCompetitions';
 import { AdminUser } from './AdminUser';
 import { adminFail } from './adminCopy';
 import { AccountName, When, confirmed, downloadCsv } from './adminBits';
 
 const AdminAnalytics = lazy(() => import('./AdminAnalytics').then((m) => ({ default: m.AdminAnalytics })));
 
-type AdminTab = 'live' | 'users' | 'moderation' | 'content' | 'server' | 'audit' | 'analytics' | 'access';
+type AdminTab = 'live' | 'users' | 'moderation' | 'content' | 'server' | 'audit' | 'analytics' | 'access' | 'competitions';
 /* ⚠️ APPEND, DO NOT REORDER. The tab order is the order of an incident: Live is what you
    open when something is happening, Users is where you land from every name on the page,
    and the deliberate, unhurried jobs follow. Audit sits last because it is read after the
@@ -48,6 +49,8 @@ const TABS: { id: AdminTab; label: string }[] = [
   { id: 'analytics', label: 'Analytics' },
   // lockdown access groups (0051): beta testers, developers, contributors
   { id: 'access', label: 'Access' },
+  // every competition, drafts included (0059); each is run from its own page
+  { id: 'competitions', label: 'Competitions' },
 ];
 const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
 
@@ -118,12 +121,15 @@ const ANN_KINDS: { value: AnnouncementKind; label: string }[] = [
 export function Admin({
   onWatch,
   onWatchReplay,
+  onCompetition,
 }: {
   /** spectate a live room (hidden — an admin watcher is not counted) */
   onWatch?: (room: string, region?: string) => void;
   /** open a finished game's replay — with the MATCH it belongs to, when that is known, so a
    *  moderator can correct what it scored while watching it */
   onWatchReplay?: WatchReplay;
+  /** open the competitions pages at `sub` (a slug, `<slug>/manage`, `new`, or null for the list) */
+  onCompetition?: (sub: string | null) => void;
 }) {
   // LIVE first: it is the tab you open during an incident, and the panel's other
   // jobs are all deliberate, unhurried ones you go looking for. Both this and the open
@@ -501,6 +507,8 @@ export function Admin({
       {tab === 'audit' && <AdminAudit onOpenUser={openAccount} />}
 
       {tab === 'access' && <AdminAccess onOpenUser={openAccount} />}
+
+      {tab === 'competitions' && onCompetition && <AdminCompetitions onOpen={onCompetition} />}
 
       {/* LAZY, unlike every other tab here, and for the reason `GraphicsSection` is:
           the dashboard and its hand-rolled SVG charts are ~20 KB that only an admin who

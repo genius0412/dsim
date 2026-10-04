@@ -1,3 +1,4 @@
+import type { ZenithAutoSetup } from '../auto/types';
 import type { DodgeVerdict } from '../dodge';
 import type { GameId, Physics } from '../types';
 import type { RobotSetup } from '../sim/spawn';
@@ -6,11 +7,14 @@ import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
 import { applyPushedStatus } from './siteStatus';
 import { appChannel, appBuild } from './env';
+import { importVisuals } from './importVisualsClient';
+import { STAGED_TIMEOUT_MESSAGE, stagedStartOverdue } from './stagedStart';
 import {
   encodeMsg,
   decodeServerMsg,
   type ServerMsg,
   CLIENT_CAPS,
+  type CompetitionRef,
   type LobbyPlayer,
   type MatchDriver,
   type PlayerIntro,
@@ -92,13 +96,16 @@ type Handlers = {
     /** false ⇒ a CUSTOM room's 3D-readiness window: no ratings, nothing to ready up. Absent
      *  from an older server ⇒ true, which is what every `strategyStart` used to be. */
     ranked: boolean,
+    /** a competition match's window: which event and match (and no ratings) */
+    competition?: CompetitionRef,
   ) => void;
   /** `code` is present only for the reasons a client can ACT on (today: `region_full`).
    *  Absent for everything else, and absent entirely from older servers, so a handler
    *  must stay correct reading `message` alone. */
   error: (message: string, code?: ErrorCode) => void;
-  /** a staged RANKED pairing was cancelled and this is what it cost. Arrives just BEFORE
-   *  the `error` that tears the screen down, so the UI can show the reason alongside it. */
+  /** a staged RANKED pairing was cancelled and this is what it cost. Arrives AFTER the `error`
+   *  that tears the screen down (the room sends it once the charge is written), which is why a
+   *  cancelled socket is `retire`d rather than closed on the error. */
   dodgeVerdict: (yours: DodgeVerdict | null, others: DodgeVerdict[]) => void;
   /** the ranked queue refused this account: its standing carries a cooldown. `until` is an
    *  epoch ms deadline, so the screen counts it down instead of showing a stale sentence. */
@@ -120,6 +127,9 @@ export class LobbyClient {
     transport.onMessage((d) => this.onMessage(d));
     // a transient drop auto-reconnects (see below); only a give-up is terminal
     transport.onFail(() => this.handlers.closed?.());
+    // the imported-robot visuals relay rides this connection (docs/area/netcode.md, VISUALS RELAY);
+    // binding the transport a `ServerSession` already holds keeps what it has
+    importVisuals.bind(transport);
   }
 
   on<K extends keyof Handlers>(event: K, cb: Handlers[K]): void {
@@ -144,9 +154,52 @@ export class LobbyClient {
       this.transport.send(
         encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
       );
+      // `send` drops a frame on a socket that closed during the token read
+      if (this.joinSentAt === null && this.transport.isOpen) this.joinSentAt = Date.now();
     };
     this.transport.onOpen(() => void doJoin());
     this.transport.onReopen(() => void doJoin());
+  }
+
+  /** when the first `join` went out on an open socket (see `watchStagedStart`) */
+  private joinSentAt: number | null = null;
+  private stagedWatch: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * THIS SOCKET IS A SEAT IN A MATCHMADE ROOM: give up on it if the room never answers.
+   *
+   * The ranked screen waits for `strategyStart`, `matchStart` or `error` and nothing else, so a
+   * room that sends none of them used to hold "Match found" forever. Past the limits in
+   * `stagedStart.ts` the socket is dropped and the CURRENT `error` handler is called, which is the
+   * screen's when it is up and the queue keeper's when it is parked, so both handle it as the
+   * cancellation it is. Stopped by the first of the three frames, and by `dispose`.
+   */
+  watchStagedStart(): void {
+    if (this.stagedWatch) return;
+    const assignedAt = Date.now();
+    this.stagedWatch = setInterval(() => {
+      if (!stagedStartOverdue(assignedAt, this.joinSentAt, Date.now())) return;
+      console.warn('[ranked] the match room never answered; giving up on it');
+      this.dispose();
+      this.handlers.error?.(STAGED_TIMEOUT_MESSAGE, 'match_gone');
+    }, 1000);
+  }
+
+  private stopStagedWatch(): void {
+    if (this.stagedWatch) clearInterval(this.stagedWatch);
+    this.stagedWatch = null;
+  }
+
+  /**
+   * THE ROOM IS OVER, BUT ITS LAST WORD MAY STILL BE ON THE WAY. A cancelled room sends `error`
+   * first and the `dodgeVerdict` after its database write, so the socket is kept for `ms` to hear
+   * it rather than closed on the error. A reconnect in the meantime closes it instead of
+   * re-sending `join` (or `queue`): the room is gone, and an older server opens a dead code empty.
+   */
+  retire(ms: number): void {
+    this.stopStagedWatch();
+    this.transport.onReopen(() => this.dispose());
+    setTimeout(() => this.dispose(), ms);
   }
 
   /**
@@ -272,7 +325,28 @@ export class LobbyClient {
   private sendPhysicsReady(): void {
     this.seated = true;
     if (this.ready3d) this.transport.send(encodeMsg({ t: 'physicsReady' }));
+    // the auto rides the same moment: a new socket is a new client record with no auto on it
+    if (this.zenithAutoSet) this.transport.send(encodeMsg({ t: 'zenithAuto', auto: this.zenithAuto }));
   }
+
+  /**
+   * THIS PLAYER'S ZENITH AUTO for a custom room (`{ t: 'zenithAuto' }`, docs/area/autos.md), or
+   * null for none. Latched like `physicsReady` and for the same reason: a frame sent before the
+   * seat exists is dropped, so the latch is flushed on `welcome` (every reattach included) and
+   * sent at once when it changes on a seat already held. The CALLER gates on `serverCaps()`
+   * containing `'zenithAuto'`: an older server ignores the message, and the driver would stand
+   * through AUTO with nothing saying why.
+   */
+  setZenithAuto(auto: ZenithAutoSetup | null): void {
+    const same = JSON.stringify(auto) === JSON.stringify(this.zenithAuto);
+    this.zenithAuto = auto;
+    this.zenithAutoSet = true;
+    if (this.seated && !same) this.transport.send(encodeMsg({ t: 'zenithAuto', auto }));
+  }
+
+  private zenithAuto: ZenithAutoSetup | null = null;
+  /** true once the caller has said anything, so a seat is never sent a null it did not ask for */
+  private zenithAutoSet = false;
 
   /**
    * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
@@ -335,6 +409,8 @@ export class LobbyClient {
   }
 
   dispose(): void {
+    this.stopStagedWatch();
+    importVisuals.release(this.transport);
     this.transport.close();
   }
 
@@ -362,6 +438,9 @@ export class LobbyClient {
          taken, and it is re-sent on every reattach, which is exactly the two moments this has
          to fire. */
       this.sendPhysicsReady();
+      importVisuals.onWelcome(m.clientId); // a new seat on the room's side holds none of our uploads
+    } else if (m.t === 'visualReady' || m.t === 'visualChunk' || m.t === 'visualRefused') {
+      importVisuals.handle(m);
     } else if (m.t === 'lobby') {
       // a recycle that landed on a lobby rather than a session (the host recycled while
       // we were still coming back). The id is ours either way — take it, and the seat's
@@ -371,16 +450,20 @@ export class LobbyClient {
     } else if (m.t === 'roster') {
       this.players = m.players;
       this.hostId = m.hostId;
+      importVisuals.noteRoster(this.clientId, m.players);
       this.handlers.roster?.(m.players, m.hostId);
     } else if (m.t === 'matchStart') {
+      this.stopStagedWatch(); // the three answers `watchStagedStart` waits for
       this.handlers.matchStart?.(m);
     } else if (m.t === 'queued') {
       this.handlers.queued?.(m.mode, m.size, m.need);
     } else if (m.t === 'matchAssigned') {
       this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
     } else if (m.t === 'strategyStart') {
-      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false);
+      this.stopStagedWatch();
+      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false, m.competition);
     } else if (m.t === 'error') {
+      this.stopStagedWatch();
       this.handlers.error?.(m.message, m.code);
     } else if (m.t === 'dodgeVerdict') {
       this.handlers.dodgeVerdict?.(m.yours, m.others);

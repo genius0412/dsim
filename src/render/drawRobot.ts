@@ -1,9 +1,21 @@
 import type { Artifact, RobotState } from '../types';
 import * as C from '../config';
 import { footprintExtents } from '../sim/field';
-import { turretWorldPos } from '../sim/robot';
+import { turretWorldPos, wheelLocals } from '../sim/robot';
+import { decodeFixedLauncher } from '../sim/fixedShot';
 import { rot } from '../math';
 import { accentFill, clampCosmetics } from '../cosmetics';
+import {
+  clipToHull,
+  drawAimMark,
+  drawImportedBody,
+  drawImportedChevron,
+  drawImportedOutline,
+  drawMouthState,
+  ringInHull,
+  traceHull,
+} from './drawImported';
+import { decodeImportGrabRect, decodeImportMouth, decodeImportSolids } from '../sim/importedMech';
 
 /**
  * ROBOT COSMETICS — 2D SHARED HELPERS (`docs/cosmetics-plan.md` §3.4). Used by all three 2D
@@ -200,6 +212,12 @@ export function drawRobot(
    */
   outline?: string,
 ): void {
+  // AN IMPORTED ROBOT draws its hull or its picture (`drawImported.ts`) — a separate function, so
+  // this sprite, frozen to what `main` draws, stays byte-identical for every standard robot
+  if (r.spec.imported) {
+    drawImportedDecodeRobot(ctx, r, intakeOn, held, outline);
+    return;
+  }
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   // the alliance is FILLS only now (the chevron); every stroke is the neutral `trim`.
@@ -252,6 +270,8 @@ export function drawRobot(
   // (sloped/triangle) are two RIGHT TRIANGLES — one per side — whose hypotenuses
   // are the slopes that funnel balls to the compliant wheels at the throat (no
   // flat front). VECTOR is a flat plate with a full-width wheel roller.
+  // NO INTAKE: no wedges, no roller, nothing out front — the chassis is the whole robot
+  const none = C.noIntake(r.spec);
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const rw = m.mouthHalf;
@@ -304,7 +324,9 @@ export function drawRobot(
       ctx.stroke();
     }
   };
-  if (m.wedge) {
+  if (none) {
+    // nothing to draw
+  } else if (m.wedge) {
     const th = m.throatHalf;
     // funnel mouth: opening at the (recessed) wedge line, narrowing to the throat
     // the mouth opening: wide at the roller axle, narrowing to the throat
@@ -400,6 +422,13 @@ export function drawRobot(
   ctx.save();
   ctx.translate(tp.x, tp.y);
   ctx.rotate(r.turretHeading);
+  // a FIXED launcher (`spec.launcher`) has no slew ring: its housing is bolted square to the
+  // chassis and `turretHeading` is the chassis heading plus its facing
+  if (decodeFixedLauncher(r.spec)) {
+    drawFixedLauncher(ctx, ring, reach, r.hopper.length > 0);
+    ctx.restore();
+    return;
+  }
   ctx.strokeStyle = r.hopper.length > 0 ? '#22c55e' : '#6b7280';
   ctx.lineWidth = 0.9;
   ctx.beginPath();
@@ -416,22 +445,36 @@ export function drawRobot(
 }
 
 /**
+ * A FIXED LAUNCHER, drawn in its own frame (+x = where it fires): a flywheel housing with the
+ * wheel across it and the hood's lip out of the front, outlined in the same loaded/empty colour a
+ * turret's ring uses. No ring, because nothing turns: the robot is what aims. Sized like the
+ * turret (`ring`, `reach`), so it never pokes past the chassis either.
+ */
+function drawFixedLauncher(ctx: CanvasRenderingContext2D, ring: number, reach: number, loaded: boolean): void {
+  const l = Math.max(ring * 1.3, 3);
+  const w = Math.max(ring * 1.5, 3);
+  ctx.fillStyle = '#3a4150';
+  ctx.fillRect(-l / 2, -w / 2, l, w);
+  ctx.strokeStyle = loaded ? '#22c55e' : '#6b7280';
+  ctx.lineWidth = 0.9;
+  ctx.strokeRect(-l / 2, -w / 2, l, w);
+  // the flywheel, edge-on across the housing
+  ctx.fillStyle = '#1f2329';
+  ctx.fillRect(-l * 0.1, -w * 0.38, l * 0.32, w * 0.76);
+  // the hood's lip: where the artifact leaves
+  ctx.fillStyle = '#525b6b';
+  ctx.fillRect(l / 2 - 0.2, -1.2, Math.max(reach - l / 2, 1), 2.4);
+}
+
+/**
  * Draw a robot's DRIVETRAIN wheels in the chassis-local frame (already translated +
  * rotated to the robot). Shared by DECODE's drawRobot and Chain Reaction's drawChainRobot
  * so every drivetrain reads identically across games: mecanum/tank point forward, SWERVE
  * pods steer to `moduleAngles`, X-drive omnis sit at ±45° (an X).
  */
 export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string, accent: string): void {
-  const hl = r.spec.length / 2;
-  const hw = r.spec.width / 2;
-  const wx = Math.max(hl - C.WHEEL_INSET, 1);
-  const wy = Math.max(hw - C.WHEEL_INSET, 1);
-  const corners = [
-    [wx, wy],
-    [wx, -wy],
-    [-wx, wy],
-    [-wx, -wy],
-  ] as const;
+  // [FL, FR, BL, BR] — `wheelLocals`, the list the sim steers `moduleAngles` against
+  const corners = wheelLocals(r.spec).map((w) => [w.x, w.y] as const);
   // the tyre's own fill DEFAULTS to the cosmetic accent (closure over `accent`); a call site
   // only overrides it for a non-tyre part (the swerve module housing below).
   const drawWheel = (px: number, py: number, ang: number, len = 4.4, wid = 2.2, fill = accent): void => {
@@ -531,4 +574,136 @@ export function roundRect(
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+/**
+ * DECODE'S SPRITE FOR AN IMPORTED ROBOT (`drawImported.ts` has the body and the rules). The body is
+ * the hull or the import's own top-down picture; on top of it, DECODE's dynamic layer from DECODE's
+ * own accessors:
+ *  - the INTAKE at the roller axle `C.intakeAxleX` across `C.intakeMouth`'s span, its band the
+ *    capture nip (`C.intakeNip`) — as roller hardware on a silhouette, as a state band over a
+ *    picture;
+ *  - the alliance heading CHEVRON (the alliance is a fill on this sprite, never the outline);
+ *  - the HELD artifacts at their stored local offsets, exactly as on a standard robot;
+ *  - the TURRET at `turretWorldPos`, sized to the hull rather than to `length`.
+ */
+function drawImportedDecodeRobot(
+  ctx: CanvasRenderingContext2D,
+  r: RobotState,
+  intakeOn: boolean,
+  held: readonly Artifact[],
+  outline?: string,
+): void {
+  const imp = r.spec.imported;
+  if (!imp) return;
+  const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  const trim = outline ?? ROBOT_TRIM;
+  const fill = C.chassisFill(r.spec.chassisColor);
+  const accent = accentFill(clampCosmetics(r.spec).accent, r.spec.chassisColor);
+
+  ctx.save();
+  ctx.translate(r.pos.x, r.pos.y);
+  ctx.rotate(r.heading);
+  ctx.save();
+  clipToHull(ctx, imp);
+  const pictured = drawImportedBody(ctx, r, { fill, accent });
+
+  // THE INTAKE — exactly where the sim's DECODE mouth is (`decodeImportMouth`): the hull's own
+  // face and roller line, the mouth's lateral centre `yc` and width, the funnel wedges the artifact
+  // solve collides with (`decodeImportSolids`), and the band the capture grabs in
+  // (`decodeImportGrabRect`: the nip about the axle, across the mouth)
+  // (NO INTAKE draws none: the hull is the robot)
+  const d = C.noIntake(r.spec) ? null : decodeImportMouth(r.spec);
+  const band = d ? decodeImportGrabRect(r.spec) : null;
+  const mh = d ? d.mouth.mouthHalf : 0;
+  const th = d ? d.mouth.throatHalf : 0;
+  const dia = C.intakeRollerDia(r.spec);
+  if (!d || !band) {
+    // nothing to draw
+  } else if (pictured) {
+    drawMouthState(ctx, [band], intakeOn);
+  } else {
+    // the funnel WEDGES (sloped/triangle) or the vector's flanking rails: the sim's own solids
+    for (const piece of decodeImportSolids(r.spec).structure) {
+      ctx.fillStyle = fill;
+      traceHull(ctx, piece);
+      ctx.fill();
+      ctx.strokeStyle = trim;
+      strokeInside(ctx, () => traceHull(ctx, piece), C.CHASSIS_OUTLINE);
+    }
+    // the mouth: wide at the axle, narrowing to the throat at the face
+    ctx.fillStyle = intakeOn ? 'rgba(34,197,94,0.85)' : '#2a303c';
+    ctx.beginPath();
+    ctx.moveTo(d.axle, d.yc - mh);
+    ctx.lineTo(d.axle, d.yc + mh);
+    ctx.lineTo(d.face, d.yc + th);
+    ctx.lineTo(d.face, d.yc - th);
+    ctx.closePath();
+    ctx.fill();
+    // the beam on the axle and the compliant wheels along it — the standard sprite's roller
+    ctx.fillStyle = intakeOn ? '#166534' : '#475569';
+    ctx.fillRect(d.axle - 0.28, d.yc - mh, 0.56, mh * 2);
+    const n = Math.max(1, Math.round(mh / C.INTAKE_ROLLER_PITCH));
+    const halfW = C.INTAKE_ROLLER_W / 2;
+    ctx.strokeStyle = intakeOn ? '#15803d' : '#94a3b8';
+    ctx.lineWidth = 0.4;
+    for (let i = -n; i <= n; i++) {
+      const cy = (i * mh) / (n + 0.35);
+      if (Math.abs(cy) + halfW > mh + 0.01) continue;
+      ctx.fillStyle = intakeOn ? '#22c55e' : '#6b7280';
+      roundRect(ctx, d.axle - dia / 2, d.yc + cy - halfW, dia, C.INTAKE_ROLLER_W, 0.45);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  drawImportedChevron(ctx, imp, color, 0.45);
+  drawImportedOutline(ctx, imp, trim);
+  ctx.restore(); // ...end of the hull clip
+
+  for (const b of held) {
+    const lp =
+      b.state.kind === 'held'
+        ? { x: b.state.lx, y: b.state.ly }
+        : rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    ctx.fillStyle = b.color === 'purple' ? C.COLORS.purple : C.COLORS.green;
+    ctx.beginPath();
+    ctx.arc(lp.x, lp.y, C.BALL_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 0.4;
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // THE TURRET at the sim's own point, ringed to fit the hull where it stands
+  const tp = turretWorldPos(r);
+  const local = rot({ x: tp.x - r.pos.x, y: tp.y - r.pos.y }, -r.heading);
+  const ring = ringInHull(imp, local, 1.5, 4.4);
+  const loaded = r.hopper.length > 0;
+  if (pictured) {
+    drawAimMark(ctx, tp.x, tp.y, r.turretHeading, ring, loaded);
+    return;
+  }
+  ctx.save();
+  ctx.translate(tp.x, tp.y);
+  ctx.rotate(r.turretHeading);
+  if (decodeFixedLauncher(r.spec)) {
+    // the FIXED launcher at the placed lip, facing `mech.shooterYawDeg`
+    drawFixedLauncher(ctx, ring, ring + 0.5, loaded);
+    ctx.restore();
+    return;
+  }
+  ctx.strokeStyle = loaded ? '#22c55e' : '#6b7280';
+  ctx.lineWidth = 0.9;
+  ctx.beginPath();
+  ctx.arc(0, 0, ring, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = '#3a4150';
+  ctx.beginPath();
+  ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#525b6b';
+  ctx.fillRect(0, -1.2, ring + 0.5, 2.4);
+  ctx.restore();
 }

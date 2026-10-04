@@ -81,7 +81,7 @@ export function buildWords(spec: RobotSpec, game: GameId): string[] {
       }, ${CHAIN_CATALYST_MOUNT_LABELS[catalystMountOf(spec)]}`,
     );
   } else {
-    words.push(`${INTAKE_SHORT[spec.intake]} intake`);
+    words.push(spec.intake === 'none' ? INTAKE_SHORT.none : `${INTAKE_SHORT[spec.intake]} intake`);
     if (spec.canSort) words.push('sorter');
     words.push(shotRange(spec.flywheelInertia));
   }

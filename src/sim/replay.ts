@@ -10,6 +10,7 @@ import {
   type QCommand,
 } from '../net/protocol';
 import { worldHash } from '../net/checksum';
+import { REPLAY_FORMAT_IMPORTED, REPLAY_FORMAT_TUNED, setupsHaveImported, setupsHaveTune } from '../net/imported';
 
 /**
  * Deterministic REPLAYS + record-chasing (score-attack) scaffolding — Phase 3
@@ -39,8 +40,18 @@ const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
  *    leftDrive/rightDrive (see robot.ts `saturation === 'tank'`) — so a tank or butterfly
  *    robot's entire drive input was thrown away and its replay played back with a dead
  *    drivetrain. The READER still understands format 1, so old replays keep playing.
+ * 3: the container holds an IMPORTED ROBOT (`RobotSpec.imported`). The stride is format 2's; the
+ *    number exists so a build that predates imports reads it as `'future'` and refuses to play
+ *    it, instead of re-simulating a rectangle robot and showing a match that never happened.
+ *    ⚠️ ONLY STAMPED WHEN A SETUP CARRIES AN IMPORT (`ReplayRecorder.finish`): every replay
+ *    without one is still written as format 2, byte for byte as it was.
+ * 4: an imported robot with PRACTICE TUNING (`ImportedRobot.tune`), which a format-3 build's coercer
+ *    drops, so it would re-simulate the untuned robot. Stamped only then; format 3 is unchanged.
  */
-export const REPLAY_FORMAT = 2;
+export const REPLAY_FORMAT = 4;
+
+/** what a container WITHOUT an imported robot is written as — the format before imports existed */
+export const REPLAY_FORMAT_BASE = 2;
 
 /** numbers per command entry, by container format. 1: [tick,dx,dy,rot,buttons] ·
  *  2: + [ld,rd] */
@@ -70,6 +81,9 @@ export interface Replay {
    * be replayed accurately on this build".
    */
   sim?: number;
+  /** C.SIM_PATCH when recorded — a behaviour fix inside one `sim` that keeps older replays
+   * playable (see `SIM_PATCH`). ABSENT ⇒ 0. */
+  patch?: number;
   /** which game this replay is of — picks the sim module to re-simulate it (createWorld
    * + step). Absent on old replays ⇒ DECODE. */
   game?: GameId;
@@ -88,6 +102,19 @@ export interface Replay {
   ticks: number;
   /** per-robot-id command track (absent id ⇒ ZERO the whole match) */
   tracks: Record<number, CommandTrack>;
+}
+
+/** when `SIM_PATCH` 1 reached the site — a build from then on ran it but did not stamp it */
+const PATCH1_SITE_AT = Date.parse('2026-09-27T08:34:35Z');
+
+/**
+ * A replay the BROWSER kept (a local practice run or LAN archive) and saved at `savedAt`: an
+ * unstamped one saved after patch 1 reached the site ran patch 1. Stored server rows are
+ * backfilled by migration 0055 instead.
+ */
+export function withLocalPatch(r: Replay, savedAt: number | undefined): Replay {
+  if (r.patch !== undefined || savedAt === undefined || savedAt < PATCH1_SITE_AT) return r;
+  return { ...r, patch: 1 };
 }
 
 function packKey(q: QCommand): string {
@@ -153,9 +180,12 @@ export class ReplayRecorder {
     const tracks: Record<number, CommandTrack> = {};
     for (const [id, t] of this.tracks) tracks[id] = t;
     return {
-      format: REPLAY_FORMAT,
+      // format 3 ONLY with an imported robot in the line-up; every other container is the format-2
+      // container it was before imports (see REPLAY_FORMAT)
+      format: setupsHaveTune(this.setups) ? REPLAY_FORMAT_TUNED : setupsHaveImported(this.setups) ? REPLAY_FORMAT_IMPORTED : REPLAY_FORMAT_BASE,
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
+      patch: C.SIM_PATCH,
       game: this.game,
       // OMITTED when it is `'2d'`, never written as the string: absent already READS `'2d'`
       // everywhere, and a container that gained a key would no longer be byte-identical to
@@ -352,6 +382,8 @@ export class ReplayPlayer {
       replay.physics ?? '2d',
     );
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
+    // the rules this log was RECORDED under — an unstamped replay predates `SIM_PATCH` 1
+    this.world.simPatch = replay.patch ?? 0;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
 

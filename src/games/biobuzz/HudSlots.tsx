@@ -46,8 +46,8 @@ const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
  * component with a branch per season.
  *
  */
-export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
-  return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
+export function BiobuzzBuilderSlot({ spec, onChange, hideFrame }: GameBuilderProps) {
+  return <BiobuzzBuilder spec={spec} setSpec={onChange} hideFrame={hideFrame} />;
 }
 
 /**

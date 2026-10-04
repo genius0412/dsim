@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
 import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
 import { START_POSES } from '../config';
@@ -31,7 +31,11 @@ import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH 
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
-import { serverCaps } from '../net/api';
+import { roomTakesImportedRobots, roomTakesImportVisuals, serverCaps } from '../net/api';
+import { importVisuals, ownLookLine } from '../net/importVisualsClient';
+import { IMPORT_FELL_BACK, isImportedSpec } from '../net/imported';
+import { standardRobotFor } from '../settings';
+import { activeZenithAuto } from '../auto/library';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
@@ -39,6 +43,8 @@ import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
+import { useLibrary } from '../robotImport/ui/useLibrary';
+import { libraryEntryFor } from '../robotImport/libraryIds';
 
 interface Props {
   settings: GameSettings;
@@ -130,6 +136,10 @@ const SLOW_CONNECT_MS = 5000;
 const IN_PROGRESS_RETRY_S = 10;
 /** debounce on writing the Discord identity back to `settings.spec` (see the effect) */
 const IDENTITY_SAVE_MS = 500;
+
+/** why this seat's own imported look is not reaching the room (the relay client's), for one line */
+const subscribeOwnLook = (cb: () => void): (() => void) => importVisuals.subscribeOwnLook(cb);
+const ownLookNow = () => importVisuals.ownLookTrouble();
 
 /** The lobby is a full-screen surface, so it cannot use AppShell's side panel.
  * Keep the actual room UI and the shared FriendsPanel as siblings here instead.
@@ -283,6 +293,37 @@ export function Lobby({
       alive = false;
     };
   }, []);
+  /**
+   * IMPORTED ROBOTS (docs/area/netcode.md, IMPORTED ROBOTS). A custom room may field one, but only
+   * on a server that says it can (`'robotImport'`): an older one drops the import without a word
+   * and steps a standard robot while this client predicts the imported one. So the imported spec
+   * goes out only once the answer is a yes, and until then — and for good on a server that says
+   * no, and in a record room, which never takes one — the room is sent the last standard robot,
+   * with one line saying so. `importOk` is null while the answer is on its way.
+   */
+  const importedActive = isImportedSpec(settings.spec);
+  // THE IMPORTED ROBOTS on this device, offered in "Your robot" beside the saved ones when the room
+  // takes them (the importer, lane 4). The server is asked as soon as there is one to offer, not
+  // only once one is active, so the cards can be shown before anybody picks one.
+  const importLibrary = useLibrary(settings.game);
+  const hasImports = (importLibrary.entries?.length ?? 0) > 0;
+  const [importOk, setImportOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!importedActive && !hasImports) return;
+    let alive = true;
+    void roomTakesImportedRobots().then((ok) => {
+      if (alive) setImportOk(ok);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [importedActive, hasImports]);
+  const sendImport = importedActive && !isRecord && importOk === true;
+  // an imported look the room refused (out of space, a junk file, an id taken) or never got: said in
+  // the robot's own line, so the owner learns why the others see an outline
+  const ownLook = useSyncExternalStore(subscribeOwnLook, ownLookNow, ownLookNow);
+  /** the spec this client puts on the wire: the active robot, or the standard one standing in for an import */
+  const wireSpec = (s: GS): RobotSpec => (isImportedSpec(s.spec) && !sendImport ? standardRobotFor(s) : s.spec);
   /** the tier the host's next "Add a bot" seats. Remembered for the session only: it is a
    *  property of the room being set up, not of the account. */
   const [botTier, setBotTier] = useState<string>(() => moduleFor(roomGame).bot?.defaultTier ?? '');
@@ -508,17 +549,18 @@ export function Lobby({
   /** the player fields this client advertises — the same on a fresh join and on a resume.
    *  An untyped name becomes the literal HERE, not in the box the player is looking at. */
   function myPlayer(): Omit<LobbyPlayer, 'clientId'> {
+    const spec = wireSpec(settings);
     return {
       name: name.trim() || DEFAULT_DRIVER_NAME,
-      teamName: settings.spec.teamName,
-      teamNumber: settings.spec.teamNumber,
+      teamName: spec.teamName,
+      teamNumber: spec.teamNumber,
       // record runs are opponent-free (one alliance) — force blue, matching the server
       alliance: isRecord ? 'blue' : settings.alliance,
       startIndex: settings.startIndex,
       startPose: settings.startPose ?? null,
       ready: false,
-      spec: settings.spec,
-      assists: settings.assists,
+      spec,
+      assists: spec === settings.spec ? settings.assists : (spec.assists ?? settings.assists),
     };
   }
 
@@ -554,6 +596,11 @@ export function Lobby({
   function wire(transport: Transport, roomCode: string): LobbyClient {
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
+    /* THE VISUALS RELAY (docs/area/netcode.md): an owner uploads its imported robot's look only to a
+       server that holds the relay, and the game says whether there is a mesh to send. Set HERE, after
+       the client exists, because binding a new transport starts the relay's state clean. */
+    importVisuals.setGame(roomGame);
+    void roomTakesImportVisuals().then((ok) => importVisuals.setOffered(ok));
 
     /**
      * SAY THAT IT IS STILL TRYING.
@@ -634,6 +681,16 @@ export function Lobby({
     // reconnect's join frame, so once here is enough — and it is here rather than beside each
     // `join`/`resume` because `wire` is the one place both of them pass through.
     announcePhysicsReady(lobby, roomGame);
+    // THIS PLAYER'S ZENITH AUTO (custom rooms only; docs/area/autos.md): the one on in
+    // Configure ▸ Match ▸ Autonomous, sent once the server says it can play it. Latched in the
+    // client like the readiness above, so a reconnect re-sends it. A record run never sends one.
+    if (!isRecord && moduleFor(roomGame).zenithAutos) {
+      void serverCaps().then((caps) => {
+        if (!caps.includes('zenithAuto')) return;
+        const active = activeZenithAuto(roomGame);
+        lobby.setZenithAuto(active ? { auto: active.auto, ...(active.waypoints ? { waypoints: active.waypoints } : {}) } : null);
+      });
+    }
     return lobby;
   }
 
@@ -823,8 +880,24 @@ export function Lobby({
   /** the full builder edits settings.spec live; mirror every change to the server */
   const onBuilderChange = (next: GS): void => {
     onSettingsChange(next);
-    lobbyRef.current?.update({ spec: next.spec, assists: next.assists });
+    const spec = wireSpec(next);
+    lobbyRef.current?.update({ spec, assists: spec === next.spec ? next.assists : (spec.assists ?? next.assists) });
   };
+
+  /**
+   * THE SERVER SAID YES AFTER THE JOIN WENT OUT. The join cannot wait on the capability read, so a
+   * seat that joined with the standard stand-in offers its imported robot once the answer lands,
+   * ONCE per robot: a room that refuses it (somebody on an older build) answers with a message and
+   * an unchanged roster, and asking again on every roster frame would only be told again.
+   */
+  const offeredImportRef = useRef<RobotSpec | null>(null);
+  useEffect(() => {
+    if (!sendImport || phase !== 'room' || !me || isImportedSpec(me.spec)) return;
+    if (offeredImportRef.current === settings.spec) return;
+    offeredImportRef.current = settings.spec;
+    lobbyRef.current?.update({ spec: settings.spec, assists: settings.assists });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendImport, phase, me?.spec, settings.spec]);
 
   const mySpec = me?.spec ?? settings.spec;
   /** is this saved robot the one this seat is bringing? The chassis fields, as the swap row
@@ -1299,6 +1372,8 @@ export function Lobby({
                       "Medium bot · READY" is indistinguishable from a driver who picked that
                       name, and the difference is whether the match rates. */}
                   {p.bot && <span className="ds-chip">BOT</span>}
+                  {/* the Zenith auto this driver's robot plays in AUTO (custom rooms) */}
+                  {p.autoName && <span className="ds-chip">AUTO · {p.autoName}</span>}
                   {p.clientId === hostId && (
                     <span className="ds-chip on">HOST</span>
                   )}
@@ -1464,13 +1539,24 @@ export function Lobby({
         {me && (
           <section className="ds-sec">
             <h2>Your robot</h2>
+            {/* an imported robot that is NOT going out, and why (see `importOk`): one line */}
+            {importedActive && isRecord && <p className="ds-hint">Record runs use a standard robot.</p>}
+            {importedActive && !isRecord && importOk === false && <p className="ds-hint">{IMPORT_FELL_BACK}</p>}
             {/* WHAT YOU ARE BRINGING, said once. When it is one of your saved robots, the lit
                 card below says it; this line is for a build that is not saved, which no card
                 can show. It used to print over the lit card too, in a second vocabulary. */}
-            {!settings.savedRobots.some(isMine) && (
-              <p className="ds-sub">
-                {mySpec.name} · {buildWords(mySpec, settings.game).join(' · ')}
+            {/* ...and when this seat's imported LOOK did not reach the room, why, in that same line's
+                place (`ownLookLine`), so the section does not move when it arrives */}
+            {sendImport && ownLook ? (
+              <p className="ds-sub" role="status">
+                {ownLookLine(ownLook)}
               </p>
+            ) : (
+              !settings.savedRobots.some(isMine) && (
+                <p className="ds-sub">
+                  {mySpec.name} · {buildWords(mySpec, settings.game).join(' · ')}
+                </p>
+              )
             )}
             <div className="ds-opts robots">
               {settings.savedRobots.map((r, i) => (
@@ -1485,6 +1571,29 @@ export function Lobby({
                   onPick={() => pickSpec({ ...r })}
                 />
               ))}
+              {/* imported robots, where this room can play them (never a record room) */}
+              {importOk === true && !isRecord
+                ? (importLibrary.entries ?? []).map((e) => (
+                    <RobotCard
+                      key={e.id}
+                      spec={e.spec}
+                      game={settings.game}
+                      on={libraryEntryFor(importLibrary.entries, mySpec.imported?.id)?.id === e.id}
+                      imported
+                      team={teamLine(e.spec)}
+                      thumb={
+                        importLibrary.thumbs[e.id] ? (
+                          <span className="ds-robot-card-thumb">
+                            <img className="ds-import-thumb" src={importLibrary.thumbs[e.id]} alt="" />
+                          </span>
+                        ) : undefined
+                      }
+                      // the card that answers for the robot already picked is a no-op: re-applying
+                      // an out-of-date library copy would put its older spec back
+                      onPick={() => (libraryEntryFor(importLibrary.entries, mySpec.imported?.id)?.id === e.id ? undefined : pickSpec({ ...e.spec }))}
+                    />
+                  ))
+                : null}
               <button className="ds-opt mini" onClick={() => setBuilding(true)}>
                 <span className="ot">Edit build</span>
               </button>

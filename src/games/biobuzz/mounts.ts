@@ -1,4 +1,27 @@
-import type { RobotSpec } from '../../types';
+import type { ImportedRobot, RobotSpec } from '../../types';
+
+/** the spec fields the geometry here reads — the parametric size, and an imported robot's hull */
+type SizeSpec = Pick<RobotSpec, 'length' | 'width'> & Partial<Pick<RobotSpec, 'imported'>>;
+
+/**
+ * An IMPORTED robot's hull bounding box. Its cells (`mountOrigin`) are the corners, edge
+ * mid-points and centre of THIS box, not of `length × width` about the origin: the parametric size
+ * is a clamped fallback, and the box need not be centred on the wheelbase centre. An inline loop so
+ * this file stays a leaf (`src/sim/imported.ts` has `polyBounds`).
+ */
+function hullBox(imp: ImportedRobot): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of imp.hull) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
 
 /**
  * BIOBUZZ MECHANISM MOUNTS — which chassis edge(s) the sweeper rollers ride on, and where the
@@ -54,8 +77,13 @@ export type BbEdge = 'front' | 'back' | 'left' | 'right';
 
 /** BIOBUZZ launchers (owner ruling 2026-09-12): a SINGLE turret (POLLEN only), a DOUBLE turret
  * (two individual turrets — one POLLEN, one NECTAR) and a DUMPER (POLLEN + NECTAR). CR's `drum`
- * is gone; a stored one migrates to `dumper` (`bbFoldScoreMode`, `mechs.ts`). */
-export const BB_SCORE_MODES = ['turret', 'twinturret', 'dumper'] as const;
+ * is gone; a stored one migrates to `dumper` (`bbFoldScoreMode`, `mechs.ts`).
+ *
+ * `fixed` (2026-10-02) is the kit robot's launcher: one flywheel and a fixed hood bolted to a
+ * chassis EDGE, POLLEN only, aimed by turning the robot, at the speed its setpoint wheel
+ * (`RobotSpec.flywheel`) throws — it scores only from the distance that arc reaches. LAST in the
+ * list, so every index a stored spec or a picker used before it still names the same launcher. */
+export const BB_SCORE_MODES = ['turret', 'twinturret', 'dumper', 'fixed'] as const;
 export type BbScoreMode = (typeof BB_SCORE_MODES)[number];
 
 export const BB_DEFAULT_INTAKE_MOUNT: BbIntakeMount = 'front';
@@ -182,15 +210,20 @@ export function bbMouthFrame(
   const end = isEndEdge(m.edge);
   const depth = end ? m.x1 - m.x0 : m.y1 - m.y0;
   const half = (end ? m.y1 - m.y0 : m.x1 - m.x0) / 2;
+  // the mouth's lateral centre — 0 for every standard mouth (centred on its edge); an IMPORTED
+  // mouth sits where it was placed, and carries its own chassis face
+  const cy = end ? (m.y0 + m.y1) / 2 : 0;
+  const cx = end ? 0 : (m.x0 + m.x1) / 2;
+  const imp = (m as { face?: number }).face;
   switch (m.edge) {
     case 'front':
-      return { ox: m.x0, oy: 0, rot: 0, depth, half, rail: hl - m.x0 };
+      return { ox: m.x0, oy: cy, rot: 0, depth, half, rail: (imp ?? hl) - m.x0 };
     case 'back':
-      return { ox: m.x1, oy: 0, rot: Math.PI, depth, half, rail: m.x1 + hl };
+      return { ox: m.x1, oy: cy, rot: Math.PI, depth, half, rail: m.x1 + (imp ?? hl) };
     case 'left':
-      return { ox: 0, oy: m.y0, rot: Math.PI / 2, depth, half, rail: hw - m.y0 };
+      return { ox: cx, oy: m.y0, rot: Math.PI / 2, depth, half, rail: (imp ?? hw) - m.y0 };
     default: // right
-      return { ox: 0, oy: m.y1, rot: -Math.PI / 2, depth, half, rail: m.y1 + hw };
+      return { ox: cx, oy: m.y1, rot: -Math.PI / 2, depth, half, rail: m.y1 + (imp ?? hw) };
   }
 }
 
@@ -230,7 +263,17 @@ export function isEndEdge(edge: BbEdge): boolean {
 
 /** the mounting geometry of `edge` on `spec`: `dist` = how far the edge is from the robot
  * centre along its outward normal, `span` = the edge's half-length across that normal. */
-export function edgeGeom(spec: Pick<RobotSpec, 'length' | 'width'>, edge: BbEdge): { dist: number; span: number } {
+export function edgeGeom(spec: SizeSpec, edge: BbEdge): { dist: number; span: number } {
+  if (spec.imported) {
+    // an IMPORT: its hull box's edge (which need not be centred on the origin)
+    const b = hullBox(spec.imported);
+    const L = (b.maxX - b.minX) / 2;
+    const W = (b.maxY - b.minY) / 2;
+    if (edge === 'front') return { dist: b.maxX, span: W };
+    if (edge === 'back') return { dist: -b.minX, span: W };
+    if (edge === 'left') return { dist: b.maxY, span: L };
+    return { dist: -b.minY, span: L };
+  }
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   return isEndEdge(edge) ? { dist: hl, span: hw } : { dist: hw, span: hl };
@@ -240,7 +283,19 @@ export function edgeGeom(spec: Pick<RobotSpec, 'length' | 'width'>, edge: BbEdge
  * mid-point of that side, corners the actual corner, centre the origin. This is the ONE source
  * for "where is it bolted" — the launch origin and both renderers all read it, so a mount can
  * never be drawn somewhere it does not act from. */
-export function mountOrigin(spec: Pick<RobotSpec, 'length' | 'width'>, pos: BbMountPos): { x: number; y: number } {
+export function mountOrigin(spec: SizeSpec, pos: BbMountPos): { x: number; y: number } {
+  if (spec.imported) {
+    // an IMPORT's nine cells sit on its HULL BOX: corners, edge mid-points and the box's centre
+    const b = hullBox(spec.imported);
+    const cx = (b.minX + b.maxX) / 2;
+    const cy = (b.minY + b.maxY) / 2;
+    const d = MOUNT_DIR[pos] ?? MOUNT_DIR.center;
+    if (pos === 'center') return { x: cx, y: cy };
+    return {
+      x: d.x > 0 ? b.maxX : d.x < 0 ? b.minX : cx,
+      y: d.y > 0 ? b.maxY : d.y < 0 ? b.minY : cy,
+    };
+  }
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   switch (pos) {
@@ -294,7 +349,11 @@ export const MOUNT_DIR: Record<BbMountPos, { x: number; y: number }> = {
 /** The turret ring's radius, scaled to the chassis. Shared by the sim's inboard pull
  * (`turretLocal`) and BOTH renderers, which is the point: they used to derive it separately in
  * CR and disagreed by an inch, so the sprite's ring sat where the ball did not leave from. */
-export function turretRadius(spec: Pick<RobotSpec, 'length' | 'width'>): number {
+export function turretRadius(spec: SizeSpec): number {
+  if (spec.imported) {
+    const b = hullBox(spec.imported);
+    return Math.min(3.8, Math.min(b.maxX - b.minX, b.maxY - b.minY) * 0.24);
+  }
   return Math.min(3.8, Math.min(spec.length, spec.width) * 0.24);
 }
 
@@ -310,12 +369,25 @@ export function turretRadius(spec: Pick<RobotSpec, 'length' | 'width'>): number 
  * `.mount2`), so the caller names which; omitted, it falls back to the flat `shooterMount`.
  */
 export function turretLocal(
-  spec: Pick<RobotSpec, 'length' | 'width'> & Partial<Pick<RobotSpec, 'shooterMount' | 'shooterRear'>>,
+  spec: SizeSpec & Partial<Pick<RobotSpec, 'shooterMount' | 'shooterRear' | 'bbMech'>>,
   pos: BbMountPos = bbShooterMountOf(spec),
 ): {
   x: number;
   y: number;
 } {
+  if (spec.imported) {
+    // an IMPORT's turret is where it was PLACED on the CAD — `mech.shooter`, or `mech.shooter2` for
+    // a double turret's second head — else the cell on its hull box, pulled inboard as below
+    const l = spec.bbMech?.launcher;
+    const second = l?.kind === 'twinturret' && pos === l.mount2 && pos !== l.mount;
+    const placed = second ? spec.imported.mech?.shooter2 : spec.imported.mech?.shooter;
+    if (placed) return { x: placed.x, y: placed.y };
+    const o = mountOrigin(spec, pos);
+    if (pos === 'center') return o;
+    const d = MOUNT_DIR[pos];
+    const r = turretRadius(spec);
+    return { x: o.x - Math.sign(d.x) * r, y: o.y - Math.sign(d.y) * r };
+  }
   if (pos === 'center') return { x: 0, y: 0 };
   const o = mountOrigin(spec, pos);
   const d = MOUNT_DIR[pos];

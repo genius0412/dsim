@@ -154,6 +154,9 @@ export interface GameModule extends GameSimModule {
   /** the game's start-position editor, used in place of the
    * `isDecode ? StartPositionEditor : ChainStartEditor` branch. */
   startEditor?: ComponentType<StartEditorProps>;
+  /** the Autonomous section's PREVIEW (`src/ui/AutonomousSetup.tsx`): a Zenith auto drawn on this
+   * game's own field. Absent means a game that plays no Zenith autos (`GameSimModule.zenithAutos`). */
+  autoPreview?: ComponentType<AutoPreviewProps>;
   /** display strings a non-game screen needs. `configSummary` is the ONE line that
    * says what a build is — printed by the leaderboard, the lobby roster and the
    * strategy screen. */
@@ -287,6 +290,13 @@ export interface GameBuilderProps {
   alliance?: Alliance;
   startIndex?: number;
   startPose?: StartPose | null;
+  /**
+   * THE ROBOT IMPORTER renders the builder for an imported robot, whose length, width, mass and
+   * height come from its CAD file and its scale. `true` hides those dials; every mechanism control
+   * stays, mount pickers included (a mount says WHICH edge an intake rides, and the importer's
+   * placement editor says WHERE along it). Absent ⇒ the full builder, as before.
+   */
+  hideFrame?: boolean;
 }
 
 /** props for `GameModule.Preview` — matches `RobotPreview` / `ChainRobotPreview` */
@@ -358,6 +368,21 @@ export type ResultsSection = readonly [string, readonly (readonly [string, numbe
  * accepts it, and a component that only ever handles a real pose still satisfies
  * the slot.
  */
+/** A Zenith auto, already planned for the robot's alliance, as the Autonomous preview draws it. */
+export interface AutoPreviewProps {
+  spec: RobotSpec;
+  alliance: Alliance;
+  /** the planned path, one polyline per path step, in the robot's ACTUAL frame (inches) */
+  legs: { id: string; points: { x: number; y: number }[] }[];
+  /** where the auto starts, and each path step's end, actual frame (heading in radians) */
+  poses: { x: number; y: number; heading: number }[];
+  /** the path the robot really drove, when a run has been recorded */
+  driven?: { x: number; y: number }[];
+  /** the leg to emphasise (the step the HUD or the list points at) */
+  focus?: string | null;
+  size?: number;
+}
+
 export interface StartEditorProps {
   spec: RobotSpec;
   alliance: Alliance;
@@ -557,6 +582,16 @@ export interface GameScene {
    * that is missing, and every scene before this existed drew none of them.
    */
   readonly camera?: SceneCamera;
+  /**
+   * RESOLVES ONCE every asset this scene would draw for `world` has SETTLED: an imported robot's
+   * mesh parsed, or known not to be on this device. It never rejects.
+   *
+   * A live view does not need it — a mesh that lands re-keys the robot on the next frame. A host
+   * that draws its frames in one synchronous burst does: the replay EXPORT draws every frame
+   * before the browser gets a turn, so a parse still in flight left the first seconds of the file
+   * on the placeholder. OPTIONAL: a scene with no lazy assets need not implement it.
+   */
+  assetsSettled?(world: World): Promise<void>;
 }
 
 /**
@@ -584,6 +619,8 @@ export interface SceneOptions {
    * preference. A video export is the case this exists for: §4.7 fixes exports at High so the
    * file does not come out at whatever the machine that made it happened to be set to, and so
    * that a settings change mid-encode cannot change the resolution of a video halfway through.
+   * No `'extreme'`: every caller that fixes a tier pins it to High, and none is ever going to
+   * ask for a tier above what a hand pick on the live device can reach.
    */
   quality?: 'low' | 'medium' | 'high' | 'ultra';
   /**
@@ -607,7 +644,9 @@ export type GameSceneFactory = (host: HTMLElement, options?: SceneOptions) => Ga
  */
 export interface RobotPreviewOptions {
   /** FIX the quality tier, ignoring the device's graphics preference — a cached thumbnail must
-   * not change because a settings screen was opened somewhere else. */
+   * not change because a settings screen was opened somewhere else. No `'extreme'`: the same
+   * ceiling as `SceneOptions.quality` above — a fixed preview stays at High at most (plan §4.7),
+   * never at a tier nobody on this device actually chose. */
   quality?: 'low' | 'medium' | 'high' | 'ultra';
   /** `false` binds no pointer handlers: a scene nobody is driving (a thumbnail). */
   interactive?: boolean;
@@ -627,7 +666,9 @@ export interface RobotPreviewScene {
   readonly element: HTMLCanvasElement;
   /** show this build. Cheap to call on every render — an unchanged build rebuilds nothing. */
   setSpec(spec: RobotSpec, alliance: Alliance): void;
-  /** fix or release the quality tier (`null` follows the device preference again). */
+  /** fix or release the quality tier (`null` follows the device preference again). No
+   * `'extreme'`, same reason as `RobotPreviewOptions.quality` above: a fixed tier tops out at
+   * High, and Extreme is a hand pick on a live device, never a tier this is asked to pin to. */
   setQuality(tier: 'low' | 'medium' | 'high' | 'ultra' | null): void;
   resize(width: number, height: number, dpr: number): void;
   /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL — of `spec` when

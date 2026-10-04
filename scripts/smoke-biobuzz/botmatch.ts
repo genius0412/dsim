@@ -24,7 +24,17 @@ import { DEFAULT_ASSISTS } from '../../src/sim/spawn';
 import { DEFAULT_SPEC } from '../../src/sim/specDefaults';
 import { BIOBUZZ_SIM } from '../../src/games/biobuzz/sim';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
+import type { BiobuzzState } from '../../src/games/biobuzz/state';
 import { bbBotBuildByKey } from '../../src/games/biobuzz/ai/builds';
+import { BB_PRESET_LIST } from '../../src/games/biobuzz/presets';
+
+/** a builder CARD as a bot's robot (`--builds preset:<name>`): the card's build under the bot's name */
+function presetBuild(name: string, tier: string): RobotSpec {
+  const want = name.toLowerCase();
+  const p = BB_PRESET_LIST.find((x) => x.name.toLowerCase() === want);
+  if (!p) throw new Error(`no BIOBUZZ preset called ${JSON.stringify(name)} (cards: ${BB_PRESET_LIST.map((x) => x.name).join(', ')})`);
+  return { ...p, name: `${tier} bot`, teamName: `AI · ${p.name}`, teamNumber: 0 };
+}
 import { newSettleClock, settleStep } from '../../src/sim/settle';
 
 export type BotFormat = 'solo' | '2v2' | 'vs';
@@ -36,8 +46,9 @@ export interface BotJob {
   red: string;
   seed: number;
   physics: Physics;
-  /** `bot` (the driver's own seating), `default` (every bot on the stock default spec), or a
-   * roster key forcing that one build on every bot */
+  /** `bot` (the driver's own seating), `default` (every bot on the stock default spec), a roster
+   * key forcing that one build on every bot, or `preset:<card name>` (a builder card, e.g.
+   * `preset:starterbot`) on every bot */
   builds: string;
   /** stop after this many seconds of MATCH (auto + transition + teleop); absent plays it all */
   stopAtS?: number;
@@ -77,6 +88,8 @@ export interface MatchRow {
   fouls: Record<Alliance, Record<string, number>>;
   warnings: Record<Alliance, number>;
   bots: BotRow[];
+  /** TELEOP seconds left when each alliance first had one of its own NECTAR in a FLOWER, or null */
+  firstPlaceLeftS: Record<Alliance, number | null>;
 }
 
 const MAX_TICKS = 16_000;
@@ -108,6 +121,7 @@ export function playBotMatch(job: BotJob): MatchRow {
     // THE SEATING CODE'S OWN CHOICE — the same call `game.ts` and `Room` make, so a measurement
     // is of the robots players meet
     if (job.builds === 'bot' && drv.build) return drv.build({ seed: job.seed, robotId: s.id, tier: s.tier, alliance: s.alliance });
+    if (job.builds.startsWith('preset:')) return presetBuild(job.builds.slice('preset:'.length), s.tier);
     return bbBotBuildByKey(job.builds, s.tier);
   };
   const setups = seats.map((s) => ({
@@ -165,6 +179,7 @@ export function playBotMatch(job: BotJob): MatchRow {
 
   const cmds = new Map<number, RobotCommand>();
   const settle = newSettleClock();
+  const firstPlace: Record<Alliance, number | null> = { red: null, blue: null };
   let ticks = 0;
   let settledOut = false;
   while (ticks < MAX_TICKS && ticks < stopTicks && !settledOut) {
@@ -243,6 +258,15 @@ export function playBotMatch(job: BotJob): MatchRow {
         a.n = 0;
       });
     }
+    if (world.match.phase === 'teleop' && (firstPlace.red === null || firstPlace.blue === null)) {
+      const bb = world.biobuzz as BiobuzzState;
+      for (const f of bb.flowers) {
+        for (const id of f.stack) {
+          const c = world.balls.find((b) => b.id === id)?.color;
+          if ((c === 'red' || c === 'blue') && firstPlace[c] === null) firstPlace[c] = world.match.phaseTimeLeft;
+        }
+      }
+    }
     if (world.match.phase === 'post') settledOut = settleStep(settle, world, BIOBUZZ_SIM.settled);
   }
   for (const b of bots) b?.dispose?.();
@@ -269,6 +293,7 @@ export function playBotMatch(job: BotJob): MatchRow {
     fouls,
     warnings,
     bots: rows.filter((r) => r.tier !== 'idle'),
+    firstPlaceLeftS: firstPlace,
   };
 }
 

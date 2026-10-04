@@ -7,6 +7,7 @@ import {
   type HudSnapshot,
   type IntroPlayer,
   type PerfSnapshot,
+  type GameControllerZenithAuto,
 } from '../game';
 import { PerfHud } from './PerfHud';
 import { PERF_DISPLAY_LEVELS } from '../settings';
@@ -15,6 +16,7 @@ import { effectiveBindings, keyLabel, padBindLabel, padBinds } from '../input/bi
 import { POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { timerPanel } from './timerPanel';
+import { autoHudLine, autoPreNotice } from './autoHud';
 import { FoulChip } from './FoulChip';
 import { AdSlot, useAdUnitActive } from './AdSlot';
 import { SponsorGameChip } from './Sponsor';
@@ -26,9 +28,11 @@ import { clearActiveGame } from '../net/activeGame';
 import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { moduleFor } from '../games';
+import { activeZenithAuto } from '../auto/library';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
-import type { Alliance, DrivetrainType } from '../types';
+import type { Alliance, DrivetrainType, RobotSpec } from '../types';
+import { coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { getCameraPref, getViewPref, subscribeCameraPref, subscribeViewPref, type CameraPref } from '../games/biobuzz/graphics/store';
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
@@ -261,6 +265,14 @@ interface Props {
    * `GameModule.tutorial` ignores the flag entirely and plays an ordinary practice.
    */
   tutorial?: boolean;
+  /**
+   * THE ROBOT IMPORTER'S TEST DRIVE: free drive with THIS robot, which is not the active one (an
+   * import that may never be saved). Frozen at mount like `tutorial`, applied to the run only and
+   * never persisted: free drive, this spec and its own assists, the named start anchor (a custom
+   * pose was set for another chassis), and no other robots on the field. Free drive is never
+   * recorded, so nothing leaves the device.
+   */
+  testDrive?: RobotSpec;
 }
 
 export function GameView({
@@ -277,6 +289,7 @@ export function GameView({
   onQueueAgain,
   onBackToLobby,
   tutorial = false,
+  testDrive,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
@@ -307,6 +320,11 @@ export function GameView({
    */
   const exitRef = useRef(onExit);
   exitRef.current = onExit;
+  /** the latest restart / practice-run callbacks, for `boot` — see where it registers them */
+  const restartRunRef = useRef(onRestartRun);
+  restartRunRef.current = onRestartRun;
+  const practiceRunRef = useRef(onPracticeRun);
+  practiceRunRef.current = onPracticeRun;
   useEffect(() => {
     suspendPadNav('match');
     setPadMenuHandler(() => exitRef.current());
@@ -391,6 +409,8 @@ export function GameView({
    * would describe a run that is already going.
    */
   const [runTutorial] = useState(() => tutorial && !session);
+  /** the importer's robot, frozen at mount the same way */
+  const [driveSpec] = useState(() => (session ? undefined : testDrive));
 
   useEffect(() => {
     let cancelled = false;
@@ -427,7 +447,16 @@ export function GameView({
        */
       let effectiveSettings = runTutorial
         ? { ...settings, mode: 'free' as const, practiceSeats: {} }
-        : settings;
+        : driveSpec
+          ? {
+              ...settings,
+              mode: 'free' as const,
+              spec: driveSpec,
+              assists: coerceAssists(driveSpec.assists, PLAYER_ASSISTS),
+              startPose: null,
+              practiceSeats: {},
+            }
+          : settings;
       let physicsFallbackNotice: string | undefined;
       if (need3d && !physics3dReady()) {
         try {
@@ -444,6 +473,25 @@ export function GameView({
           console.warn('BIOBUZZ 3D physics failed to load; playing this practice on 2D physics.', err);
           effectiveSettings = { ...settings, practicePhysics: '2d' };
           physicsFallbackNotice = 'Couldn’t load 3D physics. Playing this practice on 2D physics.';
+        }
+      }
+      /**
+       * THE ZENITH AUTO CHUNK, before the world exists, for the same reason as the 3D one: the
+       * controller seats the robot at the auto's start and builds its seat inside `makeWorld`.
+       * Solo practice and Free Drive only — never a room, a record run (both have a session) or
+       * the tutorial. A failed load plays the practice without the auto and says so.
+       */
+      let zenithAuto: GameControllerZenithAuto | undefined;
+      const activeAuto =
+        !session && !runTutorial && !driveSpec && moduleFor(settings.game).zenithAutos ? activeZenithAuto(settings.game) : null;
+      if (activeAuto) {
+        try {
+          zenithAuto = { ...activeAuto, module: await import('./zenithEditor') };
+        } catch (err) {
+          if (cancelled) return;
+          // eslint-disable-next-line no-console
+          console.warn('The Zenith auto chunk failed to load; playing without the auto.', err);
+          physicsFallbackNotice = physicsFallbackNotice ?? 'Couldn’t load the autonomous routine. Playing without it.';
         }
       }
       if (cancelled) return;
@@ -467,14 +515,26 @@ export function GameView({
         // no `tutorial` slot gets `undefined` and plays an ordinary free drive, which is the
         // right outcome for DECODE and Chain Reaction today.
         tutorial: runTutorial ? moduleFor(settings.game).tutorial : undefined,
+        zenithAuto,
       });
       controllerRef.current = controller;
+      /* REGISTER THE TWO CALLBACKS HERE TOO, through refs. The effects below that keep them
+         current run on mount — and when the 3D physics chunk is still loading, `boot` has not
+         built a controller by then, so they found `controllerRef.current` null and registered
+         nothing. Until App happened to re-render, a practice run finished (or walked out of) in
+         that window was handed to nobody and lost. */
+      controller.setRestartRequest(restartRunRef.current ?? null);
+      controller.onPracticeRun = practiceRunRef.current
+        ? (r, res) => practiceRunRef.current?.(r, res)
+        : null;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise
       hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
       onKey = (e: KeyboardEvent) => {
         // Escape is reserved (never rebindable); restart is handled by the
         // InputManager through the user's bindings
-        if (e.key === 'Escape') onExit();
+        // through the ref: this handler is registered once, and `onExit` closes over App's
+        // session state, which a mount-time copy would read stale
+        if (e.key === 'Escape') exitRef.current();
       };
       window.addEventListener('keydown', onKey);
       // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
@@ -547,6 +607,21 @@ export function GameView({
     controllerRef.current?.setRestartRequest(onRestartRun ?? null);
   }, [onRestartRun]);
 
+  /** RUN IN ZENITH: the auto that just drove, opened in Zenith with the recorded path over it */
+  const openRunInZenith = (): void => {
+    const c = controllerRef.current;
+    const mod = c?.zenithModule();
+    const name = c?.getHud().auto?.name;
+    if (!c || !mod || !name) return;
+    const error = mod.launchZenith({
+      settings,
+      open: name,
+      trace: c.autoTrace() ?? undefined,
+      onLeftOut: (sentence) => sentence && c.logEvent(sentence),
+    });
+    c.logEvent(error ?? 'Zenith is open in another window with this run over the plan.');
+  };
+
   // A REMATCH IS A NEW MATCH IN THE SAME GameView. The intro used to be read once at mount,
   // so a rematch replayed the first match's intro, ratings and all. Re-read it every time a
   // match enters its countdown: `getIntro` reads the session's CURRENT `matchStart` intros.
@@ -597,6 +672,7 @@ export function GameView({
     () => effectiveBindings(settings.bindings, hud?.game ?? settings.game),
     [settings.bindings, settings.game, hud?.game],
   );
+  const preAuto = hud ? autoPreNotice(hud) : null;
   const [scene3d, setScene3d] = useState(false);
   useEffect(() => {
     const host = viewportRef.current;
@@ -627,7 +703,13 @@ export function GameView({
     let lastTouchEnd = 0;
     const onTouchEnd = (e: TouchEvent): void => {
       const now = Date.now();
-      if (now - lastTouchEnd <= 300) e.preventDefault(); // double-tap zoom
+      /* A CONTROL IS NOT A DOUBLE-TAP. `preventDefault` on a touchend also cancels the click it
+         would have synthesized, so lifting a joystick thumb and tapping MENU, RESET or REMATCH
+         within 300 ms did nothing at all. Zoom is only ever a risk on the field and the chrome
+         around it; a button's own tap is always let through (and still resets the clock). */
+      const el = e.target as Element | null;
+      const onControl = !!el?.closest?.('button, a, input, select, textarea, [role="button"]');
+      if (!onControl && now - lastTouchEnd <= 300) e.preventDefault(); // double-tap zoom
       lastTouchEnd = now;
     };
     // passive:false is required for preventDefault to take effect
@@ -767,8 +849,9 @@ export function GameView({
           field out from under every one of them (`SceneInsets`, `games/module.ts`); nothing
           visual reads it. See `GameController.refreshHudInsets` for what is NOT marked and why. */}
       <div className="game-buttons" data-hud-band>
-        <button className="game-btn" onClick={onExit} title="Menu (Esc)">
-          <span aria-hidden="true">◄</span> MENU
+        {/* a TEST DRIVE goes back to the importer, and the button says so */}
+        <button className="game-btn" onClick={onExit} title={driveSpec ? 'Back to the importer (Esc)' : 'Menu (Esc)'}>
+          <span aria-hidden="true">◄</span> {driveSpec ? 'EDITOR' : 'MENU'}
         </button>
         {/* RESET is a LOCAL rebuild — meaningless (and desyncing) in lockstep, so
             solo only. In multiplayer use REMATCH on the results screen (host). */}
@@ -779,6 +862,13 @@ export function GameView({
             title="Restart"
           >
             <span aria-hidden="true">⟲</span> RESET
+          </button>
+        )}
+        {/* THE AUTO'S RUN, SENT TO ZENITH: once the auto has driven, its recorded path opens in
+            Zenith laid over the plan (`zenithLaunch.ts`). Solo only, like the auto itself. */}
+        {!session && hud?.auto && (hud.auto.state === 'done' || hud.auto.state === 'stopped') && (
+          <button className="game-btn" onClick={openRunInZenith} title="Open this auto in Zenith with the path the robot drove">
+            <span aria-hidden="true">↗</span> RUN IN ZENITH
           </button>
         )}
         {/* CO-OP (duo record): restarting is a VOTE — the run belongs to both
@@ -838,6 +928,14 @@ export function GameView({
             <p>
               {/* the dots' own label says "Motif", so the visible word is not read twice */}
               <span aria-hidden="true">MOTIF</span> <MotifDots motif={hud.motif} />
+            </p>
+          )}
+          {/* THE AUTO, BEFORE THE DRIVER COMMITS: which one AUTO plays, why it will not, or what
+              Zenith flags in it (`autoHud.ts`). A file the seat refuses used to leave the robot
+              sitting through AUTO with this panel saying nothing. */}
+          {preAuto && (
+            <p className={`ds-hint${preAuto.tone === 'ok' ? '' : ` ${preAuto.tone}`}`} role="status">
+              {preAuto.text}
             </p>
           )}
           {!coarsePointer && (
@@ -978,6 +1076,9 @@ function Hud({
   const GameChips = moduleFor(hud.game).hudChips;
   const GamePinnedNotice = moduleFor(hud.game).pinnedNotice;
   const timer = timerPanel(hud);
+  // the auto's line on the second card: which step it is on while AUTO (or a Free Drive trial)
+  // runs, and AUTO OFF when the file cannot run (`autoHud.ts`)
+  const autoLine = autoHudLine(hud);
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
@@ -1155,8 +1256,15 @@ function Hud({
               a new driver could not learn what two amber rings meant. The word is `aria-hidden`
               because the glyph's own `aria-label` already says it in full. This card is NOT in
               `[data-hud-band]`, so a word here never re-frames the 3D field. */}
-          {(hud.frontFlipped || hud.butterflyMode || hud.card) && (
+          {(hud.frontFlipped || hud.butterflyMode || hud.flywheel || hud.card || autoLine) && (
             <div className="sub-hud">
+              {/* THE ZENITH AUTO driving this robot, and the step it is on: a standing fact while
+                  AUTO runs, so it lives on this card (HUD-RELOCATION.md), in words */}
+              {autoLine && (
+                <span className="sub-hud-item" role="status">
+                  <span className="sub-hud-lbl">{autoLine}</span>
+                </span>
+              )}
               {hud.frontFlipped && (
                 <span className="sub-hud-item">
                   <span className="reversed-icon" role="img" aria-label="Front flipped: driving reversed." />
@@ -1174,6 +1282,26 @@ function Hud({
                   />
                   <span className="sub-hud-lbl" aria-hidden="true">
                     {hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}
+                  </span>
+                </span>
+              )}
+              {/* A SETPOINT FLYWHEEL: the speed it is running to (a fixed shooter's whole range) and
+                  whether the feeder may run. A presets wheel also says which preset, since the
+                  driver steps through them blind otherwise. */}
+              {hud.flywheel && (
+                <span
+                  className="sub-hud-item"
+                  // `img`, not `status`: READY / SPIN UP flips on every shot, and a live region
+                  // would read each flip aloud
+                  role="img"
+                  aria-label={`Flywheel ${hud.flywheel.setpoint} rpm${hud.flywheel.presets > 1 ? `, speed ${hud.flywheel.preset + 1} of ${hud.flywheel.presets}` : ''}, ${hud.flywheel.ready ? 'ready' : 'spinning up'}.`}
+                >
+                  {/* `keep`: this item has no glyph, so where the HUD drops the words (a phone in
+                      landscape) its STATE stays and only the rpm goes (`.sub-hud-rpm`) */}
+                  <span className="sub-hud-lbl keep" aria-hidden="true">
+                    {hud.flywheel.presets > 1 ? `SPEED ${hud.flywheel.preset + 1} · ` : ''}
+                    <span className="sub-hud-rpm">{hud.flywheel.setpoint} RPM · </span>
+                    {hud.flywheel.ready ? 'READY' : 'SPIN UP'}
                   </span>
                 </span>
               )}

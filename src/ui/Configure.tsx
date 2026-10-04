@@ -10,7 +10,7 @@ import { moduleFor } from '../games';
 /**
  * LAZY, unlike its five siblings — and the reason is the bundle, not the screen.
  *
- * `GraphicsSection` carries the whole seventeen-setting model (`graphics/settings.ts`: the preset
+ * `GraphicsSection` carries the whole nineteen-setting model (`graphics/settings.ts`: the preset
  * table, the coercion, the store), which nothing else in the MAIN chunk reads — the renderer
  * reads it from the scene chunk, and the scene chunk is already lazy. Statically importing it
  * here put ~5 KB gzipped of 3D graphics settings into the bundle every player of every game
@@ -73,6 +73,7 @@ export function Configure({
   onSection,
   onEditTouchControls,
   onTutorial,
+  onImport,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
@@ -82,6 +83,8 @@ export function Configure({
   onEditTouchControls: () => void;
   /** run the tutorial (roadmap item 6); absent when the active game has no tutorial. */
   onTutorial?: () => void;
+  /** open the robot importer: a new import, or `id` to edit a library robot */
+  onImport?: (id?: string) => void;
 }) {
   // Graphics only exists for a game with a 3D view (the module's `scene` slot) — every row in it
   // is a 3D setting. The route key stays valid so a bookmarked /configure/graphics under a 2D
@@ -117,7 +120,7 @@ export function Configure({
         </nav>
 
         <div className="ds-subnav-body">
-          {section === 'robot' && <Menu settings={settings} onChange={onChange} />}
+          {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} />}
           {section === 'match' && <MatchSetup settings={settings} onChange={onChange} />}
           {section === 'controls' && (
             <ControlsSection

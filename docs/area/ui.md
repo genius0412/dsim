@@ -306,6 +306,30 @@ Controls screen stands the layer down the same way while a rebind is armed
   rebindable, so a navigation layer that ate the arrows would either steal a driving control or
   need a runtime conflict check against `effectiveBindings` on every keystroke.
 
+### Screens with their own step rail, and things you drag
+
+- **LB/RB step through `[data-padnav-sections]` when a screen names one** (`sectionStep` in
+  `PadNavLayer.tsx`). Without it, LB/RB step through the list that holds focus, and from a
+  control in a body that list is the PAGE rail, so RB on the importer's Model step left for
+  Records. The importer's `nav.ds-tabs` is the first user; a wizard or tabbed editor that adds
+  one gets the same behaviour from any control on the screen.
+- **A draggable thing on a 2D map is a real `<button>`** laid over the drawing by percent, so
+  keyboard, screen reader and pad reach it as an ordinary control. Keyboard: arrows move a
+  fixed step (Shift a finer one), Home puts it back, each press commits. Pad: A GRABS it
+  (`suspendPadNav('handle')`, the layer stops reading the stick and D-pad), the D-pad steps on
+  `PAD_SLIDER_REPEAT`, the stick moves at a rate, A drops, B restores the pre-grab position,
+  and the status line under the map names the buttons in `PAD_GLYPHS`. Pointer: the drawing
+  follows the drag and the move commits on release. `src/robotImport/ui/useHandleGrab.ts` +
+  `TopDownMap.tsx` are the reference; `scripts/importpad.cjs` proves all three inputs.
+- ⚠️ **Several key presses can land inside one React render.** A handler that computes "move
+  from the current position" off a prop reads the SAME stale prop for each, and two presses
+  move once. Keep the last emitted position in a ref until the props catch up (`moved` in
+  `TopDownMap.tsx`).
+- **A pad walkthrough needs a window that paints.** `requestAnimationFrame` does not run in a
+  hidden browser tab, and the layer polls the pad on rAF, so a stubbed gamepad in a background
+  tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
+  OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
+
 ## Configure — the six sections, and the three rules that hold them together
 
 `src/ui/Configure.tsx` routes six sections at `/configure/<key>`. **The ARRAY is the order on
@@ -314,7 +338,10 @@ rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Gr
 build it, learn to drive it, set up the session, the two output sections, then the connection.
 **Network** (`NetworkSection.tsx`) holds client prediction, which sat in a Controls fold until
 2026-09-22 (owner: "Network prediction should NOT be part of controls") — it is how this machine
-draws its own robot in a 3D-physics room, not a control, and not Graphics either. **A sub-nav hint
+draws its own robot in a 3D-physics room, not a control, and not Graphics either.
+It also holds "Show other players’ imported robots" (`importVisualsPref.ts`, the room relay's download): per
+device, and every game has it — Graphics is hidden for a game with no 3D view, and the 2D picture is a
+download too. **A sub-nav hint
 is optional**: Audio and Visual's "Follows your account" and Graphics' "This device only" said
 where the settings are stored, which nobody picks a section by, and went as clutter.
 
@@ -385,6 +412,14 @@ the moment somebody opens Controls. A blurb survives only where it names a trade
 is choosing between (`docs/ui-standard.md` §8): the archetype and drivetrain descriptions, the
 four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow note.
 
+**The fixed-shooter controls** (`src/ui/LauncherRows.tsx`): DECODE's Scoring block gains
+Launcher (Turret / Fixed), Hood (Adjustable / Fixed + angle) and Flywheel (Auto / One speed /
+Presets + speed, wheel and feed sliders, each with the exit speed it throws); BIOBUZZ's fixed
+launcher shows its firing edge, hood and one speed. Every envelope is the coercer's constant.
+The preset step (`flyPreset`) is a DECODE action on Z / R3 — the MODE TOGGLE role, shared with
+BIOBUZZ's Deploy ramp — with a touch SPEED button only on a presets wheel. The HUD's sub-card
+names a setpoint wheel's speed (and preset) and READY / SPIN UP.
+
 ## HUD / UX product rules
 
 - **THE BANNER STRIP** (`BannerStack.tsx`, beside `<App/>` in `main.tsx`) is where the restart
@@ -414,6 +449,32 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   are under 4.5:1 as 12-px type on the field; the dark stroke stays, and it is what carries the
   glyphs onto the light backdrop and onto a 3D background. Category 3 (their ground is the
   canvas), so they do not theme.
+- **AN IMPORTED ROBOT IS DRAWN FROM ITS HULL, IN ALL THREE GAMES** (`src/render/drawImported.ts`,
+  robot import 2026-10-01). Each game's sprite branches on `spec.imported`: the clip is the HULL (the
+  collider), not the box; the body is the import's top-down PNG when this device has it, else the
+  hull in the chassis fill with wheels at `importedWheels`; the outline stays the neutral trim and
+  the alliance stays a FILL (DECODE/Chain chevron, BIOBUZZ's NECTAR rim). Over a PICTURE only STATE
+  is drawn — the mouths' grab areas with a live/idle lip, the turret's aim (`drawAimMark`), held
+  elements, the hopper bar, the place marker — never a second set of hardware; over a silhouette
+  the game's own mechanisms are drawn where its accessors put them. ⚠️ **"Its accessors" means the
+  SIM's import-aware ones, never the bounding box**: DECODE's mouth is `decodeImportMouth` /
+  `decodeImportGrabRect` / `decodeImportSolids`, BIOBUZZ's `bbMouths`, `turretLocal`,
+  `bbPlacePointLocal`, `bbDumperFrame`, Chain's `chainIntakeMouths`, `catalystOrigin`,
+  `launcherFrame` (= `chainImportLaunchLine`); BIOBUZZ's held discs are searched on the hull. The
+  shared smoke pins each drawn rect, ring and frame to its accessor. The deck arrow moves ahead of
+  a turret ring rather than under it (`frontArrowSpot`, shared with 3D and `FootprintSvg`).
+  - ⚠️ **ONE FRAME FOR THE PICTURE, AND IT IS THE IMPORTER'S** (`topImageFrame`,
+    `docs/area/robot-import.md` "Frames"), re-exported by `src/render/importedAssets.ts`. Its map has
+    determinant −1 in the robot frame on purpose: the camera's y-flip cancels it, and smoke checks
+    the picture is not mirrored nose-up. Never re-derive it in a renderer.
+  - **The pictures come from `importedAssets`**, a capped LRU over a source (the device library by a
+    dynamic import, so main never carries IndexedDB code) plus blobs the editor or the relay lend.
+    It owns its object URLs and revokes them on eviction — the one exception to "only `saveBlob`
+    revokes". A canvas that draws once (the builder previews) subscribes with
+    `useImportedAssetVersion`; the match redraws every frame and needs nothing.
+  - **`FootprintSvg`** (`src/ui/`) is the import's SVG: cards and the hero when there is no
+    thumbnail, and the Chain/BIOBUZZ builder previews (with the picture and the accessors' marks).
+    Nose up through `ROBOT_FRAME`, on the field mat, category-3 tokens only.
 - ⚠️ **NOTHING IN `.game-root` MAY KEY A COLOUR OR AN ASSET ON `:root[data-theme]`.** The 3D
   view's scrim (`.game-root.view-3d …`, styles.css) makes every HUD plate dark in BOTH themes by
   REDEFINING tokens, so anything themed by the attribute instead misses it. The sponsor logo swap
@@ -642,6 +703,27 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 - **`.ds-sr` is the ONE visually-hidden utility** (`shell.css`). Use it for a spoken name
   beside a glyph or a keycap, a live region's text, a table caption. Do not write another
   clip-rect rule for a single component.
+  ⚠️ **It is `position: absolute`, so it needs a positioned ancestor INSIDE `.ds-app`.** The app
+  scrolls in `.ds-app`; `html` and `body` are `overflow: hidden`. A `.ds-sr` with no
+  positioned ancestor is placed against the page at its static spot, outside `.ds-app`'s clip,
+  so one 1,500px down a long screen made the ROOT 660px taller than the window. Nothing shows
+  until something scrolls the root — `scrollIntoView` does, overflow hidden or not, and every
+  pad focus move calls it — and then the whole window is blank below the first screenful. A
+  long screen's own wrapper takes `position: relative` (`.ds-import` does). Check with
+  `document.documentElement.scrollHeight === innerHeight` on the screen scrolled to its end.
+- **A LAZY screen's sheet lives in `src/ui/<name>.css` and is imported by the lazy module**
+  (`importer.css` by `ImportEditor.tsx`), so Vite ships it with the chunk and `uiaudit` /
+  `uiindex` still read it. Its own prefix is exempt from `ds-outside-shell` the way `.ds-tut*`
+  is (`(?!tut|import)` in `uiaudit.mjs`); compounds of shared classes stay scoped under that
+  prefix (`.ds-import .ds-facts dd.warn`). A class the MAIN chunk draws (the robot page's import
+  thumbnail, the hero image) goes in `shell.css`.
+- **`.ds-facts` is the one label/value list** (it was `.ds-auto-facts`, the autos panel's;
+  the imported-robot panel and the importer's Model step use it too). A `dt`/`dd` grid, mono
+  values; do not write a per-panel one.
+- **A one-shot notice handed across screens is PEEKED while rendering and TAKEN in an effect**
+  (`useRobotNotice`). StrictMode renders twice and throws one away; a `useState` initialiser
+  that consumed the notice consumed it in the discarded render, and "Saved Ironclad." never
+  showed.
 - **`.ds-badge` is the one inline status tag** (`shell.css`): neutral on `--ds-tile`, mono
   `--ds-t-xs` caps, pill. Tones `.accent` / `.ok` / `.warn` / `.danger` / `.staff` colour the
   TEXT and EDGE only; `.count` is the one filled form. Never `--ds-red` (that is an alliance,

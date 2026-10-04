@@ -12,6 +12,56 @@ import type {
 import type { RobotSetup } from '../sim/spawn';
 import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
+import type { ImportedEdge, ImportedMech } from '../types';
+
+/**
+ * IMPORTED ROBOTS — what the mechanism placement editor needs from a game (an `ImportMechSlot`
+ * per game, reached through `validateImportedMech` / `defaultImportedMech` / `mechHandles` in
+ * `./importMechChecks.ts`). DOM-free; every input is a COERCED spec (`coerceSpec(…, game)`)
+ * carrying `imported`.
+ *
+ * ⚠️ NOT A `GameSimModule` SLOT. The slots lived there until the bundle audit measured them in the
+ * entry chunk: the sim registry is reached from every page, and the checks are only ever asked by
+ * the importer editor (and the smoke suite). `importMechChecks.ts` is the one registry of them and
+ * only the editor imports it, so they are in the editor's lazy chunk.
+ */
+export type ImportMechHandleKey = 'shooter' | 'shooter2' | 'place' | `intake:${ImportedEdge}`;
+
+/** one thing the player may drag in the top-down editor for this build */
+export interface ImportMechHandle {
+  key: ImportMechHandleKey;
+  /** a POINT inside the hull (`mech.shooter` / `shooter2` / `place`), or a SPAN along `edge`
+   *  (`mech.intakes`) */
+  kind: 'point' | 'span';
+  /** sentence-case label for the editor */
+  label: string;
+  /** the edge a span runs along */
+  edge?: ImportedEdge;
+  /** a point with a release height: the height the sim uses now, and the range it accepts */
+  z?: number;
+  zMin?: number;
+  zMax?: number;
+  /** a TURRETLESS launcher's point also carries a FACING (`mech.shooterYawDeg`, degrees CCW from
+   *  robot forward): the direction the sim fires along now. The editor gives it a direction
+   *  handle beside the point. */
+  facingDeg?: number;
+}
+
+/** one plain-language check on a placement. `block` stops Save; `warn` is shown beside it. */
+export interface ImportMechIssue {
+  level: 'block' | 'warn';
+  code: string;
+  text: string;
+  /** the handle the issue is about, when there is one */
+  handle?: ImportMechHandleKey;
+}
+
+export interface ImportMechSlot {
+  issues(spec: RobotSpec): ImportMechIssue[];
+  /** the placements the importer pre-fills from the archetype and the hull (coerced) */
+  defaults(spec: RobotSpec): ImportedMech;
+  handles(spec: RobotSpec): ImportMechHandle[];
+}
 
 /**
  * The GAME-ABSTRACTION seam (DOM-free core types).
@@ -256,7 +306,24 @@ export interface GameSimModule {
    * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
    * arriving off the wire never reaches a world, a snapshot or a replay.
    */
+  /*
+   * ⚠️ NOTHING PRODUCES A `.pp` PATH ANY MORE (owner, 2026-09-25): the import is gone from Match
+   * setup, `coerceSettings` drops a stored one, and `makeWorld` never passes one. DECODE keeps
+   * `autoPaths: true` ONLY so a practice replay recorded with a path before then re-simulates
+   * exactly; the traversal is otherwise unreachable, and removing it is a SIM_VERSION decision.
+   */
   autoPaths: boolean;
+  /**
+   * DOES THIS GAME PLAY ZENITH AUTOS? (docs/area/autos.md)
+   *
+   * A Zenith `*.auto.json` is driven by an AUTO SEAT (`src/auto/seat.ts`) that the controller,
+   * the room and the LAN host run beside the bots, so no step reads it: this flag is for the main
+   * chunk, which must not import the lazy `src/auto/games.ts` registry to ask. Its readers are the
+   * spawn chokepoint (`coerceSetup` drops `zenithAuto` for a game without it, as `autoPaths` does
+   * for `.pp` paths) and the match setup (it hides the Autonomous section). `npm test` holds it
+   * equal to "has an adapter in `src/auto/games.ts`" for every game. Absent = false.
+   */
+  zenithAutos?: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   /**

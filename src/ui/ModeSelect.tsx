@@ -5,6 +5,7 @@ import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
 import type { GameId } from '../games/types';
+import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -24,9 +25,11 @@ export function ModeSelect({
   onRanked,
   onCustomRoom,
   onWatch,
+  onCompetitions,
   compete = true,
   onTutorial,
   game,
+  importedActive = false,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
@@ -44,6 +47,8 @@ export function ModeSelect({
   onRanked: () => void;
   onCustomRoom: () => void;
   onWatch: () => void;
+  /** the competitions list (0059). Absent: no tile (an older caller). */
+  onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
   /**
@@ -59,6 +64,9 @@ export function ModeSelect({
   /** the season the offer is for: the seen flag is kept PER GAME (design review 12-12).
    *  Absent ⇒ the legacy reading, "has this device been through any tutorial". */
   game?: GameId;
+  /** the active robot is an IMPORT, which ranked and record runs refuse: their tiles say they play
+   *  the last standard robot instead (the server enforces it; this is the player being told first) */
+  importedActive?: boolean;
 }) {
   const lanOn = useLanEnabled();
   /**
@@ -182,25 +190,37 @@ export function ModeSelect({
                   and most visitors are signed out, where the line is there from the
                   start and never moves at all. If the shift is worth fixing, thread an
                   `authReady` flag down from AccountSync; do not reserve the line. */}
-              {multiplayer && !signedIn && (
+              {multiplayer && !signedIn ? (
                 <span className="d">
                   Sign in to play ranked
                 </span>
-              )}
+              ) : importedActive ? (
+                <span className="d">{IMPORT_COPY.standardOnly}</span>
+              ) : null}
             </span>
           </button>
 
           <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
             <span>
               <span className="t">Solo record run</span>
+              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
             </span>
           </button>
 
           <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
             <span>
               <span className="t">Duo record run</span>
+              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
             </span>
           </button>
+
+          {onCompetitions && (
+            <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
+              <span>
+                <span className="t">Competitions</span>
+              </span>
+            </button>
+          )}
         </div>
       </section>
       )}

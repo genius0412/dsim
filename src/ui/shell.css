@@ -3683,6 +3683,13 @@ tr.lb-detail td {
   line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
+/* the refund line names players and amounts, so it wraps; the box stays on its first line */
+.ds-checkline.rr-refund {
+  align-items: flex-start;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+}
 .rr-players,
 .rr-hist {
   list-style: none;
@@ -4436,6 +4443,11 @@ tr.lb-detail td {
 .ds-opts.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+/* LEAD: the first tile spans the row, a default above the choices it picks between (Prediction:
+   Auto over Off/Light/Balanced/Full), so five in two columns do not strand the fifth alone. */
+.ds-opts.lead > :first-child {
+  grid-column: 1 / -1;
+}
 .ds-opts.four {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
@@ -4951,6 +4963,19 @@ tr.lb-detail td {
   object-fit: cover;
   transform: scale(1.35);
 }
+/* AN IMPORTED ROBOT'S thumbnail is framed on the robot already (the importer's `renderThumb`
+   fits its bounding sphere), so it is shown whole rather than cropped like the 3D captures */
+.ds-robot-card-thumb img.ds-import-thumb {
+  object-fit: contain;
+  transform: none;
+}
+/* the hero's picture of an imported robot: the same thumbnail, at the hero's 150px */
+.ds-import-hero-img {
+  display: block;
+  max-width: 100%;
+  max-height: 150px;
+  object-fit: contain;
+}
 /* the 2D schematics: DECODE draws a `<canvas>` with both sides inline, the other two an `<svg>`.
    Box both square and let the drawing keep its own ratio (see `.ds-hero-view canvas`). */
 .ds-robot-card-thumb svg,
@@ -5250,6 +5275,9 @@ input[type='range'].ds-range:disabled {
   font-weight: 800;
   letter-spacing: -0.01em;
   line-height: var(--ds-lh-tight);
+  /* the "Imported" badge beside the name (an imported robot) */
+  align-items: center;
+  gap: var(--ds-s-2);
 }
 .ds-hero-team {
   color: var(--ds-mut);
@@ -6521,6 +6549,115 @@ a.ds-cta {
   border-radius: var(--ds-round);
   border: 1px dashed var(--ds-line);
 }
+/* THE AUTONOMOUS SECTION (`AutonomousSetup.tsx`): the selected Zenith auto's preview beside its
+   verdict, facts and actions. Its own family rather than `ds-startpos-*` (two components must not
+   share a container class), laid out the same way so the two sections read as one screen. */
+.ds-auto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--ds-s-4);
+}
+.ds-auto-stage {
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 0;
+}
+.ds-autoprev-canvas {
+  border-radius: var(--ds-round-md);
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-line);
+  width: 300px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  display: block;
+}
+.ds-auto-blank {
+  width: 300px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ds-round-md);
+  border: 1px dashed var(--ds-line);
+  line-height: var(--ds-lh-heading);
+}
+.ds-auto-side {
+  flex: 1 1 200px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-auto-status {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: var(--ds-lh-heading);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line);
+}
+.ds-auto-status.ok {
+  color: var(--ds-ok-ink);
+  background: color-mix(in srgb, var(--ds-ok) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-ok) 40%, var(--ds-line));
+}
+.ds-auto-status.bad {
+  color: var(--ds-red-ink);
+  background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
+}
+/* THE dt/dd FACT LIST: a muted label column and its values. Born as the Autonomous preview's
+   `.ds-auto-facts`; renamed when the robot importer needed the same list on two more surfaces. */
+.ds-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ds-s-1) var(--ds-s-3);
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-heading);
+}
+.ds-facts dt {
+  color: var(--ds-mut);
+  font-weight: 600;
+}
+.ds-facts dd {
+  margin: 0;
+  color: var(--ds-ink);
+}
+.ds-auto-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
+/* the command list under the Autonomous section: names in mono, one plain line each */
+.ds-auto-cmds summary {
+  cursor: pointer;
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  color: var(--ds-mut);
+}
+.ds-auto-cmds dl {
+  display: grid;
+  gap: var(--ds-s-2);
+  margin: var(--ds-s-2) 0 0;
+}
+.ds-auto-cmds dl > div {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: var(--ds-s-3);
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-heading);
+}
+.ds-auto-cmds dt {
+  margin: 0;
+}
+.ds-auto-cmds dd {
+  margin: 0;
+  color: var(--ds-ink);
+}
 .ds-startpos-where.stand {
   color: var(--ds-accent);
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
@@ -7089,6 +7226,130 @@ a.ds-cta {
 }
 .ds-standing-cost { font: 600 11px/1.4 var(--ds-font-mono); }
 
+/* =====================================================================
+   MODERATOR NOTICES (0057) — the pop-up (`NoticeDialog`) and the career page's Messages and
+   Your reports lists (`NoticeInbox`). One item component serves both, so a notice reads the
+   same in the dialog that announced it and in the list that keeps it.
+
+   TONE is a 3px strip drawn with an INSET SHADOW down the leading edge, never a wider border:
+   a border width is layout (ui-standard §1.4, §4). Good news is the ok ink, a penalty is the
+   danger ink, and plain information carries no strip. The words always say which, so the
+   colour is never the only signal.
+   ===================================================================== */
+.ds-modal.nt-card {
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-modal.nt-card .ds-dialog-title { margin: 0; }
+.nt-eyebrow {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.nt-list {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+/* the dialog's list has no panel padding of its own to lose */
+.nt-card .nt-list { padding: 0; }
+.nt-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+}
+.nt-item.tone-good { box-shadow: inset 3px 0 0 var(--ds-ok-ink); }
+.nt-item.tone-bad { box-shadow: inset 3px 0 0 var(--ds-danger); }
+/* an UNREAD row in the career list: an accent edge, a colour change only */
+.nt-inbox .nt-item.unread { border-color: var(--ds-accent); }
+.nt-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+.nt-title {
+  margin: 0;
+  font-size: var(--ds-t-control);
+  font-weight: 750;
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-ink);
+}
+.nt-meta {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-mut);
+}
+.nt-line {
+  margin: 0;
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+}
+/* THE MODERATOR'S OWN WORDS — quoted, labelled as theirs, and set apart from the facts above
+   them, because they are a person speaking rather than the system reporting */
+.nt-msg {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+}
+.nt-msg-cap {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.nt-msg-text {
+  margin: 0;
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* the second list's header needs the rule the first one's gets from the panel's top edge */
+.nt-inbox .ds-panel-body + .ds-panel-h { border-top: 1px solid var(--ds-line); }
+.nt-filed {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.nt-filed-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+.nt-filed-what {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
+  overflow-wrap: anywhere;
+}
+
 /* the standing pill in the moderation queue is `.ds-badge.ok|warn|danger`, by tier */
 
 /* REPORT a player — the post-match dialog. Lives inside the results panel, which is itself
@@ -7285,6 +7546,16 @@ a.ds-cta {
   justify-content: flex-end;
   margin-top: 12px;
 }
+/* the messages a verdict sends (0057): the explanation, the two boxes and the result line,
+   stacked above the Dismiss / Uphold row that sends them */
+.adm-tell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  margin-bottom: var(--ds-s-3);
+}
+/* a misscore row's message to its filer, between the claim and the verdict buttons */
+.sr-msg { margin-top: var(--ds-s-2); }
 /* phone: the queue head stacks rather than crushing five columns into 320px */
 @media (max-width: 560px) {
   .adm-report-head {

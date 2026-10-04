@@ -170,16 +170,46 @@ function surface(color: number, map?: THREE.Texture): THREE.MeshStandardMaterial
 
 /** a lit fitting. `emissive` rather than a light: three has no area lights in this renderer and
  * the RIG is what actually lights the field (`applyEnvironmentRig`) — this is the FIXTURE, the
- * thing that makes a ceiling read as a ceiling with lights in it. */
-function fitting(color: number, power: number): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
+ * thing that makes a ceiling read as a ceiling with lights in it.
+ *
+ * `userData.bloomBase` tags it for BLOOM (Extreme, `renderPost.ts`): at 1.0–1.95 raw a lamp is no
+ * brighter than a sunlit white panel, so no threshold could pick one without the other. The match
+ * scene raises a tagged emissive by `BLOOM_EMISSIVE_GAIN` for its own pass while bloom is on and
+ * puts it back after; `power` itself is the lamp's data and is never changed. `glow` is false for
+ * a studio's SOFTBOXES: four 116-in panels are a diffuser, not a lamp, and at the gain a whole
+ * softbox in frame bloomed into a haze over the field. */
+function fitting(color: number, power: number, glow = true): THREE.MeshStandardMaterial {
+  const mat = new THREE.MeshStandardMaterial({
     color: 0x000000,
     emissive: color,
     emissiveIntensity: power,
     roughness: 1,
     metalness: 0,
   });
+  if (glow) mat.userData.bloomBase = power;
+  return mat;
 }
+
+/** smooth value noise over one lattice of `n` cells that wraps at 1, so a texture made of it tiles
+ * without a seam */
+function wrappedNoise(n: number, seed: number): (u: number, v: number) => number {
+  const at = (i: number, j: number): number => vRand((((i % n) + n) % n) * 7919 + (((j % n) + n) % n) * 104729 + seed);
+  return (u, v) => {
+    const x = u * n;
+    const y = v * n;
+    const i = Math.floor(x);
+    const j = Math.floor(y);
+    const sx = (x - i) * (x - i) * (3 - 2 * (x - i));
+    const sy = (y - j) * (y - j) * (3 - 2 * (y - j));
+    const top = at(i, j) + (at(i + 1, j) - at(i, j)) * sx;
+    const bottom = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * sx;
+    return top + (bottom - top) * sy;
+  };
+}
+const MOTTLE_COARSE = wrappedNoise(4, 11);
+const MOTTLE_FINE = wrappedNoise(12, 23);
+/** 0…1 over the ground texture's unit square: a 12-in cloud with a 4-in one on it */
+export const groundMottle = (u: number, v: number): number => 0.65 * MOTTLE_COARSE(u, v) + 0.35 * MOTTLE_FINE(u, v);
 
 /**
  * THE GROUND'S TEXTURE — one 128 × 128 canvas, tiled. Two jobs, and the second is the one that
@@ -199,21 +229,34 @@ function groundTexture(color: number, gridded: boolean): THREE.CanvasTexture {
   const r = (color >> 16) & 255;
   const gr = (color >> 8) & 255;
   const b = color & 255;
+  // MOTTLE: a smooth, low-contrast cloud, so a poured slab is not one flat value.
+  //
+  // ⚠️ **A MULTIPLY OF THE BASE, NOT WHITE AND BLACK OVER IT.** A fixed ABSOLUTE step is a grain
+  // on `gym`'s 0x8a6e49 and a +40 % lift on `night`'s 0x32373e that covered the car park in
+  // white flecks like static (measured in the capture). A percentage reads the same on both.
+  //
+  // ⚠️ **AND SMOOTH, NOT SPECKS** (2026-09-28, owner: "nothing in graphics that mesh and create
+  // weird visual effects"). This was 200 hard-edged ±9 % squares, 0.75–2.6 in across, the same
+  // 200 in every 48-in repeat: from any camera above the field the floor read as a pixel mosaic
+  // stamped on a grid. Value noise on this texture's own torus (every lattice index wraps, so the
+  // repeat has no seam) at two octaves, ±4 %, interpolated — nothing in it is sharper than a few
+  // inches, so nothing in it can beat against the pixel grid or against its own repeat.
   g.fillStyle = `rgb(${r},${gr},${b})`;
   g.fillRect(0, 0, S, S);
-  // MOTTLE: 200 deterministic specks, so the surface has a grain at close range and averages
-  // back to `color` at distance.
-  //
-  // ⚠️ **THE SPECKS ARE A PERCENTAGE OF THE BASE, NOT WHITE AND BLACK OVER IT.** The first
-  // version painted `rgba(255,255,255,0.045)` and `rgba(0,0,0,0.06)`, which is a fixed ABSOLUTE
-  // step — on `gym`'s 0x8a6e49 it is a grain, and on `night`'s 0x32373e ground it is a +40 %
-  // lift that covered the whole car park in white flecks like static (measured in the capture).
-  // A ±9 % multiply is the same grain at every value the list carries.
-  const shade = (k: number): string => `rgb(${Math.round(r * k)},${Math.round(gr * k)},${Math.round(b * k)})`;
-  for (let i = 0; i < 200; i++) {
-    g.fillStyle = shade(vRand(i * 5 + 3) > 0.5 ? 1.09 : 0.91);
-    const sz = 2 + vRand(i * 5 + 4) * 5;
-    g.fillRect(vRand(i * 5) * S, vRand(i * 5 + 1) * S, sz, sz);
+  // (a context with no pixel access — the smoke lanes' stub — keeps the flat base)
+  const img = g.createImageData?.(S, S);
+  if (img?.data) {
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const k = 1 + (groundMottle(x / S, y / S) - 0.5) * 0.08;
+        const o = (y * S + x) * 4;
+        img.data[o] = Math.round(r * k);
+        img.data[o + 1] = Math.round(gr * k);
+        img.data[o + 2] = Math.round(b * k);
+        img.data[o + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
   }
   if (gridded) {
     g.strokeStyle = 'rgba(0,0,0,0.22)';
@@ -473,7 +516,13 @@ function buildSoftboxes(spec: VenueSpec): THREE.InstancedMesh | null {
       specs.push({ x: sx * 105, y: sy * 105, z: spec.ceil * 0.78, w: 116, d: 116, h: 5 });
     }
   }
-  return boxes('bb-venue:softbox', fitting(spec.lamp, spec.lampPower), specs);
+  const m = boxes('bb-venue:softbox', fitting(spec.lamp, spec.lampPower, false), specs);
+  // ON THE OVERHEAD LAYER, like the truss and the hall fittings, and for the same reason: the rig
+  // is straight over the field, so the top-down camera looked THROUGH it and four white 116-in
+  // squares covered the field's corners in every studio environment (seen in the Extreme
+  // captures, 2026-09-27, where bloom turned them into a white haze over the whole shot).
+  m.layers.set(VENUE_OVERHEAD_LAYER);
+  return m;
 }
 
 /**

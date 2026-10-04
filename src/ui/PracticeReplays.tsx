@@ -117,6 +117,9 @@ export function PracticeReplays({
 
   useEffect(() => {
     setLocal(listPracticeRuns());
+    // the cloud list belongs to one ACCOUNT and one GAME: a sign-out used to leave the previous
+    // account's runs listed, and a game switch showed the old game's until the fetch landed
+    setRemote([]);
     if (!signedIn) {
       setLoading(false);
       return;

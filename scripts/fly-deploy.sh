@@ -22,14 +22,41 @@
 set -euo pipefail
 
 ALPHA=0
+ROUTER=0
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --alpha) ALPHA=1 ;;
+    --router) ROUTER=1 ;;
     *) ARGS+=("$arg") ;;
   esac
 done
 set -- ${ARGS+"${ARGS[@]}"}
+
+# THE PRIMARY ROUTER (router/, src/net/primaryHost.ts): a separate tiny app, pinned to iad, that
+# fly-replays every request to the game app's primary machine so idle tabs never start a
+# satellite. `--router` deploys it (production's dsim-primary, or dsim-alpha-primary with
+# --alpha) and nothing else. One machine, iad only: a router machine anywhere else would sit
+# nearest some players and start for their polls.
+if [ "$ROUTER" -eq 1 ]; then
+  if [ "$ALPHA" -eq 1 ]; then RCONFIG=fly.alpha.toml; else RCONFIG=fly.toml; fi
+  RAPP=$(sed -n "s/^app = '\(.*\)'/\1/p" "router/$RCONFIG")
+  echo "==> primary router deploy ($RAPP, router/$RCONFIG)"
+  if ! fly status -a "$RAPP" >/dev/null 2>&1; then
+    echo "==> creating app $RAPP"
+    fly apps create "$RAPP" --org "${FLY_ORG:-personal}"
+  fi
+  (cd router && fly deploy --remote-only --ha=false -c "$RCONFIG" -a "$RAPP" "$@")
+  echo "==> done. verify: curl -sI https://$RAPP.fly.dev/health  (x-region: iad)"
+  echo "    machines:     fly machine list -a $RAPP  (one, iad)"
+  exit 0
+fi
+
+# The image `npm ci`s the vendored Zenith tarballs (`COPY vendor`), which are never committed.
+# A no-op when they are present (or when Zenith comes from npm); otherwise it fetches them with
+# ZENITH_VENDOR_* from the environment and checks them against the lockfile, or stops here with
+# a message rather than letting the remote build fail on a missing file.
+node scripts/fetch-zenith.mjs
 
 if [ "$ALPHA" -eq 1 ]; then
   APP="${FLY_ALPHA_APP:-dsim-alpha}"
@@ -103,19 +130,23 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # the memory column is the floor, not a choice. Change a size HERE — a manual
 # `fly machine update` is undone by the next deploy.
 SATELLITE_SIZES=(
-  ord:performance-1x:2048
+  ord:shared-cpu-8x:2048
   sjc:performance-1x:2048
-  lhr:performance-1x:2048
-  gru:performance-1x:2048
+  lhr:shared-cpu-8x:2048
+  gru:shared-cpu-4x:1024
   jnb:shared-cpu-4x:1024
-  syd:performance-1x:2048
-  nrt:performance-1x:2048
+  syd:shared-cpu-8x:2048
+  nrt:shared-cpu-4x:1024
 )
+# 2026-09-30: these are the sizes the capacity checkup has been running since 09-28 under the
+# $150/month budget, each fitted to the worst hourly-mean cores of the past week with no
+# throttling. Before this they were set only live, so every deploy put the old sizes back.
 # 2026-09-24 (BIOBUZZ Act 2): gru, syd and nrt stay on the dedicated core the capacity task
 # moved them to on 09-23 (peaks 0.17-0.43 cores against shared-cpu-4x's 0.175 baseline), because
-# every online BIOBUZZ room is now a 3D solve. A bigger size does NOT help: the server is ONE
-# process on ONE core (no worker_threads/cluster). ⚠️ MULTI-CORE IS THE URGENT NEXT CAPACITY
-# ITEM — see docs/capacity.md, "MULTI-CORE".
+# every online BIOBUZZ room is now a 3D solve. 2026-09-27: rooms can now use more than one core
+# (SIM_WORKERS=auto in fly.toml, docs/scaling-multicore.md), so a bigger size DOES add rooms now —
+# but a performance-1x has one vCPU and runs in-process as before. Upsizing a satellite means
+# raising its MAX_ROOMS below with it, or the cap binds before the cores do.
 SATELLITES=()
 for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 
