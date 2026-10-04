@@ -88,7 +88,7 @@ export function ModelStep({
             ? COPY.wheelsFound
             : COPY.wheelsUneven;
   const wheelField = (key: RectNumber, label: string, min: number, max: number): JSX.Element => (
-    <NumberField label={label} unit="in" value={rect![key]} min={min} max={max} step={WHEEL_STEP} onCommit={(v) => onRect(key, v)} />
+    <NumberField label={label} unit="in" value={rect![key]} min={min} max={max} step={WHEEL_STEP} digits={2} onCommit={(v) => onRect(key, v)} />
   );
   const b0 = m.hull.length ? m.hull : [];
   // turned from where the file was read: the detected front, or the CAD front when it was assumed
@@ -167,29 +167,7 @@ export function ModelStep({
         />
       </div>
 
-      <div id="ri-units">
-        <OptRow<LengthUnit>
-          label={COPY.units}
-          hint={doc.detected ? hint(UNIT_LABEL[doc.detected.units]) : undefined}
-          value={m.units}
-          cols="five"
-          mini
-          // feet only when the file is in feet: a fifth tile wrapped the row for a unit nobody exports in
-          options={LENGTH_UNITS.filter((u) => u !== 'ft' || m.units === 'ft').map((u) => ({ v: u, t: UNIT_LABEL[u] }))}
-          onPick={(u) => onSetup({ units: u, wheels: null })}
-        />
-      </div>
-      <div id="ri-up">
-        <OptRow<UpAxis>
-          label={COPY.up}
-          hint={doc.detected ? hint(upLabel(doc.detected.up)) : undefined}
-          value={m.up}
-          cols="three"
-          mini
-          options={UP_AXES.map((a) => ({ v: a, t: upLabel(a) }))}
-          onPick={(a) => onSetup({ up: a, wheels: null })}
-        />
-      </div>
+      <p className="ds-hint">{COPY.orientHint}</p>
       <div className="ds-field" id="ri-front">
         <span className="cap">
           {COPY.front}
@@ -203,6 +181,34 @@ export function ModelStep({
             {COPY.turnRight}
           </button>
         </div>
+      </div>
+      <div className="ds-fields">
+        <label className="ds-field narrow" id="ri-up">
+          <span className="cap">
+            {COPY.up}
+            {doc.detected ? <span>{hint(upLabel(doc.detected.up))}</span> : null}
+          </span>
+          <select className="ds-select" value={m.up} onChange={(e) => onSetup({ up: e.target.value as UpAxis, wheels: null })}>
+            {UP_AXES.map((a) => (
+              <option key={a} value={a}>
+                {upLabel(a)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="ds-field narrow" id="ri-units">
+          <span className="cap">
+            {COPY.units}
+            {doc.detected ? <span>{hint(UNIT_LABEL[doc.detected.units])}</span> : null}
+          </span>
+          <select className="ds-select" value={m.units} onChange={(e) => onSetup({ units: e.target.value as LengthUnit, wheels: null })}>
+            {LENGTH_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {UNIT_LABEL[u]}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="ds-field" id="ri-wheels">
@@ -257,6 +263,7 @@ export function ModelStep({
               min={-12}
               max={12}
               step={WHEEL_STEP}
+              digits={2}
               onCommit={(x) => onWheel(selectedWheel, { x, y: sel.y }, true)}
             />
             <NumberField
@@ -266,20 +273,18 @@ export function ModelStep({
               min={-12}
               max={12}
               step={WHEEL_STEP}
+              digits={2}
               onCommit={(y) => onWheel(selectedWheel, { x: sel.x, y }, true)}
             />
           </div>
         ) : null}
-        <div>
-          <button
-            type="button"
-            className="ds-btn ghost small"
-            disabled={m.wheelSource !== 'manual'}
-            onClick={() => onSetup({ wheels: null })}
-          >
-            {COPY.useDetected}
-          </button>
-        </div>
+        {m.wheelSource === 'manual' ? (
+          <div>
+            <button type="button" className="ds-btn ghost small" onClick={() => onSetup({ wheels: null })}>
+              {COPY.useDetected}
+            </button>
+          </div>
+        ) : null}
       </div>
     </>
   );

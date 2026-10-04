@@ -49,11 +49,14 @@
 .ds-import-steps {
   margin: 0;
   flex-wrap: wrap;
+  gap: var(--ds-s-1);
 }
+/* five steps on one row beside the preview: a little less air than a two-tab `.ds-tabs` */
 .ds-import-steps .ds-tab {
   display: inline-flex;
   align-items: center;
-  gap: var(--ds-s-2);
+  gap: var(--ds-s-1);
+  padding-inline: var(--ds-s-3);
 }
 .ds-import-steps .ds-tab .n {
   font-family: var(--ds-font-mono);
@@ -128,7 +131,7 @@
   .ds-import-preview-stage {
     height: 240px;
   }
-  /* four tabs do not fit a phone in a row: a deliberate 2 + 2 (the `.ds-segs.even` rule) */
+  /* five tabs do not fit a phone in a row: two a row (the `.ds-segs.even` rule) */
   .ds-import-steps {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -187,7 +190,7 @@
   gap: var(--ds-s-2);
 }
 
-/* ---- Mechanisms: the moving parts ---- */
+/* ---- Moving parts: one row per part; the selected one opens its settings under it ---- */
 .ds-import-moving {
   list-style: none;
   margin: 0;
@@ -198,20 +201,44 @@
 }
 .ds-import-moving li {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ds-s-2) var(--ds-s-3);
-  padding: var(--ds-s-2) var(--ds-s-3);
+  flex-direction: column;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  transition: border-color var(--ds-dur-fade);
+}
+.ds-import-moving li:hover {
+  border-color: var(--ds-line-strong);
 }
 .ds-import-moving li.on {
   border-color: var(--ds-accent);
 }
+/* the row itself is the button that selects the part */
+.ds-import-moving-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+  width: 100%;
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 0;
+  border-radius: var(--ds-round);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ds-import-moving-row:active {
+  transform: translateY(1px);
+}
+.ds-import-moving-row:disabled {
+  cursor: not-allowed;
+  opacity: var(--ds-disabled-opacity);
+}
 .ds-import-moving .what {
   display: flex;
   flex-direction: column;
-  flex: 1 1 160px;
+  flex: 1 1 auto;
   min-width: 0;
   font-size: var(--ds-t-md);
   color: var(--ds-ink);
@@ -220,17 +247,32 @@
   font-size: var(--ds-t-sm);
   color: var(--ds-mut);
 }
-.ds-import-moving .acts {
+.ds-import-moving .go {
+  flex: none;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-accent);
+}
+.ds-import-moving-edit {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--ds-s-2);
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  padding: 0 var(--ds-s-3) var(--ds-s-3);
+}
+.ds-import-moving-edit .ds-hint {
+  margin: 0;
+}
+.ds-import-moving-edit .ds-checkline {
+  font-size: var(--ds-t-md);
 }
 .ds-import-moving-hinge {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--ds-s-2) var(--ds-s-3);
-  flex-basis: 100%;
+}
+/* what the marks over the model mean, under the camera buttons */
+.ds-import-legend {
+  margin: 0;
 }
 .ds-import .ds-facts dd.warn {
   color: var(--ds-warn);

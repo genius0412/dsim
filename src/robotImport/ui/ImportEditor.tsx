@@ -33,6 +33,7 @@ import {
   layoutPatch,
   moveWheel,
   rectangleWheels,
+  keepEditedMotion,
   reviewItems,
   reviewSummary,
   setRectNumber,
@@ -59,7 +60,7 @@ import './../../ui/importer.css';
 /**
  * THE ROBOT IMPORT EDITOR — `/<game>/configure/robot/import[/<id>]`, a lazy chunk (lane 4 spec §2).
  *
- * One screen: a step rail (Model · Drivetrain · Mechanisms · Review), the step's panel, and a
+ * One screen: a step rail (Model · Drivetrain · Mechanisms · Moving parts · Review), the step's panel, and a
  * persistent preview. The document it edits (`EditorDoc`) lives in the draft store, not in this
  * component: a test drive unmounts the editor and the way back remounts it, and a reload restores it
  * from IndexedDB, so neither loses a thing.
@@ -76,6 +77,10 @@ export interface ImportEditorProps {
   onSaved: (spec: RobotSpec) => void;
   onTestDrive: (spec: RobotSpec) => void;
 }
+
+/** the Moving parts step and the Review step (`COPY.steps`) */
+const MOVING_STEP = 3;
+const REVIEW_STEP = 4;
 
 /** focus to restore when the editor comes back from a test drive */
 let focusOnReturn: string | null = null;
@@ -143,6 +148,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const sourceFiles = useRef<File[] | null>(null);
   /** the moving part being picked in the preview, or null; and whether the preview runs them */
   const [activeMotion, setActiveMotion] = useState<number | null>(null);
+  /** the moving part whose row is under the pointer, shown while none is selected */
+  const [hoverMotion, setHoverMotion] = useState<number | null>(null);
   const [pickTarget, setPickTarget] = useState<PickTarget>('bodies');
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -725,7 +732,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const parts = normalised.modelParts;
     const out: MotionGroup[] = [];
     const taken = (): Set<number> => new Set([...have, ...out].flatMap((g) => g.bodies));
-    if (!have.some((g) => g.role === 'wheel')) out.push(...findWheels().filter((g) => !g.bodies.some((b) => taken().has(b))));
+    // a wheel per corner no row has yet (a player's own wheel row keeps its corner)
+    for (const w of findWheels()) {
+      if (have.some((g) => g.role === 'wheel' && g.corner === w.corner)) continue;
+      const t = taken();
+      const bodies = w.bodies.filter((b) => !t.has(b));
+      if (bodies.length) out.push({ ...w, bodies });
+    }
     const intakes = doc.mech?.intakes ?? [];
     if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken()));
     const shooter = doc.mech?.shooter;
@@ -753,7 +766,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc?.setup.motion, normalised, measuring, baseWheels, !doc?.mech]);
   const setMotion = (next: MotionGroup[]): void => update((d) => ({ ...d, setup: { ...d.setup, motion: next } }));
-  const picking = step === 2 && activeMotion !== null && !!motion?.[activeMotion];
+  /** Find moving parts: every row the player has not touched goes, and is looked for again */
+  const refindMotion = (): void => {
+    const kept = keepEditedMotion(motion ?? []);
+    setActiveMotion(null);
+    setHoverMotion(null);
+    setMotion([...kept, ...findAll(kept)]);
+  };
+  // a selected row is being edited: a click in the preview adds or takes out its parts
+  const picking = step === MOVING_STEP && activeMotion !== null && !!motion?.[activeMotion];
   // a click in the preview: the part under it (and, for something that spins, its axle; for the rest,
   // what is mounted on it) joins the group being picked, or leaves it when it is already in it.
   // A body belongs to one moving part at a time.
@@ -780,11 +801,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     setMotion(next);
   };
   const highlight = useMemo(() => {
-    if (step !== 2 || !motion) return null;
-    const active = activeMotion !== null ? (motion[activeMotion]?.bodies ?? []) : [];
-    const others = motion.flatMap((g, i) => (i === activeMotion ? [] : g.bodies));
+    if (step !== MOVING_STEP || !motion) return null;
+    // the selected row, or else the one under the pointer
+    const shown = activeMotion ?? (hoverMotion !== null && hoverMotion < motion.length ? hoverMotion : null);
+    const active = shown !== null ? (motion[shown]?.bodies ?? []) : [];
+    const others = motion.flatMap((g, i) => (i === shown ? [] : g.bodies));
     return active.length || others.length ? { active, others } : null;
-  }, [step, motion, activeMotion]);
+  }, [step, motion, activeMotion, hoverMotion]);
 
   // ---- render ----------------------------------------------------------------------------------
   if (notFound) {
@@ -815,22 +838,37 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (it.level === 'block') stepBlocks[stepOf(it)]++;
   }
   const title = doc.editId ? COPY.titleEdit(doc.spec.name || 'robot') : COPY.titleNew;
+  // each step draws what it is about: the wheels and the contacts on the Model step, the placements
+  // on Mechanisms, the moving parts on theirs, and all of it on Review
   const previewState = m && normalised
     ? {
         parts: normalised.modelParts,
         hull: m.hull,
-        wheels: shownWheels,
-        contacts: m.wheels.contacts,
-        origin: m.origin,
-        mech: doc.mech,
+        wheels: step === 0 || step === 1 || step === REVIEW_STEP ? shownWheels : null,
+        contacts: step === 0 ? m.wheels.contacts : null,
+        origin: step === 0 ? m.origin : null,
+        mech: step === 2 || step === REVIEW_STEP ? doc.mech : null,
         size: m.size,
         showCube: true,
         motion: m.motion ?? null,
-        playing: playing && step === 2 && !picking,
+        playing: playing && step === MOVING_STEP && !picking,
         highlight: playing ? null : highlight,
         picking,
       }
     : null;
+  const legend = !m
+    ? null
+    : step === 0
+      ? COPY.legend.model
+      : step === 1
+        ? COPY.legend.drive
+        : step === 2
+          ? COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
+          : step === MOVING_STEP
+            ? motion?.length
+              ? COPY.legend.moving
+              : null
+            : null;
 
   const mechPanel =
     built && m && doc.mech ? (
@@ -857,28 +895,30 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             onTune={(tune) => update((d) => ({ ...d, setup: { ...d.setup, tune } }))}
           />
         }
-        moving={
-          <MotionPanel
-            rampOk={game === 'biobuzz' && bbIntakeKindOf(built.spec) === 'ramp'}
-            groups={motion ?? []}
-            parts={m.motion ?? []}
-            active={picking ? activeMotion : null}
-            target={pickTarget}
-            playing={playing}
-            onActive={(i, target = 'bodies') => {
-              setActiveMotion(i);
-              setPickTarget(target);
-              if (i !== null) setPlaying(false);
-            }}
-            onChange={setMotion}
-            onFind={() => setMotion([...(motion ?? []), ...findAll(motion ?? [])])}
-            onFindWheels={() => setMotion([...(motion ?? []).filter((g) => g.role !== 'wheel'), ...findWheels()])}
-            onPlay={(on) => {
-              setPlaying(on);
-              if (on) setActiveMotion(null);
-            }}
-          />
-        }
+      />
+    ) : null;
+
+  const movingPanel =
+    built && m ? (
+      <MotionPanel
+        rampOk={game === 'biobuzz' && bbIntakeKindOf(built.spec) === 'ramp'}
+        groups={motion ?? []}
+        parts={m.motion ?? []}
+        active={picking ? activeMotion : null}
+        target={pickTarget}
+        playing={playing}
+        onHover={setHoverMotion}
+        onActive={(i, target = 'bodies') => {
+          setActiveMotion(i);
+          setPickTarget(target);
+          if (i !== null) setPlaying(false);
+        }}
+        onChange={setMotion}
+        onRefind={refindMotion}
+        onPlay={(on) => {
+          setPlaying(on);
+          if (on) setActiveMotion(null);
+        }}
       />
     ) : null;
 
@@ -918,12 +958,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               onClick={() => goStep(i as StepIndex)}
             >
               <span className="n">{i + 1}</span> {label}
-              {/* Review carries no badge: it is the sum of the other three, and a tick on it beside
-                  "1 to fix before saving" read as a contradiction */}
-              {hasModel && i < 3 ? (
-                <span className={`ds-badge ${stepBlocks[i] ? 'danger' : stepCounts[i] ? 'warn' : 'ok'}`}>
-                  {stepCounts[i] ? stepCounts[i] : '✓'}
-                  <span className="ds-sr"> {stepCounts[i] ? COPY.stepOpen(stepCounts[i]) : COPY.stepOk}</span>
+              {/* a badge only for what needs looking at: a tick on every step said nothing, and five
+                  tabs with one each did not fit a row. Review carries none: it is the sum of the rest */}
+              {hasModel && i < REVIEW_STEP && stepCounts[i] ? (
+                <span className={`ds-badge ${stepBlocks[i] ? 'danger' : 'warn'}`}>
+                  {stepCounts[i]}
+                  <span className="ds-sr"> {COPY.stepOpen(stepCounts[i])}</span>
                 </span>
               ) : null}
             </button>
@@ -933,6 +973,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         <PreviewPane
           eng={eng}
           state={previewState}
+          legend={legend}
           onPickBody={onPickBody}
           empty={<p className="ds-hint ds-import-preview-empty">{COPY.previewEmpty}</p>}
           fallback={
@@ -952,7 +993,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
         <section className="ds-panel ds-import-body">
           <div className="ds-panel-h">
-            {step === 3 && hasModel ? (
+            {step === REVIEW_STEP && hasModel ? (
               <h2 className={`ds-panel-title notice${blocked ? ' error' : ''}`} role="status">
                 {actionError ?? (busy ? COPY.working : measuring ? COPY.phase.measure : reviewSummary(items))}
               </h2>
@@ -1016,6 +1057,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               />
             ) : step === 2 ? (
               mechPanel
+            ) : step === MOVING_STEP ? (
+              movingPanel
             ) : (
               <ReviewStep
                 items={items}
@@ -1034,7 +1077,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             </button>
           ) : null}
           <span className="ds-head-spacer" />
-          {step < 3 ? (
+          {step < REVIEW_STEP ? (
             <button
               type="button"
               className="ds-btn primary"

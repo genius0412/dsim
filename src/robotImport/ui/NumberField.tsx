@@ -14,6 +14,7 @@ export function NumberField({
   max,
   step,
   unit,
+  digits,
   narrow = true,
   onCommit,
 }: {
@@ -26,10 +27,12 @@ export function NumberField({
   step: number;
   /** printed after the label as a `.val`, e.g. ":1" or "lb" */
   unit?: string;
+  /** decimals shown, when fewer than the step's own (a wheel at 1/16 in reads 11.34, not 11.3375) */
+  digits?: number;
   narrow?: boolean;
   onCommit: (v: number) => void;
 }) {
-  const decimals = step >= 1 ? 0 : (String(step).split('.')[1]?.length ?? 2);
+  const decimals = digits ?? (step >= 1 ? 0 : (String(step).split('.')[1]?.length ?? 2));
   const fmt = (v: number): string => (Number.isFinite(v) ? Number(v.toFixed(decimals)).toString() : '');
   const [text, setText] = useState(fmt(value));
   useEffect(() => setText(fmt(value)), [value]); // eslint-disable-line react-hooks/exhaustive-deps

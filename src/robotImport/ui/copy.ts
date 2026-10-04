@@ -20,6 +20,13 @@ const ROLE_NAME: Record<MotionRole, string> = {
   swing: 'Swinging part',
   slide: 'Sliding part',
 };
+/** what each kind is called where a player picks one to add */
+const ADD_KIND: Partial<Record<MotionRole, string>> = {
+  fold: 'A part that folds out',
+  spin: 'Something else that spins',
+  swing: 'An arm or flap that swings',
+  slide: 'A lift or a slide',
+};
 const CORNER_NAME = ['Front-left wheel', 'Front-right wheel', 'Back-left wheel', 'Back-right wheel'];
 import { FORMAT_LABEL, PAGE_COPY } from './pageCopy';
 
@@ -38,9 +45,8 @@ export const COPY = {
   discardBodyNew: 'The model and everything set here are removed.',
   discardBodyEdit: (name: string) => `${name} goes back to how it was saved.`,
   discard: 'Discard',
-  steps: ['Model', 'Drivetrain', 'Mechanisms', 'Review'] as const,
+  steps: ['Model', 'Drivetrain', 'Mechanisms', 'Moving parts', 'Review'] as const,
   stepsAria: 'Import steps',
-  stepOk: 'no problems',
   stepOpen: (n: number) => `${n} to check`,
   prev: 'Back',
   next: (step: string) => `Next: ${step}`,
@@ -96,6 +102,7 @@ export const COPY = {
   units: 'Units',
   up: 'Up axis',
   detected: (v: string) => `Detected: ${v}`,
+  orientHint: 'Check the preview: the robot stands on its wheels, and the arrow points to its front.',
   front: 'Front',
   frontDetected: 'Detected',
   frontFound: {
@@ -149,6 +156,13 @@ export const COPY = {
   cameraAria: 'Preview camera',
   collision: 'Collision shape',
   previewEmpty: 'Your robot shows here, on a field tile beside the 18 in cube.',
+  legend: {
+    model: 'Arrow: the front. Blue line: the footprint. Green discs: the wheels.',
+    drive: 'Arrow: the front. Green discs: the wheels.',
+    mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
+      ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
+    moving: 'Blue: the selected part. Orange: the other moving parts.',
+  },
   resetView: 'Reset view',
 
   // ---- Drivetrain ----
@@ -201,34 +215,38 @@ export const COPY = {
   span: (label: string, w: number, c: number) => `${label}: ${w.toFixed(1)} in wide, centred ${c.toFixed(1)} in along the edge`,
   noHandles: 'Pick the mechanisms above to place them here.',
   moving: 'Moving parts',
-  movingHint:
-    'What turns or folds in a match. Press Pick parts, then click parts in the preview. A click on a wheel, roller or flywheel takes its whole axle; Shift-click takes one part.',
+  movingHint: 'Select a part to see it in the preview and change it.',
+  movingNone: 'Nothing moves yet. Find moving parts looks for the wheels, rollers, flywheels and a turret.',
   motionRole: (role: MotionRole, corner?: number) =>
     role === 'wheel' && corner !== undefined ? (CORNER_NAME[corner] ?? ROLE_NAME.wheel) : (ROLE_NAME[role] ?? 'Moving part'),
-  motionDetail: (role: MotionRole, n: number, p?: MotionPart) => {
+  motionSummary: (role: MotionRole, n: number, p: MotionPart | undefined, found: boolean) => {
     const parts = `${n} ${n === 1 ? 'part' : 'parts'}`;
-    if (!p || typeof p !== 'object') return `${parts}. Couldn’t find how it turns, so it stays still. Pick its round part.`;
-    if (role === 'ramp' || role === 'fold') return `${parts}, deploys ${Math.round((p.deploy * 180) / Math.PI)}°`;
-    if (role === 'swing') return `${parts}, swings ${Math.round(((p.amount ?? 0) * 180) / Math.PI)}°`;
-    if (role === 'slide') return `${parts}, slides ${Number((p.amount ?? 0).toFixed(2))} in`;
-    if (role === 'turret') return parts;
-    return `${parts}, ${(2 * p.radius).toFixed(1)} in across`;
+    if (!p || typeof p !== 'object') return `${parts}. Couldn’t find how it turns, so it stays still. Add its round part.`;
+    const what =
+      role === 'ramp' || role === 'fold'
+        ? `${parts}, deploys ${Math.round((p.deploy * 180) / Math.PI)}°`
+        : role === 'swing'
+          ? `${parts}, swings ${Math.round(((p.amount ?? 0) * 180) / Math.PI)}°`
+          : role === 'slide'
+            ? `${parts}, slides ${Number((p.amount ?? 0).toFixed(2))} in`
+            : parts;
+    return found ? `${what} · found automatically` : what;
   },
-  motionEmpty: 'Nothing picked yet',
-  motionPick: 'Pick parts',
+  motionEmpty: 'No parts yet. Click them in the preview.',
+  motionEdit: 'Edit',
   motionDone: 'Done',
-  motionReverse: 'Reverse',
+  motionPickHint: (role: MotionRole) =>
+    role === 'wheel' || role === 'roller' || role === 'flywheel' || role === 'spin'
+      ? 'Click a part in the preview to add it or take it out. A click takes everything on that axle; Shift-click takes one part.'
+      : 'Click a part in the preview to add it or take it out, with what is mounted on it. Shift-click takes one part.',
+  motionReverse: (role: MotionRole) => (role === 'swing' ? 'Swings the other way' : role === 'slide' ? 'Slides the other way' : 'Turns the other way'),
   motionRemove: 'Remove',
   motionRemoveAria: (label: string) => `Remove ${label}`,
   motionFileAria: 'How the file shows it',
   motionFile: { deployed: 'File shows it deployed', folded: 'File shows it folded' },
   motionFoldBy: 'Folds up by',
   motionDeployBy: 'Deploys by',
-  motionFindWheels: 'Find wheels',
-  motionFindAgain: 'Find wheels again',
-  motionFindRollers: 'Find rollers',
   motionFind: 'Find moving parts',
-  motionFound: 'found, check it in the preview',
   motionPickAxisHint: 'Click the part it turns about or slides along: an axle, a pin, a rail.',
   motionDriveLabel: 'Moved by',
   motionDrives: { intake: 'Intake', shooter: 'Launcher', fire: 'Each shot', ramp: 'Ramp', drive: 'Driving', always: 'Always' } as const,
@@ -246,7 +264,9 @@ export const COPY = {
   motionRatio: 'Ratio',
   motionRides: 'Rides on',
   motionNone: 'Nothing',
-  motionAdd: (role: MotionRole) => `Add ${(ROLE_NAME[role] ?? 'moving part').toLowerCase()}`,
+  motionAddCap: 'Add a moving part',
+  motionAddPick: 'Choose what it is…',
+  motionAddKind: (role: MotionRole) => ADD_KIND[role] ?? ROLE_NAME[role] ?? 'Moving part',
   motionPlay: 'Play',
   motionStop: 'Stop',
   tuneDrive: 'Practice tuning',

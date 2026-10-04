@@ -47,7 +47,6 @@ export function MechanismsStep({
   onSelect,
   onMech,
   onReset,
-  moving,
   tuning,
 }: {
   game: GameId;
@@ -67,9 +66,7 @@ export function MechanismsStep({
   onSelect: (key: string) => void;
   onMech: (next: ImportedMech) => void;
   onReset: () => void;
-  /** the moving parts (`MotionPanel`), after the placements */
-  moving?: ReactNode;
-  /** the mechanisms' practice tuning (`TunePanel`), after the builder */
+  /** the mechanisms' practice tuning (`TunePanel`), after the placements */
   tuning?: ReactNode;
 }) {
   const mod = moduleFor(game);
@@ -250,7 +247,6 @@ export function MechanismsStep({
       ) : (
         <BuiltinMechRows spec={spec} setSpec={onSpec} game={game} hideFrame />
       )}
-      {tuning}
       <h3 className="ds-subh" id="ri-placement" tabIndex={-1}>
         {COPY.placement}
       </h3>
@@ -271,7 +267,7 @@ export function MechanismsStep({
           {COPY.resetPlacement}
         </button>
       </div>
-      {moving}
+      {tuning}
     </>
   );
 }

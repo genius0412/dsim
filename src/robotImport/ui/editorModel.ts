@@ -16,12 +16,13 @@ import { chainMassFloorBump } from '../../games/chain/config';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
 import { bbox, buildDescriptor, isRectangle, linesToWheels, q64, squareWheels, WHEEL_SQUARE_TOL_IN, wheelLines, type WheelLines } from '../geometry';
 import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
-import type { FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, QuarterTurns, UpAxis, WheelLayout } from '../types';
+import type { FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { validateMechFor } from './placement';
 import { COPY } from './copy';
 
 export const STEP_COUNT = 4;
-export type StepIndex = 0 | 1 | 2 | 3;
+/** Model · Drivetrain · Mechanisms · Moving parts · Review */
+export type StepIndex = 0 | 1 | 2 | 3 | 4;
 
 /** what the editor edits; plain JSON, so the draft store keeps it as is */
 export interface EditorDoc {
@@ -185,7 +186,7 @@ export function frontAssumed(doc: Pick<EditorDoc, 'detected' | 'savedModel' | 's
 
 /** the step each check belongs to, for the step rail's counts */
 export function stepOf(item: ReviewItem): StepIndex {
-  return item.fix?.step ?? 3;
+  return item.fix?.step ?? 4;
 }
 
 /**
@@ -394,4 +395,36 @@ export function edgeRange(edge: ImportedEdge, hull: readonly Vec2[]): { lo: numb
     case 'right':
       return { lo: b.minX, hi: b.maxX, at: b.minY };
   }
+}
+
+/**
+ * The moving parts before Find moving parts looks again: the rows the player has edited (not
+ * `found`), with what they name by index (`follows`, `rideOn`) moved to where those rows now sit,
+ * and a link to a row that goes dropped.
+ */
+export function keepEditedMotion(groups: readonly MotionGroup[]): MotionGroup[] {
+  const keep = groups.map((g, i) => (g.found ? -1 : i)).filter((i) => i >= 0);
+  const at = new Map(keep.map((old, k) => [old, k]));
+  return keep.map((i) => {
+    const g: MotionGroup = { ...groups[i] };
+    const f = g.follows ? at.get(g.follows.group) : undefined;
+    if (g.follows && f !== undefined) g.follows = { ...g.follows, group: f };
+    else delete g.follows;
+    const r = g.rideOn !== undefined ? at.get(g.rideOn) : undefined;
+    if (r !== undefined) g.rideOn = r;
+    else delete g.rideOn;
+    return g;
+  });
+}
+
+/** each moving part's name: its kind (a wheel's corner), numbered when two share one */
+export function motionNames(groups: readonly MotionGroup[]): string[] {
+  const base = groups.map((g) => COPY.motionRole(g.role, g.corner));
+  const seen = new Map<string, number>();
+  return base.map((n) => {
+    if (base.filter((m) => m === n).length < 2) return n;
+    const k = (seen.get(n) ?? 0) + 1;
+    seen.set(n, k);
+    return `${n} ${k}`;
+  });
 }

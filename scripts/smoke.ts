@@ -31094,6 +31094,36 @@ function impPlayCheck(g: GameId): void {
   }
 }
 
+/*
+ * ---- THE IMPORTER'S MOVING PARTS STEP (2026-10-04, owner: "UI is very unintuitive") ----
+ * Moving parts left the Mechanisms step for a step of its own; rows are named by kind and numbered
+ * only when two share one; Find moving parts looks again for every row the player has not edited,
+ * keeping the edited ones and moving their links with them.
+ */
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { COPY } = await import('../src/robotImport/ui/copy');
+  type G = import('../src/robotImport/types').MotionGroup;
+  check('import UI steps: five, Moving parts fourth, Review last; a check with no step counts on Review',
+    COPY.steps.length === 5 && COPY.steps[3] === 'Moving parts' && COPY.steps[4] === 'Review' && em.stepOf({ id: 'x', level: 'warn', text: 't' }) === 4);
+  const groups: G[] = [
+    { role: 'wheel', bodies: [1], corner: 0, found: true },
+    { role: 'roller', bodies: [2], found: true },
+    { role: 'roller', bodies: [3] },
+    { role: 'flywheel', bodies: [4] },
+    { role: 'spin', bodies: [5], follows: { group: 3, ratio: 2 }, rideOn: 1 },
+    { role: 'swing', bodies: [6], rideOn: 4 },
+  ];
+  const names = em.motionNames(groups);
+  check('import UI moving parts: a wheel by its corner, two rollers numbered, the rest by kind',
+    names[0] === 'Front-left wheel' && names[1] === 'Intake roller 1' && names[2] === 'Intake roller 2' && names[3] === 'Flywheel' && names[4] === 'Spinning part');
+  const kept = em.keepEditedMotion(groups);
+  check('import UI moving parts: Find again keeps only the edited rows, in order', kept.length === 4 && kept.map((g) => g.bodies[0]).join() === '3,4,5,6');
+  check('import UI moving parts: a kept link follows its row; a link to a dropped row goes',
+    kept[2].follows?.group === 1 && kept[2].follows?.ratio === 2 && kept[2].rideOn === undefined && kept[3].rideOn === 2);
+  check('import UI moving parts: the input is not changed', groups.length === 6 && groups[4].rideOn === 1 && groups[4].follows?.group === 3);
+}
+
 /**
  * ---- AN OUT-OF-DATE LIBRARY COPY IS NOT DRAWN (`importedAssets` "AN OUT-OF-DATE COPY IS NOT DRAWN") ----
  * The account syncs the active robot's spec, never its model: after an edit on device A, device B's
@@ -34477,7 +34507,9 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     check('visuals/room: ...and what it sends the relay is ignored without a reply', vis(s, 'x').length === 0);
     room.onMessage('b', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
     check('visuals/room: a request is answered by the room’s own timer, not in the call (nothing is sent per tick, nothing unasked)', s.b.filter((m) => m.t === 'visualChunk').length === 0);
-    await sleepMs(250);
+    // the room's own timer, waited for rather than slept on: which blocks share this process
+    // decides how soon it fires (a fixed 250 ms failed when the shards were packed differently)
+    for (let waited = 0; waited < 3000 && !same(assemble(s, 'b', 'a', 'top'), png); waited += 50) await sleepMs(50);
     check('visuals/room: ⚠️ the viewer receives the owner’s picture byte for byte', same(assemble(s, 'b', 'a', 'top'), png));
     check('visuals/room: ...and the watcher, who did not ask, received no chunk', s.w.filter((m) => m.t === 'visualChunk').length === 0);
     room.onMessage('w', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });

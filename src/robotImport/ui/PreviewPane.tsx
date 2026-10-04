@@ -18,6 +18,7 @@ export function PreviewPane({
   state,
   fallback,
   empty,
+  legend,
   onPickBody,
 }: {
   eng: ImporterEngine | null;
@@ -25,6 +26,8 @@ export function PreviewPane({
   state: Partial<PreviewState> | null;
   fallback: ReactNode;
   empty: ReactNode;
+  /** what the marks drawn over the model mean, on the steps that draw any */
+  legend?: string | null;
   /** a click on a part while `state.picking` (`shift`: that one body, not its axle) */
   onPickBody?: (body: number, shift: boolean) => void;
 }) {
@@ -130,6 +133,7 @@ export function PreviewPane({
         </button>
         </div>
       </div>
+      {legend && !off ? <p className="ds-hint ds-import-legend">{legend}</p> : null}
       <span className="ds-sr" role="status">
         {off ? COPY.previewOff : ''}
       </span>

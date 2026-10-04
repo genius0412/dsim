@@ -386,7 +386,17 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   must lie within it, and one smaller than a fastener lying square to the axle must be tangential (an
   omni roller), not pointing toward the axle (a frame screw). Measured on goBILDA's kit: the rear
   wheels 12–13 → 9 bodies (inboard bearings, collars, a frame screw out), the front 78 → 64.
-- **Picking** (Mechanisms step, Moving parts): a click on a wheel takes what lies in its cylinder and
+- ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
+  bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
+  menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now
+  they are a step of their own (Model · Drivetrain · Mechanisms · Moving parts · Review). SELECTING
+  a row is editing it: its parts tint blue, a click in the preview adds or takes out parts, and its
+  settings open under it (turns the other way, the hinge or joint fields, Geared to, Rides on,
+  Remove); hovering a row tints it without selecting. One "Add a moving part" menu replaces the Add
+  buttons. Find moving parts looks again for every row still `found` and keeps the edited ones
+  (`keepEditedMotion` moves their links; a wheel row the player edited keeps its corner). Each step's
+  preview draws only what that step is about, with a legend under the cameras.
+- **Picking** (the Moving parts step, a selected row): a click on a wheel takes what lies in its cylinder and
   turns with it; on a roller, flywheel or spinning part, everything on its axle (`coaxialBodies`),
   where a body bigger than a fastener must be ROUND about the axle (a channel the shaft runs along is
   centred on it too, and has corners) and a motor-sized cylinder past the end of the rest (the motor
@@ -540,7 +550,7 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
 
 | main (the robot page, the lobby, Modes) | lazy (`ImportEditor-*.js`, route `importerui`) |
 |---|---|
-| `pageCopy.ts` (row, panel, dialog strings), `handoff.ts` (files handed to the editor, the one-shot notice, the `dsim-robot-library` BroadcastChannel), `useLibrary.ts`, `ImportedRobots.tsx` (row, panel, actions) | `ImportEditor.tsx` and the four steps, `copy.ts` (every editor string), `editorModel.ts`, `placement.ts`, `draftStore.ts`, `TopDownMap.tsx`, `PreviewPane.tsx`, `useHandleGrab.ts`, `src/ui/importer.css` |
+| `pageCopy.ts` (row, panel, dialog strings), `handoff.ts` (files handed to the editor, the one-shot notice, the `dsim-robot-library` BroadcastChannel), `useLibrary.ts`, `ImportedRobots.tsx` (row, panel, actions) | `ImportEditor.tsx` and the five steps, `copy.ts` (every editor string), `editorModel.ts`, `placement.ts`, `draftStore.ts`, `TopDownMap.tsx`, `PreviewPane.tsx`, `useHandleGrab.ts`, `src/ui/importer.css` |
 | reached by `import()` on a click: `LibraryDialogs.tsx`, `exportRobot.ts`, `shareFile.ts` | |
 
 - ⚠️ **A main-side file must not import `geometry.ts` or `ui/copy.ts`.** Rollup puts a module

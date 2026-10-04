@@ -695,7 +695,10 @@ const BASELINE = {
   // import's workers.
   // 2026-10-02: 24.71 -> 28.96, raised on purpose. `ImportEditor-*.js` 26.16: the Moving parts panel
   // and its picking (+3.3) and the rectangle wheel layout with its four fields and snapping (+0.9).
-  importerui: { gzip: 28.96 * 1000 },
+  // 2026-10-04: 28.96 -> 33.14, raised on purpose. The base (alpha 239caa2e) already measured 32.32
+  // inside the tolerance (practice tuning, the Detail choice, the generic joints); +0.82 is the
+  // Moving parts step of its own (`MotionPanel` rows, Find again, the preview legend).
+  importerui: { gzip: 33.14 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 
