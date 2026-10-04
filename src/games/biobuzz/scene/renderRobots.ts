@@ -4250,7 +4250,8 @@ function placeJoint(m: ImportedMotionNode): void {
 /**
  * HOW MUCH A GENERIC JOINT'S DRIVE IS ON, 0..1, off the robot's state as the standard parts read it:
  * the intake running, the launcher spun up or just fired, a fire PULSE (up for 0.15 s, back by 0.4 s:
- * a kicker, a catapult arm), the ramp's own ease, the chassis's speed as a share of its top speed.
+ * a kicker, a catapult arm), the ramp's own ease, the chassis's speed as a share of its top speed,
+ * a FLOWER in the Box Tube's reach (a box tube's stages).
  */
 function jointLevel(drive: MotionDrive, world: World, r: RobotState, enabled: boolean, intaking: boolean, rampOut: number, speed: number): number {
   switch (drive) {
@@ -4266,6 +4267,9 @@ function jointLevel(drive: MotionDrive, world: World, r: RobotState, enabled: bo
       return rampOut;
     case 'drive':
       return Math.min(1, speed / Math.max(1, driveParams(r.spec).maxSpeed));
+    case 'place':
+      // the Box Tube's own cue: the sim's `bbFlowerInReach`, as the standard tube's deploy reads it
+      return bbFlowerInReach(world, r) !== null ? 1 : 0;
     default:
       return enabled ? 1 : 0;
   }

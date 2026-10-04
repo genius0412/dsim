@@ -27,9 +27,10 @@ const norm = (a: V3): V3 => {
 /**
  * The finders' version (`ImportSetup.motionFinder`). Raise it with any change to what they find, so a
  * draft found by the old ones is looked for again. 1: STEP body ids kept, motors off axles, 6WD
- * middle wheels, the build read from the model (2026-10-04).
+ * middle wheels, the build read from the model (2026-10-04). 2: a flywheel's thickness read along its own
+ * axle, a turret ring reaching its launcher, box tubes (2026-10-04).
  */
-export const MOTION_FINDER = 1;
+export const MOTION_FINDER = 2;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -1098,10 +1099,11 @@ export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<numb
     if (big < 2 * FLYWHEEL_R_MIN_IN || big > 2 * FLYWHEEL_R_MAX_IN) continue;
     const fit = fitRound(parts, [b]);
     if (!fit || Math.abs(fit.axis[2]) > 0.3) continue; // a level axle
-    // a disc: thinner along the axle than across, and round across it
-    const along = Math.abs(fit.axis[0]) * ext[0] + Math.abs(fit.axis[1]) * ext[1] + Math.abs(fit.axis[2]) * ext[2];
-    if (along > fit.radius * 1.2) continue;
+    // a disc: thinner along the axle than across, and round across it. The thickness is read along
+    // the axle itself: off the box it took a disc's own diameter in when the axle is not along a model
+    // axis (Offset's flywheel, on a turret turned 22°: 1.85 in "thick" at a 1.09 radius, 2026-10-04)
     const f = axleFits(parts, st, new Set([b]), fit.pivot, fit.axis).get(b)!;
+    if (f.hi - f.lo > fit.radius * 1.2) continue;
     if (!roundAboutAxle(f) || fit.radius < FLYWHEEL_R_MIN_IN) continue;
     cands.push({ b, r: fit.radius, c });
   }
@@ -1132,8 +1134,8 @@ export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: Re
 }
 
 /**
- * THE TURRET: the largest round body with an UPRIGHT axis whose axis passes within 1.5 in of the
- * launcher's placed point (`at`, its x and y) below its release height (a bearing ring, a lazy-susan
+ * THE TURRET: the largest round body with an UPRIGHT axis, below the launcher's placed point (`at`), whose
+ * own radius (or 1.5 in) reaches that point across its axis (a bearing ring, a lazy-susan
  * plate, 1.5 to 6 in across its radius), and everything standing on it: bodies whose box lies within
  * the ring's radius plus 3 in of that axis and starts no lower than the ring's own bottom. A
  * suggestion; null when no such ring is there.
@@ -1150,11 +1152,14 @@ function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<numbe
     if (taken.has(b)) continue;
     const mo = setMoments(st, [b]);
     const c = boxCentre(mo);
-    if (Math.hypot(c[0] - at[0], c[1] - at[1]) > 1.5 || mo.max[2] > at[2]) continue;
+    if (mo.max[2] > at[2]) continue;
     const wx = (mo.max[0] - mo.min[0]) / 2;
     const wy = (mo.max[1] - mo.min[1]) / 2;
     const h = mo.max[2] - mo.min[2];
     const r = Math.max(wx, wy);
+    // the launcher stands on the ring, not always on its axis: Offset's flywheel is 2.1 in off its
+    // 3.17-in turret gear's (2026-10-04)
+    if (Math.hypot(c[0] - at[0], c[1] - at[1]) > Math.max(1.5, r)) continue;
     if (r < 1.5 || r > 6 || h > r || wx / Math.max(wy, 1e-9) < 0.85 || wx / Math.max(wy, 1e-9) > 1.18) continue;
     const f = axleFits(parts, st, new Set([b]), [c[0], c[1], 0], [0, 0, 1]).get(b)!;
     if (!roundAboutAxle(f)) continue;
@@ -1421,6 +1426,145 @@ export interface CadBuild {
    * where that ring's axis is (MODEL frame, at the ring), and the shot its hood gives (`readShot`)
    */
   launcher: { at: V3; turret: boolean; axis?: V3; shot?: CadShot } | null;
+  /** the box tubes (`findBoxTubes`): the outer tubes' base, between them (MODEL frame), and how many */
+  lift?: { base: V3; count: number } | null;
+  /** the model's footprint box, MODEL frame: x0, y0, x1, y1 */
+  box?: [number, number, number, number];
+}
+
+// ---- box tubes: telescoping slides ----------------------------------------------------------------
+
+/** a box tube's stage is at least this long, inches */
+const TUBE_MIN_LEN_IN = 6;
+/** ...and no wider across than this, inches */
+const TUBE_MAX_ACROSS_IN = 2.5;
+/** ...and at least this many times as long as it is wide */
+const TUBE_SLENDER = 4;
+/** a stage's two sides across agree within this ratio (a square or round tube) */
+const TUBE_SQUARE = 0.75;
+/** a stage nests in the one round it: centres within this across, inches */
+const TUBE_NEST_OFF_IN = 0.25;
+/** ...each stage at least this much narrower than the last, inches, and no less than this share of
+ *  it (a shaft in a tube is not a stage) */
+const TUBE_NEST_STEP_IN = 0.15;
+const TUBE_NEST_SHARE = 0.5;
+/** ...and the two overlapping along the axis by at least this, inches */
+const TUBE_NEST_OVERLAP_IN = 2;
+/** a body inside a stage's box, grown by this, rides on it, inches */
+const TUBE_RIDE_PAD_IN = 0.25;
+/** ...and the box reaches this far past the stage's base end: its bottom insert stands below the tube
+ *  (Offset's middle and final inserts, 2026-10-04), inches */
+const TUBE_BASE_END_IN = 0.6;
+
+/** one telescoping slide (`findBoxTubes`) */
+export interface BoxTube {
+  /** the model axis it runs along: 0 x, 1 y, 2 z */
+  k: 0 | 1 | 2;
+  /** the bodies of each stage, the fixed outer one first */
+  stages: number[][];
+  /** each stage's tube body, outer first */
+  tubes: number[];
+  /** the outer tube's base: the middle of its end nearer the floor (or, level, its inner end), MODEL frame */
+  base: V3;
+  /** how far each moving stage slides out of the one round it, inches (stage 1 first) */
+  travel: number[];
+}
+
+/**
+ * THE BOX TUBES: telescoping slides (2026-10-04, owner on Offset Robotics' concept robot: "boxtubes
+ * (plural)" were not detected). A stage is a long, slender body, square or round across
+ * (`TUBE_*`); stages NEST: each inside the one round it (centres together across, narrower by a step
+ * but not a shaft's worth), both running along the same model axis and overlapping along it. A run
+ * of two or more is a slide; its widest stage is fixed, the rest slide. Every other body whose box
+ * lies inside a stage's (grown by `TUBE_RIDE_PAD_IN`, and `TUBE_BASE_END_IN` past its base end) rides on
+ * the innermost such stage. Offset's
+ * robot: two upright slides at its back corners, outer 1.57 in, middle 1.18, final 0.79 across.
+ * Bodies in `taken` are left out.
+ */
+export function findBoxTubes(parts: readonly MeshPart[], taken: ReadonlySet<number>): BoxTube[] {
+  const st = bodyStats(parts);
+  const lo = (b: number, k: number): number => st.min[3 * b + k];
+  const hi = (b: number, k: number): number => st.max[3 * b + k];
+  const tubes: { b: number; k: 0 | 1 | 2; across: number; c: [number, number] }[] = [];
+  for (const b of st.ids) {
+    if (taken.has(b)) continue;
+    const ext = [0, 1, 2].map((k) => hi(b, k) - lo(b, k));
+    const k = ext.indexOf(Math.max(...ext)) as 0 | 1 | 2;
+    const [i, j] = ([0, 1, 2] as const).filter((x) => x !== k);
+    const a = Math.max(ext[i], ext[j]);
+    if (ext[k] < TUBE_MIN_LEN_IN || a > TUBE_MAX_ACROSS_IN || ext[k] < TUBE_SLENDER * a || Math.min(ext[i], ext[j]) < TUBE_SQUARE * a) continue;
+    tubes.push({ b, k, across: a, c: [(lo(b, i) + hi(b, i)) / 2, (lo(b, j) + hi(b, j)) / 2] });
+  }
+  // the widest first: each tube joins the nest of the narrowest tube it fits in
+  tubes.sort((p, q) => q.across - p.across || p.b - q.b);
+  const nests: (typeof tubes)[] = [];
+  for (const t of tubes) {
+    const home = nests.find((n) => {
+      const o = n[n.length - 1];
+      if (o.k !== t.k) return false;
+      if (Math.hypot(o.c[0] - t.c[0], o.c[1] - t.c[1]) > TUBE_NEST_OFF_IN) return false;
+      if (o.across - t.across < TUBE_NEST_STEP_IN || t.across < TUBE_NEST_SHARE * o.across) return false;
+      return Math.min(hi(o.b, t.k), hi(t.b, t.k)) - Math.max(lo(o.b, t.k), lo(t.b, t.k)) >= TUBE_NEST_OVERLAP_IN;
+    });
+    if (home) home.push(t);
+    else nests.push([t]);
+  }
+  const out: BoxTube[] = [];
+  const all = nests.filter((n) => n.length >= 2);
+  const inTube = new Set(all.flatMap((n) => n.map((t) => t.b)));
+  const inside = (b: number, s: number, along: number): boolean => {
+    for (let k = 0; k < 3; k++) if (lo(b, k) < lo(s, k) - (k === along ? TUBE_BASE_END_IN : TUBE_RIDE_PAD_IN) || hi(b, k) > hi(s, k) + TUBE_RIDE_PAD_IN) return false;
+    return true;
+  };
+  const owned = new Set<number>();
+  for (const n of all) {
+    const k = n[0].k;
+    const stages: number[][] = n.map((t) => [t.b]);
+    for (const b of st.ids) {
+      if (taken.has(b) || inTube.has(b) || owned.has(b)) continue;
+      // the innermost stage whose box holds it
+      for (let s = n.length - 1; s >= 0; s--) {
+        if (!inside(b, n[s].b, s > 0 ? k : -1)) continue;
+        stages[s].push(b);
+        owned.add(b);
+        break;
+      }
+    }
+    for (const s of stages) s.sort((a, b) => a - b);
+    const outer = n[0].b;
+    const [i, j] = ([0, 1, 2] as const).filter((x) => x !== k);
+    const base: V3 = [0, 0, 0];
+    base[i] = (lo(outer, i) + hi(outer, i)) / 2;
+    base[j] = (lo(outer, j) + hi(outer, j)) / 2;
+    base[k] = lo(outer, k);
+    // each moving stage slides out of the one round it by its own length less what stays inside
+    const travel = n.slice(1).map((t, s) => Math.max(0, Math.min(hi(t.b, k) - lo(t.b, k), hi(n[s].b, k) - lo(n[s].b, k)) - TUBE_NEST_OVERLAP_IN));
+    out.push({ k, stages, tubes: n.map((t) => t.b), base, travel });
+  }
+  return out;
+}
+
+/**
+ * A box tube's moving stages as slide groups, numbered from `first` (their index in the setup's
+ * motion): each driven by placing (`place`) along the tube's axis, the first stage of the first tube
+ * leading and every other stage following it, a stage `s` out by `s` times as far (a cascade: every
+ * stage slides its own travel out of the last). The fixed outer stages are not moving parts.
+ */
+export function boxTubeGroups(tubes: readonly BoxTube[], first: number): MotionGroup[] {
+  const out: MotionGroup[] = [];
+  if (!tubes.length) return out;
+  const lead = first;
+  for (const t of tubes) {
+    for (let s = 1; s < t.stages.length; s++) {
+      const g: MotionGroup = { role: 'slide', bodies: t.stages[s], axis: 'part', axisBody: t.tubes[s], found: true };
+      if (out.length === 0) {
+        g.drive = 'place';
+        g.amount = Math.round(Math.min(...t.travel) * 4) / 4;
+      } else g.follows = { group: lead, ratio: s };
+      out.push(g);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1461,7 +1605,17 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
     launcher = { at: d.c, turret: !!turret, ...(turret ? { axis: turret.ring.c } : {}), ...(shot ? { shot } : {}) };
     break;
   }
-  return { intake, launcher };
+  const tubes = findBoxTubes(parts, taken);
+  const lift = tubes.length
+    ? { base: scale(tubes.reduce((s, t) => add(s, t.base), [0, 0, 0] as V3), 1 / tubes.length), count: tubes.length }
+    : null;
+  // the footprint the lift's cell is read in: the 2nd to 98th percentile of the bodies' centres, so a
+  // stray part off the robot (Offset's floating cube) does not move it
+  const st = bodyStats(parts);
+  const cx = st.ids.map((b) => (st.min[3 * b] + st.max[3 * b]) / 2).sort((a, b) => a - b);
+  const cy = st.ids.map((b) => (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2).sort((a, b) => a - b);
+  const pc = (a: number[], f: number): number => (a.length ? a[Math.min(a.length - 1, Math.floor(f * a.length))] : 0);
+  return { intake, launcher, lift, box: [pc(cx, 0.02), pc(cy, 0.02), pc(cx, 0.98), pc(cy, 0.98)] };
 }
 
 /**

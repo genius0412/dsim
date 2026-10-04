@@ -73,6 +73,12 @@ export interface EditorDoc {
    * back, and what the game's defaults are filled in around
    */
   cadMech?: ImportedMech;
+  /** the mechanism fields as that read set them (`cadMechKey`): while they still match, turning the model
+   *  reads the build again in its new frame */
+  cadKey?: string;
+  /** the model was turned (or its units or up axis changed) before the player changed the build:
+   *  read it again in the new frame */
+  cadReread?: boolean;
   updated: number;
 }
 
@@ -486,7 +492,9 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
       set.push(COPY.cadIntake(intake === 'siderollers', intakeMount));
     }
     if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : shot ? COPY.cadFixedAt(mount, hoodDeg) : COPY.cadFixed);
-    set.push(COPY.cadNoLift);
+    // a Box Tube where the model shows box tubes, on the cell they stand in; else none
+    const liftMount = cad.lift && cad.box ? cellOf(cad.lift.base, cad.box) : null;
+    set.push(liftMount ? COPY.cadLift(cad.lift!.count, liftMount) : COPY.cadNoLift);
     const next = coerceSpec(
       {
         ...spec,
@@ -494,12 +502,14 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
         shooterMount: mount,
         intakeMount,
         intakeSide: intakeMount === 'side',
-        bbMech: { launcher: { kind, mount, hoodDeg }, lift: null, intake: { kind: intake } },
+        bbMech: { launcher: { kind, mount, hoodDeg }, lift: liftMount ? { kind: 'vslide', mount: liftMount } : null, intake: { kind: intake } },
       },
       undefined,
       'biobuzz',
     );
-    return { spec: { ...next, name: spec.name }, set, ...(mech ? { mech } : {}) };
+    const placed: ImportedMech | undefined =
+      liftMount && cad.lift ? { ...(mech ?? {}), place: { x: q64(cad.lift.base[0]), y: q64(cad.lift.base[1]), z: q64(cad.lift.base[2]) } } : mech;
+    return { spec: { ...next, name: spec.name }, set, ...(placed ? { mech: placed } : {}) };
   }
   if (game === 'decode') {
     const patch: Partial<RobotSpec> = {};
@@ -517,9 +527,28 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
   return null;
 }
 
+/** the mechanism fields `buildFromCad` sets, as a key: equal while the player has not changed them */
+export function cadMechKey(spec: RobotSpec): string {
+  return JSON.stringify([spec.bbMech, spec.intakeMount, spec.intakeSide, spec.shooterMount, spec.scoreMode, spec.launcher, spec.intake]);
+}
+
 /** the element a launcher throws, inches across, for reading its hood (`readShot`); 0: none */
 export function launchElementD(game: GameId): number {
   return game === 'biobuzz' ? 2 * BB_POLLEN_R : game === 'decode' ? 2 * BALL_RADIUS : 0;
+}
+
+/**
+ * the perimeter cell of BIOBUZZ's nine-cell map a point stands in, by thirds of the footprint `box`
+ * (MODEL frame: x0, y0, x1, y1); the middle cell goes to the edge it is nearest
+ */
+function cellOf(p: readonly number[], box: readonly number[]): BbMountPos {
+  const fx = (p[0] - box[0]) / Math.max(1e-6, box[2] - box[0]);
+  const fy = (p[1] - box[1]) / Math.max(1e-6, box[3] - box[1]);
+  const row = fx > 2 / 3 ? 'front' : fx < 1 / 3 ? 'back' : '';
+  const col = fy > 2 / 3 ? 'left' : fy < 1 / 3 ? 'right' : '';
+  if (row && col) return `${row}${col}` as BbMountPos;
+  if (row || col) return (row || col) as BbMountPos;
+  return Math.abs(fx - 0.5) >= Math.abs(fy - 0.5) ? (fx >= 0.5 ? 'front' : 'back') : fy >= 0.5 ? 'left' : 'right';
 }
 
 /** the bounding-box edge a horizontal direction points at, MODEL frame (+x front, +y left) */

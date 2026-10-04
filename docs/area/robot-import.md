@@ -491,6 +491,26 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   back. Measured: goBILDA BIOBUZZ ×2 out the back at 68° (the 68° the fixed default was hand-measured
   at), goBILDA DECODE straight up (89°), REV forward over the top at 59°; AndyMark ×3 none (the round
   part found there is a gear), so the defaults stay.
+- ⚠️ **OFFSET ROBOTICS' CONCEPT ROBOT** (2026-10-04, owner: turret and "boxtubes (plural)" not found).
+  Three fixes, `MOTION_FINDER` 2:
+  - A flywheel's thickness is read along its own axle (`axleFits`), not off its box: on a turret turned
+    22° the box put the wheel's diameter in, and its 1.09-in-radius flywheel read 1.85 in "thick".
+  - A turret ring may reach its launcher by its own radius (or 1.5 in): Offset's flywheel stands 2.1 in
+    off its 3.17-in turret gear's axis. The seven starter bots still show no turret.
+  - **Box tubes** (`findBoxTubes`): long slender square bodies (≥ 6 in, ≤ 2.5 across, 4× as long) that
+    NEST, each inside the one round it along the same axis, narrower by ≥ 0.15 in but ≥ half as wide,
+    overlapping ≥ 2 in. The widest stage is fixed; the others are `slide` rows (`boxTubeGroups`), the
+    first driven by placing (`place`: a FLOWER in the Box Tube's reach, as the standard tube deploys),
+    every other stage following it at its stage number (a cascade). A body inside a stage's box (grown
+    0.25 in, and 0.6 in past a moving stage's base end, where its insert sits) rides on the innermost
+    such stage. BIOBUZZ then builds a Box Tube on the cell the tubes stand in (thirds of the 2nd–98th
+    percentile footprint, so a stray part does not move it), placed at their base. Offset: two
+    upright slides, outer 1.57 / middle 1.18 / final 0.79 in, travel 9.75 in a stage; none on the
+    starter bots.
+- **TURNING THE MODEL READS THE BUILD AGAIN** (`EditorDoc.cadReread`): a units, up or front change moves
+  the model frame, so placements reset and `cadMech` goes; while the mechanism fields still match what
+  the read set (`cadKey`), the build is read again in the new frame. Offset's front is not detected
+  (its intake is on a side of the CAD), so turning it is what puts its Box Tube at the back.
 - ⚠️ **THE FINDERS AND A CLICK READ EVERY TRIANGLE** (`detectParts`: `shownParts` at Full detail), not the
   ~250k copy measured for the footprint: the copy keeps every body's id but not its shape, and on
   goBILDA's BIOBUZZ mecanum bot 296 bodies sat more than 1 mm off (a gearbox face 7 mm, a motor base

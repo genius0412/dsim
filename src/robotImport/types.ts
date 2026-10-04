@@ -151,6 +151,8 @@ export type MotionRole = 'wheel' | 'roller' | 'flywheel' | 'turret' | 'ramp' | '
  * a kicker, a claw), `slide` moves along a line and back (a lift, an extension). Each is DRIVEN by one
  * of the robot's own signals (`MotionDrive`), or GEARED to another moving part at a ratio.
  */
+// `place`: BIOBUZZ's Box Tube placing (a FLOWER in reach, `bbFlowerInReach`), added 2026-10-04 for a box
+// tube's stages; a viewer from before reads it as no drive (the default)
 export const JOINT_ROLES: readonly MotionRole[] = ['spin', 'swing', 'slide'];
 
 /**
@@ -159,8 +161,8 @@ export const JOINT_ROLES: readonly MotionRole[] = ['spin', 'swing', 'slide'];
  * shot just fired (a pulse), the ramp out, the chassis's speed (a fraction of its top speed), or
  * always on.
  */
-export type MotionDrive = 'intake' | 'shooter' | 'fire' | 'ramp' | 'drive' | 'always';
-export const MOTION_DRIVES: readonly MotionDrive[] = ['intake', 'shooter', 'fire', 'ramp', 'drive', 'always'];
+export type MotionDrive = 'intake' | 'shooter' | 'fire' | 'ramp' | 'drive' | 'always' | 'place';
+export const MOTION_DRIVES: readonly MotionDrive[] = ['intake', 'shooter', 'fire', 'ramp', 'drive', 'always', 'place'];
 
 /** a generic joint's direction: one of the robot's own axes (+x front, +y left, +z up), or a picked
  *  part's (`axisBody`: its round axle, or a slide rail's long side) */

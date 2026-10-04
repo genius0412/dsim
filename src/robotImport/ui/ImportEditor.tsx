@@ -12,7 +12,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, transformParts, type MeshPart } from '../geometry';
-import { coaxialBodies, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -35,6 +35,7 @@ import {
   moveWheel,
   rectangleWheels,
   buildFromCad,
+  cadMechKey,
   launchElementD,
   keepEditedMotion,
   reviewItems,
@@ -810,6 +811,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       }
       if (!have.some((g) => g.role === 'flywheel')) out.push(...findFlywheelGroups(parts, at, taken()));
     }
+    // box tubes: their moving stages, numbered where they land in the setup's motion
+    if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
     if (intakes.length && !have.some((g) => g.role === 'ramp' || g.role === 'fold')) {
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
@@ -821,6 +824,19 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // in (rollers, flywheels and a turret are looked for by the intake spans and the launcher)
   useEffect(() => {
     if (!doc || !normalised || measuring || !baseWheels || !doc.mech) return;
+    // the model turned before the player changed the build: the build is read again in the new frame
+    if (doc.cadReread) {
+      const wheels = new Set(findWheels().flatMap((g) => g.bodies));
+      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
+      update(
+        (d) =>
+          !d.cadReread
+            ? d
+            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) },
+        'auto',
+      );
+      return;
+    }
     // rows found by older finders, in a draft read from its CAD file: looked for again, edits kept
     const motion0 = doc.setup.motion;
     if (motion0 !== undefined) {
@@ -835,13 +851,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
       const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech } : {}) }), 'auto');
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) }), 'auto');
       return;
     }
     const found = findAll([]);
     update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, !doc?.mech, doc?.cadBuild]);
+  }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, !doc?.mech, doc?.cadBuild, doc?.cadReread]);
   /** a moving parts edit, named by the row it added, removed or changed */
   const setMotion = (next: MotionGroup[]): void => {
     const prev = motion ?? [];
@@ -1168,15 +1184,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                   setPhase(null);
                 }}
                 onSetup={(patch) =>
-                  update(
-                    (d) => ({
-                      ...d,
-                      setup: { ...d.setup, ...patch },
-                      // units, up and yaw move the model frame, and the placements with it
-                      mech: 'units' in patch || 'up' in patch || 'yaw' in patch ? null : d.mech,
-                    }),
-                    setupEdit(patch),
-                  )
+                  update((d) => {
+                    // units, up and yaw move the model frame, and the placements with it; the build read
+                    // from the model is read again in the new frame while the player has not changed it
+                    if (!('units' in patch || 'up' in patch || 'yaw' in patch)) return { ...d, setup: { ...d.setup, ...patch } };
+                    const reread = d.cadBuild !== undefined && d.cadKey !== undefined && d.cadKey === cadMechKey(d.spec);
+                    return { ...d, setup: { ...d.setup, ...patch }, mech: null, cadMech: undefined, ...(reread ? { cadReread: true } : {}) };
+                  }, setupEdit(patch))
                 }
                 onWheel={onWheel}
                 onRect={onRect}

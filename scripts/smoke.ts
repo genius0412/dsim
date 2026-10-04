@@ -31342,6 +31342,44 @@ function impPlayCheck(g: GameId): void {
       !!ringed?.turret && !!ringed.shot && !!tm?.shooter && Math.abs(tm.shooter.x - cx) < 0.1 && Math.abs(tm.shooter.y) < 0.1 && Math.abs(tm.shooter.z - ringed.shot.release[2]) <= 1 / 64 && tm.shooterYawDeg === undefined,
       J({ ringed, tm }));
   }
+  // BOX TUBES (`findBoxTubes`, 2026-10-04, owner on Offset Robotics' robot: "boxtubes (plural)" were
+  // not found): two upright three-stage slides at the back, an insert at the final stage's foot, and a
+  // shaft in a tube that is not a slide
+  {
+    const slide = (y: number): import('./robot-import/synthRobot').Prism[] => [
+      synth.box('outer', G, -7.6, -6.0, y - 0.8, y + 0.8, 3.5, 15.3),
+      synth.box('middle', G, -7.4, -6.2, y - 0.6, y + 0.6, 4.0, 16.0),
+      synth.box('final', G, -7.2, -6.4, y - 0.4, y + 0.4, 4.9, 17.5),
+      synth.box('final_insert', G, -7.1, -6.5, y - 0.3, y + 0.3, 4.5, 5.0),
+    ];
+    const robot = [
+      synth.box('frame', G, -8, 8, -8, 8, 1, 2),
+      ...slide(5),
+      ...slide(-5),
+      synth.box('tube', G, 2, 3.6, -0.8, 0.8, 3, 12),
+      synth.cylZ('shaft', G, 2.8, 0, 0.15, 2.5, 12.5, 12),
+    ];
+    const parts = mk(robot);
+    const tubes = motion.findBoxTubes(parts, new Set());
+    const names = robot.map((p) => p.name);
+    const nameOf = (b: number): string => names[b];
+    const okStages = tubes.every((t) => t.stages.length === 3 && nameOf(t.tubes[0]) === 'outer' && nameOf(t.tubes[2]) === 'final' && t.stages[2].some((b) => nameOf(b) === 'final_insert'));
+    check('box tubes: two nested three-stage slides are found, outer first, an insert at a stage\'s foot riding on that stage; a shaft in a tube is no slide',
+      tubes.length === 2 && okStages && tubes.every((t) => t.k === 2 && Math.abs(t.base[2] - 3.5) < 1e-6 && !t.tubes.some((b) => nameOf(b) === 'tube' || nameOf(b) === 'shaft')),
+      J(tubes.map((t) => ({ k: t.k, stages: t.stages.map((s) => s.map(nameOf)), base: t.base, travel: t.travel }))));
+    const groups = motion.boxTubeGroups(tubes, 5);
+    check('box tubes: each moving stage slides, the first one driven by placing, the rest following it a stage-count times as far',
+      groups.length === 4 && groups[0].drive === 'place' && (groups[0].amount ?? 0) > 5 && groups.slice(1).map((g) => `${g.follows?.group}:${g.follows?.ratio}`).join() === '5:2,5:1,5:2' &&
+        groups.every((g) => g.role === 'slide' && g.axis === 'part' && g.found),
+      J(groups.map((g) => ({ n: g.bodies.length, drive: g.drive, amount: g.amount, follows: g.follows }))));
+    const cadTubes = motion.readBuild(parts, new Set());
+    const bt = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, cadTubes);
+    check('box tubes: BIOBUZZ builds a Box Tube on the cell the slides stand in (the back), placed at their base, and says so',
+      !!bt && bbLiftOf(bt.spec)?.mount === 'back' && !!bt.mech?.place && Math.abs(bt.mech.place.x + 6.8) < 0.05 && Math.abs(bt.mech.place.y) < 0.05 && bt.set.some((x) => x.includes('box tube') && x.includes('back')),
+      J(bt && { lift: bbLiftOf(bt.spec), place: bt.mech?.place, set: bt.set }));
+    const none = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { intake: null, launcher: null, lift: null });
+    check('box tubes: with none in the model there is no Box Tube', !!none && bbLiftOf(none.spec) === null);
+  }
   // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
   // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
   // front wheels from 1 in: under 1 in only the wheels stand, so a field element's low plate slides under
@@ -35976,7 +36014,8 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     /update\(\(d\) => \(\{ \.\.\.d, mech: next \}\), 'auto'\)/, // the placements defaulting in
     /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
     /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
-    /\.\.\.\(r \? \{ spec: r\.spec, mech: null \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\) \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*'auto',/, // ...and read again after a turn
     /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
     /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
   ];
