@@ -31176,6 +31176,62 @@ function impPlayCheck(g: GameId): void {
 }
 
 /*
+ * ---- A NEW IMPORT'S MECHANISMS FROM ITS MODEL (2026-10-04, owner on goBILDA's BIOBUZZ mecanum bot:
+ * "side rollers are not selected by default, single static shooter is not selected by default, offset
+ * boxtube is selected even though I dont have it") ----
+ * `readBuild` reads the intake and the launcher off the model before anything is placed, and
+ * `buildFromCad` sets the game's mechanisms from it. The real bots, measured: goBILDA BIOBUZZ 6WD and
+ * mecanum side rollers at the front and a fixed shooter; goBILDA DECODE and REV DUO no intake and a
+ * fixed launcher; AndyMark Robits ×3 a front sweeper and a fixed shooter.
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+  const { bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
+  const { decodeFixedLauncher } = await import('../src/sim/fixedShot');
+  const { DEFAULT_SPEC } = await import('../src/sim/spawn');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: import('./robot-import/synthRobot').Prism[]): P[] =>
+    synth.synthParts(prisms).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  // a frame, two upright side rollers on their pins at the front corners, and a flywheel up high on its shaft
+  const robot = [
+    synth.box('frame', G, -8, 7, -7, 7, 1, 2),
+    synth.cylZ('side_roller_l', G, 7.5, 6, 1.4, 0.8, 2.6, 24),
+    synth.cylZ('pin_l', G, 7.5, 6, 0.1, 0.5, 3.0, 8),
+    synth.cylZ('side_roller_r', G, 7.5, -6, 1.4, 0.8, 2.6, 24),
+    synth.cylZ('pin_r', G, 7.5, -6, 0.1, 0.5, 3.0, 8),
+    synth.cylY('flywheel', G, -3, 6.8, 1.9, -0.4, 0.4, 32),
+    synth.cylY('fly_shaft', G, -3, 6.8, 0.2, -1.6, 1.6, 8),
+  ];
+  const cad = motion.readBuild(mk(robot), new Set());
+  check('cad build: upright rollers at the front are side rollers there; a flywheel up high is the launcher, no turret',
+    cad.intake?.edge === 'front' && cad.intake.upright && !!cad.launcher && !cad.launcher.turret && Math.abs(cad.launcher.at[2] - 6.8) < 0.3, J(cad));
+  const flat = motion.readBuild(mk([synth.box('frame', G, -8, 7, -7, 7, 1, 2)]), new Set());
+  check('cad build: a bare frame shows no intake and no launcher', flat.intake === null && flat.launcher === null, J(flat));
+
+  // BIOBUZZ: the first preset is a turret with a Box Tube and a sweeper; the model says otherwise
+  const pollinator = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
+  const bb = em.buildFromCad('biobuzz', { ...pollinator, name: 'bot' }, cad);
+  check('cad build: BIOBUZZ takes side rollers at the front, a fixed shooter and no Box Tube, and says so',
+    !!bb && bbIntakeKindOf(bb.spec) === 'siderollers' && bb.spec.intakeMount === 'front' && bbLauncherOf(bb.spec, 75).kind === 'fixed' && bbLiftOf(bb.spec) === null && bb.spec.name === 'bot' && bb.set.length === 3,
+    J(bb && { set: bb.set, mech: bb.spec.bbMech, mount: bb.spec.intakeMount }));
+  const bbRing = em.buildFromCad('biobuzz', pollinator, { intake: { edge: 'front', upright: false }, launcher: { at: [0, 0, 9], turret: true } });
+  check('cad build: BIOBUZZ rollers along an edge are a sweeper, a ring under the flywheel a single turret', !!bbRing && bbIntakeKindOf(bbRing.spec) === 'sweeper' && bbLauncherOf(bbRing.spec, 75).kind === 'turret', J(bbRing?.spec.bbMech));
+  const bbBlank = em.buildFromCad('biobuzz', pollinator, { intake: null, launcher: null });
+  check('cad build: BIOBUZZ with nothing shown keeps its intake and launcher, and still drops the Box Tube',
+    !!bbBlank && bbIntakeKindOf(bbBlank.spec) === bbIntakeKindOf(pollinator) && bbLauncherOf(bbBlank.spec, 75).kind === bbLauncherOf(pollinator, 75).kind && bbLiftOf(bbBlank.spec) === null);
+  // DECODE: no roller is loaded by hand
+  const dc = em.buildFromCad('decode', { ...DEFAULT_SPEC, intake: 'sloped' }, { intake: null, launcher: { at: [-1, 0, 10], turret: false } });
+  check('cad build: DECODE with no roller is loaded by hand, and a flywheel without a ring is a fixed launcher', !!dc && dc.spec.intake === 'none' && decodeFixedLauncher(dc.spec), J(dc?.set));
+  check('cad build: Chain Reaction is left alone', em.buildFromCad('chain', DEFAULT_SPEC, cad) === null);
+  check('cad build: the note lists what was set', /^Set from the model: side rollers at the front, a fixed shooter and no box tube\./.test((await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set)), (await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set));
+}
+
+/*
  * ---- FULL DETAIL READS EVERY PART (2026-10-04, owner: "Can you just import it 100%?") ----
  * A STEP read in pieces left out parts under `MIN_PART_MM` (a screw definition is placed hundreds of
  * times). Full detail keeps them: the import passes `isFullDetail(budget)` to the STEP read, and the

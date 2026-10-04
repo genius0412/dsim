@@ -125,6 +125,12 @@ export interface ImportSetup {
   /** the parts that move in a match (`docs/area/robot-import.md`, "Moving parts"). Absent = not yet
    *  looked for (the editor finds the wheels once); `[]` = none. */
   motion?: MotionGroup[];
+  /**
+   * the finders' version the `found` rows of `motion` came from (`MOTION_FINDER`); absent is 0. A
+   * draft found by an older one is looked for again (its edited rows kept), so a fix to the finders
+   * reaches an import already under way (2026-10-04: drafts kept groups found before STEP body ids)
+   */
+  motionFinder?: number;
   /** practice tuning (`ImportedRobot.tune`), copied onto the descriptor by `buildSpec` */
   tune?: ImportTuning;
 }

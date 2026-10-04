@@ -173,6 +173,9 @@ const found: MotionGroup[] = [];
 const taken = (): Set<number> => new Set(found.flatMap((g) => g.bodies));
 const wheelDia = wheelDiameterMm(setup.drive.wheel) / 25.4;
 found.push(...time('wheels', () => motion.findWheelGroups(modelParts, baseWheels, setup.drive.drivetrain, wheelDia)));
+// what the model is built with, before any placement (`readBuild`): the editor's defaults for a new import
+const build = time('build', () => motion.readBuild(modelParts, taken()));
+console.log(`build: ${JSON.stringify(build)}`);
 const intakes = cfg.mech?.intakes ?? [];
 if (intakes.length) found.push(...time('rollers', () => motion.findRollerGroups(modelParts, intakes, taken())));
 const shooter = cfg.mech?.shooter;

@@ -442,6 +442,26 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
 - **The axle of a round part** (`fitRound` without a hint) is the axis it is ROUNDEST about, of its
   moments' axle and the three model axes (`roundestAxis`): at full resolution every 48 mm Gecko wheel's
   fins put its moments' axle near vertical, so a click on one picked the wrong line.
+- ⚠️ **A NEW IMPORT'S MECHANISMS ARE READ FROM ITS MODEL** (`readBuild` → `buildFromCad`, 2026-10-04,
+  owner on goBILDA's BIOBUZZ mecanum bot: "side rollers are not selected by default, single static
+  shooter is not selected by default, offset boxtube is selected even though I dont have it"). An
+  import starts from the player's current robot, and every finder searched from THAT robot's
+  placements. Before anything is placed, the rollers are looked for along all four edges (wheels left
+  out): the edge with the most is the intake's, and one standing upright makes them side rollers. The
+  launcher is the largest flywheel disc centred above 4 in that is not a motor's part, a turret a ring
+  under it. BIOBUZZ takes side rollers or a sweeper on that edge, a fixed shooter or a single turret,
+  and NO Box Tube (the model cannot show one; the starter bots have none). DECODE with no roller is
+  loaded by hand, a flywheel without a ring a fixed launcher. Chain Reaction is left alone; what the
+  model did not show stays. The Mechanisms step says what was set (`EditorDoc.cadBuild`); the
+  placements then default in for that build and the moving parts are found from them, the flywheel
+  search starting at the flywheel `readBuild` saw. Once per new file: an edit, a re-open and a Detail
+  re-read keep the build. Measured: goBILDA BIOBUZZ 6WD and mecanum side rollers at the front and a
+  fixed shooter; goBILDA DECODE and REV DUO no intake and a fixed launcher; AndyMark Robits ×3 a
+  front sweeper and a fixed shooter.
+- **Finder versions** (`MOTION_FINDER`, `ImportSetup.motionFinder`). A draft whose `found` rows came
+  from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
+  drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
+  any change to what the finders find. A saved robot's re-open is left alone.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now

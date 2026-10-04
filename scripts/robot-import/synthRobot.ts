@@ -49,6 +49,16 @@ export function cylY(name: string, color: V3, cx: number, cz: number, r: number,
   return { name, color, base: area > 0 ? pts : pts.slice().reverse(), extrude: [0, y1 - y0, 0] };
 }
 
+/** a cylinder whose axis runs up +z, from z0 to z1, as an n-gon prism (a side roller standing up) */
+export function cylZ(name: string, color: V3, cx: number, cy: number, r: number, z0: number, z1: number, n = 16): Prism {
+  const pts: V3[] = [];
+  for (let k = 0; k < n; k++) {
+    const phi = (2 * Math.PI * k) / n;
+    pts.push([cx + r * Math.cos(phi), cy + r * Math.sin(phi), z0]);
+  }
+  return { name, color, base: pts, extrude: [0, 0, z1 - z0] };
+}
+
 export const WHEEL_R = 104 / 25.4 / 2;
 
 export function synthRobot(opts: { sixWheel?: boolean; segments?: number } = {}): Prism[] {
