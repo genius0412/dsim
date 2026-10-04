@@ -1869,9 +1869,10 @@ export function App() {
       // under an account that is gone and takes the screen back on a match nobody can play.
       //
       // ⚠️ THE EDGE IS LOAD-BEARING — a bare `if (!signedIn)` would be wrong. `AccountSync`
-      // unmounts on every trip out to a match, which is exactly the trip that parks a queue,
-      // and this effect re-runs on the way back; only a real signed-in → signed-out
-      // TRANSITION means the account went away.
+      // unmounts on every trip out to a match (and remounts between the shell and the ranked
+      // screen), which is exactly the trip that parks a queue, and this effect re-runs on the
+      // way back; only a real signed-in → signed-out TRANSITION means the account went away.
+      // `Matchmaking` keys its staged-match record on the same edge.
       dropQueue();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2127,16 +2128,26 @@ export function App() {
   }
   if (screen === 'matchmaking') {
     return (
-      <Matchmaking
-        settings={settings}
-        signedIn={signedIn}
-        onStart={(s) => beginSession(s, 'ranked')}
-        onCancel={() => navigate('modes')}
-        onSignIn={() => navigate('account')}
-        onSettingsChange={update}
-        challenge={pendingChallenge ?? undefined}
-        onChallengeConsumed={() => setPendingChallenge(null)}
-      />
+      <>
+        {/* THE RANKED SCREEN NEEDS THE ACCOUNT ON A DIRECT LOAD. `signedIn` is set by
+            AccountSync alone, which the shell renders and this early return used to skip, so a
+            page load on /ranked (a reload, or the staged-match redirect above) never learned
+            who was signed in: a signed-in player was told "Ranked needs an account", and the
+            reload path for a found match had no account to rejoin with. Mounting it here too
+            is a remount on the way in and out, not an identity change: the session store hands
+            the same user straight back, and the settings load stays guarded by `syncedUser`. */}
+        {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
+        <Matchmaking
+          settings={settings}
+          signedIn={signedIn}
+          onStart={(s) => beginSession(s, 'ranked')}
+          onCancel={() => navigate('modes')}
+          onSignIn={() => navigate('account')}
+          onSettingsChange={update}
+          challenge={pendingChallenge ?? undefined}
+          onChallengeConsumed={() => setPendingChallenge(null)}
+        />
+      </>
     );
   }
   if (screen === 'replay' && (route.replayId || replayObj)) {

@@ -10202,6 +10202,57 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  /**
+   * A PAGE LOAD ON /ranked KNOWS THE ACCOUNT, AND THE RELOAD PATH WAITS FOR IT (2026-10-04).
+   * `signedIn` is `accountUserId !== null`, set by AccountSync alone, and the ranked screen is an
+   * early return in App that skipped it: a reload there (or the staged-match redirect, which goes
+   * there on purpose) told a signed-in player "Ranked needs an account". And the staged-match
+   * rejoin ran on mount and dropped its record on a signed-out first render, which is every page
+   * load, so the reload it exists for lost the seat and was charged the no-show.
+   */
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const ranked = /if \(screen === 'matchmaking'\) \{[\s\S]*?\n {2}\}\n/.exec(app)?.[0] ?? '';
+    check(
+      'ranked reload: the ranked screen mounts AccountSync, ahead of Matchmaking',
+      /\{authEnabled && <AccountSync onUser=\{onSyncUser\} onLoad=\{onSyncLoad\} seed=\{onSyncSeed\} \/>\}/.test(ranked) &&
+        ranked.indexOf('<AccountSync') < ranked.indexOf('<Matchmaking'),
+    );
+    const sync = readFileSync('src/ui/AccountSync.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'ranked reload: an AccountSync remount with the same user keeps the cached token',
+      /if \(uid !== tokenUser\) \{\s*\n\s*tokenUser = uid;\s*\n\s*clearAuthToken\(\);\s*\n\s*\}\s*\n\s*onUser\(uid\);/.test(sync) &&
+        (sync.match(/clearAuthToken\(\)/g) ?? []).length === 1,
+    );
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'ranked reload: the staged record is read only in the effect keyed on signedIn',
+      (mm.match(/loadStagedMatch\(\)/g) ?? []).length === 1 &&
+        /const staged = loadStagedMatch\(\);\s*\n\s*if \(staged\) \{\s*\n\s*joinAssignedMatch\(staged\.room\);\s*\n\s*return;\s*\n\s*\}[\s\S]{0,400}?\}, \[signedIn\]\);/.test(mm),
+    );
+    check(
+      'ranked reload: a signed-out render drops the record only on the signed-in → signed-out edge',
+      /if \(!signedIn\) \{\s*\n\s*if \(wasSignedIn\) clearStagedMatch\(\);\s*\n\s*return;\s*\n\s*\}/.test(mm),
+    );
+    check(
+      'ranked reload: the rejoin runs once, never over an open socket or a parked search',
+      /if \(arrivedRef\.current\) return;\s*\n\s*arrivedRef\.current = true;\s*\n\s*if \(lobbyRef\.current \|\| peekQueue\(\)\) return;\s*\n\s*const staged = loadStagedMatch\(\);/.test(mm),
+    );
+    check(
+      'ranked reload: an adopted search counts as the arrival, so nothing rejoins or re-queues after it',
+      /const p = takeQueue\(\);\s*\n\s*if \(!p\) return false;[\s\S]{0,200}?arrivedRef\.current = true;/.test(mm),
+    );
+    check(
+      'ranked reload: the mount effect only adopts',
+      /useEffect\(\(\) => \{\s*\n\s*adoptParked\(\);\s*\n[^}]*\}, \[\]\);/.test(mm),
+    );
+    check(
+      'ranked reload: while the session is still loading the screen says so, not "Ranked needs an account"',
+      /if \(!signedIn\) \{\s*\n\s*if \(authResolving\) return page\(/.test(mm) &&
+        /const authResolving = !signedIn && !!session && \(session\.isPending \|\| !!session\.data\?\.user\);/.test(mm),
+    );
+  }
+
   {
     check('queue keeper: elapsed formats as m:ss', elapsedLabel(0, 67_000) === '1:07', elapsedLabel(0, 67_000));
     check('queue keeper: ...pads the seconds', elapsedLabel(0, 65_000) === '1:05');

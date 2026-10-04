@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-04b (ranked: a page load on /ranked knows the account; the reload rejoin waits for it)
+
+**State: on `alpha`; client only, no server deploy needed. Not on `main`.** `npm test` (shared 4004, BIOBUZZ 5552), `build`, `uiaudit`, `docaudit` pass.
+
+- **Bug** (found 2026-10-03, see 10-03d below): a reload on `/ranked` showed a signed-in player "Ranked needs an account", and the reload recovery for a found match cleared its record instead of rejoining, so the player lost the seat and was charged a no-show.
+- **Cause:** the ranked screen is an early return in `App.tsx` and `AccountSync` (the only thing that sets `accountUserId`) was rendered only in the shell's return. And `Matchmaking`'s mount effect cleared the staged record whenever the first render was signed out, which every page load is.
+- **Fix:** the ranked early return renders `AccountSync` too. `Matchmaking` adopts a parked search on mount; the staged rejoin (and a challenge's auto-queue) runs from an effect keyed on `signedIn`, once per screen, only with no socket open and nothing parked. The record is cleared only on a signed-in → signed-out edge or by its TTL. While the session is still loading the screen shows "Loading…" instead of the sign-in prompt. `AccountSync` now clears the cached JWT only when the user id changes, not on every remount (it remounts on each trip between the shell and the ranked screen).
+- **Checks:** 8 `ranked reload:` pins in `scripts/smoke.ts`; all 8 fail on the old code.
+- **Verified in the browser** (admin harness + 5189 preview): a direct load of `/decode/ranked` shows the queue screen; with `decodesim.stagedMatch.v1` set to `iad-1v17gone42` a reload rejoins, the server logs `refused room iad-1v17gone42: staged match gone`, the screen says "That match was cancelled before it started." and the record is cleared. Ranked → Back → Find match stays signed in with no new `/token` fetch.
+- **Next:** promote to `main` with the 10-03d server half (owner's call).
+
 # HANDOFF — 2026-10-04 (BIOBUZZ 3D: nothing stays on the HIVE beam; the NECTAR wedge fix reaches main)
 
 **State: on `main` (9905c8cd) and `alpha` (0c7df0eb); DEPLOYED 2026-10-04 to PRODUCTION from `main` (04:00Z, 2-minute announcement, all 8 machines on the new image) and to `dsim-alpha`.** `npm test` (main 5175, alpha 5552), `build`, `server:check`, `docaudit`, `bundleaudit` pass on both; `test:workers` (83) on main. Sim change behind `SIM_PATCH` 5. No `SIM_VERSION` bump, no wire change.
