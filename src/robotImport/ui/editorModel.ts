@@ -577,9 +577,9 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
     let intake: BbIntakeKind = bbIntakeKindOf(spec);
     let intakeMount = (spec.intakeMount ?? 'front') as BbIntakeMount;
     if (cad.intake) {
-      intake = cad.intake.upright ? 'siderollers' : 'sweeper';
+      intake = cad.intake.upright ? 'siderollers' : cad.intake.ramp ? 'ramp' : 'sweeper';
       intakeMount = cad.intake.edge === 'front' ? 'front' : cad.intake.edge === 'back' ? 'back' : 'side';
-      set.push(COPY.cadIntake(intake === 'siderollers', intakeMount));
+      set.push(COPY.cadIntake(intake, intakeMount));
     }
     if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : shot ? COPY.cadFixedAt(mount, hoodDeg) : COPY.cadFixed);
     // a Box Tube where the model shows box tubes, on the cell they stand in; else none

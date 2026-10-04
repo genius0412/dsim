@@ -12,7 +12,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findFlywheelGroups, findRollerGroups, findSpokedRollers, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -834,7 +834,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // (their moving stages, numbered where they land in the setup's motion)
     if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
     const intakes = doc.mech?.intakes ?? [];
-    if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken()));
+    // the edges the rollers are looked for at are the robot's own, not a ramp's the file shows down
+    const over = findOverhang(parts, taken(), 18, intakes.map((i) => i.edge));
+    if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
     // spoked axles anywhere else (a transfer column of surgical tubing)
     out.push(...findSpokedRollers(parts, taken()));
     const shooter = doc.mech?.shooter;
@@ -842,11 +844,16 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       // the flywheel the model shows, where there is one; else the launcher's placed point
       const cad = readBuild(parts, taken()).launcher;
       const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
-      if (turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret')) {
-        const t = findTurretGroup(parts, at, taken());
+      // the flywheels before the turret: they stand on it, and it would take them (Offset's transfer
+      // roller under the ring was offered as its flywheel, 2026-10-04); on a turret, none below its ring
+      const turret = turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret');
+      const ring = turret ? findTurretRing(parts, at, taken()) : null;
+      const wheels = have.some((g) => g.role === 'flywheel') ? [] : findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity);
+      if (turret) {
+        const t = findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]));
         if (t) out.push(t);
       }
-      if (!have.some((g) => g.role === 'flywheel')) out.push(...findFlywheelGroups(parts, at, taken()));
+      out.push(...wheels);
     }
     if (intakes.length && !have.some((g) => g.role === 'ramp' || g.role === 'fold')) {
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
@@ -889,10 +896,14 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) }), 'auto');
       return;
     }
+    // the placements default in first (the effect above, a render later): the build just read placed
+    // only the launcher, and the rollers and a deployed ramp are looked for on the intake spans. Found
+    // in the same render, a new import's intake rollers and ramp were never looked for (2026-10-04)
+    if (!built || !m || JSON.stringify(defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null)) !== JSON.stringify(doc.mech)) return;
     const found = findAll([]);
     update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, !doc?.mech, doc?.cadBuild, doc?.cadReread]);
+  }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]);
   /** a moving parts edit, named by the row it added, removed or changed */
   const setMotion = (next: MotionGroup[]): void => {
     const prev = motion ?? [];

@@ -30,9 +30,11 @@ const norm = (a: V3): V3 => {
  * middle wheels, the build read from the model (2026-10-04). 2: surgical-tubing spokes and staged
  * spoked rollers, what a wheel's shaft carries, gears meshed with a wheel's, a wheel's axle along x
  * (2026-10-04, Offset Robotics' concept robot). 3: a flywheel's thickness read along its own axle, a turret
- * ring reaching its launcher, box tubes (2026-10-04).
+ * ring reaching its launcher, box tubes (2026-10-04). 4: flywheels found before the turret that carries
+ * them, a turret's plates by their own reach, a deployed part at whichever end sticks out, a wheel only
+ * where something comes down to the floor (2026-10-04).
  */
-export const MOTION_FINDER = 3;
+export const MOTION_FINDER = 4;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -1425,11 +1427,15 @@ function wheelAxleAt(st: BodyStats, w: Vec2, fallback: number): V3 {
 /** how far past its radius a wheel's parts may reach, inches: its own axle height measured, a tyre's
  *  bulge and the mesh's chords; or the drivetrain's catalogue wheel, which may be the wrong one */
 const WHEEL_SLACK_IN = { measured: 0.2, catalogue: 0.35 } as const;
+/** a wheel stands on the floor: one of its bodies comes down to within this of it, inches */
+const WHEEL_FLOOR_IN = 0.35;
 
 /**
  * THE DRIVE WHEELS: for each wheel contact (MODEL frame, FL FR BL BR), the bodies of the wheel there
  * (`wheelBodies`; its axle square to the robot, radial for an X-drive, at its own radius above the
- * floor, `wheelRadiusAt`). A corner with nothing there is left out. Then any MORE wheels on a side
+ * floor, `wheelRadiusAt`). A corner with nothing there is left out, and so is one where nothing found
+ * comes down to the floor: at a contact the editor guessed (a model with no wheels shown, its spots at
+ * the footprint's corners) the catalogue wheel's outline took a roller's ends standing off the floor. Then any MORE wheels on a side
  * (a 6WD's middle pair, goBILDA's BIOBUZZ bot): a round wheel-sized body standing on the floor on the
  * side's line between its front and back wheels, found the same way, with no corner (it turns at its
  * own place's speed).
@@ -1449,7 +1455,7 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
     const { R, measured } = wheelRadiusAt(st, w, axis, R0);
     radii[corner] = R;
     const bodies = wheelBodies(parts, st, [w.x, w.y, R], axis, R, taken, measured ? WHEEL_SLACK_IN.measured : WHEEL_SLACK_IN.catalogue);
-    if (!bodies.length) return;
+    if (!bodies.some((b) => st.min[3 * b + 2] <= WHEEL_FLOOR_IN)) return;
     for (const b of bodies) taken.add(b);
     out.push({ role: 'wheel', bodies, corner, found: true });
   });
@@ -1535,12 +1541,16 @@ export function findRollerGroups(
   parts: readonly MeshPart[],
   intakes: readonly { edge: 'front' | 'back' | 'left' | 'right'; from: number; to: number }[],
   taken: ReadonlySet<number>,
+  outside: ReadonlySet<number> = new Set(),
 ): MotionGroup[] {
   const st = bodyStats(parts);
   if (!st.ids.length) return [];
+  // the edges are the robot's own: a part the file shows deployed (`outside`, `findOverhang`) moves
+  // its edge out past the roller behind it
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
   for (const b of st.ids) {
+    if (outside.has(b)) continue;
     for (let k = 0; k < 3; k++) {
       lo[k] = Math.min(lo[k], st.min[3 * b + k]);
       hi[k] = Math.max(hi[k], st.max[3 * b + k]);
@@ -1693,9 +1703,9 @@ const FLYWHEEL_R_MAX_IN = 2.6;
 
 /** the bodies that could be a flywheel: a round DISC (thinner along its axle than across it) with a
  *  level axle and a flywheel's radius, centred where `where` allows; each with its radius and centre */
-export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<number>, where: (c: V3) => boolean): { b: number; r: number; c: V3 }[] {
+export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<number>, where: (c: V3) => boolean): { b: number; r: number; c: V3; axis: V3 }[] {
   const st = bodyStats(parts);
-  const cands: { b: number; r: number; c: V3 }[] = [];
+  const cands: { b: number; r: number; c: V3; axis: V3 }[] = [];
   for (const b of st.ids) {
     if (used.has(b)) continue;
     const mo = setMoments(st, [b]);
@@ -1712,7 +1722,7 @@ export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<numb
     const f = axleFits(parts, st, new Set([b]), fit.pivot, fit.axis).get(b)!;
     if (f.hi - f.lo > fit.radius * 1.2) continue;
     if (!roundAboutAxle(f) || fit.radius < FLYWHEEL_R_MIN_IN) continue;
-    cands.push({ b, r: fit.radius, c });
+    cands.push({ b, r: fit.radius, c, axis: fit.axis });
   }
   return cands;
 }
@@ -1720,19 +1730,25 @@ export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<numb
 /**
  * THE FLYWHEELS: round DISCS (thinner along their axle than across) with a level axle, centred within
  * `FLYWHEEL_REACH_IN` of the launcher's placed point (`at`, MODEL frame: a fixed launcher's lip, a
- * turret's axis at its release height), each grown to its axle (`coaxialBodies`). The two largest
- * axles at most (a double wheel). Bodies in `taken` are never used. A suggestion.
+ * turret's axis at its release height) and no lower than `floor` (a turret's ring: a flywheel on a
+ * turret stands on it, and a transfer roller under the ring is not one), each grown to its axle
+ * (`coaxialBodies`). The two largest axles at most (a double wheel), the second PARALLEL to the first:
+ * a double shooter's wheels turn the same way round, and a round side plate beside Offset's flywheel
+ * stood across it (2026-10-04). Bodies in `taken` are never used. A suggestion.
  */
-export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): MotionGroup[] {
+export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>, floor = -Infinity): MotionGroup[] {
   const used = new Set(taken);
-  const cands = flywheelDiscs(parts, used, (c) => Math.hypot(c[0] - at[0], c[1] - at[1], c[2] - at[2]) <= FLYWHEEL_REACH_IN);
+  const cands = flywheelDiscs(parts, used, (c) => c[2] >= floor && Math.hypot(c[0] - at[0], c[1] - at[1], c[2] - at[2]) <= FLYWHEEL_REACH_IN);
   cands.sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
   const out: MotionGroup[] = [];
-  for (const { b } of cands) {
+  let first: V3 | null = null;
+  for (const { b, axis } of cands) {
     if (used.has(b) || out.length >= 2) continue;
+    if (first && Math.abs(dot(first, axis)) < AXLE_PARALLEL) continue;
     const g = spinAxle(parts, b);
     // a gearbox face or an end cap is a round disc too (2026-10-04, goBILDA's BIOBUZZ bots)
     if (g.motor) continue;
+    first ??= axis;
     const bodies = g.bodies.filter((x) => !used.has(x));
     for (const x of bodies) used.add(x);
     out.push({ role: 'flywheel', bodies, found: true });
@@ -1743,16 +1759,79 @@ export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: Re
 /**
  * THE TURRET: the largest round body with an UPRIGHT axis, below the launcher's placed point (`at`), whose
  * own radius (or 1.5 in) reaches that point across its axis (a bearing ring, a lazy-susan
- * plate, 1.5 to 6 in across its radius), and everything standing on it: bodies whose box lies within
- * the ring's radius plus 3 in of that axis and starts no lower than the ring's own bottom. A
- * suggestion; null when no such ring is there.
+ * plate, 1.5 to 6 in across its radius), and everything standing on it: bodies that lie within
+ * the ring's radius plus 3 in of that axis and start no lower than the ring's own bottom. A
+ * suggestion; null when no such ring is there. Look for the flywheels first (`findFlywheelGroups`,
+ * above `findTurretRing`'s bottom) and leave them out: a flywheel stands on the turret, so this takes
+ * it otherwise, and a flywheel row of its own rides the turret (`deriveMotion`).
  */
 export function findTurretGroup(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): MotionGroup | null {
   return findTurret(parts, at, taken)?.group ?? null;
 }
 
+/** the turret's ring `findTurretGroup` would stand on: its centre (on the axis), radius and bottom */
+export function findTurretRing(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): { c: V3; r: number; z0: number } | null {
+  const ring = turretRing(parts, at, taken);
+  return ring ? { c: ring.c, r: ring.r, z0: ring.z0 } : null;
+}
+
 /** `findTurretGroup`, with the ring it found: its centre (on the turret's axis) and radius */
 function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): { group: MotionGroup; ring: { c: V3; r: number } } | null {
+  const st = bodyStats(parts);
+  const ring = turretRing(parts, at, taken);
+  if (!ring) return null;
+  const reach = ring.r + 3;
+  const bodies: number[] = [];
+  // what stands on the ring, by its own reach from the axis: a body whose box is inside is, and one
+  // whose box only pokes out is read by its vertices. A turret turned in the file has diagonal plates
+  // whose box corners stand past every point of them, and they were left behind when it turned
+  const check = new Set<number>();
+  for (const b of st.ids) {
+    if (taken.has(b)) continue;
+    if (st.min[3 * b + 2] < ring.z0 - 0.05) continue;
+    let far = 0;
+    for (const x of [st.min[3 * b], st.max[3 * b]]) for (const y of [st.min[3 * b + 1], st.max[3 * b + 1]]) far = Math.max(far, Math.hypot(x - ring.c[0], y - ring.c[1]));
+    if (far <= reach) bodies.push(b);
+    else {
+      const nx = Math.max(st.min[3 * b], Math.min(ring.c[0], st.max[3 * b]));
+      const ny = Math.max(st.min[3 * b + 1], Math.min(ring.c[1], st.max[3 * b + 1]));
+      if (Math.hypot(nx - ring.c[0], ny - ring.c[1]) < reach) check.add(b);
+    }
+  }
+  const out = new Map<number, number>();
+  eachVertex(parts, check, (x, y, _z, b) => {
+    const d = Math.hypot(x - ring.c[0], y - ring.c[1]);
+    if (d > (out.get(b) ?? 0)) out.set(b, d);
+  });
+  for (const b of check) if ((out.get(b) ?? Infinity) <= reach) bodies.push(b);
+  return bodies.length ? { group: { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
+}
+
+/** a turret ring's shape: an upright round body 1.5 to 6 in across its radius, no taller than that */
+function ringShaped(parts: readonly MeshPart[], st: BodyStats, b: number): { c: V3; r: number; z0: number } | null {
+  const mo = setMoments(st, [b]);
+  const c = boxCentre(mo);
+  const wx = (mo.max[0] - mo.min[0]) / 2;
+  const wy = (mo.max[1] - mo.min[1]) / 2;
+  const h = mo.max[2] - mo.min[2];
+  const r = Math.max(wx, wy);
+  if (r < 1.5 || r > 6 || h > r || wx / Math.max(wy, 1e-9) < 0.85 || wx / Math.max(wy, 1e-9) > 1.18) return null;
+  const f = axleFits(parts, st, new Set([b]), [c[0], c[1], 0], [0, 0, 1]).get(b)!;
+  return roundAboutAxle(f) ? { c, r, z0: mo.min[2] } : null;
+}
+
+/** the axis (x, y) of the largest ring among a turret's `bodies`; null when none is ring-shaped */
+function ringIn(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[]): [number, number] | null {
+  let best: { c: V3; r: number } | null = null;
+  for (const b of bodies) {
+    const ring = ringShaped(parts, st, b);
+    if (ring && (!best || ring.r > best.r)) best = ring;
+  }
+  return best ? [best.c[0], best.c[1]] : null;
+}
+
+/** the ring `findTurret` stands on: the body, its centre, radius and bottom */
+function turretRing(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): { b: number; c: V3; r: number; z0: number } | null {
   const st = bodyStats(parts);
   let ring: { b: number; c: V3; r: number; z0: number } | null = null;
   for (const b of st.ids) {
@@ -1760,30 +1839,14 @@ function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<numbe
     const mo = setMoments(st, [b]);
     const c = boxCentre(mo);
     if (mo.max[2] > at[2]) continue;
-    const wx = (mo.max[0] - mo.min[0]) / 2;
-    const wy = (mo.max[1] - mo.min[1]) / 2;
-    const h = mo.max[2] - mo.min[2];
-    const r = Math.max(wx, wy);
+    const r = Math.max(mo.max[0] - mo.min[0], mo.max[1] - mo.min[1]) / 2;
     // the launcher stands on the ring, not always on its axis: Offset's flywheel is 2.1 in off its
     // 3.17-in turret gear's (2026-10-04)
     if (Math.hypot(c[0] - at[0], c[1] - at[1]) > Math.max(1.5, r)) continue;
-    if (r < 1.5 || r > 6 || h > r || wx / Math.max(wy, 1e-9) < 0.85 || wx / Math.max(wy, 1e-9) > 1.18) continue;
-    const f = axleFits(parts, st, new Set([b]), [c[0], c[1], 0], [0, 0, 1]).get(b)!;
-    if (!roundAboutAxle(f)) continue;
+    if (!ringShaped(parts, st, b)) continue;
     if (!ring || r > ring.r) ring = { b, c, r, z0: mo.min[2] };
   }
-  if (!ring) return null;
-  const reach = ring.r + 3;
-  const bodies: number[] = [];
-  for (const b of st.ids) {
-    if (taken.has(b)) continue;
-    if (st.min[3 * b + 2] < ring.z0 - 0.05) continue;
-    let far = 0;
-    for (const x of [st.min[3 * b], st.max[3 * b]]) for (const y of [st.min[3 * b + 1], st.max[3 * b + 1]]) far = Math.max(far, Math.hypot(x - ring.c[0], y - ring.c[1]));
-    if (far > reach) continue;
-    bodies.push(b);
-  }
-  return bodies.length ? { group: { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
+  return ring;
 }
 
 // ---- what the model is built with, before anything is placed ------------------------------------
@@ -2026,8 +2089,11 @@ export function readShot(parts: readonly MeshPart[], disc: number, elementD: num
 
 /** what the model shows it is built with (`readBuild`) */
 export interface CadBuild {
-  /** the edge with the most intake rollers, and whether one of them stands upright (side rollers) */
-  intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean } | null;
+  /**
+   * the edge with the most intake rollers, whether one of them stands upright (side rollers), and
+   * whether the file shows a ramp deployed past them (`findOverhang` at that edge, down to the floor)
+   */
+  intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean; ramp?: boolean } | null;
   /**
    * the launcher's largest flywheel (its centre, MODEL frame), whether a turret ring is under it and
    * where that ring's axis is (MODEL frame, at the ring), and the shot its hood gives (`readShot`)
@@ -2190,18 +2256,29 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   const used = new Set(taken);
   let intake: CadBuild['intake'] = null;
   let most = 0;
+  // a part the file shows deployed is not where the edges are, and the edge it sticks out of wins a tie
+  const over = findOverhang(parts, used);
+  const outside = new Set(over?.bodies ?? []);
   for (const edge of ['front', 'back', 'left', 'right'] as const) {
-    const groups = findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used);
+    const groups = findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used, outside);
     let upright = false;
     for (const g of groups) {
       for (const b of g.bodies) used.add(b);
       const f = fitRound(parts, g.bodies);
       if (f && Math.abs(f.axis[2]) > AXLE_PARALLEL) upright = true;
     }
-    if (groups.length > most) {
-      most = groups.length;
+    const score = groups.length + (groups.length && over?.edge === edge ? 0.5 : 0);
+    if (score > most) {
+      most = score;
       intake = { edge, upright };
     }
+  }
+  // a ramp: the deployed part sticks out past the intake's rollers and comes down to the floor
+  if (intake && over && over.edge === intake.edge) {
+    const st0 = bodyStats(parts);
+    let floor = Infinity;
+    for (const b of st0.ids) floor = Math.min(floor, st0.min[3 * b + 2]);
+    if (Math.min(...over.bodies.map((b) => st0.min[3 * b + 2])) - floor <= RAMP_FLOOR_IN) intake.ramp = true;
   }
   let launcher: CadBuild['launcher'] = null;
   const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
@@ -2225,19 +2302,28 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   return { intake, launcher, lift, box: [pc(cx, 0.02), pc(cy, 0.02), pc(cx, 0.98), pc(cy, 0.98)] };
 }
 
+/** a deployed part that comes down to within this of the model's lowest point is a ramp, inches */
+const RAMP_FLOOR_IN = 1;
+/** a part the file shows deployed is fewer than this share of the bodies: more is the robot itself
+ *  (a model in the wrong units runs past 18 in at both ends) */
+const OVERHANG_MAX_SHARE = 0.25;
+/** a deployed part is ATTACHED: one of its bodies' boxes comes within this of the robot's, inches */
+const OVERHANG_ATTACH_IN = 0.25;
+type Edge = 'front' | 'back' | 'left' | 'right';
+
 /**
- * A RAMP (or any part) THE FILE SHOWS DEPLOYED, from an intake edge: when the model runs past 18 in
- * outward from its far edge, every body whose box reaches past that line, and the smaller ones mounted
- * on them (`mountedBodies`). The owner's case: a robot imported with its ramp down "says it is too
- * big". `role` is `ramp` on a build with BIOBUZZ's ramp intake, else `fold`. Null when the model fits.
+ * WHAT THE FILE SHOWS DEPLOYED past `maxIn`: along a horizontal axis the model is longer than that,
+ * the END THAT STICKS OUT. Each end's part is every body whose box reaches past the line `maxIn` in
+ * from the other end; the end with FEWER such bodies is the deployed part (a ramp is a handful of
+ * plates, the chassis behind it hundreds), with the smaller bodies mounted on them
+ * (`mountedBodies`). Ties go to the first of `prefer`. The intake's edge is not assumed: a ramp the
+ * file shows down moves its own edge out past the roller behind it, so the intake can read at the other
+ * end, and that end's half of the chassis was offered as the part to fold. A part that touches
+ * nothing else is not deployed but floating (Offset's stray cube, offered for deleting instead,
+ * `findFloatingParts`). Null when the model fits, or when neither end is under `OVERHANG_MAX_SHARE` of
+ * the bodies and attached.
  */
-export function findDeployedGroup(
-  parts: readonly MeshPart[],
-  intakes: readonly { edge: 'front' | 'back' | 'left' | 'right' }[],
-  role: 'ramp' | 'fold',
-  taken: ReadonlySet<number>,
-  maxIn = 18,
-): MotionGroup | null {
+export function findOverhang(parts: readonly MeshPart[], taken: ReadonlySet<number>, maxIn = 18, prefer: readonly Edge[] = []): { edge: Edge; bodies: number[] } | null {
   const st = bodyStats(parts);
   if (!st.ids.length) return null;
   const lo = [Infinity, Infinity];
@@ -2246,18 +2332,53 @@ export function findDeployedGroup(
     lo[k] = Math.min(lo[k], st.min[3 * b + k]);
     hi[k] = Math.max(hi[k], st.max[3 * b + k]);
   }
-  for (const { edge } of intakes) {
-    const k = edge === 'front' || edge === 'back' ? 0 : 1;
-    const outward = edge === 'front' || edge === 'left' ? 1 : -1;
+  const free = st.ids.filter((b) => !taken.has(b));
+  const axes = [0, 1].sort((a, b) => {
+    const pa = prefer.some((e) => (e === 'front' || e === 'back' ? 0 : 1) === a) ? 0 : 1;
+    const pb = prefer.some((e) => (e === 'front' || e === 'back' ? 0 : 1) === b) ? 0 : 1;
+    return pa - pb || a - b;
+  });
+  for (const k of axes) {
     if (hi[k] - lo[k] <= maxIn + 0.05) continue;
-    const line = outward > 0 ? lo[k] + maxIn : hi[k] - maxIn;
-    const past = st.ids.filter((b) => !taken.has(b) && (outward > 0 ? st.max[3 * b + k] > line : st.min[3 * b + k] < line));
-    if (!past.length) continue;
-    const bodies = new Set(past);
-    for (const b of past) for (const x of mountedBodies(parts, b)) if (!taken.has(x)) bodies.add(x);
-    return { role, bodies: [...bodies].sort((a, b) => a - b), found: true };
+    const ends = ([1, -1] as const).map((outward) => {
+      const edge: Edge = k === 0 ? (outward > 0 ? 'front' : 'back') : outward > 0 ? 'left' : 'right';
+      const line = outward > 0 ? lo[k] + maxIn : hi[k] - maxIn;
+      return { edge, past: free.filter((b) => (outward > 0 ? st.max[3 * b + k] > line : st.min[3 * b + k] < line)) };
+    });
+    const rank = (e: (typeof ends)[number]): number => (e.past.length ? e.past.length : Infinity);
+    ends.sort((a, b) => rank(a) - rank(b) || (prefer.includes(a.edge) ? 0 : 1) - (prefer.includes(b.edge) ? 0 : 1));
+    const end = ends[0];
+    if (!end.past.length || end.past.length >= OVERHANG_MAX_SHARE * free.length) continue;
+    const bodies = new Set(end.past);
+    for (const b of end.past) for (const x of mountedBodies(parts, b)) if (!taken.has(x)) bodies.add(x);
+    const gap = (a: number, b: number): number => {
+      let g = 0;
+      for (let i = 0; i < 3; i++) g = Math.max(g, st.min[3 * a + i] - st.max[3 * b + i], st.min[3 * b + i] - st.max[3 * a + i]);
+      return g;
+    };
+    const rest = free.filter((b) => !bodies.has(b));
+    if (![...bodies].some((a) => rest.some((b) => gap(a, b) <= OVERHANG_ATTACH_IN))) continue;
+    return { edge: end.edge, bodies: [...bodies].sort((a, b) => a - b) };
   }
   return null;
+}
+
+/**
+ * A RAMP (or any part) THE FILE SHOWS DEPLOYED (`findOverhang`, the intake's edges first on a tie). The
+ * owner's case: a robot imported with its ramp down "says it is too big". `role` is what a part at an
+ * intake edge is (`ramp` on a build with BIOBUZZ's ramp intake, else `fold`); one at any other edge
+ * is a `fold`. Null when the model fits.
+ */
+export function findDeployedGroup(
+  parts: readonly MeshPart[],
+  intakes: readonly { edge: Edge }[],
+  role: 'ramp' | 'fold',
+  taken: ReadonlySet<number>,
+  maxIn = 18,
+): MotionGroup | null {
+  const over = findOverhang(parts, taken, maxIn, intakes.map((i) => i.edge));
+  if (!over) return null;
+  return { role: intakes.some((i) => i.edge === over.edge) ? role : 'fold', bodies: over.bodies, found: true };
 }
 
 // ---- folding: a ramp the file shows deployed ------------------------------------------------------
@@ -2517,7 +2638,11 @@ export function deriveMotion(modelParts: readonly MeshPart[], motion: readonly M
       part = { role: g.role, bodies, pivot: add(plan.hinge, t), axis: plan.axis, radius: 0, deploy: plan.deploy, parent: -1, group: gi };
     } else if (g.role === 'turret') {
       const mo = setMoments(st, bodies);
-      part = { role: 'turret', bodies, pivot: [(mo.min[0] + mo.max[0]) / 2, (mo.min[1] + mo.max[1]) / 2, mo.min[2]], axis: [0, 0, 1], radius: 0, deploy: 0, parent: -1, group: gi };
+      // it turns about its ring, not the middle of its box: a launcher stands off the ring's axis, and
+      // a turret turned in the file has its box off it too, so it swung wide as it turned
+      const ring = ringIn(modelParts, st, bodies);
+      const pivot: V3 = ring ? [ring[0], ring[1], mo.min[2]] : [(mo.min[0] + mo.max[0]) / 2, (mo.min[1] + mo.max[1]) / 2, mo.min[2]];
+      part = { role: 'turret', bodies, pivot, axis: [0, 0, 1], radius: 0, deploy: 0, parent: -1, group: gi };
     } else {
       const fit = fitRound(modelParts, bodies, g.role === 'wheel' ? wheelAxisHint(modelParts, bodies) : undefined);
       if (!fit) return;

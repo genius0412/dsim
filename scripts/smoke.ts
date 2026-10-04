@@ -38247,6 +38247,182 @@ function fxImportFixed(): RobotSpec {
 }
 
 /**
+ * A LAUNCHER ON A TURRET, AND A RAMP THE FILE SHOWS DOWN (2026-10-04). The editor looked for the
+ * turret before the flywheel, so the turret took the flywheel and a transfer roller under its ring was
+ * offered as it (Offset's concept robot); a turret's diagonal plates were left out by their boxes; a
+ * turret turned about the middle of its box, not its ring; and a ramp out front moved its edge past the
+ * roller behind it, so the intake read at the other end and that end's half of the chassis was offered
+ * to fold. Synthetic scenes, inches, MODEL frame, one body per solid.
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { DEFAULT_SPEC } = await import('../src/sim/spawn');
+  const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+  const { bbIntakeKindOf } = await import('../src/games/biobuzz/mechs');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type Prism = ReturnType<typeof synth.box>;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: Prism[], k = 1): P[] =>
+    synth.synthParts(prisms, (v) => [v[0] * k, v[1] * k, v[2] * k]).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  // a plate along a diagonal, standing up: `len` along (1, 1), `w` across, centred at (cx, cy)
+  const diag = (name: string, cx: number, cy: number, len: number, w: number, z0: number, z1: number): Prism => {
+    const u = [Math.SQRT1_2, Math.SQRT1_2];
+    const v = [-Math.SQRT1_2, Math.SQRT1_2];
+    const at = (a: number, b: number): [number, number, number] => [cx + a * u[0] + b * v[0], cy + a * u[1] + b * v[1], z0];
+    return { name, color: G, base: [at(-len / 2, -w / 2), at(len / 2, -w / 2), at(len / 2, w / 2), at(-len / 2, w / 2)], extrude: [0, 0, z1 - z0] };
+  };
+
+  // ---- the turret: a ring at the origin, a flywheel off its axis, a transfer roller under the ring ----
+  const tp: Prism[] = [
+    synth.box('chassis', G, -8, 8, -7, 7, 1, 2),
+    synth.cylZ('ring', G, 0, 0, 4, 8, 8.4, 48),
+    synth.cylY('flywheel', G, -2.5, 10.5, 1.4, -0.35, 0.35, 32),
+    synth.cylY('transfer', G, -2.5, 7, 0.9, -0.3, 0.3, 24),
+    // a truss plate across the ring on the diagonal: its box's corners 7.3 in out, its own 6.73 (the
+    // turret takes what lies within the ring's radius plus 3 in)
+    diag('truss', 0, 0, 13.4, 1.2, 8.4, 9),
+    // the launcher's side frame, off to one side: the turret's box is not centred on the ring
+    synth.box('frame', G, -6.8, -5.8, -1, 1, 8.4, 12),
+  ];
+  const tparts = mk(tp);
+  const tid = (n: string): number => tp.findIndex((p) => p.name === n);
+  const at: [number, number, number] = [-2.5, 0, 10.5];
+  const ring = motion.findTurretRing(tparts, at, new Set());
+  const fw = motion.findFlywheelGroups(tparts, at, new Set(), ring ? ring.z0 : -Infinity);
+  const fwAny = motion.findFlywheelGroups(tparts, at, new Set());
+  check(
+    'launcher on a turret: the flywheel is found standing on the ring, and the transfer roller under the ring is not (it is, with no floor)',
+    !!ring && Math.abs(ring.z0 - 8) < 0.01 && fw.length === 1 && fw[0].bodies.includes(tid('flywheel')) && !fw.some((g) => g.bodies.includes(tid('transfer'))) && fwAny.some((g) => g.bodies.includes(tid('transfer'))),
+    J({ ring, fw, fwAny }),
+  );
+  const tur = motion.findTurretGroup(tparts, at, new Set(fw.flatMap((g) => g.bodies)));
+  const tn = (tur?.bodies ?? []).map((b) => tp[b].name);
+  check(
+    'launcher on a turret: the turret takes the ring, the frame and the diagonal truss plate (by its own reach, not its box), and not the flywheel, the transfer roller or the chassis',
+    ['ring', 'frame', 'truss'].every((n) => tn.includes(n)) && !['flywheel', 'transfer', 'chassis'].some((n) => tn.includes(n)),
+    J(tn),
+  );
+  const parts3 = motion.deriveMotion(tparts, [tur!, ...fw], [], [0, 0, 0]);
+  const tp3 = parts3.find((p) => p.role === 'turret');
+  const fw3 = parts3.find((p) => p.role === 'flywheel');
+  check(
+    'launcher on a turret: the turret turns about its ring (0, 0), not the middle of its box, and the flywheel rides it',
+    !!tp3 && Math.hypot(tp3.pivot[0], tp3.pivot[1]) < 0.02 && !!fw3 && fw3.parent === parts3.indexOf(tp3),
+    J({ turret: tp3?.pivot, flywheelParent: fw3?.parent }),
+  );
+
+  // ---- a ramp down in front of a robot with a roller at each end ----
+  const rp: Prism[] = [
+    synth.box('deck', G, -8, 8, -7, 7, 0.5, 2),
+    synth.box('rail_l', G, -8, 8, 6.8, 7, 2, 5),
+    synth.box('rail_r', G, -8, 8, -7, -6.8, 2, 5),
+    synth.box('back_plate', G, -8, -7.8, -6.8, 6.8, 2, 6),
+    ...[-6, -3, 0, 3].flatMap((y, i) => [synth.box(`post${i}`, G, -7.6, -7.3, y, y + 0.3, 2, 6), synth.box(`mid${i}`, G, -1, -0.7, y, y + 0.3, 2, 6)]),
+    synth.cylY('front_roller', G, 6.5, 3, 1, -6, 6, 24),
+    synth.cylY('front_shaft', G, 6.5, 3, 0.2, -6.5, 6.5, 12),
+    synth.cylY('back_roller', G, -6.5, 3, 1, -6, 6, 24),
+    synth.cylY('back_shaft', G, -6.5, 3, 0.2, -6.5, 6.5, 12),
+    // the ramp, down: two side plates out to x 16 and the scoop plate on the floor
+    synth.box('ramp_l', G, 5, 16, 6.2, 6.6, 0.2, 4),
+    synth.box('ramp_r', G, 5, 16, -6.6, -6.2, 0.2, 4),
+    synth.box('scoop', G, 12, 16, -6, 6, 0.1, 0.4),
+  ];
+  const rparts = mk(rp);
+  const rn = (bodies: readonly number[]): string[] => bodies.map((b) => rp[b].name).sort();
+  const over = motion.findOverhang(rparts, new Set());
+  check(
+    'a ramp down in front: the end that sticks out is the front, and it is the ramp (its plates and scoop), not the chassis behind it',
+    over?.edge === 'front' && J(rn(over.bodies)) === J(['ramp_l', 'ramp_r', 'scoop']),
+    J(over && { edge: over.edge, bodies: rn(over.bodies) }),
+  );
+  const depFront = motion.findDeployedGroup(rparts, [{ edge: 'front' }], 'ramp', new Set());
+  const depBack = motion.findDeployedGroup(rparts, [{ edge: 'back' }], 'ramp', new Set());
+  check(
+    'a ramp down in front: offered as the ramp at a front intake, and as a fold (still the front part) when the intake is at the back',
+    depFront?.role === 'ramp' && J(rn(depFront.bodies)) === J(['ramp_l', 'ramp_r', 'scoop']) && depBack?.role === 'fold' && J(rn(depBack.bodies)) === J(rn(depFront.bodies)),
+    J({ depFront, depBack }),
+  );
+  const cad = motion.readBuild(rparts, new Set());
+  check('a ramp down in front: the build reads a ramp intake at the front (the roller behind the ramp), not a sweeper at the back', cad.intake?.edge === 'front' && cad.intake.ramp === true && !cad.intake.upright, J(cad.intake));
+  const fr = motion.findRollerGroups(rparts, [{ edge: 'front', from: -6.5, to: 6.5 }], new Set(), new Set(over?.bodies ?? []));
+  const frNo = motion.findRollerGroups(rparts, [{ edge: 'front', from: -6.5, to: 6.5 }], new Set());
+  check(
+    'a ramp down in front: the front roller is found with the ramp left out of the edge, and not with the ramp’s tip as the edge',
+    fr.some((g) => g.bodies.includes(rp.findIndex((p) => p.name === 'front_roller'))) && !frNo.some((g) => g.bodies.includes(rp.findIndex((p) => p.name === 'front_roller'))),
+    J({ fr: fr.map((g) => rn(g.bodies)), frNo: frNo.map((g) => rn(g.bodies)) }),
+  );
+  const built = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0], name: 'bot' }, cad);
+  check(
+    'a ramp down in front: BIOBUZZ builds the ramp intake on the front edge, and says so',
+    !!built && bbIntakeKindOf(built.spec) === 'ramp' && built.spec.intakeMount === 'front' && built.set.includes('a ramp at the front'),
+    J(built && { kind: bbIntakeKindOf(built.spec), mount: built.spec.intakeMount, set: built.set }),
+  );
+  check('a model in the wrong units runs past 18 in at both ends: nothing is offered as deployed', motion.findOverhang(mk(rp, 3), new Set()) === null && motion.findDeployedGroup(mk(rp, 3), [{ edge: 'front' }], 'ramp', new Set()) === null);
+
+  // ---- a model with no wheels shown: the editor guesses the spots, and a roller there is no wheel ----
+  const wp: Prism[] = [
+    synth.box('deck', G, -8, 8, -7, 7, 0.5, 2),
+    synth.cylY('corner_roller', G, -6.5, 3, 1, 4.4, 5.6, 24),
+    synth.cylY('corner_shaft', G, -6.5, 3, 0.2, 4, 6, 12),
+    synth.cylY('tyre', G, 6.5, 2, 2, 4.4, 5.6, 24),
+  ];
+  const wg = motion.findWheelGroups(mk(wp), [{ x: 6.5, y: 5 }, { x: -6.5, y: 5 }], 'tank', 4);
+  check(
+    'a wheel stands on the floor: at a guessed spot, a roller 2 in up is not taken as the wheel (it was, by the catalogue wheel’s outline); the tyre beside it still is',
+    wg.length === 1 && wg[0].corner === 0 && J(wg[0].bodies.map((b) => wp[b].name)) === J(['tyre']),
+    J(wg.map((g) => ({ corner: g.corner, bodies: g.bodies.map((b) => wp[b].name) }))),
+  );
+
+  // ---- a second flywheel turns the same way round; a round side plate across it is not one ----
+  const cylX = (name: string, cy: number, cz: number, r: number, x0: number, x1: number, n = 24): Prism => ({
+    name,
+    color: G,
+    base: Array.from({ length: n }, (_, k) => [x0, cy + r * Math.cos((2 * Math.PI * k) / n), cz + r * Math.sin((2 * Math.PI * k) / n)] as [number, number, number]),
+    extrude: [x1 - x0, 0, 0],
+  });
+  const tp2: Prism[] = [...tp, cylX('side_plate', 0, 10.5, 1.2, -0.6, -0.4), synth.cylY('flywheel_b', G, -2.5, 13.4, 1.4, -0.35, 0.35, 32)];
+  const fw2 = motion.findFlywheelGroups(mk(tp2), at, new Set(), 8);
+  const fw2n = fw2.map((g) => g.bodies.map((b) => tp2[b].name).sort().join('+'));
+  const single: Prism[] = [...tp, cylX('side_plate', 0, 10.5, 1.2, -0.6, -0.4)];
+  const fw3n = motion.findFlywheelGroups(mk(single), at, new Set(), 8).map((g) => g.bodies.map((b) => single[b].name).sort().join('+'));
+  check(
+    'a double shooter: the second wheel on a parallel axle is a flywheel; a round side plate standing across a single wheel is not (it was the second)',
+    fw2n.includes('flywheel') && fw2n.includes('flywheel_b') && !fw2n.some((n) => n.includes('side_plate')) && J(fw3n) === J(['flywheel']),
+    J({ fw2n, fw3n }),
+  );
+
+  // ---- a part that touches nothing is floating, not deployed ----
+  // a chassis of a deck and eight posts (a deployed part is a small share of the bodies)
+  const posts: Prism[] = [-6, -2, 2, 6].flatMap((x) => [synth.box(`post_${x}_a`, G, x, x + 0.3, -5, -4.7, 2, 5), synth.box(`post_${x}_b`, G, x, x + 0.3, 4.7, 5, 2, 5)]);
+  const fp: Prism[] = [synth.box('deck', G, -8, 8, -7, 7, 0.5, 2), ...posts, synth.box('stray', G, -1, -0.4, 12, 12.6, 3, 3.6)];
+  const ap: Prism[] = [synth.box('deck', G, -8, 8, -7, 7, 0.5, 2), ...posts, synth.box('arm', G, -1, 0, 6.9, 12.6, 1, 1.5)];
+  const fo = motion.findOverhang(mk(fp), new Set());
+  const ao = motion.findOverhang(mk(ap), new Set());
+  check(
+    'a part 5 in off the robot that runs it past 18 in is floating (offered for deleting), not deployed; one that touches the robot is deployed',
+    fo === null && ao?.edge === 'left' && J(ao.bodies.map((b) => ap[b].name)) === J(['arm']),
+    J({ fo, ao }),
+  );
+
+  // ---- the editor: the same order, and the moving parts wait for the placements ----
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').split('\r\n').join('\n');
+  const flyAt = ed.indexOf('findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity)');
+  const waitAt = ed.indexOf('JSON.stringify(defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null)) !== JSON.stringify(doc.mech)) return;');
+  check(
+    'the editor looks for the flywheels before the turret (none under its ring), hands the turret the rest, reads the rollers with the overhang left out of the edges, and finds the moving parts only once the placements have defaulted in (source pins)',
+    flyAt > 0 &&
+      flyAt < ed.indexOf('findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]))') &&
+      ed.includes('findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? []))') &&
+      waitAt > 0 &&
+      waitAt < ed.indexOf('const found = findAll([]);') &&
+      ed.includes('[doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]'),
+  );
+}
+
+/**
  * MOVING PARTS, ROUND TWO (2026-10-03, owner: "the auto-detector combines a static channel and a gear
  * into one component that cannot be separated. Also, the motor or the motor cover/shield spins with
  * the wheel sometimes … try auto-detecting intake side rollers, ramps, flywheels, turrets … proper

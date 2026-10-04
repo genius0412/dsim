@@ -266,7 +266,7 @@ export const COPY = {
   cadFixed: 'a fixed shooter',
   cadFixedAt: (edge: string, deg: number) => `a fixed shooter facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge} at ${deg}°`,
   cadFixedFacing: (edge: string) => `a fixed launcher facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge}`,
-  cadIntake: (side: boolean, mount: string) => `${side ? 'side rollers' : 'a sweeper'} at the ${mount === 'side' ? 'side' : mount}`,
+  cadIntake: (kind: string, mount: string) => `${kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a sweeper'} at the ${mount === 'side' ? 'side' : mount}`,
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,
   cadHandLoaded: 'no intake (loaded by hand)',

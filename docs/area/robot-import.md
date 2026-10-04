@@ -423,12 +423,14 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   (surgical tubing, below);
 - any other spoked axle (`findSpokedRollers`: a transfer column of surgical tubing), a `roller`;
 - flywheels (`findFlywheelGroups`: round discs with a level axle within 5 in of the placed launcher,
-  the two largest axles, never a motor's gearbox face or end cap);
+  the two largest axles, never a motor's gearbox face or end cap; on a turreted build none below the
+  turret's ring, `findTurretRing`), looked for BEFORE the turret;
 - a turret on a turreted build (`findTurretGroup`: the largest round, upright ring under the launcher,
-  1.5 to 6 in in radius, and what stands on it);
-- a part the file shows deployed (`findDeployedGroup`: when the model runs past 18 in toward an
-  intake edge, the bodies past that line and what is mounted on them), as BIOBUZZ's `ramp` on a ramp
-  intake, else a `fold`. The owner's "it says the robot is too big" case, found for the player.
+  1.5 to 6 in in radius, and what stands on it, the flywheels left out);
+- a part the file shows deployed (`findDeployedGroup` → `findOverhang`: along an axis the model is
+  over 18 in, the end that sticks out, the bodies past that line and what is mounted on them), as
+  BIOBUZZ's `ramp` at a ramp intake's edge, else a `fold`. The owner's "it says the robot is too big"
+  case, found for the player.
 `[]` = none.
 
 - **Bodies.** `MeshPart.body` is a per-vertex id: one per mesh instance from a reader, one per STEP
@@ -586,6 +588,40 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
     percentile footprint, so a stray part does not move it), placed at their base. Offset: two
     upright slides, outer 1.57 / middle 1.18 / final 0.79 in, travel 9.75 in a stage; none on the
     starter bots.
+- ⚠️ **A NEW IMPORT'S MOVING PARTS WAIT FOR ITS PLACEMENTS** (2026-10-04). The build read places only
+  the launcher (`cadMech`); the intake spans default in an effect later (`defaultMechFor`). The
+  moving parts effect ran in the same render, so on every new import `findAll` saw no intake span:
+  no intake rollers, no deployed ramp, and a robot imported with its ramp down stayed "over 18 in"
+  until the player pressed Find moving parts. It now returns until `doc.mech` equals what
+  `defaultMechFor` would make of it, and `doc.mech` is in its dependencies.
+- ⚠️ **A WHEEL STANDS ON THE FLOOR** (`findWheelGroups`, `WHEEL_FLOOR_IN` 0.35): with no wheels found the
+  editor guesses spots at the footprint's corners, and the catalogue wheel's outline there took an
+  intake roller's ends standing well off the floor as "wheels". A corner none of whose bodies comes
+  down to the floor is left out.
+- ⚠️ **A LAUNCHER ON A TURRET, AND A RAMP THE FILE SHOWS DOWN** (2026-10-04, `MOTION_FINDER` 4):
+  - **The flywheels before the turret.** The turret takes everything standing on its ring, the
+    flywheel too, so the editor looked for the turret first and then offered the next disc in reach
+    as the flywheel: on Offset, a transfer roller under the ring. Now the flywheels come first (none
+    below the ring on a turreted build) and the turret is found without them; the flywheel row rides
+    it (`deriveMotion`). The smoke test always called them in this order; only the editor did not.
+    A second flywheel must turn on an axle PARALLEL to the first (a double shooter's wheels do): with
+    the turret no longer taking them first, a round side plate standing across Offset's flywheel
+    came up as the second.
+  - **A turret's members by their own reach**: a body whose box pokes past the ring's radius + 3 in is
+    read by its vertices. A turret turned in the file has diagonal plates whose box corners stand past
+    every point of them, and they stayed behind when it turned.
+  - **A turret turns about its ring** (`ringIn`), not the middle of its box: a launcher stands off the
+    ring's axis, so it swung wide as it turned. Falls back to the box when no body is ring-shaped.
+  - **The deployed part is the end that sticks out** (`findOverhang`), not the intake's edge: per
+    over-long axis, the end with FEWER bodies past the line 18 in from the other end, under a quarter
+    of the bodies (a model in the wrong units runs past at both ends: nothing), and ATTACHED (a box
+    within 0.25 in of the robot's: Offset's stray cube is floating, offered for deleting, not a part
+    to fold). A ramp down in front
+    moved the front edge out past the roller behind it, so the intake read at the back and the back
+    half of the chassis was offered to fold. `findRollerGroups` takes the overhang as `outside` (not
+    counted for the edges), in `readBuild` and `findAll` alike; the overhang's edge wins a roller tie,
+    and an overhang at the intake's edge that comes down to within 1 in of the floor makes it BIOBUZZ's
+    `ramp` intake ("a ramp at the front").
 - **TURNING THE MODEL READS THE BUILD AGAIN** (`EditorDoc.cadReread`): a units, up or front change moves
   the model frame, so placements reset and `cadMech` goes; while the mechanism fields still match what
   the read set (`cadKey`), the build is read again in the new frame. Offset's front is not detected

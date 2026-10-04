@@ -200,7 +200,7 @@ app.whenReady().then(async () => {
           if (!db.objectStoreNames.contains('robots')) return res('[]');
           const tx = db.transaction('robots', 'readonly');
           const all = tx.objectStore('robots').getAll();
-          all.onsuccess = () => res(JSON.stringify(all.result.filter((r) => r && r.spec && r.spec.imported).map((r) => ({ id: r.id, name: r.spec.name, imported: r.spec.imported, source: r.source, setup: r.setup, updated: r.updated }))));
+          all.onsuccess = () => res(JSON.stringify(all.result.filter((r) => r && r.spec && r.spec.imported).map((r) => ({ id: r.id, name: r.spec.name, imported: r.spec.imported, source: r.source, setup: r.setup, updated: r.updated, mech: r.spec.bbMech ?? { intake: r.spec.intake, launcher: r.spec.launcher } }))));
           all.onerror = () => res('[]');
         };
         q.onerror = () => res('[]');
@@ -417,6 +417,10 @@ app.whenReady().then(async () => {
           console.log(`  draft restored: ${JSON.stringify(d.draftRestore)}`);
         }
         await toReview();
+        // the moving parts are found, and the model measured again with them (a deployed ramp folded),
+        // after the steps are clicked through: Save waits for it
+        await until(`[...document.querySelectorAll('button.ds-btn.primary')].some((b) => /Save/.test(b.textContent) && !b.disabled) && !document.querySelector('.ds-import-checks .bad, .ds-import-checks [data-level=block]')`, 180000);
+        await sleep(1000);
         d.review = await js(`[...document.querySelectorAll('.ds-import-checks li')].map((l) => l.textContent.replace(/\\s+/g, ' ').trim())`);
         await shot(`${p}-review`);
         const before = new Set((await libraryRows()).map((x) => x.id));
@@ -447,6 +451,10 @@ app.whenReady().then(async () => {
           if (kind === 'mesh') d.storedMB = +(buf.length / 1048576).toFixed(2);
         }
         console.log(`  saved: footprint ${d.footprintIn.length} × ${d.footprintIn.width} in, height ${d.footprintIn.height} in, stored mesh ${d.storedMB} MB, ${JSON.stringify(rec.source)}`);
+        // what was read: the build, and the moving parts with their body counts
+        d.mech = rec.mech;
+        d.motion = (rec.setup.motion ?? []).map((g) => `${g.role}${g.corner ?? ''}×${g.bodies.length}${g.follows ? ` follows ${g.follows.group}` : ''}`);
+        console.log(`  build ${JSON.stringify(d.mech)}; moving parts ${d.motion.join(', ') || 'none'}; review ${d.review.join(' | ') || 'clear'}`);
         await shot(`${p}-robot-page`);
         robots.push({ rec, d, p });
       }

@@ -1,3 +1,18 @@
+# HANDOFF — 2026-10-04h (importer: undo/redo, deleting parts, the shot off the hood, Offset's robot, a launcher on a turret, a ramp down)
+
+**State: on `alpha`; client only (importer), no server change, no deploy.** `npm test` (shared 4144, BIOBUZZ 5569), `build`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen production editor and its 2D and 3D test drive.
+
+- **Owner:** "Based on the flywheel, I think it should be able to determine what type of shooter it is and where it is."; on Offset Robotics' concept robot: "surgical tubing and gears for drivetrain, boxtubes (plural), turret … undo/redo … delete parts, especially something like the floating cube"; then a private team CAD to validate detection and driving.
+- **Done** (robot-import.md has each):
+  - The shot is read off the flywheel's hood (`readShot`, 41396be9): a BIOBUZZ fixed shooter goes on the edge it throws toward at the hood's angle; both games place the shooter where it releases.
+  - Undo/redo in the editor (b85c2301). Deleting parts, and an offer to delete what floats apart from the robot (7d07e652).
+  - Offset: a flywheel's thickness along its own axle, a turret ring reaching its launcher, box tubes as slides (e8573901); surgical tubing rollers and the gears a wheel drives (db3e7170); the front read from the wheels' axles.
+  - `MOTION_FINDER` 4 (today): flywheels before the turret (it took the flywheel, and on Offset a transfer roller was offered in its place); a turret's plates by their own reach; a turret turns about its ring; a second flywheel turns parallel to the first; the deployed part is the end that sticks out and touches the robot (Offset's floating cube stays a delete offer), the rollers are read without it, and a ramp the file shows down reads as BIOBUZZ's ramp intake; a wheel must touch the floor.
+  - **A race in the editor**: on every new import the moving parts were found before the intake placements defaulted in, so intake rollers and a deployed ramp were never found automatically. They wait for the placements now.
+- **Validated on a private team CAD** (nothing of it is in the repo or the commits): detection, save, reopen, 2D and 3D test drive. Results went to the owner in chat.
+- **Probes** (gitignored `scratch/`, generic): `fullflow.ts` (the editor's whole detection headless, from a stepnames read), `importdrive.ts` / `fireprobe.ts` / `arcprobe.ts` (a spec driven on 2D and 3D), `draftdump.cjs` / `drivewalk.cjs` (offscreen editor walk; `drivewalk` needs `decodesim.view.v2 = '3d'` and a graphics preset in storage, or the tab stays 2D). `realcadprobe.cjs` now waits for Save before saving and logs the build and moving parts.
+- **Open:** pieces off a roller's axle (small rollers round a hub) stay still when it turns; a fold's hinge is planned from the part's innermost point, not a roller axle it may pivot on; an import whose CAD shows no wheels keeps the sim's default wheel layout; the offscreen test drive shows "Your keystrokes are going somewhere else" while keys do arrive.
+
 # HANDOFF — 2026-10-04g (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
 
 **State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 7 and the 5-band descriptor are server changes). Not on `main`.** `npm test` (shared 4055, BIOBUZZ 5569), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass.
