@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-04 (BIOBUZZ 3D: nothing stays on the HIVE beam; the NECTAR wedge fix reaches main)
+
+**State: on `main` (9905c8cd) and `alpha` (0c7df0eb); DEPLOYED 2026-10-04 to PRODUCTION from `main` (04:00Z, 2-minute announcement, all 8 machines on the new image) and to `dsim-alpha`.** `npm test` (main 5175, alpha 5552), `build`, `server:check`, `docaudit`, `bundleaudit` pass on both; `test:workers` (83) on main. Sim change behind `SIM_PATCH` 5. No `SIM_VERSION` bump, no wire change.
+
+- **Owner:** the fix for POLLEN stuck on the beam between the cells (Saket's PR #108, plus the 2026-09-27 NECTAR fix that had sat on `alpha` waiting for a go) was not on `main`. Test everything, do not trust the PR, put it on `main` behind a flag and deploy.
+- **On `main` now:** `SIM_PATCH` 2 (the NECTAR wedge behind the down cell, 09-27) and 5: the HIVE shed from #108, renumbered from 3 because `alpha` had used 3 and 4, plus a PAIR rule. Two loose POLLEN resting against each other on the beam were each other's broad support, so neither was shed. `main` goes from patch 1 to 5. Patches 3 and 4 exist only on `alpha`; `config.ts` notes the gap.
+- **Measured** (`scratch/bbrec.ts`, hard/medium-bot 3D matches; "stuck" = a loose element above z 7 that has not moved 2 in): on `main`, 240 seeds, stuck ≥ 3 s 1321 → 2, ≥ 10 s 693 → 0, worst 71 s → 3.4 s. The PR's rule alone left 7 in 60 matches (3 pairs, up to 12.5 s). 175 sheds, none ended in a cell or a FLOWER. Post-buzzer settle mean 167 → 172 ticks, max 600 (capped once) → 462. Old replays: 60 `main` recordings (patch 1) and 30 `alpha` recordings (patch 4) replay bit-identically. NECTAR drop grid 194/625 → 0, POLLEN 22/625 → 0, 0/540 shots tunnel, turret accuracy unchanged, dumper close range 2/4 → 4/4 at 24 in (flagged 09-27).
+- **The PR's claim** that bot games never reach the perch holds on `alpha` (8 episodes in 30 matches; alpha's bots play differently) but not on `main` (434 in 60).
+- **Left:** a POLLEN between the two trays at x 0 (z 47–54) can still sit up to 3.4 s. It predates this (old rules: 6 in 180 matches, worst 14.7 s).
+- **PR #108** is still open on GitHub. Its commit is on `alpha` (55a86399) and `main` (1ec77bcf) with the renumber.
+- A tab opened before the deploy predicts with the old rules until reloaded; reconcile corrects it.
+
 # HANDOFF — 2026-10-03g (import speed, moving parts round two, realism research)
 
 **State: on `alpha`; client only, no deploy needed. Not on `main`.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Checked in the dev preview: found groups, a swing and a slide animating in Play, no console errors.

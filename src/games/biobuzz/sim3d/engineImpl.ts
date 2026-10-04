@@ -15,7 +15,7 @@ import type { Alliance, Artifact, BallState, RobotState, World } from '../../../
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB3_HIVE_SHED_AFTER, BB3_HIVE_SHED_MAX, BB3_HIVE_SHED_MIN_Z, BB3_HIVE_SHED_REGION_X, BB3_HIVE_SHED_REGION_Y, BB3_HIVE_SHED_SPEED, BB3_HIVE_SHED_VZ, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
 import {
   addChassis3dColliders,
@@ -92,6 +92,10 @@ export interface Engine3d {
    * branch, NOT `restTicks`. Reset to 0 the instant the element leaves the branch for any reason
    * (it falls, it reaches a broad support, it gets tagged). See `BB3_VIBE_GIVEUP_TICKS`. */
   narrowVibeTicks: Map<number, number>;
+  /** element id -> how many times `groundRoll3d` has SHED it off HIVE structure after the
+   * vibration gave up (`BB3_HIVE_SHED_MAX`). Cleared when it reaches the tiles, a broad support
+   * or a cell/tube tag, the same exits as `narrowVibeTicks`. */
+  hiveSheds: Map<number, number>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
   /**
@@ -215,6 +219,7 @@ function buildEngine(world: World): Engine3d {
     hiveHeld: { red: true, blue: true },
     restTicks: new Map(),
     narrowVibeTicks: new Map(),
+    hiveSheds: new Map(),
     lastRobot: new Map(),
     lastElement: new Map(),
     robotHeights: new Map(),
@@ -670,6 +675,7 @@ function removeElementBody(engine: Engine3d, id: number): void {
   engine.lastElement.delete(id);
   engine.restTicks.delete(id);
   engine.narrowVibeTicks.delete(id);
+  engine.hiveSheds.delete(id);
 }
 
 /**
@@ -1089,6 +1095,7 @@ interface SavedEngine {
   joints: Record<Alliance, number | null>;
   restTicks: Map<number, number>;
   narrowVibeTicks: Map<number, number>;
+  hiveSheds: Map<number, number>;
   hiveHeld: Record<Alliance, boolean>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
@@ -1135,6 +1142,7 @@ export function saveEngineState(world: World, keepFrom: number): void {
     joints: { red: e.hiveJoints.red?.handle ?? null, blue: e.hiveJoints.blue?.handle ?? null },
     restTicks: new Map(e.restTicks),
     narrowVibeTicks: new Map(e.narrowVibeTicks),
+    hiveSheds: new Map(e.hiveSheds),
     hiveHeld: { ...e.hiveHeld },
     lastRobot: new Map([...e.lastRobot].map(([id, r]) => [id, { ...r }])),
     lastElement: new Map([...e.lastElement].map(([id, r]) => [id, { ...r }])),
@@ -1174,6 +1182,7 @@ function restoreSaved(e: Engine3d, s: SavedEngine): void {
   };
   e.restTicks = s.restTicks;
   e.narrowVibeTicks = s.narrowVibeTicks;
+  e.hiveSheds = s.hiveSheds;
   e.hiveHeld = s.hiveHeld;
   e.lastRobot = s.lastRobot;
   e.lastElement = s.lastElement;
@@ -1210,7 +1219,7 @@ function restoreSaved(e: Engine3d, s: SavedEngine): void {
  * Returns false (and leaves `engineFor` to build fresh) when there is no engine to move or the
  * robot set changed, which is `engineFor`'s own rebuild rule.
  *
- * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveHeld`) are not in the JSON. Without
+ * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveSheds`, `hiveHeld`) are not in the JSON. Without
  * a save they are kept from the predicted tick, a few ticks ahead of the server's.
  *
  * ⚠️ "DIFFERS" MEANS BY MORE THAN THE WIRE'S ROUNDING (`REWIND_EPS`), NOT `POSE_EPS`. A snapshot's
@@ -1666,8 +1675,28 @@ function planWidth(v: Float32Array): number {
   return Number.isFinite(best) ? best : 0;
 }
 
+/** `SIM_PATCH` 5: the HIVE shed (`BB3_HIVE_SHED_*`). A live world always runs it; a replay
+ * recorded before it keeps the old freeze. */
+function hiveShedOn(world: World): boolean {
+  return world.simPatch === undefined || world.simPatch >= 5;
+}
+
 export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
   const RAPIER = rapier3d();
+  const shedOn = hiveShedOn(world);
+  const trayRed = engine.hiveTrays.red.handle;
+  const trayBlue = engine.hiveTrays.blue.handle;
+  // the bodies of LOOSE elements up on the HIVE: touching one of them is not a support (see the
+  // PAIR note in the contact loop)
+  const looseUp = new Set<number>();
+  if (shedOn) {
+    for (const o of world.balls) {
+      if ((o.state.kind === 'ground' || o.state.kind === 'flight') && o.z > BB3_HIVE_SHED_MIN_Z) {
+        const ob = engine.elements.get(o.id);
+        if (ob) looseUp.add(ob.handle);
+      }
+    }
+  }
   for (const b of world.balls) {
     if (!wantsDynamicBody(b.state)) continue;
     const body = engine.elements.get(b.id);
@@ -1676,6 +1705,11 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     const onFloor = b.z <= BB3_ROLL_FLOOR_Z;
 
     if (onFloor) {
+      // on the tiles, a later perch earns its own vibration and shed budget
+      if (shedOn) {
+        engine.narrowVibeTicks.delete(b.id);
+        engine.hiveSheds.delete(b.id);
+      }
       // the 2D law, verbatim: constant deceleration, then the hard snap.
       let ns = speed - BB3_ROLL_DECEL * dt;
       if (ns <= 0 || ns < BALL_REST_SPEED) ns = 0;
@@ -1757,13 +1791,33 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     };
     if (b.state.kind === 'element') {
       engine.narrowVibeTicks.delete(b.id);
+      engine.hiveSheds.delete(b.id);
       freeze();
       continue;
     }
     let touchingBroad = false;
     let touchingNarrow = false;
+    let touchingHive = false;
+    const inHiveFootprint = Math.abs(b.pos.x) <= BB3_HIVE_SHED_REGION_X && Math.abs(b.pos.y) <= BB3_HIVE_SHED_REGION_Y;
+    const upOnHive = shedOn && inHiveFootprint && b.z > BB3_HIVE_SHED_MIN_Z;
     for (let i = 0; i < body.numColliders(); i++) {
       engine.world3d.contactPairsWith(body.collider(i), (other) => {
+        // ⚠️ **A PAIR ON THE BEAM IS TWO PERCHES, NOT A PILE** (2026-10-03). Another element is
+        // BROAD below so a garden-line pile can rest, but two loose POLLEN that roll down the DOWN
+        // side's bar into the corner at the down cell's back wall rest against each other, each
+        // reading the other as broad support, and both froze until the tray next swung (3 pairs
+        // in 60 bot matches, up to 12.5 s). Up on the HIVE, a contact with another LOOSE element
+        // up there counts as HIVE structure, so each gets the vibration and the shed. An element
+        // counted in a cell (`state.kind === 'element'`) is still broad: a ball sitting on a full
+        // cell's contents stays put.
+        if (upOnHive && other.shapeType() === RAPIER.ShapeType.Ball) {
+          const parent = other.parent();
+          if (parent && looseUp.has(parent.handle)) {
+            touchingNarrow = true;
+            touchingHive = true;
+            return;
+          }
+        }
         // ⚠️ **A CYLINDER IS NARROW FOR THE SAME REASON A HULL IS** (2026-09-21, with the drawn
         // height profile). Every cylinder in this world is a ROUND part of a robot — a turret's
         // swept disc (`bbMechEnvelopes`; the head is a hood, not a flat roof, and the disc is the
@@ -1779,6 +1833,12 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
           touchingBroad = true;
         } else if (st === RAPIER.ShapeType.ConvexPolyhedron || st === RAPIER.ShapeType.Cylinder || st === RAPIER.ShapeType.RoundCuboid) {
           touchingNarrow = true;
+          // HIVE structure: anything on a tray body, or a FIXED hull inside the frame's footprint
+          // (every fixed narrow hull there is `hive_frame`; a robot's round parts are not fixed).
+          const parent = other.parent();
+          if (parent && (parent.handle === trayRed || parent.handle === trayBlue || (parent.isFixed() && inHiveFootprint))) {
+            touchingHive = true;
+          }
         } else {
           touchingBroad = true;
         }
@@ -1790,6 +1850,7 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     }
     if (touchingBroad) {
       engine.narrowVibeTicks.delete(b.id);
+      engine.hiveSheds.delete(b.id);
       freeze();
       continue;
     }
@@ -1800,7 +1861,37 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     // header: a real cage has to lose eventually, or `bbSettled` never closes).
     const vibeTicks = (engine.narrowVibeTicks.get(b.id) ?? 0) + 1;
     engine.narrowVibeTicks.set(b.id, vibeTicks);
-    if (vibeTicks > BB3_VIBE_GIVEUP_TICKS) {
+    /**
+     * ⚠️ **NOTHING LOOSE STAYS ON TOP OF THE HIVE** (found capturing the 3D reel, 2026-10-01: a
+     * POLLEN sat on the blue HIVE's pivot from 11 s to the buzzer, another on red's for 18 s).
+     * The vibration is too gentle for a CRADLE — two parallel narrow edges under the ball, the
+     * pivot brackets being the one that shipped — so on HIVE structure it gets
+     * `BB3_HIVE_SHED_AFTER` kicks, not `BB3_VIBE_GIVEUP_TICKS`, and the give-up is a HOP
+     * (`BB3_HIVE_SHED_*`) in the vibration's own hashed direction, with a fresh vibration budget
+     * after it, up to `BB3_HIVE_SHED_MAX` times per perch; only then the old budget and freeze.
+     * The short budget matters as much as the hop: each kick waits out `BB3_REST_TICKS` again, so
+     * 30 of them held a cradled ball ~290 ticks, reading `flight` going nowhere for most of it.
+     */
+    const sheds = engine.hiveSheds.get(b.id) ?? 0;
+    const canShed = shedOn && touchingHive && sheds < BB3_HIVE_SHED_MAX;
+    if (vibeTicks > (canShed ? BB3_HIVE_SHED_AFTER : BB3_VIBE_GIVEUP_TICKS)) {
+      if (canShed) {
+        engine.hiveSheds.set(b.id, sheds + 1);
+        engine.narrowVibeTicks.delete(b.id);
+        // EVEN attempts hop ACROSS the tray axis (world x — both pivots turn about x), the one way
+        // out of a cradle along the beam; ODD ones take the vibration's full hashed angle, for a
+        // perch with some other shape. The sign / angle is the vibration's hash either way.
+        const dir = elementVibeSeed(b.id, world.tick, world.rngState);
+        const across = sheds % 2 === 0;
+        const hx = across ? (dir.x >= 0 ? 1 : -1) : dir.x;
+        const hy = across ? 0 : dir.y;
+        const k = BB3_HIVE_SHED_SPEED / Math.sqrt(hx * hx + hy * hy);
+        b.vel.x = hx * k;
+        b.vel.y = hy * k;
+        b.vz = BB3_HIVE_SHED_VZ;
+        body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+        continue;
+      }
       freeze();
       continue;
     }
