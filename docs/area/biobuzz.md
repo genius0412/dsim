@@ -305,6 +305,18 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   nowhere for 16–26 (old rule 184–231 and never leaves). A zero-velocity rain over the whole
   footprint never finds this perch either side (0/598 POLLEN) — it is reached by shots arriving
   sideways. Gated on `SIM_PATCH` 5 (`hiveShedOn`); the HIVE3D lane runs each scene under 2 too.
+  **A PAIR IS TWO PERCHES** (2026-10-03): two loose POLLEN that roll down the DOWN side's bar
+  into the corner at the down cell's back wall rest against each other, and another element is
+  BROAD, so neither was shed. Up on the HIVE (inside the footprint, bottom above
+  `BB3_HIVE_SHED_MIN_Z` 30) a contact with another LOOSE element up there counts as HIVE
+  structure; an element counted in a cell stays broad. Same patch. MEASURED on 2v2 hard-bot 3D
+  matches (`scratch/bbrec.ts`, a loose element above z 7 that has not moved 2 in): seeds 1–60,
+  stuck ≥ 3 s 434 → 7 with the shed alone (3 pairs, up to 12.5 s) → 1 with the pair rule; seeds
+  61–240 (2v2 hard, 2v2 medium, 1v1 hard) 887 → 1, ≥ 10 s 472 → 0, worst 71.2 s → 3.3 s. The
+  one left is a POLLEN between the two trays at x 0 (old rules: 6, worst 14.7 s). Of 175 sheds
+  none landed in a cell or a FLOWER. Post-buzzer settle over 240 matches each: mean 167 → 172
+  ticks, max 600 (one capped) → 462. All 60 old-rule recordings replay bit-identically (1,920
+  checkpoints).
 - ⚠️ **A CELL'S FLOOR AND BACK COLLIDERS STAND 0.5 IN OUTSIDE THE CAD FACE, NOT 1.5** (owner
   report 2026-09-27: "nectar get stuck on top of the main beam that connects two CELLs").
   `convert.py` pads every tray facet slab 1.5 in outward. Behind the DOWN cell that narrowed the

@@ -1702,6 +1702,47 @@ function settleChecks(check: Check): void {
       h1.length === h2.length && h1.every((h, i) => h === h2[i]),
       `${h1.length} samples, first mismatch ${h1.findIndex((h, i) => h !== h2[i])}`,
     );
+
+    // A PAIR (2026-10-03, 60 bot matches): two POLLEN that roll down the DOWN side's bar rest
+    // against each other in the corner at the down cell's back wall, each reading the other as
+    // broad support, so the shed above never fired for either (3 pairs, up to 12.5 s). The poses
+    // are measured off one of those matches (blue, up north), mirrored for the other pose.
+    const pair = (al: Alliance, up: 'north' | 'south', patch?: number) => {
+      const w = mkWorld3d('free', 1);
+      if (patch !== undefined) w.simPatch = patch;
+      w.balls.length = 0;
+      const hive = w.biobuzz!.hives[al];
+      hive.up = up;
+      delete hive.angle;
+      const s = up === 'north' ? 1 : -1;
+      const mk = (id: number, y: number, z: number): Artifact =>
+        ({ id, color: 'yellow', state: { kind: 'ground' }, pos: { x: hivePivotX(al), y: s * y }, vel: { x: 0, y: 0 }, z, vz: 0, r: BB_POLLEN_R }) as Artifact;
+      w.balls.push(mk(1, -6.37, 38.5), mk(2, -7.76, 40.91));
+      const off: (number | null)[] = [null, null];
+      for (let t = 0; t < OFF_BY; t++) {
+        step3d(w, 1 / 60, new Map());
+        w.balls.forEach((b, i) => {
+          if (off[i] === null && (b.state.kind === 'element' || (b.state.kind === 'ground' && b.z <= 0.05))) off[i] = t;
+        });
+      }
+      return { off, at: w.balls.map((b) => `${b.state.kind} z ${b.z.toFixed(2)}`).join(', ') };
+    };
+    for (const al of ['blue', 'red'] as const) {
+      for (const up of ['north', 'south'] as const) {
+        const now = pair(al, up);
+        check(
+          `HIVE3D (3D): a POLLEN PAIR in ${al}'s down-side corner (up ${up}) both leave the beam within ${OFF_BY} ticks`,
+          now.off.every((t) => t !== null),
+          `off at ${now.off.join(', ')}; ended ${now.at}`,
+        );
+        const old = pair(al, up, 2);
+        check(
+          `HIVE3D (3D): ...under SIM_PATCH 2 (an older replay) the same pair still sits there (${al}, up ${up})`,
+          old.off.every((t) => t === null),
+          `off at ${old.off.join(', ')}; ended ${old.at}`,
+        );
+      }
+    }
   }
 
   /**

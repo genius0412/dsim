@@ -3448,6 +3448,10 @@ export const BB3_HIVE_SHED_VZ = 10;
 export const BB3_HIVE_SHED_MAX = 8;
 export const BB3_HIVE_SHED_REGION_X = 26;
 export const BB3_HIVE_SHED_REGION_Y = 22.5;
+/** element bottom height (in) above which a loose element inside the footprint is UP ON THE HIVE,
+ * where a contact with another loose element up there is not a support (`groundRoll3d`'s PAIR
+ * note). Above any legal robot (29, R105.A) and below the HIVE's lowest structure (30.652). */
+export const BB3_HIVE_SHED_MIN_Z = 30;
 
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
  * clears it (R105.A lets a robot stand 29 in). */

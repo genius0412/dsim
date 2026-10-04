@@ -15,7 +15,7 @@ import type { Alliance, Artifact, BallState, RobotState, World } from '../../../
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB3_HIVE_SHED_AFTER, BB3_HIVE_SHED_MAX, BB3_HIVE_SHED_REGION_X, BB3_HIVE_SHED_REGION_Y, BB3_HIVE_SHED_SPEED, BB3_HIVE_SHED_VZ, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB3_HIVE_SHED_AFTER, BB3_HIVE_SHED_MAX, BB3_HIVE_SHED_MIN_Z, BB3_HIVE_SHED_REGION_X, BB3_HIVE_SHED_REGION_Y, BB3_HIVE_SHED_SPEED, BB3_HIVE_SHED_VZ, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
 import {
   addChassis3dColliders,
@@ -1686,6 +1686,17 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
   const shedOn = hiveShedOn(world);
   const trayRed = engine.hiveTrays.red.handle;
   const trayBlue = engine.hiveTrays.blue.handle;
+  // the bodies of LOOSE elements up on the HIVE: touching one of them is not a support (see the
+  // PAIR note in the contact loop)
+  const looseUp = new Set<number>();
+  if (shedOn) {
+    for (const o of world.balls) {
+      if ((o.state.kind === 'ground' || o.state.kind === 'flight') && o.z > BB3_HIVE_SHED_MIN_Z) {
+        const ob = engine.elements.get(o.id);
+        if (ob) looseUp.add(ob.handle);
+      }
+    }
+  }
   for (const b of world.balls) {
     if (!wantsDynamicBody(b.state)) continue;
     const body = engine.elements.get(b.id);
@@ -1788,8 +1799,25 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     let touchingNarrow = false;
     let touchingHive = false;
     const inHiveFootprint = Math.abs(b.pos.x) <= BB3_HIVE_SHED_REGION_X && Math.abs(b.pos.y) <= BB3_HIVE_SHED_REGION_Y;
+    const upOnHive = shedOn && inHiveFootprint && b.z > BB3_HIVE_SHED_MIN_Z;
     for (let i = 0; i < body.numColliders(); i++) {
       engine.world3d.contactPairsWith(body.collider(i), (other) => {
+        // ⚠️ **A PAIR ON THE BEAM IS TWO PERCHES, NOT A PILE** (2026-10-03). Another element is
+        // BROAD below so a garden-line pile can rest, but two loose POLLEN that roll down the DOWN
+        // side's bar into the corner at the down cell's back wall rest against each other, each
+        // reading the other as broad support, and both froze until the tray next swung (3 pairs
+        // in 60 bot matches, up to 12.5 s). Up on the HIVE, a contact with another LOOSE element
+        // up there counts as HIVE structure, so each gets the vibration and the shed. An element
+        // counted in a cell (`state.kind === 'element'`) is still broad: a ball sitting on a full
+        // cell's contents stays put.
+        if (upOnHive && other.shapeType() === RAPIER.ShapeType.Ball) {
+          const parent = other.parent();
+          if (parent && looseUp.has(parent.handle)) {
+            touchingNarrow = true;
+            touchingHive = true;
+            return;
+          }
+        }
         // ⚠️ **A CYLINDER IS NARROW FOR THE SAME REASON A HULL IS** (2026-09-21, with the drawn
         // height profile). Every cylinder in this world is a ROUND part of a robot — a turret's
         // swept disc (`bbMechEnvelopes`; the head is a hood, not a flat roof, and the disc is the
