@@ -118,7 +118,8 @@ export interface ImportSetup {
   wheelLayout?: WheelLayout;
   /** compute BIOBUZZ 3D height bands */
   bands: boolean;
-  /** triangle budget after simplification, ≤ `MAX_TRIANGLES` */
+  /** the detail a CAD file is read at: `FULL_DETAIL` (0) keeps every triangle, a positive number is
+   *  the budget the stored mesh is simplified to (`LIGHT_TRI_BUDGET`; 400k was "Maximum" once) */
   triBudget: number;
   drive: DriveSetup;
   /** the parts that move in a match (`docs/area/robot-import.md`, "Moving parts"). Absent = not yet
@@ -293,9 +294,12 @@ export function readStoredMotion(x: unknown): StoredMotion | null {
   return out;
 }
 
-/** the triangle cap after simplification (the default budget is `DEFAULT_TRI_BUDGET`, 250k) */
-export const MAX_TRIANGLES = 400_000;
-export const MAX_MESH_BYTES = 4 * 1024 * 1024;
+/**
+ * The stored GLB's ceiling: a bake over it is simplified until it fits (`bakeSceneHere`). About 14M
+ * triangles at ~9 bytes each, over twice the largest kit measured (goBILDA's DECODE bot, 6.24M);
+ * it was 4 MiB while every robot was simplified to 250k.
+ */
+export const MAX_MESH_BYTES = 128 * 1024 * 1024;
 
 // ---- measurement ---------------------------------------------------------------------------
 
@@ -408,8 +412,9 @@ export interface LibraryRobot {
   id: string;
   game: GameId;
   spec: RobotSpec;
-  /** simplified, normalised GLB (stored mesh frame above), ≤ 4 MB, ≤ 400k triangles; quantised and
-   *  meshopt-packed since 2026-10-03 (engine/storedGlb.ts), a float GLB when saved before */
+  /** normalised GLB (stored mesh frame above), ≤ `MAX_MESH_BYTES`: every triangle at Full detail, 250k
+   *  at Light (≤ 4 MB and ≤ 400k before 2026-10-04); quantised and meshopt-packed since 2026-10-03
+   *  (engine/storedGlb.ts), a float GLB when saved before */
   mesh: Blob;
   /** top-down orthographic PNG, `TOP_IMAGE_PX`, transparent; frame: `topImageFrame` */
   top: Blob;

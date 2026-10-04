@@ -29,6 +29,9 @@ import { glbUsesExtensions } from './storedGlb';
 const MIN_TRIANGLES = 400;
 /** aim a little under the cap: the export's size is only roughly linear in the triangle count */
 const AIM = 0.85;
+/** the float writer's bytes a triangle: about 44–48 on CAD (`storedGlb.ts`), and never under 20 */
+const FLOAT_BYTES = 46;
+const FLOAT_FLOOR_BYTES = 20;
 
 const creasedScene = (scene: StoredScene): StoredScene => ({ rest: creaseParts(scene.rest), moving: scene.moving.map((m) => ({ ...m, parts: creaseParts(m.parts) })) });
 
@@ -52,10 +55,16 @@ export async function liteMesh(glb: ArrayBuffer, maxBytes: number): Promise<Arra
   let bytes = glb.byteLength;
   if (glbUsesExtensions(glb)) {
     // ⚠️ THE RELAY TAKES NO EXTENSION, so a compressed mesh always goes out re-written as float: whole
-    // when that fits, else aimed from the float size (the compressed size says nothing about it)
-    const whole = await exportStoredScene(creasedScene(scene));
-    if (whole.byteLength <= maxBytes) return whole;
-    bytes = whole.byteLength;
+    // when that fits, else aimed from the float size (the compressed size says nothing about it).
+    // A mesh that cannot fit by eight times (a Full robot: millions of triangles, a float copy of
+    // hundreds of MB) is aimed from the float writer's usual size instead of writing it to find out.
+    const total = triangleCount(sceneParts(scene));
+    if (total * FLOAT_FLOOR_BYTES > maxBytes * 8) bytes = total * FLOAT_BYTES;
+    else {
+      const whole = await exportStoredScene(creasedScene(scene));
+      if (whole.byteLength <= maxBytes) return whole;
+      bytes = whole.byteLength;
+    }
   }
   for (let pass = 0; pass < 6; pass++) {
     const total = triangleCount(sceneParts(scene));

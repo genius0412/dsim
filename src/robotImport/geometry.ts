@@ -35,10 +35,23 @@ export const HULL_QUANTUM = 1 / 64;
 export const MAX_HULL_VERTS = 16;
 export const MAX_BAND_VERTS = 12;
 export const MAX_BANDS = 3;
-/** the triangle budget a fresh setup starts on (the hard cap is `MAX_TRIANGLES`, 400k). At 250k the
- *  REV starter bot is its 2.31M-triangle CAD to 0.17 mm (p90), and the compressed stored GLB is
- *  2.0–2.3 MiB of the 4 MiB (`docs/area/robot-import.md`, "Budgets") */
-export const DEFAULT_TRI_BUDGET = 250_000;
+/**
+ * `ImportSetup.triBudget` for FULL detail: every triangle the reader makes is kept, previewed, stored
+ * and drawn in the match; only the measurement reads a simplified copy (`MEASURE_TRI_BUDGET`).
+ * Any budget that is not a positive number reads as Full (`isFullDetail`).
+ */
+export const FULL_DETAIL = 0;
+/** the LIGHT detail, for a slower computer: the stored mesh simplified to this many triangles. At
+ *  250k the REV starter bot is its 2.31M-triangle CAD to 0.17 mm (p90), 2.0–2.3 MiB stored
+ *  (`docs/area/robot-import.md`, "Budgets") */
+export const LIGHT_TRI_BUDGET = 250_000;
+/** the detail a fresh setup starts on */
+export const DEFAULT_TRI_BUDGET = FULL_DETAIL;
+/** what a model kept in full is MEASURED on (the footprint, the wheels, the part finders, picking):
+ *  a simplification that keeps every body (`simplifyLists`' `keepBodies`) */
+export const MEASURE_TRI_BUDGET = 250_000;
+/** does this budget keep every triangle? */
+export const isFullDetail = (triBudget: number): boolean => !(triBudget > 0);
 /** the extent an FTC robot's largest side is scored against when guessing units */
 const TYPICAL_ROBOT_IN = 15;
 /** the format's own unit gets this much head start in log space (about a factor of 1.4) */

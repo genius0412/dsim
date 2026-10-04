@@ -5,8 +5,8 @@
  *
  * The editor does not read a dropped file here: `importSession.ts` sends GLB, glTF, STL, OBJ, PLY
  * and 3MF to the import worker, which runs `parse.ts` there, and STEP to its own worker. This is the
- * path for a stored mesh or a share file (≤ 4 MB), for the dev harness, and for a browser that
- * cannot start a worker (3MF then uses the page's own `DOMParser`).
+ * path for the dev harness and for a browser that cannot start a worker (3MF then uses the page's
+ * own `DOMParser`); a stored mesh and a share file go to the import worker like any other file.
  *
  * A dropped .zip is opened here only as far as its directory (the file's last few KB), to see
  * which model is inside; the model itself is inflated where it is read.

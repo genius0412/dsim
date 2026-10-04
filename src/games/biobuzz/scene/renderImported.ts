@@ -171,11 +171,45 @@ function evict(): void {
 export function floatAttribute(geo: THREE.BufferGeometry, name: string): void {
   const a = geo.getAttribute(name);
   if (!a) return;
-  if (!(a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute && a.array instanceof Float32Array && !a.normalized) return;
+  const inter = (a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute ? (a as THREE.InterleavedBufferAttribute) : null;
+  if (!inter && a.array instanceof Float32Array && !a.normalized) return;
   const k = a.itemSize;
   const out = new Float32Array(a.count * k);
-  for (let i = 0; i < a.count; i++) {
-    for (let c = 0; c < k; c++) out[i * k + c] = a.getComponent(i, c);
+  // straight off the typed array, as `getComponent` reads it (three's `denormalize`, value for
+  // value): a call per component took ~0.4 s on the main thread for a 5.7M-triangle robot
+  const src = inter ? inter.data.array : a.array;
+  const stride = inter ? inter.data.stride : k;
+  const off = inter ? inter.offset : 0;
+  const div = !a.normalized
+    ? 0
+    : src instanceof Uint8Array
+      ? 255
+      : src instanceof Int8Array
+        ? 127
+        : src instanceof Uint16Array
+          ? 65535
+          : src instanceof Int16Array
+            ? 32767
+            : src instanceof Uint32Array
+              ? 4294967295
+              : src instanceof Int32Array
+                ? 2147483647
+                : 0;
+  const signed = src instanceof Int8Array || src instanceof Int16Array || src instanceof Int32Array;
+  if (a.normalized && !div) {
+    for (let i = 0; i < a.count; i++) for (let c = 0; c < k; c++) out[i * k + c] = a.getComponent(i, c);
+  } else {
+    for (let i = 0; i < a.count; i++) {
+      const s = i * stride + off;
+      for (let c = 0; c < k; c++) {
+        let v = src[s + c] as number;
+        if (div) {
+          v /= div;
+          if (signed && v < -1) v = -1;
+        }
+        out[i * k + c] = v;
+      }
+    }
   }
   geo.setAttribute(name, new THREE.BufferAttribute(out, k));
 }

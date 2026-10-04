@@ -11,12 +11,16 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import type { ImportedMech, Vec2 } from '../../types';
 import { bbox, triangleBody, type MeshPart } from '../geometry';
 import type { MotionPart } from '../types';
-import { splitMoving } from './bake';
+import { splitMoving } from './bakeScene';
 import { buildMeshGroup, creaseParts, disposeTree } from './meshGroup';
 
 export interface PreviewState {
-  /** the normalised model, MODEL frame (compared by identity) */
+  /** the normalised model, MODEL frame (compared by identity): what a click picks, and what is drawn
+   *  unless `shown` is set */
   parts: MeshPart[] | null;
+  /** every triangle of a model kept at Full detail, MODEL frame (compared by identity): drawn in place
+   *  of `parts`, which stay the hidden mesh a click is tested against (`NormalisedModel.shownParts`) */
+  shown?: MeshPart[] | null;
   hull: Vec2[] | null;
   /** FL, FR, BL, BR */
   wheels: Vec2[] | null;
@@ -125,6 +129,9 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   const overlays = new THREE.Group();
   scene.add(overlays);
   let model: THREE.Group | null = null;
+  /** what a click is tested against when `shown` is drawn: the measured parts, never drawn, so the
+   *  ray walks a quarter of a million triangles and not every one of the CAD */
+  let pickModel: THREE.Group | null = null;
 
   const camera = new THREE.PerspectiveCamera(35, 1, 0.5, 2000);
   camera.up.set(0, 0, 1);
@@ -136,6 +143,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
 
   const state: PreviewState = {
     parts: null,
+    shown: null,
     hull: null,
     wheels: null,
     contacts: null,
@@ -257,9 +265,17 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       disposeTree(model);
       model = null;
     }
+    if (pickModel) {
+      disposeTree(pickModel);
+      pickModel = null;
+    }
     moving = [];
     if (!state.parts) return;
-    const parts = creaseParts(state.parts);
+    if (state.shown) {
+      pickModel = buildMeshGroup(state.parts, 'pick');
+      pickModel.updateMatrixWorld(true);
+    }
+    const parts = creaseParts(state.shown ?? state.parts);
     const motion = state.motion ?? [];
     const { rest, moving: groups } = splitMoving(parts, motion);
     model = buildMeshGroup(rest, 'preview');
@@ -327,12 +343,13 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
   const bodyAt = (clientX: number, clientY: number): number => {
-    if (!model) return -1;
+    const target = pickModel ?? model;
+    if (!target) return -1;
     const r = canvas.getBoundingClientRect();
     if (!r.width || !r.height) return -1;
     ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObject(model, true)[0];
+    const hit = ray.intersectObject(target, true)[0];
     const geo = (hit?.object as THREE.Mesh | undefined)?.geometry as THREE.BufferGeometry | undefined;
     const attr = geo?.getAttribute('_body');
     if (!hit?.face || !attr) return -1;
@@ -442,7 +459,10 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   };
 
   const update = (next: Partial<PreviewState>): void => {
-    const modelChanged = (next.parts !== undefined && next.parts !== state.parts) || (next.motion !== undefined && next.motion !== state.motion);
+    const modelChanged =
+      (next.parts !== undefined && next.parts !== state.parts) ||
+      (next.shown !== undefined && next.shown !== state.shown) ||
+      (next.motion !== undefined && next.motion !== state.motion);
     const tintChanged = modelChanged || (next.highlight !== undefined && next.highlight !== state.highlight) || (next.picking !== undefined && next.picking !== state.picking);
     Object.assign(state, next);
     if (!state.picking && hover >= 0) {
@@ -485,6 +505,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       controls.removeEventListener('change', render);
       controls.dispose();
       disposeTree(scene);
+      if (pickModel) disposeTree(pickModel);
       envMap.dispose();
       renderer.dispose();
       renderer.forceContextLoss();

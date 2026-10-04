@@ -11,7 +11,7 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { defaultImportSetup, orientKey, transformParts } from '../geometry';
+import { defaultImportSetup, isFullDetail, orientKey, transformParts } from '../geometry';
 import { coaxialBodies, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, motionAsStored, mountedBodies } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
@@ -95,9 +95,14 @@ function turretBuild(game: GameId, spec: RobotSpec): boolean {
   return !decodeFixedLauncher(spec);
 }
 
-/** the drop box's line for an import stage reported by the engine (worker or not) */
-const progressLabel = (p: ImportProgress, file: string): string =>
-  p.stage === 'simplify' ? COPY.phase.simplify((p.tris ?? 0).toLocaleString('en-US')) : p.stage === 'measure' ? COPY.phase.measure : STAGE_LABEL(p.stage, file);
+/** the drop box's line for an import stage reported by the engine (worker or not); at Full detail
+ *  nothing the player sees is simplified, so that stage says it is preparing the triangles */
+const progressLabel = (p: ImportProgress, file: string, full: boolean): string =>
+  p.stage === 'simplify'
+    ? (full ? COPY.phase.prepare : COPY.phase.simplify)((p.tris ?? 0).toLocaleString('en-US'))
+    : p.stage === 'measure'
+      ? COPY.phase.measure
+      : STAGE_LABEL(p.stage, file);
 
 /** a measurement still running after this long says so; a shorter one would only flicker */
 const MEASURING_NOTICE_MS = 300;
@@ -207,8 +212,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       let stepStart = 0;
       try {
         // read, weld and simplify in the import worker; the main thread only paints the progress
+        const budget = opts.setup?.triBudget ?? draftRef.current?.doc.setup.triBudget ?? defaultImportSetup().triBudget;
+        const full = isFullDetail(budget);
         const prepared = await e.importModel(files, {
-          budget: draftRef.current?.doc.setup.triBudget ?? defaultImportSetup().triBudget,
+          budget,
           signal: abort.signal,
           onProgress: (p) => {
             if (my !== gen.current) return;
@@ -217,7 +224,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             if (p.stage === 'step-parse' && !stepStart) stepStart = performance.now();
             const elapsed = stepStart ? (performance.now() - stepStart) / 1000 : 0;
             const left = p.stage === 'step-parse' && p.frac && p.frac >= 0.25 && p.frac < 1 && elapsed >= 10 ? (elapsed * (1 - p.frac)) / p.frac : null;
-            setPhase({ title: name, label: left === null ? progressLabel(p, name) : COPY.phase.stepLeft(name, left), frac: p.frac });
+            setPhase({ title: name, label: left === null ? progressLabel(p, name, full) : COPY.phase.stepLeft(name, left), frac: p.frac });
           },
         });
         if (my !== gen.current) return;
@@ -318,7 +325,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const e = await ensureEngine();
         const spec: RobotSpec = { ...coerceSpec(payload.spec, undefined, game), name: payload.name.slice(0, 24) };
         if (!spec.imported) throw new Error('share file without an import');
-        const model = await e.loadModel([file]);
+        // read in the import worker (a share file holds every triangle of a Full robot, tens of MB),
+        // at a budget no file reaches: nothing simplified, nothing measured, only the pictures drawn
+        const model = await e.importModel([file], { budget: Number.MAX_SAFE_INTEGER });
         const robotParts = transformParts(model.parts, STORED_MESH_TO_ROBOT);
         const top = await e.renderTop(robotParts, spec.imported.hull);
         const thumb = await e.renderThumb(robotParts);
@@ -572,7 +581,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const stamp = JSON.stringify([{ ...cur.doc.setup, tune: undefined }, cur.doc.mech, { ...built.spec.imported, tune: undefined }]);
     if (cur.baked?.stamp === stamp) return cur.baked;
     const r = await e.bake({
-      modelParts: normalised.modelParts,
+      // every triangle at Full detail; what was measured otherwise
+      modelParts: normalised.shownParts ?? normalised.modelParts,
       origin: normalised.measurement.origin,
       descriptor: built.spec.imported,
       motion: normalised.measurement.motion,
@@ -703,8 +713,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }));
     if (!files) return;
     const keepMech = doc.mech;
+    // the same file read again: the front as it was found (detected or assumed, and any turn since)
+    // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
+    const keepFront = doc.detected ? { yaw: doc.detected.yaw, front: doc.detected.front, cue: doc.detected.cue } : null;
     void readModel(files, { setup, spec: doc.spec }).then(() => {
-      if (keepMech) update((d) => ({ ...d, mech: keepMech }));
+      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }));
     });
   };
 
@@ -818,6 +831,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const previewState = m && normalised
     ? {
         parts: normalised.modelParts,
+        shown: normalised.shownParts ?? null,
         hull: m.hull,
         wheels: shownWheels,
         contacts: m.wheels.contacts,

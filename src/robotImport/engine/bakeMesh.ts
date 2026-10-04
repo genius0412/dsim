@@ -11,8 +11,10 @@
  * child. Everything else is the static rest, one mesh per colour, as it always was.
  */
 import * as THREE from 'three';
+import type { ImportedRobot, Vec2 } from '../../types';
 import { transformParts, triangleCount, type MeshPart } from '../geometry';
-import { MAX_MESH_BYTES, ROBOT_TO_STORED_MESH, STORED_MESH_TO_ROBOT, readStoredMotion, type StoredMotion } from '../types';
+import { MAX_MESH_BYTES, ROBOT_TO_STORED_MESH, STORED_MESH_TO_ROBOT, readStoredMotion, type MotionPart, type StoredMotion } from '../types';
+import { storedSceneOf, toRobotLocal } from './bakeScene';
 import { creaseParts } from './meshGroup';
 import { partsFromObject } from './parse';
 import { simplifyLists } from './simplify';
@@ -97,6 +99,28 @@ export async function bakeSceneHere(scene: StoredScene): Promise<{ glb: ArrayBuf
     refits++;
   }
   return { glb, scene: cur, refits };
+}
+
+/** what the bake's mesh half needs (`bake.ts`'s `BakeInput` less the pictures) */
+export interface BakeModelInput {
+  /** MODEL frame, with normals */
+  modelParts: MeshPart[];
+  /** the robot-local origin in the MODEL frame */
+  origin: Vec2;
+  descriptor: ImportedRobot;
+  /** the moving parts as measured (MODEL frame, starting pose) */
+  motion: MotionPart[];
+}
+
+/**
+ * THE BAKE'S MESH HALF: MODEL-frame parts → robot-local, creased, split into the stored scene, written
+ * (`bakeSceneHere`). Returns the GLB and the parts the two pictures are drawn from: the stored scene
+ * back in the robot frame (every part where it starts), so they show what is stored.
+ */
+export async function bakeModelHere(input: BakeModelInput): Promise<{ glb: ArrayBuffer; pictures: MeshPart[]; refits: number }> {
+  const creased = creaseParts(toRobotLocal(input.modelParts, input.origin));
+  const { glb, scene, refits } = await bakeSceneHere(storedSceneOf(creased, input.motion, input.origin, input.descriptor));
+  return { glb, pictures: transformParts(sceneParts(scene), STORED_MESH_TO_ROBOT), refits };
 }
 
 /** robot-local creased parts with no moving parts → the stored GLB (the old single-group bake) */
