@@ -761,7 +761,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-loading` | src/ui/shell.css:2298 | 34 |
+| `.ds-loading` | src/ui/shell.css:2298 | 35 |
 
 ## `ds-lobbies` — 1
 

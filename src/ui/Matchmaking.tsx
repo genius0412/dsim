@@ -18,7 +18,7 @@ import { preloadRoomView } from '../net/roomView';
 import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
 import {
-  parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds,
+  parkQueue, takeQueue, peekQueue, updateQueue, dropQueue, elapsedSeconds,
   type ParkedQueue, type ParkedStrategy,
 } from './queueKeeper';
 import { useParkedQueue } from './QueueBar';
@@ -31,6 +31,7 @@ import { OptRow, ToggleRow } from './OptRow';
 import { formatLabel, type PendingChallenge } from './challenge';
 import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
 import { standardRobotFor } from '../settings';
+import { authClient, authEnabled } from '../lib/authClient';
 
 /**
  * ONE string for the one fact, on both waiting screens.
@@ -126,6 +127,14 @@ export function Matchmaking({
   /** one-shot: clear it so a later ordinary visit to /ranked is an ordinary queue */
   onChallengeConsumed?: () => void;
 }) {
+  /**
+   * STILL FINDING OUT WHO THIS IS. On a page load the session takes a round trip to the auth
+   * server, and `signedIn` lands one effect after that (AccountSync), so "signed out" on the
+   * first renders only means "not known yet". Without this a signed-in player who reloaded here
+   * saw "Ranked needs an account" and a SIGN IN button until it caught up.
+   */
+  const session = authEnabled ? authClient!.useSession() : null;
+  const authResolving = !signedIn && !!session && (session.isPending || !!session.data?.user);
   // a challenge dictates the bucket — you agreed on a format, there is nothing
   // left to pick
   const [mode, setMode] = useState<QueueMode>(challenge?.mode ?? '1v1');
@@ -212,6 +221,9 @@ export function Matchmaking({
   // prop that vanishes mid-search would otherwise silently turn a private
   // challenge into an open queue entry on any reconnect.
   const challengeRef = useRef<PendingChallenge | null>(challenge ?? null);
+  /** this screen has done its one-time arrival: adopted a parked search, or (signed in) gone back
+   *  to a staged match or queued its challenge. See the effect keyed on `signedIn`. */
+  const arrivedRef = useRef(false);
   /**
    * WHAT THIS SCREEN KNOWS ABOUT A MATCH THAT HAS ALREADY BEEN FOUND.
    *
@@ -401,6 +413,8 @@ export function Matchmaking({
   const adoptParked = (): boolean => {
     const p = takeQueue();
     if (!p) return false;
+    // an adopted search IS the arrival, even one that ended: nothing to rejoin, nothing to queue
+    arrivedRef.current = true;
     const lobby = p.lobby;
     lobbyRef.current = lobby;
     setMode(p.mode);
@@ -489,41 +503,60 @@ export function Matchmaking({
     return true;
   };
 
-  // Arriving from a challenge, there is nothing to choose and nothing to confirm —
-  // both sides already agreed on the format, and whoever gets here first is
-  // waiting on the other. So queue on mount rather than showing a FIND MATCH
-  // button they'd have to press to start waiting.
+  // A search parked while this screen was away is adopted on mount, signed in or not: it can only
+  // exist because this account queued from this page, and App drops it on a real sign-out.
   useEffect(() => {
-    if (adoptParked()) return; // already in the queue — do not enter it twice
-    /**
-     * THE WAY BACK FROM A RELOAD. Nothing is parked — a page load takes the keeper with
-     * it — but `stagedMatch` survives in storage, and the server is still holding this
-     * account's seat in that room (`Room.detach` holds it, `seatFor` hands it back on
-     * the account rather than on a client id the reload destroyed).
-     *
-     * Rejoining, not offering to: the clocks did not pause while the page was loading,
-     * and a card the player has to find costs them the seconds this exists to save. It
-     * is the same call the assignment itself makes, so the screen that comes up is the
-     * one they were looking at.
-     *
-     * Signed-out is a dead end by construction — the seat is keyed to the account — so
-     * a stale record is dropped rather than acted on.
-     */
-    const staged = loadStagedMatch();
-    if (staged) {
-      if (signedIn) {
-        joinAssignedMatch(staged.room);
-        return;
-      }
-      clearStagedMatch();
-    }
-    if (!challengeRef.current || !signedIn) return;
-    onChallengeConsumed?.();
-    void find();
-    // mount only: `find` closes over state that is stable for this screen's life,
-    // and re-running would double-queue
+    adoptParked();
+    // mount only: a search parked later is the store watcher's (below)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * THE WAY BACK FROM A RELOAD. Nothing is parked — a page load takes the keeper with it — but
+   * `stagedMatch` survives in storage, and the server is still holding this account's seat in
+   * that room (`Room.detach` holds it, `seatFor` hands it back on the account rather than on a
+   * client id the reload destroyed).
+   *
+   * Rejoining, not offering to: the clocks did not pause while the page was loading, and a card
+   * the player has to find costs them the seconds this exists to save. It is the same call the
+   * assignment itself makes, so the screen that comes up is the one they were looking at.
+   *
+   * ⚠️ KEYED ON `signedIn`, NOT RUN ON MOUNT. Sign-in resolves asynchronously, and a page load is
+   * the one way this record is read with nothing parked, so it is exactly when the first render is
+   * signed out (`accountUserId` arrives from AccountSync's effect, after the auth server answers).
+   * This used to run on mount and DROP the record on that first signed-out render, so the reload it
+   * exists for always lost the seat and was charged the no-show. The record is dropped only on a
+   * real signed-in → signed-out TRANSITION (the seat belongs to the account that left) or by its
+   * own TTL (`loadStagedMatch`). Once per screen, and never over a socket this screen already
+   * holds or a parked search it is about to adopt.
+   *
+   * Arriving from a challenge, there is nothing to choose and nothing to confirm — both sides
+   * already agreed on the format, and whoever gets here first is waiting on the other. So it
+   * queues on arrival rather than showing a FIND MATCH button they'd have to press to start
+   * waiting. A staged match wins over it: that seat is already being counted down.
+   */
+  const wasSignedInRef = useRef(false);
+  useEffect(() => {
+    const wasSignedIn = wasSignedInRef.current;
+    wasSignedInRef.current = signedIn;
+    if (!signedIn) {
+      if (wasSignedIn) clearStagedMatch();
+      return;
+    }
+    if (arrivedRef.current) return;
+    arrivedRef.current = true;
+    if (lobbyRef.current || peekQueue()) return;
+    const staged = loadStagedMatch();
+    if (staged) {
+      joinAssignedMatch(staged.room);
+      return;
+    }
+    if (!challengeRef.current) return;
+    onChallengeConsumed?.();
+    void find();
+    // `arrivedRef` makes this once per screen; re-running `find` would double-queue
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
 
   /**
    * ADOPTION IS NOT A MOUNT EVENT — it is "a parked search exists and nothing here owns it".
@@ -1017,6 +1050,7 @@ export function Matchmaking({
   // ranked requires an account (ELO / leaderboard). Custom rooms stay open to
   // everyone — the server also rejects an anonymous queue as a backstop.
   if (!signedIn) {
+    if (authResolving) return page('Ranked match', '', <p className="ds-loading">Loading…</p>);
     return page(
       'Ranked match',
       '',
