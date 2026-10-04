@@ -1551,6 +1551,9 @@
 .ds-foot-group {
   display: flex;
   flex-wrap: wrap;
+  /* baseline: "Data" is a <button> among <a>s, and a stretched button centres its label
+     vertically, so it sat lower than its neighbours */
+  align-items: baseline;
   gap: var(--ds-s-2) var(--ds-s-4);
 }
 

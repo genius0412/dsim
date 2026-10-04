@@ -19,47 +19,47 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-replay` | src/ui/shell.css:2297 | 18 |
-| `.ds-replay-actions` | src/ui/shell.css:3155 | 1 |
-| `.ds-replay-canvas` | src/ui/shell.css:3218 | 1 |
-| `.ds-replay-controls` | src/ui/shell.css:3229 | 1 |
-| `.ds-replay-drift` | src/ui/shell.css:3125 | 1 |
-| `.ds-replay-pen` | src/ui/shell.css:3436 | 1 |
-| `.ds-replay-play` | src/ui/shell.css:3263 | 1 |
-| `.ds-replay-rail` | src/ui/shell.css:3485 | 1 |
-| `.ds-replay-rec` | src/ui/shell.css:3855 | 1 |
-| `.ds-replay-saving` | src/ui/shell.css:3908 | 1 |
-| `.ds-replay-score` | src/ui/shell.css:3164 | 2 |
-| `.ds-replay-seek` | src/ui/shell.css:3242 | 2 |
-| `.ds-replay-stage` | src/ui/shell.css:3479 | 1 |
-| `.ds-replay-time` | src/ui/shell.css:3251 | 1 |
-| `.ds-replay-top` | src/ui/shell.css:3141 | 1 |
-| `.ds-replay-viewport` | src/ui/shell.css:3220 | 1 |
+| `.ds-replay` | src/ui/shell.css:2300 | 18 |
+| `.ds-replay-actions` | src/ui/shell.css:3158 | 1 |
+| `.ds-replay-canvas` | src/ui/shell.css:3221 | 1 |
+| `.ds-replay-controls` | src/ui/shell.css:3232 | 1 |
+| `.ds-replay-drift` | src/ui/shell.css:3128 | 1 |
+| `.ds-replay-pen` | src/ui/shell.css:3439 | 1 |
+| `.ds-replay-play` | src/ui/shell.css:3266 | 1 |
+| `.ds-replay-rail` | src/ui/shell.css:3488 | 1 |
+| `.ds-replay-rec` | src/ui/shell.css:3858 | 1 |
+| `.ds-replay-saving` | src/ui/shell.css:3911 | 1 |
+| `.ds-replay-score` | src/ui/shell.css:3167 | 2 |
+| `.ds-replay-seek` | src/ui/shell.css:3245 | 2 |
+| `.ds-replay-stage` | src/ui/shell.css:3482 | 1 |
+| `.ds-replay-time` | src/ui/shell.css:3254 | 1 |
+| `.ds-replay-top` | src/ui/shell.css:3144 | 1 |
+| `.ds-replay-viewport` | src/ui/shell.css:3223 | 1 |
 
 ## `ds-startpos` — 12
 
 | class | declared | used |
 |---|---|---|
-| `.ds-startpos` | src/ui/shell.css:5956 | 40 |
-| `.ds-startpos-canvas` | src/ui/shell.css:6482 | 6 |
-| `.ds-startpos-del` | src/ui/shell.css:6624 | 3 |
-| `.ds-startpos-inputs` | src/ui/shell.css:6541 | 3 |
-| `.ds-startpos-presets` | src/ui/shell.css:6606 | 3 |
-| `.ds-startpos-role` | src/ui/shell.css:6597 | 3 |
-| `.ds-startpos-side` | src/ui/shell.css:6496 | 3 |
-| `.ds-startpos-stage` | src/ui/shell.css:6473 | 4 |
-| `.ds-startpos-status` | src/ui/shell.css:6503 | 3 |
-| `.ds-startpos-toggle` | src/ui/shell.css:2146 | 3 |
-| `.ds-startpos-tools` | src/ui/shell.css:6569 | 3 |
-| `.ds-startpos-where` | src/ui/shell.css:6526 | 1 |
+| `.ds-startpos` | src/ui/shell.css:5959 | 40 |
+| `.ds-startpos-canvas` | src/ui/shell.css:6485 | 6 |
+| `.ds-startpos-del` | src/ui/shell.css:6627 | 3 |
+| `.ds-startpos-inputs` | src/ui/shell.css:6544 | 3 |
+| `.ds-startpos-presets` | src/ui/shell.css:6609 | 3 |
+| `.ds-startpos-role` | src/ui/shell.css:6600 | 3 |
+| `.ds-startpos-side` | src/ui/shell.css:6499 | 3 |
+| `.ds-startpos-stage` | src/ui/shell.css:6476 | 4 |
+| `.ds-startpos-status` | src/ui/shell.css:6506 | 3 |
+| `.ds-startpos-toggle` | src/ui/shell.css:2149 | 3 |
+| `.ds-startpos-tools` | src/ui/shell.css:6572 | 3 |
+| `.ds-startpos-where` | src/ui/shell.css:6529 | 1 |
 
 ## `ds-profile` — 11
 
 | class | declared | used |
 |---|---|---|
 | `.ds-profile-actions` | src/ui/shell.css:646 | 1 |
-| `.ds-profile-friend-actions` | src/ui/shell.css:2888 | 3 |
-| `.ds-profile-guest` | src/ui/shell.css:2294 | 1 |
+| `.ds-profile-friend-actions` | src/ui/shell.css:2891 | 3 |
+| `.ds-profile-guest` | src/ui/shell.css:2297 | 1 |
 | `.ds-profile-id` | src/ui/shell.css:597 | 1 |
 | `.ds-profile-label` | src/ui/shell.css:638 | 1 |
 | `.ds-profile-name` | src/ui/shell.css:620 | 1 |
@@ -89,67 +89,67 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-closed` | src/ui/shell.css:9292 | 14 |
-| `.ds-closed-access` | src/ui/shell.css:9345 | 1 |
-| `.ds-closed-actions` | src/ui/shell.css:9337 | 1 |
-| `.ds-closed-brand` | src/ui/shell.css:9315 | 1 |
-| `.ds-closed-card` | src/ui/shell.css:9303 | 1 |
-| `.ds-closed-msg` | src/ui/shell.css:9332 | 1 |
-| `.ds-closed-note` | src/ui/shell.css:9354 | 4 |
-| `.ds-closed-title` | src/ui/shell.css:9325 | 3 |
-| `.ds-closed-word` | src/ui/shell.css:9320 | 1 |
+| `.ds-closed` | src/ui/shell.css:9295 | 14 |
+| `.ds-closed-access` | src/ui/shell.css:9348 | 1 |
+| `.ds-closed-actions` | src/ui/shell.css:9340 | 1 |
+| `.ds-closed-brand` | src/ui/shell.css:9318 | 1 |
+| `.ds-closed-card` | src/ui/shell.css:9306 | 1 |
+| `.ds-closed-msg` | src/ui/shell.css:9335 | 1 |
+| `.ds-closed-note` | src/ui/shell.css:9357 | 4 |
+| `.ds-closed-title` | src/ui/shell.css:9328 | 3 |
+| `.ds-closed-word` | src/ui/shell.css:9323 | 1 |
 
 ## `ds-dl` — 9
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dl` | src/ui/shell.css:3235 | 16 |
-| `.ds-dl-get` | src/ui/shell.css:6426 | 1 |
-| `.ds-dl-hero` | src/ui/shell.css:6401 | 1 |
-| `.ds-dl-note` | src/ui/shell.css:3840 | 2 |
-| `.ds-dl-opt` | src/ui/shell.css:1653 | 2 |
-| `.ds-dl-plat` | src/ui/shell.css:6411 | 1 |
-| `.ds-dl-pop` | src/ui/shell.css:3755 | 3 |
-| `.ds-dl-row` | src/ui/shell.css:3821 | 2 |
-| `.ds-dl-sponsor` | src/ui/shell.css:7543 | 1 |
+| `.ds-dl` | src/ui/shell.css:3238 | 16 |
+| `.ds-dl-get` | src/ui/shell.css:6429 | 1 |
+| `.ds-dl-hero` | src/ui/shell.css:6404 | 1 |
+| `.ds-dl-note` | src/ui/shell.css:3843 | 2 |
+| `.ds-dl-opt` | src/ui/shell.css:1656 | 2 |
+| `.ds-dl-plat` | src/ui/shell.css:6414 | 1 |
+| `.ds-dl-pop` | src/ui/shell.css:3758 | 3 |
+| `.ds-dl-row` | src/ui/shell.css:3824 | 2 |
+| `.ds-dl-sponsor` | src/ui/shell.css:7546 | 1 |
 
 ## `ds-standing` — 9
 
 | class | declared | used |
 |---|---|---|
-| `.ds-standing` | src/ui/shell.css:6961 | 16 |
-| `.ds-standing-cap` | src/ui/shell.css:7067 | 3 |
-| `.ds-standing-head` | src/ui/shell.css:6981 | 2 |
-| `.ds-standing-headtext` | src/ui/shell.css:6986 | 2 |
-| `.ds-standing-lock` | src/ui/shell.css:6945 | 1 |
-| `.ds-standing-log` | src/ui/shell.css:7072 | 1 |
-| `.ds-standing-name` | src/ui/shell.css:7053 | 2 |
-| `.ds-standing-note` | src/ui/shell.css:7097 | 1 |
-| `.ds-standing-what` | src/ui/shell.css:7092 | 1 |
+| `.ds-standing` | src/ui/shell.css:6964 | 16 |
+| `.ds-standing-cap` | src/ui/shell.css:7070 | 3 |
+| `.ds-standing-head` | src/ui/shell.css:6984 | 2 |
+| `.ds-standing-headtext` | src/ui/shell.css:6989 | 2 |
+| `.ds-standing-lock` | src/ui/shell.css:6948 | 1 |
+| `.ds-standing-log` | src/ui/shell.css:7075 | 1 |
+| `.ds-standing-name` | src/ui/shell.css:7056 | 2 |
+| `.ds-standing-note` | src/ui/shell.css:7100 | 1 |
+| `.ds-standing-what` | src/ui/shell.css:7095 | 1 |
 
 ## `ds-hero` — 8
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hero` | src/ui/shell.css:5190 | 9 |
-| `.ds-hero-build` | src/ui/shell.css:5272 | 1 |
-| `.ds-hero-in` | src/ui/shell.css:5201 | 1 |
-| `.ds-hero-info` | src/ui/shell.css:5245 | 1 |
-| `.ds-hero-name` | src/ui/shell.css:5255 | 1 |
-| `.ds-hero-stats` | src/ui/shell.css:5280 | 1 |
-| `.ds-hero-team` | src/ui/shell.css:5256 | 1 |
-| `.ds-hero-view` | src/ui/shell.css:4967 | 1 |
+| `.ds-hero` | src/ui/shell.css:5193 | 9 |
+| `.ds-hero-build` | src/ui/shell.css:5275 | 1 |
+| `.ds-hero-in` | src/ui/shell.css:5204 | 1 |
+| `.ds-hero-info` | src/ui/shell.css:5248 | 1 |
+| `.ds-hero-name` | src/ui/shell.css:5258 | 1 |
+| `.ds-hero-stats` | src/ui/shell.css:5283 | 1 |
+| `.ds-hero-team` | src/ui/shell.css:5259 | 1 |
+| `.ds-hero-view` | src/ui/shell.css:4970 | 1 |
 
 ## `ds-banner` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-banner` | src/ui/shell.css:9194 | 9 |
-| `.ds-banner-bypass` | src/ui/shell.css:9257 | 1 |
-| `.ds-banner-kind` | src/ui/shell.css:9208 | 2 |
-| `.ds-banner-more` | src/ui/shell.css:9256 | 1 |
-| `.ds-banner-msg` | src/ui/shell.css:9219 | 2 |
-| `.ds-banner-x` | src/ui/shell.css:9236 | 1 |
+| `.ds-banner` | src/ui/shell.css:9197 | 9 |
+| `.ds-banner-bypass` | src/ui/shell.css:9260 | 1 |
+| `.ds-banner-kind` | src/ui/shell.css:9211 | 2 |
+| `.ds-banner-more` | src/ui/shell.css:9259 | 1 |
+| `.ds-banner-msg` | src/ui/shell.css:9222 | 2 |
+| `.ds-banner-x` | src/ui/shell.css:9239 | 1 |
 
 ## `ds-foot` — 6
 
@@ -160,29 +160,29 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-foot-group` | src/ui/shell.css:1551 | 2 |
 | `.ds-foot-link` | src/ui/shell.css:1492 | 3 |
 | `.ds-foot-links` | src/ui/shell.css:1550 | 1 |
-| `.ds-foot-sponsor` | src/ui/shell.css:7530 | 1 |
+| `.ds-foot-sponsor` | src/ui/shell.css:7533 | 1 |
 
 ## `ds-form` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-form` | src/ui/shell.css:3967 | 41 |
-| `.ds-form-alt` | src/ui/shell.css:4016 | 2 |
-| `.ds-form-aside` | src/ui/shell.css:4079 | 1 |
-| `.ds-form-err` | src/ui/shell.css:4001 | 16 |
-| `.ds-form-hint` | src/ui/shell.css:4005 | 13 |
-| `.ds-form-switch` | src/ui/shell.css:4057 | 3 |
+| `.ds-form` | src/ui/shell.css:3970 | 41 |
+| `.ds-form-alt` | src/ui/shell.css:4019 | 2 |
+| `.ds-form-aside` | src/ui/shell.css:4082 | 1 |
+| `.ds-form-err` | src/ui/shell.css:4004 | 16 |
+| `.ds-form-hint` | src/ui/shell.css:4008 | 13 |
+| `.ds-form-switch` | src/ui/shell.css:4060 | 3 |
 
 ## `ds-gauge` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-gauge` | src/ui/shell.css:6995 | 7 |
-| `.ds-gauge-fill` | src/ui/shell.css:7030 | 1 |
-| `.ds-gauge-mark` | src/ui/shell.css:7025 | 1 |
-| `.ds-gauge-max` | src/ui/shell.css:7048 | 1 |
-| `.ds-gauge-num` | src/ui/shell.css:7038 | 1 |
-| `.ds-gauge-tick` | src/ui/shell.css:7020 | 1 |
+| `.ds-gauge` | src/ui/shell.css:6998 | 7 |
+| `.ds-gauge-fill` | src/ui/shell.css:7033 | 1 |
+| `.ds-gauge-mark` | src/ui/shell.css:7028 | 1 |
+| `.ds-gauge-max` | src/ui/shell.css:7051 | 1 |
+| `.ds-gauge-num` | src/ui/shell.css:7041 | 1 |
+| `.ds-gauge-tick` | src/ui/shell.css:7023 | 1 |
 
 ## `ds-home` — 6
 
@@ -192,70 +192,70 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-home-games` | src/ui/shell.css:1214 | 1 |
 | `.ds-home-link` | src/ui/shell.css:1343 | 4 |
 | `.ds-home-links` | src/ui/shell.css:1229 | 1 |
-| `.ds-home-presents` | src/ui/shell.css:7523 | 1 |
+| `.ds-home-presents` | src/ui/shell.css:7526 | 1 |
 | `.ds-home-title` | src/ui/shell.css:1200 | 1 |
 
 ## `ds-lan` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-lan-banner` | src/ui/shell.css:8594 | 1 |
-| `.ds-lan-leave` | src/ui/shell.css:8708 | 1 |
-| `.ds-lan-state` | src/ui/shell.css:8625 | 3 |
-| `.ds-lan-steps` | src/ui/shell.css:8685 | 1 |
-| `.ds-lan-url` | src/ui/shell.css:8641 | 3 |
-| `.ds-lan-urls` | src/ui/shell.css:8631 | 1 |
+| `.ds-lan-banner` | src/ui/shell.css:8597 | 1 |
+| `.ds-lan-leave` | src/ui/shell.css:8711 | 1 |
+| `.ds-lan-state` | src/ui/shell.css:8628 | 3 |
+| `.ds-lan-steps` | src/ui/shell.css:8688 | 1 |
+| `.ds-lan-url` | src/ui/shell.css:8644 | 3 |
+| `.ds-lan-urls` | src/ui/shell.css:8634 | 1 |
 
 ## `ds-osk` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-osk` | src/ui/shell.css:8086 | 12 |
-| `.ds-osk-foot` | src/ui/shell.css:8171 | 1 |
-| `.ds-osk-grid` | src/ui/shell.css:8115 | 1 |
-| `.ds-osk-key` | src/ui/shell.css:1654 | 6 |
-| `.ds-osk-row` | src/ui/shell.css:8120 | 1 |
-| `.ds-osk-val` | src/ui/shell.css:8102 | 1 |
+| `.ds-osk` | src/ui/shell.css:8089 | 12 |
+| `.ds-osk-foot` | src/ui/shell.css:8174 | 1 |
+| `.ds-osk-grid` | src/ui/shell.css:8118 | 1 |
+| `.ds-osk-key` | src/ui/shell.css:1657 | 6 |
+| `.ds-osk-row` | src/ui/shell.css:8123 | 1 |
+| `.ds-osk-val` | src/ui/shell.css:8105 | 1 |
 
 ## `ds-panel` — 6
 
 | class | declared | used |
 |---|---|---|
-| `.ds-panel` | src/ui/shell.css:1994 | 390 |
-| `.ds-panel-body` | src/ui/shell.css:2051 | 100 |
-| `.ds-panel-foot` | src/ui/shell.css:2125 | 3 |
-| `.ds-panel-h` | src/ui/shell.css:2168 | 83 |
-| `.ds-panel-open` | src/ui/shell.css:2304 | 2 |
-| `.ds-panel-title` | src/ui/shell.css:2238 | 88 |
+| `.ds-panel` | src/ui/shell.css:1997 | 390 |
+| `.ds-panel-body` | src/ui/shell.css:2054 | 100 |
+| `.ds-panel-foot` | src/ui/shell.css:2128 | 3 |
+| `.ds-panel-h` | src/ui/shell.css:2171 | 83 |
+| `.ds-panel-open` | src/ui/shell.css:2307 | 2 |
+| `.ds-panel-title` | src/ui/shell.css:2241 | 88 |
 
 ## `ds-bind` — 5
 
 | class | declared | used |
 |---|---|---|
-| `.ds-bind-col` | src/ui/shell.css:6110 | 2 |
-| `.ds-bind-fold` | src/ui/shell.css:6052 | 1 |
-| `.ds-bind-label` | src/ui/shell.css:6140 | 4 |
-| `.ds-bind-row` | src/ui/shell.css:6130 | 4 |
-| `.ds-bind-scope` | src/ui/shell.css:6066 | 1 |
+| `.ds-bind-col` | src/ui/shell.css:6113 | 2 |
+| `.ds-bind-fold` | src/ui/shell.css:6055 | 1 |
+| `.ds-bind-label` | src/ui/shell.css:6143 | 4 |
+| `.ds-bind-row` | src/ui/shell.css:6133 | 4 |
+| `.ds-bind-scope` | src/ui/shell.css:6069 | 1 |
 
 ## `ds-strat` — 5
 
 | class | declared | used |
 |---|---|---|
-| `.ds-strat-card` | src/ui/shell.css:6317 | 1 |
-| `.ds-strat-cards` | src/ui/shell.css:6312 | 1 |
-| `.ds-strat-chips` | src/ui/shell.css:1796 | 1 |
-| `.ds-strat-meta` | src/ui/shell.css:6332 | 1 |
-| `.ds-strat-prev` | src/ui/shell.css:6327 | 1 |
+| `.ds-strat-card` | src/ui/shell.css:6320 | 1 |
+| `.ds-strat-cards` | src/ui/shell.css:6315 | 1 |
+| `.ds-strat-chips` | src/ui/shell.css:1799 | 1 |
+| `.ds-strat-meta` | src/ui/shell.css:6335 | 1 |
+| `.ds-strat-prev` | src/ui/shell.css:6330 | 1 |
 
 ## `ds-acct` — 4
 
 | class | declared | used |
 |---|---|---|
-| `.ds-acct-email` | src/ui/shell.css:2224 | 1 |
-| `.ds-acct-id` | src/ui/shell.css:2241 | 1 |
-| `.ds-acct-row` | src/ui/shell.css:2214 | 2 |
-| `.ds-acct-uuid` | src/ui/shell.css:2246 | 1 |
+| `.ds-acct-email` | src/ui/shell.css:2227 | 1 |
+| `.ds-acct-id` | src/ui/shell.css:2244 | 1 |
+| `.ds-acct-row` | src/ui/shell.css:2217 | 2 |
+| `.ds-acct-uuid` | src/ui/shell.css:2249 | 1 |
 
 ## `ds-bar` — 4
 
@@ -270,55 +270,55 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dlpage` | src/ui/shell.css:6367 | 4 |
-| `.ds-dlpage-build` | src/ui/shell.css:6392 | 1 |
-| `.ds-dlpage-builds` | src/ui/shell.css:6378 | 1 |
-| `.ds-dlpage-group` | src/ui/shell.css:6384 | 1 |
+| `.ds-dlpage` | src/ui/shell.css:6370 | 4 |
+| `.ds-dlpage-build` | src/ui/shell.css:6395 | 1 |
+| `.ds-dlpage-builds` | src/ui/shell.css:6381 | 1 |
+| `.ds-dlpage-group` | src/ui/shell.css:6387 | 1 |
 
 ## `ds-listbox` — 4
 
 | class | declared | used |
 |---|---|---|
 | `.ds-listbox-btn` | src/ui/shell.css:517 | 1 |
-| `.ds-listbox-opt` | src/ui/shell.css:2526 | 1 |
-| `.ds-listbox-pop` | src/ui/shell.css:2510 | 1 |
+| `.ds-listbox-opt` | src/ui/shell.css:2529 | 1 |
+| `.ds-listbox-pop` | src/ui/shell.css:2513 | 1 |
 | `.ds-listbox-root` | src/ui/shell.css:929 | 1 |
 
 ## `ds-opt` — 4
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/shell.css:4479 | 66 |
-| `.ds-opt-add` | src/ui/shell.css:4565 | 1 |
-| `.ds-opt-del` | src/ui/shell.css:4534 | 2 |
-| `.ds-opt-slot` | src/ui/shell.css:4526 | 3 |
+| `.ds-opt` | src/ui/shell.css:4482 | 66 |
+| `.ds-opt-add` | src/ui/shell.css:4568 | 1 |
+| `.ds-opt-del` | src/ui/shell.css:4537 | 2 |
+| `.ds-opt-slot` | src/ui/shell.css:4529 | 3 |
 
 ## `ds-report` — 4
 
 | class | declared | used |
 |---|---|---|
-| `.ds-report` | src/ui/shell.css:7309 | 11 |
-| `.ds-report-actions` | src/ui/shell.css:7335 | 3 |
-| `.ds-report-cap` | src/ui/shell.css:7325 | 2 |
-| `.ds-report-h` | src/ui/shell.css:7320 | 3 |
+| `.ds-report` | src/ui/shell.css:7312 | 11 |
+| `.ds-report-actions` | src/ui/shell.css:7338 | 3 |
+| `.ds-report-cap` | src/ui/shell.css:7328 | 2 |
+| `.ds-report-h` | src/ui/shell.css:7323 | 3 |
 
 ## `ds-robot` — 4
 
 | class | declared | used |
 |---|---|---|
 | `.ds-robot` | src/ui/shell.css:1457 | 7 |
-| `.ds-robot-card` | src/ui/shell.css:4901 | 3 |
-| `.ds-robot-card-thumb` | src/ui/shell.css:4911 | 2 |
-| `.ds-robot-sprite` | src/ui/shell.css:4979 | 3 |
+| `.ds-robot-card` | src/ui/shell.css:4904 | 3 |
+| `.ds-robot-card-thumb` | src/ui/shell.css:4914 | 2 |
+| `.ds-robot-sprite` | src/ui/shell.css:4982 | 3 |
 
 ## `ds-roleswap` — 4
 
 | class | declared | used |
 |---|---|---|
-| `.ds-roleswap` | src/ui/shell.css:6662 | 6 |
-| `.ds-roleswap-ctl` | src/ui/shell.css:6684 | 1 |
-| `.ds-roleswap-note` | src/ui/shell.css:6690 | 3 |
-| `.ds-roleswap-role` | src/ui/shell.css:6673 | 1 |
+| `.ds-roleswap` | src/ui/shell.css:6665 | 6 |
+| `.ds-roleswap-ctl` | src/ui/shell.css:6687 | 1 |
+| `.ds-roleswap-note` | src/ui/shell.css:6693 | 3 |
+| `.ds-roleswap-role` | src/ui/shell.css:6676 | 1 |
 
 ## `ds-subnav` — 4
 
@@ -333,17 +333,17 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-linked` | src/ui/shell.css:2106 | 3 |
-| `.ds-linked-name` | src/ui/shell.css:2119 | 1 |
-| `.ds-linked-text` | src/ui/shell.css:2112 | 1 |
+| `.ds-linked` | src/ui/shell.css:2109 | 3 |
+| `.ds-linked-name` | src/ui/shell.css:2122 | 1 |
+| `.ds-linked-text` | src/ui/shell.css:2115 | 1 |
 
 ## `ds-modal` — 3
 
 | class | declared | used |
 |---|---|---|
-| `.ds-modal` | src/ui/shell.css:3943 | 18 |
-| `.ds-modal-backdrop` | src/ui/shell.css:3933 | 9 |
-| `.ds-modal-h` | src/ui/shell.css:3961 | 4 |
+| `.ds-modal` | src/ui/shell.css:3946 | 18 |
+| `.ds-modal-backdrop` | src/ui/shell.css:3936 | 9 |
+| `.ds-modal-h` | src/ui/shell.css:3964 | 4 |
 
 ## `ds-presence` — 3
 
@@ -357,9 +357,9 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-qcount` | src/ui/shell.css:6751 | 5 |
-| `.ds-qcount-game` | src/ui/shell.css:6767 | 1 |
-| `.ds-qcount-sep` | src/ui/shell.css:6798 | 2 |
+| `.ds-qcount` | src/ui/shell.css:6754 | 5 |
+| `.ds-qcount-game` | src/ui/shell.css:6770 | 1 |
+| `.ds-qcount-sep` | src/ui/shell.css:6801 | 2 |
 
 ## `ds-rail` — 3
 
@@ -380,71 +380,71 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-chal` | src/ui/shell.css:4742 | 2 |
-| `.ds-chal-list` | src/ui/shell.css:4745 | 1 |
+| `.ds-chal` | src/ui/shell.css:4745 | 2 |
+| `.ds-chal-list` | src/ui/shell.css:4748 | 1 |
 
 ## `ds-claim` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-claim-msg` | src/ui/shell.css:6736 | 2 |
-| `.ds-claim-row` | src/ui/shell.css:6723 | 2 |
+| `.ds-claim-msg` | src/ui/shell.css:6739 | 2 |
+| `.ds-claim-row` | src/ui/shell.css:6726 | 2 |
 
 ## `ds-console` — 2
 
 | class | declared | used |
 |---|---|---|
 | `.ds-console` | src/ui/shell.css:836 | 21 |
-| `.ds-console-in` | src/ui/shell.css:4195 | 10 |
+| `.ds-console-in` | src/ui/shell.css:4198 | 10 |
 
 ## `ds-dialog` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dialog-actions` | src/ui/shell.css:6357 | 10 |
+| `.ds-dialog-actions` | src/ui/shell.css:6360 | 10 |
 | `.ds-dialog-title` | src/ui/styles.css:1795 | 9 |
 
 ## `ds-field` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:2206 | 70 |
-| `.ds-field-row` | src/ui/shell.css:2095 | 8 |
+| `.ds-field` | src/ui/shell.css:2209 | 70 |
+| `.ds-field-row` | src/ui/shell.css:2098 | 8 |
 
 ## `ds-fold` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-fold` | src/ui/shell.css:4319 | 15 |
-| `.ds-fold-body` | src/ui/shell.css:2241 | 7 |
+| `.ds-fold` | src/ui/shell.css:4322 | 15 |
+| `.ds-fold-body` | src/ui/shell.css:2244 | 7 |
 
 ## `ds-head` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-head` | src/ui/shell.css:4235 | 11 |
-| `.ds-head-spacer` | src/ui/shell.css:4262 | 10 |
+| `.ds-head` | src/ui/shell.css:4238 | 11 |
+| `.ds-head-spacer` | src/ui/shell.css:4265 | 10 |
 
 ## `ds-hint` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:2131 | 184 |
-| `.ds-hint-caption` | src/ui/shell.css:4204 | 1 |
+| `.ds-hint` | src/ui/shell.css:2134 | 184 |
+| `.ds-hint-caption` | src/ui/shell.css:4207 | 1 |
 
 ## `ds-homestats` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-homestats` | src/ui/shell.css:1847 | 2 |
-| `.ds-homestats-break` | src/ui/shell.css:1863 | 1 |
+| `.ds-homestats` | src/ui/shell.css:1850 | 2 |
+| `.ds-homestats-break` | src/ui/shell.css:1866 | 1 |
 
 ## `ds-legal` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-legal-card` | src/ui/shell.css:2067 | 1 |
-| `.ds-legal-col` | src/ui/shell.css:2063 | 2 |
+| `.ds-legal-card` | src/ui/shell.css:2070 | 1 |
+| `.ds-legal-col` | src/ui/shell.css:2066 | 2 |
 
 ## `ds-main` — 2
 
@@ -457,15 +457,15 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-maint` | src/ui/shell.css:8596 | 3 |
-| `.ds-maint-wrap` | src/ui/shell.css:8588 | 2 |
+| `.ds-maint` | src/ui/shell.css:8599 | 3 |
+| `.ds-maint-wrap` | src/ui/shell.css:8591 | 2 |
 
 ## `ds-marquee` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-marquee` | src/ui/shell.css:4998 | 4 |
-| `.ds-marquee-text` | src/ui/shell.css:5015 | 3 |
+| `.ds-marquee` | src/ui/shell.css:5001 | 4 |
+| `.ds-marquee-text` | src/ui/shell.css:5018 | 3 |
 
 ## `ds-menu` — 2
 
@@ -478,63 +478,63 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-passpick` | src/ui/shell.css:6648 | 2 |
-| `.ds-passpick-presets` | src/ui/shell.css:6654 | 1 |
+| `.ds-passpick` | src/ui/shell.css:6651 | 2 |
+| `.ds-passpick-presets` | src/ui/shell.css:6657 | 1 |
 
 ## `ds-period` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-period` | src/ui/shell.css:2356 | 3 |
-| `.ds-period-head` | src/ui/shell.css:2350 | 2 |
+| `.ds-period` | src/ui/shell.css:2359 | 3 |
+| `.ds-period-head` | src/ui/shell.css:2353 | 2 |
 
 ## `ds-seg` — 2
 
 | class | declared | used |
 |---|---|---|
 | `.ds-seg` | src/ui/shell.css:524 | 27 |
-| `.ds-seg-dot` | src/ui/shell.css:6073 | 1 |
+| `.ds-seg-dot` | src/ui/shell.css:6076 | 1 |
 
 ## `ds-sub` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sub` | src/ui/shell.css:1763 | 27 |
-| `.ds-sub-row` | src/ui/shell.css:1788 | 3 |
+| `.ds-sub` | src/ui/shell.css:1766 | 27 |
+| `.ds-sub-row` | src/ui/shell.css:1791 | 3 |
 
 ## `ds-table` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-table` | src/ui/shell.css:2254 | 29 |
-| `.ds-table-scroll` | src/ui/shell.css:2643 | 16 |
+| `.ds-table` | src/ui/shell.css:2257 | 29 |
+| `.ds-table-scroll` | src/ui/shell.css:2646 | 16 |
 
 ## `ds-tileset` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tileset` | src/ui/shell.css:1978 | 9 |
-| `.ds-tileset-label` | src/ui/shell.css:1981 | 5 |
+| `.ds-tileset` | src/ui/shell.css:1981 | 9 |
+| `.ds-tileset-label` | src/ui/shell.css:1984 | 5 |
 
 ## `ds-usersearch` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-usersearch` | src/ui/shell.css:1811 | 2 |
-| `.ds-usersearch-results` | src/ui/shell.css:1817 | 1 |
+| `.ds-usersearch` | src/ui/shell.css:1814 | 2 |
+| `.ds-usersearch-results` | src/ui/shell.css:1820 | 1 |
 
 ## `ds-verifybar` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-verifybar` | src/ui/shell.css:4108 | 3 |
-| `.ds-verifybar-text` | src/ui/shell.css:4122 | 1 |
+| `.ds-verifybar` | src/ui/shell.css:4111 | 3 |
+| `.ds-verifybar-text` | src/ui/shell.css:4125 | 1 |
 
 ## `ds-actions` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-actions` | src/ui/shell.css:6345 | 24 |
+| `.ds-actions` | src/ui/shell.css:6348 | 24 |
 
 ## `ds-app` — 1
 
@@ -546,7 +546,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-back` | src/ui/shell.css:1651 | 6 |
+| `.ds-back` | src/ui/shell.css:1654 | 6 |
 
 ## `ds-badge` — 1
 
@@ -558,13 +558,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-banners` | src/ui/shell.css:9178 | 1 |
+| `.ds-banners` | src/ui/shell.css:9181 | 1 |
 
 ## `ds-binds` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-binds` | src/ui/shell.css:6104 | 2 |
+| `.ds-binds` | src/ui/shell.css:6107 | 2 |
 
 ## `ds-body` — 1
 
@@ -582,43 +582,43 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/shell.css:2149 | 6 |
+| `.ds-checkline` | src/ui/shell.css:2152 | 6 |
 
 ## `ds-chip` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-chip` | src/ui/shell.css:1559 | 25 |
+| `.ds-chip` | src/ui/shell.css:1562 | 25 |
 
 ## `ds-clickable` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-clickable` | src/ui/shell.css:2617 | 1 |
+| `.ds-clickable` | src/ui/shell.css:2620 | 1 |
 
 ## `ds-count` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-count` | src/ui/shell.css:4517 | 16 |
+| `.ds-count` | src/ui/shell.css:4520 | 16 |
 
 ## `ds-cta` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-cta` | src/ui/shell.css:1650 | 29 |
+| `.ds-cta` | src/ui/shell.css:1653 | 29 |
 
 ## `ds-ctl` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-ctl-row` | src/ui/shell.css:4395 | 2 |
+| `.ds-ctl-row` | src/ui/shell.css:4398 | 2 |
 
 ## `ds-danger` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-danger-head` | src/ui/shell.css:2230 | 1 |
+| `.ds-danger-head` | src/ui/shell.css:2233 | 1 |
 
 ## `ds-discord` — 1
 
@@ -630,25 +630,25 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dodge` | src/ui/shell.css:6918 | 3 |
+| `.ds-dodge` | src/ui/shell.css:6921 | 3 |
 
 ## `ds-dt` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dt` | src/ui/shell.css:2607 | 4 |
+| `.ds-dt` | src/ui/shell.css:2610 | 4 |
 
 ## `ds-empty` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-empty` | src/ui/shell.css:2297 | 41 |
+| `.ds-empty` | src/ui/shell.css:2300 | 41 |
 
 ## `ds-fields` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-fields` | src/ui/shell.css:5059 | 10 |
+| `.ds-fields` | src/ui/shell.css:5062 | 10 |
 
 ## `ds-friends` — 1
 
@@ -678,31 +678,31 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-input` | src/ui/shell.css:1814 | 67 |
+| `.ds-input` | src/ui/shell.css:1817 | 67 |
 
 ## `ds-key` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-key` | src/ui/shell.css:1652 | 13 |
+| `.ds-key` | src/ui/shell.css:1655 | 13 |
 
 ## `ds-keys` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-keys` | src/ui/shell.css:6144 | 5 |
+| `.ds-keys` | src/ui/shell.css:6147 | 5 |
 
 ## `ds-linkbtn` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-linkbtn` | src/ui/shell.css:7233 | 4 |
+| `.ds-linkbtn` | src/ui/shell.css:7236 | 4 |
 
 ## `ds-loading` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-loading` | src/ui/shell.css:2298 | 30 |
+| `.ds-loading` | src/ui/shell.css:2301 | 30 |
 
 ## `ds-lobbies` — 1
 
@@ -726,91 +726,91 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-muted` | src/ui/shell.css:6944 | 61 |
+| `.ds-muted` | src/ui/shell.css:6947 | 61 |
 
 ## `ds-note` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-note` | src/ui/shell.css:5048 | 6 |
+| `.ds-note` | src/ui/shell.css:5051 | 6 |
 
 ## `ds-num` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-num` | src/ui/shell.css:1881 | 4 |
+| `.ds-num` | src/ui/shell.css:1884 | 4 |
 
 ## `ds-opts` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:4430 | 39 |
+| `.ds-opts` | src/ui/shell.css:4433 | 39 |
 
 ## `ds-padhint` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-padhint` | src/ui/shell.css:8061 | 1 |
+| `.ds-padhint` | src/ui/shell.css:8064 | 1 |
 
 ## `ds-page` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-page-note` | src/ui/shell.css:2162 | 2 |
+| `.ds-page-note` | src/ui/shell.css:2165 | 2 |
 
 ## `ds-perks` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-perks` | src/ui/shell.css:6701 | 1 |
+| `.ds-perks` | src/ui/shell.css:6704 | 1 |
 
 ## `ds-player` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-player` | src/ui/shell.css:6236 | 2 |
+| `.ds-player` | src/ui/shell.css:6239 | 2 |
 
 ## `ds-players` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-players` | src/ui/shell.css:6231 | 2 |
+| `.ds-players` | src/ui/shell.css:6234 | 2 |
 
 ## `ds-pwform` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-pwform` | src/ui/shell.css:4148 | 1 |
+| `.ds-pwform` | src/ui/shell.css:4151 | 1 |
 
 ## `ds-queuebar` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-queuebar` | src/ui/shell.css:6813 | 1 |
+| `.ds-queuebar` | src/ui/shell.css:6816 | 1 |
 
 ## `ds-queuechip` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-queuechip` | src/ui/shell.css:6872 | 1 |
+| `.ds-queuechip` | src/ui/shell.css:6875 | 1 |
 
 ## `ds-range` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-range` | src/ui/shell.css:5106 | 22 |
+| `.ds-range` | src/ui/shell.css:5109 | 22 |
 
 ## `ds-rejoin` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-rejoin` | src/ui/shell.css:1886 | 1 |
+| `.ds-rejoin` | src/ui/shell.css:1889 | 1 |
 
 ## `ds-req` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-req` | src/ui/shell.css:6416 | 1 |
+| `.ds-req` | src/ui/shell.css:6419 | 1 |
 
 ## `ds-room` — 1
 
@@ -822,25 +822,25 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-seat` | src/ui/shell.css:4396 | 1 |
+| `.ds-seat` | src/ui/shell.css:4399 | 1 |
 
 ## `ds-sec` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sec` | src/ui/shell.css:2028 | 22 |
+| `.ds-sec` | src/ui/shell.css:2031 | 22 |
 
 ## `ds-segs` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-segs` | src/ui/shell.css:2369 | 18 |
+| `.ds-segs` | src/ui/shell.css:2372 | 18 |
 
 ## `ds-select` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-select` | src/ui/shell.css:2365 | 17 |
+| `.ds-select` | src/ui/shell.css:2368 | 17 |
 
 ## `ds-server` — 1
 
@@ -852,31 +852,31 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-share` | src/ui/shell.css:2875 | 2 |
+| `.ds-share` | src/ui/shell.css:2878 | 2 |
 
 ## `ds-sr` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sr` | src/ui/shell.css:4985 | 24 |
+| `.ds-sr` | src/ui/shell.css:4988 | 24 |
 
 ## `ds-stat` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-stat` | src/ui/shell.css:1855 | 11 |
+| `.ds-stat` | src/ui/shell.css:1858 | 11 |
 
 ## `ds-stats` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-stats` | src/ui/shell.css:3077 | 3 |
+| `.ds-stats` | src/ui/shell.css:3080 | 3 |
 
 ## `ds-subh` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-subh` | src/ui/shell.css:4419 | 9 |
+| `.ds-subh` | src/ui/shell.css:4422 | 9 |
 
 ## `ds-tab` — 1
 
@@ -894,47 +894,47 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tile` | src/ui/shell.css:1908 | 8 |
+| `.ds-tile` | src/ui/shell.css:1911 | 8 |
 
 ## `ds-tiles` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tiles` | src/ui/shell.css:1903 | 5 |
+| `.ds-tiles` | src/ui/shell.css:1906 | 5 |
 
 ## `ds-tip` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tip` | src/ui/shell.css:8569 | 2 |
+| `.ds-tip` | src/ui/shell.css:8572 | 2 |
 
 ## `ds-title` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-title` | src/ui/shell.css:4276 | 5 |
+| `.ds-title` | src/ui/shell.css:4279 | 5 |
 
 ## `ds-username` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-username-input` | src/ui/shell.css:4023 | 1 |
+| `.ds-username-input` | src/ui/shell.css:4026 | 1 |
 
 ## `ds-verifycode` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-verifycode` | src/ui/shell.css:4131 | 1 |
+| `.ds-verifycode` | src/ui/shell.css:4134 | 1 |
 
 ## `ds-verifyinline` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-verifyinline` | src/ui/shell.css:4142 | 1 |
+| `.ds-verifyinline` | src/ui/shell.css:4145 | 1 |
 
 ## `ds-watchcode` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-watchcode` | src/ui/shell.css:1832 | 1 |
+| `.ds-watchcode` | src/ui/shell.css:1835 | 1 |
 
