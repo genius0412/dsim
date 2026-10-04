@@ -163,15 +163,32 @@ function extentOf(parts: readonly MeshPart[]): number {
   return Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-9);
 }
 
+export interface SimplifyOptions {
+  /** the caller hands the parts over; each is released once welded */
+  consume?: boolean;
+  /**
+   * also hand back every triangle, welded (`full`): the same parts, vertices, bodies and order the
+   * simplified lists come from, so a body id names the same CAD body in both (Full detail)
+   */
+  keepFull?: boolean;
+  /**
+   * never take a body away whole (no `Prune`, no `dropSmallBodies`, and a body that collapses anyway
+   * comes back unsimplified): the result is the measured stand-in for a `full` model, and a part
+   * that is not in it can be neither picked nor found moving, while the full mesh still draws it.
+   * The bound climbs instead, and the count may end over `budget`.
+   */
+  keepBodies?: boolean;
+}
+
 /** weld every part and bring the whole model under `budget` triangles (one list: `simplifyLists`) */
 export async function simplifyParts(
   parts: readonly MeshPart[],
   budget: number,
   onProgress?: (frac: number) => void,
-  opts: { consume?: boolean } = {},
-): Promise<SimplifyReport> {
+  opts: SimplifyOptions = {},
+): Promise<SimplifyReport & { full?: MeshPart[] }> {
   const r = await simplifyLists([parts], budget, onProgress, opts);
-  return { parts: r.lists[0], trisIn: r.trisIn, trisOut: r.trisOut, error: r.error };
+  return { parts: r.lists[0], trisIn: r.trisIn, trisOut: r.trisOut, error: r.error, ...(r.full ? { full: r.full[0] } : {}) };
 }
 
 /**
@@ -190,8 +207,8 @@ export async function simplifyLists(
   lists: readonly (readonly MeshPart[])[],
   budget: number,
   onProgress?: (frac: number) => void,
-  opts: { consume?: boolean } = {},
-): Promise<{ lists: MeshPart[][]; trisIn: number; trisOut: number; error: number }> {
+  opts: SimplifyOptions = {},
+): Promise<{ lists: MeshPart[][]; trisIn: number; trisOut: number; error: number; full?: MeshPart[][] }> {
   await MeshoptSimplifier.ready;
   const all = lists.flat();
   const trisIn = triangleCount(all);
@@ -242,10 +259,16 @@ export async function simplifyLists(
   let cur = units.map((u) => u.indices);
   let res = cur;
   let bound = 0;
+  const flags: ('ErrorAbsolute' | 'Prune')[] = opts.keepBodies ? ['ErrorAbsolute'] : ['ErrorAbsolute', 'Prune'];
   if (count(cur) > budget) {
     const run = (src: readonly Uint32Array[], e: number): Uint32Array[] =>
-      src.map((ix, i) => (ix.length >= 3 ? (MeshoptSimplifier.simplify(ix, units[i].positions, 3, 0, e, ['ErrorAbsolute', 'Prune'])[0] as Uint32Array) : ix));
-    let e = extent * FIRST_BOUND;
+      src.map((ix, i) => (ix.length >= 3 ? (MeshoptSimplifier.simplify(ix, units[i].positions, 3, 0, e, flags)[0] as Uint32Array) : ix));
+    // the measured stand-in for a full model (`keepBodies`) starts higher up the ladder: its early
+    // rungs walk millions of triangles to take a third of them. goBILDA's BIOBUZZ kit re-opened,
+    // 5.65M to 250k: from the first bound, 7 rungs and 5 steps took 5.1 s (rungs 0–2 alone 3.0 s);
+    // from 8× it (a power of two under half the reduction asked for), whose first rung still leaves
+    // 3.7 times the budget, 4 rungs and 5 steps take 2.4 s, to the same count within 0.1 %
+    let e = extent * FIRST_BOUND * (opts.keepBodies ? 2 ** Math.floor(Math.log2(Math.max(1, count(cur) / budget / 2))) : 1);
     let lastE = 0;
     let dropped = false;
     let refine = true;
@@ -260,7 +283,7 @@ export async function simplifyLists(
       // every other surface at that error too: measured on the goBILDA kit's face-split read, 0.054
       // of its size (24 mm). Dropped smallest first; a body over `SMALL_BODY` is never dropped, and
       // only if the small ones are not enough does the bound go on climbing.
-      if (!dropped && e >= cap) {
+      if (!dropped && e >= cap && !opts.keepBodies) {
         dropped = true;
         res = dropSmallBodies(units, res, budget, extent * SMALL_BODY);
         if (count(res) <= budget) {
@@ -285,6 +308,9 @@ export async function simplifyLists(
       } else lo = mid;
     }
     bound = hi;
+    // even without `Prune` a sliver collapses to nothing (goBILDA's BIOBUZZ kit: 1,152 of 3,930 bodies,
+    // median 0.7 mm across, 50k triangles in all): those come back whole
+    if (opts.keepBodies) res = restoreBodies(units, res);
   }
   const out: MeshPart[][] = lists.map(() => []);
   const byPart = new Map<number, number[]>();
@@ -301,8 +327,25 @@ export async function simplifyLists(
     );
     if (joined) out[w.list].push({ ...joined, color: w.part.color, name: w.part.name });
   });
+  // FULL DETAIL: every welded triangle as well, put back together the same way. When nothing was
+  // simplified the two are the same arrays.
+  let full: MeshPart[][] | undefined;
+  if (opts.keepFull) {
+    if (res === cur && bound === 0) full = out;
+    else {
+      full = lists.map(() => []);
+      welded.forEach((w, pi) => {
+        const us = byPart.get(pi) ?? [];
+        const joined = joinUnits(
+          us.map((i) => units[i]),
+          us.map((i) => units[i].indices),
+        );
+        if (joined) full![w.list].push({ ...joined, color: w.part.color, name: w.part.name });
+      });
+    }
+  }
   report(1);
-  return { lists: out, trisIn, trisOut: count(res), error: bound / extent };
+  return { lists: out, trisIn, trisOut: count(res), error: bound / extent, ...(full ? { full } : {}) };
 }
 
 /**
@@ -355,6 +398,31 @@ function dropSmallBodies(
     const keep: number[] = [];
     for (let t = 0; t < ix.length; t += 3) if (!drop.has(body[ix[t]])) keep.push(ix[t], ix[t + 1], ix[t + 2]);
     return keep.length === ix.length ? ix : new Uint32Array(keep);
+  });
+}
+
+/** `res` with every body of each unit that simplified away put back as it was (`keepBodies`) */
+function restoreBodies(units: readonly Unit[], res: readonly Uint32Array[]): Uint32Array[] {
+  return res.map((ix, i) => {
+    const u = units[i];
+    if (ix === u.indices || !u.body) return ix;
+    const body = u.body;
+    const have = new Set<number>();
+    for (let t = 0; t < ix.length; t += 3) have.add(body[ix[t]]);
+    const src = u.indices;
+    let extra = 0;
+    for (let t = 0; t < src.length; t += 3) if (!have.has(body[src[t]])) extra += 3;
+    if (!extra) return ix;
+    const out = new Uint32Array(ix.length + extra);
+    out.set(ix);
+    let k = ix.length;
+    for (let t = 0; t < src.length; t += 3) {
+      if (have.has(body[src[t]])) continue;
+      out[k++] = src[t];
+      out[k++] = src[t + 1];
+      out[k++] = src[t + 2];
+    }
+    return out;
   });
 }
 

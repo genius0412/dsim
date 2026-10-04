@@ -1,8 +1,9 @@
 /**
  * THE STORED MESH, COMPRESSED: a `StoredScene` → a GLB with quantised attributes
  * (`KHR_mesh_quantization`) packed by meshoptimizer (`EXT_meshopt_compression`). GLTFExporter's float
- * GLB costs 44–48 bytes a triangle, so `MAX_MESH_BYTES` held about 90k; this one costs about 9, so the
- * same 4 MB holds the 250k a robot needs to look like its CAD (`docs/area/robot-import.md`, "Budgets").
+ * GLB costs 44–48 bytes a triangle, so 4 MB held about 90k; this one costs about 9 at 250k and about
+ * 5 on a whole CAD export (Full detail: goBILDA's 5.66M-triangle BIOBUZZ kit is 27 MB;
+ * `docs/area/robot-import.md`, "Budgets").
  *
  * It holds what `exportStoredScene` holds: the static robot under the root node `dsim_robot`, each
  * moving part a node at its pivot with `extras.dsim` (`StoredMotion`), a rider under its carrier, one

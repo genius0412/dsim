@@ -286,13 +286,23 @@ export function creasedNormals(
   const inc = new Uint32Array(indices.length);
   for (let i = 0; i < indices.length; i++) inc[fill[indices[i]]++] = Math.floor(i / 3);
   const cosC = Math.cos((creaseDeg * Math.PI) / 180);
-  const outPos: number[] = [];
-  const outNrm: number[] = [];
-  const outBody: number[] = [];
+  // the output in typed arrays grown by doubling (a vertex per corner at most), and each vertex's
+  // output vertices so far in one scratch, not JS number arrays and an object per output vertex: half
+  // the memory on a 5.7M-triangle robot, and 1.47 → 1.28 s. The same arithmetic in the same order,
+  // so the same arrays out.
+  let cap = Math.max(16, Math.min(indices.length, nV + (nV >> 1)));
+  let outPos = new Float32Array(cap * 3);
+  let outNrm = new Float32Array(cap * 3);
+  let outBody = body ? new Uint32Array(cap) : null;
+  let nOut = 0;
   const outIdx = new Uint32Array(indices.length);
-  // per vertex, the output vertices made so far (their normals), to share between corners
+  let maxDeg = 0;
+  for (let v = 0; v < nV; v++) maxDeg = Math.max(maxDeg, start[v + 1] - start[v]);
+  const madeN = new Float64Array(maxDeg * 3);
+  const madeId = new Uint32Array(maxDeg);
   for (let v = 0; v < nV; v++) {
-    const made: { nx: number; ny: number; nz: number; id: number }[] = [];
+    // the output vertices made for v so far (their normals), to share between its corners
+    let made = 0;
     for (let k = start[v]; k < start[v + 1]; k++) {
       const t = inc[k];
       let sx = 0;
@@ -312,25 +322,46 @@ export function creasedNormals(
       sy /= l;
       sz /= l;
       let id = -1;
-      for (const m of made) {
-        if (m.nx * sx + m.ny * sy + m.nz * sz > 0.9999) {
-          id = m.id;
+      for (let m = 0; m < made; m++) {
+        if (madeN[3 * m] * sx + madeN[3 * m + 1] * sy + madeN[3 * m + 2] * sz > 0.9999) {
+          id = madeId[m];
           break;
         }
       }
       if (id < 0) {
-        id = outPos.length / 3;
-        outPos.push(positions[3 * v], positions[3 * v + 1], positions[3 * v + 2]);
-        outNrm.push(sx, sy, sz);
-        if (body) outBody.push(body[v]);
-        made.push({ nx: sx, ny: sy, nz: sz, id });
+        if (nOut === cap) {
+          cap = Math.min(indices.length, cap * 2);
+          const p = new Float32Array(cap * 3);
+          p.set(outPos);
+          outPos = p;
+          const q = new Float32Array(cap * 3);
+          q.set(outNrm);
+          outNrm = q;
+          if (outBody) {
+            const b = new Uint32Array(cap);
+            b.set(outBody);
+            outBody = b;
+          }
+        }
+        id = nOut++;
+        outPos[3 * id] = positions[3 * v];
+        outPos[3 * id + 1] = positions[3 * v + 1];
+        outPos[3 * id + 2] = positions[3 * v + 2];
+        outNrm[3 * id] = sx;
+        outNrm[3 * id + 1] = sy;
+        outNrm[3 * id + 2] = sz;
+        if (outBody) outBody[id] = body![v];
+        madeN[3 * made] = sx;
+        madeN[3 * made + 1] = sy;
+        madeN[3 * made + 2] = sz;
+        madeId[made++] = id;
       }
       // which corner of t is v
       const c = indices[3 * t] === v ? 0 : indices[3 * t + 1] === v ? 1 : 2;
       outIdx[3 * t + c] = id;
     }
   }
-  return { positions: new Float32Array(outPos), normals: new Float32Array(outNrm), indices: outIdx, body: body ? Uint32Array.from(outBody) : null };
+  return { positions: outPos.slice(0, 3 * nOut), normals: outNrm.slice(0, 3 * nOut), indices: outIdx, body: outBody ? outBody.slice(0, nOut) : null };
 }
 
 /** the crease angle every importer normal is computed at, degrees */

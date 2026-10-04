@@ -1,9 +1,9 @@
 import { useRef } from 'react';
 import type { Vec2 } from '../../types';
 import { OptRow } from '../../ui/OptRow';
-import { DEFAULT_TRI_BUDGET, isRectangle, WHEEL_SQUARE_TOL_IN } from '../geometry';
+import { FULL_DETAIL, isFullDetail, isRectangle, LIGHT_TRI_BUDGET, WHEEL_SQUARE_TOL_IN } from '../geometry';
 import type { ImportMeasurement, ImportSetup, LengthUnit, QuarterTurns, UpAxis, WheelLayout } from '../types';
-import { LENGTH_UNITS, MAX_TRIANGLES, UP_AXES } from '../types';
+import { LENGTH_UNITS, UP_AXES } from '../types';
 import { COPY, FORMAT_LABEL, UNIT_LABEL, sizeLabel, upLabel } from './copy';
 import { ACCEPT, DropZone, type DropError, type Phase } from './DropZone';
 import { rectNumbers, snapWheel, WHEEL_MIN_SPAN_IN, wheelHomes, type EditorDoc, type RectNumber } from './editorModel';
@@ -156,12 +156,12 @@ export function ModelStep({
         <OptRow<number>
           label={COPY.detail}
           hint={doc.savedModel ? COPY.detailSaved : canReread ? undefined : COPY.detailFile}
-          value={doc.setup.triBudget >= MAX_TRIANGLES ? MAX_TRIANGLES : DEFAULT_TRI_BUDGET}
+          value={isFullDetail(doc.setup.triBudget) ? FULL_DETAIL : LIGHT_TRI_BUDGET}
           cols="two"
           disabled={doc.savedModel}
           options={[
-            { v: DEFAULT_TRI_BUDGET, t: COPY.detailStandard, d: COPY.detailTris(DEFAULT_TRI_BUDGET) },
-            { v: MAX_TRIANGLES, t: COPY.detailMax, d: COPY.detailMaxNote(MAX_TRIANGLES) },
+            { v: FULL_DETAIL, t: COPY.detailFull, d: COPY.detailFullNote },
+            { v: LIGHT_TRI_BUDGET, t: COPY.detailLight, d: COPY.detailLightNote(LIGHT_TRI_BUDGET) },
           ]}
           onPick={onDetail}
         />

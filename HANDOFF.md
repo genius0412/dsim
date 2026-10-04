@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-04b (robot import: Full detail, every triangle of the CAD)
+
+**State: on branch `robot-import-full-detail` (off `claude/robot-importer-completion-4c525b` 239caa2e); client only, no server change, no deploy.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Checked end to end on the vendors' starter bots in the offscreen production editor (`realcadprobe.cjs --gpu`).
+
+- **Owner:** "the CAD import quality looks horrible, even with the best settings. Can you just import it 100%?"
+- **Detail is Full or Light.** Full (default, `FULL_DETAIL`) keeps every triangle the reader makes: the preview, the stored GLB, BIOBUZZ 3D and the 2D top picture all get it. Light is the old 250k path for a slower computer. Maximum (400k) and `MAX_TRIANGLES` are gone; `MAX_MESH_BYTES` 4 → 128 MiB. Old setups read at the budget they name.
+- **The editor measures a copy.** At Full the measurement, the moving-part finders and picking run on a ~250k simplification from the same weld (same body ids) that keeps every body; `normalise` hands the full mesh in the model frame (`shownParts`), newest orientation only. The preview draws it and picks on the copy. The bake's mesh half (frame, moving-part split, GLB) moved into the import worker; a share file is read there too.
+- **Measured** (robot-import.md "Full detail"): BIOBUZZ 5.66M → 27.0 MB stored, goBILDA DECODE 6.24M → 31.8 MB, REV 2.31M → 10.2 MB. Frame time in the BIOBUZZ 3D test drive, Full vs Light, on this RTX 4070 Ti SUPER: 0–2 ms more at every tier, p95 under 9 ms. Save 1.4–3.2 s (0.4). Re-open 3.1–8.4 s (0.9).
+- **Close-ups:** `scratch/probe/` (gitignored) and the sheet in the session scratchpad `quality/out/sheet-bb-full-vs-250k.png`.
+- **Fixed on the way:** a Detail change re-read the file and called an assumed front "Detected"; `liteMesh` wrote a Full robot's whole mesh as float to learn its size (9.1 → 6.3 s).
+- **Open:** a slow GPU has only Light (no stored low-tier copy); re-opening a Full robot takes several seconds (the measured copy is re-made); the relay's lighter mesh takes ~6 s the first time a room asks; 0.25 rad tessellation was judged not worth 2.27× the triangles.
+
 # HANDOFF — 2026-10-04 (BIOBUZZ 3D: nothing stays on the HIVE beam; the NECTAR wedge fix reaches main)
 
 **State: on `main` (9905c8cd) and `alpha` (0c7df0eb); DEPLOYED 2026-10-04 to PRODUCTION from `main` (04:00Z, 2-minute announcement, all 8 machines on the new image) and to `dsim-alpha`.** `npm test` (main 5175, alpha 5552), `build`, `server:check`, `docaudit`, `bundleaudit` pass on both; `test:workers` (83) on main. Sim change behind `SIM_PATCH` 5. No `SIM_VERSION` bump, no wire change.

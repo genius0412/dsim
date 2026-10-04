@@ -6,7 +6,8 @@ import type { ModelFormat } from '../types';
 import type { ImportErrorCode } from './importError';
 import type { LoadStage, ParsedFiles } from './parse';
 import type { PreparedModel } from './prepare';
-import type { StoredScene } from './bakeMesh';
+import type { BakeModelInput } from './bakeMesh';
+import type { MeshPart } from '../geometry';
 import type { ZipPick } from './zip';
 
 /** what the import is doing; `simplify` carries the triangle count it started from */
@@ -27,15 +28,15 @@ export type ImportRequest =
   | { kind: 'zip'; pick: ZipPick; budget: number }
   /** parts read elsewhere (STEP in its own workers), not yet merged */
   | { kind: 'parts'; name: string; format: ModelFormat; parsed: ParsedFiles; budget: number }
-  /** the bake's mesh half (`bakeSceneHere`): the stored scene (rest and moving parts) → the stored GLB */
-  | { kind: 'bake'; scene: StoredScene }
+  /** the bake's mesh half (`bakeModelHere`): MODEL-frame parts → the stored GLB and the pictures' parts */
+  | { kind: 'bake'; input: BakeModelInput }
   /** the relay's lighter float GLB (`liteMesh`) from the stored GLB */
   | { kind: 'lite'; glb: ArrayBuffer; maxBytes: number };
 
 export type ImportResponse =
   | ({ kind: 'progress' } & ImportProgress)
   | { kind: 'done'; model: PreparedModel }
-  | { kind: 'baked'; glb: ArrayBuffer; scene: StoredScene; refits: number }
+  | { kind: 'baked'; glb: ArrayBuffer; pictures: MeshPart[]; refits: number }
   | { kind: 'lite'; glb: ArrayBuffer | null }
   | { kind: 'error'; code: ImportErrorCode | null; name: string; message: string };
 

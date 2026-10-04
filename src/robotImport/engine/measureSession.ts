@@ -20,8 +20,13 @@ import type { PreparedModel } from './prepare';
 
 export interface NormalisedModel {
   measurement: ImportMeasurement;
-  /** MODEL frame, with normals */
+  /** MODEL frame, with normals: what was measured (and picked, and searched for moving parts) */
   modelParts: MeshPart[];
+  /**
+   * MODEL frame, with normals: EVERY triangle, for a model kept at Full detail (`PreparedModel.full`):
+   * what the preview shows and the bake stores. Absent when `modelParts` is the whole model.
+   */
+  shownParts?: MeshPart[];
 }
 
 /** orientations kept per model: units, up and turn, and the way back */
@@ -32,6 +37,8 @@ const KEEP_MODELS = 2;
 interface Entry {
   oriented: OrientedMeasure;
   modelParts?: MeshPart[];
+  /** `PreparedModel.full` in this orientation's MODEL frame: kept for the newest orientation only */
+  shown?: MeshPart[];
   finKey?: string;
   fin?: NormalisedModel;
   /** the moving parts for `motionKey` (they read the orientation and `setup.motion`, never the wheels) */
@@ -89,6 +96,18 @@ export class Measurer {
     this.entries.delete(key);
     this.entries.set(key, entry);
     if (!entry.modelParts) entry.modelParts = toModelFrame(this.model.parts, entry.oriented.sourceToModel, entry.oriented.folds);
+    if (this.model.full && !entry.shown) {
+      // EVERY TRIANGLE IN ONE ORIENTATION AT A TIME: a full copy is hundreds of MB on a real CAD
+      // export, so an older orientation lets its copy go (and the answer that names it) and builds
+      // it again if it is ever picked again
+      for (const e of this.entries.values()) {
+        if (e === entry || !e.shown) continue;
+        e.shown = undefined;
+        e.fin = undefined;
+        e.finKey = undefined;
+      }
+      entry.shown = toModelFrame(this.model.full, entry.oriented.sourceToModel, entry.oriented.folds);
+    }
     const fk = finishKey(setup);
     if (entry.fin && entry.finKey === fk) return entry.fin;
     const measurement = finishMeasure(entry.oriented, setup);
@@ -104,14 +123,14 @@ export class Measurer {
       entry.motion = measurement.motion;
     }
     measurement.trisIn = this.model.trisIn;
-    if (this.model.trisOut < this.model.trisIn) {
+    if (!this.model.fullDetail && this.model.trisOut < this.model.trisIn) {
       measurement.checks.push({
         code: 'mesh-simplified',
         level: 'info',
         message: `Simplified from ${this.model.trisIn.toLocaleString('en-US')} to ${this.model.trisOut.toLocaleString('en-US')} triangles for the match view.`,
       });
     }
-    entry.fin = { measurement, modelParts: entry.modelParts };
+    entry.fin = { measurement, modelParts: entry.modelParts, ...(entry.shown ? { shownParts: entry.shown } : {}) };
     entry.finKey = fk;
     return entry.fin;
   }

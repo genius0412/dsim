@@ -1,6 +1,7 @@
 /**
  * THE IMPORT WORKER: parse, merge, weld, simplify and crease a dropped model OFF the main thread, and
- * send the prepared model (≤ 150k triangles) back with its arrays transferred. Spawned per import by
+ * send the prepared model back with its arrays transferred (at Full detail, every triangle and the
+ * simplified copy the editor measures). Spawned per import by
  * `importSession.ts` and terminated when it answers or the player cancels, so the meshopt heap a
  * 4M-triangle export grows (hundreds of MB) is given back the moment the import is done.
  *
@@ -9,11 +10,11 @@
  * `{ kind: 'error' }` with the `ImportError` code, so the
  * player sees the same sentence the main-thread loader would have given.
  *
- * It also runs the bake's mesh half (`{ kind: 'bake' }`, `bakeMesh.ts`): the GLB export and its
- * refits, so Save does not block on them either; and the relay's lighter mesh (`{ kind: 'lite' }`,
+ * It also runs the bake's mesh half (`{ kind: 'bake' }`, `bakeMesh.ts`): the robot-local frame, the
+ * split into moving parts, the GLB export and its refits, so Save does not block on them either; and the relay's lighter mesh (`{ kind: 'lite' }`,
  * `lite.ts`), which at 250k triangles is most of a second of simplifying.
  */
-import { bakeSceneHere, sceneParts } from './bakeMesh';
+import { bakeModelHere } from './bakeMesh';
 import { ImportError } from './importError';
 import type { ImportRequest, ImportResponse } from './importProtocol';
 import { partBuffers } from './importProtocol';
@@ -30,8 +31,8 @@ ctx.onmessage = async (e: MessageEvent<ImportRequest>) => {
   const post = (m: ImportResponse, transfer?: Transferable[]): void => ctx.postMessage(m, transfer);
   try {
     if (req.kind === 'bake') {
-      const { glb, scene, refits } = await bakeSceneHere(req.scene);
-      post({ kind: 'baked', glb, scene, refits }, [glb, ...partBuffers(sceneParts(scene))]);
+      const { glb, pictures, refits } = await bakeModelHere(req.input);
+      post({ kind: 'baked', glb, pictures, refits }, [glb, ...partBuffers(pictures)]);
       return;
     }
     if (req.kind === 'lite') {
@@ -70,7 +71,7 @@ ctx.onmessage = async (e: MessageEvent<ImportRequest>) => {
       },
       { consume: true },
     );
-    post({ kind: 'done', model }, partBuffers(model.parts));
+    post({ kind: 'done', model }, partBuffers([...model.parts, ...(model.full ?? [])]));
   } catch (err) {
     post({
       kind: 'error',

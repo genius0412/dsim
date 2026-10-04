@@ -37229,29 +37229,276 @@ function fxImportFixed(): RobotSpec {
       !!lite && lite.byteLength <= IV.VISUAL_MAX_BYTES.mesh && !glbUsesExtensions(lite) && VC.validateMeshGlb(new Uint8Array(lite)) === null && liteTris > 2000 && liteTris <= VC.VISUAL_MAX_TRIANGLES,
       `${lite?.byteLength} B, ${liteTris} triangles`,
     );
-    check('stored mesh: the importer’s caps are 250k by default and 400k at most', (await import('../src/robotImport/geometry')).DEFAULT_TRI_BUDGET === 250_000 && rtypes.MAX_TRIANGLES === 400_000);
   } finally {
     if (!hadReader) delete g.FileReader;
   }
 }
 
 /**
- * THE DETAIL CHOICE (Model step): Standard reads a file at `DEFAULT_TRI_BUDGET`, Maximum at
- * `MAX_TRIANGLES`, and a new choice re-reads the files still in memory with the setup as it is
- * (bodies, moving parts, tuning) and the placements put back. A saved robot (no CAD file) cannot.
+ * THE DETAIL CHOICE (Model step): Full keeps every triangle the reader makes and is the default; Light
+ * reads at `LIGHT_TRI_BUDGET` for a slower computer. A new choice re-reads the files still in memory
+ * with the setup as it is (bodies, moving parts, tuning) and the placements put back. A saved robot
+ * (no CAD file) cannot.
  */
 {
-  const { DEFAULT_TRI_BUDGET } = await import('../src/robotImport/geometry');
-  const { MAX_TRIANGLES } = await import('../src/robotImport/types');
+  const geo = await import('../src/robotImport/geometry');
+  const rtypes = await import('../src/robotImport/types');
   const { clampBudget } = await import('../src/robotImport/engine/prepare');
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
   const ms = readFileSync('src/robotImport/ui/ModelStep.tsx', 'utf8').replace(/\r\n/g, '\n');
-  check('detail: the two choices are the default budget and the cap, and the reader takes both as they are', DEFAULT_TRI_BUDGET === 250_000 && MAX_TRIANGLES === 400_000 && clampBudget(DEFAULT_TRI_BUDGET) === DEFAULT_TRI_BUDGET && clampBudget(MAX_TRIANGLES) === MAX_TRIANGLES);
   check(
-    'detail: a new choice re-reads the files in memory with the whole setup and puts the placements back; a saved robot is greyed (source pins)',
+    'detail: Full is the default and keeps every triangle (any budget that is not a positive number), Light is 250k, and a setup from before reads at the budget it names (250k, 400k)',
+    geo.DEFAULT_TRI_BUDGET === geo.FULL_DETAIL &&
+      geo.defaultImportSetup().triBudget === geo.FULL_DETAIL &&
+      geo.isFullDetail(0) &&
+      geo.isFullDetail(Number.NaN) &&
+      !geo.isFullDetail(250_000) &&
+      clampBudget(geo.FULL_DETAIL) === Infinity &&
+      geo.LIGHT_TRI_BUDGET === 250_000 &&
+      clampBudget(geo.LIGHT_TRI_BUDGET) === 250_000 &&
+      clampBudget(400_000) === 400_000 &&
+      clampBudget(10) === 1000,
+  );
+  check(
+    'detail: no 400k cap is left, and the stored mesh may be 128 MiB (a 14M-triangle robot at ~9 bytes a triangle)',
+    !('MAX_TRIANGLES' in rtypes) && rtypes.MAX_MESH_BYTES === 128 * 1024 * 1024,
+  );
+  check(
+    'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
     /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
-      /void readModel\(files, \{ setup, spec: doc\.spec \}\)\.then\(\(\) => \{\s*if \(keepMech\) update/.test(ed) &&
-      /disabled=\{doc\.savedModel\}/.test(ms) && /onPick=\{onDetail\}/.test(ms),
+      /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
+      /void readModel\(files, \{ setup, spec: doc\.spec \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\)\);/.test(ed) &&
+      /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
+      /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
+      /disabled=\{doc\.savedModel\}/.test(ms) &&
+      /onPick=\{onDetail\}/.test(ms),
+  );
+}
+
+/**
+ * FULL DETAIL END TO END (`docs/area/robot-import.md` "Mesh quality"): the reader's every triangle is
+ * kept (`PreparedModel.full`), the editor measures a simplification that keeps every BODY (a body the
+ * simplifier collapses comes back whole), the measurer hands the preview and the bake every triangle
+ * in the model frame (one orientation at a time), and the bake stores every one of them.
+ */
+{
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const { MeshoptDecoder } = await import('three/examples/jsm/libs/meshopt_decoder.module.js');
+  const geo = await import('../src/robotImport/geometry');
+  const { simplifyModel, shownParts } = await import('../src/robotImport/engine/prepare');
+  const { bakeModelHere, readStoredScene, sceneParts } = await import('../src/robotImport/engine/bakeMesh');
+  const { splitMoving } = await import('../src/robotImport/engine/bakeScene');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  const { floatAttribute } = await import('../src/games/biobuzz/scene/renderImported');
+  type Part = import('../src/robotImport/geometry').MeshPart;
+  // a robot over MEASURE_TRI_BUDGET: seven knots (a body each) on a plate, and a hundred specks (a
+  // body each, 0.4 mm across) the simplifier would collapse
+  const parts: Part[] = [];
+  const palette: [number, number, number][] = [[0.8, 0.8, 0.82], [0.05, 0.05, 0.05], [0.9, 0.3, 0.05], [0.35, 0.35, 0.35], [0.1, 0.2, 0.7]];
+  const add = (g: import('three').BufferGeometry, at: [number, number, number], color: [number, number, number], name: string, body: number): void => {
+    const pos = g.getAttribute('position');
+    const positions = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      positions[3 * i] = pos.getX(i) + at[0];
+      positions[3 * i + 1] = pos.getY(i) + at[1];
+      positions[3 * i + 2] = pos.getZ(i) + at[2];
+    }
+    parts.push({ positions, indices: Uint32Array.from(g.index!.array as ArrayLike<number>), color, name, body: new Uint32Array(pos.count).fill(body) });
+  };
+  for (let k = 0; k < 7; k++) add(new THREE.TorusKnotGeometry(0.05, 0.012, 480, 40, 2 + (k % 3), 3), [((k % 4) - 1.5) * 0.12, 0.08, Math.floor(k / 4) * 0.14 - 0.07], palette[k % 5], `knot${k}`, 10 + k);
+  add(new THREE.BoxGeometry(0.46, 0.01, 0.4, 8, 1, 8), [0, 0.005, 0], palette[0], 'plate', 1);
+  for (let k = 0; k < 100; k++) add(new THREE.BoxGeometry(0.0004, 0.0004, 0.0004), [((k % 10) - 4.5) * 0.04, 0.0102, (Math.floor(k / 10) - 4.5) * 0.035], palette[1], `speck${k}`, 100 + k);
+  const copy = (): Part[] => parts.map((p) => ({ ...p, positions: p.positions.slice(), indices: p.indices!.slice(), body: p.body!.slice() }));
+  const loaded = (): import('../src/robotImport/engine/parse').LoadedModel => ({ name: 'dense.glb', format: 'glb', bytes: 0, fileUnit: null, notes: [], parts: copy(), trisIn: geo.triangleCount(parts) });
+  const bodiesOf = (ps: readonly Part[]): Set<number> => {
+    const s = new Set<number>();
+    for (const p of ps) for (let i = 0; i < p.body!.length; i++) s.add(p.body![i]);
+    return s;
+  };
+  // every welded triangle: what a budget no model reaches keeps (nothing simplified, nothing measured apart)
+  const whole = await simplifyModel(loaded(), Number.MAX_SAFE_INTEGER);
+  const wholeTris = geo.triangleCount(whole.parts);
+  const full = await simplifyModel(loaded(), geo.FULL_DETAIL);
+  const light = await simplifyModel(loaded(), geo.LIGHT_TRI_BUDGET);
+  const fullTris = full.full ? geo.triangleCount(full.full) : 0;
+  check(
+    `full detail: every welded triangle is kept and stored (${Math.round(fullTris / 1000)}k), and the editor measures a simplification of it`,
+    wholeTris > geo.MEASURE_TRI_BUDGET && !whole.full && !!full.full && fullTris === wholeTris && full.trisOut === wholeTris && !!full.fullDetail && geo.triangleCount(full.parts) < fullTris && shownParts(full) === full.full,
+    `${wholeTris} welded, measured ${geo.triangleCount(full.parts)}`,
+  );
+  const fullBodies = bodiesOf(full.full ?? []);
+  const measured = bodiesOf(full.parts);
+  check(
+    'full detail: the measured copy keeps EVERY body, the specks the simplifier collapses included, and names them with the full mesh’s ids',
+    fullBodies.size === 108 && [...fullBodies].every((b) => measured.has(b)) && measured.size === fullBodies.size,
+    `${measured.size} of ${fullBodies.size}`,
+  );
+  check(
+    'full detail: Light simplifies to its budget and keeps no full copy',
+    !light.full && !light.fullDetail && light.trisOut <= geo.LIGHT_TRI_BUDGET && shownParts(light) === light.parts,
+  );
+  const small = await simplifyModel({ ...loaded(), parts: copy().slice(0, 2) }, geo.FULL_DETAIL);
+  check('full detail: a model under MEASURE_TRI_BUDGET read at Full has no separate copy (all of it is measured)', !small.full && !!small.fullDetail && small.trisOut === geo.triangleCount(small.parts));
+
+  // the measurer: every triangle in the model frame, kept while the orientation is, one orientation at a time
+  const m = new Measurer(full);
+  const setup = geo.defaultImportSetup();
+  const n1 = m.normalise(setup);
+  const n2 = m.normalise({ ...setup, hullMaxVerts: 12 });
+  const n3 = m.normalise({ ...setup, yaw: 1 });
+  const n4 = m.normalise(setup);
+  check(
+    'full detail: normalise hands every triangle in the model frame (shownParts), the same arrays on a finish-only edit, and builds them again after another orientation let them go',
+    !!n1.shownParts && geo.triangleCount(n1.shownParts) === fullTris && n2.shownParts === n1.shownParts && !!n3.shownParts && n3.shownParts !== n1.shownParts && !!n4.shownParts && n4.shownParts !== n1.shownParts && n4.modelParts === n1.modelParts,
+  );
+  m.dispose();
+  const lm = new Measurer(light);
+  check('full detail: a model measured whole has no shownParts', !lm.normalise(setup).shownParts);
+  lm.dispose();
+
+  // the bake stores every triangle (no refit), and the pictures are drawn from all of them
+  const descriptor = { id: 'x', hull: n4.measurement.hull, heightIn: 5, mech: null } as unknown as import('../src/types').ImportedRobot;
+  const baked = await bakeModelHere({ modelParts: n4.shownParts ?? [], origin: n4.measurement.origin, descriptor, motion: [] });
+  const loader = new GLTFLoader();
+  loader.setMeshoptDecoder(MeshoptDecoder as Parameters<typeof loader.setMeshoptDecoder>[0]);
+  const back = sceneParts(readStoredScene((await loader.parseAsync(baked.glb.slice(0), '')).scene));
+  check(
+    'full detail: the bake stores every triangle under MAX_MESH_BYTES with no refit, and draws its pictures from all of them',
+    baked.refits === 0 && geo.triangleCount(back) === fullTris && geo.triangleCount(baked.pictures) === fullTris,
+    `${(baked.glb.byteLength / 1048576).toFixed(2)} MiB, ${(baked.glb.byteLength / fullTris).toFixed(2)} B a triangle`,
+  );
+  // the relay copy of a mesh eight times over its cap is aimed from the float writer's usual size
+  // (here a 256 KiB cap stands in for 1 MiB against a Full robot of millions)
+  {
+    const { liteMesh } = await import('../src/robotImport/engine/lite');
+    const { glbUsesExtensions } = await import('../src/robotImport/engine/storedGlb');
+    const g = globalThis as unknown as { FileReader?: unknown };
+    const hadReader = !!g.FileReader;
+    if (!hadReader) {
+      g.FileReader = class {
+        result: unknown = null;
+        onloadend: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        readAsArrayBuffer(blob: Blob): void {
+          void blob.arrayBuffer().then((b) => {
+            this.result = b;
+            this.onloadend?.();
+            this.onload?.();
+          });
+        }
+      };
+    }
+    try {
+      const cap = 256 * 1024;
+      const lite = await liteMesh(baked.glb, cap);
+      const liteTris = lite ? geo.triangleCount(sceneParts(readStoredScene((await loader.parseAsync(lite.slice(0), '')).scene))) : 0;
+      const src = readFileSync('src/robotImport/engine/lite.ts', 'utf8');
+      check(
+        'full detail: the relay copy of a mesh eight times over its cap is aimed from the float size (not written whole to find out), and fits as a float GLB',
+        fullTris * 20 > cap * 8 && !!lite && lite.byteLength <= cap && !glbUsesExtensions(lite) && liteTris > 400 && /if \(total \* FLOAT_FLOOR_BYTES > maxBytes \* 8\) bytes = total \* FLOAT_BYTES;/.test(src),
+        `${lite?.byteLength} B, ${liteTris} triangles`,
+      );
+    } finally {
+      if (!hadReader) delete g.FileReader;
+    }
+  }
+
+  // splitMoving's typed arrays give what the Map-and-array version gave, part for part
+  const oldSplit = (robotParts: readonly Part[], motion: readonly { bodies: readonly number[] }[]): { rest: Part[]; moving: Part[][] } => {
+    const owner = new Map<number, number>();
+    motion.forEach((mm, i) => {
+      for (const b of mm.bodies) if (!owner.has(b)) owner.set(b, i);
+    });
+    const rest: Part[] = [];
+    const moving: Part[][] = motion.map(() => []);
+    for (const p of robotParts) {
+      const nT = p.indices!.length / 3;
+      const buckets = new Map<number, number[]>();
+      for (let t = 0; t < nT; t++) {
+        const o = owner.get(p.body![p.indices![3 * t]]) ?? -1;
+        let l = buckets.get(o);
+        if (!l) buckets.set(o, (l = []));
+        l.push(t);
+      }
+      if (buckets.size === 1 && buckets.has(-1)) {
+        rest.push(p);
+        continue;
+      }
+      for (const [o, tris] of buckets) {
+        const map = new Map<number, number>();
+        const idx = new Uint32Array(tris.length * 3);
+        const pos: number[] = [];
+        const nrm: number[] = [];
+        const body: number[] = [];
+        let k = 0;
+        for (const t of tris) {
+          for (let c = 0; c < 3; c++) {
+            const v = p.indices![3 * t + c];
+            let mm = map.get(v);
+            if (mm === undefined) {
+              mm = pos.length / 3;
+              map.set(v, mm);
+              pos.push(p.positions[3 * v], p.positions[3 * v + 1], p.positions[3 * v + 2]);
+              if (p.normals) nrm.push(p.normals[3 * v], p.normals[3 * v + 1], p.normals[3 * v + 2]);
+              body.push(p.body![v]);
+            }
+            idx[k++] = mm;
+          }
+        }
+        (o < 0 ? rest : moving[o]).push({ positions: new Float32Array(pos), indices: idx, normals: p.normals ? new Float32Array(nrm) : null, color: p.color, name: p.name, body: Uint32Array.from(body) });
+      }
+    }
+    return { rest, moving };
+  };
+  const motion = [{ bodies: [10, 12] }, { bodies: [13, 105] }];
+  const a = splitMoving(full.full ?? [], motion);
+  const b = oldSplit(full.full ?? [], motion);
+  const bytes = (x: Float32Array | Uint32Array | null | undefined): string => (x ? Buffer.from(x.buffer, x.byteOffset, x.byteLength).toString('base64') : '');
+  const same = (x: Part[], y: Part[]): boolean =>
+    x.length === y.length && x.every((p, i) => bytes(p.positions) === bytes(y[i].positions) && bytes(p.indices) === bytes(y[i].indices) && bytes(p.body) === bytes(y[i].body) && bytes(p.normals) === bytes(y[i].normals));
+  check('full detail: splitMoving (typed arrays) splits every part exactly as the Map-and-array version did', same(a.rest, b.rest) && a.moving.every((ps, i) => same(ps, b.moving[i])) && a.moving[1].length > 0);
+
+  // floatAttribute reads a quantised attribute off the typed array as getComponent does, value for value
+  const qp = new Int16Array([1, -2, 3, 0, 32767, -32768, 7, 8, -9, 0, 5, 6]);
+  const qn = new Int8Array([127, -128, 0, 0, 64, -64, 1, 2, 3, 0, -127, 5]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(qp, 4), 3, 0, false));
+  g.setAttribute('normal', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(qn, 4), 3, 0, true));
+  const plainN = new THREE.BufferAttribute(new Int8Array([127, -128, 1, -64]), 2, true);
+  const want = (attr: import('three').BufferAttribute | import('three').InterleavedBufferAttribute): number[] => {
+    const o: number[] = [];
+    for (let i = 0; i < attr.count; i++) for (let c = 0; c < attr.itemSize; c++) o.push(attr.getComponent(i, c));
+    return o;
+  };
+  const wantP = want(g.getAttribute('position'));
+  const wantN = want(g.getAttribute('normal'));
+  const g2 = new THREE.BufferGeometry();
+  g2.setAttribute('normal', plainN);
+  const wantPlain = want(plainN);
+  floatAttribute(g, 'position');
+  floatAttribute(g, 'normal');
+  floatAttribute(g2, 'normal');
+  check(
+    'full detail: floatAttribute reads interleaved and plain quantised attributes straight off the array, equal to getComponent (stored as float32, as before)',
+    Array.from(g.getAttribute('position').array).join() === Float32Array.from(wantP).join() &&
+      Array.from(g.getAttribute('normal').array).join() === Float32Array.from(wantN).join() &&
+      Array.from(g2.getAttribute('normal').array).join() === Float32Array.from(wantPlain).join() &&
+      g.getAttribute('normal').array instanceof Float32Array,
+    `${Array.from(g.getAttribute('normal').array).join()} | ${Float32Array.from(wantN).join()}`,
+  );
+
+  // the editor draws every triangle and picks on the measured copy; the bake gets every triangle
+  const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8');
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8');
+  check(
+    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
+    /creaseParts\(state\.shown \?\? state\.parts\)/.test(pv) &&
+      /e\.importModel\(\[file\], \{ budget: Number\.MAX_SAFE_INTEGER \}\)/.test(ed) &&
+      /pickModel = buildMeshGroup\(state\.parts, 'pick'\)/.test(pv) &&
+      /const target = pickModel \?\? model;/.test(pv) &&
+      /shown: normalised\.shownParts \?\? null,/.test(ed) &&
+      /modelParts: normalised\.shownParts \?\? normalised\.modelParts,/.test(ed),
   );
 }
 
