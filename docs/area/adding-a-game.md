@@ -60,6 +60,13 @@ is SOLID to a ground element". Absent ⇒ the shared `robotSolids`, i.e. DECODE'
 BIOBUZZ fills it because its sweeper is a roller bar on whichever edge `intakeMount` names, and
 DECODE/CR leave it empty so `src/sim/world.ts` is untouched.
 
+**Competition ranking points** are optional too: a `CmTable` in `src/competition/manual.ts` (the
+game's Table 10-2/10-3/13-1) and `GameSimModule.rankFacts(world, at)` reporting the same measure
+ids, each at the instant the manual assesses it (`'autoEnd'`, `'teleopStart'` or `'final'`; the
+room merges them). The keys are string literals on purpose: game code never imports `manual.ts`,
+which belongs to the competitions chunk. `scripts/smoke.ts` checks the two key sets agree.
+Without both, a competition of the game ranks on win, tie and loss alone.
+
 An `ImportMechSlot` (`<game>/importChecks.ts`) is what the imported-robot placement editor asks a
 game: `handles` (the spans and points the player may drag), `defaults` (the pre-fill, coerced) and
 `issues` (plain-language checks, `block` stops Save). **It is NOT a `GameSimModule` slot**: a new game

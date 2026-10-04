@@ -10,7 +10,9 @@
  *      competition (`played`, with a replay that a stranger can watch);
  *   3. Q2 is called and only one player turns up: the room's grace runs out and the match goes back
  *      on the schedule with a note for the referee, charging nobody's standing;
- *   4. the call bar's read (`/api/competitions/me`) says the match is called while it is.
+ *   4. the call bar's read (`/api/competitions/me`) says the match is called while it is;
+ *   5. the competition ranks by the Competition Manual (0060), and the played match's row holds
+ *      what the room measured (`rankFacts`), in DECODE's keys, per alliance.
  *
  * What `npm run dbtest` cannot reach: the join path's claim, `Room.applyPending` with a competition,
  * the strategy window's `competition` field, the room reporting through `persistMatch` and the
@@ -96,7 +98,13 @@ async function main(): Promise<void> {
     game: 'decode',
     format: '1v1',
     capacity: 4,
-    settings: { quals: { kind: 'roundRobin', matchesPerEntry: 2 }, playoffs: { enabled: false }, checkIn: false, run: { joinGraceSec: 60, noShow: 'hold' } },
+    settings: {
+      quals: { kind: 'roundRobin', matchesPerEntry: 2 },
+      rp: { scheme: 'cm', level: 'event', thresholds: {} },
+      playoffs: { enabled: false },
+      checkIn: false,
+      run: { joinGraceSec: 60, noShow: 'hold' },
+    },
   });
   check('e2e: an admin creates a competition over HTTP', made.status === 200 && !!made.body.slug, JSON.stringify(made));
   const slug = made.body.slug as string;
@@ -203,6 +211,22 @@ async function main(): Promise<void> {
     check('e2e: a stranger can watch a competition replay', rep.status === 200, String(rep.status));
   }
   check('e2e: rankings exist after the first result', Array.isArray(d.rankings) && d.rankings.length === 2, JSON.stringify(d.rankings?.map((r: { rank: number; rp: number }) => [r.rank, r.rp])));
+  // what the room measured rides in with the result (0060): every DECODE measure, per alliance,
+  // as a whole number. The values are whatever two idle robots scored; the shape is the point.
+  const measured = (await db.query<{ facts: Record<string, Record<string, unknown>> | null }>(
+    `select facts from competition_matches where id = $1`,
+    [q1.id],
+  )).rows[0]?.facts;
+  const DECODE_KEYS = ['artifacts', 'auto', 'base', 'movement', 'pattern', 'patternAward'];
+  const shaped = (s: Record<string, unknown> | undefined): boolean =>
+    !!s && Object.keys(s).sort().join() === DECODE_KEYS.join() && Object.values(s).every((v) => typeof v === 'number' && Number.isInteger(v) && v >= 0);
+  check('e2e: the played match’s row holds what the game measured, per alliance, in DECODE’s keys',
+    !!measured && Object.keys(measured).sort().join() === 'blue,red' && shaped(measured.red) && shaped(measured.blue), JSON.stringify(measured));
+  const rpRow = d.matches.find((m: { id: number }) => m.id === q1.id);
+  check('e2e: ...and the page ranks by the manual: Q1’s RP are read from it, and MOVEMENT is out of a 1v1’s reach',
+    d.ranking?.scheme === 'cm' && JSON.stringify(d.unreachable) === '["movement"]' &&
+      typeof rpRow?.rp?.alliance?.red?.total === 'number' && typeof rpRow?.rp?.alliance?.blue?.total === 'number',
+    JSON.stringify({ scheme: d.ranking?.scheme, unreachable: d.unreachable, rp: rpRow?.rp }));
   a.ws.close();
   b.ws.close();
   await sleep(1000);

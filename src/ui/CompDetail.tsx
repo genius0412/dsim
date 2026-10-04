@@ -1,25 +1,33 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { CompError, compAction, fetchCompetition } from '../net/competitions';
 import type { CompetitionDetail, CompEntryView, CompMatchView } from '../competition/wire';
+import type { RankRow, ResolvedRanking, Tiebreaker } from '../competition/types';
+import { MEASURE_TIEBREAKERS } from '../competition/types';
 import {
   BRACKET_LABEL,
+  CARD_LABEL,
   ENTRY_LABEL,
   QUAL_LABEL,
   SELECTION_LABEL,
+  TIEBREAK_COL,
   TIEBREAK_LABEL,
   bestOfLabel,
+  bonusLabel,
+  bonusRule,
   countdown,
   formatLabel,
   logLine,
   minutesLabel,
   phaseLine,
+  tiebreakLine,
 } from '../competition/copy';
+import { tbValue } from '../competition/rankings';
 import { entriesPerAlliance } from '../competition/settings';
 import { seasonFor } from '../seasons';
 import { fmtDay, fmtDayTime } from './fmtDate';
 import { Markdown } from './markdown';
-import { useCompPoll, saveCsv, Ago } from './compBits';
-import { EntryLine, MatchState, PlayerName, ScoreCell, Side, StatusBadge, allianceOf, inMatch } from './CompParts';
+import { useCompPoll, saveCsv, Ago, unreachableLine } from './compBits';
+import { EntryLine, MatchState, PlayerName, ScoreCell, Side, StatusBadge, allianceOf, inMatch, takenRp } from './CompParts';
 import { CompPlayoffs } from './CompBracket';
 import { CompManage, MatchDesk } from './CompManage';
 
@@ -366,6 +374,7 @@ function Overview({ data, onProfile }: { data: CompetitionDetail; onProfile: (u:
   );
   const window_ = (a: number | null, b: number | null): string =>
     a || b ? `${a ? fmtDayTime(a) : 'Now'} → ${b ? fmtDayTime(b) : 'until it starts'}` : 'Open until it starts';
+  const unreachable = s.quals.kind !== 'none' && data.ranking?.scheme === 'cm' ? (data.unreachable ?? []) : [];
   return (
     <>
       {c.status === 'completed' && placements.length > 0 && (
@@ -409,7 +418,7 @@ function Overview({ data, onProfile }: { data: CompetitionDetail; onProfile: (u:
         <div className="ds-panel-h">
           <h2 className="ds-panel-title">Details</h2>
         </div>
-        <div className="ds-panel-body">
+        <div className="ds-panel-body stack">
           <dl className="ds-facts">
             <dt>Game</dt>
             <dd>{seasonFor(c.game).name}</dd>
@@ -445,16 +454,7 @@ function Overview({ data, onProfile }: { data: CompetitionDetail; onProfile: (u:
               {s.quals.kind === 'swiss' && ` · ${s.quals.matchesPerEntry} rounds`}
               {s.quals.kind === 'roundRobin' && s.quals.matchesPerEntry > 1 && ` · ${s.quals.matchesPerEntry} cycles`}
             </dd>
-            {s.quals.kind !== 'none' && (
-              <>
-                <dt>Ranking points</dt>
-                <dd>
-                  Win {s.points.win} · tie {s.points.tie} · loss {s.points.loss}
-                </dd>
-                <dt>Tiebreakers</dt>
-                <dd>{s.tiebreakers.length ? s.tiebreakers.map((t, i) => (i ? TIEBREAK_LABEL[t].toLowerCase() : TIEBREAK_LABEL[t])).join(', then ') : 'A coin toss'}</dd>
-              </>
-            )}
+            {s.quals.kind !== 'none' && <RankingFacts data={data} />}
             <dt>Playoffs</dt>
             <dd>
               {s.playoffs.enabled
@@ -485,6 +485,7 @@ function Overview({ data, onProfile }: { data: CompetitionDetail; onProfile: (u:
               </>
             )}
           </dl>
+          {unreachable.length > 0 && <p className="ds-hint">{unreachableLine(c.game, unreachable)}</p>}
         </div>
       </div>
       {c.rules && (
@@ -497,6 +498,45 @@ function Overview({ data, onProfile }: { data: CompetitionDetail; onProfile: (u:
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+/**
+ * THE RANKING ROWS OF THE DETAILS LIST. Under the Competition Manual: where the table is from and
+ * its win/tie/loss, one row per bonus RP and what it asks for, then Table 13-1's order and the
+ * coin. Otherwise (`custom`, or an older server that sends no `ranking`) the organizer's points
+ * and tiebreakers, as before.
+ */
+function RankingFacts({ data }: { data: CompetitionDetail }) {
+  const c = data.competition;
+  const r = data.ranking;
+  if (r?.scheme === 'cm') {
+    const points = `win ${r.win} · tie ${r.tie} · loss ${r.loss}`;
+    return (
+      <>
+        <dt>Ranking points</dt>
+        <dd>{r.source ? `${r.source}: ${points}` : points.charAt(0).toUpperCase() + points.slice(1)}</dd>
+        {r.bonus.map((b) => (
+          <Fragment key={b.id}>
+            <dt>{bonusLabel(b.id)}</dt>
+            <dd>{bonusRule(c.game, b)}</dd>
+          </Fragment>
+        ))}
+        <dt>Tiebreakers</dt>
+        <dd>{r.tiebreakers.length ? `${tiebreakLine(r.tiebreakers)}, then a coin toss` : 'A coin toss'}</dd>
+      </>
+    );
+  }
+  const p = r ?? { ...c.settings.points, tiebreakers: c.settings.tiebreakers };
+  return (
+    <>
+      <dt>Ranking points</dt>
+      <dd>
+        Win {p.win} · tie {p.tie} · loss {p.loss}
+      </dd>
+      <dt>Tiebreakers</dt>
+      <dd>{tiebreakLine(p.tiebreakers)}</dd>
     </>
   );
 }
@@ -711,10 +751,21 @@ function Matches({
   const total = (stage === 'qual' ? quals : playoffs).length;
   const exportCsv = (): void => {
     const name = (s: { entry: number }[]) => s.map((x) => entries.get(x.entry)?.name ?? `#${x.entry}`).join(' + ');
+    // qualification matches add the ranking points each alliance took (blank until decided)
+    const rp = stage === 'qual';
     saveCsv(
       `${slug}-${stage === 'qual' ? 'qualifications' : 'playoffs'}.csv`,
-      ['match', 'red', 'blue', 'red score', 'blue score', 'winner', 'how'],
-      list.map((m) => [m.label, name(m.red), name(m.blue), m.result?.red ?? '', m.result?.blue ?? '', m.result?.winner ?? '', m.result?.source ?? m.status]),
+      ['match', 'red', 'blue', 'red score', 'blue score', 'winner', 'how', ...(rp ? ['red RP', 'blue RP'] : [])],
+      list.map((m) => [
+        m.label,
+        name(m.red),
+        name(m.blue),
+        m.result?.red ?? '',
+        m.result?.blue ?? '',
+        m.result?.winner ?? '',
+        m.result?.source ?? m.status,
+        ...(rp ? [m.rp ? takenRp(m.rp, m, 'red').total : '', m.rp ? takenRp(m.rp, m, 'blue').total : ''] : []),
+      ]),
     );
   };
   return (
@@ -749,7 +800,7 @@ function Matches({
           {onlyMine ? 'None of them are yours.' : 'They appear once they are drawn.'}
         </div>
       ) : (
-        <div className="ds-table-scroll tall">
+        <div className="ds-table-scroll tall ds-comp-matchscroll">
           <table className="ds-table ds-comp-table">
             <thead>
               <tr>
@@ -820,10 +871,10 @@ function MatchRow({
           {referee && m.callNote && <div className="ds-hint warn">{m.callNote}</div>}
         </td>
         <td>
-          <Side slots={m.red} alliance="red" entries={entries} dq={m.dq} mine={mine} />
+          <Side m={m} alliance="red" entries={entries} mine={mine} />
         </td>
         <td>
-          <Side slots={m.blue} alliance="blue" entries={entries} dq={m.dq} mine={mine} />
+          <Side m={m} alliance="blue" entries={entries} mine={mine} />
         </td>
         <td>
           {m.live ? (
@@ -833,7 +884,7 @@ function MatchRow({
               <span className="blue">{m.live.score.blue}</span>
             </span>
           ) : (
-            <ScoreCell r={m.result} />
+            <ScoreCell r={m.result} rp={m.stage === 'qual' ? m.rp : null} slots={m} />
           )}
         </td>
         <td>
@@ -859,7 +910,9 @@ function MatchRow({
       </tr>
       {desk && (
         <tr>
-          <td colSpan={5}>{desk}</td>
+          <td colSpan={5} className="ds-comp-deskcell">
+            {desk}
+          </td>
         </tr>
       )}
     </>
@@ -868,17 +921,54 @@ function MatchRow({
 
 // ------------------------------------------------------------------ rankings
 
+/**
+ * WHAT A TIEBREAKER COLUMN PRINTS for one row: the value the sort used (`tbValue`), or null for a
+ * dash when there is nothing behind it yet. Under the manual a DQ match is a 0 IN the score
+ * averages, so those count it in their denominator; the margin, the fouls and the high score come
+ * from scored matches only, and a measure is null until a match reported it.
+ */
+function tbShown(row: RankRow, t: Tiebreaker, ranking: Pick<ResolvedRanking, 'scheme'> | undefined): number | null {
+  const v = tbValue(row, t);
+  if (v === null || MEASURE_TIEBREAKERS[t] || t === 'wins') return v;
+  const over = t === 'avgScore' || t === 'avgNoFoul' ? row.scored + (ranking?.scheme === 'cm' ? (row.dqs ?? 0) : 0) : row.scored;
+  return over > 0 ? v : null;
+}
+
+const tbText = (t: Tiebreaker, v: number | null): string => (v === null ? '—' : t === 'highScore' || t === 'wins' ? String(v) : v.toFixed(1));
+
+/** "Movement" for "Movement RP": the phone sub-line already says "Bonus RP" once */
+const bonusShort = (id: string): string => bonusLabel(id).replace(/ RP$/, '');
+
 function Rankings({ data, entries }: { data: CompetitionDetail; entries: Map<number, CompEntryView> }) {
   const rows = data.rankings ?? [];
+  const c = data.competition;
   const mine = data.viewer.entryId;
-  const cutoff = data.competition.settings.playoffs.enabled
-    ? data.competition.settings.playoffs.alliances * entriesPerAlliance(data.competition.format, data.competition.teamMode)
-    : 0;
+  const cutoff = c.settings.playoffs.enabled ? c.settings.playoffs.alliances * entriesPerAlliance(c.format, c.teamMode) : 0;
+  const ranking = data.ranking;
+  // an older server sends no `ranking`: its columns are the organizer's tiebreakers
+  const tbs: Tiebreaker[] = ranking?.tiebreakers ?? c.settings.tiebreakers;
+  const bonus = ranking?.scheme === 'cm' ? ranking.bonus.map((b) => b.id) : [];
+  const live = c.status === 'qualification';
+  const nameOf = (id: number): string => entries.get(id)?.name ?? `#${id}`;
   const exportCsv = (): void =>
     saveCsv(
-      `${data.competition.slug}-rankings.csv`,
-      ['rank', 'entry', 'ranking score', 'wins', 'losses', 'ties', 'played', 'avg score', 'avg without fouls', 'high score'],
-      rows.map((r) => [r.rank, entries.get(r.entry)?.name ?? r.entry, r.rs.toFixed(2), r.wins, r.losses, r.ties, r.played, r.avgScore.toFixed(1), r.avgNoFoul.toFixed(1), r.highScore]),
+      `${c.slug}-rankings.csv`,
+      ['rank', 'entry', 'ranking score', 'ranking points', 'wins', 'losses', 'ties', 'played', ...tbs.map((t) => TIEBREAK_LABEL[t]), ...bonus.map(bonusLabel)],
+      rows.map((r) => [
+        r.rank,
+        nameOf(r.entry),
+        r.rs.toFixed(2),
+        r.rp,
+        r.wins,
+        r.losses,
+        r.ties,
+        r.played,
+        ...tbs.map((t) => {
+          const v = tbShown(r, t, ranking);
+          return v === null ? '' : tbText(t, v);
+        }),
+        ...bonus.map((id) => r.bonus?.[id] ?? 0),
+      ]),
     );
   return (
     <div className="ds-panel">
@@ -895,22 +985,35 @@ function Rankings({ data, entries }: { data: CompetitionDetail; entries: Map<num
         </div>
       ) : (
         <div className="ds-table-scroll tall">
-          <table className="ds-table ds-comp-table">
+          <table className="ds-table ds-comp-table ds-comp-rank">
             <thead>
               <tr>
                 <th className="r">#</th>
                 <th>Entry</th>
-                <th className="r" title="Ranking points per match played">Score</th>
+                <th className="r" title="Ranking score: ranking points per match played">
+                  RS
+                </th>
+                <th className="r" title="Ranking points">
+                  RP
+                </th>
                 <th className="r">W–L–T</th>
                 <th className="r">Played</th>
-                <th className="r">Avg</th>
-                <th className="r" title="Average score minus the foul points the alliance was given">Avg no fouls</th>
-                <th className="r">High</th>
+                {tbs.map((t) => (
+                  <th key={t} className="r" title={TIEBREAK_LABEL[t]}>
+                    {TIEBREAK_COL[t]}
+                  </th>
+                ))}
+                {bonus.map((id) => (
+                  <th key={id} className="r bonus" title={`Matches that earned the ${bonusLabel(id)}`}>
+                    {bonusLabel(id)}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const e = entries.get(r.entry);
+                const range = live && cutoff > 0 && r.rank <= cutoff && !r.disqualified;
+                const yellow = live && !!r.yellow && !r.disqualified;
                 return (
                   <tr key={r.entry} className={r.entry === mine ? 'mine' : undefined}>
                     <td className="r rk">
@@ -918,20 +1021,42 @@ function Rankings({ data, entries }: { data: CompetitionDetail; entries: Map<num
                       {cutoff > 0 && r.rank === cutoff && <span className="ds-sr"> (last playoff place)</span>}
                     </td>
                     <td>
-                      {e ? e.name : `#${r.entry}`}
-                      {r.disqualified && <span className="ds-badge danger"> Disqualified</span>}
-                      {cutoff > 0 && r.rank <= cutoff && !r.disqualified && data.competition.status === 'qualification' && (
-                        <span className="ds-muted"> · in playoff range</span>
-                      )}
+                      <span className="entry">
+                        <span className="who" title={nameOf(r.entry)}>
+                          {nameOf(r.entry)}
+                        </span>
+                        {(r.disqualified || yellow || range) && (
+                          <span className="sub">
+                            {r.disqualified && <span className="ds-badge danger">Disqualified</span>}
+                            {yellow && (
+                              <span className="ds-badge warn" title="Carries a yellow card into its next qualification match">
+                                {CARD_LABEL.yellow}
+                              </span>
+                            )}
+                            {range && <span className="ds-muted">In playoff range</span>}
+                          </span>
+                        )}
+                        {bonus.length > 0 && (
+                          <span className="ds-muted bonus-sub">Bonus RP: {bonus.map((id) => `${bonusShort(id)} ${r.bonus?.[id] ?? 0}`).join(' · ')}</span>
+                        )}
+                      </span>
                     </td>
                     <td className="r num">{r.rs.toFixed(2)}</td>
+                    <td className="r num">{r.rp}</td>
                     <td className="r num">
                       {r.wins}–{r.losses}–{r.ties}
                     </td>
                     <td className="r num">{r.played}</td>
-                    <td className="r num">{r.scored ? r.avgScore.toFixed(1) : '—'}</td>
-                    <td className="r num">{r.scored ? r.avgNoFoul.toFixed(1) : '—'}</td>
-                    <td className="r num">{r.scored ? r.highScore : '—'}</td>
+                    {tbs.map((t) => (
+                      <td key={t} className="r num">
+                        {tbText(t, tbShown(r, t, ranking))}
+                      </td>
+                    ))}
+                    {bonus.map((id) => (
+                      <td key={id} className="r num bonus">
+                        {r.bonus?.[id] ?? 0}
+                      </td>
+                    ))}
                   </tr>
                 );
               })}

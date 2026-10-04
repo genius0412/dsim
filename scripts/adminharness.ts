@@ -278,6 +278,10 @@ async function seed(repo: any, db: PGlite): Promise<void> {
  * match, and one finished through alliance selection and a best-of-three final. Built through the
  * same routes an organizer and the players use (`competitionTestApi`), so the rows are the shape the
  * server writes rather than hand-made.
+ *
+ * The two that played qualifications rank by the Competition Manual (0060): each result carries the
+ * measures a referee would type (so the pages show bonus RPs), the Spring Open has one card and one
+ * ruling, and the 1v1 shows the MOVEMENT RP as out of reach.
  */
 async function seedCompetitions(): Promise<void> {
   const { competitionTestApi: api } = await import('../server/competitions');
@@ -287,6 +291,13 @@ async function seedCompetitions(): Promise<void> {
   const ok = (r: { ok: boolean; error?: string }, what: string): void => {
     if (!r.ok) console.warn(`[harness] competition seed: ${what} refused: ${r.error}`);
   };
+  const CM = { scheme: 'cm', level: 'event', thresholds: {} };
+  // DECODE measures for match i, sized for the robots an alliance fields: some clear the 16 / 36 / 18
+  // thresholds and some do not, so the table shows a spread of bonus RPs
+  const factsFor = (i: number, robots: number) => ({
+    red: { auto: 15 + ((i * 7) % 20), base: robots * (i % 2 ? 10 : 5), movement: robots * (i % 2 ? 13 : 8), artifacts: 28 + ((i * 5) % 16), pattern: 10 + ((i * 4) % 14) },
+    blue: { auto: 10 + ((i * 5) % 18), base: robots * 5, movement: robots * 8, artifacts: 24 + ((i * 3) % 18), pattern: 6 + ((i * 6) % 16) },
+  });
 
   await api.create(admin, { name: 'Harness Draft Invitational', game: 'decode', format: '1v1', capacity: 16, summary: 'Still being planned.' });
 
@@ -312,7 +323,7 @@ async function seedCompetitions(): Promise<void> {
     summary: 'Six drivers, three qualification matches each, the top four to the playoffs.',
     description: 'A **1v1 DECODE** event for the harness.\n\n- Qualifications: three matches each\n- Playoffs: top four, single elimination, best-of-three final',
     rules: 'Standard robots only. A driver who misses a called match by more than three minutes forfeits it.',
-    settings: { quals: { kind: 'balanced', matchesPerEntry: 3, minGap: 1 }, playoffs: { enabled: true, alliances: 4, format: 'single', bestOf: 1, finalsBestOf: 3 }, checkIn: false },
+    settings: { quals: { kind: 'balanced', matchesPerEntry: 3, minGap: 1 }, rp: CM, playoffs: { enabled: true, alliances: 4, format: 'single', bestOf: 1, finalsBestOf: 3 }, checkIn: false },
   });
   ok(await api.post(spring.slug, 'status', admin, { to: 'published' }), 'publish spring');
   for (const p of players) ok(await api.post(spring.slug, 'register', p, {}), `register ${p.handle}`);
@@ -321,6 +332,13 @@ async function seedCompetitions(): Promise<void> {
   const quals = (sd?.matches ?? []).filter((m) => m.stage === 'qual');
   for (const [i, m] of quals.slice(0, 5).entries()) {
     ok(await api.post(spring.slug, 'match', admin, { action: 'result', match: m.id, red: 60 + i * 9, blue: 52 + ((i * 13) % 30), redFoul: i % 2 ? 5 : 0 }), `result ${m.id}`);
+    ok(await api.post(spring.slug, 'match', admin, { action: 'facts', match: m.id, attempt: m.attempt, facts: factsFor(i, 1), note: 'From the scoring sheet.' }), `facts ${m.id}`);
+  }
+  if (quals[1]) {
+    ok(await api.post(spring.slug, 'match', admin, { action: 'card', match: quals[1].id, attempt: quals[1].attempt, entry: quals[1].red[0]?.entry, colour: 'yellow', note: 'Pinning an opponent.' }), 'card');
+  }
+  if (quals[2]) {
+    ok(await api.post(spring.slug, 'match', admin, { action: 'rp', match: quals[2].id, attempt: quals[2].attempt, rulings: { blue: { pattern: 'award' } }, note: 'Awarded to blue under G419.B.' }), 'ruling');
   }
   if (quals[5]) ok(await api.post(spring.slug, 'match', admin, { action: 'call', match: quals[5].id }), 'call');
 
@@ -330,7 +348,7 @@ async function seedCompetitions(): Promise<void> {
     format: '2v2',
     capacity: 8,
     summary: 'Alliances drawn for qualifications, then captains pick.',
-    settings: { quals: { kind: 'balanced', matchesPerEntry: 2, minGap: 0 }, playoffs: { enabled: true, alliances: 2, format: 'single', bestOf: 1, finalsBestOf: 3, selection: 'captains' }, checkIn: false },
+    settings: { quals: { kind: 'balanced', matchesPerEntry: 2, minGap: 0 }, rp: CM, playoffs: { enabled: true, alliances: 2, format: 'single', bestOf: 1, finalsBestOf: 3, selection: 'captains' }, checkIn: false },
   });
   ok(await api.post(autumn.slug, 'status', admin, { to: 'published' }), 'publish autumn');
   for (const p of players) ok(await api.post(autumn.slug, 'register', p, {}), `register ${p.handle}`);
@@ -338,6 +356,7 @@ async function seedCompetitions(): Promise<void> {
   let ad = await api.detail(autumn.slug, admin);
   for (const [i, m] of (ad?.matches ?? []).entries()) {
     ok(await api.post(autumn.slug, 'match', admin, { action: 'result', match: m.id, red: 80 + i * 11, blue: 70 + i * 4 }), `autumn result ${m.id}`);
+    ok(await api.post(autumn.slug, 'match', admin, { action: 'facts', match: m.id, attempt: m.attempt, facts: factsFor(i, 2), note: 'From the scoring sheet.' }), `autumn facts ${m.id}`);
   }
   ok(await api.post(autumn.slug, 'status', admin, { to: 'selection' }), 'autumn selection');
   for (let pick = 0; pick < 2; pick++) {

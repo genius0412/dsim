@@ -12,6 +12,7 @@ import { chainColliders } from './colliders';
 import { chainStartLegal } from './state';
 import { createChainWorld } from './spawn';
 import { chainStep } from './step';
+import { chainRankFacts } from './rankFacts';
 
 /**
  * Chain Reaction SIMULATION module (DOM-free) — fully playable + SCORED. `scored: true`
@@ -60,4 +61,6 @@ export const CHAIN_SIM: GameSimModule = {
   createWorld: createChainWorld,
   step: chainStep,
   settled: chainSettled,
+  // a competition's ranking-point measures: AUTO as AUTO ends, ASCENT at the end
+  rankFacts: chainRankFacts,
 };

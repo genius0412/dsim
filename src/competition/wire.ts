@@ -16,10 +16,13 @@ import type {
   CompSettings,
   CompStatus,
   CompetitionSummary,
+  EffectiveDq,
   EntryStatus,
+  MatchRp,
   Placement,
   PlayoffAlliance,
   RankRow,
+  ResolvedRanking,
   SelectionState,
   SeriesState,
   TeamMode,
@@ -80,6 +83,10 @@ export interface CompMatchView extends CompMatchCore {
   /** why the last call did not become a match — staff reads only */
   callNote?: string | null;
   live: CompLive | null;
+  /** qualification matches with a result: the ranking points it gave (absent from an older server) */
+  rp?: MatchRp | null;
+  /** who takes nothing from this match and why, cards and their escalation included (`effectiveDq`) */
+  dqEffective?: EffectiveDq[];
 }
 
 export interface CompStaffView extends CompPlayer {
@@ -137,6 +144,10 @@ export interface CompetitionDetail {
   matches: CompMatchView[];
   /** qualification rankings, once there are qualification matches */
   rankings: RankRow[] | null;
+  /** the ranking rules applied (frozen once qualifications started). Absent from an older server. */
+  ranking?: ResolvedRanking;
+  /** bonus RPs this format can never earn (one robot an alliance), for the overview's note */
+  unreachable?: string[];
   /** live alliance selection while `status === 'selection'` in captains mode */
   selection: SelectionState | null;
   /** the playoff alliances: frozen once the bracket exists, else the preview */

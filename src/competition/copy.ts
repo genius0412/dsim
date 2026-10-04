@@ -3,18 +3,26 @@
  * setting, in one place (`docs/area/ui.md` UI COPY: sentence case, one name per thing).
  * DOM-free so `npm run test:comp` can hold them.
  */
+import type { GameId } from '../games/types';
 import type {
   BracketFormat,
+  CardColour,
   CompFormat,
   CompMatchStatus,
   CompStatus,
+  DqReason,
   EntryStatus,
   QualKind,
+  ResolvedBonus,
+  RpLevel,
+  RpRuling,
+  RpScheme,
   SelectionMode,
   TeamMode,
   Tiebreaker,
 } from './types';
 import { countdown } from './clock';
+import { measureOf } from './manual';
 
 export const STATUS_LABEL: Record<CompStatus, string> = {
   draft: 'Draft',
@@ -79,6 +87,122 @@ export const TIEBREAK_LABEL: Record<Tiebreaker, string> = {
   avgMargin: 'Average margin',
   wins: 'Wins',
   fewestFouls: 'Fewest fouls given',
+  avgAuto: 'Average AUTO points',
+  avgBase: 'Average BASE points',
+  avgTips: 'Average TIPS',
+  avgAscent: 'Average ASCENT points',
+};
+
+/** a rankings column header for each tiebreaker; `TIEBREAK_LABEL` is its title */
+export const TIEBREAK_COL: Record<Tiebreaker, string> = {
+  avgNoFoul: 'Avg no fouls',
+  avgScore: 'Avg',
+  highScore: 'High',
+  avgMargin: 'Margin',
+  wins: 'Wins',
+  fewestFouls: 'Fouls given',
+  avgAuto: 'AUTO',
+  avgBase: 'BASE',
+  avgTips: 'TIPS',
+  avgAscent: 'ASCENT',
+};
+
+/** "Average score without fouls, then average BASE points": a tiebreak order as one sentence */
+export function tiebreakLine(list: readonly Tiebreaker[]): string {
+  if (!list.length) return 'A coin toss';
+  return list.map((t, i) => (i ? lowerFirst(TIEBREAK_LABEL[t]) : TIEBREAK_LABEL[t])).join(', then ');
+}
+
+/** lower-cases the first letter only, so "AUTO" and "BASE" keep their capitals */
+function lowerFirst(s: string): string {
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/**
+ * THE RANKING-POINT WORDS. Game terms keep the manuals' capitals (LEAVE, BASE, PATTERN, PARK,
+ * TIPS), as the HUD and BIOBUZZ's results screen print them. The in-match results screen itself
+ * shows no ranking points, competition matches included.
+ */
+export const SCHEME_LABEL: Record<RpScheme, string> = {
+  cm: 'Competition Manual',
+  custom: 'Win, tie and loss only',
+};
+
+export const LEVEL_LABEL: Record<RpLevel, string> = {
+  event: 'Standard events',
+  regional: 'Regional Championship',
+  championship: 'FIRST Championship',
+  custom: 'Custom',
+};
+
+/** keyed by bonus id (`manual.ts`); the ids are unique across games */
+export const BONUS_LABEL: Record<string, string> = {
+  movement: 'Movement RP',
+  goal: 'Goal RP',
+  pattern: 'Pattern RP',
+  swarm: 'Swarm RP',
+  pollinator1: 'Pollinator 1 RP',
+  pollinator2: 'Pollinator 2 RP',
+};
+
+/** keyed by measure id (`AllianceFacts` keys), for the referee's inputs and the overview */
+export const MEASURE_LABEL: Record<string, string> = {
+  auto: 'AUTO points',
+  base: 'BASE points',
+  movement: 'LEAVE + BASE points',
+  artifacts: 'ARTIFACTS scored',
+  pattern: 'PATTERN points',
+  patternAward: 'PATTERN RP awarded by G417',
+  swarm: 'LEAVE + PARK points',
+  tips: 'TIPS',
+  ascent: 'ASCENT points',
+};
+
+/** a counted measure's label for exactly one */
+const MEASURE_ONE: Record<string, string> = {
+  artifacts: 'ARTIFACT scored',
+  tips: 'TIP',
+};
+
+/** a bonus id's label, or a plain fallback for one this build does not know */
+export function bonusLabel(id: string): string {
+  return BONUS_LABEL[id] ?? 'Bonus RP';
+}
+
+export function measureLabel(id: string): string {
+  return MEASURE_LABEL[id] ?? id;
+}
+
+/**
+ * WHAT ONE BONUS RP ASKS FOR, in words: "16 LEAVE + BASE points", "36 ARTIFACTS scored", "4 TIPS".
+ * The measure's unit comes from the game's table, for the singular of a custom threshold of 1
+ * ("1 TIP", "1 PATTERN point").
+ */
+export function bonusRule(game: GameId, b: Pick<ResolvedBonus, 'measure' | 'threshold'>): string {
+  const label = measureLabel(b.measure);
+  if (b.threshold !== 1) return `${b.threshold} ${label}`;
+  if (measureOf(game, b.measure)?.unit === 'count') return `1 ${MEASURE_ONE[b.measure] ?? label}`;
+  return `1 ${label.replace(/ points$/, ' point')}`;
+}
+
+export const RULING_LABEL: Record<RpRuling, string> = {
+  award: 'Awarded',
+  deny: 'Ineligible',
+};
+
+/** the select's option for no ruling: the RP goes by what was scored */
+export const RULING_NONE = 'As scored';
+
+export const CARD_LABEL: Record<CardColour, string> = {
+  yellow: 'Yellow card',
+  red: 'Red card',
+};
+
+export const DQ_REASON_LABEL: Record<DqReason, string> = {
+  dq: 'Disqualified',
+  red: 'Red card',
+  yellow2: 'Second yellow card',
+  surrogate: 'Card from a surrogate match',
 };
 
 /** "Best of 3", or nothing for a single game */
@@ -124,6 +248,41 @@ export function phaseLine(o: {
     case 'cancelled':
       return 'This competition was cancelled.';
   }
+}
+
+/** "A", "A and B", "A, B and C" */
+function andList(xs: readonly string[]): string {
+  return xs.length <= 1 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+}
+
+/** the names in a log line's list: plain strings, or objects with a `name` */
+function names(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((x) => (typeof x === 'string' ? x : x && typeof x === 'object' && typeof (x as { name?: unknown }).name === 'string' ? (x as { name: string }).name : ''))
+    .filter((x) => x !== '');
+}
+
+/** a line, then the referee's reason as its own sentence */
+function withWhy(line: string, why: string): string {
+  return why ? `${line}. ${why}` : `${line}.`;
+}
+
+/** why a called match did not become one, as the server codes it (`competitionCallFailed`) */
+export type CallFailure = 'noshow' | 'bail' | 'unready';
+
+export const CALL_FAILED: Record<CallFailure, string> = {
+  noshow: 'did not connect',
+  bail: 'left before the start',
+  unready: 'did not ready up in time',
+};
+
+/** a forfeit's or an uncall's `why`: a code with the names in `who`, else the text as written (a
+ *  referee's reason, or a failed call logged before the code) */
+function callFailedWhy(d: Record<string, unknown>): string {
+  const why = typeof d.why === 'string' ? d.why : '';
+  if (!Array.isArray(d.who) || (why !== 'noshow' && why !== 'bail' && why !== 'unready')) return why;
+  return `${andList(names(d.who)) || 'A driver'} ${CALL_FAILED[why]}.`;
 }
 
 /** what a log line says, from its kind and data. Null for a kind this build does not know. */
@@ -186,26 +345,62 @@ export function logLine(kind: string, d: Record<string, unknown>): string | null
       return name ? `${name} was moved into ${label || 'a match'}.` : 'A match was changed.';
     case 'match.called':
       return `${label} was called.`;
-    case 'match.uncalled':
-      return s('why') ? `${label || 'A match'} went back on the schedule: ${s('why')}` : `${label || 'A match'} went back on the schedule.`;
+    case 'match.uncalled': {
+      const why = callFailedWhy(d);
+      return why ? `${label || 'A match'} went back on the schedule: ${why}` : `${label || 'A match'} went back on the schedule.`;
+    }
     case 'match.result': {
       const w = s('winner');
       return `${label}: red ${Number(d.red) || 0}, blue ${Number(d.blue) || 0}${w === 'tie' ? ', a tie' : w ? `, ${w} wins` : ''}.`;
     }
-    case 'match.forfeit':
-      return `${label}: ${s('winner') || 'one alliance'} wins by forfeit${s('why') ? `. ${s('why')}` : '.'}`;
+    case 'match.forfeit': {
+      // `why: 'empty'` is the server's code for an alliance with nobody left to play
+      const why = s('why') === 'empty' ? 'The other alliance had nobody left to play.' : callFailedWhy(d);
+      const dq = names(d.dq);
+      const out = dq.length ? ` ${andList(dq)} ${dq.length === 1 ? 'was' : 'were'} disqualified.` : '';
+      return `${label}: ${s('winner') || 'one alliance'} wins by forfeit.${out}${why ? ` ${why}` : ''}`;
+    }
     case 'match.entered':
       return `${label}: a referee entered red ${Number(d.red) || 0}, blue ${Number(d.blue) || 0}.`;
     case 'match.corrected':
       return `${label}: corrected to red ${Number(d.red) || 0}, blue ${Number(d.blue) || 0}${s('why') ? `. ${s('why')}` : '.'}`;
     case 'match.void':
-      return `${label} was voided${s('why') ? `: ${s('why')}` : '.'}`;
-    case 'match.reset':
-      return `${label} will be played again.`;
+      return s('why') === 'empty' ? `${label} was voided: nobody was left to play it.` : `${label} was voided${s('why') ? `: ${s('why')}` : '.'}`;
+    case 'match.reset': {
+      const cards = names(d.cards);
+      return cards.length
+        ? `${label} will be played again. The referee cards for ${andList(cards)} were withdrawn.`
+        : `${label} will be played again.`;
+    }
     case 'match.dq':
       return `${name || 'An entry'} was disqualified in ${label}.`;
     case 'match.undq':
       return `${name || 'An entry'}’s disqualification in ${label} was lifted.`;
+    case 'match.note':
+      return s('note') ? `Note on ${label}: “${s('note')}”` : `The note on ${label} was removed.`;
+    case 'match.card': {
+      const who = name || 'an entry';
+      const c = s('colour');
+      const line =
+        c === 'yellow' || c === 'red'
+          ? `${label}: ${who} was shown a ${c} card`
+          : `${label}: ${name ? `${name}’s` : 'an entry’s'} card was withdrawn`;
+      return withWhy(line, s('why'));
+    }
+    case 'match.rp': {
+      const side = s('alliance') || 'an alliance';
+      const bonus = bonusLabel(s('bonus'));
+      const r = s('ruling');
+      const line =
+        r === 'award'
+          ? `${label}: ${side} was awarded the ${bonus}`
+          : r === 'deny'
+            ? `${label}: ${side} was ruled ineligible for the ${bonus}`
+            : `${label}: the ruling on ${side}’s ${bonus} was withdrawn`;
+      return withWhy(line, s('why'));
+    }
+    case 'match.facts':
+      return withWhy(`${label}: the score breakdown was corrected`, s('why'));
     case 'selection.pick':
       return `Alliance ${Number(d.alliance) || ''} picked ${name || 'an entry'}.`;
     case 'selection.decline':

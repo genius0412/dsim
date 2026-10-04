@@ -5771,6 +5771,7 @@ async function main(): Promise<void> {
     const cdb = await import('../server/db/competitions');
     const { persistMatch } = await import('../server/persist');
     const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    const { logLine } = await import('../src/competition/copy');
     type Who = { userId: string; handle: string; emailVerified: boolean | null };
     type Answer = { ok: boolean; code?: number; error?: string; [k: string]: unknown };
     type Sides = { red: { entry: number }[]; blue: { entry: number }[] };
@@ -6341,6 +6342,438 @@ async function main(): Promise<void> {
       await db.exec('reset enable_seqscan');
     }
     check('competition: one competition’s entries are found by an index, not by reading every competition’s', plan !== '' && !/Seq Scan/.test(plan), plan);
+
+    // ---- 16. ranking points per the Competition Manual (0060) ------------------------------------------
+    // The cup above was created WITHOUT `rp`, as every competition before 0060 was, and ranks by its
+    // own points (the `rp - 2` check): the back-compat case. This one asks for the manual.
+    const CM = { scheme: 'cm', level: 'event', thresholds: {} };
+    const legacy = await compOf(L);
+    check('competition rp: a competition created without `rp` ranks by its own points (custom), and froze no table',
+      (legacy.settings as { rp?: { scheme?: string } }).rp?.scheme === 'custom' && legacy.rpTable === null &&
+        (await detail(L, org)).ranking?.scheme === 'custom',
+      JSON.stringify({ rp: (legacy.settings as { rp?: unknown }).rp, table: legacy.rpTable }));
+    const solo = await create(org, { name: 'DB Manual Solo', game: 'decode', format: '1v1', capacity: 4, settings: { rp: CM } });
+    check('competition rp: a 1v1 under the manual says MOVEMENT is out of reach (one robot’s LEAVE + BASE is 13 < 16)',
+      JSON.stringify((await detail(solo.slug, org)).unreachable) === '["movement"]', JSON.stringify((await detail(solo.slug, org)).unreachable));
+    r = await post(solo.slug, 'update', org, { settings: { rp: { level: 'custom', thresholds: { movement: 12, junk: 3 } } } });
+    const soloRp = ((await compOf(solo.slug)).settings as { rp: { scheme: string; level: string; thresholds: Record<string, number> } }).rp;
+    check('competition rp: an edit of part of `rp` keeps the rest (the scheme), and a custom threshold of 12 brings MOVEMENT back in reach',
+      r.ok && soloRp.scheme === 'cm' && soloRp.level === 'custom' && JSON.stringify(soloRp.thresholds) === '{"movement":12}' &&
+        JSON.stringify((await detail(solo.slug, org)).unreachable) === '[]',
+      `${said(r)} ${JSON.stringify(soloRp)}`);
+
+    const kp: Who[] = [];
+    for (let i = 1; i <= 4; i++) kp.push(await person(`cmk-p${i}`, `cmkp${i}`));
+    const cup = await create(org, {
+      name: 'DB Manual Cup',
+      game: 'decode',
+      format: '2v2',
+      capacity: 4,
+      settings: {
+        quals: { kind: 'balanced', matchesPerEntry: 5, minGap: 0 },
+        rp: CM,
+        playoffs: { enabled: false },
+        run: { noShow: 'forfeit' },
+        checkIn: false,
+      },
+    });
+    const K = cup.slug;
+    const kid = cup.id;
+    check('competition rp: a competition created with the manual scheme keeps it', (cup.settings as { rp: { scheme: string } }).rp.scheme === 'cm',
+      JSON.stringify((cup.settings as { rp: unknown }).rp));
+    await post(K, 'status', org, { to: 'published' });
+    for (const x of kp) await post(K, 'register', x);
+    check('competition rp: nothing is frozen before qualifications start', (await compOf(K)).rpTable === null);
+    r = await post(K, 'status', org, { to: 'qualification' });
+    const table = (await compOf(K)).rpTable as { scheme?: string; bonus?: { id: string; threshold: number }[] } | null;
+    check('competition rp: starting qualifications freezes the manual’s table on the row (16 / 36 / 18 at standard events)',
+      r.ok && table?.scheme === 'cm' && table.bonus?.map((x) => `${x.id}:${x.threshold}`).join() === 'movement:16,goal:36,pattern:18',
+      `${said(r)} ${JSON.stringify(table)}`);
+    r = await post(K, 'update', org, { settings: { rp: { scheme: 'custom' } } });
+    r2 = await post(K, 'update', org, { settings: { checkIn: false } });
+    check('competition rp: the scheme is locked from then on, and an edit that leaves it alone still goes through',
+      !r.ok && r.code === 409 && /ranking-point scheme is fixed/.test(r.error ?? '') && r2.ok &&
+        ((await compOf(K)).settings as { rp: { scheme: string } }).rp.scheme === 'cm',
+      `${said(r)} / ${said(r2)}`);
+    // the frozen copy is what is read: an edit of the stored table moves the page, a broken one is ignored
+    const frozenJson = JSON.stringify(table);
+    await db.query(`update competitions set rp_table = jsonb_set(rp_table, '{bonus,1,threshold}', '41') where id = $1`, [kid]);
+    const thresholdNow = async () => (await detail(K, org)).ranking?.bonus.find((x) => x.id === 'goal')?.threshold;
+    const edited = await thresholdNow();
+    await db.query(`update competitions set rp_table = '{"scheme":"cm"}'::jsonb where id = $1`, [kid]);
+    const broken = await thresholdNow();
+    await db.query(`update competitions set rp_table = $2::jsonb where id = $1`, [kid, frozenJson]);
+    check('competition rp: the ranking read is the FROZEN table, and an off-shape one falls back to the live table',
+      edited === 41 && broken === 36 && (await thresholdNow()) === 36, JSON.stringify({ edited, broken }));
+
+    const kq = await quals(kid);
+    const kRows = new Map((await cdb.listEntries(kid)).map((e) => [e.id, e]));
+    const kUser = (entry: number): string => kRows.get(entry)?.userId ?? '';
+    check('competition rp: five 2v2 matches for four entries, every one of them in each', kq.length === 5 && kq.every((x) => x.red.length === 2 && x.blue.length === 2),
+      JSON.stringify(kq.map(entrantsOf)));
+    const [K1, K2, K3, K4, K5] = kq;
+    const raw0060 = (await db.query<Record<string, unknown>>(`select facts, rp_rulings, cards, ref_cards from competition_matches where id = $1`, [K1.id])).rows[0];
+    check('competition rp: the 0060 columns exist, and a match not yet played has none of them',
+      !!raw0060 && raw0060.facts === null && raw0060.rp_rulings === null && raw0060.cards === null && raw0060.ref_cards === null, JSON.stringify(raw0060));
+
+    // ---- 16a. a played match: what the room measured and carded lands with the result
+    const A = K1.red[0].entry;
+    const A2 = K1.red[1].entry;
+    const X = K1.blue[0].entry;
+    r = await post(K, 'match', org, { action: 'call', match: K1.id });
+    const kRoom = await C.claimCompetitionRoom((await match(K1.id)).roomCode ?? '');
+    const kArchived = await persistMatch({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      mode: '2v2',
+      competition: kRoom?.competition,
+      result: result(120, 60),
+      replay: replay(61),
+      participants: [
+        seat(kUser(A), 'red', 120), seat(kUser(A2), 'red', 120),
+        seat(kUser(X), 'blue', 60), seat(kUser(K1.blue[1].entry), 'blue', 60),
+      ],
+      rankFacts: {
+        red: { auto: 20, base: 20, movement: 26, artifacts: 40, pattern: 10, patternAward: 0, junk: 5 },
+        blue: { auto: 5, base: 0, movement: 3, artifacts: 10, pattern: 4, patternAward: 1 },
+      },
+      cards: [{ userId: kUser(A), colour: 'yellow' }],
+    });
+    m = await match(K1.id);
+    check('competition rp: a played match stores the game’s facts per alliance (its own keys only) and the sim’s card by entry',
+      r.ok && m.status === 'done' && m.facts?.red.movement === 26 && m.facts.blue.patternAward === 1 && !('junk' in (m.facts?.red ?? {})) &&
+        JSON.stringify(m.cards) === JSON.stringify({ [A]: 'yellow' }),
+      JSON.stringify({ r: said(r), facts: m.facts, cards: m.cards }));
+    const kRow = async (entry: number) => (await detail(K, org)).rankings?.find((x) => x.entry === entry);
+    const rowA = await kRow(A);
+    const rowX = await kRow(X);
+    check('competition rp: a win is 3, plus 1 per bonus earned from the facts (MOVEMENT 26 ≥ 16, GOAL 40 ≥ 36; PATTERN 10 < 18)',
+      rowA?.rp === 5 && rowA.bonus?.movement === 1 && rowA.bonus?.goal === 1 && rowA.bonus?.pattern === 0 && rowA.yellow === true,
+      JSON.stringify(rowA));
+    check('competition rp: ...and the loser takes the PATTERN RP its opponent’s G417 awarded it (`patternAward`)',
+      rowX?.rp === 1 && rowX.bonus?.pattern === 1, JSON.stringify(rowX));
+    let kd = await detail(K, org);
+    let v1 = kd.matches.find((x) => x.id === K1.id);
+    check('competition rp: the detail carries the ranking rules, what is out of reach, and each qualification match’s RP',
+      kd.ranking?.scheme === 'cm' && kd.ranking.bonus.map((x) => x.id).join() === 'movement,goal,pattern' &&
+        JSON.stringify(kd.unreachable) === '[]' && v1?.rp?.alliance.red.total === 5 && v1.rp.alliance.blue.total === 1 &&
+        v1.rp.entries[String(A)] === 5 && JSON.stringify(v1.dqEffective) === '[]',
+      JSON.stringify({ ranking: kd.ranking?.scheme, unreachable: kd.unreachable, rp: v1?.rp }));
+
+    // ---- 16b. a referee's facts: a patch, key by key
+    const at1 = m.attempt;
+    r = await post(K, 'match', org, { action: 'facts', match: K1.id, attempt: at1, facts: { red: { pattern: 20 } } });
+    check('competition rp: a facts edit needs a reason', !r.ok && r.code === 400, said(r));
+    r = await post(K, 'match', org, { action: 'facts', match: K1.id, attempt: at1 + 1, facts: { red: { pattern: 20 } }, note: 'Recount.' });
+    check('competition rp: a facts edit for an attempt that is not the match’s is refused', !r.ok && r.code === 409 && r.error === 'The match changed. Refresh.', said(r));
+    r = await post(K, 'match', org, { action: 'facts', match: K1.id, attempt: at1, facts: { blue: { patternAward: 0 } }, note: 'No.' });
+    check('competition rp: nobody types an internal flag (`patternAward` is the sim’s)', !r.ok && r.code === 400, said(r));
+    r = await post(K, 'match', org, { action: 'facts', match: K1.id, attempt: at1, facts: { red: { pattern: 20 } }, note: 'PATTERN recounted from the replay.' });
+    m = await match(K1.id);
+    const toldRp = (await told(kUser(A2), 'competition.rp', K)).find((n) => n.data.label === 'Q1')?.data;
+    check('competition rp: a facts patch changes that key only, and PATTERN 20 earns the RP: 6',
+      r.ok && m.facts?.red.pattern === 20 && m.facts.red.artifacts === 40 && (await kRow(A2))?.rp === 6, `${said(r)} ${JSON.stringify(m.facts)}`);
+    check('competition rp: ...and the red drivers are told their RP for it went from 5 to 6', toldRp?.before === 5 && toldRp.after === 6, JSON.stringify(toldRp));
+    r = await post(K, 'match', org, { action: 'facts', match: K1.id, attempt: at1, facts: { red: { artifacts: null }, blue: { auto: 7 } }, note: 'GOAL count unreliable.' });
+    m = await match(K1.id);
+    check('competition rp: null deletes a key (unknown, so no GOAL RP), and a blue edit keeps the sim’s `patternAward`',
+      r.ok && !!m.facts && m.facts.red.artifacts === undefined && m.facts.red.movement === 26 && m.facts.blue.auto === 7 && m.facts.blue.patternAward === 1 &&
+        (await kRow(A2))?.rp === 5,
+      `${said(r)} ${JSON.stringify(m.facts)}`);
+
+    // ---- 16c. a referee's rulings, only where the manual has them
+    r = await post(K, 'match', org, { action: 'rp', match: K1.id, attempt: at1, rulings: { red: { movement: 'award' } }, note: 'Try.' });
+    r2 = await post(K, 'match', org, { action: 'rp', match: K1.id, attempt: at1, rulings: { red: { goal: 'award' } }, note: 'Try.' });
+    check('competition rp: MOVEMENT has no ruling, and GOAL can only be denied', !r.ok && r.code === 400 && !r2.ok && r2.code === 400, `${said(r)} / ${said(r2)}`);
+    r = await post(K, 'match', org, { action: 'rp', match: K1.id, attempt: at1, rulings: { blue: { pattern: 'deny' } } });
+    check('competition rp: a ruling needs a reason', !r.ok && r.code === 400, said(r));
+    r = await post(K, 'match', org, { action: 'rp', match: K1.id, attempt: at1, rulings: { blue: { pattern: 'deny' }, red: { pattern: 'award' } }, note: 'G418.A on blue; G419 on red.' });
+    m = await match(K1.id);
+    kd = await detail(K, org);
+    v1 = kd.matches.find((x) => x.id === K1.id);
+    check('competition rp: PATTERN may be denied (it overrides blue’s G417 award) and awarded',
+      r.ok && m.rulings?.blue.pattern === 'deny' && m.rulings.red.pattern === 'award' && v1?.rp?.alliance.blue.total === 0 &&
+        v1.rp.alliance.red.bonus.includes('pattern'),
+      `${said(r)} ${JSON.stringify({ rulings: m.rulings, rp: v1?.rp })}`);
+    const toldBlue = (await told(kUser(X), 'competition.rp', K)).find((n) => n.data.label === 'Q1')?.data;
+    check('competition rp: ...and blue is told its RP went from 1 to 0', toldBlue?.before === 1 && toldBlue.after === 0, JSON.stringify(toldBlue));
+
+    // ---- 16d. cards: the sim's yellow and a referee's yellow in one match are a red
+    r = await post(K, 'match', org, { action: 'card', match: K1.id, attempt: at1, entry: A, colour: 'yellow', note: 'Second G-rule warning.' });
+    kd = await detail(K, org);
+    v1 = kd.matches.find((x) => x.id === K1.id);
+    const toldCard = (await told(kUser(A), 'competition.card', K)).find((n) => n.data.label === 'Q1')?.data;
+    check('competition rp: a referee’s yellow on top of the sim’s is a red: the entry takes 0 from the match, its partner keeps 5',
+      r.ok && (await match(K1.id)).refCards?.[String(A)] === 'yellow' &&
+        JSON.stringify(v1?.dqEffective) === JSON.stringify([{ entry: A, why: 'red' }]) && v1?.rp?.entries[String(A)] === 0 &&
+        v1.rp.entries[String(A2)] === 5 && (await kRow(A))?.rp === 0 && (await kRow(A))?.dqs === 1,
+      `${said(r)} ${JSON.stringify({ dq: v1?.dqEffective, rp: v1?.rp?.entries })}`);
+    check('competition rp: ...and the carded driver is told it was a red card', toldCard?.colour === 'red' && toldCard.why === 'red', JSON.stringify(toldCard));
+    r = await post(K, 'match', org, { action: 'card', match: K1.id, attempt: at1, entry: 999999, colour: 'red', note: 'x' });
+    check('competition rp: a card for an entry not in the match is refused', !r.ok && r.code === 400, said(r));
+
+    // ---- 16e. a correction keeps the time the match was first decided; fouls cannot exceed a score
+    const firstDecided = (await match(K1.id)).finishedAt;
+    r = await post(K, 'match', org, { action: 'result', match: K1.id, red: 50, blue: 60, redFoul: 51, blueFoul: 0, note: 'x' });
+    check('competition rp: a result whose fouls given exceed the score is refused', !r.ok && r.code === 400 && /can’t exceed/.test(r.error ?? ''), said(r));
+    await new Promise((res) => setTimeout(res, 20));
+    r = await post(K, 'match', org, { action: 'result', match: K1.id, red: 121, blue: 60, redFoul: 10, note: 'Score recount.' });
+    m = await match(K1.id);
+    check('competition rp: correcting a decided match keeps when it was first decided (cards escalate in that order)',
+      r.ok && m.result?.red === 121 && firstDecided !== null && m.finishedAt === firstDecided && m.facts?.red.movement === 26,
+      JSON.stringify({ r: said(r), before: firstDecided, after: m.finishedAt }));
+
+    // ---- 16f. the moderators' misscore tool leaves a competition match to its referees
+    const miss = kArchived.matchId ? await C.competitionOfArchived(kArchived.matchId) : null;
+    check('competition rp: the misscore tool knows an archived match is Q1 of a competition, and says who corrects it',
+      miss?.label === 'Q1' && miss.refusal === 'Q1 of DB Manual Cup is corrected by its referees, from the match desk.', JSON.stringify(miss));
+    check('competition rp: ...and a plain custom match is not one', (await C.competitionOfArchived(plain.matchId ?? '')) === null);
+    const indexSrc = readFileSync(join(ROOT, 'server/index.ts'), 'utf8');
+    check('competition rp: /api/admin/match refuses a competition match before it corrects anything or tells anyone',
+      /competitionOfArchived\(id\)[\s\S]{0,200}req\.method === 'POST' && comp[\s\S]{0,200}409[\s\S]*correctMatchScore\(id/.test(indexSrc));
+
+    // ---- 16g. no bonus RP to rule on: a forfeit, a playoff match, a competition without the manual
+    r = await post(K, 'match', org, { action: 'forfeit', match: K2.id, winner: 'red', dq: [K2.blue[0].entry], note: 'Blue never connected (G208).' });
+    m = await match(K2.id);
+    check('competition rp: a referee forfeit can disqualify the entry at fault', r.ok && JSON.stringify(m.dq) === JSON.stringify([K2.blue[0].entry]),
+      `${said(r)} ${JSON.stringify(m.dq)}`);
+    r = await post(K, 'match', org, { action: 'forfeit', match: K2.id, winner: 'red', dq: [999999] });
+    check('competition rp: ...but only an entry in the match', !r.ok && r.code === 400, said(r));
+    r = await post(K, 'match', org, { action: 'rp', match: K2.id, attempt: m.attempt, rulings: { red: { pattern: 'award' } }, note: 'x' });
+    check('competition rp: a forfeit has no score to rule on', !r.ok && r.code === 409 && r.error === 'A forfeit has no score to rule on.', said(r));
+    const [pid] = await cdb.insertMatches(kid, 'playoff', [{ round: 0, number: 1, series: null, red: [{ entry: A }], blue: [{ entry: X }] }]);
+    await cdb.writeResult(pid, { red: 10, blue: 5, redFoul: 0, blueFoul: 0, winner: 'red', source: 'manual' });
+    r = await post(K, 'match', org, { action: 'rp', match: pid, attempt: 0, rulings: { red: { pattern: 'award' } }, note: 'x' });
+    r2 = await post(K, 'match', org, { action: 'card', match: pid, attempt: 0, entry: A, colour: 'yellow', note: 'x' });
+    check('competition rp: playoff matches earn no RP, and their cards are not recorded here',
+      !r.ok && r.error === 'Playoff matches earn no ranking points.' && !r2.ok && r2.code === 409, `${said(r)} / ${said(r2)}`);
+    await db.query(`delete from competition_matches where id = $1`, [pid]);
+    const op: Who[] = [await person('cmo-p1', 'cmop1'), await person('cmo-p2', 'cmop2')];
+    const pts = await create(org, { name: 'DB Points Only', game: 'decode', format: '1v1', capacity: 2, settings: { quals: { kind: 'balanced', matchesPerEntry: 1 }, checkIn: false } });
+    await post(pts.slug, 'status', org, { to: 'published' });
+    for (const x of op) await post(pts.slug, 'register', x);
+    await post(pts.slug, 'status', org, { to: 'qualification' });
+    const [O1] = await quals(pts.id);
+    await post(pts.slug, 'match', org, { action: 'result', match: O1?.id, red: 30, blue: 20 });
+    r = await post(pts.slug, 'match', org, { action: 'rp', match: O1?.id, attempt: 0, rulings: { red: { pattern: 'award' } }, note: 'x' });
+    check('competition rp: a competition without the manual has no bonus RP to rule on (and froze nothing)',
+      !r.ok && r.code === 409 && r.error === 'This competition has no bonus ranking points.' && (await compOf(pts.slug)).rpTable === null, said(r));
+
+    // ---- 16h. a reset clears everything ruled on the result
+    r = await post(K, 'match', org, { action: 'result', match: K3.id, red: 50, blue: 30 });
+    const at3 = (await match(K3.id)).attempt;
+    await post(K, 'match', org, { action: 'facts', match: K3.id, attempt: at3, facts: { red: { auto: 10 } }, note: 'Typed from the sheet.' });
+    await post(K, 'match', org, { action: 'rp', match: K3.id, attempt: at3, rulings: { blue: { goal: 'deny' } }, note: 'G206.' });
+    const onK3 = entrantsOf(K3).includes(A);
+    r2 = await post(K, 'match', org, { action: 'card', match: K3.id, attempt: at3, entry: A, colour: 'yellow', note: 'Pinning.' });
+    const k3Eff = (await detail(K, org)).matches.find((x) => x.id === K3.id)?.dqEffective;
+    check('competition rp: a yellow while carrying one is a second yellow, and costs the match',
+      r.ok && onK3 && r2.ok && JSON.stringify(k3Eff) === JSON.stringify([{ entry: A, why: 'yellow2' }]), `${said(r2)} ${JSON.stringify(k3Eff)}`);
+    r = await post(K, 'match', org, { action: 'reset', match: K3.id, note: 'Field fault.' });
+    m = await match(K3.id);
+    const resetLine = (await db.query<{ data: { cards?: { entry: number; colour: string }[] } }>(
+      `select data from competition_log where competition_id = $1 and kind = 'match.reset' order by id desc limit 1`, [kid])).rows[0]?.data;
+    check('competition rp: a reset clears the facts, the rulings, both kinds of card and when it was decided',
+      r.ok && m.status === 'scheduled' && m.facts === null && m.rulings === null && m.cards === null && m.refCards === null && m.finishedAt === null,
+      JSON.stringify({ facts: m.facts, rulings: m.rulings, refCards: m.refCards, finishedAt: m.finishedAt }));
+    check('competition rp: ...and its log line names the referee cards it dropped',
+      resetLine?.cards?.length === 1 && resetLine.cards[0].entry === A && resetLine.cards[0].colour === 'yellow', JSON.stringify(resetLine));
+    r = await post(K, 'match', org, { action: 'facts', match: K3.id, attempt: at3, facts: { red: { auto: 1 } }, note: 'x' });
+    check('competition rp: ...and a ruling on the result that is gone is refused', !r.ok && r.code === 409, said(r));
+    // a reset and a void each start a new attempt, so a desk still showing the old result cannot
+    // rule on the one typed after it (same status, same match)
+    r = await post(K, 'match', org, { action: 'result', match: K3.id, red: 44, blue: 30 });
+    const at3b = (await match(K3.id)).attempt;
+    r2 = await post(K, 'match', org, { action: 'card', match: K3.id, attempt: at3, entry: A, colour: 'red', note: 'Stale desk.' });
+    const staleRp = await post(K, 'match', org, { action: 'rp', match: K3.id, attempt: at3, rulings: { blue: { goal: 'deny' } }, note: 'Stale desk.' });
+    m = await match(K3.id);
+    check('competition rp: a reset starts a new attempt: after a result typed by hand, a card or ruling from before the reset is refused',
+      r.ok && m.status === 'done' && at3b === at3 + 1 && !r2.ok && r2.code === 409 && r2.error === 'The match changed. Refresh.' &&
+        !staleRp.ok && staleRp.code === 409 && m.refCards === null && m.rulings === null,
+      JSON.stringify({ r: said(r), at3, at3b, card: said(r2), rp: said(staleRp) }));
+    r = await post(K, 'match', org, { action: 'void', match: K3.id, note: 'Field fault again.' });
+    const at3c = (await match(K3.id)).attempt;
+    r2 = await post(K, 'match', org, { action: 'result', match: K3.id, red: 45, blue: 30 });
+    const staleFacts = await post(K, 'match', org, { action: 'facts', match: K3.id, attempt: at3b, facts: { red: { auto: 1 } }, note: 'Stale desk.' });
+    const freshFacts = await post(K, 'match', org, { action: 'facts', match: K3.id, attempt: at3c, facts: { red: { auto: 2 } }, note: 'From the sheet.' });
+    m = await match(K3.id);
+    check('competition rp: ...and so does a void: a result entered after it takes no ruling from before it, and one on it goes through',
+      r.ok && r2.ok && at3c === at3b + 1 && m.attempt === at3c && !staleFacts.ok && staleFacts.code === 409 &&
+        staleFacts.error === 'The match changed. Refresh.' && freshFacts.ok && m.facts?.red.auto === 2,
+      JSON.stringify({ at3b, at3c, stale: said(staleFacts), fresh: said(freshFacts), facts: m.facts }));
+
+    // ---- 16i. who a forfeit disqualifies by itself (R7)
+    const side4 = K4.red.some((s) => s.entry === A) ? K4.red : K4.blue;
+    const partner4 = side4.find((s) => s.entry !== A)!.entry;
+    await post(K, 'match', org, { action: 'call', match: K4.id });
+    const k4Room = await C.claimCompetitionRoom((await match(K4.id)).roomCode ?? '');
+    if (k4Room?.competition) {
+      await C.competitionCallFailed(k4Room.competition, [{ userId: kUser(A), kind: 'noshow' }, { userId: kUser(partner4), kind: 'unready' }]);
+    }
+    m = await match(K4.id);
+    check('competition rp: a no-show forfeit disqualifies the driver who never connected, not the one who did and did not ready up',
+      m.status === 'done' && m.result?.source === 'forfeit' && JSON.stringify(m.dq) === JSON.stringify([A]), JSON.stringify({ status: m.status, dq: m.dq }));
+    const gone = K5.blue[0].entry;
+    r = await post(K, 'entries', org, { action: 'remove', entry: gone });
+    r2 = await post(K, 'match', org, { action: 'result', match: K5.id, red: 40, blue: 45 });
+    m = await match(K5.id);
+    check('competition rp: an entry withdrawn mid-qualifications is disqualified from a later match’s result',
+      r.ok && r2.ok && m.dq.includes(gone) && (await detail(K, org)).matches.find((x) => x.id === K5.id)?.rp?.entries[String(gone)] === 0,
+      JSON.stringify({ dq: m.dq }));
+
+    const kKinds = (await db.query<{ kind: string }>(`select kind from competition_log where competition_id = $1`, [kid])).rows.map((x) => x.kind);
+    const kUnlogged = ['match.facts', 'match.rp', 'match.card', 'match.reset', 'match.forfeit', 'match.result', 'match.corrected', 'match.entered']
+      .filter((k) => !kKinds.includes(k));
+    check('competition rp: every ruling on ranking points is in the competition’s log', kUnlogged.length === 0, kUnlogged.join(', ') || 'all there');
+
+    // ---- 16j. a duo's two carded drivers are one red card for the entry
+    const wp: Who[] = [];
+    for (let i = 1; i <= 4; i++) wp.push(await person(`cmw-p${i}`, `cmwp${i}`));
+    const duo2 = await create(org, {
+      name: 'DB Manual Duos',
+      game: 'decode',
+      format: '2v2',
+      teamMode: 'duo',
+      capacity: 2,
+      settings: { quals: { kind: 'balanced', matchesPerEntry: 1 }, rp: CM, playoffs: { enabled: false }, checkIn: false },
+    });
+    await post(duo2.slug, 'status', org, { to: 'published' });
+    await post(duo2.slug, 'register', wp[0], { partner: '@cmwp2' });
+    await post(duo2.slug, 'partner', wp[1], { accept: true });
+    await post(duo2.slug, 'register', wp[2], { partner: '@cmwp4' });
+    await post(duo2.slug, 'partner', wp[3], { accept: true });
+    r = await post(duo2.slug, 'status', org, { to: 'qualification' });
+    const [W1] = await quals(duo2.id);
+    await post(duo2.slug, 'match', org, { action: 'call', match: W1?.id });
+    const wRoom = W1 ? await C.claimCompetitionRoom((await match(W1.id)).roomCode ?? '') : null;
+    if (wRoom?.competition) {
+      await C.competitionMatchPlayed(wRoom.competition, result(50, 40), {}, {
+        cards: [{ userId: wp[0].userId, colour: 'yellow' }, { userId: wp[1].userId, colour: 'yellow' }],
+      });
+    }
+    const duoA = (await cdb.entryOfUser(duo2.id, wp[0].userId))?.id ?? -1;
+    m = W1 ? await match(W1.id) : m;
+    const duoTold = (await told(wp[1].userId, 'competition.card', duo2.slug))[0]?.data;
+    check('competition rp: two yellows across a duo’s drivers are a red for the entry, and it takes nothing from the match',
+      r.ok && !!wRoom && JSON.stringify(m.cards) === JSON.stringify({ [duoA]: 'red' }) &&
+        JSON.stringify((await detail(duo2.slug, org)).matches[0]?.dqEffective) === JSON.stringify([{ entry: duoA, why: 'red' }]),
+      JSON.stringify({ r: said(r), cards: m.cards }));
+    check('competition rp: ...and both of its drivers are told', duoTold?.colour === 'red' && duoTold.why === 'red' &&
+      (await told(wp[0].userId, 'competition.card', duo2.slug)).length === 1, JSON.stringify(duoTold));
+    check('competition rp: competitionMatchPlayed still records a result called the old way, with three arguments',
+      await (async () => {
+        await post(duo2.slug, 'match', org, { action: 'reset', match: W1?.id });
+        await post(duo2.slug, 'match', org, { action: 'call', match: W1?.id });
+        const again = W1 ? await C.claimCompetitionRoom((await match(W1.id)).roomCode ?? '') : null;
+        if (again?.competition) await C.competitionMatchPlayed(again.competition, result(10, 20), {});
+        const x = W1 ? await match(W1.id) : null;
+        return x?.status === 'done' && x.result?.blue === 20 && x.facts === null && x.cards === null;
+      })());
+
+    // ---- 16k. the account: its export lists the cards and DQs, and deleting it drops its name from the log
+    const ex = await repo.exportAccount(kUser(A));
+    const disc = (ex?.competitionDiscipline ?? []) as { match: string; colour: string | null; source: string }[];
+    check('competition rp: the account export lists each card and DQ against its entries, with where it came from',
+      disc.some((x) => x.match === 'Q1' && x.colour === 'yellow' && x.source === 'sim') &&
+        disc.some((x) => x.match === 'Q1' && x.colour === 'yellow' && x.source === 'referee') &&
+        disc.some((x) => x.match === 'Q4' && x.colour === null && x.source === 'dq'),
+      JSON.stringify(disc));
+    const nameA = kRows.get(A)?.name ?? 'CMK';
+    const k4Before = await match(K4.id);
+    check('competition rp: a no-show forfeit’s public note names the alliance, not the driver',
+      /^(Red|Blue) did not ready up in time\.$/.test(k4Before.note ?? '') && !k4Before.note?.includes('CMK-P'), JSON.stringify(k4Before.note));
+    await repo.deleteAccount(kUser(A));
+    const lines = (await db.query<{ kind: string; data: Record<string, unknown> }>(
+      `select kind, data from competition_log where competition_id = $1`, [kid])).rows;
+    const stillNamed = lines.filter((l) => JSON.stringify(l.data).includes(nameA));
+    const kNotes = (await db.query<{ note: string | null; call_note: string | null }>(
+      `select note, call_note from competition_matches where competition_id = $1`, [kid])).rows
+      .filter((x) => `${x.note ?? ''} ${x.call_note ?? ''}`.includes(nameA));
+    const k4Line = lines.find((l) => l.kind === 'match.forfeit' && l.data.match === K4.id)?.data ?? {};
+    const k4Who = (Array.isArray(k4Line.who) ? k4Line.who : []) as string[];
+    const k4Ids = (Array.isArray(k4Line.whoEntries) ? k4Line.whoEntries : []) as number[];
+    check('competition rp: deleting the account replaces its entry’s name on every log line about it (cards, forfeits, resets, a failed call)',
+      lines.some((l) => l.kind === 'match.card' && l.data.entry === A && l.data.name === 'Deleted account') &&
+        JSON.stringify(k4Line.dq) === '["Deleted account"]' && k4Line.why === 'unready' &&
+        k4Who.length === 2 && k4Ids.length === 2 && k4Who[k4Ids.indexOf(A)] === 'Deleted account' &&
+        k4Who[k4Ids.indexOf(partner4)] === kRows.get(partner4)?.name &&
+        stillNamed.length === 0 && kNotes.length === 0,
+      JSON.stringify({ named: stillNamed.map((l) => [l.kind, l.data]), notes: kNotes, k4Line }));
+    const k4Text = logLine('match.forfeit', k4Line) ?? '';
+    check('competition rp: ...and the failed call still reads as a sentence, the deleted name included',
+      k4Text.includes('Deleted account') && k4Text.endsWith('did not ready up in time.') && !k4Text.includes(nameA), k4Text);
+    check('competition rp: the page never carries the account ids a log line is about',
+      (await detail(K, null)).log.every((l) => !('users' in l.data)) && (await detail(K, org)).log.every((l) => !('users' in l.data)) &&
+        lines.some((l) => Array.isArray(l.data.users)));
+
+    // a removed entry (its row deleted before the start) and a champion: neither line keeps the name
+    const zp: Who[] = [await person('cmz-p1', 'cmzp1'), await person('cmz-p2', 'cmzp2')];
+    const gone2 = await create(org, {
+      name: 'DB Gone Cup',
+      game: 'decode',
+      format: '1v1',
+      capacity: 2,
+      settings: { quals: { kind: 'balanced', matchesPerEntry: 1 }, playoffs: { enabled: false }, checkIn: false },
+    });
+    await post(gone2.slug, 'status', org, { to: 'published' });
+    await post(gone2.slug, 'register', zp[0]);
+    const zFirst = (await cdb.entryOfUser(gone2.id, zp[0].userId))?.id ?? -1;
+    r = await post(gone2.slug, 'entries', org, { action: 'remove', entry: zFirst });
+    const zRowGone = (await cdb.getEntry(zFirst)) === null;
+    r2 = await post(gone2.slug, 'entries', org, { action: 'add', tag: '@cmzp1' });
+    await post(gone2.slug, 'register', zp[1]);
+    await post(gone2.slug, 'status', org, { to: 'qualification' });
+    const [Z1] = await quals(gone2.id);
+    const zEntry = (await cdb.entryOfUser(gone2.id, zp[0].userId))?.id ?? -1;
+    const zRed = Z1?.red[0]?.entry === zEntry;
+    await post(gone2.slug, 'match', org, { action: 'result', match: Z1?.id, red: zRed ? 30 : 10, blue: zRed ? 10 : 30 });
+    const ended = await post(gone2.slug, 'status', org, { to: 'selection' });
+    const zLog = async () => (await db.query<{ kind: string; data: Record<string, unknown> }>(
+      `select kind, data from competition_log where competition_id = $1`, [gone2.id])).rows;
+    const zBefore = await zLog();
+    check('competition rp: (setup) a removed entry’s row is deleted, and the same account, entered again, wins',
+      r.ok && r2.ok && zRowGone && ended.ok && (await compOf(gone2.slug)).status === 'completed' &&
+        zBefore.some((l) => l.kind === 'entry.remove' && l.data.name === 'CMZ-P1') &&
+        zBefore.some((l) => l.kind === 'status.completed' && JSON.stringify(l.data.champions) === '["CMZ-P1"]' && JSON.stringify(l.data.championEntries) === `[${zEntry}]`),
+      JSON.stringify({ r: said(r), r2: said(r2), zRowGone, ended: said(ended), log: zBefore.map((l) => [l.kind, l.data]) }));
+    await repo.deleteAccount(zp[0].userId);
+    const zAfter = await zLog();
+    const zNamed = zAfter.filter((l) => JSON.stringify(l.data).includes('CMZ-P1'));
+    check('competition rp: deleting the account drops its name from the lines about the deleted entry row, and from the champions',
+      zAfter.some((l) => l.kind === 'entry.remove' && l.data.entry === zFirst && l.data.name === 'Deleted account') &&
+        zAfter.some((l) => l.kind === 'entry.register' && l.data.entry === zFirst && l.data.name === 'Deleted account') &&
+        zAfter.some((l) => l.kind === 'status.completed' && JSON.stringify(l.data.champions) === '["Deleted account"]') &&
+        zNamed.length === 0,
+      JSON.stringify(zNamed.map((l) => [l.kind, l.data])));
+    check('competition rp: ...and the other driver’s lines keep their name',
+      zAfter.some((l) => l.kind === 'entry.register' && l.data.name === 'CMZ-P2'));
+
+    // ---- 16l. an edit saved while qualifications are starting refuses the start, not frozen over
+    const racers: Who[] = [await person('cmr-p1', 'cmrp1'), await person('cmr-p2', 'cmrp2')];
+    const race = await create(org, {
+      name: 'DB Manual Race',
+      game: 'decode',
+      format: '1v1',
+      capacity: 2,
+      settings: { quals: { kind: 'balanced', matchesPerEntry: 1 }, rp: CM, playoffs: { enabled: false }, checkIn: false },
+    });
+    await post(race.slug, 'status', org, { to: 'published' });
+    for (const x of racers) await post(race.slug, 'register', x);
+    const raceEdit: { r?: Answer } = {};
+    r = await C.competitionTestApi.post(race.slug, 'status', org, { to: 'qualification' }, async () => {
+      raceEdit.r = await post(race.slug, 'update', org, { settings: { rp: { level: 'regional' } } });
+    });
+    const raced = await compOf(race.slug);
+    check('competition rp: a start that read the settings before an edit landed is refused, and nothing is frozen',
+      !r.ok && r.code === 409 && /changed while you were looking/.test(r.error ?? '') && raceEdit.r?.ok === true &&
+        raced.status === 'published' && raced.rpTable === null,
+      JSON.stringify({ r: said(r), edit: raceEdit.r && said(raceEdit.r), status: raced.status }));
+    r = await post(race.slug, 'status', org, { to: 'qualification' });
+    const raceTable = (await compOf(race.slug)).rpTable as { bonus?: { id: string; threshold: number }[] } | null;
+    check('competition rp: ...and the next start freezes the table of the settings as saved (regional: 21 / 42 / 22)',
+      r.ok && raceTable?.bonus?.map((x) => `${x.id}:${x.threshold}`).join() === 'movement:21,goal:42,pattern:22',
+      `${said(r)} ${JSON.stringify(raceTable)}`);
   }
 
   await db.close();

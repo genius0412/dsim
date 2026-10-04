@@ -51,11 +51,13 @@ import {
   LIMITS,
   slugify,
 } from '../src/competition/settings';
-import { computeRankings, seedOrder } from '../src/competition/rankings';
+import { computeRankings, effectiveDq, matchRp, seedOrder } from '../src/competition/rankings';
+import { cmTable, coerceFacts, effectiveRanking, unreachableBonus } from '../src/competition/manual';
 import { applySelection, selectionState, serpentineAlliances, type Selection } from '../src/competition/selection';
 import { bracketState, buildBracket, type BracketState } from '../src/competition/bracket';
 import { drawBalanced, drawRoundRobin, drawSwissRound } from '../src/competition/schedule';
 import { matchLabel } from '../src/competition/wire';
+import { CALL_FAILED, type CallFailure } from '../src/competition/copy';
 import type {
   CompEntryView,
   CompetitionDetail,
@@ -66,8 +68,11 @@ import type {
   CompViewer,
   MyCompetition,
 } from '../src/competition/wire';
+import { TIEBREAKERS } from '../src/competition/types';
 import type {
   Alliance,
+  AllianceFacts,
+  CardColour,
   CompEntryCore,
   CompResult,
   CompRole,
@@ -75,11 +80,18 @@ import type {
   CompSlot,
   CompStatus,
   CompetitionSummary,
+  DqReason,
+  EffectiveDq,
   EntryStatus,
+  MatchRp,
   PlayoffAlliance,
   RankRow,
+  ResolvedBonus,
+  ResolvedRanking,
+  RpLevel,
   SelectionAction,
   SeriesSpec,
+  Tiebreaker,
   Winner,
 } from '../src/competition/types';
 
@@ -162,8 +174,55 @@ function baselineSpec(game: GameId): RobotSpec {
   return game === 'biobuzz' ? BB_DEFAULT_SPEC : DEFAULT_SPEC;
 }
 
-/** what the settings column says, made safe for this competition's shape */
-const settingsOf = (c: db.CompRow): CompSettings => coerceCompSettings(c.settings, c.format, c.teamMode);
+/** what the settings column says, made safe for this competition's shape and game */
+const settingsOf = (c: db.CompRow): CompSettings => coerceCompSettings(c.settings, c.format, c.teamMode, c.game);
+
+const RP_LEVELS: readonly RpLevel[] = ['event', 'regional', 'championship', 'custom'];
+
+/**
+ * THE RANKING RULES FROZEN AT THE START OF QUALIFICATIONS (`competitions.rp_table`), checked
+ * before use: `effectiveRanking` hands a frozen copy back as it is, and `computeRankings` walks
+ * its lists on every read. A copy of any other shape is ignored whole, and the live table is read
+ * instead — half a table would rank by rules nobody chose.
+ */
+function frozenOf(raw: unknown): ResolvedRanking | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (r.scheme !== 'cm' || !num(r.win) || !num(r.tie) || !num(r.loss)) return null;
+  if (!Array.isArray(r.bonus) || !Array.isArray(r.measures) || !Array.isArray(r.tiebreakers)) return null;
+  if (!r.measures.every((m) => typeof m === 'string')) return null;
+  const bonus: ResolvedBonus[] = [];
+  for (const raw2 of r.bonus as unknown[]) {
+    const b = raw2 && typeof raw2 === 'object' ? (raw2 as Record<string, unknown>) : null;
+    if (!b || typeof b.id !== 'string' || typeof b.measure !== 'string' || !num(b.threshold)) return null;
+    if (typeof b.award !== 'boolean' || typeof b.deny !== 'boolean') return null;
+    if (b.awardFact !== undefined && typeof b.awardFact !== 'string') return null;
+    bonus.push({
+      id: b.id,
+      measure: b.measure,
+      threshold: b.threshold,
+      ...(typeof b.awardFact === 'string' ? { awardFact: b.awardFact } : {}),
+      award: b.award,
+      deny: b.deny,
+    });
+  }
+  return {
+    scheme: 'cm',
+    level: RP_LEVELS.includes(r.level as RpLevel) ? (r.level as RpLevel) : 'event',
+    source: typeof r.source === 'string' ? r.source : null,
+    win: r.win,
+    tie: r.tie,
+    loss: r.loss,
+    bonus,
+    tiebreakers: (r.tiebreakers as unknown[]).filter((t): t is Tiebreaker => TIEBREAKERS.includes(t as Tiebreaker)),
+    measures: r.measures as string[],
+  };
+}
+
+/** the ranking rules this competition applies: the frozen copy once qualifications started, else
+ *  its settings against the game's manual table */
+const rankingOf = (c: db.CompRow, s: CompSettings): ResolvedRanking => effectiveRanking(s, c.game, frozenOf(c.rpTable));
 
 const nameOfEntry = (e: db.EntryRow): string => e.name || e.handle || 'Entry';
 
@@ -195,6 +254,8 @@ function player(id: string | null, handle: string | null, username: string | nul
 interface CompState {
   comp: db.CompRow;
   settings: CompSettings;
+  /** the ranking rules applied (`rankingOf`) */
+  ranking: ResolvedRanking;
   entries: db.EntryRow[];
   matches: db.MatchRow[];
   specs: SeriesSpec[];
@@ -224,9 +285,10 @@ async function loadState(comp: db.CompRow): Promise<CompState> {
 
 function derive(comp: db.CompRow, entries: db.EntryRow[], matches: db.MatchRow[], specs: SeriesSpec[]): CompState {
   const settings = settingsOf(comp);
+  const ranking = rankingOf(comp, settings);
   const cores = entries.map(entryCore);
   const quals = matches.filter((m) => m.stage === 'qual');
-  const rankings = quals.length ? computeRankings(cores, quals, settings, comp.rngSeed) : null;
+  const rankings = quals.length ? computeRankings(cores, quals, ranking, comp.rngSeed) : null;
   const order = comp.seedOrder ?? seedOrder(cores, rankings);
   const perAlliance = entriesPerAlliance(comp.format, comp.teamMode);
   const n = settings.playoffs.alliances;
@@ -246,7 +308,40 @@ function derive(comp: db.CompRow, entries: db.EntryRow[], matches: db.MatchRow[]
     specs.length && comp.alliances
       ? bracketState(specs, comp.alliances, matches.filter((m) => m.stage === 'playoff'))
       : null;
-  return { comp, settings, entries, matches, specs, rankings, order, selection, alliances, bracket };
+  return { comp, settings, ranking, entries, matches, specs, rankings, order, selection, alliances, bracket };
+}
+
+const qualsOf = (st: CompState): db.MatchRow[] => st.matches.filter((m) => m.stage === 'qual');
+
+/** one entry's card in one match, the sim's and a referee's together (as `rankings.ts` reads it) */
+function colourIn(m: db.MatchRow, entry: number): CardColour | null {
+  const a = m.cards?.[String(entry)];
+  const b = m.refCards?.[String(entry)];
+  if (a === 'red' || b === 'red') return 'red';
+  const yellows = (a === 'yellow' ? 1 : 0) + (b === 'yellow' ? 1 : 0);
+  return yellows >= 2 ? 'red' : yellows === 1 ? 'yellow' : null;
+}
+
+/** the order cards escalate in: first decided first, a match with no time last (`effectiveDq`) */
+function byDecided(a: db.MatchRow, b: db.MatchRow): number {
+  const ta = a.finishedAt ?? Infinity;
+  const tb = b.finishedAt ?? Infinity;
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  return a.number - b.number || a.id - b.id;
+}
+
+/** a forfeit's log line names the entries it disqualified: `dq` (names, what the log prints) and
+ *  `dqEntries` (ids, which `deleteAccount` scrubs the names by) */
+function dqLog(st: CompState, ids: number[]): { dq?: string[]; dqEntries?: number[] } {
+  if (!ids.length) return {};
+  const byId = new Map(st.entries.map((e) => [e.id, e]));
+  return { dq: ids.map((id) => { const e = byId.get(id); return e ? nameOfEntry(e) : `Entry ${id}`; }), dqEntries: ids };
+}
+
+/** the entries of a match that are not in the competition any more (R7: they take nothing from it) */
+function leftEntries(st: CompState, m: db.MatchRow): number[] {
+  const status = new Map(st.entries.map((e) => [e.id, e.status]));
+  return [...new Set([...m.red, ...m.blue].map((s) => s.entry))].filter((id) => status.get(id) !== 'registered');
 }
 
 /** "Q12", "SF1-2": the label each match carries */
@@ -418,6 +513,9 @@ async function detailOf(comp: db.CompRow, user: AuthedUser | null): Promise<Comp
   const [staffRows, log, live] = await Promise.all([db.listStaff(comp.id), db.listLog(comp.id, staff), liveByCode()]);
   const labels = labelsOf(st);
   const graceMs = st.settings.run.joinGraceSec * 1000;
+  // the card escalation is derived over every qualification match at once, so each match's view
+  // agrees with the rankings about who takes nothing from it
+  const eff = effectiveDq(qualsOf(st));
   const matches: CompMatchView[] = st.matches.map((m) => {
     const room = m.status === 'called' && m.roomCode ? live.get(m.roomCode) : undefined;
     return {
@@ -443,6 +541,11 @@ async function detailOf(comp: db.CompRow, user: AuthedUser | null): Promise<Comp
       live: room
         ? { phase: room.phase, timeLeft: room.timeLeft, score: room.score, spectators: room.spectators, region: room.region }
         : null,
+      facts: m.facts,
+      rulings: m.rulings,
+      cards: m.cards,
+      refCards: m.refCards,
+      ...(m.stage === 'qual' ? { rp: matchRp(m, st.ranking, eff.get(m.id)), dqEffective: eff.get(m.id) ?? [] } : {}),
     };
   });
   const actorIds = [...new Set(log.map((l) => l.actor).filter((a) => a !== 'system' && a !== 'secret'))];
@@ -451,14 +554,18 @@ async function detailOf(comp: db.CompRow, user: AuthedUser | null): Promise<Comp
     const p = await getProfile(id).catch(() => null);
     if (p) names.set(id, p.username ? `@${p.username}` : p.handle);
   }
-  const logView: CompLogView[] = log.map((l) => ({
-    id: l.id,
-    at: l.at,
-    actor: l.actor === 'system' ? 'DSIM' : (names.get(l.actor) ?? (isAdmin(l.actor) ? 'DSIM staff' : 'Organizer')),
-    kind: l.kind,
-    data: l.data,
-    public: l.public,
-  }));
+  const logView: CompLogView[] = log.map((l) => {
+    // `users` (account ids) is for `deleteAccount` to find the line by; no page prints it
+    const { users: _users, ...data } = l.data;
+    return {
+      id: l.id,
+      at: l.at,
+      actor: l.actor === 'system' ? 'DSIM' : (names.get(l.actor) ?? (isAdmin(l.actor) ? 'DSIM staff' : 'Organizer')),
+      kind: l.kind,
+      data,
+      public: l.public,
+    };
+  });
   return {
     competition: fullOf(comp, st.settings),
     entries: st.entries
@@ -466,6 +573,8 @@ async function detailOf(comp: db.CompRow, user: AuthedUser | null): Promise<Comp
       .map((e) => entryView(e, staff)),
     matches,
     rankings: st.rankings,
+    ranking: st.ranking,
+    unreachable: unreachableBonus(st.ranking, comp.game, comp.format),
     selection: st.selection,
     alliances: st.alliances,
     bracket: st.bracket
@@ -484,6 +593,16 @@ async function detailOf(comp: db.CompRow, user: AuthedUser | null): Promise<Comp
 // =====================================================================================
 // NOTICES — who is told what (never throws into a route; see server/notices.ts)
 // =====================================================================================
+
+/** a step after a write that already landed (a notice, and the read it needs): its failure is
+ *  logged, never turned into an error for a change that was made */
+async function afterWrite(what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`[comp] ${what} failed:`, e);
+  }
+}
 
 async function notify(rows: NewNotice[]): Promise<void> {
   if (!dbEnabled || !rows.length) return;
@@ -531,6 +650,84 @@ async function noticeResult(st: CompState, m: db.MatchRow, what: CompNoticeData[
   await notify(rows);
 }
 
+/**
+ * A referee's facts or ruling moved the ranking points a match gave: tell each driver whose own
+ * points from it changed, with the old and new number. Read per entry rather than per alliance, so
+ * a surrogate or a disqualified entry (0 either way) is not told about points it never takes.
+ */
+async function noticeRp(st: CompState, label: string, before: MatchRp | null, after: MatchRp | null): Promise<void> {
+  const byId = new Map(st.entries.map((e) => [e.id, e]));
+  const rows: NewNotice[] = [];
+  for (const key of new Set([...Object.keys(before?.entries ?? {}), ...Object.keys(after?.entries ?? {})])) {
+    const was = before?.entries[key] ?? 0;
+    const now = after?.entries[key] ?? 0;
+    const e = byId.get(Number(key));
+    if (was === now || !e) continue;
+    for (const userId of usersOf(e)) {
+      rows.push({ userId, kind: 'competition.rp', game: st.comp.game, data: noticeData(st.comp, { label, before: was, after: now }) });
+    }
+  }
+  await notify(rows);
+}
+
+/** (match, entry) pairs a CARD disqualifies now that it did not before: what a card notice is about */
+function newCardDqs(before: Map<number, EffectiveDq[]>, after: Map<number, EffectiveDq[]>): { match: number; entry: number; why: DqReason }[] {
+  const out: { match: number; entry: number; why: DqReason }[] = [];
+  for (const [match, list] of after) {
+    for (const d of list) {
+      if (d.why === 'dq' || (before.get(match) ?? []).some((x) => x.entry === d.entry)) continue;
+      out.push({ match, entry: d.entry, why: d.why });
+    }
+  }
+  return out;
+}
+
+/**
+ * WHAT A CARD NOTICE SAYS (`competition.card`), for one entry's card in match `x` and the DQs it
+ * newly caused (`pairs`, that entry's only). In order: the card costs `x` itself (a red, or a
+ * second yellow); it is a surrogate appearance's card, counted against another match; it made a
+ * LATER yellow the second one (a referee's card added to an early match); it is a surrogate card
+ * with no match yet to count against (the next one will). `why` is absent when it costs nothing.
+ */
+function cardNoticeData(
+  st: CompState,
+  x: db.MatchRow,
+  entry: number,
+  colour: CardColour | null,
+  pairs: { match: number; why: DqReason }[],
+): Partial<CompNoticeData> {
+  const labels = labelsOf(st);
+  const labelOf = (id: number): string => labels.get(id) ?? `#${id}`;
+  const label = labelOf(x.id);
+  if (!colour) return { label, colour: null };
+  const own = pairs.find((p) => p.match === x.id && (p.why === 'red' || p.why === 'yellow2'));
+  if (own) return { label, colour, why: own.why as 'red' | 'yellow2' };
+  const counted = pairs.find((p) => p.why === 'surrogate');
+  if (counted) return { label, colour, why: 'surrogate', dqLabel: labelOf(counted.match) };
+  const later = pairs.find((p) => p.why === 'yellow2');
+  if (later) return { label: labelOf(later.match), colour: 'yellow', why: 'yellow2' };
+  if ([...x.red, ...x.blue].some((s) => s.entry === entry && s.surrogate)) {
+    // a surrogate card that costs a match (a red, or a yellow on top of one carried in) but changed
+    // nothing new: the match it counts against was already lost, or there is none yet
+    const before = qualsOf(st)
+      .filter((m) => m.id !== x.id && m.status === 'done' && !!m.result && byDecided(m, x) < 0)
+      .filter((m) => [...m.red, ...m.blue].some((s) => s.entry === entry))
+      .sort(byDecided);
+    const carried = before.some((m) => colourIn(m, entry) !== null);
+    if (colour === 'red' || carried) {
+      const earlier = before.filter((m) => [...m.red, ...m.blue].some((s) => s.entry === entry && !s.surrogate)).pop();
+      return earlier ? { label, colour, why: 'surrogate', dqLabel: labelOf(earlier.id) } : { label, colour, why: 'surrogate' };
+    }
+  }
+  return { label, colour };
+}
+
+async function noticeCard(st: CompState, entry: number, data: Partial<CompNoticeData>): Promise<void> {
+  const e = st.entries.find((x) => x.id === entry);
+  if (!e) return;
+  await notify(usersOf(e).map((userId) => ({ userId, kind: 'competition.card', game: st.comp.game, data: noticeData(st.comp, data) })));
+}
+
 // =====================================================================================
 // CALLING A MATCH
 // =====================================================================================
@@ -556,13 +753,18 @@ async function callMatch(st: CompState, m: db.MatchRow, actor: string): Promise<
   const roster = rosterOf(st, m);
   if (!roster.red.length || !roster.blue.length) {
     if (!roster.red.length && !roster.blue.length) {
-      await db.setMatchStatus(m.id, 'void', 'Nobody left to play it.');
+      await db.voidMatch(m.id, 'Nobody left to play it.');
       await db.addLog(st.comp.id, actor, 'match.void', { match: m.id, label, why: 'empty' });
       return { called: false, note: `${label} was voided: nobody left on either alliance.` };
     }
     const winner: Alliance = roster.red.length ? 'red' : 'blue';
-    await db.writeResult(m.id, { red: null, blue: null, redFoul: 0, blueFoul: 0, winner, source: 'forfeit', note: 'The other alliance had nobody left to play.' }, { fromStatus: ['scheduled', 'called'] });
-    await db.addLog(st.comp.id, actor, 'match.forfeit', { match: m.id, label, winner, why: 'empty' });
+    const dqAdd = m.stage === 'qual' ? leftEntries(st, m) : [];
+    await db.writeResult(
+      m.id,
+      { red: null, blue: null, redFoul: 0, blueFoul: 0, winner, source: 'forfeit', note: 'The other alliance had nobody left to play.', dqAdd },
+      { fromStatus: ['scheduled', 'called'] },
+    );
+    await db.addLog(st.comp.id, actor, 'match.forfeit', { match: m.id, label, winner, why: 'empty', ...dqLog(st, dqAdd.filter((e) => !m.dq.includes(e))) });
     await afterResult(st.comp.id);
     return { called: false, note: `${label} went to ${winner} by forfeit: the other alliance had nobody left.` };
   }
@@ -668,20 +870,70 @@ async function buildClaimedRoom(code: string, claim: { id: number; attempt: numb
   };
 }
 
+/** what the room measured, coerced to the game's own keys (internal flags included: this is the
+ *  server's write). An alliance with nothing known is `{}`, and both unknown is null. */
+function playedFacts(game: GameId, raw: Record<Alliance, Record<string, number>> | undefined): Record<Alliance, AllianceFacts> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const red = coerceFacts(game, raw.red, true);
+  const blue = coerceFacts(game, raw.blue, true);
+  return red || blue ? { red: red ?? {}, blue: blue ?? {} } : null;
+}
+
+/**
+ * THE SIM'S CARDS, BY ENTRY (R4). The room reports carded DRIVERS; a duo puts two on the field, and
+ * two yellows to one team in a match are a red (the manual cards the team, not the robot). Any red,
+ * or two or more yellows across the entry's drivers, is 'red'; one yellow is 'yellow'. Null when
+ * nobody in the match was carded.
+ */
+function playedCards(st: CompState, m: db.MatchRow, carded: { userId: string; colour: CardColour }[]): Record<string, CardColour> | null {
+  const byId = new Map(st.entries.map((e) => [e.id, e]));
+  const tally = new Map<number, { red: number; yellow: number }>();
+  for (const c of carded) {
+    if (c.colour !== 'red' && c.colour !== 'yellow') continue;
+    for (const id of new Set([...m.red, ...m.blue].map((s) => s.entry))) {
+      const e = byId.get(id);
+      if (!e || !usersOf(e).includes(c.userId)) continue;
+      const t = tally.get(id) ?? { red: 0, yellow: 0 };
+      t[c.colour]++;
+      tally.set(id, t);
+    }
+  }
+  const out: Record<string, CardColour> = {};
+  for (const [id, t] of tally) out[String(id)] = t.red > 0 || t.yellow >= 2 ? 'red' : 'yellow';
+  return Object.keys(out).length ? out : null;
+}
+
 /**
  * A COMPETITION ROOM FINISHED ITS MATCH — called by `persistMatch` with the authoritative result
  * and whatever it managed to archive. Conditional on the attempt: a room from a call the referee
  * has since replaced (re-called, voided, entered by hand) finishes into nothing.
+ *
+ * `extra` is what the room measured (`MatchOutcome.rankFacts`) and the drivers it carded; both
+ * optional, and the parameter itself defaults, because a caller that predates it (a test, an older
+ * worker) must still record the result. The facts, the cards and the R7 DQs go in the one
+ * conditional write. The competition's rows are read first only for the cards and the DQs; a read
+ * that fails costs those, never the result.
  */
 export async function competitionMatchPlayed(
   tag: CompetitionTag,
   result: ReplayResult,
   ids: { matchId?: string | null; replayId?: string | null },
+  extra: { facts?: Record<Alliance, Record<string, number>>; cards?: { userId: string; colour: CardColour }[] } = {},
 ): Promise<void> {
   if (!dbEnabled) return;
   try {
     const r = result.score;
     const winner: Winner = r.red > r.blue ? 'red' : r.blue > r.red ? 'blue' : 'tie';
+    let st: CompState | null = null;
+    try {
+      const comp = await db.getCompetition({ id: tag.id });
+      st = comp ? await loadState(comp) : null;
+    } catch (e) {
+      console.warn(`[comp] ${tag.slug} ${tag.label}: could not read the competition before the result; writing it without cards:`, e);
+    }
+    const m = st?.matches.find((x) => x.id === tag.matchId);
+    const cards = st && m ? playedCards(st, m, extra.cards ?? []) : undefined;
+    const dqAdd = st && m && m.stage === 'qual' ? leftEntries(st, m) : [];
     const ok = await db.writeResult(
       tag.matchId,
       {
@@ -693,6 +945,10 @@ export async function competitionMatchPlayed(
         source: 'played',
         matchId: ids.matchId ?? null,
         replayId: ids.replayId ?? null,
+        facts: playedFacts(tag.game, extra.facts),
+        // replaced by every played write (undefined only when the read above failed)
+        cards,
+        dqAdd,
       },
       { attempt: tag.attempt, fromStatus: ['called'] },
     );
@@ -704,8 +960,23 @@ export async function competitionMatchPlayed(
     console.log(`[comp] ${tag.slug} ${tag.label}: red ${r.red} – blue ${r.blue}`);
     touch(tag.id);
     await afterResult(tag.id);
+    if (st && m && cards && m.stage === 'qual') await afterWrite('card notices', () => noticePlayedCards(st!, tag.matchId, cards));
   } catch (e) {
     console.error('[comp] recording a played result failed:', e);
+  }
+}
+
+/** tell the drivers whose cards in a played match cost them a match (`cardNoticeData`) */
+async function noticePlayedCards(before: CompState, matchId: number, cards: Record<string, CardColour>): Promise<void> {
+  const after = await loadState(before.comp);
+  const x = after.matches.find((m) => m.id === matchId);
+  if (!x) return;
+  const fresh = newCardDqs(effectiveDq(qualsOf(before)), effectiveDq(qualsOf(after)));
+  for (const key of Object.keys(cards)) {
+    const entry = Number(key);
+    const data = cardNoticeData(after, x, entry, colourIn(x, entry), fresh.filter((p) => p.entry === entry));
+    // a played card that costs nothing is no news: the driver saw it shown in the match
+    if (data.why) await noticeCard(after, entry, data);
   }
 }
 
@@ -732,24 +1003,34 @@ export async function competitionCallFailed(
     const sideAtFault = (entries: db.EntryRow[]): boolean => entries.some((e) => usersOf(e).some((u) => guilty.has(u)));
     const redFault = sideAtFault(roster.red);
     const blueFault = sideAtFault(roster.blue);
-    const who = st.entries
-      .filter((e) => usersOf(e).some((u) => guilty.has(u)))
-      .map(nameOfEntry)
-      .join(', ');
-    const why = culprits.some((c) => c.kind === 'unready')
-      ? `${who || 'A driver'} did not ready up in time.`
-      : culprits.some((c) => c.kind === 'bail')
-        ? `${who || 'A driver'} left before the start.`
-        : `${who || 'A driver'} did not connect.`;
+    const at = st.entries.filter((e) => usersOf(e).some((u) => guilty.has(u)));
+    const code: CallFailure = culprits.some((c) => c.kind === 'unready') ? 'unready' : culprits.some((c) => c.kind === 'bail') ? 'bail' : 'noshow';
+    /* THE LOG CARRIES A CODE AND THE NAMES BY POSITION against their ids (`logLine` writes the
+       sentence), so `deleteAccount` can drop a name. The public match note names the alliance only:
+       nothing rewrites it. The call note is staff-only and replaced by the next call. */
+    const failed = { why: code, who: at.map(nameOfEntry), whoEntries: at.map((e) => e.id) };
+    const callNote = `${failed.who.join(', ') || 'A driver'} ${CALL_FAILED[code]}.`;
     if (st.settings.run.noShow === 'forfeit' && redFault !== blueFault) {
       const winner: Alliance = redFault ? 'blue' : 'red';
+      /* R7: a driver who never connected or left before the start is disqualified from the match
+         (G208, G203), which costs more than the loss (0 in every average under the manual). One
+         who connected and did not ready up only loses it. Plus any entry no longer in the
+         competition. Qualification matches only: nothing else reads a match's DQs. */
+      const noShows = new Set(culprits.filter((c) => c.kind !== 'unready').map((c) => c.userId));
+      const dqAdd =
+        m.stage === 'qual'
+          ? [...new Set([
+              ...[...roster.red, ...roster.blue].filter((e) => usersOf(e).some((u) => noShows.has(u))).map((e) => e.id),
+              ...leftEntries(st, m),
+            ])]
+          : [];
       const ok = await db.writeResult(
         m.id,
-        { red: null, blue: null, redFoul: 0, blueFoul: 0, winner, source: 'forfeit', note: why },
+        { red: null, blue: null, redFoul: 0, blueFoul: 0, winner, source: 'forfeit', note: `${redFault ? 'Red' : 'Blue'} ${CALL_FAILED[code]}.`, dqAdd },
         { attempt: tag.attempt, fromStatus: ['called'] },
       );
       if (ok) {
-        await db.addLog(comp.id, 'system', 'match.forfeit', { match: m.id, label: tag.label, winner, why });
+        await db.addLog(comp.id, 'system', 'match.forfeit', { match: m.id, label: tag.label, winner, ...failed, ...dqLog(st, dqAdd.filter((e) => !m.dq.includes(e))) });
         touch(comp.id);
         await afterResult(comp.id);
         // the drivers hear about a forfeit the room decided as they would about a referee's
@@ -758,8 +1039,8 @@ export async function competitionCallFailed(
       }
       return;
     }
-    if (await db.uncallMatch(m.id, tag.attempt, why)) {
-      await db.addLog(comp.id, 'system', 'match.uncalled', { match: m.id, label: tag.label, why }, false);
+    if (await db.uncallMatch(m.id, tag.attempt, callNote)) {
+      await db.addLog(comp.id, 'system', 'match.uncalled', { match: m.id, label: tag.label, ...failed }, false);
       touch(comp.id);
     }
   } catch (e) {
@@ -847,7 +1128,7 @@ async function drawSwiss(
   // the field is every entry still registered: the ones that never checked in were withdrawn when
   // qualifications started, and one withdrawn or disqualified since drops out of later rounds
   const pool = entries.filter((e) => e.status === 'registered' && (round > 1 || !settings.checkIn || e.checkedInAt !== null));
-  const rankings = quals.length ? computeRankings(entries.map(entryCore), quals, settings, comp.rngSeed) : null;
+  const rankings = quals.length ? computeRankings(entries.map(entryCore), quals, rankingOf(comp, settings), comp.rngSeed) : null;
   const ids = new Set(pool.map((e) => e.id));
   const ranking = rankings
     ? rankings.filter((r) => ids.has(r.entry)).map((r) => r.entry)
@@ -877,7 +1158,7 @@ async function drawSwiss(
   const { matches: drawn, bye } = drawSwissRound(round, ranking, played, colors, comp.rngSeed + round, byes);
   if (bye !== null && query) {
     const e = entries.find((x) => x.id === bye);
-    await db.addLog(comp.id, 'system', 'schedule.bye', { round, entry: bye, name: e ? nameOfEntry(e) : null }, true, query);
+    await db.addLog(comp.id, 'system', 'schedule.bye', { round, entry: bye, name: e ? nameOfEntry(e) : null, users: e ? usersOf(e) : [] }, true, query);
   }
   let next = Math.max(0, ...quals.map((m) => m.number)) + 1;
   await db.insertMatches(
@@ -920,8 +1201,9 @@ async function completeCompetition(comp: db.CompRow, actor: string): Promise<voi
     const done = await db.updateCompetition(comp.id, { status: 'completed', completedAt: Date.now() }, comp.status, query);
     if (!done) return false;
     await db.writePlacements(comp.id, places, query);
-    const champs = st.entries.filter((e) => places.get(e.id) === 1).map(nameOfEntry);
-    await db.addLog(comp.id, actor, 'status.completed', { champions: champs }, true, query);
+    const champs = st.entries.filter((e) => places.get(e.id) === 1);
+    // the ids beside the names, by position, so `deleteAccount` can drop a name
+    await db.addLog(comp.id, actor, 'status.completed', { champions: champs.map(nameOfEntry), championEntries: champs.map((e) => e.id) }, true, query);
     return true;
   });
   if (!finished) return;
@@ -1089,7 +1371,8 @@ async function meRoute(user: AuthedUser | null, ctx: ApiCtx): Promise<void> {
   const rows = await db.myOpenEntries(user.userId);
   const out: MyCompetition[] = [];
   for (const r of rows) {
-    const settings = coerceCompSettings(r.settings, '1v1', 'solo');
+    // only the run timing and check-in are read here, which no shape or game folds
+    const settings = coerceCompSettings(r.settings, '1v1', 'solo', r.game);
     let called: MyCompetition['called'] = null;
     let next: MyCompetition['next'] = null;
     if (RUNNING.includes(r.status) && r.entryStatus === 'registered') {
@@ -1174,16 +1457,30 @@ async function readEdit(b: Record<string, unknown>, prev: db.CompRow | null, ent
   const opens = (has('regOpensAt') ? out.regOpensAt : prev?.regOpensAt) as number | null | undefined;
   const closes = (has('regClosesAt') ? out.regClosesAt : prev?.regClosesAt) as number | null | undefined;
   if (opens && closes && closes <= opens) refuse(400, 'Registration has to close after it opens.');
+  // the game the settings are coerced for: the one this edit leaves the competition on
+  const game = (out.game ?? prev?.game ?? 'decode') as GameId;
   if (has('settings') || !prev) {
     const format = (out.format ?? prev?.format ?? '1v1') as '1v1' | '2v2';
     const teamMode = (out.teamMode ?? prev?.teamMode ?? 'solo') as 'solo' | 'duo';
-    const merged = { ...((prev?.settings as Record<string, unknown>) ?? {}), ...(b.settings && typeof b.settings === 'object' ? (b.settings as Record<string, unknown>) : {}) };
-    const next = coerceCompSettings(merged, format, teamMode);
+    // a shallow merge, so an edit that leaves `rp` out keeps the stored one (without it, the
+    // coercer would read the competition as one from before the manual scheme: custom). `rp` is
+    // merged one level deeper: a body of `{ rp: { level } }` must not drop the stored scheme,
+    // which a present `rp` without one coerces to the manual's.
+    const plainObj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+    const stored = plainObj(prev?.settings) ?? {};
+    const body = plainObj(b.settings) ?? {};
+    const merged: Record<string, unknown> = { ...stored, ...body };
+    if (plainObj(body.rp) && plainObj(stored.rp)) merged.rp = { ...plainObj(stored.rp), ...plainObj(body.rp) };
+    const next = coerceCompSettings(merged, format, teamMode, game);
     if (prev) {
       const was = settingsOf(prev);
       const st = prev.status;
       if (st !== 'draft' && st !== 'published' && JSON.stringify(next.quals) !== JSON.stringify(was.quals)) {
         refuse(409, 'Qualification settings are fixed once qualifications start.');
+      }
+      // the rules every qualification match is ranked by, frozen with them (`rp_table`)
+      if (st !== 'draft' && st !== 'published' && JSON.stringify(next.rp) !== JSON.stringify(was.rp)) {
+        refuse(409, 'The ranking-point scheme is fixed once qualifications start.');
       }
       if ((st === 'playoffs' || st === 'completed' || st === 'cancelled') && JSON.stringify(next.playoffs) !== JSON.stringify(was.playoffs)) {
         refuse(409, 'Playoff settings are fixed once the bracket is built.');
@@ -1194,7 +1491,7 @@ async function readEdit(b: Record<string, unknown>, prev: db.CompRow | null, ent
     }
     out.settings = next;
   } else if (out.format || out.teamMode) {
-    out.settings = coerceCompSettings(prev?.settings, out.format as '1v1' | '2v2', out.teamMode as 'solo' | 'duo');
+    out.settings = coerceCompSettings(prev?.settings, out.format as '1v1' | '2v2', out.teamMode as 'solo' | 'duo', game);
   }
   return out;
 }
@@ -1299,7 +1596,7 @@ async function postAction(
       if (!mine) refuse(409, 'You’re not entered.');
       if (!checkInOpen(comp, st.settings)) refuse(409, 'Check-in isn’t open.');
       await db.updateEntry(mine!.id, { checkedIn: true });
-      await db.addLog(comp.id, user.userId, 'entry.checkin', { entry: mine!.id, name: nameOfEntry(mine!) }, false);
+      await db.addLog(comp.id, user.userId, 'entry.checkin', { entry: mine!.id, name: nameOfEntry(mine!), users: usersOf(mine!) }, false);
       return { note: 'You’re checked in.' };
     }
     case 'partner':
@@ -1324,6 +1621,7 @@ async function postAction(
       await db.addLog(comp.id, user.userId, kind === 'pick' ? 'selection.pick' : 'selection.decline', {
         entry,
         name: picked ? nameOfEntry(picked) : null,
+        users: picked ? usersOf(picked) : [],
         alliance: turn !== null ? turn + 1 : null,
       });
       return {};
@@ -1484,7 +1782,7 @@ async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<strin
       partnerName = found.username ? `@${found.username}` : found.handle;
     }
   }
-  const status = await db.tx(async (query) => {
+  const { status, entry } = await db.tx(async (query) => {
     const locked = await db.lockCompetition(query, comp.id);
     if (!locked || registrationOpen(locked)) refuse(409, 'Registration has closed.');
     const entries = await db.listEntries(comp.id, query);
@@ -1510,12 +1808,12 @@ async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<strin
                 registered_at = now() where id = $1`,
         [old.id, st, partnerId, name, number],
       );
-    } else {
-      await db.insertEntry({ competitionId: comp.id, userId: user.userId, partnerId, name, number, status: st }, query);
+      return { status: st, entry: old.id };
     }
-    return st;
+    return { status: st, entry: await db.insertEntry({ competitionId: comp.id, userId: user.userId, partnerId, name, number, status: st }, query) };
   });
-  await db.addLog(comp.id, user.userId, 'entry.register', { status, name: teamName || me!.handle }, false);
+  // the entry id rides along so `deleteAccount` can find this line's name to scrub
+  await db.addLog(comp.id, user.userId, 'entry.register', { entry, status, name: teamName || me!.handle, users: [user.userId] }, false);
   if (partnerId) {
     await notify([{ userId: partnerId, kind: 'competition.invite', game: comp.game, data: noticeData(comp, { from: `@${me!.username}` }) }]);
     return { status, note: `Invitation sent to ${partnerName}. You’re entered once they accept.` };
@@ -1534,7 +1832,7 @@ async function withdrawRoute(comp: db.CompRow, user: AuthedUser): Promise<Record
   const before = comp.status === 'draft' || comp.status === 'published';
   if (before && e!.status === 'pending') await db.deleteEntry(e!.id);
   else await db.updateEntry(e!.id, { status: 'withdrawn', checkedIn: false });
-  await db.addLog(comp.id, user.userId, 'entry.withdraw', { entry: e!.id, name: nameOfEntry(e!) });
+  await db.addLog(comp.id, user.userId, 'entry.withdraw', { entry: e!.id, name: nameOfEntry(e!), users: usersOf(e!) });
   if (e!.status === 'registered' && before) await promoteWaitlist(comp);
   return { note: 'You’ve withdrawn.' };
 }
@@ -1545,7 +1843,7 @@ async function partnerRoute(comp: db.CompRow, user: AuthedUser, b: Record<string
   if (!e) refuse(404, 'There’s no invitation waiting for you.');
   if (b.accept !== true) {
     await db.deleteEntry(e!.id);
-    await db.addLog(comp.id, user.userId, 'entry.decline', { entry: e!.id }, false);
+    await db.addLog(comp.id, user.userId, 'entry.decline', { entry: e!.id, users: usersOf(e!) }, false);
     return { note: 'Invitation declined.' };
   }
   if (registrationOpen(comp)) refuse(409, 'Registration has closed.');
@@ -1564,7 +1862,7 @@ async function partnerRoute(comp: db.CompRow, user: AuthedUser, b: Record<string
     await db.updateEntry(e!.id, { status: next }, query);
     return next;
   });
-  await db.addLog(comp.id, user.userId, 'entry.accept', { entry: e!.id, name: nameOfEntry(e!) });
+  await db.addLog(comp.id, user.userId, 'entry.accept', { entry: e!.id, name: nameOfEntry(e!), users: usersOf({ ...e!, status }) });
   return { status, note: status === 'waitlist' ? 'Accepted. The competition is full, so your duo is on the waitlist.' : 'Accepted. Your duo is registered.' };
 }
 
@@ -1585,7 +1883,7 @@ async function promoteWaitlist(comp: db.CompRow): Promise<void> {
     }
     return out;
   });
-  for (const e of promoted) await db.addLog(comp.id, 'system', 'entry.promoted', { entry: e.id, name: nameOfEntry(e) });
+  for (const e of promoted) await db.addLog(comp.id, 'system', 'entry.promoted', { entry: e.id, name: nameOfEntry(e), users: usersOf({ ...e, status: 'registered' }) });
   await notify(
     promoted.flatMap((e) => usersOf({ ...e, status: 'registered' }).map((userId) => ({ userId, kind: 'competition.promoted', game: comp.game, data: noticeData(comp) }))),
   );
@@ -1648,16 +1946,32 @@ async function statusRoute(
         }
       }
       await db.tx(async (query) => {
+        // everything above read the settings this request loaded: an edit saved since then is
+        // refused here rather than locked in under rules built from the older settings
+        const locked = await db.lockCompetition(query, comp.id);
+        if (!locked || locked.status !== 'published' || JSON.stringify(locked.settings) !== JSON.stringify(comp.settings)) {
+          refuse(409, 'The competition changed while you were looking at it. Refresh and try again.');
+        }
+        // THE RANKING RULES FREEZE HERE under the manual scheme (R2): a Team Update that changes a
+        // table after this cannot re-rank an event already under way. Read from the live table,
+        // never an older frozen copy; the scheme itself is locked from now on (`readEdit`).
+        const ranking = effectiveRanking(settingsOf(locked!), comp.game);
         // entries that never checked in, and the waitlist, sit this one out
         for (const e of st.entries) {
           if (e.status === 'registered' && !want.has(e.id)) await db.updateEntry(e.id, { status: 'withdrawn' }, query);
         }
-        await db.updateCompetition(
+        const started = await db.updateCompetition(
           comp.id,
-          { status: 'qualification', startedAt: Date.now(), regClosesAt: comp.regClosesAt && comp.regClosesAt < Date.now() ? comp.regClosesAt : Date.now() },
+          {
+            status: 'qualification',
+            startedAt: Date.now(),
+            regClosesAt: comp.regClosesAt && comp.regClosesAt < Date.now() ? comp.regClosesAt : Date.now(),
+            rpTable: ranking.scheme === 'cm' ? ranking : null,
+          },
           'published',
           query,
         );
+        if (!started) refuse(409, 'The competition changed while you were looking at it. Refresh and try again.');
         if (st.settings.quals.kind === 'swiss') {
           await query(`delete from competition_matches where competition_id = $1 and stage = 'qual'`, [comp.id]);
           const entries = await db.listEntries(comp.id, query);
@@ -1694,7 +2008,7 @@ async function statusRoute(
         const lastRound = Math.max(0, ...quals.map((m) => m.round));
         if (lastRound < st.settings.quals.matchesPerEntry) refuse(409, `Only ${lastRound} of ${st.settings.quals.matchesPerEntry} swiss rounds have been drawn.`);
       }
-      for (const m of open) await db.setMatchStatus(m.id, 'void', 'Not played: qualifications ended.');
+      for (const m of open) await db.voidMatch(m.id, 'Not played: qualifications ended.');
       const fresh = await loadState(comp);
       const order = seedOrder(fresh.entries.map(entryCore), fresh.rankings);
       if (!st.settings.playoffs.enabled) {
@@ -1779,7 +2093,7 @@ async function entriesRoute(
       if (partnerId === found.userId) refuse(400, 'A duo is two different players.');
     }
     const name = (await cleanPublic(str(b.name, 40), 'team name')) || found.handle;
-    await db.tx(async (query) => {
+    const added = await db.tx(async (query) => {
       const locked = await db.lockCompetition(query, comp.id);
       if (!locked) refuse(404, 'No such competition.');
       const entries = await db.listEntries(comp.id, query);
@@ -1788,9 +2102,10 @@ async function entriesRoute(
       const old = entries.find((e) => e.userId === found.userId);
       if (old) await query(`delete from competition_entries where id = $1`, [old.id]);
       if (partnerId) await db.releaseWithdrawnPartner(comp.id, partnerId, null, query);
-      await db.insertEntry({ competitionId: comp.id, userId: found.userId, partnerId, name, number: intIn(b.number, 0, 999999), status: 'registered' }, query);
+      return db.insertEntry({ competitionId: comp.id, userId: found.userId, partnerId, name, number: intIn(b.number, 0, 999999), status: 'registered' }, query);
     });
-    await db.addLog(comp.id, user.userId, 'entry.add', { name }, false);
+    const users = partnerId ? [found.userId, partnerId] : [found.userId];
+    await db.addLog(comp.id, user.userId, 'entry.add', { entry: added, name, users }, false);
     await audit('entry.add', { userId: found.userId });
     return { note: `Added ${name}.` };
   }
@@ -1805,58 +2120,58 @@ async function entriesRoute(
     case 'remove':
       if (before) await db.deleteEntry(entry.id);
       else await db.updateEntry(entry.id, { status: 'withdrawn' });
-      await db.addLog(comp.id, user.userId, 'entry.remove', { entry: entry.id, name });
+      await db.addLog(comp.id, user.userId, 'entry.remove', { entry: entry.id, name, users: usersOf(entry) });
       await audit('entry.remove', { entry: entry.id, userId: entry.userId });
       await notify(usersOf(entry).map((userId) => ({ userId, kind: 'competition.removed', game: comp.game, data: noticeData(comp, { how: 'removed' }) })));
       if (before && entry.status === 'registered') await promoteWaitlist(comp);
       return { note: `Removed ${name}.` };
     case 'disqualify':
       await db.updateEntry(entry.id, { status: 'disqualified' });
-      await db.addLog(comp.id, user.userId, 'entry.disqualify', { entry: entry.id, name, why: str(b.note, 200) || null });
+      await db.addLog(comp.id, user.userId, 'entry.disqualify', { entry: entry.id, name, users: usersOf(entry), why: str(b.note, 200) || null });
       await audit('entry.disqualify', { entry: entry.id, userId: entry.userId }, str(b.note, 200) || null);
       await notify(usersOf(entry).map((userId) => ({ userId, kind: 'competition.removed', game: comp.game, data: noticeData(comp, { how: 'disqualified' }), message: cleanMessage(b.note) })));
       return { note: `${name} is disqualified.` };
     case 'reinstate':
       await db.updateEntry(entry.id, { status: 'registered' });
-      await db.addLog(comp.id, user.userId, 'entry.reinstate', { entry: entry.id, name });
+      await db.addLog(comp.id, user.userId, 'entry.reinstate', { entry: entry.id, name, users: usersOf(entry) });
       await audit('entry.reinstate', { entry: entry.id });
       return { note: `${name} is back in.` };
     case 'checkin':
     case 'uncheckin':
       await db.updateEntry(entry.id, { checkedIn: act === 'checkin' });
-      await db.addLog(comp.id, user.userId, `entry.${act}`, { entry: entry.id, name }, false);
+      await db.addLog(comp.id, user.userId, `entry.${act}`, { entry: entry.id, name, users: usersOf(entry) }, false);
       return {};
     case 'promote':
       if (entry.status !== 'waitlist') refuse(409, 'That entry isn’t on the waitlist.');
       // once the schedule is playing, an entry let in now would hold a place and have no matches
       if (!before) refuse(409, 'The competition has started. Nobody can come off the waitlist now.');
       await db.updateEntry(entry.id, { status: 'registered' });
-      await db.addLog(comp.id, user.userId, 'entry.promoted', { entry: entry.id, name });
+      await db.addLog(comp.id, user.userId, 'entry.promoted', { entry: entry.id, name, users: usersOf(entry) });
       await notify(usersOf({ ...entry, status: 'registered' }).map((userId) => ({ userId, kind: 'competition.promoted', game: comp.game, data: noticeData(comp) })));
       return { note: `${name} is in.` };
     case 'demote':
       if (entry.status !== 'registered' || !before) refuse(409, 'Only a registered entry can move to the waitlist before the start.');
       await db.updateEntry(entry.id, { status: 'waitlist' });
-      await db.addLog(comp.id, user.userId, 'entry.waitlisted', { entry: entry.id, name }, false);
+      await db.addLog(comp.id, user.userId, 'entry.waitlisted', { entry: entry.id, name, users: usersOf(entry) }, false);
       return {};
     case 'seed': {
       const seed = b.seed === null || b.seed === '' ? null : intIn(b.seed, 1, 999);
       await db.updateEntry(entry.id, { seed });
-      await db.addLog(comp.id, user.userId, 'entry.seed', { entry: entry.id, name, seed }, false);
+      await db.addLog(comp.id, user.userId, 'entry.seed', { entry: entry.id, name, seed, users: usersOf(entry) }, false);
       return {};
     }
     case 'rename': {
       const nm = await cleanPublic(str(b.name, 40), 'team name');
       if (!nm) refuse(400, 'A name is required.');
       await db.updateEntry(entry.id, { name: nm, number: b.number === undefined ? undefined : intIn(b.number, 0, 999999) });
-      await db.addLog(comp.id, user.userId, 'entry.rename', { entry: entry.id, from: name, to: nm });
+      await db.addLog(comp.id, user.userId, 'entry.rename', { entry: entry.id, from: name, to: nm, users: usersOf(entry) });
       return {};
     }
     case 'note':
       await db.updateEntry(entry.id, { note: text(b.note, 500) || null });
       // in the trail like every other organizer action; private, and without the note itself,
       // which only the staff's own reads carry
-      await db.addLog(comp.id, user.userId, 'entry.note', { entry: entry.id, name }, false);
+      await db.addLog(comp.id, user.userId, 'entry.note', { entry: entry.id, name, users: usersOf(entry) }, false);
       return {};
   }
   return refuse(400, 'Unknown entry action.');
@@ -1936,7 +2251,7 @@ async function scheduleRoute(
       refuse(409, 'That entry is already in this match.');
     }
     await db.setSlot(m!.id, alliance, slot!, entry!, b.surrogate === true);
-    await db.addLog(comp.id, user.userId, 'schedule.swap', { match: m!.id, alliance, slot, entry, name: nameOfEntry(e!) });
+    await db.addLog(comp.id, user.userId, 'schedule.swap', { match: m!.id, alliance, slot, entry, name: nameOfEntry(e!), users: usersOf(e!) });
     return {};
   }
   return refuse(400, 'Unknown schedule action.');
@@ -1979,6 +2294,27 @@ async function matchRoute(
       if (!s || s.red !== red || s.blue !== blue) refuse(409, 'Later playoff matches were played on this result. Reset those first.');
     }
   };
+  const inMatch = (entry: number | null): boolean => entry !== null && [...match.red, ...match.blue].some((s) => s.entry === entry);
+  /* A RULING ON A DECIDED MATCH (facts, rp, card). It must be the decided attempt the referee was
+     looking at: a match reset, re-called or re-played since has other facts, and a ruling on the
+     old ones would land on the new. The reason is required; it is the log line. The write itself
+     is conditional on the same attempt, for a change that lands between this read and it. */
+  const ruling = (): number => {
+    if (match.status !== 'done' || !match.result) refuse(409, `${label} has no result to rule on.`);
+    const attempt = intIn(b.attempt, 0, Number.MAX_SAFE_INTEGER);
+    if (attempt === null || attempt !== match.attempt) refuse(409, 'The match changed. Refresh.');
+    if (!note) refuse(400, 'Say why. The reason goes in the log.');
+    return attempt!;
+  };
+  const perAlliance = (raw: unknown, what: string): [Alliance, Record<string, unknown>][] => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) refuse(400, `Send the ${what} to change, per alliance.`);
+    return Object.entries(raw as Record<string, unknown>).map(([side, val]) => {
+      if ((side !== 'red' && side !== 'blue') || !val || typeof val !== 'object' || Array.isArray(val)) {
+        refuse(400, `Send the ${what} to change, per alliance.`);
+      }
+      return [side as Alliance, val as Record<string, unknown>];
+    });
+  };
   switch (act) {
     case 'call': {
       const r = await callMatch(st, match, user.userId);
@@ -1993,11 +2329,23 @@ async function matchRoute(
     case 'forfeit': {
       const winner = b.winner === 'blue' ? 'blue' : b.winner === 'red' ? 'red' : null;
       if (!winner) refuse(400, 'Pick the alliance that wins by forfeit.');
+      // R7: the referee may disqualify the entries at fault (a no-show is G208), on top of the
+      // entries no longer in the competition, which take nothing from a qualification match
+      const picked: number[] = [];
+      if (b.dq !== undefined && b.dq !== null) {
+        if (!Array.isArray(b.dq) || b.dq.length > 8) refuse(400, 'List the entries to disqualify.');
+        for (const x of b.dq as unknown[]) {
+          const entry = intIn(x, 1, Number.MAX_SAFE_INTEGER);
+          if (!inMatch(entry)) refuse(400, 'That entry isn’t in this match.');
+          picked.push(entry!);
+        }
+      }
+      const dqAdd = [...new Set([...picked, ...(match.stage === 'qual' ? leftEntries(st, match) : [])])];
       const res: CompResult = { red: null, blue: null, redFoul: 0, blueFoul: 0, winner: winner!, source: 'forfeit' };
       playoffGuard(res);
-      await db.writeResult(match.id, { ...res, note });
-      await db.addLog(comp.id, user.userId, 'match.forfeit', { match: match.id, label, winner, why: note });
-      await audit('match.forfeit', { match: match.id, label, winner }, note);
+      await db.writeResult(match.id, { ...res, note, dqAdd });
+      await db.addLog(comp.id, user.userId, 'match.forfeit', { match: match.id, label, winner, why: note, ...dqLog(st, dqAdd.filter((e) => !match.dq.includes(e))) });
+      await audit('match.forfeit', { match: match.id, label, winner, ...(dqAdd.length ? { dq: dqAdd } : {}) }, note);
       await afterResult(comp.id);
       await noticeResult(st, { ...match, result: res }, 'forfeit', label);
       return { note: `${label}: ${winner} wins by forfeit.` };
@@ -2008,11 +2356,13 @@ async function matchRoute(
       if (red === null || blue === null) refuse(400, 'Enter both alliance scores.');
       const redFoul = intIn(b.redFoul ?? 0, 0, 100000) ?? 0;
       const blueFoul = intIn(b.blueFoul ?? 0, 0, 100000) ?? 0;
+      // foul points GIVEN to an alliance are part of its total, so they can never be more than it
+      if (redFoul > red! || blueFoul > blue!) refuse(400, 'Fouls given can’t exceed the score.');
       const winner: Winner = red! > blue! ? 'red' : blue! > red! ? 'blue' : 'tie';
       const res: CompResult = { red: red!, blue: blue!, redFoul, blueFoul, winner, source: 'manual' };
       playoffGuard(res);
       const was = match.status === 'done';
-      await db.writeResult(match.id, { ...res, note });
+      await db.writeResult(match.id, { ...res, note, dqAdd: match.stage === 'qual' ? leftEntries(st, match) : [] });
       await db.addLog(comp.id, user.userId, was ? 'match.corrected' : 'match.entered', { match: match.id, label, red, blue, winner, why: note });
       await audit(was ? 'match.correct' : 'match.enter', { match: match.id, label, red, blue, before: match.result }, note);
       await afterResult(comp.id);
@@ -2023,7 +2373,7 @@ async function matchRoute(
     }
     case 'void': {
       playoffGuard(null);
-      await db.setMatchStatus(match.id, 'void', note ?? 'Voided by a referee.');
+      await db.voidMatch(match.id, note ?? 'Voided by a referee.');
       await db.addLog(comp.id, user.userId, 'match.void', { match: match.id, label, why: note });
       await audit('match.void', { match: match.id, label }, note);
       await afterResult(comp.id);
@@ -2034,8 +2384,14 @@ async function matchRoute(
       if (match.status === 'scheduled') refuse(409, `${label} hasn’t been played.`);
       playoffGuard(null);
       await db.clearResult(match.id, note);
-      await db.addLog(comp.id, user.userId, 'match.reset', { match: match.id, label, why: note });
-      await audit('match.reset', { match: match.id, label, before: match.result }, note);
+      // a reset drops the referee's cards with the result they were shown on: the log says which,
+      // so a card that should follow the replay can be shown again on purpose
+      const cards = Object.entries(match.refCards ?? {}).map(([key, colour]) => {
+        const e = st.entries.find((x) => x.id === Number(key));
+        return { entry: Number(key), name: e ? nameOfEntry(e) : `Entry ${key}`, colour };
+      });
+      await db.addLog(comp.id, user.userId, 'match.reset', { match: match.id, label, why: note, ...(cards.length ? { cards } : {}) });
+      await audit('match.reset', { match: match.id, label, before: match.result, ...(cards.length ? { cards: cards.map((c) => ({ entry: c.entry, colour: c.colour })) } : {}) }, note);
       await afterResult(comp.id);
       if (match.status === 'done') await noticeResult(st, match, 'reset', label);
       return { note: `${label} is back on the schedule.` };
@@ -2047,9 +2403,110 @@ async function matchRoute(
       const dq = on ? [...new Set([...match.dq, entry!])] : match.dq.filter((x) => x !== entry);
       await db.setMatchDq(match.id, dq);
       const e = st.entries.find((x) => x.id === entry);
-      await db.addLog(comp.id, user.userId, on ? 'match.dq' : 'match.undq', { match: match.id, label, entry, name: e ? nameOfEntry(e) : null, why: note });
+      await db.addLog(comp.id, user.userId, on ? 'match.dq' : 'match.undq', { match: match.id, label, entry, name: e ? nameOfEntry(e) : null, users: e ? usersOf(e) : [], why: note });
       await audit(on ? 'match.dq' : 'match.undq', { match: match.id, label, entry }, note);
       return {};
+    }
+    case 'facts': {
+      // what the game measured, typed or fixed by a referee: a key at a time (null deletes one)
+      if (match.stage !== 'qual') refuse(409, 'Playoff matches earn no ranking points.');
+      const attempt = ruling();
+      if (match.result!.red === null) refuse(409, 'A forfeit has no score to rule on.');
+      const table = cmTable(comp.game);
+      if (!table) refuse(409, 'This game reports nothing to rule on.');
+      const patch: Partial<Record<Alliance, db.SidePatch>> = {};
+      let changed = 0;
+      for (const [side, val] of perAlliance(b.facts, 'measures')) {
+        const p: db.SidePatch = { set: {}, drop: [] };
+        for (const [k, v] of Object.entries(val)) {
+          // only what the game reports and a person may type: never an internal flag, such as
+          // DECODE's `patternAward`, which the sim sets and the patch leaves where it is
+          const measure = table!.measures.find((x) => x.id === k && !x.internal);
+          if (!measure) refuse(400, 'That isn’t something this game measures.');
+          const had = match.facts?.[side]?.[k];
+          if (v === null) {
+            if (had !== undefined) p.drop.push(k);
+            continue;
+          }
+          const n = intIn(v, 0, measure!.max);
+          if (n === null) refuse(400, `Each measure is a whole number from 0 to ${measure!.max}.`);
+          if (n !== had) p.set[k] = n;
+        }
+        changed += Object.keys(p.set).length + p.drop.length;
+        patch[side] = p;
+      }
+      if (!changed) return { note: 'Nothing changed.' };
+      const eff = effectiveDq(qualsOf(st)).get(match.id);
+      const before = matchRp(match, st.ranking, eff);
+      if (!(await db.patchSides(match.id, attempt, 'facts', patch))) refuse(409, 'The match changed. Refresh.');
+      await db.addLog(comp.id, user.userId, 'match.facts', { match: match.id, label, why: note });
+      await audit('match.facts', { match: match.id, label, facts: patch }, note);
+      await afterWrite('facts notices', async () => {
+        const fresh = await db.getMatch(match.id);
+        await noticeRp(st, label, before, fresh ? matchRp(fresh, st.ranking, eff) : null);
+      });
+      return { note: `${label}: the measures are updated.` };
+    }
+    case 'rp': {
+      // a referee's ruling on a bonus RP, only where the manual has one (R9; `ResolvedBonus`)
+      if (!st.ranking.bonus.length) refuse(409, 'This competition has no bonus ranking points.');
+      if (match.stage !== 'qual') refuse(409, 'Playoff matches earn no ranking points.');
+      const attempt = ruling();
+      if (match.result!.red === null) refuse(409, 'A forfeit has no score to rule on.');
+      const patch: Partial<Record<Alliance, db.SidePatch>> = {};
+      const changes: { alliance: Alliance; bonus: string; ruling: 'award' | 'deny' | null }[] = [];
+      for (const [side, val] of perAlliance(b.rulings, 'rulings')) {
+        const p: db.SidePatch = { set: {}, drop: [] };
+        for (const [id, v] of Object.entries(val)) {
+          const bonus = st.ranking.bonus.find((x) => x.id === id);
+          if (!bonus || (!bonus.award && !bonus.deny)) refuse(400, 'The manual has no ruling on that ranking point.');
+          if (v !== null && v !== 'award' && v !== 'deny') refuse(400, 'A ruling is award, deny, or none.');
+          if ((v === 'award' && !bonus!.award) || (v === 'deny' && !bonus!.deny)) refuse(400, 'The manual doesn’t allow that ruling on that ranking point.');
+          const ruled = v as 'award' | 'deny' | null;
+          if (ruled === (match.rulings?.[side]?.[id] ?? null)) continue;
+          if (ruled === null) p.drop.push(id);
+          else p.set[id] = ruled;
+          changes.push({ alliance: side, bonus: id, ruling: ruled });
+        }
+        patch[side] = p;
+      }
+      if (!changes.length) return { note: 'Nothing changed.' };
+      const eff = effectiveDq(qualsOf(st)).get(match.id);
+      const before = matchRp(match, st.ranking, eff);
+      if (!(await db.patchSides(match.id, attempt, 'rp_rulings', patch))) refuse(409, 'The match changed. Refresh.');
+      for (const c of changes) await db.addLog(comp.id, user.userId, 'match.rp', { match: match.id, label, ...c, why: note });
+      await audit('match.rp', { match: match.id, label, rulings: changes }, note);
+      await afterWrite('ruling notices', async () => {
+        const fresh = await db.getMatch(match.id);
+        await noticeRp(st, label, before, fresh ? matchRp(fresh, st.ranking, eff) : null);
+      });
+      return { note: `${label}: ${changes.length === 1 ? 'the ruling is' : 'the rulings are'} recorded.` };
+    }
+    case 'card': {
+      // a referee's card (§10.6.1), kept apart from the sim's; together they escalate (`effectiveDq`)
+      if (match.stage !== 'qual') refuse(409, 'Cards are recorded on qualification matches only.');
+      const attempt = ruling();
+      const entry = intIn(b.entry, 1, Number.MAX_SAFE_INTEGER);
+      if (!inMatch(entry)) refuse(400, 'That entry isn’t in this match.');
+      const colour: CardColour | null | undefined = b.colour === 'yellow' || b.colour === 'red' ? b.colour : b.colour === null ? null : undefined;
+      if (colour === undefined) refuse(400, 'Pick a yellow card, a red card, or none.');
+      if ((match.refCards?.[String(entry)] ?? null) === colour) return { note: 'Nothing changed.' };
+      const before = effectiveDq(qualsOf(st));
+      if (!(await db.setRefCard(match.id, attempt, entry!, colour!))) refuse(409, 'The match changed. Refresh.');
+      const e = st.entries.find((x) => x.id === entry);
+      const name = e ? nameOfEntry(e) : `Entry ${entry}`;
+      await db.addLog(comp.id, user.userId, 'match.card', { match: match.id, label, entry, name, users: e ? usersOf(e) : [], colour, why: note });
+      await audit('match.card', { match: match.id, label, entry, colour }, note);
+      // the card can cost this match, an earlier one (a surrogate's) or a later one (a second
+      // yellow): the notice is read off the escalation before and after
+      await afterWrite('card notice', async () => {
+        const after = await loadState(comp);
+        const x = after.matches.find((y) => y.id === match.id);
+        if (!x) return;
+        const pairs = newCardDqs(before, effectiveDq(qualsOf(after))).filter((p) => p.entry === entry);
+        await noticeCard(after, entry!, cardNoticeData(after, x, entry!, colour ? colourIn(x, entry!) : null, pairs));
+      });
+      return { note: colour ? `${label}: ${name} is shown a ${colour} card.` : `${label}: ${name}’s card is withdrawn.` };
     }
     case 'note': {
       await db.setMatchStatus(match.id, match.status, note);
@@ -2173,6 +2630,24 @@ export async function anyRunning(): Promise<boolean> {
 /** the players' profile page: finished competitions and their places */
 export const placementsOf = db.placementsOf;
 
+/**
+ * IS THIS ARCHIVED MATCH A COMPETITION'S? Asked by the moderators' misscore tool
+ * (`/api/admin/match`, R11). A competition match's result is the competition's, and its ranking
+ * points rest on facts that tool cannot edit, so a moderator's correction there would leave the
+ * competition's own row (and every RP derived from it) as it was while telling the drivers it
+ * changed. Its referees correct it, from the match desk; this names the match and says so.
+ */
+export async function competitionOfArchived(matchId: string): Promise<{ slug: string; name: string; label: string; refusal: string } | null> {
+  if (!dbEnabled) return null;
+  const row = await db.competitionMatchOf(matchId);
+  if (!row) return null;
+  const comp = await db.getCompetition({ id: row.competitionId });
+  if (!comp) return null;
+  const st = await loadState(comp);
+  const label = labelsOf(st).get(row.id) ?? `#${row.id}`;
+  return { slug: comp.slug, name: comp.name, label, refusal: `${label} of ${comp.name} is corrected by its referees, from the match desk.` };
+}
+
 export const _test = { regionOf, registrationOpen, derive, labelsOf, COMP_CODE };
 
 /**
@@ -2182,10 +2657,19 @@ export const _test = { regionOf, registrationOpen, derive, labelsOf, COMP_CODE }
  */
 export const competitionTestApi = {
   create: (user: AuthedUser, b: Record<string, unknown>): Promise<db.CompRow> => createRoute(user, b),
-  async post(slug: string, action: string, user: AuthedUser, b: Record<string, unknown> = {}): Promise<{ ok: boolean; code?: number; error?: string; [k: string]: unknown }> {
+  /** `between` runs after the row is read and before the route sees it: a write that lands while
+   *  this request is in flight */
+  async post(
+    slug: string,
+    action: string,
+    user: AuthedUser,
+    b: Record<string, unknown> = {},
+    between?: () => Promise<unknown>,
+  ): Promise<{ ok: boolean; code?: number; error?: string; [k: string]: unknown }> {
     const comp = await db.getCompetition({ slug });
     if (!comp) return { ok: false, code: 404, error: 'No such competition.' };
     const role = await roleFor(comp, user.userId);
+    if (between) await between();
     try {
       const out = await postRoute(action, comp, user, role, b);
       touch(comp.id);

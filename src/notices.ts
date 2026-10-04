@@ -54,6 +54,10 @@ export const NOTICE_KINDS = [
   'competition.finished',
   /** the competition was cancelled */
   'competition.cancelled',
+  /** a card in one of your qualification matches (the sim's or a referee's), and what it costs */
+  'competition.card',
+  /** a referee's ruling changed the ranking points your alliance took from a match */
+  'competition.rp',
 ] as const;
 
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
@@ -392,6 +396,8 @@ export function noticeView(
     case 'competition.result':
     case 'competition.finished':
     case 'competition.cancelled':
+    case 'competition.card':
+    case 'competition.rp':
       return competitionNotice(n.kind, d, gameName(n.game));
     default:
       return null;
@@ -415,6 +421,15 @@ export interface CompNoticeData {
   /** competition.finished */
   place?: number | null;
   of?: number;
+  /** competition.card: the colour shown (null: a referee withdrew a card) */
+  colour?: 'yellow' | 'red' | null;
+  /** competition.card: why it costs a match, when it does (`DqReason` in src/competition/types.ts) */
+  why?: 'red' | 'yellow2' | 'surrogate';
+  /** competition.card from a surrogate match: the match it counts against */
+  dqLabel?: string;
+  /** competition.rp: the recipient alliance's ranking points from the match, before and after */
+  before?: number;
+  after?: number;
 }
 
 /** "1st", "2nd", "3rd", "11th" */
@@ -489,6 +504,41 @@ function competitionNotice(kind: string, d: Record<string, unknown>, game: strin
     }
     case 'competition.cancelled':
       return { title: `${name} was cancelled`, meta, lines: ['Its remaining matches won’t be played.'], tone: 'info' };
+    case 'competition.card': {
+      const label = typeof d.label === 'string' && d.label ? d.label : 'a match';
+      if (d.colour !== 'yellow' && d.colour !== 'red') {
+        return { title: `A referee withdrew your card in ${label}`, meta: `${name} · ${meta}`, lines: ['It no longer counts.'], tone: 'info' };
+      }
+      const dqLabel = typeof d.dqLabel === 'string' && d.dqLabel ? d.dqLabel : null;
+      // a yellow that costs a match is a second one: in this match, or carried in from an earlier one
+      const second = d.colour === 'yellow' && (d.why === 'yellow2' || d.why === 'surrogate');
+      const none = 'You take no ranking points from it.';
+      const lines =
+        d.why === 'surrogate'
+          ? dqLabel
+            ? [`It was a surrogate match, so the card counts against ${dqLabel}.`, `You take no ranking points from ${dqLabel}.`]
+            : ['It was a surrogate match, so the card counts against your next qualification match.']
+          : d.colour === 'red' || second
+            ? [none]
+            : ['A second yellow card in qualifications is a red card.'];
+      return {
+        title: second ? `Your second yellow card, in ${label}, is a red card` : `You were shown a ${d.colour} card in ${label}`,
+        meta: `${name} · ${meta}`,
+        lines,
+        tone: 'bad',
+      };
+    }
+    case 'competition.rp': {
+      const label = typeof d.label === 'string' && d.label ? d.label : 'a match';
+      const before = num(d.before);
+      const after = num(d.after);
+      return {
+        title: `Your ranking points for ${label} changed`,
+        meta: `${name} · ${meta}`,
+        lines: [`From ${before} to ${after}.`],
+        tone: after > before ? 'good' : after < before ? 'bad' : 'info',
+      };
+    }
     default:
       return null;
   }

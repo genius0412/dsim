@@ -1544,6 +1544,8 @@ export async function adminResolveScoreReport(
 /** one finished match, as the score editor reads it */
 export interface AdminMatch {
   matchId: string;
+  /** a competition match: its referees correct it, from the match desk (absent: older server) */
+  competition?: { slug: string; name: string; label: string; refusal: string };
   replayId: string | null;
   game: string;
   mode: string;
@@ -1590,7 +1592,8 @@ export async function adminFetchMatch(matchId: string): Promise<AdminMatch | nul
       cache: 'no-store',
     });
     if (!res.ok) return null;
-    return ((await res.json()) as { match: AdminMatch }).match ?? null;
+    const body = (await res.json()) as { match: AdminMatch; competition?: AdminMatch['competition'] };
+    return body.match ? { ...body.match, ...(body.competition ? { competition: body.competition } : {}) } : null;
   } catch {
     return null;
   }

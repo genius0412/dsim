@@ -206,6 +206,15 @@ export function ScoreEditor({
     );
   }
   if (!match) return <div className="ds-loading">Loading the result…</div>;
+  // a competition match's result is the competition's: the server refuses a correction here
+  if (match.competition) {
+    return (
+      <section className="rr-sec">
+        <h2 className="rr-h">Score</h2>
+        <p className="rr-none">{match.competition.refusal}</p>
+      </section>
+    );
+  }
 
   const nextRed = Math.max(0, Math.round(Number(red) || 0));
   const nextBlue = Math.max(0, Math.round(Number(blue) || 0));

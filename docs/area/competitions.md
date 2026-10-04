@@ -1,4 +1,4 @@
-<!-- governs: src/competition/**, server/competitions.ts, server/competitionRunner.ts, server/db/competitions.ts, server/db/migrations/0059_competitions.sql, src/net/competitions.ts, src/net/myCompetitions.ts, src/ui/Comp*.tsx, src/ui/Competitions.tsx, src/ui/compBits.tsx, src/ui/AdminCompetitions.tsx, src/ui/competitions.css, scripts/compsmoke.ts, scripts/compe2e.ts -->
+<!-- governs: src/competition/**, server/competitions.ts, server/competitionRunner.ts, server/db/competitions.ts, server/db/migrations/0059_competitions.sql, server/db/migrations/0060_competition_rp.sql, src/net/competitions.ts, src/net/myCompetitions.ts, src/ui/Comp*.tsx, src/ui/Competitions.tsx, src/ui/compBits.tsx, src/ui/AdminCompetitions.tsx, src/ui/competitions.css, scripts/compsmoke.ts, scripts/compe2e.ts -->
 # Competitions — FTC-style events: registration, qualifications, rankings, alliance selection, playoffs
 
 Migration 0059, built 2026-10-04. Staff run them today; the permission model is already the
@@ -19,8 +19,14 @@ placements are recomputed from those rows on every read** by the pure modules in
 `src/competition/` (`rankings.ts`, `selection.ts`, `bracket.ts`). Never store a derived number:
 a corrected result has to move everything downstream of it, and a second copy would not move.
 The only exceptions are deliberate freezes, each written once by an organizer's action:
-`seed_order` (end of qualifications, so a correction during selection cannot reshuffle captains),
-`alliances` (when the bracket is built) and `placement` (when the competition completes).
+`rp_table` (start of qualifications, see "Ranking points"), `seed_order` (end of qualifications,
+so a correction during selection cannot reshuffle captains), `alliances` (when the bracket is
+built) and `placement` (when the competition completes).
+
+Per match, 0060 adds what the ranking points are computed FROM, never the points themselves:
+`facts` (what the game measured per alliance), `rp_rulings` (a referee's bonus-RP rulings),
+`cards` (the sim's, per entry, from the played match) and `ref_cards` (a referee's). A null is
+UNKNOWN, never zero: a forfeit, a result typed without them, or a row from before 0060.
 
 `settings` is coerced on every read and write (`coerceCompSettings`). An unknown or out-of-range
 field falls back to its default; a shape that cannot have a setting folds it (round robin and
@@ -50,8 +56,9 @@ window, check-in, start) GATE player actions and are displayed; they move nothin
 `quals.kind: 'none'` goes `published → selection` directly.
 
 What locks when (the server refuses, the editor greys): game/format/team mode once anyone has
-entered; capacity and the qualification settings at `qualification`; ranking points and
-tiebreakers at `selection`; the playoff settings at `playoffs`.
+entered; capacity, the qualification settings and the ranking-point scheme (`settings.rp`) at
+`qualification`; a custom scheme's points and tiebreakers at `selection`; the playoff settings at
+`playoffs`. The editor merges `rp` one level deep, so a partial edit keeps the stored scheme.
 
 **Starting qualifications needs a schedule drawn for exactly the entries that will play**
 (registered, and checked in when check-in is required); an entry list that changed after the draw
@@ -87,11 +94,22 @@ is refused with "draw it again". Entries left out at the start become `withdrawn
   custom game and then calls `competitionMatchPlayed` **in a `finally`**, so no early return or
   failure on the archive path can strand a decided match. The write is conditional on the
   ATTEMPT: a room from a call the referee has since replaced finishes into nothing.
+- **What the game measured rides with it.** A competition room asks the game's
+  `GameSimModule.rankFacts` at three instants — the first tick after AUTO (`autoEnd`), the first
+  TELEOP tick (`teleopStart`) and finalize — and merges them per alliance, the earliest instant
+  winning a key (`Room.captureRankFacts`). Each game reports a number when its manual assesses
+  it: INTO THE DEEP (Chain Reaction) counts the transition as TELEOP, DECODE and BIOBUZZ as AUTO.
+  Every read is in a try/catch after the tick is recorded, so a hook that throws costs the facts
+  (unknown), never a replay tick or the result. `MatchOutcome.rankFacts` and `.cards` (every
+  carded driver) exist on competition outcomes only; neither is in `ReplayResult`, which is the
+  client's wire shape.
 - **A call that never became a match** (no-show at the grace, a bail, unready) reaches it
   through the dodge report: `cancelPending` fires `onDodge` for a competition room even with no
   culprit, carrying the tag, and `persistDodges` routes it to `competitionCallFailed` and returns
-  no verdict. `noShow: 'forfeit'` with the fault on one alliance forfeits it; anything else puts
-  the match back on the schedule with a `call_note` for the referee.
+  no verdict. `noShow: 'forfeit'` with the fault on one alliance forfeits it, and disqualifies the
+  entries that never connected or left (G208/G203: a no-show is DQ'd from the match; a driver who
+  connected and did not ready up is G301, so not); anything else puts the match back on the
+  schedule with a `call_note` for the referee.
 - `LiveRoom.competition` makes the room public in Watch Live and labels it; the competition page
   joins the live list by room code to show a called match as live.
 - **Wire, all additive:** `strategyStart.competition` and `LiveRoom.competition`. An older client
@@ -120,13 +138,61 @@ played on it** (`playoffGuard`, refused with a sentence); an UNPLAYED later matc
 longer agree with its series is deleted and re-created. When the final is decided the competition
 completes itself: placements from the bracket, everyone else after them in seed order.
 
+## Ranking points — the Competition Manual
+
+`src/competition/manual.ts` holds each game's table: win/tie/loss, the bonus RPs with their
+thresholds per event level (Table 10-3), and the Table 13-1 tiebreakers. Its header says where
+every reading comes from (manual text, an official Q&A answer, or arithmetic). DECODE and BIOBUZZ
+use their own manuals; **Chain Reaction's manual has no ranking rules, so DSIM uses INTO THE DEEP's**
+(win 2, tie 1, no bonus RPs).
+
+- **Two schemes** (`settings.rp.scheme`). `cm` applies the game's table; `custom` is the
+  organizer's win/tie/loss and tiebreakers with no bonus RPs. **A settings object without `rp` is
+  `custom`** — every competition before 0060, and a create from an older client — so nothing that
+  existed re-ranks. A new competition starts at `cm`. A game with no table is `custom`.
+- **Frozen at the start.** Moving to `qualification` under `cm` writes the resolved table
+  (`effectiveRanking`) into `competitions.rp_table`, and every later read ranks by that copy. It
+  is built from the row under its lock: a settings edit saved after the request read them refuses
+  the start ("Refresh and try again"), so the table always matches the stored settings. A
+  Team Update edit of `manual.ts` reaches only events that start after it; a finished event keeps
+  agreeing with its placements. A malformed frozen copy is ignored whole (`frozenOf`).
+- **Bonus RPs come from `facts`.** `bonusEarned`: an "ineligible" ruling beats everything (Table
+  10-4), then an award (a referee's, or the sim's own `patternAward` from DECODE's G417), then the
+  measure against the threshold. Unknown facts earn nothing. Rulings are offered only where the
+  manual has a rule that makes them: DECODE Pattern (award, ineligible) and Goal (ineligible).
+- **DQ.** `effectiveDq` (derived on read) decides who takes nothing from a match: `match.dq` (a
+  referee, a no-show, an entry not registered when the match was played — written with the
+  result), a red card, two yellows in one match, a yellow while carrying one (§10.6.1, ordered by
+  `finished_at`, which is the FIRST decision and survives a correction), or a card from a surrogate
+  appearance, which lands on the entry's previous counted match (the next, when there is none
+  earlier). A DQ'd entry takes 0 RP and its partner keeps the alliance's (T601). Under `cm` a DQ
+  "contributes 0 to all sort criteria": a 0 in every average, counted in the denominator. Under
+  `custom` it stays out of the averages, as before.
+- **A forfeit** is DSIM's, not the manual's (the manual plays the match). The side present takes
+  the win RP only; no bonus, no facts, out of every average.
+- **One robot an alliance cannot reach** DECODE's Movement or BIOBUZZ's Swarm threshold (13 points
+  is one robot's most, below 16). `unreachableBonus` lets the editor and the overview say so;
+  nothing changes behind the organizer's back, and `custom` thresholds are there for it.
+- **The in-match results screen stays RP-free**, competition matches included (owner, 2026-09-21).
+
 ## What a referee can and cannot change
 
-Forfeit, enter or correct a result (with a public reason), void, reset (the result AND its archived
-match and replay are cleared), disqualify an entry in one match (no ranking points from it). **A
-finished or cancelled competition's results are final** (`matchRoute` refuses everything but a
-note): its placements were written once from them. The waitlist is capped at the capacity, and
-nobody comes off it once qualifications start (they would hold a place and have no matches).
+Forfeit (optionally disqualifying the absent entries), enter or correct a result (with a public
+reason; fouls given cannot exceed the score), void, reset (the result, its facts, rulings and both
+kinds of card, AND its archived match and replay are cleared; the log names the referee cards
+dropped), disqualify an entry in one match. On a decided qualification match a referee can also
+patch the `facts` (one key at a time, null deletes), rule on a bonus RP, and show or withdraw a
+card. Each of those needs a reason, is conditional on the match's `attempt` and status ("The match
+changed. Refresh."; a reset and a void each start a new attempt, so a ruling from before one never
+lands on a result entered after it), writes a log line, and tells the drivers whose ranking points changed
+(`competition.rp`) or who were carded (`competition.card`). **A finished or cancelled
+competition's results are final** (`matchRoute` refuses everything but a note): its placements
+were written once from them. The waitlist is capped at the capacity, and nobody comes off it once
+qualifications start (they would hold a place and have no matches).
+
+**A moderator's misscore correction does not reach a competition match.** `/api/admin/match`
+refuses it with "<label> of <name> is corrected by its referees, from the match desk." and the
+replay rail says the same: the archived row and the competition's result would disagree.
 
 ## Privacy, accounts, notices
 
@@ -137,11 +203,23 @@ nobody comes off it once qualifications start (they would hold a place and have 
   entries 'Deleted account'.
 - Notices (`src/notices.ts`, `competition.*`): invite, promoted off the waitlist, removed or
   disqualified, a result CHANGED (corrected, forfeited, voided, reset — a first result entered by
-  hand is not news, any more than a played one), the final placement, cancelled, and an
-  organizer's message. The pop-up says "Competitions", not "From the moderators", for these.
-- The account export carries the account's entries and staff rows; `deleteAccount` deletes the
-  replays of every match the account played, competition matches included. A CALLED match is not a notice (it is time-critical):
-  the call bar says it for exactly as long as it is true.
+  hand is not news, any more than a played one), a card (a referee's, or the sim's when it cost a
+  match), ranking points for a match changed by a ruling or a facts edit, the final placement,
+  cancelled, and an organizer's message. The pop-up says "Competitions", not "From the moderators", for these.
+- The account export carries the account's entries and staff rows, and every card and DQ against
+  its entries (`competitionDiscipline`); `deleteAccount` deletes the replays of every match the
+  account played, competition matches included.
+- **Deletion also takes the name out of the competition log.** A line about an entry carries its
+  id and the accounts it is about (`entry`, `users`); `deleteAccount` finds the account's entries
+  by both, so an entry row deleted before the start (removed, a pending duo withdrawn, replaced by
+  a re-add) is found too, and an entry still captained by someone else is not. It replaces `name`
+  (a rename's `from`/`to`), and by position against their ids a forfeit's `dq` (`dqEntries`), a
+  failed call's `who` (`whoEntries`), the champions (`championEntries`) and a reset's `cards`. A
+  failed call's public match note names the alliance only ("Blue did not connect."); its staff-only
+  `call_note` names the drivers until the next call, a reset or a void. Lines written before these ids existed keep
+  their names. `users` never leaves the server (`detailOf` drops it).
+- A CALLED match is not a notice (it is time-critical): the call bar says it for exactly as long as
+  it is true.
 
 ## Client
 
@@ -153,14 +231,22 @@ nobody comes off it once qualifications start (they would hold a place and have 
 - Routes: `/competitions`, `/competitions/new`, `/competitions/<slug>[/<tab>]`,
   `/competitions/<slug>/edit`, and `/competitions/<slug>/play` (full screen, outside the shell, like
   ranked). A finished match returns to the competition's Matches tab (`compReturnRef`).
+- `manual.ts`, `rankings.ts` and `copy.ts` are imported only from the pages and `src/competition/`;
+  the games report their numbers with string-literal keys, and `scripts/smoke.ts` checks they match
+  the tables. The rankings table (`.ds-comp-rank`) has a width floor and folds the bonus columns
+  into a sub-line on phones. The match desk's ranking form sends only what changed, keyed on the
+  match's attempt.
 - The call bar polls `/api/competitions/me` only while there is something to ask about: once on
   sign-in, every 2 min during registration, every 10 s while a competition is running, every 5 s
   while a match is called; never while hidden or idle.
 
 ## Tests
 
-`npm run test:comp` (`scripts/compsmoke.ts`, the pure modules); `npm run dbtest` ("competition:",
-the routes through `competitionTestApi`, the room half, the runner, the cascade). Both are kept out
+`npm run test:comp` (`scripts/compsmoke.ts`, the pure modules: the manual tables, every bonus at
+its threshold edge, card escalation, both DQ rules); `npm run dbtest` ("competition:" and
+"competition rp": the routes through `competitionTestApi`, the room half, the runner, the cascade,
+the freeze, the new actions); `npm test` (the three games' `rankFacts`, a competition room's
+captured facts and cards, the new notices). Both are kept out
 of `npm test` for the matchmaker's reason. **`npx tsx scripts/compe2e.ts`** (about five minutes)
 runs the real server on PGlite with two socket clients: a called match played out at real time, a
 leave-and-rejoin while it waits, a no-show, a forfeit, completion. `npm run adminharness` seeds a

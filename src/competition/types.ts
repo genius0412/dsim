@@ -106,17 +106,37 @@ export type SelectionMode = 'captains' | 'serpentine';
 /**
  * RANKING TIEBREAKERS, after the ranking score (ranking points per match played).
  *
- *   avgNoFoul   — average alliance score minus the foul points the alliance was GIVEN
+ *   avgNoFoul   — average alliance score minus the foul points the alliance was GIVEN (never below 0)
  *   avgScore    — average alliance score
- *   highScore   — best alliance score
+ *   highScore   — best alliance score (fouls included)
  *   avgMargin   — average (own score − opponent score)
  *   wins        — total wins
  *   fewestFouls — average foul points GIVEN AWAY to the opponent, lower is better
  *
- * A final deterministic coin (a hash of the competition seed and the entry id) settles anything
- * left, so two reads of the same results always give the same order.
+ * and the four that read a MEASURE the game reports at the end of a match (`AllianceFacts`), each
+ * an average of it over the matches that have it (`MEASURE_TIEBREAKERS`):
+ *
+ *   avgAuto     — AUTO points
+ *   avgBase     — DECODE BASE points
+ *   avgTips     — BIOBUZZ HIVE TIPS
+ *   avgAscent   — Chain Reaction ring-stand ascent points
+ *
+ * Under the Competition Manual scheme the order is the manual's Table 13-1, not the organizer's
+ * (`manual.ts`). A final deterministic coin (a hash of the competition seed and the entry id)
+ * settles anything left — the manual's "random sort" — so two reads of the same results always give
+ * the same order.
  */
-export type Tiebreaker = 'avgNoFoul' | 'avgScore' | 'highScore' | 'avgMargin' | 'wins' | 'fewestFouls';
+export type Tiebreaker =
+  | 'avgNoFoul'
+  | 'avgScore'
+  | 'highScore'
+  | 'avgMargin'
+  | 'wins'
+  | 'fewestFouls'
+  | 'avgAuto'
+  | 'avgBase'
+  | 'avgTips'
+  | 'avgAscent';
 
 export const TIEBREAKERS: readonly Tiebreaker[] = [
   'avgNoFoul',
@@ -125,7 +145,107 @@ export const TIEBREAKERS: readonly Tiebreaker[] = [
   'avgMargin',
   'wins',
   'fewestFouls',
+  'avgAuto',
+  'avgBase',
+  'avgTips',
+  'avgAscent',
 ];
+
+/** the tiebreakers that average a reported measure, and the measure (fact key) each reads */
+export const MEASURE_TIEBREAKERS: Readonly<Partial<Record<Tiebreaker, string>>> = {
+  avgAuto: 'auto',
+  avgBase: 'base',
+  avgTips: 'tips',
+  avgAscent: 'ascent',
+};
+
+/**
+ * HOW RANKING POINTS ARE AWARDED.
+ *
+ * `cm`: the game's Competition Manual (`manual.ts`): its win/tie values, its bonus RPs at the
+ * thresholds of `level`, its Table 13-1 tiebreakers, and its rule that a DISQUALIFIED match
+ * "contributes 0 to all sort criteria" (counted in every average, as a 0).
+ * `custom`: the organizer's `points` and `tiebreakers`, no bonus RPs, and a DQ match left out of
+ * the averages (the rule every competition ranked by before the manual scheme existed).
+ */
+export type RpScheme = 'cm' | 'custom';
+
+/**
+ * WHICH COLUMN OF THE MANUAL'S RP-THRESHOLD TABLE (Table 10-3): `event` is "All Other Events",
+ * `regional` "Regional Championships", `championship` "FIRST Championship". A column the manual
+ * has not published yet (TBA) is not offered. `custom` reads `RpSettings.thresholds` — the
+ * manual's footnote lets Premier Events set their own.
+ */
+export type RpLevel = 'event' | 'regional' | 'championship' | 'custom';
+
+export interface RpSettings {
+  scheme: RpScheme;
+  level: RpLevel;
+  /** organizer thresholds keyed by bonus id, read when `level` is `custom` */
+  thresholds: Record<string, number>;
+}
+
+/** one bonus RP as a competition applies it: the manual's row with the threshold chosen */
+export interface ResolvedBonus {
+  /** 'movement' | 'goal' | 'pattern' (DECODE), 'swarm' | 'pollinator1' | 'pollinator2' (BIOBUZZ) */
+  id: string;
+  /** the fact it reads (`AllianceFacts` key) */
+  measure: string;
+  threshold: number;
+  /** a fact that AWARDS this RP whatever was scored, when > 0 (DECODE: the opponent's G417) */
+  awardFact?: string;
+  /** a rule in the manual can award it to an alliance (a referee may rule 'award') */
+  award: boolean;
+  /** a rule in the manual can make an alliance ineligible for it (a referee may rule 'deny') */
+  deny: boolean;
+}
+
+/**
+ * A COMPETITION'S RANKING RULES, RESOLVED: what `rankings.ts` actually applies. Built by
+ * `effectiveRanking` from the settings and the game's manual table, and FROZEN into
+ * `competitions.rp_table` when qualifications start under `cm`, so a later edit of a manual table
+ * (a Team Update) cannot re-rank an event that already began.
+ */
+export interface ResolvedRanking {
+  scheme: RpScheme;
+  level: RpLevel;
+  /** the manual and edition the table is from ('cm' only), e.g. "DECODE Competition Manual, Team Update 32" */
+  source: string | null;
+  win: number;
+  tie: number;
+  loss: number;
+  bonus: ResolvedBonus[];
+  tiebreakers: Tiebreaker[];
+  /** the measures the game reports (fact keys), for validation and the referee's inputs */
+  measures: string[];
+}
+
+/**
+ * WHAT THE GAME MEASURED for one alliance in one match: plain numbers keyed by measure id
+ * (`manual.ts` lists each game's). Reported by the room from the authoritative world
+ * (`GameSimModule.rankFacts`), or typed by a referee. A missing key is UNKNOWN, never 0.
+ */
+export type AllianceFacts = Record<string, number>;
+
+/** a referee's ruling on one bonus RP for one alliance (Table 10-4 / 10-6 of the DECODE manual) */
+export type RpRuling = 'award' | 'deny';
+
+export type CardColour = 'yellow' | 'red';
+
+/**
+ * WHY AN ENTRY TAKES NOTHING FROM A MATCH (`effectiveDq` in `rankings.ts`, derived on read):
+ *   dq       — `match.dq`: a referee's DQ, a no-show (G208/G203), or an entry not in the
+ *              competition any more when the match was played
+ *   red      — a red card in this match (the sim's or a referee's), or two yellows in it
+ *   yellow2  — a yellow card while carrying one from an earlier qualification match (§10.6.1)
+ *   surrogate — a card from the entry's surrogate appearance, applied here (Table 10-5)
+ */
+export type DqReason = 'dq' | 'red' | 'yellow2' | 'surrogate';
+
+export interface EffectiveDq {
+  entry: number;
+  why: DqReason;
+}
 
 export interface CompSettings {
   quals: {
@@ -135,9 +255,15 @@ export interface CompSettings {
     /** balanced only: the fewest matches between two appearances of one entry it tries to keep */
     minGap: number;
   };
-  /** ranking points for a qualification win, tie and loss */
+  /** ranking points for a qualification win, tie and loss — read under the `custom` scheme only */
   points: { win: number; tie: number; loss: number };
+  /** read under the `custom` scheme only; `cm` uses the manual's Table 13-1 */
   tiebreakers: Tiebreaker[];
+  /**
+   * The ranking-point scheme. A stored row WITHOUT this key coerces to `custom` (it was ranked by
+   * `points` before the manual scheme existed); a new competition starts at `cm`.
+   */
+  rp: RpSettings;
   playoffs: {
     enabled: boolean;
     /** how many alliances (or entries, where an entry fills an alliance) advance */
@@ -212,6 +338,19 @@ export interface CompMatchCore {
   result: CompResult | null;
   /** entries disqualified IN THIS MATCH: they take no ranking points from it */
   dq: number[];
+  /**
+   * What the game measured per alliance (0060). Absent or null = unknown: a forfeit, a result typed
+   * without them, or a row from before 0060. Optional on the wire — an older server sends none.
+   */
+  facts?: Record<Alliance, AllianceFacts> | null;
+  /** a referee's bonus-RP rulings per alliance, keyed by bonus id */
+  rulings?: Record<Alliance, Record<string, RpRuling>> | null;
+  /** cards the SIM showed, per entry id (as a string — jsonb keys), from the played match */
+  cards?: Record<string, CardColour> | null;
+  /** cards a REFEREE showed in this match, per entry id */
+  refCards?: Record<string, CardColour> | null;
+  /** when the result was FIRST decided (a correction keeps it), epoch ms: the order cards escalate in */
+  finishedAt?: number | null;
 }
 
 /** what the pure modules need to know about an entry */
@@ -245,6 +384,23 @@ export interface RankRow {
   avgFouls: number;
   /** a disqualified entry is ranked last, whatever it scored */
   disqualified: boolean;
+  /** bonus RP earned, per bonus id: in how many matches. Optional on the wire (older server). */
+  bonus?: Record<string, number>;
+  /** the average of each measure the game reports; null until a counted match the entry was not
+   *  disqualified in reports it */
+  avg?: Record<string, number | null>;
+  /** counted matches this entry was disqualified in (`effectiveDq`) */
+  dqs?: number;
+  /** holds a yellow card into its next qualification match (meaningless once qualifications end) */
+  yellow?: boolean;
+}
+
+/** the ranking points one match gave, per alliance and per entry (qualification matches only) */
+export interface MatchRp {
+  /** the alliance's own: win/tie/loss points, the bonus RPs it earned, and their sum */
+  alliance: Record<Alliance, { result: number; bonus: string[]; total: number }>;
+  /** per entry id (string key): what that entry took — 0 when it was disqualified */
+  entries: Record<string, number>;
 }
 
 /** one alliance in the playoffs. `entries[0]` is the captain. */
