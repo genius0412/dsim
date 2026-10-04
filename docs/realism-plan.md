@@ -48,6 +48,45 @@ plan. Nothing here is built.
   μ 0.7 has about 21 lbf of traction. FTC drives are traction-limited, and the traction-limited
   current is near the 20 A fuse, so battery sag and current coupling are real effects in FTC.
 
+## How accurate the references are
+
+None of them publishes an error against a real robot. What their models leave out:
+
+- **WPILib's drivetrain sim** is a linear model from the motor curve or from SysId's kV/kA: no traction
+  limit (a stalled start accelerates as fast as the motors push, which an FTC drive cannot), no
+  slip, no collisions, battery sag only if the code wires `BatterySim` in. Its docs call the CAD-built
+  version "just an approximation"; fitted to a real robot it tracks driving inside the grip limit
+  well, and that is where it is meant to be used.
+- **The 2D physics library on dyn4j** (swerve only): per-module grip capped at COF × the module's
+  share of the weight, ONE friction coefficient (no static/kinetic split), no weight transfer, a
+  skidding wheel's speed set halfway between the motor's and the floor's, battery sag modelled.
+  Collisions with field elements and game pieces are its point; its own claim is "realistic enough
+  to feel like a video game".
+- **The drivetrain calculator**: a straight line only, no slip dynamics.
+- FTC has no equivalent in its SDK, and none of these models mecanum.
+
+What they all lack: mecanum roller losses, weight transfer, static vs kinetic friction, a check
+against logs. DSIM today has the grip ceiling (a μg cap) but no motor, battery or per-wheel model.
+
+## How DSIM does better
+
+1. **Measured, not claimed.** A library of real-robot logs and a test that reports DSIM's error on each
+   (velocity RMSE, time to distance, path deviation on a strafe and a spin), run on every model change.
+   That number is the claim; no reference has one.
+2. **Fit to the team's robot.** A calibration OpMode (sprint, coast-down, strafe, spin, a push) whose log
+   the importer reads to fit kS/kV/kA, μ, strafe efficiency and battery IR for THAT robot, the way SysId
+   fits a feedforward. Defaults stay the catalogue values.
+3. **The terms FTC needs** (the table below): per-wheel mecanum force with roller friction, static and
+   kinetic friction, weight transfer, one battery shared by every mechanism, the 20 A fuse.
+4. **The robot's own code.** Much of a real robot's feel is its software: field-centric, heading hold,
+   slew limits, dead zones, a path follower's corrections. Make those settings of the import, so the
+   sim drives like the team's code does.
+5. **Game pieces measured.** Launch dispersion, bounce and rolling friction from video of the real
+   artifacts, with seeded spread instead of a perfect shot.
+
+Limits: tile wear, dust, pack charge and motor-to-motor spread vary run to run, so the target is the
+real robot's own spread across repeated runs, not zero error.
+
 ## What to model
 
 | term | model | data |
