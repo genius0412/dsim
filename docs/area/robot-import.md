@@ -826,6 +826,30 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
 - ⚠️ **`computeBands` gives up above 1.5 × the 18 in cube** (`BAND_MAX_HEIGHT_IN`). Its cost
   grows with the cube of the slice count; a model in the wrong units (381 in tall) took 42 s
   and froze the editor between two clicks on Units. A robot that tall is refused anyway.
+- **Undo and redo** (`editorHistory.ts`): Undo and Redo in the editor's header, Ctrl/Cmd+Z, and
+  Ctrl/Cmd+Shift+Z or Ctrl+Y. The keys are left to the browser in a text or number field, a select
+  or an editable region, which have their own undo. Past and future are stacks of `EditorDoc`
+  snapshots, at most 100.
+  - `update(fn, how)` is the PLAYER's edit unless `how` is `'auto'`. A player's edit is a step named
+    by `how.label` (the button's title), and edits with the same `how.key` each within 600 ms of the
+    last are one step: a handle dragged, a slider, a name typed. An edit that changes nothing is no
+    step, and a run that ends where it began (a pad grab cancelled) leaves none.
+  - ⚠️ **What the editor does by itself is `'auto'`**: the placements defaulting in, the moving-part
+    finders and `buildFromCad`, a step change, a Detail change and the re-read's restore. An auto edit
+    is never a step and leaves the redo stack alone, so an effect that runs again after an undo (the
+    placements re-defaulting once `mech` is null) changes neither stack. A new `update` call records
+    by default: pass `'auto'` when no player made the change.
+  - An undo restores the setup, the placements and the spec (`restoreDoc`); the measurement follows
+    the setup as it does for any edit. The step stays where the player is, and so does what belongs to
+    the file (`detected`, `source`, the notes). **Detail is not a step**: it re-reads the file, which
+    can take minutes, and the model is not in the document, so the history keeps the detail the model
+    was read at and goes on across the change.
+  - The history is `LiveDraft.history`, in memory only: a test drive keeps it; a reload, a new file
+    or another library robot starts it empty. Undo and Redo wait while a file is read or the model
+    baked.
+  - Proof: the `import UI undo` checks in `npm test`, and `scripts/robot-import/undoeditor.cjs`, which
+    drives the production editor offscreen (two edits, two undos, two redos, a units change, a Detail
+    change, a handle stepped by keys) and reads the persisted draft after each.
 - **Test drive** passes the draft's spec to `GameView` (`testDrive`), frozen at mount: free
   drive, its own assists, the default start, no other robots, no Zenith auto. Leaving the
   match returns to the editor route, and the draft is flushed first, so nothing is lost.

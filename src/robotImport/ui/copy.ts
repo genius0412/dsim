@@ -56,6 +56,35 @@ export const COPY = {
   loading: 'Loading the importer…',
   restoring: 'Restoring your import…',
 
+  // ---- undo and redo (`editorHistory.ts`): an edit's name follows the colon, in lower case ----
+  undo: 'Undo',
+  redo: 'Redo',
+  undoAria: (what: string | null) => (what ? `Undo: ${what}` : 'Undo'),
+  redoAria: (what: string | null) => (what ? `Redo: ${what}` : 'Redo'),
+  /** the button's tooltip: its name and its shortcut */
+  withKeys: (label: string, keys: string) => `${label} (${keys})`,
+  undoKeys: (mac: boolean) => (mac ? '⌘Z' : 'Ctrl+Z'),
+  redoKeys: (mac: boolean) => (mac ? '⇧⌘Z' : 'Ctrl+Y'),
+  edits: {
+    turn: 'turn the robot',
+    up: 'change the up axis',
+    units: 'change the units',
+    useDetected: 'use the detected wheels',
+    layout: 'change the wheel layout',
+    wheels: 'move the wheels',
+    mechanisms: 'change the mechanisms',
+    placement: 'move a placement',
+    resetPlacement: 'reset the placement',
+    addMoving: 'add a moving part',
+    findMoving: 'find the moving parts',
+    rename: 'rename the robot',
+    teamNumber: 'change the team number',
+    move: (name: string) => `move the ${name}`,
+    aim: (name: string) => `turn the ${name}`,
+    change: (name: string) => `change the ${name}`,
+    removeMoving: (name: string) => `remove the ${name}`,
+  },
+
   // ---- Model ----
   dropTitle: 'Choose a file or drop it here',
   choose: 'Choose a file',
