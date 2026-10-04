@@ -37278,8 +37278,9 @@ function fxImportFixed(): RobotSpec {
     synth.box('hub_screw', [0.5, 0.5, 0.5], 5.95, 6.15, 6.5, 7.5, R - 0.1, R + 0.1),
     synth.box('clamp_screw', [0.5, 0.5, 0.5], 5.4, 5.6, 6.9, 7.1, R - 0.35, R + 0.35),
     // beside it: a motor shield disc (not overlapping the tyre), a vertical frame screw off the axle
+    // in the wheel's dish (inside its cylinder, beside the tyre: a screw cannot be inside the tyre)
     synth.cylY('shield', [0.3, 0.3, 0.3], 5.5, R, 1.6, 5.6, 5.75, 24),
-    synth.box('frame_screw', [0.5, 0.5, 0.5], 6.6, 6.85, 6.8, 7.05, R + 0.5, R + 1.1),
+    synth.box('frame_screw', [0.5, 0.5, 0.5], 6.6, 6.85, 5.8, 6.05, R + 0.5, R + 1.1),
     // the intake: a roller on a shaft at x = 9, a square tube the shaft runs through, a motor on its end
     synth.cylY('roller', [0.2, 0.7, 0.3], 9, 1.5, 1, -5, 5, 24),
     synth.cylY('shaft', [0.7, 0.7, 0.7], 9, 1.5, 0.2, -5.5, 6.4, 12),
@@ -37416,6 +37417,186 @@ function fxImportFixed(): RobotSpec {
       return !!r && r.drive === undefined && r.amount === 60 && r.follow === undefined;
     })(),
   );
+}
+
+/**
+ * MOVING PARTS, ROUND THREE (2026-10-04, owner: "You are still combining the motor into the wheel").
+ * Measured on seven starter bots (goBILDA BIOBUZZ 6WD and mecanum, goBILDA DECODE mecanum, REV DUO
+ * DECODE, AndyMark Robits BIOBUZZ base, mecanum and alt flower): a STEP read lost its body ids on the
+ * way to the simplifier, and with them, the intake motor came with the intake gear, the launcher motor
+ * with the flywheel, motor end caps and nuts were offered as rollers, a 6WD's middle pair was never
+ * found. Each case as a synthetic scene (inches, MODEL frame, one body per solid).
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const geo = await import('../src/robotImport/geometry');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: import('./robot-import/synthRobot').Prism[]): P[] =>
+    synth.synthParts(prisms).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+
+  // ---- the STEP reader keeps its bodies (`stepParsed`); without them two touching solids of one
+  // colour are one connected piece, so a gear and the channel it touches could only move together ----
+  {
+    const { stepParsed } = await import('../src/robotImport/engine/load');
+    const { simplifyParts } = await import('../src/robotImport/engine/simplify');
+    const two = synth.synthParts([synth.box('gear', G, 0, 1, 0, 1, 0, 1), synth.box('channel', G, 1, 3, 0, 1, 0, 1)]);
+    const positions = new Float32Array([...two[0].positions, ...two[1].positions]);
+    const n0 = two[0].positions.length / 3;
+    const body = new Uint32Array(positions.length / 3).map((_, v) => (v < n0 ? 0 : 1));
+    const parsed = stepParsed({ parts: [{ positions, indices: Uint32Array.from({ length: positions.length / 3 }, (_, i) => i), color: G, name: 'step', body }], trisIn: positions.length / 9, notes: [] }, 1);
+    const kept = (await simplifyParts(parsed.parts, 1e9)).parts;
+    const lost = (await simplifyParts(parsed.parts.map((p) => ({ ...p, body: null })), 1e9)).parts;
+    const ids = (ps: P[]): number => new Set(ps.flatMap((p) => Array.from(p.body ?? []))).size;
+    check(
+      'moving parts 3: a STEP read keeps its solids as bodies through the simplifier (a gear and the channel it touches stay two parts; dropped, they were one)',
+      parsed.parts[0].body === body && ids(kept) === 2 && ids(lost) === 1,
+      J({ kept: ids(kept), lost: ids(lost) }),
+    );
+  }
+
+  // ---- a goBILDA-style motor on a gear's axle: can, gearbox, face, bearing, shield, end cap, the
+  // channel it sits in; the gear on its output shaft with a square hub and a screw through both ----
+  {
+    const prisms = [
+      synth.box('floor', G, -6, 5, -8, 8, 0, 1),
+      synth.cylY('gear', G, 6, 5, 1.6, -0.12, 0.12, 48),
+      synth.box('hub', G, 5.52, 6.48, -0.31, 0.08, 4.52, 5.48),
+      synth.box('hub_screw', G, 6.22, 6.38, -0.29, 0.11, 4.92, 5.08),
+      synth.cylY('shaft', G, 6, 5, 0.18, -1.52, 0.08, 8),
+      synth.cylY('face', G, 6, 5, 0.71, -1.52, -0.86, 24),
+      synth.box('face_screw', G, 6.4, 6.55, -1.14, -0.59, 5.38, 5.53),
+      synth.cylY('bearing', G, 6, 5, 0.33, -1.2, -1.0, 16),
+      synth.cylY('barrel', G, 6, 5, 0.71, -2.83, -1.3, 24),
+      synth.cylY('gearbox_base', G, 6, 5, 0.63, -2.83, -2.61, 24),
+      synth.cylY('can', G, 6, 5, 0.7, -5.07, -2.64, 24),
+      synth.cylY('shield', G, 6, 5, 0.74, -4.33, -2.98, 24),
+      synth.cylY('back_plate', G, 6, 5, 0.7, -5.0, -4.96, 24),
+      synth.cylY('endcap', G, 6, 5, 0.73, -5.85, -5.0, 24),
+      synth.box('channel', G, 5.06, 6.94, -9.35, -0.85, 4.06, 5.94),
+    ];
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const parts = mk(prisms);
+    const names = (b: readonly number[]): string => b.map((x) => prisms[x].name).sort().join('+');
+    const turning = 'gear+hub+hub_screw+shaft';
+    const gear = names(motion.coaxialBodies(parts, id('gear'), 'roller'));
+    check('moving parts 3: a click on a gear takes its hub, the screw through them and the output shaft, never the motor, its gearbox, bearing, face screws or the channel', gear === turning, gear);
+    const viaShaft = names(motion.coaxialBodies(parts, id('shaft'), 'roller'));
+    const viaScrew = names(motion.coaxialBodies(parts, id('hub_screw'), 'roller'));
+    check('moving parts 3: a click on the output shaft or the hub screw takes the same (read off the gear, not the gearbox the shaft runs into)', viaShaft === turning && viaScrew === turning, J({ viaShaft, viaScrew }));
+    check(
+      'moving parts 3: a click on a motor part (the can, the gearbox face) takes that one part, not the gear it drives',
+      J(motion.coaxialBodies(parts, id('can'), 'roller')) === J([id('can')]) && J(motion.coaxialBodies(parts, id('face'), 'roller')) === J([id('face')]),
+    );
+    const rollers = motion.findRollerGroups(parts, [{ edge: 'front', from: -6, to: 6 }], new Set()).map((g) => names(g.bodies));
+    check('moving parts 3: the roller finder at the mouth finds the gear’s axle and seeds nothing on the motor (its can, face and end cap are round discs too)', J(rollers) === J([turning]), J(rollers));
+    const fly = motion.findFlywheelGroups(parts, [6, 0, 5], new Set()).map((g) => names(g.bodies));
+    check('moving parts 3: the flywheel finder takes the disc on the motor’s shaft without the motor', J(fly) === J([turning]), J(fly));
+  }
+
+  // ---- a direct-drive wheel: its gearbox face against the hub, the shaft through the side plate, a
+  // bracket over a 3-in wheel the drivetrain still calls 104 mm ----
+  {
+    const prisms = [
+      synth.box('plate', G, -8, 8, -6, 6, 1.2, 1.6),
+      synth.box('side_plate', G, -8, 8, 5.3, 5.5, 0.5, 4),
+      synth.cylY('tyre', G, 4, 1.5, 1.5, 6.4, 7.6, 32),
+      synth.cylY('hub', G, 4, 1.5, 0.45, 6.4, 7.0, 12),
+      synth.box('hub_screw', G, 4.25, 4.4, 6.4, 7.0, 1.42, 1.58),
+      synth.cylY('shaft', G, 4, 1.5, 0.2, 3.0, 7.7, 8),
+      synth.cylY('face', G, 4, 1.5, 0.71, 5.85, 6.4, 24),
+      synth.cylY('barrel', G, 4, 1.5, 0.71, 4.85, 5.9, 24),
+      synth.cylY('can', G, 4, 1.5, 0.7, 2.5, 4.9, 24),
+      synth.cylY('endcap', G, 4, 1.5, 0.73, 2.0, 2.5, 24),
+      synth.box('bracket', G, 3.9, 4.1, 6.8, 7.2, 3.3, 3.45),
+    ];
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const parts = mk(prisms);
+    const names = (b: readonly number[]): string => b.map((x) => prisms[x].name).sort().join('+');
+    const w = motion.findWheelGroups(parts, [{ x: 4, y: 7 }], 'tank', 104 / 25.4).map((g) => names(g.bodies));
+    check(
+      'moving parts 3: a wheel takes its tyre, hub, hub screw and the shaft it turns on, not the gearbox face touching the hub, the motor behind it, or a bracket over it (its radius from the geometry, not the 104 mm default)',
+      J(w) === J(['hub+hub_screw+shaft+tyre']),
+      J(w),
+    );
+    check('moving parts 3: a click on the tyre takes the same, without the motor', names(motion.coaxialBodies(parts, id('tyre'), 'wheel')) === 'hub+hub_screw+shaft+tyre', names(motion.coaxialBodies(parts, id('tyre'), 'wheel')));
+  }
+
+  // ---- a 6WD: the middle pair is found too, with no corner (it turns at its own place's speed) ----
+  {
+    const prisms = synth.synthRobot({ sixWheel: true });
+    const parts = synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+    const m = geo.measureParts(parts, { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' });
+    const w = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'tank', 104 / 25.4).map((g) => `${g.corner ?? '-'}:${g.bodies.map((b) => prisms[b].name).join('+')}`);
+    check(
+      'moving parts 3: a six-wheel drive gives its four corners and the middle pair, each one wheel',
+      J(w) === J(['0:wheel_5.5_5.5', '1:wheel_5.5_-5.5', '2:wheel_-5.5_5.5', '3:wheel_-5.5_-5.5', '-:wheel_0_5.5', '-:wheel_0_-5.5']),
+      J(w),
+    );
+  }
+
+  // ---- a round part's axle from how round it is about it, not its moments alone: a disc with a dense
+  // patch of mesh on its rim (a Gecko wheel's fins at full resolution) ----
+  {
+    const disc = synth.synthParts([synth.cylY('disc', G, 0, 3, 0.94, -0.3, 0.3, 64)])[0];
+    const extra: number[] = [];
+    for (let k = 0; k < 4000; k++) {
+      const y = -0.3 + (0.6 * (k % 40)) / 40;
+      const x = -0.3 + (0.6 * Math.floor(k / 40)) / 100;
+      extra.push(x, y, 3.9, x + 0.01, y, 3.9, x, y + 0.01, 3.88);
+    }
+    const positions = new Float32Array([...disc.positions, ...extra]);
+    const parts: P[] = [{ positions, indices: null, color: G, name: 'd', body: new Uint32Array(positions.length / 3) }];
+    const st = motion.bodyStats(parts);
+    const n = st.n[0];
+    const cov = [st.q[0] / n - (st.s[0] / n) ** 2, st.q[1] / n - (st.s[0] / n) * (st.s[1] / n), st.q[2] / n - (st.s[0] / n) * (st.s[2] / n), st.q[3] / n - (st.s[1] / n) ** 2, st.q[4] / n - (st.s[1] / n) * (st.s[2] / n), st.q[5] / n - (st.s[2] / n) ** 2];
+    const fit = motion.fitRound(parts, [0]);
+    check(
+      'moving parts 3: a disc whose moments point the wrong way (a dense patch on its rim) is still fitted about its own axle',
+      Math.abs(motion.roundAxis(cov)[1]) < 0.9 && !!fit && Math.abs(fit.axis[1]) > 0.99,
+      J({ moments: motion.roundAxis(cov), fit: fit?.axis }),
+    );
+  }
+
+  // ---- the same groups from a coarse mesh and a fine one (the importer keeps every triangle now) ----
+  {
+    const run = (segments: number): string => {
+      const prisms = [...synth.synthRobot({ segments }), synth.cylY('shaft', G, 9, 1.5, 0.2, -6.5, 6.5, segments)];
+      const parts = synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+      const m = geo.measureParts(parts, { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' });
+      const w = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+      const r = motion.findRollerGroups(m.modelParts, [{ edge: 'front', from: -6, to: 6 }], new Set(w.flatMap((g) => g.bodies)));
+      return J([...w, ...r].map((g) => [g.role, g.corner, g.bodies]));
+    };
+    const coarse = run(12);
+    check('moving parts 3: the wheels and the roller come out the same from 12-sided and 96-sided cylinders', coarse === run(96) && coarse.includes('roller'), coarse);
+  }
+
+  // ---- the per-body vertex index the finders read instead of the whole model ----
+  {
+    const prisms = synth.synthRobot();
+    const raw = mk(prisms);
+    // two bodies interleaved in one part, as a merge by colour leaves them
+    const merged: P = { positions: new Float32Array([...raw[0].positions, ...raw[1].positions, ...raw[0].positions]), indices: null, color: G, name: 'm', body: null };
+    const n0 = raw[0].positions.length / 3;
+    const n1 = raw[1].positions.length / 3;
+    merged.body = new Uint32Array(2 * n0 + n1).map((_, v) => (v < n0 || v >= n0 + n1 ? 0 : 1));
+    const parts = [merged, ...raw.slice(2)];
+    const st = motion.bodyStats(parts);
+    let covered = 0;
+    let right = true;
+    for (const b of st.ids) {
+      for (let k = st.runStart[b]; k < st.runStart[b + 1]; k++) {
+        const r = st.runIdx[k];
+        covered += st.runTo[r] - st.runFrom[r];
+        for (let v = st.runFrom[r]; v < st.runTo[r]; v++) if (parts[st.runPart[r]].body![v] !== b) right = false;
+      }
+    }
+    const total = parts.reduce((s, p) => s + p.positions.length / 3, 0);
+    check('moving parts 3: the body index covers every vertex once, each run inside one body (a body split across a part is two runs)', right && covered === total && st.runStart[1] - st.runStart[0] === 2, J({ covered, total }));
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
