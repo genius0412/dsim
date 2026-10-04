@@ -2212,6 +2212,57 @@ positions.
   `bbIntakeAct`, the flower gate, the ramp swing corners, the reach shapes, the tutorial, the AI.
   A `siderollers` roller line sits `BB_SIDE_ROLLER_PROTRUDE` behind where the hull ends: the CAD's
   front is the wheel's outer face, so the 3D wheels land on the hull's own face.
+- ⚠️ **SIDE ROLLERS AT A FLOWER, `SIM_PATCH` 6** (owner, 2026-10-04: "side rollers cant actually
+  intake from flower because of weird footprint ... on the biobuzz 3d gobilda mecanum"). Measured
+  on the descriptor the production editor saved for that vendor's mecanum starter bot
+  (`scripts/smoke-biobuzz/fixtures/sideRollerImport.ts`, numbers only: 17.8 × 17.8 × 12.2 in, bands
+  0–5 / 5–8.5 / 8.5–12.2, its two upright rollers r 1.41 about (8.32, ±6.14) robot-local, z
+  1.06–2.06, the hull's front corners lying on their circles). Built as side rollers on the front,
+  fixed launcher, no Box Tube. Three causes:
+  - **3D, the band.** The lowest band is one prism from the tiles to 5 in, and its front (x 9.55) is
+    the rollers' front. Below the slot the pocket filler (solid to statics) and above it the band
+    reached that front across the whole width, so the FLOWER's lower plate (z ≤ 0.354) and mid
+    plate (z ≥ 3.904) stopped it on their edge. The wheels' front is that same face, so they stood
+    **0.85 in** short of the bottom POLLEN (a wheel has to reach 1.004 past the plate edge). The
+    CAD has nothing there: under 1 in its front is the drive wheels (x ≤ 6.9), at the mid plate's
+    height x ≤ 8.7 (mesh vertices, `scratch/glbfront.mjs`).
+  - **The wheel's place.** `bbSideRollerY(half)` put each wheel 7.28 off the centre; the CAD's are
+    at 6.14. A driver lining up the visible roller missed the sim's by 1.14 in, and the sim's
+    poked 0.9 in out of the robot's side.
+  - **2D, the foot.** The 2D FLOWER foot is one solid rectangle. The import's hull holds its rollers,
+    so the hull's front meets the foot and the wheel axis sat 3.88 in from the ring axis against
+    the 3.25 grip; it took a POLLEN only when a yawed corner swung a wheel in.
+
+  The fix, all behind `spec.imported` and `siderollers`: `bbImportSideRollerV` moves each wheel
+  inboard until its circle is inside the hull (closed form per edge; an edge the wheel overhangs
+  even on the centre is a front not square to the wheelbase and does not bound it), 6.06 off
+  centre here, and a hull with square corners keeps the standard rule exactly.
+  `bbImportClipReach` takes the strip past the roller line inside the span out of every 3D prism
+  (carved, pocket, above the slot, remote), so the body ends at the roller line and the two wheel
+  cylinders stand past it, which is what a standard side-roller robot is; the wheels still stop on
+  a wall at the hull's front. The 2D gate measures an import's wheel from the hull's front
+  (`uw + BB_SIDE_ROLLER_PROTRUDE`), the depth the 3D wheel gets. `bbSideRollerOffsets` is the one
+  placement the gate, `chassis3dReachShapes`, the tutorial and both renderers read.
+
+  Real drive-ins (`scratch/srimport.ts`, 540 a row: four FLOWERS × lateral 0/±0.8/±1.5 × square
+  and ±10° × stick 0.4/0.7/1.0 × column 1/2/4, intake held, the robot's own roller lined up):
+
+  | | 2D | 3D |
+  |---|---|---|
+  | standard, 15 × 17 | 100 % | 93.3 % (straight-on 180/180) |
+  | standard, 18 × 18 | 100 % | 92.8 % (180/180) |
+  | import, before | 13.3 % (36/180 straight-on) | **0 %** |
+  | import, after | 100 % | 93.7 % (180/180), mean 0.79 s |
+
+  The 3D misses printed, import and standard alike, are the corner `SIDE ROLLERS RELOCATED`
+  already names: a 1.5-in offset with a 10° skew the same way, the settle yawing the wheel out
+  (19–25°).
+
+  `SIM_PATCH` 6 gates all three (`importSideRollersPre6`): a replay recorded before runs the old
+  geometry, and the IMPORT lane holds four scenes stepped under patch 5 to hashes measured on
+  e5c3f6a8 (`scripts/sideroller-pre6-scenes.ts`), and runs 36 drive-ins per engine on the fixture.
+  It is a `step()` change, so a server change (a room steps imports on the game server). Standard
+  robots are bit-identical (`IMP_STANDARD_PINS`, `L2_MECH_PINS`).
 - **Launchers**: a turret is the placed `shooter` (`shooter2` for a double turret's NECTAR head);
   its flywheel axle is the placed height less the head's path radius, so the rest-pitch release is
   exactly the placed `z` (`bbImportTurretAxleZ`, read clamped to 7.5–18). A dumper's line is

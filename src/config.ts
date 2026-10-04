@@ -254,8 +254,13 @@ export const SIM_VERSION = 5;
  *      SHED off it (a hashed hop, `BB3_HIVE_SHED_*`) instead of frozen on top of the HIVE for the
  *      rest of the match (`sim3d/engineImpl.ts`, `groundRoll3d`). On `main` from 2026-10-03
  *      without 3 and 4, so a `main` replay stamped 5 did not run them.
+ *   6  BIOBUZZ, IMPORTED `siderollers` robots only: the two wheels sit inside the hull's own
+ *      front corners (`bbImportSideRollerV`), the 3D compound stops at the roller line inside the
+ *      mouth span (`bbImportClipReach`), and the 2D FLOWER gate measures the wheel from the hull's
+ *      front (`biobuzz/play.ts`). Before it a side-roller import could not reach a FLOWER's
+ *      bottom POLLEN in 3D at all. Standard robots step bit-identically.
  */
-export const SIM_PATCH = 5;
+export const SIM_PATCH = 6;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

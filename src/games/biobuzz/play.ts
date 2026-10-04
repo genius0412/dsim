@@ -23,7 +23,7 @@ import {
   bbFlowerReachOf,
   bbHopperCap,
   bbLoadingZoneSpot,
-  bbSideRollerY,
+  BB_SIDE_ROLLER_PROTRUDE,
   type BbFlowerReach,
 } from './config';
 import { biobuzzColliders } from './colliders';
@@ -36,7 +36,7 @@ import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './element
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
-import { bbDumpZ } from './importMech';
+import { bbDumpZ, bbSideRollerOffsets, importSideRollersPre6 } from './importMech';
 import {
   type BbMouthAxes,
   type BbShot,
@@ -997,10 +997,21 @@ export interface BbFlowerIntakeHit {
   ax: BbMouthAxes;
 }
 
-export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFlowerIntakeHit | null {
+/**
+ * How the gate is asked. `pre6`: a replay recorded before `SIM_PATCH` 6 (`importSideRollersPre6`),
+ * which places an import's side rollers by the standard rule and measures them from the roller
+ * line in 2D too. `twoD`: the caller is 2D's `retrieveFromFlower`.
+ */
+export interface BbFlowerGateOpts {
+  pre6?: boolean;
+  twoD?: boolean;
+}
+
+export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach, opts: BbFlowerGateOpts = {}): BbFlowerIntakeHit | null {
   const mouths = bbMouths(r.spec);
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
+  const pre6 = opts.pre6 ?? false;
   for (let i = 0; i < BB_FLOWERS.length; i++) {
     const f = BB_FLOWERS[i];
     const local = rot({ x: f.x - r.pos.x, y: f.y - r.pos.y }, -r.heading);
@@ -1012,15 +1023,28 @@ export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFl
         // SIDE ROLLERS ARE A SOLID WHEEL NOW, SO THE GATE IS CONTACT, NOT A LATERAL BAND PLUS A
         // SEPARATE X-BITE (owner, 2026-09-20: "it should also be colliding with everything. It
         // is a physical thing"). `reach.out`'s own midpoint is the wheel's axis past the tip
-        // line; each wheel sits at `±bbSideRollerY(ax.half)` off the centreline; the POLLEN is
+        // line; each wheel sits at `±bbSideRollerY(ax.half)` off the centreline (an IMPORT's
+        // inside its own hull, `bbSideRollerOffsets`); the POLLEN is
         // gripped when its centre is within `edgeGrip` (a RADIUS — `BB_SIDE_ROLLER_GRIP`) of
         // EITHER wheel's own axis, in the full (u, v) plane. Same predicate in 2D (which has no
         // solid wheel, so the robot CAN overlap) and 3D (`flowerRetrieve3d` calls this same
         // function) — see `config.ts`'s own header on `BB_SIDE_ROLLER_R` for why the box-BITE
         // test this replaced stopped matching a real drive-in once the wheel became solid.
-        const wy = bbSideRollerY(ax.half);
-        const uw = (reach.out[0] + reach.out[1]) / 2;
-        const near = Math.min(hyp(u - uw, v - wy), hyp(u - uw, v + wy));
+        const [wl, wr] = bbSideRollerOffsets(r.spec, ax, pre6);
+        let uw = (reach.out[0] + reach.out[1]) / 2;
+        /**
+         * ⚠️ **AN IMPORT IN 2D IS MEASURED FROM ITS HULL'S FRONT** (`SIM_PATCH` 6). The 2D FLOWER
+         * foot is one solid rectangle, with no retrieval window in it. A standard robot's 2D
+         * footprint ends at the roller line and its wheel (drawing only) overlaps the foot by
+         * `BB_SIDE_ROLLER_PROTRUDE`; an import's hull HOLDS its CAD wheels, so the hull's front,
+         * `BB_SIDE_ROLLER_PROTRUDE` past the roller line, is what meets the foot, and the wheel
+         * axis then sat 3.88 in from the ring axis against a 3.25 grip: 2D took a POLLEN only
+         * when a yawed corner happened to swing a wheel in. In 3D the body ends at the roller line
+         * and the wheel goes that far into the window (`bbImportClipReach`), so 2D credits the
+         * same depth.
+         */
+        if (opts.twoD && !pre6 && r.spec.imported) uw += BB_SIDE_ROLLER_PROTRUDE;
+        const near = Math.min(hyp(u - uw, v - wl), hyp(u - uw, v + wr));
         if (near > reach.edgeGrip) continue;
         return { i, ax };
       }
@@ -1031,8 +1055,8 @@ export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFl
   return null;
 }
 
-export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | null {
-  return bbFlowerAtIntakeMouth(r, reach)?.i ?? null;
+export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach, opts: BbFlowerGateOpts = {}): number | null {
+  return bbFlowerAtIntakeMouth(r, reach, opts)?.i ?? null;
 }
 
 /**
@@ -1067,7 +1091,7 @@ export function retrieveFromFlower(
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
   const reach = bbFlowerReachOf(bbIntakeKindOf(rob.spec), bbRampSettled(rob, world.time));
   if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
-  const i = bbFlowerAtIntake(rob, reach);
+  const i = bbFlowerAtIntake(rob, reach, { pre6: importSideRollersPre6(world), twoD: true });
   if (i === null) return false;
   const flower = bb.flowers[i];
   const { id } = flowerRetrieve(flower.stack, kindOf);

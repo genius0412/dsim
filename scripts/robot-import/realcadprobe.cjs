@@ -15,7 +15,7 @@
  *   2. what the Model step says (size, triangles, wheels, units, up, front) and pictures of it;
  *      `--orbit` drags the preview round for two seconds and times its frames;
  *   3. Save (timed), then the library record's descriptor (hull, wheels, height, in robot-local
- *      inches) and the stored mesh;
+ *      inches; the whole of it in `<out>/<file>-<detail>-imported.json`) and the stored mesh;
  *   4. each saved robot re-opened (timed, its draft cleared first so the stored mesh is read), Review,
  *      Test drive: pictures of the match, before and after driving and turning. With `--tiers`, once
  *      per graphics tier (the preset written to storage before the page loads), the robots taking
@@ -222,7 +222,8 @@ app.whenReady().then(async () => {
         q.onerror = () => res('');
       })`);
     const toReview = async () => {
-      for (const s of ['Next: Drivetrain', 'Next: Mechanisms', 'Next: Review']) {
+      // five steps since Moving parts became its own (d154b36a); a missing button is skipped
+      for (const s of ['Next: Drivetrain', 'Next: Mechanisms', 'Next: Moving parts', 'Next: Review']) {
         await click('button', s);
         await sleep(600);
       }
@@ -434,6 +435,8 @@ app.whenReady().then(async () => {
         const ys = rec.imported.hull.map((q) => q.y);
         d.footprintIn = { length: +(Math.max(...xs) - Math.min(...xs)).toFixed(2), width: +(Math.max(...ys) - Math.min(...ys)).toFixed(2), height: rec.imported.heightIn };
         d.wheelsIn = rec.imported.wheels ?? null;
+        // the whole saved descriptor (robot-local inches), for sim scenes built on this robot
+        fs.writeFileSync(path.join(OUT, `${tag}-${p}-imported.json`), JSON.stringify(rec.imported, null, 2));
         d.source = rec.source;
         d.triBudget = rec.setup.triBudget;
         for (const kind of ['mesh', 'top']) {

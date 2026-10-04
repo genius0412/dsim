@@ -14,6 +14,7 @@ import {
   bbSideRollerY,
 } from './config';
 import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
+import { bbSideRollerOffsets } from './importMech';
 import { bbCarriesNectar, bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbIndexElements } from './spawn';
 import { capturePollen } from './elements';
@@ -268,7 +269,7 @@ function mouthPoint(spec: RobotSpec): Vec2 {
   if (spec.imported && m) {
     // an IMPORTED robot: on ITS mouth's roller line and off its own centre (`mouthAxes`' `vc`)
     const ax = mouthAxes(m, 0, 0);
-    const v = ax.vc + (bbIntakeKindOf(spec) === 'siderollers' ? bbSideRollerY(ax.half) : 0);
+    const v = ax.vc + (bbIntakeKindOf(spec) === 'siderollers' ? bbSideRollerOffsets(spec, ax)[0] : 0);
     return { x: ax.n.x * ax.uOut + ax.p.x * v, y: ax.n.y * ax.uOut + ax.p.y * v };
   }
   const edge = m?.edge ?? 'front';

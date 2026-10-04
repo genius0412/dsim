@@ -3,15 +3,27 @@ import { bbCoerce, cmd, mkWorld3dPair, setup } from './harness';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { import3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
+import { chassis3dReachShapes, import3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
 import { createLightPredictor, probeFullReconcileMs } from '../../src/games/biobuzz/sim3d/predict';
 import { bbAimHeading, bbMouths, bbPlacePointLocal, bbTurretRelease, bbTurretSolution, mouthAxes } from '../../src/games/biobuzz/robot';
 import { bbAimTarget, bbCellSideOf, bbDumpShotEnters, bbPretendHive, bbTurretShotEnters } from '../../src/games/biobuzz/play';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
-import { BB_PLACE_REACH, BB_POLLEN_R, bbLiftPlaceLocal, PREDICT_FULL_BUDGET_MS } from '../../src/games/biobuzz/config';
+import {
+  BB_FLOWERS,
+  BB_PLACE_REACH,
+  BB_POLLEN_R,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_PROTRUDE,
+  BB_SIDE_ROLLER_R,
+  bbLiftPlaceLocal,
+  bbSideRollerY,
+  PREDICT_FULL_BUDGET_MS,
+} from '../../src/games/biobuzz/config';
 import { polyFeature } from '../../src/sim/imported';
 import { BB_G402_CROSS_IN, bbIntrusion } from '../../src/games/biobuzz/penalties';
-import { bbImportMouths } from '../../src/games/biobuzz/importMech';
+import { bbImportMouths, bbSideRollerOffsets } from '../../src/games/biobuzz/importMech';
+import { SIDE_ROLLER_IMPORT, SIDE_ROLLER_IMPORT_BUILD, SIDE_ROLLER_IMPORT_CAD_WHEEL } from './fixtures/sideRollerImport';
+import { flowerDriveInTakes, pre6Scenes, stageFlowerDriveIn } from '../sideroller-pre6-scenes';
 import { biobuzzZenithRobot } from '../../src/games/biobuzz/auto';
 import { robotSchema } from '@horizon36596/zenith-schema';
 import { SIM_DT } from '../../src/config';
@@ -250,6 +262,8 @@ export function importedChecks(check: Check): void {
     );
   }
 
+  importedSideRollerChecks(check);
+
   // ---- launchers and the Box Tube work from where they were placed ---------------------------
   {
     const sp = bbCoerce({
@@ -299,6 +313,112 @@ export function importedChecks(check: Check): void {
         dump({}, cluster) && dump({ imported: { ...OCT, mech: { shooter: { x: 9.5, y: 0, z: 10 } } } }, cluster),
       );
     }
+  }
+}
+
+/**
+ * SIDE ROLLERS ON A REAL IMPORT, AT A FLOWER (`SIM_PATCH` 6; owner, 2026-10-04: "side rollers cant
+ * actually intake from flower because of weird footprint ... on the biobuzz 3d gobilda mecanum").
+ * The fixture is the descriptor the production editor saved for a vendor's mecanum starter bot
+ * (`fixtures/sideRollerImport.ts`, numbers only). Before patch 6 its lowest 3D band (tiles to 5 in,
+ * front = its rollers' front) met both FLOWER plates on their edge, the wheels stood 0.85 in short
+ * of the bottom POLLEN, and 0 of 540 real drive-ins took one; 2D took 13 %, only when a yawed
+ * corner swung a wheel in. `docs/area/biobuzz.md`, "IMPORTED ROBOTS".
+ */
+function importedSideRollerChecks(check: Check): void {
+  const sp = bbCoerce(SIDE_ROLLER_IMPORT_BUILD);
+  const ax = mouthAxes(bbMouths(sp)[0], sp.length / 2, sp.width / 2);
+  const cad = SIDE_ROLLER_IMPORT_CAD_WHEEL;
+  {
+    const [l, r] = bbSideRollerOffsets(sp, ax);
+    const [l5] = bbSideRollerOffsets(sp, ax, true);
+    const u = ax.uOut + BB_SIDE_ROLLER_OUT;
+    const depth = Math.min(...[l, -r].map((v) => polyFeature(SIDE_ROLLER_IMPORT.hull, { x: u, y: ax.vc + v }).depth));
+    check(
+      "import side rollers: each wheel sits in the hull's own front corner, on the CAD's own roller (axis within 0.15 in), where the standard rule put it over 1 in outboard",
+      Math.abs(l - cad.y) < 0.15 && Math.abs(r - cad.y) < 0.15 && Math.abs(u - cad.x) < 0.15 && depth > BB_SIDE_ROLLER_R - 0.02 && l5 - cad.y > 1,
+      `left ${l.toFixed(3)} right ${r.toFixed(3)} at u ${u.toFixed(3)}, ${depth.toFixed(3)} in inside the hull; CAD (${cad.x}, ±${cad.y}); before patch 6 ${l5.toFixed(3)}`,
+    );
+  }
+  {
+    // an import with square corners is placed by the standard rule, exactly
+    const box: ImportedRobot = { v: 1, id: 'd4d4d4d4d4d4d4d4', hull: [{ x: -9, y: -8.5 }, { x: 9, y: -8.5 }, { x: 9, y: 8.5 }, { x: -9, y: 8.5 }], heightIn: 14 };
+    const bs = bbCoerce({ ...SIDE_ROLLER_IMPORT_BUILD, imported: box });
+    const bax = mouthAxes(bbMouths(bs)[0], 0, 0);
+    const [l, r] = bbSideRollerOffsets(bs, bax);
+    check('import side rollers: a hull with square corners keeps the standard wheel placement exactly', l === bbSideRollerY(bax.half) && r === l, `${l} ${r} vs ${bbSideRollerY(bax.half)}`);
+  }
+  {
+    // past the roller line, inside the span, the 3D body is the two wheels and nothing else
+    const h = sp.heightIn ?? 13;
+    const past = (shapes: { cx: number; cy: number; pts?: Vec2[] }[]): number => {
+      let x = -Infinity;
+      for (const s of shapes) for (const q of s.pts ?? []) if (Math.abs(s.cy + q.y - ax.vc) < ax.half - 1e-6) x = Math.max(x, s.cx + q.x);
+      return x;
+    };
+    const live = import3dShapes(sp, h);
+    const old = import3dShapes(sp, h, true);
+    const now = Math.max(past(live.chassis), past(live.pocket), past(live.remote));
+    const was = Math.max(past(old.chassis), past(old.pocket), past(old.remote));
+    const wheels = chassis3dReachShapes(sp, h, false);
+    const wheelFront = Math.max(...wheels.map((s) => s.cx + s.hx));
+    check(
+      "import side rollers 3D: inside the span nothing of the body stands past the roller line, the wheels' front is the hull's front; before patch 6 the lowest band reached 1.4+ in past it",
+      now <= ax.uOut + 1e-6 && was > ax.uOut + 1.4 && wheels.length === 2 && Math.abs(wheelFront - (ax.uOut + BB_SIDE_ROLLER_PROTRUDE)) < 1e-9,
+      `body ${now.toFixed(3)} against the roller line ${ax.uOut.toFixed(3)}; before ${was.toFixed(3)}; wheel front ${wheelFront.toFixed(3)}`,
+    );
+  }
+  {
+    // REAL DRIVE-INS, the CAD roller lined up on the ring axis: every FLOWER, 0.8 in either side of
+    // it, square and 10° skewed each way, full stick, intake held — 36 per engine
+    for (const physics of ['2d', '3d'] as const) {
+      let took = 0;
+      let square = 0;
+      let old = 0;
+      const miss: string[] = [];
+      for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
+        for (const delta of [-0.8, 0, 0.8]) {
+          for (const yaw of [0, -10, 10]) {
+            const side = fi % 2 === 0 ? 1 : -1;
+            const { w, column } = stageFlowerDriveIn(undefined, physics, SIDE_ROLLER_IMPORT_BUILD, cad, fi, side, yaw, delta);
+            const t = flowerDriveInTakes(w, column);
+            if (t !== null) {
+              took++;
+              if (yaw === 0) square++;
+            } else miss.push(`F${fi + 1} ${delta} ${yaw}°`);
+            if (yaw === 0 && delta === 0) {
+              const pre = stageFlowerDriveIn(5, physics, SIDE_ROLLER_IMPORT_BUILD, cad, fi, side, 0, 0);
+              if (flowerDriveInTakes(pre.w, pre.column) !== null) old++;
+            }
+          }
+        }
+      }
+      check(
+        `import side rollers ${physics}: real drive-ins with the CAD roller lined up take the bottom POLLEN like a standard side-roller robot (every square approach, 33 of 36 or more)`,
+        took >= 33 && square === 12,
+        `${took}/36, square ${square}/12; missed ${miss.join(', ') || 'none'}`,
+      );
+      if (physics === '3d') {
+        check('import side rollers 3d: ...and a replay recorded under patch 5 keeps the old geometry, where no square, dead-on approach takes one', old === 0, `${old}/4`);
+      } else {
+        console.log(`[smoke-bb import] 2d under patch 5: ${old}/4 square, dead-on approaches took a POLLEN`);
+      }
+    }
+  }
+  {
+    // SIM_PATCH 6: the four scenes stepped as a replay recorded under patch 5 land on the pins the
+    // code before the change produced (e5c3f6a8, measured 2026-10-04), and live none does
+    const PRE6: Record<string, string> = {
+      bb2dFlower: 'held=1 stack=3 4137413556:71779836',
+      bb3dFlower: 'held=0 stack=4 868394184:2793652222',
+      bb3dFlowerSkew: 'held=0 stack=4 1221431464:2227753158',
+      bb3dPush: '669942157:3738788457',
+    };
+    const old = pre6Scenes(5);
+    const live = pre6Scenes(undefined);
+    const bad = Object.keys(PRE6).filter((k) => old[k] !== PRE6[k]);
+    check('SIM_PATCH 6: a replay recorded under patch 5 steps a side-roller import exactly as the code before the fix did (2D and 3D FLOWER drive-ins, a skewed one, a push into a robot)', bad.length === 0, bad.map((k) => `${k}: ${old[k]}`).join(' | '));
+    check('SIM_PATCH 6: ...and live, every one of those scenes runs the new rules (none lands on its old pin)', Object.keys(PRE6).every((k) => live[k] !== PRE6[k]), JSON.stringify(live));
   }
 }
 
