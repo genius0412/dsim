@@ -470,10 +470,14 @@ export function flower3dChecks(check: Check): void {
      * column is 180/180 at 1.65 and 179/180 at 1.60. 1.65 is therefore the largest cut the owner
      * asked for that costs neither population anything measurable; 1.40, which the held-intake
      * sweep alone would have allowed, takes park-then-intake to ZERO.
+     *
+     * ⚠️ **2.0 SINCE `SIM_PATCH` 7 (2026-10-04).** The middle and top plates are solids over their
+     * measured outline now, not a box whose corners stood up to 0.7 in proud of the real plate, so
+     * the chassis carries 1.844 in past the flush pose (1.677 against the box).
      */
     check(
-      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.8in)",
-      Math.abs(drivenX - wantX) < 1.8,
+      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 2.0in)",
+      Math.abs(drivenX - wantX) < 2.0,
       `driven to x=${drivenX.toFixed(3)}, want ${wantX.toFixed(3)} (delta ${(drivenX - wantX).toFixed(3)})`,
     );
     // ⚠️ STILL NO ANALYTIC RE-SEAT (owner, 2026-09-20: a previous pass here teleported the robot

@@ -1,4 +1,4 @@
-import type { ImportedBand, ImportedEdge, ImportedMech, ImportedRobot, ImportTuning, Vec2 } from '../types';
+import type { ImportedBand, ImportedCut, ImportedEdge, ImportedMech, ImportedRobot, ImportTuning, Vec2 } from '../types';
 import { WHEEL_INSET } from '../config';
 import { clamp, hyp } from '../math';
 
@@ -28,7 +28,9 @@ export const IMPORT_QUANTUM = 1 / 64;
 export const IMPORT_MAX_EXTENT = 18;
 export const IMPORT_MAX_HULL_VERTS = 16;
 export const IMPORT_MAX_BAND_VERTS = 12;
-export const IMPORT_MAX_BANDS = 3;
+/** 5 since 2026-10-04: a band of its own under an intake's overhang and one at a FLOWER's middle
+ *  plate (`computeBands`); an older reader keeps the lowest 3 */
+export const IMPORT_MAX_BANDS = 5;
 export const IMPORT_MAX_INTAKES = 4;
 /**
  * Input points read per polygon (the rest are ignored): bounds the work a hostile array costs.
@@ -42,6 +44,9 @@ export const IMPORT_MAX_INPUT_POINTS = 64;
  * of 16 junk bands costs 6 polygons, not 16.
  */
 export const IMPORT_MAX_BAND_INPUTS = 2 * IMPORT_MAX_BANDS;
+/** a band's cuts kept (`ImportedBand.cuts`; the importer writes at most 2 an edge), read from the
+ *  first twice as many */
+export const IMPORT_MAX_BAND_CUTS = 8;
 /** any input coordinate is clamped to ±this before anything else (keeps every product exact) */
 export const IMPORT_COORD_LIMIT = 10000;
 /**
@@ -649,6 +654,36 @@ function place(f: Frame, x: number, y: number): Vec2 {
 }
 
 /**
+ * A band's cuts: a known edge and three finite numbers each, `from < to`, placed in the coerced
+ * frame (the span on y for an end edge and x for a flank, `at` on the other axis) and snapped.
+ * The first `IMPORT_MAX_BAND_CUTS` valid ones of the first twice as many, in input order. No range
+ * beyond the coordinate limit: the game clamps a cut into the mouth it trims when it reads it.
+ */
+function readCuts(raw: unknown, f: Frame): ImportedCut[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ImportedCut[] = [];
+  const L = IMPORT_COORD_LIMIT;
+  for (const it of raw.slice(0, 2 * IMPORT_MAX_BAND_CUTS)) {
+    if (out.length >= IMPORT_MAX_BAND_CUTS) break;
+    if (typeof it !== 'object' || it === null) continue;
+    const r = it as Record<string, unknown>;
+    const edge = r.edge as ImportedEdge;
+    if (!EDGES.includes(edge)) continue;
+    const a = num(r.from);
+    const b = num(r.to);
+    const at = num(r.at);
+    if (a === null || b === null || at === null) continue;
+    const end = edge === 'front' || edge === 'back';
+    const span = (v: number): number => q(clamp(v, -L, L) * f.s) + (end ? f.ty : f.tx);
+    const from = span(Math.min(a, b));
+    const to = span(Math.max(a, b));
+    if (!(to > from)) continue;
+    out.push({ edge, from, to, at: q(clamp(at, -L, L) * f.s) + (end ? f.tx : f.ty) });
+  }
+  return out;
+}
+
+/**
  * A mechanism point, game-blind: x/y placed in the coerced frame and moved to the NEAREST point
  * inside the hull (every mechanism is part of the robot in its starting configuration — a REACH
  * point such as BIOBUZZ's Box Tube target is computed by the game from this base, never stored),
@@ -750,10 +785,11 @@ function coerceMech(raw: unknown, f: Frame, b: Bounds, hull: readonly Vec2[], he
  *   6. HEIGHT: snapped, clamped to [`IMPORT_MIN_HEIGHT`, 18].
  *   7. WHEELS: exactly four finite points, else dropped. Each is walked inside the hull if it is
  *      outside; a set with no spread (RMS radius under 1 in) is dropped; then sorted FL, FR, BL, BR.
- *   8. BANDS: up to 3 valid ones, in input order, then sorted by (z0, z1). z0/z1 snapped and
+ *   8. BANDS: up to 5 valid ones, in input order, then sorted by (z0, z1). z0/z1 snapped and
  *      clamped to [0, heightIn], z0 < z1 or the band is dropped; its points are walked inside the
  *      hull, hulled and cut to 12 vertices, < 3 ⇒ the band is dropped. Points are read for at most
- *      `IMPORT_MAX_BAND_INPUTS` bands (the work bound; a list that needs more is junk).
+ *      `IMPORT_MAX_BAND_INPUTS` bands (the work bound; a list that needs more is junk). Its cuts
+ *      as `readCuts` says; none valid ⇒ no `cuts` field.
  *   9. MECH, game-blind: shooter / shooter2 / place snapped and moved to the nearest point INSIDE
  *      the hull, z into [0, heightIn]; `shooterYawDeg` whole degrees wrapped to (−180, 180], kept
  *      only beside a shooter; intakes need a known edge, the span clamped to that edge's
@@ -843,7 +879,8 @@ export function coerceImported(raw: unknown): ImportedRobot | undefined {
       const pts = readPoints(br.hull, IMPORT_MAX_INPUT_POINTS).map((p) => pullInside(hull, place(f, p.x, p.y), true));
       const bh = reduceHull(convexHull(pts), IMPORT_MAX_BAND_VERTS);
       if (bh.length < 3) continue;
-      list.push({ z0, z1, hull: bh });
+      const cuts = readCuts(br.cuts, f);
+      list.push(cuts.length > 0 ? { z0, z1, hull: bh, cuts } : { z0, z1, hull: bh });
     }
     list.sort((a, b) => a.z0 - b.z0 || a.z1 - b.z1);
     if (list.length > 0) out.bands = list;

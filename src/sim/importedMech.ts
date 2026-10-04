@@ -135,7 +135,7 @@ export const IMPORT_EDGE_P: Record<ImportedEdge, Vec2> = {
 };
 
 /** a stored span (`from..to` along y for an end edge, x for a flank) as an interval of `v` */
-function spanToV(edge: ImportedEdge, from: number, to: number): [number, number] {
+export function spanToV(edge: ImportedEdge, from: number, to: number): [number, number] {
   return edge === 'front' || edge === 'right' ? [from, to] : [-to, -from];
 }
 /** ...and back */

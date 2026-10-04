@@ -50,8 +50,12 @@ function fnv(s: string): number {
  */
 const PINS: Record<'2d' | '3d', string> = {
   '2d': 'fired=17 2126857166:3339463799 3482816271:2456356880 1881524541:1265804104',
-  '3d': 'fired=11 2256851025:431673127 2013511614:1719602821',
+  '3d': 'fired=11 3143138018:968569403 2080766:4176946555',
 };
+/** `'3d'` re-recorded 2026-10-04 for `SIM_PATCH` 7: a robot meets a FLOWER's middle and top plates
+ *  over their measured outline, not a box. This is the pin it had; a world stepped under patch 6
+ *  must still reproduce it. */
+const PIN_3D_PATCH6 = 'fired=11 2256851025:431673127 2013511614:1719602821';
 /** `'3d'` was re-recorded 2026-10-02 for `SIM_PATCH` 3 — the 3D wall square-up moved into the solve,
  * not a fixed-shooter change. This is the pin it had, and a world stepped under patch 2 (a replay
  * recorded before) must still reproduce it exactly. */
@@ -229,6 +233,8 @@ export function fixedChecks(check: Check): void {
     check('fixed: …and in 3D (600 ticks)', got === PINS['3d'], got);
     const old = pinRun('3d', 600, 2);
     check('fixed: …and under SIM_PATCH 2 the 3D run still lands on its pre-patch pin', old === PIN_3D_PATCH2, old);
+    const old6 = pinRun('3d', 600, 6);
+    check('fixed: …and under SIM_PATCH 6 (square FLOWER plates) the 3D run lands on the pin it had before patch 7', old6 === PIN_3D_PATCH6, old6);
   }
 
   // ---- the coercer ------------------------------------------------------------------------------

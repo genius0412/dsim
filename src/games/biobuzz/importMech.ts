@@ -1,4 +1,4 @@
-import type { RobotSpec, Vec2 } from '../../types';
+import type { ImportedCut, RobotSpec, Vec2 } from '../../types';
 import { INTAKE_RAIL_T, simPatchAtLeast } from '../../config';
 import { clamp } from '../../math';
 import {
@@ -10,6 +10,7 @@ import {
   IMPORT_PIECE_MIN_AREA,
   rayExit,
   resolveImportMouth,
+  spanToV,
   type ImportMouth,
 } from '../../sim/importedMech';
 import { polyArea, polyBounds } from '../../sim/imported';
@@ -86,6 +87,12 @@ export function bbImportSolids(spec: RobotSpec): { chassis: Vec2[]; structure: V
  *  the FLOWER gate. A standard robot steps the same either way. */
 export function importSideRollersPre6(world: { simPatch?: number }): boolean {
   return !simPatchAtLeast(world, 6);
+}
+
+/** does `world` build an import's 3D bands without their cuts (`bbImportClipReach`), as before
+ *  `SIM_PATCH` 7? Only a replay recorded then. */
+export function importBandCutsPre7(world: { simPatch?: number }): boolean {
+  return !simPatchAtLeast(world, 7);
 }
 
 /** the mouth frame a side roller is placed in: `mouthAxes`' fields, or an `ImportMouth`'s */
@@ -171,8 +178,15 @@ export function bbSideRollerOffsets(spec: RobotSpec, ax: BbSideRollerFrame, pre6
  * less the strip `n·x > uOut`, `|p·x − vc| < half`, per mouth, as convex pieces (the part behind
  * the line and whatever of the hull lies past it outside the span), slivers dropped. A polygon the
  * strip misses comes back as itself, vertex for vertex.
+ *
+ * ⚠️ **INSIDE THE SPAN, THE BODY ALSO STOPS AT THE MODEL'S OWN EDGE** (`SIM_PATCH` 7, the band's
+ * `cuts`). A band is one convex prism, so between two side rollers it bridges the gap at the
+ * roller line. The same bot's frame between its rollers stands 0.3–0.5 in behind that line at a
+ * FLOWER's middle plate (z 3.9–5.3); on the real robot the plate goes into that gap, and in 3D it
+ * stopped on the bridge. Each cut on the mouth's edge, clipped to the span, takes the band back
+ * to its `at`, never behind the mouth's `face`: it only removes what the model says is empty.
  */
-export function bbImportClipReach(poly: readonly Vec2[], mouths: readonly ImportMouth[]): Vec2[][] {
+export function bbImportClipReach(poly: readonly Vec2[], mouths: readonly ImportMouth[], cuts: readonly ImportedCut[] = []): Vec2[][] {
   let pieces: Vec2[][] = [poly.map((q) => ({ x: q.x, y: q.y }))];
   for (const m of mouths) {
     const next: Vec2[][] = [];
@@ -189,6 +203,28 @@ export function bbImportClipReach(poly: readonly Vec2[], mouths: readonly Import
       next.push(clipHalf(beyond, m.p.x, m.p.y, m.vc - m.half));
     }
     pieces = next.filter((q) => q.length >= 3 && polyArea(q) >= IMPORT_PIECE_MIN_AREA);
+    for (const c of cuts) {
+      if (c.edge !== m.edge) continue;
+      const [v0, v1] = spanToV(c.edge, c.from, c.to);
+      const a = Math.max(v0, m.vc - m.half);
+      const b = Math.min(v1, m.vc + m.half);
+      const line = clamp(c.at * (m.n.x + m.n.y), m.face, m.uOut);
+      if (!(b > a) || !(line < m.uOut)) continue;
+      const notched: Vec2[][] = [];
+      for (const q of pieces) {
+        // what the cut removes: a ≤ v ≤ b, past the line
+        let gone = clipHalf(q, -m.n.x, -m.n.y, -line);
+        gone = clipHalf(clipHalf(gone, m.p.x, m.p.y, b), -m.p.x, -m.p.y, -a);
+        if (gone.length < 3 || polyArea(gone) < IMPORT_PIECE_MIN_AREA) {
+          notched.push(q);
+          continue;
+        }
+        notched.push(clipHalf(q, m.p.x, m.p.y, a)); // v ≤ a
+        notched.push(clipHalf(q, -m.p.x, -m.p.y, -b)); // v ≥ b
+        notched.push(clipHalf(clipHalf(clipHalf(q, -m.p.x, -m.p.y, -a), m.p.x, m.p.y, b), m.n.x, m.n.y, line));
+      }
+      pieces = notched.filter((q) => q.length >= 3 && polyArea(q) >= IMPORT_PIECE_MIN_AREA);
+    }
   }
   return pieces;
 }

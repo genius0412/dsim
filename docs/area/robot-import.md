@@ -119,9 +119,28 @@ touching `src/robotImport/**`.
   millisecond) and the model-frame arrays keep their identity (the preview does not rebuild).
 - **Colours are linear RGB** everywhere (`MeshPart.color`, three's working space, glTF's
   `baseColorFactor`). occt already returns linear: converting its colours again darkens them.
-- **Height bands** (BIOBUZZ 3D): triangles are clipped into 0.5 in slices, each slice hulled, and
-  the slices split into ≤ 3 contiguous bands by DP on the volume a band's hull wastes. Bands are
-  emitted only when they save ≥ 5 % of the single prism's volume. Each band hull ≤ 12 vertices.
+- **Height bands** (BIOBUZZ 3D, `computeBands`): triangles are clipped into 0.5 in slices, each
+  slice hulled, and the slices split into ≤ 5 contiguous bands by DP on the volume a band's hull
+  wastes, waste under `LOW_BAND_IN` (2.5 in) counting `LOW_WEIGHT` (8) times. Bands are emitted only
+  when they save ≥ 5 % of the single prism's volume. Each band hull ≤ 12 vertices.
+  - ⚠️ **A FLOWER's middle plate is a band of its own** (`BAND_OWN_Z`): its heights, 0.1 in clear
+    either side and out to the 1/64 grid (3.796875–5.359375), are one slice no band shares. A band
+    holding the plate's heights with anything else carries that thing's front: on goBILDA's BIOBUZZ
+    bot the cross bar just under the plate reaches 7.81, the frame at the plate 7.69. The 0.1 in is
+    for the engine: a 3D prism's edge is rounded (eroded by `r`, a contact skin of `r`), and a band
+    ending 0.013 or 0.06 in under the plate caught the plate's edge with it; 0.09 did not.
+  - **Cuts** (`bandCuts`, `ImportedBand.cuts`): a band is one convex prism, so it bridges any gap
+    in its edge, such as the frame between two side rollers. Each edge of each band reaching the
+    plate or above (`CUT_FROM_Z`) is sampled in 16 bins across the hull; a bin's model edge is the
+    furthest any triangle, clipped to the band's heights, reaches inside it (± 0.05 in), and runs of
+    bins the hull overstates by 0.1 in become a cut at the run's furthest model edge + 1/16 (the
+    measured copy is simplified, and its surfaces sat 0.03 in inside the full mesh's on goBILDA's
+    BIOBUZZ bot). A cut only ever removes empty space. Two an edge, ranked by width × depth to 1 in, so an empty corner
+    cannot crowd out a recess. Lower bands carry none: nothing on the field reaches into a robot
+    below the plate, and each cut costs the 3D body convex pieces. The game reads them
+    (`bbImportClipReach`, `docs/area/biobuzz.md`).
+  - An existing library robot picks both up when it is opened in the importer and saved: the editor
+    re-measures the stored mesh.
 
 ## Budgets
 
@@ -151,7 +170,8 @@ touching `src/robotImport/**`.
 - A share file is the stored mesh with the setup in its JSON, so it is compressed too. Every build
   with the importer opens one, since `parse.ts` has set the meshopt decoder from the first engine. A
   glTF viewer needs both extensions; three.js and Babylon.js read them.
-- `ImportedRobot` ≤ 2 KB JSON (16 + 3 × 12 hull vertices at 1/64 in is about 1.2 KB).
+- `ImportedRobot` ≤ 6 KB JSON: 16 + 5 × 12 hull vertices and 5 × 8 cuts at their longest is about
+  5.2 KB. goBILDA's BIOBUZZ bot is 3.4 KB (1.6 KB with the three bands it had before 2026-10-04).
 - The drivetrain numbers shown are `driveParams`/`pushForce` of the spec that will be saved. The
   equivalent rpm is motor free rpm ÷ gearbox ÷ external ratio × (wheel mm / 104), because the sim
   models wheel rpm at a 104 mm wheel (`SPEED_PER_RPM`). Catalogue sources are cited in `drive.ts`.

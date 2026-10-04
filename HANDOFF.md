@@ -1,4 +1,4 @@
-# HANDOFF — 2026-10-04g (competitions: ranking points per each game's Competition Manual)
+# HANDOFF — 2026-10-04h (competitions: ranking points per each game's Competition Manual)
 
 **State: on `alpha`. SERVER CHANGE: migration 0060, `Room` (facts capture), `persistMatch`, the competition routes; `dsim-alpha` redeployed before the push.** `npm test` (shared 4102, BIOBUZZ 5568), `test:comp` (1365), `dbtest` (1038), `test:workers` (149), `test:mm` (236), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` and `scripts/compe2e.ts` (28) pass. Clicked through on the admin harness (overview, rankings, matches, the referee desk's facts/card forms, the editor for all three games, phone width).
 
@@ -9,6 +9,17 @@
 - **CM rules applied:** DQ = 0 RP, partner unaffected (T601), and under `cm` a 0 in every average; red card, two yellows in a match, a yellow carried from an earlier match (by first-decided time), a surrogate's card on the previous match. No-show (G208/G203) and an entry not registered are DQ'd in the match. Referees: facts patch, Pattern award/ineligible and Goal ineligible rulings, yellow/red cards; each needs a reason and notifies (`competition.rp`, `competition.card`). Reset and void start a new attempt.
 - **Also:** misscore corrections refuse competition matches (the replay rail says so); deleting an account scrubs its names from the competition log (`users` on entry lines); the desk stays in view on a phone.
 - **Open:** playoffs are not the manual's yet (it has 2/4/6/8 alliances by team count, one match per bracket slot and an "if required" final; DSIM has best-of series and 16); a playoff card or DQ does not cost the alliance; a 2v2 no-show forfeits the whole alliance instead of playing short-handed; a sim red card voids the whole alliance (unreachable today: the sim only issues yellows); BIOBUZZ has no cards; G418.A, G419, G206 and G431 are referee rulings only; DECODE's in-match results use sentence case ("Leave") while the competition pages use the manual's capitals ("LEAVE").
+# HANDOFF — 2026-10-04g (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
+
+**State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 7 and the 5-band descriptor are server changes). Not on `main`.** `npm test` (shared 4055, BIOBUZZ 5569), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass.
+
+- **Owner:** "For the gobilda biobuzz robot, I know i can get closer into the flower but it blocks me. Fix."
+- **Measured:** the real CAD, every triangle swept straight in against what the 3D robot meets at a FLOWER (plates, HIPS pipes, supports, wall), stops 0.38 in short of the ring axis; the sim stopped it at 0.77. Now 0.38, and at 10–20° never more than 0.05 further out than the CAD. biobuzz.md "AN IMPORT GOES INTO A FLOWER AS FAR AS ITS CAD DOES".
+- **What changed** (all behind `SIM_PATCH` 7): FLOWER middle/top plates are solids over their measured outline (`BB_FLOWER_PLATE_OUTLINE`, RENDER lane re-measures `field.glb`), not boxes; the importer gives the middle plate a band of its own with 0.1 in clear either side, up to 5 bands, and writes per-band `cuts` where the convex hull overstates the model (`computeBands`, `bandCuts`); `bbImportClipReach` cuts side-roller imports back to them inside the mouth; a band wholly under the mouth slot no longer keeps a 0.1-in bar across the mouth (that bar, from this morning's floor band, made the bottom POLLEN ride up: F2 0/9 off line, now 84/84).
+- **The owner has to re-save the robot**: open it in the importer from the library and save (the editor re-measures the stored mesh). The old descriptor still plays, with the old bands.
+- **Fixtures:** `SIDE_ROLLER_IMPORT` stays as saved (the patch-6 pins use it); `SIDE_ROLLER_IMPORT_V7` is the same robot as measured now. 3D standard-robot pins re-recorded, old ones checked under patch 6. The standard side-roller drive-in bound went 1.8 → 2.0 in (1.844 against the real plate outline).
+- **Costs:** this robot's 3D compound is 20 colliders (9 before), no measurable tick change; descriptor 3.4 KB (1.6 before), budget now 6 KB; importer and measure-worker chunks +1.4 KB gz each (baselines raised).
+- **Open:** 2D still stops it ~2.3 in short (its FLOWER is one foot rectangle); the standalone probes are `scratch/realstop4.ts` (real CAD), `scratch/simstop2.ts` (sim), `scratch/cutgen.ts` (bands and cuts off a STEP read), gitignored.
 
 # HANDOFF — 2026-10-04f (competitions: FTC-style events, run by staff)
 
@@ -24,6 +35,7 @@
 - **Bugs found by testing and fixed:** a staged room deleted itself when its last socket closed while waiting (a reload stranded the call: every rejoin refused); the join screen lost its socket in React's dev double mount; the partial unique indexes made every entry read scan all competitions; re-inviting a withdrawn duo's partner 500'd; plus five smaller ones in the dbtest agent's report (audit gaps, a completion race, a selection pick/undo race).
 - **Open:** `deleteAccount` deletes the replays of competition matches the account played; `userMatchHistory` shows no Watch button to strangers on competition matches (the replay itself is public); a manual swiss round racing the automatic draw can 500; no champion badge yet (`src/badges.ts` is a closed set with art); no scheduled match times (calls are by hand or auto-call).
 - **Harness:** `npm run adminharness` now seeds four competitions (draft, registration with a duo invite, qualifications with a called match, finished through selection and a best-of-three final).
+
 
 # HANDOFF — 2026-10-04e (importer on goBILDA's BIOBUZZ mecanum: build from the model, every fin turns, side rollers at a FLOWER)
 
@@ -681,6 +693,17 @@ works; until then set `VITE_ZENITH_URL`.
 - Found in passing, not fixed here (robot repo): biobuzz's `PathBuilder.withHeading` does not
   mirror `constant`/`linear`/`facePoint` headings for the other alliance. DSIM mirrors them.
 
+---
+
+# HANDOFF — 2026-09-26c (branch `bb-preview-entry-perf`: faster entry to BIOBUZZ Configure ▸ Robot in 3D)
+
+**State: merged into `alpha` (PR #88).** `build`, `npm test` (shared + 5141 BIOBUZZ PASS), `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Client only, no deploy.
+
+- **Report:** opening /biobuzz/configure/robot lags while the 3D robot renders.
+- **Fix, three commits:** (1) `createEnvironment` no longer builds a room PMREM or compiles the equirect shader at construction. Low/Medium have lighting off, so that 69 ms of work was thrown away; the HDRI path compiles during its fetch and lights the room meanwhile. The builder preview passes `envLighting` to `apply` like the match. (2) Saved-robot thumbnails draw through the live turntable via `capture(size, spec)`, which swaps the build, shoots at the default pose, swaps back and redraws in one task. There is no second WebGL context now; the offscreen scene stays as the fallback. (3) `App.tsx` warms the scene chunk on idle through `preloadRoomView` (3D view + scene-bearing game only).
+- **Measured** (`scratch/perf.cjs`, now with `GFX=<tier>` and `MBPS=<n>` throttle): long tasks Medium 90–147 → ~62 ms, High 211–219 → ~105 (median of 5). At 10 Mbit/s, click-to-ready 400 → 200 ms. Numbers are in `docs/area/ui.md`.
+- **Checked by eye:** thumbnails show their own builds and the hero is undisturbed. A 3D free drive on Medium (room, no IBL) and High (school-hall HDRI) lights as before.
+- **Not done, on purpose:** keeping the turntable's context alive between visits (the rule against holding a context the match wants) and saving thumbnails in storage (`Preview3D.tsx` explains why). Revisit if revisits still measure slow.
 ---
 
 # HANDOFF — 2026-09-26b (branch `fix/ramp-pad-default`: Deploy ramp's pad default moves to R3)

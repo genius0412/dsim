@@ -1,5 +1,5 @@
 import type { Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
-import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
+import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR, simPatchAtLeast } from '../../../config';
 import { updateRobot } from '../../../sim/robot';
 import { robotsEnabled } from '../../../sim/match';
 import { chassisInertia } from '../../../sim/robot';
@@ -489,7 +489,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   // worlds agree rather than trusting the copy.
   world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
-  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION, simPatchAtLeast(world, 7));
   // the trays are KINEMATIC here whatever `BB3_HIVE_DYNAMIC` says — see the header.
   const trays = {
     red: buildKinematicTray(RAPIER, world3d, 'red', trayOuterSkin(world)),

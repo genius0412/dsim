@@ -11,7 +11,7 @@
  * measured twice gives the same descriptor, which is what lets a stored `ImportSetup` re-open the
  * editor on exactly the robot that was saved.
  */
-import type { ImportedBand, ImportedEdge, ImportedMech, ImportedRobot, Vec2 } from '../types';
+import type { ImportedBand, ImportedCut, ImportedEdge, ImportedMech, ImportedRobot, Vec2 } from '../types';
 import { applyFolds, deriveMotion, foldKey, planFolds, type FoldPlan } from './motion';
 import {
   INCHES_PER_UNIT,
@@ -34,7 +34,7 @@ export const ROBOT_MAX_IN = 18;
 export const HULL_QUANTUM = 1 / 64;
 export const MAX_HULL_VERTS = 16;
 export const MAX_BAND_VERTS = 12;
-export const MAX_BANDS = 3;
+export const MAX_BANDS = 5;
 /**
  * `ImportSetup.triBudget` for FULL detail: every triangle the reader makes is kept, previewed, stored
  * and drawn in the match; only the measurement reads a simplified copy (`MEASURE_TRI_BUDGET`).
@@ -68,8 +68,61 @@ const UP_FLAT_SLAB_IN = 0.25;
 const UP_PRIOR_BONUS = 0.25;
 /** band slicing step, inches */
 const BAND_SLICE_IN = 0.5;
+/** slices wholly under this height (in) weigh `LOW_WEIGHT` in the band cut (`computeBands`) */
+const LOW_BAND_IN = 2.5;
+const LOW_WEIGHT = 8;
 /** emit bands only when they save this fraction of the single prism's volume */
 const BAND_MIN_SAVING = 0.05;
+/**
+ * How far the bands beside a band of its own stay clear of the plate, inches. The 3D prism's edge is
+ * rounded (eroded by `r`, a contact skin of `r`) and catches a plate's edge it passes close under:
+ * on goBILDA's BIOBUZZ bot driven straight in, a band ending 0.013 or 0.06 in under the plate held it
+ * 0.1 in short of where the plate's own band stops it; 0.09 did not. What lies in that gap is in no
+ * band (here the top 0.09 in of the intake's cross bar, which passes under the real plate).
+ */
+const BAND_OWN_CLEAR_IN = 0.1;
+/** a BIOBUZZ FLOWER's middle plate, z inches: `FLOWER_RING_Z.mid` (`fieldDims.gen.ts`, which smoke
+ *  holds this equal to; copied so the measure worker does not carry the field's dimensions) */
+export const BAND_FLOWER_PLATE_Z: readonly [number, number] = [3.904, 5.254];
+const floor64 = (z: number): number => Math.floor(z * 64) / 64;
+const ceil64 = (z: number): number => Math.ceil(z * 64) / 64;
+/**
+ * Heights that are a band of their own: a BIOBUZZ FLOWER's middle plate, the one part of the field
+ * a robot's body reaches into, out to the 1/64 grid (`computeBands`), and the gap either side of it
+ * that no band holds (`BAND_OWN_CLEAR_IN`).
+ */
+const BAND_OWN_Z: readonly { band: readonly [number, number]; clear: readonly [number, number] }[] = [
+  {
+    band: [floor64(BAND_FLOWER_PLATE_Z[0]), ceil64(BAND_FLOWER_PLATE_Z[1])],
+    clear: [floor64(BAND_FLOWER_PLATE_Z[0] - BAND_OWN_CLEAR_IN), ceil64(BAND_FLOWER_PLATE_Z[1] + BAND_OWN_CLEAR_IN)],
+  },
+];
+/** a grid slice boundary this close to a `BAND_OWN_Z` end is dropped (no sliver slices), inches */
+const BAND_MIN_SLICE_IN = 0.1;
+/** only bands reaching above this height carry cuts: below a FLOWER's middle plate nothing on the
+ *  field reaches into a robot, and every cut costs the 3D body more convex pieces */
+const CUT_FROM_Z = BAND_OWN_Z[0].band[0];
+/** lateral bins a band's edge is sampled in for its cuts (`bandCuts`) */
+const CUT_BINS = 16;
+/** material this far either side of a bin counts in it, inches (well over the 1/64 grid) */
+const CUT_V_MARGIN = 0.05;
+/**
+ * A cut stands this far proud of the measured model, inches. The editor measures a simplified copy
+ * (`MEASURE_TRI_BUDGET`) whose surfaces can sit inside the real ones by the simplifier's bound, up
+ * to about 0.04 in on an 18-in robot: goBILDA's BIOBUZZ bot's cross bar read 7.64 there against 7.67
+ * in the full mesh, which took all of the 1/32 this was.
+ */
+const CUT_MARGIN_IN = 1 / 16;
+/** a bin is cut only where the hull stands at least this far proud of the model, inches */
+const CUT_MIN_GAIN_IN = 0.1;
+/** one cut ends where the model's edge steps by more than this, inches */
+const CUT_STEP_IN = 0.1;
+/** at most this many cuts an edge of a band (so an empty corner on one edge cannot crowd out the
+ *  recess an intake meets on another), ranked by area to `CUT_VALUE_DEPTH_IN` deep */
+export const MAX_EDGE_CUTS = 2;
+/** a cut is worth its area to this depth and no deeper, inches: a plate meets a cut's width, and an
+ *  empty corner 10 in deep is worth no more to it than one an inch deep */
+const CUT_VALUE_DEPTH_IN = 1;
 
 // ---- plain geometry ------------------------------------------------------------------------
 
@@ -1007,10 +1060,24 @@ export function detectFront(modelParts: readonly MeshPart[], wheels: readonly Ve
 // ---- height bands ------------------------------------------------------------------------
 
 /**
- * Up to three stacked convex prisms for 3D collision. Triangles are clipped into
+ * Up to five stacked convex prisms for 3D collision. Triangles are clipped into
  * `BAND_SLICE_IN` slices, each slice hulled, and the slices split into contiguous bands by DP on
- * the volume each band's hull wastes over the slices inside it. Returned only when they save at
- * least `BAND_MIN_SAVING` of the one-prism volume; MODEL frame.
+ * the volume each band's hull wastes over the slices inside it, where waste under `LOW_BAND_IN`
+ * counts `LOW_WEIGHT` times. Each `BAND_OWN_Z` range is one slice no band holds with anything
+ * else, and the clearance either side of it is in no band. Returned only when they save at least `BAND_MIN_SAVING` of the one-prism
+ * volume; MODEL frame. Each band carries its cuts (`bandCuts`).
+ *
+ * ⚠️ THE FLOOR IS WHERE FIELD ELEMENTS MEET A ROBOT (2026-10-04, owner on goBILDA's BIOBUZZ bot: "I
+ * know i can get closer into the flower but it blocks me"). Its lowest band ran from the tiles to 5 in
+ * and out to its side rollers, 2.7 in past the drive wheels, while under 1 in nothing stands past the
+ * wheels: a FLOWER's lower plate (0.354 in up) slides under the real robot and stopped on the band.
+ * Unweighted, that slab is too little volume for the DP to cut off even with more bands; weighted, it
+ * is a band of its own (0–1 in, the front at the wheels), and the fourth band keeps the rest as it was.
+ *
+ * ⚠️ AND A FLOWER'S MIDDLE PLATE IS A BAND OF ITS OWN (the same complaint, what was left of it). The
+ * bot's frame between its side rollers reaches 7.69 in at the plate's heights, but its intake's cross
+ * bar just under the plate reaches 7.81 and whatever it carries above reaches 8.0; a band shared with
+ * either kept the plate 0.2–0.4 in further out than the real robot stops.
  */
 /** the tallest model bands are computed for (the 18-in cube with room for a units guess near it) */
 const BAND_MAX_HEIGHT_IN = ROBOT_MAX_IN * 1.5;
@@ -1021,37 +1088,45 @@ export function computeBands(modelParts: readonly MeshPart[], heightIn: number, 
   // thread, freezing the editor on one Units click. Such a model is blocked as oversize anyway,
   // and bands are never saved for it.
   if (!(heightIn > BAND_SLICE_IN * 2) || heightIn > BAND_MAX_HEIGHT_IN) return null;
-  const S = Math.ceil(heightIn / BAND_SLICE_IN);
+  // the slice boundaries: the grid, less what falls in or beside an own range's clearance, plus the
+  // clearance's ends and the band's own
+  const own = BAND_OWN_Z.filter((o) => o.clear[0] > BAND_MIN_SLICE_IN && o.band[0] < heightIn - BAND_MIN_SLICE_IN);
+  const zs: number[] = [];
+  for (let k = 0; k * BAND_SLICE_IN < heightIn - 1e-9; k++) {
+    const z = k * BAND_SLICE_IN;
+    if (own.some((o) => z > o.clear[0] - BAND_MIN_SLICE_IN && z < o.clear[1] + BAND_MIN_SLICE_IN)) continue;
+    zs.push(z);
+  }
+  for (const o of own) for (const z of [o.clear[0], o.band[0], o.band[1], o.clear[1]]) if (z < heightIn - BAND_MIN_SLICE_IN) zs.push(z);
+  zs.sort((p, q) => p - q);
+  zs.push(heightIn);
+  const S = zs.length - 1;
+  // a band may not hold an own range's slice with any other, and no band holds a clearance slice
+  const ownSlice = zs.slice(0, S).map((z) => own.some((o) => z === o.band[0]));
+  const gapSlice = zs.slice(0, S).map((z) => own.some((o) => z === o.clear[0] || z === o.band[1]));
   const slicePts: number[][] = Array.from({ length: S }, () => []);
-  const sliceZ = (s: number): number => Math.min(heightIn, s * BAND_SLICE_IN);
+  const sliceZ = (s: number): number => zs[s];
+  // the slice holding height z (the last whose start is at or under it)
+  const sliceOf = (z: number): number => {
+    let lo = 0;
+    let hi = S - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (zs[mid] <= z) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
   const clipAdd = (P: V3[], s: number): void => {
-    const z0 = sliceZ(s);
-    const z1 = sliceZ(s + 1);
-    // Sutherland–Hodgman against z >= z0 and z <= z1
-    const clip = (poly: V3[], keep: (p: V3) => number): V3[] => {
-      const out: V3[] = [];
-      for (let i = 0; i < poly.length; i++) {
-        const a = poly[i];
-        const b = poly[(i + 1) % poly.length];
-        const da = keep(a);
-        const db = keep(b);
-        if (da >= 0) out.push(a);
-        if ((da >= 0) !== (db >= 0)) {
-          const t = da / (da - db);
-          out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]);
-        }
-      }
-      return out;
-    };
-    const c = clip(clip(P, (p) => p[2] - z0), (p) => z1 - p[2]);
+    const c = clipZ(P, sliceZ(s), sliceZ(s + 1));
     const dst = slicePts[s];
     for (const p of c) dst.push(p[0], p[1]);
   };
   forEachTriangle(modelParts, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
     const lo = Math.min(az, bz, cz);
     const hi = Math.max(az, bz, cz);
-    const s0 = Math.max(0, Math.min(S - 1, Math.floor(lo / BAND_SLICE_IN)));
-    const s1 = Math.max(0, Math.min(S - 1, Math.floor(hi / BAND_SLICE_IN)));
+    const s0 = sliceOf(lo);
+    const s1 = sliceOf(hi);
     if (s0 === s1) {
       slicePts[s0].push(ax, ay, bx, by, cx, cy);
       return;
@@ -1062,7 +1137,11 @@ export function computeBands(modelParts: readonly MeshPart[], heightIn: number, 
   const sliceHull = slicePts.map((pts) => hullOfXY(pts));
   const sliceArea = sliceHull.map((h) => (h.length >= 3 ? Math.abs(polygonArea(h)) : 0));
   const sliceH = Array.from({ length: S }, (_, s) => sliceZ(s + 1) - sliceZ(s));
-  const filled = sliceArea.reduce((acc, a, s) => acc + a * sliceH[s], 0);
+  // what is wasted near the floor counts LOW_WEIGHT times: that is where a FLOWER's plates, an
+  // element on the tiles and another robot's frame meet this one, and an intake's overhang above the
+  // floor is empty there however little volume it is (`LOW_BAND_IN`)
+  const sliceW = Array.from({ length: S }, (_, s) => (sliceZ(s + 1) <= LOW_BAND_IN + 1e-9 ? LOW_WEIGHT : 1));
+  const filled = sliceArea.reduce((acc, a, s) => acc + a * sliceH[s] * sliceW[s], 0);
   // hull area of slices i..j, memoised
   const memo = new Map<number, number>();
   const unionArea = (i: number, j: number): number => {
@@ -1076,14 +1155,28 @@ export function computeBands(modelParts: readonly MeshPart[], heightIn: number, 
     memo.set(key, a);
     return a;
   };
-  const bandCost = (i: number, j: number): number => unionArea(i, j) * (sliceZ(j + 1) - sliceZ(i));
-  // DP[k][j] = min total prism volume covering slices 0..j with k bands
+  const wh = (i: number, j: number): number => {
+    let t = 0;
+    for (let s = i; s <= j; s++) t += sliceH[s] * sliceW[s];
+    return t;
+  };
+  // a band holding an own slice holds nothing else, and none holds a clearance slice
+  const bandCost = (i: number, j: number): number => {
+    for (let s = i; s <= j; s++) if (gapSlice[s] || (j > i && ownSlice[s])) return Infinity;
+    return unionArea(i, j) * wh(i, j);
+  };
+  // DP[k][j] = min total prism volume covering slices 0..j with k bands (a clearance slice is
+  // covered by nothing: the bands before it carry over)
   const K = Math.max(1, Math.min(MAX_BANDS, maxBands));
   const dp: number[][] = Array.from({ length: K + 1 }, () => new Array<number>(S).fill(Infinity));
   const cut: number[][] = Array.from({ length: K + 1 }, () => new Array<number>(S).fill(-1));
-  for (let j = 0; j < S; j++) dp[1][j] = bandCost(0, j);
+  for (let j = 0; j < S; j++) dp[1][j] = gapSlice[j] && j > 0 ? dp[1][j - 1] : bandCost(0, j);
   for (let k = 2; k <= K; k++) {
     for (let j = 0; j < S; j++) {
+      if (gapSlice[j]) {
+        if (j > 0) dp[k][j] = dp[k][j - 1];
+        continue;
+      }
       for (let i = 1; i <= j; i++) {
         const c = dp[k - 1][i - 1] + bandCost(i, j);
         if (c < dp[k][j] - 1e-9) {
@@ -1093,16 +1186,25 @@ export function computeBands(modelParts: readonly MeshPart[], heightIn: number, 
       }
     }
   }
-  const single = dp[1][S - 1];
+  // the one prism, held apart from nothing: what bands are measured against
+  const single = unionArea(0, S - 1) * wh(0, S - 1);
+  // the fewest bands that keep each own slice apart, then more while each pays its way
   let bestK = 1;
-  for (let k = 2; k <= K; k++) if (dp[k][S - 1] < dp[bestK][S - 1] - BAND_MIN_SAVING * single * 0.4) bestK = k;
+  while (bestK < K && !Number.isFinite(dp[bestK][S - 1])) bestK++;
+  if (!Number.isFinite(dp[bestK][S - 1])) return null;
+  for (let k = bestK + 1; k <= K; k++) if (dp[k][S - 1] < dp[bestK][S - 1] - BAND_MIN_SAVING * single * 0.4) bestK = k;
   if (bestK === 1 || single - dp[bestK][S - 1] < BAND_MIN_SAVING * single || single <= filled) return null;
   const ranges: [number, number][] = [];
   let j = S - 1;
-  for (let k = bestK; k >= 1; k--) {
+  for (let k = bestK; k >= 1; ) {
+    if (gapSlice[j]) {
+      j--;
+      continue;
+    }
     const i = k === 1 ? 0 : cut[k][j];
     ranges.unshift([i, j]);
     j = i - 1;
+    k--;
   }
   const bands: ImportedBand[] = [];
   for (const [i, jj] of ranges) {
@@ -1114,7 +1216,189 @@ export function computeBands(modelParts: readonly MeshPart[], heightIn: number, 
     if (hull.length < 3) continue;
     bands.push({ z0: q64(sliceZ(i)), z1: q64(sliceZ(jj + 1)), hull });
   }
-  return bands.length >= 2 ? bands : null;
+  if (bands.length < 2) return null;
+  bandCuts(modelParts, bands);
+  return bands;
+}
+
+/** `poly` with z in [z0, z1] (Sutherland–Hodgman) */
+function clipZ(poly: V3[], z0: number, z1: number): V3[] {
+  const clip = (pts: V3[], keep: (p: V3) => number): V3[] => {
+    const out: V3[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const da = keep(a);
+      const db = keep(b);
+      if (da >= 0) out.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]);
+      }
+    }
+    return out;
+  };
+  return clip(clip(poly, (p) => p[2] - z0), (p) => z1 - p[2]);
+}
+
+/** each edge's outward normal and the axis its span runs along: `IMPORT_EDGE_N`/`IMPORT_EDGE_P`
+ *  (`src/sim/importedMech.ts`, which smoke holds these equal to; copied so the measure worker
+ *  does not pull in the game config) */
+export const BAND_CUT_EDGES: readonly { edge: ImportedEdge; n: Vec2; p: Vec2 }[] = [
+  { edge: 'front', n: { x: 1, y: 0 }, p: { x: 0, y: 1 } },
+  { edge: 'back', n: { x: -1, y: 0 }, p: { x: 0, y: -1 } },
+  { edge: 'left', n: { x: 0, y: 1 }, p: { x: -1, y: 0 } },
+  { edge: 'right', n: { x: 0, y: -1 }, p: { x: 1, y: 0 } },
+];
+
+/** the largest `u` of polygon (`us`, `vs`) inside `a ≤ v ≤ b`; −∞ when it misses the slab */
+function maxUInSlab(us: ArrayLike<number>, vs: ArrayLike<number>, n: number, a: number, b: number): number {
+  let best = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const u0 = us[i];
+    const v0 = vs[i];
+    if (v0 >= a && v0 <= b && u0 > best) best = u0;
+    const j = i + 1 === n ? 0 : i + 1;
+    const v1 = vs[j];
+    if (v1 === v0) continue;
+    for (const c of [a, b]) {
+      if ((v0 - c) * (v1 - c) < 0) {
+        const u = u0 + ((c - v0) / (v1 - v0)) * (us[j] - u0);
+        if (u > best) best = u;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * A BAND'S CUTS: where its convex hull stands proud of the model, edge by edge. Each edge is
+ * sampled in `CUT_BINS` bins across the hull; a bin's model edge is the furthest any triangle,
+ * clipped to the band's heights, reaches inside it (± `CUT_V_MARGIN`), and runs of bins the hull
+ * overstates by `CUT_MIN_GAIN_IN` become cuts at the run's furthest model edge plus
+ * `CUT_MARGIN_IN`. So a cut only ever removes empty space. At most `MAX_EDGE_CUTS` an edge, and
+ * only on bands reaching `CUT_FROM_Z`. MODEL frame, unquantised.
+ *
+ * Why (2026-10-04, owner on goBILDA's BIOBUZZ bot: "I know i can get closer into the flower but it
+ * blocks me"): its two side rollers stand 2 in proud of the frame between them, the band's hull
+ * bridges the gap, and a FLOWER's middle plate, which reaches into that gap on the real robot,
+ * stopped on the bridge.
+ */
+function bandCuts(modelParts: readonly MeshPart[], bands: ImportedBand[]): void {
+  const B = bands.length;
+  const E = BAND_CUT_EDGES.length;
+  const lo = new Float64Array(B * E);
+  const w = new Float64Array(B * E);
+  const prof = new Float64Array(B * E * CUT_BINS).fill(-Infinity);
+  for (let bi = 0; bi < B; bi++) {
+    for (let ei = 0; ei < E; ei++) {
+      const p = BAND_CUT_EDGES[ei].p;
+      let a = Infinity;
+      let b = -Infinity;
+      for (const q of bands[bi].hull) {
+        const v = q.x * p.x + q.y * p.y;
+        a = Math.min(a, v);
+        b = Math.max(b, v);
+      }
+      lo[bi * E + ei] = a;
+      w[bi * E + ei] = (b - a) / CUT_BINS;
+    }
+  }
+  const us = new Float64Array(8);
+  const vs = new Float64Array(8);
+  forEachTriangle(modelParts, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    const zl = Math.min(az, bz, cz);
+    const zh = Math.max(az, bz, cz);
+    for (let bi = 0; bi < B; bi++) {
+      const band = bands[bi];
+      if (zh < band.z0 || zl > band.z1) continue;
+      const tri: V3[] = [[ax, ay, az], [bx, by, bz], [cx, cy, cz]];
+      const poly = zl < band.z0 || zh > band.z1 ? clipZ(tri, band.z0, band.z1) : tri;
+      const n = Math.min(8, poly.length);
+      if (n === 0) continue;
+      for (let ei = 0; ei < E; ei++) {
+        const k = bi * E + ei;
+        const W = w[k];
+        if (!(W > 0)) continue;
+        const { n: N, p: P } = BAND_CUT_EDGES[ei];
+        let vmin = Infinity;
+        let vmax = -Infinity;
+        let umax = -Infinity;
+        for (let i = 0; i < n; i++) {
+          const [x, y] = poly[i];
+          us[i] = x * N.x + y * N.y;
+          vs[i] = x * P.x + y * P.y;
+          vmin = Math.min(vmin, vs[i]);
+          vmax = Math.max(vmax, vs[i]);
+          umax = Math.max(umax, us[i]);
+        }
+        const k0 = Math.max(0, Math.floor((vmin - CUT_V_MARGIN - lo[k]) / W));
+        const k1 = Math.min(CUT_BINS - 1, Math.floor((vmax + CUT_V_MARGIN - lo[k]) / W));
+        for (let bin = k0; bin <= k1; bin++) {
+          const at = k * CUT_BINS + bin;
+          if (umax <= prof[at]) continue;
+          const a = lo[k] + bin * W - CUT_V_MARGIN;
+          const b = lo[k] + (bin + 1) * W + CUT_V_MARGIN;
+          prof[at] = vmin >= a && vmax <= b ? umax : Math.max(prof[at], maxUInSlab(us, vs, n, a, b));
+        }
+      }
+    }
+  });
+  for (let bi = 0; bi < B; bi++) {
+    const band = bands[bi];
+    if (!(band.z1 > CUT_FROM_Z)) continue;
+    const kept: ImportedCut[] = [];
+    for (let ei = 0; ei < E; ei++) {
+      const found: { cut: ImportedCut; value: number }[] = [];
+      const k = bi * E + ei;
+      const W = w[k];
+      if (!(W > 0)) continue;
+      const { edge, n: N, p: P } = BAND_CUT_EDGES[ei];
+      const hu = band.hull.map((q) => q.x * N.x + q.y * N.y);
+      const hv = band.hull.map((q) => q.x * P.x + q.y * P.y);
+      const uMin = Math.min(...hu);
+      const sup: number[] = [];
+      const edgeAt: number[] = [];
+      for (let bin = 0; bin < CUT_BINS; bin++) {
+        sup.push(maxUInSlab(hu, hv, hu.length, lo[k] + bin * W, lo[k] + (bin + 1) * W));
+        const m = prof[k * CUT_BINS + bin];
+        edgeAt.push(m === -Infinity ? uMin : m);
+      }
+      const ok = (bin: number): boolean => sup[bin] - (edgeAt[bin] + CUT_MARGIN_IN) >= CUT_MIN_GAIN_IN;
+      for (let i = 0; i < CUT_BINS; ) {
+        if (!ok(i)) {
+          i++;
+          continue;
+        }
+        let j = i;
+        let line = edgeAt[i];
+        while (j + 1 < CUT_BINS && ok(j + 1) && Math.abs(edgeAt[j + 1] - edgeAt[j]) <= CUT_STEP_IN) {
+          j++;
+          line = Math.max(line, edgeAt[j]);
+        }
+        line += CUT_MARGIN_IN;
+        let value = 0;
+        for (let t = i; t <= j; t++) value += Math.min(Math.max(sup[t] - line, 0), CUT_VALUE_DEPTH_IN) * W;
+        const v0 = lo[k] + i * W;
+        const v1 = lo[k] + (j + 1) * W;
+        // the span convention of `ImportedMech.intakes` (`vToSpan`): from < to on the robot's axis
+        const span = edge === 'front' || edge === 'right' ? { from: v0, to: v1 } : { from: -v1, to: -v0 };
+        if (value > 0) found.push({ cut: { edge, ...span, at: line * (N.x + N.y) }, value });
+        i = j + 1;
+      }
+      found.sort((a, b) => b.value - a.value);
+      for (const f of found.slice(0, MAX_EDGE_CUTS).sort((a, b) => a.cut.from - b.cut.from)) kept.push(f.cut);
+    }
+    if (kept.length > 0) band.cuts = kept;
+  }
+}
+
+/** a cut in another frame: shifted by −`o`, then scaled by `s`, on the 1/64 grid */
+export function moveCut(c: ImportedCut, o: Vec2, s = 1): ImportedCut {
+  const endEdge = c.edge === 'front' || c.edge === 'back';
+  const oa = endEdge ? o.x : o.y;
+  const os = endEdge ? o.y : o.x;
+  return { edge: c.edge, from: q64((c.from - os) * s), to: q64((c.to - os) * s), at: q64((c.at - oa) * s) };
 }
 
 // ---- the whole measurement -----------------------------------------------------------------
@@ -1446,7 +1730,14 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
   let bands: ImportedBand[] | undefined;
   if (setup.bands && !empty) {
     const b = o.bandsModel;
-    if (b) bands = b.map((band) => ({ z0: band.z0, z1: band.z1, hull: quantiseHull(band.hull.map((p) => ({ x: p.x - origin.x, y: p.y - origin.y }))) }));
+    if (b) {
+      bands = b.map((band) => ({
+        z0: band.z0,
+        z1: band.z1,
+        hull: quantiseHull(band.hull.map((p) => ({ x: p.x - origin.x, y: p.y - origin.y }))),
+        ...(band.cuts ? { cuts: band.cuts.map((c) => moveCut(c, origin)) } : {}),
+      }));
+    }
   }
 
   // ---- checks (copy: docs/area/ui.md — sentence case, Couldn’t … + a next step) ----
@@ -1595,6 +1886,7 @@ export function buildDescriptor(input: { id: string; measurement: ImportMeasurem
       z0: Math.min(heightIn, q64(band.z0)),
       z1: Math.min(heightIn, q64(band.z1)),
       hull: scale === 1 ? band.hull.map((p) => ({ x: p.x, y: p.y })) : quantiseHull(band.hull.map((p) => ({ x: p.x * scale, y: p.y * scale }))),
+      ...(band.cuts?.length ? { cuts: band.cuts.map((c) => moveCut(c, { x: 0, y: 0 }, scale)) } : {}),
     })).filter((band) => band.z1 > band.z0 && band.hull.length >= 3);
     if (!out.bands.length) delete out.bands;
   }

@@ -18,6 +18,7 @@ import { GAME_IDS } from '../games/types';
 import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
 import { moduleFor } from '../games';
 import { preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -817,6 +818,22 @@ export function App() {
       .scene?.()
       .catch(() => {});
   }, [inActivity, settings.game]);
+  /**
+   * WARM THE 3D CHUNK WHILE THE PLAYER IS ON SOME OTHER SCREEN. The builder's turntable and a 3D
+   * practice both open on the lazy Three.js chunk (~200 KB gz), which otherwise starts downloading
+   * the moment that screen mounts. `preloadRoomView` gates on a game with a scene and on the 3D
+   * view, so DECODE, Chain Reaction and 2D players fetch nothing. It measured as no gain against
+   * localhost (2026-09-23), where there is no network to hide; the live site has one.
+   */
+  useEffect(() => {
+    const warm = (): void => preloadRoomView(settings.game);
+    if (typeof requestIdleCallback !== 'function') {
+      const t = setTimeout(warm, 2000);
+      return () => clearTimeout(t);
+    }
+    const h = requestIdleCallback(warm, { timeout: 5000 });
+    return () => cancelIdleCallback(h);
+  }, [settings.game]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the
