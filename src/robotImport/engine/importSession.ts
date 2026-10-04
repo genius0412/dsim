@@ -11,7 +11,7 @@
  * here on the main thread through `load.ts`, as they always did.
  */
 import { bakeModelHere, type BakeModelInput } from './bakeMesh';
-import type { MeshPart } from '../geometry';
+import { isFullDetail, type MeshPart } from '../geometry';
 import { ImportError, abortError } from './importError';
 import { partBuffers, type ImportProgress, type ImportRequest, type ImportResponse } from './importProtocol';
 import { liteMesh } from './lite';
@@ -39,7 +39,7 @@ function spawn(): Worker | null {
 
 /** the same steps on this thread (no worker) */
 async function onMainThread(files: File[], opts: ImportOptions): Promise<PreparedModel> {
-  const loaded = await loadModel(files, (stage, frac) => opts.onProgress?.({ stage, frac }), { signal: opts.signal });
+  const loaded = await loadModel(files, (stage, frac) => opts.onProgress?.({ stage, frac }), { signal: opts.signal, keepSmall: isFullDetail(opts.budget) });
   if (opts.signal?.aborted) throw abortError();
   opts.onProgress?.({ stage: 'simplify', tris: loaded.trisIn });
   // a frame for the label to paint before the synchronous part of simplification
@@ -114,7 +114,8 @@ export async function importModel(input: readonly File[] | FileList, opts: Impor
   try {
     if (r.format === 'step') {
       // STEP in its own workers, then the merge and simplify in the import worker
-      const parsed = await readStepFile(r, (stage, frac) => opts.onProgress?.({ stage, frac }), opts.signal);
+      // Full detail reads every part of the file, the screws and nuts too
+      const parsed = await readStepFile(r, (stage, frac) => opts.onProgress?.({ stage, frac }), opts.signal, isFullDetail(opts.budget));
       request = { kind: 'parts', name, format: 'step', parsed, budget: opts.budget };
       transfer = partBuffers(parsed.parts);
     } else if (!WORKER_FORMATS.includes(r.format)) {

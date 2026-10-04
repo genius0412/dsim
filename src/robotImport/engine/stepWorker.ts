@@ -7,8 +7,8 @@
  * - past that, IN PIECES (`stepSplit.ts`): occt's wasm heap stops at 2 GB and needs about 35 bytes
  *   of it per byte of STEP text, so a 125 MB file cannot be read whole (it "succeeds" with no
  *   triangles), and pieces read in parallel. Pieces of `pieceBytesFor` go to a pool of occt workers
- *   (`poolSize`), biggest first, and parts under `MIN_PART_MM` (screws, nuts, washers) are left out,
- *   with a note saying so.
+ *   (`poolSize`), biggest first. At Light detail parts under `MIN_PART_MM` (screws, nuts, washers)
+ *   are left out, with a note saying so; Full reads every one (`keepSmall`).
  *
  * A whole read that comes back with faces and no triangles (occt out of heap) is read again in
  * pieces. Every read carries a colour hint (`colourHint`): occt finds no colour for a body of a
@@ -25,7 +25,8 @@ import { zipEntryBytes } from './zip';
  * in parallel are faster (a 12.6 MB file: 10.0 s whole, 4.2 s in 3 MB pieces on 8 readers).
  */
 export const DIRECT_MAX_BYTES = 8 * 1024 * 1024;
-/** parts whose bounding-box diagonal is under this are left out of a file read in pieces */
+/** parts whose bounding-box diagonal is under this are left out of a file read in pieces at Light
+ *  detail; Full reads them all (`StepRequest.keepSmall`) */
 export const MIN_PART_MM = 16;
 
 const ctx = self as unknown as {
@@ -93,7 +94,7 @@ async function readBytes(req: StepRequest): Promise<Uint8Array> {
 
 const plural = (n: number, one: string, many: string): string => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 
-async function readInPieces(bytes: Uint8Array, name: string): Promise<{ parts: StepPart[]; trisIn: number; notes: string[] }> {
+async function readInPieces(bytes: Uint8Array, name: string, keepSmall: boolean): Promise<{ parts: StepPart[]; trisIn: number; notes: string[] }> {
   progress('step-index');
   let ix;
   try {
@@ -102,7 +103,7 @@ async function readInPieces(bytes: Uint8Array, name: string): Promise<{ parts: S
     if (e instanceof StepSyntaxError && e.truncated) throw stepCutOff(name);
     throw new ImportError('corrupt', `Couldn’t read ${name}: it looks damaged (${e instanceof Error ? e.message : 'unknown error'}). Export it again, or export a GLB or STL instead.`);
   }
-  const plan = planPieces(ix, { pieceBytes: pieceBytesFor(bytes.length, devicePool(Infinity)), minPartMm: MIN_PART_MM });
+  const plan = planPieces(ix, { pieceBytes: pieceBytesFor(bytes.length, devicePool(Infinity)), minPartMm: keepSmall ? 0 : MIN_PART_MM });
   if (!plan.pieces.length) {
     throw new ImportError('empty', `Couldn’t find any solids in ${name}. Export the robot as solids or surfaces and try again.`);
   }
@@ -191,7 +192,7 @@ ctx.onmessage = async (e: MessageEvent<StepRequest>) => {
         return;
       }
     }
-    const out = await readInPieces(bytes, req.name);
+    const out = await readInPieces(bytes, req.name, !!req.keepSmall);
     const transfer: Transferable[] = [];
     for (const p of out.parts) transfer.push(p.positions.buffer, p.indices.buffer, ...(p.body ? [p.body.buffer] : []));
     ctx.postMessage({ kind: 'done', parts: out.parts, trisIn: out.trisIn, notes: out.notes }, transfer);

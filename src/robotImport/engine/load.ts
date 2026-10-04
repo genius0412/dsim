@@ -131,6 +131,8 @@ export async function resolveFiles(input: readonly File[] | FileList): Promise<R
 export interface LoadOptions {
   /** stop a STEP read (its worker is terminated) and reject with an `AbortError` */
   signal?: AbortSignal;
+  /** a STEP read in pieces keeps its smallest parts too (Full detail; `StepRequest.keepSmall`) */
+  keepSmall?: boolean;
 }
 
 /**
@@ -157,7 +159,7 @@ export async function readRaw(
   const r = await resolveFiles(input);
   const name = r.zip ? r.zip.name : r.file.name;
   onProgress?.('read');
-  if (r.format === 'step') return { name, format: r.format, parsed: await readStepFile(r, onProgress, opts.signal) };
+  if (r.format === 'step') return { name, format: r.format, parsed: await readStepFile(r, onProgress, opts.signal, opts.keepSmall) };
   let files = r.files;
   let file = r.file;
   if (r.zip) {
@@ -169,7 +171,7 @@ export async function readRaw(
 }
 
 /** a STEP file (or the STEP in a zip) in its worker */
-export async function readStepFile(r: Resolved, onProgress?: LoadProgress, signal?: AbortSignal): Promise<ParsedFiles> {
+export async function readStepFile(r: Resolved, onProgress?: LoadProgress, signal?: AbortSignal, keepSmall = false): Promise<ParsedFiles> {
   const name = r.zip ? r.zip.name : r.file.name;
   let readStep: typeof import('./stepReader').readStep;
   try {
@@ -177,7 +179,7 @@ export async function readStepFile(r: Resolved, onProgress?: LoadProgress, signa
   } catch (e) {
     throw new ImportError('step-reader', `Couldn’t load the STEP reader (${e instanceof Error ? e.message : String(e)}). Check your connection and try again.`);
   }
-  const res = await readStep(r.file, name, r.zip?.entry ?? null, (s, frac) => onProgress?.(s, frac), signal);
+  const res = await readStep(r.file, name, r.zip?.entry ?? null, (s, frac) => onProgress?.(s, frac), signal, keepSmall);
   const parts = res.parts.map((p) => ({ positions: p.positions, indices: p.indices, color: p.color, name: p.name }));
   return { parts, bytes: r.zip ? r.zip.entry.size : r.file.size, notes: res.notes, fileUnit: 'mm', trisIn: res.trisIn };
 }

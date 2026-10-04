@@ -43,7 +43,9 @@ export interface StepPart {
 export type StepParts = { kind: 'done'; parts: StepPart[]; trisIn: number; faces: number } | { kind: 'error'; message: string };
 
 /** the STEP worker's request: the file (or the zip holding it), read there, not on the main thread */
-export type StepRequest = { file: Blob; name: string; entry: ZipEntry | null };
+/** `keepSmall`: read every part, screws and nuts too (Full detail); without it a file read in
+ *  pieces leaves out parts under `MIN_PART_MM` to read faster */
+export type StepRequest = { file: Blob; name: string; entry: ZipEntry | null; keepSmall?: boolean };
 export type StepStage = 'unzip' | 'read' | 'step-wasm' | 'step-index' | 'step-parse';
 export type StepResponse =
   | { kind: 'progress'; stage: StepStage; frac?: number }

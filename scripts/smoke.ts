@@ -31124,6 +31124,29 @@ function impPlayCheck(g: GameId): void {
   check('import UI moving parts: the input is not changed', groups.length === 6 && groups[4].rideOn === 1 && groups[4].follows?.group === 3);
 }
 
+/*
+ * ---- FULL DETAIL READS EVERY PART (2026-10-04, owner: "Can you just import it 100%?") ----
+ * A STEP read in pieces left out parts under `MIN_PART_MM` (a screw definition is placed hundreds of
+ * times). Full detail keeps them: the import passes `isFullDetail(budget)` to the STEP read, and the
+ * worker plans with no size floor. Light keeps the faster read.
+ */
+{
+  const fs = await import('node:fs');
+  const session = fs.readFileSync('src/robotImport/engine/importSession.ts', 'utf8');
+  const worker = fs.readFileSync('src/robotImport/engine/stepWorker.ts', 'utf8');
+  const split = await import('../src/robotImport/engine/stepSplit');
+  const geo = await import('../src/robotImport/geometry');
+  check('full detail: the import asks the STEP read to keep every part at Full (both paths)',
+    /readStepFile\(r, [^;]*isFullDetail\(opts\.budget\)\)/.test(session) && /keepSmall: isFullDetail\(opts\.budget\)/.test(session));
+  check('full detail: the worker plans with no size floor when asked to keep small parts', /minPartMm: keepSmall \? 0 : MIN_PART_MM/.test(worker));
+  check('full detail: Full is the default detail and Light is not Full', geo.isFullDetail(geo.DEFAULT_TRI_BUDGET) && !geo.isFullDetail(geo.LIGHT_TRI_BUDGET));
+  // the fixture's parts are all over 16 mm, so a floor high enough to leave some out shows the switch
+  const ix = split.indexStep(new Uint8Array(fs.readFileSync('scripts/fixtures/robot-import/robot.step')));
+  const floor = split.planPieces(ix, { pieceBytes: 1 << 20, minPartMm: 200 });
+  const none = split.planPieces(ix, { pieceBytes: 1 << 20, minPartMm: 0 });
+  check('full detail: with no floor no part is left out (the same file with a floor leaves some out)', floor.skipped.length > 0 && none.skipped.length === 0, `floor ${floor.skipped.length}, none ${none.skipped.length}`);
+}
+
 /**
  * ---- AN OUT-OF-DATE LIBRARY COPY IS NOT DRAWN (`importedAssets` "AN OUT-OF-DATE COPY IS NOT DRAWN") ----
  * The account syncs the active robot's spec, never its model: after an edit on device A, device B's
@@ -32650,7 +32673,7 @@ function impPlayCheck(g: GameId): void {
   const eng = (f: string): string => src(joinPath('src', 'robotImport', 'engine', f));
   check(
     'robot import (real CAD): the STEP worker makes its occt workers with `new Worker(new URL(…, import.meta.url), { type: \'module\' })`, and is handed the FILE, never its bytes on the main thread',
-    /new Worker\(new URL\('\.\/occtWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(eng('stepWorker.ts')) && /worker\.postMessage\(\{ file, name, entry \}/.test(eng('stepReader.ts')) && !/arrayBuffer\(\)/.test(eng('stepReader.ts')),
+    /new Worker\(new URL\('\.\/occtWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(eng('stepWorker.ts')) && /worker\.postMessage\(\{ file, name, entry(, keepSmall)? \}/.test(eng('stepReader.ts')) && !/arrayBuffer\(\)/.test(eng('stepReader.ts')),
   );
   const workerSide = ['stepWorker.ts', 'occtWorker.ts', 'stepSplit.ts', 'stepConvert.ts', 'zip.ts', 'miniDom.ts', 'threeMf.ts'];
   // comments and string literals out (the small DOM's own node name is the string '#document')

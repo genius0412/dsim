@@ -20,6 +20,7 @@ export function readStep(
   entry: ZipEntry | null,
   onProgress?: StepProgress,
   signal?: AbortSignal,
+  keepSmall = false,
 ): Promise<{ parts: StepPart[]; trisIn: number; notes: string[] }> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -64,6 +65,6 @@ export function readStep(
           : new ImportError('step-reader', `Couldn’t load the STEP reader (${e.message || 'its script did not load'}). Check your connection and try again.`),
       );
     };
-    worker.postMessage({ file, name, entry } satisfies StepRequest);
+    worker.postMessage({ file, name, entry, keepSmall } satisfies StepRequest);
   });
 }

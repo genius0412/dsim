@@ -305,7 +305,12 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
 - **Planning is string-light.** `planPieces` sized parts by parsing their points with
   `String.fromCharCode(...bytes)`, a spread through the iterator protocol per byte: 6.7 s of a 420 MB
   file. `fromCharCode.apply` (`chars`) gives the same strings: 1.7 s, the plan bit-identical.
-- **Parts under 16 mm across are left out of a file read in pieces** (`MIN_PART_MM`): screws, nuts,
+- ⚠️ **Full detail reads every part; Light leaves out parts under 16 mm across** of a file read in
+  pieces (`MIN_PART_MM`, `StepRequest.keepSmall`; owner 2026-10-04: "Can you just import it 100%?").
+  A skipped part is a DEFINITION, and one screw is placed hundreds of times, so "left out 50" was most
+  of the hardware. Kept, measured with another session loading the machine: REV 2.31 → 2.93 M
+  triangles, 41 → 53 s; goBILDA BIOBUZZ 5.66 → 6.34 M, 68 → 81 s; goBILDA DECODE 6.24 → 7.36 M,
+  71 → 86 s. What Light leaves out: screws, nuts,
   washers. A part's size is the box of the points ON it (B-rep vertices, B-spline control points, a
   whole circle's centre ± radius), not of every point it names: a cylinder's placement can sit
   metres along its axis, and REV's bot has 1,476 arcs of a 2.27 m circle on one 40 cm part. The
