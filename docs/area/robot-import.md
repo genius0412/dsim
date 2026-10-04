@@ -478,6 +478,19 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   re-read keep the build. Measured: goBILDA BIOBUZZ 6WD and mecanum side rollers at the front and a
   fixed shooter; goBILDA DECODE and REV DUO no intake and a fixed launcher; AndyMark Robits ×3 a
   front sweeper and a fixed shooter.
+- ⚠️ **THE SHOT IS READ OFF THE HOOD** (`readShot`, 2026-10-04, owner: "Based on the flywheel, I think it
+  should be able to determine what type of shooter it is and where it is"). In a slice through the
+  flywheel's tread, square to its level axle, the nearest material round the wheel is found in 3°
+  bins; material one element across off the wheel, less the squeeze (0.5–1.15 diameters: POLLEN 2.8
+  in, DECODE's artifact 5 in, `launchElementD`), is hood. The longest run whose higher end points up
+  is the hood (a turret ring under the wheel is a flat run); the element leaves along it there, half
+  a diameter off it. `buildFromCad` puts a BIOBUZZ fixed shooter on the edge it throws toward at that
+  angle (30–80), and both games get the shooter placed where it releases, facing that way; a turret
+  is placed on its ring's axis at the release height. DECODE keeps its own hood (its kit's 90° guide
+  is not the sim's no-spin angle). The placements are kept as `EditorDoc.cadMech`, what Reset puts
+  back. Measured: goBILDA BIOBUZZ ×2 out the back at 68° (the 68° the fixed default was hand-measured
+  at), goBILDA DECODE straight up (89°), REV forward over the top at 59°; AndyMark ×3 none (the round
+  part found there is a gear), so the defaults stay.
 - ⚠️ **THE FINDERS AND A CLICK READ EVERY TRIANGLE** (`detectParts`: `shownParts` at Full detail), not the
   ~250k copy measured for the footprint: the copy keeps every body's id but not its shape, and on
   goBILDA's BIOBUZZ mecanum bot 296 bodies sat more than 1 mm off (a gearbox face 7 mm, a motor base

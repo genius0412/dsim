@@ -218,6 +218,8 @@ export const COPY = {
   cadBuild: (set: readonly string[]) => `Set from the model: ${set.length > 1 ? `${set.slice(0, -1).join(', ')} and ${set[set.length - 1]}` : set[0]}. Change any of them below.`,
   cadTurret: 'a turret',
   cadFixed: 'a fixed shooter',
+  cadFixedAt: (edge: string, deg: number) => `a fixed shooter facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge} at ${deg}°`,
+  cadFixedFacing: (edge: string) => `a fixed launcher facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge}`,
   cadIntake: (side: boolean, mount: string) => `${side ? 'side rollers' : 'a sweeper'} at the ${mount === 'side' ? 'side' : mount}`,
   cadNoLift: 'no box tube',
   cadHandLoaded: 'no intake (loaded by hand)',

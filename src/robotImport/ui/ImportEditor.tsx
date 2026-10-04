@@ -34,6 +34,7 @@ import {
   moveWheel,
   rectangleWheels,
   buildFromCad,
+  launchElementD,
   keepEditedMotion,
   reviewItems,
   reviewSummary,
@@ -547,7 +548,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // (never from a measurement of the orientation being replaced: the placements would land on it)
   useEffect(() => {
     if (!doc || !m || !built || m.hull.length < 3 || measuring) return;
-    const next = defaultMechFor(game, built.spec, m.origin, doc.mech);
+    // the game's defaults round what the player placed, else what the model showed (`cadMech`)
+    const next = defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null);
     if (JSON.stringify(next) !== JSON.stringify(doc.mech)) update((d) => ({ ...d, mech: next }));
   }, [doc, m, built, game, update, measuring]);
 
@@ -797,8 +799,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // default in for that build, and this runs again to find the moving parts from them
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels));
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: null } : {}) }));
+      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech } : {}) }));
       return;
     }
     const found = findAll([]);
@@ -920,7 +922,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         hull={m.hull}
         heightIn={m.heightIn}
         mech={doc.mech}
-        home={defaultMechFor(game, built.spec, m.origin, null)}
+        home={defaultMechFor(game, built.spec, m.origin, doc.cadMech ?? null)}
         defs={defs}
         checks={mechChecks}
         selected={selHandle}

@@ -31296,6 +31296,52 @@ function impPlayCheck(g: GameId): void {
   const dc = em.buildFromCad('decode', { ...DEFAULT_SPEC, intake: 'sloped' }, { intake: null, launcher: { at: [-1, 0, 10], turret: false } });
   check('cad build: DECODE with no roller is loaded by hand, and a flywheel without a ring is a fixed launcher', !!dc && dc.spec.intake === 'none' && decodeFixedLauncher(dc.spec), J(dc?.set));
   check('cad build: Chain Reaction is left alone', em.buildFromCad('chain', DEFAULT_SPEC, cad) === null);
+  // THE SHOT, READ OFF THE HOOD (`readShot`, 2026-10-04, owner: "Based on the flywheel, I think it
+  // should be able to determine what type of shooter it is and where it is"): a flywheel with a
+  // straight sheet over it, one POLLEN less a squeeze off the wheel, rising 40° to the back
+  {
+    const D = 2.8;
+    const cx = -1;
+    const cz = 8;
+    const d = 1.9 + 0.7 * D;
+    const th = (50 * Math.PI) / 180;
+    const n = [Math.cos(th), Math.sin(th)];
+    const t = [-Math.cos((40 * Math.PI) / 180), Math.sin((40 * Math.PI) / 180)];
+    const P0 = [cx + d * n[0], cz + d * n[1]];
+    const end = (k: number, off: number): [number, number, number] => [P0[0] + k * t[0] + off * n[0], -1.5, P0[1] + k * t[1] + off * n[1]];
+    const sheet: import('./robot-import/synthRobot').Prism = { name: 'hood', color: G, base: [end(-3, 0), end(3, 0), end(3, 0.08), end(-3, 0.08)], extrude: [0, 3, 0] };
+    const launcher = [
+      synth.box('frame', G, -8, 7, -7, 7, 1, 2),
+      synth.cylY('flywheel', G, cx, cz, 1.9, -0.4, 0.4, 48),
+      synth.cylY('fly_shaft', G, cx, cz, 0.2, -1.6, 1.6, 8),
+    ];
+    const hooded = motion.readBuild(mk([...launcher, sheet]), new Set(), D).launcher;
+    const s = hooded?.shot;
+    // the release: half an element off the sheet, toward the wheel, at the sheet's high end
+    const want = [P0[0] + 3 * t[0] - (D / 2) * n[0], P0[1] + 3 * t[1] - (D / 2) * n[1]];
+    check('cad shot: a flywheel under a sheet rising 40° to the back throws out the back at 40° (±1.5), from half an element under the sheet\'s high end (±0.25 in)',
+      !!s && Math.abs(s.elevDeg - 40) < 1.5 && s.dir[0] < -0.7 && Math.abs(s.dir[1]) < 0.02 && Math.hypot(s.release[0] - want[0], s.release[2] - want[1]) < 0.25,
+      J(s && { ...s, want }));
+    const bare = motion.readBuild(mk(launcher), new Set(), D).launcher;
+    check('cad shot: with no hood, or no element size, there is no shot to read',
+      !!bare && !bare.shot && !motion.readBuild(mk([...launcher, sheet]), new Set()).launcher?.shot, J(bare));
+    const cadShot = { intake: null, launcher: hooded! };
+    const bs = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, cadShot);
+    const bl = bs && bbLauncherOf(bs.spec, 75);
+    check('cad shot: BIOBUZZ builds a fixed shooter on the edge the hood throws toward, at its angle, placed where it releases and facing that way',
+      !!bs && !!bl && bl.kind === 'fixed' && bl.mount === 'back' && bl.hoodDeg === Math.round(s!.elevDeg) && bs.mech?.shooterYawDeg === 180 &&
+        Math.abs(bs.mech.shooter!.x - s!.release[0]) <= 1 / 64 && Math.abs(bs.mech.shooter!.z - s!.release[2]) <= 1 / 64 && bs.set.some((x) => x.includes('back') && x.includes(`${bl.hoodDeg}°`)),
+      J(bs && { l: bl, mech: bs.mech, set: bs.set }));
+    const ds = em.buildFromCad('decode', { ...DEFAULT_SPEC }, cadShot);
+    check('cad shot: DECODE builds a fixed launcher placed where it releases, facing the way it throws (its hood stays its own)',
+      !!ds && decodeFixedLauncher(ds.spec) && ds.mech?.shooterYawDeg === 180 && ds.spec.hoodDeg === undefined && ds.mech.shooter!.z >= 10.5,
+      J(ds && { mech: ds.mech, hood: ds.spec.hoodDeg }));
+    const ringed = motion.readBuild(mk([...launcher, sheet, synth.cylZ('ring', G, cx, 0, 3, 4, 4.5, 48)]), new Set(), D).launcher;
+    const tm = em.cadLauncherMech('biobuzz', { intake: null, launcher: ringed! });
+    check('cad shot: a turret is placed on its ring\'s axis, at the height its hood releases from',
+      !!ringed?.turret && !!ringed.shot && !!tm?.shooter && Math.abs(tm.shooter.x - cx) < 0.1 && Math.abs(tm.shooter.y) < 0.1 && Math.abs(tm.shooter.z - ringed.shot.release[2]) <= 1 / 64 && tm.shooterYawDeg === undefined,
+      J({ ringed, tm }));
+  }
   // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
   // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
   // front wheels from 1 in: under 1 in only the wheels stand, so a field element's low plate slides under

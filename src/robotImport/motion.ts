@@ -447,7 +447,7 @@ function leadOnAxle(parts: readonly MeshPart[], st: BodyStats, seed: number, fit
  * axle never does (`axleMotors`, 2026-10-04): its can, gearbox, shield and end cap stay, its output
  * shaft turns. `motor` says the seed is itself part of a motor.
  */
-function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: number[]; motor: boolean } {
+export function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: number[]; motor: boolean } {
   const st = bodyStats(parts);
   const fit = fitRound(parts, [seed]);
   if (!fit) return { bodies: [seed], motor: false };
@@ -1085,7 +1085,7 @@ const FLYWHEEL_R_MAX_IN = 2.6;
 
 /** the bodies that could be a flywheel: a round DISC (thinner along its axle than across it) with a
  *  level axle and a flywheel's radius, centred where `where` allows; each with its radius and centre */
-function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<number>, where: (c: V3) => boolean): { b: number; r: number; c: V3 }[] {
+export function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<number>, where: (c: V3) => boolean): { b: number; r: number; c: V3 }[] {
   const st = bodyStats(parts);
   const cands: { b: number; r: number; c: V3 }[] = [];
   for (const b of st.ids) {
@@ -1139,6 +1139,11 @@ export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: Re
  * suggestion; null when no such ring is there.
  */
 export function findTurretGroup(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): MotionGroup | null {
+  return findTurret(parts, at, taken)?.group ?? null;
+}
+
+/** `findTurretGroup`, with the ring it found: its centre (on the turret's axis) and radius */
+function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): { group: MotionGroup; ring: { c: V3; r: number } } | null {
   const st = bodyStats(parts);
   let ring: { b: number; c: V3; r: number; z0: number } | null = null;
   for (const b of st.ids) {
@@ -1166,7 +1171,7 @@ export function findTurretGroup(parts: readonly MeshPart[], at: V3, taken: Reado
     if (far > reach) continue;
     bodies.push(b);
   }
-  return bodies.length ? { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true } : null;
+  return bodies.length ? { group: { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
 }
 
 // ---- what the model is built with, before anything is placed ------------------------------------
@@ -1174,12 +1179,248 @@ export function findTurretGroup(parts: readonly MeshPart[], at: V3, taken: Reado
 /** a launcher's flywheel is centred at least this high, inches: an intake's rollers sit lower */
 const LAUNCHER_MIN_Z_IN = 4;
 
+/** the hood is read in bins this wide round the flywheel, degrees */
+const HOOD_BIN_DEG = 3;
+/** material is the hood where it stands this many element diameters off the wheel: one element,
+ *  less what it is squeezed by, and no wider than a loose fit */
+const HOOD_GAP_LO = 0.5;
+const HOOD_GAP_HI = 1.15;
+/** a hood wraps at least this much of the wheel, degrees */
+const HOOD_MIN_DEG = 15;
+/** bins with nothing in them a hood may skip (a perforated sheet) */
+const HOOD_HOLE_BINS = 2;
+/** past the squeeze the hood goes on while its surface steps by no more than this a bin, inches */
+const HOOD_STEP_IN = 0.5;
+/** an exit whose direction rises less than this (sine) is no launch */
+const HOOD_MIN_RISE = 0.05;
+/** edges are sampled this finely, inches */
+const HOOD_SAMPLE_IN = 0.05;
+/** the hood is looked for this many element diameters off the wheel (the starter bots release
+ *  within 1.5) */
+const HOOD_REACH = 2;
+
+/** the shot a launcher's hood gives (`readShot`) */
+export interface CadShot {
+  /** the way the element leaves the hood, MODEL frame, unit, z up */
+  dir: V3;
+  /** degrees above level */
+  elevDeg: number;
+  /** the element's centre where it leaves the hood, MODEL frame */
+  release: V3;
+}
+
+/**
+ * THE SHOT, READ OFF THE HOOD (2026-10-04, owner: "Based on the flywheel, I think it should be able to
+ * determine what type of shooter it is and where it is"). A flywheel throws an element along the
+ * channel between it and its hood: material one element across off the wheel, less the squeeze
+ * (`HOOD_GAP_LO`..`HOOD_GAP_HI` diameters). In a slice through the wheel's tread, square to its level
+ * axle, the nearest material is found in `HOOD_BIN_DEG` bins round it; the longest run of bins at
+ * the hood's distance is the hood, carried on past the squeeze while its surface runs on smoothly.
+ * The element leaves at the run's HIGHER end, along the hood there, and that end must point up: a
+ * hood is there to lift (the longest run that does; a turret's ring under the wheel is a flat run). goBILDA's BIOBUZZ bot: a straight sheet over the wheel, 1.9 in off it,
+ * rising to the back at 35°. REV's DECODE bot: a hood wrapped one element out round the wheel's
+ * underside, throwing forward over the top. Null when the axle is not level, the element size is
+ * unknown, or no hood is found (AndyMark's bots, whose round part there is a gear).
+ */
+export function readShot(parts: readonly MeshPart[], disc: number, elementD: number): CadShot | null {
+  if (!(elementD > 0)) return null;
+  const fit = fitRound(parts, [disc]);
+  if (!fit) return null;
+  const a = norm(fit.axis);
+  if (Math.abs(a[2]) > 0.3) return null;
+  const c = fit.pivot;
+  const R = fit.radius;
+  const u = norm(cross(a, [0, 0, 1]));
+  // the tread: the disc's box along the axle (exact for an axle along a model axis)
+  const st = bodyStats(parts);
+  const box = setMoments(st, [disc]);
+  const s0 = dot(sub(boxCentre(box), c), a);
+  const half = Math.max(0.15, (Math.abs(a[0]) * (box.max[0] - box.min[0]) + Math.abs(a[1]) * (box.max[1] - box.min[1]) + Math.abs(a[2]) * (box.max[2] - box.min[2])) / 2);
+  // the wheel and what turns with it are not the hood
+  const skip = new Set(spinAxle(parts, disc).bodies);
+  skip.add(disc);
+  const N = Math.round(360 / HOOD_BIN_DEG);
+  const rmin = new Float64Array(N).fill(Infinity);
+  const rLo = R + 0.15;
+  const rHi = R + HOOD_REACH * elementD;
+  // only bodies whose box comes within reach of the wheel are walked
+  const near = new Uint8Array(st.n.length);
+  const reach = rHi + half + Math.abs(s0);
+  for (const b of st.ids) {
+    let ok = !skip.has(b);
+    for (let k = 0; k < 3 && ok; k++) ok = st.min[3 * b + k] <= c[k] + reach && st.max[3 * b + k] >= c[k] - reach;
+    if (ok) near[b] = 1;
+  }
+  const binOf = (pu: number, pv: number): number => {
+    let th = Math.atan2(pv, pu);
+    if (th < 0) th += 2 * Math.PI;
+    return Math.min(N - 1, Math.floor((th * 180) / Math.PI / HOOD_BIN_DEG));
+  };
+  const put = (pu: number, pv: number): void => {
+    const r = Math.hypot(pu, pv);
+    if (r < rLo || r > rHi) return;
+    const k = binOf(pu, pv);
+    if (r < rmin[k]) rmin[k] = r;
+  };
+  // a triangle clipped to the tread's slab, as (s, u, v) corners
+  const clipS = (poly: V3[], keep: (q: V3) => number): V3[] => {
+    const out: V3[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      const dp = keep(p);
+      const dq = keep(q);
+      if (dp >= 0) out.push(p);
+      if ((dp >= 0) !== (dq >= 0)) {
+        const t = dp / (dp - dq);
+        out.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), p[2] + t * (q[2] - p[2])]);
+      }
+    }
+    return out;
+  };
+  // (s, u, v) of a triangle's corners: s along the axle from the tread's middle
+  const Q = new Float64Array(9);
+  for (const p of parts) {
+    const P = p.positions;
+    const idx = p.indices;
+    const n = idx ? idx.length : P.length / 3;
+    const B = p.body;
+    for (let t = 0; t + 2 < n; t += 3) {
+      const i0 = idx ? idx[t] : t;
+      if (B && !near[B[i0]]) continue;
+      let sLo = Infinity;
+      let sHi = -Infinity;
+      let uLo = Infinity;
+      let uHi = -Infinity;
+      let vLo = Infinity;
+      let vHi = -Infinity;
+      for (let k = 0; k < 3; k++) {
+        const v = k === 0 ? i0 : idx ? idx[t + k] : t + k;
+        const dx = P[3 * v] - c[0];
+        const dy = P[3 * v + 1] - c[1];
+        const dz = P[3 * v + 2] - c[2];
+        const s = dx * a[0] + dy * a[1] + dz * a[2] - s0;
+        const w = dx * u[0] + dy * u[1] + dz * u[2];
+        Q[3 * k] = s;
+        Q[3 * k + 1] = w;
+        Q[3 * k + 2] = dz;
+        sLo = Math.min(sLo, s);
+        sHi = Math.max(sHi, s);
+        uLo = Math.min(uLo, w);
+        uHi = Math.max(uHi, w);
+        vLo = Math.min(vLo, dz);
+        vHi = Math.max(vHi, dz);
+      }
+      if (sLo > half || sHi < -half || uLo > rHi || uHi < -rHi || vLo > rHi || vHi < -rHi) continue;
+      const q: V3[] = [
+        [Q[0], Q[1], Q[2]],
+        [Q[3], Q[4], Q[5]],
+        [Q[6], Q[7], Q[8]],
+      ];
+      const cl = sLo >= -half && sHi <= half ? q : clipS(clipS(q, (x) => half - x[0]), (x) => x[0] + half);
+      for (let i = 0; i < cl.length; i++) {
+        const A = cl[i];
+        const B = cl[(i + 1) % cl.length];
+        const len = Math.hypot(B[1] - A[1], B[2] - A[2]);
+        const steps = Math.max(1, Math.ceil(len / HOOD_SAMPLE_IN));
+        for (let k = 0; k < steps; k++) put(A[1] + ((B[1] - A[1]) * k) / steps, A[2] + ((B[2] - A[2]) * k) / steps);
+      }
+    }
+  }
+  const hood = (k: number): boolean => rmin[k] - R >= HOOD_GAP_LO * elementD && rmin[k] - R <= HOOD_GAP_HI * elementD;
+  // the runs of hood bins round the circle, skipping short holes; from a bin that is not hood
+  let start = -1;
+  for (let k = 0; k < N; k++) if (!hood(k)) start = k;
+  if (start < 0) return null; // hood all round: no ends to read
+  const runs: [number, number][] = [];
+  let run: [number, number] | null = null;
+  let miss = 0;
+  for (let i = 1; i <= N; i++) {
+    const k = (start + i) % N;
+    if (hood(k)) {
+      run = run ? [run[0], start + i] : [start + i, start + i];
+      miss = 0;
+    } else if (run && ++miss > HOOD_HOLE_BINS) {
+      runs.push(run);
+      run = null;
+      miss = 0;
+    }
+  }
+  if (run) runs.push(run);
+  const at = (i: number): number => rmin[((i % N) + N) % N];
+  // the longest run whose exit rises: a turret's ring or a deck under the wheel is a run too, a flat one
+  runs.sort((p, q) => q[1] - q[0] - (p[1] - p[0]) || p[0] - q[0]);
+  for (const r of runs) {
+    if ((r[1] - r[0] + 1) * HOOD_BIN_DEG < HOOD_MIN_DEG) break;
+    const shot = shotOff(r);
+    if (shot) return shot;
+  }
+  return null;
+  function shotOff(best: [number, number]): CadShot | null {
+  // past the squeeze: on while the surface runs on smoothly
+  const extend = (i: number, step: 1 | -1, stop: number): number => {
+    let last = i;
+    for (let j = i + step, holes = 0; Math.abs(j - stop) > 0 && Math.abs(j - i) < N / 2; j += step) {
+      const r = at(j);
+      if (!Number.isFinite(r)) {
+        if (++holes > HOOD_HOLE_BINS) break;
+        continue;
+      }
+      if (Math.abs(r - at(last)) > HOOD_STEP_IN * (Math.abs(j - last))) break;
+      last = j;
+      holes = 0;
+    }
+    return last;
+  };
+  const e0 = extend(best[0], -1, best[1] - N);
+  const e1 = extend(best[1], 1, best[0] + N);
+  const pt = (i: number): [number, number] => {
+    const th = (((((i % N) + N) % N) + 0.5) * HOOD_BIN_DEG * Math.PI) / 180;
+    return [at(i) * Math.cos(th), at(i) * Math.sin(th)];
+  };
+  // the direction off an end: from a finite bin a few in, out to the end
+  const outward = (end: number, inward: 1 | -1): [number, number] | null => {
+    const span = Math.max(1, Math.min(5, Math.floor((e1 - e0) / 3)));
+    for (let k = span; k >= 1; k--) {
+      const j = end + inward * k;
+      if (!Number.isFinite(at(j))) continue;
+      const [x0, y0] = pt(j);
+      const [x1, y1] = pt(end);
+      const l = Math.hypot(x1 - x0, y1 - y0);
+      if (l > 1e-6) return [(x1 - x0) / l, (y1 - y0) / l];
+    }
+    return null;
+  };
+  const ends = [
+    { p: pt(e0), d: outward(e0, 1) },
+    { p: pt(e1), d: outward(e1, -1) },
+  ];
+  const exit = ends[0].p[1] > ends[1].p[1] ? ends[0] : ends[1];
+  if (!exit.d || exit.d[1] < HOOD_MIN_RISE) return null;
+  // the element's centre: half a diameter off the hood, toward the wheel
+  let nx = -exit.d[1];
+  let ny = exit.d[0];
+  if (nx * -exit.p[0] + ny * -exit.p[1] < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const ru = exit.p[0] + (nx * elementD) / 2;
+  const rv = exit.p[1] + (ny * elementD) / 2;
+  const release: V3 = add(add(c, scale(a, s0)), add(scale(u, ru), [0, 0, rv]));
+  const dir = norm(add(scale(u, exit.d[0]), [0, 0, exit.d[1]]));
+  return { dir, elevDeg: (Math.atan2(exit.d[1], Math.abs(exit.d[0])) * 180) / Math.PI, release };
+  }
+}
+
 /** what the model shows it is built with (`readBuild`) */
 export interface CadBuild {
   /** the edge with the most intake rollers, and whether one of them stands upright (side rollers) */
   intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean } | null;
-  /** the launcher's largest flywheel (its centre, MODEL frame), and whether a turret ring is under it */
-  launcher: { at: V3; turret: boolean } | null;
+  /**
+   * the launcher's largest flywheel (its centre, MODEL frame), whether a turret ring is under it and
+   * where that ring's axis is (MODEL frame, at the ring), and the shot its hood gives (`readShot`)
+   */
+  launcher: { at: V3; turret: boolean; axis?: V3; shot?: CadShot } | null;
 }
 
 /**
@@ -1190,10 +1431,11 @@ export interface CadBuild {
  * that robot's. Here the rollers are looked for along all four edges (`findRollerGroups`, wheels in
  * `taken` left out) and the edge with the most is the intake's; one standing upright makes them side
  * rollers. The launcher is the largest flywheel disc (`flywheelDiscs`) centred above
- * `LAUNCHER_MIN_Z_IN` that is not a motor's part, and a turret is a ring under it
- * (`findTurretGroup`). Null where nothing is there.
+ * `LAUNCHER_MIN_Z_IN` that is not a motor's part, a turret is a ring under it (`findTurretGroup`), and
+ * the shot is read off its hood (`readShot`, given the element's diameter, `elementD`). Null where
+ * nothing is there.
  */
-export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>): CadBuild {
+export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>, elementD = 0): CadBuild {
   const used = new Set(taken);
   let intake: CadBuild['intake'] = null;
   let most = 0;
@@ -1214,7 +1456,9 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
   for (const d of discs) {
     if (spinAxle(parts, d.b).motor) continue;
-    launcher = { at: d.c, turret: !!findTurretGroup(parts, d.c, used) };
+    const turret = findTurret(parts, d.c, used);
+    const shot = readShot(parts, d.b, elementD);
+    launcher = { at: d.c, turret: !!turret, ...(turret ? { axis: turret.ring.c } : {}), ...(shot ? { shot } : {}) };
     break;
   }
   return { intake, launcher };

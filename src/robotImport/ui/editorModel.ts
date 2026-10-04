@@ -20,7 +20,10 @@ import type { FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, Lengt
 import { validateMechFor } from './placement';
 import type { CadBuild } from '../motion';
 import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeKind } from '../../games/biobuzz/mechs';
-import { BB_HOOD_DEFAULT_DEG } from '../../games/biobuzz/config';
+import { BB_FIXED_HOOD_MAX_DEG, BB_FIXED_HOOD_MIN_DEG, BB_HOOD_DEFAULT_DEG, BB_POLLEN_R } from '../../games/biobuzz/config';
+import { BB_IMPORT_DUMP_Z, BB_IMPORT_TURRET_Z } from '../../games/biobuzz/importMech';
+import { DECODE_IMPORT_LAUNCH_MIN } from '../../sim/importedMech';
+import { BALL_RADIUS } from '../../config';
 import { BB_DEFAULT_SHOOTER_MOUNT, isEdgePos, type BbIntakeMount, type BbMountPos, type BbScoreMode } from '../../games/biobuzz/mounts';
 import { COPY } from './copy';
 
@@ -65,6 +68,11 @@ export interface EditorDoc {
    * re-open, a draft from before 2026-10-04 never looks).
    */
   cadBuild?: string[];
+  /**
+   * the launcher placements the same read gave (`buildFromCad`, MODEL frame): where Reset puts them
+   * back, and what the game's defaults are filled in around
+   */
+  cadMech?: ImportedMech;
   updated: number;
 }
 
@@ -451,16 +459,24 @@ export function motionNames(groups: readonly MotionGroup[]): string[] {
  *   else a fixed launcher.
  * Chain Reaction is left alone. Returns the spec and what was set, in words, or null for no change.
  */
-export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { spec: RobotSpec; set: string[] } | null {
+export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { spec: RobotSpec; set: string[]; mech?: ImportedMech } | null {
   const set: string[] = [];
+  const shot = cad.launcher?.shot;
+  const mech = cadLauncherMech(game, cad);
   if (game === 'biobuzz') {
     const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
     let kind: BbScoreMode = launcher.kind;
     let mount: BbMountPos = launcher.mount;
+    let hoodDeg = launcher.hoodDeg;
     if (cad.launcher) {
       kind = cad.launcher.turret ? 'turret' : 'fixed';
       if (kind === 'fixed' && !isEdgePos(mount)) mount = BB_DEFAULT_SHOOTER_MOUNT;
       if (kind === 'turret' && launcher.kind !== 'turret') mount = 'center';
+      // a fixed launcher faces the edge its hood throws toward, at the hood's angle
+      if (kind === 'fixed' && shot) {
+        mount = edgeOf(shot.dir);
+        hoodDeg = Math.min(BB_FIXED_HOOD_MAX_DEG, Math.max(BB_FIXED_HOOD_MIN_DEG, Math.round(shot.elevDeg)));
+      }
     }
     let intake: BbIntakeKind = bbIntakeKindOf(spec);
     let intakeMount = (spec.intakeMount ?? 'front') as BbIntakeMount;
@@ -469,7 +485,7 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
       intakeMount = cad.intake.edge === 'front' ? 'front' : cad.intake.edge === 'back' ? 'back' : 'side';
       set.push(COPY.cadIntake(intake === 'siderollers', intakeMount));
     }
-    if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : COPY.cadFixed);
+    if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : shot ? COPY.cadFixedAt(mount, hoodDeg) : COPY.cadFixed);
     set.push(COPY.cadNoLift);
     const next = coerceSpec(
       {
@@ -478,12 +494,12 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
         shooterMount: mount,
         intakeMount,
         intakeSide: intakeMount === 'side',
-        bbMech: { launcher: { kind, mount, hoodDeg: launcher.hoodDeg }, lift: null, intake: { kind: intake } },
+        bbMech: { launcher: { kind, mount, hoodDeg }, lift: null, intake: { kind: intake } },
       },
       undefined,
       'biobuzz',
     );
-    return { spec: { ...next, name: spec.name }, set };
+    return { spec: { ...next, name: spec.name }, set, ...(mech ? { mech } : {}) };
   }
   if (game === 'decode') {
     const patch: Partial<RobotSpec> = {};
@@ -493,10 +509,38 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
     } else if (spec.intake === 'none') patch.intake = 'sloped';
     if (cad.launcher) {
       patch.launcher = cad.launcher.turret ? 'turret' : 'fixed';
-      set.push(cad.launcher.turret ? COPY.cadTurret : COPY.cadFixed);
+      set.push(cad.launcher.turret ? COPY.cadTurret : shot ? COPY.cadFixedFacing(edgeOf(shot.dir)) : COPY.cadFixed);
     }
     if (!set.length) return null;
-    return { spec: { ...coerceSpec({ ...spec, ...patch }, undefined, 'decode'), name: spec.name }, set };
+    return { spec: { ...coerceSpec({ ...spec, ...patch }, undefined, 'decode'), name: spec.name }, set, ...(mech ? { mech } : {}) };
   }
   return null;
+}
+
+/** the element a launcher throws, inches across, for reading its hood (`readShot`); 0: none */
+export function launchElementD(game: GameId): number {
+  return game === 'biobuzz' ? 2 * BB_POLLEN_R : game === 'decode' ? 2 * BALL_RADIUS : 0;
+}
+
+/** the bounding-box edge a horizontal direction points at, MODEL frame (+x front, +y left) */
+function edgeOf(d: readonly number[]): ImportedEdge {
+  return Math.abs(d[0]) >= Math.abs(d[1]) ? (d[0] >= 0 ? 'front' : 'back') : d[1] >= 0 ? 'left' : 'right';
+}
+
+/**
+ * WHERE THE MODEL'S LAUNCHER IS, as placements (MODEL frame): a turret's axis, at the height its hood
+ * releases from, else the release point its hood gives (`readShot`) facing the way it throws. The
+ * release height is held inside what the game accepts there. Undefined when the model shows neither.
+ */
+export function cadLauncherMech(game: GameId, cad: CadBuild): ImportedMech | undefined {
+  const l = cad.launcher;
+  if (!l || (game !== 'biobuzz' && game !== 'decode')) return undefined;
+  const shot = l.shot;
+  const zr = game === 'decode' ? { min: DECODE_IMPORT_LAUNCH_MIN, max: 18 } : l.turret ? BB_IMPORT_TURRET_Z : BB_IMPORT_DUMP_Z;
+  const zOf = (z: number): number => q64(Math.min(zr.max, Math.max(zr.min, z)));
+  if (l.turret && l.axis) return { shooter: { x: q64(l.axis[0]), y: q64(l.axis[1]), z: zOf(shot ? shot.release[2] : l.at[2]) } };
+  if (l.turret || !shot) return undefined;
+  let yaw = Math.round((Math.atan2(shot.dir[1], shot.dir[0]) * 180) / Math.PI);
+  if (yaw <= -180) yaw += 360;
+  return { shooter: { x: q64(shot.release[0]), y: q64(shot.release[1]), z: zOf(shot.release[2]) }, shooterYawDeg: yaw };
 }
