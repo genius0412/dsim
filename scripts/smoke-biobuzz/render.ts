@@ -5416,6 +5416,26 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           slotCode.includes('await scene.ready()') &&
           slotCode.includes('await idle()'),
       );
+      // and it opens no second WebGL context when the hero's turntable is up (2026-09-26): the
+      // cards shoot through it, one task per card, with the hero's build put back in that task
+      check(
+        'the thumbnail batch draws through the live turntable when one is mounted',
+        slotCode.includes('liveTurntable = sc;') &&
+          slotCode.includes('const scene = shared ?? own;') &&
+          slotCode.includes('scene.capture(THUMB_CAPTURE_PX, req.spec, req.alliance)') &&
+          slotCode.includes('own?.dispose()'),
+      );
+      check(
+        '...and capture(size, spec) puts the build on show back and redraws a live turntable',
+        /if \(spec && shown\) api\.setSpec\(shown, shownAlliance\);\s*(\/\/.*\s*)*if \(opts\.animate !== false\) draw\(0\);/.test(previewSrc),
+      );
+      // and the chunk itself is fetched on idle from whatever screen comes first, not when the
+      // turntable mounts — gated by preloadRoomView on a scene-bearing game and the 3D view
+      check(
+        'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
+        /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game\]\);/.test(readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8')) &&
+          readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8').includes('const warm = (): void => preloadRoomView(settings.game);'),
+      );
       check(
         'the preview scene warms its shaders with compileAsync and draws nothing until then',
         previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
@@ -11012,6 +11032,24 @@ function environmentAndReadoutChecks(check: Check): void {
         /applySky\(def, lighting\)/.test(envSrc) && /scene\.environment = lighting \? tex : null/.test(envSrc),
       );
       check('an HDRI with the lighting off is still NOT fetched', /if \(!lighting\) \{[\s\S]{0,120}applyRoom\(false\);/.test(envSrc));
+      // ENTRY LAG (2026-09-26): the constructor built a room PMREM (69 ms on entering Configure ▸
+      // Robot) that Low and Medium, lighting off, threw away unused. Construction generates
+      // nothing; the HDRI path compiles its shader during the fetch and lights the room meanwhile.
+      {
+        const ctor = envSrc.slice(envSrc.indexOf('export function createEnvironment('), envSrc.search(/\r?\n  return \{\r?\n    get current\(\)/));
+        check(
+          'createEnvironment builds no PMREM at construction (applyRoom(false), no eager equirect compile)',
+          /\n  applyRoom\(false\);\r?\n/.test(ctor) && !/\n  applyRoom\(\);/.test(ctor) && !/\n  pmrem\.compileEquirectangularShader\(\)/.test(ctor),
+        );
+        check(
+          '...and the HDRI path lights the room while it downloads and compiles the equirect shader then',
+          /if \(!scene\.environment\) applyRoom\(true\);\s*pmrem\.compileEquirectangularShader\(\);\s*try \{/.test(envSrc),
+        );
+        check(
+          'the builder preview hands envLighting to env.apply, as the match scene does',
+          readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8').includes('env.apply(s.environment, undefined, s.envLighting)'),
+        );
+      }
       // a CALL, not the words: the file's own header explains why the star field is hashed
       // rather than random, and the check must not fail on its own reasoning
       check('the dome is painted with no Math.random() call (an export must repaint the same sky)', !/Math\.random\(/.test(envSrc));
