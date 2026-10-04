@@ -16,7 +16,7 @@ import { chainMassFloorBump } from '../../games/chain/config';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
 import { bbox, buildDescriptor, isRectangle, linesToWheels, q64, squareWheels, WHEEL_SQUARE_TOL_IN, wheelLines, type WheelLines } from '../geometry';
 import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
-import type { FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
+import type { FloatingGroup, FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { validateMechFor } from './placement';
 import type { CadBuild } from '../motion';
 import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeKind } from '../../games/biobuzz/mechs';
@@ -433,6 +433,85 @@ export function keepEditedMotion(groups: readonly MotionGroup[]): MotionGroup[] 
     else delete g.rideOn;
     return g;
   });
+}
+
+// ---- deleting parts (`docs/area/robot-import.md`, "Deleting parts") -----------------------------
+
+/**
+ * The moving parts without the bodies in `gone`: each row loses them (a joint whose axle part went
+ * turns about its own again), a row they leave empty goes, and what named the rows after it by index
+ * (`follows`, `rideOn`) moves up with them. A row that was empty already (just added, not yet
+ * picked) stays.
+ */
+export function pruneMotion(groups: readonly MotionGroup[], gone: ReadonlySet<number>): MotionGroup[] {
+  const drop = new Set<number>();
+  const kept = groups.map((g, i) => {
+    if (!g.bodies.some((b) => gone.has(b)) && !(g.axisBody !== undefined && gone.has(g.axisBody))) return g;
+    const out: MotionGroup = { ...g, bodies: g.bodies.filter((b) => !gone.has(b)) };
+    if (out.axisBody !== undefined && gone.has(out.axisBody)) {
+      delete out.axisBody;
+      delete out.axis;
+    }
+    if (g.bodies.length && !out.bodies.length) drop.add(i);
+    return out;
+  });
+  if (!drop.size) return kept;
+  const at = new Map<number, number>();
+  kept.forEach((_, i) => {
+    if (!drop.has(i)) at.set(i, at.size);
+  });
+  return kept
+    .filter((_, i) => !drop.has(i))
+    .map((g) => {
+      const out: MotionGroup = { ...g };
+      const f = g.follows ? at.get(g.follows.group) : undefined;
+      if (g.follows && f !== undefined) out.follows = { ...g.follows, group: f };
+      else delete out.follows;
+      const r = g.rideOn !== undefined ? at.get(g.rideOn) : undefined;
+      if (r !== undefined) out.rideOn = r;
+      else delete out.rideOn;
+      return out;
+    });
+}
+
+/**
+ * The document with `bodies` deleted too: added to `setup.removed` and taken out of the moving parts.
+ * `movesFrame` (`removalMovesFrame`): the model's box changed, and the MODEL frame with it, so the
+ * wheels placed by hand and the mechanism placements are found again, as after a Units, Up axis or
+ * Turn change. A deletion inside the box moves nothing and keeps them.
+ */
+export function deleteBodies(d: EditorDoc, bodies: readonly number[], movesFrame: boolean): EditorDoc {
+  if (!bodies.length) return d;
+  const gone = new Set([...(d.setup.removed ?? []), ...bodies]);
+  const setup: ImportSetup = { ...d.setup, removed: [...gone].sort((a, b) => a - b) };
+  if (d.setup.motion) setup.motion = pruneMotion(d.setup.motion, new Set(bodies));
+  if (movesFrame) setup.wheels = null;
+  return { ...d, setup, mech: movesFrame ? null : d.mech };
+}
+
+/** the document with every deleted body back (the moving parts keep what they have) */
+export function restoreBodies(d: EditorDoc, movesFrame: boolean): EditorDoc {
+  if (!d.setup.removed) return d;
+  const setup: ImportSetup = { ...d.setup };
+  delete setup.removed;
+  if (movesFrame) setup.wheels = null;
+  return { ...d, setup, mech: movesFrame ? null : d.mech };
+}
+
+/** the floating groups the editor offers to delete: the ones the player has not chosen to keep */
+export function floatingOffer(m: Pick<ImportMeasurement, 'floating'> | null, setup: Pick<ImportSetup, 'keepFloating'>): FloatingGroup[] {
+  if (!m?.floating?.length) return [];
+  const keep = new Set(setup.keepFloating ?? []);
+  return m.floating.filter((g) => !g.bodies.every((b) => keep.has(b)));
+}
+
+/** the setup a saved robot keeps: no deleted bodies, since its stored mesh is made without them (and
+ *  a body id names a body of the file as read, not of the stored mesh read back) */
+export function savedSetup(s: ImportSetup): ImportSetup {
+  if (!('removed' in s)) return s;
+  const out = { ...s };
+  delete out.removed;
+  return out;
 }
 
 /** each moving part's name: its kind (a wheel's corner), numbered when two share one */

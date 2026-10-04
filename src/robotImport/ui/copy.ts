@@ -83,6 +83,9 @@ export const COPY = {
     aim: (name: string) => `turn the ${name}`,
     change: (name: string) => `change the ${name}`,
     removeMoving: (name: string) => `remove the ${name}`,
+    deleteParts: (n: number) => `delete ${n} ${n === 1 ? 'part' : 'parts'}`,
+    restoreParts: 'restore the deleted parts',
+    keepFloating: 'keep the floating parts',
   },
 
   // ---- Model ----
@@ -160,6 +163,18 @@ export const COPY = {
   forward: 'Forward',
   left: 'Left',
   useDetected: 'Use detected wheels',
+  parts: 'Parts',
+  partsState: (selected: number, deleted: number) =>
+    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : ''].filter(Boolean).join(', '),
+  floating: (n: number, near: number, far: number) =>
+    `${n} ${n === 1 ? 'part floats' : 'parts float'} ${near.toFixed(1)}${far - near >= 0.05 ? ` to ${far.toFixed(1)}` : ''} in away from the robot. Delete ${n === 1 ? 'it' : 'them'}?`,
+  floatDelete: 'Delete',
+  floatKeep: 'Keep',
+  deleteParts: 'Delete parts',
+  deleteDone: 'Done',
+  deleteSelected: 'Delete selected',
+  deleteHint: 'Click a part in the preview to select it. Shift-click selects more. The Delete key removes them.',
+  restoreAll: 'Restore all',
   grabPad: (dpad: string, a: string, b: string) => `Move with ${dpad} or the left stick. ${a} to drop, ${b} to cancel.`,
   grabKeys: 'Arrow keys move it. Hold Shift for small steps. Home puts it back.',
   handleAria: (label: string, x: number, y: number, z?: number) => `${label}, ${where(x, y, z)}`,
@@ -192,6 +207,8 @@ export const COPY = {
     mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
       ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
     moving: 'Blue: the selected part. Orange: the other moving parts.',
+    deleting: 'Blue: the parts selected to delete.',
+    floating: 'Blue: the parts that float apart from the robot.',
   },
   resetView: 'Reset view',
 

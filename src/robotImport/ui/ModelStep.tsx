@@ -15,6 +15,25 @@ const ROBOT_MAX = 18;
 /** the wheel number fields' step, inches: every value on it is typed exactly */
 const WHEEL_STEP = 1 / 16;
 
+/**
+ * DELETING PARTS (`docs/area/robot-import.md`, "Deleting parts"): the mode in which a click in the
+ * preview selects bodies, and the offer to delete what floats apart from the robot.
+ */
+export interface PartsControls {
+  /** bodies deleted so far */
+  deleted: number;
+  /** bodies selected while `deleting` */
+  selected: number;
+  deleting: boolean;
+  /** what floats apart from the robot and has not been kept: bodies, and the nearest and farthest gap */
+  floating: { count: number; near: number; far: number } | null;
+  onDeleting: (on: boolean) => void;
+  onDelete: () => void;
+  onRestore: () => void;
+  onDeleteFloating: () => void;
+  onKeepFloating: () => void;
+}
+
 export function ModelStep({
   doc,
   m,
@@ -32,6 +51,7 @@ export function ModelStep({
   onLayout,
   onDetail,
   canReread,
+  parts,
 }: {
   doc: EditorDoc;
   m: ImportMeasurement | null;
@@ -54,6 +74,8 @@ export function ModelStep({
   onDetail: (budget: number) => void;
   /** the dropped files are still in memory, so a new detail can re-read them */
   canReread: boolean;
+  /** deleting parts (`PartsControls`) */
+  parts: PartsControls;
 }) {
   const replace = useRef<HTMLInputElement>(null);
   if (!m || phase || error) {
@@ -151,6 +173,49 @@ export function ModelStep({
         <dt>{COPY.wheels}</dt>
         <dd>{wheelFact}</dd>
       </dl>
+
+      <div className="ds-field" id="ri-parts">
+        <span className="cap">
+          {COPY.parts}
+          {parts.selected || parts.deleted ? <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted)}</span> : null}
+        </span>
+        {parts.floating ? (
+          <>
+            <p className="ds-hint" role="status">
+              {COPY.floating(parts.floating.count, parts.floating.near, parts.floating.far)}
+            </p>
+            <div className="ds-import-turns">
+              <button type="button" className="ds-btn ghost small" onClick={parts.onKeepFloating}>
+                {COPY.floatKeep}
+              </button>
+              <button type="button" className="ds-btn danger small" onClick={parts.onDeleteFloating}>
+                {COPY.floatDelete}
+              </button>
+            </div>
+          </>
+        ) : null}
+        {parts.deleting ? <p className="ds-hint">{COPY.deleteHint}</p> : null}
+        <div className="ds-import-turns">
+          <button
+            type="button"
+            className={`ds-btn small${parts.deleting ? ' primary' : ''}`}
+            aria-pressed={parts.deleting}
+            onClick={() => parts.onDeleting(!parts.deleting)}
+          >
+            {parts.deleting ? COPY.deleteDone : COPY.deleteParts}
+          </button>
+          {parts.deleting ? (
+            <button type="button" className="ds-btn danger small" disabled={!parts.selected} onClick={parts.onDelete}>
+              {COPY.deleteSelected}
+            </button>
+          ) : null}
+          {parts.deleted ? (
+            <button type="button" className="ds-btn ghost small" onClick={parts.onRestore}>
+              {COPY.restoreAll}
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       <div id="ri-detail">
         <OptRow<number>

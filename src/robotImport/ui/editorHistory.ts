@@ -116,9 +116,19 @@ export function sameDoc(a: EditorDoc, b: EditorDoc): boolean {
  * model frame, and the moving parts name the file's own bodies.
  */
 export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
+  const setup = { ...target.setup, triBudget: current.setup.triBudget };
+  // ⚠️ except the DELETED parts: a big STEP is read in pieces and Light leaves its small parts out, so
+  // a body id names another solid at the other Detail. A snapshot from before a Detail change keeps
+  // the deletions the model in memory was read with (`docs/area/robot-import.md`, "Deleting parts").
+  if (target.setup.triBudget !== current.setup.triBudget) {
+    setup.removed = current.setup.removed;
+    setup.keepFloating = current.setup.keepFloating;
+    if (setup.removed === undefined) delete setup.removed;
+    if (setup.keepFloating === undefined) delete setup.keepFloating;
+  }
   return {
     ...current,
-    setup: { ...target.setup, triBudget: current.setup.triBudget },
+    setup,
     mech: target.mech,
     spec: target.spec,
   };
