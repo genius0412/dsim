@@ -622,7 +622,10 @@ const BASELINE = {
   // selection, the organizer's desk), the editor, the join screen, the pure rankings/selection/
   // bracket modules they render from, and the competition client. Lazy, so a player who never
   // opens Competitions downloads none of it; what main carries is the call bar and its one read.
-  competitions: { gzip: 20.2 * 1000 },
+  // 2026-10-04: 20.20 -> 26.34, raised on purpose: ranking points per the Competition Manual
+  // (`manual.ts` tables, the card/DQ pass, the new copy, the RP columns, the desk's ranking form
+  // and the editor's scheme section). Still lazy; no `manual-*.js` chunk of its own.
+  competitions: { gzip: 26.34 * 1000 },
   // 2026-10-01: NEW, the robot importer (lane 3 of `docs/robot-import-plan.md`). MEASURED with
   // `npm run bundleaudit:importer` (the app plus `engineLoader.ts` as an entry, because no screen
   // imports the loader yet; a plain production build reports both routes absent). The engine

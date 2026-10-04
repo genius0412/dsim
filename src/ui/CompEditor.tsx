@@ -1,22 +1,34 @@
 import { useEffect, useMemo, useState } from 'react';
 import { compAction, createCompetition, fetchCompetition } from '../net/competitions';
 import type { CompEditInput, CompetitionDetail } from '../competition/wire';
-import type { CompFormat, CompSettings, TeamMode, Tiebreaker } from '../competition/types';
+import type { CompFormat, CompSettings, RpLevel, RpScheme, TeamMode, Tiebreaker } from '../competition/types';
 import { TIEBREAKERS } from '../competition/types';
 import {
   BEST_OF,
   DEFAULT_SETTINGS,
   LIMITS,
   PLAYOFF_SIZES,
+  RP_SCHEMES,
   coerceCompSettings,
   entriesPerAlliance,
   playoffEntriesNeeded,
 } from '../competition/settings';
-import { BRACKET_LABEL, QUAL_LABEL, SELECTION_LABEL, TIEBREAK_LABEL } from '../competition/copy';
+import { cmTable, effectiveRanking, levelsOf, thresholdAt, tiebreakersFor, unreachableBonus } from '../competition/manual';
+import {
+  BRACKET_LABEL,
+  LEVEL_LABEL,
+  QUAL_LABEL,
+  SCHEME_LABEL,
+  SELECTION_LABEL,
+  TIEBREAK_LABEL,
+  bonusLabel,
+  measureLabel,
+} from '../competition/copy';
 import type { GameId } from '../games/types';
 import { SEASONS } from '../seasons';
 import { gameVisible } from '../seasonVisibility';
 import { OptRow } from './OptRow';
+import { unreachableLine } from './compBits';
 
 /** a datetime-local value for an epoch, in the viewer's own zone, and back */
 const toLocal = (ms: number | null): string => {
@@ -87,11 +99,14 @@ export function CompEditor({
           regClosesAt: null,
           checkinOpensAt: null,
           startsAt: null,
-          settings: coerceCompSettings(DEFAULT_SETTINGS, '1v1', 'solo'),
+          settings: coerceCompSettings(DEFAULT_SETTINGS, '1v1', 'solo', game),
         },
   );
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // a custom threshold's text while it is being typed: an emptied field would otherwise snap back
+  // to the coerced number under the cursor. Dropped on blur, when the field shows the stored value.
+  const [thrText, setThrText] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!slug) return;
@@ -116,7 +131,8 @@ export function CompEditor({
           regClosesAt: x.regClosesAt,
           checkinOpensAt: x.checkinOpensAt,
           startsAt: x.startsAt,
-          settings: x.settings,
+          // an older server's settings have no `rp`: coerced here they read as what it ranks by
+          settings: coerceCompSettings(x.settings, x.format, x.teamMode, x.game),
         });
       })
       .catch((e: unknown) => alive && setErr(e instanceof Error ? e.message : 'Couldn’t load it.'));
@@ -131,6 +147,9 @@ export function CompEditor({
   const qualsLocked = status !== 'draft' && status !== 'published';
   const playoffsLocked = status === 'playoffs' || status === 'completed' || status === 'cancelled';
   const pointsLocked = status === 'selection' || playoffsLocked;
+  // the scheme, level and thresholds freeze when qualifications START (the server copies the
+  // resolved table then); the organizer's own points and tiebreakers keep their later lock
+  const rpLocked = qualsLocked;
   const visibleGames = useMemo(() => SEASONS.filter((s) => gameVisible(s.key)), []);
 
   if (!d) {
@@ -145,13 +164,23 @@ export function CompEditor({
     const next = { ...d, ...p };
     // the shape decides which settings exist (round robin needs one entry per alliance, …)
     next.teamMode = next.format === '2v2' ? next.teamMode : 'solo';
-    next.settings = coerceCompSettings(next.settings, next.format, next.teamMode);
+    next.settings = coerceCompSettings(next.settings, next.format, next.teamMode, next.game);
     setD(next);
   };
   const putS = (fn: (s: CompSettings) => CompSettings): void => put({ settings: fn(structuredClone(d.settings)) });
   const s = d.settings;
   const per = entriesPerAlliance(d.format, d.teamMode);
   const needForPlayoffs = playoffEntriesNeeded(s, d.format, d.teamMode);
+  // THE RANKING-POINT SCHEME. A game with no manual table has no choice to make (`custom` only),
+  // so the scheme row is not drawn at all; a column of Table 10-3 the manual has not published
+  // is not offered, and the line under the row says why.
+  const table = cmTable(d.game);
+  const cm = s.rp.scheme === 'cm' ? table : null;
+  const levels = levelsOf(d.game);
+  const tba = (['regional', 'championship'] as const).filter((l) => !levels.includes(l));
+  const unpublished =
+    tba.length === 2 ? 'Regional and FIRST Championship thresholds aren’t published yet.' : tba.length === 1 ? `${LEVEL_LABEL[tba[0]]} thresholds aren’t published yet.` : null;
+  const unreachable = cm ? unreachableBonus(effectiveRanking(s, d.game), d.game, d.format) : [];
 
   const save = async (): Promise<void> => {
     setBusy(true);
@@ -328,36 +357,96 @@ export function CompEditor({
           )}
           {s.quals.kind !== 'none' && (
             <>
-              <label>
-                <span>Ranking points: win · tie · loss</span>
-                <span className="ds-field-row">
-                  {(['win', 'tie', 'loss'] as const).map((k) => (
-                    <input
-                      key={k}
-                      className="ds-input"
-                      inputMode="numeric"
-                      aria-label={`Points for a ${k}`}
-                      value={String(s.points[k])}
-                      disabled={pointsLocked}
-                      onChange={(e) => putS((x) => ({ ...x, points: { ...x.points, [k]: Number(e.target.value.replace(/[^0-9]/g, '')) || 0 } }))}
+              {table && (
+                <div className="wide">
+                  <OptRow
+                    label="Ranking points"
+                    value={s.rp.scheme}
+                    disabled={rpLocked}
+                    options={RP_SCHEMES.map((k) => ({
+                      v: k,
+                      t: SCHEME_LABEL[k],
+                      d: k === 'cm' ? `Win ${table.win} · tie ${table.tie}${table.bonus.length ? ' · bonus RPs' : ''}` : 'Your own points and tiebreakers',
+                    }))}
+                    onPick={(v) => putS((x) => ({ ...x, rp: { ...x.rp, scheme: v as RpScheme } }))}
+                  />
+                </div>
+              )}
+              {cm && cm.bonus.length > 0 && (
+                <>
+                  <div className="wide">
+                    <OptRow
+                      label="Bonus RP thresholds"
+                      value={s.rp.level}
+                      disabled={rpLocked}
+                      options={levels.map((l) => ({ v: l, t: LEVEL_LABEL[l], d: cm.bonus.map((b) => thresholdAt(b, l, s.rp.thresholds)).join(' · ') }))}
+                      onPick={(v) => putS((x) => ({ ...x, rp: { ...x.rp, level: v as RpLevel } }))}
                     />
-                  ))}
-                </span>
-              </label>
-              <div className="wide ds-comp-stack">
-                <span className="ds-hint">Tiebreakers, in order (after the ranking score)</span>
-                <span className="ds-comp-tags">
-                  {TIEBREAKERS.map((t) => {
-                    const i = s.tiebreakers.indexOf(t);
-                    return (
-                      <button key={t} type="button" className={`ds-btn small${i >= 0 ? '' : ' ghost'}`} aria-pressed={i >= 0} disabled={pointsLocked} onClick={() => toggleTb(t)}>
-                        {i >= 0 ? `${i + 1}. ` : ''}
-                        {TIEBREAK_LABEL[t]}
-                      </button>
-                    );
-                  })}
-                </span>
-              </div>
+                  </div>
+                  {unpublished && <p className="ds-hint wide">{unpublished}</p>}
+                  {s.rp.level === 'custom' &&
+                    cm.bonus.map((b) => (
+                      <label key={b.id}>
+                        <span>
+                          {bonusLabel(b.id)}: {measureLabel(b.measure)}
+                        </span>
+                        <input
+                          className="ds-input"
+                          inputMode="numeric"
+                          value={thrText[b.id] ?? String(thresholdAt(b, 'custom', s.rp.thresholds))}
+                          disabled={rpLocked}
+                          onChange={(e) => {
+                            const t = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
+                            setThrText((x) => ({ ...x, [b.id]: t }));
+                            if (t) putS((x) => ({ ...x, rp: { ...x.rp, thresholds: { ...x.rp.thresholds, [b.id]: Number(t) } } }));
+                          }}
+                          onBlur={() =>
+                            setThrText((x) => {
+                              const next = { ...x };
+                              delete next[b.id];
+                              return next;
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                  {unreachable.length > 0 && <p className="ds-hint warn wide">{unreachableLine(d.game, unreachable)}</p>}
+                </>
+              )}
+              {!cm && (
+                <>
+                  <label>
+                    <span>Points: win · tie · loss</span>
+                    <span className="ds-field-row">
+                      {(['win', 'tie', 'loss'] as const).map((k) => (
+                        <input
+                          key={k}
+                          className="ds-input"
+                          inputMode="numeric"
+                          aria-label={`Points for a ${k}`}
+                          value={String(s.points[k])}
+                          disabled={pointsLocked}
+                          onChange={(e) => putS((x) => ({ ...x, points: { ...x.points, [k]: Number(e.target.value.replace(/[^0-9]/g, '')) || 0 } }))}
+                        />
+                      ))}
+                    </span>
+                  </label>
+                  <div className="wide ds-comp-stack">
+                    <span className="ds-hint">Tiebreakers, in order (after the ranking score)</span>
+                    <span className="ds-comp-tags">
+                      {tiebreakersFor(d.game, TIEBREAKERS).map((t) => {
+                        const i = s.tiebreakers.indexOf(t);
+                        return (
+                          <button key={t} type="button" className={`ds-btn small${i >= 0 ? '' : ' ghost'}`} aria-pressed={i >= 0} disabled={pointsLocked} onClick={() => toggleTb(t)}>
+                            {i >= 0 ? `${i + 1}. ` : ''}
+                            {TIEBREAK_LABEL[t]}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

@@ -133,6 +133,84 @@
 .ds-comp-score .w {
   font-weight: 800;
 }
+/* the ranking points a qualification match gave, a quiet line under its score ("RP 4 – 1") */
+.ds-comp-rp {
+  display: block;
+  margin-top: var(--ds-s-1);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+/* THE RANKINGS TABLE: up to twelve columns under the Competition Manual (rank, entry, RS, RP,
+   W–L–T, played, three tiebreakers, three bonus RPs). The floor makes the scroller take the
+   overflow rather than the one column with prose in it, and the name never wraps (the
+   leaderboard's rule, docs/area/ui.md). Headers stay on one line too: "Avg no fouls" stacked
+   three deep would stand taller than the rows under it. */
+.ds-comp-rank {
+  min-width: 640px;
+}
+/* the numbers do not wrap either: "1–0–0" broke at its dashes */
+.ds-comp-rank thead,
+.ds-comp-rank .num {
+  white-space: nowrap;
+}
+/* twelve columns at the table's 16px each side spent ~380px on gutters, and a desktop panel
+   scrolled sideways; between columns it is 8, at the panel's edges still 16 */
+.ds-comp-rank th,
+.ds-comp-rank td {
+  padding-inline: var(--ds-s-2);
+}
+.ds-comp-rank th:first-child,
+.ds-comp-rank td:first-child {
+  padding-left: var(--ds-s-4);
+}
+.ds-comp-rank th:last-child,
+.ds-comp-rank td:last-child {
+  padding-right: var(--ds-s-4);
+}
+.ds-comp-rank .entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+/* a name clamps rather than breaking its row (the leaderboard's `.lb-name-h`): 40 characters
+   of team name would otherwise push every number off a phone */
+.ds-comp-rank .who {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Disqualified, a carried yellow card, "In playoff range" */
+.ds-comp-rank .sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-1) var(--ds-s-2);
+  font-size: var(--ds-t-sm);
+}
+/* the bonus-RP counts as one line under the name, shown only where their columns are dropped */
+.ds-comp-rank .bonus-sub {
+  display: none;
+  font-size: var(--ds-t-xs);
+}
+@media (max-width: 640px) {
+  /* three fewer columns on a phone: the bonus counts fold into the entry's sub-line */
+  .ds-comp-rank {
+    min-width: 520px;
+  }
+  .ds-comp-rank .who {
+    max-width: 16ch;
+  }
+  .ds-comp-rank .bonus {
+    display: none;
+  }
+  .ds-comp-rank .bonus-sub {
+    display: block;
+  }
+}
 .ds-comp-table tr.mine td {
   background: var(--ds-accent-soft);
   color: var(--ds-accent-soft-ink);
@@ -309,6 +387,42 @@
 }
 .ds-comp-grid > .wide {
   grid-column: 1 / -1;
+}
+/* THE REFEREE DESK opens in a row of the matches table, which scrolls sideways on a phone. The desk
+   stays in view: it sticks to the scroller's left edge and is no wider than the scroller shows
+   (`cqi` of `.ds-comp-matchscroll`, less the cell's padding), so a referee scrolls down through it,
+   never sideways to find the blue alliance. */
+.ds-comp-matchscroll {
+  container-type: inline-size;
+}
+.ds-comp-deskcell > * {
+  position: sticky;
+  left: var(--ds-s-3);
+  max-width: calc(100cqi - 2 * var(--ds-s-3));
+}
+/* THE MATCH DESK'S RANKING-POINT FORM: one fieldset per alliance, side by side in
+   `.ds-comp-grid` and stacked on a phone. A fieldset's own border, padding, margin and its
+   min-content floor are reset: it is a group, not a card, and the floor would stop the grid
+   from shrinking it. The legend names the alliance in its ink. */
+.ds-comp-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ds-comp-facts > legend {
+  padding: 0 0 var(--ds-s-2);
+  font-size: var(--ds-t-control);
+  font-weight: 800;
+}
+.ds-comp-facts.red > legend {
+  color: var(--ds-red-ink);
+}
+.ds-comp-facts.blue > legend {
+  color: var(--ds-blue-ink);
 }
 .ds-comp-textarea {
   min-height: 120px;

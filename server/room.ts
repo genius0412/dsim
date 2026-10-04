@@ -11,7 +11,7 @@ import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
-import { serverPhysics } from '../src/games/types';
+import { serverPhysics, type RankFactsAt } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
@@ -430,10 +430,22 @@ export interface MatchOutcome {
   /** a competition match: the result is the competition's as well as the archive's
    *  (`competitionMatchPlayed`, called by `persistMatch`) */
   competition?: CompetitionTag;
+  /**
+   * A COMPETITION MATCH ONLY: what the game measured per alliance (`GameSimModule.rankFacts`,
+   * merged across its three instants), for the competition's ranking points. Absent when the game
+   * reports nothing or the read threw — unknown, never zero. Plain numbers: it crosses the worker
+   * boundary by structured clone.
+   */
+  rankFacts?: Record<Alliance, Record<string, number>>;
+  /** A COMPETITION MATCH ONLY: every carded driver and the colour their robot ended the match on */
+  cards?: { userId: string; colour: 'yellow' | 'red' }[];
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
 }
+
+/** one read of `GameSimModule.rankFacts`, copied to plain finite numbers */
+type RankFacts = Record<Alliance, Record<string, number>>;
 
 /**
  * One room: lobby while `world` is null, then the authoritative match loop. The
@@ -550,6 +562,12 @@ export class Room {
   // the post-buzzer settle: the match is finalized once nothing left on the field can change
   // the score (see `src/sim/settle.ts`)
   private settle: SettleClock = newSettleClock();
+  /**
+   * A COMPETITION MATCH'S `rankFacts`, read at the two in-match instants (`captureRankFacts`);
+   * `'final'` is read in `finalizeMatch`. Absent = not asked yet, null = the game reports nothing
+   * or the read threw. Reset with `finalized`.
+   */
+  private rankAt: Partial<Record<'autoEnd' | 'teleopStart', RankFacts | null>> = {};
   // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
   // the world coasting at ZERO, but their client object is gone once grace lapses,
   // so they'd drop out of the finalize roster and the match would become unratable
@@ -2537,6 +2555,7 @@ export class Room {
     }
     this.finalized = false;
     this.settle = newSettleClock();
+    this.rankAt = {};
     this.departed.clear();
 
     // register each authed driver's single-game lock: while this match is live they
@@ -3279,6 +3298,8 @@ export class Room {
     simModuleFor(this.game).step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
+    // after the record, so nothing a game's read does can cost the replay a tick
+    if (this.pendingMatch?.competition) this.captureRankFacts(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
     // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
@@ -3288,6 +3309,57 @@ export class Room {
       this.finalizeMatch();
     }
     return due;
+  }
+
+  /**
+   * A COMPETITION MATCH'S IN-MATCH INSTANTS (`GameSimModule.rankFacts`): `'autoEnd'` on the first
+   * tick out of AUTO, `'teleopStart'` on the first TELEOP tick. Each is asked once, after the step,
+   * so a game whose gameplay runs before its phase machine (all three do) has the last AUTO tick's
+   * scoring in `'autoEnd'` and none of the transition's.
+   */
+  private captureRankFacts(w: World): void {
+    const p = w.match.phase;
+    if (this.rankAt.autoEnd === undefined && (p === 'transition' || p === 'teleop' || p === 'post')) {
+      this.rankAt.autoEnd = this.readRankFacts(w, 'autoEnd');
+    }
+    if (this.rankAt.teleopStart === undefined && p === 'teleop') {
+      this.rankAt.teleopStart = this.readRankFacts(w, 'teleopStart');
+    }
+  }
+
+  /**
+   * One read of the game's `rankFacts`, COPIED to plain finite numbers. The copy is the point as much
+   * as the filter: a hook that handed back an object living in the world would keep changing after
+   * the instant it was asked about. A throw is logged and reads as unknown (null) — a competition
+   * ranks an unknown measure as unknown, never as 0, and the match itself is unaffected.
+   */
+  private readRankFacts(w: World, at: RankFactsAt): RankFacts | null {
+    const hook = simModuleFor(this.game).rankFacts;
+    if (!hook) return null;
+    try {
+      const raw = hook(w, at);
+      const out: RankFacts = { red: {}, blue: {} };
+      for (const a of ['red', 'blue'] as const) {
+        for (const [k, v] of Object.entries(raw?.[a] ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v)) out[a][k] = v;
+        }
+      }
+      return out;
+    } catch (err) {
+      console.error(`[room ${this.code}] rankFacts(${at}) failed; left unknown:`, err);
+      return null;
+    }
+  }
+
+  /** the three instants merged per alliance, the EARLIEST one winning a key reported twice; absent
+   *  when nothing was reported (unknown, never zero) */
+  private mergedRankFacts(final: RankFacts | null): RankFacts | undefined {
+    const { autoEnd, teleopStart } = this.rankAt;
+    const out: RankFacts = { red: {}, blue: {} };
+    for (const a of ['red', 'blue'] as const) {
+      out[a] = { ...final?.[a], ...teleopStart?.[a], ...autoEnd?.[a] };
+    }
+    return Object.keys(out.red).length || Object.keys(out.blue).length ? out : undefined;
   }
 
   /** the match reached phase 'post': broadcast the SERVER's authoritative score +
@@ -3303,6 +3375,10 @@ export class Room {
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
+    // a competition match's ranking-point measures: the end-of-match read, on the same settled
+    // world as the result, merged with the two taken during the match
+    const comp = this.pendingMatch?.competition;
+    const rankFacts = comp ? this.mergedRankFacts(this.readRankFacts(w, 'final')) : undefined;
     // MINT THE MATCH ID HERE, at the one moment a match becomes a thing that happened.
     // Every recipient of this broadcast gets the same id, which is what lets a
     // self-hosted match be uploaded by a client without the cloud having to guess
@@ -3379,7 +3455,9 @@ export class Room {
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
         discord: this.group !== '',
-        ...(this.pendingMatch?.competition ? { competition: this.pendingMatch.competition } : {}),
+        // a competition match also carries its measures and EVERY card, whoever was carded: cards
+        // cost ranking points there, which is separate from `reportBehaviour` (ranked only)
+        ...(comp ? { competition: comp, ...(rankFacts ? { rankFacts } : {}), cards: this.cardsOf(participants) } : {}),
         result,
         replay,
         participants,
@@ -3481,23 +3559,8 @@ export class Room {
       else if (chargedForParticipation(kind, mode)) offenders.push({ userId: p.userId, kind });
       // else: an EXCUSED 1v1 leaver — neither charged nor credited as clean
     }
-    /**
-     * CARDS travel with the behaviour report, from the world the match was played in.
-     *
-     * `world.penalties.carded` is keyed by ROBOT id and holds the colour each carded robot
-     * currently shows — a second card escalates the same robot to red rather than adding a
-     * row, which is exactly the shape a standing charge wants: one event per carded driver,
-     * priced by what they ended the match holding.
-     */
-    const carded: { userId: string; colour: 'yellow' | 'red' }[] = [];
-    const held = this.world?.penalties.carded ?? {};
-    for (const p of participants) {
-      if (!p.userId) continue;
-      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
-      if (rid === undefined) continue;
-      const colour = held[rid];
-      if (colour === 'yellow' || colour === 'red') carded.push({ userId: p.userId, colour });
-    }
+    // CARDS travel with the behaviour report, from the world the match was played in
+    const carded = this.cardsOf(participants);
     if (!offenders.length && !cleanUserIds.length && !carded.length) return;
     this.onBehaviour({
       offenders,
@@ -3524,6 +3587,28 @@ export class Room {
       earlyAwayTicks: this.earlyAwayTicks.get(robotId) ?? 0,
     });
     return { party, away, early };
+  }
+
+  /**
+   * Every carded driver of the match just played, by account. Read by the behaviour report (ranked)
+   * and by a competition's outcome, each for its own reason.
+   *
+   * `world.penalties.carded` is keyed by ROBOT id and holds the colour each carded robot
+   * currently shows — a second card escalates the same robot to red rather than adding a
+   * row, which is exactly the shape a standing charge wants: one event per carded driver,
+   * priced by what they ended the match holding. A driver who left is found through `departed`.
+   */
+  private cardsOf(participants: MatchParticipant[]): { userId: string; colour: 'yellow' | 'red' }[] {
+    const carded: { userId: string; colour: 'yellow' | 'red' }[] = [];
+    const held = this.world?.penalties.carded ?? {};
+    for (const p of participants) {
+      if (!p.userId) continue;
+      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
+      if (rid === undefined) continue;
+      const colour = held[rid];
+      if (colour === 'yellow' || colour === 'red') carded.push({ userId: p.userId, colour });
+    }
+    return carded;
   }
 
   /** the robot a DEPARTED user was driving (their client is gone, so `robotOf` cannot
@@ -3754,6 +3839,7 @@ export class Room {
     this.finalized = false;
     this.matchId = null; // `lastMatchId` is kept: a misscore claim still points at the game just played
     this.settle = newSettleClock();
+    this.rankAt = {};
     this.departed.clear();
     this.finishing = null;
     this.dropped.clear();

@@ -513,7 +513,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
  * ⚠️ RANKING POINTS used to close this table: SWARM / POLLINATOR 1 / POLLINATOR 2, printed as
  * 1 / 0 off `BB_RP`. It was REMOVED on 2026-09-21 at the owner's request. `BbRankPoints` is
  * still computed in `score.ts` and still rides `BiobuzzFieldHud.rp`, so restoring the section
- * is one tuple — but until then NOTHING in the product surfaces a ranking point.
+ * is one tuple. The results screen stays RP-free, competition matches included: ranking points
+ * are shown on the competition pages, ranked by `src/competition/manual.ts`'s table.
  */
 export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] {
   const f: BiobuzzFieldHud | undefined = sliceOf(hud)?.field;

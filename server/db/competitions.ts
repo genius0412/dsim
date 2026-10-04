@@ -9,6 +9,9 @@
 import { q, tx, type Tx } from './pool';
 import { badgeCols } from './repo';
 import type {
+  Alliance,
+  AllianceFacts,
+  CardColour,
   CompFormat,
   CompResult,
   CompSlot,
@@ -16,6 +19,7 @@ import type {
   EntryStatus,
   MatchStage,
   PlayoffAlliance,
+  RpRuling,
   SelectionAction,
   SeriesSpec,
   TeamMode,
@@ -53,6 +57,8 @@ export interface CompRow {
   seedOrder: number[] | null;
   selection: SelectionAction[];
   alliances: PlayoffAlliance[] | null;
+  /** raw jsonb (0060): the `ResolvedRanking` frozen when qualifications started; validate before use */
+  rpTable: unknown;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -89,6 +95,7 @@ interface CompDbRow {
   seed_order: number[] | null;
   selection: SelectionAction[] | null;
   alliances: PlayoffAlliance[] | null;
+  rp_table?: unknown;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -125,6 +132,7 @@ function compOf(r: CompDbRow): CompRow {
     seedOrder: Array.isArray(r.seed_order) ? r.seed_order.map(Number) : null,
     selection: Array.isArray(r.selection) ? r.selection : [],
     alliances: Array.isArray(r.alliances) ? r.alliances : null,
+    rpTable: r.rp_table ?? null,
     createdBy: r.created_by,
     createdAt: msReq(r.created_at),
     updatedAt: msReq(r.updated_at),
@@ -269,11 +277,13 @@ const EDITABLE: Record<string, string> = {
   seedOrder: 'seed_order',
   selection: 'selection',
   alliances: 'alliances',
+  // written by the server alone, when qualifications start (`statusRoute`); never from an edit
+  rpTable: 'rp_table',
   startedAt: 'started_at',
   completedAt: 'completed_at',
   cancelledAt: 'cancelled_at',
 };
-const JSON_COLS = new Set(['settings', 'seed_order', 'selection', 'alliances']);
+const JSON_COLS = new Set(['settings', 'seed_order', 'selection', 'alliances', 'rp_table']);
 const TIME_COLS = new Set(['reg_opens_at', 'reg_closes_at', 'checkin_opens_at', 'starts_at', 'started_at', 'completed_at', 'cancelled_at']);
 
 /**
@@ -561,6 +571,14 @@ export interface MatchRow {
   callNote: string | null;
   red: CompSlot[];
   blue: CompSlot[];
+  /** 0060: what the game measured per alliance; null = unknown */
+  facts: Record<Alliance, AllianceFacts> | null;
+  /** 0060: a referee's bonus-RP rulings per alliance */
+  rulings: Record<Alliance, Record<string, RpRuling>> | null;
+  /** 0060: the sim's cards in the played match, per entry id */
+  cards: Record<string, CardColour> | null;
+  /** 0060: a referee's cards in this match, per entry id */
+  refCards: Record<string, CardColour> | null;
 }
 
 interface MatchDbRow {
@@ -587,7 +605,37 @@ interface MatchDbRow {
   replay_id: string | null;
   note: string | null;
   call_note: string | null;
+  facts?: unknown;
+  rp_rulings?: unknown;
+  cards?: unknown;
+  ref_cards?: unknown;
   slots: { a: string; i: number; e: string | number; s: boolean }[] | null;
+}
+
+/* THE 0060 JSONB COLUMNS, read defensively: they are written only by the server, but a jsonb
+   column will hold anything a hand edit puts there, and the rankings read them on every page
+   view. A value of the wrong shape is dropped, never passed on. */
+const plain = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+const isRuling = (x: unknown): x is RpRuling => x === 'award' || x === 'deny';
+const isColour = (x: unknown): x is CardColour => x === 'yellow' || x === 'red';
+
+function sidesOf<T>(v: unknown, keep: (x: unknown) => x is T): Record<Alliance, Record<string, T>> | null {
+  const o = plain(v);
+  if (!o) return null;
+  const side = (a: Alliance): Record<string, T> => {
+    const out: Record<string, T> = {};
+    for (const [k, x] of Object.entries(plain(o[a]) ?? {})) if (keep(x)) out[k] = x;
+    return out;
+  };
+  return { red: side('red'), blue: side('blue') };
+}
+
+function byEntry(v: unknown): Record<string, CardColour> | null {
+  const out: Record<string, CardColour> = {};
+  for (const [k, x] of Object.entries(plain(v) ?? {})) if (/^\d+$/.test(k) && isColour(x)) out[k] = x;
+  return Object.keys(out).length ? out : null;
 }
 
 function matchOf(r: MatchDbRow): MatchRow {
@@ -624,6 +672,10 @@ function matchOf(r: MatchDbRow): MatchRow {
     callNote: r.call_note,
     red: side('red'),
     blue: side('blue'),
+    facts: sidesOf(r.facts, isNum),
+    rulings: sidesOf(r.rp_rulings, isRuling),
+    cards: byEntry(r.cards),
+    refCards: byEntry(r.ref_cards),
   };
 }
 
@@ -776,10 +828,27 @@ export async function unclaimRoom(id: number, attempt: number): Promise<void> {
  * Write a result. `attempt` (when given) makes a PLAYED result conditional on the call it came
  * from still being the current one: a room from a call the referee has since replaced finishes
  * into nothing.
+ *
+ * What rides in the SAME conditional update (0060), so a stale attempt writes none of it and a
+ * reset cannot slip in between two writes: `facts` and `cards` (undefined leaves the column alone,
+ * null clears it) and `dqAdd`, entries ADDED to `dq` — a union, so a referee's earlier DQ in the
+ * match survives a result written after it.
+ *
+ * `finished_at` is when the result was FIRST decided: a correction of a match already done keeps
+ * it. Cards escalate in the order matches were decided (`effectiveDq`), and a score fixed at the
+ * end of qualifications must not move its match to the end of that order. A reset clears it
+ * (`clearResult`), so a replayed match takes the time it is replayed.
  */
 export async function writeResult(
   id: number,
-  r: CompResult & { matchId?: string | null; replayId?: string | null; note?: string | null },
+  r: CompResult & {
+    matchId?: string | null;
+    replayId?: string | null;
+    note?: string | null;
+    facts?: Record<Alliance, AllianceFacts> | null;
+    cards?: Record<string, CardColour> | null;
+    dqAdd?: number[];
+  },
   opts: { attempt?: number; fromStatus?: CompMatchStatus[] } = {},
   query: Tx = q,
 ): Promise<boolean> {
@@ -796,17 +865,31 @@ export async function writeResult(
     params.push(opts.fromStatus);
     cond += ` and status = any($${params.length}::text[])`;
   }
-  let noteSet = '';
+  let extra = '';
   if (r.note !== undefined) {
     params.push(r.note);
-    noteSet = `, note = $${params.length}`;
+    extra += `, note = $${params.length}`;
   }
+  if (r.facts !== undefined) {
+    params.push(r.facts === null ? null : JSON.stringify(r.facts));
+    extra += `, facts = $${params.length}::jsonb`;
+  }
+  if (r.cards !== undefined) {
+    params.push(r.cards === null ? null : JSON.stringify(r.cards));
+    extra += `, cards = $${params.length}::jsonb`;
+  }
+  if (r.dqAdd?.length) {
+    params.push(r.dqAdd);
+    extra += `, dq = array(select distinct x from unnest(dq || $${params.length}::bigint[]) as x order by x)`;
+  }
+  // every right-hand side reads the row as it was, so `status` below is the status BEFORE this write
   const rows = await query<{ id: string }>(
     `update competition_matches
         set status = 'done', red_score = $2, blue_score = $3, red_foul = $4, blue_foul = $5,
             winner = $6, source = $7,
             match_id = coalesce($8::uuid, match_id), replay_id = coalesce($9::uuid, replay_id),
-            finished_at = now(), call_note = null${noteSet}
+            finished_at = case when status = 'done' and finished_at is not null then finished_at else now() end,
+            call_note = null${extra}
       where id = $1${cond}
       returning id`,
     params,
@@ -816,17 +899,94 @@ export async function writeResult(
 
 /** back to the schedule with no result (a referee resetting a match). The archived match and its
  *  replay go with the result: a replay of the game that no longer counts must not sit beside the
- *  one that will. The `matches` row and the replay themselves stay in the archive. */
+ *  one that will. The `matches` row and the replay themselves stay in the archive. So does
+ *  everything ruled on that result (0060): its facts, rulings and both kinds of card. The match is
+ *  played again from nothing, and the route logs the referee cards it drops.
+ *  A NEW ATTEMPT, like `voidMatch`: a ruling or a desk form from before the reset is refused,
+ *  even once a new result lands with the same status. Nothing from a room is lost by it: a room's
+ *  writes all need status 'called', which a reset match is not. */
 export async function clearResult(id: number, note: string | null): Promise<boolean> {
   const rows = await q<{ id: string }>(
     `update competition_matches
         set status = 'scheduled', red_score = null, blue_score = null, red_foul = 0, blue_foul = 0,
             winner = null, source = null, finished_at = null, claimed_at = null, dq = '{}', note = $2,
-            match_id = null, replay_id = null
+            match_id = null, replay_id = null, attempt = attempt + 1,
+            facts = null, rp_rulings = null, cards = null, ref_cards = null, call_note = null
       where id = $1 returning id`,
     [id, note],
   );
   return rows.length > 0;
+}
+
+/** void a match: a new attempt, for the reason `clearResult` takes one (a result typed after the
+ *  void must not take a ruling made before it) */
+export async function voidMatch(id: number, note: string | null): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update competition_matches set status = 'void', attempt = attempt + 1, note = $2, call_note = null where id = $1 returning id`,
+    [id, note],
+  );
+  return rows.length > 0;
+}
+
+/** the per-alliance jsonb columns a referee patches */
+export type SideColumn = 'facts' | 'rp_rulings';
+
+/** one alliance's patch of a `SideColumn`: keys to set and keys to drop */
+export interface SidePatch {
+  set: Record<string, unknown>;
+  drop: string[];
+}
+
+/**
+ * PATCH A PER-ALLIANCE COLUMN OF A DECIDED MATCH, key by key (0060): only the keys named change,
+ * so two referees editing different numbers cannot undo each other, and a key the server wrote
+ * (DECODE's `patternAward`) survives a referee's edit of the rest. Conditional on the match still
+ * being the decided attempt the referee was looking at: false when it moved on (reset, re-called,
+ * re-played), and the route says so.
+ */
+export async function patchSides(
+  id: number,
+  attempt: number,
+  column: SideColumn,
+  patch: Partial<Record<Alliance, SidePatch>>,
+): Promise<boolean> {
+  const col = column === 'facts' ? 'facts' : 'rp_rulings';
+  const side = (a: Alliance): SidePatch => patch[a] ?? { set: {}, drop: [] };
+  const rows = await q<{ id: string }>(
+    `update competition_matches
+        set ${col} = jsonb_build_object(
+              'red', (coalesce(${col} -> 'red', '{}'::jsonb) || $3::jsonb) - $4::text[],
+              'blue', (coalesce(${col} -> 'blue', '{}'::jsonb) || $5::jsonb) - $6::text[])
+      where id = $1 and status = 'done' and attempt = $2
+      returning id`,
+    [id, attempt, JSON.stringify(side('red').set), side('red').drop, JSON.stringify(side('blue').set), side('blue').drop],
+  );
+  return rows.length > 0;
+}
+
+/** a referee's card for one entry in a decided match (null withdraws it); conditional like `patchSides` */
+export async function setRefCard(id: number, attempt: number, entry: number, colour: CardColour | null): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update competition_matches
+        set ref_cards = nullif(
+              case when $4::text is null then coalesce(ref_cards, '{}'::jsonb) - $3::text
+                   else coalesce(ref_cards, '{}'::jsonb) || jsonb_build_object($3::text, $4::text) end,
+              '{}'::jsonb)
+      where id = $1 and status = 'done' and attempt = $2
+      returning id`,
+    [id, attempt, String(entry), colour],
+  );
+  return rows.length > 0;
+}
+
+/** the competition match an ARCHIVED match decided, for the moderators' misscore tool */
+export async function competitionMatchOf(archivedMatchId: string): Promise<{ id: number; competitionId: string } | null> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(archivedMatchId)) return null;
+  const rows = await q<{ id: string; competition_id: string }>(
+    `select id, competition_id from competition_matches where match_id = $1::uuid limit 1`,
+    [archivedMatchId],
+  );
+  return rows[0] ? { id: Number(rows[0].id), competitionId: rows[0].competition_id } : null;
 }
 
 export async function setMatchStatus(id: number, status: CompMatchStatus, note?: string | null): Promise<boolean> {

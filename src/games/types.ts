@@ -130,6 +130,9 @@ export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
  */
 export type Physics = '2d' | '3d';
 
+/** when the room asks a game for its competition numbers — see `GameSimModule.rankFacts` */
+export type RankFactsAt = 'autoEnd' | 'teleopStart' | 'final';
+
 /**
  * WHICH PHYSICS EVERY SERVER-CONNECTED MATCH OF THIS GAME RUNS ON (owner ruling, 2026-09-18).
  *
@@ -375,6 +378,20 @@ export interface GameSimModule {
    * the same on every machine. Absent ⇒ the field counts as settled at once.
    */
   settled?(world: World): boolean;
+  /**
+   * THE COMPETITION MANUAL'S NUMBERS for each alliance, read off the authoritative world for a
+   * competition's ranking points (`src/competition/manual.ts` lists each game's keys;
+   * `scripts/smoke.ts` checks they agree). A PURE READ — it must not touch the world.
+   *
+   * The room asks at three instants and merges them, the EARLIEST instant's value winning for a
+   * key reported more than once: `'autoEnd'` on the first tick the phase has left AUTO, `'teleopStart'`
+   * on the first TELEOP tick, `'final'` once the field has settled. A game reports each number at the
+   * instant its manual assesses it — what counts as AUTO is not the same in every manual (INTO THE
+   * DEEP counts the transition as TELEOP, DECODE and BIOBUZZ as AUTO). Plain numbers only: the result
+   * crosses a worker boundary and lands in jsonb. Absent ⇒ the game reports nothing, and a
+   * competition ranks it on win/tie/loss alone.
+   */
+  rankFacts?(world: World, at: RankFactsAt): Record<Alliance, Record<string, number>>;
   /**
    * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
    * `robotSolids` (`src/sim/artifactSolids.ts`).

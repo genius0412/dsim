@@ -70,7 +70,7 @@ import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { WakeTally } from './wakeLog';
 import { dbEnabled } from './db/pool';
 import { isStagedRoomCode, type PendingMatch } from './matchTypes';
-import { claimCompetitionRoom, isCompetitionRoomCode, setCompetitionLive } from './competitions';
+import { claimCompetitionRoom, competitionOfArchived, isCompetitionRoomCode, setCompetitionLive } from './competitions';
 import { startCompetitionRunner } from './competitionRunner';
 import {
   currentSeasonNumber,
@@ -1484,6 +1484,17 @@ const httpServer = createServer((req, res) => {
           res.end(dbEnabled ? 'bad request' : 'database disabled');
           return;
         }
+        /* A COMPETITION MATCH IS ITS REFEREES' TO CORRECT (0060). Its result lives on the
+           competition's own row, with facts and rulings this tool cannot edit, so a correction here
+           would change the history and tell the drivers while the competition (and every ranking
+           point) stayed as it was. The read says which competition match it is; a write is refused
+           with that sentence, and nobody is told anything. */
+        const comp = await competitionOfArchived(id);
+        if (req.method === 'POST' && comp) {
+          res.writeHead(409, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: comp.refusal, competition: comp }));
+          return;
+        }
         if (req.method === 'POST') {
           const red = Number(u.searchParams.get('red'));
           const blue = Number(u.searchParams.get('blue'));
@@ -1553,7 +1564,7 @@ const httpServer = createServer((req, res) => {
         }
         const match = await matchScoreDetail(id);
         res.writeHead(match ? 200 : 404, { ...cors, 'content-type': 'application/json' });
-        res.end(JSON.stringify(match ? { match } : { error: 'no such match' }));
+        res.end(JSON.stringify(match ? { match, ...(comp ? { competition: comp } : {}) } : { error: 'no such match' }));
         return;
       }
       /**

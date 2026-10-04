@@ -394,8 +394,15 @@ where the settings are stored, which nobody picks a section by, and went as clut
   search is ~30 ms a call; with the saved cards that was a 276 ms task, so it now builds ONE
   template world per document (0 ms after). BIOBUZZ 3D was ~210 ms: the thumbnail batch now waits
   for idle and captures one per slice, and the preview warms its shaders with `compileAsync`
-  before it draws (~140 ms after, the floor being context + PMREM setup). Prefetching the scene
-  chunk was measured and bought nothing. A new picture on this page gets measured the same way.
+  before it draws (~140 ms after, the floor being context + PMREM setup). A new picture on this
+  page gets measured the same way.
+  **2026-09-26, the rest of that floor** (`scratch/perf.cjs`, 5 runs, `GFX=` tier, `MBPS=`
+  throttle): (1) `createEnvironment` built a room PMREM at construction (69 ms) that Low/Medium,
+  lighting off, never used; it now builds nothing until `apply`. (2) The thumbnails draw through
+  the live turntable (`capture(size, spec)`), not a second context. (3) `App.tsx` warms the scene
+  chunk on idle via `preloadRoomView`. Long tasks: Medium 90–147 → ~62 ms, High 211–219 → ~105. The
+  "prefetch bought nothing" finding was localhost, which has no network to hide: at 10 Mbit/s,
+  click-to-ready goes 400 → 200 ms.
 
 **Configure copy.** No decorative glyph (the `🎯` on preset cards, the `＋` on the add cards and
 the `✎` on Edit build are gone), no sentence whose content is where another screen is, and no

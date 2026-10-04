@@ -3281,6 +3281,75 @@ export async function deleteAccount(userId: string): Promise<boolean> {
       `update competition_entries set name = 'Deleted account', note = null where user_id = $1`,
       [userId],
     );
+    /* ...AND THE COMPETITION LOG DROPS IT TOO (0060). A log line about an entry carries the name it
+       had then ("<name> was shown a red card"), and the public log would keep printing it after the
+       rename above. The lines are found by ENTRY ID: the account's entries now, plus each entry a
+       line says is the account's (`users`, on every line about an entry), which reaches an entry
+       row deleted before the start too (an organizer's removal, a pending duo withdrawn, the row a
+       re-add replaces). An entry that is still another captain's keeps its name: the account was
+       only its partner. Replaced: `name` (both names of a rename), and by position against their
+       ids a forfeit's `dq` (`dqEntries`), a failed call's `who` (`whoEntries`), the champions
+       (`championEntries`) and a reset's dropped `cards`. Lines written before those ids existed
+       keep their names. Before the profile delete: the cascade nulls `user_id`, and with it the
+       account's entries. Ids are compared as TEXT and arrays are read through a CASE, so a
+       malformed line is skipped rather than failing the whole deletion; the competitions those
+       entries are in bound the scan (the log's index), and `users` has its own. */
+    const about = await query<{ comp: string; entry: string }>(
+      `select competition_id::text as comp, id::text as entry from competition_entries where user_id = $1
+       union
+       select l.competition_id::text, l.data ->> 'entry'
+         from competition_log l
+        where l.data -> 'users' ? $1
+          and l.data ->> 'entry' is not null
+          and not exists (select 1 from competition_entries e
+                           where e.id = case when l.data ->> 'entry' ~ '^[0-9]{1,18}$' then (l.data ->> 'entry')::bigint end
+                             and e.user_id is distinct from $1)`,
+      [userId],
+    );
+    // names in `list`, replaced where the id at the same position in `ids` is one of the account's
+    const byPosition = (list: string, ids: string): string =>
+      `update competition_log l
+          set data = jsonb_set(l.data, '{${list}}', (
+                select coalesce(jsonb_agg(
+                         case when (l.data -> '${ids}' ->> (i - 1)::int) = any($2::text[])
+                              then '"Deleted account"'::jsonb else n end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> '${list}') with ordinality as t(n, i)))
+        where l.competition_id = any($1::uuid[])
+          and jsonb_typeof(l.data -> '${list}') = 'array'
+          and exists (select 1
+                        from jsonb_array_elements_text(case when jsonb_typeof(l.data -> '${ids}') = 'array'
+                                                            then l.data -> '${ids}' else '[]'::jsonb end) as d(v)
+                       where d.v = any($2::text[]))`;
+    const scrubs = [
+      // a line about one entry: its `name`, and both names of a rename
+      `update competition_log l
+          set data = l.data
+                || case when l.data ? 'name' then '{"name":"Deleted account"}'::jsonb else '{}'::jsonb end
+                || case when l.kind = 'entry.rename' then '{"from":"Deleted account","to":"Deleted account"}'::jsonb else '{}'::jsonb end
+        where l.competition_id = any($1::uuid[])
+          and (l.data ->> 'entry') = any($2::text[])`,
+      byPosition('dq', 'dqEntries'),
+      byPosition('who', 'whoEntries'),
+      byPosition('champions', 'championEntries'),
+      // a reset's dropped referee cards
+      `update competition_log l
+          set data = jsonb_set(l.data, '{cards}', (
+                select coalesce(jsonb_agg(
+                         case when (c ->> 'entry') = any($2::text[])
+                              then c || '{"name":"Deleted account"}'::jsonb else c end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> 'cards') with ordinality as t(c, i)))
+        where l.competition_id = any($1::uuid[])
+          and l.kind = 'match.reset'
+          and exists (select 1
+                        from jsonb_array_elements(case when jsonb_typeof(l.data -> 'cards') = 'array'
+                                                       then l.data -> 'cards' else '[]'::jsonb end) as x(c)
+                       where (c ->> 'entry') = any($2::text[]))`,
+    ];
+    if (about.length) {
+      const comps = [...new Set(about.map((r) => r.comp))];
+      const entries = [...new Set(about.map((r) => r.entry))];
+      for (const sql of scrubs) await query(sql, [comps, entries]);
+    }
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
   }).then((gone) => {
@@ -3359,6 +3428,8 @@ export interface AccountExport {
   /** competitions entered (0059), and the ones this account staffs */
   competitions: Record<string, unknown>[];
   competitionStaff: Record<string, unknown>[];
+  /** the cards and disqualifications recorded against this account's entries, per match (0060) */
+  competitionDiscipline: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3606,6 +3677,28 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
       `select c.name as competition, c.slug, s.role, s.added_at as "addedAt"
          from competition_staff s join competitions c on c.id = s.competition_id
         where s.user_id = $1 order by s.added_at`,
+      [userId],
+    ),
+    // a disciplinary record about the person behind an entry (0060): every card shown to it and
+    // every DQ in a match. One row each: the match's schedule label (a playoff match by its series
+    // key), the card's colour (null for a DQ) and its source: 'sim', 'referee', or 'dq'. The
+    // escalations the rankings derive from these (a second yellow, a surrogate's card) are not
+    // records of their own.
+    competitionDiscipline: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug,
+              case when m.stage = 'qual' then 'Q' || m.number else coalesce(m.series_key, 'P' || m.number) end as match,
+              x.colour, x.source, m.finished_at as "decidedAt"
+         from competition_entries e
+         join competitions c on c.id = e.competition_id
+         join competition_match_slots s on s.entry_id = e.id
+         join competition_matches m on m.id = s.match_id
+         cross join lateral (values
+           (m.cards ->> e.id::text, 'sim', coalesce(m.cards ? e.id::text, false)),
+           (m.ref_cards ->> e.id::text, 'referee', coalesce(m.ref_cards ? e.id::text, false)),
+           (null, 'dq', e.id = any(m.dq))
+         ) as x(colour, source, present)
+        where (e.user_id = $1 or e.partner_id = $1) and x.present
+        order by m.finished_at nulls last, m.id, x.source`,
       [userId],
     ),
   };

@@ -62,7 +62,8 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   try {
     return await archiveMatch(o, ids);
   } finally {
-    await competitionMatchPlayed(o.competition, o.result, ids);
+    // what the room measured and carded rides along: the competition's ranking points read them
+    await competitionMatchPlayed(o.competition, o.result, ids, { facts: o.rankFacts, cards: o.cards });
   }
 }
 

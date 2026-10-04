@@ -1,10 +1,22 @@
 import { useState } from 'react';
-import { compAction } from '../net/competitions';
+import { compAction, matchCard, matchFacts, matchRulings, type FactsPatch, type RulingsPatch } from '../net/competitions';
 import type { CompetitionDetail, CompMatchView } from '../competition/wire';
-import { STATUS_LABEL, minutesLabel } from '../competition/copy';
+import type { Alliance, CardColour, CompFormat, ResolvedBonus, ResolvedRanking, RpRuling } from '../competition/types';
+import { MEASURE_TIEBREAKERS } from '../competition/types';
+import {
+  CARD_LABEL,
+  DQ_REASON_LABEL,
+  RULING_LABEL,
+  RULING_NONE,
+  STATUS_LABEL,
+  bonusLabel,
+  measureLabel,
+  minutesLabel,
+} from '../competition/copy';
 import { entriesPerAlliance } from '../competition/settings';
+import type { GameId } from '../games/types';
 import { NOTICE_MESSAGE_MAX } from '../notices';
-import { PlayerName } from './CompParts';
+import { PlayerName, dqOf } from './CompParts';
 import type { Run } from './CompDetail';
 
 /**
@@ -353,12 +365,26 @@ export function MatchDesk({
   const [redFoul, setRedFoul] = useState(String(m.result?.redFoul ?? 0));
   const [blueFoul, setBlueFoul] = useState(String(m.result?.blueFoul ?? 0));
   const [note, setNote] = useState('');
+  // entries to disqualify with a forfeit (no-shows): R7, qualification matches only
+  const [absent, setAbsent] = useState<number[]>([]);
   const act = (action: string, extra: Record<string, unknown> = {}) =>
     run(() => compAction(slug, 'match', { action, match: m.id, note: note.trim() || undefined, ...extra }));
   const entries = new Map(data.entries.map((e) => [e.id, e]));
+  const nameOf = (id: number): string => entries.get(id)?.name ?? `#${id}`;
   const num = (v: string): string => v.replace(/[^0-9]/g, '').slice(0, 5);
   const stageLive =
     (m.stage === 'qual' && data.competition.status === 'qualification') || (m.stage === 'playoff' && data.competition.status === 'playoffs');
+  const slots = [...m.red, ...m.blue];
+  const counted = slots.filter((s) => !s.surrogate);
+  const forfeit = (winner: Alliance): void => {
+    const dq = absent.filter((e) => counted.some((s) => s.entry === e));
+    const who = dq.map(nameOf);
+    const also = who.length ? `\n\n${who.join(' and ')} ${who.length === 1 ? 'is' : 'are'} disqualified in it.` : '';
+    if (!window.confirm(`${m.label}: ${winner} wins by forfeit?${also}`)) return;
+    void act('forfeit', { winner, ...(dq.length ? { dq } : {}) }).then((ok) => ok && setAbsent([]));
+  };
+  // what disqualifies each entry here, cards and their escalation included (`effectiveDq`)
+  const out = dqOf(m);
   return (
     <div className="ds-comp-stack">
       <div className="ds-actions">
@@ -374,10 +400,10 @@ export function MatchDesk({
         )}
         {m.status !== 'void' && (
           <>
-            <button className="ds-btn ghost" disabled={busy} onClick={() => window.confirm(`${m.label}: red wins by forfeit?`) && void act('forfeit', { winner: 'red' })}>
+            <button className="ds-btn ghost" disabled={busy} onClick={() => forfeit('red')}>
               Red by forfeit
             </button>
-            <button className="ds-btn ghost" disabled={busy} onClick={() => window.confirm(`${m.label}: blue wins by forfeit?`) && void act('forfeit', { winner: 'blue' })}>
+            <button className="ds-btn ghost" disabled={busy} onClick={() => forfeit('blue')}>
               Blue by forfeit
             </button>
             <button className="ds-btn ghost danger" disabled={busy} onClick={() => window.confirm(`Void ${m.label}?\n\nIt stops counting for anyone.`) && void act('void')}>
@@ -394,6 +420,22 @@ export function MatchDesk({
           Close
         </button>
       </div>
+      {m.stage === 'qual' && m.status !== 'void' && counted.length > 0 && (
+        <div className="ds-actions" role="group" aria-labelledby={`dqabsent-${m.id}`}>
+          <span className="ds-muted" id={`dqabsent-${m.id}`}>Disqualify the absent entries with a forfeit:</span>
+          {counted.map((s) => (
+            <label key={s.entry} className="ds-checkline">
+              <input
+                type="checkbox"
+                checked={absent.includes(s.entry)}
+                disabled={busy}
+                onChange={(e) => setAbsent((xs) => (e.target.checked ? [...xs, s.entry] : xs.filter((x) => x !== s.entry)))}
+              />
+              {nameOf(s.entry)}
+            </label>
+          ))}
+        </div>
+      )}
       <form
         className="ds-form ds-comp-grid"
         onSubmit={(e) => {
@@ -428,18 +470,274 @@ export function MatchDesk({
         </div>
       </form>
       {m.status === 'done' && (
+        <RankingForm key={`${m.id}:${m.attempt}`} m={m} ranking={data.ranking} game={data.competition.game} format={data.competition.format} nameOf={nameOf} run={run} busy={busy} slug={slug} />
+      )}
+      {m.status === 'done' && (
         <div className="ds-actions">
           <span className="ds-muted">Disqualified in this match (no ranking points):</span>
-          {[...m.red, ...m.blue].map((s) => {
+          {slots.map((s) => {
             const on = m.dq.includes(s.entry);
+            const why = out.get(s.entry);
+            // a DQ a card caused is not this toggle's: it lifts when the card does
+            if (!on && why && why !== 'dq') {
+              return (
+                <button key={s.entry} className="ds-btn small danger" aria-pressed disabled>
+                  {nameOf(s.entry)}: {DQ_REASON_LABEL[why]}
+                </button>
+              );
+            }
             return (
               <button key={s.entry} className={`ds-btn small${on ? ' danger' : ' ghost'}`} aria-pressed={on} disabled={busy} onClick={() => void act('dq', { entry: s.entry, on: !on })}>
-                {entries.get(s.entry)?.name ?? `#${s.entry}`}
+                {nameOf(s.entry)}
+                {s.surrogate ? ' (surrogate)' : ''}
               </button>
             );
           })}
         </div>
       )}
+      {m.status === 'done' && slots.some((s) => s.surrogate && m.dq.includes(s.entry)) && (
+        <p className="ds-hint">A disqualification on a surrogate appearance has no effect: that match doesn’t count for the entry.</p>
+      )}
     </div>
+  );
+}
+
+/** how a referee counts a measure, where the label alone does not say (the inputs are not the
+ *  results screen's lines: `artifacts` is a count, `tips` is a count where the HUD shows points) */
+/** how a measure is counted, for a referee typing it; `two`: two robots an alliance */
+function measureHow(game: GameId, id: string, two: boolean): string | null {
+  switch (id) {
+    case 'auto':
+      return game === 'chain' ? 'scored before AUTO ends' : 'scored before TELEOP starts';
+    case 'artifacts':
+      return 'classified + overflow, every pass';
+    case 'movement':
+      return two ? 'both robots, the BASE bonus included' : null;
+    case 'base':
+      return two ? 'both robots, the bonus included' : null;
+    case 'pattern':
+      return 'AUTO + TELEOP';
+    case 'swarm':
+      return two ? 'both robots, AUTO and TELEOP PARK' : 'AUTO and TELEOP PARK';
+    case 'tips':
+      return 'a count: TIPS points ÷ 20';
+    default:
+      return null;
+  }
+}
+
+const SIDES: Alliance[] = ['red', 'blue'];
+
+interface RpDraft {
+  /** per alliance, per measure: the input's text ('' = unknown) */
+  facts: Record<Alliance, Record<string, string>>;
+  /** per alliance, per bonus id: '' = as scored */
+  rulings: Record<Alliance, Record<string, RpRuling | ''>>;
+  /** per entry id: the referee's card, '' = none */
+  cards: Record<string, CardColour | ''>;
+}
+
+/**
+ * THE RANKING-POINT CORRECTIONS for one decided qualification match: what the game measured (only
+ * the measures this competition's ranking reads; never the sim's G417 flag, which the 'Awarded'
+ * ruling already expresses), a ruling per bonus RP where the manual allows one, and a referee card
+ * per entry. Folded by default under the result form, with its own Save and a required reason,
+ * because every change is a public log line.
+ *
+ * Only what CHANGED is sent, against the values this form opened with (`base`), not the latest
+ * poll: a field another referee changed meanwhile is left alone rather than reverted. Keyed on the
+ * match's attempt, so a reset and replay opens a fresh form.
+ *
+ * Nothing at all under `custom` with no measured tiebreaker (there is nothing to read), on a
+ * forfeit (no score to rule on) or on a playoff match (no ranking points).
+ */
+function RankingForm({
+  m,
+  ranking,
+  game,
+  format,
+  nameOf,
+  run,
+  busy,
+  slug,
+}: {
+  m: CompMatchView;
+  ranking: ResolvedRanking | undefined;
+  game: GameId;
+  format: CompFormat;
+  nameOf: (id: number) => string;
+  run: Run;
+  busy: boolean;
+  slug: string;
+}) {
+  const needed = new Set<string>();
+  for (const b of ranking?.bonus ?? []) needed.add(b.measure);
+  for (const t of ranking?.tiebreakers ?? []) {
+    const k = MEASURE_TIEBREAKERS[t];
+    if (k) needed.add(k);
+  }
+  const measures = (ranking?.measures ?? []).filter((k) => needed.has(k) && k !== 'patternAward');
+  const ruled: ResolvedBonus[] = (ranking?.bonus ?? []).filter((b) => b.award || b.deny);
+  const draft = (): RpDraft => {
+    const side = <T,>(fn: (a: Alliance) => T): Record<Alliance, T> => ({ red: fn('red'), blue: fn('blue') });
+    const fact = (a: Alliance, k: string): string => {
+      const v = m.facts?.[a]?.[k];
+      return typeof v === 'number' ? String(v) : '';
+    };
+    return {
+      facts: side((a) => Object.fromEntries(measures.map((k) => [k, fact(a, k)]))),
+      rulings: side((a) => Object.fromEntries(ruled.map((b) => [b.id, m.rulings?.[a]?.[b.id] ?? '']))),
+      cards: Object.fromEntries([...m.red, ...m.blue].map((s) => [String(s.entry), m.refCards?.[String(s.entry)] ?? ''])),
+    };
+  };
+  const [base, setBase] = useState<RpDraft>(draft);
+  const [cur, setCur] = useState<RpDraft>(draft);
+  const [why, setWhy] = useState('');
+
+  const scored = m.stage === 'qual' && !!m.result && m.result.red !== null && m.result.blue !== null;
+  // cards escalate under either scheme, so the form is always there for them; facts and rulings
+  // only where the ranking reads them
+  if (!ranking || !scored) return null;
+  const title = measures.length || ruled.length ? 'Ranking points and cards' : 'Cards';
+
+  const factsPatch: FactsPatch = {};
+  const rulingsPatch: RulingsPatch = {};
+  for (const a of SIDES) {
+    for (const k of measures) {
+      if (cur.facts[a][k] === base.facts[a][k]) continue;
+      (factsPatch[a] ??= {})[k] = cur.facts[a][k] === '' ? null : Number(cur.facts[a][k]);
+    }
+    for (const b of ruled) {
+      if (cur.rulings[a][b.id] === base.rulings[a][b.id]) continue;
+      (rulingsPatch[a] ??= {})[b.id] = cur.rulings[a][b.id] || null;
+    }
+  }
+  const cardChanges = Object.keys(cur.cards).filter((e) => cur.cards[e] !== base.cards[e]);
+  const factsChanged = Object.keys(factsPatch).length > 0;
+  const rulingsChanged = Object.keys(rulingsPatch).length > 0;
+  const changed = factsChanged || rulingsChanged || cardChanges.length > 0;
+
+  const setFact = (a: Alliance, k: string, v: string): void =>
+    setCur((x) => ({ ...x, facts: { ...x.facts, [a]: { ...x.facts[a], [k]: v.replace(/[^0-9]/g, '').slice(0, 4) } } }));
+  const setRuling = (a: Alliance, id: string, v: string): void =>
+    setCur((x) => ({ ...x, rulings: { ...x.rulings, [a]: { ...x.rulings[a], [id]: v === 'award' || v === 'deny' ? v : '' } } }));
+  const setCard = (entry: number, v: string): void =>
+    setCur((x) => ({ ...x, cards: { ...x.cards, [String(entry)]: v === 'yellow' || v === 'red' ? v : '' } }));
+
+  const save = (): void => {
+    const note = why.trim();
+    const sent = cur;
+    // one request per kind, in order; each one that lands moves `base`, so a refusal part-way
+    // leaves only the unsent changes marked as changed
+    void run(async () => {
+      let res: unknown = null;
+      if (factsChanged) {
+        res = await matchFacts(slug, m, factsPatch, note);
+        setBase((b) => ({ ...b, facts: sent.facts }));
+      }
+      if (rulingsChanged) {
+        res = await matchRulings(slug, m, rulingsPatch, note);
+        setBase((b) => ({ ...b, rulings: sent.rulings }));
+      }
+      for (const e of cardChanges) {
+        const c = sent.cards[e];
+        res = await matchCard(slug, m, Number(e), c === '' ? null : c, note);
+        setBase((b) => ({ ...b, cards: { ...b.cards, [e]: c } }));
+      }
+      return res;
+    }, `${m.label} updated.`).then((ok) => ok && setWhy(''));
+  };
+
+  return (
+    <details className="ds-fold inset">
+      <summary>{title}</summary>
+      <form
+        className="ds-fold-body ds-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <div className="ds-comp-grid">
+          {SIDES.map((a) => {
+            const now = m.rp?.alliance[a];
+            // a flag the sim set (DECODE's G417), shown and never typed
+            const flags = (ranking.bonus ?? []).flatMap((b) => (b.awardFact && (m.facts?.[a]?.[b.awardFact] ?? 0) > 0 ? [b.awardFact] : []));
+            return (
+              <fieldset key={a} className={`ds-comp-facts ${a}`}>
+                <legend>{a === 'red' ? 'Red' : 'Blue'}</legend>
+                {now && (
+                  <p className="ds-hint">
+                    {now.total} RP: {now.result} for the result
+                    {now.bonus.length > 0 && ` + ${now.bonus.map(bonusLabel).join(' + ')}`}
+                  </p>
+                )}
+                {flags.map((f) => (
+                  <p key={f} className="ds-hint">
+                    {measureLabel(f)}
+                  </p>
+                ))}
+                {measures.map((k) => {
+                  const how = measureHow(game, k, format === '2v2');
+                  return (
+                    <label key={k}>
+                      <span>
+                        {measureLabel(k)}
+                        {how && ` (${how})`}
+                      </span>
+                      <input className="ds-input" inputMode="numeric" placeholder="Unknown" value={cur.facts[a][k]} onChange={(e) => setFact(a, k, e.target.value)} />
+                    </label>
+                  );
+                })}
+                {ruled.map((b) => (
+                  <label key={b.id}>
+                    <span>{bonusLabel(b.id)}</span>
+                    <select className="ds-select" value={cur.rulings[a][b.id]} onChange={(e) => setRuling(a, b.id, e.target.value)}>
+                      <option value="">{RULING_NONE}</option>
+                      {b.award && <option value="award">{RULING_LABEL.award}</option>}
+                      {b.deny && <option value="deny">{RULING_LABEL.deny}</option>}
+                    </select>
+                  </label>
+                ))}
+                {m[a].map((s) => {
+                  const name = nameOf(s.entry);
+                  const sim = m.cards?.[String(s.entry)];
+                  return (
+                    <label key={s.entry}>
+                      <span>
+                        {name}
+                        {s.surrogate ? ' (surrogate)' : ''}
+                      </span>
+                      <span className="ds-field-row">
+                        <select className="ds-select" aria-label={`Card for ${name}`} value={cur.cards[String(s.entry)] ?? ''} onChange={(e) => setCard(s.entry, e.target.value)}>
+                          <option value="">No card</option>
+                          <option value="yellow">{CARD_LABEL.yellow}</option>
+                          <option value="red">{CARD_LABEL.red}</option>
+                        </select>
+                        {sim && (
+                          <span className="ds-muted">
+                            In play: <span className={`ds-badge ${sim === 'red' ? 'danger' : 'warn'}`}>{CARD_LABEL[sim]}</span>
+                          </span>
+                        )}
+                      </span>
+                      {sim === 'yellow' && cur.cards[String(s.entry)] === 'yellow' && <span className="ds-hint warn">Two yellow cards in one match are a red card.</span>}
+                    </label>
+                  );
+                })}
+              </fieldset>
+            );
+          })}
+        </div>
+        <label>
+          <span>Reason (shown in the log)</span>
+          <input className="ds-input" maxLength={200} required value={why} onChange={(e) => setWhy(e.target.value)} />
+        </label>
+        <div className="ds-actions">
+          <button className="ds-btn" type="submit" disabled={busy || !changed || !why.trim()}>
+            Save
+          </button>
+        </div>
+      </form>
+    </details>
   );
 }

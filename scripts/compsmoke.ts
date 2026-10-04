@@ -1,10 +1,11 @@
 /**
  * Competition verification — `npm run test:comp`.
  *
- * The pure competition modules (`src/competition/`): qualification schedules, rankings, alliance
- * selection and playoff brackets. All of them are functions of stored decisions (entries, matches,
- * selection actions) and a seed, so every case here is a function call and an assertion: no DB, no
- * sockets, no clock.
+ * The pure competition modules (`src/competition/`): qualification schedules, rankings, the
+ * Competition Manual's ranking points and cards, alliance selection, playoff brackets, the
+ * settings coercer and the log's words. All of them are functions of stored decisions (entries,
+ * matches, selection actions) and a seed, so every case here is a function call and an assertion:
+ * no DB, no sockets, no clock.
  *
  * What it guards is the part of a tournament nobody can see going wrong: an entry quietly playing
  * one match fewer, a partner repeated that did not need to be, a tie that advanced a series, a
@@ -15,23 +16,52 @@
  * Kept out of `npm test` on purpose: a red `npm test` must keep meaning "physics broke".
  */
 import { drawBalanced, drawRoundRobin, drawSwissRound, scheduleQuality } from '../src/competition/schedule';
-import { computeRankings, seedOrder } from '../src/competition/rankings';
+import { computeRankings, effectiveDq, matchRp, seedOrder, tbValue } from '../src/competition/rankings';
 import { applySelection, selectionState, serpentineAlliances, type Selection } from '../src/competition/selection';
 import { bracketState, buildBracket, seedPositions } from '../src/competition/bracket';
 import { hash32, mulberry32 } from '../src/competition/rng';
+import {
+  CM_TABLES,
+  bonusEarned,
+  cmTable,
+  coerceFacts,
+  effectiveRanking,
+  levelsOf,
+  measureOf,
+  tiebreakersFor,
+  unreachableBonus,
+} from '../src/competition/manual';
+import { DEFAULT_SETTINGS, coerceCompSettings } from '../src/competition/settings';
+import {
+  BONUS_LABEL,
+  LEVEL_LABEL,
+  MEASURE_LABEL,
+  TIEBREAK_COL,
+  TIEBREAK_LABEL,
+  bonusRule,
+  logLine,
+  tiebreakLine,
+} from '../src/competition/copy';
+import { BB_PTS, BB_RP } from '../src/games/biobuzz/config';
+import { PTS_BASE_FULL, PTS_LEAVE, PTS_PATTERN } from '../src/config';
+import type { GameId } from '../src/games/types';
 import type {
+  AllianceFacts,
   BracketFormat,
   CompEntryCore,
+  CompFormat,
   CompMatchCore,
-  CompSettings,
   EntryStatus,
   PlayoffAlliance,
   RankRow,
+  ResolvedRanking,
+  RpSettings,
   SelectionAction,
   SeriesSpec,
   Tiebreaker,
   Winner,
 } from '../src/competition/types';
+import { TIEBREAKERS } from '../src/competition/types';
 
 let failures = 0;
 let checks = 0;
@@ -356,7 +386,13 @@ const done = (
     ...extra,
   };
 };
-const PTS: Pick<CompSettings, 'points' | 'tiebreakers'> = { points: { win: 2, tie: 1, loss: 0 }, tiebreakers: ['avgNoFoul', 'highScore', 'avgMargin'] };
+/** the organizer's scheme: win/tie/loss and tiebreakers, no bonus RPs, DQ matches out of the averages */
+const CUSTOM: RpSettings = { scheme: 'custom', level: 'event', thresholds: {} };
+const PTS: ResolvedRanking = effectiveRanking({ points: { win: 2, tie: 1, loss: 0 }, tiebreakers: ['avgNoFoul', 'highScore', 'avgMargin'], rp: CUSTOM }, 'decode');
+/** the manual's table for a game, at a level (custom thresholds optional) */
+const CM = (game: GameId, level: RpSettings['level'] = 'event', thresholds: Record<string, number> = {}): ResolvedRanking =>
+  effectiveRanking({ points: { win: 2, tie: 1, loss: 0 }, tiebreakers: [], rp: { scheme: 'cm', level, thresholds } }, game);
+const both = (red: AllianceFacts, blue: AllianceFacts = {}): Record<'red' | 'blue', AllianceFacts> => ({ red, blue });
 const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) => r.entry === e);
 {
   // 2v2: entries 1–4, plus a surrogate 5
@@ -398,7 +434,7 @@ const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) =
   const a = row(rows, 1)!;
   const b = row(rows, 2)!;
   check('comp rankings: an entry DQ’d in a match takes 0 RP and a loss', a.rp === 0 && a.losses === 1 && a.wins === 0 && a.played === 1, J(a));
-  check('comp rankings: …and that match is not in its score averages', a.scored === 0 && a.avgScore === 0);
+  check('comp rankings: …and under custom that match is not in its score averages', a.scored === 0 && a.avgScore === 0 && a.dqs === 1);
   check('comp rankings: …while its partner keeps the win', b.rp === 2 && b.wins === 1 && b.scored === 1);
 }
 {
@@ -415,7 +451,7 @@ const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) =
   // EACH TIEBREAKER DECIDES. Two entries on the same ranking score; in scenario A entry 1 is
   // better on the tiebreaker, in scenario B entry 2 is. The coin is fixed per entry, so if the
   // better one ranks first in BOTH, the tiebreaker decided it and not the coin.
-  type Line = { own: number; opp: number; given?: number; gave?: number; result?: Winner };
+  type Line = { own: number; opp: number; given?: number; gave?: number; result?: Winner; facts?: AllianceFacts };
   const scen: Record<Tiebreaker, [Line[], Line[]]> = {
     avgNoFoul: [[{ own: 90, opp: 0 }], [{ own: 100, opp: 0, given: 30 }]],
     avgScore: [[{ own: 100, opp: 0 }], [{ own: 90, opp: 0 }]],
@@ -423,7 +459,13 @@ const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) =
     avgMargin: [[{ own: 60, opp: 0 }], [{ own: 100, opp: 90 }]],
     wins: [[{ own: 50, opp: 0 }, { own: 0, opp: 50 }], [{ own: 10, opp: 10, result: 'tie' }, { own: 10, opp: 10, result: 'tie' }]],
     fewestFouls: [[{ own: 50, opp: 0, gave: 0 }], [{ own: 50, opp: 0, gave: 20 }]],
+    // the measured ones: averaged over the matches that report the measure
+    avgAuto: [[{ own: 50, opp: 0, facts: { auto: 30 } }], [{ own: 50, opp: 0, facts: { auto: 10 } }]],
+    avgBase: [[{ own: 50, opp: 0, facts: { base: 20 } }, { own: 50, opp: 0 }], [{ own: 50, opp: 0, facts: { base: 5 } }, { own: 50, opp: 0, facts: { base: 25 } }]],
+    avgTips: [[{ own: 50, opp: 0, facts: { tips: 3 } }], [{ own: 50, opp: 0, facts: { tips: 0 } }]],
+    avgAscent: [[{ own: 50, opp: 0, facts: { ascent: 15 } }], [{ own: 50, opp: 0 }]],
   };
+  check('comp rankings: the tiebreaker scenarios cover every tiebreaker', TIEBREAKERS.every((t) => scen[t] !== undefined) && Object.keys(scen).length === TIEBREAKERS.length);
   for (const t of Object.keys(scen) as Tiebreaker[]) {
     const [better, worse] = scen[t];
     for (const flip of [false, true]) {
@@ -433,11 +475,12 @@ const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) =
       for (const [e, ls] of lines) {
         for (const l of ls) {
           const winner: Winner = l.result ?? (l.own > l.opp ? 'red' : l.own < l.opp ? 'blue' : 'tie');
-          matches.push(done([e], [opp++], { red: l.own, blue: l.opp, redFoul: l.given ?? 0, blueFoul: l.gave ?? 0, winner }));
+          matches.push(done([e], [opp++], { red: l.own, blue: l.opp, redFoul: l.given ?? 0, blueFoul: l.gave ?? 0, winner }, l.facts ? { facts: both(l.facts) } : {}));
         }
       }
       const entries = [1, 2, ...ids(opp - 100, 100)].map((i) => ent(i));
-      const rows = computeRankings(entries, matches, { points: PTS.points, tiebreakers: [t] }, 77);
+      const ranking: ResolvedRanking = { ...PTS, tiebreakers: [t], measures: ['auto', 'base', 'tips', 'ascent'] };
+      const rows = computeRankings(entries, matches, ranking, 77);
       const a = row(rows, 1)!;
       const b = row(rows, 2)!;
       const want = flip ? 2 : 1;
@@ -465,6 +508,406 @@ const row = (rows: RankRow[], e: number): RankRow | undefined => rows.find((r) =
   const order = seedOrder(entries, rows);
   check('comp seeding: ranked entries that played first, by rank; the rest after', J(order.slice(0, 4)) === J(rows.filter((r) => r.played > 0).map((r) => r.entry)) && J(order.slice(4)) === J([3, 2]), J(order));
   check('comp seeding: only registered entries are eligible', !order.includes(4));
+}
+
+// =============================================================================================
+// ranking points — the Competition Manual tables (`manual.ts`)
+// =============================================================================================
+{
+  const d = cmTable('decode')!;
+  const b = cmTable('biobuzz')!;
+  const c = cmTable('chain')!;
+  const th = (t: typeof d, id: string) => {
+    const x = t.bonus.find((y) => y.id === id)!.thresholds;
+    return [x.event, x.regional, x.championship];
+  };
+  check(
+    'comp manual: DECODE thresholds 16/21/21, 36/42/67, 18/22/22',
+    J(th(d, 'movement')) === J([16, 21, 21]) && J(th(d, 'goal')) === J([36, 42, 67]) && J(th(d, 'pattern')) === J([18, 22, 22]),
+    J(d.bonus),
+  );
+  check('comp manual: DECODE win 3, tie 1, loss 0; no-foul, BASE, AUTO', d.win === 3 && d.tie === 1 && d.loss === 0 && J(d.tiebreakers) === J(['avgNoFoul', 'avgBase', 'avgAuto']));
+  check(
+    'comp manual: BIOBUZZ 16 / 4 / 7, regional and championship TBA',
+    J(th(b, 'swarm')) === J([16, null, null]) && J(th(b, 'pollinator1')) === J([4, null, null]) && J(th(b, 'pollinator2')) === J([7, null, null]),
+  );
+  check(
+    'comp manual: BIOBUZZ agrees with the sim’s BB_RP (thresholds, win, tie)',
+    th(b, 'swarm')[0] === BB_RP.swarm && th(b, 'pollinator1')[0] === BB_RP.pollinator1 && th(b, 'pollinator2')[0] === BB_RP.pollinator2 && b.win === BB_RP.win && b.tie === BB_RP.tie,
+  );
+  check('comp manual: BIOBUZZ no-foul, TIPS, AUTO', J(b.tiebreakers) === J(['avgNoFoul', 'avgTips', 'avgAuto']));
+  const bbOne = BB_PTS.leave + BB_PTS.parkAuto + BB_PTS.parkTele;
+  check('comp manual: BIOBUZZ one robot’s SWARM most is LEAVE + both PARKs = 13', b.bonus.find((x) => x.id === 'swarm')!.perRobotMax === bbOne && bbOne === 13);
+  check('comp manual: BIOBUZZ SWARM measure max is two robots’ worth', measureOf('biobuzz', 'swarm')!.max === 2 * bbOne);
+  const dcOne = PTS_LEAVE + PTS_BASE_FULL;
+  check('comp manual: DECODE one robot’s MOVEMENT most is LEAVE + full BASE = 13', d.bonus.find((x) => x.id === 'movement')!.perRobotMax === dcOne && dcOne === 13);
+  check('comp manual: DECODE PATTERN measure max is 9 RAMP indices × 2 assessments', measureOf('decode', 'pattern')!.max === 9 * PTS_PATTERN * 2);
+  check('comp manual: Chain 2/1/0 with no bonus RP; AUTO, ASCENT, high score', c.win === 2 && c.tie === 1 && c.loss === 0 && c.bonus.length === 0 && J(c.tiebreakers) === J(['avgAuto', 'avgAscent', 'highScore']));
+  let within = true;
+  let known = true;
+  for (const [game, t] of Object.entries(CM_TABLES) as [GameId, typeof d][]) {
+    for (const x of t.bonus) {
+      const m = measureOf(game, x.measure);
+      if (!m) known = false;
+      for (const v of [x.thresholds.event, x.thresholds.regional, x.thresholds.championship]) if (v !== null && (!m || v > m.max || v < 1)) within = false;
+      if (x.awardFact && !measureOf(game, x.awardFact)) known = false;
+    }
+    for (const tb of t.tiebreakers) if (!tiebreakersFor(game, [tb]).length) known = false;
+    if (t.game !== game) known = false;
+  }
+  check('comp manual: every published threshold is within [1, its measure’s max]', within);
+  check('comp manual: every bonus measure, award flag and tiebreaker is one the game reports', known);
+  check(
+    'comp manual: levels per game (TBA columns are not offered; custom only with a bonus)',
+    J(levelsOf('decode')) === J(['event', 'regional', 'championship', 'custom']) && J(levelsOf('biobuzz')) === J(['event', 'custom']) && J(levelsOf('chain')) === J(['event']),
+    J([levelsOf('decode'), levelsOf('biobuzz'), levelsOf('chain')]),
+  );
+  check(
+    'comp manual: rulings exist only where the manual has them (DECODE PATTERN award + deny, GOAL deny)',
+    J(Object.values(CM_TABLES).flatMap((t) => t!.bonus.filter((x) => x.award || x.deny).map((x) => `${x.id}:${x.award ? 'a' : ''}${x.deny ? 'd' : ''}`))) === J(['goal:d', 'pattern:ad']),
+  );
+}
+{
+  // effectiveRanking: what a competition actually applies
+  const dc = CM('decode');
+  check('comp manual: cm DECODE resolves the event column', J(dc.bonus.map((x) => [x.id, x.threshold])) === J([['movement', 16], ['goal', 36], ['pattern', 18]]) && dc.win === 3 && dc.source !== null);
+  check('comp manual: cm DECODE at regional', J(CM('decode', 'regional').bonus.map((x) => x.threshold)) === J([21, 42, 22]));
+  check('comp manual: cm DECODE at championship', J(CM('decode', 'championship').bonus.map((x) => x.threshold)) === J([21, 67, 22]));
+  check('comp manual: custom level reads the organizer’s, the rest default to the event column', J(CM('decode', 'custom', { movement: 13 }).bonus.map((x) => x.threshold)) === J([13, 36, 18]));
+  check('comp manual: the internal G417 flag is not a measure the referee types', !dc.measures.includes('patternAward') && dc.measures.includes('auto'));
+  const custom = effectiveRanking({ points: { win: 5, tie: 2, loss: 1 }, tiebreakers: ['wins', 'avgTips', 'avgAuto'], rp: CUSTOM }, 'decode');
+  check('comp manual: custom takes the organizer’s points, no bonus, its tiebreakers the game can rank by', custom.win === 5 && custom.tie === 2 && custom.loss === 1 && custom.bonus.length === 0 && J(custom.tiebreakers) === J(['wins', 'avgAuto']));
+  const legacy = effectiveRanking({ points: { win: 2, tie: 1, loss: 0 }, tiebreakers: ['highScore'] }, 'decode');
+  check('comp manual: settings with no rp resolve to custom', legacy.scheme === 'custom' && legacy.bonus.length === 0 && legacy.win === 2);
+  const cmSettings = { points: { win: 2, tie: 1, loss: 0 }, tiebreakers: [] as Tiebreaker[], rp: { scheme: 'cm', level: 'event', thresholds: {} } as RpSettings };
+  const frozen: ResolvedRanking = { ...dc, source: 'An older Team Update', bonus: dc.bonus.map((x) => ({ ...x, threshold: x.threshold + 1 })) };
+  check('comp manual: a frozen table wins over the live one', J(effectiveRanking(cmSettings, 'decode', frozen)) === J(frozen));
+  check('comp manual: …but not once the competition is custom', effectiveRanking({ ...cmSettings, rp: CUSTOM }, 'decode', frozen).scheme === 'custom');
+  check('comp manual: …and a frozen custom copy is not used for cm', J(effectiveRanking(cmSettings, 'decode', { ...custom })) === J(dc));
+  check(
+    'comp manual: cm tiebreaker order per game',
+    J(CM('decode').tiebreakers) === J(['avgNoFoul', 'avgBase', 'avgAuto']) && J(CM('biobuzz').tiebreakers) === J(['avgNoFoul', 'avgTips', 'avgAuto']) && J(CM('chain').tiebreakers) === J(['avgAuto', 'avgAscent', 'highScore']),
+  );
+  check('comp manual: Chain under cm is 2/1/0 with no bonus', CM('chain').win === 2 && CM('chain').bonus.length === 0);
+}
+{
+  // UNREACHABLE: one robot an alliance cannot make 16 of LEAVE + BASE or LEAVE + PARK
+  const fmt = (g: GameId, f: CompFormat, r = CM(g)): string => J(unreachableBonus(r, g, f));
+  check('comp manual: 1v1 DECODE cannot earn MOVEMENT', fmt('decode', '1v1') === J(['movement']));
+  check('comp manual: 1v1 BIOBUZZ cannot earn SWARM', fmt('biobuzz', '1v1') === J(['swarm']));
+  check('comp manual: 2v2 can earn every bonus', fmt('decode', '2v2') === '[]' && fmt('biobuzz', '2v2') === '[]');
+  check('comp manual: nothing is unreachable under custom, or in Chain', fmt('decode', '1v1', PTS) === '[]' && fmt('chain', '1v1') === '[]');
+  check('comp manual: a custom threshold one robot can reach is reachable', fmt('decode', '1v1', CM('decode', 'custom', { movement: 13 })) === '[]');
+  // two DECODE robots also take the both-robots BASE bonus: 2 × 3 + 2 × 10 + 10 = 36, not 2 × 13
+  check('comp manual: a 2v2 custom MOVEMENT of 30 is reachable', fmt('decode', '2v2', CM('decode', 'custom', { movement: 30 })) === '[]');
+  check('comp manual: …and the same threshold in a 1v1 is not', fmt('decode', '1v1', CM('decode', 'custom', { movement: 30 })) === J(['movement']));
+}
+{
+  // bonusEarned: deny beats award beats the award fact beats the measure (Table 10-4)
+  const dc = CM('decode');
+  const pattern = dc.bonus.find((x) => x.id === 'pattern')!;
+  const goal = dc.bonus.find((x) => x.id === 'goal')!;
+  const movement = dc.bonus.find((x) => x.id === 'movement')!;
+  check('comp bonus: deny beats the award fact and the measure', !bonusEarned(pattern, { pattern: 30, patternAward: 1 }, 'deny'));
+  check('comp bonus: award beats a measure below threshold', bonusEarned(pattern, { pattern: 0 }, 'award'));
+  check('comp bonus: the award fact beats the measure', bonusEarned(pattern, { pattern: 0, patternAward: 1 }) && !bonusEarned(pattern, { pattern: 0, patternAward: 0 }));
+  check('comp bonus: otherwise the measure against the threshold', bonusEarned(pattern, { pattern: 18 }) && !bonusEarned(pattern, { pattern: 17 }));
+  check('comp bonus: award is ignored where the manual has no award (GOAL, MOVEMENT)', !bonusEarned(goal, { artifacts: 0 }, 'award') && !bonusEarned(movement, { movement: 0 }, 'award'));
+  check('comp bonus: deny is ignored where the manual has no ineligibility (MOVEMENT)', bonusEarned(movement, { movement: 20 }, 'deny'));
+  check('comp bonus: GOAL can be denied', !bonusEarned(goal, { artifacts: 50 }, 'deny') && bonusEarned(goal, { artifacts: 50 }));
+  check('comp bonus: unknown facts earn nothing', !bonusEarned(movement, null) && !bonusEarned(movement, {}) && !bonusEarned(movement, undefined));
+  // each bonus at its threshold edge
+  const edge = (r: ResolvedRanking, id: string, below: AllianceFacts, at: AllianceFacts): boolean => {
+    const x = r.bonus.find((y) => y.id === id)!;
+    return !bonusEarned(x, below) && bonusEarned(x, at);
+  };
+  check('comp bonus: DECODE MOVEMENT 15 no, 16 yes', edge(dc, 'movement', { movement: 15 }, { movement: 16 }));
+  check('comp bonus: DECODE GOAL 35 no, 36 yes', edge(dc, 'goal', { artifacts: 35 }, { artifacts: 36 }));
+  check('comp bonus: DECODE PATTERN 17 no, 18 yes', edge(dc, 'pattern', { pattern: 17 }, { pattern: 18 }));
+  check('comp bonus: DECODE regional MOVEMENT 20 no, 21 yes', edge(CM('decode', 'regional'), 'movement', { movement: 20 }, { movement: 21 }));
+  const bb = CM('biobuzz');
+  check('comp bonus: BIOBUZZ SWARM 15 no, 16 yes', edge(bb, 'swarm', { swarm: 15 }, { swarm: 16 }));
+  check('comp bonus: BIOBUZZ POLLINATOR 1 at 3 no, 4 TIPS yes', edge(bb, 'pollinator1', { tips: 3 }, { tips: 4 }));
+  check('comp bonus: BIOBUZZ POLLINATOR 2 at 6 no, 7 TIPS yes', edge(bb, 'pollinator2', { tips: 6 }, { tips: 7 }));
+  const win7 = matchRp(done([1], [2], { red: 200, blue: 10 }, { facts: both({ tips: 7, swarm: 0 }) }), bb)!;
+  check('comp bonus: 7 TIPS earns both POLLINATORs, 3 + 2 = 5 RP on a win', win7.alliance.red.total === 5 && J(win7.alliance.red.bonus) === J(['pollinator1', 'pollinator2']) && win7.alliance.blue.total === 0, J(win7));
+  const all = matchRp(done([1], [2], { red: 10, blue: 200 }, { facts: both({ tips: 7, swarm: 16 }) }), bb)!;
+  check('comp bonus: a loss still takes its bonus RPs', all.alliance.red.result === 0 && all.alliance.red.total === 3 && all.alliance.blue.total === 3, J(all));
+}
+{
+  // RANKING SCORE WITH BONUS RPs: 2v2 DECODE under cm
+  const entries = [1, 2, 3, 4].map((i) => ent(i));
+  const matches = [
+    done([1, 2], [3, 4], { red: 120, blue: 40 }, { facts: both({ movement: 16, artifacts: 36, pattern: 18 }, { movement: 16 }) }),
+    done([1, 3], [2, 4], { red: 50, blue: 50 }, { facts: both({ pattern: 18 }, {}) }),
+  ];
+  const rows = computeRankings(entries, matches, CM('decode'), 3);
+  const r1 = row(rows, 1)!;
+  const r4 = row(rows, 4)!;
+  check('comp rp: win 3 + three bonus, then tie 1 + PATTERN: 8 RP over 2', r1.rp === 8 && r1.rs === 4 && J(r1.bonus) === J({ movement: 1, goal: 1, pattern: 2 }), J(r1));
+  check('comp rp: a losing alliance keeps its bonus RP', r4.rp === 2 && r4.rs === 1 && r4.bonus!.movement === 1, J(r4));
+  check('comp rp: custom gives no bonus on the same matches', row(computeRankings(entries, matches, PTS, 3), 1)!.rp === 3);
+  check('comp rp: the rankings order by RS first', rows[0].entry === 1);
+}
+{
+  // A DQ UNDER cm CONTRIBUTES 0 TO EVERY AVERAGE AND STAYS IN THE DENOMINATOR; under custom it is left out
+  const entries = [1, 2, 3, 4].map((i) => ent(i));
+  const matches = [
+    done([1], [2], { red: 100, blue: 0 }, { facts: both({ auto: 20, base: 10 }) }),
+    done([1], [3], { red: 50, blue: 40, redFoul: 10 }, { facts: both({ auto: 10, base: 0 }) }),
+    done([1], [4], { red: 80, blue: 0 }, { facts: both({ auto: 30, base: 30 }), dq: [1] }),
+  ];
+  const cmRow = row(computeRankings(entries, matches, CM('decode'), 1), 1)!;
+  const cuRow = row(computeRankings(entries, matches, PTS, 1), 1)!;
+  check('comp rp: a DQ is played, a loss, 0 RP, counted in dqs', cmRow.played === 3 && cmRow.losses === 1 && cmRow.wins === 2 && cmRow.rp === 6 && cmRow.dqs === 1 && cmRow.scored === 2, J(cmRow));
+  check('comp rp: cm — the DQ is a 0 in the score and no-foul averages', cmRow.avgScore === (100 + 50) / 3 && cmRow.avgNoFoul === (100 + 40) / 3, J(cmRow));
+  check('comp rp: cm — …and in every measure average', cmRow.avg!.auto === (20 + 10) / 3 && cmRow.avg!.base === 10 / 3, J(cmRow.avg));
+  check('comp rp: cm — high score and margin come from scored matches', cmRow.highScore === 100 && cmRow.avgMargin === (100 + 10) / 2);
+  check('comp rp: custom — the DQ match is out of every average', cuRow.avgScore === 75 && cuRow.avgNoFoul === 70 && cuRow.avg!.auto === 15 && cuRow.dqs === 1, J(cuRow));
+}
+{
+  // FORFEIT: the result's RP only, out of every average, whatever the facts or rulings say
+  const entries = [1, 2, 3].map((i) => ent(i));
+  const f = done([1], [2], { red: null, blue: null, winner: 'red' }, { facts: both({ movement: 30, artifacts: 50, pattern: 30, auto: 40 }), rulings: { red: { pattern: 'award' }, blue: {} } });
+  const s = done([1], [3], { red: 60, blue: 20 }, { facts: both({ auto: 10 }) });
+  const r1 = row(computeRankings(entries, [f, s], CM('decode'), 1), 1)!;
+  check('comp rp: a forfeit win is the win RP only', r1.rp === 6 && r1.wins === 2 && J(r1.bonus) === J({ movement: 0, goal: 0, pattern: 0 }), J(r1));
+  check('comp rp: a forfeit is out of every average and not a DQ', r1.scored === 1 && r1.avgScore === 60 && r1.avg!.auto === 10 && r1.dqs === 0, J(r1));
+  const mr = matchRp(f, CM('decode'))!;
+  check('comp rp: matchRp of a forfeit: result only, no bonus', mr.alliance.red.total === 3 && mr.alliance.red.bonus.length === 0 && mr.alliance.blue.total === 0, J(mr));
+}
+{
+  // UNKNOWN FACTS: null, never 0, and sorted below every number
+  const entries = [1, 2, 3, 4].map((i) => ent(i));
+  const matches = [done([1], [3], { red: 50, blue: 0 }, { facts: both({ auto: 0, base: 0 }) }), done([2], [4], { red: 50, blue: 0 })];
+  let firstEvery = true;
+  for (const seed of ids(12)) if (computeRankings(entries, matches, CM('decode'), seed)[0].entry !== 1) firstEvery = false;
+  const rows = computeRankings(entries, matches, CM('decode'), 1);
+  check('comp rp: no facts ⇒ every measure average null', J(row(rows, 2)!.avg) === J({ auto: null, base: null, movement: null, artifacts: null, pattern: null }), J(row(rows, 2)!.avg));
+  check('comp rp: a known 0 ranks above an unknown, whatever the coin', firstEvery && row(rows, 1)!.avg!.base === 0);
+  check('comp rp: tbValue is null for an unknown measure, the number otherwise', tbValue(row(rows, 2)!, 'avgBase') === null && tbValue(row(rows, 1)!, 'avgBase') === 0);
+  const dqOnly = [done([1], [3], { red: 50, blue: 0 }), done([1], [4], { red: 50, blue: 0 }, { facts: both({ auto: 30 }), dq: [1] })];
+  const r = row(computeRankings(entries, dqOnly, CM('decode'), 1), 1)!;
+  check('comp rp: a measure known only from a DQ match stays null', r.avg!.auto === null && r.dqs === 1, J(r));
+  const old: RankRow = { ...r, avg: undefined };
+  check('comp rp: tbValue reads an older row with no averages as null', tbValue(old, 'avgAuto') === null && tbValue(old, 'wins') === r.wins);
+  check('comp rp: tbValue prints fewest fouls as the fouls given, not negated', tbValue({ ...r, avgFouls: 7 }, 'fewestFouls') === 7);
+}
+{
+  // NO-FOUL never goes below 0
+  const entries = [1, 2].map((i) => ent(i));
+  const r = row(computeRankings(entries, [done([1], [2], { red: 10, blue: 40, redFoul: 30 })], CM('decode'), 1), 1)!;
+  check('comp rp: no-foul score is clamped at 0', r.avgNoFoul === 0, J(r));
+}
+{
+  // THE MANUAL'S TIEBREAK ORDER IS APPLIED, not the organizer's
+  const entries = ids(6).map((i) => ent(i));
+  // 1 and 2: same RS, same no-foul; 1 has more BASE, 2 more AUTO. DECODE breaks on BASE first.
+  const matches = [
+    done([1], [3], { red: 60, blue: 0 }, { facts: both({ base: 20, auto: 5 }) }),
+    done([2], [4], { red: 60, blue: 0 }, { facts: both({ base: 10, auto: 40 }) }),
+  ];
+  const settings = { points: { win: 2, tie: 1, loss: 0 }, tiebreakers: ['avgAuto'] as Tiebreaker[], rp: { scheme: 'cm', level: 'event', thresholds: {} } as RpSettings };
+  const dcRows = computeRankings(entries, matches, effectiveRanking(settings, 'decode'), 1);
+  const cuRows = computeRankings(entries, matches, effectiveRanking({ ...settings, rp: CUSTOM }, 'decode'), 1);
+  check('comp rp: cm DECODE breaks on BASE before AUTO', row(dcRows, 1)!.rank < row(dcRows, 2)!.rank);
+  check('comp rp: custom uses the organizer’s order (AUTO)', row(cuRows, 2)!.rank < row(cuRows, 1)!.rank);
+  // BIOBUZZ: TIPS before AUTO; Chain: AUTO before ASCENT, then the high score
+  const bbm = [done([1], [3], { red: 60, blue: 0 }, { facts: both({ tips: 2, auto: 5 }) }), done([2], [4], { red: 60, blue: 0 }, { facts: both({ tips: 1, auto: 40 }) })];
+  const bbRows = computeRankings(entries, bbm, CM('biobuzz'), 1);
+  check('comp rp: cm BIOBUZZ breaks on TIPS before AUTO', row(bbRows, 1)!.rank < row(bbRows, 2)!.rank);
+  const chm = [done([1], [3], { red: 60, blue: 0 }, { facts: both({ auto: 30, ascent: 0 }) }), done([2], [4], { red: 60, blue: 0 }, { facts: both({ auto: 20, ascent: 30 }) })];
+  const chRows = computeRankings(entries, chm, CM('chain'), 1);
+  check('comp rp: cm Chain breaks on AUTO before ASCENT', row(chRows, 1)!.rank < row(chRows, 2)!.rank && row(chRows, 1)!.rp === 2);
+  const chHigh = [
+    done([1], [3], { red: 90, blue: 0 }, { facts: both({ auto: 10, ascent: 10 }) }),
+    done([1], [4], { red: 10, blue: 0 }, { facts: both({ auto: 10, ascent: 10 }) }),
+    done([2], [5], { red: 50, blue: 0 }, { facts: both({ auto: 10, ascent: 10 }) }),
+    done([2], [6], { red: 50, blue: 0 }, { facts: both({ auto: 10, ascent: 10 }) }),
+  ];
+  const hiRows = computeRankings(entries, chHigh, CM('chain'), 1);
+  check('comp rp: cm Chain falls to the high score third', row(hiRows, 1)!.rank < row(hiRows, 2)!.rank);
+}
+{
+  // CARDS AND THEIR ESCALATION (`effectiveDq`)
+  const entries = ids(8).map((i) => ent(i));
+  const at = (t: number) => ({ finishedAt: t });
+  // two yellows in two matches: the second is a DQ
+  const y1 = done([1], [2], { red: 50, blue: 0 }, { ...at(1000), cards: { '1': 'yellow' } });
+  const y2 = done([1], [3], { red: 50, blue: 0 }, { ...at(2000), refCards: { '1': 'yellow' } });
+  const e1 = effectiveDq([y1, y2]);
+  check('comp cards: one yellow is a warning, not a DQ', !e1.has(y1.id));
+  check('comp cards: a second yellow in a later match is a DQ (yellow2)', J(e1.get(y2.id)) === J([{ entry: 1, why: 'yellow2' }]), J([...e1]));
+  const rows = computeRankings(entries, [y1, y2], CM('decode'), 1);
+  check('comp cards: …which costs that match’s RP and counts as a loss', row(rows, 1)!.rp === 3 && row(rows, 1)!.losses === 1 && row(rows, 1)!.dqs === 1 && row(rows, 1)!.yellow === true);
+  check('comp cards: an entry with no card carries no yellow', row(rows, 2)!.yellow === false);
+  // a red is a DQ on its own
+  const red = done([1], [2], { red: 50, blue: 0 }, { refCards: { '1': 'red' } });
+  check('comp cards: a red card is a DQ (red)', J(effectiveDq([red]).get(red.id)) === J([{ entry: 1, why: 'red' }]));
+  // the sim's yellow and the referee's yellow in one match make a red
+  const two = done([1], [2], { red: 50, blue: 0 }, { cards: { '1': 'yellow' }, refCards: { '1': 'yellow' } });
+  check('comp cards: a sim yellow and a referee yellow in one match are a red', J(effectiveDq([two]).get(two.id)) === J([{ entry: 1, why: 'red' }]));
+  // order by when the match was decided, not by its number
+  const late = done([1], [2], { red: 50, blue: 0 }, { ...at(5000), cards: { '1': 'yellow' } });
+  const early = done([1], [3], { red: 50, blue: 0 }, { ...at(4000), cards: { '1': 'yellow' } });
+  const eo = effectiveDq([late, early]);
+  check('comp cards: escalation follows finishedAt, not the match number', late.number < early.number && eo.has(late.id) && !eo.has(early.id), J([...eo]));
+  const unknown = done([1], [2], { red: 50, blue: 0 }, { cards: { '1': 'yellow' } });
+  const known = done([1], [3], { red: 50, blue: 0 }, { ...at(100), cards: { '1': 'yellow' } });
+  const eu = effectiveDq([unknown, known]);
+  check('comp cards: a match with no time goes after every timed one', eu.has(unknown.id) && !eu.has(known.id), J([...eu]));
+  // a surrogate's card lands on the entry's previous counted match
+  const prev = done([4], [5], { red: 50, blue: 0 }, at(1000));
+  const sur = done([{ entry: 4, surrogate: true }], [6], { red: 50, blue: 0 }, { ...at(2000), refCards: { '4': 'red' } });
+  const es = effectiveDq([prev, sur]);
+  check('comp cards: a surrogate red disqualifies the previous counted match', J(es.get(prev.id)) === J([{ entry: 4, why: 'surrogate' }]) && !es.has(sur.id), J([...es]));
+  // …or the next one when there is none earlier
+  const sur1 = done([{ entry: 4, surrogate: true }], [6], { red: 50, blue: 0 }, { ...at(1000), refCards: { '4': 'red' } });
+  const next = done([4], [5], { red: 50, blue: 0 }, at(2000));
+  const after = done([4], [7], { red: 50, blue: 0 }, at(3000));
+  const en = effectiveDq([sur1, next, after]);
+  check('comp cards: a surrogate red with nothing before applies to the next counted match', J(en.get(next.id)) === J([{ entry: 4, why: 'surrogate' }]) && !en.has(after.id), J([...en]));
+  // a surrogate yellow while carrying one is a DQ of the previous match too
+  const yPrev = done([4], [5], { red: 50, blue: 0 }, { ...at(1000), cards: { '4': 'yellow' } });
+  const ySur = done([{ entry: 4, surrogate: true }], [6], { red: 50, blue: 0 }, { ...at(2000), cards: { '4': 'yellow' } });
+  check('comp cards: a surrogate yellow while carrying one disqualifies the previous counted match', J(effectiveDq([yPrev, ySur]).get(yPrev.id)) === J([{ entry: 4, why: 'surrogate' }]));
+  // a surrogate yellow while not carrying only starts the carry
+  const ySur1 = done([{ entry: 4, surrogate: true }], [6], { red: 50, blue: 0 }, { ...at(1000), cards: { '4': 'yellow' } });
+  const yNext = done([4], [5], { red: 50, blue: 0 }, { ...at(2000), refCards: { '4': 'yellow' } });
+  const ey2 = effectiveDq([ySur1, yNext]);
+  check('comp cards: a surrogate yellow carries into the next match, where a yellow is the second', !ey2.has(ySur1.id) && J(ey2.get(yNext.id)) === J([{ entry: 4, why: 'yellow2' }]));
+  // a dq on a surrogate slot does nothing
+  const dqSur = done([{ entry: 4, surrogate: true }], [6], { red: 50, blue: 0 }, { ...at(1000), dq: [4] });
+  const counted = done([4], [5], { red: 50, blue: 0 }, at(2000));
+  check('comp cards: a DQ on a surrogate appearance has no effect', effectiveDq([dqSur, counted]).size === 0 && row(computeRankings(entries, [dqSur, counted], CM('decode'), 1), 4)!.rp === 3);
+  // cards on matches that do not count are ignored
+  const voided = done([1], [2], { red: 50, blue: 0 }, { status: 'void', refCards: { '1': 'red' } });
+  const sched = done([1], [2], { red: 50, blue: 0 }, { status: 'scheduled', result: null, refCards: { '1': 'red' } });
+  const playoff = done([1], [2], { red: 50, blue: 0 }, { stage: 'playoff', refCards: { '1': 'yellow' } });
+  const later = done([1], [3], { red: 50, blue: 0 }, { cards: { '1': 'yellow' } });
+  const ev = effectiveDq([voided, sched, playoff, later]);
+  const rv = row(computeRankings(entries, [voided, sched, playoff, later], CM('decode'), 1), 1)!;
+  check('comp cards: cards on void, unplayed and playoff matches are ignored', ev.size === 0 && rv.dqs === 0 && rv.rp === 3, J([...ev]));
+  check('comp cards: a yellow at the end leaves the entry carrying one', rv.yellow === true);
+  // the referee's DQ is named as such, before any card
+  const twoDq = done([1, 2], [3, 4], { red: 50, blue: 0 }, { dq: [2], refCards: { '1': 'red', '2': 'red' } });
+  check('comp cards: each DQ names its reason, entries in order', J(effectiveDq([twoDq]).get(twoDq.id)) === J([{ entry: 1, why: 'red' }, { entry: 2, why: 'dq' }]));
+}
+{
+  // matchRp: what a match gave each alliance and each entry
+  const dc = CM('decode');
+  const m = done([1, 2], [3, { entry: 5, surrogate: true }], { red: 90, blue: 40 }, { facts: both({ movement: 16 }, { pattern: 20 }), dq: [1] });
+  const r = matchRp(m, dc)!;
+  check('comp matchRp: the alliance’s result and bonus', r.alliance.red.result === 3 && J(r.alliance.red.bonus) === J(['movement']) && r.alliance.red.total === 4 && r.alliance.blue.total === 1, J(r));
+  check('comp matchRp: a DQ’d entry takes 0, its partner keeps the alliance’s RP (T601)', r.entries['1'] === 0 && r.entries['2'] === 4, J(r.entries));
+  check('comp matchRp: a surrogate takes 0, its partner the alliance’s', r.entries['5'] === 0 && r.entries['3'] === 1);
+  const card = done([1, 2], [3, 4], { red: 90, blue: 40 }, { refCards: { '2': 'red' } });
+  const viaEff = matchRp(card, dc, effectiveDq([card]).get(card.id))!;
+  check('comp matchRp: with effectiveDq, a card’s DQ takes the RP too', viaEff.entries['2'] === 0 && viaEff.entries['1'] === 3);
+  check('comp matchRp: without it, only the match’s own dq list', matchRp(card, dc)!.entries['2'] === 3);
+  check('comp matchRp: rulings decide the bonus', matchRp({ ...m, rulings: { red: { movement: 'deny' }, blue: { pattern: 'deny' } } }, dc)!.alliance.blue.total === 0);
+  check('comp matchRp: custom has no bonus', matchRp(m, PTS)!.alliance.red.total === 2);
+  check(
+    'comp matchRp: a playoff match, a void one or one with no result gives none',
+    matchRp({ ...m, stage: 'playoff' }, dc) === null && matchRp({ ...m, result: null }, dc) === null && matchRp({ ...m, status: 'void' }, dc) === null,
+  );
+  const tie = matchRp(done([1], [2], { red: 30, blue: 30 }), dc)!;
+  check('comp matchRp: a tie gives both alliances the tie RP', tie.alliance.red.total === 1 && tie.alliance.blue.total === 1);
+}
+{
+  // facts as a referee or a client sends them
+  check('comp facts: known keys only, whole numbers in [0, max]', J(coerceFacts('decode', { auto: 12.6, base: 99, pattern: -4, bogus: 3, movement: '20' })) === J({ auto: 13, base: 30, movement: 20, pattern: 0 }));
+  check('comp facts: the internal G417 flag only from the server', coerceFacts('decode', { patternAward: 1 }) === null && J(coerceFacts('decode', { patternAward: 5 }, true)) === J({ patternAward: 1 }));
+  check('comp facts: nothing usable is unknown, not zeros', coerceFacts('biobuzz', { auto: 'x' }) === null && coerceFacts('biobuzz', null) === null && coerceFacts('biobuzz', [1]) === null);
+}
+
+// =============================================================================================
+// settings
+// =============================================================================================
+{
+  const legacy = coerceCompSettings({ points: { win: 2, tie: 1, loss: 0 }, tiebreakers: ['highScore'] }, '2v2', 'solo', 'decode');
+  check('comp settings: a row with no rp is custom, its points kept', legacy.rp.scheme === 'custom' && J(legacy.points) === J({ win: 2, tie: 1, loss: 0 }) && effectiveRanking(legacy, 'decode').bonus.length === 0);
+  check(
+    'comp settings: an rp that is not an object counts as absent',
+    coerceCompSettings({ rp: 'cm' }, '2v2', 'solo', 'decode').rp.scheme === 'custom' && coerceCompSettings({ rp: null }, '2v2', 'solo', 'decode').rp.scheme === 'custom',
+  );
+  const fresh = coerceCompSettings(DEFAULT_SETTINGS, '2v2', 'solo', 'decode');
+  check('comp settings: a new competition starts on the manual, standard events', J(fresh.rp) === J({ scheme: 'cm', level: 'event', thresholds: {} }));
+  check('comp settings: a present rp is coerced field by field', J(coerceCompSettings({ rp: { level: 'regional' } }, '2v2', 'solo', 'decode').rp) === J({ scheme: 'cm', level: 'regional', thresholds: {} }));
+  check('comp settings: junk rp fields take their defaults', J(coerceCompSettings({ rp: { scheme: 'x', level: 'x', thresholds: 'x' } }, '2v2', 'solo', 'decode').rp) === J({ scheme: 'cm', level: 'event', thresholds: {} }));
+  check('comp settings: custom stays custom', coerceCompSettings({ rp: { scheme: 'custom', level: 'event' } }, '2v2', 'solo', 'decode').rp.scheme === 'custom');
+  check(
+    'comp settings: BIOBUZZ regional and championship (TBA) fold to event',
+    coerceCompSettings({ rp: { scheme: 'cm', level: 'regional' } }, '2v2', 'solo', 'biobuzz').rp.level === 'event' &&
+      coerceCompSettings({ rp: { scheme: 'cm', level: 'championship' } }, '2v2', 'solo', 'biobuzz').rp.level === 'event' &&
+      coerceCompSettings({ rp: { scheme: 'cm', level: 'custom' } }, '2v2', 'solo', 'biobuzz').rp.level === 'custom',
+  );
+  const chain = coerceCompSettings({ rp: { scheme: 'cm', level: 'custom', thresholds: { movement: 5 } } }, '1v1', 'solo', 'chain');
+  check(
+    'comp settings: Chain under cm has one level and no thresholds',
+    J(chain.rp) === J({ scheme: 'cm', level: 'event', thresholds: {} }) && effectiveRanking(chain, 'chain').bonus.length === 0 && effectiveRanking(chain, 'chain').win === 2,
+  );
+  check('comp settings: a game with no table folds to custom', coerceCompSettings({ rp: { scheme: 'cm' } }, '1v1', 'solo', 'nogame' as GameId).rp.scheme === 'custom');
+  const th = coerceCompSettings({ rp: { scheme: 'cm', level: 'custom', thresholds: { movement: 99, goal: 0, pattern: '20', bogus: 5, swarm: 3, artifacts: 4 } } }, '2v2', 'solo', 'decode').rp.thresholds;
+  check('comp settings: thresholds keep the game’s bonus ids, whole and clamped to [1, max]', J(th) === J({ movement: 36, goal: 1, pattern: 20 }), J(th));
+  const bb = coerceCompSettings({ rp: { scheme: 'cm', level: 'custom', thresholds: { swarm: 2.6, pollinator1: 'x', pollinator2: 500 } } }, '2v2', 'solo', 'biobuzz').rp.thresholds;
+  check('comp settings: BIOBUZZ thresholds rounded, junk dropped, clamped to the TIPS max', J(bb) === J({ swarm: 3, pollinator2: 99 }), J(bb));
+  check('comp settings: thresholds are kept on a manual level too', J(coerceCompSettings({ rp: { scheme: 'cm', level: 'event', thresholds: { goal: 40 } } }, '2v2', 'solo', 'decode').rp.thresholds) === J({ goal: 40 }));
+  const tb = (g: GameId) => coerceCompSettings({ tiebreakers: ['avgTips', 'avgBase', 'avgAscent', 'avgAuto', 'wins', 'avgAuto', 'nope'] }, '2v2', 'solo', g).tiebreakers;
+  check(
+    'comp settings: custom tiebreakers are filtered to the game’s measures',
+    J(tb('decode')) === J(['avgBase', 'avgAuto', 'wins']) && J(tb('biobuzz')) === J(['avgTips', 'avgAuto', 'wins']) && J(tb('chain')) === J(['avgAscent', 'avgAuto', 'wins']),
+    J([tb('decode'), tb('biobuzz'), tb('chain')]),
+  );
+  check('comp settings: the default tiebreakers survive for every game', (['decode', 'biobuzz', 'chain'] as GameId[]).every((g) => J(coerceCompSettings({}, '2v2', 'solo', g).tiebreakers) === J(DEFAULT_SETTINGS.tiebreakers)));
+  // the existing folds still hold
+  const rr = coerceCompSettings({ quals: { kind: 'roundRobin' }, playoffs: { selection: 'captains' } }, '2v2', 'solo', 'decode');
+  check('comp settings: round robin in a 2v2 of solo entries folds to balanced', rr.quals.kind === 'balanced' && rr.playoffs.selection === 'captains');
+  check('comp settings: one entry per alliance is always serpentine', coerceCompSettings({ playoffs: { selection: 'captains' } }, '1v1', 'solo', 'decode').playoffs.selection === 'serpentine');
+  check('comp settings: tie ≤ win and loss ≤ tie', J(coerceCompSettings({ points: { win: 1, tie: 4, loss: 9 } }, '1v1', 'solo', 'decode').points) === J({ win: 1, tie: 1, loss: 1 }));
+}
+
+// =============================================================================================
+// copy
+// =============================================================================================
+{
+  const allBonus = Object.values(CM_TABLES).flatMap((t) => t!.bonus.map((x) => x.id));
+  const allMeasures = Object.values(CM_TABLES).flatMap((t) => t!.measures.map((x) => x.id));
+  check('comp copy: every bonus RP and every measure has a label', allBonus.every((id) => !!BONUS_LABEL[id]) && allMeasures.every((id) => !!MEASURE_LABEL[id]));
+  check('comp copy: every tiebreaker has a label and a column header', TIEBREAKERS.every((t) => !!TIEBREAK_LABEL[t] && !!TIEBREAK_COL[t]));
+  check('comp copy: every level a game offers has a label', (['decode', 'biobuzz', 'chain'] as GameId[]).every((g) => levelsOf(g).every((l) => !!LEVEL_LABEL[l])));
+  const rule = (g: GameId, id: string, r = CM(g)): string => bonusRule(g, r.bonus.find((x) => x.id === id)!);
+  check(
+    'comp copy: a bonus rule in words',
+    rule('decode', 'movement') === '16 LEAVE + BASE points' && rule('decode', 'goal') === '36 ARTIFACTS scored' && rule('biobuzz', 'pollinator1') === '4 TIPS' && rule('biobuzz', 'swarm') === '16 LEAVE + PARK points',
+    J([rule('decode', 'movement'), rule('decode', 'goal'), rule('biobuzz', 'pollinator1'), rule('biobuzz', 'swarm')]),
+  );
+  check('comp copy: a count of one is singular', rule('biobuzz', 'pollinator1', CM('biobuzz', 'custom', { pollinator1: 1 })) === '1 TIP' && rule('decode', 'pattern', CM('decode', 'custom', { pattern: 1 })) === '1 PATTERN point');
+  check('comp copy: a tiebreak list keeps the manual’s capitals', tiebreakLine(CM('decode').tiebreakers) === 'Average score without fouls, then average BASE points, then average AUTO points' && tiebreakLine([]) === 'A coin toss');
+  const lines: [string, Record<string, unknown>, string][] = [
+    ['match.rp', { label: 'Q4', alliance: 'red', bonus: 'pattern', ruling: 'award', why: 'G417 by blue.' }, 'Q4: red was awarded the Pattern RP. G417 by blue.'],
+    ['match.rp', { label: 'Q4', alliance: 'blue', bonus: 'goal', ruling: 'deny', why: '' }, 'Q4: blue was ruled ineligible for the Goal RP.'],
+    ['match.rp', { label: 'Q4', alliance: 'red', bonus: 'pattern', ruling: null, why: 'Misread.' }, 'Q4: the ruling on red’s Pattern RP was withdrawn. Misread.'],
+    ['match.card', { label: 'Q5', name: 'Ada', colour: 'yellow', why: 'Pinning.' }, 'Q5: Ada was shown a yellow card. Pinning.'],
+    ['match.card', { label: 'Q5', name: 'Ada', colour: 'red' }, 'Q5: Ada was shown a red card.'],
+    ['match.card', { label: 'Q5', name: 'Ada', colour: null, why: 'Wrong robot.' }, 'Q5: Ada’s card was withdrawn. Wrong robot.'],
+    ['match.facts', { label: 'Q6', why: 'BASE was missed.' }, 'Q6: the score breakdown was corrected. BASE was missed.'],
+    ['match.note', { label: 'Q7', note: 'Replayed after a field fault.' }, 'Note on Q7: “Replayed after a field fault.”'],
+    ['match.forfeit', { label: 'Q8', winner: 'blue', dq: ['Ada', 'Bo'], why: 'Ada did not connect.' }, 'Q8: blue wins by forfeit. Ada and Bo were disqualified. Ada did not connect.'],
+    // a failed call since the names moved out of `why`: a code, the names in `who`
+    ['match.forfeit', { label: 'Q8', winner: 'blue', dq: ['Ada'], why: 'noshow', who: ['Ada'], whoEntries: [3] }, 'Q8: blue wins by forfeit. Ada was disqualified. Ada did not connect.'],
+    ['match.forfeit', { label: 'Q8', winner: 'red', why: 'unready', who: ['Ada', 'Bo'], whoEntries: [3, 4] }, 'Q8: red wins by forfeit. Ada and Bo did not ready up in time.'],
+    ['match.uncalled', { label: 'Q8', why: 'bail', who: [], whoEntries: [] }, 'Q8 went back on the schedule: A driver left before the start.'],
+    ['match.uncalled', { label: 'Q8', why: 'Nobody joined before the call ran out.' }, 'Q8 went back on the schedule: Nobody joined before the call ran out.'],
+    ['match.forfeit', { label: 'Q8', winner: 'red', why: 'empty' }, 'Q8: red wins by forfeit. The other alliance had nobody left to play.'],
+    ['match.forfeit', { label: 'Q8', winner: 'red' }, 'Q8: red wins by forfeit.'],
+    ['match.void', { label: 'Q9', why: 'empty' }, 'Q9 was voided: nobody was left to play it.'],
+    ['match.reset', { label: 'Q9', cards: [{ name: 'Ada', colour: 'yellow' }] }, 'Q9 will be played again. The referee cards for Ada were withdrawn.'],
+  ];
+  for (const [kind, data, want] of lines) {
+    const got = logLine(kind, data);
+    check(`comp copy: log ${kind} — ${want}`, got === want, String(got));
+  }
 }
 
 // =============================================================================================

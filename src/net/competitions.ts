@@ -10,8 +10,8 @@
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
 import { sendWithTokenRetry } from './authFetch';
-import type { CompetitionSummary } from '../competition/types';
-import type { CompEditInput, CompetitionDetail, CompetitionList } from '../competition/wire';
+import type { Alliance, CardColour, CompetitionSummary, RpRuling } from '../competition/types';
+import type { CompEditInput, CompMatchView, CompetitionDetail, CompetitionList } from '../competition/wire';
 import type { GameId } from '../games/types';
 
 /** a refusal the server explained, or a failure that has no better sentence */
@@ -80,6 +80,32 @@ export function createCompetition(input: CompEditInput): Promise<{ slug: string;
 /** one action on one competition: `register`, `status`, `match`, … (see server/competitions.ts) */
 export function compAction<T = { ok: true; note?: string }>(slug: string, action: string, payload: Record<string, unknown> = {}): Promise<T> {
   return post<T>(`/api/competitions/${encodeURIComponent(slug)}/${action}`, payload);
+}
+
+/**
+ * THE RANKING-POINT CORRECTIONS on one decided qualification match (0060). Each carries the
+ * match's `attempt` as the desk rendered it: a match reset or replayed since is refused with
+ * "The match changed. Refresh." rather than corrected blind. `note` is the reason, required, and
+ * public in the log.
+ */
+type MatchRef = Pick<CompMatchView, 'id' | 'attempt'>;
+
+/** a per-key patch: a number sets a measure, null clears it (unknown), a key left out is kept */
+export type FactsPatch = Partial<Record<Alliance, Record<string, number | null>>>;
+/** per bonus id: a ruling, or null to go back to what was scored */
+export type RulingsPatch = Partial<Record<Alliance, Record<string, RpRuling | null>>>;
+
+export function matchFacts(slug: string, m: MatchRef, facts: FactsPatch, note: string) {
+  return compAction(slug, 'match', { action: 'facts', match: m.id, attempt: m.attempt, facts, note });
+}
+
+export function matchRulings(slug: string, m: MatchRef, rulings: RulingsPatch, note: string) {
+  return compAction(slug, 'match', { action: 'rp', match: m.id, attempt: m.attempt, rulings, note });
+}
+
+/** a referee's card for one entry; null withdraws it. The sim's own card is not touched. */
+export function matchCard(slug: string, m: MatchRef, entry: number, colour: CardColour | null, note: string) {
+  return compAction(slug, 'match', { action: 'card', match: m.id, attempt: m.attempt, entry, colour, note });
 }
 
 export { fetchPlacements, type Placement } from './myCompetitions';

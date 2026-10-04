@@ -441,6 +441,7 @@ import { restoreWireClocks } from '../src/net/wireClocks';
 import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
 import { AGREE_BALL_IN, AGREE_POS_IN, AGREE_STICK, cmdsAgree, digestsAgree, worldDigest } from '../src/net/worldDigest';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
+import { cmTable } from '../src/competition/manual';
 import { moduleFor, gameOf } from '../src/games';
 import { Renderer } from '../src/render/renderer';
 import type { GameScene } from '../src/games/module';
@@ -476,9 +477,10 @@ import {
   CHAIN_MIN_LENGTH,
   CHAIN_MAX_LENGTH,
   CHAIN_PRISM,
+  CHAIN_PTS,
   chainArmReach,
 } from '../src/games/chain/config';
-import { CHAIN_HOOKS_PER_GOAL, accelMultiplier, catalystRailHalf, catalystRailTarget, catalystMouth, catalystTrackTarget, chainEvalStart, chainFitAnchor, chainStartExtents, chainHeadingFits, chainNearestFittingHeading, chainSnapStartPose, chainIntakeMouths, chainMirrorStart, chainSnapStart, chainStartLegal, hookPos, labAreas, onRingStand, ringStandBoxes, ringStands } from '../src/games/chain/state';
+import { CHAIN_HOOKS_PER_GOAL, accelSide, accelMultiplier, catalystRailHalf, catalystRailTarget, catalystMouth, catalystTrackTarget, chainEvalStart, chainFitAnchor, chainStartExtents, chainHeadingFits, chainNearestFittingHeading, chainSnapStartPose, chainIntakeMouths, chainMirrorStart, chainSnapStart, chainStartLegal, hookPos, labAreas, onRingStand, ringStandBoxes, ringStands } from '../src/games/chain/state';
 import {
   CHAIN_CATALYSTS,
   CHAIN_CATALYST_TYPES,
@@ -37047,6 +37049,293 @@ function fxImportFixed(): RobotSpec {
 }
 
 /**
+ * COMPETITION RANKING POINTS: what each game reports to a competition (`GameSimModule.rankFacts`)
+ * and what a competition room hands on. The keys are `src/competition/manual.ts`'s measures; the
+ * ranking built from them is `npm run test:comp`'s.
+ */
+// ---- DECODE: every measure at the end, off the breakdown LINES; G417.A through the engine ----
+{
+  const facts = simModuleFor('decode').rankFacts!;
+  // blue (robot 0) drives INTO red's gate arm: G417 fires through `step` and the penalty engine
+  const gz = gateZone('red');
+  const w = foulWorld();
+  w.robots[0].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 };
+  w.robots[0].heading = 0;
+  w.robots[0].fieldCentric = false;
+  w.robots[1].pos = { x: 0, y: 30 };
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), 2.5);
+  const f = facts(w, 'final');
+  check('rankFacts DECODE: the scene is real (blue was called for G417)', w.match.fouls.blue.major >= 1, `blueMajor=${w.match.fouls.blue.major}`);
+  check(
+    'rankFacts DECODE: G417.A awards the gate OWNER the PATTERN RP, and nobody else',
+    f.red.patternAward === 1 && f.blue.patternAward === 0,
+    JSON.stringify({ red: f.red.patternAward, blue: f.blue.patternAward }),
+  );
+  // the owner working its own gate is legal: no award either way
+  const w2 = foulWorld();
+  w2.robots[1].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 };
+  w2.robots[1].heading = 0;
+  w2.robots[1].fieldCentric = false;
+  w2.robots[0].pos = { x: 0, y: 30 };
+  runCmds(w2, new Map([[1, cmd({ driveY: 1 })]]), 2.5);
+  const f2 = facts(w2, 'final');
+  check(
+    'rankFacts DECODE: an owner opening its own gate awards nobody the PATTERN RP',
+    w2.goals.red.gateOpen && f2.red.patternAward === 0 && f2.blue.patternAward === 0,
+    `open=${w2.goals.red.gateOpen} ${JSON.stringify({ red: f2.red.patternAward, blue: f2.blue.patternAward })}`,
+  );
+
+  // the arithmetic, on a breakdown written by hand
+  const w3 = foulWorld();
+  w3.match.scores.red = {
+    leave: 6, autoClassified: 9, autoOverflow: 2, autoPattern: 4,
+    teleClassified: 30, teleOverflow: 3, telePattern: 10, depot: 2, base: 30, foulPoints: 15, total: 111,
+  };
+  w3.goals.red.classifiedCount = 13;
+  w3.goals.red.overflowCount = 5;
+  const json = JSON.stringify(w3);
+  const r = facts(w3, 'final').red;
+  check('rankFacts DECODE: AUTO = LEAVE + AUTO CLASSIFIED + AUTO OVERFLOW + AUTO PATTERN = 6 + 9 + 2 + 4', r.auto === 21, String(r.auto));
+  check('rankFacts DECODE: BASE = the BASE line, bonus included (30)', r.base === 30, String(r.base));
+  check('rankFacts DECODE: MOVEMENT = LEAVE + BASE = 6 + 30', r.movement === 36, String(r.movement));
+  check('rankFacts DECODE: PATTERN = AUTO + TELEOP PATTERN = 4 + 10', r.pattern === 14, String(r.pattern));
+  check('rankFacts DECODE: ARTIFACTS = every pass through the SQUARE, CLASSIFIED + OVERFLOW = 13 + 5', r.artifacts === 18, String(r.artifacts));
+  check('rankFacts DECODE: a pure read (the world is unchanged)', JSON.stringify(w3) === json);
+  // a red card voids the TOTAL; the lines, and so the measures, are what was played
+  awardCard(w3, w3.robots[1], 'smoke');
+  awardCard(w3, w3.robots[1], 'smoke');
+  const v = facts(w3, 'final').red;
+  check(
+    'rankFacts DECODE: a voided score keeps its lines',
+    w3.match.scores.red.voided === true && w3.match.scores.red.total === 0 &&
+      v.auto === 21 && v.base === 30 && v.movement === 36 && v.pattern === 14 && v.artifacts === 18,
+    `total=${w3.match.scores.red.total} ${JSON.stringify(v)}`,
+  );
+  const early = [facts(w3, 'autoEnd'), facts(w3, 'teleopStart')];
+  check(
+    'rankFacts DECODE: nothing before the end (its AUTO lines already hold the transition)',
+    early.every((e) => Object.keys(e.red).length === 0 && Object.keys(e.blue).length === 0),
+    JSON.stringify(early),
+  );
+}
+
+// ---- every game with a manual table reports exactly that table's measures, once each ---------
+{
+  for (const game of GAME_IDS) {
+    const mod = simModuleFor(game);
+    const table = cmTable(game);
+    check(`rankFacts ${game}: a game reports measures exactly when the manual module has its table`, !!mod.rankFacts === !!table);
+    if (!mod.rankFacts || !table) continue;
+    const setups = (['red', 'blue'] as const).map((alliance, id) =>
+      coerceSetup({ id, alliance, spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }, game),
+    );
+    const w = mod.createWorld('match', 11, setups);
+    // which instant reported each key, per alliance: the room merges them, so one key reported at
+    // two instants would be decided by the merge order rather than by the manual
+    const seen = new Map<string, Set<string>>();
+    let finite = true;
+    for (const at of ['autoEnd', 'teleopStart', 'final'] as const) {
+      const f = mod.rankFacts(w, at);
+      for (const a of ['red', 'blue'] as const) {
+        for (const [k, v] of Object.entries(f[a])) {
+          if (!seen.has(k)) seen.set(k, new Set());
+          seen.get(k)!.add(at);
+          if (typeof v !== 'number' || !Number.isFinite(v)) finite = false;
+        }
+      }
+    }
+    const got = [...seen.keys()].sort();
+    const want = table.measures.map((m) => m.id).sort();
+    check(
+      `rankFacts ${game}: the keys reported are exactly the manual table's measures (internal ones too)`,
+      JSON.stringify(got) === JSON.stringify(want),
+      `${got.join(',')} vs ${want.join(',')}`,
+    );
+    check(`rankFacts ${game}: each measure is read at one instant`, [...seen.values()].every((s) => s.size === 1));
+    check(`rankFacts ${game}: every value is a finite number`, finite);
+  }
+}
+
+// ---- Chain Reaction: AUTO as AUTO ends, nothing as TELEOP starts, ASCENT at the end -------------
+{
+  const facts = simModuleFor('chain').rankFacts!;
+  const w = createChainWorld('match', 7, [chainSetup(0, 'red'), chainSetup(1, 'blue')]);
+  const ch = w.chain!;
+  ch.particlePoints.red = 12;
+  ch.particlePoints.blue = 3;
+  ch.descended[0] = true;
+  ch.endgame[0] = 'ascended';
+  ch.endgame[1] = 'parked';
+  const a = facts(w, 'autoEnd');
+  const t = facts(w, 'teleopStart');
+  const f = facts(w, 'final');
+  check(
+    'rankFacts CR: AUTO = particle points + a descent per robot that came down, read as AUTO ends',
+    a.red.auto === 12 + CHAIN_PTS.ringStandDescend && a.blue.auto === 3 && !('ascent' in a.red),
+    JSON.stringify(a),
+  );
+  check('rankFacts CR: nothing at TELEOP start', Object.keys(t.red).length === 0 && Object.keys(t.blue).length === 0, JSON.stringify(t));
+  check(
+    'rankFacts CR: ASCENT = 100 per robot ascended (a Lab park is not an ascent)',
+    f.red.ascent === CHAIN_PTS.ringStandAscend && f.blue.ascent === 0 && !('auto' in f.red),
+    JSON.stringify(f),
+  );
+}
+
+/**
+ * ---- A COMPETITION ROOM HANDS ON ITS MEASURES AND ITS CARDS --------------------------------------
+ *
+ * The room asks at the first tick out of AUTO, the first TELEOP tick and at finalize, and
+ * `MatchOutcome` carries the merge and every carded driver — for a competition room only. Each
+ * phase is cut to a few ticks: the instants are what is under test, not the clock.
+ */
+{
+  interface Played { outcome: MatchOutcome | null; buzzerAuto?: number; buzzerPts?: number; finalPts?: number }
+  const play = (game: GameId, opts: { competition: boolean; card?: boolean; transitionShot?: boolean }): Played => {
+    const outcomes: MatchOutcome[] = [];
+    const mk = (id: 'red' | 'blue'): Client => ({
+      id,
+      send: () => {},
+      player: {
+        clientId: id, name: id, teamName: 'T', teamNumber: id === 'red' ? 1 : 2, alliance: id,
+        startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS },
+      },
+      connected: true,
+      disconnectAt: 0,
+      userId: `u-${id}`,
+    });
+    const room = new Room(`smoke-comp-rp-${game}`, () => {}, { kind: 'versus', game }, (o) => {
+      outcomes.push(o);
+    });
+    if (opts.competition) {
+      const entry = (alliance: Alliance): PendingRosterEntry => ({
+        userId: `u-${alliance}`, name: alliance, teamName: 'T', teamNumber: alliance === 'red' ? 1 : 2,
+        spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance, introElo: null,
+      });
+      room.applyPending({
+        code: `iad-cmrp${game}`, hostRegion: 'iad', mode: '1v1', seed: 5, ranked: false, game,
+        roster: [entry('red'), entry('blue')],
+        competition: { id: 'c1', slug: 'spring-open', name: 'Spring Open', game, matchId: 12, label: 'Q12', attempt: 1, graceMs: 60_000 },
+      });
+      // no `strategy` cap: the staged match starts at once (`startRankedImmediate`)
+      room.add(mk('red'));
+      room.add(mk('blue'));
+      room.maybeStartRanked();
+    } else {
+      room.add(mk('red'));
+      room.add(mk('blue'));
+      room.onMessage('red', { t: 'start' });
+    }
+    const w = room.worldForTest();
+    if (!w) return { outcome: null };
+    w.match.preCountdown = SIM_DT / 2;
+    const out: Played = { outcome: null };
+    let carded = false;
+    let shot = false;
+    let wasAuto = false;
+    for (let i = 0; i < 4000 && outcomes.length === 0; i++) {
+      const m = w.match;
+      if ((m.phase === 'auto' || m.phase === 'transition' || m.phase === 'teleop') && m.phaseTimeLeft > 4 * SIM_DT) {
+        m.phaseTimeLeft = 4 * SIM_DT;
+      }
+      if (opts.card && !carded && m.phase === 'teleop') {
+        awardCard(w, w.robots[0], 'smoke'); // robot 0 is red's, driven by u-red
+        carded = true;
+      }
+      // CR: a particle that is still in the air on the last AUTO tick and enters during the
+      // transition — TELEOP by ITD §10.5 B, so not in AUTO
+      if (opts.transitionShot && !shot && m.phase === 'auto') {
+        const side = accelSide('red');
+        m.phaseTimeLeft = SIM_DT / 2; // this tick is the last of AUTO
+        w.balls.push({
+          ...w.balls[0], id: 990001, state: { kind: 'flight', target: 'red' },
+          pos: { x: side * (CHAIN_HALF_X - 1.5), y: 0 }, vel: { x: side * 60, y: 0 }, z: 10, vz: 0,
+        });
+        shot = true;
+      }
+      room.advanceForTest(1);
+      if (m.phase === 'auto') wasAuto = true;
+      if (wasAuto && out.buzzerAuto === undefined && m.phase === 'transition' && w.chain) {
+        const descents = w.robots.filter((r) => r.alliance === 'red' && w.chain!.descended?.[r.id]).length;
+        out.buzzerPts = w.chain.particlePoints.red;
+        out.buzzerAuto = w.chain.particlePoints.red + descents * CHAIN_PTS.ringStandDescend;
+      }
+    }
+    out.outcome = outcomes[0] ?? null;
+    if (w.chain) out.finalPts = w.chain.particlePoints.red;
+    return out;
+  };
+  const keysOf = (game: GameId): string => JSON.stringify(cmTable(game)!.measures.map((m) => m.id).sort());
+  const keys = (o: Record<string, number> | undefined): string => JSON.stringify(Object.keys(o ?? {}).sort());
+
+  const dec = play('decode', { competition: true, card: true });
+  const o = dec.outcome;
+  check('competition room: a played match reaches the result callback, tagged', o?.competition?.label === 'Q12', String(o?.competition?.label));
+  check(
+    'competition room (DECODE): MatchOutcome.rankFacts carries every measure for both alliances',
+    keys(o?.rankFacts?.red) === keysOf('decode') && keys(o?.rankFacts?.blue) === keysOf('decode'),
+    `${keys(o?.rankFacts?.red)} / ${keys(o?.rankFacts?.blue)}`,
+  );
+  check(
+    'competition room: MatchOutcome.cards names the carded driver by account, at the colour they ended on',
+    JSON.stringify(o?.cards) === JSON.stringify([{ userId: 'u-red', colour: 'yellow' }]),
+    JSON.stringify(o?.cards),
+  );
+
+  const cr = play('chain', { competition: true, transitionShot: true });
+  check(
+    'competition room (CR): MatchOutcome.rankFacts carries AUTO and ASCENT for both alliances',
+    keys(cr.outcome?.rankFacts?.red) === keysOf('chain') && keys(cr.outcome?.rankFacts?.blue) === keysOf('chain'),
+    `${keys(cr.outcome?.rankFacts?.red)} / ${keys(cr.outcome?.rankFacts?.blue)}`,
+  );
+  check(
+    'competition room (CR): the particle in the air at the AUTO buzzer scored in the transition (the scene is real)',
+    cr.buzzerPts !== undefined && cr.finalPts !== undefined && cr.finalPts > cr.buzzerPts,
+    `at the buzzer ${cr.buzzerPts}, at the end ${cr.finalPts}`,
+  );
+  check(
+    'competition room (CR): ...and AUTO is what was scored before AUTO ended, without it',
+    cr.buzzerAuto !== undefined && cr.outcome?.rankFacts?.red.auto === cr.buzzerAuto,
+    `auto ${cr.outcome?.rankFacts?.red.auto} vs ${cr.buzzerAuto} at the buzzer`,
+  );
+  check('competition room (CR): no cards, an empty list rather than none', JSON.stringify(cr.outcome?.cards) === '[]', JSON.stringify(cr.outcome?.cards));
+
+  const custom = play('decode', { competition: false, card: true });
+  check(
+    'a custom room reports neither measures nor cards (competition rooms only)',
+    !!custom.outcome && custom.outcome.rankFacts === undefined && custom.outcome.cards === undefined && custom.outcome.competition === undefined,
+    JSON.stringify({ rankFacts: custom.outcome?.rankFacts, cards: custom.outcome?.cards }),
+  );
+
+  // a game's read that THROWS leaves the measures unknown and costs the match nothing
+  const mod = simModuleFor('decode');
+  const hook = mod.rankFacts;
+  const logError = console.error;
+  let threw: Played = { outcome: null };
+  try {
+    mod.rankFacts = () => {
+      throw new Error('smoke: rankFacts throws');
+    };
+    console.error = () => {};
+    threw = play('decode', { competition: true, card: true });
+  } finally {
+    mod.rankFacts = hook;
+    console.error = logError;
+  }
+  check(
+    'competition room: a rankFacts that throws leaves the measures unknown (absent, never zero)',
+    !!threw.outcome && threw.outcome.rankFacts === undefined && threw.outcome.cards?.length === 1,
+    JSON.stringify({ rankFacts: threw.outcome?.rankFacts, cards: threw.outcome?.cards }),
+  );
+  check(
+    'competition room: ...and the match it was read on is the same match, tick for tick',
+    !!o && !!threw.outcome && threw.outcome.result.ticks === o.result.ticks && threw.outcome.result.hash === o.result.hash &&
+      threw.outcome.replay.ticks === o.replay.ticks,
+    `${threw.outcome?.result.ticks}/${o?.result.ticks}`,
+  );
+}
+
+/**
  * MODERATOR NOTICES (0057) — the words a player reads after a moderation outcome, and the one
  * rule that moves a rating: the refund after a corrected result.
  */
@@ -37094,6 +37383,8 @@ function fxImportFixed(): RobotSpec {
     'competition.result': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', what: 'corrected', outcome: 'win', score: { red: 88, blue: 54 } },
     'competition.finished': { slug: 'spring-open', name: 'Spring Open', place: 2, of: 24 },
     'competition.cancelled': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.card': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', colour: 'yellow' },
+    'competition.rp': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', before: 4, after: 5 },
   };
   for (const k of NOTICE_KINDS) {
     const v = view(k, samples[k] ?? {});
@@ -37120,6 +37411,40 @@ function fxImportFixed(): RobotSpec {
   const placed = view('competition.finished', samples['competition.finished'])!;
   const won = view('competition.finished', { slug: 's', name: 'Spring Open', place: 1, of: 24 })!;
   check('notices: a finished competition says the place, and a win says so in the title', placed.lines[0] === 'You placed 2nd of 24.' && won.title === 'You won Spring Open', JSON.stringify([placed, won]));
+  // cards and ranking points: the match, the card, and what it costs
+  const cardView = (extra: Record<string, unknown>) => view('competition.card', { ...samples['competition.card'], ...extra })!;
+  const cRed = cardView({ colour: 'red', why: 'red' });
+  check(
+    'notices: a red card names the match and costs its ranking points',
+    cRed.title === 'You were shown a red card in Q12' && cRed.lines.join(' ') === 'You take no ranking points from it.' && cRed.tone === 'bad',
+    JSON.stringify(cRed),
+  );
+  const cYellow = cardView({});
+  check(
+    'notices: a first yellow card says what a second one does',
+    cYellow.title === 'You were shown a yellow card in Q12' && cYellow.lines.join(' ') === 'A second yellow card in qualifications is a red card.',
+    JSON.stringify(cYellow),
+  );
+  const cSecond = cardView({ why: 'yellow2' });
+  check(
+    'notices: a second yellow card is a red card, and costs the match',
+    cSecond.title === 'Your second yellow card, in Q12, is a red card' && cSecond.lines.join(' ') === 'You take no ranking points from it.',
+    JSON.stringify(cSecond),
+  );
+  const cSurrogate = cardView({ colour: 'red', why: 'surrogate', dqLabel: 'Q9' });
+  check(
+    'notices: a card from a surrogate match says which match it counts against',
+    cSurrogate.lines.includes('It was a surrogate match, so the card counts against Q9.') &&
+      cSurrogate.lines.includes('You take no ranking points from Q9.'),
+    JSON.stringify(cSurrogate.lines),
+  );
+  const rpUp = view('competition.rp', samples['competition.rp'])!;
+  const rpDown = view('competition.rp', { ...samples['competition.rp'], before: 5, after: 3 })!;
+  check(
+    'notices: changed ranking points name the match, old and new, good up and bad down',
+    rpUp.title === 'Your ranking points for Q12 changed' && rpUp.lines.join(' ') === 'From 4 to 5.' && rpUp.tone === 'good' && rpDown.tone === 'bad',
+    JSON.stringify([rpUp, rpDown.tone]),
+  );
 
   // ---- what each one actually says
   const fixed = view('match.corrected', samples['match.corrected'])!;

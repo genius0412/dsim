@@ -12,17 +12,36 @@
  *   - round robin and swiss need ONE entry per alliance (1v1, or 2v2 duos), so a 2v2 of solo
  *     entries falls back to `balanced`;
  *   - alliance selection only exists where two solo entries form an alliance.
+ *
+ * The ranking-point scheme (`rp`) depends on the GAME as well, because each game has its own
+ * manual table (`manual.ts`):
+ *   - a settings object with no `rp` at all is `custom`. Every competition stored before the
+ *     manual scheme existed was ranked by `points`, and an older client creates without it; neither
+ *     may start earning bonus RPs because a default changed;
+ *   - a present `rp` is coerced field by field from `DEFAULT_SETTINGS.rp` (the manual, standard
+ *     events), and a game with no table folds to `custom`;
+ *   - `level` must be one the game's table publishes (`levelsOf`): BIOBUZZ's regional and
+ *     championship columns are TBA, so they fold to `event`;
+ *   - `thresholds` keep only the game's bonus ids, as whole numbers in [1, the measure's max]. They
+ *     are kept whatever the level, so switching to a manual column and back loses nothing;
+ *   - `tiebreakers` (read by `custom` only) keep only the ones the game can rank by: a measured
+ *     tiebreaker needs the game to report that measure (`tiebreakersFor`).
  */
+import type { GameId } from '../games/types';
 import type {
   BracketFormat,
   CompFormat,
   CompSettings,
   QualKind,
+  RpLevel,
+  RpScheme,
+  RpSettings,
   SelectionMode,
   TeamMode,
   Tiebreaker,
 } from './types';
 import { TIEBREAKERS } from './types';
+import { cmTable, levelsOf, measureOf, tiebreakersFor } from './manual';
 
 export const QUAL_KINDS: readonly QualKind[] = ['balanced', 'roundRobin', 'swiss', 'none'];
 export const BRACKET_FORMATS: readonly BracketFormat[] = ['single', 'double'];
@@ -47,10 +66,13 @@ export const LIMITS = {
   rules: { max: 8000 },
 } as const;
 
+export const RP_SCHEMES: readonly RpScheme[] = ['cm', 'custom'];
+
 export const DEFAULT_SETTINGS: CompSettings = {
   quals: { kind: 'balanced', matchesPerEntry: 5, minGap: 1 },
   points: { win: 2, tie: 1, loss: 0 },
   tiebreakers: ['avgNoFoul', 'highScore', 'avgMargin'],
+  rp: { scheme: 'cm', level: 'event', thresholds: {} },
   playoffs: {
     enabled: true,
     alliances: 4,
@@ -88,10 +110,32 @@ const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
 /**
- * `raw` coerced into settings for a competition of this shape. Never throws; every field that is
- * missing or wrong takes its default.
+ * The ranking-point scheme for this game (header). `raw` is the stored `rp`: anything but a plain
+ * object counts as absent, which is `custom`.
  */
-export function coerceCompSettings(raw: unknown, format: CompFormat, teamMode: TeamMode): CompSettings {
+export function coerceRp(raw: unknown, game: GameId): RpSettings {
+  const present = !!raw && typeof raw === 'object' && !Array.isArray(raw);
+  const r = obj(raw);
+  const d = DEFAULT_SETTINGS.rp;
+  const table = cmTable(game);
+  let scheme: RpScheme = present ? pick(r.scheme, RP_SCHEMES, d.scheme) : 'custom';
+  if (!table) scheme = 'custom';
+  const level: RpLevel = pick(r.level, levelsOf(game), 'event');
+  const thresholds: Record<string, number> = {};
+  const t = obj(r.thresholds);
+  for (const b of table?.bonus ?? []) {
+    const max = measureOf(game, b.measure)?.max ?? b.thresholds.event;
+    const v = int(t[b.id], NaN, 1, max);
+    if (Number.isFinite(v)) thresholds[b.id] = v;
+  }
+  return { scheme, level, thresholds };
+}
+
+/**
+ * `raw` coerced into settings for a competition of this shape and game. Never throws; every field
+ * that is missing or wrong takes its default.
+ */
+export function coerceCompSettings(raw: unknown, format: CompFormat, teamMode: TeamMode, game: GameId): CompSettings {
   const r = obj(raw);
   const d = DEFAULT_SETTINGS;
   const oneEntryPerAlliance = entriesPerAlliance(format, teamMode) === 1;
@@ -109,7 +153,7 @@ export function coerceCompSettings(raw: unknown, format: CompFormat, teamMode: T
   const tie = Math.min(win, int(p.tie, d.points.tie, LIMITS.points.min, LIMITS.points.max));
   const loss = Math.min(tie, int(p.loss, d.points.loss, LIMITS.points.min, LIMITS.points.max));
 
-  // a list of distinct known tiebreakers, in the organizer's order
+  // a list of distinct known tiebreakers, in the organizer's order, that this game can rank by
   const tb: Tiebreaker[] = [];
   if (Array.isArray(r.tiebreakers)) {
     for (const t of r.tiebreakers) if (TIEBREAKERS.includes(t as Tiebreaker) && !tb.includes(t as Tiebreaker)) tb.push(t as Tiebreaker);
@@ -120,7 +164,8 @@ export function coerceCompSettings(raw: unknown, format: CompFormat, teamMode: T
   return {
     quals: { kind, matchesPerEntry: perEntry, minGap: int(q.minGap, d.quals.minGap, LIMITS.minGap.min, LIMITS.minGap.max) },
     points: { win, tie, loss },
-    tiebreakers: Array.isArray(r.tiebreakers) ? tb : [...d.tiebreakers],
+    tiebreakers: tiebreakersFor(game, Array.isArray(r.tiebreakers) ? tb : d.tiebreakers),
+    rp: coerceRp(r.rp, game),
     playoffs: {
       // a competition with no qualifications IS its playoffs
       enabled: kind === 'none' ? true : typeof po.enabled === 'boolean' ? po.enabled : d.playoffs.enabled,

@@ -401,6 +401,10 @@ total. An older note here claimed the manual said 10/30; that was a PREVIOUS sea
   contact with the gate ARM (`robotIntersectsRect(r, gateArmRect(a))`), **even if it never
   opens**. Deliberately DIFFERENT from `updateGates`' physical `pushingGate` (which also needs
   an active shove). Touching your OWN gate is legal.
+  ⚠️ **The episode key is also G417.A's PATTERN RP award.** `decodeRankFacts`
+  (`src/games/decode/rankFacts.ts`, a competition's measures) reports `patternAward` for the
+  gate owner from any `penalties.episodes` key `G417:<owner>:<robot>`. Nothing prunes that map
+  on a DECODE world; pruning or re-keying it silently takes the award away, so change both.
 - **G418.B** — each classified artifact that LEAVES an opponent's RAMP because you opened their
   gate is a MAJOR **per artifact**. Billed **on the DRAIN, not on the touch**:
   `penalties.rampBallIds` holds last tick's committed non-overflow rail balls per goal and every

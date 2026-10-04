@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { saveBlob } from './saveBlob';
 import { onUserActive, userIdle } from './userActivity';
+import type { GameId } from '../games/types';
+import { cmTable } from '../competition/manual';
+import { bonusLabel } from '../competition/copy';
 
 /**
  * The competition pages' own small helpers. The console has twins of these in `adminBits.tsx`,
@@ -53,6 +56,21 @@ export function saveCsv(filename: string, headers: string[], rows: (string | num
   const cell = (v: string | number | null | undefined): string => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const body = [headers.map(cell).join(','), ...rows.map((r) => r.map(cell).join(','))].join('\r\n');
   saveBlob(new Blob(['﻿' + body], { type: 'text/csv;charset=utf-8' }), filename);
+}
+
+/**
+ * "Movement RP needs two robots: one scores at most 13." — one sentence per bonus RP a one-robot
+ * alliance can never earn (`unreachableBonus`). The overview prints it as information for entrants,
+ * the editor as a warning to the organizer.
+ */
+export function unreachableLine(game: GameId, ids: readonly string[]): string {
+  const rows = cmTable(game)?.bonus ?? [];
+  return ids
+    .map((id) => {
+      const max = rows.find((b) => b.id === id)?.perRobotMax;
+      return max === undefined ? `${bonusLabel(id)} needs two robots.` : `${bonusLabel(id)} needs two robots: one scores at most ${max}.`;
+    })
+    .join(' ');
 }
 
 /** coarse "how long ago", with the exact time in the tooltip */

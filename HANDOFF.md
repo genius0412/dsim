@@ -1,6 +1,6 @@
-# HANDOFF — 2026-10-04h (importer: undo/redo, deleting parts, the shot off the hood, Offset's robot, a launcher on a turret, a ramp down)
+# HANDOFF — 2026-10-04i (importer: undo/redo, deleting parts, the shot off the hood, Offset's robot, a launcher on a turret, a ramp down)
 
-**State: on `alpha`; client only (importer), no server change, no deploy.** `npm test` (shared 4144, BIOBUZZ 5569), `build`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen production editor and its 2D and 3D test drive.
+**State: on `alpha`; client only (importer), no server change, no deploy.** `npm test` (shared 4189, BIOBUZZ 5583, after merging alpha), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen production editor and its 2D and 3D test drive.
 
 - **Owner:** "Based on the flywheel, I think it should be able to determine what type of shooter it is and where it is."; on Offset Robotics' concept robot: "surgical tubing and gears for drivetrain, boxtubes (plural), turret … undo/redo … delete parts, especially something like the floating cube"; then a private team CAD to validate detection and driving.
 - **Done** (robot-import.md has each):
@@ -13,6 +13,17 @@
 - **Probes** (gitignored `scratch/`, generic): `fullflow.ts` (the editor's whole detection headless, from a stepnames read), `importdrive.ts` / `fireprobe.ts` / `arcprobe.ts` (a spec driven on 2D and 3D), `draftdump.cjs` / `drivewalk.cjs` (offscreen editor walk; `drivewalk` needs `decodesim.view.v2 = '3d'` and a graphics preset in storage, or the tab stays 2D). `realcadprobe.cjs` now waits for Save before saving and logs the build and moving parts.
 - **Open:** pieces off a roller's axle (small rollers round a hub) stay still when it turns; a fold's hinge is planned from the part's innermost point, not a roller axle it may pivot on; an import whose CAD shows no wheels keeps the sim's default wheel layout; the offscreen test drive shows "Your keystrokes are going somewhere else" while keys do arrive.
 
+# HANDOFF — 2026-10-04h (competitions: ranking points per each game's Competition Manual)
+
+**State: on `alpha`. SERVER CHANGE: migration 0060, `Room` (facts capture), `persistMatch`, the competition routes; `dsim-alpha` redeployed before the push.** `npm test` (shared 4102, BIOBUZZ 5568), `test:comp` (1365), `dbtest` (1038), `test:workers` (149), `test:mm` (236), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` and `scripts/compe2e.ts` (28) pass. Clicked through on the admin harness (overview, rankings, matches, the referee desk's facts/card forms, the editor for all three games, phone width).
+
+- **Owner:** "Implement a proper ranking point system based on the CM."
+- **The tables** (`src/competition/manual.ts`, header cites every row): DECODE TU32 (win 3, tie 1; Movement 16/21/21 LEAVE + BASE points, Goal 36/42/67 ARTIFACTS through the SQUARE, Pattern 18/22/22; Table 13-1: no-foul points, BASE, AUTO). BIOBUZZ TU03 (win 3, tie 1; Swarm 16, Pollinator 4 and 7 TIPS; Regional/Championship TBA; Table 13-1: no-foul points, TIPS, AUTO). Chain Reaction's manual has no ranking rules: DSIM uses INTO THE DEEP V14 (win 2, tie 1, AUTO, ascent, high score).
+- **How** (`docs/area/competitions.md`, "Ranking points"): `settings.rp` = `cm` (the manual) or `custom` (the old points/tiebreakers). A row without `rp` is `custom`, so nothing existing re-ranks. Levels: standard, regional, championship, custom thresholds. Frozen into `competitions.rp_table` when qualifications start; `rp` locks then.
+- **Facts from the sim:** `GameSimModule.rankFacts` (`src/games/<id>/rankFacts.ts`), read by a competition room at the end of AUTO, the start of TELEOP and finalize; on `MatchOutcome.rankFacts` with the carded drivers (`.cards`). DECODE's opponent-gate G417 awards the Pattern RP from the penalty episodes (decode.md says never to prune them).
+- **CM rules applied:** DQ = 0 RP, partner unaffected (T601), and under `cm` a 0 in every average; red card, two yellows in a match, a yellow carried from an earlier match (by first-decided time), a surrogate's card on the previous match. No-show (G208/G203) and an entry not registered are DQ'd in the match. Referees: facts patch, Pattern award/ineligible and Goal ineligible rulings, yellow/red cards; each needs a reason and notifies (`competition.rp`, `competition.card`). Reset and void start a new attempt.
+- **Also:** misscore corrections refuse competition matches (the replay rail says so); deleting an account scrubs its names from the competition log (`users` on entry lines); the desk stays in view on a phone.
+- **Open:** playoffs are not the manual's yet (it has 2/4/6/8 alliances by team count, one match per bracket slot and an "if required" final; DSIM has best-of series and 16); a playoff card or DQ does not cost the alliance; a 2v2 no-show forfeits the whole alliance instead of playing short-handed; a sim red card voids the whole alliance (unreachable today: the sim only issues yellows); BIOBUZZ has no cards; G418.A, G419, G206 and G431 are referee rulings only; DECODE's in-match results use sentence case ("Leave") while the competition pages use the manual's capitals ("LEAVE").
 # HANDOFF — 2026-10-04g (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
 
 **State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 7 and the 5-band descriptor are server changes). Not on `main`.** `npm test` (shared 4055, BIOBUZZ 5569), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass.
@@ -697,6 +708,17 @@ works; until then set `VITE_ZENITH_URL`.
 - Found in passing, not fixed here (robot repo): biobuzz's `PathBuilder.withHeading` does not
   mirror `constant`/`linear`/`facePoint` headings for the other alliance. DSIM mirrors them.
 
+---
+
+# HANDOFF — 2026-09-26c (branch `bb-preview-entry-perf`: faster entry to BIOBUZZ Configure ▸ Robot in 3D)
+
+**State: merged into `alpha` (PR #88).** `build`, `npm test` (shared + 5141 BIOBUZZ PASS), `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Client only, no deploy.
+
+- **Report:** opening /biobuzz/configure/robot lags while the 3D robot renders.
+- **Fix, three commits:** (1) `createEnvironment` no longer builds a room PMREM or compiles the equirect shader at construction. Low/Medium have lighting off, so that 69 ms of work was thrown away; the HDRI path compiles during its fetch and lights the room meanwhile. The builder preview passes `envLighting` to `apply` like the match. (2) Saved-robot thumbnails draw through the live turntable via `capture(size, spec)`, which swaps the build, shoots at the default pose, swaps back and redraws in one task. There is no second WebGL context now; the offscreen scene stays as the fallback. (3) `App.tsx` warms the scene chunk on idle through `preloadRoomView` (3D view + scene-bearing game only).
+- **Measured** (`scratch/perf.cjs`, now with `GFX=<tier>` and `MBPS=<n>` throttle): long tasks Medium 90–147 → ~62 ms, High 211–219 → ~105 (median of 5). At 10 Mbit/s, click-to-ready 400 → 200 ms. Numbers are in `docs/area/ui.md`.
+- **Checked by eye:** thumbnails show their own builds and the hero is undisturbed. A 3D free drive on Medium (room, no IBL) and High (school-hall HDRI) lights as before.
+- **Not done, on purpose:** keeping the turntable's context alive between visits (the rule against holding a context the match wants) and saving thumbnails in storage (`Preview3D.tsx` explains why). Revisit if revisits still measure slow.
 ---
 
 # HANDOFF — 2026-09-26b (branch `fix/ramp-pad-default`: Deploy ramp's pad default moves to R3)

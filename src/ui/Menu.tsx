@@ -738,7 +738,7 @@ export function Menu({ settings, onChange, onImport }: Props) {
                   keyboard or a phone. Screen-reader text rather than a visible line, because the
                   reason flips on and off with every edit and a line appearing would move the panel. */}
               <button
-                className="ds-btn small"
+                className="ds-btn primary small"
                 disabled={!!saveBlocked}
                 title={saveBlocked}
                 aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
