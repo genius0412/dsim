@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-04d (robot import polish: Moving parts step, 100 % CAD, no motors in moving parts)
+
+**State: on `alpha`; client only, no server change, no deploy.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen dev editor on seven vendor starter bots (`scratch/uiwalk.cjs`, gitignored).
+
+- **Owner:** "polish the importer. Test with all of the available starter bot cads … You are still combining the motor into the wheel. UI is very unintuitive." and "Can you just import it 100%?"
+- **UI** (d154b36a): Moving parts is its own step (five steps); selecting a row edits it, hovering tints it, one "Add a moving part" menu, Find moving parts keeps edited rows (`keepEditedMotion`), the preview draws only the step's own marks with a legend; Model step's units and up axis are compact menus. robot-import.md "THE MOVING PARTS STEP".
+- **100 %** (bf253627 + 6529581d, section below): Full detail is the default and keeps every triangle; it also reads every part of a STEP, screws and nuts included (`StepRequest.keepSmall`). goBILDA BIOBUZZ 6.34 M triangles, goBILDA DECODE 7.36 M, REV 2.93 M.
+- **No motors in moving parts** (b87d9fe1): STEP body ids were dropped in `readStepFile`, so touching solids merged; `stepParsed` keeps them. `axleMotors` takes a motor off any axle, wheels read their radius off the geometry, a 6WD's middle pair is found, roller seeds must be real rollers. Seven bots (goBILDA BIOBUZZ 6WD 0003 and mecanum 0004, goBILDA DECODE mecanum, REV DUO, three AndyMark Robits) in robot-import.md "Moving parts". Probe: `scripts/robot-import/motion/`.
+- **Files:** the vendors' CAD is in the old session scratchpad `…new-session-33b5bf/…/scratchpad/starterbot/` (`step/`, `rev/`, `andymark/`); goBILDA's DECODE skid-steer STEP is cut off upstream.
+- **Open:** a slow GPU has only Light; re-opening a Full robot takes 3–8 s; a click on a mecanum roller takes less than its wheel; the flywheel and roller finders lean on the default placements (AndyMark's launcher gears, not a flywheel); a draft started before b87d9fe1 and re-read via Detail gets new STEP body ids.
+
 # HANDOFF — 2026-10-04c (robot import: Full detail, every triangle of the CAD)
 
 **State: on branch `robot-import-full-detail` (off `claude/robot-importer-completion-4c525b` 239caa2e); client only, no server change, no deploy.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Checked end to end on the vendors' starter bots in the offscreen production editor (`realcadprobe.cjs --gpu`).
