@@ -38246,5 +38246,214 @@ function fxImportFixed(): RobotSpec {
   }
 }
 
+/**
+ * MOVING PARTS, ROUND FOUR (2026-10-04, owner on Offset Robotics' concept robot: "A lot of things are
+ * not being detected accurately, especially surgical tubing and gears for drivetrain"). Measured there
+ * and on the seven starter bots; each case as a synthetic scene (inches, MODEL frame, one body per
+ * solid; a part with a bore is two cylinders as one body, so its nearest vertex is the bore's).
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const geo = await import('../src/robotImport/geometry');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type Prism = import('./robot-import/synthRobot').Prism;
+  type V3 = [number, number, number];
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: V3 = [0.6, 0.6, 0.6];
+  /** one body per entry, each the prisms listed (a ring: its outside and its bore) */
+  const mkBodies = (bodies: { name: string; prisms: Prism[] }[]): P[] =>
+    bodies.map((b, i) => {
+      const ps = synth.synthParts(b.prisms);
+      const positions = new Float32Array(ps.reduce((s, p) => s + p.positions.length, 0));
+      let o = 0;
+      for (const p of ps) {
+        positions.set(p.positions, o);
+        o += p.positions.length;
+      }
+      return { positions, indices: null, color: G, name: b.name, body: new Uint32Array(positions.length / 3).fill(i) };
+    });
+  const one = (p: Prism): { name: string; prisms: Prism[] } => ({ name: p.name, prisms: [p] });
+  /** a rod from `a` to `b`, `r` thick: an n-gon prism along it */
+  const rod = (name: string, a: V3, b: V3, r: number, n = 12): Prism => {
+    const d: V3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const l = Math.hypot(d[0], d[1], d[2]);
+    const u = d.map((x) => x / l) as V3;
+    const t: V3 = Math.abs(u[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const c1: V3 = [u[1] * t[2] - u[2] * t[1], u[2] * t[0] - u[0] * t[2], u[0] * t[1] - u[1] * t[0]];
+    const l1 = Math.hypot(c1[0], c1[1], c1[2]);
+    const e1 = c1.map((x) => x / l1) as V3;
+    const e2: V3 = [u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2], u[0] * e1[1] - u[1] * e1[0]];
+    const base: V3[] = [];
+    for (let k = 0; k < n; k++) {
+      const p = (2 * Math.PI * k) / n;
+      base.push([a[0] + r * (Math.cos(p) * e1[0] + Math.sin(p) * e2[0]), a[1] + r * (Math.cos(p) * e1[1] + Math.sin(p) * e2[1]), a[2] + r * (Math.cos(p) * e1[2] + Math.sin(p) * e2[2])]);
+    }
+    return { name, color: G, base, extrude: d };
+  };
+  /** a part with a bore on an axle along y at (cx, cz): its outside and its bore, one body */
+  const ringY = (name: string, cx: number, cz: number, rOut: number, rIn: number, y0: number, y1: number): { name: string; prisms: Prism[] } => ({
+    name,
+    prisms: [synth.cylY(name, G, cx, cz, rOut, y0, y1, 48), synth.cylY(`${name}_bore`, G, cx, cz, rIn, y0, y1, 16)],
+  });
+  /** a STAR of six surgical-tubing spokes at 60° in the plane y = sy about an axle along y at (cx, cz):
+   *  0.37 in tube from 0.3 in out (inside its 0.34 in hub) for `len` (Offset's 60 mm: 0.89, 90 mm: 1.48) */
+  const starY = (tag: string, cx: number, cz: number, sy: number, len: number): { name: string; prisms: Prism[] }[] =>
+    [0, 1, 2, 3, 4, 5].map((k) => {
+      const a = (k * Math.PI) / 3;
+      const dx = Math.cos(a);
+      const dz = Math.sin(a);
+      return one(rod(`${tag}_spoke${k}`, [cx + 0.3 * dx, sy, cz + 0.3 * dz], [cx + (0.3 + len) * dx, sy, cz + (0.3 + len) * dz], 0.185));
+    });
+
+  // ---- SURGICAL TUBING ROLLERS: a front roller of six stars on 0.34 in hex hubs (no part of it is a
+  // round 3/4 in seed), a second stage 3.2 in further in (past `ROLLER_DEPTH_IN` from the edge) on the
+  // shaft a motor drives, a transfer roller square to the edge up high, and two radial screws on a
+  // hub, which are no star ----
+  {
+    const bodies: { name: string; prisms: Prism[] }[] = [
+      one(synth.box('frame', G, -8, 6, -7, 7, 1, 2)),
+      one(synth.cylY('a_shaft', G, 7, 4, 0.16, -5.6, 5.6, 8)),
+      ...[-5, -3, -1, 1, 3, 5].flatMap((y, i) => [one(synth.cylY(`a_hub${i}`, G, 7, 4, 0.34, y - 0.2, y + 0.2, 6)), ...starY(`a${i}`, 7, 4, y, 0.89)]),
+      one(synth.cylY('b_shaft', G, 3.8, 4.1, 0.16, -4, 4.6, 8)),
+      ...[-3, -1, 1, 3].flatMap((y, i) => [one(synth.cylY(`b_hub${i}`, G, 3.8, 4.1, 0.34, y - 0.2, y + 0.2, 6)), ...starY(`b${i}`, 3.8, 4.1, y, 1.48)]),
+      // the motor on b's shaft: its face against the shaft's end, gearbox, can, end cap
+      one(synth.cylY('m_face', G, 3.8, 4.1, 0.71, 4.5, 5.0, 24)),
+      one(synth.cylY('m_barrel', G, 3.8, 4.1, 0.71, 5.0, 6.4, 24)),
+      one(synth.cylY('m_can', G, 3.8, 4.1, 0.7, 6.4, 8.6, 24)),
+      one(synth.cylY('m_endcap', G, 3.8, 4.1, 0.73, 8.6, 9.3, 24)),
+      // the transfer: an axle along x, one star, up the back
+      one(rod('t_shaft', [-6.5, -5.5, 9], [-4.5, -5.5, 9], 0.16, 8)),
+      one(rod('t_hub', [-5.7, -5.5, 9], [-5.3, -5.5, 9], 0.34, 6)),
+      ...[0, 1, 2, 3, 4, 5].map((k) => {
+        const a = (k * Math.PI) / 3;
+        return one(rod(`t_spoke${k}`, [-5.5, -5.5 + 0.3 * Math.cos(a), 9 + 0.3 * Math.sin(a)], [-5.5, -5.5 + 1.78 * Math.cos(a), 9 + 1.78 * Math.sin(a)], 0.185));
+      }),
+      // two radial screws at 90° on a hub: they cross at its axle, and are two
+      one(synth.cylY('s_shaft', G, -2, 6, 0.16, -1, 1, 8)),
+      one(synth.cylY('s_hub', G, -2, 6, 0.34, -0.2, 0.2, 6)),
+      one(rod('s_screw0', [-2 + 0.3, 0, 6], [-2 + 1.2, 0, 6], 0.1)),
+      one(rod('s_screw1', [-2, 0, 6 + 0.3], [-2, 0, 6 + 1.2], 0.1)),
+    ];
+    const parts = mkBodies(bodies);
+    const id = (n: string): number => bodies.findIndex((b) => b.name === n);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const want = (re: RegExp): string => names(bodies.map((_, i) => i).filter((i) => re.test(bodies[i].name)));
+    const rollers = motion.findRollerGroups(parts, [{ edge: 'front', from: -7, to: 7 }], new Set());
+    const got = rollers.map((g) => names(g.bodies));
+    check(
+      'moving parts 4: tubing rollers: the front one is ONE group with its shaft, its six hubs and all 36 spokes, found though no part of it is a 3/4 in round seed',
+      got[0] === want(/^a([0-9]|_)/),
+      J(got[0]),
+    );
+    check(
+      'moving parts 4: tubing rollers: the next stage in (4.4 in from the edge, 3.2 in behind the first) is found too, with its 24 spokes, and NOT the motor on its shaft (face, gearbox, can, end cap)',
+      rollers.length === 2 && got[1] === want(/^b([0-9]|_)/),
+      J(got),
+    );
+    const transfer = motion.findSpokedRollers(parts, new Set(rollers.flatMap((g) => g.bodies)));
+    check(
+      'moving parts 4: tubing rollers: a spoked axle away from the intake (a transfer, square to the edge) is a roller of its own; two radial screws on a hub are not a star',
+      transfer.length === 1 && names(transfer[0].bodies) === want(/^t_/) && transfer[0].role === 'roller',
+      J(transfer.map((g) => names(g.bodies))),
+    );
+    check('moving parts 4: tubing rollers: a click on one spoke takes the whole roller, read off its star’s axle', names(motion.coaxialBodies(parts, id('a3_spoke4'), 'roller')) === want(/^a([0-9]|_)/), names(motion.coaxialBodies(parts, id('a3_spoke4'), 'roller')));
+    const cad = motion.readBuild(parts, new Set());
+    check('moving parts 4: tubing rollers: the build read off the model puts its intake on that edge', cad.intake?.edge === 'front' && !cad.intake.upright, J(cad.intake));
+  }
+
+  // ---- DRIVETRAIN GEARS: a wheel whose shaft runs through a bearing in the side plate to a gear
+  // 1.1 in inboard, which a motor's pinion 0.94 in away drives (their 0.51 and 0.52 in circles cross by
+  // 0.09: the teeth), the pinion 0.16 in off the gearbox face ----
+  {
+    const bodies: { name: string; prisms: Prism[] }[] = [
+      one(synth.box('side_plate', G, -8, 8, 5.0, 5.3, 0.5, 4)),
+      one(synth.cylY('tyre', G, 4, 1.9, 1.9, 5.6, 6.6, 48)),
+      ringY('hub', 4, 1.9, 0.6, 0.14, 5.45, 6.6),
+      one(synth.cylY('shaft', G, 4, 1.9, 0.16, 3.6, 6.8, 8)),
+      ringY('bearing', 4, 1.9, 0.3, 0.19, 5.0, 5.3),
+      ringY('gear', 4, 1.9, 0.51, 0.14, 3.9, 4.4),
+      one(synth.box('gear_screw', G, 3.9, 4.0, 4.0, 4.3, 2.3, 2.4)),
+      one(synth.cylY('m_shaft', G, 3.06, 1.9, 0.18, 3.4, 4.6, 8)),
+      ringY('pinion', 3.06, 1.9, 0.52, 0.14, 3.9, 4.4),
+      one(synth.cylY('m_face', G, 3.06, 1.9, 0.71, 3.2, 3.74, 24)),
+      one(synth.cylY('m_barrel', G, 3.06, 1.9, 0.71, 1.8, 3.2, 24)),
+      one(synth.cylY('m_can', G, 3.06, 1.9, 0.7, -0.6, 1.8, 24)),
+      one(synth.cylY('m_endcap', G, 3.06, 1.9, 0.73, -1.4, -0.6, 24)),
+    ];
+    const parts = mkBodies(bodies);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const wheels = motion.findWheelGroups(parts, [{ x: 4, y: 6.1 }], 'tank', 104 / 25.4);
+    check(
+      'moving parts 4: drive gears: the wheel takes the gear its shaft carries across the side plate (and the screw in it), not the bearing’s outer race (its bore clears the shaft), the plate or the motor',
+      wheels.length === 1 && names(wheels[0].bodies) === 'gear+gear_screw+hub+shaft+tyre',
+      J(wheels.map((g) => names(g.bodies))),
+    );
+    const geared = motion.findDriveGears(parts, wheels, new Set(wheels.flatMap((g) => g.bodies)));
+    check(
+      'moving parts 4: drive gears: the pinion meshed with it is found with its output shaft, geared to the wheel at minus the pitch radii’s ratio (−0.98), and the motor driving it is not in it',
+      geared.length === 1 && geared[0].role === 'spin' && names(geared[0].bodies) === 'm_shaft+pinion' && geared[0].follows?.group === 0 && geared[0].follows.ratio === -0.98,
+      J(geared.map((g) => ({ ...g, bodies: names(g.bodies) }))),
+    );
+    const derived = motion.deriveMotion(parts, [...wheels, ...geared], [], [0, 0, 0]);
+    const w = derived.find((p) => p.role === 'wheel')!;
+    const s = derived.find((p) => p.role === 'spin')!;
+    check(
+      'moving parts 4: drive gears: measured, the pinion turns about its own axle in its wheel’s sense, so −0.98 turns it the other way',
+      !!w && !!s && s.axis[0] * w.axis[0] + s.axis[1] * w.axis[1] + s.axis[2] * w.axis[2] > 0.999 && Math.abs(s.pivot[0] - 3.06) < 0.02 && Math.abs(s.pivot[2] - 1.9) < 0.02 && s.follows?.ratio === -0.98,
+      J({ w: w?.axis, s: s && { axis: s.axis, pivot: s.pivot, follows: s.follows } }),
+    );
+    const flipped = motion.deriveMotion(parts, [...wheels, { ...geared[0], flip: true }], [], [0, 0, 0]).find((p) => p.role === 'spin');
+    check('moving parts 4: drive gears: a geared part flipped by the player turns against its leader’s sense', !!flipped && flipped.axis[0] * w.axis[0] + flipped.axis[1] * w.axis[1] + flipped.axis[2] * w.axis[2] < -0.999, J(flipped?.axis));
+  }
+
+  // ---- a wheel whose axle runs along x (a model whose CAD front is not the robot's, its front not
+  // yet turned): read off the round plates standing at the contact, not assumed along y ----
+  {
+    const bodies = [
+      one(rod('tyre', [3.4, 6, 1.6], [4.6, 6, 1.6], 1.6, 48)),
+      one(rod('plate', [3.3, 6, 1.6], [3.4, 6, 1.6], 1.5, 48)),
+      one(rod('hub', [3.3, 6, 1.6], [4.9, 6, 1.6], 0.4, 12)),
+      one(synth.cylY('gearbox', G, 4, 1.6, 0.71, 3.0, 4.2, 24)),
+    ];
+    const parts = mkBodies(bodies);
+    const w = motion.findWheelGroups(parts, [{ x: 4, y: 6 }], 'mecanum', 104 / 25.4);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const d = motion.deriveMotion(parts, w, [], [0, 0, 0])[0];
+    check(
+      'moving parts 4: a wheel on an axle along x is taken about x (tyre, plate, hub), not about y (which took the gearbox beside it)',
+      w.length === 1 && names(w[0].bodies) === 'hub+plate+tyre' && !!d && Math.abs(d.axis[0]) > 0.999,
+      J({ bodies: w.map((g) => names(g.bodies)), axis: d?.axis }),
+    );
+  }
+
+  // ---- wheels on the floor when blocks hang 0.1 in above it at the corners (Offset's frame plates
+  // stop 0.10 in up): at 0.15 in the four corners were the blocks, no rectangle; looked for again at
+  // 0.08 in they are the wheels ----
+  {
+    const stubs = [
+      [9, 6.5],
+      [9, -5],
+      [-8.5, 6],
+      [-9, -6.5],
+    ].map(([x, y], k) => synth.box(`stub${k}`, G, x - 0.3, x + 0.3, y - 0.3, y + 0.3, 0.1, 1));
+    const measure = (prisms: Prism[]) => geo.measureParts(synth.synthParts(prisms, synth.FRAMES.cadMm), { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' }).measurement;
+    const w = measure([...synth.synthRobot(), ...stubs]).wheelsUsed ?? [];
+    const spread = (a: number, b: number, k: 'x' | 'y'): number => Math.abs(w[a][k] - w[b][k]);
+    check(
+      'moving parts 4: wheels: with blocks hanging 0.1 in off the floor at the corners, the four wheels found are the wheels (11 in apart both ways), not the blocks',
+      w.length === 4 && Math.abs(spread(0, 2, 'x') - 11) < 0.05 && Math.abs(spread(0, 1, 'y') - 11) < 0.05 && geo.isRectangle(w, 0.01),
+      J(w),
+    );
+    const plain = measure(synth.synthRobot()).wheelsUsed ?? [];
+    const rel = plain.map((p) => [p.x - plain[3].x, p.y - plain[3].y]);
+    check(
+      'moving parts 4: wheels: a robot found at 0.15 in is measured as before (no second look)',
+      rel.length === 4 && [[11, 11], [11, 0], [0, 11], [0, 0]].every((q, k) => Math.abs(rel[k][0] - q[0]) < 1e-4 && Math.abs(rel[k][1] - q[1]) < 1e-4),
+      J(plain),
+    );
+  }
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

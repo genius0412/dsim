@@ -660,7 +660,12 @@ const BASELINE = {
   // 2026-10-04 (FLOWER plate bands and cuts): 84.28 -> 89.72, raised on purpose. HEAD before it
   // (14f373dd) already measured 88.24, inside tolerance; `geometry-*.js` +1.5: `computeBands`'s own
   // plate band and `bandCuts`, which measures where each band's hull stands proud of the model.
-  importer: { gzip: 89.72 * 1000 },
+  // 2026-10-04 (moving parts, round four: Offset Robotics' concept robot): 89.72 -> 95.54, raised on
+  // purpose. HEAD before it (41396be9) measured 91.44, inside tolerance; `geometry-*.js` 23.04 -> 27.14
+  // (+4.1: `motion.ts`'s surgical-tubing spokes and stars, the staged and transfer rollers, what a
+  // wheel's shaft carries, the gears a wheel drives, the wheel click's own wheel; `geometry.ts`'s
+  // thin floor slab).
+  importer: { gzip: 95.54 * 1000 },
   // 2026-10-01: NEW (lane 9). `importWorker-*.js` 104.06 (three.js core, the GLB/glTF, STL, OBJ+MTL
   // and PLY loaders, meshopt's simplifier, the weld and the crease: the parse-to-prepared pipeline
   // that used to block the main thread for seconds; and GLTFExporter for the bake's mesh half),

@@ -27,9 +27,11 @@ const norm = (a: V3): V3 => {
 /**
  * The finders' version (`ImportSetup.motionFinder`). Raise it with any change to what they find, so a
  * draft found by the old ones is looked for again. 1: STEP body ids kept, motors off axles, 6WD
- * middle wheels, the build read from the model (2026-10-04).
+ * middle wheels, the build read from the model (2026-10-04). 2: surgical-tubing spokes and staged
+ * spoked rollers, what a wheel's shaft carries, gears meshed with a wheel's, a wheel's axle along x
+ * (2026-10-04, Offset Robotics' concept robot).
  */
-export const MOTION_FINDER = 1;
+export const MOTION_FINDER = 2;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -297,8 +299,17 @@ function roundestAxis(parts: readonly MeshPart[], bodies: readonly number[], cov
   });
   let best = 0;
   for (let k = 1; k < cands.length; k++) if (score[k] < score[best] - 0.02) best = k;
+  // ...but a model axis within 20° of the moments' axle that the part is about as round about (0.03)
+  // is the axle: a robot is built square, and a gear's teeth or a set screw lean its moments
+  // (goBILDA's 6WD drive gears fit 12° off their shaft, and a click on one took a chain and a gearbox)
+  if (best === 0) {
+    for (let k = 1; k < cands.length; k++) if (Math.abs(dot(cands[k], first)) >= SQUARE_COS && score[k] <= score[0] + 0.03) return cands[k];
+  }
   return cands[best];
 }
+
+/** within 20° of a model axis (`roundestAxis`) */
+const SQUARE_COS = Math.cos((20 * Math.PI) / 180);
 
 /**
  * visit every vertex of the bodies in `set`: (x, y, z, body), in the model's own order (part, then
@@ -375,6 +386,15 @@ const SHAFT_MAX_IN = 10;
  */
 export function coaxialBodies(parts: readonly MeshPart[], seed: number, role: MotionRole): number[] {
   const st = bodyStats(parts);
+  // a click on a SPOKE is read off its star's axle
+  if (role !== 'wheel') {
+    const star = starAxle(parts, seed);
+    const hub = star ? bodyOnLine(st, star.pivot, star.axis, new Set()) : -1;
+    if (star && hub >= 0) {
+      const g = spinAxle(parts, hub, star);
+      if (!g.motor) return [...new Set([...g.bodies, seed])].sort((a, b) => a - b);
+    }
+  }
   const fit = fitRound(parts, [seed]);
   if (!fit) return [seed];
   // a click on a small part of it (its shaft, its hub, a screw) is read off the biggest round part on
@@ -382,7 +402,11 @@ export function coaxialBodies(parts: readonly MeshPart[], seed: number, role: Mo
   const lead = leadOnAxle(parts, st, seed, fit);
   const lf = lead === seed ? fit : (fitRound(parts, [lead]) ?? fit);
   if (role === 'wheel') {
-    const keep = new Set(wheelBodies(parts, st, lf.pivot, lf.axis, lf.radius, new Set()));
+    // a gear, sprocket or pulley the wheel's shaft carries is read off the wheel itself; its radius is
+    // read off the part, so the measured slack (a catalogue wheel's took the frame screws beside Offset
+    // Robotics' mecanum wheels, 0.1 in past their rollers)
+    const wf = wheelOnLine(parts, st, seed, lf) ?? wheelAround(parts, st, seed) ?? lf;
+    const keep = new Set(wheelBodies(parts, st, wf.pivot, wf.axis, wf.radius, new Set(), WHEEL_SLACK_IN.measured));
     keep.add(seed);
     return [...keep].sort((a, b) => a - b);
   }
@@ -392,6 +416,60 @@ export function coaxialBodies(parts: readonly MeshPart[], seed: number, role: Mo
   if (lead === seed) return g.bodies;
   const h = spinAxle(parts, lead);
   return h.motor ? g.bodies : [...new Set([...h.bodies, seed])].sort((a, b) => a - b);
+}
+
+/**
+ * The WHEEL on `fit`'s line, for a click on something its shaft carries: the biggest part round about
+ * that line that stands on the floor (within 0.35 in of it), within `SHAFT_CARRY_IN` and
+ * `LEAD_REACH_IN` of the clicked part along it. Only on a level line, and only bigger than what was
+ * clicked: a motor on the line never stands on the floor. Null when there is none.
+ */
+function wheelOnLine(parts: readonly MeshPart[], st: BodyStats, seed: number, fit: { axis: V3; pivot: V3; radius: number }): { axis: V3; pivot: V3; radius: number } | null {
+  const { axis, pivot } = fit;
+  if (Math.abs(axis[2]) > 0.2) return null;
+  const lo = dot(sub([st.min[3 * seed], st.min[3 * seed + 1], st.min[3 * seed + 2]], pivot), axis);
+  const hi = dot(sub([st.max[3 * seed], st.max[3 * seed + 1], st.max[3 * seed + 2]], pivot), axis);
+  const reach = Math.max(Math.abs(lo), Math.abs(hi)) + LEAD_REACH_IN + SHAFT_CARRY_IN;
+  let best: { axis: V3; pivot: V3; radius: number } | null = null;
+  for (const b of st.ids) {
+    if (st.min[3 * b + 2] > 0.35) continue;
+    const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    const al = dot(d, axis);
+    if (Math.abs(al) > reach || Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al) > COAXIAL_TOL_IN) continue;
+    const f = axleFits(parts, st, new Set([b]), pivot, axis).get(b)!;
+    if (f.rMax <= Math.max(fit.radius, best?.radius ?? 0) || !roundAboutAxle(f)) continue;
+    best = { axis, pivot: add(pivot, scale(axis, (f.lo + f.hi) / 2)), radius: f.rMax };
+  }
+  return best;
+}
+
+/**
+ * The WHEEL a clicked part lies in when it is on no wheel's line (a mecanum's roller, its pin: their
+ * own axles lean 45°): the biggest part standing on the floor, round about a level model axis, whose
+ * cylinder (its radius and 0.2 in, its span along the axle) holds the clicked part's centre. On
+ * Offset Robotics' mecanum wheels a roller's own line ran into the odometry pod beside the wheel.
+ */
+function wheelAround(parts: readonly MeshPart[], st: BodyStats, seed: number): { axis: V3; pivot: V3; radius: number } | null {
+  const c: V3 = [(st.min[3 * seed] + st.max[3 * seed]) / 2, (st.min[3 * seed + 1] + st.max[3 * seed + 1]) / 2, (st.min[3 * seed + 2] + st.max[3 * seed + 2]) / 2];
+  let best: { axis: V3; pivot: V3; radius: number } | null = null;
+  for (const b of st.ids) {
+    if (st.min[3 * b + 2] > 0.35) continue;
+    const h = st.max[3 * b + 2] - st.min[3 * b + 2];
+    const bc: V3 = [(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2];
+    if (h < 1 || Math.hypot(c[0] - bc[0], c[1] - bc[1], c[2] - bc[2]) > h / 2 + 0.5) continue;
+    for (const axis of [
+      [0, 1, 0],
+      [1, 0, 0],
+    ] as V3[]) {
+      const f = axleFits(parts, st, new Set([b]), bc, axis).get(b)!;
+      if (!roundAboutAxle(f) || f.rMax < 0.4 * h || (best && f.rMax <= best.radius)) continue;
+      const d = sub(c, bc);
+      const al = dot(d, axis);
+      if (al < f.lo - WHEEL_HALF_WIDTH_IN || al > f.hi + WHEEL_HALF_WIDTH_IN || Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al) > f.rMax + WHEEL_SLACK_IN.measured) continue;
+      best = { axis, pivot: bc, radius: f.rMax };
+    }
+  }
+  return best;
 }
 
 /** how far along a clicked part's axle its lead part may be, past its own span, inches */
@@ -445,11 +523,14 @@ function leadOnAxle(parts: readonly MeshPart[], st: BodyStats, seed: number, fit
  * when it is ROUND about the axle (2026-10-03, owner: "the auto-detector combines a static channel and
  * a gear into one component": a channel the shaft runs along is centred on it too). A MOTOR on the
  * axle never does (`axleMotors`, 2026-10-04): its can, gearbox, shield and end cap stay, its output
- * shaft turns. `motor` says the seed is itself part of a motor.
+ * shaft turns. Nor do its SPOKES stand still (`spokesAbout`: surgical tubing on hubs). `motor` says the
+ * seed is itself part of a motor. `line`: the axle when it is known (a star of spokes'), else the
+ * seed's own (`fitRound`). `driven`: the seed is known to turn (it meshes with a wheel's gear), so it
+ * is never taken for a motor's part.
  */
-export function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: number[]; motor: boolean } {
+export function spinAxle(parts: readonly MeshPart[], seed: number, line?: { axis: V3; pivot: V3 }, driven = false): { bodies: number[]; motor: boolean } {
   const st = bodyStats(parts);
-  const fit = fitRound(parts, [seed]);
+  const fit = line ? { ...line, radius: axleFits(parts, st, new Set([seed]), line.pivot, line.axis).get(seed)!.rMax } : fitRound(parts, [seed]);
   if (!fit) return { bodies: [seed], motor: false };
   const { axis, pivot } = fit;
   const reach = Math.max(AXLE_RADIUS_IN, fit.radius + 0.25);
@@ -469,8 +550,9 @@ export function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: nu
   const near = [...cand].filter((b) => fits.get(b)!.rMax <= reach);
   const nearFits = new Map([seed, ...near].map((b) => [b, fits.get(b)!]));
   const sf = fits.get(seed)!;
-  // the seed is a motor's own part (its can, gearbox, face, shield, end cap) or inside one (a bearing)
-  if (axleMotors(nearFits, new Set()).some((m) => m.members.has(seed) || (sf.lo >= m.lo - 0.05 && sf.hi <= m.hi + 0.05))) return { bodies: [seed], motor: true };
+  // the seed is a motor's own part (its can, gearbox, face, shield, end cap) or inside one (a bearing);
+  // a seed known to be DRIVEN (a gear meshed with a wheel's) is never one, however close to the face
+  if (axleMotors(nearFits, new Set(driven ? [seed] : [])).some((m) => m.members.has(seed) || (sf.lo >= m.lo - 0.05 && sf.hi <= m.hi + 0.05))) return { bodies: [seed], motor: true };
   const motors = axleMotors(nearFits, attachedTo(nearFits, seed));
   const out = motorExclusions(nearFits, motors, sf.lo, sf.hi);
   // larger than a fastener, it is round about the axle (a gear, a wheel, a spacer) or small (a hub
@@ -480,31 +562,309 @@ export function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: nu
     return !out.has(b) && (f.ext < FASTENER_IN || f.rMax <= HUB_R_IN || roundAboutAxle(f));
   });
   const res = alongAxle(fits, seed, round);
-  // SMALL PARTS INSIDE IT: a fastener or a sliver of a gear lying wholly inside one of the turning
-  // parts' own cylinder (its span along the axle, its radius) is that part's, however far off the axle
-  // it sits (the screws through a gear, a hub's set screw): nothing static can be there. Without this
-  // a sliver 0.4 in off the axle was in or out with the triangle count (2026-10-04, AndyMark's gears).
-  const rotors = [...res].map((b) => fits.get(b)!).filter((f) => f.rMax > SHAFT_R_IN);
-  if (rotors.length) {
-    const top = Math.max(...rotors.map((f) => f.rMax));
-    const lo = Math.min(...rotors.map((f) => f.lo));
-    const hi = Math.max(...rotors.map((f) => f.hi));
-    const inner = new Set<number>();
-    for (const b of st.ids) {
-      if (res.has(b) || out.has(b) || fits.has(b)) continue;
-      if (Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]) >= FASTENER_IN) continue;
-      const bd = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
-      const bal = dot(bd, axis);
-      if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top + Math.max(0.05, 0.03 * top)) inner.add(b);
+  const turning = [...res].map((b) => fits.get(b)!);
+  for (const b of insideRotors(parts, st, turning, pivot, axis, (x) => res.has(x) || out.has(x) || fits.has(x))) res.add(b);
+  // its SPOKES, which stand out past every round part on it
+  const lo = Math.min(...turning.map((f) => f.lo));
+  const hi = Math.max(...turning.map((f) => f.hi));
+  const rAt = (al: number): number => Math.max(SHAFT_R_IN, ...turning.filter((f) => al >= f.lo - 0.1 && al <= f.hi + 0.1).map((f) => f.rMax));
+  for (const b of spokesAbout(parts, st, axis, pivot, lo, hi, rAt, (x) => res.has(x) || out.has(x) || fits.has(x))) res.add(b);
+  return { bodies: [...res].sort((a, b) => a - b), motor: false };
+}
+
+/**
+ * SMALL PARTS INSIDE TURNING ONES: a fastener or a sliver of a gear lying wholly inside one of
+ * `turning`'s own cylinder (its span along the axle, its radius) is that part's, however far off the
+ * axle it sits (the screws through a gear, a hub's set screw): nothing static can be there. Without
+ * this a sliver 0.4 in off the axle was in or out with the triangle count (2026-10-04, AndyMark's
+ * gears). Shafts (`SHAFT_R_IN`) hold nothing. `skip`: bodies already decided.
+ */
+function insideRotors(parts: readonly MeshPart[], st: BodyStats, turning: readonly AxleFit[], pivot: V3, axis: V3, skip: (b: number) => boolean): number[] {
+  const rotors = turning.filter((f) => f.rMax > SHAFT_R_IN);
+  if (!rotors.length) return [];
+  const top = Math.max(...rotors.map((f) => f.rMax));
+  const lo = Math.min(...rotors.map((f) => f.lo));
+  const hi = Math.max(...rotors.map((f) => f.hi));
+  const inner = new Set<number>();
+  for (const b of st.ids) {
+    if (skip(b)) continue;
+    if (Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]) >= FASTENER_IN) continue;
+    const bd = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    const bal = dot(bd, axis);
+    if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top + Math.max(0.05, 0.03 * top)) inner.add(b);
+  }
+  // the radius with a little slack: a Gecko wheel modelled fin by fin has its fin tips as slivers
+  // 0.09 in long that stand ~0.03 in past the round part they belong to, and at 0.02 a side roller
+  // kept 20 of its 140 bodies (goBILDA's BIOBUZZ mecanum bot, 2026-10-04)
+  const out: number[] = [];
+  for (const [b, f] of axleFits(parts, st, inner, pivot, axis)) {
+    if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + Math.max(0.05, 0.03 * r.rMax))) out.push(b);
+  }
+  return out;
+}
+
+// ---- spokes: surgical tubing on a hub ---------------------------------------------------------------
+
+/**
+ * A SPOKE is a ROD at least twice as long as it is thick: Offset Robotics' surgical tubing is 0.89 and
+ * 1.48 in long on 0.37 in tube (2.4 and 4 to 1). Its long axis is square to its axle (within
+ * `SPOKE_SQUARE`, a cosine) and its line runs through the axle (`SPOKE_RADIAL_IN`), from the hub it
+ * is pushed into (its inner end within 0.15 in of the hub's radius: 0.30 in on a 0.34 in hex hub) out
+ * to at least `SPOKE_REACH_IN`. On their own a mecanum's roller pins (45° to the axle), an omni
+ * wheel's (tangent: their line misses the axle by the wheel's radius) and a screw (too short) are not.
+ */
+const SPOKE_SQUARE = 0.15;
+const SPOKE_RADIAL_IN = 0.12;
+const SPOKE_ASPECT = 2;
+const SPOKE_MIN_LEN_IN = 0.5;
+const SPOKE_REACH_IN = 0.8;
+/** no spoke's box is longer than this, inches (and a seed's spokes start within this of the axle) */
+const SPOKE_MAX_IN = 3;
+/** a spoke's two smaller second moments are under this share of the largest: long and thin (a tube
+ *  whose vertices sit on its two end rings has (L/2)² against ρ²/2: Offset's tubing 0.09 and 0.03) */
+const SPOKE_THIN = 0.25;
+/**
+ * A STAR: spokes in one plane across the axle (their centres within `STAR_SLICE_IN` along it), at
+ * least `STAR_MIN` of them, round it with no gap wider than `STAR_GAP_DEG` (Offset's tubing: six at
+ * 60°, every 0.79 in along the shaft). Rotational symmetry is what says they turn together: a lone
+ * radial screw, or two, does not make one.
+ */
+const STAR_SLICE_IN = 0.12;
+const STAR_MIN = 3;
+const STAR_GAP_DEG = 150;
+
+/** a body's long direction and its length and thickness along and across it, when it is ROD-like */
+interface Rod {
+  b: number;
+  c: V3;
+  u: V3;
+  len: number;
+  rho: number;
+}
+
+/** each body's rod measurement, or null when it is no rod (memoised on the parts, like `bodyStats`:
+ *  the roller search asks about the same bodies once per edge and per axle) */
+const rodCache = new WeakMap<readonly MeshPart[], Map<number, Rod | null>>();
+
+/** of `bodies`, the rods (`SPOKE_THIN`, then measured: `SPOKE_ASPECT`, `SPOKE_MIN_LEN_IN`) square to `axis` */
+function rodsSquareTo(parts: readonly MeshPart[], st: BodyStats, bodies: Iterable<number>, axis: V3): Rod[] {
+  let cache = rodCache.get(parts);
+  if (!cache) rodCache.set(parts, (cache = new Map()));
+  const asked: number[] = [];
+  const fresh = new Map<number, { r: Rod; lo: number; hi: number }>();
+  for (const b of bodies) {
+    asked.push(b);
+    if (cache.has(b) || fresh.has(b)) continue;
+    const ext = Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]);
+    const mo = ext > SPOKE_MAX_IN || ext < SPOKE_MIN_LEN_IN ? null : setMoments(st, [b]);
+    const e = mo && mo.n >= 6 ? eigenSym3(mo.cov) : null;
+    if (!mo || !e || !(e.values[0] > 0) || e.values[1] > SPOKE_THIN * e.values[0]) {
+      cache.set(b, null);
+      continue;
     }
-    // the radius with a little slack: a Gecko wheel modelled fin by fin has its fin tips as slivers
-    // 0.09 in long that stand ~0.03 in past the round part they belong to, and at 0.02 a side roller
-    // kept 20 of its 140 bodies (goBILDA's BIOBUZZ mecanum bot, 2026-10-04)
-    for (const [b, f] of axleFits(parts, st, inner, pivot, axis)) {
-      if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + Math.max(0.05, 0.03 * r.rMax))) res.add(b);
+    fresh.set(b, { r: { b, c: boxCentre(mo), u: e.vectors[0], len: 0, rho: 0 }, lo: Infinity, hi: -Infinity });
+  }
+  // its length along its long axis and its thickness across it: one pass over the new ones' vertices
+  if (fresh.size) {
+    eachVertex(parts, new Set(fresh.keys()), (x, y, z, b) => {
+      const k = fresh.get(b)!;
+      const d: V3 = [x - k.r.c[0], y - k.r.c[1], z - k.r.c[2]];
+      const t = dot(d, k.r.u);
+      if (t < k.lo) k.lo = t;
+      if (t > k.hi) k.hi = t;
+      const q = Math.hypot(d[0] - k.r.u[0] * t, d[1] - k.r.u[1] * t, d[2] - k.r.u[2] * t);
+      if (q > k.r.rho) k.r.rho = q;
+    });
+    for (const [b, k] of fresh) {
+      k.r.len = k.hi - k.lo;
+      cache.set(b, k.r.len >= Math.max(SPOKE_MIN_LEN_IN, SPOKE_ASPECT * 2 * k.r.rho) ? k.r : null);
     }
   }
-  return { bodies: [...res].sort((a, b) => a - b), motor: false };
+  const out: Rod[] = [];
+  for (const b of asked) {
+    const r = cache.get(b);
+    if (r && Math.abs(dot(r.u, axis)) <= SPOKE_SQUARE) out.push(r);
+  }
+  return out;
+}
+
+/** do these angles (radians) go round: at least `STAR_MIN`, no gap over `STAR_GAP_DEG` */
+function goesRound(angles: number[]): boolean {
+  if (angles.length < STAR_MIN) return false;
+  const a = [...angles].sort((x, y) => x - y);
+  let gap = a[0] + 2 * Math.PI - a[a.length - 1];
+  for (let k = 1; k < a.length; k++) gap = Math.max(gap, a[k] - a[k - 1]);
+  return gap < (STAR_GAP_DEG * Math.PI) / 180;
+}
+
+/**
+ * THE SPOKES ON A KNOWN AXLE (`spinAxle`): rods square to it whose line runs through it, centred
+ * along it within [lo − 0.3, hi + 0.3] (what turns there), the inner end within 0.15 in of `rAt` (the
+ * radius of what turns at that place), the outer end at least `SPOKE_REACH_IN` out, in stars.
+ */
+function spokesAbout(parts: readonly MeshPart[], st: BodyStats, axis: V3, pivot: V3, lo: number, hi: number, rAt: (al: number) => number, skip: (b: number) => boolean): number[] {
+  const near: number[] = [];
+  for (const b of st.ids) {
+    if (skip(b)) continue;
+    const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    const al = dot(d, axis);
+    if (al < lo - 0.3 || al > hi + 0.3) continue;
+    const rc = Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al);
+    if (rc >= 0.15 && rc <= SPOKE_MAX_IN) near.push(b);
+  }
+  if (!near.length) return [];
+  const e1 = norm(Math.abs(axis[2]) < 0.9 ? cross(axis, [0, 0, 1]) : cross(axis, [1, 0, 0]));
+  const e2 = cross(axis, e1);
+  const spokes: { b: number; al: number; ang: number }[] = [];
+  for (const r of rodsSquareTo(parts, st, near, axis)) {
+    const d = sub(r.c, pivot);
+    const al = dot(d, axis);
+    // its line runs through the axle: the two lines' distance apart
+    if (Math.abs(dot(d, norm(cross(axis, r.u)))) > SPOKE_RADIAL_IN) continue;
+    const rc = Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al);
+    if (rc - r.len / 2 > rAt(al) + 0.15 || rc + r.len / 2 < SPOKE_REACH_IN) continue;
+    spokes.push({ b: r.b, al, ang: Math.atan2(dot(d, e2), dot(d, e1)) });
+  }
+  return starsOf(spokes).flat();
+}
+
+/** spokes (along the axle, angle round it) grouped into planes; the planes that are stars */
+function starsOf(spokes: { b: number; al: number; ang: number }[]): number[][] {
+  const s = [...spokes].sort((x, y) => x.al - y.al || x.b - y.b);
+  const out: number[][] = [];
+  for (let i = 0; i < s.length; ) {
+    let j = i + 1;
+    while (j < s.length && s[j].al - s[j - 1].al <= STAR_SLICE_IN) j++;
+    const plane = s.slice(i, j);
+    if (goesRound(plane.map((p) => p.ang))) out.push(plane.map((p) => p.b));
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * STARS OF SPOKES ANYWHERE, about axles along `axis` (a model axis: a robot is built square), among
+ * bodies `used` does not hold and whose centre `where` allows: the rods square to it, paired where
+ * their lines cross behind both inner ends (within 0.8 in: the hub they are pushed into), the crossings
+ * that agree (0.2 in) taken as one axle, kept when its rods go round it (`goesRound`). Each star with
+ * a point on its axle and its spokes; nearest the start of `axis` first.
+ */
+export function spokeStars(parts: readonly MeshPart[], axis: V3, used: ReadonlySet<number>, where?: (c: V3) => boolean): { pivot: V3; spokes: number[] }[] {
+  const st = bodyStats(parts);
+  const e1 = norm(Math.abs(axis[2]) < 0.9 ? cross(axis, [0, 0, 1]) : cross(axis, [1, 0, 0]));
+  const e2 = cross(axis, e1);
+  const pool = st.ids.filter((b) => !used.has(b) && (!where || where(boxCentre({ min: [st.min[3 * b], st.min[3 * b + 1], st.min[3 * b + 2]], max: [st.max[3 * b], st.max[3 * b + 1], st.max[3 * b + 2]] }))));
+  const rods = rodsSquareTo(parts, st, pool, axis).map((r) => {
+    const v = [dot(r.u, e1), dot(r.u, e2)];
+    const l = Math.hypot(v[0], v[1]) || 1;
+    return { ...r, al: dot(r.c, axis), p: [dot(r.c, e1), dot(r.c, e2)], v: [v[0] / l, v[1] / l] };
+  });
+  // pairs in one plane whose lines cross behind both: a candidate axle each
+  const cell = 2;
+  const grid = new Map<string, number[]>();
+  const key = (al: number, x: number, y: number): string => `${Math.round(al / 0.5)},${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+  rods.forEach((r, i) => {
+    const k = key(r.al, r.p[0], r.p[1]);
+    const l = grid.get(k);
+    if (l) l.push(i);
+    else grid.set(k, [i]);
+  });
+  const hits: { q: [number, number]; al: number; i: number; j: number }[] = [];
+  const behind = (r: (typeof rods)[number], q: [number, number]): boolean => {
+    const s = Math.hypot(q[0] - r.p[0], q[1] - r.p[1]);
+    return s >= r.len / 2 - 0.3 && s <= r.len / 2 + 0.8;
+  };
+  rods.forEach((a, i) => {
+    const ka = Math.round(a.al / 0.5);
+    const cx = Math.floor(a.p[0] / cell);
+    const cy = Math.floor(a.p[1] / cell);
+    for (let da = -1; da <= 1; da++) for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      for (const j of grid.get(`${ka + da},${cx + dx},${cy + dy}`) ?? []) {
+        if (j <= i) continue;
+        const b = rods[j];
+        if (Math.abs(a.al - b.al) > STAR_SLICE_IN) continue;
+        const den = a.v[0] * b.v[1] - a.v[1] * b.v[0];
+        if (Math.abs(den) < 0.25) continue; // nearly parallel: opposite spokes, or a row of screws
+        const s = ((b.p[0] - a.p[0]) * b.v[1] - (b.p[1] - a.p[1]) * b.v[0]) / den;
+        const q: [number, number] = [a.p[0] + s * a.v[0], a.p[1] + s * a.v[1]];
+        if (behind(a, q) && behind(b, q)) hits.push({ q, al: (a.al + b.al) / 2, i, j });
+      }
+    }
+  });
+  // crossings that agree are one axle; its rods are every rod that crosses there
+  const taken = new Set<number>();
+  const stars: { pivot: V3; spokes: number[]; al: number }[] = [];
+  const order = hits.map((_, k) => k).sort((x, y) => hits[x].al - hits[y].al || hits[x].q[0] - hits[y].q[0] || hits[x].q[1] - hits[y].q[1]);
+  const seen = new Set<number>();
+  for (const k of order) {
+    if (seen.has(k)) continue;
+    const h = hits[k];
+    const members = new Set<number>();
+    let qx = 0;
+    let qy = 0;
+    let al = 0;
+    let n = 0;
+    for (const m of order) {
+      const o = hits[m];
+      if (seen.has(m) || Math.abs(o.al - h.al) > STAR_SLICE_IN || Math.hypot(o.q[0] - h.q[0], o.q[1] - h.q[1]) > 0.2) continue;
+      seen.add(m);
+      members.add(o.i);
+      members.add(o.j);
+      qx += o.q[0];
+      qy += o.q[1];
+      al += o.al;
+      n++;
+    }
+    const q = [qx / n, qy / n];
+    // every member points at the agreed centre, and they go round it
+    const ok = [...members].filter((i) => !taken.has(i) && Math.abs((q[0] - rods[i].p[0]) * rods[i].v[1] - (q[1] - rods[i].p[1]) * rods[i].v[0]) <= SPOKE_RADIAL_IN && Math.hypot(q[0] - rods[i].p[0], q[1] - rods[i].p[1]) + rods[i].len / 2 >= SPOKE_REACH_IN);
+    if (!goesRound(ok.map((i) => Math.atan2(rods[i].p[1] - q[1], rods[i].p[0] - q[0])))) continue;
+    for (const i of ok) taken.add(i);
+    const a = al / n;
+    stars.push({ pivot: add(add(scale(e1, q[0]), scale(e2, q[1])), scale(axis, a)), spokes: ok.map((i) => rods[i].b).sort((x, y) => x - y), al: a });
+  }
+  return stars.sort((x, y) => x.al - y.al || x.spokes[0] - y.spokes[0]).map(({ pivot, spokes }) => ({ pivot, spokes }));
+}
+
+/** the body on the line (`pivot`, `axis`) nearest `pivot` along it: a star's hub, else its shaft; -1 when none */
+function bodyOnLine(st: BodyStats, pivot: V3, axis: V3, skip: ReadonlySet<number>): number {
+  let best = -1;
+  let bestD = Infinity;
+  for (const b of st.ids) {
+    if (skip.has(b)) continue;
+    const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    const al = dot(d, axis);
+    if (Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al) > COAXIAL_TOL_IN) continue;
+    // a body spanning the star's plane (its hub, its shaft) before one beside it
+    const lo = dot(sub([st.min[3 * b], st.min[3 * b + 1], st.min[3 * b + 2]], pivot), axis);
+    const hi = dot(sub([st.max[3 * b], st.max[3 * b + 1], st.max[3 * b + 2]], pivot), axis);
+    const dist = Math.min(lo, hi) <= 0 && Math.max(lo, hi) >= 0 ? 0 : Math.abs(al);
+    if (dist < bestD - 1e-9) {
+      bestD = dist;
+      best = b;
+    }
+  }
+  return bestD <= 1 ? best : -1;
+}
+
+/**
+ * The axle of the star `seed` is a spoke of (a click on surgical tubing): its own line runs through
+ * the axle, so its own round fit is the tube's, and grew the radial line into a stray group. Null when
+ * it is in no star.
+ */
+function starAxle(parts: readonly MeshPart[], seed: number): { axis: V3; pivot: V3 } | null {
+  const st = bodyStats(parts);
+  const c = boxCentre({ min: [st.min[3 * seed], st.min[3 * seed + 1], st.min[3 * seed + 2]], max: [st.max[3 * seed], st.max[3 * seed + 1], st.max[3 * seed + 2]] });
+  for (const axis of [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ] as V3[]) {
+    if (!rodsSquareTo(parts, st, [seed], axis).length) continue;
+    const star = spokeStars(parts, axis, new Set(), (p) => Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]) <= SPOKE_MAX_IN).find((s) => s.spokes.includes(seed));
+    if (star) return { axis, pivot: star.pivot };
+  }
+  return null;
 }
 
 /** a body no wider than this from the axle that is not round is a hub or a collar, inches */
@@ -516,13 +876,18 @@ const HUB_R_IN = 0.7;
  *  longer than the part and an inch: AndyMark's motor shaft has a shoulder, and reached the motor). */
 function attachedTo(fits: ReadonlyMap<number, AxleFit>, seed: number): Set<number> {
   const out = new Set([seed]);
-  let lo = fits.get(seed)!.lo;
-  let hi = fits.get(seed)!.hi;
+  const sf = fits.get(seed)!;
+  let lo = sf.lo;
+  let hi = sf.hi;
   const short = Math.max(1, hi - lo);
+  // a SHAFT runs through everything on it: only what grips it is attached (goBILDA's 6WD pinion's
+  // output shaft runs back into its gearbox, and attached the gearbox's face to it)
+  const shaft = sf.rMax <= SHAFT_R_IN;
   for (let grew = true; grew; ) {
     grew = false;
     for (const [b, f] of fits) {
       if (out.has(b) || f.off > ON_AXLE_IN || Math.min(f.hi, hi) - Math.max(f.lo, lo) < 0.02) continue;
+      if (shaft && f.rMin > sf.rMax + GRIP_IN) continue;
       out.add(b);
       if (f.rMax > SHAFT_R_IN && f.hi - f.lo <= short) {
         lo = Math.min(lo, f.lo);
@@ -685,6 +1050,8 @@ interface AxleFit {
   hi: number;
   /** the largest distance of its points from the axle */
   rMax: number;
+  /** the smallest: a bore's radius, for a part the axle runs through */
+  rMin: number;
   /** its box centre's distance from the axle */
   off: number;
   /** its box's longest side */
@@ -705,6 +1072,7 @@ function axleFits(parts: readonly MeshPart[], st: BodyStats, bodies: ReadonlySet
       lo: Infinity,
       hi: -Infinity,
       rMax: 0,
+      rMin: Infinity,
       off: Math.hypot(rv[0], rv[1], rv[2]),
       ext: Math.max(mo.max[0] - mo.min[0], mo.max[1] - mo.min[1], mo.max[2] - mo.min[2]),
       w1: 0,
@@ -722,6 +1090,7 @@ function axleFits(parts: readonly MeshPart[], st: BodyStats, bodies: ReadonlySet
     if (along < f.lo) f.lo = along;
     if (along > f.hi) f.hi = along;
     if (rr > f.rMax) f.rMax = rr;
+    if (rr < f.rMin) f.rMin = rr;
     let sp = span.get(b);
     if (!sp) span.set(b, (sp = [Infinity, -Infinity, Infinity, -Infinity]));
     const u = dot(r, e1);
@@ -856,10 +1225,150 @@ function wheelBodies(parts: readonly MeshPart[], st: BodyStats, centre: V3, axis
     // the ring and what overlaps it on the axle (its hub) are never a motor's
     const protect = new Set(ring.bodies);
     for (const [b, f] of onAxle) if (Math.min(f.hi, ring.hi) - Math.max(f.lo, ring.lo) >= 0.02) protect.add(b);
-    const out = motorExclusions(pool, axleMotors(onAxle, protect), ring.lo, ring.hi);
-    for (const b of out) keep.delete(b);
+    const motors = axleMotors(onAxle, protect);
+    for (const b of motorExclusions(pool, motors, ring.lo, ring.hi)) keep.delete(b);
+    // WHAT ITS SHAFT CARRIES past the wheel: a sprocket, a gear, a pulley, a collar
+    const motorParts = motorExclusions(onAxle, motors, ring.lo, ring.hi);
+    const carried = shaftCarries(fits, keep, ring, R, (b) => taken.has(b) || motorParts.has(b));
+    for (const b of carried) keep.add(b);
+    // and the screws in them (what lies on the axle was judged above: a bearing's rings beside a
+    // collar are not the collar's)
+    const turning = carried.map((b) => fits.get(b)!);
+    for (const b of insideRotors(parts, st, turning, centre, axis, (x) => keep.has(x) || taken.has(x) || motorParts.has(x) || onAxle.has(x))) keep.add(b);
   }
   return [...keep].sort((a, b) => a - b);
+}
+
+/** a part GRIPS a shaft when its bore comes within this of the shaft's own radius, inches */
+const GRIP_IN = 0.01;
+/** how far along its shaft past the wheel a carried part may be, inches */
+const SHAFT_CARRY_IN = 4;
+/** a carried part is smaller than the wheel (under this share of its radius) and bigger than a
+ *  bearing, a washer or a screw head (`CARRY_R_MIN_IN`: an 8 mm bearing's outer race is 0.30 in from
+ *  the axle, goBILDA's collar 0.48, AndyMark's pulley 0.47, goBILDA's 6WD pinion 0.52) */
+const CARRY_R_SHARE = 0.85;
+const CARRY_R_MIN_IN = 0.4;
+
+/**
+ * WHAT A WHEEL'S SHAFT CARRIES past the wheel's own width (2026-10-04, owner: "gears for drivetrain"
+ * are not found): on goBILDA's 6WD BIOBUZZ bot the gear the motor drives and the chain sprocket sit
+ * 0.5 to 1.4 in inboard of each wheel, across the frame from it, and stood still while it turned;
+ * AndyMark's wheels carry their belt pulleys the same way, goBILDA's mecanum its clamping collar. A
+ * part ON THE AXLE that GRIPS a shaft of the wheel's (`keep`): its bore within `GRIP_IN` of the
+ * shaft's radius, which only a bore shaped to the shaft does (goBILDA's 8 mm REX: the shaft 0.16 in,
+ * a gear's and a sprocket's bore 0.14, a bearing's outer race 0.19; AndyMark's 3/8 hex: 0.22, its
+ * pulley 0.19), round about the axle or a hub (`HUB_R_IN`: a split collar's halves and their screws),
+ * `CARRY_R_MIN_IN` to `CARRY_R_SHARE` of the wheel, within `SHAFT_CARRY_IN` of it, no motor's, and in
+ * no HOUSING: a bigger round part around it that is not turning (REV's UltraPlanetary output stage
+ * grips the wheel's hex shaft inside its cartridges, and its motor is not found where its encoder sits
+ * behind a gap). A bearing's outer race, a pillow block and the frame clear the shaft and stay.
+ */
+function shaftCarries(fits: ReadonlyMap<number, AxleFit>, keep: ReadonlySet<number>, ring: { lo: number; hi: number }, R: number, skip: (b: number) => boolean): number[] {
+  const shafts = [...keep].map((b) => fits.get(b)).filter((f): f is AxleFit => !!f && f.off <= ON_AXLE_IN && f.rMax <= SHAFT_R_IN && f.hi - f.lo >= 0.3);
+  if (!shafts.length) return [];
+  const onAxle = [...fits].filter(([, f]) => f.off <= ON_AXLE_IN);
+  const out: number[] = [];
+  for (const [b, f] of onAxle) {
+    if (keep.has(b) || skip(b) || f.rMax < CARRY_R_MIN_IN || f.rMax > CARRY_R_SHARE * R) continue;
+    if (f.lo > ring.hi + SHAFT_CARRY_IN || f.hi < ring.lo - SHAFT_CARRY_IN) continue;
+    if (!shafts.some((s) => f.lo <= s.hi + 0.05 && f.hi >= s.lo - 0.05 && f.rMin <= s.rMax + GRIP_IN)) continue;
+    if (!roundAboutAxle(f) && f.rMax > HUB_R_IN) continue;
+    const housed = onAxle.some(([h, hf]) => h !== b && !keep.has(h) && hf.rMax > f.rMax + 0.05 && hf.rMin >= f.rMax - 0.05 && Math.min(hf.hi, f.hi) - Math.max(hf.lo, f.lo) >= 0.05 && roundAboutAxle(hf));
+    if (!housed) out.push(b);
+  }
+  return out;
+}
+
+// ---- gears that mesh with a wheel's --------------------------------------------------------------
+
+/** a gear is at least this big from its axle, inches (goBILDA's 6WD pinion: 0.52) */
+const GEAR_R_MIN_IN = 0.3;
+/**
+ * TWO GEARS MESH when their outer circles cross by a tooth's depth (twice the addendum): two solids
+ * in one plane cannot overlap, teeth can. Measured: goBILDA's 6WD pinion and wheel gear 0.09 in
+ * (0.52 + 0.51 in on 0.94 in centres), AndyMark's 40T 20DP pair 0.10 (1.05 + 1.05 on 2.00: 20DP's
+ * addendum is 0.05 in). At most `MESH_DEPTH_IN` and `MESH_DEPTH_SHARE` of the smaller gear.
+ */
+const MESH_DEPTH_IN = 0.25;
+const MESH_DEPTH_SHARE = 0.4;
+
+/**
+ * GEARS DRIVEN BY THE WHEELS (and gears they drive in turn, two deep: an idler train): for every gear
+ * on a wheel group's axle (round about it, under 0.85 of its largest radius: the tyre meshes nothing)
+ * each body not in `taken`, round about its own axle parallel to it, in its plane, meshing with it,
+ * grown to its own axle (`spinAxle`, never a motor's part: the motor that drives the train stays).
+ * Each is a `spin` group geared to its leader (`follows`), the ratio the pitch radii's (the outer
+ * radius less half the crossing, the same module), negative: meshed gears turn opposite ways. Leaders
+ * are indices into `motion`; the groups returned go after it in order (their own indices follow on).
+ */
+export function findDriveGears(parts: readonly MeshPart[], motion: readonly MotionGroup[], taken: ReadonlySet<number>): MotionGroup[] {
+  const st = bodyStats(parts);
+  const used = new Set(taken);
+  const out: MotionGroup[] = [];
+  const queue = motion.flatMap((g, gi) => (g.role === 'wheel' && g.bodies.length ? [{ gi, bodies: g.bodies, depth: 0 }] : []));
+  while (queue.length) {
+    const q = queue.shift()!;
+    // its axle, from the bodies centred on it (a wheel's hundreds of rollers are not: reading their
+    // vertices cost a mecanum bot 0.1 s)
+    const hint = q.depth === 0 ? wheelAxisHint(parts, q.bodies) : undefined;
+    const box = boxCentre(setMoments(st, q.bodies));
+    const centred = hint
+      ? q.bodies.filter((b) => {
+          const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], box);
+          const al = dot(d, hint);
+          return Math.hypot(d[0] - hint[0] * al, d[1] - hint[1] * al, d[2] - hint[2] * al) <= ON_AXLE_IN;
+        })
+      : q.bodies;
+    const fit = fitRound(parts, centred.length ? centred : q.bodies, hint);
+    if (!fit) continue;
+    const { axis, pivot } = fit;
+    const fits = axleFits(parts, st, new Set(centred), pivot, axis);
+    const top = Math.max(...[...fits.values()].map((f) => f.rMax));
+    const gears = [...fits.values()].filter((f) => f.off <= ON_AXLE_IN && f.rMax >= GEAR_R_MIN_IN && roundAboutAxle(f) && (q.depth > 0 || f.rMax < 0.85 * top));
+    // along a model axis a body's box says most of it: as wide both ways across the axle, and its
+    // circle near this gear's (the vertex passes below are for the few that are)
+    const k = axis.findIndex((v) => Math.abs(v) > 0.999);
+    for (const gf of gears) {
+      for (const b of st.ids) {
+        if (used.has(b)) continue;
+        const ext = Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]);
+        if (ext < 2 * GEAR_R_MIN_IN) continue;
+        const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+        const al = dot(d, axis);
+        const rc = Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al);
+        if (al < gf.lo - 0.5 || al > gf.hi + 0.5 || rc < 0.5 * gf.rMax || rc > gf.rMax + 3) continue;
+        if (k >= 0) {
+          const w = [0, 1, 2].filter((j) => j !== k).map((j) => (st.max[3 * b + j] - st.min[3 * b + j]) / 2);
+          const cross = gf.rMax + Math.max(w[0], w[1]) - rc;
+          if (w[0] < 0.8 * w[1] || w[1] < 0.8 * w[0] || cross < -0.2 || cross > 0.5) continue;
+        }
+        // round about an axle parallel to it (its own fit can lean: a gear's teeth tilt its moments
+        // 10° on goBILDA's 6WD pinion)
+        const own = fitRound(parts, [b], axis);
+        if (!own) continue;
+        const of = axleFits(parts, st, new Set([b]), own.pivot, axis).get(b)!;
+        if (of.rMax < GEAR_R_MIN_IN || !roundAboutAxle(of)) continue;
+        // in its plane, and the two circles cross by a tooth's depth (neither inside the other)
+        const dv = sub(own.pivot, pivot);
+        const shift = dot(dv, axis);
+        if (Math.min(of.hi + shift, gf.hi) - Math.max(of.lo + shift, gf.lo) < 0.05) continue;
+        const dist = Math.hypot(dv[0] - axis[0] * shift, dv[1] - axis[1] * shift, dv[2] - axis[2] * shift);
+        const depth = gf.rMax + of.rMax - dist;
+        if (dist <= Math.abs(gf.rMax - of.rMax) || depth <= 0.01 || depth > Math.min(MESH_DEPTH_IN, MESH_DEPTH_SHARE * Math.min(gf.rMax, of.rMax))) continue;
+        // meshed, it is driven: a pinion 0.16 in off its gearbox face (goBILDA's 6WD) is not the motor's
+        const g = spinAxle(parts, b, { axis, pivot: own.pivot }, true);
+        if (g.motor) continue;
+        const bodies = g.bodies.filter((x) => !used.has(x));
+        if (!bodies.includes(b)) continue;
+        for (const x of bodies) used.add(x);
+        const ratio = -(gf.rMax - depth / 2) / (of.rMax - depth / 2);
+        const gi = motion.length + out.length;
+        out.push({ role: 'spin', bodies, follows: { group: q.gi, ratio: Math.round(ratio * 100) / 100 }, found: true });
+        if (q.depth < 2) queue.push({ gi, bodies, depth: q.depth + 1 });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -886,6 +1395,18 @@ function wheelRadiusAt(st: BodyStats, w: Vec2, axis: V3, fallback: number): { R:
   return best >= 0.4 * fallback && best <= 2 * fallback ? { R: best, measured: true } : { R: fallback, measured: false };
 }
 
+/**
+ * A WHEEL'S AXLE: level, along the model's y (square to its front), else along x when only that way
+ * is something round standing at the contact (`wheelRadiusAt`). A model whose CAD front is not the
+ * robot's has its axles along x until the player turns it: Offset Robotics' concept robot drives
+ * along the CAD's left, its front is assumed, and read along y its wheels took in the motors' gearboxes
+ * beside them. Along x its mecanum's side plates stand there (2.83 in tall, 0.30 thick).
+ */
+function wheelAxleAt(st: BodyStats, w: Vec2, fallback: number): V3 {
+  if (wheelRadiusAt(st, w, [0, 1, 0], fallback).measured) return [0, 1, 0];
+  return wheelRadiusAt(st, w, [1, 0, 0], fallback).measured ? [1, 0, 0] : [0, 1, 0];
+}
+
 /** how far past its radius a wheel's parts may reach, inches: its own axle height measured, a tyre's
  *  bulge and the mesh's chords; or the drivetrain's catalogue wheel, which may be the wrong one */
 const WHEEL_SLACK_IN = { measured: 0.2, catalogue: 0.35 } as const;
@@ -906,8 +1427,10 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
   const taken = new Set<number>();
   const out: MotionGroup[] = [];
   const radii: number[] = [];
+  let square = true;
   wheels.forEach((w, corner) => {
-    const axis: V3 = drivetrain === 'xdrive' ? norm([w.x - cx, w.y - cy, 0]) : [0, 1, 0];
+    const axis: V3 = drivetrain === 'xdrive' ? norm([w.x - cx, w.y - cy, 0]) : wheelAxleAt(st, w, R0);
+    if (axis[1] !== 1) square = false;
     const { R, measured } = wheelRadiusAt(st, w, axis, R0);
     radii[corner] = R;
     const bodies = wheelBodies(parts, st, [w.x, w.y, R], axis, R, taken, measured ? WHEEL_SLACK_IN.measured : WHEEL_SLACK_IN.catalogue);
@@ -915,7 +1438,7 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
     for (const b of bodies) taken.add(b);
     out.push({ role: 'wheel', bodies, corner, found: true });
   });
-  if (wheels.length !== 4 || drivetrain === 'xdrive' || drivetrain === 'swerve') return out;
+  if (wheels.length !== 4 || drivetrain === 'xdrive' || drivetrain === 'swerve' || !square) return out;
   for (const [f, k] of [
     [0, 2],
     [1, 3],
@@ -1023,6 +1546,8 @@ export function findRollerGroups(
       { axis: [0, 0, 1], d1: 0, d2: 1 },
     ];
     for (const o of orients) {
+      // the axles found on this edge this way (a point on each), for the next stage in
+      const lines: V3[] = [];
       // the candidates by their boxes: near the edge, low, within the span, round about the axle's
       // direction (equal spread across it)
       const cand = new Map<number, { c: number[]; h1: number; h2: number; r: number }>();
@@ -1056,20 +1581,88 @@ export function findRollerGroups(
         const own = fitRound(parts, [b]);
         if (!own || Math.abs(dot(own.axis, o.axis)) < AXLE_PARALLEL) continue;
         if (Math.abs(o.axis[0]) * (st.max[3 * b] - st.min[3 * b]) + Math.abs(o.axis[1]) * (st.max[3 * b + 1] - st.min[3 * b + 1]) + Math.abs(o.axis[2]) * (st.max[3 * b + 2] - st.min[3 * b + 2]) < 0.1) continue;
-        const g = spinAxle(parts, b);
-        // a motor's can, face and end cap are round and can sit at the mouth (2026-10-04, goBILDA's BIOBUZZ bots)
-        if (g.motor) continue;
-        // an axle that carries a drive wheel is the drivetrain's (goBILDA's DECODE bot, its front axle)
-        if (g.bodies.some((x) => taken.has(x))) continue;
-        const bodies = g.bodies.filter((x) => !used.has(x));
-        const whole = fitRound(parts, bodies, o.axis);
-        if (!whole || whole.radius < ROLLER_R_MIN_IN || whole.radius > ROLLER_R_MAX_IN) continue;
-        // a roller turns on a SHAFT, or is a bar long enough to be its own: a round plate at the mouth
-        // with nothing through it is a mount (goBILDA's pattern mounts, measured)
-        if (!onShaft(parts, bodies, whole.axis, whole.pivot)) continue;
-        for (const x of bodies) used.add(x);
-        out.push({ role: 'roller', bodies, found: true });
+        const g = rollerOn(parts, b, o.axis, taken, used);
+        if (!g) continue;
+        for (const x of g.bodies) used.add(x);
+        lines.push(g.pivot);
+        out.push({ role: 'roller', bodies: g.bodies, found: true });
       }
+      // SPOKED AXLES (surgical tubing on hubs, Offset Robotics' concept robot): a star of spokes is a
+      // roller however small its hub. Within `ROLLER_DEPTH_IN` of the edge it seeds one; deeper, it is
+      // the intake's NEXT STAGE when its axle is within `ROLLER_STAGE_IN` of a roller found on this edge
+      // (Offset's three run 1.9, 5.1 and 7.1 in in from its edge, 3.2 and 2.0 in apart; the six of its
+      // transfer stand 8.5 in on, square to the edge, `findSpokedRollers`)
+      const stars = spokeStars(parts, o.axis, used, (c) => c[2] <= ROLLER_TOP_IN && c[along] >= Math.min(span.from, span.to) - 1 && c[along] <= Math.max(span.from, span.to) + 1);
+      const across2 = (p: V3, q: V3): number => {
+        const d = sub(p, q);
+        const al = dot(d, o.axis);
+        return Math.hypot(d[0] - o.axis[0] * al, d[1] - o.axis[1] * al, d[2] - o.axis[2] * al);
+      };
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const star of stars) {
+          if (star.spokes.some((x) => used.has(x))) continue;
+          const depth = (edgeAt - star.pivot[across]) * outward;
+          if (depth > ROLLER_DEPTH_IN && !lines.some((p) => across2(p, star.pivot) <= ROLLER_STAGE_IN)) continue;
+          const hub = bodyOnLine(st, star.pivot, o.axis, used);
+          if (hub < 0) continue;
+          const g = rollerOn(parts, hub, o.axis, taken, used, { axis: o.axis, pivot: star.pivot });
+          if (!g || !star.spokes.every((x) => g.bodies.includes(x))) continue;
+          for (const x of g.bodies) used.add(x);
+          lines.push(g.pivot);
+          out.push({ role: 'roller', bodies: g.bodies, found: true });
+          grew = true;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** a roller's next stage is within this of it, axle to axle, inches (an element handed on: BIOBUZZ's
+ *  POLLEN is 2.8 in across) */
+const ROLLER_STAGE_IN = 4;
+
+/**
+ * The roller on `seed`'s axle (`spinAxle`, or along `line`), its axle along `axis`: none when the seed
+ * is a motor's part (its can, face and end cap are round and can sit at a mouth: goBILDA's BIOBUZZ
+ * bots), when the axle carries a drive wheel (`taken`: goBILDA's DECODE bot's front axle), when it is
+ * no roller's size (`ROLLER_R_MIN_IN`, `ROLLER_R_MAX_IN`) or turns on no shaft and is not a bar
+ * (`onShaft`: goBILDA's round pattern mounts). Its bodies `used` does not hold, and its axle's point.
+ */
+function rollerOn(parts: readonly MeshPart[], seed: number, axis: V3, taken: ReadonlySet<number>, used: ReadonlySet<number>, line?: { axis: V3; pivot: V3 }): { bodies: number[]; pivot: V3 } | null {
+  const g = spinAxle(parts, seed, line);
+  if (g.motor || g.bodies.some((x) => taken.has(x))) return null;
+  const bodies = g.bodies.filter((x) => !used.has(x));
+  const whole = fitRound(parts, bodies, axis);
+  if (!whole || whole.radius < ROLLER_R_MIN_IN || whole.radius > ROLLER_R_MAX_IN) return null;
+  if (!onShaft(parts, bodies, whole.axis, whole.pivot)) return null;
+  return { bodies, pivot: whole.pivot };
+}
+
+/**
+ * EVERY OTHER SPOKED AXLE (`spokeStars` about the three model axes), among bodies `taken` does not
+ * hold: rollers that are not at an intake edge, such as Offset Robotics' six-roller transfer column.
+ * Surgical tubing in a star is a roller wherever it is; the intake's own are found first, on their
+ * edge (`findRollerGroups`). Role `roller`: it turns while the intake runs.
+ */
+export function findSpokedRollers(parts: readonly MeshPart[], taken: ReadonlySet<number>): MotionGroup[] {
+  const st = bodyStats(parts);
+  const used = new Set(taken);
+  const out: MotionGroup[] = [];
+  for (const axis of [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ] as V3[]) {
+    for (const star of spokeStars(parts, axis, used)) {
+      if (star.spokes.some((x) => used.has(x))) continue;
+      const hub = bodyOnLine(st, star.pivot, axis, used);
+      if (hub < 0) continue;
+      const g = rollerOn(parts, hub, axis, taken, used, { axis, pivot: star.pivot });
+      if (!g || !star.spokes.every((x) => g.bodies.includes(x))) continue;
+      for (const x of g.bodies) used.add(x);
+      out.push({ role: 'roller', bodies: g.bodies, found: true });
     }
   }
   return out;
@@ -1810,11 +2403,46 @@ export function deriveMotion(modelParts: readonly MeshPart[], motion: readonly M
       at = out[at].follows?.index;
     }
   });
+  // A RATIO IS AGAINST THE LEADER'S OWN SENSE: a part turning about an axle parallel to its leader's
+  // is given the leader's direction before its own flip, so −1 turns it the other way (two meshed
+  // gears) and +1 the same way (a belt). A round part's axle comes out of `fitRound` either way up,
+  // and a ratio's sign changed with it. Within `GEARED_PARALLEL` of parallel it IS parallel, and is
+  // fitted again about the leader's axle: a spur gear, a belt or a chain turns about a parallel axle
+  // (a bevel square to it), and goBILDA's 6WD pinion and its shaft fit 13° off, which turned it
+  // wobbling. Leaders before followers, so a train settles in one pass.
+  const flipped = new Map<number, boolean>();
+  motion.forEach((g, gi) => {
+    const i = index.get(gi);
+    if (i !== undefined) flipped.set(i, !!g.flip);
+  });
+  const done = new Set<number>();
+  const align = (i: number, depth: number): void => {
+    const f = out[i].follows;
+    if (done.has(i) || depth > out.length) return;
+    done.add(i);
+    if (!f || isHinge(out[i].role) || out[i].role === 'slide') return;
+    align(f.index, depth + 1);
+    const lead = out[f.index].axis;
+    const own = flipped.get(i) ? scale(out[i].axis, -1) : out[i].axis;
+    if (Math.abs(dot(own, lead)) < GEARED_PARALLEL) return;
+    if (isSpin(out[i].role)) {
+      const fit = fitRound(modelParts, out[i].bodies, lead);
+      if (fit) {
+        out[i].pivot = fit.pivot;
+        out[i].radius = fit.radius;
+      }
+    }
+    out[i].axis = flipped.get(i) ? scale(lead, -1) : [...lead];
+  };
+  out.forEach((_, i) => align(i, 0));
   return out;
 }
 
 /** a robot axis as a unit vector (MODEL frame: +x front, +y left, +z up) */
 const ROBOT_AXIS: Readonly<Record<'forward' | 'left' | 'up', V3>> = { forward: [1, 0, 0], left: [0, 1, 0], up: [0, 0, 1] };
+
+/** a geared part's axle within this (a cosine, 20°) of its leader's is parallel to it (`deriveMotion`) */
+const GEARED_PARALLEL = Math.cos((20 * Math.PI) / 180);
 
 /**
  * A GENERIC JOINT as measured (`spin`, `swing`, `slide`). Its direction is a robot axis, or the picked

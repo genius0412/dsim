@@ -176,8 +176,11 @@ found.push(...time('wheels', () => motion.findWheelGroups(modelParts, baseWheels
 // what the model is built with, before any placement (`readBuild`): the editor's defaults for a new import
 const build = time('build', () => motion.readBuild(modelParts, taken()));
 console.log(`build: ${JSON.stringify(build)}`);
+// as the editor's `findAll`: the gears the wheels drive, the intake rollers, any other spoked roller
+found.push(...time('gears', () => motion.findDriveGears(modelParts, found, taken())));
 const intakes = cfg.mech?.intakes ?? [];
 if (intakes.length) found.push(...time('rollers', () => motion.findRollerGroups(modelParts, intakes, taken())));
+found.push(...time('spoked', () => motion.findSpokedRollers(modelParts, taken())));
 const shooter = cfg.mech?.shooter;
 if (shooter) {
   // as the editor: the flywheel `readBuild` saw, else the launcher's placed point
@@ -242,7 +245,7 @@ found.forEach((g, gi) => {
   const pick = motion.isSpin(role) ? motion.coaxialBodies(modelParts, seed, role) : motion.mountedBodies(modelParts, seed);
   const gs = new Set(g.bodies);
   const ps = new Set(pick);
-  lines.push(`\n[${gi}] ${role}${g.corner !== undefined ? ` corner ${g.corner}` : ''}: ${g.bodies.length} bodies${fit ? `, axis ${fit.axis.map(f2).join(',')} r ${f2(fit.radius)} @ ${fit.pivot.map(f2).join(',')}` : ''}`);
+  lines.push(`\n[${gi}] ${role}${g.corner !== undefined ? ` corner ${g.corner}` : ''}${g.follows ? ` geared to [${g.follows.group}] × ${g.follows.ratio}` : ''}: ${g.bodies.length} bodies${fit ? `, axis ${fit.axis.map(f2).join(',')} r ${f2(fit.radius)} @ ${fit.pivot.map(f2).join(',')}` : ''}`);
   lines.push(`    names: ${hist(g.bodies)}`);
   for (const b of g.bodies) lines.push(`      ${describe(b)}`);
   lines.push(`    click on #${seed} (${nameOf(seed)}): ${pick.length} bodies; not in group: ${pick.filter((b) => !gs.has(b)).map(describe).join(' | ') || '-'}; group not picked: ${g.bodies.filter((b) => !ps.has(b)).length}`);

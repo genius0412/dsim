@@ -58,6 +58,15 @@ const TYPICAL_ROBOT_IN = 15;
 const UNIT_PRIOR_BONUS = 0.35;
 /** floor-contact slab for wheel detection, inches; widened once if it finds too few wheels */
 const WHEEL_SLABS_IN = [0.15, 0.5] as const;
+/**
+ * A FRAME CAN HANG INSIDE THAT SLAB. Offset Robotics' concept robot has its side plates 0.10 in off
+ * the floor: at 0.15 their ends were six "wheels" and its mecanum wheels joined a plate's edge, so the
+ * four corners were a motor's gearbox and the plates. No four corners, or four that are no rectangle
+ * (within `WHEEL_SQUARE_TOL_IN`), are looked for again this close to the floor, and the four found there
+ * are used when they are one (Offset: its four mecanum wheels, at 0.03 to 0.08 alike). The tread's lowest
+ * vertex can sit 0.05 in up (a 0.5 rad facet on a 1.6 in radius), so not closer.
+ */
+const WHEEL_THIN_SLAB_IN = 0.08;
 /** single-linkage distance for floor contacts, inches: one wheel's patch, never two wheels */
 const CONTACT_LINK_IN = 1.0;
 /** a contact cluster longer than this is an intake or a skid, not a wheel */
@@ -1670,6 +1679,11 @@ export function orientParts(
       const d = detectWheels(xy, edges);
       if (slab === WHEEL_SLABS_IN[0] || d.wheels) wheels = d;
       if (d.wheels) break;
+    }
+    if (!wheels.wheels || !isRectangle(wheels.wheels, WHEEL_SQUARE_TOL_IN)) {
+      const { xy, edges } = floorContacts(modelParts, WHEEL_THIN_SLAB_IN);
+      const d = detectWheels(xy, edges);
+      if (d.wheels && isRectangle(d.wheels, WHEEL_SQUARE_TOL_IN)) wheels = d;
     }
   }
   const bandsModel = setup.bands && !empty ? computeBands(modelParts, size.height) : null;
