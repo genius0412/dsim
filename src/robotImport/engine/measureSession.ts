@@ -13,7 +13,7 @@
  * computes on this thread only when nobody asked `prepare` first (the dev harness) or a worker
  * cannot start.
  */
-import { finishMeasure, orientKey, orientParts, toModelFrame, withMotion, type MeasureOptions, type MeshPart, type OrientedMeasure } from '../geometry';
+import { finishMeasure, orientKey, orientParts, toModelFrame, withMotion, withoutBodies, type MeasureOptions, type MeshPart, type OrientedMeasure } from '../geometry';
 import type { ImportMeasurement, ImportSetup } from '../types';
 import type { MeasureRequest, MeasureResponse } from './measureProtocol';
 import type { PreparedModel } from './prepare';
@@ -95,7 +95,9 @@ export class Measurer {
     // most recently used last
     this.entries.delete(key);
     this.entries.set(key, entry);
-    if (!entry.modelParts) entry.modelParts = toModelFrame(this.model.parts, entry.oriented.sourceToModel, entry.oriented.folds);
+    // the bodies the player deleted are left out here as `orientParts` leaves them out (`orientKey`
+    // names them, so each set of them is an orientation of its own)
+    if (!entry.modelParts) entry.modelParts = toModelFrame(withoutBodies(this.model.parts, setup.removed), entry.oriented.sourceToModel, entry.oriented.folds);
     if (this.model.full && !entry.shown) {
       // EVERY TRIANGLE IN ONE ORIENTATION AT A TIME: a full copy is hundreds of MB on a real CAD
       // export, so an older orientation lets its copy go (and the answer that names it) and builds
@@ -106,7 +108,7 @@ export class Measurer {
         e.fin = undefined;
         e.finKey = undefined;
       }
-      entry.shown = toModelFrame(this.model.full, entry.oriented.sourceToModel, entry.oriented.folds);
+      entry.shown = toModelFrame(withoutBodies(this.model.full, setup.removed), entry.oriented.sourceToModel, entry.oriented.folds);
     }
     const fk = finishKey(setup);
     if (entry.fin && entry.finKey === fk) return entry.fin;

@@ -13,10 +13,12 @@
  */
 import type { ImportedBand, ImportedCut, ImportedEdge, ImportedMech, ImportedRobot, Vec2 } from '../types';
 import { applyFolds, deriveMotion, foldKey, planFolds, type FoldPlan } from './motion';
+import { findFloatingParts } from './floating';
 import {
   INCHES_PER_UNIT,
   LENGTH_UNITS,
   UP_AXES,
+  type FloatingGroup,
   type FrontDetection,
   type ImportCheck,
   type ImportMeasurement,
@@ -1508,14 +1510,107 @@ export interface OrientedMeasure {
   /** the hinged moving parts folded for the starting configuration, as planned (rotated frame:
    *  after the linear part of `sourceToModel`, before its shift). `toModelFrame` re-applies them. */
   folds: FoldPlan[];
+  /** bodies that float apart from the robot (`findFloatingParts`) */
+  floating?: FloatingGroup[];
 }
 
 /** what `orientParts` depends on in a setup: equal keys, equal `OrientedMeasure` */
 export function orientKey(setup: ImportSetup): string {
   // a FOLD changes the footprint, so a hinged moving part (and what rides on it) is part of the key;
-  // a spinning part alone is not (it moves nothing the heavy half measures)
+  // a spinning part alone is not (it moves nothing the heavy half measures). Deleted parts are left
+  // out of everything measured, so they are part of it too.
   const f = foldKey(setup.motion);
-  return `${setup.units}|${setup.up}|${setup.yaw}|${setup.bands ? 1 : 0}${f ? `|${f}` : ''}`;
+  const r = setup.removed?.length ? `|x${setup.removed.join(',')}` : '';
+  return `${setup.units}|${setup.up}|${setup.yaw}|${setup.bands ? 1 : 0}${f ? `|${f}` : ''}${r}`;
+}
+
+/**
+ * THE PARTS WITHOUT THE BODIES THE PLAYER DELETED (`ImportSetup.removed`): their triangles and
+ * vertices go, the rest keep their order, values and body ids, so the measure worker and the main
+ * thread filter to the same arrays. `parts` itself comes back when nothing is removed, and a part
+ * holding none of them comes back as it is; a part left empty is dropped.
+ */
+export function withoutBodies(parts: readonly MeshPart[], removed: readonly number[] | undefined): MeshPart[] {
+  if (!removed?.length) return parts as MeshPart[];
+  const gone = new Set(removed);
+  const out: MeshPart[] = [];
+  for (const p of parts) {
+    const body = p.body;
+    if (!body || !body.some((b) => gone.has(b))) {
+      out.push(p);
+      continue;
+    }
+    const nv = body.length;
+    const map = new Int32Array(nv).fill(-1);
+    let kept = 0;
+    for (let v = 0; v < nv; v++) if (!gone.has(body[v])) map[v] = kept++;
+    if (!kept) continue;
+    const positions = new Float32Array(kept * 3);
+    const normals = p.normals ? new Float32Array(kept * 3) : null;
+    const nb = new Uint32Array(kept);
+    for (let v = 0; v < nv; v++) {
+      const k = map[v];
+      if (k < 0) continue;
+      positions[3 * k] = p.positions[3 * v];
+      positions[3 * k + 1] = p.positions[3 * v + 1];
+      positions[3 * k + 2] = p.positions[3 * v + 2];
+      if (normals) {
+        normals[3 * k] = p.normals![3 * v];
+        normals[3 * k + 1] = p.normals![3 * v + 1];
+        normals[3 * k + 2] = p.normals![3 * v + 2];
+      }
+      nb[k] = body[v];
+    }
+    // a triangle goes when any corner does (the weld never joins two bodies, so all three agree)
+    const corners = p.indices ?? null;
+    const nt = Math.floor((corners ? corners.length : nv) / 3);
+    const idx = new Uint32Array(nt * 3);
+    let n = 0;
+    for (let t = 0; t < nt; t++) {
+      const a = map[corners ? corners[3 * t] : 3 * t];
+      const b = map[corners ? corners[3 * t + 1] : 3 * t + 1];
+      const c = map[corners ? corners[3 * t + 2] : 3 * t + 2];
+      if (a < 0 || b < 0 || c < 0) continue;
+      idx[n++] = a;
+      idx[n++] = b;
+      idx[n++] = c;
+    }
+    if (!n) continue;
+    out.push({ positions, indices: idx.slice(0, n), normals, color: p.color, name: p.name, body: nb });
+  }
+  return out;
+}
+
+/** the box of every vertex whose body is not in `skip`, in the parts' own frame (null: none) */
+export function boxWithout(parts: readonly MeshPart[], skip: ReadonlySet<number>): { min: V3; max: V3 } | null {
+  const min: V3 = [Infinity, Infinity, Infinity];
+  const max: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const p of parts) {
+    const a = p.positions;
+    const body = p.body;
+    for (let v = 0, i = 0; i < a.length; v++, i += 3) {
+      if (body && skip.has(body[v])) continue;
+      for (let k = 0; k < 3; k++) {
+        const x = a[i + k];
+        if (x < min[k]) min[k] = x;
+        if (x > max[k]) max[k] = x;
+      }
+    }
+  }
+  return Number.isFinite(min[0]) ? { min, max } : null;
+}
+
+/**
+ * Does deleting (or bringing back) bodies move the MODEL frame? Its origin is the centre of the
+ * model's box and its floor the box's bottom, so it moves exactly when the box does. `parts` holds
+ * every body of both states (`before` and `after` are what each leaves out).
+ */
+export function removalMovesFrame(parts: readonly MeshPart[], before: readonly number[], after: readonly number[]): boolean {
+  const a = boxWithout(parts, new Set(before));
+  const b = boxWithout(parts, new Set(after));
+  if (!a || !b) return a !== b;
+  for (let k = 0; k < 3; k++) if (a.min[k] !== b.min[k] || a.max[k] !== b.max[k]) return true;
+  return false;
 }
 
 /**
@@ -1571,10 +1666,12 @@ export function withMotion(measurement: ImportMeasurement, modelParts: readonly 
 
 /** the heavy half (`OrientedMeasure`), and the parts in the MODEL frame it was measured on */
 export function orientParts(
-  parts: readonly MeshPart[],
+  input: readonly MeshPart[],
   setup: ImportSetup,
   opts: MeasureOptions,
 ): { oriented: OrientedMeasure; modelParts: MeshPart[] } {
+  // the parts the player deleted are not the robot: nothing below sees them
+  const parts = withoutBodies(input, setup.removed);
   const trisIn = triangleCount(parts);
   // source AABB
   let maxExtent = 0;
@@ -1674,6 +1771,9 @@ export function orientParts(
   }
   const bandsModel = setup.bands && !empty ? computeBands(modelParts, size.height) : null;
   const front: FrontDetection = empty ? { yaw: 0, confidence: 0, detected: false, cue: null } : detectFront(modelParts, wheels.wheels, size.height, yaw);
+  // here, not on the main thread: the bodies' boxes cost a pass over the measured copy (50–90 ms
+  // on a 1.3–1.9 M copy, Node)
+  const floating = empty ? [] : findFloatingParts(modelParts);
   return {
     oriented: {
       units,
@@ -1691,6 +1791,7 @@ export function orientParts(
       front,
       bandsModel,
       folds,
+      floating,
     },
     modelParts,
   };
@@ -1824,6 +1925,7 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
     bands,
     trisIn: o.trisIn,
     checks,
+    floating: o.floating ?? [],
   };
 }
 

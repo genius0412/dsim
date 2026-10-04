@@ -133,6 +133,14 @@ export interface ImportSetup {
   motionFinder?: number;
   /** practice tuning (`ImportedRobot.tune`), copied onto the descriptor by `buildSpec` */
   tune?: ImportTuning;
+  /**
+   * the bodies the player deleted (`MeshPart.body` ids of the model as read), ascending. They are left
+   * out of the measurement, the preview, the moving parts and the stored mesh (`withoutBodies`).
+   * Never saved: the stored mesh is made without them, so a saved setup has none. Absent = none.
+   */
+  removed?: number[];
+  /** the floating bodies (`findFloatingParts`) the player chose to keep, so they are not offered again */
+  keepFloating?: number[];
 }
 
 // ---- moving parts ----------------------------------------------------------------------------
@@ -365,6 +373,16 @@ export interface WheelDetection {
   note: string;
 }
 
+/** bodies that float apart from the robot (`findFloatingParts`, MODEL frame) */
+export interface FloatingGroup {
+  /** its bodies (`MeshPart.body`), ascending */
+  bodies: number[];
+  /** the gap from its box to the nearest box on the robot, inches */
+  gapIn: number;
+  /** its box, inches */
+  size: [number, number, number];
+}
+
 /** what `measureParts` (and the engine's `normalise`) reports */
 export interface ImportMeasurement {
   units: LengthUnit;
@@ -403,6 +421,9 @@ export interface ImportMeasurement {
   checks: ImportCheck[];
   /** the moving parts, MODEL frame, starting pose (absent when the setup has none) */
   motion?: MotionPart[];
+  /** bodies that float apart from the robot, nearest first (`findFloatingParts`; the deleted ones
+   *  are not looked at) */
+  floating?: FloatingGroup[];
 }
 
 // ---- the library record (plan §3.2) ------------------------------------------------------

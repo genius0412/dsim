@@ -35817,6 +35817,173 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
 }
 
 /**
+ * DELETING PARTS (`docs/area/robot-import.md`, "Deleting parts"). The synthetic robot with a body per
+ * solid and a 1-in cube floating 4 in off its left side: a deleted body is measured as if the file
+ * never had it, each set of deleted bodies is an orientation of its own, the main thread rebuilds
+ * the worker's model frame without them bit for bit, the moving parts lose them, the floating-part
+ * finder flags the cube and nothing on a robot whose parts touch, and a saved setup names none.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const { findFloatingParts, FLOAT_GAP_IN } = await import('../src/robotImport/floating');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type G = import('../src/robotImport/types').MotionGroup;
+  const J = JSON.stringify;
+  const robot = synth.synthRobot();
+  // beside the flag (x 2..6, z 4.5..6, y to 7.5): 4 in off the robot's left side
+  const cube = synth.box('cube', [0.9, 0.9, 0.9], 2, 3, 11.5, 12.5, 5, 6);
+  const prisms = [...robot, cube];
+  const id = (name: string): number => prisms.findIndex((p) => p.name === name);
+  const cubeId = id('cube');
+  // the file as CAD writes it (Z up, front −Y, millimetres), one body per solid
+  const mk = (ps: typeof prisms): P[] => synth.synthParts(ps, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const withCube = mk(prisms);
+  const without = mk(robot);
+  const base = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+  const opts = { format: 'stl' as const };
+  const sameArrays = (a: P[], b: P[]): boolean =>
+    a.length === b.length &&
+    a.every((p, i) => {
+      const q = b[i];
+      const eq = (x: ArrayLike<number> | null | undefined, y: ArrayLike<number> | null | undefined): boolean =>
+        !x || !y ? !x === !y : x.length === y.length && Array.prototype.every.call(x, (v: number, k: number) => Object.is(v, y[k]));
+      return eq(p.positions, q.positions) && eq(p.indices, q.indices) && eq(p.body, q.body);
+    });
+
+  const full = geo.measureParts(withCube, base, opts);
+  const del = geo.measureParts(withCube, { ...base, removed: [cubeId] }, opts);
+  const ref = geo.measureParts(without, base, opts);
+  check(
+    'delete parts: the floating cube makes the robot oversize, and deleted it is measured exactly as the file without it (size, hull, wheels, bands, front, checks)',
+    full.measurement.checks.some((c) => c.code === 'oversize') && J(del.measurement) === J(ref.measurement) && sameArrays(del.modelParts, ref.modelParts),
+    `${full.measurement.size.width.toFixed(2)} wide with it, ${del.measurement.size.width.toFixed(2)} without`,
+  );
+
+  // two bodies in one part (a merge by colour): the deleted one's triangles and vertices go, the rest
+  // keep their order and values
+  {
+    const merged: P = { positions: new Float32Array([...withCube[id('flag')].positions, ...withCube[cubeId].positions]), indices: null, color: [1, 1, 1], name: 'm', body: null };
+    const nf = withCube[id('flag')].positions.length / 3;
+    merged.body = new Uint32Array(merged.positions.length / 3).map((_, v) => (v < nf ? id('flag') : cubeId));
+    const [kept] = geo.withoutBodies([merged], [cubeId]);
+    const tris = (p: P): string[] => {
+      const out: string[] = [];
+      const n = (p.indices ? p.indices.length : p.positions.length / 3) / 3;
+      for (let t = 0; t < n; t++) {
+        const c = [0, 1, 2].map((k) => (p.indices ? p.indices[3 * t + k] : 3 * t + k));
+        out.push(c.map((v) => `${p.positions[3 * v]},${p.positions[3 * v + 1]},${p.positions[3 * v + 2]}`).join(' '));
+      }
+      return out;
+    };
+    check(
+      'delete parts: a deleted body sharing a part with another leaves that body’s triangles, in order, with its id',
+      J(tris(kept)) === J(tris(withCube[id('flag')])) && kept.body!.every((b) => b === id('flag')) && geo.withoutBodies(withCube, []) === withCube,
+    );
+  }
+
+  check(
+    'delete parts: the orientation key names the deleted bodies (a deletion re-measures), and no deletion is the old key',
+    geo.orientKey({ ...base, removed: [cubeId] }) !== geo.orientKey(base) &&
+      geo.orientKey({ ...base, removed: [] }) === geo.orientKey(base) &&
+      geo.orientKey({ ...base, removed: [1, 2] }) !== geo.orientKey({ ...base, removed: [1, 3] }),
+  );
+  {
+    const o = geo.orientParts(withCube, { ...base, removed: [cubeId] }, opts);
+    const rebuilt = geo.toModelFrame(geo.withoutBodies(withCube, [cubeId]), o.oriented.sourceToModel, o.oriented.folds);
+    const prepared = { name: 'cube.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts: withCube, full: withCube, trisIn: geo.triangleCount(withCube), notes: [], trisOut: geo.triangleCount(withCube), simplifyError: 0, fullDetail: true };
+    const n = new Measurer(prepared).normalise({ ...base, removed: [cubeId] });
+    const hasCube = (ps: readonly P[]): boolean => ps.some((p) => p.body?.includes(cubeId));
+    check(
+      'delete parts: the main thread rebuilds the measured model frame without the deleted bodies bit for bit, and the engine’s measured and shown parts (what is previewed, picked and baked) lack them',
+      sameArrays(rebuilt, o.modelParts) && !hasCube(n.modelParts) && !!n.shownParts && !hasCube(n.shownParts) && J(n.measurement.size) === J(ref.measurement.size),
+    );
+  }
+
+  // ---- what floats apart from the robot ----
+  const fl = findFloatingParts(full.modelParts);
+  check(
+    'delete parts: the floating-part finder flags the cube, 4 in off the robot, and only the cube; the measurement carries it',
+    fl.length === 1 && J(fl[0].bodies) === J([cubeId]) && Math.abs(fl[0].gapIn - 4) < 1e-3 && fl[0].size.every((s) => Math.abs(s - 1) < 1e-3) && J(full.measurement.floating) === J(fl),
+    J(fl),
+  );
+  const near = mk([...robot, synth.box('near', [0.9, 0.9, 0.9], 2, 3, 7.5 + FLOAT_GAP_IN * 0.6, 8.5 + FLOAT_GAP_IN * 0.6, 5, 6)]);
+  check(
+    'delete parts: nothing floats on the robot itself (every part touches), nor a part nearer than the gap, nor once the cube is deleted',
+    findFloatingParts(ref.modelParts).length === 0 && geo.measureParts(near, base, opts).measurement.floating?.length === 0 && del.measurement.floating?.length === 0,
+  );
+  check(
+    'delete parts: the editor offers the floating parts until they are kept',
+    J(em.floatingOffer(full.measurement, {}).map((g) => g.bodies)) === J([[cubeId]]) && em.floatingOffer(full.measurement, { keepFloating: [cubeId] }).length === 0,
+  );
+
+  // ---- the frame, and the document ----
+  check(
+    'delete parts: deleting the cube moves the model frame (its box changes), deleting the belly inside the box does not',
+    geo.removalMovesFrame(withCube, [], [cubeId]) && !geo.removalMovesFrame(withCube, [], [id('belly')]) && geo.removalMovesFrame(withCube, [cubeId], []),
+  );
+  const w = id('wheel_5.5_5.5');
+  const groups: G[] = [
+    { role: 'roller', bodies: [id('intake'), cubeId] },
+    { role: 'spin', bodies: [cubeId] },
+    { role: 'spin', bodies: [id('flag')], follows: { group: 0, ratio: 2 }, rideOn: 1 },
+    { role: 'swing', bodies: [id('tower')], axis: 'part', axisBody: cubeId, follows: { group: 2, ratio: 1 } },
+    { role: 'slide', bodies: [] },
+  ];
+  const pruned = em.pruneMotion(groups, new Set([cubeId]));
+  check(
+    'delete parts: the moving parts lose the deleted bodies, a row left empty goes and the links after it move up, a joint about a deleted part turns about its own, a row still being picked stays',
+    J(pruned) ===
+      J([
+        { role: 'roller', bodies: [id('intake')] },
+        { role: 'spin', bodies: [id('flag')], follows: { group: 0, ratio: 2 } },
+        { role: 'swing', bodies: [id('tower')], follows: { group: 1, ratio: 1 } },
+        { role: 'slide', bodies: [] },
+      ]),
+    J(pruned),
+  );
+  const doc = {
+    setup: { ...base, wheels: [{ x: 1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: -1 }], motion: [{ role: 'wheel' as const, bodies: [w], corner: 0 }, ...groups], removed: [7] },
+    mech: { intakes: [{ edge: 'front' as const, from: -5, to: 5 }] },
+  } as unknown as import('../src/robotImport/ui/editorModel').EditorDoc;
+  const moved = em.deleteBodies(doc, [cubeId], true);
+  const inside = em.deleteBodies(doc, [id('belly')], false);
+  check(
+    'delete parts: a deletion is one document edit: the ids join the deleted list, the moving parts lose them, and a moved frame clears placed wheels and placements (a deletion inside the box keeps them)',
+    J(moved.setup.removed) === J([7, cubeId].sort((a, b) => a - b)) && moved.setup.wheels === null && moved.mech === null && moved.setup.motion!.length === 5 &&
+      J(inside.setup.wheels) === J(doc.setup.wheels) && inside.mech === doc.mech && J(inside.setup.removed) === J([7, id('belly')].sort((a, b) => a - b)),
+  );
+  const measuredMotion = geo.measureParts(withCube, { ...moved.setup, wheels: null }, opts).measurement.motion ?? [];
+  check(
+    'delete parts: the measured moving parts name no deleted body',
+    measuredMotion.length > 0 && measuredMotion.every((p) => !p.bodies.includes(cubeId)),
+    J(measuredMotion.map((p) => p.bodies)),
+  );
+  const back = em.restoreBodies(moved, true);
+  const saved = em.savedSetup({ ...moved.setup, keepFloating: [3] });
+  check(
+    'delete parts: Restore all brings every body back; a saved setup names no deleted body (its stored mesh is made without them) and keeps the kept floating parts',
+    back.setup.removed === undefined && !('removed' in saved) && J(saved.keepFloating) === J([3]) && em.savedSetup(base) === base,
+  );
+  {
+    const { restoreDoc, applyEdit, undoDoc } = await import('../src/robotImport/ui/editorHistory');
+    const at = (triBudget: number, removed?: number[]): typeof doc => ({ ...doc, setup: { ...doc.setup, triBudget, removed } }) as typeof doc;
+    // a deletion is one undo step, and its undo brings the bodies back
+    const r = applyEdit(at(0, undefined), undefined, (d) => em.deleteBodies(d, [cubeId], true), { label: 'delete 1 part' }, 1);
+    const u = r ? undoDoc(r.doc, r.history, 2) : null;
+    check(
+      'delete parts: a deletion is one undo step, and an undo across a Detail change never puts back ids from the other detail’s numbering',
+      !!r && J(r.doc.setup.removed) === J([cubeId]) && r.history?.past.length === 1 && !!u && u.doc.setup.removed === undefined &&
+        J(restoreDoc(at(0, [5]), at(0)).setup.removed) === J([5]) &&
+        restoreDoc(at(0, [5]), at(250_000)).setup.removed === undefined &&
+        J(restoreDoc(at(0), at(250_000, [9])).setup.removed) === J([9]),
+    );
+  }
+}
+
+/**
  * SIM_PATCH 4 (fixed launchers: the aim controller, the lead, DECODE's release tolerance and tank
  * forward, the feed clock's slack). A replay recorded before it must re-simulate exactly as it was
  * recorded, so the five scenes stepped under patch 3 land on the pins the code BEFORE the change

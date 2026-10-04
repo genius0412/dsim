@@ -11,7 +11,7 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { defaultImportSetup, isFullDetail, orientKey, transformParts, type MeshPart } from '../geometry';
+import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
 import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
@@ -36,10 +36,15 @@ import {
   rectangleWheels,
   buildFromCad,
   cadMechKey,
+  deleteBodies,
+  frameMoved,
+  floatingOffer,
   launchElementD,
   keepEditedMotion,
+  restoreBodies,
   reviewItems,
   reviewSummary,
+  savedSetup,
   setRectNumber,
   stepOf,
   wheelLayoutOf,
@@ -179,6 +184,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const [hoverMotion, setHoverMotion] = useState<number | null>(null);
   const [pickTarget, setPickTarget] = useState<PickTarget>('bodies');
   const [playing, setPlaying] = useState(false);
+  /** the Model step's Delete parts mode, and the bodies selected in it */
+  const [deleting, setDeleting] = useState(false);
+  const [selected, setSelected] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
@@ -272,9 +280,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const cur = draftRef.current;
         const baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
         // a new file is a new robot: everything about how it stands, where its wheels are and what
-        // moves is found again (the wheel layout too: its wheels decide it; the moving parts too: the
-        // bodies are numbered per file), unless the caller says otherwise
-        let setup: ImportSetup = { ...baseDoc.setup, units: 'auto', up: 'auto', yaw: 0, wheels: null, wheelLayout: undefined, motion: undefined, ...opts.setup };
+        // moves is found again (the wheel layout too: its wheels decide it; the moving parts and the
+        // deleted parts too: the bodies are numbered per file), unless the caller says otherwise
+        let setup: ImportSetup = {
+          ...baseDoc.setup,
+          units: 'auto',
+          up: 'auto',
+          yaw: 0,
+          wheels: null,
+          wheelLayout: undefined,
+          motion: undefined,
+          removed: undefined,
+          keepFloating: undefined,
+          ...opts.setup,
+        };
+        // a saved robot's stored mesh is made without its deleted parts, and its body ids are not the
+        // file's: nothing is deleted from it
+        if (opts.savedModel) setup = savedSetup(setup);
         // the first measurement in the measure worker; `normalise` then answers from its cache
         await e.prepareMeasure(prepared, setup);
         if (my !== gen.current) {
@@ -329,6 +351,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         if (replaced && replaced !== prepared) e.releaseModel(replaced as PreparedModel);
         setActiveMotion(null);
         setPlaying(false);
+        setDeleting(false);
+        setSelected([]);
         sourceFiles.current = opts.savedModel ? null : files;
         setDraft({ doc, model: prepared, modelStored: false, baked: null, history: opts.keepHistory ? draftRef.current?.history : undefined });
         setPhase(null);
@@ -607,9 +631,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   };
   const blocked = blocks(items) > 0;
 
-  /** the setup as the stored mesh needs it: the hinged parts already folded (`motionAsStored`) */
+  /** the setup as the stored mesh needs it: the hinged parts already folded (`motionAsStored`), and no
+   *  deleted parts (the mesh is made without them, `savedSetup`) */
   const storedSetup = (s: ImportSetup): ImportSetup =>
-    s.motion ? { ...s, motion: motionAsStored(s.motion, normalised?.measurement.motion) } : s;
+    savedSetup(s.motion ? { ...s, motion: motionAsStored(s.motion, normalised?.measurement.motion) } : s);
 
   const finalSpec = (): RobotSpec | null => {
     if (!built || !doc) return null;
@@ -757,9 +782,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const onDetail = (budget: number): void => {
     if (!doc || doc.savedModel || budget === doc.setup.triBudget) return;
     const files = sourceFiles.current;
-    const setup = { ...doc.setup, triBudget: budget };
     update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }), 'auto');
     if (!files) return;
+    // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
+    // small parts out, so a body id names another solid at the other detail. The floating parts are
+    // offered again once it is read.
+    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, keepFloating: undefined };
     const keepMech = doc.mech;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
     // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
@@ -876,6 +904,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // what is mounted on it) joins the group being picked, or leaves it when it is already in it.
   // A body belongs to one moving part at a time.
   const onPickBody = (body: number, shift: boolean): void => {
+    if (deletePicking) return onSelectBody(body, shift);
     if (!picking || !normalised || !motion || activeMotion === null) return;
     const g = motion[activeMotion];
     if (pickTarget === 'axis') {
@@ -897,14 +926,78 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     });
     setMotion(next);
   };
+  // ---- deleting parts --------------------------------------------------------------------------
+  // The Model step's Delete parts mode: a click in the preview selects a body (Shift adds), and Delete
+  // takes the selection out of everything (`withoutBodies`). What floats apart from the robot
+  // (`findFloatingParts`, in the measurement) is offered for deleting; nothing goes unless the player
+  // says so. A deletion, Restore all and Keep are one undo step each.
+  const removed = doc?.setup.removed;
+  const deletePicking = step === 0 && deleting && !!m;
+  const keptFloating = doc?.setup.keepFloating;
+  // keyed on the orientation's own array, not the measurement: a wheel or drivetrain edit makes a new
+  // measurement, and a new list here would rebuild the preview's tint
+  const floatFound = m?.floating;
+  const floating = useMemo(
+    () => (floatFound && !measuring ? floatingOffer({ floating: floatFound }, { keepFloating: keptFloating }) : []),
+    [floatFound, keptFloating, measuring],
+  );
+  const floatingBodies = useMemo(() => floating.flatMap((g) => g.bodies), [floating]);
+  /** delete `bodies`; the frame question is asked of the measured copy in the model frame */
+  const deleteParts = (bodies: readonly number[]): void => {
+    if (!normalised || !bodies.length) return;
+    const moves = removalMovesFrame(normalised.modelParts, [], bodies);
+    setSelected([]);
+    update((d) => deleteBodies(d, bodies, moves), { label: COPY.edits.deleteParts(bodies.length) });
+  };
+  const restoreParts = (): void => {
+    const all = model ? (model as PreparedModel).parts : null;
+    if (!removed?.length || !all) return;
+    const moves = removalMovesFrame(all, removed, []);
+    update((d) => restoreBodies(d, moves), { label: COPY.edits.restoreParts });
+  };
+  const keepFloating = (): void =>
+    update(
+      (d) => ({ ...d, setup: { ...d.setup, keepFloating: [...new Set([...(d.setup.keepFloating ?? []), ...floatingBodies])].sort((a, b) => a - b) } }),
+      { label: COPY.edits.keepFloating },
+    );
+  // the mode belongs to the Model step: leaving it ends the mode and drops the selection
+  useEffect(() => {
+    if (step === 0) return;
+    setDeleting(false);
+    setSelected([]);
+  }, [step]);
+  // the Delete (or Backspace) key deletes the selection, unless a field has the keys
+  const deleteRef = useRef<() => void>(() => {});
+  deleteRef.current = () => deleteParts(selected);
+  useEffect(() => {
+    if (!deletePicking) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      deleteRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [deletePicking]);
+  /** a click in the preview while deleting: that body alone is the selection, or Shift adds or takes it out */
+  const onSelectBody = (body: number, shift: boolean): void =>
+    setSelected((cur) => (shift ? (cur.includes(body) ? cur.filter((b) => b !== body) : [...cur, body]) : cur.length === 1 && cur[0] === body ? [] : [body]));
+
   const highlight = useMemo(() => {
+    if (step === 0) {
+      // the selection while deleting, else what floats apart from the robot while it is offered
+      const active = deleting ? selected : floatingBodies;
+      return active.length ? { active, others: [] } : null;
+    }
     if (step !== MOVING_STEP || !motion) return null;
     // the selected row, or else the one under the pointer
     const shown = activeMotion ?? (hoverMotion !== null && hoverMotion < motion.length ? hoverMotion : null);
     const active = shown !== null ? (motion[shown]?.bodies ?? []) : [];
     const others = motion.flatMap((g, i) => (i === shown ? [] : g.bodies));
     return active.length || others.length ? { active, others } : null;
-  }, [step, motion, activeMotion, hoverMotion]);
+  }, [step, motion, activeMotion, hoverMotion, deleting, selected, floatingBodies]);
 
   // ---- undo and redo (`editorHistory.ts`) -------------------------------------------------------
   // The step the player is on stays: moving between steps is not an edit, and an undo that also
@@ -985,13 +1078,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         motion: m.motion ?? null,
         playing: playing && step === MOVING_STEP && !picking,
         highlight: playing ? null : highlight,
-        picking,
+        picking: picking || deletePicking,
       }
     : null;
   const legend = !m
     ? null
     : step === 0
-      ? COPY.legend.model
+      ? deleting
+        ? COPY.legend.deleting
+        : floating.length
+          ? COPY.legend.floating
+          : COPY.legend.model
       : step === 1
         ? COPY.legend.drive
         : step === 2
@@ -1188,8 +1285,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                     // units, up and yaw move the model frame, and the placements with it; the build read
                     // from the model is read again in the new frame while the player has not changed it
                     if (!('units' in patch || 'up' in patch || 'yaw' in patch)) return { ...d, setup: { ...d.setup, ...patch } };
-                    const reread = d.cadBuild !== undefined && d.cadKey !== undefined && d.cadKey === cadMechKey(d.spec);
-                    return { ...d, setup: { ...d.setup, ...patch }, mech: null, cadMech: undefined, ...(reread ? { cadReread: true } : {}) };
+                    return { ...d, setup: { ...d.setup, ...patch }, ...frameMoved(d) };
                   }, setupEdit(patch))
                 }
                 onWheel={onWheel}
@@ -1198,6 +1294,22 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                 onLayout={onLayout}
                 onDetail={onDetail}
                 canReread={!!sourceFiles.current}
+                parts={{
+                  deleted: removed?.length ?? 0,
+                  selected: selected.length,
+                  deleting,
+                  floating: floating.length
+                    ? { count: floatingBodies.length, near: floating[0].gapIn, far: floating[floating.length - 1].gapIn }
+                    : null,
+                  onDeleting: (on) => {
+                    setDeleting(on);
+                    setSelected([]);
+                  },
+                  onDelete: () => deleteParts(selected),
+                  onRestore: restoreParts,
+                  onDeleteFloating: () => deleteParts(floatingBodies),
+                  onKeepFloating: keepFloating,
+                }}
               />
             ) : step === 1 ? (
               <DrivetrainStep

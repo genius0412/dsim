@@ -609,6 +609,69 @@ The editor, rebuilt with this code, finds the same groups as the Node probe on a
   slide over 0.5 s), a geared part as its leader times the ratio. Drawn spin is capped at 26 rad/s,
   past which a spoked wheel strobes. The editor's preview has Play for the same, with fixed rates.
 
+## Deleting parts
+
+Owner, 2026-10-04: a team's STEP carried a small part floating beside the robot. `ImportSetup.removed`
+lists the bodies the player deleted, as `MeshPart.body` ids of the model as read.
+
+- **Left out of everything.** `orientParts` measures `withoutBodies(parts, removed)` (size, hull,
+  height, bands, wheels, front, checks), and `orientKey` names the ids, so each set of deleted bodies
+  is an orientation of its own, measured in the worker. The measurer rebuilds the measured copy and
+  the full mesh from the same filtered arrays, so the preview does not draw them, a click cannot pick
+  them, the finders never see them and the bake stores none of them; the relay's lighter mesh is cut
+  from the stored one. Smoke `delete parts:` holds measuring with a body deleted to measuring the file
+  without it, field for field.
+- **Moving parts.** A deletion takes its bodies out of every row (`pruneMotion`); a row it empties
+  goes and the `follows`/`rideOn` indices after it move up. A row added and not yet picked stays.
+- **The frame.** The model frame is centred on the model's box, so a deletion that changes the box
+  moves it (`removalMovesFrame`): placed wheels and the placements are found again, as after Units,
+  Up axis or Turn. A deletion inside the box keeps them.
+- **Never saved.** The stored mesh is made without the deleted bodies, so `savedSetup` drops
+  `removed` on Save and Export, and a re-open never applies one (`readModel` with `savedModel`). A
+  stored mesh's ids are the ones it was saved with, so `keepFloating` still names the same parts.
+  A new file clears both. ⚠️ So does a Detail change: a big STEP is read in pieces and Light leaves
+  its small parts out, so an id names another solid at the other detail (measured: of goBILDA's
+  BIOBUZZ bot's 7,235 Light ids, 4,585 name the same part at Full; REV 3,522 of 4,010). An undo
+  across a Detail change keeps the deletions the model was read with (`restoreDoc`). The moving parts
+  are kept across a Detail change and have that problem (open).
+- **The UI** (Model step, Parts). Delete parts turns on a mode in which a click in the preview selects
+  a body (Shift adds or takes one out), tinted blue; Delete selected or the Delete or Backspace key
+  (not in a field) deletes them. The cap counts what is deleted; Restore all brings every body back.
+  The mode ends with the step. A deletion, Restore all and Keep are one undo step each ("delete 5
+  parts").
+
+### Floating parts
+
+`findFloatingParts` (`floating.ts`) runs in `orientParts`, so in the measure worker, on the measured
+copy in the model frame. Two bodies are joined when their boxes come within `FLOAT_GAP_IN` (0.5 in);
+the joined group with the most vertices is the robot; every other group floats. A box is larger than
+its body, so the rule errs toward joining. The Model step offers them ("5 parts float 9.2 in away from
+the robot. Delete them?", tinted blue in the preview) with Keep and Delete; Keep adds them to
+`keepFloating` and they are not offered again. Nothing is deleted without a click.
+
+Measured 2026-10-04 (Node, the editor's pipeline: `simplifyModel`, `measureParts`):
+
+| model (STEP) | Full: bodies, finder | Light: bodies, finder | flagged |
+|---|---|---|---|
+| Offset Robotics concept robot (307 MB) | 7,123, 71 ms | 3,498, 38 ms | 5 bodies, 0.69 × 0.59 × 0.59 in, 9.17 in from the robot: an "Expansion Node" part (three bodies) and two M3 screws. With it the robot is 25.71 in long and over 18 in; deleted, 16.52 × 17.66 × 17.56 in |
+| goBILDA BIOBUZZ mecanum | 10,992, 100 ms | 1,706, 25 ms | nothing |
+| goBILDA BIOBUZZ 6WD | 7,713, 56 ms | 2,012, 20 ms | nothing |
+| goBILDA DECODE mecanum | 8,981, 73 ms | 1,576, 7 ms | nothing |
+| REV DUO DECODE | 4,912, 36 ms | 3,966, 17 ms | nothing |
+| AndyMark Robits BIOBUZZ, mecanum, alt flower | 2,650 / 4,399 / 2,649, 11–27 ms | 1,591–1,721, 7–11 ms | nothing |
+
+Light is the 250k budget; for the six starter bots below goBILDA's mecanum the read also left out the
+parts under 16 mm, as the editor's Light read of a big STEP does, and nothing was flagged in the gaps
+they leave. Joined only within 0.05 in, every starter bot is still one group. Deleting the Offset
+node measures exactly as the model without it; `withoutBodies` on its 7.2 M-triangle full mesh takes
+97 ms.
+
+In the production editor, offscreen: the Offset STEP read in 139 s and the Model step offered "5 parts
+float 9.2 in away from the robot". Delete took the size from 25.7 × 17.7 × 17.6 in (over 18) to
+16.5 × 17.7 × 17.6 in; Undo ("Undo: delete 5 parts") and Redo swapped them; a body picked in the
+preview went with the Delete key; Restore all brought the offer back. The saved footprint is
+16.53 × 17.66 in, the saved setup names no deleted body, and the re-opened robot offers nothing.
+
 ## Mesh quality
 
 Measured 2026-10-03 on the REV and goBILDA starter-bot STEPs (distance from the occt mesh, area
