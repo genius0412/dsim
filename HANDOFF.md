@@ -1,3 +1,13 @@
+# HANDOFF — 2026-10-04e (importer on goBILDA's BIOBUZZ mecanum: build from the model, every fin turns, side rollers at a FLOWER)
+
+**State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 6 is a server change). Not on `main`.** `npm test` (shared 4040, BIOBUZZ 5560), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass.
+
+- **Owner:** "Motor still moves, twenty intake rollers are found instead of three sets, side rollers cant actually intake from flower because of weird footprint, side rollers are not selected by default, single static shooter is not selected by default, offset boxtube is selected even though I dont have it, on the biobuzz 3d gobilda mecanum".
+- **Build from the model** (c56bd102): an import started from the player's current robot. `readBuild` (motion.ts) reads the intake edge (upright rollers = side rollers) and the launcher (largest flywheel disc above 4 in; a ring under it = turret) before anything is placed; `buildFromCad` (editorModel.ts) sets BIOBUZZ side rollers/sweeper, fixed/turret, no Box Tube, DECODE hand loading. All seven starter bots read right. `MOTION_FINDER` re-finds stale draft rows.
+- **Every triangle for the finders** (a2d271e3): detection and clicks read `shownParts`, not the footprint copy (296 bodies over 1 mm off there). Fin-tip slack: main roller 123 → 879 bodies, side rollers 46 → 284. No motor or servo body in any group; Play frames change only on wheels, gear, rollers, flywheel. The 20 rollers: not reproduced on the new code from fresh settings or all-four-edge spans; most likely a draft or import from before b87d9fe1.
+- **Side rollers at a FLOWER** (2faa83e5, SIM_PATCH 6): wheels placed from the hull's corner (6.06 in off centre vs the CAD's 6.14), the 3D body clipped at the roller line, the 2D gate measured from the hull front. Retrieval 3D 0 → 93.7 %, 2D 13.3 → 100 % (standard 93 / 100). biobuzz.md IMPORTED ROBOTS.
+- **Open:** the servo hub's plate above a side roller stays still; AndyMark's "flywheel" is its launcher gears; an imported side-roller robot starts 1.65 in further from a wall than needed in 3D; driving the test drive offscreen does not take keys (the harness cannot press T).
+
 # HANDOFF — 2026-10-04d (robot import polish: Moving parts step, 100 % CAD, no motors in moving parts)
 
 **State: on `alpha`; client only, no server change, no deploy.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen dev editor on seven vendor starter bots (`scratch/uiwalk.cjs`, gitignored).
