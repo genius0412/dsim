@@ -70,6 +70,8 @@ import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { WakeTally } from './wakeLog';
 import { dbEnabled } from './db/pool';
 import { isStagedRoomCode, type PendingMatch } from './matchTypes';
+import { claimCompetitionRoom, isCompetitionRoomCode, setCompetitionLive } from './competitions';
+import { startCompetitionRunner } from './competitionRunner';
 import {
   currentSeasonNumber,
   purgeSeasonReplays,
@@ -981,6 +983,8 @@ function localLive(): LiveRoom[] {
 function isPublicLive(r: unknown): boolean {
   const room = r as Partial<LiveRoom>;
   if (room?.kind === 'record') return true;
+  // a competition match is an event: its page links straight to it (0059)
+  if (room?.competition) return true;
   return room?.ranked === true;
 }
 
@@ -990,6 +994,13 @@ function unionLive(local: LiveRoom[], global: unknown[]): unknown[] {
   const seen = new Set(local.map((r) => r.room));
   return [...local, ...global.filter((r) => !seen.has((r as { room: string }).room))];
 }
+
+/* COMPETITIONS (0059) read the same union to show which called matches are live. */
+setCompetitionLive(async () => {
+  const local = localLive();
+  if (!dbEnabled) return local;
+  return unionLive(local, await aggregateLive()) as LiveRoom[];
+});
 
 const httpServer = createServer((req, res) => {
   // what woke / is keeping this satellite up (see wakeLog.ts). The platform's own health
@@ -3441,8 +3452,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
     }
     if (created && dbEnabled) {
-      // one retry: a read that fails is usually Neon waking, and failing here strands a match
-      const take = (): Promise<PendingMatch | null> => takePendingMatch(code);
+      // one retry: a read that fails is usually Neon waking, and failing here strands a match.
+      // A COMPETITION call (0059) is claimed off its own row rather than `pending_matches`: it
+      // waits minutes for its drivers, longer than that table's reaper keeps anything.
+      const take = (): Promise<PendingMatch | null> =>
+        isCompetitionRoomCode(code) ? claimCompetitionRoom(code) : takePendingMatch(code);
       let pending: PendingMatch | null = null;
       let unread = false;
       try {
@@ -3473,9 +3487,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({
           t: 'error',
           code: 'match_gone',
-          message: unread
-            ? 'Couldn’t load that match. Find a new one.'
-            : 'That match was cancelled before it started.',
+          message: isCompetitionRoomCode(code)
+            ? 'That call is over. Check the competition page for your next match.'
+            : unread
+              ? 'Couldn’t load that match. Find a new one.'
+              : 'That match was cancelled before it started.',
         });
         abandon();
         return;
@@ -4456,6 +4472,9 @@ migrate()
     await runRewardJob()
       .then((paid) => console.log(`[rewards] boot award job: ${paid.grants} grant(s) over ${paid.periods} new period(s)`))
       .catch((e) => console.error('[rewards] boot award job failed; the next boot or roll retries it:', e));
+    /* THE COMPETITION RUNNER (0059) — on the matchmaker's machine only, and asleep unless a
+       competition is running: one read at boot, then it arms itself from the API. */
+    startCompetitionRunner(REGION === '' || REGION === MATCHMAKER_REGION);
   })
   .catch((e) => console.error('[server] migration failed (records disabled):', e));
 

@@ -100,6 +100,11 @@ const ROUTE_META: Record<string, RouteMeta> = {
     title: 'Player profile',
     description: 'A DSIM player’s rating, records and recent matches.',
   },
+  competitions: {
+    title: 'Competitions',
+    description:
+      'DSIM competitions: register, play qualification matches, climb the rankings and fight through the playoff bracket.',
+  },
 };
 
 /** upsert a <meta> by name= or property= (they are distinct attributes) */

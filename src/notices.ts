@@ -37,6 +37,23 @@ export const NOTICE_KINDS = [
   'standing.edited',
   /** to every player whose rating a recalculation of the act moved (`server/ratingRecalc.ts`) */
   'rating.recalculated',
+  /* COMPETITIONS (0059). Each carries `CompNoticeData`: the competition's slug and name, so the
+     card can link to it. A notice says what happened TO the recipient; a called match is not one
+     (it is time-critical, and the call bar says it for exactly as long as it is true). */
+  /** an organizer's message to everyone entered */
+  'competition.message',
+  /** invited to play as somebody's duo partner */
+  'competition.invite',
+  /** off the waitlist and into the competition */
+  'competition.promoted',
+  /** an organizer removed or disqualified your entry */
+  'competition.removed',
+  /** a referee entered, forfeited, voided or reset a result of one of your matches */
+  'competition.result',
+  /** the competition finished: your place */
+  'competition.finished',
+  /** the competition was cancelled */
+  'competition.cancelled',
 ] as const;
 
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
@@ -368,6 +385,110 @@ export function noticeView(
         tone: after > before ? 'good' : 'info',
       };
     }
+    case 'competition.message':
+    case 'competition.invite':
+    case 'competition.promoted':
+    case 'competition.removed':
+    case 'competition.result':
+    case 'competition.finished':
+    case 'competition.cancelled':
+      return competitionNotice(n.kind, d, gameName(n.game));
+    default:
+      return null;
+  }
+}
+
+/** what every competition notice carries */
+export interface CompNoticeData {
+  slug: string;
+  name: string;
+  /** competition.invite: who invited you */
+  from?: string;
+  /** competition.removed: how */
+  how?: 'removed' | 'disqualified';
+  /** competition.result: the match and what happened to it */
+  label?: string;
+  what?: 'entered' | 'corrected' | 'forfeit' | 'void' | 'reset';
+  /** competition.result: the result as it now stands, from the recipient's side */
+  outcome?: MatchResult | null;
+  score?: Score2 | null;
+  /** competition.finished */
+  place?: number | null;
+  of?: number;
+}
+
+/** "1st", "2nd", "3rd", "11th" */
+export function ordinal(n: number): string {
+  const t = n % 100;
+  if (t >= 11 && t <= 13) return `${n}th`;
+  const suffix = ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${suffix}`;
+}
+
+function competitionNotice(kind: string, d: Record<string, unknown>, game: string | null): NoticeView | null {
+  const name = typeof d.name === 'string' && d.name ? d.name : 'A competition';
+  const meta = game ? `Competition · ${game}` : 'Competition';
+  switch (kind) {
+    case 'competition.message':
+      return { title: `Message from ${name}`, meta, lines: ['The organizers wrote to everyone entered.'], tone: 'info' };
+    case 'competition.invite': {
+      const from = typeof d.from === 'string' && d.from ? d.from : 'A player';
+      return {
+        title: `${from} invited you to ${name}`,
+        meta,
+        lines: ['You’d play as their duo partner. Open the competition to accept or decline.'],
+        tone: 'info',
+      };
+    }
+    case 'competition.promoted':
+      return { title: `You’re in ${name}`, meta, lines: ['A place opened up and you came off the waitlist.'], tone: 'good' };
+    case 'competition.removed':
+      return {
+        title: d.how === 'disqualified' ? `You were disqualified from ${name}` : `You were removed from ${name}`,
+        meta,
+        lines: [d.how === 'disqualified' ? 'Your remaining matches go to your opponents.' : 'Matches you already played still count.'],
+        tone: 'bad',
+      };
+    case 'competition.result': {
+      const label = typeof d.label === 'string' && d.label ? d.label : 'A match';
+      const s = score2(d.score);
+      const out = d.outcome === 'win' ? 'a win' : d.outcome === 'loss' ? 'a loss' : d.outcome === 'tie' ? 'a tie' : null;
+      const what = d.what;
+      const title =
+        what === 'forfeit'
+          ? `${label} was decided by forfeit`
+          : what === 'void'
+            ? `${label} was voided`
+            : what === 'reset'
+              ? `${label} will be played again`
+              : what === 'corrected'
+                ? `${label}’s result was corrected`
+                : `${label}’s result was entered by a referee`;
+      const lines: string[] = [];
+      if (s && what !== 'void' && what !== 'reset') lines.push(`${scoreWords(s)}.`);
+      if (out && what !== 'void' && what !== 'reset') lines.push(`It counts as ${out} for you.`);
+      if (what === 'void') lines.push('It no longer counts for anyone.');
+      if (what === 'reset') lines.push('Its result is cleared. You’ll be told when it’s called.');
+      if (!lines.length) lines.push('The competition page has the full schedule.');
+      return {
+        title,
+        meta: `${name} · ${meta}`,
+        lines,
+        tone: what === 'void' || what === 'reset' ? 'info' : d.outcome === 'win' ? 'good' : d.outcome === 'loss' ? 'bad' : 'info',
+      };
+    }
+    case 'competition.finished': {
+      const place = typeof d.place === 'number' && d.place > 0 ? d.place : null;
+      const of = num(d.of);
+      return {
+        title: place === 1 ? `You won ${name}` : `${name} has finished`,
+        meta,
+        lines: place ? [`You placed ${ordinal(place)}${of > 0 ? ` of ${of}` : ''}.`] : ['The final standings are on the competition page.'],
+        tone: place !== null && place <= 3 ? 'good' : 'info',
+      };
+    }
+    case 'competition.cancelled':
+      return { title: `${name} was cancelled`, meta, lines: ['Its remaining matches won’t be played.'], tone: 'info' };
     default:
       return null;
   }

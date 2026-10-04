@@ -603,7 +603,11 @@ export function net3dChecks(check: Check): void {
     const ms = readFileSync('src/ui/MatchStrategy.tsx', 'utf8');
     check('ready3d: the strategy screen names the seats that are still loading', ms.includes('LOADING 3D'));
     check('ready3d: ...and says so instead of “Everyone ready. Starting…”', /loading3d\.length[\s\S]{0,160}Loading 3D physics/.test(ms));
-    check('ready3d: ...and hides the ELO column when the window is not ranked', /ranked && <span className="ds-chip">\{ratingChip\(/.test(ms));
+    // `rated` is `ranked && !competition` (0059): a competition window keeps the ranked gate, no ratings
+    check(
+      'ready3d: ...and hides the ELO column when the window is not ranked',
+      /rated && <span className="ds-chip">\{ratingChip\(/.test(ms) && /const rated = ranked && !competition;/.test(ms),
+    );
   }
 
   // ═══ 3. THE OLD-CLIENT PROOF: a 2D GAME's wire is what it always was ═══════

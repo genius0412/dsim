@@ -18,6 +18,8 @@ export interface CareerNav {
    *  since there is no server id to fetch it by */
   onWatchLocal?: (replay: Replay) => void;
   onOpenProfile?: (username: string) => void;
+  /** open a competition's page (the profile's placements list) */
+  onOpenCompetition?: (slug: string) => void;
   /** which game's boards to show (DECODE default) — its own periods/records */
   game?: GameId;
 }

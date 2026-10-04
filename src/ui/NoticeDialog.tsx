@@ -61,6 +61,10 @@ export function NoticeCard({ notices, onDone }: { notices: Notice[]; onDone: () 
   if (!items.length) return null;
   const single = items.length === 1;
   const headId = `nt-h-${items[0].n.id}`;
+  // WHO IS SPEAKING: a competition's notices come from its organizers and its results, not from
+  // the moderators, and a pop-up holding both says neither
+  const comp = items.filter(({ n }) => n.kind.startsWith('competition.')).length;
+  const eyebrow = comp === 0 ? 'From the moderators' : comp === items.length ? 'Competitions' : 'Updates';
 
   return (
     <div className="ds-modal-backdrop" role="presentation">
@@ -72,7 +76,7 @@ export function NoticeCard({ notices, onDone }: { notices: Notice[]; onDone: () 
         aria-labelledby={headId}
         tabIndex={-1}
       >
-        <span className="nt-eyebrow">From the moderators</span>
+        <span className="nt-eyebrow">{eyebrow}</span>
         <h2 className="ds-dialog-title" id={headId}>
           {single ? items[0].v.title : `${items.length} updates`}
         </h2>
@@ -123,7 +127,7 @@ export function NoticeItem({
       ))}
       {notice.message && (
         <figure className="nt-msg">
-          <figcaption className="nt-msg-cap">Moderator’s note</figcaption>
+          <figcaption className="nt-msg-cap">{notice.kind.startsWith('competition.') ? 'From the organizers' : 'Moderator’s note'}</figcaption>
           <blockquote className="nt-msg-text">{notice.message}</blockquote>
         </figure>
       )}

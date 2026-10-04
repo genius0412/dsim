@@ -17,6 +17,7 @@ import { eloMode } from './eloMode';
 import { RED_CARD_MULT } from '../src/standing';
 import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
+import { competitionCallFailed, competitionMatchPlayed } from './competitions';
 // scrubSpecNames used to live HERE. It moved to `./moderation` when `saveReplay` started
 // scrubbing too: repo.ts is the one funnel all three replay writers share, and persist.ts
 // imports repo.ts, so repo.ts importing it back from here would be a cycle.
@@ -49,8 +50,29 @@ export function playSourceOf(o: MatchOutcome): [PlaySource, PlayMode] {
  * Both save the recorded replay first. It is re-simulatable but NOT public: a versus replay
  * is watchable by the people in it (and by staff) unless every one of them has opted in, while
  * a record run's stays public as the board's proof. See `replayAccess` (migration 0038).
+ *
+ * A COMPETITION MATCH (0059) is archived exactly like a custom game (history + replay, nobody
+ * rated) and its result is ALSO the competition's. That write is in a `finally`, so no early
+ * return or failure on the archive path can leave a competition match waiting on a result that
+ * was decided; it gets whatever the archive managed to write (the match row and the replay).
  */
 export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
+  if (!o.competition) return archiveMatch(o, {});
+  const ids: ArchivedIds = {};
+  try {
+    return await archiveMatch(o, ids);
+  } finally {
+    await competitionMatchPlayed(o.competition, o.result, ids);
+  }
+}
+
+/** what the archive wrote, for the competition's result row */
+interface ArchivedIds {
+  matchId?: string;
+  replayId?: string;
+}
+
+async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<PersistOutcome> {
   const authed = o.participants.filter((p) => p.userId);
   const label = o.config.kind === 'record' ? `record/${o.config.record ?? 'solo'}` : 'versus';
   console.log(
@@ -108,6 +130,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     // memo here turned that into an FK violation in the middle of everybody's result.
     for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player', true);
     const replayId = await saveReplay(o.replay, bv, game);
+    archived.replayId = replayId;
 
     /**
      * PLAYTIME + GAMES PLAYED, credited to everyone who was in it.
@@ -216,7 +239,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
        * ⚠️ The test is `ids.matchId`, NOT `elo.length`: an UNRANKED custom room moves no ELO
        * and returns [], but it DOES write its match row, and deleting that match's replay
        * would take the Watch button off a real custom game. */
-      if (!ids.matchId) await q(`delete from replays where id = $1`, [replayId]);
+      archived.matchId = ids.matchId;
+      if (!ids.matchId) {
+        await q(`delete from replays where id = $1`, [replayId]);
+        archived.replayId = undefined;
+      }
       // say which of the two things actually happened — the old line printed "WROTE versus
       // match" on the exact path that writes no match row and then deletes the replay again,
       // which is the one case an operator reading this log is trying to find
@@ -255,6 +282,13 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
  * other's repeat offence.
  */
 export async function persistDodges(d: DodgeReport): Promise<DodgeVerdict[]> {
+  // A COMPETITION CALL that never became a match charges nobody's standing: it is the
+  // competition's to decide (a forfeit, or back on the schedule). No verdict goes back to the
+  // room either, so nobody reads "nothing was charged to you" about a penalty that never existed.
+  if (d.competition) {
+    await competitionCallFailed(d.competition, d.culprits);
+    return [];
+  }
   if (!dbEnabled || !d.culprits.length) return [];
   try {
     const verdicts: DodgeVerdict[] = [];

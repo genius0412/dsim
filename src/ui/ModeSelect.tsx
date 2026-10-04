@@ -25,6 +25,7 @@ export function ModeSelect({
   onRanked,
   onCustomRoom,
   onWatch,
+  onCompetitions,
   compete = true,
   onTutorial,
   game,
@@ -46,6 +47,8 @@ export function ModeSelect({
   onRanked: () => void;
   onCustomRoom: () => void;
   onWatch: () => void;
+  /** the competitions list (0059). Absent: no tile (an older caller). */
+  onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
   /**
@@ -210,6 +213,14 @@ export function ModeSelect({
               {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
             </span>
           </button>
+
+          {onCompetitions && (
+            <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
+              <span>
+                <span className="t">Competitions</span>
+              </span>
+            </button>
+          )}
         </div>
       </section>
       )}

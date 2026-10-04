@@ -1,3 +1,18 @@
+# HANDOFF — 2026-10-04e (competitions: FTC-style events, run by staff)
+
+**State: on `alpha`. SERVER CHANGE: migration 0059, the join path, `Room`, `persistMatch`; needs a `dsim-alpha` deploy (production only on the owner's word).** `npm test`, `test:comp` (1214), `dbtest` (979, 87 new), `test:workers`, `test:mm`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass. `scripts/compe2e.ts` (real server on PGlite, two socket clients, a real match at real time) passes. Clicked through on the admin harness (desktop, phone, both themes).
+
+- **Owner:** "Plan and create a competition management system. For now, a competition can only be started & managed by admins, but it would be open to public later. Make the features extensive."
+- **What exists** (rules in `docs/area/competitions.md`, routed from CLAUDE.md):
+  - Lifecycle draft → published (registration window, waitlist, optional check-in) → qualifications → alliance selection → playoffs → completed, or cancelled. Every step is an organizer's button.
+  - Formats: 1v1, 2v2 with alliances drawn per match (FTC quals), 2v2 duos (captain invites a partner). Qualifications: balanced FTC-style draw with surrogates, round robin, swiss, or none. Rankings with configurable points and tiebreakers. Playoffs: 2/4/8/16, single or double elimination, best-of per series and for the final; alliance selection by captains (FTC picks, declines, lower-captain promotion) or by seed.
+  - Matches run as STAGED rooms (`<region>-cm…` codes): called by a referee or the auto-caller, the strategy window names the event, results land on the competition via `persistMatch`, no-shows via the dodge report. Nothing is rated, no standing is charged. Referee desk: call/re-call, forfeit, enter/correct with a public reason, void, reset, per-match DQ.
+  - Pages (lazy chunk): list (live/upcoming/past/mine/drafts), a competition page (overview, entrants, matches, rankings, playoffs with bracket and selection, manage, log), editor, join screen; the call bar in the menus; Watch Live labels; profile placements; console tab "Competitions" (appended); seven `competition.*` notices.
+  - Public later: `COMPETITION_CREATORS=signed-in` (`mayCreate`), per-competition organizers/referees, `official` flag. Before flipping it: reports for a competition page and a staff unpublish (guide, last section).
+- **Bugs found by testing and fixed:** a staged room deleted itself when its last socket closed while waiting (a reload stranded the call: every rejoin refused); the join screen lost its socket in React's dev double mount; the partial unique indexes made every entry read scan all competitions; re-inviting a withdrawn duo's partner 500'd; plus five smaller ones in the dbtest agent's report (audit gaps, a completion race, a selection pick/undo race).
+- **Open:** `deleteAccount` deletes the replays of competition matches the account played; `userMatchHistory` shows no Watch button to strangers on competition matches (the replay itself is public); a manual swiss round racing the automatic draw can 500; no champion badge yet (`src/badges.ts` is a closed set with art); no scheduled match times (calls are by hand or auto-call).
+- **Harness:** `npm run adminharness` now seeds four competitions (draft, registration with a duo invite, qualifications with a called match, finished through selection and a best-of-three final).
+
 # HANDOFF — 2026-10-04d (robot import polish: Moving parts step, 100 % CAD, no motors in moving parts)
 
 **State: on `alpha`; client only, no server change, no deploy.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen dev editor on seven vendor starter bots (`scratch/uiwalk.cjs`, gitignored).

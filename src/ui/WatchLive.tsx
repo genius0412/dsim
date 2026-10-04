@@ -11,7 +11,7 @@ import { onUserActive, userIdle } from './userActivity';
  * "Watch Live" — the games currently in progress on the game server.
  *
  * The LIST is everything live EXCEPT custom rooms (the server decides that; see
- * `isPublicLive`) — ranked matches and record runs both appear. A custom room is
+ * `isPublicLive`) — ranked matches, record runs and competition matches all appear. A custom room is
  * somebody's private game reached by a code they chose to hand out, so publishing
  * it here would hand that code to every visitor. They are still fully spectatable
  * — by CODE, in the box below, which is the same key that lets you join one.
@@ -118,7 +118,8 @@ export function WatchLive({
                 <span className="od">
                   {[
                     seasonFor(r.game).name,
-                    `${r.kind === 'record' ? 'Record' : 'Ranked'} ${r.mode}`,
+                    // a competition match names its event and match (0059); older servers send no field
+                    r.competition ? `${r.competition.name} · ${r.competition.label}` : `${r.kind === 'record' ? 'Record' : 'Ranked'} ${r.mode}`,
                     r.timeLeft > 0 ? `${phaseLabel(r.phase)} ${fmtTime(r.timeLeft)}` : phaseLabel(r.phase),
                     r.spectators > 0 ? `${r.spectators} watching` : null,
                   ]

@@ -12,6 +12,7 @@ import { sanitizeReplay } from '../src/net/sanitize';
 import { replayHasImported } from '../src/net/imported';
 import { moderateName, scrubName } from './moderation';
 import { LAN_UPLOADS } from './lanUploads';
+import { handleCompetitionApi, placementsOf } from './competitions';
 import { dbEnabled } from './db/pool';
 import {
   acceptFriendRequest,
@@ -656,6 +657,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         const refusal = await lockdownRefusal(user?.userId, 'site');
         if (refusal) return json(503, { error: refusal, code: 'site_closed' }), true;
       }
+    }
+
+    // ---- competitions (0059): their own module, behind the closed-site door above ----------
+    if (url.pathname === '/api/competitions' || url.pathname.startsWith('/api/competitions/')) {
+      return await handleCompetitionApi(req, url, { json, readBody, bearer });
     }
 
     // ---- authenticated write: set your own display name --------------------
@@ -1915,6 +1921,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!profile) return json(404, { error: 'no such user' }), true;
       const page = await userMatchHistory(profile.userId, await historyOptsFor(req));
       return json(200, page), true;
+    }
+
+    // the competitions a player finished and where they placed (0059), for their profile
+    const profCompMatch = url.pathname.match(/^\/api\/profile\/([^/]+)\/competitions$/);
+    if (profCompMatch) {
+      const username = decodeURIComponent(profCompMatch[1]).toLowerCase();
+      const profile = dbEnabled ? await getProfileByUsername(username) : null;
+      if (!profile) return json(404, { error: 'no such user' }), true;
+      return json(200, { competitions: await placementsOf(profile.userId) }), true;
     }
 
     // public profile + stats keyed by USERNAME (the /profile/<username> page)

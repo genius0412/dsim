@@ -397,8 +397,8 @@ for (const f of css) {
 for (const f of css.filter((x) => !/shell\.css$/.test(x))) {
   read(f).forEach((l, i) => {
     // `.ds-import*` is the robot importer's own sheet (importer.css), lazy with its editor, the way
-    // tutorial.css owns `.ds-tut*`
-    if (/^\s*\.ds-(?!tut|import)/.test(l)) hit('ds-outside-shell', f, i + 1, l);
+    // tutorial.css owns `.ds-tut*` and competitions.css owns `.ds-comp*` (lazy with its pages)
+    if (/^\s*\.ds-(?!tut|import|comp)/.test(l)) hit('ds-outside-shell', f, i + 1, l);
   });
 }
 

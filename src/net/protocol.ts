@@ -921,6 +921,16 @@ export interface LiveRoom {
   /** which Fly region is hosting, for the admin's cross-region list. Absent on a
    *  single-region/dev deploy. */
   region?: string;
+  /** a competition match (0059): always public, and labelled with its event and match */
+  competition?: CompetitionRef;
+}
+
+/** a competition match, as a room describes itself to a client */
+export interface CompetitionRef {
+  slug: string;
+  name: string;
+  /** "Q12", "SF1-2" */
+  label: string;
 }
 
 // ---- server → client --------------------------------------------------------
@@ -1163,6 +1173,9 @@ export type ServerMsg =
       intros: PlayerIntro[];
       game?: GameId;
       ranked?: boolean;
+      /** a COMPETITION match's window (0059): which competition and which match. The ready gate is
+       *  the ranked one, the rating column is not (nobody is rated). Absent from an older server. */
+      competition?: CompetitionRef;
     }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)

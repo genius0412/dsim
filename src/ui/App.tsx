@@ -42,6 +42,13 @@ const Admin = lazy(() => import('./Admin').then((m) => ({ default: m.Admin })));
  * still — the editor fetches it only on the first file. `bundleaudit` routes the chunk to `importer`.
  */
 const ImportEditor = lazy(() => import('../robotImport/ui/ImportEditor'));
+/**
+ * COMPETITIONS (0059), lazy for the reason `Admin` is: most players never open them, and the
+ * pages, their sheet and their client stay out of the bundle that drives a robot. The play screen
+ * is the same chunk (one module, two exports). `bundleaudit` routes it to `competitions`.
+ */
+const Competitions = lazy(() => import('./Competitions'));
+const CompMatchPlay = lazy(() => import('./Competitions').then((m) => ({ default: m.CompMatchPlay })));
 import { coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import type { RobotSpec } from '../types';
 import { Announcements } from './Announcements';
@@ -71,6 +78,7 @@ import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
+import { CompCallBar } from './CompCallBar';
 import { usePresence } from './usePresence';
 import { maintenanceLine } from './MaintenanceBanner';
 import { dropQueue, peekQueue } from './queueKeeper';
@@ -156,6 +164,11 @@ type Screen =
   | 'accountreset'
   | 'accountverify'
   | 'admin'
+  /** `/competitions`, `/competitions/<slug>[/<tab>]`, `/competitions/new` — the competitions
+   *  pages (a lazy chunk). `sub` is everything after `/competitions/`. */
+  | 'competitions'
+  /** `/competitions/<slug>/play`: joining a called competition match. Full screen, like ranked. */
+  | 'compmatch'
   /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
   | 'dev';
 
@@ -268,6 +281,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/account/verify';
     case 'admin':
       return '/admin';
+    case 'competitions':
+      return a.sub ? `/competitions/${a.sub}` : '/competitions';
+    case 'compmatch':
+      return a.sub ? `/competitions/${a.sub}/play` : '/competitions';
     case 'dev':
       return a.dev ?? '';
   }
@@ -290,6 +307,11 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (replay) return at('replay', { replayId: decodeURIComponent(replay[1]) });
   const profile = rest.match(/^\/profile\/(.+)$/);
   if (profile) return at('profile', { username: decodeURIComponent(profile[1]) });
+  // competitions: the play screen first, it is the more specific of the two
+  const compPlay = rest.match(/^\/competitions\/([a-z0-9-]{3,48})\/play\/?$/);
+  if (compPlay) return at('compmatch', { sub: compPlay[1] });
+  const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
+  if (comps) return at('competitions', { sub: comps[1] ?? null });
 
   // BEFORE the configure match, which would read `/configure/robot/import` as the robot section
   const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
@@ -403,6 +425,8 @@ function navFor(screen: Screen): ShellNav {
     case 'matchmaking':
     case 'watch':
     case 'lan':
+    case 'competitions':
+    case 'compmatch':
       return 'play';
     case 'configure':
     case 'robotimport':
@@ -1701,6 +1725,12 @@ export function App() {
       navigate('robotimport', { sub: drive.back });
       return;
     }
+    const comp = compReturnRef.current;
+    if (comp) {
+      compReturnRef.current = null;
+      navigate('competitions', { sub: `${comp}/matches` });
+      return;
+    }
     navigate('home');
   };
 
@@ -1735,6 +1765,9 @@ export function App() {
    */
   const [testDrive, setTestDrive] = useState<{ spec: RobotSpec; back: string | null } | null>(null);
   const testDriveRef = useRef(testDrive);
+  /** A COMPETITION MATCH returns to its competition's page, not home (see `exitGame`). Set when
+   *  the match starts from the play screen, cleared on the way out. */
+  const compReturnRef = useRef<string | null>(null);
   testDriveRef.current = testDrive;
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
@@ -2150,6 +2183,30 @@ export function App() {
       </>
     );
   }
+  if (screen === 'compmatch' && route.sub) {
+    const slug = route.sub;
+    return (
+      <>
+        {/* the account, for the reason the ranked screen mounts it: this is an early return */}
+        {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
+        <LoadBoundary what="the match" fallback={<p className="ds-loading">Loading…</p>}>
+          <CompMatchPlay
+            slug={slug}
+            settings={settings}
+            signedIn={signedIn}
+            onSettingsChange={update}
+            onSelectGame={selectGame}
+            onStart={(s) => {
+              compReturnRef.current = slug;
+              beginSession(s, 'custom');
+            }}
+            onBack={() => navigate('competitions', { sub: slug })}
+            onSignIn={() => navigate('account')}
+          />
+        </LoadBoundary>
+      </>
+    );
+  }
   if (screen === 'replay' && (route.replayId || replayObj)) {
     return fullScreen(
       <ReplayView
@@ -2200,6 +2257,17 @@ export function App() {
       {/* the standing "still queued" bar — only appears when a search is PARKED,
           i.e. the player queued and then went somewhere else */}
       <QueueBar onOpen={openParkedQueue} />
+      {/* a competition match of this player's that is called (0059): the queue bar's twin */}
+      {multiplayer && (
+        <CompCallBar
+          signedIn={signedIn}
+          muted={settings.audio.volume.master <= 0}
+          onJoin={(slug, g) => {
+            selectGame(g);
+            navigate('compmatch', { sub: slug });
+          }}
+        />
+      )}
       <AppShell
         active={navFor(screen)}
         onNav={goNav}
@@ -2299,6 +2367,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          onCompetitions={() => navigate('competitions')}
           compete={!inActivity}
           /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
              no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
@@ -2480,7 +2549,7 @@ export function App() {
           username={route.username}
           signedIn={signedIn}
           viewerUsername={viewerUsername}
-          nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile }}
+          nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile, onOpenCompetition: (slug) => navigate('competitions', { sub: slug }) }}
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
@@ -2505,9 +2574,24 @@ export function App() {
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
+      {screen === 'competitions' && (
+        <LoadBoundary what="competitions" fallback={<p className="ds-loading">Loading competitions…</p>}>
+          <Competitions
+            sub={route.sub}
+            game={settings.game}
+            signedIn={signedIn}
+            onRoute={(sub) => navigate('competitions', { sub })}
+            onPlay={(slug) => navigate('compmatch', { sub: slug })}
+            onWatch={spectateRoom}
+            onWatchReplay={(id) => watchReplay(id)}
+            onProfile={openProfile}
+            onSignIn={() => navigate('account')}
+          />
+        </LoadBoundary>
+      )}
       {screen === 'admin' && isAdmin && (
         <LoadBoundary what="the console" fallback={<p className="ds-loading">Loading the console…</p>}>
-          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />
+          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} onCompetition={(sub) => navigate('competitions', { sub })} />
         </LoadBoundary>
       )}
       {screen === 'dev' &&
