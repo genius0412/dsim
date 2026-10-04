@@ -31,6 +31,7 @@ import {
   frontAssumed,
   driveNumbers,
   layoutPatch,
+  motionNames,
   moveWheel,
   rectangleWheels,
   buildFromCad,
@@ -45,6 +46,21 @@ import {
   type ReviewItem,
   type StepIndex,
 } from './editorModel';
+import {
+  applyEdit,
+  driveEdit,
+  historyShortcut,
+  lowerFirst,
+  mechEdit,
+  motionEdit,
+  nextRedo,
+  nextUndo,
+  ownsUndo,
+  redoDoc,
+  setupEdit,
+  undoDoc,
+  type EditHow,
+} from './editorHistory';
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
 import { libraryChanged, postRobotNotice, takeHandedFiles } from './handoff';
 import { ConfirmDialog, DuplicateDialog } from './LibraryDialogs';
@@ -113,6 +129,9 @@ const progressLabel = (p: ImportProgress, file: string, full: boolean): string =
 /** a measurement still running after this long says so; a shorter one would only flicker */
 const MEASURING_NOTICE_MS = 300;
 
+/** the shortcuts the Undo and Redo titles name: ⌘ on a Mac, Ctrl elsewhere */
+const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
 function freshDoc(settings: GameSettings, key: string, editId: string | null): EditorDoc {
   const base: RobotSpec = { ...settings.spec };
   delete base.imported;
@@ -173,12 +192,19 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     setDraftState(d);
     if (d) keepDraft(d);
   }, []);
-  /** edit the document (and keep the draft) */
+  /**
+   * Edit the document (and keep the draft). An edit is the PLAYER's unless it says `'auto'`: it goes
+   * on the undo history (`editorHistory.ts`), named by `how.label`, and quick repeats with the same
+   * `how.key` are one step. `'auto'` is what the editor does by itself (placements defaulting in, the
+   * moving parts found, a step change, a re-read putting back what it kept): applied, never recorded,
+   * and the redo stack is left alone, so an effect that runs again after an undo changes neither stack.
+   */
   const update = useCallback(
-    (fn: (d: EditorDoc) => EditorDoc) => {
+    (fn: (d: EditorDoc) => EditorDoc, how: EditHow = {}) => {
       const cur = draftRef.current;
       if (!cur) return;
-      setDraft({ ...cur, doc: { ...fn(cur.doc), updated: Date.now() } });
+      const r = applyEdit(cur.doc, cur.history, fn, how, Date.now());
+      if (r) setDraft({ ...cur, doc: r.doc, history: r.history });
     },
     [setDraft],
   );
@@ -194,9 +220,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- reading files ---------------------------------------------------------------------
 
-  /** read dropped files into a prepared model and a fresh measurement */
+  /** read dropped files into a prepared model and a fresh measurement. A new file starts the undo
+   *  history empty; `keepHistory` (a new Detail, the same file read again) keeps it */
   const readModel = useCallback(
-    async (files: File[], opts: { setup?: Partial<ImportSetup>; savedModel?: boolean; spec?: RobotSpec; keepSource?: EditorDoc['source'] } = {}) => {
+    async (
+      files: File[],
+      opts: { setup?: Partial<ImportSetup>; savedModel?: boolean; spec?: RobotSpec; keepSource?: EditorDoc['source']; keepHistory?: boolean } = {},
+    ) => {
       const my = ++gen.current;
       // one import at a time: a new drop stops the last one's workers
       importAbort.current?.abort();
@@ -298,7 +328,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         setActiveMotion(null);
         setPlaying(false);
         sourceFiles.current = opts.savedModel ? null : files;
-        setDraft({ doc, model: prepared, modelStored: false, baked: null });
+        setDraft({ doc, model: prepared, modelStored: false, baked: null, history: opts.keepHistory ? draftRef.current?.history : undefined });
         setPhase(null);
       } catch (err) {
         if (my !== gen.current || (err instanceof Error && err.name === 'AbortError')) return;
@@ -548,7 +578,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   useEffect(() => {
     if (!doc || !m || !built || m.hull.length < 3 || measuring) return;
     const next = defaultMechFor(game, built.spec, m.origin, doc.mech);
-    if (JSON.stringify(next) !== JSON.stringify(doc.mech)) update((d) => ({ ...d, mech: next }));
+    if (JSON.stringify(next) !== JSON.stringify(doc.mech)) update((d) => ({ ...d, mech: next }), 'auto');
   }, [doc, m, built, game, update, measuring]);
 
   // focus after a "Fix", a step change, or a return from the test drive
@@ -569,7 +599,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const step = doc?.step ?? 0;
   const goStep = (s: StepIndex, focus?: string): void => {
     pendingFocus.current = focus ?? null;
-    update((d) => ({ ...d, step: s }));
+    // moving between steps is not an edit: it is kept with the draft, never undone
+    update((d) => ({ ...d, step: s }), 'auto');
   };
   const blocked = blocks(items) > 0;
 
@@ -694,40 +725,44 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const shownWheels = wheelDrag ?? baseWheels;
   const layout: WheelLayout = doc && m ? wheelLayoutOf(doc.setup, m.wheels.wheels) : 'rect';
   // a placed wheel writes the layout it was placed in, so an unpicked layout never flips under it
-  const commitWheels = (next: Vec2[]): void => update((d) => ({ ...d, setup: { ...d.setup, wheels: next, wheelLayout: layout } }));
+  const commitWheels = (next: Vec2[], how: EditHow): void => update((d) => ({ ...d, setup: { ...d.setup, wheels: next, wheelLayout: layout } }), how);
   const onWheel = (i: number, p: Vec2, final: boolean): void => {
     // not while a new orientation is measured: the wheels shown are in the frame it replaces
     if (!m || !baseWheels || measuring) return;
     const next = moveWheel(baseWheels, i, p, layout);
     if (!final) return setWheelDrag(next);
     setWheelDrag(null);
-    commitWheels(next);
+    // a run of arrow-key presses on one wheel is one step
+    commitWheels(next, { label: COPY.edits.move(lowerFirst(COPY.wheelNames[i] ?? COPY.wheels)), key: `wheel:${i}` });
   };
   const onRect = (key: RectNumber, v: number): void => {
     if (!m || !baseWheels || measuring) return;
-    commitWheels(setRectNumber(baseWheels, key, v));
+    const label = key === 'wheelbase' ? COPY.edits.change(lowerFirst(COPY.wheelbase)) : key === 'track' ? COPY.edits.change(lowerFirst(COPY.track)) : COPY.edits.wheels;
+    commitWheels(setRectNumber(baseWheels, key, v), { label, key: `rect:${key}` });
   };
   const onLayout = (next: WheelLayout): void => {
     if (!m || measuring || next === layout) return;
-    update((d) => ({ ...d, setup: { ...d.setup, ...layoutPatch(d.setup, next) } }));
+    update((d) => ({ ...d, setup: { ...d.setup, ...layoutPatch(d.setup, next) } }), { label: COPY.edits.layout });
   };
 
   // ---- detail: the triangle budget the file is read at -----------------------------------------
   // A new detail re-reads the files still in memory, keeping everything set so far: the bodies are
   // the file's own, so the moving parts still name the same ones, and the placements go back once
   // the new model is measured. Without the files (a reload, a saved robot) it applies next read.
+  // NOT AN UNDO STEP: the re-read can take minutes and the model is not in the document, so the
+  // history keeps the detail the model was read at and goes on across the change (`restoreDoc`).
   const onDetail = (budget: number): void => {
     if (!doc || doc.savedModel || budget === doc.setup.triBudget) return;
     const files = sourceFiles.current;
     const setup = { ...doc.setup, triBudget: budget };
-    update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }));
+    update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }), 'auto');
     if (!files) return;
     const keepMech = doc.mech;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
     // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
     const keepFront = doc.detected ? { yaw: doc.detected.yaw, front: doc.detected.front, cue: doc.detected.cue } : null;
-    void readModel(files, { setup, spec: doc.spec }).then(() => {
-      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }));
+    void readModel(files, { setup, spec: doc.spec, keepHistory: true }).then(() => {
+      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
     });
   };
 
@@ -790,7 +825,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       if (doc.savedModel || (doc.setup.motionFinder ?? 0) >= MOTION_FINDER || !motion0.some((g) => g.found)) return;
       const kept = keepEditedMotion(motion0);
       const again = [...kept, ...findAll(kept)];
-      update((d) => (d.setup.motion === motion0 ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d));
+      update((d) => (d.setup.motion === motion0 ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d), 'auto');
       return;
     }
     // a NEW import's mechanisms are read from its model first (`buildFromCad`): the placements then
@@ -798,20 +833,24 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
       const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels));
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: null } : {}) }));
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: null } : {}) }), 'auto');
       return;
     }
     const found = findAll([]);
-    update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d));
+    update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, !doc?.mech, doc?.cadBuild]);
-  const setMotion = (next: MotionGroup[]): void => update((d) => ({ ...d, setup: { ...d.setup, motion: next } }));
+  /** a moving parts edit, named by the row it added, removed or changed */
+  const setMotion = (next: MotionGroup[]): void => {
+    const prev = motion ?? [];
+    update((d) => ({ ...d, setup: { ...d.setup, motion: next } }), motionEdit(prev, next, motionNames(prev)));
+  };
   /** Find moving parts: every row the player has not touched goes, and is looked for again */
   const refindMotion = (): void => {
     const kept = keepEditedMotion(motion ?? []);
     setActiveMotion(null);
     setHoverMotion(null);
-    update((d) => ({ ...d, setup: { ...d.setup, motion: [...kept, ...findAll(kept)], motionFinder: MOTION_FINDER } }));
+    update((d) => ({ ...d, setup: { ...d.setup, motion: [...kept, ...findAll(kept)], motionFinder: MOTION_FINDER } }), { label: COPY.edits.findMoving });
   };
   // a selected row is being edited: a click in the preview adds or takes out its parts
   const picking = step === MOVING_STEP && activeMotion !== null && !!motion?.[activeMotion];
@@ -849,6 +888,38 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     return active.length || others.length ? { active, others } : null;
   }, [step, motion, activeMotion, hoverMotion]);
 
+  // ---- undo and redo (`editorHistory.ts`) -------------------------------------------------------
+  // The step the player is on stays: moving between steps is not an edit, and an undo that also
+  // jumped to another step would move them somewhere they did not ask to go. The preview shows the
+  // model on every step, and the button's title names what is taken back.
+  /** not while a file is read (what it reads replaces the document) or the model is baked */
+  const historyFrozen = !!phase || busy;
+  const stepHistory = (dir: 'undo' | 'redo', fromButton = false): void => {
+    const cur = draftRef.current;
+    if (!cur || historyFrozen || dialog) return;
+    const r = (dir === 'undo' ? undoDoc : redoDoc)(cur.doc, cur.history, Date.now());
+    if (!r) return;
+    setWheelDrag(null);
+    // a row being picked that the step took away
+    if (activeMotion !== null && !r.doc.setup.motion?.[activeMotion]) setActiveMotion(null);
+    // the last step either way disables the button pressed, so focus goes to the other one
+    if (fromButton && !(dir === 'undo' ? nextUndo(r.history) : nextRedo(r.history))) pendingFocus.current = dir === 'undo' ? 'ri-redo' : 'ri-undo';
+    setDraft({ ...cur, doc: r.doc, history: r.history });
+  };
+  const historyKeys = useRef(stepHistory);
+  historyKeys.current = stepHistory;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const dir = historyShortcut(e);
+      // a text or number field, a select or an editable region keeps its own undo
+      if (!dir || ownsUndo(e.target as HTMLElement | null)) return;
+      e.preventDefault();
+      historyKeys.current(dir);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // ---- render ----------------------------------------------------------------------------------
   if (notFound) {
     return (
@@ -878,6 +949,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (it.level === 'block') stepBlocks[stepOf(it)]++;
   }
   const title = doc.editId ? COPY.titleEdit(doc.spec.name || 'robot') : COPY.titleNew;
+  const toUndo = nextUndo(draft?.history);
+  const toRedo = nextRedo(draft?.history);
   // each step draws what it is about: the wheels and the contacts on the Model step, the placements
   // on Mechanisms, the moving parts on theirs, and all of it on Review
   const previewState = m && normalised
@@ -916,7 +989,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       <MechanismsStep
         game={game}
         spec={built.spec}
-        onSpec={(patch) => update((d) => ({ ...d, spec: { ...d.spec, ...patch } }))}
+        onSpec={(patch) => update((d) => ({ ...d, spec: { ...d.spec, ...patch } }), { label: COPY.edits.mechanisms, key: `spec:${Object.keys(patch).sort().join()}` })}
         hull={m.hull}
         heightIn={m.heightIn}
         mech={doc.mech}
@@ -925,8 +998,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         checks={mechChecks}
         selected={selHandle}
         onSelect={setSelHandle}
-        onMech={(next: ImportedMech) => update((d) => ({ ...d, mech: next }))}
-        onReset={() => update((d) => ({ ...d, mech: null }))}
+        // a handle dragged, stepped by keys or by its slider is one step per handle
+        onMech={(next: ImportedMech) => update((d) => ({ ...d, mech: next }), mechEdit(doc.mech, next, defs))}
+        onReset={() => update((d) => ({ ...d, mech: null }), { label: COPY.edits.resetPlacement })}
         cadNote={doc.cadBuild?.length ? COPY.cadBuild(doc.cadBuild) : undefined}
         tuning={
           <TunePanel
@@ -934,7 +1008,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             title={COPY.tuneMech}
             fields={mechTuneFields(game, built.spec)}
             tune={doc.setup.tune}
-            onTune={(tune) => update((d) => ({ ...d, setup: { ...d.setup, tune } }))}
+            onTune={(tune) => update((d) => ({ ...d, setup: { ...d.setup, tune } }), { label: COPY.edits.change(lowerFirst(COPY.tuneMech)) })}
           />
         }
       />
@@ -980,9 +1054,35 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         </button>
         <span className="ds-head-spacer" />
         {hasModel ? (
-          <button type="button" className="ds-btn ghost small" onClick={() => setDialog({ kind: 'discard' })}>
-            {doc.editId ? COPY.discardEdit : COPY.discardNew}
-          </button>
+          <div className="ds-actions ds-import-headacts">
+            <button
+              type="button"
+              id="ri-undo"
+              className="ds-btn ghost small"
+              disabled={!toUndo || historyFrozen}
+              title={COPY.withKeys(COPY.undoAria(toUndo?.label ?? null), COPY.undoKeys(MAC))}
+              aria-label={COPY.undoAria(toUndo?.label ?? null)}
+              aria-keyshortcuts="Control+Z Meta+Z"
+              onClick={() => stepHistory('undo', true)}
+            >
+              {COPY.undo}
+            </button>
+            <button
+              type="button"
+              id="ri-redo"
+              className="ds-btn ghost small"
+              disabled={!toRedo || historyFrozen}
+              title={COPY.withKeys(COPY.redoAria(toRedo?.label ?? null), COPY.redoKeys(MAC))}
+              aria-label={COPY.redoAria(toRedo?.label ?? null)}
+              aria-keyshortcuts="Control+Shift+Z Control+Y Meta+Shift+Z"
+              onClick={() => stepHistory('redo', true)}
+            >
+              {COPY.redo}
+            </button>
+            <button type="button" className="ds-btn ghost small" onClick={() => setDialog({ kind: 'discard' })}>
+              {doc.editId ? COPY.discardEdit : COPY.discardNew}
+            </button>
+          </div>
         ) : null}
       </div>
       <h1 className="ds-h1">{title}</h1>
@@ -1066,12 +1166,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                   setPhase(null);
                 }}
                 onSetup={(patch) =>
-                  update((d) => ({
-                    ...d,
-                    setup: { ...d.setup, ...patch },
-                    // units, up and yaw move the model frame, and the placements with it
-                    mech: 'units' in patch || 'up' in patch || 'yaw' in patch ? null : d.mech,
-                  }))
+                  update(
+                    (d) => ({
+                      ...d,
+                      setup: { ...d.setup, ...patch },
+                      // units, up and yaw move the model frame, and the placements with it
+                      mech: 'units' in patch || 'up' in patch || 'yaw' in patch ? null : d.mech,
+                    }),
+                    setupEdit(patch),
+                  )
                 }
                 onWheel={onWheel}
                 onRect={onRect}
@@ -1084,7 +1187,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               <DrivetrainStep
                 drive={doc.setup.drive}
                 numbers={numbers}
-                onDrive={(patch) => update((d) => ({ ...d, setup: { ...d.setup, drive: { ...d.setup.drive, ...patch } } }))}
+                onDrive={(patch) => update((d) => ({ ...d, setup: { ...d.setup, drive: { ...d.setup.drive, ...patch } } }), driveEdit(patch))}
                 tuning={
                   built ? (
                     <TunePanel
@@ -1092,7 +1195,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                       title={COPY.tuneDrive}
                       fields={driveTuneFields(built.spec)}
                       tune={doc.setup.tune}
-                      onTune={(tune) => update((d) => ({ ...d, setup: { ...d.setup, tune } }))}
+                      onTune={(tune) => update((d) => ({ ...d, setup: { ...d.setup, tune } }), { label: COPY.edits.change(lowerFirst(COPY.tuneDrive)) })}
                     />
                   ) : null
                 }
@@ -1105,7 +1208,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               <ReviewStep
                 items={items}
                 spec={doc.spec}
-                onIdentity={(patch) => update((d) => ({ ...d, spec: { ...d.spec, ...patch } }))}
+                // typing is one step per field until it pauses
+                onIdentity={(patch) =>
+                  update((d) => ({ ...d, spec: { ...d.spec, ...patch } }), {
+                    label: 'name' in patch ? COPY.edits.rename : 'teamName' in patch ? COPY.edits.change(lowerFirst(COPY.teamName)) : COPY.edits.teamNumber,
+                    key: `id:${Object.keys(patch).join()}`,
+                  })
+                }
                 onFix={(it: ReviewItem) => it.fix && goStep(it.fix.step, it.fix.focus)}
               />
             )}

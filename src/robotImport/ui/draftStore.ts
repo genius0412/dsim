@@ -9,6 +9,7 @@
  */
 import type { PreparedModel } from '../engine/importerEngine';
 import { deleteDraft, getDraft, putDraft, type DraftRecord } from '../library';
+import type { EditorHistory } from './editorHistory';
 import type { EditorDoc } from './editorModel';
 
 export interface LiveDraft {
@@ -18,6 +19,9 @@ export interface LiveDraft {
   modelStored: boolean;
   /** a bake of the current document, reused by test drive / save / export until it changes */
   baked: { stamp: string; mesh: Blob; top: Blob; thumb: Blob; trisOut: number } | null;
+  /** the player's undo and redo (`editorHistory.ts`). Never written to disk: it lasts as long as
+   *  this object, so it outlives a test drive but not a reload, and a new file starts without one */
+  history?: EditorHistory;
 }
 
 const live = new Map<string, LiveDraft>();

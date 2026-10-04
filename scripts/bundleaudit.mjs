@@ -717,7 +717,10 @@ const BASELINE = {
   // 2026-10-04: 28.96 -> 33.14, raised on purpose. The base (alpha 239caa2e) already measured 32.32
   // inside the tolerance (practice tuning, the Detail choice, the generic joints); +0.82 is the
   // Moving parts step of its own (`MotionPanel` rows, Find again, the preview legend).
-  importerui: { gzip: 33.14 * 1000 },
+  // 2026-10-04: 33.14 -> 36.06, raised on purpose. The base (alpha 7fb1d7ba) measured 34.06 inside the
+  // tolerance; +2.00 is undo and redo in the editor (`editorHistory.ts`, the edit names in `copy.ts`,
+  // the header buttons and the keys).
+  importerui: { gzip: 36.06 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

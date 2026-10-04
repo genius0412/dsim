@@ -472,6 +472,13 @@
   color: var(--ds-danger);
 }
 
+/* the header's Undo, Redo and Discard: one group on the right, which wraps under Back as a whole
+   on a phone instead of leaving Discard alone on a line of its own */
+.ds-import-headacts {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
 /* the footer: Back on the left, the step's actions on the right */
 .ds-import-foot .ds-head-spacer {
   flex: 1;

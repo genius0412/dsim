@@ -35822,6 +35822,127 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
 }
 
 /**
+ * UNDO AND REDO IN THE IMPORT EDITOR (`editorHistory.ts`). The player's edits are steps; quick repeats
+ * of one thing are one step; the oldest goes past the cap; a new edit clears the redo stack; what the
+ * editor does by itself (`'auto'`) is never a step and never clears the redo stack, so an effect that
+ * runs again after an undo leaves both stacks alone. An undo puts back the setup, the placements and
+ * the spec, and keeps the step and the Detail. The history is not written with the draft.
+ */
+{
+  const H = await import('../src/robotImport/ui/editorHistory');
+  const { COPY } = await import('../src/robotImport/ui/copy');
+  const { defaultImportSetup } = await import('../src/robotImport/geometry');
+  const { coerceSpec, DEFAULT_SPEC } = await import('../src/sim/spawn');
+  // the stacks, on plain numbers
+  let h = H.emptyHistory<number>();
+  h = H.record(h, 1, { label: 'a' }, 0);
+  h = H.record(h, 2, { label: 'b' }, 10);
+  h = H.record(h, 3, { label: 'c' }, 20);
+  check('import UI undo: each edit is a step, newest last, with its label', h.past.map((e) => `${e.doc}${e.label}`).join() === '1a,2b,3c' && h.future.length === 0 && H.nextUndo(h)?.label === 'c');
+  const u1 = H.undo(h, 4)!;
+  const u2 = H.undo(u1.history, u1.doc)!;
+  check('import UI undo: undo walks back (4 → 3 → 2), each taken step goes on the redo stack with its label', u1.doc === 3 && u2.doc === 2 && u2.history.past.length === 1 && u2.history.future.map((e) => `${e.doc}${e.label}`).join() === '4c,3b');
+  const r1 = H.redo(u2.history, u2.doc)!;
+  check('import UI undo: redo puts back the last undone (2 → 3), and its step returns to the undo stack', r1.doc === 3 && r1.history.past.map((e) => e.doc).join() === '1,2' && H.nextRedo(r1.history)?.doc === 4 && H.nextUndo(r1.history)?.label === 'b');
+  const fresh = H.record(r1.history, 3, { label: 'd' }, 30);
+  check('import UI undo: a new edit after an undo clears the redo stack', fresh.future.length === 0 && fresh.past.length === 3 && H.undo(H.emptyHistory<number>(), 0) === null && H.redo(fresh, 9) === null);
+  // coalescing: one key, each edit within COALESCE_MS of the last, is one step (a drag, a slider, typing)
+  let c = H.emptyHistory<number>();
+  [0, 400, 800, 1200].forEach((t, i) => (c = H.record(c, i, { label: 'drag', key: 'mech:shooter' }, t)));
+  check('import UI undo: a drag of one handle (edits 400 ms apart, 1.2 s in all) is ONE step, holding the state before it', c.past.length === 1 && c.past[0].doc === 0 && H.COALESCE_MS === 600);
+  c = H.record(c, 9, { label: 'drag', key: 'mech:shooter' }, 1200 + H.COALESCE_MS + 1);
+  const c2 = H.record(c, 10, { label: 'other', key: 'mech:place' }, 1200 + H.COALESCE_MS + 2);
+  const c3 = H.record(c2, 11, { label: 'unkeyed' }, 1200 + H.COALESCE_MS + 3);
+  const c4 = H.record(c3, 12, { label: 'unkeyed' }, 1200 + H.COALESCE_MS + 4);
+  check('import UI undo: a pause past the window, another key, or no key at all starts a new step', c.past.length === 2 && c2.past.length === 3 && c3.past.length === 4 && c4.past.length === 5);
+  const cu = H.undo(H.record(H.emptyHistory<number>(), 0, { key: 'k' }, 0), 1)!;
+  const cu2 = H.record(cu.history, 0, { key: 'k' }, 100);
+  check('import UI undo: an undo ends the run, so the next edit of the same thing is a step of its own', cu.history.open === null && cu2.past.length === 1 && cu2.future.length === 0);
+  // the cap
+  let big = H.emptyHistory<number>();
+  for (let i = 0; i < 150; i++) big = H.record(big, i, { label: String(i) }, i * 1000);
+  check('import UI undo: at most 100 steps; the oldest go first', H.HISTORY_CAP === 100 && big.past.length === 100 && big.past[0].doc === 50 && big.past[99].doc === 149);
+
+  // the editor's document: the player's edits recorded, 'auto' edits not
+  const doc0 = {
+    v: 1, key: 'decode:new', game: 'decode', id: '0123456789abcdef', editId: null, step: 2,
+    setup: defaultImportSetup({ massLb: 30 }), detected: null, mech: { shooter: { x: 1, y: 2, z: 10 } }, spec: coerceSpec(DEFAULT_SPEC, undefined, 'decode'),
+    source: null, savedModel: false, created: null, sourceName: null, updated: 0,
+  } as never as Parameters<typeof H.applyEdit>[0];
+  const turn = H.applyEdit(doc0, undefined, (d) => ({ ...d, setup: { ...d.setup, yaw: 1 }, mech: null }), H.setupEdit({ yaw: 1 }), 1000)!;
+  // the placements default in again, as the effect does after a units, up or turn change
+  const defaulted = H.applyEdit(turn.doc, turn.history, (d) => ({ ...d, mech: { shooter: { x: 3, y: 0, z: 10 } } }), 'auto', 1001)!;
+  const moved = H.applyEdit(defaulted.doc, defaulted.history, (d) => ({ ...d, mech: { shooter: { x: 4, y: 0, z: 10 } } }), { label: 'move the launcher', key: 'mech:shooter' }, 2000)!;
+  check('import UI undo: the player’s edits are steps, the editor’s own (`auto`) are not', turn.history!.past.length === 1 && defaulted.history === turn.history && moved.history!.past.length === 2 && H.nextUndo(moved.history)?.label === 'move the launcher' && H.nextUndo(turn.history)?.label === COPY.edits.turn);
+  check('import UI undo: an edit that changes nothing is no step', H.applyEdit(moved.doc, moved.history, (d) => ({ ...d, mech: { shooter: { x: 4, y: 0, z: 10 } } }), {}, 2100) === null);
+  const back1 = H.undoDoc(moved.doc, moved.history, 3000)!;
+  const back2 = H.undoDoc(back1.doc, back1.history, 3001)!;
+  check('import UI undo: two undos take back the move and then the turn, placements and all', JSON.stringify(back1.doc.mech) === JSON.stringify({ shooter: { x: 3, y: 0, z: 10 } }) && back2.doc.setup.yaw === 0 && JSON.stringify(back2.doc.mech) === JSON.stringify(doc0.mech) && H.undoDoc(back2.doc, back2.history, 3002) === null);
+  // after the undo an effect may run again: an auto edit, which must not eat the redo stack
+  const rerun = H.applyEdit(back2.doc, back2.history, (d) => ({ ...d, cadBuild: [] }), 'auto', 3003)!;
+  const fwd = H.redoDoc(rerun.doc, rerun.history, 3004)!;
+  check('import UI undo: ⚠️ an auto edit after an undo leaves the redo stack, and redo puts the turn back', rerun.history === back2.history && rerun.history!.future.length === 2 && fwd.doc.setup.yaw === 1 && JSON.stringify(fwd.doc.mech) === JSON.stringify({ shooter: { x: 3, y: 0, z: 10 } }) && fwd.history.future.length === 1);
+  const branch = H.applyEdit(fwd.doc, fwd.history, (d) => ({ ...d, spec: { ...d.spec, name: 'New name' } }), { label: COPY.edits.rename, key: 'id:name' }, 3100)!;
+  check('import UI undo: a new player edit after an undo clears the redo stack', branch.history!.future.length === 0 && H.redoDoc(branch.doc, branch.history, 3101) === null);
+  // a handle grabbed and put back (the pad's B): the run comes back to where it began, so no step
+  const g1 = H.applyEdit(doc0, undefined, (d) => ({ ...d, mech: { shooter: { x: 1.25, y: 2, z: 10 } } }), { key: 'mech:shooter' }, 0)!;
+  const g2 = H.applyEdit(g1.doc, g1.history, (d) => ({ ...d, mech: { shooter: { x: 1, y: 2, z: 10 } } }), { key: 'mech:shooter' }, 200)!;
+  check('import UI undo: a handle moved and put back inside one run leaves no step', g1.history!.past.length === 1 && g2.history!.past.length === 0 && g2.history!.open === null);
+  // what an undo restores: setup, placements, spec; never the step or the Detail
+  const target = { ...doc0, step: 0, setup: { ...doc0.setup, units: 'mm', triBudget: 1234 }, mech: null, spec: { ...doc0.spec, name: 'Old' } } as typeof doc0;
+  const cur = { ...doc0, step: 4, setup: { ...doc0.setup, units: 'in', triBudget: 0 }, notes: ['note'] } as typeof doc0;
+  const rs = H.restoreDoc(target, cur);
+  check('import UI undo: an undo restores the setup, placements and spec, and keeps the step, the Detail and the file’s notes', rs.setup.units === 'mm' && rs.mech === null && rs.spec.name === 'Old' && rs.step === 4 && rs.setup.triBudget === 0 && rs.notes?.[0] === 'note');
+  // the names on the buttons
+  const handles = [
+    { key: 'shooter', field: 'shooter', label: 'Fixed launcher' },
+    { key: 'intake:front', field: 'intake', edge: 'front', label: 'Front intake' },
+    { key: 'place', field: 'place', label: 'Box Tube' },
+  ] as const;
+  const mPrev = { shooter: { x: 0, y: 0, z: 9 }, shooterYawDeg: 0, intakes: [{ edge: 'front', from: -4, to: 4 }], place: { x: 1, y: 1, z: 2 } };
+  const e1 = H.mechEdit(mPrev as never, { ...mPrev, intakes: [{ edge: 'front', from: -3, to: 5 }] } as never, handles);
+  const e2 = H.mechEdit(mPrev as never, { ...mPrev, shooterYawDeg: 15 } as never, handles);
+  const e3 = H.mechEdit(mPrev as never, { ...mPrev, place: { x: 2, y: 1, z: 2 } } as never, handles);
+  check(
+    'import UI undo: a placement step is named by its handle (“move the front intake”, “turn the fixed launcher”, “move the Box Tube”)',
+    e1.label === 'move the front intake' && e1.key === 'mech:intake:front' && e2.label === 'turn the fixed launcher' && e2.key === 'mech:shooter:aim' && e3.label === 'move the Box Tube',
+    [e1.label, e2.label, e3.label].join(' | '),
+  );
+  const de = H.driveEdit({ massLb: 30 });
+  const me = H.motionEdit([{ role: 'roller', bodies: [1] }, { role: 'flywheel', bodies: [2] }], [{ role: 'roller', bodies: [1] }], ['Intake roller', 'Flywheel']);
+  check('import UI undo: drivetrain and moving parts steps name the field or the row', de.label === 'change the weight' && de.key === 'drive:massLb' && me.label === 'remove the flywheel' && H.motionEdit([], [{ role: 'fold', bodies: [] }], []).label === COPY.edits.addMoving);
+  // the keys
+  const k = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => H.historyShortcut({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods });
+  check(
+    'import UI undo: Ctrl or Cmd+Z undoes; Ctrl or Cmd+Shift+Z and Ctrl+Y redo; Z, Alt+Ctrl+Z and Cmd+Y do nothing',
+    k('z', { ctrlKey: true }) === 'undo' && k('z', { metaKey: true }) === 'undo' && k('Z', { ctrlKey: true, shiftKey: true }) === 'redo' && k('Z', { metaKey: true, shiftKey: true }) === 'redo' &&
+      k('y', { ctrlKey: true }) === 'redo' && k('z') === null && k('z', { ctrlKey: true, altKey: true }) === null && k('y', { metaKey: true }) === null,
+  );
+  check(
+    'import UI undo: the shortcut is left to a text or number field, a select, a textarea and an editable region; a slider, a checkbox and a button are the editor’s',
+    H.ownsUndo({ tagName: 'INPUT', type: 'text' }) && H.ownsUndo({ tagName: 'INPUT', type: 'number' }) && H.ownsUndo({ tagName: 'SELECT' }) && H.ownsUndo({ tagName: 'TEXTAREA' }) && H.ownsUndo({ tagName: 'DIV', isContentEditable: true }) &&
+      !H.ownsUndo({ tagName: 'INPUT', type: 'range' }) && !H.ownsUndo({ tagName: 'INPUT', type: 'checkbox' }) && !H.ownsUndo({ tagName: 'BUTTON' }) && !H.ownsUndo(null),
+  );
+  check('import UI undo: a label keeps a name with a capital inside it (“Box Tube”) and lowers the rest', H.lowerFirst('Box Tube') === 'Box Tube' && H.lowerFirst('Front left wheel') === 'front left wheel' && H.lowerFirst('') === '');
+  // the wiring: the editor's own edits are auto, a new file starts the history empty, and it is never written
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const autoSites = [
+    /update\(\(d\) => \(\{ \.\.\.d, mech: next \}\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
+    /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: null \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
+    /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
+  ];
+  const missing = autoSites.filter((re) => !re.test(ed)).map(String);
+  check('import UI undo: the editor’s own edits (placements defaulting in, the finders, a step change, a Detail change) go through update as auto', missing.length === 0, missing.join(' | '));
+  check('import UI undo: a new file starts the history empty; a Detail re-read keeps it', /history: opts\.keepHistory \? draftRef\.current\?\.history : undefined/.test(ed) && /readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)/.test(ed));
+  check('import UI undo: the shortcut leaves text fields alone', /if \(!dir \|\| ownsUndo\(e\.target/.test(ed));
+  const ds = readFileSync('src/robotImport/ui/draftStore.ts', 'utf8');
+  check('import UI undo: the draft written to disk is the document alone, so the history is never persisted', /const record = \{ \.\.\.d\.doc, updated: Date\.now\(\) \}/.test(ds) && /putDraft\(record, /.test(ds));
+}
+
+/**
  * THE WHEEL LAYOUTS (`editorModel.ts`, `finishMeasure`). In a RECTANGLE the four wheels sit on four
  * lines, a moved wheel moves the two through it, and the four never stop being an exact rectangle;
  * the four number fields set exactly what was typed; a pointer drag snaps to a floor contact or a
@@ -37589,7 +37710,7 @@ function fxImportFixed(): RobotSpec {
     'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
     /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
       /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
-      /void readModel\(files, \{ setup, spec: doc\.spec \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\)\);/.test(ed) &&
+      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
       /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
       /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
       /disabled=\{doc\.savedModel\}/.test(ms) &&

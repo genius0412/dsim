@@ -10,16 +10,16 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-373 classes · 128 families · 0 with no reference found.
+374 classes · 128 families · 0 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
-## `ds-import` — 30
+## `ds-import` — 31
 
 | class | declared | used |
 |---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 36 |
+| `.ds-import` | src/ui/competitions.css:4 | 37 |
 | `.ds-import-body` | src/ui/importer.css:40 | 1 |
 | `.ds-import-canvas` | src/ui/importer.css:93 | 2 |
 | `.ds-import-canvas-host` | src/ui/importer.css:89 | 1 |
@@ -29,6 +29,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-import-filerow` | src/ui/importer.css:167 | 1 |
 | `.ds-import-foot` | src/ui/importer.css:44 | 1 |
 | `.ds-import-handle` | src/ui/importer.css:362 | 1 |
+| `.ds-import-headacts` | src/ui/importer.css:477 | 1 |
 | `.ds-import-hero-img` | src/ui/shell.css:4973 | 1 |
 | `.ds-import-in` | src/ui/importer.css:27 | 1 |
 | `.ds-import-legend` | src/ui/importer.css:274 | 1 |
@@ -501,7 +502,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-head` | src/ui/shell.css:4235 | 15 |
-| `.ds-head-spacer` | src/ui/importer.css:476 | 12 |
+| `.ds-head-spacer` | src/ui/importer.css:483 | 12 |
 
 ## `ds-hint` — 2
 
@@ -612,7 +613,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-actions` | src/ui/shell.css:6361 | 39 |
+| `.ds-actions` | src/ui/shell.css:6361 | 40 |
 
 ## `ds-app` — 1
 
@@ -660,7 +661,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:653 | 344 |
+| `.ds-btn` | src/ui/shell.css:653 | 346 |
 
 ## `ds-checkline` — 1
 
