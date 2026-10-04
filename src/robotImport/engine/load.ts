@@ -15,6 +15,7 @@ import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.j
 import type { ModelFormat } from '../types';
 import { EXPORT_HINT, ImportError } from './importError';
 import { WORKER_FORMATS, assembleLoaded, extOf, parseFiles, type LoadProgress, type LoadedModel, type ParsedFiles } from './parse';
+import type { StepPart } from './stepConvert';
 import { entryBaseName, unzipFiles, zipEntries, type ZipPick } from './zip';
 
 export type { ZipPick } from './zip';
@@ -180,6 +181,16 @@ export async function readStepFile(r: Resolved, onProgress?: LoadProgress, signa
     throw new ImportError('step-reader', `Couldn’t load the STEP reader (${e instanceof Error ? e.message : String(e)}). Check your connection and try again.`);
   }
   const res = await readStep(r.file, name, r.zip?.entry ?? null, (s, frac) => onProgress?.(s, frac), signal, keepSmall);
-  const parts = res.parts.map((p) => ({ positions: p.positions, indices: p.indices, color: p.color, name: p.name }));
-  return { parts, bytes: r.zip ? r.zip.entry.size : r.file.size, notes: res.notes, fileUnit: 'mm', trisIn: res.trisIn };
+  return stepParsed(res, r.zip ? r.zip.entry.size : r.file.size);
+}
+
+/**
+ * The STEP worker's answer as the import's parsed files. ⚠️ Each part keeps its `body` ids (one per
+ * occt solid): dropped here, every STEP import fell back to one body per connected piece of a colour,
+ * so a channel and the gear touching it, or a wheel's hub and a motor shield, were one part that
+ * could only move together (2026-10-04, owner: "You are still combining the motor into the wheel").
+ */
+export function stepParsed(res: { parts: readonly StepPart[]; trisIn: number; notes: string[] }, bytes: number): ParsedFiles {
+  const parts = res.parts.map((p) => ({ positions: p.positions, indices: p.indices, color: p.color, name: p.name, body: p.body ?? null }));
+  return { parts, bytes, notes: res.notes, fileUnit: 'mm', trisIn: res.trisIn };
 }

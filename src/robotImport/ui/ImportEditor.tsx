@@ -745,9 +745,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const parts = normalised.modelParts;
     const out: MotionGroup[] = [];
     const taken = (): Set<number> => new Set([...have, ...out].flatMap((g) => g.bodies));
-    // a wheel per corner no row has yet (a player's own wheel row keeps its corner)
+    // a wheel per corner no row has yet (a player's own wheel row keeps its corner); a 6WD's middle
+    // pair has no corner, and the bodies a kept row holds already keep it from coming back twice
     for (const w of findWheels()) {
-      if (have.some((g) => g.role === 'wheel' && g.corner === w.corner)) continue;
+      if (w.corner !== undefined && have.some((g) => g.role === 'wheel' && g.corner === w.corner)) continue;
       const t = taken();
       const bodies = w.bodies.filter((b) => !t.has(b));
       if (bodies.length) out.push({ ...w, bodies });

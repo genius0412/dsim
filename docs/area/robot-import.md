@@ -347,6 +347,12 @@ eight readers; offscreen production editor, the whole import from drop to measur
 (renderer peak 3.4 GB), goBILDA BIOBUZZ 170.1 → 53.9 s (unzip 1.9 s, index and plan 2.7, read 43,
 simplify 5.2, measure 0.7; peak 3.5 GB, was 2.6).
 
+Also read, 2026-10-04, by the production editor offscreen (moving parts measured on them below):
+goBILDA's BIOBUZZ mecanum bot (3200-2627-0004, 70.5 MB zip of a 419.5 MB STEP, 7.15 M triangles,
+97 s) and AndyMark's Robits BIOBUZZ bot, base, mecanum and alt flower (126–134 MB STEP, 4.6–5.3 M
+triangles, 32–42 s; AndyMark's are Y up, found). Studica's starter-bot page refuses scripted fetches;
+REV publishes its BIOBUZZ bot as an Onshape document only.
+
 Units mm (declared), up +Z, four wheels found, Review clean on all three; each test-drives. Against
 what the vendors publish: REV's frame is 420 mm extrusions across (measured 420 mm wide) on 408 mm
 C-channels (427 mm long overall); goBILDA's DECODE bot has a shortened wheelbase on 104 mm mecanum
@@ -371,11 +377,18 @@ match: `wheel`, `roller`, `flywheel` spin about their own axle, `turret` turns a
 positions), so a units or yaw change keeps it. Absent = never looked for: the editor looks once, and
 Find moving parts again on demand, among the bodies no row has (each marked `found` until edited):
 - the drive wheels (`findWheelGroups`: every body wholly inside each wheel's cylinder at a floor
-  contact, of which `turnsWithWheel` keeps what turns, below);
+  contact, of which `turnsWithWheel` keeps what turns, below), and any MORE wheels on a side (a 6WD's
+  middle pair: a round wheel-sized body standing on the floor on the side's line between its corner
+  wheels), which have no `corner` and turn at their own place's speed;
 - the intake rollers (`findRollerGroups`: a round body near an intake span's edge, within 4 in of it
-  and under 10 in, grown to its axle), its axle ALONG the edge or UPRIGHT (side rollers);
+  and under 10 in, grown to its axle), its axle ALONG the edge or UPRIGHT (side rollers). A seed is at
+  least 3/4 in across (`ROLLER_SEED_R_IN`: nuts, washers and screw heads are round too), round about
+  the edge's direction by its own vertices and that thick along it (a flat face drawn as a surface is
+  not), never a motor's part, biggest first; the group is dropped when its axle carries a drive wheel
+  (goBILDA's DECODE bot: its front axle at the mouth) or turns on no shaft and is under 2 in long (a
+  round pattern mount, `onShaft`);
 - flywheels (`findFlywheelGroups`: round discs with a level axle within 5 in of the placed launcher,
-  the two largest axles);
+  the two largest axles, never a motor's gearbox face or end cap);
 - a turret on a turreted build (`findTurretGroup`: the largest round, upright ring under the launcher,
   1.5 to 6 in in radius, and what stands on it);
 - a part the file shows deployed (`findDeployedGroup`: when the model runs past 18 in toward an
@@ -388,20 +401,47 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   crease, merge and simplify all carry it. The stored GLB writes it as `_BODY` (unsigned 32-bit, one
   per vertex; a float mesh saved before has 16-bit where it fits, and the relay's validator allows
   both), so an edit of a saved robot can pick parts again. The lighter relay mesh drops it.
+- ⚠️ **A STEP import keeps its solids** (`stepParsed`, `engine/load.ts`). Until 2026-10-04 the STEP
+  worker's parts reached the import worker without `body`, so every STEP import fell back to one body
+  per connected piece of one colour: two solids of one colour that touch (a channel and its gear, a
+  hub and a motor shield, a gearbox face and a hub) were one part. That was the owner's "combines a
+  static channel and a gear into one component" and most of "the motor spins with the wheel"; the
+  round-two numbers below were measured in Node, which kept the ids, and so never saw it. A robot
+  saved before keeps the bodies its stored mesh was saved with.
 - ⚠️ **A body that is several LUMPS gets an id per lump** (`splitLumps`, in the simplifier). An
   exporter can put a channel and the gear beside it in one mesh or one multi-lump solid, and picking
   works on bodies, so they could only move together (owner, 2026-10-03). Lumps are joined across
   colour groups by position (a two-colour wheel stays one); the first keeps the id, so a one-lump body
-  keeps its id and a saved robot's rows still name the same parts. REV's kit: 7 of 2,150 solids.
-- ⚠️ **What turns with a wheel** (`turnsWithWheel`; owner: "the motor or the motor cover/shield spins
-  with the wheel sometimes", and on goBILDA's kit frame screws beside the axle did). The wheel's WIDTH
-  is the along-axle span of its ring: bodies CENTRED on the axle near the largest radius (a tyre, a
-  rim, a mecanum's side plates); a shield or pulley beside it is centred and big too, so the ring is
-  the bodies within 85 % of the largest. A body on the axle must overlap that width and stand out of
-  it by at most 0.6 in (a hub does; a motor, a bearing block, a shield do not). A body off the axle
-  must lie within it, and one smaller than a fastener lying square to the axle must be tangential (an
-  omni roller), not pointing toward the axle (a frame screw). Measured on goBILDA's kit: the rear
-  wheels 12–13 → 9 bodies (inboard bearings, collars, a frame screw out), the front 78 → 64.
+  keeps its id and a saved robot's rows still name the same parts. Measured: REV 14 of 4,010 solids,
+  goBILDA BIOBUZZ 6 of 7,235 (mecanum 8 of 9,909), goBILDA DECODE 11 of 7,905.
+- ⚠️ **What turns with a wheel** (`wheelBodies`, `turnsWithWheel`; owner: "the motor or the motor
+  cover/shield spins with the wheel sometimes"). The wheel's RADIUS is read off the geometry, the
+  axle height of the round bodies standing on the floor at its contact (`wheelRadiusAt`), with
+  0.2 in of slack; the drivetrain's catalogue wheel (often the 104 mm default) only when nothing is
+  there, with 0.35 in. A 104 mm cylinder on AndyMark's 3-in wheels took in frame pieces over them.
+  The wheel's WIDTH is the along-axle span of its ring: bodies CENTRED on the axle near the largest
+  radius (a tyre, a rim, a mecanum's side plates); a shield or pulley beside it is centred and big
+  too, so the ring is the bodies within 85 % of the largest. A body on the axle must touch that width
+  (0.05 in, a screw head on the hub's face) and stand out of it by at most 0.6 in (a hub does; a
+  bearing block, a shield do not); its SHAFT (on the axle, within 0.35 in of it, up to 10 in long)
+  turns however far it runs. A body off the axle must lie within the width. A motor on the axle never
+  turns (below), so a gearbox face against the hub is the motor's. The round-two rule that dropped
+  small bodies pointing at the axle (a frame screw) came out: on the seven bots below it never dropped
+  a screw, only omni pieces and REV's tread nubs, and which it dropped changed with the triangle count.
+- ⚠️ **A MOTOR ON THE AXLE does not turn** (`axleMotors`, 2026-10-04, owner: "You are still combining
+  the motor into the wheel"). A goBILDA 5203 is a dozen round bodies on its shaft's line (can, gearbox
+  barrel, face, bearings, shield, base, end cap, label), and with the intake gear, the 96 mm Hogback
+  flywheel or a drive wheel on its output shaft every one of them is coaxial and round. A motor is a
+  CAN (round, 1.1–1.9 in across, at least 1 in long, no shaft out of both its ends) grown along the
+  axle through what stacks on it (0.45–1.35 in from the axle, round or a plate no thicker than 0.6 in,
+  gaps under 0.3 in: the channel a motor sits in is neither, and runs past it), 1.6–7.5 in long, with
+  a FREE end (nothing round carries the axle on within 1 in: its end cap), not alone on its line. The
+  part being picked and what overlaps it (its hub, the screws in the hub, `attachedTo`) are never a
+  motor's. Out go its parts, what lies inside its span (bearings), and what lies past its free end; its
+  output shaft, coming out toward the part, stays.
+- **The axle of a round part** (`fitRound` without a hint) is the axis it is ROUNDEST about, of its
+  moments' axle and the three model axes (`roundestAxis`): at full resolution every 48 mm Gecko wheel's
+  fins put its moments' axle near vertical, so a click on one picked the wrong line.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now
@@ -413,11 +453,43 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   (`keepEditedMotion` moves their links; a wheel row the player edited keeps its corner). Each step's
   preview draws only what that step is about, with a legend under the cameras.
 - **Picking** (the Moving parts step, a selected row): a click on a wheel takes what lies in its cylinder and
-  turns with it; on a roller, flywheel or spinning part, everything on its axle (`coaxialBodies`),
-  where a body bigger than a fastener must be ROUND about the axle (a channel the shaft runs along is
-  centred on it too, and has corners) and a motor-sized cylinder past the end of the rest (the motor
-  driving it) stays; on anything else, the smaller bodies inside its box (`mountedBodies`: a plate's
-  hardware). Shift takes one body. A body is in one group at a time.
+  turns with it (`wheelBodies`, at the clicked body's own radius); on a roller, flywheel or spinning
+  part, its axle (`spinAxle`): bodies centred within 0.4 in of the line, as one run along it (0.4 in
+  gaps: a part on the far side of the robot that shares the line is another shaft), a body bigger than
+  a fastener ROUND about the axle or a hub under 0.7 in (a channel the shaft runs along is centred on
+  it too, and has corners), no motor, and every small body lying wholly inside one of the turning
+  parts' own cylinder (the screws through a gear, a gear's teeth when it is modelled tooth by tooth);
+  a click on a motor's own part takes that part alone. On anything else, the smaller bodies inside its
+  box (`mountedBodies`: a plate's hardware). Shift takes one body. A body is in one group at a time.
+- **Fast on every triangle.** `BodyStats` keeps each body's vertex runs (`runStart`, `runIdx`), so a
+  question about a few bodies reads their vertices only, in the model's own order (a fold's hinge comes
+  out bit for bit as before). Seeds are ranked by size to 0.05 in, so the same seed leads at any
+  triangle count. On the seven bots below the finders give the same groups at 250k and with every
+  triangle (2.3–7.1 M), over the bodies both have, in 62–106 ms at 250k and 234–470 ms in full (Node,
+  Ryzen 9 7950X); before, 380–1,075 ms at 250k and 30.2 s on the 7.1 M mecanum bot in full, the roller
+  search a full pass over the model per seed.
+- **A click** on any body of a found group, all 6,238 of them on the seven bots, takes nothing static
+  but in 7 (a click on a mecanum's roller pin, an omni roller, a static bushing): a click on a small
+  part is read off the round part it lies in or against (`leadOnAxle`). A click on a mecanum roller
+  takes less than its wheel (its own axle is at 45°).
+
+Measured 2026-10-04 with `scripts/robot-import/motion/` (below, "Proving it"): the editor's own
+pipeline in Node on the vendors' STEP files, each body labelled with its STEP part name, checked group
+for group against the real editor's draft (identical on all seven), pictures rendered offscreen, and
+the real editor's Play frames diffed (only the wheels, rollers, gears and flywheels change). Before is
+what the 2026-10-03 editor found (no STEP body ids; reproduced body for body), after is this code;
+counts are bodies:
+
+| starter bot (STEP, triangles) | before | after |
+|---|---|---|
+| goBILDA BIOBUZZ mecanum (3200-2627-0004, 7.1 M) | 4 wheels × 45; 6 "rollers": the intake gear with its 5203 motor (8 motor bodies), the Gecko roller, a motor end cap, 2 screws, 2 side rollers; flywheel with its motor (7) | 4 wheels × 46 (with shaft); intake gear 10 (gear, hub, output shaft, screws); Gecko roller 106; side rollers 29, 29; flywheel 58; no motor body |
+| goBILDA BIOBUZZ 6WD (3200-2627-0003, 5.7 M) | 4 corner wheels (64, 65, 9, 9), the middle pair not found; gear with motor (8), an end cap, flywheel with motor (6) | 6 wheels (117, 117, 58 × 4); rollers 9, 106, 29, 29; flywheel 58 |
+| goBILDA DECODE mecanum (3200-2526-0003, 6.2 M; no intake) | 10 "intake rollers" at the front: its drive axle, the upright drive motors' gearboxes and end caps (17 motor bodies); flywheel with its motor (6) | 4 wheels × 46; flywheel 111; no roller |
+| REV DUO DECODE (2.3 M; no intake) | 4 corner wheels (29, 29, 4, 4), the middle grip wheels not found; a 14-body "roller"; flywheel 23 | 6 wheels (32, 32, 5, 5, 1,023, 1,025: the grip wheels' tread nubs); flywheel 1,375; no roller |
+| AndyMark Robits BIOBUZZ, base and alt flower (4.6 M) | wheels 11, 15–16, 3, 3–4 (a 104 mm cylinder on 3-in wheels); 4 one- and two-body "rollers"; launcher gear with its NeveRest (4 motor bodies) | wheels 17, 17, 5, 5; the two intake shafts with their gears 203–204, 151–152; launcher gears 3, 10 |
+| AndyMark Robits BIOBUZZ mecanum (5.3 M) | wheels 36 × 4; rollers 13, 12; launcher gear with its NeveRest (4) | wheels 38 × 4; rollers 197, 147; launcher gears 3, 10 |
+
+The editor, rebuilt with this code, finds the same groups as the Node probe on all seven.
 - **Generic joints** (`JOINT_ROLES`), for a mechanism the named roles do not cover: `spin` turns
   continuously (turns a second), `swing` to an angle and back (an arm, a kicker; degrees), `slide`
   along a line and back (a lift, an extension; inches). Each is moved by one of the robot's signals
@@ -751,3 +823,11 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   long tasks, renderer and total memory, what the Model step says, pictures, Save and the saved
   descriptor, the stored mesh, a test drive). It needs a STEP or zip on disk: the vendors' files are
   never committed.
+- **Moving parts on real CAD** (`scripts/robot-import/motion/`): `stepnames.ts` reads a STEP as the
+  editor does, keeping each body's STEP part name; `motionprobe.ts` runs the editor's pipeline and
+  finders on it at 250k or every triangle, names every body of every group, clicks every body
+  (`--clickall`), compares two runs (`--compare`) or the editor's own draft (`--cfg`), and renders
+  each group offscreen (`softrender.ts`, no GPU); `motioneditor.cjs` drives the production editor
+  offscreen to Mechanisms, dumps its draft and pictures each group picked and Play; `framediff.mjs`
+  paints what moved between two Play frames. `moving parts 3` in `npm test` holds each case the
+  starter bots showed as a synthetic scene.
