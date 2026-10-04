@@ -821,7 +821,9 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   into faces and cut by the size filter. `scripts/robot-import/realcadprobe.cjs --files <paths> --out <dir>` imports real
   files through the production editor in an offscreen Electron window, one at a time (timeline,
   long tasks, renderer and total memory, what the Model step says, pictures, Save and the saved
-  descriptor, the stored mesh, a test drive). It needs a STEP or zip on disk: the vendors' files are
+  descriptor, the stored mesh, a test drive). The descriptor is written whole to
+  `<out>/<file>-<detail>-imported.json`; the BIOBUZZ IMPORT lane's side-roller fixture
+  (`scripts/smoke-biobuzz/fixtures/sideRollerImport.ts`) is one, copied as numbers. It needs a STEP or zip on disk: the vendors' files are
   never committed.
 - **Moving parts on real CAD** (`scripts/robot-import/motion/`): `stepnames.ts` reads a STEP as the
   editor does, keeping each body's STEP part name; `motionprobe.ts` runs the editor's pipeline and

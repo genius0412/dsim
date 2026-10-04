@@ -474,7 +474,11 @@ const BASELINE = {
   // 2026-10-01: 778.01 -> 797.84 (+19.83), MEASURED: the imported robot's sim and the visuals relay,
   // which a LAN host's Room runs (see the RE-MEASURED entry above). Alpha's own drift was +3.67 of it.
   hostWorker: { gzip: 797.84 * 1000 },
-  physics3d: { gzip: 1125.06 * 1000 },
+  // 2026-10-04: 1125.06 -> 1147.60 (+22.54), MEASURED. 22.26 of it was already on alpha
+  // (e5c3f6a8 builds 1147.32, 0.24 under the tolerance edge); the side-roller import fix
+  // (`SIM_PATCH` 6: `bbImportClipReach`, the patch flag threaded through the 3D compound) is the
+  // last 0.28, which crossed it.
+  physics3d: { gzip: 1147.6 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
   // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
   // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a
