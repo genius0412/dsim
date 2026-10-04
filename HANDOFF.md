@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-04f (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
+
+**State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 7 and the 5-band descriptor are server changes). Not on `main`.** `npm test` (shared 4055, BIOBUZZ 5569), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass.
+
+- **Owner:** "For the gobilda biobuzz robot, I know i can get closer into the flower but it blocks me. Fix."
+- **Measured:** the real CAD, every triangle swept straight in against what the 3D robot meets at a FLOWER (plates, HIPS pipes, supports, wall), stops 0.38 in short of the ring axis; the sim stopped it at 0.77. Now 0.38, and at 10–20° never more than 0.05 further out than the CAD. biobuzz.md "AN IMPORT GOES INTO A FLOWER AS FAR AS ITS CAD DOES".
+- **What changed** (all behind `SIM_PATCH` 7): FLOWER middle/top plates are solids over their measured outline (`BB_FLOWER_PLATE_OUTLINE`, RENDER lane re-measures `field.glb`), not boxes; the importer gives the middle plate a band of its own with 0.1 in clear either side, up to 5 bands, and writes per-band `cuts` where the convex hull overstates the model (`computeBands`, `bandCuts`); `bbImportClipReach` cuts side-roller imports back to them inside the mouth; a band wholly under the mouth slot no longer keeps a 0.1-in bar across the mouth (that bar, from this morning's floor band, made the bottom POLLEN ride up: F2 0/9 off line, now 84/84).
+- **The owner has to re-save the robot**: open it in the importer from the library and save (the editor re-measures the stored mesh). The old descriptor still plays, with the old bands.
+- **Fixtures:** `SIDE_ROLLER_IMPORT` stays as saved (the patch-6 pins use it); `SIDE_ROLLER_IMPORT_V7` is the same robot as measured now. 3D standard-robot pins re-recorded, old ones checked under patch 6. The standard side-roller drive-in bound went 1.8 → 2.0 in (1.844 against the real plate outline).
+- **Costs:** this robot's 3D compound is 20 colliders (9 before), no measurable tick change; descriptor 3.4 KB (1.6 before), budget now 6 KB; importer and measure-worker chunks +1.4 KB gz each (baselines raised).
+- **Open:** 2D still stops it ~2.3 in short (its FLOWER is one foot rectangle); the standalone probes are `scratch/realstop4.ts` (real CAD), `scratch/simstop2.ts` (sim), `scratch/cutgen.ts` (bands and cuts off a STEP read), gitignored.
+
 # HANDOFF — 2026-10-04e (importer on goBILDA's BIOBUZZ mecanum: build from the model, every fin turns, side rollers at a FLOWER)
 
 **State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 6 is a server change). Not on `main`.** `npm test` (shared 4040, BIOBUZZ 5560), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass.

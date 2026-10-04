@@ -136,7 +136,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
   `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
   positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
-- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLID BOXES**
+- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLIDS**
   (`groups.ts`, `GROUP_FLOWER_RING` / `GROUP_FLOWER_SOLID` / `GROUP_CHASSIS`;
   `flowerTube.ts`, `buildFlowerSolids3d`). A trimesh has no inside. A chassis pressed past a
   plate's outer face was pushed out through the plate's top face: up onto the 0.354-in LOWER
@@ -147,6 +147,11 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   before, 1,025 drive-ins and 214 shoves lifted the chassis over 0.1 in and 2 drive-ins left it
   at z 0.34 where 4 s of any drive command moved it 0.004 in; lower plate removed alone, 55
   shoves sank it up to 1.5 in. After: 0 lifted, 0 sunk, 0 parked, deepest plate contact 0.38 in.
+  - **Since `SIM_PATCH` 7 each solid is the plate's measured outline** (`BB_FLOWER_PLATE_OUTLINE`,
+    about that plate's own bore, turned to the flower's mouth), not a box over `rect`. The plates
+    are near octagons, 2.39 in out from the bore and 2.97 along the wall but 3.11 at 45°, where the
+    box's corner was 3.82: a robot driven in at an angle stopped up to 0.7 in short. The RENDER lane
+    re-measures the outlines off the shipped `field.glb`. A replay recorded before keeps the boxes.
   - The lower plate gets no box: the middle plate's footprint contains it and every chassis spans
     the middle plate's z band, so it never stopped a chassis. Elements meet exactly the plates they
     met before, and a deployed ramp meets neither the trimesh nor the solids (the swing guard's
@@ -2263,6 +2268,39 @@ positions.
   e5c3f6a8 (`scripts/sideroller-pre6-scenes.ts`), and runs 36 drive-ins per engine on the fixture.
   It is a `step()` change, so a server change (a room steps imports on the game server). Standard
   robots are bit-identical (`IMP_STANDARD_PINS`, `L2_MECH_PINS`).
+- ⚠️ **AN IMPORT GOES INTO A FLOWER AS FAR AS ITS CAD DOES, `SIM_PATCH` 7** (owner, 2026-10-04: "For
+  the gobilda biobuzz robot, I know i can get closer into the flower but it blocks me"). The real
+  robot, every triangle of the full mesh swept straight in against everything the 3D robot meets at
+  a FLOWER (both plates over their outlines, the HIPS pipes and supports from the field CAD, the
+  wall), stops with its front point 0.38 in short of the ring axis, its intake's frame between the
+  rollers (x 7.67) on the middle plate. The sim stopped it at 0.77. Four causes, each measured:
+  - **The plates were boxes** whose corners stood up to 0.7 in proud (above).
+  - **A band is one convex prism.** Between its two side rollers the band at the plate's heights
+    bridged the gap at the roller line (8.08), 0.4 in past the frame.
+  - **A band boundary fell inside the plate** (z 5.0), so the band above, built for what the robot
+    carries higher up (8.0 in the centre), met the plate's top quarter inch; and the band under the
+    plate held the intake's cross bar (7.81) that passes under the real one.
+  - **A band ending under the mouth slot kept its top 0.1 in whole**, a bar across the mouth. Harmless
+    while the lowest band reached 5 in; the floor band (0–1 in) the importer writes since
+    2026-10-04 put it at the POLLEN's height, and the bottom POLLEN rode onto it (F2, 0.4 in or more
+    off line: 0 of 9).
+
+  The fix: the importer gives the middle plate a band of its own with the bands either side 0.1 in
+  clear (a prism's rounded edge catches a plate it passes 0.06 under), and measures each band's
+  cuts (`docs/area/robot-import.md`, "Height bands"). `bbImportClipReach` takes each band back to
+  its cut inside a side-roller mouth, never behind the mouth's face, and a band wholly under the
+  slot is carved top to bottom. Straight in, it stops 0.38 in short (0.38 real); at 10° and 20°
+  across three offsets it is never more than 0.05 in further out than the CAD. The 3D compound for
+  this robot is 20 colliders (9 with three bands) at no measurable tick cost; retrieval is 84 of 84
+  (four FLOWERS × seven offsets × three skews). It needs the robot re-saved: a library robot opened
+  in the importer re-measures its stored mesh. The 2D FLOWER (one foot rectangle) is unchanged; it
+  still stops this robot about 2 in short.
+
+  `SIM_PATCH` 7 gates all of it (`importBandCutsPre7`, the `plateOutlines` flag through
+  `buildStatics3d`): the IMPORT lane holds four plate-corner scenes stepped under patch 6 to their
+  pins (`scripts/flowerplate-pre7-scenes.ts`), the 3D standard-robot pins were re-recorded with the
+  old ones checked under patch 6, and `SIDE_ROLLER_IMPORT_V7` is the robot as the importer now
+  measures it.
 - **Launchers**: a turret is the placed `shooter` (`shooter2` for a double turret's NECTAR head);
   its flywheel axle is the placed height less the head's path radius, so the rest-pitch release is
   exactly the placed `z` (`bbImportTurretAxleZ`, read clamped to 7.5–18). A dumper's line is
@@ -2272,12 +2310,13 @@ positions.
 - **Height**: `heightIn` is `imported.heightIn` rounded UP onto the 12–18 dial, with no stow height
   (the CAD is the starting configuration, already inside R102's cube).
 - **3D is the CAD bands** (`import3dShapes`): per band, below `BB3_MOUTH_SLOT_Z` the 2D carve
-  (chassis + plates) with a `GROUP_POCKET` filler per mouth, above it the whole band; no
+  (chassis + plates) with a `GROUP_POCKET` filler per mouth, above it the whole band (a band wholly
+  under the slot has no whole part since patch 7); no
   `bbMechEnvelopes` shape (the bands hold the turret). Prisms are `convexHull`s with the chassis
   boxes' edge break (eroded by `r`, contact skin `r`). A `ConvexPolyhedron` is NARROW to
   `groundRoll3d`, so a POLLEN that lands on an import's top rolls off. The FULL predictor gives the
   LOCAL import the authority's compound and a REMOTE one the uncarved bands; the PERF lane holds a
-  heavy import (16-vertex hull, three bands, side sweepers) to the standard budgets.
+  heavy import (16-vertex hull, four bands, side sweepers) to the standard budgets.
 - **The LIGHT predictor** clamps an import to the walls by its hull turned to the heading and
   separates any pair with an import by `polySatGap` on the two footprint polygons. `robotExtents`
   is a box with a SYMMETRIC flank, so an asymmetric import was drawn 5 in off a wall it was

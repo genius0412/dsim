@@ -113,7 +113,8 @@ import {
   type BbKeepOut,
 } from '../../src/games/biobuzz/parts';
 import { coerceBiobuzzSpec } from '../../src/games/biobuzz/coerce';
-import { BB_PRESETS } from '../../src/games/biobuzz/config';
+import { BB_FLOWER_PLATE_OUTLINE, BB_PRESETS } from '../../src/games/biobuzz/config';
+import { cadFlowerRings } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
 import { BB_SCORE_MODES } from '../../src/games/biobuzz/mounts';
 import { BB_TOP_CAP_Z, bbTopCapBand, bbTopCapSegments } from '../../src/games/biobuzz/scene/renderRobots';
@@ -9351,6 +9352,42 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     // So this measures the asset PER PLANE, with the loader's own exported function: a closed slab
     // puts its two faces in one plane cluster and splits the area both ways, an open sheet puts all
     // of it one way. Run over the shipped `.glb` in Node -- no GL context, no camera, no opinion.
+    // THE FLOWER PLATES A ROBOT MEETS ARE THE ASSET'S OWN (`BB_FLOWER_PLATE_OUTLINE`, `SIM_PATCH` 7):
+    // every `flower_0` vertex in each plate's z band (± 0.02), about that plate's own bore, hulled; the
+    // stored outline must have the same support in every direction to the 3-decimal rounding
+    {
+      const f0 = FIELD_GLB_SCENE?.getObjectByName('flower_0') ?? null;
+      const rings = cadFlowerRings(0);
+      const worst: Record<string, number> = {};
+      if (f0) {
+        f0.updateMatrixWorld(true);
+        const v = new THREE.Vector3();
+        for (const id of ['mid', 'top'] as const) {
+          const ring = rings.find((r) => r.id === id);
+          if (!ring) continue;
+          const pts: { x: number; y: number }[] = [];
+          f0.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!(m as { isMesh?: boolean }).isMesh) return;
+            const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+            for (let i = 0; i < pos.count; i++) {
+              v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+              if (v.z >= ring.z[0] - 0.02 && v.z <= ring.z[1] + 0.02) pts.push({ x: v.x - ring.bore[0], y: v.y - ring.bore[1] });
+            }
+          });
+          const stored = BB_FLOWER_PLATE_OUTLINE[id].map(([x, y]) => ({ x, y }));
+          const support = (P: readonly { x: number; y: number }[], a: number): number => Math.max(...P.map((p) => p.x * Math.cos(a) + p.y * Math.sin(a)));
+          let w = 0;
+          for (let k = 0; k < 72; k++) w = Math.max(w, Math.abs(support(pts, (k * Math.PI) / 36) - support(stored, (k * Math.PI) / 36)));
+          worst[id] = pts.length > 0 ? w : Infinity;
+        }
+      }
+      check(
+        "flower plates: the middle and top plates' stored outlines are the shipped field.glb's, measured about each plate's own bore (support within 0.002 in, 72 directions)",
+        !!f0 && worst.mid <= 0.002 && worst.top <= 0.002,
+        JSON.stringify(worst),
+      );
+    }
     {
       const scene = FIELD_GLB_SCENE;
       check('field.glb parses headlessly, so the asset itself can be measured here', scene !== null);

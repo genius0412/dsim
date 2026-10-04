@@ -92,9 +92,11 @@ export interface ImportedRobot {
   heightIn: number;
   /** wheel contact points FL, FR, BL, BR, each inside the hull. Absent = the rectangle default. */
   wheels?: Vec2[];
-  /** 3D only (BIOBUZZ): up to 3 stacked convex prisms for the tall parts, z0 < z1 within
-   *  [0, heightIn], each hull ≤ 12 vertices. Absent = one prism of `hull` to `heightIn`. */
-  bands?: { z0: number; z1: number; hull: Vec2[] }[];
+  /** 3D only (BIOBUZZ): up to 5 stacked convex prisms for the tall parts (3 until 2026-10-04),
+   *  z0 < z1 within [0, heightIn], each hull ≤ 12 vertices, each with at most 8 `cuts` (where the
+   *  hull stands proud of the model, `ImportedCut` in `src/types.ts`). Absent = one prism of
+   *  `hull` to `heightIn`. */
+  bands?: { z0: number; z1: number; hull: Vec2[]; cuts?: ImportedCut[] }[];
   /** mechanism placements; each game reads the fields it knows. */
   mech?: ImportedMech;
 }

@@ -647,7 +647,10 @@ const BASELINE = {
   // (+2.6: `motion.ts`'s flywheel, turret and deployed-part finders, upright side rollers, the wheel's
   // turns-with rules, the generic spin / swing / slide joints and their gearing) and
   // `importerEngine-*.js` 64.39 (+1.9: `splitLumps`, the preview playing joints and gearing).
-  importer: { gzip: 84.28 * 1000 },
+  // 2026-10-04 (FLOWER plate bands and cuts): 84.28 -> 89.72, raised on purpose. HEAD before it
+  // (14f373dd) already measured 88.24, inside tolerance; `geometry-*.js` +1.5: `computeBands`'s own
+  // plate band and `bandCuts`, which measures where each band's hull stands proud of the model.
+  importer: { gzip: 89.72 * 1000 },
   // 2026-10-01: NEW (lane 9). `importWorker-*.js` 104.06 (three.js core, the GLB/glTF, STL, OBJ+MTL
   // and PLY loaders, meshopt's simplifier, the weld and the crease: the parse-to-prepared pipeline
   // that used to block the main thread for seconds; and GLTFExporter for the bake's mesh half),
@@ -667,7 +670,9 @@ const BASELINE = {
   // float writer (`floatGlb.ts`, GLTFExporter), lazy in the worker and fetched only when a room asks
   // for the lighter mesh. It ran on the main thread, 0.3 s from the old 69k float mesh and 0.8 s
   // from a 250k one (Node), which froze the lobby the first time a room asked.
-  importworker: { gzip: 154.05 * 1000 },
+  // 2026-10-04 (FLOWER plate bands and cuts): 154.05 -> 159.18, raised on purpose. HEAD before it
+  // measured 157.80; `measureWorker-*.js` +1.4, the same `computeBands` / `bandCuts` code.
+  importworker: { gzip: 159.18 * 1000 },
   // 2026-10-01: NEW. `occt-import-js-*.wasm` 3110.91 (OpenCascade, 7.6 MB raw), `stepWorker-*.js`
   // 21.95 (the worker with occt's glue) and `stepReader-*.js` 0.42. Fetched only when a STEP file is
   // dropped; every other import, and every player who never imports a robot, pays nothing.

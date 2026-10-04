@@ -538,6 +538,36 @@ export const BB_FLOWER_OUTER_MIN = 2.392;
 export const BB_FLOWER_OUTER_MAX = 3.113;
 
 /**
+ * THE MIDDLE AND TOP PLATES' OWN OUTLINES (in), about each plate's bore centre, in FLOWER 1's frame
+ * (the field side is +x, the wall side −x): the 2D convex hull of every `flower_0` vertex in the plate's
+ * z band (± 0.02) of the shipped `field.glb`, about that plate's own bore (`cadFlowerRings`; the middle
+ * one's sits 0.011 in off the top's). NOT the rectangle `fieldColliders`' `rect` bounds them by: the
+ * plates are close to octagons, 2.39 out from the bore and 2.97 along the wall but only 3.11 at 45°,
+ * where the rectangle's corner is 3.82 (owner, 2026-10-04, driving an imported goBILDA bot in at an
+ * angle: "I know i can get closer into the flower but it blocks me" — the box corner held it 0.84 in
+ * short). What a robot meets of a FLOWER from `SIM_PATCH` 7 (`sim3d/flowerTube.ts`,
+ * `buildFlowerSolids3d`). The RENDER lane re-measures the asset and pins these.
+ */
+export const BB_FLOWER_PLATE_OUTLINE: { readonly mid: readonly (readonly [number, number])[]; readonly top: readonly (readonly [number, number])[] } = {
+  mid: [
+    [-2.609, -1.025], [-2.333, -2.056], [-2.1, -2.304], [-1.807, -2.425], [-1.619, -2.486],
+    [-0.078, -2.961], [0.064, -2.973], [1.604, -2.486], [1.792, -2.425], [2.085, -2.304],
+    [2.317, -2.056], [2.393, -1.745], [2.393, 1.741], [2.38, 1.892], [2.317, 2.051],
+    [2.03, 2.295], [1.88, 2.376], [1.792, 2.421], [1.604, 2.482], [0.064, 2.968],
+    [-0.078, 2.956], [-1.619, 2.482], [-1.807, 2.421], [-1.922, 2.37], [-2.232, 2.191],
+    [-2.304, 2.034], [-2.407, 1.723], [-2.603, 1.032],
+  ],
+  top: [
+    [-2.385, -1.725], [-2.343, -1.854], [-2.213, -2.184], [-1.928, -2.356], [-1.796, -2.410],
+    [-1.608, -2.471], [-0.066, -2.947], [0.073, -2.958], [1.615, -2.471], [1.803, -2.410],
+    [1.935, -2.356], [2.170, -2.167], [2.379, -1.892], [2.392, -1.725], [2.392, 1.725],
+    [2.379, 1.891], [2.177, 2.174], [1.935, 2.355], [1.803, 2.410], [1.615, 2.471], [0.073, 2.958],
+    [-1.608, 2.471], [-1.796, 2.410], [-1.928, 2.355], [-2.213, 2.184], [-2.343, 1.854],
+    [-2.385, 1.725],
+  ],
+};
+
+/**
  * The flower's outer radius in the direction a mechanism approaches from — `theta` is the angle
  * between the flower's INWARD wall normal (`FLOWER_MOUTH`) and the horizontal line from its bore
  * centre to that mechanism, in radians, either sign.

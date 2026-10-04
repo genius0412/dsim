@@ -30189,6 +30189,12 @@ const IMP_STANDARD_PINS: Record<string, string> = {
   'chain teleop': 'rr=1281 2256841879:3095239556 3284001669:73183289 1872871630:404922659',
   'biobuzz auto': 'rr=991 4255951604:2662367511 660269574:1959277593 4168578138:2355650975',
   'biobuzz teleop': 'rr=991 1190480768:2589840997 1619190486:802938886 1865481434:3779862946',
+  'bb3d auto': 'rr=669 1607295770:1409803632 2200351981:4275673017',
+  'bb3d teleop': 'rr=669 2836792230:1383244223 880852445:3017784053',
+};
+// Re-pinned 2026-10-04 for `SIM_PATCH` 7: a robot meets a FLOWER's middle and top plates over their
+// measured outline, not a box. These are the pins they had; a world stepped under patch 6 lands on them.
+const IMP_STANDARD_PINS_PATCH6: Record<string, string> = {
   'bb3d auto': 'rr=693 3060472950:2940359141 1030663276:691242207',
   'bb3d teleop': 'rr=693 3798170826:4183526500 3022533868:2001194370',
 };
@@ -30234,6 +30240,11 @@ function impStandardCheck(g: GameId | 'bb3d'): void {
       const old = impStandardRun(g, phase, 2);
       check(`imported robots: ...and under SIM_PATCH 2 (a replay recorded before the 3D wall square-up moved into the solve) the same scene still steps to its old pin — ${key}`, old === before, old);
     }
+    const before6 = IMP_STANDARD_PINS_PATCH6[key];
+    if (before6) {
+      const old = impStandardRun(g, phase, 6);
+      check(`imported robots: ...and under SIM_PATCH 6 (square FLOWER plates) the same scene steps to the pin it had before patch 7 — ${key}`, old === before6, old);
+    }
   }
 }
 // one block per game, so the sharder can spread them
@@ -30274,13 +30285,20 @@ function impBroken(c: ImportedRobot): string[] {
     for (const w of c.wheels) if (polyFeature(h, w).depth < 0 || !onGrid(w.x) || !onGrid(w.y)) bad.push('wheel outside the hull / off grid');
   }
   if (c.bands) {
-    if (c.bands.length > 3) bad.push('more than 3 bands');
+    if (c.bands.length > 5) bad.push('more than 5 bands');
     for (let i = 0; i < c.bands.length; i++) {
       const bd = c.bands[i];
       if (!(bd.z0 < bd.z1 && bd.z0 >= 0 && bd.z1 <= c.heightIn)) bad.push(`band ${i} z range`);
       if (i > 0 && c.bands[i - 1].z0 > bd.z0) bad.push('bands not sorted');
       if (bd.hull.length < 3 || bd.hull.length > 12) bad.push(`band ${i} has ${bd.hull.length} vertices`);
       for (const p of bd.hull) if (polyFeature(h, p).depth < 0) bad.push(`band ${i} outside the hull`);
+      if (bd.cuts) {
+        if (bd.cuts.length === 0 || bd.cuts.length > 8) bad.push(`band ${i} has ${bd.cuts.length} cuts`);
+        for (const ct of bd.cuts) {
+          if (!['front', 'back', 'left', 'right'].includes(ct.edge)) bad.push(`band ${i} cut edge ${ct.edge}`);
+          if (!(ct.from < ct.to) || ![ct.from, ct.to, ct.at].every((v) => Number.isFinite(v) && onGrid(v))) bad.push(`band ${i} cut ${JSON.stringify(ct)}`);
+        }
+      }
     }
   }
   if (c.mech?.intakes) {
@@ -30297,7 +30315,8 @@ function impBroken(c: ImportedRobot): string[] {
     if (polyFeature(h, p).depth < 0 || !onGrid(p.x) || !onGrid(p.y)) bad.push(`${k} outside the hull / off grid`);
     if (!(p.z >= 0 && p.z <= c.heightIn) || !onGrid(p.z)) bad.push(`${k} z ${p.z}`);
   }
-  if (JSON.stringify(c).length > 2048) bad.push(`descriptor is ${JSON.stringify(c).length} bytes`);
+  // 16 + 5 × 12 vertices and 5 × 8 cuts at their longest: about 5.2 KB (`docs/area/robot-import.md`)
+  if (JSON.stringify(c).length > 6144) bad.push(`descriptor is ${JSON.stringify(c).length} bytes`);
   return bad;
 }
 
@@ -30344,9 +30363,37 @@ function impBroken(c: ImportedRobot): string[] {
         { z0: 0, z1: 6, hull: circle(20, 40) },
         { z0: 2, z1: 99, hull: circle(8, 4, 2, 0) },
         { z0: 1, z1: 3, hull: circle(6, 1) },
+        { z0: 3, z1: 5, hull: circle(7, 1) },
+        { z0: 6, z1: 9, hull: circle(9, 2) },
       ],
     }],
     ['a band with a degenerate hull', { ...base, bands: [{ z0: 0, z1: 5, hull: [{ x: 0, y: 0 }, { x: 1, y: 0 }] }] }],
+    ['band cuts: junk, reversed, zero-wide, far off, twenty of them', {
+      ...base,
+      bands: [
+        {
+          z0: 0,
+          z1: 5,
+          hull: circle(12, 6),
+          cuts: [
+            { edge: 'front', from: 2, to: -2, at: 5.0001 },
+            { edge: 'top', from: -1, to: 1, at: 3 },
+            { edge: 'left', from: 1, to: 1, at: 3 },
+            { edge: 'back', from: NaN, to: 1, at: 3 },
+            { edge: 'right', from: -1e9, to: 1e9, at: -1e9 },
+            null,
+            'cut',
+            ...Array.from({ length: 20 }, (_, i) => ({ edge: 'left', from: i, to: i + 0.5, at: 4 })),
+          ],
+        },
+        { z0: 5, z1: 9, hull: circle(8, 4), cuts: [{ edge: 'front', from: 'a', to: 1, at: 2 }] },
+      ],
+    }],
+    ['band cuts on a model 2× over the cube', {
+      ...base,
+      hull: [{ x: -18, y: -16 }, { x: 18, y: -16 }, { x: 18, y: 16 }, { x: -18, y: 16 }],
+      bands: [{ z0: 0, z1: 6, hull: [{ x: -18, y: -16 }, { x: 18, y: -16 }, { x: 18, y: 16 }, { x: -18, y: 16 }], cuts: [{ edge: 'front', from: -10, to: 10, at: 16 }, { edge: 'back', from: -4, to: 6, at: -12 }] }],
+    }],
     ['mech: far shooter, bad edges, reversed spans, ten intakes', {
       ...base,
       mech: {
@@ -30414,7 +30461,28 @@ function impBroken(c: ImportedRobot): string[] {
   check('coerceImported: three wheels, a NaN wheel or no spread drop the wheels', !want('three wheels')!.wheels && !want('a NaN wheel')!.wheels && !want('four wheels on one point')!.wheels);
   {
     const bands = want('five bands, unsorted, one inverted, one outside')!.bands ?? [];
-    check('coerceImported: bands — at most 3, the inverted one dropped, sorted by z0', bands.length === 3 && bands[0].z0 <= bands[1].z0 && bands[1].z0 <= bands[2].z0, JSON.stringify(bands.map((b) => [b.z0, b.z1, b.hull.length])));
+    check('coerceImported: bands — at most 5, the inverted one dropped, sorted by z0', bands.length === 5 && bands.every((b, i) => i === 0 || bands[i - 1].z0 <= b.z0), JSON.stringify(bands.map((b) => [b.z0, b.z1, b.hull.length])));
+  }
+  {
+    const bands = want('band cuts: junk, reversed, zero-wide, far off, twenty of them')!.bands ?? [];
+    const cuts = bands[0]?.cuts ?? [];
+    check(
+      'coerceImported: band cuts — junk and zero-wide ones dropped, a reversed one put in order, one far off clamped, at most 8, none on a band whose only cut is junk',
+      cuts.length === 8 && isDeepStrictEqual(cuts[0], { edge: 'front', from: -2, to: 2, at: 5 }) && cuts[1].edge === 'right' && cuts[1].to === 10000 && cuts[1].at === -10000 &&
+        cuts.slice(2).every((ct) => ct.edge === 'left') && bands.length === 2 && bands[1].cuts === undefined,
+      JSON.stringify(cuts),
+    );
+  }
+  {
+    const c = want('band cuts on a model 2× over the cube')!;
+    const s = (polyBounds(c.hull).maxX - polyBounds(c.hull).minX) / 36;
+    const cuts = c.bands?.[0]?.cuts ?? [];
+    const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1 / 64;
+    check(
+      'coerceImported: a model scaled to the cube scales its band cuts with it (span and line alike)',
+      cuts.length === 2 && near(cuts[0].from, -10 * s) && near(cuts[0].to, 10 * s) && near(cuts[0].at, 16 * s) && near(cuts[1].from, -4 * s) && near(cuts[1].at, -12 * s),
+      `scale ${s}: ${JSON.stringify(cuts)}`,
+    );
   }
   {
     const c = want('mech: far shooter, bad edges, reversed spans, ten intakes')!;
@@ -30509,8 +30577,8 @@ function impBroken(c: ImportedRobot): string[] {
   });
   const frame = JSON.stringify({ t: 'update', patch: { spec: { ...DEFAULT_SPEC, imported: hostileImp(ID_A) } } });
   check('imports/cost: the hostile frame fits the server’s 64 KiB cap (it is a real attack, not a hypothetical one)', frame.length < 64 * 1024 && frame.length > 60_000, String(frame.length));
-  check('imports/cost: the input bounds are what the importer needs and no more (64 points a polygon, 6 bands read)',
-    IMPORT_MAX_INPUT_POINTS === 64 && IMPORT_MAX_BAND_INPUTS === 6);
+  check('imports/cost: the input bounds are what the importer needs and no more (64 points a polygon, 10 bands read for the 5 kept)',
+    IMPORT_MAX_INPUT_POINTS === 64 && IMPORT_MAX_BAND_INPUTS === 10);
   /** the median of `n` timed calls, after 10 untimed ones (JIT); `inputs` are parsed BEFORE the clock
    *  starts, so what is measured is the coercion, not `JSON.parse` of 62 KB */
   const median = <T,>(make: () => T, f: (x: T) => void, n = 25): number => {
@@ -31228,6 +31296,86 @@ function impPlayCheck(g: GameId): void {
   const dc = em.buildFromCad('decode', { ...DEFAULT_SPEC, intake: 'sloped' }, { intake: null, launcher: { at: [-1, 0, 10], turret: false } });
   check('cad build: DECODE with no roller is loaded by hand, and a flywheel without a ring is a fixed launcher', !!dc && dc.spec.intake === 'none' && decodeFixedLauncher(dc.spec), J(dc?.set));
   check('cad build: Chain Reaction is left alone', em.buildFromCad('chain', DEFAULT_SPEC, cad) === null);
+  // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
+  // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
+  // front wheels from 1 in: under 1 in only the wheels stand, so a field element's low plate slides under
+  {
+    const geo = await import('../src/robotImport/geometry');
+    const robot = [
+      synth.cylY('wheel_fl', G, 5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_fr', G, 5, 2, 2, -8, -6.5, 24),
+      synth.cylY('wheel_bl', G, -5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_br', G, -5, 2, 2, -8, -6.5, 24),
+      synth.box('frame', G, -8, 7, -6.5, 6.5, 1, 5),
+      synth.box('intake', G, 7, 9.7, -8, 8, 1, 4),
+      synth.box('tower', G, -4, 2, -3, 3, 5, 12),
+    ];
+    const bands = geo.computeBands(mk(robot), 12) ?? [];
+    const front = (h: readonly { x: number }[]): number => Math.max(...h.map((p) => p.x));
+    check('cad build: a band of its own under the intake: from the tiles to the frame, its front at the wheels, and the band above out to the intake',
+      bands.length >= 2 && bands[0].z0 === 0 && bands[0].z1 <= 1 && front(bands[0].hull) < 7.1 && front(bands[1].hull) > 9.6,
+      J(bands.map((b) => [b.z0, b.z1, front(b.hull)])));
+  }
+  // A FLOWER'S MIDDLE PLATE IS A BAND OF ITS OWN, AND A RECESS IS CUT (`computeBands`, `bandCuts`,
+  // 2026-10-04): two side rollers stand to x 9.7 at |y| 5..8, the frame between them only to 7.5, and
+  // a cross bar under the plate to 8.2. The convex band bridges the rollers at 9.7; the cut takes the
+  // band at the plate's heights back to the frame, and nothing of the model is past it
+  {
+    const geo = await import('../src/robotImport/geometry');
+    const { FLOWER_RING_Z } = await import('../src/games/biobuzz/fieldDims.gen');
+    const { IMPORT_EDGE_N, IMPORT_EDGE_P } = await import('../src/sim/importedMech');
+    const robot = [
+      synth.cylY('wheel_fl', G, 5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_fr', G, 5, 2, 2, -8, -6.5, 24),
+      synth.cylY('wheel_bl', G, -5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_br', G, -5, 2, 2, -8, -6.5, 24),
+      synth.box('frame', G, -8, 7.5, -8, 8, 1, 7),
+      synth.box('roller_l', G, 6, 9.7, 5, 8, 1, 7),
+      synth.box('roller_r', G, 6, 9.7, -8, -5, 1, 7),
+      synth.box('bar', G, 6, 8.2, -5, 5, 2.5, 3.5),
+      synth.box('tower', G, -4, 2, -3, 3, 7, 12),
+    ];
+    const parts = mk(robot);
+    const bands = geo.computeBands(parts, 12) ?? [];
+    const [p0, p1] = FLOWER_RING_Z.mid;
+    const plate = bands.find((b) => b.z0 <= p0 && b.z1 >= p1 && b.z1 - b.z0 < 1.4);
+    const below = bands.filter((b) => b.z1 <= p0);
+    const above = bands.filter((b) => b.z0 >= p1);
+    const cut = plate?.cuts?.find((c) => c.edge === 'front');
+    // every model point at the band's heights inside the cut's span stands no further out than it
+    let worst = -Infinity;
+    if (plate && cut) {
+      for (const p of parts) {
+        for (let i = 0; i < p.positions.length; i += 3) {
+          const [x, y, z] = [p.positions[i], p.positions[i + 1], p.positions[i + 2]];
+          if (z >= plate.z0 && z <= plate.z1 && y >= cut.from && y <= cut.to) worst = Math.max(worst, x);
+        }
+      }
+    }
+    check(
+      "band cuts: a FLOWER's middle plate is a band of its own (to the 1/64 grid), the bands either side end 0.1 in clear of it, and nothing below it carries a cut",
+      !!plate && plate.z0 === Math.floor(p0 * 64) / 64 && plate.z1 === Math.ceil(p1 * 64) / 64 &&
+        below.length >= 1 && below.every((b) => !b.cuts && b.z1 <= p0 - 0.1) && above.length >= 1 && above.every((b) => b.z0 >= p1 + 0.1),
+      J(bands.map((b) => [b.z0, b.z1, b.cuts?.length ?? 0])),
+    );
+    check(
+      "band cuts: between the side rollers the plate's band is cut back to the frame (7.5 + 1/16), across the gap, and no model point there is past it",
+      !!cut && cut.at === 7.5 + 1 / 16 && cut.from <= -4 && cut.to >= 4 && cut.from > -5.1 && cut.to < 5.1 && worst <= cut.at && Math.max(...plate!.hull.map((q) => q.x)) > 9.6,
+      J({ cut, worst }),
+    );
+    check("band cuts: the importer's FLOWER plate heights are the field CAD's (FLOWER_RING_Z.mid)", isDeepStrictEqual([...geo.BAND_FLOWER_PLATE_Z], [...FLOWER_RING_Z.mid]), J(FLOWER_RING_Z.mid));
+    check(
+      "band cuts: the importer's edge frames are the sim's (IMPORT_EDGE_N / IMPORT_EDGE_P)",
+      geo.BAND_CUT_EDGES.length === 4 && geo.BAND_CUT_EDGES.every((e) => isDeepStrictEqual(e.n, IMPORT_EDGE_N[e.edge]) && isDeepStrictEqual(e.p, IMPORT_EDGE_P[e.edge])),
+    );
+    const mc = geo.moveCut({ edge: 'back', from: -2, to: 3, at: -7 }, { x: 1, y: 0.5 }, 0.5);
+    const ml = geo.moveCut({ edge: 'left', from: -2, to: 3, at: 7 }, { x: 1, y: 0.5 });
+    check(
+      'band cuts: moved into the robot frame, an end edge shifts its span by y and its line by x, a flank the other way round, and both scale',
+      isDeepStrictEqual(mc, { edge: 'back', from: -1.25, to: 1.25, at: -4 }) && isDeepStrictEqual(ml, { edge: 'left', from: -3, to: 2, at: 6.5 }),
+      J([mc, ml]),
+    );
+  }
   // a Gecko wheel modelled fin by fin: a round core to 1.4 in on its pin, fin tips as 0.09 in slivers
   // standing 0.03 in past it, and a frame screw beside it at 1.9 in
   {
@@ -32122,8 +32270,8 @@ function impPlayCheck(g: GameId): void {
     check('robot import: every descriptor number is a multiple of 1/64 in', nums.every(onGrid), nums.filter((n) => !onGrid(n)).join(','));
     check('robot import: every wheel is inside the hull', (d.wheels ?? []).every((w) => geo.insetDepth(w, d.hull) >= 0));
     check(
-      'robot import: ≤ 3 bands, z0 < z1 inside [0, height], ≤ 12 vertices each, the tower band narrower than the base',
-      !!d.bands && d.bands.length >= 2 && d.bands.length <= 3 && d.bands.every((x) => x.z0 < x.z1 && x.z0 >= 0 && x.z1 <= d.heightIn && x.hull.length >= 3 && x.hull.length <= 12) &&
+      'robot import: ≤ 5 bands, z0 < z1 inside [0, height], ≤ 12 vertices each, the tower band narrower than the base',
+      !!d.bands && d.bands.length >= 2 && d.bands.length <= 5 && d.bands.every((x) => x.z0 < x.z1 && x.z0 >= 0 && x.z1 <= d.heightIn && x.hull.length >= 3 && x.hull.length <= 12) &&
         Math.abs(geo.polygonArea(d.bands[d.bands.length - 1].hull)) < Math.abs(geo.polygonArea(d.bands[0].hull)) / 2,
       JSON.stringify(d.bands?.map((x) => [x.z0, x.z1, x.hull.length])),
     );
@@ -32953,8 +33101,11 @@ const L2_MECH_PINS: Record<string, string> = {
   decode: 'held=3611 2049313317:4014017715 2788731338:1360918128 1577943677:2318776227',
   chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
   biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459',
-  bb3d: 'held=693 385226777:3749707125 2128002571:24819118',
+  bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
 };
+// `bb3d` re-pinned 2026-10-04 for `SIM_PATCH` 7 (the FLOWER plates over their measured outline); the
+// old pin is the patch-6 run's, checked beside it.
+const L2_MECH_PINS_PATCH6 = { bb3d: 'held=693 385226777:3749707125 2128002571:24819118' };
 // `bb3d` re-pinned 2026-10-02 for `SIM_PATCH` 3 (the 3D wall square-up inside the solve); the old
 // pin is the patch-2 run's, checked beside it — see `IMP_STANDARD_PINS_PATCH2`.
 const L2_MECH_PINS_PATCH2 = { bb3d: 'held=907 4176744764:1760924406 112866128:1298346330' };
@@ -33062,6 +33213,8 @@ function l2MechRun(g: GameId | 'bb3d', ticks: number, patch?: number): string {
   check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 3D (worldHash + whole-world JSON, 600 ticks)', got === L2_MECH_PINS.bb3d, got);
   const old = l2MechRun('bb3d', 600, 2);
   check('imported mechanisms: ...and under SIM_PATCH 2 the biobuzz 3D scene still steps to the pin it had before the wall square-up moved into the solve', old === L2_MECH_PINS_PATCH2.bb3d, old);
+  const old6 = l2MechRun('bb3d', 600, 6);
+  check('imported mechanisms: ...and under SIM_PATCH 6 the biobuzz 3D scene steps to the pin it had before the FLOWER plates took their measured outline (patch 7)', old6 === L2_MECH_PINS_PATCH6.bb3d, old6);
 }
 
 /** an 18 × 16 robot with its front corners chamfered: a hull no box describes */

@@ -4,7 +4,7 @@
  * `src/types.ts`; `docs/robot-import-plan.md` §3 binds both; `docs/area/robot-import.md` names the
  * frames every number below is in.
  */
-import type { DrivetrainType, GameId, ImportTuning, RobotSpec, Vec2 } from '../types';
+import type { DrivetrainType, GameId, ImportedBand, ImportTuning, RobotSpec, Vec2 } from '../types';
 
 export type LengthUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft';
 /** a signed source axis; `+z` means "the file's +Z points up" */
@@ -396,7 +396,7 @@ export interface ImportMeasurement {
   origin: Vec2;
   heightIn: number;
   /** robot-local frame (already shifted), absent when one prism is close enough */
-  bands?: { z0: number; z1: number; hull: Vec2[] }[];
+  bands?: ImportedBand[];
   trisIn: number;
   checks: ImportCheck[];
   /** the moving parts, MODEL frame, starting pose (absent when the setup has none) */

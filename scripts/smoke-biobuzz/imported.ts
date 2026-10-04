@@ -22,8 +22,18 @@ import {
 import { polyFeature } from '../../src/sim/imported';
 import { BB_G402_CROSS_IN, bbIntrusion } from '../../src/games/biobuzz/penalties';
 import { bbImportMouths, bbSideRollerOffsets } from '../../src/games/biobuzz/importMech';
-import { SIDE_ROLLER_IMPORT, SIDE_ROLLER_IMPORT_BUILD, SIDE_ROLLER_IMPORT_CAD_WHEEL } from './fixtures/sideRollerImport';
+import {
+  SIDE_ROLLER_IMPORT,
+  SIDE_ROLLER_IMPORT_BUILD,
+  SIDE_ROLLER_IMPORT_CAD_WHEEL,
+  SIDE_ROLLER_IMPORT_REAL_STOP_IN,
+  SIDE_ROLLER_IMPORT_V7,
+  SIDE_ROLLER_IMPORT_V7_BUILD,
+} from './fixtures/sideRollerImport';
 import { flowerDriveInTakes, pre6Scenes, stageFlowerDriveIn } from '../sideroller-pre6-scenes';
+import { pre7Scenes } from '../flowerplate-pre7-scenes';
+import { clipHalf } from '../../src/sim/importedMech';
+import { isDeepStrictEqual } from 'node:util';
 import { biobuzzZenithRobot } from '../../src/games/biobuzz/auto';
 import { robotSchema } from '@horizon36596/zenith-schema';
 import { SIM_DT } from '../../src/config';
@@ -263,6 +273,7 @@ export function importedChecks(check: Check): void {
   }
 
   importedSideRollerChecks(check);
+  importedFlowerPlateChecks(check);
 
   // ---- launchers and the Box Tube work from where they were placed ---------------------------
   {
@@ -422,7 +433,126 @@ function importedSideRollerChecks(check: Check): void {
   }
 }
 
-/** a 16-vertex hull (a rounded 18 × 16), three bands and a side sweeper — the heaviest import */
+/**
+ * AN IMPORT REACHES INTO A FLOWER AS FAR AS ITS CAD DOES (`SIM_PATCH` 7; owner, 2026-10-04: "For the
+ * gobilda biobuzz robot, I know i can get closer into the flower but it blocks me"). The real robot,
+ * swept exactly into everything the 3D robot meets at a FLOWER, stops with its front 0.38 in short of
+ * the ring axis, on the middle plate (`SIDE_ROLLER_IMPORT_REAL_STOP_IN`); the sim stopped it at 0.77.
+ * The descriptor the importer writes now (`SIDE_ROLLER_IMPORT_V7`) gives the plate's heights a band of
+ * their own and cuts each band back to the CAD between the side rollers (`bbImportClipReach`).
+ */
+function importedFlowerPlateChecks(check: Check): void {
+  const sp = bbCoerce(SIDE_ROLLER_IMPORT_V7_BUILD);
+  const h = sp.heightIn ?? 13;
+  const m = bbImportMouths(sp)[0];
+  {
+    // inside the mouth, at the plate band's heights, the 3D body ends at the cut, not the roller line
+    const band = SIDE_ROLLER_IMPORT_V7.bands!.find((b) => b.cuts?.some((c) => c.edge === 'front' && c.from < 0 && c.to > 0))!;
+    const cut = band.cuts!.find((c) => c.edge === 'front' && c.from < 0 && c.to > 0)!;
+    const reach = (shapes: { cx: number; cy: number; cz: number; hz: number; pts?: Vec2[] }[]): number => {
+      let x = -Infinity;
+      for (const s of shapes) {
+        const z0 = s.cz + h / 2 - s.hz;
+        const z1 = s.cz + h / 2 + s.hz;
+        if (!s.pts || z1 <= band.z0 + 0.01 || z0 >= band.z1 - 0.01) continue;
+        let q = s.pts.map((p) => ({ x: s.cx + p.x, y: s.cy + p.y }));
+        q = clipHalf(clipHalf(q, 0, 1, cut.to - 0.01), 0, -1, -(cut.from + 0.01));
+        for (const p of q) x = Math.max(x, p.x);
+      }
+      return x;
+    };
+    const live = import3dShapes(sp, h);
+    const old = import3dShapes(sp, h, false, true);
+    const now = Math.max(reach(live.chassis), reach(live.pocket), reach(live.remote));
+    const was = Math.max(reach(old.chassis), reach(old.pocket), reach(old.remote));
+    check(
+      "import FLOWER plate 3D: between the side rollers, at the plate's heights, the body ends at the CAD's own front (the band's cut), 0.38 in behind the roller line it ended at before patch 7",
+      Math.abs(now - cut.at) < 1e-6 && Math.abs(was - m.uOut) < 1e-6 && m.uOut - now > 0.3,
+      `now ${now.toFixed(3)}, cut ${cut.at}, before ${was.toFixed(3)}, roller line ${m.uOut.toFixed(3)}`,
+    );
+    const stripped = bbCoerce({ ...SIDE_ROLLER_IMPORT_V7_BUILD, imported: { ...SIDE_ROLLER_IMPORT_V7, bands: SIDE_ROLLER_IMPORT_V7.bands!.map(({ z0, z1, hull }) => ({ z0, z1, hull })) } });
+    check(
+      'import FLOWER plate 3D: a replay recorded under patch 6 builds the bands as if they had no cuts',
+      isDeepStrictEqual(old, import3dShapes(stripped, h, false, true)) && !isDeepStrictEqual(live, old),
+    );
+    // the floor band (0–1 in) is wholly under the mouth slot: nothing of it an element meets stands in
+    // front of the face inside the span. Before patch 7 its top 0.1 in stayed whole, a bar across the
+    // mouth at the POLLEN's height that the bottom POLLEN rode up onto (F2, 0.4 in or more off line)
+    const floor = SIDE_ROLLER_IMPORT_V7.bands![0];
+    const inMouth = (shapes: { cx: number; cy: number; cz: number; hz: number; pts?: Vec2[] }[]): number =>
+      shapes.filter((s) => {
+        const z1 = s.cz + h / 2 + s.hz;
+        if (!s.pts || z1 > floor.z1 + 1e-6) return false;
+        let q = s.pts.map((p) => ({ x: s.cx + p.x, y: s.cy + p.y }));
+        q = clipHalf(clipHalf(clipHalf(q, 0, 1, m.vc + m.half - 0.75), 0, -1, -(m.vc - m.half + 0.75)), -1, 0, -(m.face + 0.05));
+        return q.length >= 3;
+      }).length;
+    const oldLive = import3dShapes(sp, h, false, true);
+    check(
+      "import FLOWER plate 3D: a band wholly under the mouth slot is carved top to bottom (no bar across the mouth in front of the face); a patch-6 replay keeps its 0.1-in top",
+      floor.z1 < 3 && inMouth(live.chassis) === 0 && inMouth(oldLive.chassis) > 0,
+      `now ${inMouth(live.chassis)}, before ${inMouth(oldLive.chassis)}`,
+    );
+  }
+  {
+    // driven straight at every FLOWER, the front point (9.7, 0) on the ring axis
+    const stop = (spec: Partial<RobotSpec>, fi: number): number => {
+      const { w } = stageFlowerDriveIn(undefined, '3d', spec, { x: 9.7, y: 0 }, fi, 1, 0, 0);
+      const f = BB_FLOWERS[fi];
+      const r = w.robots[0];
+      const cm = new Map([[0, cmd({ driveY: 0.6, leftDrive: 0.6, rightDrive: 0.6, intake: false })]]);
+      let best = Infinity;
+      for (let k = 0; k < 240; k++) {
+        biobuzzStep(w, SIM_DT, cm);
+        const c = Math.cos(r.heading);
+        const s = Math.sin(r.heading);
+        best = Math.min(best, (f.x - r.pos.x - 9.7 * c) * c + (f.y - r.pos.y - 9.7 * s) * s);
+      }
+      return best;
+    };
+    const now = BB_FLOWERS.map((_, fi) => stop(SIDE_ROLLER_IMPORT_V7_BUILD, fi));
+    const was = BB_FLOWERS.map((_, fi) => stop(SIDE_ROLLER_IMPORT_BUILD, fi));
+    const real = SIDE_ROLLER_IMPORT_REAL_STOP_IN;
+    check(
+      `import FLOWER plate 3D: driven straight in, it stops within 0.1 in of where the real CAD does (${real} in short of the axis) at every FLOWER; the descriptor from before stopped 0.7+`,
+      now.every((d) => Math.abs(d - real) <= 0.1) && was.every((d) => d > 0.7),
+      `now ${now.map((d) => d.toFixed(2)).join(' ')}; before ${was.map((d) => d.toFixed(2)).join(' ')}`,
+    );
+  }
+  {
+    // ...and its side rollers still take the bottom POLLEN on every square approach
+    const cad = SIDE_ROLLER_IMPORT_CAD_WHEEL;
+    let took = 0;
+    const miss: string[] = [];
+    for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
+      for (const delta of [-0.8, 0, 0.8]) {
+        const side = fi % 2 === 0 ? 1 : -1;
+        const { w, column } = stageFlowerDriveIn(undefined, '3d', SIDE_ROLLER_IMPORT_V7_BUILD, cad, fi, side, 0, delta);
+        if (flowerDriveInTakes(w, column) !== null) took++;
+        else miss.push(`F${fi + 1} ${delta}`);
+      }
+    }
+    check('import FLOWER plate 3D: with the new bands the side rollers take the bottom POLLEN on every square drive-in, 0.8 in either side of the line too (12 of 12)', took === 12, `${took}/12; missed ${miss.join(', ') || 'none'}`);
+  }
+  {
+    // SIM_PATCH 7: robots driven at a FLOWER's plate corner, stepped as a replay recorded under patch
+    // 6, land on the pins the code before the change produced (square plates, uncut bands), and live
+    // none does
+    const PRE7: Record<string, string> = {
+      importCorner: '4186992891:2752920888',
+      importCornerOther: '1719389586:1537790104',
+      standardCorner: '1245461433:2638020036',
+      standardSquare: '3200283346:3985946132',
+    };
+    const old = pre7Scenes(6);
+    const live = pre7Scenes(undefined);
+    const bad = Object.keys(PRE7).filter((k) => old[k] !== PRE7[k]);
+    check('SIM_PATCH 7: a replay recorded under patch 6 meets a FLOWER exactly as the code before the change did (an import and a standard robot, at a plate corner and square)', bad.length === 0, bad.map((k) => `${k}: ${old[k]}`).join(' | '));
+    check('SIM_PATCH 7: ...and live, every one of those scenes meets the measured plate outline (none lands on its old pin)', Object.keys(PRE7).every((k) => live[k] !== PRE7[k]), JSON.stringify(live));
+  }
+}
+
+/** a 16-vertex hull (a rounded 18 × 16), four bands and a side sweeper — the heaviest import */
 function heavyImport(): Partial<RobotSpec> {
   const ring = (rx: number, ry: number, n: number, cx = 0) =>
     Array.from({ length: n }, (_, i) => {
@@ -440,7 +570,8 @@ function heavyImport(): Partial<RobotSpec> {
       heightIn: 15,
       hull: ring(9, 8, 16),
       bands: [
-        { z0: 0, z1: 5, hull: ring(9, 8, 8) },
+        { z0: 0, z1: 1, hull: ring(7, 7, 8) },
+        { z0: 1, z1: 5, hull: ring(9, 8, 8) },
         { z0: 5, z1: 10, hull: ring(6, 6, 8) },
         { z0: 10, z1: 15, hull: ring(4, 4, 8) },
       ],
@@ -469,7 +600,7 @@ export function importedPerfChecks(check: Check): void {
     }
     times.sort((a, b) => a - b);
     const median = times[Math.floor(times.length / 2)];
-    check('perf: a 2v2 of four heavy imports (16-vertex hulls, 3 bands, side sweepers) keeps the standard step3d median budget, <= 1.5ms', median <= 1.5, `median=${median}ms p95=${times[Math.floor(times.length * 0.95)]}ms`);
+    check('perf: a 2v2 of four heavy imports (16-vertex hulls, 4 bands, side sweepers) keeps the standard step3d median budget, <= 1.5ms', median <= 1.5, `median=${median}ms p95=${times[Math.floor(times.length * 0.95)]}ms`);
   }
   {
     const w = mkWorld3dPair('free', 9213, heavyImport());

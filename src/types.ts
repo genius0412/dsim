@@ -349,7 +349,7 @@ export interface ImportedRobot {
   heightIn: number;
   /** wheel contact points FL, FR, BL, BR, each inside the hull. Absent = the rectangle default. */
   wheels?: Vec2[];
-  /** 3D only: up to 3 stacked convex prisms for the tall parts (z0 < z1 within [0, heightIn],
+  /** 3D only: up to 5 stacked convex prisms for the tall parts (z0 < z1 within [0, heightIn],
    *  each hull ≤ 12 vertices). Absent = one prism of `hull` up to `heightIn`. */
   bands?: ImportedBand[];
   /** mechanism placements; each game reads the fields it knows. */
@@ -392,6 +392,21 @@ export interface ImportedBand {
   z0: number;
   z1: number;
   hull: Vec2[];
+  /** where `hull` stands proud of the model at these heights (at most 8) */
+  cuts?: ImportedCut[];
+}
+
+/**
+ * A RECESS IN A BAND'S EDGE. Across `from..to` (the `ImportedMech.intakes` span convention:
+ * lateral for front/back, longitudinal for left/right, `from < to`) the model at the band's
+ * heights reaches no further out than `at` (robot-local x for front/back, y for left/right). A
+ * convex hull bridges the gap between two side rollers; a cut says how deep the gap really is.
+ */
+export interface ImportedCut {
+  edge: ImportedEdge;
+  from: number;
+  to: number;
+  at: number;
 }
 
 /** An edge of the hull's bounding box, as a robot-local direction. */

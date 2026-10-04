@@ -14,10 +14,10 @@ import { rapier3d, type Rapier3d } from './engine';
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
+import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR, simPatchAtLeast } from '../../../config';
 import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB3_HIVE_SHED_AFTER, BB3_HIVE_SHED_MAX, BB3_HIVE_SHED_MIN_Z, BB3_HIVE_SHED_REGION_X, BB3_HIVE_SHED_REGION_Y, BB3_HIVE_SHED_SPEED, BB3_HIVE_SHED_VZ, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
-import { importSideRollersPre6 } from '../importMech';
+import { importBandCutsPre7, importSideRollersPre6 } from '../importMech';
 import {
   addChassis3dColliders,
   chassis3dBaseColliderCount,
@@ -196,7 +196,7 @@ function buildEngine(world: World): Engine3d {
   // authoritative one and every landed shot reconciles with a snap. The SIM3D lane asserts it.
   world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
-  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION, simPatchAtLeast(world, 7));
   // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
   // upright and then rotated into place is a body that falls for one tick, and an engine rebuilt
   // mid-swing (a reconcile, a scene restart) has to resume the swing, not restart it.
@@ -231,7 +231,7 @@ function buildEngine(world: World): Engine3d {
   // DETERMINISTIC BUILD ORDER: statics, the two trays (above), robots by ascending id, elements
   // by ascending id (plan section 3.2 / this lane's binding design point 1).
   for (const r of [...world.robots].sort((a, b) => a.id - b.id)) {
-    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), importSideRollersPre6(world));
+    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), importSideRollersPre6(world), importBandCutsPre7(world));
   }
   for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, world, b);
   return engine;
@@ -296,8 +296,9 @@ function addChassisCollider(
   heightIn: number,
   rampReady: boolean,
   pre6: boolean,
+  pre7: boolean,
 ): void {
-  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn, rampReady, pre6);
+  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn, rampReady, pre6, pre7);
 }
 
 /** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
@@ -444,11 +445,18 @@ function chassisInsideStatic(parts: FitPart[], reach: number, statics: FitStatic
  * inside a static is the swing guard's and the embed fold's case (`elements3d.ts`), and moving
  * the robot here would take that decision away from them.
  */
-function setChassisClear(engine: Engine3d, body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, centreZ: number, pre6: boolean): boolean {
+function setChassisClear(
+  engine: Engine3d,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  r: RobotState,
+  centreZ: number,
+  pre6: boolean,
+  pre7: boolean,
+): boolean {
   const parts: FitPart[] = [];
   let reach = 0;
   // the chassis boxes, pocket filler and mechanism shapes come first; the reach hardware after
-  const n = Math.min(body.numColliders(), chassis3dBaseColliderCount(r.spec, builtHeight(engine, r), pre6));
+  const n = Math.min(body.numColliders(), chassis3dBaseColliderCount(r.spec, builtHeight(engine, r), pre6, pre7));
   for (let i = 0; i < n; i++) {
     const c = body.collider(i);
     if (c.isSensor()) continue;
@@ -490,7 +498,15 @@ function setChassisClear(engine: Engine3d, body: InstanceType<Rapier3d['RigidBod
  * `solveRobots` picks it up fresh every rebuild. Setting mass properties does not move the body,
  * so it cannot fight the "leave a resting body alone" rule above.
  */
-function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight: number, rampReady: boolean, pre6: boolean): void {
+function syncRobot(
+  RAPIER: Rapier3d,
+  engine: Engine3d,
+  r: RobotState,
+  wantHeight: number,
+  rampReady: boolean,
+  pre6: boolean,
+  pre7: boolean,
+): void {
   const z = r.z ?? 0;
   const heightIn = wantHeight;
   const centreZ = z + heightIn / 2;
@@ -531,7 +547,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
      * end -- `hx`/`half` collapse to `spec.length/2`/`spec.width/2` for a mount with no reach,
      * so this is a strict generalization, not a behavior change, for a robot that has none.
      */
-    addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6);
+    addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6, pre7);
     engine.robots.set(r.id, body);
     engine.robotHeights.set(r.id, heightIn);
     engine.robotRampReady.set(r.id, rampReady);
@@ -561,9 +577,9 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
        */
       if (heightChanged) {
         clearChassis3dColliders(engine.world3d, body);
-        addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6);
+        addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6, pre7);
       } else {
-        swapChassis3dReachColliders(RAPIER, engine.world3d, body, chassis3dBaseColliderCount(r.spec, heightIn, pre6), r.spec, heightIn, rampReady, pre6);
+        swapChassis3dReachColliders(RAPIER, engine.world3d, body, chassis3dBaseColliderCount(r.spec, heightIn, pre6, pre7), r.spec, heightIn, rampReady, pre6);
       }
       engine.robotHeights.set(r.id, heightIn);
       engine.robotRampReady.set(r.id, rampReady);
@@ -608,7 +624,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
     Math.abs(last.y - r.pos.y) > POSE_EPS ||
     Math.abs(last.z - z) > POSE_EPS
   ) {
-    setChassisClear(engine, body, r, centreZ, pre6);
+    setChassisClear(engine, body, r, centreZ, pre6, pre7);
   }
   engine.lastRobot.set(r.id, {
     x: r.pos.x,
@@ -627,7 +643,8 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
 export function syncRobots(world: World, engine: Engine3d): void {
   const RAPIER = rapier3d();
   const pre6 = importSideRollersPre6(world);
-  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), pre6);
+  const pre7 = importBandCutsPre7(world);
+  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), pre6, pre7);
 }
 
 /** the robot a chassis-body TRANSLATION corresponds to, for `readback` and `robot3d.ts`'s yaw
@@ -849,6 +866,7 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
 
   const solids: BirthSolid[] = [];
   const pre6 = importSideRollersPre6(world);
+  const pre7 = importBandCutsPre7(world);
   for (const rob of world.robots) {
     const h = builtHeight(engine, rob);
     // ⚠️ THE ARCHETYPE REACH HARDWARE TOO, NOT JUST THE BARE FRAME (owner ruling 2026-09-20: a
@@ -865,7 +883,7 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
       py: rob.pos.y,
       pz: (rob.z ?? 0) + h / 2,
       heading: rob.heading,
-      shapes: [...chassis3dShapes(rob.spec, h, pre6), ...chassis3dReachShapes(rob.spec, h, bbRampSettled(rob, world.time), pre6)],
+      shapes: [...chassis3dShapes(rob.spec, h, pre6, pre7), ...chassis3dReachShapes(rob.spec, h, bbRampSettled(rob, world.time), pre6)],
     });
   }
   const writeBack = (): void => {

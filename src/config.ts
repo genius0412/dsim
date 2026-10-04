@@ -259,8 +259,15 @@ export const SIM_VERSION = 5;
  *      mouth span (`bbImportClipReach`), and the 2D FLOWER gate measures the wheel from the hull's
  *      front (`biobuzz/play.ts`). Before it a side-roller import could not reach a FLOWER's
  *      bottom POLLEN in 3D at all. Standard robots step bit-identically.
+ *   7  BIOBUZZ 3D, a robot at a FLOWER: it meets the middle and top plates over their measured
+ *      outline (`BB_FLOWER_PLATE_OUTLINE`, `sim3d/flowerTube.ts`), not a box whose corners stood
+ *      0.7 in past the real plate's; a side-roller import's bands are cut back to the CAD's own
+ *      front inside the mouth (`ImportedBand.cuts`, `bbImportClipReach`); and an import's band
+ *      wholly under the mouth slot is carved top to bottom, not left whole along its top 0.1 in
+ *      (`import3dShapes`). goBILDA's BIOBUZZ bot stopped 0.77 in short of the ring axis driven
+ *      straight in, its CAD 0.38; now 0.38.
  */
-export const SIM_PATCH = 6;
+export const SIM_PATCH = 7;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */
