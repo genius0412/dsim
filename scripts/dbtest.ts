@@ -5756,6 +5756,593 @@ async function main(): Promise<void> {
     check('board: nobody with under 10 1v1 games is on the board', lb.length === 0, JSON.stringify(lb));
   }
 
+  /* ---- COMPETITIONS (0059), END TO END ------------------------------------------------------------
+     `npm run test:comp` holds the pure modules (the draws, the rankings, selection, the bracket).
+     What only a database can show is what sits around them: the conditional updates that make a
+     call, a claim and a result each happen ONCE, the attempt that makes an old room's result moot,
+     the cascades, and who is told what. Driven through `competitionTestApi` (the routes minus token
+     verification) as a NON-admin creator, who runs their own competition as its organizer by
+     `created_by`; `ADMIN_USER_IDS` is unset here, so no path below is an admin's. A route that
+     THROWS (a 500, not a refusal) is caught by `post` and read as a failed check, so one broken
+     path cannot take the rest of the suite down with it. Every account is the block's own: a
+     driver standing in a called match is busy in EVERY competition (`usersInCalledMatches`). */
+  {
+    const C = await import('../server/competitions');
+    const cdb = await import('../server/db/competitions');
+    const { persistMatch } = await import('../server/persist');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    type Who = { userId: string; handle: string; emailVerified: boolean | null };
+    type Answer = { ok: boolean; code?: number; error?: string; [k: string]: unknown };
+    type Sides = { red: { entry: number }[]; blue: { entry: number }[] };
+    const person = async (id: string, username: string | null): Promise<Who> => {
+      const handle = id.toUpperCase();
+      await repo.ensureProfile(id, handle);
+      if (username) await repo.setUsername(id, username);
+      return { userId: id, handle, emailVerified: null };
+    };
+    const post = async (slug: string, action: string, who: Who, body: Record<string, unknown> = {}): Promise<Answer> => {
+      try {
+        return await C.competitionTestApi.post(slug, action, who, body);
+      } catch (e) {
+        return { ok: false, code: 500, error: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    const said = (a: Answer): string => (a.ok ? 'ok' : `${a.code} ${a.error}`);
+    const create = (who: Who, body: Record<string, unknown>) => C.competitionTestApi.create(who, body);
+    const detail = async (slug: string, who: Who | null) => (await C.competitionTestApi.detail(slug, who))!;
+    const compOf = async (slug: string) => (await cdb.getCompetition({ slug }))!;
+    const match = async (id: number) => (await cdb.getMatch(id))!;
+    const quals = async (id: string) =>
+      (await cdb.listMatches(id)).filter((x) => x.stage === 'qual').sort((a, b) => a.number - b.number);
+    const result = (red: number, blue: number) => ({ score: { red, blue }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 });
+    const told = async (userId: string, kind: string, slug: string) =>
+      (await repo.listNotices(userId, 100)).filter((n) => n.kind === kind && n.data.slug === slug);
+    const entrantsOf = (x: Sides): number[] => [...x.red, ...x.blue].map((s) => s.entry);
+
+    // ---- 1. a 1v1 for four, and registration ----------------------------------------------------
+    const org = await person('cmp-org', 'cmporg');
+    const p: Who[] = [];
+    for (let i = 1; i <= 5; i++) p.push(await person(`cmp-p${i}`, `cmpp${i}`));
+    const byUser = new Map(p.map((x) => [x.userId, x]));
+    const made = await create(org, {
+      name: 'DB Test Cup',
+      game: 'decode',
+      format: '1v1',
+      capacity: 4,
+      settings: {
+        quals: { kind: 'balanced', matchesPerEntry: '3', minGap: -4 },
+        playoffs: { enabled: true, alliances: 2, format: 'single', bestOf: 1, finalsBestOf: 1, selection: 'captains' },
+        run: { joinGraceSec: 5, noShow: 'hold' },
+        checkIn: false,
+      },
+    });
+    const L = made.slug;
+    const lid = made.id;
+    const s0 = made.settings as {
+      quals: { matchesPerEntry: number; minGap: number };
+      playoffs: { selection: string };
+      run: { joinGraceSec: number };
+      checkIn: boolean;
+    };
+    check('competition: creating one makes a draft with a slug from its name, unofficial when a non-admin made it',
+      L === 'db-test-cup' && made.status === 'draft' && made.official === false && made.createdBy === org.userId,
+      JSON.stringify({ L, status: made.status, official: made.official }));
+    check('competition: ...its settings coerced on the way in (a string count, a negative gap, captains in a 1v1, a 5 s grace)',
+      s0.quals.matchesPerEntry === 3 && s0.quals.minGap === 0 && s0.playoffs.selection === 'serpentine' &&
+        s0.run.joinGraceSec === 60 && s0.checkIn === false,
+      JSON.stringify(s0));
+    const twin = await create(org, { name: 'DB Test Cup', game: 'decode', format: '1v1', capacity: 4, settings: { checkIn: false } });
+    check('competition: a second one with the same name gets a slug of its own', twin.slug !== L && twin.slug.startsWith(`${L}-`), twin.slug);
+
+    let r = await post(L, 'register', p[0]);
+    check('competition: nobody can register while it is a draft', !r.ok && r.code === 409, said(r));
+    r = await post(L, 'status', org, { to: 'published' });
+    check('competition: its creator publishes it (its organizer, by created_by)', r.ok && (await compOf(L)).status === 'published', said(r));
+    const signups: Answer[] = [];
+    for (const x of p) signups.push(await post(L, 'register', x));
+    check('competition: five sign-ups for four places: four registered, the fifth on the waitlist',
+      signups.slice(0, 4).every((x) => x.ok && x.status === 'registered') && signups[4].ok && signups[4].status === 'waitlist',
+      JSON.stringify(signups.map((x) => x.status ?? x.error)));
+    r = await post(L, 'register', p[0]);
+    check('competition: registering twice is refused', !r.ok && r.code === 409, said(r));
+    r = await post(L, 'withdraw', p[1]);
+    const statusOf = async (who: Who) => (await cdb.entryOfUser(lid, who.userId))?.status;
+    check('competition: a registered player withdraws...', r.ok && (await statusOf(p[1])) === 'withdrawn', said(r));
+    check('competition: ...and the waitlisted one is promoted into the place', (await statusOf(p[4])) === 'registered', String(await statusOf(p[4])));
+    check('competition: ...and is told so', (await told(p[4].userId, 'competition.promoted', L)).length === 1);
+    const nameless = await person('cmp-nouser', null);
+    r = await post(L, 'register', nameless);
+    check('competition: an account with no @username cannot register (the schedule has to name it)',
+      !r.ok && r.code === 409 && !(await cdb.entryOfUser(lid, nameless.userId)), said(r));
+    r = await post(L, 'update', org, { format: '2v2' });
+    let r2 = await post(L, 'update', org, { game: 'chain' });
+    const shaped = await compOf(L);
+    check('competition: the format and the game cannot change once people have entered',
+      !r.ok && r.code === 409 && !r2.ok && r2.code === 409 && shaped.format === '1v1' && shaped.game === 'decode',
+      `${said(r)} / ${said(r2)}`);
+    r = await post(L, 'update', org, { capacity: 3 });
+    check('competition: a capacity below the registered count is refused', !r.ok && r.code === 409 && (await compOf(L)).capacity === 4, said(r));
+
+    // ---- 2. the schedule, and starting qualifications -------------------------------------------
+    r = await post(L, 'schedule', org, { action: 'draw' });
+    let qs = await quals(lid);
+    const reg = (await cdb.listEntries(lid)).filter((e) => e.status === 'registered').map((e) => e.id);
+    const appearances = new Map<number, number>();
+    for (const x of qs) for (const s of [...x.red, ...x.blue]) if (!s.surrogate) appearances.set(s.entry, (appearances.get(s.entry) ?? 0) + 1);
+    check('competition: the draw makes ceil(n·m/2) matches', r.ok && qs.length === Math.ceil((reg.length * 3) / 2),
+      `${said(r)}; ${qs.length} for ${reg.length}`);
+    check('competition: ...in which every registered entry plays exactly m counted matches',
+      appearances.size === reg.length && reg.every((id) => appearances.get(id) === 3), JSON.stringify([...appearances]));
+    // stale, the kept-row way: one player withdraws and one who had withdrawn comes back
+    await post(L, 'withdraw', p[2]);
+    r = await post(L, 'register', p[1]);
+    r2 = await post(L, 'status', org, { to: 'qualification' });
+    check('competition: qualifications will not start on a schedule drawn for a different entry list',
+      r.ok && !r2.ok && r2.code === 409 && (await compOf(L)).status === 'published', `${said(r)} / ${said(r2)}`);
+    // stale, the deleted-row way: an organizer REMOVING an entry before the start deletes its row,
+    // and its slots go with it, so the ids left in the schedule are exactly the entry list while
+    // three matches have nobody on one side
+    await post(L, 'schedule', org, { action: 'draw' });
+    r = await post(L, 'entries', org, { action: 'remove', entry: (await cdb.entryOfUser(lid, p[3].userId))?.id });
+    r2 = await post(L, 'status', org, { to: 'qualification' });
+    check('⚠️ competition: ...nor on one with an empty seat, left by an entry the organizer removed after the draw',
+      r.ok && !r2.ok && r2.code === 409 && (await compOf(L)).status === 'published', `${said(r)} / ${said(r2)}`);
+    r = await post(L, 'entries', org, { action: 'add', tag: '@cmpp4' });
+    await post(L, 'schedule', org, { action: 'draw' });
+    r2 = await post(L, 'status', org, { to: 'qualification' });
+    check('competition: re-drawn for the entries it has, it starts', r.ok && r2.ok && (await compOf(L)).status === 'qualification',
+      `${said(r)} / ${said(r2)}`);
+    r = await post(L, 'register', await person('cmp-late', 'cmplate'));
+    check('competition: registration is closed once qualifications start', !r.ok && r.code === 409, said(r));
+
+    // ---- 3. calling a match, claiming its room, and the attempt -----------------------------------
+    qs = await quals(lid);
+    const entryRows = new Map((await cdb.listEntries(lid)).map((e) => [e.id, e]));
+    const userOf = (entry: number): string => entryRows.get(entry)?.userId ?? '';
+    const [M1, ...rest] = qs;
+    r = await post(L, 'match', org, { action: 'call', match: M1.id });
+    let m = await match(M1.id);
+    check('competition: calling a match: status called, attempt 1, a competition room code',
+      r.ok && m.status === 'called' && m.attempt === 1 && /^[a-z]{3}-cm[0-9a-z]{8}$/.test(m.roomCode ?? ''),
+      JSON.stringify({ r: said(r), status: m.status, attempt: m.attempt, code: m.roomCode }));
+    const overlap = rest.find((x) => entrantsOf(x).some((e) => entrantsOf(M1).includes(e)))!;
+    r = await post(L, 'match', org, { action: 'call', match: overlap.id });
+    check('competition: a match with a driver already in a called match cannot be called',
+      !r.ok && r.code === 409 && (await match(overlap.id)).status === 'scheduled', said(r));
+    const bar = (await C.competitionTestApi.me(byUser.get(userOf(M1.red[0].entry))!)) as {
+      competitions: { slug: string; called: { matchId: number; roomCode: string; alliance: string } | null }[];
+    };
+    const mine = bar.competitions.find((c) => c.slug === L);
+    check('competition: the player’s own read names the called match, its room and their side',
+      mine?.called?.matchId === M1.id && mine.called.roomCode === m.roomCode && mine.called.alliance === 'red', JSON.stringify(mine));
+
+    const staged = await C.claimCompetitionRoom(m.roomCode ?? '');
+    const sideOf = (a: 'red' | 'blue') => (staged?.roster ?? []).filter((x) => x.alliance === a).map((x) => x.userId).join();
+    check('⚠️ competition: the first join claims the call, and its roster puts each driver on their own alliance',
+      !!staged && sideOf('red') === M1.red.map((s) => userOf(s.entry)).join() && sideOf('blue') === M1.blue.map((s) => userOf(s.entry)).join(),
+      JSON.stringify(staged?.roster.map((x) => [x.userId, x.alliance])));
+    check('⚠️ competition: ...unrated, and tagged with its match and the call it came from',
+      staged?.ranked === false && staged.mode === '1v1' && staged.competition?.matchId === M1.id &&
+        staged.competition.attempt === 1 && staged.competition.graceMs >= 60_000,
+      JSON.stringify(staged?.competition));
+    check('⚠️ competition: a second claim of the same code gets nothing (one call, one room)', (await C.claimCompetitionRoom(m.roomCode ?? '')) === null);
+    r = await post(L, 'match', org, { action: 'call', match: M1.id });
+    m = await match(M1.id);
+    check('competition: calling it again mints a new room and attempt 2',
+      r.ok && m.status === 'called' && m.attempt === 2 && m.roomCode !== staged?.code && m.claimedAt === null,
+      JSON.stringify({ r: said(r), attempt: m.attempt, code: m.roomCode }));
+    check('competition: ...and the old code claims nothing', (await C.claimCompetitionRoom(staged?.code ?? '')) === null);
+    if (staged?.competition) await C.competitionMatchPlayed(staged.competition, result(90, 10), {});
+    m = await match(M1.id);
+    check('⚠️ competition: a result from the replaced call is ignored', m.status === 'called' && m.result === null, JSON.stringify(m.result));
+    const restaged = await C.claimCompetitionRoom(m.roomCode ?? '');
+    if (restaged?.competition) await C.competitionMatchPlayed(restaged.competition, result(30, 70), {});
+    m = await match(M1.id);
+    check('competition: the current call’s result is the match’s',
+      m.status === 'done' && m.result?.source === 'played' && m.result.red === 30 && m.result.blue === 70 && m.result.winner === 'blue',
+      JSON.stringify(m.result));
+
+    // ---- 4. a referee's rulings ------------------------------------------------------------------
+    const [M2, M3, M4, M5, M6] = rest;
+    r = await post(L, 'match', org, { action: 'forfeit', match: M2.id, winner: 'red', note: 'Blue never arrived.' });
+    m = await match(M2.id);
+    check('competition: a forfeit has a winner and no score',
+      r.ok && m.status === 'done' && m.result?.source === 'forfeit' && m.result.winner === 'red' && m.result.red === null && m.result.blue === null,
+      JSON.stringify(m.result));
+    const noteFor = async (entry: number, x: { number: number }) =>
+      (await told(userOf(entry), 'competition.result', L)).find((n) => n.data.label === `Q${x.number}`)?.data;
+    const redHeard = await noteFor(M2.red[0].entry, M2);
+    const blueHeard = await noteFor(M2.blue[0].entry, M2);
+    check('competition: ...and both drivers are told, each from their own side',
+      redHeard?.what === 'forfeit' && redHeard.outcome === 'win' && blueHeard?.what === 'forfeit' && blueHeard.outcome === 'loss',
+      JSON.stringify([redHeard, blueHeard]));
+    r = await post(L, 'match', org, { action: 'result', match: M3.id, red: 40, blue: 40 });
+    r2 = await post(L, 'match', org, { action: 'result', match: M3.id, red: 55, blue: 40, note: 'Scoring error.' });
+    m = await match(M3.id);
+    check('competition: a result entered by hand, then corrected',
+      r.ok && r2.ok && m.result?.source === 'manual' && m.result.red === 55 && m.result.winner === 'red' && m.note === 'Scoring error.',
+      JSON.stringify(m.result));
+    await post(L, 'match', org, { action: 'result', match: M4.id, red: 20, blue: 10 });
+    r = await post(L, 'match', org, { action: 'void', match: M4.id });
+    const played = ((await detail(L, org)).rankings ?? []).reduce((n, row) => n + row.played, 0);
+    const doneNow = (await quals(lid)).filter((x) => x.status === 'done').length;
+    check('competition: a voided match stops counting in the rankings',
+      r.ok && (await match(M4.id)).status === 'void' && played === 2 * doneNow, `${played} played over ${doneNow} decided`);
+    r = await post(L, 'match', org, { action: 'reset', match: M3.id });
+    m = await match(M3.id);
+    check('competition: a reset puts the match back on the schedule, its result gone',
+      r.ok && m.status === 'scheduled' && m.result === null && m.finishedAt === null, JSON.stringify({ status: m.status, result: m.result }));
+    await post(L, 'match', org, { action: 'result', match: M5.id, red: 60, blue: 20 });
+    const culprit = M5.red[0].entry;
+    const rankRow = async (entry: number) => (await detail(L, org)).rankings?.find((x) => x.entry === entry);
+    const clean = await rankRow(culprit);
+    r = await post(L, 'match', org, { action: 'dq', match: M5.id, entry: culprit, note: 'Pinning.' });
+    const dqd = await rankRow(culprit);
+    check('competition: an entry disqualified in a match takes no ranking points from it (its win reads as a loss)',
+      r.ok && !!clean && !!dqd && dqd.rp === clean.rp - 2 && dqd.wins === clean.wins - 1 && dqd.losses === clean.losses + 1 && dqd.played === clean.played,
+      JSON.stringify({ clean, dqd }));
+    await post(L, 'match', org, { action: 'note', match: M5.id, note: 'Pinning, per the head referee.' });
+    await post(L, 'entries', org, { action: 'note', entry: culprit, note: 'Watch the pinning.' });
+    const kinds = (await db.query<{ kind: string }>(`select kind from competition_log where competition_id = $1`, [lid])).rows.map((x) => x.kind);
+    const unlogged = [
+      'created', 'status.published', 'entry.register', 'entry.withdraw', 'entry.promoted', 'schedule.drawn', 'entry.remove',
+      'entry.add', 'status.qualification', 'match.called', 'match.forfeit', 'match.entered', 'match.corrected', 'match.void',
+      'match.reset', 'match.dq', 'match.note', 'entry.note',
+    ].filter((k) => !kinds.includes(k));
+    check('competition: every organizer and referee action is in the competition’s log', unlogged.length === 0, unlogged.join(', ') || 'all there');
+
+    // ---- 5. a call that never became a match ------------------------------------------------------
+    r = await post(L, 'match', org, { action: 'call', match: M6.id });
+    const noShow = await C.claimCompetitionRoom((await match(M6.id)).roomCode ?? '');
+    if (noShow?.competition) await C.competitionCallFailed(noShow.competition, [{ userId: userOf(M6.blue[0].entry), kind: 'noshow' }]);
+    m = await match(M6.id);
+    check('competition: a no-show under "hold" sends the match back to the schedule, with a note for the referee',
+      r.ok && m.status === 'scheduled' && m.result === null && /did not connect/.test(m.callNote ?? ''),
+      JSON.stringify({ status: m.status, note: m.callNote }));
+    r = await post(L, 'update', org, { settings: { run: { noShow: 'forfeit' } } });
+    check('competition: the no-show rule can change during qualifications',
+      r.ok && (await compOf(L)).settings !== null && ((await compOf(L)).settings as { run: { noShow: string } }).run.noShow === 'forfeit', said(r));
+    await post(L, 'match', org, { action: 'call', match: M6.id });
+    if (noShow?.competition) await C.competitionCallFailed(noShow.competition, [{ userId: userOf(M6.red[0].entry), kind: 'noshow' }]);
+    m = await match(M6.id);
+    check('⚠️ competition: a failure report from an older call changes nothing',
+      m.status === 'called' && m.attempt === 2 && m.result === null && m.callNote === null, JSON.stringify({ status: m.status, attempt: m.attempt, note: m.callNote }));
+    const noShow2 = await C.claimCompetitionRoom(m.roomCode ?? '');
+    if (noShow2?.competition) await C.competitionCallFailed(noShow2.competition, [{ userId: userOf(M6.red[0].entry), kind: 'noshow' }]);
+    m = await match(M6.id);
+    check('competition: under "forfeit", the one alliance at fault forfeits to the other',
+      m.status === 'done' && m.result?.source === 'forfeit' && m.result.winner === 'blue', JSON.stringify(m.result));
+
+    // ---- 6. a room that finished: archived like a custom game, and the competition's result --------
+    await post(L, 'match', org, { action: 'call', match: M3.id });
+    const room = await C.claimCompetitionRoom((await match(M3.id)).roomCode ?? '');
+    const seat = (userId: string, alliance: 'red' | 'blue', score: number) => ({
+      clientId: userId,
+      userId,
+      handle: byUser.get(userId)?.handle ?? userId,
+      alliance,
+      drivetrain: 'tank' as const,
+      score,
+      spec: DEFAULT_SPEC,
+      assists: DEFAULT_ASSISTS,
+    });
+    const replay = (seed: number) => ({
+      format: 2, balanceVersion: 4, sim: 2, game: 'decode' as const, mode: 'match' as const, seed, ticks: 60, setups: [] as never[], tracks: {},
+    });
+    const archived = await persistMatch({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      mode: '1v1',
+      competition: room?.competition,
+      result: result(80, 45),
+      replay: replay(59),
+      participants: [seat(userOf(M3.red[0].entry), 'red', 80), seat(userOf(M3.blue[0].entry), 'blue', 45)],
+    });
+    m = await match(M3.id);
+    check('competition: a competition room’s match is archived like a custom game AND decides the competition match',
+      !!room && !!archived.matchId && m.status === 'done' && m.result?.source === 'played' && m.result.red === 80 &&
+        m.matchId === archived.matchId && !!m.replayId,
+      JSON.stringify({ archived, status: m.status, matchId: m.matchId, replayId: m.replayId }));
+    check('⚠️ competition: its replay is public: a stranger may watch it',
+      !!m.replayId && (await repo.replayAccess(m.replayId, 'cmp-stranger')).access === 'ok');
+    check('competition: ...signed out too', !!m.replayId && (await repo.replayAccess(m.replayId, null)).access === 'ok');
+    await repo.ensureProfile('cmp-vs-a', 'VsA');
+    await repo.ensureProfile('cmp-vs-b', 'VsB');
+    const plain = await persistMatch({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      mode: '1v1',
+      result: result(5, 1),
+      replay: replay(60),
+      participants: [seat('cmp-vs-a', 'red', 5), seat('cmp-vs-b', 'blue', 1)],
+    });
+    const plainReplay = (await db.query<{ replay_id: string | null }>(`select replay_id from matches where id = $1`, [plain.matchId ?? null]))
+      .rows[0]?.replay_id ?? null;
+    check('⚠️ competition: ...while an ordinary custom match’s replay stays private to a stranger',
+      !!plainReplay && (await repo.replayAccess(plainReplay, 'cmp-stranger')).access === 'private', String(plainReplay));
+
+    // ---- 7. end of qualifications → selection → playoffs → the final ---------------------------------
+    r = await post(L, 'status', org, { to: 'selection' });
+    let lc = await compOf(L);
+    const regNow = new Set((await cdb.listEntries(lid)).filter((e) => e.status === 'registered').map((e) => e.id));
+    const byRank = ((await detail(L, org)).rankings ?? []).filter((x) => regNow.has(x.entry)).map((x) => x.entry);
+    const frozen = lc.seedOrder ?? [];
+    check('competition: ending qualifications freezes the seeding order, best ranked first',
+      r.ok && lc.status === 'selection' && frozen.length === regNow.size && JSON.stringify(frozen) === JSON.stringify(byRank),
+      JSON.stringify({ r: said(r), frozen, byRank }));
+    // the top seed's qualification results all become losses: the live table moves, the seeding must not
+    const top = frozen[0];
+    for (const x of (await quals(lid)).filter((q2) => q2.status === 'done' && entrantsOf(q2).includes(top))) {
+      const red = x.red.some((s) => s.entry === top);
+      await post(L, 'match', org, { action: 'result', match: x.id, red: red ? 0 : 100, blue: red ? 100 : 0, note: 'Corrected.' });
+    }
+    const live = ((await detail(L, org)).rankings ?? []).map((x) => x.entry);
+    lc = await compOf(L);
+    check('competition: a result corrected during selection moves the rankings but not the frozen seeding',
+      live[0] !== top && JSON.stringify(lc.seedOrder) === JSON.stringify(frozen), JSON.stringify({ live, frozen: lc.seedOrder }));
+    r = await post(L, 'status', org, { to: 'playoffs' });
+    lc = await compOf(L);
+    const po = (await cdb.listMatches(lid)).filter((x) => x.stage === 'playoff');
+    check('competition: the bracket is built from the frozen seeding, and its first match is scheduled',
+      r.ok && lc.status === 'playoffs' && lc.alliances?.map((a) => a.entries.join('+')).join() === `${frozen[0]},${frozen[1]}` &&
+        po.length === 1 && po[0].series === 'F' && po[0].status === 'scheduled' && po[0].red[0]?.entry === frozen[0] && po[0].blue[0]?.entry === frozen[1],
+      JSON.stringify({ r: said(r), alliances: lc.alliances, po: po.map((x) => [x.series, x.status, entrantsOf(x)]) }));
+    r = await post(L, 'match', org, { action: 'call', match: po[0]?.id });
+    const finalRoom = po[0] ? await C.claimCompetitionRoom((await match(po[0].id)).roomCode ?? '') : null;
+    if (finalRoom?.competition) await C.competitionMatchPlayed(finalRoom.competition, result(20, 90), {});
+    lc = await compOf(L);
+    const placed = await cdb.listEntries(lid);
+    const placeOf = (id: number) => placed.find((e) => e.id === id)?.placement ?? null;
+    const regPlaced = placed.filter((e) => e.status === 'registered');
+    check('competition: deciding the final completes the competition', r.ok && lc.status === 'completed' && lc.completedAt !== null,
+      `${said(r)}; ${lc.status}`);
+    check('competition: ...the final’s winner places 1st and its loser 2nd', placeOf(frozen[1]) === 1 && placeOf(frozen[0]) === 2,
+      JSON.stringify(placed.map((e) => [e.id, e.status, e.placement])));
+    check('competition: ...and every registered entry has a place of its own',
+      regPlaced.map((e) => e.placement ?? 0).sort((a, b) => a - b).join() === regPlaced.map((_, i) => i + 1).join(),
+      JSON.stringify(regPlaced.map((e) => e.placement)));
+    let heard = 0;
+    for (const e of regPlaced) if ((await told(e.userId ?? '', 'competition.finished', L)).some((n) => n.data.place === e.placement)) heard++;
+    check('competition: ...and every entrant is told where they finished', heard === regPlaced.length && heard > 0, `${heard}/${regPlaced.length}`);
+    check('competition: the champion is named on the list read',
+      JSON.stringify(lc.champions) === JSON.stringify([placed.find((e) => e.placement === 1)?.name]), JSON.stringify(lc.champions));
+
+    // ---- 8. what a signed-out visitor sees ----------------------------------------------------------
+    const anonView = await detail(L, null);
+    const staffView = await detail(L, org);
+    check('⚠️ competition: a signed-out read never carries an organizer’s private note on an entry',
+      anonView.entries.every((e) => !('note' in e)) && staffView.entries.some((e) => e.note === 'Watch the pinning.'),
+      JSON.stringify(anonView.entries.filter((e) => 'note' in e)));
+    check('competition: ...nor an organizer-only log line', anonView.log.length > 0 && anonView.log.every((l) => l.public));
+    const listed = (await cdb.listCompetitions({ scope: 'all', hidden: false, limit: 60 })).rows.map((c) => c.slug);
+    const drafts = (await cdb.listCompetitions({ scope: 'drafts', hidden: true, limit: 60 })).rows.map((c) => c.slug);
+    check('competition: a draft is not on the public list (staff see it)',
+      listed.includes(L) && !listed.includes(twin.slug) && drafts.includes(twin.slug), JSON.stringify({ listed, drafts }));
+
+    // ---- 9. an entrant deletes their account --------------------------------------------------------
+    const theirs = (await cdb.entryOfUser(lid, p[0].userId))!;
+    const slotCount = async () =>
+      Number((await db.query<{ n: string | number }>(
+        `select count(*) as n from competition_match_slots s join competition_matches x on x.id = s.match_id where x.competition_id = $1`,
+        [lid],
+      )).rows[0].n);
+    const slotsBefore = await slotCount();
+    await repo.deleteAccount(p[0].userId);
+    const kept = await cdb.getEntry(theirs.id);
+    check('competition: deleting an entrant’s account keeps the entry, without their name or their account',
+      kept?.name === 'Deleted account' && kept.userId === null && kept.placement === theirs.placement && kept.status === theirs.status,
+      JSON.stringify(kept));
+    check('competition: ...and every match it played keeps both sides', slotsBefore > 0 && (await slotCount()) === slotsBefore,
+      `${slotsBefore} → ${await slotCount()}`);
+    let second = true;
+    try {
+      await repo.deleteAccount(p[1].userId);
+    } catch {
+      second = false;
+    }
+    check('competition: ...a second deleted entrant in the same competition is fine too (the unique index lets nulls repeat)',
+      second && (await cdb.listEntries(lid)).filter((e) => e.userId === null).length === 2);
+
+    // ---- 10. alliance selection, FTC style (a 2v2 of solo entries) ------------------------------------
+    const cp: Who[] = [];
+    for (let i = 1; i <= 5; i++) cp.push(await person(`cmc-p${i}`, `cmcp${i}`));
+    const cap = await create(org, {
+      name: 'DB Captains',
+      game: 'decode',
+      format: '2v2',
+      capacity: 8,
+      settings: { quals: { kind: 'none' }, playoffs: { alliances: 2, format: 'single', bestOf: 1, finalsBestOf: 1, selection: 'captains' }, checkIn: false },
+    });
+    await post(cap.slug, 'status', org, { to: 'published' });
+    for (const x of cp) await post(cap.slug, 'register', x);
+    r = await post(cap.slug, 'status', org, { to: 'selection' });
+    const capRows = await cdb.listEntries(cap.id);
+    const eid = (who: Who): number => capRows.find((e) => e.userId === who.userId)?.id ?? -1;
+    check('competition: with no qualifications, selection opens straight from registration, seeded in sign-up order',
+      r.ok && (await compOf(cap.slug)).status === 'selection' && JSON.stringify((await compOf(cap.slug)).seedOrder) === JSON.stringify(cp.map(eid)),
+      said(r));
+    check('competition: the first captain is on turn, and only they are offered the pick',
+      (await detail(cap.slug, cp[0])).viewer.canPick && !(await detail(cap.slug, cp[1])).viewer.canPick);
+    r = await post(cap.slug, 'pick', cp[3], { entry: eid(cp[2]) });
+    r2 = await post(cap.slug, 'pick', cp[1], { entry: eid(cp[2]) });
+    check('competition: neither a non-captain nor a captain out of turn may pick', !r.ok && r.code === 403 && !r2.ok && r2.code === 403,
+      `${said(r)} / ${said(r2)}`);
+    r = await post(cap.slug, 'pick', cp[0], { entry: eid(cp[2]) });
+    let sel = (await detail(cap.slug, org)).selection;
+    check('competition: the captain on turn picks a partner, and the turn moves on',
+      r.ok && sel?.alliances[0]?.entries.join() === `${eid(cp[0])},${eid(cp[2])}` && sel.turn === 1, JSON.stringify(sel));
+    r = await post(cap.slug, 'pick', cp[1], { entry: eid(cp[3]), decline: true });
+    check('competition: a captain cannot record a decline', !r.ok && r.code === 403, said(r));
+    r = await post(cap.slug, 'pick', org, { entry: eid(cp[3]), decline: true });
+    sel = (await detail(cap.slug, org)).selection;
+    check('competition: the organizer records a decline, and that entry can no longer be picked',
+      r.ok && !!sel?.declined.includes(eid(cp[3])) && !sel.available.includes(eid(cp[3])), JSON.stringify(sel));
+    r = await post(cap.slug, 'selection', org, { action: 'undo' });
+    sel = (await detail(cap.slug, org)).selection;
+    check('competition: undo takes back the last action, and only that',
+      r.ok && sel?.declined.length === 0 && sel.available.includes(eid(cp[3])) && sel.alliances[0]?.entries.length === 2, JSON.stringify(sel));
+    r = await post(cap.slug, 'status', org, { to: 'playoffs' });
+    check('competition: the bracket cannot be built before selection is finished',
+      !r.ok && r.code === 409 && (await compOf(cap.slug)).status === 'selection', said(r));
+    r = await post(cap.slug, 'pick', cp[1], { entry: eid(cp[3]) });
+    r2 = await post(cap.slug, 'status', org, { to: 'playoffs' });
+    const capDone = await compOf(cap.slug);
+    check('competition: once it is, the bracket is built from the alliances as picked',
+      r.ok && r2.ok && capDone.status === 'playoffs' &&
+        capDone.alliances?.map((a) => a.entries.join('+')).join() === `${eid(cp[0])}+${eid(cp[2])},${eid(cp[1])}+${eid(cp[3])}`,
+      JSON.stringify({ r: said(r), r2: said(r2), alliances: capDone.alliances }));
+    r = await post(cap.slug, 'status', org, { to: 'cancelled' });
+    check('competition: a running competition can be cancelled, and its entrants are told',
+      r.ok && (await compOf(cap.slug)).status === 'cancelled' && (await told(cp[4].userId, 'competition.cancelled', cap.slug)).length === 1, said(r));
+
+    // ---- 11. duos: a captain invites a partner ------------------------------------------------------
+    const dp: Who[] = [];
+    for (let i = 1; i <= 4; i++) dp.push(await person(`cmd-p${i}`, `cmdp${i}`));
+    const duo = await create(org, { name: 'DB Duos', game: 'decode', format: '2v2', teamMode: 'duo', capacity: 4, settings: { checkIn: false } });
+    await post(duo.slug, 'status', org, { to: 'published' });
+    r = await post(duo.slug, 'register', dp[0], { partner: '@cmdp2', name: 'Gear Heads' });
+    const pair = await cdb.entryOfUser(duo.id, dp[0].userId);
+    check('competition: a duo is pending until the partner answers',
+      duo.teamMode === 'duo' && r.ok && r.status === 'pending' && pair?.status === 'pending' && pair.partnerId === dp[1].userId && pair.name === 'Gear Heads',
+      `${said(r)} ${JSON.stringify(pair)}`);
+    check('competition: ...and the partner is invited, by name', (await told(dp[1].userId, 'competition.invite', duo.slug)).some((n) => n.data.from === '@cmdp1'));
+    r = await post(duo.slug, 'partner', dp[1], { accept: true });
+    check('competition: the partner accepts: the duo is registered', r.ok && (await cdb.getEntry(pair?.id ?? 0))?.status === 'registered', said(r));
+    r = await post(duo.slug, 'register', dp[2], { partner: '@cmdp4' });
+    const asked = await cdb.entryOfUser(duo.id, dp[2].userId);
+    r2 = await post(duo.slug, 'partner', dp[3], { accept: false });
+    check('competition: a declined invitation deletes the entry', r.ok && r2.ok && !!asked && (await cdb.getEntry(asked.id)) === null,
+      `${said(r)} / ${said(r2)}`);
+    // the captain withdraws: the duo's row stays (it is how a captain comes back), and its partner
+    // must still be free to play with somebody else
+    r = await post(duo.slug, 'withdraw', dp[0]);
+    r2 = await post(duo.slug, 'register', dp[2], { partner: '@cmdp2' });
+    check('competition: the partner of a duo that withdrew can be invited by somebody else',
+      r.ok && r2.ok && r2.status === 'pending', `${said(r)} / ${said(r2)}`);
+
+    // ---- 12. swiss: one round at a time, drawn as the last one is decided ------------------------------
+    const sp: Who[] = [];
+    for (let i = 1; i <= 5; i++) sp.push(await person(`cms-p${i}`, `cmsp${i}`));
+    const sw = await create(org, {
+      name: 'DB Swiss',
+      game: 'decode',
+      format: '1v1',
+      capacity: 8,
+      settings: { quals: { kind: 'swiss', matchesPerEntry: 2 }, playoffs: { enabled: false }, checkIn: false },
+    });
+    await post(sw.slug, 'status', org, { to: 'published' });
+    for (const x of sp) await post(sw.slug, 'register', x);
+    r = await post(sw.slug, 'schedule', org, { action: 'draw' });
+    check('competition: a swiss schedule is not drawn ahead of time', !r.ok && r.code === 409, said(r));
+    r = await post(sw.slug, 'status', org, { to: 'qualification' });
+    const swIds = (await cdb.listEntries(sw.id)).map((e) => e.id);
+    const satOut = (round: Sides[]): number[] => {
+      const seen = new Set(round.flatMap(entrantsOf));
+      return swIds.filter((id) => !seen.has(id));
+    };
+    const pairKey = (x: Sides): string => entrantsOf(x).sort((a, b) => a - b).join('-');
+    let sq = await quals(sw.id);
+    const round1 = sq.filter((x) => x.round === 1);
+    const bye1 = satOut(round1);
+    check('competition: starting a swiss draws round 1 only: two matches and a bye',
+      r.ok && sq.length === 2 && round1.length === 2 && bye1.length === 1, JSON.stringify({ r: said(r), q: sq.map((x) => [x.round, entrantsOf(x)]) }));
+    for (const x of round1) await post(sw.slug, 'match', org, { action: 'result', match: x.id, red: 50, blue: 10 });
+    sq = await quals(sw.id);
+    const round2 = sq.filter((x) => x.round === 2);
+    const bye2 = satOut(round2);
+    const met = new Set(round1.map(pairKey));
+    check('competition: deciding the round draws the next one', round2.length === 2, JSON.stringify(sq.map((x) => [x.round, entrantsOf(x)])));
+    check('competition: ...with no rematch', round2.length > 0 && round2.every((x) => !met.has(pairKey(x))),
+      JSON.stringify({ round1: round1.map(pairKey), round2: round2.map(pairKey) }));
+    check('competition: ...and the bye moves on to somebody who has not had one', bye2.length === 1 && bye2[0] !== bye1[0], JSON.stringify({ bye1, bye2 }));
+    for (const x of round2) await post(sw.slug, 'match', org, { action: 'result', match: x.id, red: 50, blue: 10 });
+    sq = await quals(sw.id);
+    check('competition: the last round decided, no further round is drawn', sq.length === 4 && sq.every((x) => x.status === 'done'),
+      JSON.stringify(sq.map((x) => [x.round, x.status])));
+    r = await post(sw.slug, 'status', org, { to: 'selection' });
+    const swPlaced = (await cdb.listEntries(sw.id)).map((e) => e.placement ?? 0).sort((a, b) => a - b);
+    check('competition: with no playoffs, ending qualifications completes it, every entry placed by the rankings',
+      r.ok && (await compOf(sw.slug)).status === 'completed' && swPlaced.join() === '1,2,3,4,5', `${said(r)} ${JSON.stringify(swPlaced)}`);
+
+    // ---- 13. the runner ----------------------------------------------------------------------------
+    const rp: Who[] = [];
+    for (let i = 1; i <= 4; i++) rp.push(await person(`cmr-p${i}`, `cmrp${i}`));
+    const run = await create(org, {
+      name: 'DB Runner',
+      game: 'decode',
+      format: '1v1',
+      capacity: 4,
+      settings: { quals: { kind: 'balanced', matchesPerEntry: 1 }, checkIn: false },
+    });
+    await post(run.slug, 'status', org, { to: 'published' });
+    for (const x of rp) await post(run.slug, 'register', x);
+    r = await post(run.slug, 'status', org, { to: 'qualification' });
+    const rq = await quals(run.id);
+    await post(run.slug, 'match', org, { action: 'call', match: rq[0]?.id });
+    await db.query(`update competition_matches set called_at = now() - interval '20 minutes' where id = $1`, [rq[0]?.id ?? 0]);
+    const pass1 = await C.runnerPass();
+    m = await match(rq[0]?.id ?? 0);
+    check('competition: the runner returns a call nobody joined to the schedule',
+      r.ok && rq.length === 2 && pass1.stale >= 1 && m.status === 'scheduled' && /Nobody joined/.test(m.callNote ?? ''),
+      JSON.stringify({ r: said(r), pass1, status: m.status, note: m.callNote }));
+    r = await post(run.slug, 'update', org, { settings: { run: { autoCall: true, maxConcurrent: 1, restSec: 0 } } });
+    const pass2 = await C.runnerPass();
+    const calledNow = async () => (await quals(run.id)).filter((x) => x.status === 'called').length;
+    check('competition: with auto-calling on, one match at a time, a pass calls exactly one',
+      r.ok && pass2.called === 1 && (await calledNow()) === 1, JSON.stringify({ r: said(r), pass2 }));
+    const pass3 = await C.runnerPass();
+    check('competition: ...and the next pass waits for it', pass3.called === 0 && (await calledNow()) === 1, JSON.stringify(pass3));
+    await post(run.slug, 'status', org, { to: 'cancelled' });
+
+    // ---- 14. deleting a draft takes every row of it along --------------------------------------------
+    await person('cmx-p1', 'cmxp1');
+    await person('cmx-p2', 'cmxp2');
+    const adds = [
+      await post(twin.slug, 'entries', org, { action: 'add', tag: '@cmxp1' }),
+      await post(twin.slug, 'entries', org, { action: 'add', tag: '@cmxp2' }),
+    ];
+    const drew = await post(twin.slug, 'schedule', org, { action: 'draw' });
+    const staffed = await post(twin.slug, 'staff', org, { action: 'add', tag: '@cmxp1', role: 'referee' });
+    const twinMatches = (await cdb.listMatches(twin.id)).map((x) => x.id);
+    const count = async (sql: string, arg: unknown): Promise<number> => Number((await db.query<{ n: string | number }>(sql, [arg])).rows[0].n);
+    const holdings = async (): Promise<number[]> => [
+      await count(`select count(*) as n from competition_entries where competition_id = $1`, twin.id),
+      await count(`select count(*) as n from competition_matches where competition_id = $1`, twin.id),
+      await count(`select count(*) as n from competition_match_slots where match_id = any($1::bigint[])`, twinMatches),
+      await count(`select count(*) as n from competition_log where competition_id = $1`, twin.id),
+      await count(`select count(*) as n from competition_staff where competition_id = $1`, twin.id),
+    ];
+    const held = await holdings();
+    check('competition: a draft can hold entries, a schedule and staff',
+      adds.every((x) => x.ok) && drew.ok && staffed.ok && held.every((n) => n > 0), JSON.stringify({ adds: adds.map(said), drew: said(drew), staffed: said(staffed), held }));
+    r = await post(twin.slug, 'delete', org);
+    const left = await holdings();
+    check('competition: deleting the draft cascades every row of it away',
+      r.ok && !(await cdb.getCompetition({ slug: twin.slug })) && left.every((n) => n === 0), JSON.stringify(left));
+    check('competition: ...and the deletion is in the admin audit, which outlives it',
+      (await count(`select count(*) as n from admin_audit where action = 'competition.delete' and target_id = $1`, twin.id)) === 1);
+
+    // ---- 15. the schema: one competition's entries are read by an index -------------------------------
+    // Every read of a competition (`listEntries`) and the cascade of its deletion select entries by
+    // `competition_id`. A PARTIAL index cannot serve that (`competition_id = $1` does not imply its
+    // predicate), and the two schema checks above accept one as covering, so it is asked here of
+    // the planner itself, with sequential scans priced out.
+    await db.exec('set enable_seqscan = off');
+    let plan = '';
+    try {
+      plan = (
+        await db.query<Record<string, string>>(
+          `explain select id from competition_entries where competition_id = '00000000-0000-0000-0000-000000000000'`,
+        )
+      ).rows.map((x) => Object.values(x)[0]).join(' / ');
+    } finally {
+      await db.exec('reset enable_seqscan');
+    }
+    check('competition: one competition’s entries are found by an index, not by reading every competition’s', plan !== '' && !/Seq Scan/.test(plan), plan);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

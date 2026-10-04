@@ -569,7 +569,7 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
  * `coalesce(..., false)` matters on a LEFT JOIN: a solo run has no partner row,
  * and the predicate over all-NULL columns is NULL, not false.
  */
-function badgeCols(a: string, prefix?: string): string {
+export function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
   const badges = prefix ? `"${prefix}Badges"` : 'badges';
@@ -2326,7 +2326,7 @@ export async function getReplay(id: string): Promise<Replay | null> {
  * orphan — and a privacy gate whose unknown case is "allow" is one a later migration opens
  * by accident.
  */
-export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan';
+export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan' | 'competition';
 export interface ReplayAccessResult {
   access: 'ok' | 'private' | 'missing';
   /** what KIND of thing refused, so the refusal can say the right sentence. A private versus
@@ -2363,6 +2363,11 @@ export async function replayAccess(
          select p.user_id, 'practice', null from practice_runs p where p.replay_id = $1
          union all
          select l.host_user_id, 'lan', null from lan_runs l where l.replay_id = $1
+         union all
+         -- a COMPETITION MATCH (0059) is public: entering says so, and the event is watched
+         select null, 'competition', null from competition_matches cm
+           join competitions c on c.id = cm.competition_id
+          where cm.replay_id = $1 and c.status <> 'draft'
        )
        select o.kind, o.user_id, o.mode, coalesce(p.replays_public, false) as is_public
          from owners o left join profiles p on p.user_id = o.user_id`,
@@ -2380,6 +2385,9 @@ export async function replayAccess(
   if (viewerId && owners.some((o) => o.user_id === viewerId)) return { access: 'ok', kind };
 
   if (kind === 'record') return { access: 'ok', kind };
+  // a competition's matches are public whoever else holds the replay (it is also a versus match
+  // row): the entrants agreed to it when they signed up, and an event is meant to be watched
+  if (owners.some((o) => o.kind === 'competition')) return { access: 'ok', kind: 'competition' };
   if (
     kind === 'versus' &&
     versusReleased(
@@ -3266,6 +3274,13 @@ export async function deleteAccount(userId: string): Promise<boolean> {
          deleted_at = now()`,
       [userId, STANDING_MAX],
     );
+    /* COMPETITION ENTRIES KEEP THEIR ROW, NOT THEIR NAME (0059). An entry's `user_id` is SET NULL
+       by the cascade so a played schedule keeps both sides of every match, but the name is the
+       person's own handle or team name, and the account is gone. The private note goes too. */
+    await query(
+      `update competition_entries set name = 'Deleted account', note = null where user_id = $1`,
+      [userId],
+    );
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
   }).then((gone) => {
@@ -3341,6 +3356,9 @@ export interface AccountExport {
   rewards: Record<string, unknown>[];
   /** access groups (0051) — the group and when; never who granted it (another account's id) */
   accessGroups: Record<string, unknown>[];
+  /** competitions entered (0059), and the ones this account staffs */
+  competitions: Record<string, unknown>[];
+  competitionStaff: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3571,6 +3589,23 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     ),
     accessGroups: await q<Record<string, unknown>>(
       `select grp as "group", granted_at as "grantedAt" from access_members where user_id = $1 order by granted_at`,
+      [userId],
+    ),
+    // the entry's own facts (0059). A partner is another account, so "this was a duo" is a
+    // boolean here, as `records.partner_id` is above; the organizer's private note is theirs.
+    competitions: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, c.game, e.name, e.number, e.status, e.placement,
+              (e.user_id = $1) as captain, (e.partner_id is not null) as duo,
+              e.registered_at as "registeredAt", e.checked_in_at as "checkedInAt"
+         from competition_entries e join competitions c on c.id = e.competition_id
+        where e.user_id = $1 or e.partner_id = $1
+        order by e.registered_at`,
+      [userId],
+    ),
+    competitionStaff: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, s.role, s.added_at as "addedAt"
+         from competition_staff s join competitions c on c.id = s.competition_id
+        where s.user_id = $1 order by s.added_at`,
       [userId],
     ),
   };

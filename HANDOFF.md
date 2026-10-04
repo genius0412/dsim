@@ -1,4 +1,4 @@
-# HANDOFF — 2026-10-04f (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
+# HANDOFF — 2026-10-04g (BIOBUZZ 3D: an import goes into a FLOWER as far as its CAD; SIM_PATCH 7)
 
 **State: on `alpha`; `dsim-alpha` redeployed (SIM_PATCH 7 and the 5-band descriptor are server changes). Not on `main`.** `npm test` (shared 4055, BIOBUZZ 5569), `test:mm`, `test:workers`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass.
 
@@ -9,6 +9,22 @@
 - **Fixtures:** `SIDE_ROLLER_IMPORT` stays as saved (the patch-6 pins use it); `SIDE_ROLLER_IMPORT_V7` is the same robot as measured now. 3D standard-robot pins re-recorded, old ones checked under patch 6. The standard side-roller drive-in bound went 1.8 → 2.0 in (1.844 against the real plate outline).
 - **Costs:** this robot's 3D compound is 20 colliders (9 before), no measurable tick change; descriptor 3.4 KB (1.6 before), budget now 6 KB; importer and measure-worker chunks +1.4 KB gz each (baselines raised).
 - **Open:** 2D still stops it ~2.3 in short (its FLOWER is one foot rectangle); the standalone probes are `scratch/realstop4.ts` (real CAD), `scratch/simstop2.ts` (sim), `scratch/cutgen.ts` (bands and cuts off a STEP read), gitignored.
+
+# HANDOFF — 2026-10-04f (competitions: FTC-style events, run by staff)
+
+**State: on `alpha`. SERVER CHANGE: migration 0059, the join path, `Room`, `persistMatch`; needs a `dsim-alpha` deploy (production only on the owner's word).** `npm test`, `test:comp` (1214), `dbtest` (979, 87 new), `test:workers`, `test:mm`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` pass. `scripts/compe2e.ts` (real server on PGlite, two socket clients, a real match at real time) passes. Clicked through on the admin harness (desktop, phone, both themes).
+
+- **Owner:** "Plan and create a competition management system. For now, a competition can only be started & managed by admins, but it would be open to public later. Make the features extensive."
+- **What exists** (rules in `docs/area/competitions.md`, routed from CLAUDE.md):
+  - Lifecycle draft → published (registration window, waitlist, optional check-in) → qualifications → alliance selection → playoffs → completed, or cancelled. Every step is an organizer's button.
+  - Formats: 1v1, 2v2 with alliances drawn per match (FTC quals), 2v2 duos (captain invites a partner). Qualifications: balanced FTC-style draw with surrogates, round robin, swiss, or none. Rankings with configurable points and tiebreakers. Playoffs: 2/4/8/16, single or double elimination, best-of per series and for the final; alliance selection by captains (FTC picks, declines, lower-captain promotion) or by seed.
+  - Matches run as STAGED rooms (`<region>-cm…` codes): called by a referee or the auto-caller, the strategy window names the event, results land on the competition via `persistMatch`, no-shows via the dodge report. Nothing is rated, no standing is charged. Referee desk: call/re-call, forfeit, enter/correct with a public reason, void, reset, per-match DQ.
+  - Pages (lazy chunk): list (live/upcoming/past/mine/drafts), a competition page (overview, entrants, matches, rankings, playoffs with bracket and selection, manage, log), editor, join screen; the call bar in the menus; Watch Live labels; profile placements; console tab "Competitions" (appended); seven `competition.*` notices.
+  - Public later: `COMPETITION_CREATORS=signed-in` (`mayCreate`), per-competition organizers/referees, `official` flag. Before flipping it: reports for a competition page and a staff unpublish (guide, last section).
+- **Bugs found by testing and fixed:** a staged room deleted itself when its last socket closed while waiting (a reload stranded the call: every rejoin refused); the join screen lost its socket in React's dev double mount; the partial unique indexes made every entry read scan all competitions; re-inviting a withdrawn duo's partner 500'd; plus five smaller ones in the dbtest agent's report (audit gaps, a completion race, a selection pick/undo race).
+- **Open:** `deleteAccount` deletes the replays of competition matches the account played; `userMatchHistory` shows no Watch button to strangers on competition matches (the replay itself is public); a manual swiss round racing the automatic draw can 500; no champion badge yet (`src/badges.ts` is a closed set with art); no scheduled match times (calls are by hand or auto-call).
+- **Harness:** `npm run adminharness` now seeds four competitions (draft, registration with a duo invite, qualifications with a called match, finished through selection and a best-of-three final).
+
 
 # HANDOFF — 2026-10-04e (importer on goBILDA's BIOBUZZ mecanum: build from the model, every fin turns, side rollers at a FLOWER)
 

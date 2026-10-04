@@ -187,6 +187,10 @@ function routeFor(file, buf) {
   // because the console imports the SEASONS registry and the standing model and a future
   // marker could otherwise claim it.
   if (/^Admin[A-Za-z]*-[^/]*\.js$/.test(base)) return 'admin';
+  // THE COMPETITION PAGES (0059), by FILENAME like the console: `App.tsx` lazy-loads
+  // `src/ui/Competitions.tsx` (the list, a competition's page, its editor and the join screen),
+  // and Vite names the chunk after it. The call bar and its one read are in main on purpose.
+  if (/^Competitions-[^/]*\.js$/.test(base)) return 'competitions';
   // The post-processing chunk (AO + bloom), by FILENAME: Vite names it after `renderPost.ts`, and
   // it imports three.js from `renderScene-*.js` instead of containing it, so no content marker
   // here would recognise it. If a future chunking ever merged it into the scene chunk, the name
@@ -613,6 +617,12 @@ const BASELINE = {
   // scope controls, and the analytics page's sponsor report and imported-history section. Admin
   // only, so no player downloads it.
   admin: { gzip: 29.75 * 1000 },
+  // 2026-10-04: NEW, the competition pages (0059), MEASURED on the build that introduced them:
+  // the list, a competition's page and its tabs (rankings, matches, the bracket, alliance
+  // selection, the organizer's desk), the editor, the join screen, the pure rankings/selection/
+  // bracket modules they render from, and the competition client. Lazy, so a player who never
+  // opens Competitions downloads none of it; what main carries is the call bar and its one read.
+  competitions: { gzip: 20.2 * 1000 },
   // 2026-10-01: NEW, the robot importer (lane 3 of `docs/robot-import-plan.md`). MEASURED with
   // `npm run bundleaudit:importer` (the app plus `engineLoader.ts` as an entry, because no screen
   // imports the loader yet; a plain production build reports both routes absent). The engine

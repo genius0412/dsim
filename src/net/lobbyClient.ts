@@ -14,6 +14,7 @@ import {
   decodeServerMsg,
   type ServerMsg,
   CLIENT_CAPS,
+  type CompetitionRef,
   type LobbyPlayer,
   type MatchDriver,
   type PlayerIntro,
@@ -95,6 +96,8 @@ type Handlers = {
     /** false ⇒ a CUSTOM room's 3D-readiness window: no ratings, nothing to ready up. Absent
      *  from an older server ⇒ true, which is what every `strategyStart` used to be. */
     ranked: boolean,
+    /** a competition match's window: which event and match (and no ratings) */
+    competition?: CompetitionRef,
   ) => void;
   /** `code` is present only for the reasons a client can ACT on (today: `region_full`).
    *  Absent for everything else, and absent entirely from older servers, so a handler
@@ -458,7 +461,7 @@ export class LobbyClient {
       this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
     } else if (m.t === 'strategyStart') {
       this.stopStagedWatch();
-      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false);
+      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false, m.competition);
     } else if (m.t === 'error') {
       this.stopStagedWatch();
       this.handlers.error?.(m.message, m.code);

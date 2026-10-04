@@ -1,0 +1,317 @@
+/*
+ * COMPETITIONS — the pages' own sheet (docs/area/competitions.md). Imported by the lazy
+ * `Competitions.tsx`, so it ships with that chunk; `.ds-comp*` is exempt from `ds-outside-shell`
+ * the way `.ds-import*` and `.ds-tut*` are (scripts/uiaudit.mjs). Everything else these pages
+ * draw is the shell's own: panels, tables, tabs, badges, option tiles, forms.
+ *
+ * Tokens only (docs/ui-standard.md): spacing on the 4px grid, the type scale, radius tokens,
+ * colour tokens. Alliance names are the `-ink` siblings: `--ds-red`/`--ds-blue` are fills.
+ */
+
+/* the page: a positioned ancestor for `.ds-sr` (docs/area/ui.md), and the gap between blocks */
+.ds-comp {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-5);
+}
+/* a flex column stretches its children; the back control is a keycap, not a bar */
+.ds-comp > .ds-back {
+  align-self: flex-start;
+}
+/* seven sections do not fit a phone's width: the strip WRAPS (docs/area/ui.md, phone layout),
+   it does not scroll a section out of sight. The page's own gap spaces it, not the shared margin. */
+.ds-comp > .ds-tabs {
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+/* the title row: name and status, then the actions, wrapping on a phone */
+.ds-comp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+}
+.ds-comp-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  min-width: 0;
+}
+.ds-comp-title .ds-h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ds-comp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.ds-comp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+
+/* the list: one option tile per competition, its status and dates on their own lines */
+.ds-comp-list .ds-opt {
+  min-height: 112px;
+}
+.ds-comp-list .ds-opt .ot {
+  overflow-wrap: anywhere;
+}
+.ds-comp-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--ds-s-3) var(--ds-s-4);
+}
+
+/* YOUR MATCH IS CALLED: the one surface on the page that wants an answer now. An accent edge
+   and a soft accent ground; the countdown is mono so its width does not jitter. */
+.ds-comp-call {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-accent);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-comp-call b {
+  font-weight: 800;
+}
+.ds-comp-call .clock {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ds-comp-call.quiet {
+  border-color: var(--ds-line-strong);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+}
+
+/* a match row's two alliances: names in alliance ink, the winner's score heavier */
+.ds-comp-side {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-1) var(--ds-s-2);
+}
+.ds-comp-side.red {
+  color: var(--ds-red-ink);
+}
+.ds-comp-side.blue {
+  color: var(--ds-blue-ink);
+}
+.ds-comp-side .sur {
+  color: var(--ds-mut);
+  font-size: var(--ds-t-sm);
+}
+.ds-comp-side .dq {
+  text-decoration: line-through;
+}
+.ds-comp-side .me {
+  font-weight: 800;
+}
+.ds-comp-score {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ds-comp-score .red {
+  color: var(--ds-red-ink);
+}
+.ds-comp-score .blue {
+  color: var(--ds-blue-ink);
+}
+.ds-comp-score .w {
+  font-weight: 800;
+}
+.ds-comp-table tr.mine td {
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-comp-table tr.mine .ds-comp-side.red,
+.ds-comp-table tr.mine .ds-comp-side.blue {
+  color: inherit;
+}
+.ds-comp-rowacts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ds-s-1);
+}
+
+/* THE BRACKET: one column per round, scrolling sideways rather than squeezing a series card
+   until its names ellipsize to nothing. The columns are grids so a round's cards share their
+   column's height evenly, which lines a series up between the two that feed it. */
+.ds-comp-bracket {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+}
+.ds-comp-side-label {
+  margin: 0;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-comp-rounds {
+  display: flex;
+  gap: var(--ds-s-4);
+  overflow-x: auto;
+  padding-bottom: var(--ds-s-2);
+}
+.ds-comp-round {
+  flex: 0 0 240px;
+  display: grid;
+  grid-auto-rows: 1fr;
+  align-items: center;
+  gap: var(--ds-s-3);
+}
+.ds-comp-series {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  overflow: hidden;
+}
+.ds-comp-series-h {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-1) var(--ds-s-2);
+  font-size: var(--ds-t-xs);
+  font-family: var(--ds-font-mono);
+  color: var(--ds-mut);
+  background: var(--ds-tile);
+}
+.ds-comp-series-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border-top: 1px solid var(--ds-line);
+  min-height: 32px;
+}
+/* names WRAP rather than ellipsize: an alliance is two names, and a 216px column cut both */
+.ds-comp-series-row .who {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ds-comp-series-row .red {
+  color: var(--ds-red-ink);
+}
+.ds-comp-series-row .blue {
+  color: var(--ds-blue-ink);
+}
+.ds-comp-series-row .seed {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+  margin-right: var(--ds-s-1);
+}
+.ds-comp-series-row .wins {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ds-comp-series-row.won {
+  font-weight: 800;
+}
+.ds-comp-series-row.lost .who {
+  color: var(--ds-mut);
+  text-decoration: line-through;
+}
+.ds-comp-series-row.tbd .who {
+  color: var(--ds-mut);
+}
+
+/* the podium on a finished competition */
+.ds-comp-podium {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--ds-s-3);
+}
+.ds-comp-place {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-panel);
+}
+.ds-comp-place.first {
+  border-color: var(--ds-gold);
+  box-shadow: 2px 2px 0 var(--ds-gold);
+}
+.ds-comp-place .n {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-comp-place .who {
+  font-size: var(--ds-t-lg);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+/* alliance selection: the alliances on the left, the pickable entries on the right */
+.ds-comp-sel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--ds-s-4);
+}
+@media (max-width: 720px) {
+  .ds-comp-sel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.ds-comp-alliance {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+}
+.ds-comp-alliance.turn {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-comp-alliance .seed {
+  font-family: var(--ds-font-mono);
+  font-weight: 800;
+  min-width: 24px;
+}
+.ds-comp-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+
+/* the editor: two columns of fields on a wide screen, one on a phone */
+.ds-comp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--ds-s-3) var(--ds-s-4);
+}
+.ds-comp-grid > .wide {
+  grid-column: 1 / -1;
+}
+.ds-comp-textarea {
+  min-height: 120px;
+  resize: vertical;
+  line-height: var(--ds-lh-prose);
+}

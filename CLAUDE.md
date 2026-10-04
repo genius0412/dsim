@@ -50,6 +50,7 @@ mostly of the form "the obvious thing is wrong, and here is the measurement that
 | `src/ads/**` · `server/kofi.ts` · `src/legalText.ts` · `src/storageKeys.ts` | [docs/area/monetization.md](docs/area/monetization.md) | 2.2k |
 | `src/sponsor.ts` · `src/ui/Sponsor.tsx` · `electron/**` | [docs/area/sponsor.md](docs/area/sponsor.md) | 0.9k |
 | `src/robotImport/**` | [docs/area/robot-import.md](docs/area/robot-import.md) | 1.9k |
+| `src/competition/**` · `src/ui/Comp*` | [docs/area/competitions.md](docs/area/competitions.md) | 2.6k |
 
 ⚠️ **`src/sim/` is TWO guides.** It is the shared deterministic core (physics.md) *and* it is
 where DECODE's own rules live (decode.md) — they predate the game seam and were deliberately
@@ -92,7 +93,7 @@ future session read it.
   `src/config.ts`, or `src/games/`. It catches almost everything. **Add a check per behavior
   change.**
   It is fast because `scripts/smokeshard.mjs` SHARDS smoke.ts across cores, not because it is
-  small (serially it is 3m40s, what it cost until 2026-09-16): it parses smoke.ts, keeps the
+  small (serially it is 3m40s): it parses smoke.ts, keeps the
   103-statement preamble verbatim in every shard, and bin-packs its 257 top-level blocks
   longest-first across 12 processes from a measured cost table. **smoke.ts itself is
   untouched — write checks exactly as before**; a serial run produces the same check names
@@ -109,10 +110,9 @@ future session read it.
     invalidate one entry rather than all of them, and a stale table only packs worse.
   - **~22s is the FLOOR** at any width: one block costs 22.4s on its own and a block cannot be
     split across processes. More shards past 12 buy nothing.
-- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 234 checks, no DB or
-  sockets — injected clock + `stage`). Run after ANY change to `server/matchmaking.ts`. Kept
-  out of `npm test` on purpose, same reasoning as `contrast`: a red `npm test` must keep
-  meaning "physics broke".
+- `npm run test:mm` / `test:comp` — the matchmaker (`scripts/mmsmoke.ts`) and the
+  competition modules (`scripts/compsmoke.ts`). Run after changing one.
+  Not in `npm test`, like `contrast`: red `npm test` must mean "physics broke".
 - `npm run build` — tsc (strict) + vite build. Run before claiming work done.
 - `npm run server:check` — typecheck the server against the shared sim (`tsconfig.server.json`).
 - `npm run uiaudit` — **UI STANDARD audit** (`scripts/uiaudit.mjs`, zero deps). Enforces

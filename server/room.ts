@@ -77,7 +77,7 @@ import { eloMode } from './eloMode';
    A value import here would drag a Postgres driver into the browser bundle — see
    `server/eloMode.ts` and `docs/lan-webrtc.md` §5. */
 import type { EloOutcome } from './ranked';
-import type { PendingMatch } from './matchTypes';
+import type { CompetitionTag, PendingMatch } from './matchTypes';
 
 /** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO
  *  failed and HOW; the penalty scale and the rolling window live outside it. */
@@ -90,6 +90,9 @@ export interface DodgeReport {
   /** the room it died in — recorded on the standing ledger so a moderator reading a
    *  player's history can line an offence up against the match it came from */
   roomCode: string;
+  /** a competition room's call that never became a match: charged to nobody's standing, and
+   *  reported to the competition instead (`competitionCallFailed`) */
+  competition?: CompetitionTag;
 }
 
 /**
@@ -424,6 +427,9 @@ export interface MatchOutcome {
   /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
    *  source in `play_counts`, folded into Custom on the homepage */
   discord?: boolean;
+  /** a competition match: the result is the competition's as well as the archive's
+   *  (`competitionMatchPlayed`, called by `persistMatch`) */
+  competition?: CompetitionTag;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -1234,8 +1240,10 @@ export class Room {
       return;
     }
     // the first client to land defines the room's release channel (custom/record
-    // rooms are single-channel by construction — the matchmaker segregates ranked)
-    if (this.clients.size === 0 && client.channel) this.channel = client.channel;
+    // rooms are single-channel by construction — the matchmaker segregates ranked).
+    // NOT a competition room's: its result belongs to the competition on this server's
+    // database whatever build a driver arrived on, and the server's own sim decided it.
+    if (this.clients.size === 0 && client.channel && !this.pendingMatch?.competition) this.channel = client.channel;
     client.conn = ++this.connSeq;
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
@@ -1437,6 +1445,16 @@ export class Room {
       spectators: this.visibleSpectators(),
       kind: record ? 'record' : 'versus',
       region: SERVER_REGION || undefined,
+      // a competition match is public (its page links here) and says which match it is
+      ...(this.pendingMatch?.competition
+        ? {
+            competition: {
+              slug: this.pendingMatch.competition.slug,
+              name: this.pendingMatch.competition.name,
+              label: this.pendingMatch.competition.label,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1599,6 +1617,22 @@ export class Room {
         c.connected = false;
         c.disconnectAt = Date.now();
         c.player.ready = false; // a seat nobody is sitting in has not readied
+        this.broadcastRoster();
+        return;
+      }
+      /**
+       * A COMPETITION ROOM HOLDS ITS SEATS WHILE IT WAITS FOR ITS DRIVERS, clean close or not.
+       *
+       * The wait is minutes, not the ranked seconds, and a driver going back to the competition
+       * page or reloading the join screen is the ordinary way to spend it. Deleting the seat (and
+       * with the last one the ROOM) left the call claimed with no room behind it: every later join
+       * was refused as a match that was over. Nothing is charged here, so holding costs nobody
+       * anything, and the wait is bounded already — the call's own grace (`pendingTimer`) cancels
+       * the match and reports whoever never came back (`absentRoster` counts a held seat as absent).
+       */
+      if (this.pendingMatch?.competition && this.phase === 'connecting') {
+        c.connected = false;
+        c.disconnectAt = Date.now();
         this.broadcastRoster();
         return;
       }
@@ -1843,6 +1877,7 @@ export class Room {
         intros: p ? this.intros : [],
         game: this.game,
         ...(p ? {} : { ranked: false }),
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster();
@@ -2122,12 +2157,14 @@ export class Room {
         if (typeof msg.seat === 'string') this.removeBot(msg.seat);
         break;
       case 'rematch':
+        // a competition room plays its one match: a second would be a result nobody called
+        if (this.pendingMatch?.competition) break;
         this.voteRematch(id, msg.on === true);
         break;
       case 'lobby':
         // host only, exactly like `start` — the room is shared state and one player must
         // not tear the results screen out from under the rest of it.
-        if (id === this.hostId) this.returnToLobby();
+        if (id === this.hostId && !this.pendingMatch?.competition) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -2597,7 +2634,10 @@ export class Room {
    * player reconnects (`maybeStartRanked`) or cancels after the join grace. */
   applyPending(p: PendingMatch): void {
     this.pendingMatch = p;
-    this.ranked = true;
+    // a COMPETITION match is staged exactly like a ranked pairing and rates nobody: no ELO, no
+    // standing, no dodge charge. What a no-show costs is the competition's call, made through the
+    // same dodge report (see `cancelPending`).
+    this.ranked = !p.competition;
     // the matchmaker groups a single channel; carry it so an alpha ranked match
     // is segregated + unpersisted just like custom/record alpha rooms
     if (p.channel) this.channel = p.channel;
@@ -2629,10 +2669,13 @@ export class Room {
     this.pendingTimer = setTimeout(
       () =>
         this.cancelPending(
-          'Match cancelled - an opponent did not connect.',
+          p.competition
+            ? 'The match didn’t start: not every driver connected in time. The referee will call it again.'
+            : 'Match cancelled - an opponent did not connect.',
           this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
         ),
-      RANKED_JOIN_GRACE_MS,
+      // a competition's call carries its own wait, what is left of it when the room was built
+      p.competition ? Math.max(30_000, p.competition.graceMs) : RANKED_JOIN_GRACE_MS,
     );
     if (this.pendingTimer.unref) this.pendingTimer.unref();
     this.maybeStartRanked(); // in case everyone is already here
@@ -2722,16 +2765,19 @@ export class Room {
       // the staged autoPath is a serialized string (and in practice unset); coerce it
       // to the AutoPathData shape RobotSetup expects (createWorld re-coerces anyway).
       const autoPath = coerceAutoPath(r.autoPath) ?? undefined;
+      const c = r.userId ? byUser.get(r.userId) : undefined;
+      // a competition stages a placeholder robot (it cannot know anyone's build when it calls
+      // the match), so the driver's own build from the join is the one that plays
+      const live = p.competition && c ? c.player : null;
       setups.push({
         id: i,
         alliance: r.alliance,
-        spec: r.spec,
-        assists: r.assists,
+        spec: live ? live.spec : r.spec,
+        assists: live ? live.assists : r.assists,
         startIndex: r.startIndex,
         autoPath,
         autoPathEnabled: autoPath ? r.autoPathEnabled === true : false,
       });
-      const c = r.userId ? byUser.get(r.userId) : undefined;
       if (c) this.robotOf.set(c.id, i);
     });
     this.beginMatch(setups, p.seed);
@@ -2767,9 +2813,20 @@ export class Room {
         mode: p.mode,
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
+  }
+
+  /**
+   * What a competition room adds to `strategyStart`: which competition and which match, so the
+   * window can say so and drop the rating column. ADDITIVE: an older client ignores it and shows
+   * the ranked window with "Unranked" chips, which is wrong in a word and right in every action.
+   */
+  private competitionWire(): { competition?: { slug: string; name: string; label: string } } {
+    const t = this.pendingMatch?.competition;
+    return t ? { competition: { slug: t.slug, name: t.name, label: t.label } } : {};
   }
 
   /**
@@ -2863,6 +2920,7 @@ export class Room {
         mode: p?.mode ?? '1v1',
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     return true;
@@ -2886,7 +2944,11 @@ export class Room {
     const p = this.pendingMatch;
     if (!p || this.phase !== 'strategy' || this.world !== null) return;
     const connected = [...this.clients.values()].filter((c) => c.connected);
-    if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+    // A COMPETITION MATCH STARTS WHEN THE CLOCK SAYS SO, ready or not, as a field does: every
+    // driver is here, and re-calling the match because one of them did not press a button would
+    // cost the whole event the time the window was meant to bound.
+    const allHere = connected.length === p.roster.length;
+    if (allHere && (p.competition || connected.every((c) => c.player.ready))) {
       // a seat still loading its 3D chunk buys the window more time, once, up to the same
       // 45 s cap — see `extendStrategyForReady3d`
       if (this.extendStrategyForReady3d()) return;
@@ -2997,7 +3059,10 @@ export class Room {
      * sockets are still open at this point; `stop()` below closes them, so this has to fire
      * first and the verdict is relayed from the async reply.
      */
-    if (p && this.ranked && culprits.length && this.onDodge) {
+    /* A COMPETITION ROOM REPORTS THROUGH THE SAME DOOR, with its tag, and the persistence layer
+       routes it to the competition instead of the standing ledger (`persistDodges`). Always, even
+       with no culprit named: the competition has to learn that its call is over either way. */
+    if (p && (this.ranked ? culprits.length > 0 : !!p.competition) && this.onDodge) {
       const listeners = [...this.clients.values()].filter((c) => c.connected);
       void Promise.resolve(
         this.onDodge({
@@ -3006,6 +3071,7 @@ export class Room {
           game: this.game,
           rosterUserIds: p.roster.map((r) => r.userId).filter((u): u is string => !!u),
           roomCode: this.code,
+          ...(p.competition ? { competition: p.competition } : {}),
         }),
       )
         .then((verdicts) => {
@@ -3313,6 +3379,7 @@ export class Room {
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
         discord: this.group !== '',
+        ...(this.pendingMatch?.competition ? { competition: this.pendingMatch.competition } : {}),
         result,
         replay,
         participants,
@@ -3504,6 +3571,8 @@ export class Room {
   }
 
   private broadcastRematch(): void {
+    // no vote to show in a competition room (see the `rematch` case)
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     const votes = ids.filter((i) => this.rematchVotes.has(i)).length;
     /**
@@ -3557,6 +3626,7 @@ export class Room {
   }
 
   private maybeRematch(): void {
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;

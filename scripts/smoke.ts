@@ -36695,6 +36695,13 @@ function fxImportFixed(): RobotSpec {
     penalty: { points: 25, scoreAfter: 50, cooldownMin: 1440, ratingCharge: 20, reasons: ['throwing', 'afk'], reporters: 3 },
     'standing.edited': { scoreBefore: 60, scoreAfter: 100, pardoned: 2, lock: 'cleared' },
     'rating.recalculated': { mode: '1v1', before: 1685, after: 1491 },
+    'competition.message': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.invite': { slug: 'spring-open', name: 'Spring Open', from: '@ada' },
+    'competition.promoted': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.removed': { slug: 'spring-open', name: 'Spring Open', how: 'disqualified' },
+    'competition.result': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', what: 'corrected', outcome: 'win', score: { red: 88, blue: 54 } },
+    'competition.finished': { slug: 'spring-open', name: 'Spring Open', place: 2, of: 24 },
+    'competition.cancelled': { slug: 'spring-open', name: 'Spring Open' },
   };
   for (const k of NOTICE_KINDS) {
     const v = view(k, samples[k] ?? {});
@@ -36709,6 +36716,18 @@ function fxImportFixed(): RobotSpec {
     recalc.lines[0] === 'Your 1v1 rating: 1685 → 1491.' && recalc.meta === 'Ranked 1v1 · BIOBUZZ' &&
       recalc.lines.some((l) => l.includes('10 1v1 matches')), JSON.stringify(recalc));
   check('notices: a malformed correction is skipped rather than printing undefined', view('match.corrected', { alliance: 'red' }) === null);
+  // competitions (0059): a referee's ruling says the match, the score and what it means for YOU
+  const comp = view('competition.result', samples['competition.result'])!;
+  check(
+    'notices: a corrected competition result names the match, the score and the recipient’s outcome',
+    comp.title === 'Q12’s result was corrected' && comp.lines.includes('Red 88, Blue 54.') && comp.lines.includes('It counts as a win for you.') && comp.tone === 'good',
+    JSON.stringify(comp),
+  );
+  const voided = view('competition.result', { ...samples['competition.result'], what: 'void' })!;
+  check('notices: a voided competition match prints no score and no outcome', voided.lines.join(' ') === 'It no longer counts for anyone.', JSON.stringify(voided.lines));
+  const placed = view('competition.finished', samples['competition.finished'])!;
+  const won = view('competition.finished', { slug: 's', name: 'Spring Open', place: 1, of: 24 })!;
+  check('notices: a finished competition says the place, and a win says so in the title', placed.lines[0] === 'You placed 2nd of 24.' && won.title === 'You won Spring Open', JSON.stringify([placed, won]));
 
   // ---- what each one actually says
   const fixed = view('match.corrected', samples['match.corrected'])!;

@@ -52,6 +52,13 @@ interface Props {
    * anything, and a chip reading "ELO Unranked" beside every name would be four lies.
    */
   ranked?: boolean;
+  /**
+   * A COMPETITION MATCH (0059): the ranked window's ready gate and re-pick, with the event's name
+   * and match in the title instead of "Match strategy", and no rating chips (nobody is rated).
+   * Its deadline STARTS the match when every driver is there (`Room.onStrategyDeadline`), so the
+   * foot line says that instead of "it cancels".
+   */
+  competition?: { name: string; label: string } | null;
 }
 
 /**
@@ -78,7 +85,10 @@ export function MatchStrategy({
   onSettingsChange,
   onLeave,
   ranked = true,
+  competition = null,
 }: Props) {
+  // a competition window has the ranked gate and no ratings
+  const rated = ranked && !competition;
   const [now, setNow] = useState(() => Date.now());
   const [building, setBuilding] = useState(false);
 
@@ -234,7 +244,7 @@ export function MatchStrategy({
         <ConsoleHead onBack={onLeave} backLabel="← Leave" />
         <div className="ds-title">
           <h1>
-            {ranked ? 'Match strategy' : 'Starting the match'}
+            {competition ? `${competition.name} · ${competition.label}` : ranked ? 'Match strategy' : 'Starting the match'}
           </h1>
         {/* the sub sits INSIDE `.ds-title`, the title's caption (see `ConsoleHead`). The
             countdown chip's tooltip is gone —
@@ -273,7 +283,7 @@ export function MatchStrategy({
                   </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  {ranked && <span className="ds-chip">{ratingChip(p)}</span>}
+                  {rated && <span className="ds-chip">{ratingChip(p)}</span>}
                   {p.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : '…'}
@@ -326,7 +336,7 @@ export function MatchStrategy({
                               START_POSES[pl.startIndex]?.label ??
                               '-')}
                       </span>
-                      {ranked && <span className="ds-chip">{ratingChip(pl)}</span>}
+                      {rated && <span className="ds-chip">{ratingChip(pl)}</span>}
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
                         {pl.ready ? 'READY' : 'NOT READY'}
                       </span>
@@ -410,7 +420,7 @@ export function MatchStrategy({
         {ranked && (
         <section className="ds-sec">
           <h2>Your robot</h2>
-          {importedActive && <p className="ds-hint">Ranked uses a standard robot.</p>}
+          {importedActive && <p className="ds-hint">{competition ? 'Competitions use a standard robot.' : 'Ranked uses a standard robot.'}</p>}
           <div className="ds-opts robots">
             {(importedActive ? standardRobotChoices(settings) : settings.savedRobots).map((r, i) => {
               const active =
@@ -467,7 +477,9 @@ export function MatchStrategy({
                 ? '⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to ready up.'
                 : allReady
                   ? 'Everyone ready. Starting…'
-                  : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
+                  : competition
+                    ? `The match starts when all ${players.length} drivers are ready, or in ${secsLeft}s with everyone here.`
+                    : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
         </p>
       </div>
     </div>
