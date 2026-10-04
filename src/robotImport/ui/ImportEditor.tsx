@@ -11,8 +11,8 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { defaultImportSetup, isFullDetail, orientKey, transformParts } from '../geometry';
-import { coaxialBodies, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, motionAsStored, mountedBodies } from '../motion';
+import { defaultImportSetup, isFullDetail, orientKey, transformParts, type MeshPart } from '../geometry';
+import { coaxialBodies, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -33,6 +33,7 @@ import {
   layoutPatch,
   moveWheel,
   rectangleWheels,
+  buildFromCad,
   keepEditedMotion,
   reviewItems,
   reviewSummary,
@@ -287,6 +288,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           },
           sourceName: model.name,
           savedModel: !!opts.savedModel,
+          // a new file's mechanisms are read from it again; a re-read of the same one keeps what was set
+          cadBuild: opts.setup || opts.savedModel ? baseDoc.cadBuild : undefined,
           notes: model.notes.length ? model.notes : undefined,
           updated: Date.now(),
         };
@@ -730,9 +733,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- moving parts ----------------------------------------------------------------------------
   const motion = doc?.setup.motion;
+  /** what the finders and a click read: EVERY triangle at Full detail (the mesh the match turns), not
+   *  the simplified copy measured for the footprint, where a gearbox face can sit 7 mm off and a
+   *  Gecko wheel's fins lose their tips (goBILDA's BIOBUZZ mecanum bot, 2026-10-04) */
+  const detectParts = (): MeshPart[] => (normalised ? (normalised.shownParts ?? normalised.modelParts) : []);
   const findWheels = (): MotionGroup[] =>
     normalised && baseWheels && doc
-      ? findWheelGroups(normalised.modelParts, baseWheels, doc.setup.drive.drivetrain, wheelDiameterMm(doc.setup.drive.wheel) / 25.4)
+      ? findWheelGroups(detectParts(), baseWheels, doc.setup.drive.drivetrain, wheelDiameterMm(doc.setup.drive.wheel) / 25.4)
       : [];
   /**
    * EVERY KIND OF MOVING PART the model shows, among the bodies `have` does not hold: the drive wheels
@@ -742,7 +749,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
    */
   const findAll = (have: readonly MotionGroup[]): MotionGroup[] => {
     if (!normalised || !doc) return [];
-    const parts = normalised.modelParts;
+    const parts = detectParts();
     const out: MotionGroup[] = [];
     const taken = (): Set<number> => new Set([...have, ...out].flatMap((g) => g.bodies));
     // a wheel per corner no row has yet (a player's own wheel row keeps its corner); a 6WD's middle
@@ -757,7 +764,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken()));
     const shooter = doc.mech?.shooter;
     if (shooter && built) {
-      const at: [number, number, number] = [shooter.x, shooter.y, shooter.z];
+      // the flywheel the model shows, where there is one; else the launcher's placed point
+      const cad = readBuild(parts, taken()).launcher;
+      const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
       if (turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret')) {
         const t = findTurretGroup(parts, at, taken());
         if (t) out.push(t);
@@ -774,18 +783,35 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // the moving parts are looked for once, on a setup that has never had any, once the placements are
   // in (rollers, flywheels and a turret are looked for by the intake spans and the launcher)
   useEffect(() => {
-    if (!doc || !normalised || measuring || !baseWheels || doc.setup.motion !== undefined || !doc.mech) return;
+    if (!doc || !normalised || measuring || !baseWheels || !doc.mech) return;
+    // rows found by older finders, in a draft read from its CAD file: looked for again, edits kept
+    const motion0 = doc.setup.motion;
+    if (motion0 !== undefined) {
+      if (doc.savedModel || (doc.setup.motionFinder ?? 0) >= MOTION_FINDER || !motion0.some((g) => g.found)) return;
+      const kept = keepEditedMotion(motion0);
+      const again = [...kept, ...findAll(kept)];
+      update((d) => (d.setup.motion === motion0 ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d));
+      return;
+    }
+    // a NEW import's mechanisms are read from its model first (`buildFromCad`): the placements then
+    // default in for that build, and this runs again to find the moving parts from them
+    if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
+      const wheels = new Set(findWheels().flatMap((g) => g.bodies));
+      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels));
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: null } : {}) }));
+      return;
+    }
     const found = findAll([]);
-    update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found } } : d));
+    update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc?.setup.motion, normalised, measuring, baseWheels, !doc?.mech]);
+  }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, !doc?.mech, doc?.cadBuild]);
   const setMotion = (next: MotionGroup[]): void => update((d) => ({ ...d, setup: { ...d.setup, motion: next } }));
   /** Find moving parts: every row the player has not touched goes, and is looked for again */
   const refindMotion = (): void => {
     const kept = keepEditedMotion(motion ?? []);
     setActiveMotion(null);
     setHoverMotion(null);
-    setMotion([...kept, ...findAll(kept)]);
+    update((d) => ({ ...d, setup: { ...d.setup, motion: [...kept, ...findAll(kept)], motionFinder: MOTION_FINDER } }));
   };
   // a selected row is being edited: a click in the preview adds or takes out its parts
   const picking = step === MOVING_STEP && activeMotion !== null && !!motion?.[activeMotion];
@@ -801,7 +827,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       setActiveMotion(null);
       return;
     }
-    const parts = normalised.modelParts;
+    const parts = detectParts();
     const take = shift ? [body] : isSpin(g.role) ? coaxialBodies(parts, body, g.role) : mountedBodies(parts, body);
     const leaving = g.bodies.includes(body);
     const set = new Set(take);
@@ -901,6 +927,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         onSelect={setSelHandle}
         onMech={(next: ImportedMech) => update((d) => ({ ...d, mech: next }))}
         onReset={() => update((d) => ({ ...d, mech: null }))}
+        cadNote={doc.cadBuild?.length ? COPY.cadBuild(doc.cadBuild) : undefined}
         tuning={
           <TunePanel
             id="ri-tune-mech"

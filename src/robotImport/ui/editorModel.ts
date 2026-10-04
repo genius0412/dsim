@@ -18,6 +18,10 @@ import { bbox, buildDescriptor, isRectangle, linesToWheels, q64, squareWheels, W
 import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
 import type { FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { validateMechFor } from './placement';
+import type { CadBuild } from '../motion';
+import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeKind } from '../../games/biobuzz/mechs';
+import { BB_HOOD_DEFAULT_DEG } from '../../games/biobuzz/config';
+import { BB_DEFAULT_SHOOTER_MOUNT, isEdgePos, type BbIntakeMount, type BbMountPos, type BbScoreMode } from '../../games/biobuzz/mounts';
 import { COPY } from './copy';
 
 export const STEP_COUNT = 4;
@@ -55,6 +59,12 @@ export interface EditorDoc {
   created: number | null;
   /** the source file's name, for the robot page's "Resume import" card */
   sourceName: string | null;
+  /**
+   * what a NEW import's mechanisms were set to from the model (`buildFromCad`), in words for the
+   * Mechanisms step; `[]` when the model showed nothing to set. Absent: not looked yet (an edit, a
+   * re-open, a draft from before 2026-10-04 never looks).
+   */
+  cadBuild?: string[];
   updated: number;
 }
 
@@ -427,4 +437,66 @@ export function motionNames(groups: readonly MotionGroup[]): string[] {
     seen.set(n, k);
     return `${n} ${k}`;
   });
+}
+
+/**
+ * A NEW IMPORT'S MECHANISMS FROM ITS MODEL (2026-10-04, owner on goBILDA's BIOBUZZ mecanum bot: "side
+ * rollers are not selected by default, single static shooter is not selected by default, offset
+ * boxtube is selected even though I dont have it"). An import starts from the player's current robot,
+ * whose launcher, intake and Box Tube were nothing to do with the file. What `readBuild` saw sets them:
+ * - BIOBUZZ: upright rollers at an edge are SIDE ROLLERS there, rollers along it a SWEEPER; a flywheel
+ *   on a turret ring a single TURRET, else a FIXED shooter; no Box Tube (the model cannot say there is
+ *   one, and the starter bots have none). What the model did not show stays as it was.
+ * - DECODE: no roller at any edge is no intake (loaded by hand), and a flywheel on a ring a turret,
+ *   else a fixed launcher.
+ * Chain Reaction is left alone. Returns the spec and what was set, in words, or null for no change.
+ */
+export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { spec: RobotSpec; set: string[] } | null {
+  const set: string[] = [];
+  if (game === 'biobuzz') {
+    const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+    let kind: BbScoreMode = launcher.kind;
+    let mount: BbMountPos = launcher.mount;
+    if (cad.launcher) {
+      kind = cad.launcher.turret ? 'turret' : 'fixed';
+      if (kind === 'fixed' && !isEdgePos(mount)) mount = BB_DEFAULT_SHOOTER_MOUNT;
+      if (kind === 'turret' && launcher.kind !== 'turret') mount = 'center';
+    }
+    let intake: BbIntakeKind = bbIntakeKindOf(spec);
+    let intakeMount = (spec.intakeMount ?? 'front') as BbIntakeMount;
+    if (cad.intake) {
+      intake = cad.intake.upright ? 'siderollers' : 'sweeper';
+      intakeMount = cad.intake.edge === 'front' ? 'front' : cad.intake.edge === 'back' ? 'back' : 'side';
+      set.push(COPY.cadIntake(intake === 'siderollers', intakeMount));
+    }
+    if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : COPY.cadFixed);
+    set.push(COPY.cadNoLift);
+    const next = coerceSpec(
+      {
+        ...spec,
+        scoreMode: bbScoreModeMirror(kind),
+        shooterMount: mount,
+        intakeMount,
+        intakeSide: intakeMount === 'side',
+        bbMech: { launcher: { kind, mount, hoodDeg: launcher.hoodDeg }, lift: null, intake: { kind: intake } },
+      },
+      undefined,
+      'biobuzz',
+    );
+    return { spec: { ...next, name: spec.name }, set };
+  }
+  if (game === 'decode') {
+    const patch: Partial<RobotSpec> = {};
+    if (!cad.intake) {
+      patch.intake = 'none';
+      set.push(COPY.cadHandLoaded);
+    } else if (spec.intake === 'none') patch.intake = 'sloped';
+    if (cad.launcher) {
+      patch.launcher = cad.launcher.turret ? 'turret' : 'fixed';
+      set.push(cad.launcher.turret ? COPY.cadTurret : COPY.cadFixed);
+    }
+    if (!set.length) return null;
+    return { spec: { ...coerceSpec({ ...spec, ...patch }, undefined, 'decode'), name: spec.name }, set };
+  }
+  return null;
 }

@@ -79,7 +79,6 @@ import {
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_YOKE_BACK,
   BB_SIDE_ROLLER_YOKE_W,
-  bbSideRollerY,
   bbSideRollerYokeY,
   BB_SIDE_ROLLER_Z,
   BB_TURRET_AXLE_Z,
@@ -109,8 +108,8 @@ import {
   bbRailSegments,
   type BbKeepOut,
 } from '../parts';
-import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
-import { bbDumpZ, bbDumperFrame, bbImportTurretAxleZ } from '../importMech';
+import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal, mouthAxes } from '../robot';
+import { bbDumpZ, bbDumperFrame, bbImportTurretAxleZ, bbSideRollerOffsets } from '../importMech';
 import { bbSpecKey } from '../specKey';
 import { driveParams } from '../../../sim/drivetrain';
 import type { MotionDrive } from '../../../robotImport/types';
@@ -2273,11 +2272,12 @@ export function buildIntake(
       // RENDER lane asserts the two agree rather than trusting the copy.
       const armY = bbSideRollerYokeY(f.half);
       const wheelX = tip + BB_SIDE_ROLLER_OUT;
+      const wheelV = bbSideRollerOffsets(spec, mouthAxes(m, hl, hw));
       const wheelZ0 = BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2;
       const wheelZ1 = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
       const backX = wheelX - BB_SIDE_ROLLER_YOKE_BACK;
       for (const s of [1, -1] as const) {
-        const rollerY = s * bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the arm plane
+        const rollerY = s * wheelV[s === 1 ? 0 : 1]; // ±: as wide as the chassis, inboard of the arm plane (an IMPORT's inside its hull)
         const armOuter = s * (armY + armT / 2); // the arm rail's own outboard face
         // ONE yoke strap: a narrow bar from the arm rail to the axle, ending in the bearing BOSS.
         // Built per (z, side) rather than cached across them: `rollerY` and `armY` differ by side

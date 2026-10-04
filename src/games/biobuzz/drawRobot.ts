@@ -13,7 +13,7 @@ import {
   frontArrowSpot,
 } from '../../render/drawImported';
 import { polyBounds, polyPointDepth } from '../../sim/imported';
-import { bbDumperFrame } from './importMech';
+import { bbDumperFrame, bbSideRollerOffsets } from './importMech';
 import { accentFill, clampCosmetics } from '../../cosmetics';
 import {
   BB_END_BAR_T,
@@ -42,7 +42,6 @@ import {
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_YOKE_BACK,
   BB_SIDE_ROLLER_YOKE_W,
-  bbSideRollerY,
   bbSideRollerYokeY,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
@@ -72,7 +71,7 @@ import {
   turretLocal,
   turretRadius,
 } from './mounts';
-import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
+import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
 import { BB_ALLIANCE_BLUE, ELEMENT_FILL, ELEMENT_LINE } from './draw';
 
 /**
@@ -497,8 +496,10 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
     ctx.rotate(f.rot);
 
     if (kind === 'siderollers') {
+      const wheelV = bbSideRollerOffsets(r.spec, mouthAxes(m, r.spec.length / 2, r.spec.width / 2));
       for (const s of [1, -1] as const) {
-        const y = s * bbSideRollerY(f.half); // AT THE EDGE (owner, 2026-09-20), not the centreline
+        // AT THE EDGE (owner, 2026-09-20), not the centreline; an IMPORT's inside its own hull
+        const y = s * wheelV[s === 1 ? 0 : 1];
         const x = tip + BB_SIDE_ROLLER_OUT;
         // ⚠️ **A REAR YOKE, AND IT MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting the
         // housed draft this replaces: "The side rollers are rendered as being covered and still

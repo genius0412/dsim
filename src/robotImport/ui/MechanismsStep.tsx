@@ -47,6 +47,7 @@ export function MechanismsStep({
   onSelect,
   onMech,
   onReset,
+  cadNote,
   tuning,
 }: {
   game: GameId;
@@ -66,6 +67,8 @@ export function MechanismsStep({
   onSelect: (key: string) => void;
   onMech: (next: ImportedMech) => void;
   onReset: () => void;
+  /** what a new import's mechanisms were set to from its model (`EditorDoc.cadBuild`), in words */
+  cadNote?: string;
   /** the mechanisms' practice tuning (`TunePanel`), after the placements */
   tuning?: ReactNode;
 }) {
@@ -242,6 +245,7 @@ export function MechanismsStep({
 
   return (
     <>
+      {cadNote ? <p className="ds-hint">{cadNote}</p> : null}
       {Builder ? (
         <Builder spec={spec} onChange={onSpec} game={game} hideFrame />
       ) : (

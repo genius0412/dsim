@@ -24,6 +24,13 @@ const norm = (a: V3): V3 => {
   return [a[0] / l, a[1] / l, a[2] / l];
 };
 
+/**
+ * The finders' version (`ImportSetup.motionFinder`). Raise it with any change to what they find, so a
+ * draft found by the old ones is looked for again. 1: STEP body ids kept, motors off axles, 6WD
+ * middle wheels, the build read from the model (2026-10-04).
+ */
+export const MOTION_FINDER = 1;
+
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
 export const isJoint = (r: MotionRole): boolean => JOINT_ROLES.includes(r);
@@ -488,10 +495,13 @@ function spinAxle(parts: readonly MeshPart[], seed: number): { bodies: number[];
       if (Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]) >= FASTENER_IN) continue;
       const bd = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
       const bal = dot(bd, axis);
-      if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top) inner.add(b);
+      if (bal >= lo && bal <= hi && Math.hypot(bd[0] - axis[0] * bal, bd[1] - axis[1] * bal, bd[2] - axis[2] * bal) <= top + Math.max(0.05, 0.03 * top)) inner.add(b);
     }
+    // the radius with a little slack: a Gecko wheel modelled fin by fin has its fin tips as slivers
+    // 0.09 in long that stand ~0.03 in past the round part they belong to, and at 0.02 a side roller
+    // kept 20 of its 140 bodies (goBILDA's BIOBUZZ mecanum bot, 2026-10-04)
     for (const [b, f] of axleFits(parts, st, inner, pivot, axis)) {
-      if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + 0.02)) res.add(b);
+      if (rotors.some((r) => f.lo >= r.lo - 0.05 && f.hi <= r.hi + 0.05 && f.rMax <= r.rMax + Math.max(0.05, 0.03 * r.rMax))) res.add(b);
     }
   }
   return { bodies: [...res].sort((a, b) => a - b), motor: false };
@@ -1073,21 +1083,16 @@ const FLYWHEEL_REACH_IN = 5;
 const FLYWHEEL_R_MIN_IN = 0.6;
 const FLYWHEEL_R_MAX_IN = 2.6;
 
-/**
- * THE FLYWHEELS: round DISCS (thinner along their axle than across) with a level axle, centred within
- * `FLYWHEEL_REACH_IN` of the launcher's placed point (`at`, MODEL frame: a fixed launcher's lip, a
- * turret's axis at its release height), each grown to its axle (`coaxialBodies`). The two largest
- * axles at most (a double wheel). Bodies in `taken` are never used. A suggestion.
- */
-export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): MotionGroup[] {
+/** the bodies that could be a flywheel: a round DISC (thinner along its axle than across it) with a
+ *  level axle and a flywheel's radius, centred where `where` allows; each with its radius and centre */
+function flywheelDiscs(parts: readonly MeshPart[], used: ReadonlySet<number>, where: (c: V3) => boolean): { b: number; r: number; c: V3 }[] {
   const st = bodyStats(parts);
-  const used = new Set(taken);
-  const cands: { b: number; r: number }[] = [];
+  const cands: { b: number; r: number; c: V3 }[] = [];
   for (const b of st.ids) {
     if (used.has(b)) continue;
     const mo = setMoments(st, [b]);
     const c = boxCentre(mo);
-    if (Math.hypot(c[0] - at[0], c[1] - at[1], c[2] - at[2]) > FLYWHEEL_REACH_IN) continue;
+    if (!where(c)) continue;
     const ext = [0, 1, 2].map((k) => mo.max[k] - mo.min[k]);
     const big = Math.max(...ext);
     if (big < 2 * FLYWHEEL_R_MIN_IN || big > 2 * FLYWHEEL_R_MAX_IN) continue;
@@ -1098,8 +1103,20 @@ export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: Re
     if (along > fit.radius * 1.2) continue;
     const f = axleFits(parts, st, new Set([b]), fit.pivot, fit.axis).get(b)!;
     if (!roundAboutAxle(f) || fit.radius < FLYWHEEL_R_MIN_IN) continue;
-    cands.push({ b, r: fit.radius });
+    cands.push({ b, r: fit.radius, c });
   }
+  return cands;
+}
+
+/**
+ * THE FLYWHEELS: round DISCS (thinner along their axle than across) with a level axle, centred within
+ * `FLYWHEEL_REACH_IN` of the launcher's placed point (`at`, MODEL frame: a fixed launcher's lip, a
+ * turret's axis at its release height), each grown to its axle (`coaxialBodies`). The two largest
+ * axles at most (a double wheel). Bodies in `taken` are never used. A suggestion.
+ */
+export function findFlywheelGroups(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): MotionGroup[] {
+  const used = new Set(taken);
+  const cands = flywheelDiscs(parts, used, (c) => Math.hypot(c[0] - at[0], c[1] - at[1], c[2] - at[2]) <= FLYWHEEL_REACH_IN);
   cands.sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
   const out: MotionGroup[] = [];
   for (const { b } of cands) {
@@ -1150,6 +1167,57 @@ export function findTurretGroup(parts: readonly MeshPart[], at: V3, taken: Reado
     bodies.push(b);
   }
   return bodies.length ? { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true } : null;
+}
+
+// ---- what the model is built with, before anything is placed ------------------------------------
+
+/** a launcher's flywheel is centred at least this high, inches: an intake's rollers sit lower */
+const LAUNCHER_MIN_Z_IN = 4;
+
+/** what the model shows it is built with (`readBuild`) */
+export interface CadBuild {
+  /** the edge with the most intake rollers, and whether one of them stands upright (side rollers) */
+  intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean } | null;
+  /** the launcher's largest flywheel (its centre, MODEL frame), and whether a turret ring is under it */
+  launcher: { at: V3; turret: boolean } | null;
+}
+
+/**
+ * WHAT THE MODEL IS BUILT WITH, read before anything is placed (2026-10-04, owner on goBILDA's BIOBUZZ
+ * mecanum bot: "side rollers are not selected by default, single static shooter is not selected by
+ * default, offset boxtube is selected even though I dont have it"). An import started from the
+ * player's current robot, so its mechanisms, and the placements every finder searches from, were
+ * that robot's. Here the rollers are looked for along all four edges (`findRollerGroups`, wheels in
+ * `taken` left out) and the edge with the most is the intake's; one standing upright makes them side
+ * rollers. The launcher is the largest flywheel disc (`flywheelDiscs`) centred above
+ * `LAUNCHER_MIN_Z_IN` that is not a motor's part, and a turret is a ring under it
+ * (`findTurretGroup`). Null where nothing is there.
+ */
+export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>): CadBuild {
+  const used = new Set(taken);
+  let intake: CadBuild['intake'] = null;
+  let most = 0;
+  for (const edge of ['front', 'back', 'left', 'right'] as const) {
+    const groups = findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used);
+    let upright = false;
+    for (const g of groups) {
+      for (const b of g.bodies) used.add(b);
+      const f = fitRound(parts, g.bodies);
+      if (f && Math.abs(f.axis[2]) > AXLE_PARALLEL) upright = true;
+    }
+    if (groups.length > most) {
+      most = groups.length;
+      intake = { edge, upright };
+    }
+  }
+  let launcher: CadBuild['launcher'] = null;
+  const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
+  for (const d of discs) {
+    if (spinAxle(parts, d.b).motor) continue;
+    launcher = { at: d.c, turret: !!findTurretGroup(parts, d.c, used) };
+    break;
+  }
+  return { intake, launcher };
 }
 
 /**

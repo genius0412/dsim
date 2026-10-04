@@ -5,7 +5,7 @@
  * bodies come back nameless; matched by face counts as the colours are, `lostColours`), else '~' and
  * the occt node that lists it. Never commit the vendors' files.
  *
- *   npx tsx scripts/robot-import/motion/stepnames.ts --file X.step --out DIR [--procs 8]
+ *   npx tsx scripts/robot-import/motion/stepnames.ts --file X.step --out DIR [--procs 8] [--keepsmall 1]
  *
  * Writes DIR/model.bin + DIR/model.json: the parts (positions, indices, body, colour) and names[],
  * paths[], faces[] per body id. `motionprobe.ts` reads it.
@@ -18,7 +18,8 @@ import { STEP_PIECE_PARAMS, stepToParts, type StepPart } from '../../../src/robo
 
 const args = new Map<string, string>();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i].replace(/^--/, ''), process.argv[i + 1]);
-const MIN_PART_MM = 16;
+// `--keepsmall 1`: every part, as Full detail reads it (`StepRequest.keepSmall`); else Light's floor
+const MIN_PART_MM = args.get('keepsmall') === '1' ? 0 : 16;
 const POOL = 8; // the editor's pool on this machine (32 cores, deviceMemory 8)
 
 function plan(file: string) {
@@ -298,7 +299,7 @@ async function driver(file: string, out: string): Promise<void> {
       { length: procs },
       (_, s) =>
         new Promise<void>((res, rej) => {
-          const c = spawn(process.execPath, [...process.execArgv, process.argv[1], '--file', file, '--out', out, '--shard', String(s), '--of', String(procs)], { stdio: 'inherit' });
+          const c = spawn(process.execPath, [...process.execArgv, process.argv[1], '--file', file, '--out', out, '--shard', String(s), '--of', String(procs), '--keepsmall', args.get('keepsmall') ?? '0'], { stdio: 'inherit' });
           c.on('exit', (code) => (code === 0 ? res() : rej(new Error(`shard ${s} exit ${code}`))));
         }),
     ),

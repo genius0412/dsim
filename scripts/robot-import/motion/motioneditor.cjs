@@ -105,14 +105,16 @@ app.whenReady().then(async () => {
       await sleep(2500);
       row.facts = await js(`[...document.querySelectorAll('.ds-facts dt')].map((d) => d.textContent.trim() + ': ' + d.nextElementSibling.textContent.trim())`);
       console.log(`\n${tag}: imported in ${row.importS} s; ${row.facts.join(' | ')}`);
-      for (const s of ['Next: Drivetrain', 'Next: Mechanisms']) {
+      for (const s of ['Next: Drivetrain', 'Next: Mechanisms', 'Next: Moving parts']) {
         await click('button', s);
         await sleep(800);
       }
       await until(`document.querySelectorAll('.ds-import-moving li').length > 0`, 20000);
       await sleep(1500);
       row.groups = await js(`[...document.querySelectorAll('.ds-import-moving li')].map((l) => l.querySelector('.what')?.textContent.replace(/\\s+/g, ' ').trim())`);
+      row.build = await js(`[...document.querySelectorAll('.ds-hint')].map((h) => h.textContent).find((t) => t.startsWith('Set from the model')) ?? ''`);
       console.log(`  editor found: ${row.groups.join(' | ')}`);
+      console.log(`  ${row.build}`);
       // the draft, as persisted (800 ms after the last edit)
       await sleep(1500);
       row.draft = await js(`new Promise((res) => {
@@ -133,14 +135,14 @@ app.whenReady().then(async () => {
       // each group picked: its bodies tinted, from the side and 3/4
       const n = CFG.playOnly ? 0 : row.groups.length;
       for (let i = 0; i < n; i++) {
-        const ok = await js(`(() => { const li = document.querySelectorAll('.ds-import-moving li')[${i}]; const b = li && [...li.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Pick parts'); if (!b) return false; b.click(); return true; })()`);
+        const ok = await js(`(() => { const li = document.querySelectorAll('.ds-import-moving li')[${i}]; const b = li && li.querySelector('.ds-import-moving-row'); if (!b) return false; b.click(); return true; })()`);
         if (!ok) continue;
         await sleep(500);
         await click('.ds-import-preview-tools button', 'Side');
         await shot(`g${i}-side`);
         await click('.ds-import-preview-tools button', '3/4');
         await shot(`g${i}-iso`);
-        await js(`(() => { const li = document.querySelectorAll('.ds-import-moving li')[${i}]; const b = li && [...li.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Done'); if (b) b.click(); return !!b; })()`);
+        await js(`(() => { const li = document.querySelectorAll('.ds-import-moving li')[${i}]; const b = li && [...li.querySelectorAll('.ds-import-moving-edit button')].find((x) => x.textContent.trim() === 'Done'); if (b) b.click(); return !!b; })()`);
         await sleep(300);
       }
       // Play: frames from the side and the front
