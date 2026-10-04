@@ -12,7 +12,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findFlywheelGroups, findRollerGroups, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findFlywheelGroups, findRollerGroups, findSpokedRollers, findTurretGroup, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -809,9 +809,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       : [];
   /**
    * EVERY KIND OF MOVING PART the model shows, among the bodies `have` does not hold: the drive wheels
-   * (when there are none yet), the intake rollers on the intake spans, flywheels by the launcher, a
-   * turret under it (a turreted build), and a part the file shows deployed past 18 in at an intake
-   * edge (BIOBUZZ's ramp, else a folding part). Suggestions, marked `found`.
+   * (when there are none yet) and the gears they drive, the intake rollers on the intake spans, any
+   * other spoked roller, flywheels by the launcher, a turret under it (a turreted build), and a part
+   * the file shows deployed past 18 in at an intake edge (BIOBUZZ's ramp, else a folding part).
+   * Suggestions, marked `found`.
    */
   const findAll = (have: readonly MotionGroup[]): MotionGroup[] => {
     if (!normalised || !doc) return [];
@@ -826,8 +827,16 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const bodies = w.bodies.filter((b) => !t.has(b));
       if (bodies.length) out.push({ ...w, bodies });
     }
+    // the gears the wheels drive (a motor's pinion), each geared to its wheel; their leaders are
+    // indices into the rows before them, which is `[...have, ...out]` as the caller lays it out
+    out.push(...findDriveGears(parts, [...have, ...out], taken()));
+    // box tubes before the rollers: a slide's pulleys and bearings ride on its stages
+    // (their moving stages, numbered where they land in the setup's motion)
+    if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
     const intakes = doc.mech?.intakes ?? [];
     if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken()));
+    // spoked axles anywhere else (a transfer column of surgical tubing)
+    out.push(...findSpokedRollers(parts, taken()));
     const shooter = doc.mech?.shooter;
     if (shooter && built) {
       // the flywheel the model shows, where there is one; else the launcher's placed point
@@ -839,8 +848,6 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       }
       if (!have.some((g) => g.role === 'flywheel')) out.push(...findFlywheelGroups(parts, at, taken()));
     }
-    // box tubes: their moving stages, numbered where they land in the setup's motion
-    if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
     if (intakes.length && !have.some((g) => g.role === 'ramp' || g.role === 'fold')) {
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());

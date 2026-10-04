@@ -82,7 +82,11 @@ touching `src/robotImport/**`.
   to it as the file is read ("Detected from the intake"); under it the front is ASSUMED, the Model
   step says "Assumed: the CAD front view", and Review carries a note (`front-assumed`, Fix → the
   Turn buttons) until the player turns it. A saved robot's stored mesh, and a setup that names a
-  yaw, are never re-detected. Measured: the synthetic robot (4- and 6-wheel, facing either way) is
+  yaw, are never re-detected. **A robot drives square to its wheels' axles** (`wheelAxleVotes`,
+  2026-10-04): with three or more wheels read about x and none about y, the front is ±y, the votes
+  along x are dropped and the confidence is the y votes' alone (silent votes still leave it
+  assumed). Offset Robotics' concept robot (axles along the CAD's x, a tubing intake above 3 in):
+  assumed at 0.07, now detected at 0.78 facing its intake; the starter bots read exactly as before. Measured: the synthetic robot (4- and 6-wheel, facing either way) is
   found in all 24 orientations; the stress robots in every orientation whose up axis is found;
   goBILDA's BIOBUZZ starter bot (a front roller intake) in all 24, confidence 0.65; goBILDA's
   DECODE and REV's DECODE starter bots (no intake, launcher at the front) are ASSUMED in all 24
@@ -97,6 +101,11 @@ touching `src/robotImport/**`.
   clusters → the four corner ones (extremes of ±x ± y after normalising by the layout's extent);
   fewer → a reason, and the rectangle default. `detectWheels` reports them as found;
   `finishMeasure` lines them up (below).
+  ⚠️ **A frame can hang inside the slab** (`WHEEL_THIN_SLAB_IN`): Offset Robotics' concept robot has
+  its side plates 0.10 in off the floor, and at 0.15 the four corners were plate ends and a gearbox.
+  No four corners, or four that are no rectangle within `WHEEL_SQUARE_TOL_IN`, are looked for again
+  at 0.08 in and taken when they are one (Offset: its four mecanum wheels). A robot found square at
+  0.15 is measured as before.
 - **Footprint hull**: monotone chain on every vertex's (x, y), reduced to ≤ 16 vertices by a
   MIN-MAX search (binary search on the tolerance; farthest-reach walks from every start), an inner
   approximation whose measured maximum deviation is reported. Greedy removal alone is a local
@@ -397,16 +406,22 @@ match: `wheel`, `roller`, `flywheel` spin about their own axle, `turret` turns a
 positions), so a units or yaw change keeps it. Absent = never looked for: the editor looks once, and
 Find moving parts again on demand, among the bodies no row has (each marked `found` until edited):
 - the drive wheels (`findWheelGroups`: every body wholly inside each wheel's cylinder at a floor
-  contact, of which `turnsWithWheel` keeps what turns, below), and any MORE wheels on a side (a 6WD's
-  middle pair: a round wheel-sized body standing on the floor on the side's line between its corner
-  wheels), which have no `corner` and turn at their own place's speed;
+  contact, of which `turnsWithWheel` keeps what turns, below, and what its shaft carries), and any
+  MORE wheels on a side (a 6WD's middle pair: a round wheel-sized body standing on the floor on the
+  side's line between its corner wheels), which have no `corner` and turn at their own place's speed.
+  The axle is along y, else along x when only that way something round stands at the contact
+  (`wheelAxleAt`: a model whose CAD front is not the robot's, below);
+- the gears the wheels drive (`findDriveGears`, below), each a `spin` geared to its wheel;
 - the intake rollers (`findRollerGroups`: a round body near an intake span's edge, within 4 in of it
   and under 10 in, grown to its axle), its axle ALONG the edge or UPRIGHT (side rollers). A seed is at
   least 3/4 in across (`ROLLER_SEED_R_IN`: nuts, washers and screw heads are round too), round about
   the edge's direction by its own vertices and that thick along it (a flat face drawn as a surface is
   not), never a motor's part, biggest first; the group is dropped when its axle carries a drive wheel
   (goBILDA's DECODE bot: its front axle at the mouth) or turns on no shaft and is under 2 in long (a
-  round pattern mount, `onShaft`);
+  round pattern mount, `onShaft`). A star of spokes seeds one too, however small its hub, and deeper
+  than 4 in a spoked axle is the next stage in when it is within 4 in of a roller found there
+  (surgical tubing, below);
+- any other spoked axle (`findSpokedRollers`: a transfer column of surgical tubing), a `roller`;
 - flywheels (`findFlywheelGroups`: round discs with a level axle within 5 in of the placed launcher,
   the two largest axles, never a motor's gearbox face or end cap);
 - a turret on a turreted build (`findTurretGroup`: the largest round, upright ring under the launcher,
@@ -458,7 +473,71 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
   a FREE end (nothing round carries the axle on within 1 in: its end cap), not alone on its line. The
   part being picked and what overlaps it (its hub, the screws in the hub, `attachedTo`) are never a
   motor's. Out go its parts, what lies inside its span (bearings), and what lies past its free end; its
-  output shaft, coming out toward the part, stays.
+  output shaft, coming out toward the part, stays. A shaft that is picked attaches only what grips it
+  (its bore within `GRIP_IN` of the shaft): it runs back into its gearbox, and attached the face.
+- ⚠️ **SURGICAL TUBING IS A ROLLER** (`spokesAbout`, `spokeStars`, 2026-10-04, owner on Offset
+  Robotics' concept robot: "A lot of things are not being detected accurately, especially surgical
+  tubing"). A SPOKE is a rod at least twice as long as it is thick (Offset's tubing: 0.89 and 1.48 in
+  on 0.37 in tube), square to the axle, its line through it, its inner end at the hub it is pushed
+  into, its tip at least 0.8 in out. A STAR is three or more spokes in one plane across the axle with no
+  gap over 150° (Offset: six at 60°): that rotational symmetry is what says they turn together. Every
+  axle grown by `spinAxle` takes its stars; a star found anywhere is found by crossing its rods' lines
+  behind their inner ends. Rod measurements are memoised per model. Before: Offset's front roller was
+  its 54 hubs and spacers without its 102 tubes, and its second and third rollers (no round seed, and
+  5.1 and 7.1 in from the edge) and its six transfer rollers were not found.
+- ⚠️ **WHAT A WHEEL'S SHAFT CARRIES turns with it** (`shaftCarries`, owner: "gears for drivetrain").
+  goBILDA's 6WD BIOBUZZ bot has the gear its motor drives and a chain sprocket 0.5 to 1.4 in inboard of
+  each driven wheel, across the frame; AndyMark's wheels carry belt pulleys, REV's chain sprockets,
+  goBILDA's mecanum a clamping collar. A part ON THE AXLE within 4 in of the wheel GRIPS one of its
+  shafts when its bore is within `GRIP_IN` (0.01 in) of the shaft's radius, which only a bore shaped
+  to the shaft does (8 mm REX: shaft 0.16, gear and sprocket bores 0.14, a bearing's outer race 0.19;
+  3/8 hex: shaft 0.22, pulley 0.19). It must be round or a hub, 0.4 in to 0.85 R from the axle (a
+  bearing race is 0.30), no motor's, and in no HOUSING (a bigger round part around it that is not
+  turning: REV's UltraPlanetary output stage grips the wheel's hex shaft inside its cartridges, and its
+  motor goes unfound where the encoder sits behind a gap). The screws in it come with it.
+- ⚠️ **GEARS A WHEEL DRIVES** (`findDriveGears`). Two gears mesh when their outer circles, in one
+  plane on parallel axles, cross by a tooth's depth (two solids cannot overlap, teeth can): goBILDA's
+  6WD pinion and wheel gear 0.09 in, AndyMark's 40T 20DP pair 0.10 (20DP's addendum is 0.05). The
+  meshed gear is grown to its own axle (`spinAxle` with `driven`: the pinion sits 0.16 in off its
+  gearbox face, and the motor's growth took it as its own) and becomes a `spin` geared to the wheel,
+  `follows.ratio` minus the pitch radii's ratio (outer radius less half the crossing). Two deep, for an
+  idler. A belt or chain whose pulley is on another axle is not inferred: none of the eight bots models
+  its drive belt (Offset's 25T motor pulleys stand still, its wheels' 25T pulleys turn).
+- ⚠️ **A RATIO IS AGAINST ITS LEADER'S SENSE** (`deriveMotion`). A round part's fitted axle comes out
+  either way up, so a geared part's ratio changed sign with the fit. A part geared to another within
+  20° of parallel is turned about its leader's axle in its leader's sense (then its own flip): −1 is
+  "the other way" (meshed gears), +1 "the same way" (a belt). goBILDA's 6WD pinion fitted 13° off its
+  shaft and turned wobbling. `roundestAxis` also takes a model axis within 20° of the moments' axle when
+  the part is as round about it (within 0.03): a gear's teeth leaned its moments 12°, and a click on it
+  took a chain and a gearbox.
+- **A wheel click** reads the wheel off the floor: what its shaft carries is read off the biggest
+  round part on its line standing on the floor (`wheelOnLine`), a mecanum roller off the floor-standing
+  round part whose cylinder holds it (`wheelAround`), with the measured slack (0.2 in): the catalogue's
+  0.35 took the frame screws 0.1 in past Offset's rollers.
+
+Measured 2026-10-04 (`motionprobe.ts --budget full`, the editor's drafts; Offset with intake spans on
+both sides, as BIOBUZZ's `side` mount from its read build). Groups per role, bodies in each:
+
+| bot | before | after |
+|---|---|---|
+| goBILDA BIOBUZZ mecanum | wheel 806 × 4; roller 22, 879, 284, 284; flywheel 104 | wheel 810 × 4 (+ collar, its screws); rest the same |
+| goBILDA BIOBUZZ 6WD | wheel 141, 141, 99, 99, 99, 99; roller 22, 862, 277, 277; flywheel 101 | wheel 141, 141, 101, 101, 100, 100 (+ drive gear, sprockets); spin 2, 2 (the motors' pinions, × −0.98); rest the same |
+| goBILDA DECODE mecanum | wheel 585 × 4; flywheel 197 | wheel 589 × 4 (+ collar, screws); flywheel 197 |
+| REV DUO DECODE | wheel 32, 32, 5, 5, 1031, 1031; flywheel 1387 | wheel 33, 33, 6, 6, 1033, 1033 (+ chain sprockets); flywheel 1387 |
+| AndyMark Robits base, alt flower | wheel 17, 17, 5, 5; roller 210, 158; flywheel 3, 10 | wheel 21, 21, 9, 9 (+ belt pulley, hex bushings); spin 3, 3 (the NeveRest's 40T gear, × −1); rest the same |
+| AndyMark Robits mecanum | wheel 38 × 4; roller 210, 158; flywheel 3, 10 | wheel 42, 42, 40, 40; spin 3, 3; rest the same |
+| Offset Robotics concept | wheel 155, 36, 159, 19 (gearbox faces and plates: the wheels unfound); roller 54, 335, 319, 15, 20 (two of them its mecanum wheels); flywheel 13, 23 | wheel 665, 651, 649, 667 (axle along x, each with its 25T pulley and dead axle); roller 156, 68, 35 (its intake: 102, 30 and 12 tubes), 11–13 × 6 (its transfer), 15, 20; flywheel 13, 29 |
+
+No starter bot lost a group or changed a roller or flywheel. A click on every body of every wheel,
+roller and gear group takes nothing outside its group on the seven (the roller-pin and omni-roller
+clicks that took a static part before no longer do); flywheel clicks are as they were. On Offset,
+still wrong in this scope: two slivers of a drive motor's gearbox face (0.26 and 0.39 in, 0.1 in
+off the tread) sit in a rear wheel's cylinder and turn with it; the spools of its slides at the other
+edge are offered as rollers when BIOBUZZ's `side` mount searches both edges; its odometry pods (goBILDA
+4-bar, beside each wheel) are left out. Its CAD front is not its front (its wheels roll along the CAD's
+left, its intake is there) and the front is ASSUMED: the player turns it (yaw 3), and then the intake
+is the front edge and its three rollers are found there. The finders took 0.6 to 1.5 s in full (Node,
+8 bots, 4 at a time); the gears add 20 to 140 ms, the spoked rollers 3 to 30.
 - **The axle of a round part** (`fitRound` without a hint) is the axis it is ROUNDEST about, of its
   moments' axle and the three model axes (`roundestAxis`): at full resolution every 48 mm Gecko wheel's
   fins put its moments' axle near vertical, so a click on one picked the wrong line.
@@ -524,7 +603,8 @@ Find moving parts again on demand, among the bodies no row has (each marked `fou
 - **Finder versions** (`MOTION_FINDER`, `ImportSetup.motionFinder`). A draft whose `found` rows came
   from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
   drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
-  any change to what the finders find. A saved robot's re-open is left alone.
+  any change to what the finders find. A saved robot's re-open is left alone. 2: tubing, what a wheel's
+  shaft carries, the gears it drives, a wheel's axle along x.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now
@@ -580,7 +660,8 @@ The editor, rebuilt with this code, finds the same groups as the Node probe on a
   along a robot axis or a picked part's (`axis: 'part'`, `axisBody`: its round axle, a slide rail's
   long side), and a swing pivots on that part's axle or, without one, at its own end nearer the
   robot's middle. Any spinning or generic part can be GEARED to another (`follows`: its value times a
-  ratio, a gear train, a belt, a cascade's second stage) and RIDE on another (`rideOn`: an arm on a
+  ratio, a gear train, a belt, a cascade's second stage; a negative ratio on a parallel axle turns it
+  the other way, above) and RIDE on another (`rideOn`: an arm on a
   slide). A chain or a gearing that comes back on itself is cut where it closes. Measured as
   `MotionPart` (`drive`, `amount` in turns a second, radians or inches, `follows` by part index) and
   stored with an `id` per node and `follow: { id, ratio }`; an older viewer reads a joint's role as
@@ -1002,4 +1083,6 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   each group offscreen (`softrender.ts`, no GPU); `motioneditor.cjs` drives the production editor
   offscreen to Mechanisms, dumps its draft and pictures each group picked and Play; `framediff.mjs`
   paints what moved between two Play frames. `moving parts 3` in `npm test` holds each case the
-  starter bots showed as a synthetic scene.
+  starter bots showed as a synthetic scene, `moving parts 4` Offset's: a tubing roller, its next stage
+  on a motor's shaft, a transfer roller, a wheel's carried gear and the pinion meshed with it, a wheel
+  on an axle along x, blocks hanging 0.1 in off the floor.

@@ -12,7 +12,7 @@
  * editor on exactly the robot that was saved.
  */
 import type { ImportedBand, ImportedCut, ImportedEdge, ImportedMech, ImportedRobot, Vec2 } from '../types';
-import { applyFolds, deriveMotion, foldKey, planFolds, type FoldPlan } from './motion';
+import { applyFolds, deriveMotion, foldKey, planFolds, wheelAxleVotes, type FoldPlan } from './motion';
 import { findFloatingParts } from './floating';
 import {
   INCHES_PER_UNIT,
@@ -60,6 +60,15 @@ const TYPICAL_ROBOT_IN = 15;
 const UNIT_PRIOR_BONUS = 0.35;
 /** floor-contact slab for wheel detection, inches; widened once if it finds too few wheels */
 const WHEEL_SLABS_IN = [0.15, 0.5] as const;
+/**
+ * A FRAME CAN HANG INSIDE THAT SLAB. Offset Robotics' concept robot has its side plates 0.10 in off
+ * the floor: at 0.15 their ends were six "wheels" and its mecanum wheels joined a plate's edge, so the
+ * four corners were a motor's gearbox and the plates. No four corners, or four that are no rectangle
+ * (within `WHEEL_SQUARE_TOL_IN`), are looked for again this close to the floor, and the four found there
+ * are used when they are one (Offset: its four mecanum wheels, at 0.03 to 0.08 alike). The tread's lowest
+ * vertex can sit 0.05 in up (a 0.5 rad facet on a 1.6 in radius), so not closer.
+ */
+const WHEEL_THIN_SLAB_IN = 0.08;
 /** single-linkage distance for floor contacts, inches: one wheel's patch, never two wheels */
 const CONTACT_LINK_IN = 1.0;
 /** a contact cluster longer than this is an intake or a skid, not a wheel */
@@ -1047,6 +1056,18 @@ export function detectFront(modelParts: readonly MeshPart[], wheels: readonly Ve
   }
   const mass = [-vote((ax / area - fx) / ((x1 - x0) / 2), 0.05, 0.15), -vote((ay / area - fy) / ((y1 - y0) / 2), 0.05, 0.15)];
   const S = [0, 1].map((k) => FRONT_WEIGHTS.intake * intake[k] + FRONT_WEIGHTS.wheels * wheel[k] + FRONT_WEIGHTS.mass * mass[k]);
+  // A ROBOT DRIVES SQUARE TO ITS WHEELS' AXLES. With three or more of them along x and none along y,
+  // the front is ±y: the votes along x say nothing about it, and the confidence is the y votes' alone
+  // (still never a guess: silent votes leave it assumed). Offset Robotics' concept robot (2026-10-04):
+  // axles along the CAD's x, its tubing intake on +y riding above `FRONT_LOW_IN`; 0.07 confidence
+  // with the x votes against it, 0.78 along y alone.
+  const axles = wheels && wheels.length >= 4 ? wheelAxleVotes(modelParts, wheels) : { x: 0, y: 0 };
+  if (axles.x >= 3 && axles.y === 0 && S[1] !== 0) {
+    const c = Math.min(1, Math.abs(S[1]));
+    const sure = c >= FRONT_MIN_CONFIDENCE;
+    const turnY: QuarterTurns = S[1] > 0 ? 3 : 1;
+    return { yaw: sure ? (((yaw + turnY) % 4) as QuarterTurns) : 0, confidence: Math.round(c * 1000) / 1000, detected: sure, cue: 'wheels' };
+  }
   const major = Math.abs(S[0]) >= Math.abs(S[1]) ? 0 : 1;
   const confidence = Math.min(1, Math.max(0, Math.abs(S[major]) - Math.abs(S[1 - major])));
   if (S[major] === 0) return none;
@@ -1767,6 +1788,11 @@ export function orientParts(
       const d = detectWheels(xy, edges);
       if (slab === WHEEL_SLABS_IN[0] || d.wheels) wheels = d;
       if (d.wheels) break;
+    }
+    if (!wheels.wheels || !isRectangle(wheels.wheels, WHEEL_SQUARE_TOL_IN)) {
+      const { xy, edges } = floorContacts(modelParts, WHEEL_THIN_SLAB_IN);
+      const d = detectWheels(xy, edges);
+      if (d.wheels && isRectangle(d.wheels, WHEEL_SQUARE_TOL_IN)) wheels = d;
     }
   }
   const bandsModel = setup.bands && !empty ? computeBands(modelParts, size.height) : null;
