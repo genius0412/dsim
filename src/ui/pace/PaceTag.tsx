@@ -3,12 +3,14 @@ import type { HudSnapshot } from '../../game';
 import { paceAt, type PaceCurve } from './curve';
 
 /**
- * THE PACE READ-OUT IN THE SCORE BAR: `+12 PB` under your own alliance's score.
+ * THE PACE READ-OUT IN THE SCORE BAR: `+12` over `PB`, beside your own alliance's score.
  *
- * One line in the panel you already read, in its own ink, and nothing else — no colour for ahead
- * or behind (the sign says it, and the chip fill would not carry a third colour at AA), no popup,
- * no sound. The line is there from the first frame of a paced match whether or not the curve has
- * arrived, so the bar never changes height mid-match: `—` until there is a number to show.
+ * Beside the total, not under it: under it, a BIOBUZZ panel stacked four things (YOU, the total,
+ * the tip line, the pace) and its total rode up out of line with the other alliance's. In the
+ * panel you already read, in its own ink, and nothing else — no colour for ahead or behind (the
+ * sign says it, and the chip fill would not carry a third colour at AA), no popup, no sound. It
+ * is there from the first frame of a paced match whether or not the curve has arrived, and it
+ * holds a fixed width, so the bar never changes size mid-match: `—` until there is a number.
  */
 
 export interface PaceState {
@@ -40,9 +42,11 @@ export function PaceTag({ hud }: { hud: HudSnapshot }) {
     delta == null
       ? pace.why || `Pace against ${pace.tag}`
       : `${delta === 0 ? 'Level with' : `${Math.abs(delta)} ${delta > 0 ? 'ahead of' : 'behind'}`} ${pace.tag} at this point`;
+  // two short lines beside the total: the number, and what it is measured against under it
   return (
-    <span className="pace-tag" title={label}>
-      {delta == null ? '—' : fmtPace(delta)} {pace.tag}
+    <span className="pace-tag" title={label} aria-label={label}>
+      <span className="pace-d">{delta == null ? '—' : fmtPace(delta)}</span>
+      <span className="pace-k">{pace.tag}</span>
     </span>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, MatchPhase } from '../../types';
 import type { PaceState } from './PaceTag';
 import { PACE_TAG, resolvePace, type PaceRun } from './resolve';
-import { curveFor, PaceStale } from './store';
+import { curveFor, curveKey, PaceStale, storedCurve } from './store';
 
 /**
  * The pace for this screen, or null when the match is not one the pace runs in (or it is off).
@@ -35,6 +35,8 @@ export function usePace(
   // what the shown curve was resolved for: a new round of the same match keeps it while the
   // target is asked again, but another game or kind of match must not read it even for a moment
   const shownFor = useRef('');
+  /** the run (its store key) whose curve is on show */
+  const shownRun = useRef('');
   useEffect(() => {
     if (source === 'off' || !run) {
       shownFor.current = '';
@@ -56,8 +58,14 @@ export function usePace(
           return;
         }
         const t = res.target;
+        // the SAME source can now be a DIFFERENT run (a new best since the last match): its
+        // curve, not the old run's, or nothing while it is made — the old run under the new
+        // run's name would be a number about a race nobody is running
+        if (shownRun.current !== t.key && !storedCurve(curveKey(t.key))) setState({ tag, curve: null, why: '' });
         const curve = await curveFor(t.key, settings.game, t.load, t.alliance, t.pin);
-        if (live) setState({ tag, curve, why: '' });
+        if (!live) return;
+        shownRun.current = t.key;
+        setState({ tag, curve, why: '' });
       } catch (err) {
         if (!live) return;
         const why =

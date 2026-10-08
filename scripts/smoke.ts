@@ -345,7 +345,7 @@ import {
 import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
-import { buildPaceCurve, clockKey, coerceCurve, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
+import { buildPaceCurve, clockKey, coerceCurve, netScore, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
 import {
   runRecordMatch,
   simulateReplay,
@@ -17269,7 +17269,15 @@ const recordDrive: CommandSource = (tick) => {
   // would mean re-running a full decode match a second time just to get it, which
   // costs strictly more than keeping the two together.
   const solo = recordSetups(DEFAULT_SPEC, 'solo', DEFAULT_ASSISTS, undefined, true);
-  const run = runRecordMatch(0x51ce, solo, recordDrive);
+  // the pace curve as solo practice makes it, WHILE the run is played (`GameController.paceRec`):
+  // a source is handed the world as the previous step left it, so this is a push after every
+  // step, and the last one is pushed off the final world below
+  const livePace = new PaceCurveRecorder();
+  const run = runRecordMatch(0x51ce, solo, (t, w) => {
+    livePace.push(w.match.phase, w.match.phaseTimeLeft, netScore(w, 'blue'));
+    return recordDrive(t, w);
+  });
+  livePace.push(run.world.match.phase, run.world.match.phaseTimeLeft, netScore(run.world, 'blue'));
   check('record match runs to phase "post"', run.world.match.phase === 'post');
   // format 2: a replay with no imported robot is the container it was before imports (format 3)
   check('replay stamped with format + balance version', run.replay.format === REPLAY_FORMAT_BASE && run.replay.balanceVersion === BALANCE_VERSION);
@@ -17306,6 +17314,7 @@ const recordDrive: CommandSource = (tick) => {
     check('pace: the final whistle reads the final score', paceAt(curve, 'post', 0) === net);
     const mid = paceAt(curve, 'teleop', 60);
     check('pace: half way through TELEOP is between 0 and the final', mid !== null && mid >= 0 && mid <= net, `${mid}`);
+    check('pace: the curve made while the run is played is the one its replay re-simulates into', JSON.stringify(livePace.curve) === JSON.stringify(curve), `${livePace.curve.k.length} vs ${curve.k.length} points`);
     check('pace: a curve survives a storage round trip', JSON.stringify(coerceCurve(JSON.parse(JSON.stringify(curve)))) === JSON.stringify(curve));
   }
 

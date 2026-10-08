@@ -64,6 +64,7 @@ import { chainCatalystPrompt } from './games/chain/play';
 import { beamRide } from './games/chain/beams';
 import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { netScore, PaceCurveRecorder, type PaceCurve } from './ui/pace/curve';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
 import { readRenderStats } from './perfStats';
@@ -569,6 +570,14 @@ export class GameController {
    *  multiplayer, where the SERVER owns the recording) */
   private recorder: ReplayRecorder | null = null;
   /**
+   * The run's PACE CURVE, made as it is played, beside the replay (`src/ui/pace/curve.ts`).
+   * The same points a re-simulation of the saved replay would give — a practice replay re-runs
+   * exactly, and this is pushed after the same step the replay records — but without the
+   * re-simulation: a BIOBUZZ one took over a minute in the pace worker beside a live match, and
+   * for that minute a new best could not be raced. Opened and closed with `recorder`.
+   */
+  private paceRec: PaceCurveRecorder | null = null;
+  /**
    * Ticks of the run in flight on which the robots were actually ENABLED — the length
    * `src/replaySavePolicy.ts` judges an abandoned run by.
    *
@@ -582,7 +591,7 @@ export class GameController {
   /** the finished solo practice run, once the match reaches `post` */
   private practice: { replay: Replay; result: ReplayResult } | null = null;
   /** fired once when a solo practice run finishes, so the app can save + upload it */
-  onPracticeRun: ((replay: Replay, result: ReplayResult) => void) | null = null;
+  onPracticeRun: ((replay: Replay, result: ReplayResult, pace?: PaceCurve) => void) | null = null;
   private lastBeepAt = -1;
   private lastTransitionBeep = -1;
   private hudCountdown: number | null = null;
@@ -2135,6 +2144,7 @@ export class GameController {
       if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
+      this.paceRec?.push(this.world.match.phase, this.world.match.phaseTimeLeft, netScore(this.world, this.viewAlliance()));
       // counted HERE, beside the record call, because it must measure exactly the ticks that
       // went into the log — and only the ones the sim let the robot move on (`pre` and
       // `transition` are recorded but undrivable).
@@ -3532,6 +3542,7 @@ export class GameController {
       this.gameId,
       this.interp3d() ? '3d' : '2d',
     );
+    this.paceRec = new PaceCurveRecorder();
     this.drivenTicks = 0;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -3565,6 +3576,7 @@ export class GameController {
     // on the rebuilt world. A RESTART is still not a replay of a MATCH — it is now a replay of
     // the DRIVING, which is what a practice replay was always for (see `replaySavePolicy`).
     this.recorder = null;
+    this.paceRec = null;
     this.practice = null;
     this.drivenTicks = 0;
     this.frontFlipped = false;
@@ -3771,13 +3783,15 @@ export class GameController {
     // closed before the branch: kept or not, the run is over, and a recorder left open would
     // keep appending to a run whose world is about to be thrown away.
     this.recorder = null;
+    const pace = this.paceRec?.curve;
+    this.paceRec = null;
     const replay = recorder.finish();
     const decision = practiceSaveDecision({ drivenTicks: this.drivenTicks, completed });
     this.drivenTicks = 0;
     if (!decision.keep) return;
     const kept = { replay, result: worldResult(this.world) };
     if (completed) this.practice = kept;
-    this.onPracticeRun?.(kept.replay, kept.result);
+    this.onPracticeRun?.(kept.replay, kept.result, pace);
   }
 
   dispose(): void {

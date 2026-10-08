@@ -471,7 +471,12 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 1013.97 * 1000 },
+  // 2026-10-08: 1013.97 -> 1034.49, RAISED on purpose and measured, not crept into: alpha's own
+  // base (c52b145a) already measures 1030.32 (+16.35 of drift on alpha, inside the 2% tolerance),
+  // and the pace line adds +4.17 — the score-bar tag, the Pace setting, the replay viewer's Use as
+  // pace, `usePace` and the resolver/curve store it calls, and the live curve solo practice records.
+  // The re-simulation itself is the lazy `paceWorker` route, not main.
+  main: { gzip: 1034.49 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.

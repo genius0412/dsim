@@ -377,16 +377,27 @@ button {
   color: inherit;
 }
 
-/* THE PACE LINE (`src/ui/pace/PaceTag.tsx`): `+12 PB` under the player's own score. The same
-   type and ink as `.bb-tip` (fixed chip ink, category 2) and no colour for ahead or behind: the
-   sign says it, and a third colour on the alliance fill would not hold AA. A paced panel STACKS
-   (`.paced`); BIOBUZZ's panel already does. The line is rendered from the match's first frame,
-   so the bar's height is set once and never moves. */
-.score-panel.paced {
-  flex-direction: column;
-  gap: var(--ds-s-0);
+/* BIOBUZZ's total line: the total, and the pace beside it when there is one. The panel's column
+   stays two lines (this, then the tip line) whether or not the match is paced. */
+.bb-score {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
 }
+
+/* THE PACE (`src/ui/pace/PaceTag.tsx`): `+12` over `PB`, BESIDE the player's own total. Under
+   it, a BIOBUZZ panel stacked YOU, the total, the tip line and the pace, and its total rode up
+   out of line with the other alliance's. The same type and ink as `.bb-tip` (fixed chip ink,
+   category 2) and no colour for ahead or behind: the sign says it, and a third colour on the
+   alliance fill would not hold AA. A FIXED WIDTH (the widest tag, `REPLAY`, with its tracking)
+   so the panel does not change size when the number does, and the timer between the panels
+   never shifts. Rendered from the match's first frame, so the bar's size is set once. */
 .pace-tag {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-s-0);
+  min-width: 7ch;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -395,6 +406,10 @@ button {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   color: inherit;
+}
+/* the number is what is read mid-drive, so it is one step up; the tag under it stays at the floor */
+.pace-d {
+  font-size: var(--ds-t-md);
 }
 
 /* TIPPING is a state that changes what to do — hold fire, the CELL accepts nothing while
@@ -3154,6 +3169,31 @@ button {
   .score-panel .you-tag {
     letter-spacing: 0;
   }
+  /* THE PACE GOES TO THE CORNER OPPOSITE YOU. Beside the total, the total slid left under the
+     YOU tag (the compact panel has no room to spare either side of it); in the top-right corner
+     it mirrors YOU on the line YOU already uses, and costs the bar no height and no width. One
+     line, both parts at the floor, like YOU. */
+  .score-panel .pace-tag {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    flex-direction: row;
+    gap: var(--ds-s-1);
+    min-width: 0;
+    letter-spacing: 0;
+  }
+  .score-panel .pace-d {
+    font-size: var(--ds-t-xs);
+  }
+  /* ...and a paced panel holds both corners clear of each other and of the total: wide enough
+     for YOU, a gap and the longest pace (`−103 REPLAY`) — at its 74px floor, under a short tip
+     line (TIPPING), the two corners overlapped — and a top strip of their own, because the
+     compact total starts at the top of the panel and a long pace ran into a three-digit total.
+     Set from the match's first frame (the pace renders `—` until it has a number). */
+  .score-panel.mine:has(.pace-tag) {
+    min-width: 116px;
+    padding-top: 16px;
+  }
   .timer-panel {
     min-width: 108px;
     padding: 4px 14px;
@@ -3328,6 +3368,14 @@ button {
   .timer-panel {
     min-width: 68px;
     padding: 4px 8px;
+  }
+  /* THE PACE'S TOP STRIP GROWS THE STACK DOWNWARD, NOT BOTH WAYS. The stack is centred, so the
+     strip (16px of top padding on the paced panel against this block's 4px: +12) moved its top
+     up 6px, and the sponsor chip above it, which already grazed the first panel's total by 2px,
+     cut 8px into it (812×375, measured). Half the strip back keeps the top edge where an unpaced
+     stack has it. */
+  .scorebar:has(> .score-panel.mine .pace-tag) {
+    transform: translateY(calc(-50% + 6px));
   }
   /* the breakdown chips stack in the RIGHT gutter, mirroring the scorebar.
      THE SLOT IS RESERVED ON THE OTHER AXIS HERE. As a column it is the row's WIDTH that a

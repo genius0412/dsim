@@ -111,6 +111,7 @@ import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } f
 import { loadStagedMatch } from '../net/stagedMatch';
 import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
+import type { PaceCurve } from './pace/curve';
 import {
   savePracticeRun,
   markPracticeUploaded,
@@ -1408,10 +1409,19 @@ export function App() {
    * practice figure that flattered you relative to a record run would be worse than useless
    * for the one thing practice is for.
    */
-  const keepPracticeRun = (replay: Replay, result: ReplayResult): void => {
+  const keepPracticeRun = (replay: Replay, result: ReplayResult, pace?: PaceCurve): void => {
     const alliance = replay.setups[0]?.alliance ?? 'blue';
     const score = recordScore(result, alliance);
-    savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    const kept = savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // the run's pace curve, made while it was played, under the key the pace looks it up by: a
+    // new best is raced from the very next match instead of after a re-simulation. A dynamic
+    // import because the store reaches the replay simulator (`replayFidelity`), which is not in
+    // the first download; the game screen that hands this over has already loaded it.
+    if (kept && pace) {
+      void import('./pace/store').then(({ curveKey, storeCurve }) =>
+        storeCurve(curveKey(`l:${kept.id}`), kept.game, pace),
+      );
+    }
     // the homepage's games-played counter, signed in or not (the upload below is account-only)
     reportPlayed(replay.game ?? 'decode', 'practice');
     // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
