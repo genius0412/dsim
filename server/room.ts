@@ -35,6 +35,8 @@ import {
   quantizeCommand,
   slimWorld,
   roomCapacity,
+  mergeRoomSettings,
+  type RoomSettings,
   DEFAULT_ROOM_CONFIG,
   RANKED_JOIN_GRACE_MS,
   READY3D_DEADLINE_MS,
@@ -809,6 +811,17 @@ export class Room {
    *  quietly make the room count as playtime again after the roster was already built around it. */
   private botsEverSeated = false;
 
+  /** the host-controlled shape of this room (mutable; `config.settings` is what it was created with).
+   *  Undefined ⇒ a legacy room, which behaves exactly as before. */
+  settings: RoomSettings | undefined;
+
+  /** seats in this room right now — `roomCapacity` of the creation config until the host changes it */
+  private get capacity(): number {
+    return this.settings
+      ? this.settings.perAlliance.red + this.settings.perAlliance.blue
+      : roomCapacity(this.config);
+  }
+
   /** how many seats are spoken for: connected drivers plus bots. */
   private get seatsTaken(): number {
     return this.clients.size + this.bots.length;
@@ -834,10 +847,12 @@ export class Room {
     if (this.pendingMatch || this.ranked) return 'A ranked match cannot have bots in it.';
     if (this.config.kind === 'record') return 'A record run cannot have bots in it.';
     if (this.world !== null || this.phase === 'match') return 'The match has already started.';
-    if (this.seatsTaken >= roomCapacity(this.config)) return 'The room is full.';
+    if (this.seatsTaken >= this.capacity) return 'The room is full.';
     const red = this.sideCount('red');
     const blue = this.sideCount('blue');
-    const alliance: Alliance = red <= blue ? 'red' : 'blue';
+    // the EMPTIER side, among the sides that still have a seat when the host set a split
+    const open = (a: Alliance): boolean => !this.settings || this.sideCount(a) < this.settings.perAlliance[a];
+    const alliance: Alliance = !open('red') ? 'blue' : !open('blue') ? 'red' : red <= blue ? 'red' : 'blue';
     const anchors = simModuleFor(this.game).startPoseCount;
     // the first anchor nobody on that alliance has claimed; past the anchors it wraps, exactly
     // as `startMatch` de-conflicts a human roster (the solver pushes an overlap apart)
@@ -865,6 +880,60 @@ export class Room {
     if (i < 0) return;
     this.bots.splice(i, 1);
     this.broadcastRoster();
+  }
+
+  /**
+   * The host controls only an ordinary open lobby: never a staged ranked / competition room
+   * (a host there could demote an opponent and have them charged a no-show), and never once the
+   * match is being set up or running.
+   */
+  private hostControlRefusal(): string | null {
+    if (!this.settings) return 'This room has no host controls.';
+    if (this.pendingMatch || this.ranked) return 'A ranked match cannot be changed.';
+    if (this.config.kind === 'record') return 'A record run cannot be changed.';
+    if (this.world !== null || this.phase !== 'connecting') return 'The match has already started.';
+    return null;
+  }
+
+  /** HOST ONLY. Returns an error sentence, or null. A change clears everyone's ready. */
+  changeSettings(raw: unknown): string | null {
+    const refusal = this.hostControlRefusal();
+    if (refusal || !this.settings) return refusal;
+    const next = mergeRoomSettings(this.settings, raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {});
+    for (const a of ['red', 'blue'] as const) {
+      const over = this.sideCount(a) - next.perAlliance[a];
+      if (over > 0) return `Move ${over} ${over === 1 ? 'player' : 'players'} off ${a} first.`;
+    }
+    this.settings = next;
+    for (const c of this.clients.values()) c.player.ready = false;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** HOST ONLY. Put a member (human or bot) on `alliance`, if it has a seat. */
+  moveMember(memberId: unknown, alliance: unknown): string | null {
+    const refusal = this.hostControlRefusal();
+    if (refusal || !this.settings) return refusal;
+    if (alliance !== 'red' && alliance !== 'blue') return null;
+    const human = typeof memberId === 'string' ? this.clients.get(memberId) : undefined;
+    const bot = typeof memberId === 'string' ? this.bots.find((b) => b.id === memberId) : undefined;
+    const was = human?.player.alliance ?? bot?.alliance;
+    if (!was || was === alliance) return null;
+    if (this.sideCount(alliance) >= this.settings.perAlliance[alliance]) return `The ${alliance} alliance is full.`;
+    if (human) {
+      human.player.alliance = alliance;
+      human.player.ready = false;
+    } else if (bot) bot.alliance = alliance;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** the side a joiner lands on: their pick if it has a seat, else the other one */
+  private allianceWithRoom(pick: Alliance): Alliance {
+    const s = this.settings;
+    if (!s) return pick;
+    const other: Alliance = pick === 'red' ? 'blue' : 'red';
+    return this.sideCount(pick) < s.perAlliance[pick] || this.sideCount(other) >= s.perAlliance[other] ? pick : other;
   }
 
   private sideCount(a: Alliance): number {
@@ -954,7 +1023,9 @@ export class Room {
      * the room itself only OBSERVES (it counts ticks), so tests/dev pass nothing and the
      * match behaves exactly as before. */
     private readonly onBehaviour?: (b: BehaviourReport) => void,
-  ) {}
+  ) {
+    this.settings = config.settings && structuredClone(config.settings);
+  }
 
   /**
    * PARTICIPATION, counted while the match is actually live.
@@ -996,7 +1067,7 @@ export class Room {
       // BOTS COUNT. A seat filled by an AI is a seat, and a human admitted past capacity would
       // be built a setup the roster has no room for — the same oversized-roster failure the LAN
       // host's `canSeat` was written for. The host gives a bot back to make room for a person.
-      this.seatsTaken < roomCapacity(this.config) &&
+      this.seatsTaken < this.capacity &&
       this.world === null &&
       this.phase !== 'strategy'
     );
@@ -1035,12 +1106,12 @@ export class Room {
     const state: 'lobby' | 'strategy' | 'match' | 'full' =
       this.world !== null ? 'match'
       : this.phase === 'strategy' ? 'strategy'
-      : this.seatsTaken >= roomCapacity(this.config) ? 'full'
+      : this.seatsTaken >= this.capacity ? 'full'
       : 'lobby';
     return {
       code: this.code,
       players: this.seatsTaken,
-      capacity: roomCapacity(this.config),
+      capacity: this.capacity,
       kind: this.config.kind,
       game: this.config.game ?? 'decode',
       joinable: this.canJoin(),
@@ -1068,7 +1139,7 @@ export class Room {
   canSeat(id: string): boolean {
     if (!this.canJoin()) return false;
     const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
-    return !hostPending || this.seatsTaken + 1 < roomCapacity(this.config);
+    return !hostPending || this.seatsTaken + 1 < this.capacity;
   }
 
   /**
@@ -1265,6 +1336,7 @@ export class Room {
     client.conn = ++this.connSeq;
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
+    if (this.settings) client.player.alliance = this.allianceWithRoom(client.player.alliance);
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
@@ -2040,6 +2112,13 @@ export class Room {
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
+        // the host's rules for sides: no self-service when team switching is off, and never onto
+        // a full side. Enforced HERE so an older client, which just sends the patch, obeys it too.
+        if (patch.alliance && this.settings && patch.alliance !== c.player.alliance) {
+          if (!this.settings.teamSwitch || this.sideCount(patch.alliance) >= this.settings.perAlliance[patch.alliance]) {
+            delete patch.alliance;
+          }
+        }
         const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
         this.visuals.specChanged(c.id); // a seat's assets stay only while it holds the robot they are for
@@ -2167,6 +2246,18 @@ export class Room {
         // not seat an AI into everybody else's match.
         if (id !== this.hostId) break;
         const err = this.addBot(typeof msg.tier === 'string' ? msg.tier : undefined);
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
+      case 'roomSettings': {
+        if (id !== this.hostId) break;
+        const err = this.changeSettings(msg.patch);
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
+      case 'moveMember': {
+        if (id !== this.hostId) break;
+        const err = this.moveMember(msg.id, msg.alliance);
         if (err) c.send({ t: 'error', message: err });
         break;
       }
@@ -4336,7 +4427,7 @@ export class Room {
       const players = [...this.clients.values()]
         .map((c) => this.rosterPlayer(c))
         .concat(this.bots.map((b) => this.botPlayer(b)));
-      this.broadcast({ t: 'roster', players, hostId: this.hostId });
+      this.broadcast({ t: 'roster', players, hostId: this.hostId, ...(this.settings ? { settings: this.settings } : {}) });
       return;
     }
     // strategy window: ALLIANCE-ONLY reveal. Each recipient sees its own alliance's

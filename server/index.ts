@@ -17,7 +17,7 @@ import {
 import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
 import { visualSourceKey } from './importVisuals';
 import { clientIp } from './analytics';
-import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
+import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
@@ -3313,6 +3313,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // keep sending it and the config is echoed back in the operator snapshot; nothing
       // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
+      // the host-controlled shape is built from the untrusted request, never taken as sent; a
+      // staged ranked / competition code ignores it (they are not the host's to shape)
+      settings: isStagedRoomCode(code)
+        ? undefined
+        : coerceRoomSettings(msg.config?.kind === 'record' ? 'record' : 'versus', msg.config?.record, msg.config?.settings),
     };
     /**
      * READ BEFORE THE CAPACITY REFUSAL, not just before the group guard below, because the

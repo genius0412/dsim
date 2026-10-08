@@ -211,8 +211,92 @@ export type RecordKind = 'solo' | 'duo';
 export type QueueMode = '1v1' | '2v2';
 export const QUEUE_NEED: Record<QueueMode, number> = { '1v1': 2, '2v2': 4 };
 
+/** what a room is a starting point for. `custom` starts from scratch; the rest fill in the settings. */
+export type RoomPreset = 'custom' | 'solo-record' | 'duo-record' | 'casual-1v1' | 'casual-2v2';
+const ROOM_PRESETS: readonly RoomPreset[] = ['custom', 'solo-record', 'duo-record', 'casual-1v1', 'casual-2v2'];
+
+/**
+ * A room's host-controlled shape. Absent on `RoomConfig` ⇒ the legacy room (any split up to
+ * `ROOM_CAPACITY` seats, everyone picks their own side), which is what every old client creates
+ * and what staged ranked / competition codes always are.
+ */
+export interface RoomSettings {
+  preset: RoomPreset;
+  /** seats per alliance; the room's capacity is their sum (≤ ROOM_CAPACITY until 3–4 a side lands) */
+  perAlliance: { red: number; blue: number };
+  /** may a driver pick their own side? Off ⇒ only the host moves people */
+  teamSwitch: boolean;
+  /** Public (true) shows in Browse rooms; Private (false) is code/invite only */
+  listed: boolean;
+}
+
+const PRESET_SHAPE: Record<Exclude<RoomPreset, 'custom'>, { red: number; blue: number; record?: RecordKind }> = {
+  'solo-record': { red: 1, blue: 0, record: 'solo' },
+  'duo-record': { red: 2, blue: 0, record: 'duo' },
+  'casual-1v1': { red: 1, blue: 1 },
+  'casual-2v2': { red: 2, blue: 2 },
+};
+
+/**
+ * Build a room's settings from an UNTRUSTED request (the first joiner's `config.settings`), or
+ * undefined when none was asked for. Never trust the label: a record room is whatever `kind`
+ * says, so its shape comes from `record` and is locked (`teamSwitch` off, always Private).
+ * A versus room clamps every number, and its total to `ROOM_CAPACITY`.
+ */
+export function coerceRoomSettings(
+  kind: RoomKind,
+  record: RecordKind | undefined,
+  raw: unknown,
+): RoomSettings | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (kind === 'record') {
+    const duo = record === 'duo';
+    return {
+      preset: duo ? 'duo-record' : 'solo-record',
+      perAlliance: { red: duo ? 2 : 1, blue: 0 },
+      teamSwitch: false,
+      listed: false,
+    };
+  }
+  const asked = ROOM_PRESETS.includes(r.preset as RoomPreset) ? (r.preset as RoomPreset) : 'custom';
+  // a record preset on a versus room is just a custom room
+  const preset = asked === 'solo-record' || asked === 'duo-record' ? 'custom' : asked;
+  const shape = preset === 'custom' ? { red: 2, blue: 2 } : PRESET_SHAPE[preset];
+  const out: RoomSettings = {
+    preset,
+    perAlliance: { red: shape.red, blue: shape.blue },
+    teamSwitch: true,
+    listed: r.listed === true,
+  };
+  return mergeRoomSettings(out, r);
+}
+
+/** apply a (possibly hostile) partial over settings, clamping every field */
+export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unknown>): RoomSettings {
+  const side = (v: unknown, was: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(ROOM_CAPACITY, Math.floor(v))) : was;
+  const pa = patch.perAlliance && typeof patch.perAlliance === 'object' ? (patch.perAlliance as Record<string, unknown>) : {};
+  let red = side(pa.red, base.perAlliance.red);
+  let blue = side(pa.blue, base.perAlliance.blue);
+  // over the ceiling: shave the side that changed last, i.e. the one the patch named
+  while (red + blue > ROOM_CAPACITY) {
+    if (pa.blue !== undefined && blue > 0) blue--;
+    else red--;
+  }
+  if (red + blue < 1) red = 1;
+  return {
+    preset: base.preset,
+    perAlliance: { red, blue },
+    teamSwitch: typeof patch.teamSwitch === 'boolean' ? patch.teamSwitch : base.teamSwitch,
+    listed: typeof patch.listed === 'boolean' ? patch.listed : base.listed,
+  };
+}
+
 export interface RoomConfig {
   kind: RoomKind;
+  /** the host-controlled shape (see `RoomSettings`); absent ⇒ legacy room */
+  settings?: RoomSettings;
   /** set when kind === 'record' */
   record?: RecordKind;
   /** which game the room plays. Absent ⇒ 'decode' (old clients / back-compat).
@@ -250,6 +334,7 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
 
 /** roster cap for a room kind (record rooms are opponent-free + small) */
 export function roomCapacity(config: RoomConfig): number {
+  if (config.settings) return config.settings.perAlliance.red + config.settings.perAlliance.blue;
   if (config.kind === 'record') return config.record === 'duo' ? 2 : 1;
   return ROOM_CAPACITY;
 }
@@ -569,6 +654,8 @@ export function coerceCaps(x: unknown): string[] {
  */
 export const SERVER_CAPS: string[] = [
   'party',
+  /** `'rooms2'` — host-controlled room settings (`roomSettings`, `moveMember`, `roster.settings`) */
+  'rooms2',
   /**
    * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
    *
@@ -744,6 +831,11 @@ export type ClientMsg =
   /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
    *  minted for it and put in the roster). */
   | { t: 'removeBot'; seat: string }
+  /** HOST ONLY: change the room's settings (a partial; the server clamps it, and refuses one that
+   *  would seat fewer than are already there). Gated on `SERVER_CAPS` `'rooms2'`. */
+  | { t: 'roomSettings'; patch: Partial<RoomSettings> }
+  /** HOST ONLY: put the member (a roster `clientId`, bots included) on this alliance. */
+  | { t: 'moveMember'; id: string; alliance: 'red' | 'blue' }
   /**
    * MY 3D PHYSICS CHUNK HAS LOADED — sent once `initPhysics3d()` resolves, by any client
    * that advertised `READY3D_CAP`, and re-sent on a reconnect because a new socket is a new
@@ -1014,7 +1106,7 @@ export type ServerMsg =
   /** A `visualPut` or `visualGet` was refused (`reason`), with a plain sentence. The viewer keeps
    *  the footprint; the owner is told so it stops sending. */
   | { t: 'visualRefused'; op: 'put' | 'get'; owner: string; id: string; kind: VisualKind; reason: VisualRefusal; message: string }
-  | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
+  | { t: 'roster'; players: LobbyPlayer[]; hostId: string; settings?: RoomSettings }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
    *
