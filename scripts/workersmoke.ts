@@ -18,6 +18,7 @@
  * Kept out of `npm test` for the same reason `test:mm` is: a red `npm test` must keep meaning
  * "physics broke", and this boots two servers and four worker threads.
  */
+import { coerceRoomSettings } from '../src/net/protocol';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { WebSocket } from 'ws';
 import {
@@ -212,6 +213,26 @@ async function partA(): Promise<void> {
   await until(() => solo.summary() !== null, 2000);
   check('A: a live summary is mirrored (Watch Live)', solo.summary()?.kind === 'record');
   check('A: presence is mirrored', solo.presenceSnapshot().players.some((p) => p.userId === 'u-a' && p.act === 'match'));
+
+  // ---- a host unlocks a duo-record room: the socket thread's copy of the config follows ------
+  {
+    const duoCfg = { kind: 'record' as const, record: 'duo' as const, game: 'decode' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const duo = createRoom('wt-duo', () => {}, duoCfg);
+    const ds = fakeSocket();
+    const cd = clientOn(ds, 'd1', 'u-d1', 'blue');
+    duo.add(cd);
+    await until(() => duo.lobbySummary().players === 1, 3000);
+    check('A: a duo record room mirrors its locked config', duo.config.kind === 'record' && duo.lobbySummary().capacity === 2);
+    duo.onMessage('d1', { t: 'unlockRoom' });
+    const unlocked = await until(() => duo.config.kind === 'versus', 3000);
+    check('A: unlocking a worker room updates the socket thread copy of the config (kind, record, settings)',
+      unlocked && duo.config.record === undefined && duo.config.settings?.preset === 'custom' && !duo.soloRecord);
+    duo.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    const grown = await until(() => duo.lobbySummary().capacity === 4, 3000);
+    check('A: a settings change on a worker room reaches the capacity the join door reads', grown);
+    duo.detach('d1', cd.conn, true); // leave, so the room empties and later room counts stay true
+    await sleep(300);
+  }
 
   // ---- a socket that stops draining is skipped, then resumes --------------------------------
   s1.setBacklog(300 * 1024);

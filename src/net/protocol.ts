@@ -254,7 +254,8 @@ export function coerceRoomSettings(
     const duo = record === 'duo';
     return {
       preset: duo ? 'duo-record' : 'solo-record',
-      perAlliance: { red: duo ? 2 : 1, blue: 0 },
+      // record runs are forced onto ONE alliance, blue, server-side (`startMatch`)
+      perAlliance: { red: 0, blue: duo ? 2 : 1 },
       teamSwitch: false,
       listed: false,
     };
@@ -836,6 +837,9 @@ export type ClientMsg =
   | { t: 'roomSettings'; patch: Partial<RoomSettings> }
   /** HOST ONLY: put the member (a roster `clientId`, bots included) on this alliance. */
   | { t: 'moveMember'; id: string; alliance: 'red' | 'blue' }
+  /** HOST ONLY: turn a duo-record room into an ordinary room (one-way; it stops posting records).
+   *  Only before the first run. Gated on `'rooms2'`. */
+  | { t: 'unlockRoom' }
   /**
    * MY 3D PHYSICS CHUNK HAS LOADED — sent once `initPhysics3d()` resolves, by any client
    * that advertised `READY3D_CAP`, and re-sent on a reconnect because a new socket is a new

@@ -372,6 +372,11 @@ export class LobbyClient {
     this.transport.send(encodeMsg({ t: 'roomSettings', patch }));
   }
 
+  /** HOST ONLY: turn a duo-record room into an ordinary one (one-way). Same `'rooms2'` gate. */
+  unlockRoom(): void {
+    this.transport.send(encodeMsg({ t: 'unlockRoom' }));
+  }
+
   /** HOST ONLY: put a member (roster `clientId`) on an alliance. Same `'rooms2'` gate. */
   moveMember(id: string, alliance: 'red' | 'blue'): void {
     this.transport.send(encodeMsg({ t: 'moveMember', id, alliance }));

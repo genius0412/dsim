@@ -5695,11 +5695,13 @@ export async function saveMatch(
   query: Tx = q,
   /** the rule set that rated it (0058, `RULE_SETS`); null for a custom match */
   ratingRules: string | null = null,
+  /** the room's setup (0061): 'custom' | 'casual-1v1' | 'casual-2v2'; null for a ranked/staged match */
+  preset: string | null = null,
 ): Promise<string> {
   const rows = await query<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules)
-     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules],
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules, preset)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules, preset],
   );
   return rows[0].id;
 }

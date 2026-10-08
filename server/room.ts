@@ -55,6 +55,7 @@ import {
   type RecordRankInfo,
   type RoomConfig,
   type RoomKind,
+  type RecordKind,
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
@@ -401,6 +402,9 @@ export interface MatchParticipant {
 }
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
+/** the host may move the same member at most this often */
+const MOVE_COOLDOWN_MS = 300;
+
 export interface MatchOutcome {
   /** which game was played. Persistence SKIPS unscored games (CR shell) so they
    * never touch ELO/records. Absent ⇒ 'decode'. */
@@ -895,6 +899,30 @@ export class Room {
     return null;
   }
 
+  /**
+   * HOST ONLY. A duo-record room becomes an ordinary custom room: one-way, and only before the
+   * first run (a record room never recycles, so `world === null` is "before the first run").
+   * Records post only from a room that is still a record room, so this is what stops it posting.
+   */
+  unlockRecord(): string | null {
+    if (this.config.kind !== 'record' || !this.settings) return 'This room is already unlocked.';
+    if (this.pendingMatch || this.ranked) return 'A ranked match cannot be changed.';
+    if (this.world !== null || this.phase !== 'connecting') return 'The match has already started.';
+    // the record-only checks key on the config, so it is changed in place: kind and record go,
+    // and the settings open up to a custom room's (the seats stay as they were)
+    this.config.kind = 'versus';
+    delete this.config.record;
+    this.settings = { preset: 'custom', perAlliance: { ...this.settings.perAlliance }, teamSwitch: true, listed: false };
+    for (const c of this.clients.values()) c.player.ready = false;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** the parts of the config a worker room's socket-thread copy has to follow (`RoomFacts.cfg`) */
+  cfgFacts(): { kind: RoomKind; record?: RecordKind; settings?: RoomSettings } {
+    return { kind: this.config.kind, record: this.config.record, settings: this.settings };
+  }
+
   /** HOST ONLY. Returns an error sentence, or null. A change clears everyone's ready. */
   changeSettings(raw: unknown): string | null {
     const refusal = this.hostControlRefusal();
@@ -910,11 +938,17 @@ export class Room {
     return null;
   }
 
+  private readonly moveAt = new Map<string, number>();
+
   /** HOST ONLY. Put a member (human or bot) on `alliance`, if it has a seat. */
   moveMember(memberId: unknown, alliance: unknown): string | null {
     const refusal = this.hostControlRefusal();
     if (refusal || !this.settings) return refusal;
     if (alliance !== 'red' && alliance !== 'blue') return null;
+    // a double-click or a macro is not two moves: repeated actions on one member are spaced out
+    const now = Date.now();
+    if (typeof memberId === 'string' && now - (this.moveAt.get(memberId) ?? 0) < MOVE_COOLDOWN_MS) return null;
+    if (typeof memberId === 'string') this.moveAt.set(memberId, now);
     const human = typeof memberId === 'string' ? this.clients.get(memberId) : undefined;
     const bot = typeof memberId === 'string' ? this.bots.find((b) => b.id === memberId) : undefined;
     const was = human?.player.alliance ?? bot?.alliance;
@@ -2255,6 +2289,12 @@ export class Room {
         if (err) c.send({ t: 'error', message: err });
         break;
       }
+      case 'unlockRoom': {
+        if (id !== this.hostId) break;
+        const err = this.unlockRecord();
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
       case 'moveMember': {
         if (id !== this.hostId) break;
         const err = this.moveMember(msg.id, msg.alliance);
@@ -3538,7 +3578,8 @@ export class Room {
       this.reportBehaviour(participants);
       const ret = this.onResult({
         game: this.game,
-        config: this.config,
+        // the room as it ENDED: a host can have reshaped or unlocked it since creation
+        config: { ...this.config, settings: this.settings },
         ranked: this.ranked,
         // the format this match WAS, not the number of people left holding a controller at the
         // end of it: the queue bucket when the matchmaker staged this room, else the roster it

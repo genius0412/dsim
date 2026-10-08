@@ -154,6 +154,7 @@ function pushFacts(rid: number): void {
   const f: RoomFacts = {
     ack: e.ack,
     lobby: r.lobbySummary(),
+    cfg: r.cfgFacts(),
     seats,
     staging: r.staging(),
     summary: r.summary(),

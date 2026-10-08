@@ -17795,7 +17795,7 @@ const recordDrive: CommandSource = (tick) => {
   check('settings: no request ⇒ a legacy room', coerceRoomSettings('versus', undefined, undefined) === undefined);
   const rec = coerceRoomSettings('record', 'solo', { preset: 'casual-2v2', listed: true, perAlliance: { red: 4, blue: 4 } });
   check('settings: a record room is locked to its record shape, Private, whatever was sent',
-    rec?.perAlliance.red === 1 && rec.perAlliance.blue === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
+    rec?.perAlliance.blue === 1 && rec.perAlliance.red === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
   const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 }, teamSwitch: false });
   check('settings: a versus room cannot claim a record preset, and creation ignores the sides it sent',
     fake?.preset === 'custom' && fake.perAlliance.red === 2 && fake.perAlliance.blue === 2 && fake.teamSwitch, JSON.stringify(fake));
@@ -17834,6 +17834,9 @@ const recordDrive: CommandSource = (tick) => {
   // host moves
   room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'red' });
   check('settings: the host moves a member', a.player.alliance === 'red');
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'blue' });
+  check('settings: a second move of the same member inside the cooldown is ignored', a.player.alliance === 'red');
+  await new Promise((r) => setTimeout(r, 350));
   check('settings: ...and a move clears that member ready', !a.player.ready);
   room.onMessage('a', { t: 'moveMember', id: 'h', alliance: 'blue' });
   check('settings: a guest cannot move anybody', h.player.alliance === 'red');
@@ -17841,6 +17844,30 @@ const recordDrive: CommandSource = (tick) => {
   check('settings: a side cannot shrink below who is on it', room.settings?.perAlliance.red === 2 && errs(seen.h).some((e) => /Move 1 player off red/.test(e)), JSON.stringify(room.settings));
   room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });
   check('settings: ...a shrink below the room total is refused too', room.settings?.perAlliance.red === 2);
+
+  // a duo-record room: seats are blue (the run alliance), locked, and Unlock opens it once
+  {
+    const sink: ServerMsg[] = [];
+    const dcfg = { kind: 'record' as const, record: 'duo' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const dr = new Room('smoke-duo', () => {}, dcfg);
+    const d1 = mk('d1', 'blue', sink);
+    const d2 = mk('d2', 'blue', []);
+    dr.add(d1);
+    dr.add(d2);
+    check('settings: a duo record seats both drivers on blue', d1.player.alliance === 'blue' && d2.player.alliance === 'blue');
+    dr.onMessage('d1', { t: 'roomSettings', patch: { teamSwitch: true } });
+    check('settings: a record room refuses settings changes', dr.settings?.teamSwitch === false);
+    dr.onMessage('d2', { t: 'unlockRoom' });
+    check('settings: only the host unlocks', dcfg.kind === 'record');
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlock turns a record room into a custom one (one-way)',
+      dcfg.kind === 'versus' && dcfg.record === undefined && dr.settings?.preset === 'custom' && dr.cfgFacts().kind === 'versus');
+    check('settings: ...and it is no longer a solo/duo record for the lock rules', !dr.soloRecord);
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlocking twice is refused', errs(sink).some((e) => /already unlocked/.test(e)));
+    dr.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    check('settings: an unlocked room takes the host controls', dr.settings?.perAlliance.red === 2);
+  }
 
   // legacy rooms are untouched
   const legacy = new Room('smoke-legacy', () => {}, { kind: 'versus' });
