@@ -37,6 +37,24 @@ Reading it as `'3d'` emptied the board and claimed the period with zero winners,
 `submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
 Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
 `npm run dbtest`.
+**RECORD CATEGORIES AND WINDOWS** (rooms plan M5/M7, 2026-10-08, migration 0062). `/api/records`
+takes `category` (`total` default, `auto`, `teleop`) and `window` (`season` default, `day`,
+`week`, `month`, `all`), echoing both plus `windowStart`/`resetsAt`; an older client sends neither
+and gets what it always did. A run's `auto_score`/`teleop_score` are the NET points of each period,
+captured in the room (`Room.recordSplit`, `MatchOutcome.split`): the game's own `auto` fact read at
+the instant THAT game counts AUTO at (Chain `autoEnd`; BIOBUZZ and DECODE by `teleopStart`, because
+they book the transition as AUTO), the fouls handed over at the same instant come off AUTO, and
+TELEOP is the rest; a run whose net total is 0 (a void) is 0 in both. A row from before 0062 has
+null splits and stays off the Auto/TeleOp boards, and `personalBest`/`recordRank`/the awards stay
+Total/Season. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
+Windows roll over at **08:00 UTC** (day; Monday week; the 1st for month, `server/boardWindow.ts`),
+computed by the SERVER; they sit inside the current season, so one era. `all` (lifetime) drops the
+season filter but keeps ONE physics inside `best` (the live era, or `era=2d|3d` for a game with
+both), so 2D and 3D never share a board. `$1` stays in the lifetime SQL as `$1::int is null`:
+Postgres rejects a parameter it cannot type. Not built: `run_length` and the auto-only filters
+(M6, the column arrives with the first auto-only run), a response cache, the one-query personal
+rank. Covered in `npm test` ("split:", "window:") and `npm run dbtest` ("category:", "window:",
+"lifetime:").
 **ADMIN MENU** (`src/ui/Admin.tsx`, `/admin`) gated on the signed-in UUID (`ADMIN_USER_IDS`;
 the server enforces every action independently). **VERSION GATE**: a new build is detected
 (`__BUILD_ID__` → `/version.json` poll) and forces a refresh when a player STARTS a run

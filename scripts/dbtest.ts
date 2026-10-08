@@ -1632,6 +1632,45 @@ async function main(): Promise<void> {
       ((await db.query(`select preset from matches where id = $1`, [mLegacy])).rows[0] as { preset: string | null }).preset === null,
     );
 
+    // ---- categories, windows and lifetime (0062, rooms plan §5) ---------------------------
+    {
+      await repo.ensureProfile('cat-a', 'CatA');
+      await repo.ensureProfile('cat-b', 'CatB');
+      await repo.ensureProfile('cat-c', 'CatC');
+      const mk = (userId: string, score: number, autoScore?: number, teleopScore?: number) =>
+        repo.submitRecord({ userId, mode: 'solo', drivetrain: 'tank', score, balanceVersion: SEASON, replayId: id2d, game: 'decode', autoScore, teleopScore });
+      const ra = await mk('cat-a', 100, 40, 60);
+      await mk('cat-b', 90, 70, 20);
+      await mk('cat-c', 300); // a run from before 0062: no split
+      const board = (o: Partial<Parameters<typeof repo.recordLeaderboard>[0]>) =>
+        repo.recordLeaderboard({ mode: 'solo', drivetrain: 'tank', balanceVersion: SEASON, game: 'decode', ...o });
+      const ids = (rows: { userId: string }[]) => rows.map((r) => r.userId).join(',');
+      const mine = (await board({})).map((r) => r.userId).filter((u) => u.startsWith('cat-')).join(',');
+      check('category: total ranks by the whole run', mine === 'cat-c,cat-a,cat-b', mine);
+      check('category: auto ranks by AUTO points and drops a run with no split',
+        ids((await board({ category: 'auto' })).filter((r) => r.userId.startsWith('cat-'))) === 'cat-b,cat-a', ids(await board({ category: 'auto' })));
+      check('category: the row score IS the category score', (await board({ category: 'auto' }))[0]?.score === 70);
+      check('category: teleop ranks by TELEOP points',
+        ids(await board({ category: 'teleop' })) === 'cat-a,cat-b' && (await board({ category: 'teleop' }))[0]?.score === 60);
+      // windows: age one run, then ask for a window that starts after it
+      await db.query(`update records set created_at = now() - interval '3 days' where id = $1`, [ra]);
+      const since = new Date(Date.now() - 86_400_000).toISOString();
+      check('window: a run older than the window start is not on it',
+        !(await board({ since })).some((r) => r.userId === 'cat-a') && (await board({ since })).some((r) => r.userId === 'cat-b'));
+      check('window: the season board still has it', (await board({})).some((r) => r.userId === 'cat-a'));
+      // lifetime spans seasons
+      await repo.submitRecord({ userId: 'cat-a', mode: 'solo', drivetrain: 'tank', score: 500, balanceVersion: SEASON + 7, replayId: id2d, game: 'decode', autoScore: 1, teleopScore: 499 });
+      check('lifetime: an earlier or later season counts, the season board does not see it',
+        (await board({ lifetime: true }))[0]?.userId === 'cat-a' && (await board({}))[0]?.userId === 'cat-c');
+      // lifetime never mixes eras: BIOBUZZ has both; 2d and 3d are separate boards
+      const lt3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', lifetime: true });
+      const lt2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', lifetime: true, physics: '2d' });
+      check('lifetime: the default era is the live one, and no row crosses eras',
+        lt3d.every((r) => r.physics === '3d') && lt2d.every((r) => r.physics === '2d') && lt2d.length > 0);
+      // the personal best and rank are Total/Season and ignore the split rows' absence
+      check('category: the profile personal best is unchanged', (await repo.personalBest('cat-c', 'solo', 'tank', SEASON, 'decode')) === 300);
+    }
+
     // ---- practice runs: physics AND the view it was watched in ------------------------
     //
     // The two are different KINDS of fact and are sourced differently, which is the thing to
