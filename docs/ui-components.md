@@ -372,7 +372,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/competitions.css:61 | 89 |
+| `.ds-opt` | src/ui/competitions.css:61 | 90 |
 | `.ds-opt-add` | src/ui/importer.css:11 | 7 |
 | `.ds-opt-del` | src/ui/shell.css:4537 | 2 |
 | `.ds-opt-slot` | src/ui/shell.css:4529 | 3 |
@@ -513,7 +513,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/importer.css:261 | 240 |
+| `.ds-hint` | src/ui/importer.css:261 | 241 |
 | `.ds-hint-caption` | src/ui/shell.css:4207 | 1 |
 
 ## `ds-homestats` — 2
@@ -840,7 +840,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:4433 | 50 |
+| `.ds-opts` | src/ui/shell.css:4433 | 51 |
 
 ## `ds-padhint` — 1
 
@@ -924,7 +924,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sec` | src/ui/shell.css:2031 | 23 |
+| `.ds-sec` | src/ui/shell.css:2031 | 24 |
 
 ## `ds-segs` — 1
 

@@ -206,7 +206,6 @@ export function Lobby({
   group = '',
   initialName,
 }: Props) {
-  const isRecord = config.kind === 'record';
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
@@ -272,6 +271,8 @@ export function Lobby({
   const [hostId, setHostId] = useState('');
   /** the host-controlled shape the room reported (absent on a legacy room / an older server) */
   const [roomSet, setRoomSet] = useState<RoomSettings | undefined>(undefined);
+  /** a duo-record room the host has unlocked reports the open `custom` settings and is a room now */
+  const isRecord = config.kind === 'record' && roomSet?.preset !== 'custom';
   const capacity = roomSet ? roomSet.perAlliance.red + roomSet.perAlliance.blue : roomCapacity(config);
   /** what the create form asks for; sent only by `createRoom`, and only to a server that has `'rooms2'` */
   const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>('custom');
@@ -1066,7 +1067,7 @@ export function Lobby({
       >
         <div className="ds-console">
           <div className="ds-console-in narrow">
-            <ConsoleHead onBack={onCancel} title={joiningGroup ? 'Discord lobby' : 'Custom room'} />
+            <ConsoleHead onBack={onCancel} title={joiningGroup ? 'Discord lobby' : 'Room'} />
             <div className="ds-panel ds-panel-body stack">
               {phase === 'error' && errorCode === 'in_progress' ? (
                 /* NOT AN ERROR, A QUEUE. The room is running a match and will open again on
@@ -1144,7 +1145,7 @@ export function Lobby({
       >
       <div className="ds-console">
         <div className="ds-console-in narrow">
-          <ConsoleHead onBack={onCancel} title={isRecord ? 'Duo record run' : 'Custom room'} />
+          <ConsoleHead onBack={onCancel} title={isRecord ? 'Duo record' : 'Room'} />
           <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
@@ -1490,6 +1491,21 @@ export function Lobby({
         </section>
 
         {!idFirst && youSection}
+
+        {roomSet && isRecord && isHost && (
+          <section className="ds-sec">
+            <h2>Room settings</h2>
+            <p className="ds-hint">
+              Seats and sides are fixed for a record run. Unlocking turns this into an ordinary room.
+              This room stops posting records.
+            </p>
+            <div className="ds-opts fill">
+              <button className="ds-opt mini" onClick={() => lobbyRef.current?.unlockRoom()}>
+                <span className="ot">Unlock settings</span>
+              </button>
+            </div>
+          </section>
+        )}
 
         {roomSet && !isRecord && (
           <section className="ds-sec">

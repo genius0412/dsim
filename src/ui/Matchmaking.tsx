@@ -190,7 +190,7 @@ export function Matchmaking({
       <p className="ds-hint">Ranked matches run on the 3D physics.</p>
     ) : (
       <p className="ds-form-err">
-        ⚠ This server hasn’t been updated for 3D ranked matches yet. Custom rooms and practice
+        ⚠ This server hasn’t been updated for 3D ranked matches yet. Rooms and practice
         still work.
       </p>
     );
@@ -861,7 +861,7 @@ export function Matchmaking({
         {/* "finishing matches earns it back" is `dodgeNote`'s line, and the two
             notices can stand one above the other in the same panel. Said once, in
             one wording, by whichever one is up. */}
-        <span className="ds-muted">Custom rooms and solo practice are unaffected.</span>
+        <span className="ds-muted">Rooms and solo practice are unaffected.</span>
       </div>
     );
   };
@@ -1055,7 +1055,7 @@ export function Matchmaking({
       '',
       <>
         <p className="ds-hint">
-          Ranked needs an account. Custom rooms are open to everyone.
+          Ranked needs an account. Rooms are open to everyone.
         </p>
         <div className="ds-actions">
           <button className="ds-cta" onClick={onSignIn}>
