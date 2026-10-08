@@ -5,6 +5,7 @@ import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { fmtTime, timerPanel } from '../../ui/timerPanel';
 import { FoulChip } from '../../ui/FoulChip';
+import { PaceTag } from '../../ui/pace/PaceTag';
 import { BiobuzzBuilder } from './Builder';
 import { BbPassPicker } from './PassPicker';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
@@ -421,6 +422,7 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.red)}
           </span>
+          {hud.alliance === 'red' && <PaceTag hud={hud} />}
         </div>
         <div className={`timer-panel ${timer.cls}`}>
           {/* status on the PHASE only — the digits beside it retick every frame and would
@@ -436,6 +438,7 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.blue)}
           </span>
+          {hud.alliance === 'blue' && <PaceTag hud={hud} />}
         </div>
       </div>
       {/* AFTER the bar, as DECODE's and Chain Reaction's rows are (`GameView`): the two are

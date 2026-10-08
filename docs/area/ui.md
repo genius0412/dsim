@@ -434,6 +434,21 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   and takes focus; the way in is Sign in, after which the status is asked again and the app
   replaces the screen with no reload. Copy: DSIM or "Alpha" is closed, never a game name.
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
+- **THE PACE LINE** (`src/ui/pace/`, 2026-10-07; owner asked for a "+/- of what PB would be at
+  the given time"): `+12 PB` under the player's own score, in SOLO PRACTICE and RECORD runs only.
+  Setting `GameSettings.pace` (Off · Your best · World record · Replay) in Audio and Visual beside
+  the other read-outs; the replay is picked with **Use as pace** in the replay viewer
+  (`paceReplays`, per game). A replay is an input log, so the reference's score-over-time is
+  re-simulated ONCE in `paceWorker.ts` and stored per replay (`PACE_CURVES_KEY`); the live run is
+  matched on the CLOCK `(phase, ticks left)`, never the tick, because practice starts AUTO on a
+  keypress and records count a pre-match in the sim. Score is NET (`recordScore`). PB/WR are
+  looked up again every match, so a new best is the pace from the next match on.
+  ⚠️ **ONLY AN EXACT RE-RUN IS A PACE** (`replayFidelity === 'ok'`), stricter than the viewer:
+  measured, a 723-point DECODE record from sim v2 re-ran as 40 on v5 and BIOBUZZ v3 records ran
+  598 → 96. WR takes the first PLAYABLE run tied at the top; practice PB the best run on this sim.
+  After a `SIM_VERSION` or `BALANCE_VERSION` bump every older PB/WR shows `—` until beaten — expected, not a bug.
+  The line is rendered from the first frame of a paced match (`—` until there is a number), so the
+  bar's height never changes mid-match; no colour for ahead/behind (chip fill, AA).
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH

@@ -345,6 +345,7 @@ import {
 import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
+import { buildPaceCurve, clockKey, coerceCurve, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
 import {
   runRecordMatch,
   simulateReplay,
@@ -17291,6 +17292,23 @@ const recordDrive: CommandSource = (tick) => {
   // referential determinism: a second re-sim is identical
   check('simulateReplay is referentially stable', worldHash(simulateReplay(run.replay)) === v.hash);
 
+  // THE PACE CURVE (`src/ui/pace/curve.ts`) off the same full record match: its last point is
+  // the run's NET record score, it never goes backwards on the clock, and it reads the score the
+  // run had at a moment rather than its final one.
+  {
+    const curve = buildPaceCurve(run.replay, 'blue');
+    const net = recordScore(run.result, 'blue');
+    check('pace: a curve ends on the net record score of the run', curve.s[curve.s.length - 1] === net, `${curve.s[curve.s.length - 1]} vs ${net}`);
+    check('pace: the curve is in clock order', curve.k.every((k, i) => i === 0 || k > curve.k[i - 1]));
+    check('pace: the curve is compact (a point per change, not per tick)', curve.k.length > 1 && curve.k.length * 10 < run.replay.ticks, `${curve.k.length} points`);
+    check('pace: 0 at the first moment of AUTO', paceAt(curve, 'auto', 30) === 0);
+    check('pace: no pace before AUTO (pre has no clock to match)', paceAt(curve, 'pre', 3) === null);
+    check('pace: the final whistle reads the final score', paceAt(curve, 'post', 0) === net);
+    const mid = paceAt(curve, 'teleop', 60);
+    check('pace: half way through TELEOP is between 0 and the final', mid !== null && mid >= 0 && mid <= net, `${mid}`);
+    check('pace: a curve survives a storage round trip', JSON.stringify(coerceCurve(JSON.parse(JSON.stringify(curve)))) === JSON.stringify(curve));
+  }
+
   // CHAIN REACTION replays: a CR run must re-simulate through the CR module (createWorld +
   // chainStep), stamp game:'chain', and reproduce its outcome byte-for-byte (the replay is
   // watchable + verifiable exactly like a DECODE one).
@@ -17308,6 +17326,46 @@ const recordDrive: CommandSource = (tick) => {
     // module is actually chosen from replay.game, not hardcoded.
     check('CR replay: re-sims via the chain module (differs from a decode re-sim)', crV.hash !== v.hash);
   }
+}
+{
+  // PACE CLOCK (`src/ui/pace/curve.ts`): moments compare by phase, then by time left COUNTING
+  // DOWN, so a run that started its clock on a keypress and one that counted a pre-match in the
+  // sim line up on the same match moment.
+  const a = clockKey('auto', 29)!;
+  const b = clockKey('auto', 1)!;
+  const c = clockKey('transition', 7)!;
+  const d = clockKey('teleop', 119)!;
+  const e = clockKey('post', 0)!;
+  check('pace clock: later in a phase is a larger key', b > a);
+  check('pace clock: phases order auto < transition < teleop < post', a < c && c < d && d < e);
+  check('pace clock: pre and free drive have no key', clockKey('pre', 3) === null && clockKey('freeplay', 0) === null);
+  const rec = new PaceCurveRecorder();
+  rec.push('auto', 30, 0);
+  rec.push('auto', 29, 0);
+  rec.push('auto', 20, 5);
+  rec.push('teleop', 100, 5);
+  rec.push('teleop', 50, 12);
+  rec.push('post', 0, 12);
+  rec.push('post', 0, 15); // the field settling folds a point in after the buzzer
+  check('pace recorder: keeps only the changes', rec.curve.s.join(',') === '0,5,12,15', rec.curve.s.join(','));
+  check('pace recorder: post keeps its latest score', paceAt(rec.curve, 'post', 0) === 15);
+  check('pace lookup: holds the last change', paceAt(rec.curve, 'auto', 10) === 5 && paceAt(rec.curve, 'teleop', 80) === 5 && paceAt(rec.curve, 'teleop', 49) === 12);
+  check('pace lookup: a curve that never ran reads nothing', paceAt({ k: [], s: [] }, 'auto', 10) === null);
+  check('pace: coerceCurve refuses a mismatched pair', coerceCurve({ k: [1, 2], s: [1] }) === null && coerceCurve('x') === null);
+
+  // the SETTING: absent is off, a stored one survives, garbage falls back per field
+  const def = coerceSettings({});
+  check('pace setting: absent reads off', (def.pace ?? 'off') === 'off');
+  const kept = coerceSettings({
+    pace: 'replay',
+    paceReplays: { decode: { key: 'r:abc', replayId: 'abc', alliance: 'blue', label: '120-point run' }, chain: { key: 'zz', alliance: 'blue' } },
+  });
+  check('pace setting: a source and a picked replay survive a load', kept.pace === 'replay' && kept.paceReplays?.decode?.replayId === 'abc');
+  check('pace setting: a picked replay with a bad key is dropped, not kept', kept.paceReplays?.chain === undefined);
+  check('pace setting: an unknown source falls back to off', (coerceSettings({ pace: 'ghost' }).pace ?? 'off') === 'off');
+  // the replay id goes into a fetch path, so one that is not a plain id is dropped from the pick
+  const odd = coerceSettings({ paceReplays: { decode: { key: 'r:x', replayId: '../admin?x=1', alliance: 'red', label: '' } } });
+  check('pace setting: a replay id with path characters is not kept', odd.paceReplays?.decode !== undefined && odd.paceReplays.decode.replayId === undefined);
 }
 {
   // DUO (2v0) short run: two command tracks, both re-simulate deterministically.

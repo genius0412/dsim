@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import {
@@ -38,6 +38,9 @@ import { getCameraPref, getViewPref, subscribeCameraPref, subscribeViewPref, typ
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { setPadMenuHandler } from './PadNavLayer';
+import { PaceContext, PaceTag } from './pace/PaceTag';
+import { usePace } from './pace/usePace';
+import type { PaceRun } from './pace/resolve';
 
 /**
  * ── WHERE THE CONNECTION CHIP AND THE PING GRAPH WENT ──────────────────────────────────────
@@ -273,6 +276,10 @@ interface Props {
    * recorded, so nothing leaves the device.
    */
   testDrive?: RobotSpec;
+  /** a RECORD run, and which board — the pace read-out runs here and in solo practice only */
+  recordMode?: 'solo' | 'duo';
+  /** the signed-in account, for the pace's own-best lookup; null signed out */
+  userId?: string | null;
 }
 
 export function GameView({
@@ -290,6 +297,8 @@ export function GameView({
   onBackToLobby,
   tutorial = false,
   testDrive,
+  recordMode,
+  userId = null,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
@@ -334,6 +343,14 @@ export function GameView({
     };
   }, []);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
+  // THE PACE (`src/ui/pace`): record runs (the App says which board) and solo practice — a
+  // local match with no server, that is not the tutorial or an importer test drive
+  const paceRun: PaceRun | null = recordMode
+    ? { kind: 'record', mode: recordMode }
+    : !session && settings.mode === 'match' && !tutorial && !testDrive
+      ? { kind: 'practice' }
+      : null;
+  const pace = usePace(settings, paceRun, userId, hud?.phase ?? 'pre');
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
   const [editingLayout, setEditingLayout] = useState(editLayout);
   // gates the flanking ad columns. When false the <aside>s are not rendered at all
@@ -826,12 +843,14 @@ export function GameView({
         </MatchOverlay>
       )}
       {hud && (
-        <Hud
-          hud={hud}
-          showEventLog={settings.showEventLog}
-          perfLevel={perfLevel}
-          perfStats={perfStats}
-        />
+        <PaceContext.Provider value={pace}>
+          <Hud
+            hud={hud}
+            showEventLog={settings.showEventLog}
+            perfLevel={perfLevel}
+            perfStats={perfStats}
+          />
+        </PaceContext.Provider>
       )}
       {/* THE TUTORIAL STEP CARD — a HUD band, never an overlay over the field
           (`docs/area/ui.md`). It is a sibling of `<Hud>` rather than a child because `.hud` is
@@ -1079,6 +1098,8 @@ function Hud({
   // the auto's line on the second card: which step it is on while AUTO (or a Free Drive trial)
   // runs, and AUTO OFF when the file cannot run (`autoHud.ts`)
   const autoLine = autoHudLine(hud);
+  // a paced match stacks the pace line under the player's own score (`.score-panel.paced`)
+  const paced = useContext(PaceContext) !== null;
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
@@ -1105,9 +1126,10 @@ function Hud({
         <GameScoreBar hud={hud} />
       ) : hud.mode === 'match' ? (
         <div className="scorebar" data-hud-band>
-          <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`} role="group" aria-label="Red alliance score">
+          <div className={`score-panel red ${hud.alliance === 'red' ? `mine${paced ? ' paced' : ''}` : ''}`} role="group" aria-label="Red alliance score">
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
+            {hud.alliance === 'red' && <PaceTag hud={hud} />}
           </div>
           <div className={`timer-panel ${timer.cls}`}>
             {/* status on the PHASE only — the digits beside it retick every frame and
@@ -1118,9 +1140,10 @@ function Hud({
             <span className="timer-time">{timer.time}</span>
             {dec && <MotifDots className="timer-motif" motif={hud.motif} />}
           </div>
-          <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`} role="group" aria-label="Blue alliance score">
+          <div className={`score-panel blue ${hud.alliance === 'blue' ? `mine${paced ? ' paced' : ''}` : ''}`} role="group" aria-label="Blue alliance score">
             {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{blueScore}</span>
+            {hud.alliance === 'blue' && <PaceTag hud={hud} />}
           </div>
         </div>
       ) : (

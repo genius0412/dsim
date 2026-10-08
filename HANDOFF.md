@@ -1,3 +1,16 @@
+# HANDOFF — 2026-10-08 (pace line: +/- against your best, the record, or a replay)
+
+**State: branch `feat/pb-ghost-delta` off `alpha`; client only, no server change, no deploy.** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: every pace check passes; the run here also failed 2 `visuals/room` checks (a fixed `sleepMs(250)` timer under load, unrelated) and the 3 BIOBUZZ step3d/predict perf budgets this machine always fails. Clicked through on the dev build (DECODE practice, BIOBUZZ bar) and the production worker bundle.
+
+- **Owner (via Saket):** "+/- of what pb would be at the given time", a setting, monkeytype-style; on the bottom score bar; records (solo/duo) and solo practice only; reference = a replay you can see, your PB (auto-updating) or the WR (auto-updating).
+- **Done** (`docs/area/ui.md`, "THE PACE LINE"):
+  - `GameSettings.pace` (`off`·`pb`·`wr`·`replay`) + `paceReplays` per game, coerced field by field. Audio and Visual ▸ Pace, beside the performance read-out.
+  - `src/ui/pace/`: `curve.ts` (DOM-free clock-keyed curve, `npm test` covers it), `paceWorker.ts` (re-sims the reference; new `bundleaudit` route), `store.ts` (curve cache `PACE_CURVES_KEY`, worker client), `resolve.ts` (which run), `usePace.ts`, `PaceTag.tsx` (the line; imported by every score bar, so it stays free of net/storage), `PaceSetting.tsx`.
+  - Replay viewer: **Use as pace** (disabled for a replay whose sim moved).
+- **Measured:** pacing needs an EXACT re-run. A 723 DECODE record (sim v2) re-ran as 40 on v5; BIOBUZZ v3 records 598/523/518 re-ran as 96/91/151. Every record on the alpha boards today predates sim v5, so WR/PB pace for records reads `—` there until new records are set. Re-sim of a full DECODE match: ~6 s in the browser worker here, 15 s under load.
+- **After review:** a picked replay id must be a plain id (it goes into a fetch path); the net score is floored at 0 like `recordScore`; the curve key carries `BALANCE_VERSION` too (`#5.4`); a worker job times out at 120 s and resets the worker; a throwing re-sim still disposes its 3D world; a new game, match kind or account clears the shown curve instead of reading the old one until the new one lands; Use as pace writes onto the settings as they are when the curve lands. Re-run after: shared smoke PASS, BIOBUZZ only the two perf budgets.
+- **Open:** the account's practice runs carry no `others` (robots on the field), so an account-only run with bots can be the practice PB; a pace replay picked off the results screen (no server id) lives on that device only.
+
 # HANDOFF — 2026-10-04i (importer: undo/redo, deleting parts, the shot off the hood, Offset's robot, a launcher on a turret, a ramp down)
 
 **State: on `alpha`; client only (importer), no server change, no deploy.** `npm test` (shared 4189, BIOBUZZ 5583, after merging alpha), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. Walked end to end in the offscreen production editor and its 2D and 3D test drive.

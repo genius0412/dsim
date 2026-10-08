@@ -377,6 +377,26 @@ button {
   color: inherit;
 }
 
+/* THE PACE LINE (`src/ui/pace/PaceTag.tsx`): `+12 PB` under the player's own score. The same
+   type and ink as `.bb-tip` (fixed chip ink, category 2) and no colour for ahead or behind: the
+   sign says it, and a third colour on the alliance fill would not hold AA. A paced panel STACKS
+   (`.paced`); BIOBUZZ's panel already does. The line is rendered from the match's first frame,
+   so the bar's height is set once and never moves. */
+.score-panel.paced {
+  flex-direction: column;
+  gap: var(--ds-s-0);
+}
+.pace-tag {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: var(--ds-lh-tight);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: inherit;
+}
+
 /* TIPPING is a state that changes what to do — hold fire, the CELL accepts nothing while
    it swings — so it has to come forward. The resting ink is already full strength (85% failed
    AA on the flat chip fill), so the mark is an underline, which never changes the box. */

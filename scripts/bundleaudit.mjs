@@ -23,6 +23,7 @@
  * breaks the day after it is written. Route by what a chunk actually contains instead:
  *   main       — the entry chunk (`index-*.js` at the top of `dist/assets`)
  *   hostWorker — the LAN host worker (`hostWorker-*.js`, its own Vite worker entry)
+ *   paceWorker — the pace worker (`paceWorker-*.js`, `src/ui/pace/`): fetched only while a pace is on
  *   physics3d  — a chunk (or wasm asset) whose bytes carry a rapier3d marker, OR one carrying a
  *                BIOBUZZ `sim3d/` marker: since the implementation moved behind
  *                `initPhysics3d()` (`sim3d/impl.ts`), the 3D physics arrives as THREE lazy
@@ -169,6 +170,10 @@ function routeFor(file, buf) {
   const base = file;
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
+  // THE PACE WORKER (`src/ui/pace/paceWorker.ts`): re-simulates a reference replay into the
+  // pace curve. It carries the whole server-safe sim, like the LAN host worker, and is fetched
+  // only when a pace is on and its curve is not already stored on the device.
+  if (/^paceWorker-[^/]*\.js$/.test(base)) return 'paceWorker';
   // the Embedded App SDK, reached only through `src/net/discordSdk.ts` (a facade that
   // exists precisely so this chunk is NOT named `index-*` — the package's own entry is
   // index.js, and without the facade it was billed against main's baseline).
@@ -478,11 +483,19 @@ const BASELINE = {
   // 2026-10-01: 778.01 -> 797.84 (+19.83), MEASURED: the imported robot's sim and the visuals relay,
   // which a LAN host's Room runs (see the RE-MEASURED entry above). Alpha's own drift was +3.67 of it.
   hostWorker: { gzip: 797.84 * 1000 },
+  // 2026-10-07: NEW, MEASURED. `paceWorker-*.js` (see the route table): the server-safe sim and
+  // Rapier 2D, the replay player and the curve. The same weight as the LAN host's sim, and like it
+  // fetched only by somebody who uses it: a player with a pace on whose curve is not yet stored.
+  paceWorker: { gzip: 725.11 * 1000 },
   // 2026-10-04: 1125.06 -> 1147.60 (+22.54), MEASURED. 22.26 of it was already on alpha
   // (e5c3f6a8 builds 1147.32, 0.24 under the tolerance edge); the side-roller import fix
   // (`SIM_PATCH` 6: `bbImportClipReach`, the patch flag threaded through the 3D compound) is the
   // last 0.28, which crossed it.
-  physics3d: { gzip: 1147.6 * 1000 },
+  // 2026-10-07: 1147.60 -> 1177.08 (+29.48), MEASURED. +29.17 is the PACE WORKER's own copy of the 3D
+  // implementation (`impl-*.js`, byte-identical in size to the LAN host worker's): a worker bundle
+  // code-splits on its own, so it carries its own chunk. Fetched only to pace against a 3D replay.
+  // The other +0.31 is alpha's drift.
+  physics3d: { gzip: 1177.08 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
   // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
   // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a

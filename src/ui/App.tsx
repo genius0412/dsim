@@ -2024,6 +2024,8 @@ export function App() {
         tutorial={tutorialRun}
         testDrive={testDrive?.spec}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
+        recordMode={session && sessionKind === 'record' ? (sessionCoop ? 'duo' : 'solo') : undefined}
+        userId={accountUserId}
         onWatchReplay={(r) => {
           setReplayObj(r);
           // capture the seat NOW: `session` is torn down on the way out of the game
@@ -2232,6 +2234,16 @@ export function App() {
         viewerRobotId={replayObj ? replayRobot : null}
         adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
+        paceKeys={
+          settings.pace === 'replay'
+            ? Object.values(settings.paceReplays ?? {}).map((r) => r.key)
+            : undefined
+        }
+        onUsePace={(game, ref) => {
+          // the curve can take seconds to make, so read the settings as they are when it lands
+          const cur = settingsRef.current;
+          update({ ...cur, pace: 'replay', paceReplays: { ...cur.paceReplays, [game]: ref } });
+        }}
       />
     );
   }
