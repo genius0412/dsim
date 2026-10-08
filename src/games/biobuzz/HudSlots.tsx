@@ -418,15 +418,13 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
       <div className="scorebar" data-hud-band>
         <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
           {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
-          {/* the pace sits BESIDE the total, so a paced panel keeps the same two lines (total,
-              tip) as the other one and the two stay level (`.bb-score`) */}
-          <span className="bb-score">
-            <span className="panel-score">{red}</span>
-            {hud.alliance === 'red' && <PaceTag hud={hud} />}
-          </span>
+          <span className="panel-score">{red}</span>
           <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.red)}
           </span>
+          {/* the pace is a TAB on the panel's top edge, outside its flow (`.pace-tab`), so the
+              two panels stay the same two lines either way */}
+          {hud.alliance === 'red' && <PaceTag hud={hud} />}
         </div>
         <div className={`timer-panel ${timer.cls}`}>
           {/* status on the PHASE only — the digits beside it retick every frame and would
@@ -438,13 +436,11 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
         </div>
         <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
           {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
-          <span className="bb-score">
-            <span className="panel-score">{blue}</span>
-            {hud.alliance === 'blue' && <PaceTag hud={hud} />}
-          </span>
+          <span className="panel-score">{blue}</span>
           <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.blue)}
           </span>
+          {hud.alliance === 'blue' && <PaceTag hud={hud} />}
         </div>
       </div>
       {/* AFTER the bar, as DECODE's and Chain Reaction's rows are (`GameView`): the two are

@@ -3,14 +3,15 @@ import type { HudSnapshot } from '../../game';
 import { paceAt, type PaceCurve } from './curve';
 
 /**
- * THE PACE READ-OUT IN THE SCORE BAR: `+12` over `PB`, beside your own alliance's score.
+ * THE PACE READ-OUT: `+12 PB`, a small TAB on the top edge of your own alliance's score panel.
  *
- * Beside the total, not under it: under it, a BIOBUZZ panel stacked four things (YOU, the total,
- * the tip line, the pace) and its total rode up out of line with the other alliance's. In the
- * panel you already read, in its own ink, and nothing else — no colour for ahead or behind (the
- * sign says it, and the chip fill would not carry a third colour at AA), no popup, no sound. It
- * is there from the first frame of a paced match whether or not the curve has arrived, and it
- * holds a fixed width, so the bar never changes size mid-match: `—` until there is a number.
+ * OUTSIDE THE PANEL, NOT IN IT (owner, 2026-10-08: it "broke the clean, symmetrical scoring look"):
+ * under the total it stacked a fourth line into a BIOBUZZ panel, and beside the total it pushed
+ * the total off centre. As a tab the two alliance panels are identical whether or not the match
+ * is paced. GREEN ahead, RED behind, plain ink level — on the tab's own HUD fill, not the
+ * alliance chip, which could not carry a third colour at AA. It is there from the first frame of
+ * a paced match whether or not the curve has arrived, so nothing moves mid-match: `—` until
+ * there is a number. A band (`data-hud-band`): the field fit keeps clear of it.
  */
 
 export interface PaceState {
@@ -42,11 +43,10 @@ export function PaceTag({ hud }: { hud: HudSnapshot }) {
     delta == null
       ? pace.why || `Pace against ${pace.tag}`
       : `${delta === 0 ? 'Level with' : `${Math.abs(delta)} ${delta > 0 ? 'ahead of' : 'behind'}`} ${pace.tag} at this point`;
-  // two short lines beside the total: the number, and what it is measured against under it
+  const tone = delta == null || delta === 0 ? 'level' : delta > 0 ? 'ahead' : 'behind';
   return (
-    <span className="pace-tag" title={label} aria-label={label}>
-      <span className="pace-d">{delta == null ? '—' : fmtPace(delta)}</span>
-      <span className="pace-k">{pace.tag}</span>
+    <span className={`pace-tab ${tone}`} title={label} aria-label={label} data-hud-band>
+      {delta == null ? '—' : fmtPace(delta)} {pace.tag}
     </span>
   );
 }
