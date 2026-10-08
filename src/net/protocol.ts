@@ -241,7 +241,7 @@ const PRESET_SHAPE: Record<Exclude<RoomPreset, 'custom'>, { red: number; blue: n
  * Build a room's settings from an UNTRUSTED request (the first joiner's `config.settings`), or
  * undefined when none was asked for. Never trust the label: a record room is whatever `kind`
  * says, so its shape comes from `record` and is locked (`teamSwitch` off, always Private).
- * A versus room clamps every number, and its total to `ROOM_CAPACITY`.
+ * Only `preset` and `listed` are read from the request; the sides come from the preset.
  */
 export function coerceRoomSettings(
   kind: RoomKind,
@@ -263,13 +263,13 @@ export function coerceRoomSettings(
   // a record preset on a versus room is just a custom room
   const preset = asked === 'solo-record' || asked === 'duo-record' ? 'custom' : asked;
   const shape = preset === 'custom' ? { red: 2, blue: 2 } : PRESET_SHAPE[preset];
-  const out: RoomSettings = {
+  // creation takes the preset and Public/Private only; everything else is the host's, in the room
+  return {
     preset,
     perAlliance: { red: shape.red, blue: shape.blue },
     teamSwitch: true,
     listed: r.listed === true,
   };
-  return mergeRoomSettings(out, r);
 }
 
 /** apply a (possibly hostile) partial over settings, clamping every field */

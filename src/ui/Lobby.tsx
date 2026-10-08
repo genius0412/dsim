@@ -24,7 +24,7 @@ import type { ResumedRoom } from './roomReturn';
 import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { roomCapacity, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
+import { coerceRoomSettings, roomCapacity, ROOM_CAPACITY, type RoomSettings, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
@@ -207,7 +207,6 @@ export function Lobby({
   initialName,
 }: Props) {
   const isRecord = config.kind === 'record';
-  const capacity = roomCapacity(config);
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
@@ -271,6 +270,22 @@ export function Lobby({
   const [name, setName] = useState(initialName || (displayName ?? settings.spec.teamName) || '');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
+  /** the host-controlled shape the room reported (absent on a legacy room / an older server) */
+  const [roomSet, setRoomSet] = useState<RoomSettings | undefined>(undefined);
+  const capacity = roomSet ? roomSet.perAlliance.red + roomSet.perAlliance.blue : roomCapacity(config);
+  /** what the create form asks for; sent only by `createRoom`, and only to a server that has `'rooms2'` */
+  const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>('custom');
+  const [serverRooms2, setServerRooms2] = useState(false);
+  const creatingRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setServerRooms2(c.includes('rooms2'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   /**
    * BOT SEATS (plan §6). Two independent conditions, and the control needs both:
    *  · the GAME has an AI driver at all (`GameSimModule.bot`), which is a fact about the build;
@@ -457,6 +472,7 @@ export function Lobby({
 
   /** create a brand-new room with a freshly generated code (you host it) */
   function createRoom(): void {
+    creatingRef.current = serverRooms2 && !isRecord;
     join(generateRoomCode());
   }
 
@@ -584,6 +600,8 @@ export function Lobby({
        * thing, and nothing is what the wire has always carried.
        */
       physics: physicsOffered ? '3d' : undefined,
+      // Public/Private lands with Browse rooms; until then every created room is Private
+      settings: creatingRef.current ? coerceRoomSettings('versus', undefined, { preset: setup, listed: false }) : undefined,
     };
   }
 
@@ -618,7 +636,8 @@ export function Lobby({
      */
     transport.onDown(() => setSlowConnect(true));
 
-    lobby.on('roster', (list, host) => {
+    lobby.on('roster', (list, host, set) => {
+      setRoomSet(set);
       setPlayers(list);
       setHostId(host);
       setMyId(lobby.clientId);
@@ -1192,6 +1211,26 @@ export function Lobby({
                 can still run on the 2D physics.
               </p>
             )}
+            {entryMode === 'create' && serverRooms2 && !isRecord && (
+              <div className="ds-opts three" role="group" aria-label="Setup">
+                {(
+                  [
+                    ['casual-1v1', '1v1'],
+                    ['casual-2v2', '2v2'],
+                    ['custom', 'Custom'],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    className={`ds-opt ${setup === id ? 'on' : ''}`}
+                    aria-pressed={setup === id}
+                    onClick={() => setSetup(id)}
+                  >
+                    <span className="ot">{label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {entryMode === 'join' && (
               <label className="ds-field">
                 <span className="cap">Room code</span>
@@ -1378,6 +1417,18 @@ export function Lobby({
                     <span className="ds-chip on">HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
+                  {isHost && roomSet && !isRecord && (
+                    <button
+                      className="ds-btn small ghost"
+                      disabled={
+                        players.filter((o) => o.alliance !== p.alliance).length >=
+                        roomSet.perAlliance[p.alliance === 'red' ? 'blue' : 'red']
+                      }
+                      onClick={() => lobbyRef.current?.moveMember(p.clientId, p.alliance === 'red' ? 'blue' : 'red')}
+                    >
+                      Move to {p.alliance === 'red' ? 'blue' : 'red'}
+                    </button>
+                  )}
                   <span className="ds-chip">
                     {p.startPose
                       ? 'CUSTOM'
@@ -1440,7 +1491,65 @@ export function Lobby({
 
         {!idFirst && youSection}
 
-        {!isRecord && (
+        {roomSet && !isRecord && (
+          <section className="ds-sec">
+            <h2>Room settings</h2>
+            {isHost ? (
+              <>
+                {(['red', 'blue'] as const).map((a) => (
+                  <div key={a} className="ds-opts fill">
+                    <button
+                      className="ds-opt mini"
+                      aria-label={`Fewer ${a} seats`}
+                      disabled={roomSet.perAlliance[a] <= 0}
+                      onClick={() =>
+                        lobbyRef.current?.roomSettings({ perAlliance: { ...roomSet.perAlliance, [a]: roomSet.perAlliance[a] - 1 } })
+                      }
+                    >
+                      <span className="ot">−</span>
+                    </button>
+                    <span className={`ds-chip ${a}`} aria-live="polite">
+                      {a.toUpperCase()} · {roomSet.perAlliance[a]} {roomSet.perAlliance[a] === 1 ? 'seat' : 'seats'}
+                    </span>
+                    <button
+                      className="ds-opt mini"
+                      aria-label={`More ${a} seats`}
+                      disabled={capacity >= ROOM_CAPACITY}
+                      onClick={() =>
+                        lobbyRef.current?.roomSettings({ perAlliance: { ...roomSet.perAlliance, [a]: roomSet.perAlliance[a] + 1 } })
+                      }
+                    >
+                      <span className="ot">+</span>
+                    </button>
+                  </div>
+                ))}
+                <div className="ds-opts two">
+                  <button
+                    className={`ds-opt ${roomSet.teamSwitch ? 'on' : ''}`}
+                    aria-pressed={roomSet.teamSwitch}
+                    onClick={() => lobbyRef.current?.roomSettings({ teamSwitch: true })}
+                  >
+                    <span className="ot">Drivers pick a side</span>
+                  </button>
+                  <button
+                    className={`ds-opt ${!roomSet.teamSwitch ? 'on' : ''}`}
+                    aria-pressed={!roomSet.teamSwitch}
+                    onClick={() => lobbyRef.current?.roomSettings({ teamSwitch: false })}
+                  >
+                    <span className="ot">Host places drivers</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="ds-hint">
+                {roomSet.perAlliance.red} red · {roomSet.perAlliance.blue} blue ·{' '}
+                {roomSet.teamSwitch ? 'drivers pick a side' : 'the host places drivers'}
+              </p>
+            )}
+          </section>
+        )}
+
+        {!isRecord && (!roomSet || roomSet.teamSwitch) && (
           <section className="ds-sec">
             <h2>Your alliance</h2>
             <div className="ds-opts two">

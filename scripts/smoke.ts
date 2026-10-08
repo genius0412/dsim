@@ -17779,7 +17779,7 @@ const recordDrive: CommandSource = (tick) => {
 
 // ---- room settings: the host-controlled shape (rooms plan M1) ------------------
 {
-  const { coerceRoomSettings, roomCapacity } = await import('../src/net/protocol');
+  const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');
   const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,
     send: (m) => sink.push(m),
@@ -17796,9 +17796,12 @@ const recordDrive: CommandSource = (tick) => {
   const rec = coerceRoomSettings('record', 'solo', { preset: 'casual-2v2', listed: true, perAlliance: { red: 4, blue: 4 } });
   check('settings: a record room is locked to its record shape, Private, whatever was sent',
     rec?.perAlliance.red === 1 && rec.perAlliance.blue === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
-  const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 } });
-  check('settings: a versus room cannot claim a record preset, and its numbers are clamped',
-    fake?.preset === 'custom' && fake.perAlliance.red + fake.perAlliance.blue <= 4 && fake.perAlliance.blue >= 0, JSON.stringify(fake));
+  const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 }, teamSwitch: false });
+  check('settings: a versus room cannot claim a record preset, and creation ignores the sides it sent',
+    fake?.preset === 'custom' && fake.perAlliance.red === 2 && fake.perAlliance.blue === 2 && fake.teamSwitch, JSON.stringify(fake));
+  const hostile = mergeRoomSettings(fake!, { perAlliance: { red: 99, blue: -3 }, teamSwitch: 'no' });
+  check('settings: a host patch is clamped to the ceiling and to sane numbers',
+    hostile.perAlliance.red + hostile.perAlliance.blue <= 4 && hostile.perAlliance.blue >= 0 && hostile.teamSwitch === true, JSON.stringify(hostile));
   check('settings: capacity is the sum of the sides',
     roomCapacity({ kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) }) === 2);
   check('settings: Public is opt-in', coerceRoomSettings('versus', undefined, { preset: 'custom' })?.listed === false);
@@ -28100,7 +28103,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
     /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',
