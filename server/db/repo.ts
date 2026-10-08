@@ -7253,6 +7253,16 @@ export async function acceptFriendRequest(callerId: string, fromId: string): Pro
   });
 }
 
+/** every account this one is friends with (matchmaking: friends are never ranked opponents) */
+export async function friendIdsOf(userId: string): Promise<string[]> {
+  const rows = await q<{ id: string }>(
+    `select case when user_low = $1 then user_high else user_low end as id
+       from friendships where user_low = $1 or user_high = $1`,
+    [userId],
+  );
+  return rows.map((r) => r.id);
+}
+
 /** decline a request sent TO the caller (caller is the `to` side) */
 export async function declineFriendRequest(callerId: string, fromId: string): Promise<boolean> {
   const del = await q(

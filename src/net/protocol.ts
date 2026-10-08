@@ -639,7 +639,6 @@ export const SERVER_CAPS: string[] = [
 export const CHALLENGE_FORMATS = [
   'casual1v1',
   'casual2v2',
-  'rated1v1',
   'ranked2v2',
   'duorecord',
 ] as const;
@@ -650,17 +649,17 @@ export type ChallengeFormat = (typeof CHALLENGE_FORMATS)[number];
  * room code — which is exactly what makes them rated, since `Room.ranked` is only
  * ever set from a staged `pending_matches` row (see server/room.ts).
  *
- * `partyOnly` is the difference between the two:
- *  - `rated1v1` is a CLOSED pair. The token is the whole match; it never admits a
- *    stranger and never waits on the search radius, because the two of them
- *    already chose each other.
- *  - `ranked2v2` is a PREMADE that queues into the OPEN 2v2 pool. It waits for two
- *    more like anyone else; the only privilege is landing on one alliance.
+ * `ranked2v2` is a PREMADE that queues into the OPEN 2v2 pool: it waits for two more
+ * like anyone else, and the only privilege is landing on one alliance. (`rated1v1`, the
+ * closed pair that staged two friends against each other, is retired: friends are
+ * teammates, never ranked opponents.)
  */
-export const RATED_FORMATS: Record<string, { mode: QueueMode; partyOnly: boolean }> = {
-  rated1v1: { mode: '1v1', partyOnly: true },
-  ranked2v2: { mode: '2v2', partyOnly: false },
+export const RATED_FORMATS: Record<string, { mode: QueueMode }> = {
+  ranked2v2: { mode: '2v2' },
 };
+
+/** formats an old client may still send; `/api/friends/invite` answers them 410 */
+export const RETIRED_FORMATS: readonly string[] = ['rated1v1'];
 
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the

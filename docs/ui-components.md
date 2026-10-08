@@ -666,7 +666,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:653 | 353 |
+| `.ds-btn` | src/ui/shell.css:653 | 354 |
 
 ## `ds-checkline` — 1
 

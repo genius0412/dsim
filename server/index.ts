@@ -444,7 +444,7 @@ const stagedElsewhere = (userId: string): boolean => {
  * Returns null for an ordinary open-queue entry (no token — the common case),
  * `'bad-token'` for one to reject, or the verified token to enqueue under.
  */
-type VerifiedParty = { token: string; partyOnly: boolean } | null | 'bad-token';
+type VerifiedParty = { token: string } | null | 'bad-token';
 async function verifyParty(
   userId: string,
   msg: Extract<ClientMsg, { t: 'queue' }>,
@@ -454,15 +454,16 @@ async function verifyParty(
   const format = typeof msg.partyFormat === 'string' ? msg.partyFormat : '';
   const spec = RATED_FORMATS[format];
   // the format decides the queue it belongs in, so a token issued for one must not
-  // be spendable in the other
-  if (!spec || spec.mode !== msg.mode) return 'bad-token';
+  // be spendable in the other. A retired closed-pair format (`rated1v1`, or any queue
+  // still carrying `partyOnly`) is refused here, never downgraded into the open pool.
+  if (!spec || spec.mode !== msg.mode || msg.partyOnly) return 'bad-token';
   // no DB (local dev) ⇒ no challenges exist to verify against. Drop the party and
   // let them pair through the open queue, which on a single dev machine is the
   // same two people anyway.
   if (!dbEnabled) return null;
   const pair = await challengeParty(userId, token, format);
   if (!pair) return 'bad-token';
-  return { token, partyOnly: spec.partyOnly };
+  return { token };
 }
 /** a challenge is always exactly two people: the one who sent it and the one who
  * accepted. The matchmaker needs the number to know when the party is complete. */
@@ -4294,7 +4295,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // "play a friend": only ever the VERIFIED token (see verifyParty) —
             // never the raw one off the wire
             party: party?.token,
-            partyOnly: party?.partyOnly,
             partySize: party ? PARTY_SIZE : undefined,
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,

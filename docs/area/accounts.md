@@ -544,17 +544,22 @@ Tests: `npm test` ("notices:" — wording, copy rules, the refund rule, the rout
 
 **PLAY A FRIEND — challenges (chess.com's model), DONE.** A challenge (`room_invites` +
 migration `0019`) carries a **`format`**: `casual1v1`/`casual2v2` (a `versus` room),
-`duorecord` (a `record`/`duo` room), or the two RATED ones. Rating is only ever applied to a
+`duorecord` (a `record`/`duo` room), or the RATED one (`ranked2v2`). Rating is only ever applied to a
 matchmaker-STAGED room (`Room.ranked` ← `pending_matches`), so a code-joined room can NEVER
 rate — the rated formats therefore resolve through the MATCHMAKER, not through a room code.
 The challenge's `room` column doubles as a **party token** both sides send on `queue`
-(`party`/`partyOnly`/`partyFormat`; `RATED_FORMATS` in protocol.ts maps format → mode +
-partyOnly). The matchmaker pairs on **UNITS** (`groupUnits`), never individual entries:
-`rated1v1` is a CLOSED party (the token IS the match — no strangers, and the search radius is
-skipped since they chose each other; the channel+build bucket still applies), `ranked2v2` is a
-PREMADE that queues into the OPEN pool and is kept on one alliance by `allianceOrder`. That
-same ordering needs NO 1v1 exception: there the party is the two opponents and half=1 splits
-them correctly. **`partySize` (2) is load-bearing** — the members enqueue seconds apart, and
+(`party`/`partyFormat`; `RATED_FORMATS` in protocol.ts maps format → mode). The matchmaker
+pairs on **UNITS** (`groupUnits`), never individual entries: `ranked2v2` is a PREMADE that
+queues into the OPEN pool and is kept on one alliance by `allianceOrder`.
+**FRIENDS ARE TEAMMATES, NEVER RANKED OPPONENTS** (2026-10-07, rooms plan M0). `rated1v1`, the
+closed pair that staged two friends against each other, is RETIRED: `/api/friends/invite`
+answers it **410** (an unknown format would coerce to null and become a bogus casual invite),
+and a `queue` carrying `partyOnly` or that format is REFUSED at `verifyParty`, never downgraded
+into the open pool. Leftover pending rows read "Retired challenge" with only Dismiss. The
+matchmaker stamps each queued account's friends (`friendIdsOf`, `friendships`) like its rating
+and refuses any group that puts two of them on opposite alliances (`friendsOpposed`; in 2v2
+`bestSplit` prefers a clash-free split, and a group with none is skipped). Cost: two friends
+alone in one bucket cannot match each other and wait for a third player. **`partySize` (2) is load-bearing** — the members enqueue seconds apart, and
 without it the first arrival reads as a complete unit and is swallowed by an open group.
 **The token is VERIFIED, never trusted** (`challengeParty` → `verifyParty`): it resolves
 against the real challenge row and only answers for an account named on it, so two clients

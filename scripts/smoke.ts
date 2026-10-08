@@ -10273,11 +10273,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   // challenge into an ordinary open-queue entry on the way back in.
   {
     const ch = {
-      token: 'TMFX2K', format: 'rated1v1', mode: '1v1' as const,
-      partyOnly: true, game: 'chain' as const, opponent: 'bob',
+      token: 'TMFX2K', format: 'ranked2v2', mode: '2v2' as const,
+      game: 'chain' as const, opponent: 'bob',
     };
     parkQueue({
-      lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
+      lobby: {} as never, mode: '2v2', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
       assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
