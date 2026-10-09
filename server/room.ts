@@ -443,6 +443,11 @@ export interface MatchOutcome {
    * boundary by structured clone.
    */
   rankFacts?: Record<Alliance, Record<string, number>>;
+  /**
+   * A RECORD RUN ONLY: the net points each alliance earned in AUTO and in TELEOP, for the Auto and
+   * TeleOp boards (`recordSplit`). Absent when the game reported no AUTO number.
+   */
+  split?: Record<Alliance, { auto: number; teleop: number }>;
   /** A COMPETITION MATCH ONLY: every carded driver and the colour their robot ended the match on */
   cards?: { userId: string; colour: 'yellow' | 'red' }[];
   result: ReplayResult;
@@ -574,6 +579,8 @@ export class Room {
    * or the read threw. Reset with `finalized`.
    */
   private rankAt: Partial<Record<'autoEnd' | 'teleopStart', RankFacts | null>> = {};
+  /** the FOUL points each alliance had been handed at the same two instants (a record run's split) */
+  private foulAt: Partial<Record<'autoEnd' | 'teleopStart', Record<Alliance, number>>> = {};
   // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
   // the world coasting at ZERO, but their client object is gone once grace lapses,
   // so they'd drop out of the finalize roster and the match would become unratable
@@ -2687,6 +2694,7 @@ export class Room {
     this.finalized = false;
     this.settle = newSettleClock();
     this.rankAt = {};
+    this.foulAt = {};
     this.departed.clear();
 
     // register each authed driver's single-game lock: while this match is live they
@@ -3430,7 +3438,7 @@ export class Room {
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
     // after the record, so nothing a game's read does can cost the replay a tick
-    if (this.pendingMatch?.competition) this.captureRankFacts(w);
+    if (this.pendingMatch?.competition || this.config.kind === 'record') this.captureRankFacts(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
     // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
@@ -3452,10 +3460,51 @@ export class Room {
     const p = w.match.phase;
     if (this.rankAt.autoEnd === undefined && (p === 'transition' || p === 'teleop' || p === 'post')) {
       this.rankAt.autoEnd = this.readRankFacts(w, 'autoEnd');
+      this.foulAt.autoEnd = this.foulsNow(w);
     }
     if (this.rankAt.teleopStart === undefined && p === 'teleop') {
       this.rankAt.teleopStart = this.readRankFacts(w, 'teleopStart');
+      this.foulAt.teleopStart = this.foulsNow(w);
     }
+  }
+
+  private foulsNow(w: World): Record<Alliance, number> {
+    return { red: w.match.scores.red.foulPoints, blue: w.match.scores.blue.foulPoints };
+  }
+
+  /**
+   * A RECORD RUN'S AUTO / TELEOP SPLIT, net of the fouls committed in each period (the same net
+   * the Total board uses: `recordScore`). A record room has no opponent, so the fouls the player
+   * committed are the points handed to the OTHER alliance.
+   *
+   * The AUTO points are the game's own `auto` fact, read at the instant that game counts them at
+   * (Chain `autoEnd`, BIOBUZZ `teleopStart`, DECODE `final`), and the fouls are the ones handed over
+   * by the matching instant: DECODE and BIOBUZZ book the transition as AUTO, Chain as TELEOP.
+   * TELEOP is everything else. A run whose net total is 0 (a void) is 0 in both. Absent when the
+   * game reported no AUTO number or the instant was never reached.
+   */
+  private recordSplit(w: World, result: ReplayResult): Record<Alliance, { auto: number; teleop: number }> | undefined {
+    const facts = this.mergedRankFacts(this.readRankFacts(w, 'final'));
+    const out = {} as Record<Alliance, { auto: number; teleop: number }>;
+    for (const a of ['red', 'blue'] as const) {
+      const opp: Alliance = a === 'red' ? 'blue' : 'red';
+      const autoG = facts?.[a]?.auto;
+      if (autoG === undefined) return undefined;
+      // the instant the game counts AUTO at: Chain reports at autoEnd, the others by teleopStart
+      const at = this.rankAt.autoEnd?.[a]?.auto !== undefined ? 'autoEnd' : 'teleopStart';
+      const autoF = this.foulAt[at]?.[opp];
+      if (autoF === undefined) return undefined;
+      const totalG = result.score[a];
+      const totalF = result.foulPoints[opp];
+      out[a] =
+        Math.max(0, totalG - totalF) === 0
+          ? { auto: 0, teleop: 0 }
+          : {
+              auto: Math.max(0, autoG - autoF),
+              teleop: Math.max(0, totalG - autoG - (totalF - autoF)),
+            };
+    }
+    return out;
   }
 
   /**
@@ -3590,6 +3639,7 @@ export class Room {
         // a competition match also carries its measures and EVERY card, whoever was carded: cards
         // cost ranking points there, which is separate from `reportBehaviour` (ranked only)
         ...(comp ? { competition: comp, ...(rankFacts ? { rankFacts } : {}), cards: this.cardsOf(participants) } : {}),
+        ...(this.config.kind === 'record' ? (() => { const split = this.recordSplit(w, result); return split ? { split } : {}; })() : {}),
         result,
         replay,
         participants,

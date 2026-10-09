@@ -16760,6 +16760,75 @@ const forceRoomToPost = (room: Room): void => {
   room.advanceForTest(Math.round(MATCH_SETTLE_MAX_S / SIM_DT) + 10);
 };
 
+// ---- a record run's AUTO / TELEOP split, and the board windows (rooms plan M5/M7) ----
+// The Auto and TeleOp boards need what a run earned in each period, net of the fouls committed in
+// it. The room reads the game's own `auto` fact at the instant that game counts AUTO at and the
+// fouls handed over at that instant; the rest is TELEOP.
+{
+  const { windowBounds, coerceWindow } = await import('../server/boardWindow');
+  const at = (iso: string) => windowBounds('day', new Date(iso));
+  check('window: after 08:00 UTC the day started today at 08:00', at('2026-10-07T09:00:00Z').start === '2026-10-07T08:00:00.000Z');
+  check('window: before 08:00 UTC it is still yesterday', at('2026-10-07T07:00:00Z').start === '2026-10-06T08:00:00.000Z');
+  check('window: the day resets 24 hours after it starts', at('2026-10-07T09:00:00Z').resetsAt === '2026-10-08T08:00:00.000Z');
+  const wk = (iso: string) => windowBounds('week', new Date(iso));
+  check('window: the week starts on Monday 08:00 UTC', wk('2026-10-07T09:00:00Z').start === '2026-10-05T08:00:00.000Z');
+  check('window: Monday before 08:00 is still last week', wk('2026-10-05T07:59:00Z').start === '2026-09-28T08:00:00.000Z');
+  check('window: the week resets next Monday', wk('2026-10-07T09:00:00Z').resetsAt === '2026-10-12T08:00:00.000Z');
+  const mo = (iso: string) => windowBounds('month', new Date(iso));
+  check('window: the month starts on the 1st at 08:00', mo('2026-10-07T09:00:00Z').start === '2026-10-01T08:00:00.000Z');
+  check('window: the 1st before 08:00 is still last month, across a year end', mo('2027-01-01T07:00:00Z').start === '2026-12-01T08:00:00.000Z');
+  check('window: the month resets on the next 1st', mo('2026-12-15T00:00:00Z').resetsAt === '2027-01-01T08:00:00.000Z');
+  check('window: the season and all-time boards have no window', windowBounds('season', new Date()).start === null && windowBounds('all', new Date()).resetsAt === null);
+  check('window: an unknown value is the season board', coerceWindow('decade') === 'season' && coerceWindow(undefined) === 'season');
+
+  const solo = (id: string): Client => ({
+    id, send: () => {}, connected: true, disconnectAt: 0, userId: `u-${id}`,
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+  });
+  const runRecord = (game: 'decode' | 'chain' | 'biobuzz', tweak: (w: World, phase: string) => void): MatchOutcome | null => {
+    let seen: MatchOutcome | null = null;
+    const room = new Room(`smoke-split-${game}`, () => {}, { kind: 'record', record: 'solo', game }, (o) => { seen = o; });
+    room.add(solo('s1'));
+    room.onMessage('s1', { t: 'start' });
+    let last = '';
+    for (let i = 0; i < 20000; i++) {
+      room.advanceForTest(1);
+      const w = room.worldForTest();
+      if (!w) break;
+      if (w.match.phase !== last) { last = w.match.phase; tweak(w, last); }
+      if (w.match.phase === 'teleop') break;
+    }
+    forceRoomToPost(room);
+    return seen;
+  };
+  // DECODE: 10 in AUTO (leave), 5 foul points handed over during TELEOP
+  const dec = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') w.match.scores.blue.leave = 10;
+    if (ph === 'teleop') w.match.scores.red.foulPoints = 5;
+  });
+  check('split: DECODE reports one', !!dec?.split, JSON.stringify(dec?.split));
+  check('split: DECODE AUTO is the AUTO points, TELEOP is the rest net of fouls',
+    dec?.split?.blue.auto === 10 && (dec?.split?.blue.teleop ?? -1) >= 0 && dec.split.blue.auto + dec.split.blue.teleop <= (dec.result.score.blue ?? 0),
+    JSON.stringify([dec?.split?.blue, dec?.result.score.blue, dec?.result.foulPoints.red]));
+  const decF = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') { w.match.scores.blue.leave = 10; w.match.scores.red.foulPoints = 4; }
+  });
+  check('split: a foul committed in AUTO comes off AUTO', decF?.split?.blue.auto === 6, JSON.stringify(decF?.split?.blue));
+  const chn = runRecord('chain', (w, ph) => {
+    if (ph === 'auto' && w.chain) w.chain.particlePoints.blue = 20;
+  });
+  check('split: Chain Reaction reports one, AUTO is the particle points', chn?.split?.blue.auto === 20, JSON.stringify(chn?.split?.blue));
+  await initPhysics3d(); // a BIOBUZZ record room is a 3D room
+  const bio = runRecord('biobuzz', () => {});
+  check('split: BIOBUZZ reports one (its AUTO is read at TELEOP start)', !!bio?.split && bio.split.blue.auto >= 0 && bio.split.blue.teleop >= 0, JSON.stringify(bio?.split));
+  let vs: MatchOutcome | null = null;
+  const vr = new Room('smoke-split-vs', () => {}, { kind: 'versus' }, (o) => { vs = o; });
+  vr.add(solo('v1'));
+  vr.onMessage('v1', { t: 'start' });
+  forceRoomToPost(vr);
+  check('split: a versus room reports none', (vs as MatchOutcome | null)?.split === undefined);
+}
+
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------
 // A room used to be single-use: `world` was set once and never cleared, so after one
 // match `canJoin` refused every later joiner and the `start` gate refused every later

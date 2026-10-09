@@ -205,14 +205,23 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
  * current server ignores it if an older client still sends one, and `Leaderboard` filters an
  * OLDER server's mixed response client-side.
  */
+export type RecordCategory = 'total' | 'auto' | 'teleop';
+export type RecordWindow = 'season' | 'day' | 'week' | 'month' | 'all';
+
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
   game?: GameId,
-): Promise<{ rows: RecordRow[]; physics?: string }> {
+  /** Total / Auto / TeleOp and the time window. An older server ignores both and answers Total, season. */
+  view?: { category?: RecordCategory; window?: RecordWindow; era?: '2d' | '3d' },
+): Promise<{ rows: RecordRow[]; physics?: string; category?: RecordCategory; window?: RecordWindow; resetsAt?: string | null }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
+  const v =
+    (view?.category && view.category !== 'total' ? `&category=${view.category}` : '') +
+    (view?.window && view.window !== 'season' ? `&window=${view.window}` : '') +
+    (view?.window === 'all' && view.era ? `&era=${view.era}` : '');
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${v}${gameParam(game)}`);
 }
 
 export function fetchElo(

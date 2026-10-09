@@ -2851,6 +2851,9 @@ export interface RecordSubmit {
   game?: Game;
   /** which physics solve produced this run (0039). Absent ⇒ '2d'. */
   physics?: string;
+  /** the net points earned in AUTO and in TELEOP (0062); absent ⇒ unknown, off those two boards */
+  autoScore?: number;
+  teleopScore?: number;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
@@ -2883,8 +2886,9 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
     throw new Error('record refused: an imported robot cannot set a record');
   }
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics,
+                          auto_score, teleop_score)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -2896,10 +2900,20 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.config ? JSON.stringify(r.config) : null,
       g(r.game),
       r.physics === '3d' ? '3d' : '2d',
+      r.autoScore ?? null,
+      r.teleopScore ?? null,
     ],
   );
   return rows[0].id;
 }
+
+/** which score a record board ranks by: the whole run, or the points of one period */
+export type BoardCategory = 'total' | 'auto' | 'teleop';
+export const BOARD_CATEGORIES: readonly BoardCategory[] = ['total', 'auto', 'teleop'];
+export const coerceCategory = (v: unknown): BoardCategory =>
+  BOARD_CATEGORIES.includes(v as BoardCategory) ? (v as BoardCategory) : 'total';
+/** the column behind each category — a closed map, so a request value never reaches the SQL text */
+const CATEGORY_COLUMN: Record<BoardCategory, string> = { total: 'score', auto: 'auto_score', teleop: 'teleop_score' };
 
 export interface BoardRow {
   userId: string;
@@ -2949,15 +2963,32 @@ export async function recordLeaderboard(opts: {
    * first makes the board "each player's best 3D run", which is what the board now means.
    */
   physics?: '2d' | '3d';
+  /** Total (default), or the points of one period (0062). Auto/TeleOp skip rows with no split. */
+  category?: BoardCategory;
+  /** only runs set at or after this instant: today / this week / this month (`boardWindow.ts`) */
+  since?: string;
+  /**
+   * LIFETIME: every season, but ONE physics, so a 2D run and a 3D run never share a board. The
+   * era is `physics` here, else the live solve of the game (none for a one-solve game).
+   */
+  lifetime?: boolean;
 }): Promise<BoardRow[]> {
-  const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
+  const col = CATEGORY_COLUMN[opts.category ?? 'total'];
+  // lifetime reads every season: $1 stays in the text (`is null`) so Postgres can type it
+  const params: unknown[] = [opts.lifetime ? null : opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let sinceFilter = '';
+  if (opts.since) {
+    params.push(opts.since);
+    sinceFilter = `and r.created_at >= $${params.length}`;
+  }
   let physFilter = '';
-  const phys = opts.physics ?? (await boardPhysics(g(opts.game), opts.balanceVersion));
+  const phys =
+    opts.physics ?? (opts.lifetime ? livePhysics(g(opts.game)) : await boardPhysics(g(opts.game), opts.balanceVersion));
   if (phys) {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
@@ -2966,10 +2997,11 @@ export async function recordLeaderboard(opts: {
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config, r.physics
+         r.user_id, r.partner_id, r.${col} as score, r.replay_id, r.created_at, r.config, r.physics
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter} ${physFilter}
-       order by r.user_id, r.score desc, r.created_at asc
+       where ${opts.lifetime ? '$1::int is null' : 'r.balance_version = $1'} and r.mode = $2 and r.game = $3
+         and r.${col} is not null ${dtFilter} ${sinceFilter} ${physFilter}
+       order by r.user_id, r.${col} desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
