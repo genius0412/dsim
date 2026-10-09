@@ -12,6 +12,7 @@ import { chainColliders } from './colliders';
 import { chainStartLegal } from './state';
 import { createChainWorld } from './spawn';
 import { chainStep } from './step';
+import { chainRankFacts } from './rankFacts';
 
 /**
  * Chain Reaction SIMULATION module (DOM-free) — fully playable + SCORED. `scored: true`
@@ -45,11 +46,13 @@ export const CHAIN_SIM: GameSimModule = {
   // G04. The FLAG above stays false and this is filled anyway — they are different questions:
   // the flag is whether the SERVER refuses a ready-up, and this is whether the EDITOR paints
   // the ring red. CR has always answered the second and never wanted the first.
-  // ALLIANCE IS IGNORED, exactly as the caller that used to branch on the game id did:
-  // `chainStartLegal` asks about the Lab Areas as a pair, so a canonical pose is assessed in
-  // the frame it is stored in. Changing that is a CR rules question, not a seam change.
-  startLegal: (spec, _a, pose) =>
-    !pose || chainStartLegal(spec, { x: pose.x, y: pose.y }, pose.headingDeg),
+  // The pose is assessed in the canonical frame it is stored in (the Lab Areas as a pair). The
+  // ALLIANCE matters only for an IMPORT: red's footprint is the x-reflection of the canonical
+  // one, which for a hull that is not symmetric left-right is the hull FLIPPED, so red is judged
+  // on that (`chainStartExtents`). A standard robot's answer does not depend on it.
+  // No pose = an anchor, which the spawn fits for an import (`spawn.ts`), so it is legal.
+  startLegal: (spec, a, pose) =>
+    !pose || chainStartLegal(spec, { x: pose.x, y: pose.y }, pose.headingDeg, a),
   // CR's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
   autoPaths: false,
   // camera bounds include the protruding goals (walls/colliders stay at ±72)
@@ -58,4 +61,6 @@ export const CHAIN_SIM: GameSimModule = {
   createWorld: createChainWorld,
   step: chainStep,
   settled: chainSettled,
+  // a competition's ranking-point measures: AUTO as AUTO ends, ASCENT at the end
+  rankFacts: chainRankFacts,
 };

@@ -1,5 +1,16 @@
 # Can DSIM use more than one core?
 
+> **BUILT 2026-09-27** as Option A below (`server/roomHost.ts`, `server/roomWorker.ts`), behind
+> `SIM_WORKERS` (unset/0 = in-process, `auto` = one worker per vCPU beyond the first; production
+> sets `auto`). Two things differ from this design. The synchronous reads became a mirror as
+> §4 suggests, but the mirror alone was not enough for admission: an add in flight has to count
+> as a seat, or two joins inside a millisecond both fit a one-seat room. And `UV_THREADPOOL_SIZE`
+> was NOT raised: at 120 clients on 8 workers the default pool of 4 showed no latency, and no Fly
+> size in use gets near that. The measured numbers replace §6's estimates — see
+> `docs/capacity.md`, "MULTI-CORE". The short version: §6's "8 workers ≈ 90–100 rooms" held for
+> 1v1 (60 rooms at ~40% per worker), and the socket thread saturates near ~250 clients. Rules for
+> changing it: `docs/area/netcode.md`. The rest of this document is the original audit.
+
 **Yes.** Written 2026-09-11 on branch `perf-load-v2`, in answer to a direct question: the
 capacity model (`docs/capacity.md` §5) says 1,000 concurrent players needs **70–90 machines**
 under today's topology, and that is not a number anyone wants to operate.

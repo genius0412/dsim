@@ -1,5 +1,6 @@
 import { createAuthClient } from '@neondatabase/auth';
 import { BetterAuthReactAdapter } from '@neondatabase/auth/react/adapters';
+import { createTokenCache } from '../net/authFetch';
 
 /**
  * Neon Auth (Better Auth) client. One env var — `VITE_NEON_AUTH_URL` (the hosted
@@ -65,63 +66,51 @@ export const authClient: AuthClient | null = url
  * point of one. `exp` is read off the token rather than assumed, so this tracks
  * whatever lifetime Neon Auth issues without hardcoding it.
  */
-let cachedToken: { token: string; expiresAtMs: number } | null = null;
-/** renew this far ahead of `exp` so a token cannot expire in flight */
-const TOKEN_REFRESH_SKEW_MS = 60_000;
-/** only for a token with no readable `exp` — still ~10x fewer fetches than before */
-const TOKEN_FALLBACK_TTL_MS = 60_000;
+/**
+ * The cache itself — dedupe of concurrent fetches, and the identity epoch that keeps a token
+ * fetched before a sign-out from being cached after it — lives in `createTokenCache`
+ * (`src/net/authFetch.ts`), a leaf module the headless smoke run can import. This file reads
+ * `import.meta.env` at load and cannot be.
+ */
+const tokens = createTokenCache(fetchToken);
 
-/** `exp` (ms) from a JWT payload, WITHOUT verifying it: the server checks the
- * signature, the client only needs to know when to ask for a new one. */
-function expiryOf(jwt: string): number | null {
+/** one `/token` round trip. Null for a definite "no session"; THROWS for a network failure,
+ *  which the cache treats as "leave what you have" rather than as a miss. */
+async function fetchToken(): Promise<string | null> {
+  if (!url) return null;
+  // The SDK's getJWTToken() posts to a wrong route on this Neon Auth build
+  // (`/get-j-w-t-token` → 404). The Better Auth JWT plugin serves a fresh JWT at
+  // `GET ${authURL}/token` using the session cookie, so fetch that directly. The
+  // server verifies it against the same JWKS (EdDSA).
+  let res: Response;
   try {
-    const part = jwt.split('.')[1];
-    if (!part) return null;
-    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
-    const payload = JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))) as {
-      exp?: unknown;
-    };
-    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
-  } catch {
-    return null; // unreadable ⇒ fall back to the short TTL, never fail a request
+    res = await fetch(`${url.replace(/\/$/, '')}/token`, { credentials: 'include' });
+  } catch (e) {
+    console.log('[auth] getAuthToken failed:', e);
+    throw e;
   }
+  if (!res.ok) {
+    console.log(`[auth] getAuthToken: /token → ${res.status} (signed out or CORS?)`);
+    return null;
+  }
+  const data = (await res.json().catch(() => ({}))) as { token?: string };
+  return data.token ?? null;
 }
 
 /**
  * Drop the cached token. Called on sign-in and sign-out (the identity changed) and
  * on a 401 from our own API — a session revoked server-side leaves the cached token
  * stale even though it has not expired, and only a fresh fetch can discover that.
+ * It also bumps the cache's identity epoch, so a `/token` fetch already in flight for
+ * whoever was here before cannot land in the cache afterwards.
  */
 export function clearAuthToken(): void {
-  cachedToken = null;
+  tokens.clear();
 }
 
 /** the JWT the SERVER verifies to attribute a match to this user (null if signed
  * out or auth is off). `force` bypasses the cache, for a retry after a 401. */
 export async function getAuthToken(force = false): Promise<string | null> {
   if (!url) return null;
-  if (!force && cachedToken && Date.now() < cachedToken.expiresAtMs - TOKEN_REFRESH_SKEW_MS) {
-    return cachedToken.token;
-  }
-  // The SDK's getJWTToken() posts to a wrong route on this Neon Auth build
-  // (`/get-j-w-t-token` → 404). The Better Auth JWT plugin serves a fresh JWT at
-  // `GET ${authURL}/token` using the session cookie, so fetch that directly. The
-  // server verifies it against the same JWKS (EdDSA).
-  try {
-    const res = await fetch(`${url.replace(/\/$/, '')}/token`, { credentials: 'include' });
-    if (!res.ok) {
-      console.log(`[auth] getAuthToken: /token → ${res.status} (signed out or CORS?)`);
-      cachedToken = null;
-      return null;
-    }
-    const data = (await res.json()) as { token?: string };
-    const token = data.token ?? null;
-    cachedToken = token
-      ? { token, expiresAtMs: expiryOf(token) ?? Date.now() + TOKEN_FALLBACK_TTL_MS }
-      : null;
-    return token;
-  } catch (e) {
-    console.log('[auth] getAuthToken failed:', e);
-    return null;
-  }
+  return tokens.get(force);
 }

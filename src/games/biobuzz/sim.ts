@@ -21,6 +21,7 @@ import { bbSettled } from './settle';
 import { createBiobuzzWorld } from './spawn';
 import { bbActiveStartLegal } from './start';
 import { biobuzzStep } from './step';
+import { biobuzzRankFacts } from './rankFacts';
 
 /**
  * BIOBUZZ (FTC 2026-27) — the SIMULATION half of the game module.
@@ -147,6 +148,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // the match is finalized only once nothing left on the field can score (§10.5 A/C) — a tip
   // swing that the buzzer caught finishes and pays before anything is saved. See `bbSettled`.
   settled: bbSettled,
+  // a competition's ranking-point measures: AUTO as TELEOP starts, SWARM and TIPS at the end
+  rankFacts: biobuzzRankFacts,
   // THE AI SEAT (Day 3, plan §6). DECODE and Chain Reaction leave this absent, which is what
   // "this game offers no bot" means at every reader. See `src/games/biobuzz/ai/index.ts` for the
   // driving contract, and `BotDriver` for why there is a `create` and no `drive`.

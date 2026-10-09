@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Alliance, RobotState, StartCat, StartPose, World } from '../../types';
 import { DEFAULT_ASSISTS } from '../../sim/spawn';
 import { MAX_SAVED_STARTS } from '../../config';
-import { samePose } from '../../ui/startPositions';
+import { samePose, startHandleReach } from '../../ui/startPositions';
+import { footprintCorners } from '../../sim/field';
 import type { StartEditorProps } from '../module';
 import { BB_HALF_X, BB_HALF_Y, BB_START_POSES, BB_VIEW_MARGIN, bbAnchorCat, bbAnchorName, bbRoleLabel } from './config';
 import { bbEvalStart, bbSnapStart, bbStartBox } from './start';
@@ -140,9 +141,19 @@ export function BiobuzzStartEditor({
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.2;
     ctx.stroke();
+    // AN IMPORT's box is its hull's, which is not a rectangle and need not be centred on the
+    // origin: outline the hull itself inside the tested box, so the box reads as the hull's bound
+    if (spec.imported) {
+      const hull = footprintCorners(spec, { x: pose.x, y: pose.y }, hRad);
+      ctx.beginPath();
+      hull.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+      ctx.closePath();
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
 
-    // heading handle
-    const front = spec.length / 2 + 8;
+    // heading handle, past the robot's front (an import's is its hull's)
+    const front = startHandleReach(spec);
     const hx = pose.x + Math.cos(hRad) * front;
     const hy = pose.y + Math.sin(hRad) * front;
     ctx.strokeStyle = col;
@@ -189,7 +200,7 @@ export function BiobuzzStartEditor({
 
   const handleWorld = (): { x: number; y: number } => {
     const hRad = (pose.headingDeg * Math.PI) / 180;
-    const front = spec.length / 2 + 8;
+    const front = startHandleReach(spec);
     return { x: pose.x + Math.cos(hRad) * front, y: pose.y + Math.sin(hRad) * front };
   };
 

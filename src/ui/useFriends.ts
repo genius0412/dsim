@@ -21,6 +21,7 @@ import {
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { onUserActive, userIdle } from './userActivity';
+import { startPollLoop } from './pollLoop';
 
 /**
  * Adaptive poll cadence (only ever runs while the tab is VISIBLE — see below).
@@ -158,10 +159,6 @@ export function useFriends({
       return;
     }
     let alive = true;
-    let timer: number | undefined;
-    const schedule = (ms: number): void => {
-      timer = window.setTimeout(tick, ms);
-    };
     // Reschedule off the LATEST data (via the ref): fast while something pending
     // is actively moving, slow otherwise. `hotKey` fingerprints the pending set,
     // so the fast window restarts on a real change (a request arrives, an invite
@@ -190,8 +187,9 @@ export function useFriends({
       const fresh = Date.now() - hotSince < HOT_WINDOW_MS;
       return pending && fresh ? POLL_HOT_MS : POLL_IDLE_MS;
     };
-    function tick(): void {
-      if (!alive) return;
+    /* ONE request in flight and ONE timer pending, at most, however many wake signals arrive at
+       once — `startPollLoop` says what used to happen when a tab came forward. */
+    const poll = (): number | Promise<number> => {
       // An UNATTENDED page must not poll - a hidden/backgrounded tab, or one left
       // visible on a second monitor with nobody at the keyboard (see
       // userActivity.ts). Polling on would keep the caller eternally "online"
@@ -200,15 +198,12 @@ export function useFriends({
       // window, which reads as offline - the truth. The re-check below is a bare
       // timer, not a request, and `onUserActive`/`focus`/`visibilitychange` catch
       // the page up the moment somebody is actually there again.
-      if (userIdle()) {
-        schedule(POLL_IDLE_MS);
-        return;
-      }
+      if (userIdle()) return POLL_IDLE_MS;
       setLoading(true);
       // stamp the generation this request belongs to; if a mutation begins or
       // completes while it's in flight, its answer is already out of date
       const gen = mutSeq.current;
-      fetchFriends(activity, game)
+      return fetchFriends(activity, game)
         .then((d) => {
           if (!alive) return;
           if (mutSeq.current !== gen) return; // superseded by a mutation
@@ -223,20 +218,22 @@ export function useFriends({
           // data and let the next tick retry.
           if (e instanceof FriendsUnavailableError) setUnavailable(true);
         })
-        .finally(() => {
-          if (!alive) return;
-          setLoading(false);
-          schedule(nextDelay());
+        .then(() => {
+          if (alive) setLoading(false);
+          return nextDelay();
         });
-    }
-
-    tick();
+    };
+    const loop = startPollLoop({
+      run: poll,
+      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimer: (t) => window.clearTimeout(t),
+      fallbackMs: POLL_IDLE_MS,
+    });
     // catch up immediately when a backgrounded/blurred tab comes forward, rather
     // than showing stale presence until the next interval
     const wake = (): void => {
       if (document.visibilityState !== 'visible') return;
-      window.clearTimeout(timer);
-      tick();
+      loop.wake();
     };
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('focus', wake);
@@ -245,7 +242,7 @@ export function useFriends({
     const unwake = onUserActive(wake);
     return () => {
       alive = false;
-      window.clearTimeout(timer);
+      loop.stop();
       document.removeEventListener('visibilitychange', wake);
       window.removeEventListener('focus', wake);
       unwake();

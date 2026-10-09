@@ -1,5 +1,5 @@
 import type { Alliance, World } from '../../../types';
-import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R, BB_RAMP_LIFT_Z } from '../config';
+import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_FLOWER_RETRIEVE_Z, BB_POLLEN_R, BB_RAMP_LIFT_Z } from '../config';
 import { hiveTakingSide } from '../hive';
 import { hiveTiltAngle, insideCell } from './hive3d';
 import { flowerTubeOf } from './flowerTube';
@@ -226,7 +226,28 @@ export function deriveTick(world: World, engine: Engine3d): void {
     const liftedOut = b.state.kind === 'ground' && b.z >= BB_RAMP_LIFT_Z;
     if (!tagged && !liftedOut) {
       const i = flowerTubeOf(b.pos.x, b.pos.y, centreZ);
-      if (i !== null && i < flowerIds.length) {
+      /**
+       * ⚠️ **AN ELEMENT JOINS A FLOWER THROUGH THE TOP, NEVER THROUGH THE RETRIEVAL OPENING.**
+       * §10.5.2: "Placing SCORING ELEMENTS into the top of the FLOWER is the only allowable way
+       * to score." A POLLEN or NECTAR pushed across the tiles into the opening has its centre
+       * inside the bore, and it used to be adopted as the stack's BOTTOM element — where
+       * `flowerStackZ` seats a NECTAR on the middle ring, so a floor NECTAR paid the 5-point
+       * Bottom NECTAR Bonus, could take ownership, and fired G410 during the lock.
+       *
+       * So the same LATCH the cells use: an element already in this flower stays in it wherever
+       * it falls to, and a new one is admitted only while its centre is above the opening's top
+       * (`BB_FLOWER_RETRIEVE_Z[1]`), which only an element that came down the tube can be.
+       * Placed and staged elements are tagged `flower:i` before their first tick and a shot is
+       * seen well above the middle ring on its way down, so neither is affected.
+       *
+       * ⚠️ A REPLAY RECORDED BEFORE THIS RULE KEEPS THE OLD ONE (`SIM_PATCH` 1, `config.ts`).
+       * Changing which elements are in a FLOWER changes the match that follows, and without the
+       * gate every earlier 3D replay re-simulated into a different game — measured, the top
+       * eight BIOBUZZ records replayed at 55–186 against their real 674–726.
+       */
+      const topOnly = world.simPatch === undefined || world.simPatch >= 1;
+      const entered = i !== null && (!topOnly || latched === `flower:${i}` || centreZ > BB_FLOWER_RETRIEVE_Z[1]);
+      if (i !== null && entered && i < flowerIds.length) {
         b.state = { kind: 'element', el: `flower:${i}`, slot: 0 }; // `slot` is set below, by z
         flowerIds[i].push({ id: b.id, z: centreZ });
         tagged = true;

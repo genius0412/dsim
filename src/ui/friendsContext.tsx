@@ -192,7 +192,6 @@ export function FriendsProvider({
           token: code,
           format,
           mode: rated.mode,
-          partyOnly: rated.partyOnly,
           game,
           opponent: username,
         });

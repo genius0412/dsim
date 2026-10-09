@@ -1,6 +1,6 @@
 # Zenith autos in DSIM: plan (2026-09-24)
 
-Branch `claude/zenith-dsim-auto-pathing-g29xta` in `genius0412/dsim` (off `alpha` @ `c4afe65`) and
+Branch `zenith-dsim-auto-pathing-g29xta` in `genius0412/dsim` (off `alpha` @ `c4afe65`) and
 the same branch name in `Horizon-36596/zenith`. The owner reviews at two checkpoints (below); the
 rest is built end to end.
 

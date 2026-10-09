@@ -70,7 +70,8 @@ export interface BbLauncherSpec {
    * `BB_MOUNT_POSITIONS` order) and deletes it for every other kind. */
   mount2?: BbMountPos;
   /** the HOOD angle in DEGREES above level that a TURRETLESS launcher throws at. A fixed hood
-   * is real hardware. A TURRETED launcher ignores it and solves its own elevation per shot. */
+   * is real hardware. A TURRETED launcher ignores it and solves its own elevation per shot, and a
+   * DUMPER ignores it too (it lobs, `bbLobThrow`); the FIXED launcher throws at exactly this. */
   hoodDeg: number;
 }
 
@@ -184,6 +185,7 @@ export function bbIsTurreted(launcher: BbLauncherSpec): boolean {
  * intake (`capturePollen`, `elements.ts`) refuses a NECTAR for a build this says no to.
  */
 export function bbCarriesNectar(launcher: BbLauncherSpec): boolean {
+  // a FIXED launcher is one small wheel sized for a POLLEN, like a single turret's
   return launcher.kind === 'twinturret' || launcher.kind === 'dumper';
 }
 
@@ -217,7 +219,30 @@ export function bbTurretFor(launcher: BbLauncherSpec, nectar: boolean): 0 | 1 {
  * that edge and both of its corners. A TURRET and a BOX TUBE are both single-cell towers.
  */
 export function bbSpansEdge(kind: BbScoreMode | BbLiftKind): boolean {
-  return kind !== 'vslide' && !isTurreted(kind as BbScoreMode);
+  // a FIXED launcher is turretless but it is ONE head on its edge's middle cell, not a line
+  // across the side: the corners either side of it stay free for a Box Tube
+  return kind !== 'vslide' && kind !== 'fixed' && !isTurreted(kind as BbScoreMode);
+}
+
+/**
+ * THE FLAT `scoreMode` MIRROR for a launcher kind. It is what an older peer or server reads (it
+ * drops `bbMech`), so it must be a name that reader knows: a FIXED launcher mirrors as a DUMPER on
+ * the same edge — turretless, turns to aim — the nearest hardware an old build can name.
+ */
+export function bbScoreModeMirror(kind: BbScoreMode): NonNullable<RobotSpec['scoreMode']> {
+  return kind === 'fixed' ? 'dumper' : kind;
+}
+
+/** does this launcher stand a FLYWHEEL HEAD on the deck — a turret (its head turns on a ring) or a
+ * FIXED launcher (the same head, bolted)? What the deck dressing, the held-element layout and the
+ * front marks keep clear of. */
+export function bbHasHead(launcher: BbLauncherSpec): boolean {
+  return isTurreted(launcher.kind) || launcher.kind === 'fixed';
+}
+
+/** is this a FIXED launcher — one flywheel head bolted to an edge, aimed by turning the robot? */
+export function bbIsFixed(launcher: BbLauncherSpec): boolean {
+  return launcher.kind === 'fixed';
 }
 
 /**

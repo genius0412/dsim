@@ -13,9 +13,18 @@
  * ⚠️ WAYPOINT REFS ARE INLINED FIRST. `mirrorAuto` leaves a `{ "ref": … }` as the reference it
  * is (a mirrored routine wants the other alliance's waypoint of that name), and `waypoints.json`
  * holds canonical poses only, so resolving after the mirror would drive BLUE to RED's waypoint.
+ *
+ * ⚠️ A ROBOT THAT CANNOT STRAFE DRIVES EVERY LEG NOSE-FIRST OR TAIL-FIRST (`tankHeadings`). Zenith
+ * plans and follows for a mecanum chassis only (its robot file has no drivetrain kind). A tank
+ * asked to hold a constant or sweeping heading along a leg cannot, and Pedro's follower then
+ * spends its whole power budget on the heading it will never reach and drives nothing (its
+ * allocator puts heading feedback before the drive vector while the heading is off). So for a
+ * `holonomic(spec) === false` build each path leg is re-planned `tangent`, or `tangentReversed`
+ * where the file's own heading along it points backwards, before the follower sees it.
  */
 import {
   check,
+  flattenSteps,
   estimate as estimatePlan,
   loadAuto,
   loadField,
@@ -43,6 +52,7 @@ import {
   type Waypoints,
 } from '@horizon36596/zenith-schema';
 import type { Alliance, RobotSpec, StartPose } from '../types';
+import { datan2, dcos } from '../math';
 import type { GameAutoAdapter, ZenithAutoSetup } from './types';
 
 /** An auto that could not be loaded, with a sentence a player can act on. */
@@ -61,6 +71,50 @@ export interface LoadedAuto {
   findings: Finding[];
   /** named commands and conditions the file uses that this game does not run */
   unsupported: string[];
+  /** the path legs re-headed for a robot that cannot strafe (`tankHeadings`), by step id */
+  reheaded: string[];
+  /** commands the file uses that this game runs and this build cannot, with the reason */
+  notOnRobot: { name: string; why: string }[];
+}
+
+/** a leg shorter than this is a turn in place or a nudge: it keeps the heading it was written with */
+const TANK_MIN_LEG_IN = 2;
+
+/**
+ * THE RUNNING ROUTINE FOR A ROBOT THAT CANNOT STRAFE: every path leg long enough to have a
+ * direction is headed along it. `tangentReversed` where the heading the file plans at the leg's
+ * start points more than 90° off the direction of travel, i.e. the author drew the robot backing
+ * along it; `tangent` otherwise. Returns the ids it changed, for the panel.
+ */
+function tankHeadings(auto: Auto, planned: Plan): { auto: Auto; reheaded: string[] } {
+  // keyed by the step object the plan carries (a step's `id` is optional in the file), and by
+  // id as well, in case the resolver hands the plan a copy
+  const byStep = new Map<Step, 'tangent' | 'tangentReversed'>();
+  const byId = new Map<string, 'tangent' | 'tangentReversed'>();
+  for (const ps of flattenSteps(planned.steps)) {
+    if (ps.kind !== 'path' || ps.lengthIn < TANK_MIN_LEG_IN || ps.samples.length < 2) continue;
+    const mode = ps.step.kind === 'path' ? (ps.step.heading?.mode ?? null) : null;
+    if (mode === 'tangent' || mode === 'tangentReversed') continue;
+    const a = ps.samples[0].pose;
+    const b = ps.samples.find((x) => (x.pose.xIn - a.xIn) ** 2 + (x.pose.yIn - a.yIn) ** 2 > 0.25)?.pose;
+    if (!b) continue;
+    const travel = datan2(b.yIn - a.yIn, b.xIn - a.xIn);
+    const heading = a.headingRad ?? travel;
+    const m = dcos(heading - travel) < 0 ? 'tangentReversed' : 'tangent';
+    byStep.set(ps.step, m);
+    byId.set(ps.id, m);
+  }
+  const step = (s: Step): Step => {
+    if (s.kind === 'path') {
+      const m = byStep.get(s) ?? (s.id !== undefined ? byId.get(s.id) : undefined);
+      return m ? { ...s, heading: { mode: m } } : s;
+    }
+    if (s.kind === 'sequence' || s.kind === 'parallel' || s.kind === 'branch') {
+      return withChildLists(s, childLists(s).map((list) => list.map(step)));
+    }
+    return s;
+  };
+  return { auto: { ...auto, steps: auto.steps.map(step) }, reheaded: [...byId.keys()] };
 }
 
 const DSIM_ALLIANCE: Record<Alliance, Auto['alliance']> = { red: 'RED', blue: 'BLUE' };
@@ -174,9 +228,20 @@ export function loadZenithAuto(
   }
   const written = inlineRefs(auto, waypoints, field);
   const mirrored = written.alliance !== DSIM_ALLIANCE[alliance] && mirrorForField(field) !== 'none';
-  const running = mirrored ? mirrorAuto(written, mirrorForField(field)) : written;
-  const resolved = resolve(running);
-  const thePlan = planAuto(resolved, robot, field);
+  const asWritten = mirrored ? mirrorAuto(written, mirrorForField(field)) : written;
+  let running = asWritten;
+  let resolved = resolve(running);
+  let thePlan = planAuto(resolved, robot, field);
+  let reheaded: string[] = [];
+  if (adapter.holonomic?.(spec) === false) {
+    const t = tankHeadings(asWritten, thePlan);
+    if (t.reheaded.length > 0) {
+      running = t.auto;
+      reheaded = t.reheaded;
+      resolved = resolve(running);
+      thePlan = planAuto(resolved, robot, field);
+    }
+  }
   const est = estimatePlan(thePlan, robot);
   const findings = [...resolved.findings, ...check(thePlan, est, robot, field, adapter.rules?.(field))];
   const used = namesUsed(written);
@@ -184,5 +249,7 @@ export function loadZenithAuto(
     ...used.commands.filter((n) => !adapter.commands.includes(n)),
     ...used.conditions.filter((n) => !adapter.conditions.includes(n)),
   ];
-  return { written, running, mirrored, robot, field, plan: thePlan, estimate: est, findings, unsupported };
+  const cannot = adapter.notOnRobot?.(spec) ?? {};
+  const notOnRobot = used.commands.filter((n) => Object.hasOwn(cannot, n)).map((name) => ({ name, why: cannot[name] }));
+  return { written, running, mirrored, robot, field, plan: thePlan, estimate: est, findings, unsupported, reheaded, notOnRobot };
 }

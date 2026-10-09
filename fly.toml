@@ -19,6 +19,11 @@ primary_region = 'iad'
   #     data. Production sets NEON_AUTH_URL, so an anonymous host is still refused (`lanAnon`).
   LAN_UPLOADS = '1'
   LAN_SIGNALLING = '1'
+  # MULTI-CORE ROOMS (server/roomHost.ts, docs/scaling-multicore.md). `auto` runs rooms on one
+  # worker thread per vCPU beyond the first, which keeps the sockets: performance-1x (one vCPU)
+  # runs rooms in-process exactly as before, iad's performance-2x gets one worker, jnb's
+  # shared-cpu-4x three. `/api/perf` reports each worker. Rollback: '0' and redeploy.
+  SIM_WORKERS = 'auto'
 
 [http_service]
   internal_port = 8080

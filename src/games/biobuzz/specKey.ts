@@ -47,7 +47,7 @@ export function bbSpecKey(spec: RobotSpec): string {
   const launcher = bbLauncherOf(spec, 0);
   const lift = bbLiftOf(spec);
   const cosm = clampCosmetics(spec);
-  return [
+  const key = [
     spec.length,
     spec.width,
     bbDeployedHeightIn(spec),
@@ -65,4 +65,32 @@ export function bbSpecKey(spec: RobotSpec): string {
     launcher.mount2 ?? '',
     lift?.mount ?? '',
   ].join('|');
+  return spec.imported ? `${key}|${importedDigest(spec)}` : key;
+}
+
+/**
+ * ⚠️ AN IMPORTED ROBOT'S DESCRIPTOR IS ITS GEOMETRY (`docs/robot-import-plan.md` §3.1): two imports
+ * with one bounding box — the only shape `length`/`width` above can tell apart — can differ in
+ * hull, wheels, bands and every mechanism placement, and re-opening one in the editor keeps its
+ * `id` while moving all of those. So the whole descriptor is in the key, as its id plus a digest
+ * (FNV-1a of its JSON), computed once per descriptor object, appended only for an import, so a
+ * standard robot's key is byte-identical to what it was. Whether the MESH has loaded is
+ * NOT in it — that is per device (`renderImported.ts`'s `importedMeshKey`, beside the wheel tier).
+ */
+const digests = new WeakMap<object, string>();
+function importedDigest(spec: RobotSpec): string {
+  const imp = spec.imported;
+  if (!imp) return '';
+  let d = digests.get(imp);
+  if (d === undefined) {
+    const s = JSON.stringify(imp);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    d = `imp:${imp.id}:${(h >>> 0).toString(16)}`;
+    digests.set(imp, d);
+  }
+  return d;
 }

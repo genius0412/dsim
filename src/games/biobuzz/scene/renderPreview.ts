@@ -8,8 +8,10 @@ import {
   frameIntervalMs,
   getGraphics,
   shadowBlurRadius,
+  shadowBlurSamples,
   shadowMapSize,
   subscribeGraphics,
+  wantsSurfaces,
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
@@ -26,6 +28,7 @@ import {
 } from './renderCore';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { bbWheelDetail, buildRobotGroup, disposeRobotGroup, type BbWheelDetail } from './renderRobots';
+import { importedMeshKey, onImportedMeshChange } from './renderImported';
 
 /**
  * THE ROBOT-BUILDER TURNTABLE (`docs/roadmap.md` item 1) — a small 3D scene that shows ONE robot,
@@ -134,6 +137,11 @@ function getTileTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+/** THE PHYSICAL-MATERIALS CHUNK, typed without an import statement — the match scene's own
+ * `SurfacesModule` note says why (`renderScene.ts`). */
+type SurfacesModule = typeof import('./renderSurfaces');
+type BbSurfaces = ReturnType<SurfacesModule['createSurfaces']>;
+
 /** one `MediaQueryList`, constructed once — `matchMedia()` per frame is a cost this is read on
  * every frame to avoid. Null in a non-DOM host, which reads as "motion is fine". */
 const reducedMotionMq: MediaQueryList | null =
@@ -172,8 +180,13 @@ export interface RobotPreviewScene {
    * task as the `render()` that filled it, which is the trick `Gallery.tsx`'s 3D stills already
    * use. Asking for the attribute instead would slow every frame of a live preview down to make
    * a call that happens three times a session cheaper.
+   *
+   * With a `spec`, it shoots THAT build and puts the one on show back, all inside this one task,
+   * so a live turntable never presents a frame of the card's robot. That is how the saved-robot
+   * thumbnails draw through the builder's own scene instead of opening a second WebGL context.
+   * The pose is always the display-stand angle, whatever the turntable was spun or dragged to.
    */
-  capture(size: number): string;
+  capture(size: number, spec?: RobotSpec, alliance?: Alliance): string;
   /** resolves once the first build's shaders are compiled — see `warmUp`. A thumbnail batch
    * awaits it before its first `capture`, which is synchronous and would otherwise block on the
    * compile itself. */
@@ -280,7 +293,19 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     renderer.shadowMap.enabled = on;
     sun.castShadow = on;
     if (on) {
-      const size = shadowMapSize(s.shadows);
+      /**
+       * CAPPED AT 2048, and Extreme's `max` drawn as `soft`. `max` is a 4096 map because the
+       * match's shadow camera spans the whole field plus a margin (184 in); this one is fitted to ONE robot, so
+       * 2048 already puts several texels on every rail edge, and a 4096 VSM map (two of them,
+       * counting the blur's own target) behind a 300-px card would be memory spent on nothing. The blur follows the map, so it takes `soft`'s
+       * radius and sample count too: `max`'s wider radius is in texels of a map twice as fine.
+       *
+       * AO and bloom are MATCH-ONLY on purpose. This scene has its own renderer and no post
+       * chain, and loading `renderPost.ts` from here would make it a second importer of that
+       * chunk (see the header of `renderPost.ts`), so the builder draws Extreme without them.
+       */
+      const q = s.shadows === 'max' ? 'soft' : s.shadows;
+      const size = Math.min(2048, shadowMapSize(q));
       if (sun.shadow.mapSize.x !== size) {
         sun.shadow.mapSize.set(size, size);
         // A SHADOW MAP IS ALLOCATED ONCE, AT ITS FIRST SIZE — changing `mapSize` on a light whose
@@ -289,20 +314,88 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
         sun.shadow.map?.dispose();
         sun.shadow.map = null;
       }
-      sun.shadow.radius = shadowBlurRadius(s.shadows);
+      sun.shadow.radius = shadowBlurRadius(q);
+      sun.shadow.blurSamples = shadowBlurSamples(q);
     }
     renderer.shadowMap.needsUpdate = true;
     hemi.intensity = s.envLighting ? SCENE_HEMI_INTENSITY : SCENE_HEMI_INTENSITY_NO_IBL;
-    if (s.envLighting) {
-      void env.apply(s.environment);
-    } else {
-      // and no HDRI is fetched at all — an environment map that is not lighting anything is a
-      // 1.7 MB download for nothing at all here, since this scene shows no background
-      void env.apply('room');
-      scene.environment = null;
-    }
+    // the match scene's own call. With the lighting off no HDRI is fetched (a 1.7 MB download for
+    // nothing, since this scene shows no background) and no PMREM is built at all.
+    void env.apply(s.environment, undefined, s.envLighting);
+    syncSurfaces();
     tuneMaterials();
     syncSize();
+  }
+
+  /**
+   * PHYSICAL MATERIALS, ON THE ROBOT ONLY — the same twins the match swaps in (`renderSurfaces.ts`
+   * keeps ONE cache of robot twins for the document), so the builder shows the finish the robot
+   * will have on the field. Same predicate as the match: the `materials` row AND image-based
+   * lighting, because a metal with no environment to reflect renders near black.
+   *
+   * ⚠️ NO ROOM PROBE (`{ probe: false }`): there is no venue here to capture, so the robot reflects
+   * the dome. That is the ONE material-side difference between this card and the match, beside the
+   * three this file already documents (no post chain, the shadow map capped at 2048, the default
+   * light rig). A material PARAMETER that differed at the same settings would be a preview that
+   * lies, which is what ONE GENERATOR exists to prevent.
+   */
+  let surfaces: BbSurfaces | null = null;
+  let surfacesLoad: Promise<void> | null = null;
+  let surfacesFailed = false;
+  const surfacesOn = (s: GraphicsSettings): boolean => wantsSurfaces(s) && s.envLighting;
+  /** a throw from the surfaces code drops the mode for this card's life, never out of a frame */
+  function dropSurfaces(err: unknown): void {
+    surfacesFailed = true;
+    const sf = surfaces;
+    surfaces = null;
+    try {
+      if (sf && group) sf.revertRobots(group);
+      sf?.dispose();
+    } catch {
+      /* already failing */
+    }
+    console.warn('[renderPreview] physical materials unavailable', err);
+  }
+  function syncSurfaces(): void {
+    if (!surfacesOn(settings)) {
+      if (surfaces) {
+        const sf = surfaces;
+        surfaces = null;
+        try {
+          if (group) sf.revertRobots(group);
+          sf.dispose();
+        } catch (err) {
+          dropSurfaces(err);
+        }
+      }
+      return;
+    }
+    if (surfaces) {
+      surfaces.setReflections(settings.reflections);
+      surfaces.setAnisotropy(Math.min(settings.anisotropy, renderer.capabilities.getMaxAnisotropy()));
+      return;
+    }
+    if (surfacesLoad || surfacesFailed) return;
+    surfacesLoad = import('./renderSurfaces')
+      .then((m) => {
+        surfacesLoad = null;
+        if (disposed || surfaces || surfacesFailed || !surfacesOn(settings)) return;
+        try {
+          const sf = m.createSurfaces({ probe: false });
+          surfaces = sf;
+          sf.setReflections(settings.reflections);
+          sf.setAnisotropy(Math.min(settings.anisotropy, renderer.capabilities.getMaxAnisotropy()));
+          if (group) sf.applyRobots(group);
+        } catch (err) {
+          dropSurfaces(err);
+          return;
+        }
+        tuneMaterials();
+      })
+      .catch((err: unknown) => {
+        surfacesLoad = null;
+        if (!disposed) dropSurfaces(err);
+      });
   }
 
   /** ANISOTROPY and REFLECTIONS, the two settings that live on the MATERIALS — same rule as the
@@ -411,17 +504,20 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   function buildHeightEnvelope(spec: RobotSpec): THREE.LineSegments {
     const hl = spec.length / 2;
     const hw = spec.width / 2;
-    const h = bbDeployedHeightIn(spec);
-    const corners: [number, number][] = [
-      [hl, hw],
-      [hl, -hw],
-      [-hl, -hw],
-      [-hl, hw],
-    ];
+    // an IMPORT's envelope is its hull, up to its measured top
+    const h = spec.imported ? spec.imported.heightIn : bbDeployedHeightIn(spec);
+    const corners: [number, number][] = spec.imported
+      ? spec.imported.hull.map((p): [number, number] => [p.x, p.y])
+      : [
+          [hl, hw],
+          [hl, -hw],
+          [-hl, -hw],
+          [-hl, hw],
+        ];
     const pts: number[] = [];
     corners.forEach(([x, y], i) => {
       pts.push(x, y, 0, x, y, h); // the upright
-      const [nx, ny] = corners[(i + 1) % 4];
+      const [nx, ny] = corners[(i + 1) % corners.length];
       pts.push(x, y, h, nx, ny, h); // the top rail
     });
     const geo = new THREE.BufferGeometry();
@@ -441,6 +537,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
    *  caller handing the spec back — the wheel tessellation is baked at build time (see
    *  `bbWheelDetail`) and is the one setting this preview cannot apply in place. */
   let builtSpec: RobotSpec | null = null;
+  /** the spec last handed to `setSpec` — what `capture(size, spec)` puts back. Not `builtSpec`:
+   *  `fit` reads the dimensions of every call, including the ones that rebuild nothing. */
+  let shownSpec: RobotSpec | null = null;
 
   /**
    * THE FIRST BUILD'S SHADERS COMPILE OFF THE MAIN THREAD. A first `render()` compiles every
@@ -482,6 +581,14 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     group.add(buildHeightEnvelope(spec));
     scene.add(group);
     measure(group);
+    // the new group's meshes onto their physical twins (cached — a slider drag builds none)
+    if (surfaces) {
+      try {
+        surfaces.applyRobots(group);
+      } catch (err) {
+        dropSurfaces(err);
+      }
+    }
     tuneMaterials();
     void warmUp();
   }
@@ -507,7 +614,21 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     // otherwise win.
     if (scene.background !== null) scene.background = null;
     poseCamera(dt);
-    renderer.render(scene, camera);
+    // the twins' shared uniforms for THIS pass only (the reflections scale; no probe here), put
+    // back after it — the match on another GL context reads the same objects
+    const sf = surfaces;
+    if (sf) {
+      try {
+        sf.raise(scene);
+      } catch (err) {
+        dropSurfaces(err);
+      }
+    }
+    try {
+      renderer.render(scene, camera);
+    } finally {
+      sf?.lower();
+    }
   }
 
   function loop(): void {
@@ -577,6 +698,18 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     );
   }
 
+  // AN IMPORT'S MESH LANDS BETWEEN TWO REACT RENDERS: `setSpec` is only called when React hands a
+  // spec, so the scene re-keys itself when the parse settles and swaps the placeholder for it
+  teardown.push(
+    onImportedMeshChange(() => {
+      if (disposed || !builtSpec?.imported) return;
+      const k = `${bbSpecKey(builtSpec)}|${alliance}|${importedMeshKey(builtSpec)}`;
+      if (k === key) return;
+      key = k;
+      rebuild(builtSpec);
+    }),
+  );
+
   applyQuality();
   if (opts.animate !== false) {
     if (typeof IntersectionObserver === 'function') {
@@ -606,7 +739,10 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     element: canvas,
     setSpec(next: RobotSpec, nextAlliance: Alliance): void {
       if (disposed) return;
-      const nextKey = `${bbSpecKey(next)}|${nextAlliance}`;
+      shownSpec = next;
+      // an IMPORT adds its mesh state, so the placeholder swaps for the mesh when it lands — the
+      // match's `sync` keys the same way
+      const nextKey = `${bbSpecKey(next)}|${nextAlliance}|${importedMeshKey(next)}`;
       // the FIT is arithmetic over three numbers and depends only on the dimensions, so it is
       // re-run unconditionally; the GROUP is the expensive half and only a key change earns one
       fit(next);
@@ -643,14 +779,21 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       hostDpr = Math.min(dpr, 2);
       syncSize();
     },
-    capture(size: number): string {
+    capture(size: number, spec?: RobotSpec, shotAlliance?: Alliance): string {
       if (disposed) return '';
+      const shown = shownSpec;
+      const shownAlliance = alliance;
+      if (spec) api.setSpec(spec, shotAlliance ?? alliance);
       const prevW = cssW;
       const prevH = cssH;
       const prevDpr = hostDpr;
+      const prevPose = [yaw, elev, zoom] as const;
       cssW = Math.max(1, Math.round(size));
       cssH = cssW;
       hostDpr = 1;
+      yaw = TURN_YAW_START;
+      elev = TURN_ELEV_DEFAULT;
+      zoom = 1;
       syncSize();
       draw(0);
       shot ??= document.createElement('canvas');
@@ -666,7 +809,12 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       cssW = prevW;
       cssH = prevH;
       hostDpr = prevDpr;
+      [yaw, elev, zoom] = prevPose;
       syncSize();
+      if (spec && shown) api.setSpec(shown, shownAlliance);
+      // the resize cleared the drawing buffer; a live turntable redraws now or it presents an
+      // empty frame before its next rAF
+      if (opts.animate !== false) draw(0);
       return url;
     },
     ready(): Promise<void> {
@@ -680,6 +828,16 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       for (const off of teardown) off();
       teardown.length = 0;
       env.dispose();
+      if (surfaces) {
+        const sf = surfaces;
+        surfaces = null;
+        try {
+          if (group) sf.revertRobots(group);
+          sf.dispose();
+        } catch {
+          /* teardown carries on */
+        }
+      }
       if (group) {
         scene.remove(group);
         disposeRobotGroup(group);

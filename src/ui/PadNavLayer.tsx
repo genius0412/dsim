@@ -324,8 +324,15 @@ export function PadNavLayer(): JSX.Element | null {
     };
 
     const sectionStep = (delta: number): void => {
+      // A SCREEN THAT NAMES ITS OWN SECTIONS (`[data-padnav-sections]`, the robot importer's step
+      // rail) gets LB/RB over those alone. Without it the list below starts from the first lit
+      // item in the document — the nav rail's — so RB from a control in the page body left the
+      // screen for the next destination instead of going to the next step.
+      const scoped = Array.from(document.querySelectorAll<HTMLElement>('[data-padnav-sections]')).find(visible);
       const sel = '.ds-rail-btn, .ds-subnav-btn, .ds-seg, .ds-tab';
-      const list = Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(visible);
+      const list = scoped
+        ? Array.from(scoped.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]')).filter(visible)
+        : Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(visible);
       if (list.length < 2) return;
       const active = document.activeElement as HTMLElement | null;
       let at = list.findIndex((e) => e === active);

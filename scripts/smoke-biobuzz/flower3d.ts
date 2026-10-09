@@ -9,7 +9,8 @@ import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/f
 import { bbFootprint, bbMouths, bbPlacePointLocal, bbRampSettled, mouthAxes } from '../../src/games/biobuzz/robot';
 import { retrieveFromFlower, bbFlowerAtIntakeMouth } from '../../src/games/biobuzz/play';
 import { BB_INTAKE_KINDS, type BbIntakeKind } from '../../src/games/biobuzz/mechs';
-import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
+import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT, SIM_PATCH } from '../../src/config';
+import { ReplayPlayer, ReplayRecorder } from '../../src/sim/replay';
 import {
   BB3_FLOWER_NECTAR_SORT_D,
   BB3_FLOWER_CAGE_SEGMENTS,
@@ -182,6 +183,75 @@ export function flower3dChecks(check: Check): void {
       `flowerTubeOf agrees the ${kind} is in tube ${F}`,
       flowerTubeOf(el.pos.x, el.pos.y, centre) === F,
       `got ${flowerTubeOf(el.pos.x, el.pos.y, centre)}`,
+    );
+  }
+
+  // ---- an element on the FLOOR in the retrieval opening is NOT in the flower -----------------
+  //
+  // §10.5.2: scoring elements enter through the TOP. A NECTAR pushed into the opening across the
+  // tiles used to be adopted as the stack's bottom element, paid the Bottom NECTAR Bonus, and
+  // billed G410 while entry was locked. Run in a MATCH with the lock on so G410 is live.
+  for (const kind of ['pollen', 'nectar'] as const) {
+    const w = mkWorld3d('match', kind === 'pollen' ? 902 : 903);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    w.balls.length = 0;
+    const f = BB_FLOWERS[F];
+    const r = kind === 'pollen' ? BB_POLLEN_R : BB_NECTAR_R;
+    const el = {
+      id: 1,
+      color: kind === 'pollen' ? 'yellow' : 'red',
+      state: { kind: 'ground' },
+      pos: { x: f.x, y: f.y },
+      vel: { x: 0, y: 0 },
+      // a POLLEN fits the lower bore and stands on the tiles; a NECTAR rests on the lower plate's rim
+      z: kind === 'pollen' ? 0 : BB_FLOWER_LOW_Z,
+      vz: 0,
+      r,
+    } as Artifact;
+    w.balls.push(el);
+    const centreIn = flowerTubeOf(el.pos.x, el.pos.y, el.z + r) === F;
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    const fs = flowerScore(w.biobuzz!.flowers[F].stack, kindOfIn(w));
+    check(
+      `a ${kind} pushed into the retrieval opening along the floor is NOT in the FLOWER (§10.5.2, top only)`,
+      centreIn && w.biobuzz!.flowers[F].stack.length === 0 && el.state.kind !== 'element' && fs.bonusAlliance === null && fs.owner === null,
+      `centre in bore ${centreIn}; stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}, state ${el.state.kind}, ` +
+        `bonus ${fs.bonusAlliance}, owner ${fs.owner}, at (${(el.pos.x - f.x).toFixed(2)}, ${(el.pos.y - f.y).toFixed(2)}, z ${el.z.toFixed(2)})`,
+    );
+    const g410 = w.events.filter((e) => e.includes('G410'));
+    check(
+      `...and a ${kind} on the floor in the opening bills no G410 while entry is locked`,
+      g410.length === 0,
+      JSON.stringify(g410),
+    );
+  }
+
+  // ---- ...but a REPLAY recorded before SIM_PATCH 1 keeps the old rule ------------------------
+  //
+  // Otherwise every earlier 3D replay re-simulates into a different match (measured: the top
+  // eight records replayed at 55–186 against a real 674–726).
+  {
+    const w = mkWorld3d('free', 904);
+    w.balls.length = 0;
+    w.simPatch = 0; // what `ReplayPlayer` writes for an unstamped replay
+    const f = BB_FLOWERS[F];
+    w.balls.push({
+      id: 1, color: 'red', state: { kind: 'ground' }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 },
+      z: BB_FLOWER_LOW_Z, vz: 0, r: BB_NECTAR_R,
+    } as Artifact);
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    check(
+      'patch 0 (a replay recorded before SIM_PATCH 1): a floor NECTAR in the opening is adopted, as it was',
+      JSON.stringify(w.biobuzz!.flowers[F].stack) === '[1]',
+      `stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
+    );
+    const rep = new ReplayRecorder(1, [], 'match', 'biobuzz', '3d').finish();
+    check('patch: the recorder stamps the current SIM_PATCH', rep.patch === SIM_PATCH, String(rep.patch));
+    const { patch: _drop, ...bare } = rep;
+    check(
+      'patch: the player runs an UNSTAMPED replay as patch 0, and a stamped one as its own',
+      new ReplayPlayer(bare).world.simPatch === 0 && new ReplayPlayer(rep).world.simPatch === SIM_PATCH,
     );
   }
 
@@ -400,10 +470,14 @@ export function flower3dChecks(check: Check): void {
      * column is 180/180 at 1.65 and 179/180 at 1.60. 1.65 is therefore the largest cut the owner
      * asked for that costs neither population anything measurable; 1.40, which the held-intake
      * sweep alone would have allowed, takes park-then-intake to ZERO.
+     *
+     * ⚠️ **2.0 SINCE `SIM_PATCH` 7 (2026-10-04).** The middle and top plates are solids over their
+     * measured outline now, not a box whose corners stood up to 0.7 in proud of the real plate, so
+     * the chassis carries 1.844 in past the flush pose (1.677 against the box).
      */
     check(
-      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.8in)",
-      Math.abs(drivenX - wantX) < 1.8,
+      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 2.0in)",
+      Math.abs(drivenX - wantX) < 2.0,
       `driven to x=${drivenX.toFixed(3)}, want ${wantX.toFixed(3)} (delta ${(drivenX - wantX).toFixed(3)})`,
     );
     // ⚠️ STILL NO ANALYTIC RE-SEAT (owner, 2026-09-20: a previous pass here teleported the robot

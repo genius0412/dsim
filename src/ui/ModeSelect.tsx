@@ -5,6 +5,7 @@ import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
 import type { GameId } from '../games/types';
+import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -24,13 +25,15 @@ export function ModeSelect({
   onRanked,
   onCustomRoom,
   onWatch,
+  onCompetitions,
   compete = true,
   onTutorial,
   game,
+  importedActive = false,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
-  /** show the "Compete · online" tileset (ranked + records). Off inside a Discord
+  /** show the "Ranked · online" tileset (ranked + records). Off inside a Discord
    * Activity, which has no account (auth is CSP-blocked in the embed) and is meant
    * as a drop-in casual lobby — so ranked/records would only show as dead tiles. */
   compete?: boolean;
@@ -44,6 +47,8 @@ export function ModeSelect({
   onRanked: () => void;
   onCustomRoom: () => void;
   onWatch: () => void;
+  /** the competitions list (0059). Absent: no tile (an older caller). */
+  onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
   /**
@@ -59,6 +64,9 @@ export function ModeSelect({
   /** the season the offer is for: the seen flag is kept PER GAME (design review 12-12).
    *  Absent ⇒ the legacy reading, "has this device been through any tutorial". */
   game?: GameId;
+  /** the active robot is an IMPORT, which ranked and record runs refuse: their tiles say they play
+   *  the last standard robot instead (the server enforces it; this is the player being told first) */
+  importedActive?: boolean;
 }) {
   const lanOn = useLanEnabled();
   /**
@@ -162,56 +170,30 @@ export function ModeSelect({
         </div>
       </section>
 
-      {/* Online — ranked + score-attack records (need the game server / sign-in) */}
-      {compete && (
       <section className="ds-tileset">
-        <p className="ds-tileset-label">Compete · online</p>
+        <p className="ds-tileset-label">Rooms · online</p>
         <div className="ds-tiles">
-          <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
-            <span>
-              <span className="t">
-                Find match
-                <QueueCounts className="tile" />
-              </span>
-              {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
-                  this line ALWAYS, with a non-breaking space when there was nothing to
-                  say, to stop the tile growing when `signedIn` resolves asynchronously.
-                  That trade is backwards: `.ds-tiles` is a grid, so the reserved line
-                  made Find Match, Solo Record AND Duo Record permanently a line taller
-                  for everyone, to spare signed-in users one shrink at first paint —
-                  and most visitors are signed out, where the line is there from the
-                  start and never moves at all. If the shift is worth fixing, thread an
-                  `authReady` flag down from AccountSync; do not reserve the line. */}
-              {multiplayer && !signedIn && (
-                <span className="d">
-                  Sign in to play ranked
-                </span>
-              )}
-            </span>
-          </button>
-
+          {compete && (
+            <>
           <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
             <span>
-              <span className="t">Solo record run</span>
+              <span className="t">Solo record</span>
+              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
             </span>
           </button>
 
           <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
             <span>
-              <span className="t">Duo record run</span>
+              <span className="t">Duo record</span>
+              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
             </span>
           </button>
-        </div>
-      </section>
-      )}
 
-      {/* Custom room */}
-      <section className="ds-tileset">
-        <p className="ds-tileset-label">Custom · online</p>
-        <div className="ds-tiles">
+            </>
+          )}
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
             <span>
-              <span className="t">Custom room</span>
+              <span className="t">Room</span>
             </span>
           </button>
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
@@ -240,6 +222,47 @@ export function ModeSelect({
           </button>
         </div>
       </section>
+
+      {/* Ranked: the matchmaker and competitions (need the game server and an account) */}
+      {compete && (
+      <section className="ds-tileset">
+        <p className="ds-tileset-label">Ranked · online</p>
+        <div className="ds-tiles">
+          <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
+            <span>
+              <span className="t">
+                Find match
+                <QueueCounts className="tile" />
+              </span>
+              {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
+                  this line ALWAYS, with a non-breaking space when there was nothing to
+                  say, to stop the tile growing when `signedIn` resolves asynchronously.
+                  That trade is backwards: `.ds-tiles` is a grid, so the reserved line
+                  made Find Match, Solo Record AND Duo Record permanently a line taller
+                  for everyone, to spare signed-in users one shrink at first paint —
+                  and most visitors are signed out, where the line is there from the
+                  start and never moves at all. If the shift is worth fixing, thread an
+                  `authReady` flag down from AccountSync; do not reserve the line. */}
+              {multiplayer && !signedIn ? (
+                <span className="d">
+                  Sign in to play ranked
+                </span>
+              ) : importedActive ? (
+                <span className="d">{IMPORT_COPY.standardOnly}</span>
+              ) : null}
+            </span>
+          </button>
+
+          {onCompetitions && (
+            <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
+              <span>
+                <span className="t">Competitions</span>
+              </span>
+            </button>
+          )}
+        </div>
+      </section>
+      )}
 
       {/* LAN — LAST on the page (owner, 2026-09-13). Never disabled on `multiplayer`: not
           needing our servers is the point of it.

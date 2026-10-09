@@ -21,6 +21,7 @@
 
 import {
   GFX_TIERS,
+  GFX_AUTO_MAX_TIER,
   GFX_PRESET_LABEL,
   getGraphics,
   setGraphicsTier,
@@ -177,10 +178,26 @@ export function firstGuess(p: GpuProbe, adapter = ''): GraphicsTier {
   return p.cores >= 8 && p.memoryGb >= 8 ? 'high' : 'medium';
 }
 
-/** one step along `GFX_TIERS`, clamped at both ends. */
-export function stepTier(tier: GraphicsTier, dir: 1 | -1): GraphicsTier {
+/**
+ * One step along `GFX_TIERS`, clamped at both ends. A step UP also stops at `max`, which is how
+ * the warm-up is kept below Extreme (`GFX_AUTO_MAX_TIER`). An up-step from a tier already past
+ * `max` stays where it is rather than walking DOWN to it: the ceiling says how far Auto may climb,
+ * not where a hand pick has to be.
+ *
+ * ⚠️ It walks the whole `GFX_TIERS` and clamps by index. Stepping through a FILTERED list instead
+ * would put Extreme at index -1, and a slip from it would clamp to index 0: Low.
+ */
+export function stepTier(
+  tier: GraphicsTier,
+  dir: 1 | -1,
+  max: GraphicsTier = GFX_TIERS[GFX_TIERS.length - 1],
+): GraphicsTier {
   const i = GFX_TIERS.indexOf(tier);
-  return GFX_TIERS[Math.min(GFX_TIERS.length - 1, Math.max(0, i + dir))];
+  if (dir > 0) {
+    const top = GFX_TIERS.indexOf(max);
+    return i >= top ? tier : GFX_TIERS[i + 1];
+  }
+  return GFX_TIERS[Math.max(0, i - 1)];
 }
 
 /**
@@ -273,7 +290,17 @@ export interface QualityGovernor {
  * p95 is only READ when a decision is due (once at the end of the warm-up, then at most once a
  * second for the slip check and the overlay), so the O(n log n) is amortised to nothing.
  */
-export function createQualityGovernor(now: () => number, onEvent?: QualityEvent): QualityGovernor {
+export function createQualityGovernor(
+  now: () => number,
+  onEvent?: QualityEvent,
+  /**
+   * `false` for a scene drawn at a FIXED tier (the replay export and the gallery, both at High):
+   * it still measures, for the read-out, but it never writes the device's preset. It used to, and
+   * a warm-up measured at High on an Auto device would step the stored tier from what the export
+   * happened to draw rather than from anything the player's own view had done.
+   */
+  decide = true,
+): QualityGovernor {
   const CAP = 256;
   const buf = new Float32Array(CAP);
   let n = 0;
@@ -336,6 +363,7 @@ export function createQualityGovernor(now: () => number, onEvent?: QualityEvent)
         if (n < 20) return;
         const v = p95(windowSamples());
         lastP95 = v;
+        if (!decide) return;
         const cur = getGraphics();
         if (cur.preset !== 'auto') return; // detection does not move a hand-picked preset
         if (v > WARMUP_DOWN_MS) {
@@ -345,7 +373,8 @@ export function createQualityGovernor(now: () => number, onEvent?: QualityEvent)
             onEvent?.(`Graphics: ${GFX_PRESET_LABEL[next]} (auto, ${v.toFixed(1)} ms p95)`);
           }
         } else if (v < WARMUP_UP_MS) {
-          const next = stepTier(cur.tier, 1);
+          // never into Extreme: see `GFX_AUTO_MAX_TIER` for why a fast Ultra frame is no evidence
+          const next = stepTier(cur.tier, 1, GFX_AUTO_MAX_TIER);
           if (next !== cur.tier) {
             setGraphicsTier(next, true);
             onEvent?.(`Graphics: ${GFX_PRESET_LABEL[next]} (auto, ${v.toFixed(1)} ms p95)`);
@@ -358,7 +387,7 @@ export function createQualityGovernor(now: () => number, onEvent?: QualityEvent)
       if (t - lastCheck < 250) return;
       lastCheck = t;
       lastP95 = p95(windowSamples());
-      if (slipped) return;
+      if (slipped || !decide) return;
       if (lastP95 >= SLIP_MS) {
         if (slipSince === 0) slipSince = t;
         else if (t - slipSince >= SLIP_WINDOW_MS) {

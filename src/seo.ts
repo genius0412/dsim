@@ -69,6 +69,11 @@ const ROUTE_META: Record<string, RouteMeta> = {
     description:
       'Set drivetrain, mass, motor RPM, flywheel inertia, intake and starting position, and rebind your controls.',
   },
+  robotimport: {
+    title: 'Import a robot',
+    description:
+      'Import your robot from CAD (STEP, GLB, STL, OBJ, 3MF or PLY) and drive it with its real footprint, gearing and weight.',
+  },
   records: {
     title: 'Leaderboards & records',
     description:
@@ -94,6 +99,11 @@ const ROUTE_META: Record<string, RouteMeta> = {
   profile: {
     title: 'Player profile',
     description: 'A DSIM player’s rating, records and recent matches.',
+  },
+  competitions: {
+    title: 'Competitions',
+    description:
+      'DSIM competitions: register, play qualification matches, climb the rankings and fight through the playoff bracket.',
   },
 };
 

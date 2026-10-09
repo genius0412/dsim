@@ -80,6 +80,8 @@ import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { COSMETIC_AXES, clampCosmetics, type Cosmetics } from '../cosmetics';
 import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
+import { coerceImported, polyBounds } from './imported';
+import { coerceFlywheel, flySeed } from './flywheel';
 import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
@@ -167,8 +169,12 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   // resolve INTAKE + DRIVETRAIN first (width's floor depends on the drivetrain —
   // swerve needs a wider base). Legacy preset names from older saves migrate.
   if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
+  else if (sp.intake === 'none') out.intake = 'none';
   else if (sp.intake === 'compact') out.intake = 'sloped';
   else if (sp.intake === 'extended') out.intake = 'vector';
+  // NO INTAKE is DECODE's (hand loading in its LOADING ZONE); the other games have no human
+  // player who loads a robot, so they get the sloped preset, from `sp` or from `base`
+  if (out.intake === 'none' && (game === 'chain' || game === 'biobuzz')) out.intake = 'sloped';
   if (
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
@@ -198,8 +204,28 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     game === 'chain'
       ? { min: crSize.minWidth, max: crSize.maxWidth }
       : widthLimits(out.intake, out.drivetrain);
-  out.length = clampFinite(sp.length, len.min, len.max, base.length);
-  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
+  /**
+   * AN IMPORTED ROBOT (`docs/robot-import-plan.md` §3.1), resolved HERE, with the size, because
+   * it decides the size: an import's `length`/`width` are its HULL's bounding box (x and y
+   * extent, intake INCLUDED — the hull is the whole robot seen from above), then clamped by this
+   * game's ordinary limits like any other length. They are the PARAMETRIC FALLBACK — what a
+   * reader that knows nothing about imports sees — and may therefore be smaller than the hull
+   * (DECODE's sloped intake caps `length` at 15, an 18-in hull stays 18 in); everything that
+   * collides, contacts or judges a start reads the hull itself. Resolving it any later would
+   * break IDEMPOTENCY: the storage ceiling below reads `length`, so a first pass would clamp
+   * storage against the raw length and a second against the hull's.
+   *
+   * FROM THE RAW INPUT ONLY, NEVER FROM `base`. A spec without `imported` is a standard robot —
+   * JSON drops an absent field, so a client switching back from an import sends exactly that —
+   * and falling back to `base` would keep the import on every `update` that meant to remove it.
+   * Carried for EVERY game; the BIOBUZZ arm below re-reads the size from the same hull.
+   */
+  const imported = coerceImported(sp.imported);
+  const hullBox = imported ? polyBounds(imported.hull) : null;
+  if (imported) out.imported = imported;
+  else delete out.imported;
+  out.length = clampFinite(hullBox ? hullBox.maxX - hullBox.minX : sp.length, len.min, len.max, base.length);
+  out.width = clampFinite(hullBox ? hullBox.maxY - hullBox.minY : sp.width, wid.min, wid.max, base.width);
 
   // 2) DRIVETRAIN → rpm range. BUTTERFLY has TWO geared wheel sets, so it has two
   // sliders: `driveRpm` is its mecanum set (the shared field) and `tankRpm` its traction
@@ -477,6 +503,34 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
 
   /**
+   * THE FIXED SHOOTER — DECODE's launcher aim, fixed hood and setpoint flywheel, and the setpoint
+   * flywheel BIOBUZZ's `fixed` launcher shares (`src/sim/flywheel.ts`).
+   *
+   * FROM THE RAW INPUT ONLY, NEVER FROM `base` — the `imported` rule above, for the same reason:
+   * absent means the turret with the adjustable hood and the solved speed every robot had before
+   * these existed, and a client switching back sends exactly that (JSON drops an absent field), so
+   * a fallback to `base` would keep a fixed launcher on the very update that removed it.
+   *
+   * Written only when PRESENT, so a spec without them is byte-for-byte what it was. Chain Reaction
+   * has none of the three. BIOBUZZ's hood lives on `bbMech.launcher.hoodDeg` and its arm below
+   * keeps the flywheel only on its `fixed` launcher. `game === undefined` is DECODE (`createWorld`
+   * passes it that way — see `coerceSetup`).
+   */
+  {
+    const fly = game === 'chain' ? undefined : coerceFlywheel(sp.flywheel);
+    if (fly) out.flywheel = fly;
+    else delete out.flywheel;
+    const decodeArm = game !== 'chain' && game !== 'biobuzz';
+    if (decodeArm && sp.launcher === 'fixed') out.launcher = 'fixed';
+    else delete out.launcher;
+    if (decodeArm && typeof sp.hoodDeg === 'number' && Number.isFinite(sp.hoodDeg)) {
+      out.hoodDeg = Math.round(clamp(sp.hoodDeg, C.DECODE_HOOD_MIN_DEG, C.DECODE_HOOD_MAX_DEG));
+    } else {
+      delete out.hoodDeg;
+    }
+  }
+
+  /**
    * THE BIOBUZZ ARM, LAST — this game's own clamps, over a spec every shared pass above has
    * already bounded.
    *
@@ -545,8 +599,10 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // ...and the SIZE, RAW, for the same reason. Step 1 sized it with DECODE's per-intake
     // `lengthLimits`, whose ceiling (18 − reach, 15 for sloped) is DECODE's in-cube roller rule;
     // a BIOBUZZ sweeper deploys, and `bbSizeLimits` is this game's whole envelope.
-    out.length = sp.length as RobotSpec['length'];
-    out.width = sp.width as RobotSpec['width'];
+    // (an IMPORTED robot's raw size is its hull's bounding box — see step 1 — and `imported`
+    // itself is already on `out`, which `coerceBiobuzzSpec` copies through)
+    out.length = (hullBox ? hullBox.maxX - hullBox.minX : sp.length) as RobotSpec['length'];
+    out.width = (hullBox ? hullBox.maxY - hullBox.minY : sp.width) as RobotSpec['width'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;
@@ -930,6 +986,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     // preloaded artifacts are PHYSICAL held balls (the hopper mirrors their colors);
     // step()'s positionHeldBalls parks them at the storage slots
     const created = robots[robots.length - 1];
+    // a SETPOINT flywheel starts at its first setpoint; writes nothing for any other build
+    flySeed(created);
     created.hopper.forEach((color, slot) => {
       const side = slot >= 1 ? (slot === 1 ? -1 : 1) : 0; // triangle front row: opposite sides
       const lp = heldSlotPos(created.spec, slot, side);

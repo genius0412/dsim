@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ADMIN_FAIL_WHY } from './adminCopy';
+import { saveBlob } from './saveBlob';
 
 /**
  * The small pieces every admin panel needs, written once.
@@ -250,12 +251,7 @@ export function downloadCsv(filename: string, headers: string[], rows: (string |
   const body = [headers.map(cell).join(','), ...rows.map((r) => r.map(cell).join(','))].join('\r\n');
   // BOM: Excel reads a CSV as the system codepage without one, and every non-ASCII display
   // name in the file comes out mojibake.
-  const url = URL.createObjectURL(new Blob(['﻿' + body], { type: 'text/csv;charset=utf-8' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+  saveBlob(new Blob(['﻿' + body], { type: 'text/csv;charset=utf-8' }), filename);
 }
 
 // ------------------------------------------------------------ list states ----

@@ -33,4 +33,5 @@ export const INTAKE_SHORT: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
   vector: 'Vector',
   triangle: 'Triangle',
+  none: 'Hand loaded',
 };

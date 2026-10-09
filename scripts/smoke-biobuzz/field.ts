@@ -1320,10 +1320,9 @@ export function fieldChecks(check: Check): void {
    *
    *  1. THE ALONG-WALL COORDINATE IS EXACTLY THE TILE SEAM one tile off the field centreline.
    *     A flower half a tile either way sits mid-tile, which is not where an FTC field puts
-   *     anything, and it moves every approach a robot can take to it. ⚠️ THE SEAM IS AT
-   *     `BB_TILE_SEAMS[2]` = ±23.907's neighbour, not at ±24: real soft tiles are
-   *     `BB_TILE_PITCH` 23.528 on centre (CAD, owner ruling 2026-09-18), so the CAD bore sits at
-   *     ±`FLOWER_ALONG` 23.392. Asserted against the generated constant, not a literal — the
+   *     anything, and it moves every approach a robot can take to it. ⚠️ THE JOINT IS AT
+   *     ±23.502 (`BB_TILE_SEAMS`), not at ±24: real soft tiles are 23.502 joint to joint (CAD,
+   *     owner ruling 2026-09-18), and the CAD bore sits at ±`FLOWER_ALONG` 23.392. Asserted against the generated constant, not a literal — the
    *     literal 24 was the whole field-size finding in one number.
    *  2. IT SITS ON THE WALL IT IS NAMED FOR, at the `BB_FLOWER_D` stand-off. `BB_FLOWERS`
    *     carries `wall` as a STRING and the coordinates separately, so the two can disagree in

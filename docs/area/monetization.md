@@ -98,9 +98,13 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     `import.meta.env` through a guard and reaches `net/env` by dynamic import.
   - **RETENTION**: raw rows 30 days, `analytics_hourly` 35 days, `analytics_daily` kept,
     `analytics_concurrency` 120 days, the salt 2 days. The rollup and the sweep run on a
-    five-minute interval under `pg_try_advisory_lock`, so exactly one Fly machine does the
-    work — and the interval is **started by the first beacon**, never at boot, because Neon
-    bills the wall-clock time the compute is awake and an unconditional timer costs the month.
+    five-minute interval, each pass ONE transaction under `pg_try_advisory_xact_lock`, so exactly
+    one Fly machine does the work — and the interval is **started by the first beacon**, never at
+    boot, because Neon bills the wall-clock time the compute is awake and an unconditional timer
+    costs the month. ⚠️ **Never a session lock here:** `DATABASE_URL` is Neon's transaction-mode
+    pooler, where the unlock can land on another backend and leak the lock, after which every
+    machine skips the job silently (2026-09-27; key `ANL2`, not the leaked-by-old-builds `ANLY`).
+    The daily half (day rollup + sweep) runs under a savepoint, so its failure keeps the hourly rows.
   - **GATES**: `VITE_ANALYTICS=1` **and** a configured cloud game server, plus
     `analyticsAllowed()` (the in-app switch). Browser `doNotTrack`/GPC do NOT gate it (owner,
     2026-09-25: count all traffic; no identifier, first-party only). A self-hosted, LAN or offline build sends

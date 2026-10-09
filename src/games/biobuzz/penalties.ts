@@ -1,7 +1,8 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import { dcos, dsin, hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
-import { driveIntent, robotCorners } from '../../sim/physics';
+import { driveIntent, robotCorners, robotHullWorld } from '../../sim/physics';
+import { polyGap, polySatGap } from '../../sim/imported';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
 import { type ControlGeometry, controlKeyLive, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
@@ -14,6 +15,7 @@ import {
   bbHopperCap,
 } from './config';
 import { bbKindOf } from './score';
+import { bbImportSolids } from './importMech';
 import { biobuzzPhysics } from './state';
 
 /**
@@ -952,6 +954,23 @@ export const BB_G402_REARM_S = 1; // APPROX, s
 
 export function bbIntrusion(r: RobotState): number {
   const want = r.alliance === 'red' ? 1 : -1; // the sign of x that is the OPPONENT's half
+  /**
+   * AN IMPORT'S FRAME IS ITS HULL BEHIND THE MOUTHS (`bbImportSolids().chassis`, the polygon the
+   * POLLEN solve meets), and its origin is the wheelbase centre, not the middle of that shape. So
+   * the depth is its deepest vertex along the line normal. The centred `length/2 × width/2` box
+   * below billed a hull wholly on its own half (a 6-in rear toward the line read 2.5 in across)
+   * and let a long side cross 3 in unseen.
+   */
+  if (r.spec.imported) {
+    const c = dcos(r.heading);
+    const s = dsin(r.heading);
+    let deepest = -Infinity;
+    for (const p of bbImportSolids(r.spec).chassis) {
+      const d = (r.pos.x + p.x * c - p.y * s) * want;
+      if (d > deepest) deepest = d;
+    }
+    return deepest > 0 ? deepest : 0;
+  }
   const reach =
     Math.abs((r.spec.length / 2) * dcos(r.heading)) + Math.abs((r.spec.width / 2) * dsin(r.heading));
   const deepest = r.pos.x * want + reach;
@@ -1001,6 +1020,9 @@ function bbShovedAcross(x: RobotState, y: RobotState, commands: Map<number, Robo
  * would be measuring the copy.
  */
 export function bbRobotsContact(A: RobotState, B: RobotState): boolean {
+  // a pair with an IMPORT in it: the shared hull SAT, every edge direction of both footprints
+  // (two edge normals per robot is a rectangle's assumption, and a pointed hull breaks it)
+  if (A.spec.imported || B.spec.imported) return polySatGap(robotHullWorld(A), robotHullWorld(B)).gap <= BB_FOUL_SLOP;
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [
@@ -1031,6 +1053,8 @@ export function bbRobotsContact(A: RobotState, B: RobotState): boolean {
  * the pin accumulator.
  */
 export function bbFootprintGap(A: RobotState, B: RobotState): number {
+  // an IMPORT: the exact distance between the two hulls, by the same vertex-to-edge argument
+  if (A.spec.imported || B.spec.imported) return polyGap(robotHullWorld(A), robotHullWorld(B));
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [edgeNormal(ca[0], ca[1]), edgeNormal(ca[1], ca[2]), edgeNormal(cb[0], cb[1]), edgeNormal(cb[1], cb[2])];
