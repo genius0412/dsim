@@ -174,7 +174,7 @@ const ROOM_BUDGET = 1.2;
  * that stood before. Re-measure and move them if CR's own cost moves again.
  */
 const CR_STEP_REANCHOR = 1.8;
-const CR_ROOM_REANCHOR = 1.07;
+const CR_ROOM_REANCHOR = 1.5;
 
 /**
  * How many PAIRED rounds a perf check runs. Five is the smallest odd count whose median still
