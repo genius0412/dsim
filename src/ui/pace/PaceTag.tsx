@@ -3,15 +3,16 @@ import type { HudSnapshot } from '../../game';
 import { paceAt, type PaceCurve } from './curve';
 
 /**
- * THE PACE READ-OUT: `+12 PB`, a small TAB on the top edge of your own alliance's score panel.
+ * THE PACE READ-OUT: `+12 PB`, a chip in the row over the score bar (`.breakdown-row`), first,
+ * beside NECTAR LOCKED / CLASSIFIED / PARTICLES.
  *
- * OUTSIDE THE PANEL, NOT IN IT (owner, 2026-10-08: it "broke the clean, symmetrical scoring look"):
- * under the total it stacked a fourth line into a BIOBUZZ panel, and beside the total it pushed
- * the total off centre. As a tab the two alliance panels are identical whether or not the match
- * is paced. GREEN ahead, RED behind, plain ink level — on the tab's own HUD fill, not the
- * alliance chip, which could not carry a third colour at AA. It is there from the first frame of
- * a paced match whether or not the curve has arrived, so nothing moves mid-match: `—` until
- * there is a number. A band (`data-hud-band`): the field fit keeps clear of it.
+ * NOT IN THE SCORE BAR (owner, 2026-10-08: it "broke the clean, symmetrical scoring look", then
+ * "make it another chip like how NECTAR LOCKED is, in that row, of the same style"). Inside a
+ * panel it made the two alliance panels differ; the row is where a driver's own read-outs
+ * already live. GREEN ahead, RED behind, plain ink level. It is there from the first frame of a
+ * paced match whether or not the curve has arrived (`—` until there is a number), so the row's
+ * HEIGHT, which is what the field fit measures, never changes mid-match; its width moves with
+ * the digits the way PENDING's already does.
  */
 
 export interface PaceState {
@@ -45,7 +46,7 @@ export function PaceTag({ hud }: { hud: HudSnapshot }) {
       : `${delta === 0 ? 'Level with' : `${Math.abs(delta)} ${delta > 0 ? 'ahead of' : 'behind'}`} ${pace.tag} at this point`;
   const tone = delta == null || delta === 0 ? 'level' : delta > 0 ? 'ahead' : 'behind';
   return (
-    <span className={`pace-tab ${tone}`} title={label} aria-label={label} data-hud-band>
+    <span className={`pace ${tone}`} title={label} aria-label={label}>
       {delta == null ? '—' : fmtPace(delta)} {pace.tag}
     </span>
   );

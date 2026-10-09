@@ -1128,7 +1128,6 @@ function Hud({
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`} role="group" aria-label="Red alliance score">
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
-            {hud.alliance === 'red' && <PaceTag hud={hud} />}
           </div>
           <div className={`timer-panel ${timer.cls}`}>
             {/* status on the PHASE only — the digits beside it retick every frame and
@@ -1142,7 +1141,6 @@ function Hud({
           <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`} role="group" aria-label="Blue alliance score">
             {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{blueScore}</span>
-            {hud.alliance === 'blue' && <PaceTag hud={hud} />}
           </div>
         </div>
       ) : (
@@ -1156,6 +1154,7 @@ function Hud({
 
       {hud.mode === 'match' && dec && (
         <div className="breakdown-row" data-hud-band>
+          <PaceTag hud={hud} />
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
               end of AUTO and the end of the match, never live. */}
@@ -1172,6 +1171,7 @@ function Hud({
 
       {hud.mode === 'match' && cr && hud.chain && (
         <div className="breakdown-row" data-hud-band>
+          <PaceTag hud={hud} />
           {/* EACH FACT ONCE (design review 05-14, 22-11). MULT and CATALYSTS were printed here
               AND drawn as the badge + pips in `ChainHudChips`, which every pointer now gets, so
               the card is their one home. ASCENDED / PARKED is the `.park-status` card on a fine

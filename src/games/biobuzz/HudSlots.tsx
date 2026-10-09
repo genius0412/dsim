@@ -422,9 +422,6 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.red)}
           </span>
-          {/* the pace is a TAB on the panel's top edge, outside its flow (`.pace-tab`), so the
-              two panels stay the same two lines either way */}
-          {hud.alliance === 'red' && <PaceTag hud={hud} />}
         </div>
         <div className={`timer-panel ${timer.cls}`}>
           {/* status on the PHASE only — the digits beside it retick every frame and would
@@ -440,7 +437,6 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.blue)}
           </span>
-          {hud.alliance === 'blue' && <PaceTag hud={hud} />}
         </div>
       </div>
       {/* AFTER the bar, as DECODE's and Chain Reaction's rows are (`GameView`): the two are
@@ -470,6 +466,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           the alliance panel — the panel is the score, and the whole point of this figure is
           that it is not in the score yet (§10.5 C/E/F/G). */}
       <div className="breakdown-row" data-hud-band>
+        {/* the pace chip leads: it is the driver's own read-out, like PENDING (`PaceTag`) */}
+        <PaceTag hud={hud} />
         {f?.nectarLocked && (
           <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
         )}
