@@ -510,7 +510,10 @@ interface PerfSample {
 
 async function perf(http: string, reset = false): Promise<PerfSample | null> {
   try {
-    const res = await fetch(`${http}/api/perf${reset ? '?reset=1' : ''}`);
+    // on Fly the reset needs the operator secret (see `/api/perf` in server/index.ts); without
+    // one this is a plain read and the window simply is not zeroed
+    const secret = process.env.ADMIN_SECRET ? `&secret=${encodeURIComponent(process.env.ADMIN_SECRET)}` : '';
+    const res = await fetch(`${http}/api/perf${reset ? `?reset=1${secret}` : ''}`);
     if (!res.ok) return null;
     return (await res.json()) as PerfSample;
   } catch {

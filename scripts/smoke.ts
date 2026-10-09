@@ -410,6 +410,18 @@ import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners 
 import type { SiteAccess, SiteBanner, SiteLockdown } from '../src/net/protocol';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
+import { takeProviderBudget, resetProviderBudgetForTests, MODERATION_BUDGET_PER_MIN } from '../server/moderation';
+import {
+  ACCESS_MS_MAX,
+  coerceAccessMs,
+  coerceHomeRegion,
+  coerceRoomKind,
+  hostedBy,
+  isQueueMode,
+  legalRoomCode,
+  remoteLiveConflict,
+} from '../server/admission';
+import { sweepGate } from '../server/sweepGate';
 import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
 import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
 import { bestHost } from '../server/regions';
@@ -646,6 +658,12 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode 2v2': ['1f80d772e026ba28', '974956cf37f76f09', '68c947be9e76ac19', '99fdba0d5c6495e0', '5222684bcff58964', 'fe6a16b8428fad99'],
     'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
     'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
+  },
+  5: {
+    'decode solo': ['fb2a65c5dabfb38a', '7b715493f956ebd2', 'c818f0f50624ae57', '8bb36d9c5151f5a8', 'aeac450d900d63fe', '2719f93071f60cb2'],
+    'decode 2v2': ['b22f51d0e7ef5db5', '396f5c5bc8b6f92b', '851f3b3466d66389', 'cbc02356dba29ba5', 'c07fadabb100d0b6', 'e2c4dd9317fe36c1'],
+    'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
+    'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', '223a5b21ffe4863f', '6c243b2e6ac9bf9e'],
   },
 };
 const goldenArmed = (w: World): World => {
@@ -30206,6 +30224,275 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+// ---- ADMISSION: room codes, room kinds, queue inputs, the cross-machine lock (server/admission.ts)
+{
+  // EVERY code the product mints must pass, or the gate refuses a real room. Each generator is
+  // called rather than a sample copied, so a format change fails here first.
+  const minted: [string, string][] = [
+    ['custom/duo/LAN code', generateRoomCode().toLowerCase()],
+    ['Discord activity code', roomCodeForInstance('1234567890abcdef').toLowerCase()],
+    ['record run', 'rec-' + Math.random().toString(36).slice(2, 9)],
+    ['staged ranked', `iad-1v1${12}${Math.floor(Math.random() * 0x7fffffff).toString(36).padStart(6, '0').slice(-6)}`],
+    ['staged 2v2', 'syd-2v27abc123'],
+    ['no-DB matchmaker fallback', 'mm-2v2-41'],
+    ['load harness region-prefixed', `lhr-${generateRoomCode().toLowerCase()}`],
+    ['the fallback code', 'play42'],
+  ];
+  for (const [what, code] of minted) check(`admission: a minted ${what} code passes (${code})`, legalRoomCode(code));
+  check('admission: an empty code is refused', !legalRoomCode(''));
+  check('admission: a 65-char code is refused', !legalRoomCode('a'.repeat(65)));
+  check('admission: a code with a newline is refused (log injection)', !legalRoomCode('abc\n[server] fake'));
+  check('admission: a non-string code is refused', !legalRoomCode(42) && !legalRoomCode(null));
+  check('admission: non-ASCII is refused', !legalRoomCode('äbc123'));
+
+  check('admission: record + duo stays duo', JSON.stringify(coerceRoomKind({ kind: 'record', record: 'duo' })) === '{"kind":"record","record":"duo"}');
+  check(
+    '⚠️ admission: a record room with NO record kind is SOLO (persist filed it on the solo board while soloRecord read false)',
+    JSON.stringify(coerceRoomKind({ kind: 'record' })) === '{"kind":"record","record":"solo"}',
+  );
+  check('admission: an unknown record kind is solo', coerceRoomKind({ kind: 'record', record: 'trio' }).record === 'solo');
+  check('admission: an unknown room kind is versus, with no record', JSON.stringify(coerceRoomKind({ kind: 'ranked', record: 'duo' })) === '{"kind":"versus"}');
+  check('admission: a non-object config is versus', coerceRoomKind('abc').kind === 'versus' && coerceRoomKind(null).kind === 'versus');
+
+  check('admission: the two queue modes are accepted', isQueueMode('1v1') && isQueueMode('2v2'));
+  check('admission: anything else is refused before enqueue', !isQueueMode('3v3') && !isQueueMode('__proto__') && !isQueueMode(undefined));
+
+  check('admission: a huge accessMs is capped (it pinned the host to the liar)', coerceAccessMs(1e6) === ACCESS_MS_MAX);
+  check('admission: a string / NaN / negative accessMs reads 0', coerceAccessMs('abc') === 0 && coerceAccessMs(NaN) === 0 && coerceAccessMs(-40) === 0);
+  check('admission: an honest accessMs passes through', coerceAccessMs(37) === 37);
+  check('admission: a region-shaped homeRegion is kept, anything else dropped', coerceHomeRegion('syd') === 'syd' && coerceHomeRegion('syd\r\nx') === '' && coerceHomeRegion(5) === '');
+
+  // the cross-machine single-game lock
+  const local = new Set(['abc123', 'rec-local']);
+  const isLocal = (c: string) => local.has(c);
+  check('cross-machine lock: no live entry, no conflict', !remoteLiveConflict(undefined, 'rec-x', isLocal, true));
+  check(
+    '⚠️ cross-machine lock: a live versus on ANOTHER machine refuses a new record run',
+    remoteLiveConflict({ room: 'k7m2p9', region: 'lhr' }, 'rec-x', isLocal, true),
+  );
+  check('cross-machine lock: ...and the ranked queue', remoteLiveConflict({ room: 'k7m2p9', region: 'lhr' }, '', isLocal, false));
+  check('cross-machine lock: the SAME room (a reconnect) is never a conflict', !remoteLiveConflict({ room: 'K7M2P9', region: 'lhr' }, 'k7m2p9', isLocal, true));
+  check('cross-machine lock: a room on THIS machine is left to the local lock', !remoteLiveConflict({ room: 'abc123', region: 'iad' }, 'rec-x', isLocal, true));
+  check(
+    'cross-machine lock: a remote SOLO record run yields to its owner at the join door (restart)',
+    !remoteLiveConflict({ room: 'rec-far', region: 'syd', soloRecord: true }, 'rec-x', isLocal, true),
+  );
+  check(
+    'cross-machine lock: ...but the queue still refuses it, like the local queue guard',
+    remoteLiveConflict({ room: 'rec-far', region: 'syd', soloRecord: true }, '', isLocal, false),
+  );
+
+  // per-network hosting count
+  const rs = [
+    { host: 'n1', counts: true },
+    { host: 'n1', counts: true },
+    { host: 'n1', counts: false },
+    { host: 'n2', counts: true },
+    { host: undefined, counts: true },
+  ];
+  check('host cap: counts only this network’s rooms that count', hostedBy(rs, 'n1', (r) => r.host, (r) => r.counts) === 2);
+  check('host cap: another network is independent', hostedBy(rs, 'n2', (r) => r.host, (r) => r.counts) === 1);
+
+}
+
+// ---- ROOM abuse guards: replaced sockets, lobby locks, idle lobbies, reports, roster fan-out
+{
+  const mkA = (id: string, box: ServerMsg[], userId?: string): Client => ({
+    id,
+    send: (m) => box.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    ...(userId ? { userId } : {}),
+  });
+  const rosterAlliance = (box: ServerMsg[], id: string) => {
+    const r = [...box].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    return r?.players.find((p) => p.clientId === id)?.alliance;
+  };
+
+  // A REPLACED SOCKET NO LONGER SPEAKS FOR THE SEAT
+  const oldBox: ServerMsg[] = [];
+  const newBox: ServerMsg[] = [];
+  const room = new Room('smoke-conn', () => {}, { kind: 'versus' });
+  const cl = mkA('c1', oldBox, 'u-c1');
+  room.add(cl);
+  const oldConn = cl.conn as number;
+  const newConn = room.reattach('c1', (m) => newBox.push(m), undefined, undefined, undefined, true) as number;
+  check('replaced socket: the reclaim issues a new generation', typeof newConn === 'number' && newConn !== oldConn);
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'red' } }, oldConn);
+  check('⚠️ replaced socket: a frame from the OLD socket is ignored', rosterAlliance(newBox, 'c1') !== 'red');
+  await new Promise((r) => setTimeout(r, 60)); // clear the roster throttle window
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'red' } }, newConn);
+  check('replaced socket: the NEW socket’s frame lands', rosterAlliance(newBox, 'c1') === 'red');
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'blue' } });
+  await new Promise((r) => setTimeout(r, 60));
+  check('replaced socket: a caller with no generation (tests, the LAN host) is unaffected', rosterAlliance(newBox, 'c1') === 'blue');
+
+  // THE ROSTER AFTER A BURST OF PATCHES: one now, one trailing, the final state
+  const fanBox: ServerMsg[] = [];
+  const fan = new Room('smoke-fanout', () => {}, { kind: 'versus' });
+  fan.add(mkA('f1', fanBox));
+  await new Promise((r) => setTimeout(r, 60));
+  fanBox.length = 0;
+  for (let i = 0; i < 50; i++) fan.onMessage('f1', { t: 'update', patch: { alliance: i % 2 ? 'blue' : 'red' } });
+  const burst = fanBox.filter((m) => m.t === 'roster').length;
+  check('roster fan-out: a 50-patch burst broadcasts ONCE immediately', burst === 1, String(burst));
+  await new Promise((r) => setTimeout(r, 80));
+  const after = fanBox.filter((m) => m.t === 'roster').length;
+  check('roster fan-out: ...and once more, trailing', after === 2, String(after));
+  check('roster fan-out: the trailing roster carries the FINAL state', rosterAlliance(fanBox, 'f1') === 'blue');
+
+  // A LOBBY SEAT HOLDS NO LOCK, AND LEAVING ONE RELEASES WHATEVER THE REGISTRY THOUGHT IT HAD
+  const inactive: string[] = [];
+  const active: string[] = [];
+  const lob = new Room('smoke-lobbylock', () => {}, { kind: 'versus' }, undefined, (u) => active.push(u), (u) => inactive.push(u));
+  lob.add(mkA('l1', [], 'u-l1'));
+  lob.add(mkA('l2', [], 'u-l2'));
+  check('lobby lock: a lobby seat holds no single-game lock', !lob.holdsLockFor('u-l1') && active.length === 0);
+  lob.detach('l1', undefined, true);
+  check('⚠️ lobby lock: leaving a lobby hands the lock back (it leaked when a reclaim had set it)', inactive.includes('u-l1'));
+  lob.onMessage('l2', { t: 'start' });
+  check('lobby lock: a LIVE match does hold it', lob.holdsLockFor('u-l2') && active.includes('u-l2'));
+  lob.advanceForTest(1);
+
+  // HOST CAP: which rooms count
+  const capLobby = new Room('smoke-cap1', () => {}, { kind: 'versus' });
+  capLobby.add(mkA('h1', [], 'u-h1'));
+  check('host cap: a lobby counts', capLobby.countsTowardHostCap());
+  capLobby.onMessage('h1', { t: 'start' });
+  capLobby.advanceForTest(1);
+  check('⚠️ host cap: a live match with a signed-in driver NEVER counts (a school full of real matches)', !capLobby.countsTowardHostCap());
+  const anon = new Room('smoke-cap2', () => {}, { kind: 'record', record: 'solo' });
+  anon.add(mkA('h2', []));
+  anon.onMessage('h2', { t: 'start' });
+  anon.advanceForTest(1);
+  check('host cap: an anonymous live run does count', anon.countsTowardHostCap());
+
+  // IDLE LOBBY REAPER
+  let emptied = 0;
+  const idleBox: ServerMsg[] = [];
+  const idleUnlock: string[] = [];
+  const idle = new Room('smoke-idle', () => emptied++, { kind: 'versus' }, undefined, undefined, (u) => idleUnlock.push(u));
+  idle.add(mkA('i1', idleBox, 'u-i1'));
+  check('idle lobby: a fresh lobby is not idle', idle.idleLobbyMs() < 1000);
+  idle.setLastActivityForTest(Date.now() - 21 * 60_000);
+  check('idle lobby: 21 minutes untouched reads as idle', idle.idleLobbyMs() >= 20 * 60_000);
+  idle.onMessage('i1', { t: 'update', patch: {} });
+  check('idle lobby: any driver frame resets the clock', idle.idleLobbyMs() < 1000);
+  idle.setLastActivityForTest(Date.now() - 21 * 60_000);
+  idle.closeIdleLobby('closed for idleness');
+  check('idle lobby: closing it empties the room (the registry drops it)', emptied === 1);
+  check('idle lobby: the driver is told why', idleBox.some((m) => m.t === 'error' && m.message === 'closed for idleness'));
+  check('idle lobby: and its lock (if any) is handed back', idleUnlock.includes('u-i1'));
+  check('idle lobby: a room with a match is never an idle lobby', capLobby.idleLobbyMs(Date.now() + 3_600_000) === 0);
+
+  // ONE REPORT ROW PER KEY PER ROOM
+  check('reports: the first report of a key passes', room.claimReportSlot('player|a|b|griefing'));
+  check('⚠️ reports: a repeat never reaches the database', !room.claimReportSlot('player|a|b|griefing'));
+  check('reports: a different reason is a different row', room.claimReportSlot('player|a|b|language'));
+  let passed = 0;
+  for (let i = 0; i < 400; i++) if (room.claimReportSlot(`score|x|${i}`)) passed++;
+  check('reports: the per-room set is bounded', passed < 400 && passed > 100, String(passed));
+
+  // TICK ERRORS STOP A BROKEN MATCH
+  const errBox: ServerMsg[] = [];
+  const err = new Room('smoke-tickerr', () => {}, { kind: 'versus' });
+  err.add(mkA('e1', errBox, 'u-e1'));
+  err.onMessage('e1', { t: 'start' });
+  check('tick errors: the loop is running', err.loopRunningForTest());
+  const origErr = console.error;
+  console.error = () => {};
+  try {
+    for (let i = 0; i < 119; i++) err.noteTickErrorForTest(new Error('boom'));
+    check('tick errors: a burst below the limit keeps the match', err.loopRunningForTest());
+    err.noteTickErrorForTest(new Error('boom'));
+  } finally {
+    console.error = origErr;
+  }
+  check('⚠️ tick errors: a world that throws every tick is STOPPED, not logged forever', !err.loopRunningForTest());
+  check('tick errors: its drivers are told', errBox.some((m) => m.t === 'error' && /server error/.test(m.message)));
+  for (const r of [room, fan, lob, capLobby, anon]) r.advanceForTest(0);
+}
+
+// ---- THE RECORD ROW's ASSISTS ARE THE ONES THE ROBOT PLAYED WITH ------------------------
+{
+  let outcome: { participants: { assists: { autoFire: boolean; autoIntake: boolean } }[] } | null = null;
+  const room = new Room('smoke-assists', () => {}, { kind: 'record', record: 'solo' }, (o) => {
+    outcome = o as never;
+  });
+  room.add({
+    id: 'a1',
+    send: () => {},
+    player: { clientId: 'a1', name: 'a1', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS, autoFire: true, autoIntake: true } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-a1',
+  });
+  room.onMessage('a1', { t: 'start' });
+  room.advanceForTest(10);
+  // mid-match, the roster copy is patched to claim no assists at all
+  room.onMessage('a1', { t: 'update', patch: { assists: { ...DEFAULT_ASSISTS, autoFire: false, autoIntake: false } } });
+  const w = room.worldForTest() as World;
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 0.05;
+  room.advanceForTest(2000);
+  const got = (outcome as { participants: { assists: { autoFire: boolean; autoIntake: boolean } }[] } | null)?.participants[0]?.assists;
+  check('record assists: the match finalized with a participant', !!got);
+  check(
+    '⚠️ record assists: a mid-match roster patch cannot relabel a run driven WITH auto-fire',
+    got?.autoFire === true && got?.autoIntake === true,
+    JSON.stringify(got),
+  );
+}
+
+// ---- SERVER WIRING (index.ts cannot be imported headlessly, so its seams are pinned in source)
+{
+  const idx = readFileSync(pathResolve('server/index.ts'), 'utf8');
+  check('wiring: the join path validates the room code before it can name a room', /const code = typeof msg\.room === 'string'[\s\S]{0,120}if \(!legalRoomCode\(code\)\)/.test(idx));
+  check('wiring: the room kind is coerced to its enums', idx.includes('...coerceRoomKind(msg.config ?? DEFAULT_ROOM_CONFIG)'));
+  check('wiring: onEmpty drops only the room it belongs to', /if \(rooms\.get\(code\) === created0\) rooms\.delete\(code\);/.test(idx));
+  check('wiring: the per-network host cap runs after the staged-pairing claim', idx.indexOf('takePendingMatch(code)') < idx.indexOf('MAX_HOSTED_PER_IP > 0 && !r.staging()') && idx.indexOf('MAX_HOSTED_PER_IP > 0 && !r.staging()') > 0);
+  check('wiring: the join path asks the cross-machine heartbeat, with the solo-record exemption', /remoteLiveConflict\(live\.get\(user\.userId\), code, \(c\) => rooms\.has\(c\), true\)/.test(idx));
+  check('wiring: ...and the queue asks it too, without the exemption', /remoteLiveConflict\(live\.get\(u\.userId\), '', \(c\) => rooms\.has\(c\), false\)/.test(idx));
+  check('wiring: a seat reclaim re-asserts the lock only where the room holds one', idx.includes('if (r.holdsLockFor(user.userId)) userRoom.set(user.userId, code);'));
+  check('wiring: room frames carry the socket generation', idx.includes('room.onMessage(id, msg, conn || undefined);'));
+  check('wiring: spectators are capped per network', idx.includes('(spectatorsByNet.get(netKey) ?? 0) >= MAX_SPECTATORS_PER_IP'));
+  check('wiring: reports are de-duplicated before the database', (idx.match(/claimReportSlot\(/g) ?? []).length === 2);
+  check('wiring: the queue refuses an unknown mode before enqueue', idx.includes('if (!isQueueMode(msg.mode)) {'));
+  check('wiring: accessMs and homeRegion are coerced', idx.includes('accessMs: coerceAccessMs(msg.accessMs),') && idx.includes('coerceHomeRegion(msg.homeRegion)'));
+  check('wiring: every queue step has a catch', (idx.match(/\.catch\(queueFailed\)/g) ?? []).length === 3);
+  check('wiring: the idle-lobby sweep is armed', idx.includes('r.closeIdleLobby(LOBBY_IDLE_MESSAGE)'));
+  check('wiring: the old socket’s close only deletes its own liveSockets row', idx.includes('if (liveSockets.get(id) === mySock) liveSockets.delete(id);'));
+}
+
+// ---- REQUEST-PATH LOAD: rate-limit sweeps and the moderation provider budget --------------
+{
+  // the request-path limiters sweep at most once per interval (server/sweepGate.ts)
+  const due = sweepGate(1000);
+  check('sweepGate: the first call sweeps', due(10_000));
+  check('sweepGate: a call inside the interval does not', !due(10_500));
+  check('sweepGate: the next interval sweeps again', due(11_000));
+
+  // the moderation provider budget (server/moderation.ts)
+  resetProviderBudgetForTests();
+  let took = 0;
+  const t0 = 1_000_000;
+  for (let i = 0; i < MODERATION_BUDGET_PER_MIN + 5; i++) if (takeProviderBudget(t0)) took++;
+  check('moderation budget: at most the per-minute budget of hosted calls', took === MODERATION_BUDGET_PER_MIN, `${took}/${MODERATION_BUDGET_PER_MIN}`);
+  check('moderation budget: it refills after a minute', takeProviderBudget(t0 + 60_000));
+  resetProviderBudgetForTests();
+
+  const idx = readFileSync(pathResolve('server/index.ts'), 'utf8');
+  check('wiring: the /api/perf reset needs the operator secret on Fly', /const gapReset =[\s\S]{0,200}perfQs\.get\('secret'\) === process\.env\.ADMIN_SECRET/.test(idx));
+  check('wiring: the admin body reader stops at its cap (the shared readBody)', idx.includes('return readBody(req, 16 * 1024);'));
+  check('wiring: the presence and live-rooms reads are shared while in flight', idx.includes('if (!presenceInFlight) {') && idx.includes('if (!liveInFlight) {'));
+  const site = readFileSync(pathResolve('server/siteState.ts'), 'utf8');
+  check('wiring: the lockdown and banner reads are shared while in flight', site.includes('if (!force && lockInFlight) return lockInFlight;') && site.includes('if (!force && bannersInFlight) return bannersInFlight;'));
+  const auth = readFileSync(pathResolve('server/auth.ts'), 'utf8');
+  check('wiring: a missing token is not logged (the ordinary anonymous case)', !auth.includes('no token on join'));
+  check('wiring: a failed verify is logged at a bounded rate', auth.includes('logVerifyFailure(e);') && auth.includes('VERIFY_FAIL_LOG_MS'));
+}
+
 /**
  * IMPORTED ROBOTS ON THE WIRE (docs/area/netcode.md, IMPORTED ROBOTS) — THE RULES, PURE.
  *
@@ -36131,9 +36418,9 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   const rw = rd(joinPath('server', 'roomWorker.ts'));
   const rh = rd(joinPath('server', 'roomHost.ts'));
   check('visuals/pins: the room answers the relay’s two messages BEFORE it looks the sender up, so a watcher (who is not a seat) can ask',
-    /onMessage\(id: string, msg: ClientMsg\): void \{[\s\S]{0,400}msg\.t === 'visualPut' \|\| msg\.t === 'visualGet'[\s\S]{0,200}const c = this\.clients\.get\(id\);/.test(room));
+    /onMessage\(id: string, msg: ClientMsg, conn\?: number\): void \{[\s\S]{0,400}msg\.t === 'visualPut' \|\| msg\.t === 'visualGet'[\s\S]{0,200}const c = this\.clients\.get\(id\);/.test(room));
   check('visuals/pins: every place the room drops a seat frees its assets, and the room closing disposes the relay',
-    (room.match(/this\.visuals\.freeOwner\(/g) ?? []).length === 4 && /this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/.test(room) && !/[^.]this\.onEmpty\(\)/.test(room.replace(/this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/, '')));
+    (room.match(/this\.visuals\.freeOwner\(/g) ?? []).length === 5 && /this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/.test(room) && !/[^.]this\.onEmpty\(\)/.test(room.replace(/this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/, '')));
   check('visuals/pins: a joiner, a watcher and a reclaimed seat are greeted; a seat’s robot change re-checks its assets',
     (room.match(/this\.visuals\.greet\(/g) ?? []).length === 3 && /this\.visuals\.specChanged\(c\.id\)/.test(room) && /this\.visuals\.reconcile\(\)/.test(room));
   check('visuals/pins: ⚠️ the socket thread does not compress a `visualChunk` (base64 of a PNG or GLB: no gain, a zlib pass, and it would foul the snapshots’ shared deflate window)',

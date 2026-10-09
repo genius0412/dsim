@@ -162,6 +162,8 @@ function pushFacts(rid: number): void {
     holds: r.holdsCapacity(),
     abandonable: r.isAbandonable(),
     spectators: r.spectatorCount(),
+    hostCap: r.countsTowardHostCap(),
+    plainLobby: r.isPlainLobby(),
     imports: { hasImport: imp.hasImport, capless: imp.capless, ids: [...(imp.ids ?? [])] },
   };
   const s = JSON.stringify(f);
@@ -320,7 +322,8 @@ function handle(op: Op): void {
       break;
     }
     case 'msg':
-      r.onMessage(op.id, op.msg);
+      // the socket thread's key for the socket this arrived on, as the room's own `conn` stamp
+      r.onMessage(op.id, op.msg, op.sock ? connOf.get(op.sock) : undefined);
       // an input is 60 Hz per driver and moves nothing the socket thread mirrors
       if (op.msg.t === 'input') return;
       break;
@@ -334,6 +337,9 @@ function handle(op: Op): void {
       break;
     case 'abandon':
       r.abandonSlot(op.id, op.token);
+      break;
+    case 'closeIdle':
+      r.closeIdleLobby(op.message);
       break;
     case 'unlock':
       r.releaseSeatLock(op.uid);

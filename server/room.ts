@@ -24,6 +24,7 @@ import type {
   DrivetrainType,
   RobotCommand,
   RobotSpec,
+  RobotState,
   StartPose,
   World,
 } from '../src/types';
@@ -249,6 +250,22 @@ import { round3 } from './wire';
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
 const RECONNECT_GRACE_MS = 45000;
+
+/** the shortest spacing between two roster broadcasts caused by `update` frames. 50 ms is
+ *  three frames of a 60 Hz UI: a burst of patches (the name editor, a builder drag) still
+ *  reads as live, while one socket at the inbound rate limit can no longer fan the roster out
+ *  hundreds of times a second. See `Room.rosterAfterUpdate`. */
+const UPDATE_ROSTER_MIN_MS = 50;
+/** distinct report rows one room will pass to the database over its life. Four seats, a few
+ *  reasons each, plus one score claim per match: far above what a real room files, and far
+ *  below what a script can. See `Room.claimReportSlot`. */
+export const MAX_REPORT_KEYS = 256;
+/** a tick loop that throws this many times inside `TICK_ERROR_WINDOW_MS` stops its match
+ *  (two seconds of continuous failure at 60 Hz). See `Room.noteTickError`. */
+const MAX_TICK_ERRORS = 120;
+const TICK_ERROR_WINDOW_MS = 5000;
+/** how many tick errors a room logs in full before it goes quiet (the stop is logged too) */
+const TICK_ERROR_LOG_FIRST = 5;
 /** how close to the buzzer a solo record run counts as DECIDED: a driver who leaves inside it
  *  still has the run finished and saved. One second of slack because the client's predicted
  *  clock runs a little ahead of the server's, so "I restarted at 0:00" can land in teleop. */
@@ -1388,6 +1405,7 @@ export class Room {
     // database whatever build a driver arrived on, and the server's own sim decided it.
     if (this.clients.size === 0 && client.channel && !this.pendingMatch?.competition) this.channel = client.channel;
     client.conn = ++this.connSeq;
+    this.lastActivityAt = Date.now();
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
     if (this.settings) client.player.alliance = this.allianceWithRoom(client.player.alliance);
@@ -1780,6 +1798,20 @@ export class Room {
         this.broadcastRoster();
         return;
       }
+      /*
+       * A LOBBY SEAT HOLDS NO SINGLE-GAME LOCK, SO LEAVING ONE MUST NOT LEAVE ONE BEHIND.
+       * The registry could still have pointed this account at this room (an account that
+       * reclaimed its own lobby seat from a second tab or a reconnect used to re-assert the lock
+       * there), and nothing on this path ever cleared it, so the player was refused every other
+       * game with "You already have a game in progress" for as long as the lobby existed. The
+       * registry's release is code-scoped, so this is a no-op for a lock held anywhere else.
+       * ⚠️ NOT in a STAGED room: that lock is taken from the roster at `applyPending` precisely so
+       * a player who drops while loading in cannot walk back into the queue (see there).
+       */
+      if (c.userId && !this.pendingMatch) {
+        this.activeUserIds.delete(c.userId);
+        this.onUserInactive?.(c.userId);
+      }
       this.clients.delete(id);
       this.visuals.freeOwner(id);
       this.visuals.dropRecipient(id);
@@ -1988,6 +2020,7 @@ export class Room {
     c.connected = true;
     c.disconnectAt = 0;
     c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
+    this.lastActivityAt = Date.now();
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     this.snapAck.delete(id); // drop its stale pre-drop ack so it doesn't re-keyframe
     send({ t: 'welcome', clientId: id, seatToken: c.seatToken });
@@ -2129,7 +2162,7 @@ export class Room {
     return mod.startLegal(spec, a, startPose);
   }
 
-  onMessage(id: string, msg: ClientMsg): void {
+  onMessage(id: string, msg: ClientMsg, conn?: number): void {
     // THE RELAY'S TWO MESSAGES come from a seat (an upload) or a seat or a watcher (a download),
     // so they are answered before the lookup below, which a watcher would not pass.
     if (msg.t === 'visualPut' || msg.t === 'visualGet') {
@@ -2138,6 +2171,18 @@ export class Room {
     }
     const c = this.clients.get(id);
     if (!c) return;
+    /**
+     * ⚠️ A SOCKET THAT HAS BEEN REPLACED NO LONGER SPEAKS FOR THE SEAT.
+     *
+     * `reattach` hands the seat to a newer socket and bumps `c.conn`, and `detach` already
+     * ignores the OLD socket's close by comparing that stamp. Its FRAMES were never checked:
+     * the replaced tab kept its `room` and its client id in `server/index.ts`, so its inputs,
+     * roster patches and even a host's `start` still landed on the seat the new tab now owns —
+     * two tabs driving one robot. `conn` is optional so the in-process callers (smoke, the LAN
+     * tab host) that have no socket generation behave exactly as before.
+     */
+    if (conn !== undefined && c.conn !== undefined && conn !== c.conn) return;
+    this.lastActivityAt = Date.now();
     // a late message into a cancelled room (a ready landing after the deadline) must not
     // begin a match nobody is registered for — see `cancelled`
     if (this.cancelled) return;
@@ -2205,7 +2250,7 @@ export class Room {
         ) {
           c.player.ready = false;
         }
-        this.broadcastRoster();
+        this.rosterAfterUpdate();
         if (this.phase === 'strategy') this.maybeBeginRanked();
         break;
       }
@@ -3389,7 +3434,7 @@ export class Room {
       // spacing even and hands the client a single freshest world to reconcile to.
       if (due && !this.finalized) this.broadcastSnapshot();
     } catch (e) {
-      console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+      this.noteTickError(e);
     }
   }
 
@@ -3617,7 +3662,7 @@ export class Room {
           drivetrain: robot.spec.drivetrain,
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
-          assists: c.player.assists,
+          assists: Room.assistsOf(robot),
           ...this.rankedPresence(robot.id, c.userId),
         });
       }
@@ -3636,7 +3681,7 @@ export class Room {
           drivetrain: robot.spec.drivetrain,
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
-          assists: d.assists,
+          assists: Room.assistsOf(robot),
           ...this.rankedPresence(robot.id, d.userId),
         });
       }
@@ -4642,6 +4687,169 @@ export class Room {
     const reporter = this.clients.get(reporterClientId);
     if (!reporter?.userId) return null;
     return { reporterId: reporter.userId, matchId: this.lastMatchId, roomCode: this.code };
+  }
+
+  // ---- admission / abuse guards (see the constants at the top of the file) --------------
+
+  /** epoch ms of the last thing a DRIVER did here: a join, a reclaim, or any room message.
+   *  Read by the idle-lobby reaper (`idleLobbyMs`). Pings never reach the room, so a tab left
+   *  open does not keep a lobby alive on its own. */
+  private lastActivityAt = Date.now();
+
+  /** does this room currently hold `userId`'s single-game lock? The seat-reclaim path asks
+   *  before re-asserting the lock in the registry, so a lobby seat never mints one. */
+  holdsLockFor(userId: string): boolean {
+    return this.activeUserIds.has(userId);
+  }
+
+  /**
+   * Does this room count against its CREATOR's per-network hosting cap (`MAX_HOSTED_PER_IP`
+   * in `server/index.ts`)? Every room that has not finished, EXCEPT one playing a live match
+   * with a signed-in driver in it: a school running a dozen real matches off one NAT address
+   * is exactly the traffic the cap must never touch, and an account can only be seated in one
+   * live match at a time (the single-game lock), so those rooms are not an abuse vector.
+   */
+  countsTowardHostCap(): boolean {
+    if (this.finalized) return false;
+    if (this.world !== null && [...this.clients.values()].some((c) => !!c.userId)) return false;
+    return true;
+  }
+
+  /**
+   * How long this room has been an IDLE LOBBY, in ms, or 0 if it is not a lobby at all.
+   * A lobby is a room with no world, no staged pairing, and no start window open. A results
+   * screen is not a lobby (it has a world), and neither is a ranked room waiting on its roster
+   * (it reaps itself on its own grace).
+   */
+  idleLobbyMs(now = Date.now()): number {
+    if (!this.isPlainLobby()) return 0;
+    return Math.max(0, now - this.lastActivityAt);
+  }
+
+  /** no world, no staged pairing, no start window: the shape `idleLobbyMs` reaps. A room on a
+   *  worker mirrors this to the socket thread, which keeps the clock (`RemoteRoom.idleLobbyMs`). */
+  isPlainLobby(): boolean {
+    return this.world === null && !this.pendingMatch && this.phase === 'connecting' && !this.customStart;
+  }
+
+  /**
+   * CLOSE AN IDLE LOBBY. Everyone in it is told why in the plain `error` every client already
+   * renders, then the room is torn down exactly as the last driver leaving would tear it down.
+   * The sockets stay open (the server has no handle on them from here): a later frame finds no
+   * seat and is ignored, and the close that follows finds no client, which is the same shape
+   * a room deleted under a reconnecting socket has always had.
+   */
+  closeIdleLobby(message: string): void {
+    this.broadcast({ t: 'error', message });
+    for (const c of this.clients.values()) {
+      if (c.userId) {
+        this.activeUserIds.delete(c.userId);
+        this.onUserInactive?.(c.userId);
+      }
+      this.visuals.freeOwner(c.id);
+      this.visuals.dropRecipient(c.id);
+    }
+    this.clients.clear();
+    this.spectators.clear();
+    this.stop();
+    this.emptied();
+  }
+
+  /** test seam: pretend the last driver activity happened at `t` */
+  setLastActivityForTest(t: number): void {
+    this.lastActivityAt = t;
+  }
+
+  /**
+   * ONE REPORT ROW PER KEY PER ROOM, decided here before anything touches the database.
+   *
+   * Every `report` / `reportScore` frame used to be a Postgres insert. The unique indexes
+   * make repeats harmless to the DATA, but not to the pool: at the socket's rate limit that is
+   * hundreds of inserts a second from one player against a pool of five connections, which
+   * queues the suspension read on every join and the result write of every match behind them.
+   * The key mirrors the unique index the row would hit (reporter, target, reason — or reporter
+   * and match for a score claim), and the room is the room-code column, so a repeat that is
+   * dropped here is exactly a repeat the table would have dropped.
+   */
+  private readonly reportKeys = new Set<string>();
+  claimReportSlot(key: string): boolean {
+    if (this.reportKeys.has(key)) return false;
+    // bounded: a room seats four, so a legitimate room files a handful of these at most
+    if (this.reportKeys.size >= MAX_REPORT_KEYS) return false;
+    this.reportKeys.add(key);
+    return true;
+  }
+
+  /**
+   * THE ROSTER AFTER A PLAYER PATCH, at most once per `UPDATE_ROSTER_MIN_MS`.
+   *
+   * Every `update` frame re-sent the whole roster to every driver AND every spectator, so one
+   * socket at the inbound rate limit was a few MB/s of egress fanned out across the room —
+   * and egress is most of this service's bill. The FIRST patch in a window still broadcasts
+   * immediately (a ready toggle is felt at once), and a burst collapses into one trailing
+   * broadcast that carries the final state. Only the BROADCAST is deferred: the patch itself,
+   * the ready gate and the ranked start check have all run by the time this is called.
+   */
+  private lastUpdateRosterAt = 0;
+  private updateRosterTimer: ReturnType<typeof setTimeout> | null = null;
+  private rosterAfterUpdate(): void {
+    const now = Date.now();
+    const wait = this.lastUpdateRosterAt + UPDATE_ROSTER_MIN_MS - now;
+    if (wait <= 0 && !this.updateRosterTimer) {
+      this.lastUpdateRosterAt = now;
+      this.broadcastRoster();
+      return;
+    }
+    if (this.updateRosterTimer) return; // a trailing broadcast is already on its way
+    this.updateRosterTimer = setTimeout(() => {
+      this.updateRosterTimer = null;
+      this.lastUpdateRosterAt = Date.now();
+      this.broadcastRoster();
+    }, Math.max(0, wait));
+    if (this.updateRosterTimer.unref) this.updateRosterTimer.unref();
+  }
+
+  /**
+   * A TICK THAT THROWS, counted. The loop contains the throw (a crash would take every room on
+   * the machine with it), but a world that throws once usually throws on every tick after, and
+   * that used to be a `console.error` sixty times a second, forever, from a room that kept its
+   * slot. Past `MAX_TICK_ERRORS` inside `TICK_ERROR_WINDOW_MS` the match is stopped and its
+   * drivers are told; the room then empties through the ordinary leave and grace paths.
+   */
+  private tickErrors: number[] = [];
+  private noteTickError(e: unknown): void {
+    const now = Date.now();
+    this.tickErrors = this.tickErrors.filter((t) => now - t < TICK_ERROR_WINDOW_MS);
+    this.tickErrors.push(now);
+    const n = this.tickErrors.length;
+    if (n <= TICK_ERROR_LOG_FIRST) {
+      console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+    }
+    if (n < MAX_TICK_ERRORS || !this.loop) return;
+    console.error(`[room ${this.code}] ${n} tick errors in ${TICK_ERROR_WINDOW_MS} ms - stopping the match`);
+    this.tickErrors = [];
+    this.broadcast({ t: 'error', message: 'This match hit a server error and was stopped. Return to the menu to start another.' });
+    this.stop();
+  }
+
+  /** test seam: run the tick-error accounting as the loop's catch would */
+  noteTickErrorForTest(e: unknown): void {
+    this.noteTickError(e);
+  }
+
+  /** is the tick loop running? (test seam) */
+  loopRunningForTest(): boolean {
+    return this.loop !== null;
+  }
+
+  /**
+   * The assists a robot actually PLAYED with, off the world, for the record row and the
+   * leaderboard's assist chips. The roster copy (`c.player.assists`) is a lobby preference a
+   * player can still patch mid-match, so reading it at finalize let a run driven with
+   * auto-fire be filed as one without it.
+   */
+  static assistsOf(r: RobotState): AssistConfig {
+    return { fieldCentric: r.fieldCentric, aimAssist: r.aimAssist, autoIntake: r.autoIntake, autoFire: r.autoFire };
   }
 
   /** TEST SEAM: fire the strategy deadline synchronously (no real timer). */

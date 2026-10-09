@@ -24,6 +24,7 @@ import {
   SKILL_BASE, skillCeiling, bestSplit, mmNumber, RATING_WAIT_MS, TEAM_BAND_BASE, teamBandCeiling,
   skillOf,
 } from '../server/matchmaking';
+import { ACCESS_MS_MAX, coerceAccessMs } from '../server/admission';
 import { readFileSync } from 'node:fs';
 
 let passed = 0;
@@ -1128,6 +1129,29 @@ const friendsOf = (table: Record<string, string[]>) => async (u: string): Promis
   const { staged } = await pair([entry('x1', '1v1', { game: 'biobuzz' }), entry('x2', '1v1')]);
   check('physics: a BIOBUZZ queuer and a DECODE queuer still never pair', staged.length === 0,
     `${staged.length} staged`);
+}
+
+{
+  // THE HOST PICK TAKES A BOUNDED accessMs. `server/index.ts` passes every queue entry's
+  // reported access latency through `coerceAccessMs`; unbounded, a player reporting 1e6 made
+  // every other member's latency irrelevant and pinned the host to their own region, and a
+  // string turned the estimate into concatenation.
+  const liar = bestHost([
+    { homeRegion: 'syd', accessMs: 1e6 },
+    { homeRegion: 'iad', accessMs: 20 },
+  ]);
+  check('host pick: an UNBOUNDED accessMs pins the host to the liar (the bug, measured)', liar.hostRegion === 'syd');
+  const bounded = bestHost([
+    { homeRegion: 'syd', accessMs: coerceAccessMs(1e6) },
+    { homeRegion: 'iad', accessMs: 20 },
+  ]);
+  check('host pick: a coerced accessMs is capped at ACCESS_MS_MAX', coerceAccessMs(1e6) === ACCESS_MS_MAX);
+  check('host pick: ...so the worst estimated ping stays a real number of ms', bounded.cost < 1000 && Number.isFinite(bounded.cost), String(bounded.cost));
+  const junk = bestHost([
+    { homeRegion: 'syd', accessMs: coerceAccessMs('fast' as unknown) },
+    { homeRegion: 'iad', accessMs: 20 },
+  ]);
+  check('host pick: a non-number accessMs reads 0, never string arithmetic', typeof junk.cost === 'number' && Number.isFinite(junk.cost));
 }
 
 // ---- report ----------------------------------------------------------------

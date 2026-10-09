@@ -45,7 +45,9 @@ export type Op =
   | { k: 'detach'; rid: number; id: string; sock: number; clean: boolean }
   /** `caps`: the returning socket's, which replace the seat's (`Room.reattach`); absent keeps them */
   | { k: 'reattach'; rid: number; seq: number; call: number; id: string; sock: number; token?: string; trusted: boolean; caps?: string[] }
-  | { k: 'msg'; rid: number; id: string; msg: ClientMsg }
+  /** `sock`: the socket key the message arrived on, so a REPLACED socket is dropped (`Room.onMessage`'s `conn`) */
+  | { k: 'msg'; rid: number; id: string; msg: ClientMsg; sock?: number }
+  | { k: 'closeIdle'; rid: number; message: string }
   | { k: 'pending'; rid: number; seq: number; call: number; p: PendingMatch }
   | { k: 'maybeStart'; rid: number }
   | { k: 'abandon'; rid: number; id: string; token?: string }
@@ -80,6 +82,9 @@ export interface RoomFacts {
   holds: boolean;
   abandonable: boolean;
   spectators: number;
+  /** `Room.countsTowardHostCap` and `Room.isPlainLobby`, for the admission guards */
+  hostCap: boolean;
+  plainLobby: boolean;
   /**
    * What the room holds as far as imported robots go (`Room.importState`, minus `allows`, which
    * the socket thread answers itself from the config and the staged roster). The join, rejoin

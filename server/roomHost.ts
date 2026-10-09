@@ -27,7 +27,7 @@ import { Worker } from 'node:worker_threads';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
-import { Room, type Client } from './room';
+import { Room, MAX_REPORT_KEYS, type Client } from './room';
 import { configureVisualBudget, makeSharedVisualBudget, resetVisualSlot } from './importVisuals';
 import { DEFAULT_ROOM_CONFIG, roomCapacity, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { serverPhysics } from '../src/games/types';
@@ -95,7 +95,17 @@ export interface RoomHandle {
     /** the returning socket's capabilities, which replace the seat's (see `Room.reattach`) */
     caps?: string[],
   ): number | null | Promise<number | null>;
-  onMessage(id: string, msg: ClientMsg): void;
+  /** `conn`: the socket this arrived on; a socket a reconnect has replaced no longer speaks for the seat */
+  onMessage(id: string, msg: ClientMsg, conn?: number): void;
+  /** does this room hold `userId`'s one-game lock? (a lobby seat never does) */
+  holdsLockFor(userId: string): boolean;
+  /** does this room count against its creator's per-network hosting cap? */
+  countsTowardHostCap(): boolean;
+  /** how long this room has been an idle lobby, in ms (0: not a lobby) */
+  idleLobbyMs(now?: number): number;
+  closeIdleLobby(message: string): void;
+  /** one report row per key per room reaches the database */
+  claimReportSlot(key: string): boolean;
   applyPending(p: PendingMatch): void | Promise<void>;
   maybeStartRanked(): void;
   abandonSlot(clientId: string, token?: string): boolean | void;
@@ -208,6 +218,8 @@ function initialFacts(code: string, config: RoomConfig, capacity: number): RoomF
     holds: true,
     abandonable: true,
     spectators: 0,
+    hostCap: true,
+    plainLobby: true,
     imports: { hasImport: false, capless: false, ids: [] },
   };
 }
@@ -381,6 +393,7 @@ export class RemoteRoom implements RoomHandle {
     flags?: { imp?: boolean; nocap?: boolean; iid?: string },
   ): number {
     const seq = ++this.seq;
+    this.lastActivityAt = Date.now();
     this.unacked.push({ seq, kind, uid, id, ...flags });
     return seq;
   }
@@ -450,8 +463,34 @@ export class RemoteRoom implements RoomHandle {
     );
   }
 
-  onMessage(id: string, msg: ClientMsg): void {
-    this.pool.post(this.slot, { k: 'msg', rid: this.rid, id, msg });
+  onMessage(id: string, msg: ClientMsg, conn?: number): void {
+    this.lastActivityAt = Date.now();
+    this.pool.post(this.slot, { k: 'msg', rid: this.rid, id, msg, sock: conn });
+  }
+
+  // ---- admission guards (`Room`'s own, answered here from the mirror and this thread's clock) ----
+
+  /** the last driver activity this thread saw: a join, a reclaim or any message */
+  private lastActivityAt = Date.now();
+  private readonly reportKeys = new Set<string>();
+  holdsLockFor(userId: string): boolean {
+    return this.locks.has(userId);
+  }
+  countsTowardHostCap(): boolean {
+    return this.facts.hostCap;
+  }
+  idleLobbyMs(now = Date.now()): number {
+    if (!this.facts.plainLobby || this.unackedOf('pending') > 0) return 0;
+    return Math.max(0, now - this.lastActivityAt);
+  }
+  closeIdleLobby(message: string): void {
+    this.pool.post(this.slot, { k: 'closeIdle', rid: this.rid, message });
+  }
+  claimReportSlot(key: string): boolean {
+    if (this.reportKeys.has(key)) return false;
+    if (this.reportKeys.size >= MAX_REPORT_KEYS) return false;
+    this.reportKeys.add(key);
+    return true;
   }
 
   applyPending(p: PendingMatch): Promise<void> {
