@@ -7,7 +7,8 @@ import { authorizeUrl, exchangeForId, linkConfigured, readState } from './oauthL
 import { runStarSweep } from './stargazers';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
-import { CHALLENGE_FORMATS } from '../src/net/protocol';
+import { coerceWindow, windowBounds } from './boardWindow';
+import { CHALLENGE_FORMATS, RETIRED_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
 import { replayHasImported } from '../src/net/imported';
 import { moderateName, scrubName } from './moderation';
@@ -83,6 +84,7 @@ import {
   exportAccount,
   listSeasonsCached,
   recordLeaderboard,
+  coerceCategory,
   saveSettingsFromClient,
   setHandle,
   setUsername,
@@ -1713,6 +1715,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           // party token that a challenge of the matching format actually created
           // (`challengeParty`). Validated against the allowlist here so a client
           // can't invent one.
+          // a retired format must not coerce to null below, which would turn an old client's
+          // rated challenge into a bogus casual invite carrying a party token as its "room"
+          if (RETIRED_FORMATS.includes(body.format as string)) {
+            return json(410, { error: 'Rated 1v1 challenges are gone. Invite your friend to a room, or queue Ranked 2v2 together.' }), true;
+          }
           const format = (CHALLENGE_FORMATS as readonly string[]).includes(body.format as string)
             ? (body.format as string)
             : null;
@@ -1881,12 +1888,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        * an archived one is the solve it was played on — BIOBUZZ Act 1 is a 2D board. The client
        * keeps the rows of the era echoed here.
        */
+      // CATEGORY (Total / Auto / TeleOp) and WINDOW (season / day / week / month / all time), rooms
+      // plan §5. Both default to what the board always was, so an older client is unaffected.
+      const category = coerceCategory(url.searchParams.get('category'));
+      const window = coerceWindow(url.searchParams.get('window'));
+      const { start, resetsAt } = windowBounds(window, new Date());
+      // all time spans seasons but never mixes eras: `physics=2d|3d` picks one (a game with two
+      // solves has both), default the live era. Day/week/month sit inside one season, hence one era.
+      const wantEra = url.searchParams.get('era');
+      // a one-solve game has no era to pick (DECODE and Chain Reaction are all '2d')
+      const era = (wantEra === '2d' || wantEra === '3d') && serverPhysics(simModuleFor(game)) === '3d' ? wantEra : undefined;
+      const lifetime = window === 'all';
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
+        ? await recordLeaderboard({
+            mode, drivetrain, balanceVersion: season, limit, game, category,
+            ...(start ? { since: start } : {}),
+            ...(lifetime ? { lifetime: true, physics: era } : {}),
+          })
         : [];
-      const physics =
-        (dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game));
-      return json(200, { season, mode, drivetrain, physics, rows, game }), true;
+      const physics = lifetime
+        ? (era ?? (serverPhysics(simModuleFor(game)) === '3d' ? '3d' : '2d'))
+        : ((dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game)));
+      return json(200, { season, mode, drivetrain, physics, rows, game, category, window, windowStart: start, resetsAt }), true;
     }
 
     if (url.pathname === '/api/elo') {

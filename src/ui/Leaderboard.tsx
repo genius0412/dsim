@@ -4,6 +4,8 @@ import {
   fetchRecords,
   fetchSeasons,
   type Board,
+  type RecordCategory,
+  type RecordWindow,
   type EloMode,
   type EloRow,
   type EloStanding,
@@ -40,6 +42,14 @@ import {
 import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
 
 type Kind = 'records' | 'ranked';
+
+/** "3h 12m" / "2d 4h" until `iso`; the board's own clock, so it is computed from the server's time */
+function resetsIn(iso: string, now: number): string {
+  const mins = Math.max(0, Math.round((Date.parse(iso) - now) / 60_000));
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
+}
 
 // RECORD boards are split by drivetrain (+ a cross-drivetrain Overall); the
 // picker shows for records only — ranked (rating) is a single board per mode.
@@ -245,6 +255,18 @@ export function Leaderboard({
   const [recMode, setRecMode] = useState<RecordMode>('solo');
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
   const [board, setBoard] = useState<Board>('overall'); // record boards only
+  // what a record board ranks by, and over what span (rooms plan §5). Records only.
+  const [category, setCategory] = useState<RecordCategory>('total');
+  const [win, setWin] = useState<RecordWindow>('season');
+  // lifetime spans seasons but never mixes eras; BIOBUZZ has both, so it picks one
+  const [era, setEra] = useState<'2d' | '3d'>('3d');
+  const [resetsAt, setResetsAt] = useState<string | null>(null);
+  // `now` for the "Resets in" line, refreshed once a minute and not announced
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
   /**
    * THE ERA FILTER IS GONE (owner ruling, 2026-09-18), and so is the 2D/3D chip per row.
    *
@@ -330,7 +352,7 @@ export function Leaderboard({
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s, game).then((r) => ({
+        ? fetchRecords(recMode, board, win === 'season' ? s : undefined, game, { category, window: win, era }).then((r) => ({
             /**
              * TOLERATING AN OLDER SERVER. One Fly app serves every client version and the
              * reverse is just as true — this page can be talking to a deploy that predates
@@ -347,12 +369,14 @@ export function Leaderboard({
               ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
               : r.rows,
             me: null as EloStanding | null,
+            resetsAt: r.resetsAt ?? null,
           }))
         : fetchElo(eloMode, s, myUserId, game);
     req
       .then((r) => {
         if (!alive) return;
         setRows(r.rows);
+        setResetsAt('resetsAt' in r && typeof r.resetsAt === 'string' ? r.resetsAt : null);
         setMe(r.me);
         setMinGames('minGames' in r && typeof r.minGames === 'number' ? r.minGames : OLD_SERVER_PLACEMENT);
         setStatus('ok');
@@ -366,7 +390,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game, retry]);
+  }, [kind, recMode, eloMode, board, category, win, era, threeD, season, configured, myUserId, game, retry]);
 
   const isRecords = kind === 'records';
   /* A FILTER CHANGE KEEPS THE TABLE UP (design review 07-16). Blanking it for a 30px
@@ -388,7 +412,29 @@ export function Leaderboard({
         {isArchived ? ' · final' : ''}
       </h2>
 
-      <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
+      {isRecords && (
+        <div className="ds-period">
+          <span className="ds-panel-title">Window</span>
+          <select className="ds-select" aria-label="Window" value={win} onChange={(e) => setWin(e.target.value as RecordWindow)}>
+            <option value="day">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="season">This season</option>
+            <option value="all">All time</option>
+          </select>
+          {win !== 'season' && (
+            <span className="ds-hint">
+              {win === 'all'
+                ? `All seasons · ${threeD ? era.toUpperCase() : '2D'}`
+                : `Best run ${win === 'day' ? 'today' : win === 'week' ? 'this week' : 'this month'}`}
+              {resetsAt ? ` · resets in ${resetsIn(resetsAt, now)}` : ''}
+            </span>
+          )}
+        </div>
+      )}
+      {(!isRecords || win === 'season') && (
+        <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
+      )}
 
       <div className="ds-panel">
         <div className="ds-panel-h">
@@ -422,6 +468,28 @@ export function Leaderboard({
             )}
           </div>
         </div>
+
+        {isRecords && (
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Ranked by</span>
+            <div className="ds-segs">
+              {(['total', 'auto', 'teleop'] as const).map((c) => (
+                <button key={c} className={`ds-seg ${category === c ? 'on' : ''}`} aria-pressed={category === c} onClick={() => setCategory(c)}>
+                  {c === 'total' ? 'Total' : c === 'auto' ? 'Auto' : 'TeleOp'}
+                </button>
+              ))}
+            </div>
+            {win === 'all' && threeD && (
+              <div className="ds-segs">
+                {(['3d', '2d'] as const).map((e) => (
+                  <button key={e} className={`ds-seg ${era === e ? 'on' : ''}`} aria-pressed={era === e} onClick={() => setEra(e)}>
+                    {e.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {isRecords && (
           <div className="ds-panel-h">
@@ -466,7 +534,9 @@ export function Leaderboard({
           <div className="ds-empty">
             <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
             {isRecords
-              ? 'Be the first to set a score on this board.'
+              ? category === 'total'
+                ? 'Be the first to set a score on this board.'
+                : `No ${category === 'auto' ? 'Auto' : 'TeleOp'} scores yet. Runs set from now on are split by period and appear here.`
               : `Players appear here after ${minGames} ranked matches.`}
           </div>
         )}

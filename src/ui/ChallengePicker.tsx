@@ -12,14 +12,11 @@ export type { ChallengeFormat };
  *    1v1-vs-2v2 split is emergent from how many join + alliance choice in the
  *    lobby, not a server flag). Unrated — a code-joined room never rates.
  *  - `duorecord` → a `record`/`duo` co-op run (2v0, opponent-free score attack).
- *  - `rated1v1` → NOT a room. Both sides hand the matchmaker the challenge token
- *    and it stages them a private ranked match, which is what makes it rate:
- *    `Room.ranked` is only ever set from a staged roster.
- *  - `ranked2v2` → the same token, but the two of you queue into the OPEN ranked
+ *  - `ranked2v2` → NOT a room. Both sides hand the matchmaker the challenge token and the two of you queue into the OPEN ranked
  *    2v2 pool as a premade and are kept on one alliance. You wait for two more
  *    like anybody else.
  *
- * The last two need a server that understands parties, which is not a given: one
+ * The ranked one needs a server that understands parties, which is not a given: one
  * Fly app serves every client build. They stay disabled until it says otherwise —
  * see `serverCaps`.
  */
@@ -39,10 +36,9 @@ interface FormatTile {
  * which say something the title cannot.
  */
 const TILES: FormatTile[] = [
-  { format: 'casual1v1', title: '1v1 · Casual' },
-  { format: 'rated1v1', title: '1v1 · Rated', needs: 'party' },
-  { format: 'casual2v2', title: '2v2 · Casual' },
-  { format: 'ranked2v2', title: '2v2 · Ranked', needs: 'party' },
+  { format: 'ranked2v2', title: '2v2 · Ranked, same team', needs: 'party' },
+  { format: 'casual1v1', title: '1v1 · Room' },
+  { format: 'casual2v2', title: '2v2 · Room' },
   { format: 'duorecord', title: '2v0 · Co-op record' },
 ];
 
@@ -104,7 +100,7 @@ export function ChallengePicker({
       >
         <div className="ds-modal-h">
           <h2 className="ds-dialog-title" id={titleId}>
-            Play @{username}
+            Invite @{username}
           </h2>
           <button className="ds-btn ghost" onClick={onClose} aria-label="Close" disabled={!!busy}>
             ✕

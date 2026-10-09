@@ -21,6 +21,7 @@ import {
   type PlayerPatch,
   type QueueMode,
   type RoomConfig,
+  type RoomSettings,
   type ErrorCode,
 } from './protocol';
 
@@ -80,7 +81,7 @@ export interface MatchStart {
  * caller mints a ServerSession that TAKES OVER this same transport.
  */
 type Handlers = {
-  roster: (players: LobbyPlayer[], hostId: string) => void;
+  roster: (players: LobbyPlayer[], hostId: string, settings?: RoomSettings) => void;
   matchStart: (m: MatchStart) => void;
   queued: (mode: QueueMode, size: number, need: number) => void;
   /** ranked match found on a `?mm=1` connection: reconnect to `?room=<room>` (the
@@ -366,6 +367,21 @@ export class LobbyClient {
     this.transport.send(encodeMsg({ t: 'removeBot', seat }));
   }
 
+  /** HOST ONLY. The CALLER gates on `serverCaps()` containing `'rooms2'` — an older server ignores it. */
+  roomSettings(patch: Partial<RoomSettings>): void {
+    this.transport.send(encodeMsg({ t: 'roomSettings', patch }));
+  }
+
+  /** HOST ONLY: turn a duo-record room into an ordinary one (one-way). Same `'rooms2'` gate. */
+  unlockRoom(): void {
+    this.transport.send(encodeMsg({ t: 'unlockRoom' }));
+  }
+
+  /** HOST ONLY: put a member (roster `clientId`) on an alliance. Same `'rooms2'` gate. */
+  moveMember(id: string, alliance: 'red' | 'blue'): void {
+    this.transport.send(encodeMsg({ t: 'moveMember', id, alliance }));
+  }
+
   /** enter the ranked queue on this `?mm=1` connection. On a match the server sends
    * `matchAssigned` (reconnect to the host region). (Re)sends on open + reconnect,
    * with the auth JWT. `homeRegion`/`accessMs` are the client's network position (so
@@ -379,7 +395,7 @@ export class LobbyClient {
     game?: GameId,
     /** "play a friend": queue under a challenge token so the server pairs us with
      * the person we challenged instead of the open pool (see ui/challenge.ts) */
-    party?: { token: string; format: string; partyOnly: boolean },
+    party?: { token: string; format: string },
   ): void {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
@@ -387,7 +403,7 @@ export class LobbyClient {
         encodeMsg({
           t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden, game,
           caps: CLIENT_CAPS, channel: appChannel(), build: appBuild(),
-          party: party?.token, partyFormat: party?.format, partyOnly: party?.partyOnly,
+          party: party?.token, partyFormat: party?.format,
         }),
       );
     };
@@ -451,7 +467,7 @@ export class LobbyClient {
       this.players = m.players;
       this.hostId = m.hostId;
       importVisuals.noteRoster(this.clientId, m.players);
-      this.handlers.roster?.(m.players, m.hostId);
+      this.handlers.roster?.(m.players, m.hostId, m.settings);
     } else if (m.t === 'matchStart') {
       this.stopStagedWatch(); // the three answers `watchStagedStart` waits for
       this.handlers.matchStart?.(m);

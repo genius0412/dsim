@@ -1,6 +1,6 @@
 import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { actFor, getRating, getSkill, createPendingMatch, clearRoomInvites } from './db/repo';
+import { actFor, getRating, getSkill, createPendingMatch, clearRoomInvites, friendIdsOf } from './db/repo';
 import { PLACEMENT_GAMES } from '../src/config';
 import { dbEnabled } from './db/pool';
 import type { GameId, Physics } from '../src/types';
@@ -262,9 +262,6 @@ export interface QueueEntry {
    * to a challenge whose other half is already in someone else's match.
    */
   partySize?: number;
-  /** this party is the WHOLE match: pair it with itself and nobody else, and skip
-   * the search radius (they chose each other; there is nothing to widen toward) */
-  partyOnly?: boolean;
   /** set by enqueue (this.now()); drives the widening ceiling */
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
@@ -299,6 +296,14 @@ export interface QueueEntry {
   seed?: number;
   /** the rating read is in flight — see `RATING_WAIT_MS` */
   ratingPending?: boolean;
+  /**
+   * This account's friends, SERVER-STAMPED like `rating` (never off the wire). Friends are
+   * teammates, never ranked opponents: a group that would put two of them on opposite
+   * alliances is not formed. Absent = unknown, which means "do not gate".
+   */
+  friendIds?: Set<string>;
+  /** the friends read is in flight — waits on the same `RATING_WAIT_MS` as the rating */
+  friendsPending?: boolean;
   /** DEV FALLBACK only: told which local Room this connection landed in */
   onRoom?: (room: Room) => void;
 }
@@ -329,6 +334,8 @@ export interface MatchmakerDeps {
   stage?: StageFn;
   /** override the rating read (default: Postgres elo_ratings when dbEnabled) */
   rating?: RatingFn;
+  /** override the friends read (default: Postgres `friendships` when dbEnabled) */
+  friends?: (userId: string) => Promise<string[]>;
 }
 
 let roomSeq = 0;
@@ -343,6 +350,7 @@ export class Matchmaker {
   private readonly now: () => number;
   private readonly stage?: StageFn;
   private readonly rating?: RatingFn;
+  private readonly friends?: (userId: string) => Promise<string[]>;
   private readonly timer: ReturnType<typeof setInterval> | null;
 
   constructor(deps: MatchmakerDeps = {}) {
@@ -364,6 +372,8 @@ export class Matchmaker {
             }
           }
         : undefined);
+    // fail open like the rating: a read that throws leaves the entry ungated
+    this.friends = deps.friends ?? (dbEnabled ? (userId) => friendIdsOf(userId) : undefined);
     // auto-widen: re-attempt matches as ceilings grow. Disabled when a clock is
     // injected (deterministic tests drive matching via enqueue/expand/tick).
     this.timer = deps.now ? null : setInterval(() => this.tick(), 1000);
@@ -383,6 +393,7 @@ export class Matchmaker {
     entry.expandBumps = entry.expandBumps ?? 0;
     this.queues[entry.mode].push(entry);
     this.stampRating(entry);
+    this.stampFriends(entry);
     this.tryMatch(entry.mode);
     this.broadcastStatus(entry.mode);
   }
@@ -425,6 +436,22 @@ export class Matchmaker {
       .catch(() => {
         /* fail open: an unrated entry pairs on latency alone */
       });
+  }
+
+  /** Same shape as `stampRating`: not awaited, re-found by id, fail open. */
+  private stampFriends(entry: QueueEntry): void {
+    const read = this.friends;
+    if (!read || !entry.userId) return;
+    const { id, mode, userId } = entry;
+    entry.friendsPending = true;
+    const settle = (ids: string[] | null): void => {
+      const live = this.queues[mode].find((e) => e.id === id);
+      if (!live || live.userId !== userId) return; // left, or re-queued since
+      live.friendsPending = false;
+      if (ids) live.friendIds = new Set(ids);
+      this.tryMatch(mode);
+    };
+    void read(userId).then(settle, () => settle(null));
   }
 
   remove(id: string): void {
@@ -579,23 +606,13 @@ export class Matchmaker {
     const now = this.now();
     // an entry whose rating read is still in flight sits out, for at most RATING_WAIT_MS
     const waiting = (u: QueueEntry[]): boolean =>
-      u.some((e) => e.ratingPending && now - e.enqueuedAt < RATING_WAIT_MS);
+      u.some((e) => (e.ratingPending || e.friendsPending) && now - e.enqueuedAt < RATING_WAIT_MS);
     for (let i = 0; i < units.length; i++) {
       const anchor = units[i];
       if (anchor.length > need) continue; // malformed party — never stage it
       if (!partyReady(anchor)) continue; // still waiting on its other member
       if (waiting(anchor)) continue;
       const group = [...anchor];
-      if (anchor.some((e) => e.partyOnly)) {
-        // a CLOSED party (rated 1v1): it is the whole match or it waits. No
-        // strangers, and no radius gate — two people who challenged each other
-        // have already decided they'll play across whatever distance separates
-        // them. The compatibility bucket still applies: same channel + build or no
-        // match, because a mixed-build match desyncs no matter who asked for it.
-        if (group.length !== need) continue;
-        if (group.some((e) => bucketKey(e) !== bucketKey(anchor[0]))) continue;
-        return { group, hostRegion: bestHost(group.map(toPing)).hostRegion };
-      }
       const taken = new Set<number>([i]);
       // THE REGION THE GROUP SO FAR ALL SHARES, when that is a region we deploy to.
       // This is what makes the common case cheap, and it is a property of the GROUP, so
@@ -622,8 +639,6 @@ export class Matchmaker {
         for (let j = 0; j < units.length; j++) {
           if (taken.has(j)) continue;
           const cand = units[j];
-          // a closed party never joins someone else's group
-          if (cand.some((e) => e.partyOnly)) continue;
           // and a half-arrived party is not available to be taken
           if (!partyReady(cand)) continue;
           if (waiting(cand)) continue;
@@ -655,10 +670,12 @@ export class Matchmaker {
           // the fill, so similar players still tend to be drawn together.
           let span = ratingSpan(group, cand, mode === '1v1' ? placedRating : mmNumber);
           if (mode === '1v1') {
+            if (friendsOpposed([...group, ...cand])) continue;
             if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
           } else if (group.length + cand.length === need) {
             const trial = [...group, ...cand];
             const split = bestSplit(allianceOrder(trial));
+            if (split.clash) continue; // friends are teammates, never opponents
             if (split.known) {
               let band = Infinity;
               for (const e of trial) band = Math.min(band, this.teamBandOf(e, now));
@@ -863,11 +880,9 @@ export class Matchmaker {
 
   /** live queue depth per bucket ACROSS EVERY GAME. Kept because older clients read
    * this shape; new ones want `queueSizesByGame` (a DECODE player cannot pair with
-   * a Chain Reaction queuer, so a combined number misleads them). CLOSED parties are
-   * excluded: they can never pair with anyone reading this, so counting them would
-   * advertise a pool that isn't there. */
+   * a Chain Reaction queuer, so a combined number misleads them). */
   queueSizes(): Record<QueueMode, number> {
-    const open = (m: QueueMode): number => this.queues[m].reduce((n, e) => n + (e.partyOnly ? 0 : 1), 0);
+    const open = (m: QueueMode): number => this.queues[m].length;
     return { '1v1': open('1v1'), '2v2': open('2v2') };
   }
 
@@ -885,7 +900,6 @@ export class Matchmaker {
     const out: Record<string, Record<QueueMode, number>> = {};
     for (const mode of Object.keys(this.queues) as QueueMode[]) {
       for (const e of this.queues[mode]) {
-        if (e.partyOnly) continue; // a closed challenge is not an open pool
         const g = e.game ?? 'decode';
         out[g] ??= { '1v1': 0, '2v2': 0 };
         out[g][mode]++;
@@ -935,27 +949,12 @@ export class Matchmaker {
     // and answers /health. The counts below are the same numbers the reduces
     // produced; only the number of times they are computed changed.
     const byBucket = new Map<string, number>();
-    const byParty = new Map<string, number>();
-    // `x.party` is compared with `===` below, so undefined has to stay its own key
-    // rather than collapsing into the string one — a closed party with no token must
-    // keep counting exactly the entries that also have none.
-    const partyKey = (e: QueueEntry): string => (e.party === undefined ? '\0none' : `t${e.party}`);
     for (const x of this.queues[mode]) {
-      const pk = partyKey(x);
-      byParty.set(pk, (byParty.get(pk) ?? 0) + 1);
-      // the open-pool count excludes closed parties, exactly as the old predicate did
-      if (!x.partyOnly) {
-        const bk = bucketKey(x);
-        byBucket.set(bk, (byBucket.get(bk) ?? 0) + 1);
-      }
+      const bk = bucketKey(x);
+      byBucket.set(bk, (byBucket.get(bk) ?? 0) + 1);
     }
     for (const e of this.queues[mode]) {
-      // a closed party isn't waiting on the pool, it's waiting on one person — so
-      // count only its own members. Otherwise a friend challenge would read "6/2"
-      // off a busy open queue it can never be matched from.
-      const size = e.partyOnly
-        ? (byParty.get(partyKey(e)) ?? 0)
-        : (byBucket.get(bucketKey(e)) ?? 0);
+      const size = byBucket.get(bucketKey(e)) ?? 0;
       e.send({ t: 'queued', mode, size, need: QUEUE_NEED[mode] });
     }
   }
@@ -1012,9 +1011,11 @@ export function skillOf(
  * numbers, so a missing rating still delays nobody. Since 2026-10-02 an unplaced player's
  * provisional 2v2 rating counts (`skillOf`), so "unknown" means no 2v2 game yet.
  */
-export function bestSplit(group: QueueEntry[]): { group: QueueEntry[]; dev: number; known: boolean } {
+export function bestSplit(
+  group: QueueEntry[],
+): { group: QueueEntry[]; dev: number; known: boolean; clash: boolean } {
   const known = group.every((e) => mmNumber(e) !== undefined);
-  if (group.length !== 4) return { group, dev: 0, known }; // 1v1 has nothing to distribute
+  if (group.length !== 4) return { group, dev: 0, known, clash: friendsOpposed(group) }; // 1v1 has nothing to distribute
   const num = (e: QueueEntry): number => mmNumber(e) ?? 1000;
   const gap = (g: QueueEntry[]): number => Math.abs(num(g[0]) + num(g[1]) - (num(g[2]) + num(g[3])));
   const movable = (i: number): boolean => group[i].party === undefined;
@@ -1022,6 +1023,7 @@ export function bestSplit(group: QueueEntry[]): { group: QueueEntry[]; dev: numb
 
   let best = group;
   let bestGap = gap(group);
+  let bestClash = friendsOpposed(group);
   // the three partitions of four players into two pairs are reachable by swapping one
   // red with one blue, so enumerating those four swaps covers them all
   for (let r = 0; r < half; r++) {
@@ -1031,15 +1033,31 @@ export function bestSplit(group: QueueEntry[]): { group: QueueEntry[]; dev: numb
       trial[r] = group[b];
       trial[b] = group[r];
       const g = gap(trial);
-      if (g < bestGap) {
+      // a split without friends across it beats any split with one, balance second
+      const c = friendsOpposed(trial);
+      if ((bestClash && !c) || (c === bestClash && g < bestGap)) {
         bestGap = g;
         best = trial;
+        bestClash = c;
       }
     }
   }
   // the alliance MEANS differ by half the sums' gap
   const e = 1 / (1 + Math.exp(-bestGap / 2 / GLICKO_SCALE));
-  return { group: best, dev: e - 0.5, known };
+  return { group: best, dev: e - 0.5, known, clash: bestClash };
+}
+
+/** does the split (`i < half` is red) put two friends on opposite alliances? */
+export function friendsOpposed(group: QueueEntry[]): boolean {
+  const half = group.length / 2;
+  // either account's read may be the one that landed, so check both directions
+  const knows = (a: QueueEntry, b: QueueEntry): boolean => !!b.userId && !!a.friendIds?.has(b.userId);
+  for (let i = 0; i < half; i++) {
+    for (let j = half; j < group.length; j++) {
+      if (knows(group[i], group[j]) || knows(group[j], group[i])) return true;
+    }
+  }
+  return false;
 }
 
 /** every member of this unit sits in region `r` */
@@ -1111,11 +1129,6 @@ export function groupUnits(q: QueueEntry[]): QueueEntry[][] {
  * The split is positional, so all this has to do is make parties contiguous and
  * front-loaded — a stable sort by descending unit size does it: a 2v2 with one
  * party becomes [P, P, S, S], red = the party.
- *
- * The 1v1 case looks like it should be the exception and isn't. A `rated1v1`
- * party of two lands at indices 0 and 1 with half = 1, so it splits ACROSS the
- * alliances — which is exactly right, because in that format the party is the two
- * opponents, not two teammates. Same rule, both meanings.
  */
 export function allianceOrder(group: QueueEntry[]): QueueEntry[] {
   const units = groupUnits(group);

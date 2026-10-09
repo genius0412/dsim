@@ -169,72 +169,76 @@ const namesOf = (m: PendingMatch | undefined): string =>
   check('open: cross-region strangers wait for the radius', staged.length === 0);
 }
 
-// ---- closed party (rated 1v1 challenge) ------------------------------------
+// ---- friends are teammates, never ranked opponents -------------------------
+// `rated1v1` (a closed pair staged against each other) is retired. The matchmaker now
+// refuses any split that puts two accounts from `friendships` on opposite alliances.
+const friendsOf = (table: Record<string, string[]>) => async (u: string): Promise<string[]> => table[u] ?? [];
 {
-  const { staged } = await pair([entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true })]);
-  check('closed 1v1: challenger alone waits', staged.length === 0);
+  const { staged } = await pair(
+    [entry('a', '1v1'), entry('b', '1v1')],
+    { friends: friendsOf({ 'u-a': ['u-b'], 'u-b': ['u-a'] }) },
+  );
+  check('friends 1v1: two friends are never staged as opponents', staged.length === 0);
 }
 {
-  const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-  ]);
-  check('closed 1v1: the pair matches', staged.length === 1);
-  check('closed 1v1: rated', staged[0]?.ranked === true);
+  // one side knowing is enough (the table is read per account, either may lag)
+  const { staged } = await pair(
+    [entry('a', '1v1'), entry('b', '1v1')],
+    { friends: friendsOf({ 'u-a': ['u-b'] }) },
+  );
+  check('friends 1v1: one direction of the friendship is enough', staged.length === 0);
+}
+{
+  // ...but they do not block anyone else: a friend waits, the next stranger matches
+  const { staged } = await pair(
+    [entry('a', '1v1'), entry('b', '1v1'), entry('c', '1v1')],
+    { friends: friendsOf({ 'u-a': ['u-b'], 'u-b': ['u-a'] }) },
+  );
+  check('friends 1v1: a stranger still matches', staged.length === 1);
+  check('friends 1v1: ...and it is not the friend pair', !namesOf(staged[0]).includes('a,b'), namesOf(staged[0]));
+}
+{
+  const { staged } = await pair([entry('a', '1v1'), entry('b', '1v1')], { friends: friendsOf({}) });
+  check('friends 1v1: non-friends match as before', staged.length === 1);
+}
+{
+  // 2v2: four open players, two of them friends — the split must put them together
+  const { staged } = await pair(
+    [entry('a', '2v2'), entry('b', '2v2'), entry('c', '2v2'), entry('d', '2v2')],
+    { friends: friendsOf({ 'u-a': ['u-c'], 'u-c': ['u-a'] }) },
+  );
   const al = alliancesOf(staged[0]);
-  check('closed 1v1: opponents, not teammates', !!al['a'] && al['a'] !== al['b'], JSON.stringify(al));
+  check('friends 2v2: an open group still forms', staged.length === 1);
+  check('friends 2v2: the friends land on one alliance', !!al['a'] && al['a'] === al['c'], JSON.stringify(al));
 }
 {
-  // THE important one: a closed party is unreachable from the open pool. A stranger
-  // waiting in 1v1 must never be pulled into somebody's friend challenge, and the
-  // challenger must never be spent on the stranger.
-  const half = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-    entry('x', '1v1'),
-  ]);
-  check('closed 1v1: a stranger cannot be pulled in', half.staged.length === 0);
-
-  const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-    entry('x', '1v1'),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-  ]);
-  check('closed 1v1: pairs with its own partner, not the stranger', staged.length === 1);
-  check('closed 1v1: exactly the challenged pair', namesOf(staged[0]) === 'a,b', namesOf(staged[0]));
+  // a premade vs its own friend: the premade cannot be split and the friend is a solo
+  // who must go on the premade's side, which `bestSplit` cannot do — the group is refused
+  const { staged } = await pair(
+    [
+      entry('p1', '2v2', { party: 'tok', partySize: 2 }),
+      entry('p2', '2v2', { party: 'tok', partySize: 2 }),
+      entry('s1', '2v2'),
+      entry('s2', '2v2'),
+    ],
+    { friends: friendsOf({ 'u-p1': ['u-s1'], 'u-s1': ['u-p1'] }) },
+  );
+  const al = alliancesOf(staged[0]);
+  check('friends 2v2: a premade’s friend is never put against it', staged.length === 0 || al['p1'] === al['s1'],
+    JSON.stringify(al));
 }
 {
-  // a challenge crosses any distance — the two already chose each other, so the
-  // widening schedule has nothing to say about it
-  const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true, homeRegion: 'syd' }),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true, homeRegion: 'lhr' }),
-  ]);
-  check('closed 1v1: ignores the search radius', staged.length === 1);
+  // a friends read that never lands fails open once the wait is up, like the rating
+  const { staged } = await pair(
+    [entry('a', '1v1'), entry('b', '1v1')],
+    { friends: async () => { throw new Error('db down'); } },
+  );
+  check('friends: a failed read does not gate anyone', staged.length === 1);
 }
 {
-  // ...but NOT the compatibility bucket. Two friends on different builds run
-  // different code; matching them would desync the match, challenge or not.
-  const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true, build: 'sha-1' }),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true, build: 'sha-2' }),
-  ]);
-  check('closed 1v1: mixed builds still refuse', staged.length === 0);
-}
-{
-  // two different challenges in flight at once must not cross-pair
-  const cross = await pair([
-    entry('a', '1v1', { party: 't1', partySize: 2, partyOnly: true }),
-    entry('c', '1v1', { party: 't2', partySize: 2, partyOnly: true }),
-  ]);
-  check('closed 1v1: separate tokens never cross-pair', cross.staged.length === 0);
-
-  const { staged } = await pair([
-    entry('a', '1v1', { party: 't1', partySize: 2, partyOnly: true }),
-    entry('c', '1v1', { party: 't2', partySize: 2, partyOnly: true }),
-    entry('d', '1v1', { party: 't2', partySize: 2, partyOnly: true }),
-  ]);
-  check('closed 1v1: the second challenge resolves on its own token', staged.length === 1);
-  check('closed 1v1: right pair matched', namesOf(staged[0]) === 'c,d', namesOf(staged[0]));
+  // a retired closed-pair queue is refused at the door, so nothing in the pool is `partyOnly`
+  const src = readFileSync('server/index.ts', 'utf8');
+  check('rated1v1: the queue door refuses partyOnly', /msg\.partyOnly\) return 'bad-token'/.test(src));
 }
 
 // ---- premade party (ranked 2v2 with a friend) ------------------------------
@@ -363,15 +367,15 @@ const namesOf = (m: PendingMatch | undefined): string =>
 // both entries carry the challenge's own game.
 {
   const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true, game: 'decode' }),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true, game: 'chain' }),
+    entry('a', '1v1', { game: 'decode' }),
+    entry('b', '1v1', { game: 'chain' }),
   ]);
   check('challenge: a pair split across GAMES never stages (bucket rule holds)', staged.length === 0);
 }
 {
   const { staged } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true, game: 'chain' }),
-    entry('b', '1v1', { party: 'tok', partySize: 2, partyOnly: true, game: 'chain' }),
+    entry('a', '1v1', { game: 'chain' }),
+    entry('b', '1v1', { game: 'chain' }),
   ]);
   check('challenge: both sides on the challenge’s game DO pair', staged.length === 1);
   check('challenge: ...and the room is staged for that game', staged[0]?.game === 'chain', String(staged[0]?.game));
@@ -415,15 +419,6 @@ const namesOf = (m: PendingMatch | undefined): string =>
   // the combined shape stays correct too — older clients still read it
   check('per-game depth: the combined total is unchanged for old clients', mm.queueSizes()['1v1'] === 2);
 }
-{
-  // a CLOSED challenge is not an open pool in either shape
-  const { mm } = await pair([
-    entry('p1', '1v1', { game: 'decode', party: 'tok', partySize: 2, partyOnly: true }),
-  ]);
-  check('per-game depth: a closed challenge is not advertised as available',
-    (mm.queueSizesByGame().decode?.['1v1'] ?? 0) === 0);
-}
-
 // ---- the operator view of the queue -----------------------------------------
 // A depth count cannot distinguish "nobody is queueing" from "everybody is queueing
 // and nothing is pairing", which is exactly the failure an operator gets called
@@ -441,24 +436,6 @@ const namesOf = (m: PendingMatch | undefined): string =>
 }
 
 // ---- queue depth reporting --------------------------------------------------
-{
-  const { mm } = await pair([
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true }),
-    entry('x', '1v1'),
-  ]);
-  const sizes = mm.queueSizes();
-  check('queueSizes: closed parties are not advertised as available', sizes['1v1'] === 1, String(sizes['1v1']));
-}
-{
-  // a closed waiter is told about its OWN party, not the open pool it can't join
-  const seen: ServerMsg[] = [];
-  await pair([
-    entry('x1', '1v1'),
-    entry('a', '1v1', { party: 'tok', partySize: 2, partyOnly: true, send: (m) => seen.push(m) }),
-  ]);
-  const last = seen.filter((m) => m.t === 'queued').pop();
-  check('queued: a challenge reports 1/2, not the open depth', last?.t === 'queued' && last.size === 1, JSON.stringify(last));
-}
 {
   // THE OPEN-POOL HALF of the same rule, which had no check at all — only the closed
   // party above did. `broadcastStatus` counts per BUCKET (game|channel|build), and the
@@ -816,15 +793,6 @@ const namesOf = (m: PendingMatch | undefined): string =>
   await new Promise((r) => setTimeout(r, 0));
   check('skill: among equal-latency candidates it takes the closest RATED one',
     namesOf(staged[0]) === 'anchor,near', namesOf(staged[0]));
-}
-{
-  // A CLOSED PARTY IS NEVER SKILL-GATED. Two friends who challenged each other have
-  // already decided; a rating band there would refuse a match both sides asked for.
-  const { staged } = await pair([
-    entry('c1', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 600, placed: true } as Partial<QueueEntry>),
-    entry('c2', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 2000, placed: true } as Partial<QueueEntry>),
-  ]);
-  check('skill: a friend challenge ignores the band entirely', staged.length === 1, `${staged.length}`);
 }
 {
   // the freshest arrival caps the group, exactly as it does for the radius

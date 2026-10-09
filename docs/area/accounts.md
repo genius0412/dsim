@@ -37,6 +37,24 @@ Reading it as `'3d'` emptied the board and claimed the period with zero winners,
 `submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
 Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
 `npm run dbtest`.
+**RECORD CATEGORIES AND WINDOWS** (rooms plan M5/M7, 2026-10-08, migration 0062). `/api/records`
+takes `category` (`total` default, `auto`, `teleop`) and `window` (`season` default, `day`,
+`week`, `month`, `all`), echoing both plus `windowStart`/`resetsAt`; an older client sends neither
+and gets what it always did. A run's `auto_score`/`teleop_score` are the NET points of each period,
+captured in the room (`Room.recordSplit`, `MatchOutcome.split`): the game's own `auto` fact read at
+the instant THAT game counts AUTO at (Chain `autoEnd`; BIOBUZZ and DECODE by `teleopStart`, because
+they book the transition as AUTO), the fouls handed over at the same instant come off AUTO, and
+TELEOP is the rest; a run whose net total is 0 (a void) is 0 in both. A row from before 0062 has
+null splits and stays off the Auto/TeleOp boards, and `personalBest`/`recordRank`/the awards stay
+Total/Season. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
+Windows roll over at **08:00 UTC** (day; Monday week; the 1st for month, `server/boardWindow.ts`),
+computed by the SERVER; they sit inside the current season, so one era. `all` (lifetime) drops the
+season filter but keeps ONE physics inside `best` (the live era, or `era=2d|3d` for a game with
+both), so 2D and 3D never share a board. `$1` stays in the lifetime SQL as `$1::int is null`:
+Postgres rejects a parameter it cannot type. Not built: `run_length` and the auto-only filters
+(M6, the column arrives with the first auto-only run), a response cache, the one-query personal
+rank. Covered in `npm test` ("split:", "window:") and `npm run dbtest` ("category:", "window:",
+"lifetime:").
 **ADMIN MENU** (`src/ui/Admin.tsx`, `/admin`) gated on the signed-in UUID (`ADMIN_USER_IDS`;
 the server enforces every action independently). **VERSION GATE**: a new build is detected
 (`__BUILD_ID__` → `/version.json` poll) and forces a refresh when a player STARTS a run
@@ -544,17 +562,22 @@ Tests: `npm test` ("notices:" — wording, copy rules, the refund rule, the rout
 
 **PLAY A FRIEND — challenges (chess.com's model), DONE.** A challenge (`room_invites` +
 migration `0019`) carries a **`format`**: `casual1v1`/`casual2v2` (a `versus` room),
-`duorecord` (a `record`/`duo` room), or the two RATED ones. Rating is only ever applied to a
+`duorecord` (a `record`/`duo` room), or the RATED one (`ranked2v2`). Rating is only ever applied to a
 matchmaker-STAGED room (`Room.ranked` ← `pending_matches`), so a code-joined room can NEVER
 rate — the rated formats therefore resolve through the MATCHMAKER, not through a room code.
 The challenge's `room` column doubles as a **party token** both sides send on `queue`
-(`party`/`partyOnly`/`partyFormat`; `RATED_FORMATS` in protocol.ts maps format → mode +
-partyOnly). The matchmaker pairs on **UNITS** (`groupUnits`), never individual entries:
-`rated1v1` is a CLOSED party (the token IS the match — no strangers, and the search radius is
-skipped since they chose each other; the channel+build bucket still applies), `ranked2v2` is a
-PREMADE that queues into the OPEN pool and is kept on one alliance by `allianceOrder`. That
-same ordering needs NO 1v1 exception: there the party is the two opponents and half=1 splits
-them correctly. **`partySize` (2) is load-bearing** — the members enqueue seconds apart, and
+(`party`/`partyFormat`; `RATED_FORMATS` in protocol.ts maps format → mode). The matchmaker
+pairs on **UNITS** (`groupUnits`), never individual entries: `ranked2v2` is a PREMADE that
+queues into the OPEN pool and is kept on one alliance by `allianceOrder`.
+**FRIENDS ARE TEAMMATES, NEVER RANKED OPPONENTS** (2026-10-07, rooms plan M0). `rated1v1`, the
+closed pair that staged two friends against each other, is RETIRED: `/api/friends/invite`
+answers it **410** (an unknown format would coerce to null and become a bogus casual invite),
+and a `queue` carrying `partyOnly` or that format is REFUSED at `verifyParty`, never downgraded
+into the open pool. Leftover pending rows read "Retired challenge" with only Dismiss. The
+matchmaker stamps each queued account's friends (`friendIdsOf`, `friendships`) like its rating
+and refuses any group that puts two of them on opposite alliances (`friendsOpposed`; in 2v2
+`bestSplit` prefers a clash-free split, and a group with none is skipped). Cost: two friends
+alone in one bucket cannot match each other and wait for a third player. **`partySize` (2) is load-bearing** — the members enqueue seconds apart, and
 without it the first arrival reads as a complete unit and is swallowed by an open group.
 **The token is VERIFIED, never trusted** (`challengeParty` → `verifyParty`): it resolves
 against the real challenge row and only answers for an account named on it, so two clients

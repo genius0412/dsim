@@ -63,6 +63,26 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   - Checks: `npm run test:workers` (`scripts/workersmoke.ts`) — the pool with fake sockets (a
     killed worker, backlog, dispose, revive, the awaited calls), then the same scenarios against a
     real server in-process and on two workers. Kept out of `npm test`.
+- ⚠️ **ROOM SETTINGS: A ROOM'S SHAPE IS THE HOST'S, AND THE SERVER BUILDS IT** (rooms plan M1,
+  2026-10-07; `docs/rooms-and-leaderboards-plan.md`). `RoomConfig.settings` (`RoomSettings`:
+  `preset`, `perAlliance`, `teamSwitch`, `listed`) is built by `coerceRoomSettings` from the first
+  joiner's UNTRUSTED request, which contributes only `preset` and `listed`; the sides come from the
+  preset, and a record room is locked to its record shape (all seats BLUE, record runs are forced
+  onto one alliance), Private. Capacity is the sum of the sides (`roomCapacity`, `Room.capacity`),
+  clamped to `ROOM_CAPACITY` (4) until 3-4 a side lands. **No `settings` = the legacy room, byte
+  for byte** (old clients, staged ranked/competition codes, LAN): everyone picks a side, any split
+  up to four seats. Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
+  client gates on `serverCaps()`; an older server ignores them) are refused in a staged/ranked room
+  (`hostControlRefusal`: a host there could demote an opponent and have them charged a no-show) and
+  once the match is set up. Sides are enforced in `add` (a joiner lands on a side with room) and in
+  `update` (a self-switch onto a full side, or with team switching off, is DROPPED, so an old client
+  obeys too). A shrink below who is seated is refused, never auto-demoting anyone; a settings change
+  clears everyone's ready, a move clears that member's. `unlockRoom` turns a duo record into a
+  custom room, one-way and only before the first run; it mutates `config.kind/record` IN PLACE, and
+  a worker room's socket-thread copy follows through `RoomFacts.cfg` (`applyFacts`), the same way the
+  capacity follows through `lobby.capacity`. `MatchOutcome.config.settings` is the room as it ENDED
+  and `matches.preset` (0061) stores it beside `mode`, whose check constraint cannot say 3v1.
+  Smoke: "settings:" (shared), `test:workers` "unlocking a worker room", `dbtest` "preset:".
 - ⚠️ **A MISSING INPUT TICK KEEPS THE LAST APPLIED BUTTONS** (`frameCommands`, 2026-09-25).
   Inputs ride the unreliable lane, one tick per packet, and a tick with none of its own is filled
   from `latest`, the newest command BY TICK. A client runs ahead, so that is usually a FUTURE

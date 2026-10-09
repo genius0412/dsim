@@ -10274,11 +10274,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   // challenge into an ordinary open-queue entry on the way back in.
   {
     const ch = {
-      token: 'TMFX2K', format: 'rated1v1', mode: '1v1' as const,
-      partyOnly: true, game: 'chain' as const, opponent: 'bob',
+      token: 'TMFX2K', format: 'ranked2v2', mode: '2v2' as const,
+      game: 'chain' as const, opponent: 'bob',
     };
     parkQueue({
-      lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
+      lobby: {} as never, mode: '2v2', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
       assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
@@ -16761,6 +16761,75 @@ const forceRoomToPost = (room: Room): void => {
   room.advanceForTest(Math.round(MATCH_SETTLE_MAX_S / SIM_DT) + 10);
 };
 
+// ---- a record run's AUTO / TELEOP split, and the board windows (rooms plan M5/M7) ----
+// The Auto and TeleOp boards need what a run earned in each period, net of the fouls committed in
+// it. The room reads the game's own `auto` fact at the instant that game counts AUTO at and the
+// fouls handed over at that instant; the rest is TELEOP.
+{
+  const { windowBounds, coerceWindow } = await import('../server/boardWindow');
+  const at = (iso: string) => windowBounds('day', new Date(iso));
+  check('window: after 08:00 UTC the day started today at 08:00', at('2026-10-07T09:00:00Z').start === '2026-10-07T08:00:00.000Z');
+  check('window: before 08:00 UTC it is still yesterday', at('2026-10-07T07:00:00Z').start === '2026-10-06T08:00:00.000Z');
+  check('window: the day resets 24 hours after it starts', at('2026-10-07T09:00:00Z').resetsAt === '2026-10-08T08:00:00.000Z');
+  const wk = (iso: string) => windowBounds('week', new Date(iso));
+  check('window: the week starts on Monday 08:00 UTC', wk('2026-10-07T09:00:00Z').start === '2026-10-05T08:00:00.000Z');
+  check('window: Monday before 08:00 is still last week', wk('2026-10-05T07:59:00Z').start === '2026-09-28T08:00:00.000Z');
+  check('window: the week resets next Monday', wk('2026-10-07T09:00:00Z').resetsAt === '2026-10-12T08:00:00.000Z');
+  const mo = (iso: string) => windowBounds('month', new Date(iso));
+  check('window: the month starts on the 1st at 08:00', mo('2026-10-07T09:00:00Z').start === '2026-10-01T08:00:00.000Z');
+  check('window: the 1st before 08:00 is still last month, across a year end', mo('2027-01-01T07:00:00Z').start === '2026-12-01T08:00:00.000Z');
+  check('window: the month resets on the next 1st', mo('2026-12-15T00:00:00Z').resetsAt === '2027-01-01T08:00:00.000Z');
+  check('window: the season and all-time boards have no window', windowBounds('season', new Date()).start === null && windowBounds('all', new Date()).resetsAt === null);
+  check('window: an unknown value is the season board', coerceWindow('decade') === 'season' && coerceWindow(undefined) === 'season');
+
+  const solo = (id: string): Client => ({
+    id, send: () => {}, connected: true, disconnectAt: 0, userId: `u-${id}`,
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+  });
+  const runRecord = (game: 'decode' | 'chain' | 'biobuzz', tweak: (w: World, phase: string) => void): MatchOutcome | null => {
+    let seen: MatchOutcome | null = null;
+    const room = new Room(`smoke-split-${game}`, () => {}, { kind: 'record', record: 'solo', game }, (o) => { seen = o; });
+    room.add(solo('s1'));
+    room.onMessage('s1', { t: 'start' });
+    let last = '';
+    for (let i = 0; i < 20000; i++) {
+      room.advanceForTest(1);
+      const w = room.worldForTest();
+      if (!w) break;
+      if (w.match.phase !== last) { last = w.match.phase; tweak(w, last); }
+      if (w.match.phase === 'teleop') break;
+    }
+    forceRoomToPost(room);
+    return seen;
+  };
+  // DECODE: 10 in AUTO (leave), 5 foul points handed over during TELEOP
+  const dec = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') w.match.scores.blue.leave = 10;
+    if (ph === 'teleop') w.match.scores.red.foulPoints = 5;
+  });
+  check('split: DECODE reports one', !!dec?.split, JSON.stringify(dec?.split));
+  check('split: DECODE AUTO is the AUTO points, TELEOP is the rest net of fouls',
+    dec?.split?.blue.auto === 10 && (dec?.split?.blue.teleop ?? -1) >= 0 && dec.split.blue.auto + dec.split.blue.teleop <= (dec.result.score.blue ?? 0),
+    JSON.stringify([dec?.split?.blue, dec?.result.score.blue, dec?.result.foulPoints.red]));
+  const decF = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') { w.match.scores.blue.leave = 10; w.match.scores.red.foulPoints = 4; }
+  });
+  check('split: a foul committed in AUTO comes off AUTO', decF?.split?.blue.auto === 6, JSON.stringify(decF?.split?.blue));
+  const chn = runRecord('chain', (w, ph) => {
+    if (ph === 'auto' && w.chain) w.chain.particlePoints.blue = 20;
+  });
+  check('split: Chain Reaction reports one, AUTO is the particle points', chn?.split?.blue.auto === 20, JSON.stringify(chn?.split?.blue));
+  await initPhysics3d(); // a BIOBUZZ record room is a 3D room
+  const bio = runRecord('biobuzz', () => {});
+  check('split: BIOBUZZ reports one (its AUTO is read at TELEOP start)', !!bio?.split && bio.split.blue.auto >= 0 && bio.split.blue.teleop >= 0, JSON.stringify(bio?.split));
+  let vs: MatchOutcome | null = null;
+  const vr = new Room('smoke-split-vs', () => {}, { kind: 'versus' }, (o) => { vs = o; });
+  vr.add(solo('v1'));
+  vr.onMessage('v1', { t: 'start' });
+  forceRoomToPost(vr);
+  check('split: a versus room reports none', (vs as MatchOutcome | null)?.split === undefined);
+}
+
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------
 // A room used to be single-use: `world` was set once and never cleared, so after one
 // match `canJoin` refused every later joiner and the `start` gate refused every later
@@ -17842,6 +17911,118 @@ const recordDrive: CommandSource = (tick) => {
   );
   room.removeBot(live[1]);
   check('bot seats: the newest seat can be removed (it is not shadowed by an older twin)', botIds().length === 1, botIds().join(','));
+}
+
+// ---- room settings: the host-controlled shape (rooms plan M1) ------------------
+{
+  const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');
+  const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const lastRoster = (m: ServerMsg[]): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+    [...m].reverse().find((x): x is Extract<ServerMsg, { t: 'roster' }> => x.t === 'roster');
+  const errs = (m: ServerMsg[]): string[] => m.flatMap((x) => (x.t === 'error' ? [x.message] : []));
+
+  // coercion: never trust the label or the numbers
+  check('settings: no request ⇒ a legacy room', coerceRoomSettings('versus', undefined, undefined) === undefined);
+  const rec = coerceRoomSettings('record', 'solo', { preset: 'casual-2v2', listed: true, perAlliance: { red: 4, blue: 4 } });
+  check('settings: a record room is locked to its record shape, Private, whatever was sent',
+    rec?.perAlliance.blue === 1 && rec.perAlliance.red === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
+  const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 }, teamSwitch: false });
+  check('settings: a versus room cannot claim a record preset, and creation ignores the sides it sent',
+    fake?.preset === 'custom' && fake.perAlliance.red === 2 && fake.perAlliance.blue === 2 && fake.teamSwitch, JSON.stringify(fake));
+  const hostile = mergeRoomSettings(fake!, { perAlliance: { red: 99, blue: -3 }, teamSwitch: 'no' });
+  check('settings: a host patch is clamped to the ceiling and to sane numbers',
+    hostile.perAlliance.red + hostile.perAlliance.blue <= 4 && hostile.perAlliance.blue >= 0 && hostile.teamSwitch === true, JSON.stringify(hostile));
+  check('settings: capacity is the sum of the sides',
+    roomCapacity({ kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) }) === 2);
+  check('settings: Public is opt-in', coerceRoomSettings('versus', undefined, { preset: 'custom' })?.listed === false);
+
+  // a 1v1 preset: two seats, one a side
+  const seen: Record<string, ServerMsg[]> = { h: [], a: [], b: [] };
+  const cfg = { kind: 'versus' as const, settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) };
+  const room = new Room('smoke-set', () => {}, cfg);
+  const h = mk('h', 'red', seen.h);
+  const a = mk('a', 'red', seen.a); // asks for red, which is full
+  room.add(h);
+  room.add(a);
+  check('settings: a joiner whose side is full lands on the other', a.player.alliance === 'blue', a.player.alliance);
+  check('settings: the room is full at the sum of the sides', !room.canJoin());
+  check('settings: the roster carries the settings', lastRoster(seen.h)?.settings?.preset === 'casual-1v1');
+
+  // team switching
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: a self-switch onto a full side is dropped', a.player.alliance === 'blue');
+  room.onMessage('a', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: only the host changes settings', room.settings?.teamSwitch === true);
+  room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: the host can lock team switching', room.settings?.teamSwitch === false);
+  check('settings: a settings change clears everyone ready', !h.player.ready && !a.player.ready);
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+  a.player.ready = true;
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: team switching off ⇒ the self-switch is dropped even with a seat free', a.player.alliance === 'blue');
+
+  // host moves
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'red' });
+  check('settings: the host moves a member', a.player.alliance === 'red');
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'blue' });
+  check('settings: a second move of the same member inside the cooldown is ignored', a.player.alliance === 'red');
+  await new Promise((r) => setTimeout(r, 350));
+  check('settings: ...and a move clears that member ready', !a.player.ready);
+  room.onMessage('a', { t: 'moveMember', id: 'h', alliance: 'blue' });
+  check('settings: a guest cannot move anybody', h.player.alliance === 'red');
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 3 } } });
+  check('settings: a side cannot shrink below who is on it', room.settings?.perAlliance.red === 2 && errs(seen.h).some((e) => /Move 1 player off red/.test(e)), JSON.stringify(room.settings));
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });
+  check('settings: ...a shrink below the room total is refused too', room.settings?.perAlliance.red === 2);
+
+  // a duo-record room: seats are blue (the run alliance), locked, and Unlock opens it once
+  {
+    const sink: ServerMsg[] = [];
+    const dcfg = { kind: 'record' as const, record: 'duo' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const dr = new Room('smoke-duo', () => {}, dcfg);
+    const d1 = mk('d1', 'blue', sink);
+    const d2 = mk('d2', 'blue', []);
+    dr.add(d1);
+    dr.add(d2);
+    check('settings: a duo record seats both drivers on blue', d1.player.alliance === 'blue' && d2.player.alliance === 'blue');
+    dr.onMessage('d1', { t: 'roomSettings', patch: { teamSwitch: true } });
+    check('settings: a record room refuses settings changes', dr.settings?.teamSwitch === false);
+    dr.onMessage('d2', { t: 'unlockRoom' });
+    check('settings: only the host unlocks', dcfg.kind === 'record');
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlock turns a record room into a custom one (one-way)',
+      dcfg.kind === 'versus' && dcfg.record === undefined && dr.settings?.preset === 'custom' && dr.cfgFacts().kind === 'versus');
+    check('settings: ...and it is no longer a solo/duo record for the lock rules', !dr.soloRecord);
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlocking twice is refused', errs(sink).some((e) => /already unlocked/.test(e)));
+    dr.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    check('settings: an unlocked room takes the host controls', dr.settings?.perAlliance.red === 2);
+  }
+
+  // legacy rooms are untouched
+  const legacy = new Room('smoke-legacy', () => {}, { kind: 'versus' });
+  const lh = mk('lh', 'red', []);
+  legacy.add(lh);
+  legacy.onMessage('lh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a legacy room has no host controls', legacy.settings === undefined);
+  legacy.onMessage('lh', { t: 'update', patch: { alliance: 'blue' } });
+  check('settings: ...and everyone still picks their own side', lh.player.alliance === 'blue');
+
+  // a staged / ranked room refuses the host controls outright
+  const ranked = new Room('smoke-rank', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'custom' }) });
+  const rh = mk('rh', 'red', []);
+  const rsink: ServerMsg[] = [];
+  rh.send = (m) => rsink.push(m);
+  ranked.add(rh);
+  (ranked as unknown as { ranked: boolean }).ranked = true;
+  ranked.onMessage('rh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a ranked room refuses the host controls', ranked.settings?.teamSwitch === true && errs(rsink).length > 0);
 }
 
 {
@@ -28085,7 +28266,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
     /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',

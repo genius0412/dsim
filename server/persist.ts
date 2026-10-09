@@ -209,6 +209,9 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
         // that offers it, which is the point: a board fed by two different solves is two
         // boards, and this is what lets one be told from the other without a season reset.
         physics: o.replay.physics,
+        // the points of each period, for the Auto and TeleOp boards (0062); absent ⇒ off them
+        autoScore: o.split?.[primary.alliance].auto,
+        teleopScore: o.split?.[primary.alliance].teleop,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
         config: { spec: primarySpec, assists: primary.assists, partnerSpec },
