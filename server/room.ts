@@ -75,6 +75,8 @@ import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { absenceOf, chargedForParticipation, EARLY_ABSENT_TICKS, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
+import { joinClock, leaveClock, type Turn } from './tickScheduler';
+import { BallWireCache, referenceBody, referenceChanged, snapshotBody, snapshotParts } from './snapshotWire';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
    A value import here would drag a Postgres driver into the browser bundle — see
@@ -539,9 +541,20 @@ export class Room {
   private readonly lastRecvTick = new Map<number, number>();
   private readonly ackTick = new Map<string, number>(); // clientId -> newest input tick
   private readonly dropped = new Set<number>();
-  private loop: ReturnType<typeof setInterval> | null = null;
-  // delta-snapshot state: last-sent balls (id -> JSON) + clients holding a baseline
-  private prevBalls = new Map<number, string>();
+  /** this room's turn on the shared 60 Hz clock (`server/tickScheduler.ts`), while on it */
+  private loop: Turn | null = null;
+  /**
+   * SNAPSHOT PARITY: this room broadcasts on ticks where `(tick + snapPhase) % 2 === 0`. Handed
+   * out by the clock so half a machine's rooms encode on odd ticks and half on even ones; 0
+   * (every even tick, the old cadence) whenever the room is not on the clock — which is also
+   * every test that drives ticks itself (`advanceForTest` drops the room off the clock first).
+   */
+  private snapPhase: 0 | 1 = 0;
+  // delta-snapshot state: each ball's wire form as of the last broadcast (see
+  // `server/snapshotWire.ts`) + clients holding a baseline
+  private readonly ballWire = new BallWireCache();
+  /** TEST ONLY (`checkWireForTest`): the pre-`BallWireCache` encoder, run beside the live one */
+  private wireCheck: { prev: Map<number, string>; frames: number; bodies: number; mismatches: string[] } | null = null;
   /** `serverTick` of the last broadcast snapshot — the baseline a RELIABLE recipient holds */
   private prevSnapTick = -1;
   /** which ball ids changed on each of the last `SNAP_HISTORY_FRAMES` broadcasts, oldest
@@ -2643,7 +2656,8 @@ export class Room {
     this.lastRecvTick.clear();
     this.ackTick.clear();
     this.dropped.clear();
-    this.prevBalls.clear();
+    this.ballWire.reset();
+    if (this.wireCheck) this.wireCheck.prev = new Map();
     this.prevSnapTick = -1;
     this.snapChanged.length = 0;
     this.snapHistoryFrom = -1;
@@ -3294,89 +3308,89 @@ export class Room {
 
   private startLoop(): void {
     this.stopLoop(); // NOT `stop()` — the locks `startMatch` just took must survive this
-    let last = Date.now();
-    let acc = 0;
     // ⚠️ RESET THE SPACING CLOCK HERE, not only in the ghost-freeze branch below. `beginMatch`
     // is this method's only caller and it runs on EVERY REMATCH, so without this the results
     // screen plus the whole rematch-vote window lands in `maxMs` and stays there for the life
     // of the machine — one number that makes every reading after it a lie.
     this.lastSnapAt = 0;
-    this.loop = setInterval(() => {
-      // a throw here would otherwise kill the whole process (every room) and Fly
-      // would report "app not listening" — contain it to this tick instead
-      try {
-        this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
-        if (this.clients.size === 0) return; // room emptied (loop already stopped)
-        // GHOST ROOM: every driver has dropped but none has been gone long enough for
-        // `checkGrace` to reap them, so the slots are still held and the room keeps
-        // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
-        // 0.906 cores with 0 players (docs/capacity.md §7).
-        //
-        // Freezing loses NOTHING, which is the part worth knowing before changing it: a
-        // match nobody returns to is never finalized at all — when the last grace lapses
-        // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
-        // on that path. So these ticks can only ever be thrown away.
-        //
-        // And when somebody DOES come back, resuming where they left is the better
-        // outcome anyway. It is what makes a whole-region restart survivable: today both
-        // sides of a ranked match return to a world that ran 45 s without either of them,
-        // which is unplayable and effectively a double forfeit.
-        //
-        // `last`/`acc` are reset so the resume does not fast-forward the frozen
-        // wall-clock — without that, the catch-up clamp would burn 0.25 s of sim in one
-        // turn the moment the first player reconnects.
-        //
-        // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
-        // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
-        // region blip costs the match no game time at all, on purpose (that is the whole
-        // "survivable restart" argument above). Two consequences that are POLICY and not
-        // accidents, stated here because neither is visible from the code:
-        //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
-        //     clock restarts for all four the moment the first of them is back, while the
-        //     other three are still inside their reconnect grace;
-        //   · a match therefore takes longer in wall-clock time than its own clock says,
-        //     which anything reading `Date.now()` around a match (the grace timers, the
-        //     post-match settle) does not see.
-        // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
-        // a player who never comes back is still reaped on schedule.
-        if (this.frozenForNobody()) {
-          last = Date.now();
-          acc = 0;
-          this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
-          return;
-        }
-        // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
-        // play it (or the cap passes). Same clock reset as the freeze above.
-        if (this.loadHeld()) {
-          last = Date.now();
-          acc = 0;
-          this.lastSnapAt = 0;
-          return;
-        }
-        const now = Date.now();
-        acc += (now - last) / 1000;
-        last = now;
-        if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
-        let n = 0;
-        let due = false;
-        while (acc >= C.SIM_DT && n < 8 && !this.finalized) {
-          if (this.stepOnce()) due = true;
-          acc -= C.SIM_DT;
-          n++;
-        }
-        // COALESCE snapshots: send AT MOST ONE per timer fire, at the newest tick.
-        // When a scheduling hitch / GC pause delays this timer, the loop catches up
-        // several ticks in one turn — and the old "broadcast inside stepOnce on every
-        // interval crossing" then flushed a BURST of snapshots back-to-back down the
-        // same socket. The client received them with ~0 ms spacing followed by a gap,
-        // which reads as snapshot jitter → the exact stutter/rubberband being chased
-        // (CPU is idle; it's timing, not load). One send per fire keeps outbound
-        // spacing even and hands the client a single freshest world to reconcile to.
-        if (due && !this.finalized) this.broadcastSnapshot();
-      } catch (e) {
-        console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+    // ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`), not a `setInterval` per room: the
+    // per-room timer fired every ~16.3 ms against a 16.67 ms tick, so its accumulator ran 0 or
+    // 2 steps on some fires and a lone room's snapshots went out 16/48 ms apart (7.7% of gaps).
+    const turn: Turn = (steps) => this.runTurn(steps);
+    this.loop = turn;
+    this.snapPhase = joinClock(turn);
+  }
+
+  /**
+   * ONE TURN ON THE SHARED CLOCK: `steps` ticks are due (1 normally; up to
+   * `MAX_STEPS_PER_TURN` after a stall, the clock having already forgiven anything past a
+   * quarter second). Everything the old per-room timer did per fire, in the same order.
+   */
+  private runTurn(steps: number): void {
+    // a throw here would otherwise kill the whole process (every room) and Fly
+    // would report "app not listening" — contain it to this tick instead
+    try {
+      this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
+      if (this.clients.size === 0) return; // room emptied (loop already stopped)
+      // GHOST ROOM: every driver has dropped but none has been gone long enough for
+      // `checkGrace` to reap them, so the slots are still held and the room keeps
+      // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
+      // 0.906 cores with 0 players (docs/capacity.md §7).
+      //
+      // Freezing loses NOTHING, which is the part worth knowing before changing it: a
+      // match nobody returns to is never finalized at all — when the last grace lapses
+      // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
+      // on that path. So these ticks can only ever be thrown away.
+      //
+      // And when somebody DOES come back, resuming where they left is the better
+      // outcome anyway. It is what makes a whole-region restart survivable: today both
+      // sides of a ranked match return to a world that ran 45 s without either of them,
+      // which is unplayable and effectively a double forfeit.
+      //
+      // Nothing to reset for the resume: the shared clock hands out ticks as they fall due,
+      // so a room that sat out some turns simply steps from where it stopped. (With a
+      // per-room accumulator the old loop had to zero `last`/`acc` here, or the catch-up
+      // clamp would have burned 0.25 s of sim in one turn the moment a player reconnected.)
+      //
+      // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
+      // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
+      // region blip costs the match no game time at all, on purpose (that is the whole
+      // "survivable restart" argument above). Two consequences that are POLICY and not
+      // accidents, stated here because neither is visible from the code:
+      //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
+      //     clock restarts for all four the moment the first of them is back, while the
+      //     other three are still inside their reconnect grace;
+      //   · a match therefore takes longer in wall-clock time than its own clock says,
+      //     which anything reading `Date.now()` around a match (the grace timers, the
+      //     post-match settle) does not see.
+      // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
+      // a player who never comes back is still reaped on schedule.
+      if (this.frozenForNobody()) {
+        this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
+        return;
       }
-    }, 1000 * C.SIM_DT);
+      // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
+      // play it (or the cap passes). Same treatment as the freeze above.
+      if (this.loadHeld()) {
+        this.lastSnapAt = 0;
+        return;
+      }
+      let due = false;
+      for (let n = 0; n < steps && !this.finalized; n++) {
+        if (this.stepOnce()) due = true;
+      }
+      // COALESCE snapshots: send AT MOST ONE per turn, at the newest tick.
+      // When a scheduling hitch / GC pause delays this timer, the loop catches up
+      // several ticks in one turn — and the old "broadcast inside stepOnce on every
+      // interval crossing" then flushed a BURST of snapshots back-to-back down the
+      // same socket. The client received them with ~0 ms spacing followed by a gap,
+      // which reads as snapshot jitter → the exact stutter/rubberband being chased
+      // (CPU is idle; it's timing, not load). One send per turn keeps outbound
+      // spacing even and hands the client a single freshest world to reconcile to.
+      if (due && !this.finalized) this.broadcastSnapshot();
+    } catch (e) {
+      console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
+    }
   }
 
   /**
@@ -3441,7 +3455,7 @@ export class Room {
     this.countParticipation(w);
     // after the record, so nothing a game's read does can cost the replay a tick
     if (this.pendingMatch?.competition || this.config.kind === 'record') this.captureRankFacts(w);
-    const due = w.tick % SNAPSHOT_INTERVAL === 0;
+    const due = (w.tick + this.snapPhase) % SNAPSHOT_INTERVAL === 0; // see `snapPhase`
     // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
     // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
     // Keep stepping (and recording) until the game says nothing left can change the score, so
@@ -4033,7 +4047,8 @@ export class Room {
     this.latestTick.clear();
     this.lastRecvTick.clear();
     this.ackTick.clear();
-    this.prevBalls = new Map();
+    this.ballWire.reset();
+    if (this.wireCheck) this.wireCheck.prev = new Map();
     this.snapPrimed.clear();
     this.snapAck.clear();
     this.lastFrame = new Map();
@@ -4082,12 +4097,24 @@ export class Room {
 
   /** TEST / TOOL SEAM: drive an already-started match deterministically with NO
    * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
-   * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
+   * shared 60 Hz clock (`server/tickScheduler.ts`); this lets smoke/tools run a full room match reproducibly. */
   advanceForTest(maxTicks: number): void {
     this.stopLoop(); // drop the real-time timer — the test pumps synchronously
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /**
+   * TEST SEAM: run the PRE-`snapshotWire` encoder (the per-ball string diff AND the one-shot
+   * body stringify) beside the live one on every broadcast from now on, and report every
+   * disagreement — change sets and every body, keyframes and lossy baselines included. The first call switches it on (the
+   * reference starts from an empty baseline, so call it before the first snapshot or it will
+   * disagree once, honestly); later calls read the tally. `npm test` "snapshot wire:".
+   */
+  checkWireForTest(): { frames: number; bodies: number; mismatches: string[] } {
+    if (!this.wireCheck) this.wireCheck = { prev: new Map(), frames: 0, bodies: 0, mismatches: [] };
+    return { frames: this.wireCheck.frames, bodies: this.wireCheck.bodies, mismatches: [...this.wireCheck.mismatches] };
   }
 
   /** TEST SEAM: pump the way the REAL loop does — grace reaping and the ghost-room freeze
@@ -4233,9 +4260,10 @@ export class Room {
    */
   private stopLoop(): void {
     if (this.loop) {
-      clearInterval(this.loop);
+      leaveClock(this.loop);
       this.loop = null;
     }
+    this.snapPhase = 0;
   }
 
   private stop(): void {
@@ -4280,10 +4308,18 @@ export class Room {
     // within a thousandth of an inch still read as CHANGED and are re-sent every frame — which
     // is precisely the 54% the rounding was supposed to save. (A bandwidth property, not a
     // correctness one: over-sending desyncs nobody.)
-    const cur = new Map<number, string>();
-    for (const b of w.balls) cur.set(b.id, JSON.stringify(b, round3));
-    const changedIds: number[] = [];
-    for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changedIds.push(b.id);
+    // ...and it is now decided WITHOUT stringifying the balls that did not move: a shadow walk
+    // with the same rounding, then a string only for what changed (`BallWireCache.diff`). Same
+    // set, in the same order, as comparing a fresh `JSON.stringify(b, round3)` per ball.
+    const changedIds = this.ballWire.diff(w.balls);
+    if (this.wireCheck) {
+      const ref = referenceChanged(this.wireCheck.prev, w.balls);
+      this.wireCheck.prev = ref.cur;
+      this.wireCheck.frames++;
+      if (ref.changed.join(',') !== changedIds.join(',')) {
+        this.wireCheck.mismatches.push(`tick ${w.tick}: changed [${changedIds}] vs reference [${ref.changed}]`);
+      }
+    }
     // Push THIS frame's change set before anything reads the history, so a delta keyed to an
     // older baseline includes what moved on this very tick as well as everything in between.
     this.snapChanged.push({ tick: w.tick, ids: changedIds });
@@ -4324,16 +4360,24 @@ export class Room {
       // is what every delta has always carried
       return w.balls.filter((b) => ids.has(b.id));
     };
+    /** the slim world / id order / cmds as JSON, once per broadcast and only if someone needs it */
+    let parts: ReturnType<typeof snapshotParts> | null = null;
     const bodyFor = (base: number): string => {
       const cached = bodies.get(base);
       if (cached !== undefined) return cached;
-      const balls: BallDelta = { order, upd: base === KEYFRAME ? w.balls : updSince(base) };
-      // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
-      // missing the one required field each recipient supplies for itself.
-      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds }, round3);
-      // drop the closing brace so the per-client tail can be appended. `whole` always
-      // has at least one key, so it is never the degenerate `{}`.
-      const body = whole.slice(0, -1);
+      const upd = base === KEYFRAME ? w.balls : updSince(base);
+      // SPLICED, not stringified: every ball's rounded wire string is already in `ballWire`
+      // (`diff` just refreshed the ones that moved), so only the slim world meets the replacer.
+      // Byte-identical to the old `JSON.stringify({ t, serverTick, w, balls, cmds }, round3)`
+      // minus its closing brace — see `snapshotBody`, and "snapshot wire:" in `npm test`.
+      // Still a PARTIAL snapshot: the one per-recipient field is appended by `sendTo`.
+      if (!parts) parts = snapshotParts(slim, order, cmds);
+      const body = snapshotBody(w.tick, parts.slimJson, parts.orderJson, upd, parts.cmdsJson, this.ballWire);
+      if (this.wireCheck) {
+        const ref = referenceBody(w.tick, slim, order, upd, cmds);
+        if (ref !== body) this.wireCheck.mismatches.push(`tick ${w.tick} base ${base}: body differs from the reference`);
+        this.wireCheck.bodies++;
+      }
       bodies.set(base, body);
       return body;
     };
@@ -4355,7 +4399,7 @@ export class Room {
        * WHICH BASELINE THIS RECIPIENT IS KNOWN TO HOLD — the thing a delta must be keyed to.
        *
        * On an ordered reliable lane that is the PREVIOUS BROADCAST: it arrived or the socket
-       * is gone, so the cheapest correct delta is the one against `prevBalls`.
+       * is gone, so the cheapest correct delta is the one against the previous broadcast.
        *
        * ⚠️ ON A LOSSY LANE IT IS NOT, AND ASSUMING IT WAS CORRUPTED LAN GUESTS SILENTLY. A tab
        * host's guests take snapshots over an unordered `maxRetransmits: 0` DataChannel, so
@@ -4389,7 +4433,6 @@ export class Room {
     };
     for (const c of this.clients.values()) sendTo(c);
     for (const s of this.spectators.values()) sendTo(s); // read-only watchers get the same stream
-    this.prevBalls = cur;
     this.prevSnapTick = w.tick;
   }
 

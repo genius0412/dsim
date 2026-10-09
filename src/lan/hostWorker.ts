@@ -8,7 +8,7 @@
  *
  * ## Why a Worker and not the page
  *
- * `Room` drives itself with `setInterval` at 60 Hz, and a hidden page cannot hold that. MEASURED
+ * `Room` drives itself off a 60 Hz timer (`server/tickScheduler.ts`), and a hidden page cannot hold that. MEASURED
  * side by side in one hidden tab for 7 minutes (`docs/lan-webrtc.md` §6): the PAGE thread ran at
  * 59 Hz for the first half-minute, fell to **1–2 Hz**, and past the five-minute mark dropped to
  * **one tick per minute** under Chrome's intensive throttling. The WORKER held **60.08 Hz for

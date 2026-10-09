@@ -447,6 +447,27 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.
+- ⚠️ **EVERY ROOM STEPS OFF ONE CLOCK, AND THE SNAPSHOT ENCODER IS SPLICED, NOT STRINGIFIED**
+  (2026-09-27, `docs/capacity.md` §7b). ⚠️ A SERVER CHANGE: it needs a deploy.
+  - `server/tickScheduler.ts` replaced a `setInterval(1000/60)` per room. On Linux that interval
+    fires every ~16.3 ms, so its `Date.now()` accumulator ran 0 or 2 steps on some fires and a
+    LONE room sent 7.7% of its snapshots 16/48 ms apart — jitter the client reads as stutter, on
+    an idle machine. One self-correcting `performance.now()` deadline; the old per-room rules
+    (≤8 steps a turn, debt past 250 ms forgiven, ONE coalesced broadcast per turn) apply once for
+    the process. Rooms alternate SNAPSHOT PARITY (`snapPhase`) so half of them encode on odd
+    ticks. `advanceForTest`/`pumpForTest` take a room off the clock and keep parity 0, so every
+    headless test sees the old even-tick cadence. Browser-safe: the LAN tab host bundles it.
+  - `server/snapshotWire.ts`: the diff used to `JSON.stringify(ball, round3)` EVERY ball on
+    EVERY broadcast (a replacer disables V8's fast path) to find the ~12% that moved — ~40% of a
+    Chain Reaction room's CPU. A rounded SHADOW walk (`sameR3`) decides "changed" and only those
+    are stringified; the body splices those cached strings. **The wire is byte-identical**, and
+    that is asserted, not argued: `npm test` "snapshot wire:" runs rooms of all three games with
+    the old encoder beside the new one (`Room.checkWireForTest`), lossy recipients, a backed-up
+    socket and a reattach included. Anything that changes what a snapshot CONTAINS goes through
+    `snapshotBody`/`BallWireCache` and must keep that check green.
+  - `server/warmup.ts`: a headless busy match per game after physics init, so a woken satellite's
+    first player does not pay for the JIT (their match cost 30–60% more). Sliced and never
+    awaited — `/health` and joins are served throughout. `WARMUP=0` is the kill switch.
 - **CONNECTION-QUALITY HUD**: `ping`/`pong` probe → smoothed RTT; snapshot arrival rate +
   inter-arrival JITTER measured client-side → SMOOTH/OK/CHOPPY dot. **Jitter is the real
   choppiness signal** — surface it when diagnosing lag reports.

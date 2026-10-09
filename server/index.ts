@@ -23,6 +23,7 @@ import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
+import { warmUp, warmupEnabled } from './warmup';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
@@ -4448,7 +4449,22 @@ const roomWorkers = startRoomWorkers(simWorkerCount());
 if (roomWorkers > 0) console.log(`[server] ${roomWorkers} room worker thread(s): rooms step off the socket thread`);
 
 Promise.all([initPhysics(), initPhysics3d()])
-  .then(() => console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled'))
+  .then(() => {
+    console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled');
+    // THE JIT WARM-UP (`server/warmup.ts`): a short headless busy match per game, so the first
+    // real player on a freshly woken machine does not pay for V8 compiling the sim (their match
+    // cost 30-60% more CPU, with 100-390 ms ticks). Sliced and yielding: `/health` and joins are
+    // served throughout, nothing waits on it. `WARMUP=0` turns it off.
+    if (!warmupEnabled(process.env.WARMUP)) return;
+    const cpu0 = process.cpuUsage();
+    void warmUp().then((r) => {
+      const cpu = process.cpuUsage(cpu0);
+      console.log(
+        `[server] JIT warm-up: ${r.ticks} ticks across ${r.games.join('/')} in ${Math.round(r.ms)} ms ` +
+          `(${Math.round((cpu.user + cpu.system) / 1000)} ms CPU)`,
+      );
+    });
+  })
   .catch((e) => {
     console.error('[server] failed to init physics:', e);
     process.exit(1);

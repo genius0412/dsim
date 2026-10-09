@@ -408,7 +408,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       for (const s of ballsAtStart) s.b.pos = { x: s.pos.x, y: s.pos.y };
     }
     preVels = solveRobots(world, dt, decodeColliders, gateCol, drive, pinned, solids);
-    solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom);
+    solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom, C.BALL_RADIUS, ground);
     /**
      * THE FIELD IS AN INVARIANT FOR ARTIFACTS TOO, and it is held HERE, before the pin test —
      * the same shape as  for robots. The artifact solve holds the perimeter,

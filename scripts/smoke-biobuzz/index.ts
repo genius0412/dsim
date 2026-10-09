@@ -15,6 +15,7 @@ import { renderChecks } from './render';
 import { tutorialChecks } from './tutorial';
 import { net3dChecks } from './net3d';
 import { autoChecks } from './autos';
+import { goldenChecks } from './golden';
 import { importedChecks, importedPerfChecks } from './imported';
 import { fixedChecks } from './fixed';
 import type { Check } from './harness';
@@ -67,6 +68,8 @@ import type { Check } from './harness';
 
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
+  // step() output pinned per SIM_VERSION — see golden.ts and scripts/simGolden.ts
+  { name: 'GOLDEN', fn: goldenChecks },
   { name: 'SIM3D', fn: sim3dChecks },
   // Day 2 lane A: the DYNAMIC see-saw, the real FLOWER tube, and the two prediction worlds.
   { name: 'HIVE3D', fn: hive3dChecks },

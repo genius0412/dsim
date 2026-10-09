@@ -12,7 +12,7 @@ import {
 } from '../src/replaySavePolicy';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
-import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { sanitizePlayer, sanitizePlayerPatch, sanitizeReplay } from '../src/net/sanitize';
 import { allianceDuo, derivedRole, savedStartCap, startHandleReach } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
@@ -39,6 +39,8 @@ import {
   setLaunchSearchForTests,
 } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
+import { clampBallPosToStatics as clampToStatics } from '../src/sim/physics';
+import { canonicalWorld, judgeGolden, runGolden, type GoldenScene } from './simGolden';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
@@ -376,6 +378,9 @@ import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport, type MatchOutcome } from '../server/room';
+import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
+import { clockMembers } from '../server/tickScheduler';
+import { warmUp, warmupEnabled } from '../server/warmup';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import {
   IMPORT_MEMBER_NEEDS_UPDATE,
@@ -628,6 +633,185 @@ const mkWorld = (
 const slotCount = (w: World, a: 'red' | 'blue') =>
   w.balls.filter((b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow)
     .length;
+
+// ---- GOLDEN HASHES: step() output is pinned per SIM_VERSION ------------------
+// See `scripts/simGolden.ts`. Each scene is a whole world hashed at checkpoints; a failure means
+// the sim's output moved. Byte-identical work (refactors, speed-ups) must leave every hash here
+// untouched; a real behaviour change bumps SIM_VERSION and adds a row. BIOBUZZ's scenes live in
+// its own suite (`scripts/smoke-biobuzz/golden.ts`). One block per scene, so the shard runner
+// can spread them.
+const GOLDEN: Record<number, Record<string, string[]>> = {
+  4: {
+    'decode solo': ['fb2a65c5dabfb38a', '7b715493f956ebd2', 'c818f0f50624ae57', '8bb36d9c5151f5a8', 'aeac450d900d63fe', '2719f93071f60cb2'],
+    'decode 2v2': ['1f80d772e026ba28', '974956cf37f76f09', '68c947be9e76ac19', '99fdba0d5c6495e0', '5222684bcff58964', 'fe6a16b8428fad99'],
+    'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
+    'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
+  },
+};
+const goldenArmed = (w: World): World => {
+  // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
+  w.match.preCountdown = 1;
+  return w;
+};
+const goldenSetup = (id: number, alliance: Alliance, startIndex: number, spec: Partial<RobotSpec>): RobotSetup => ({
+  id,
+  alliance,
+  spec: { ...DEFAULT_SPEC, ...spec },
+  assists: { ...PLAYER_ASSISTS, fieldCentric: id % 2 === 0 },
+  startIndex,
+});
+/** run one golden scene, judge it against `GOLDEN`, and hand back the final world */
+const goldenCheck = (scene: GoldenScene): World => {
+  const { hashes, world } = runGolden(scene, SIM_DT);
+  const [ok, detail] = judgeGolden(scene, hashes, GOLDEN, SIM_VERSION, 'scripts/smoke.ts (GOLDEN)');
+  check(`golden: ${scene.name} re-simulates bit-identically under SIM_VERSION ${SIM_VERSION}`, ok, detail);
+  return world;
+};
+const goldenScore = (w: World): number => w.match.scores.red.total + w.match.scores.blue.total;
+
+{
+  // one driven robot through the countdown, AUTO, the transition and into DRIVER-CONTROLLED with
+  // the human player restocking: the ground-artifact solve, intake, shooter, basin, rail, gate
+  // and scoring all run
+  const w = goldenCheck({
+    name: 'decode solo',
+    game: 'decode',
+    build: () => goldenArmed(createWorld('match', 20260927, [goldenSetup(0, 'blue', 0, {})])),
+    step,
+    ticks: 2700,
+    every: 450,
+  });
+  check('golden: decode solo is not vacuous (it reached DRIVER-CONTROLLED and scored)', w.match.phase === 'teleop' && goldenScore(w) > 0, `${w.match.phase} · ${goldenScore(w)} pts`);
+}
+
+{
+  // four drivetrains and all three intakes, so robot-robot contact, the pin rounds and the
+  // penalty engine run too (tank and butterfly steer through leftDrive/rightDrive)
+  const w = goldenCheck({
+    name: 'decode 2v2',
+    game: 'decode',
+    build: () =>
+      goldenArmed(
+        createWorld('match', 7, [
+          goldenSetup(0, 'blue', 0, { drivetrain: 'mecanum', intake: 'sloped' }),
+          goldenSetup(1, 'red', 0, { drivetrain: 'tank', intake: 'vector' }),
+          goldenSetup(2, 'blue', 1, { drivetrain: 'swerve', intake: 'triangle' }),
+          goldenSetup(3, 'red', 1, { drivetrain: 'butterfly', intake: 'sloped', canSort: true }),
+        ]),
+      ),
+    step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: decode 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+{
+  // the end of a match: ENDGAME, the buzzer, and the post-match settle scoring
+  const w = goldenCheck({
+    name: 'decode endgame',
+    game: 'decode',
+    build: () => {
+      const g = createWorld('match', 99, [goldenSetup(0, 'red', 1, { drivetrain: 'xdrive', intake: 'vector' })]);
+      g.match.phase = 'teleop';
+      g.match.phaseTimeLeft = 24;
+      return g;
+    },
+    step,
+    ticks: 1800,
+    every: 450,
+  });
+  check('golden: decode endgame is not vacuous (it reached the post-match settle)', w.match.phase === 'post', w.match.phase);
+}
+
+{
+  // Chain Reaction: the pre-match fling, 300 particles, all four scoring archetypes, the catalyst
+  // mechanisms and the accelerator loop
+  const chain = simModuleFor('chain');
+  const w = goldenCheck({
+    name: 'chain 2v2',
+    game: 'chain',
+    build: () =>
+      goldenArmed(
+        chain.createWorld('match', 11, [
+          { id: 0, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'turret', catalystType: 'arm' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 1, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'drum', catalystType: 'launcher' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 2, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'dumper', catalystType: 'turret', drivetrain: 'tank' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+          { id: 3, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'twinturret', catalystType: 'rail', drivetrain: 'swerve' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+        ]),
+      ),
+    step: chain.step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- untrusted-input edges that must not move a valid input ----------------
+{
+  // sanitizeReplay: an id is an INTEGER slot. It used to test the raw value for duplicates and
+  // round afterwards, so 0.6 and 1.4 were two robots that both spawned as robot 1.
+  const base = { format: REPLAY_FORMAT, mode: 'match', seed: 5, ticks: 10, balanceVersion: BALANCE_VERSION, sim: SIM_VERSION, tracks: {} };
+  const s0 = { alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 };
+  check('sanitizeReplay refuses fractional robot ids (0.6 and 1.4 both rounded to 1)', sanitizeReplay({ ...base, setups: [{ ...s0, id: 0.6 }, { ...s0, id: 1.4, alliance: 'red' }] }) === null);
+  const ok = sanitizeReplay({ ...base, setups: [{ ...s0, id: 0 }, { ...s0, id: 1, alliance: 'red' }] });
+  check('...and still takes integer ids unchanged', !!ok && ok.setups.map((x) => x.id).join() === '0,1', `${ok?.setups.map((x) => x.id)}`);
+
+  // coerceSetup: the id and `passive` are forced to their types; valid values pass unchanged
+  const cs = coerceSetup({ ...s0, id: NaN, passive: { yes: 1 } } as never);
+  check('coerceSetup forces a NaN id to a finite integer and a non-boolean passive to absent', cs.id === 0 && cs.passive === undefined, `${cs.id} ${cs.passive}`);
+  const cv = coerceSetup({ ...s0, id: 3, passive: true } as never);
+  check('...and keeps a valid id and passive flag exactly', cv.id === 3 && cv.passive === true);
+
+  // the registries answer OWN keys only: "constructor" is not a game
+  check('simModuleFor("constructor") falls back to DECODE, not Object', simModuleFor('constructor' as never).id === 'decode');
+  check('moduleFor("toString") falls back to DECODE too', moduleFor('toString' as never).id === 'decode');
+  check('...and a real id still resolves', simModuleFor('chain').id === 'chain' && moduleFor('chain').id === 'chain');
+
+  // the classifier clamp runs at the artifact's own radius, like the walls and goal faces: a
+  // point hugging the classifier's field-side face is cleared by exactly the radius asked for
+  const cr = classifierRect('red');
+  const probe = { x: cr.x0 - 0.5, y: (cr.y0 + cr.y1) / 2 };
+  const small = clampToStatics(probe, 1.5);
+  const big = clampToStatics(probe);
+  check(
+    'clampBallPosToStatics clears the classifier by the radius it is given (1.5 vs the default 2.5)',
+    Math.abs(small.x - (cr.x0 - 1.5)) < 1e-9 && Math.abs(big.x - (cr.x0 - BALL_RADIUS)) < 1e-9,
+    `${small.x.toFixed(3)} / ${big.x.toFixed(3)} vs face ${cr.x0}`,
+  );
+
+  // coerceAutoPath is an ALLOWLIST: a valid path comes through field for field, and a key the
+  // sim never reads does not ride into the world, every snapshot and every replay
+  const valid = {
+    fileName: 'p.pp',
+    startPoint: { x: 10, y: -20, heading: 'linear', startDeg: 0, endDeg: 90 },
+    lines: [
+      { id: 'a', endPoint: { x: 30, y: -20, heading: 'tangential', reverse: true }, controlPoints: [{ x: 20, y: -30 }], waitBeforeMs: 200 },
+      { id: 'b', endPoint: { x: 30, y: 10, heading: 'constant', degrees: 45 }, waitAfterMs: 100 },
+    ],
+    sequence: [{ kind: 'path', lineId: 'a' }, { kind: 'wait', id: 'w', durationMs: 500 }, { kind: 'path', lineId: 'b' }],
+    version: '1',
+    timestamp: 't',
+  };
+  const round = coerceAutoPath(JSON.parse(JSON.stringify(valid)));
+  check(
+    'coerceAutoPath passes a valid path through field for field',
+    !!round && canonicalWorld(round as never) === canonicalWorld(valid as never),
+    round ? '' : 'refused',
+  );
+  const junk = coerceAutoPath({
+    ...valid,
+    startPoint: { ...valid.startPoint, heading: 'sideways', blob: 'x'.repeat(1000) },
+    lines: [{ ...valid.lines[0], color: 'red', meta: { deep: [1, 2, 3] } }],
+    sequence: [{ kind: 'dance', lineId: 'a', extra: 1 }],
+  })!;
+  check(
+    'coerceAutoPath drops keys the sim never reads, and a heading/kind outside its enum',
+    !('blob' in junk.startPoint) && !('heading' in junk.startPoint) && !('color' in junk.lines[0]) && !('meta' in junk.lines[0]) &&
+      !('extra' in (junk.sequence?.[0] ?? {})) && !('kind' in (junk.sequence?.[0] ?? {})) && junk.sequence?.[0].lineId === 'a',
+    JSON.stringify(junk).slice(0, 200),
+  );
+}
 
 // ---- spawn sanity ----------------------------------------------------------
 {
@@ -15876,6 +16060,169 @@ function pinScene(
   gapRoom.snapGapStats(true);
   check('snapshot spacing: a reset drains the window (a second read is not the same numbers)', gapRoom.snapGapStats().n === 0);
   gapRoom.stop();
+}
+
+// ---- ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`) ------------------------
+// Rooms used to own a `setInterval` each; they now take turns on one self-correcting 60 Hz
+// deadline and are split across two snapshot PARITIES. This is the one block that runs rooms
+// on REAL timers (everything else pumps `advanceForTest`), so it proves the live path steps at
+// all, at the right rate, broadcasts on the parity it was given, and lets the clock go idle.
+{
+  const sends: Record<string, { at: number; tick: number }[]> = { k1: [], k2: [] };
+  const mk = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => {
+      if (str.startsWith('{"t":"snapshot"')) sends[id].push({ at: performance.now(), tick: (JSON.parse(str) as { serverTick: number }).serverTick });
+    },
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const before = clockMembers();
+  const a = new Room('smoke-clock-a', () => {}, { kind: 'record', record: 'solo' });
+  const b = new Room('smoke-clock-b', () => {}, { kind: 'record', record: 'solo' });
+  a.add(mk('k1'));
+  b.add(mk('k2'));
+  a.onMessage('k1', { t: 'start' });
+  b.onMessage('k2', { t: 'start' });
+  check('clock: a started room is ON the shared clock (one member per live room)', clockMembers() === before + 2, `${clockMembers() - before}`);
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, 1000));
+  const ticks = a.tickForTest();
+  const secs = (performance.now() - t0) / 1000;
+  // generous below: this box also runs other shards, and the first second of a match is a cold
+  // JIT. The claims are "it steps" and "it never runs ahead of the wall clock" — not a latency
+  // number (docs/capacity.md §0 on what a loaded dev box can measure).
+  check('clock: a live room steps off the shared clock, never faster than 60 Hz', ticks > 10 * secs && ticks <= 60 * secs + 2, `${ticks} ticks in ${secs.toFixed(2)} s`);
+  // parity is read off the rooms rather than off their snapshot ticks: a turn that catches up
+  // several ticks (a cold JIT, a loaded box) broadcasts at its NEWEST tick, whatever its parity
+  const phase = (r: Room): number => (r as unknown as { snapPhase: number }).snapPhase;
+  check('clock: both live rooms broadcast (the clock drives the snapshot path, not just the step)', sends.k1.length > 0 && sends.k2.length > 0, `${sends.k1.length} / ${sends.k2.length}`);
+  // only asserted from an EMPTY clock: a block earlier in this shard that left a room running
+  // would skew the counts the parity is balanced against
+  if (before === 0) {
+    check('clock: two rooms on an empty clock get OPPOSITE snapshot parities, so their encodes land on different ticks', phase(a) !== phase(b), `${phase(a)} / ${phase(b)}`);
+  }
+  a.stop();
+  b.stop();
+  check('clock: stopped rooms leave it (an idle machine sleeps, nothing keeps stepping)', clockMembers() === before, `${clockMembers() - before}`);
+  check('clock: a stopped room is reset to the old even-tick parity', phase(a) === 0 && phase(b) === 0);
+  const cadence = new Room('smoke-clock-c', () => {}, { kind: 'record', record: 'solo' });
+  const seen: number[] = [];
+  cadence.add({ ...mk('k3'), sendRaw: (str) => { if (str.startsWith('{"t":"snapshot"')) seen.push((JSON.parse(str) as { serverTick: number }).serverTick); } });
+  cadence.onMessage('k3', { t: 'start' });
+  cadence.advanceForTest(20);
+  check('clock: a room driven by advanceForTest is OFF the clock and keeps the old even-tick cadence', clockMembers() === before && seen.length > 0 && seen.every((t) => t % 2 === 0), `${seen}`);
+  cadence.stop();
+}
+
+// ---- BOOT JIT WARM-UP (`server/warmup.ts`) -----------------------------------------
+// A headless busy match per game after physics init, so the first real player on a woken
+// machine does not pay for V8 compiling the sim. It must warm EVERY game (on its server
+// physics), leave nothing behind (no room on the clock, no user lock), and have a kill switch
+// that honours the spellings an operator reaches for under pressure.
+{
+  await initPhysics3d();
+  check('warmup: on by default, and WARMUP=0/false/no/off turns it off', warmupEnabled(undefined) && warmupEnabled('1') && ['0', 'false', 'NO', ' off '].every((v) => !warmupEnabled(v)));
+  const before = clockMembers();
+  const r = await warmUp(60);
+  check('warmup: every registered game is warmed', r.games.join() === GAME_IDS.join(), `${r.games} of ${GAME_IDS}`);
+  check('warmup: it actually stepped each game (not vacuous)', r.ticks === 60 * GAME_IDS.length, `${r.ticks} ticks`);
+  check('warmup: nothing is left on the room clock afterwards', clockMembers() === before, `${clockMembers() - before}`);
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check(
+    'warmup: the server starts it only after physics init and does not await it (joins and /health are never gated)',
+    /initPhysics3d\(\)\]\)[\s\S]{0,800}void warmUp\(\)/.test(idx) && !/await warmUp\(/.test(idx),
+  );
+}
+
+// ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
+// `server/snapshotWire.ts` replaced a `JSON.stringify(ball, round3)` per ball per broadcast with
+// a shadow walk (`sameR3`) that only stringifies what moved, and builds the body by splicing
+// those cached strings instead of re-serializing the balls. It is a pure CPU change, so the one
+// thing to prove is that NOTHING on the wire moved: the room runs the old encoder beside the new
+// one on every broadcast (`checkWireForTest`) and every disagreement is reported. Real rooms,
+// every game, driven and shooting, with the recipients that take the unusual paths — a LOSSY one
+// keyed to stale acks, one that backs up and is unprimed, and a reattach mid-match.
+//
+// ⚠️ NOT VACUOUS: a room where nothing moves agrees with any encoder, so each game asserts that
+// the frames carried real ball updates and that deltas (not only keyframes) were compared.
+{
+  // the leaf rules first, on hand-built values: each is a way the walk could disagree with the string
+  const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a, round3) === JSON.stringify(b, round3);
+  const cases: [unknown, unknown][] = [
+    [{ x: 1.0004, y: 2 }, { x: 1.0001, y: 2 }], // same after rounding
+    [{ x: 1.0006, y: 2 }, { x: 1.0001, y: 2 }], // not
+    [{ x: -0.0001 }, { x: 0 }], // -0 prints as 0
+    [{ x: NaN }, { x: null }], [{ x: Infinity }, { x: NaN }],
+    [{ a: 1, b: 2 }, { b: 2, a: 1 }], // key ORDER is part of the string
+    [{ a: 1, u: undefined }, { a: 1 }], // an undefined property is omitted
+    [{ a: [1, undefined] }, { a: [1, null] }], // ...and is null in an array
+    [{ s: { kind: 'held', robot: 1 } }, { s: { kind: 'held', robot: 2 } }],
+    [{ s: { kind: 'ground' } }, { s: { kind: 'flight', target: 'red' } }],
+    [{ a: [1, 2] }, { a: [1, 2, 3] }], [{ a: [] }, { a: {} }], [{ a: 'x' }, { a: 'y' }], [{ a: true }, { a: false }],
+  ];
+  let bad = 0;
+  for (const [prev, cur] of cases) {
+    const shadow = JSON.parse(JSON.stringify(prev, round3));
+    if (sameR3(shadow, cur) !== eq(prev, cur)) bad++;
+  }
+  check('snapshot wire: sameR3 agrees with the rounded string on every edge case (rounding, -0, NaN, key order, undefined)', bad === 0, `${bad}/${cases.length}`);
+  // a ball that LEAVES and comes back identical must read as changed — the client dropped it
+  const c = new BallWireCache();
+  const ball = (id: number, x: number): Artifact => ({ id, color: 'purple', state: { kind: 'ground' }, pos: { x, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 }) as Artifact;
+  c.diff([ball(1, 0), ball(2, 5)]);
+  c.diff([ball(1, 0)]);
+  const back = c.diff([ball(1, 0), ball(2, 5)]);
+  const ref = referenceChanged(referenceChanged(new Map(), [ball(1, 0)]).cur, [ball(1, 0), ball(2, 5)]).changed;
+  check('snapshot wire: a ball that left the world and returned unchanged is SENT again (as the old diff did)', back.join() === '2' && ref.join() === '2', `[${back}] vs [${ref}]`);
+}
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  if (serverPhysics(simModuleFor(game)) === '3d') await initPhysics3d();
+  const got: Record<string, string[]> = { r1: [], b1: [], l1: [] };
+  let backed = false;
+  const mk = (id: string, alliance: Alliance, extra: Partial<Client> = {}): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => got[id].push(str),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+    ...extra,
+  });
+  const room = new Room('smoke-wire-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('r1', 'red'));
+  room.add(mk('b1', 'blue', { backlog: () => (backed ? 1 << 30 : 0) }));
+  room.add(mk('l1', 'blue', { lossy: true }));
+  room.checkWireForTest(); // on BEFORE the first snapshot, so the reference shares the baseline
+  room.onMessage('r1', { t: 'start' });
+  room.advanceForTest(1);
+  const gen = (room as unknown as { matchGen: number }).matchGen;
+  let lastSnap = 0;
+  for (let i = 0; i < 700; i++) {
+    const w = room.worldForTest();
+    if (!w) break;
+    const t = w.tick + 1;
+    const p = t / 60;
+    const drive = (seat: number): RobotCommand => cmd({ driveX: Math.sin(p * 0.9 + seat), driveY: Math.cos(p * 0.7 + seat), rotate: Math.sin(p * 1.3) * 0.5, intake: true, fire: t % 90 > 20 });
+    room.onMessage('r1', { t: 'input', tick: t, q: quantizeCommand(drive(0)), ack: lastSnap, gen });
+    room.onMessage('b1', { t: 'input', tick: t, q: quantizeCommand(drive(1)), ack: lastSnap, gen });
+    // the lossy recipient confirms only every ~7th frame, so its deltas are cut against old baselines
+    if (i % 14 === 0) room.onMessage('l1', { t: 'input', tick: t, q: quantizeCommand(cmd({})), ack: lastSnap, gen });
+    backed = i >= 200 && i < 206; // a backed-up socket is skipped and unprimed, then keyframed
+    if (i === 400) room.detach('r1');
+    if (i === 430) room.reattach('r1', () => {}, (str) => got.r1.push(str), undefined, undefined, true);
+    room.advanceForTest(1);
+    lastSnap = room.worldForTest()?.tick ?? lastSnap;
+  }
+  const res = room.checkWireForTest();
+  const snaps = [...got.r1, ...got.b1, ...got.l1].filter((x) => x.startsWith('{"t":"snapshot"')).map((x) => JSON.parse(x) as Extract<ServerMsg, { t: 'snapshot' }>);
+  const upd = snaps.reduce((n, m) => n + m.balls.upd.length, 0);
+  const deltas = snaps.filter((m) => m.balls.upd.length < m.balls.order.length).length;
+  check(`snapshot wire/${game}: the room broadcast and the reference ran on every frame`, res.frames >= 300, `${res.frames} frames`);
+  check(`snapshot wire/${game}: ...and moved real ball data, in deltas as well as keyframes (not vacuous)`, upd > 0 && deltas > 100 && snaps.length - deltas >= 4, `${upd} ball updates, ${deltas} delta frames, ${snaps.length - deltas} keyframes`);
+  check(`snapshot wire/${game}: bodies were compared for more baselines than frames (keyframes + lossy acks, not just the shared delta)`, res.bodies > res.frames, `${res.bodies} bodies over ${res.frames} frames`);
+  check(`snapshot wire/${game}: every change set AND every body is byte-identical to the old encoder`, res.mismatches.length === 0, res.mismatches.slice(0, 3).join(' | '));
+  room.stop();
 }
 
 // ---- A MISSING INPUT TICK CANNOT INVENT A BUTTON EDGE -------------------------------
