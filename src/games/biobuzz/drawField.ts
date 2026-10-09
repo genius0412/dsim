@@ -1039,8 +1039,9 @@ export function drawBiobuzzField(
   // ⚠️ NOT `C.TILE`. That is 24, DECODE's nominal tile; a real FTC soft tile is `BB_TILE_PITCH`
   // 23.528 on centre and the six of them close on 141.17, not 144. Stepping by 24 from the wall
   // drew a grid that drifted almost half an inch per tile away from the tape, the flowers and the
-  // GLB, and the seven lines here are the measured positions rather than a pitch multiplied out,
-  // because the tabbed tile bodies make the real gaps uneven (23.176 … 23.986).
+  // GLB. The seven lines are the two perimeter edges and the five tile JOINTS, evenly spaced at
+  // 23.502 (the outer tiles are cut straight and run 23.581); the 3D mat draws the dovetail about
+  // the same joints (`scene/renderTiles.ts`).
   ctx.save();
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 0.6;

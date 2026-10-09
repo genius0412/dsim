@@ -24,7 +24,7 @@
  * peers reach the same one, and `lanServerUrl()` is a different machine entirely (the
  * `npm run lan` / desktop-app path, which needs none of this).
  */
-import { gameServerUrl } from './env';
+import { primaryWsUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
 import { encodeMsg, decodeServerMsg, type ClientMsg, type ServerMsg } from './protocol';
 import type { LanSignalBus } from './lanPeer';
@@ -61,7 +61,9 @@ export class LanSignalClient implements LanSignalBus {
   /** open (or reuse) the socket. Safe to call repeatedly. */
   private connect(): Promise<void> {
     if (this.ready) return this.ready;
-    const url = gameServerUrl();
+    // the primary router, not the Anycast host: a tab can sit hosting a LAN room for hours,
+    // and the rendezvous only has to be on one machine everybody reaches (primaryHost.ts)
+    const url = primaryWsUrl();
     this.ready = new Promise<void>((resolve, reject) => {
       if (!url) {
         reject(new LanSignalError('No game server is configured.', 'noserver'));

@@ -34,3 +34,6 @@ scripts/.smokeshard-*.ts
 # Zenith is not public yet: its packed packages stay on the machine that packed them
 # (scripts/vendor-zenith.mjs). Never commit them.
 vendor/zenith/*.tgz
+
+# npm run tune:ai writes its log and accepted weights to the working directory
+aitune.*.json*

@@ -56,11 +56,20 @@ const ALL_PAGES = ['/', '/modes', '/configure/robot', '/configure/match', '/conf
                // shipped, which is the failure mode the list has: a page nobody adds here is a
                // page this audit silently reports zero shifts for. `/privacy` earns its place
                // twice over — the Your-data panel is the densest run of pressables in the app.
-               '/privacy', '/terms', '/contributors'];
+               '/privacy', '/terms', '/contributors',
+               // the robot importer (its empty state: the drop card, the step rail, the head)
+               '/configure/robot/import'];
 // DSIM_PAGES=/configure/robot,/records narrows a run to the routes you actually touched.
 const PAGES = process.env.DSIM_PAGES
   ? process.env.DSIM_PAGES.split(',').map((p) => p.trim()).filter(Boolean)
   : ALL_PAGES;
+// WITH AN IMPORTED ROBOT. The importer above is audited empty; a user who has imported a robot
+// sees other surfaces: the robot page with its Imported robot panel and library card, and the
+// editor reopened by Edit, on each of its four steps. The run makes one the way a user does
+// (the STL fixture through the drop card's file input, straight to Review, Save) and audits
+// those. Off with DSIM_SEED=0; a DSIM_PAGES run includes it only when the list names `seeded`.
+const SEED = process.env.DSIM_SEED !== '0' && (!process.env.DSIM_PAGES || PAGES.includes('seeded'));
+const STL = path.join(__dirname, 'fixtures', 'robot-import', 'robot.stl');
 // PAGE selectors — the controls that differ from route to route.
 const SELECTORS = [
   '.ds-btn', '.ds-cta', '.ds-tile', '.ds-opt', '.ds-opt-add', '.ds-opt-del',
@@ -114,9 +123,10 @@ const SETTLE = 25;
 const MEASURE = (sel, i) => `(() => {
   const all=[...document.querySelectorAll('*')];
   const o=new Array(all.length*4);
+  let sc=0;
   for (let k=0;k<all.length;k++){const r=all[k].getBoundingClientRect();
-    o[k*4]=r.x;o[k*4+1]=r.y;o[k*4+2]=r.width;o[k*4+3]=r.height;}
-  o.push(document.documentElement.scrollHeight);
+    o[k*4]=r.x;o[k*4+1]=r.y;o[k*4+2]=r.width;o[k*4+3]=r.height;sc+=all[k].scrollTop+all[k].scrollLeft;}
+  o.push(document.documentElement.scrollHeight, sc);
   const idx=new Map(all.map((e,n)=>[e,n]));
   const sub=(t)=> t ? [idx.get(t), ...[...t.querySelectorAll('*')].map(d=>idx.get(d))] : [];
   const skip=sub(document.querySelectorAll(${JSON.stringify(sel)})[${i}]);
@@ -135,7 +145,12 @@ function diff(base, cur, skip, tags) {
   // "document height 0 -> 815" lines on pages the change never touched. Nothing about a
   // pseudo-state can add nodes, so this is never a real shift — skip the sample.
   if (base.length !== cur.length) return out;
-  const n = base.length - 1; // the scrollHeight sentinel RECTS appends
+  // SOMETHING SCROLLED between the two reads (a focus move, a late layout that anchored the
+  // scroll): every rect below the scroller moved by the same amount, which is a scroll and not a
+  // state-driven reflow. One run on a fresh session saw the page drift 700px across a step this way
+  // and blamed each probe in turn. Skip the sample; the same pseudo-state cannot scroll.
+  if (Math.abs(base[base.length - 1] - cur[cur.length - 1]) > EPS) return out;
+  const n = base.length - 2; // the scrollHeight sentinel MEASURE appends (the scroll sum is last)
   if (Math.abs(base[n] - cur[n]) > EPS) out.push(`document height ${base[n]} -> ${cur[n]}`);
   for (let i = 0; i * 4 < n && out.length < 5; i++) {
     if (skip.has(i)) continue;
@@ -160,8 +175,10 @@ app.whenReady().then(async () => {
   // fallback when debugging: it maps the window WITHOUT raising or focusing it.
   // DSIM_SHOW=1 to watch a run.
   const visible = process.env.DSIM_SHOW === '1';
+  // an IN-MEMORY session (a partition without `persist:`): the seeded import, its IndexedDB
+  // library and the settings it writes are gone when the run ends, and every run starts clean
   const win = new BrowserWindow({ width: 1400, height: 900, show: false,
-    webPreferences: { backgroundThrottling: false } });
+    webPreferences: { backgroundThrottling: false, offscreen: true, partition: 'shiftaudit' } });
   const surface = () => { if (visible) win.showInactive(); };
   // MUTE. The run clicks into Free Drive to reach the in-game HUD, which starts the match
   // audio — countdown, announcer, the lot. Nothing about layout needs sound.
@@ -192,10 +209,18 @@ app.whenReady().then(async () => {
       const M = MEASURE(sel, i);
       for (const pseudo of [['hover'], ['hover', 'active']]) {
         const base = await js(M);
-        await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: pseudo });
+        // A RE-RENDER CAN RETIRE THE NODE between `DOM.getDocument` and here (a library or a
+        // settings read answering after the first paint): CDP then says "Could not find node
+        // with given id". That element is gone, not shifting; skip it rather than end the run.
+        try {
+          await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: pseudo });
+        } catch (e) {
+          log(`  (${sel}[${i}] left the DOM before it was probed: ${e.message})`);
+          return;
+        }
         await sleep(SETTLE);
         const cur = await js(M);
-        await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: [] });
+        await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: [] }).catch(() => {});
         // SETTLE AFTER CLEARING. Pressable surfaces hover via `transform: translate(-1px,-1px)`
         // — correct, since transforms don't reflow — but getBoundingClientRect() REPORTS the
         // transform. Without this wait, the cleared transform is still applied when the NEXT
@@ -213,23 +238,19 @@ app.whenReady().then(async () => {
     }
   };
 
-  for (const theme of THEMES) {
-    // stamped by the blocking inline script in index.html, so it must precede the load
-    await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
-    log(`\n############################ THEME: ${theme.toUpperCase()}`);
-
-    let chromeDone = false;
-    for (const page of PAGES) {
-      await win.loadURL(BASE + page);
-      await sleep(1400);
+  /** every probe, on whatever the window shows now (a route, or a state reached by clicking) */
+  const auditHere = async (label, withChrome) => {
       surface();
+      // A FRESH SESSION HAS NO FONT CACHE: a face that arrives mid-probe re-measures every label in
+      // it, and the first probe after it is blamed (the top bar's season name, 72 -> 108 px)
+      await js(`document.fonts.ready.then(() => true)`);
       await js(FREEZE);          // transitions would bleed into the next probe
       await sleep(120);
-      log(`\n##### [${theme}] ${page}`);
+      log(`\n##### ${label}`);
       const tags = await js(TAGS);
       const { root } = await cmd('DOM.getDocument', { depth: -1 });
 
-      for (const sel of chromeDone ? SELECTORS : [...SELECTORS, ...CHROME]) {
+      for (const sel of withChrome ? [...SELECTORS, ...CHROME] : SELECTORS) {
         let nodeIds = [];
         try {
           nodeIds = (await cmd('DOM.querySelectorAll',
@@ -238,7 +259,6 @@ app.whenReady().then(async () => {
         if (!nodeIds.length) continue;
         await probePseudo(sel, nodeIds, tags);
       }
-      chromeDone = true;
 
       for (const [sel, cls] of TOGGLE_CLASSES) {
         const n = await js(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
@@ -246,11 +266,13 @@ app.whenReady().then(async () => {
         for (let i = 0; i < Math.min(n, MAX_PER); i++) {
           const M = MEASURE(sel, i);
           const base = await js(M);
-          const had = await js(`(()=>{const e=document.querySelectorAll(${JSON.stringify(sel)})[${i}];
+          // (null: a re-render removed the element between the count and the toggle; skip it)
+          const had = await js(`(()=>{const e=document.querySelectorAll(${JSON.stringify(sel)})[${i}]; if (!e) return null;
             const h=e.classList.contains(${JSON.stringify(cls)});e.classList.toggle(${JSON.stringify(cls)});return h;})()`);
+          if (had === null) continue;
           await sleep(SETTLE);
           const cur = await js(M);
-          await js(`document.querySelectorAll(${JSON.stringify(sel)})[${i}].classList.toggle(${JSON.stringify(cls)})`);
+          await js(`document.querySelectorAll(${JSON.stringify(sel)})[${i}]?.classList.toggle(${JSON.stringify(cls)}); true`);
           await sleep(SETTLE); // settle before the next baseline — see probePseudo
           checked++;
           const d = diff(base.rects, cur.rects, new Set(cur.skip), tags);
@@ -260,6 +282,84 @@ app.whenReady().then(async () => {
             d.forEach((x) => say(`          ${x}`));
           }
         }
+      }
+  };
+
+  const until = (expr, ms = 15000) => js(`(async () => { for (let t = 0; t < ${ms}; t += 100) { try { if (${expr}) return true; } catch {} await new Promise((r) => setTimeout(r, 100)); } return false; })()`);
+  const IMPORTED_PANEL = `[...document.querySelectorAll('.ds-panel-title')].some((h) => h.textContent.trim() === 'Imported robot')`;
+  /** make the imported robot: the fixture through the drop card, straight to Review, Save */
+  const seedImport = async () => {
+    const b64 = fs.readFileSync(STL).toString('base64');
+    await win.loadURL(BASE + '/decode/configure/robot/import');
+    await sleep(1500);
+    const got = await js(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const bin = atob(${JSON.stringify(b64)});
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const input = document.querySelector('.ds-import-drop input[type=file]');
+      if (!input) return 'no drop card';
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], 'robot.stl'));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 100 && !document.querySelector('.ds-import-filerow'); i++) await wait(200);
+      if (!document.querySelector('.ds-import-filerow')) return 'the file was not read';
+      document.querySelectorAll('.ds-import-steps .ds-tab')[3]?.click();
+      await wait(600);
+      let save = null;
+      for (let i = 0; i < 100; i++) {
+        save = document.querySelector('.ds-import-foot .ds-btn.primary');
+        if (save && !save.disabled) break;
+        await wait(200);
+      }
+      if (!save || save.disabled) return 'Save stayed disabled';
+      save.click();
+      return 'saving';
+    })()`);
+    const ok = got === 'saving' && (await until(`location.pathname.endsWith('/configure/robot') && ${IMPORTED_PANEL}`));
+    log(`seed import: ${got}${ok ? ', saved' : ''}`);
+    // the save's writes (the library record, the synced settings) finish after the page has moved
+    // on; a reload straight away raced them and came back without the import
+    if (ok) await sleep(1500);
+    if (!ok) say(`  (could not seed an imported robot: ${got === 'saving' ? 'Save did not land on the robot page' : got}; those surfaces were NOT audited)`);
+    return ok;
+  };
+  let seeded = null;
+
+  for (const theme of THEMES) {
+    // stamped by the blocking inline script in index.html, so it must precede the load
+    await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
+    log(`\n############################ THEME: ${theme.toUpperCase()}`);
+
+    let chromeDone = false;
+    for (const page of PAGES) {
+      if (page === 'seeded') continue;
+      await win.loadURL(BASE + page);
+      await sleep(1400);
+      await auditHere(`[${theme}] ${page}`, !chromeDone);
+      chromeDone = true;
+    }
+
+    // ---- with an imported robot: the robot page, then the editor (Edit) on each step ----
+    if (SEED) {
+      if (seeded === null) seeded = await seedImport();
+      if (seeded) {
+        await win.loadURL(BASE + '/decode/configure/robot');
+        await sleep(1400);
+        if (await until(IMPORTED_PANEL, 12000)) await auditHere(`[${theme}] /configure/robot (an imported robot)`, false);
+        else say(`  (the robot page did not show the imported robot in ${theme})`);
+        await win.loadURL(BASE + '/decode/configure/robot');
+        // the panel's Edit appears once the library has answered (IndexedDB, after the first paint)
+        const EDIT = `[...([...document.querySelectorAll('.ds-panel-title')].find((t) => t.textContent.trim() === 'Imported robot')?.closest('.ds-panel-h')?.querySelectorAll('.ds-btn') ?? [])].find((x) => /^Edit/.test(x.textContent.trim()))`;
+        const edit = (await until(`!!${EDIT}`, 8000)) && (await js(`(() => { const b = ${EDIT}; if (!b) return false; b.click(); return true; })()`));
+        if (edit && (await until(`location.pathname.includes('/configure/robot/import') && document.querySelectorAll('.ds-import-steps .ds-tab').length === 4`, 8000))) {
+          for (let k = 0; k < 4; k++) {
+            await js(`document.querySelectorAll('.ds-import-steps .ds-tab')[${k}].click(); true`);
+            await sleep(700);
+            await auditHere(`[${theme}] importer, editing the imported robot, step ${k + 1}`, false);
+          }
+        } else say(`  (could not open the imported robot in the editor in ${theme})`);
       }
     }
 

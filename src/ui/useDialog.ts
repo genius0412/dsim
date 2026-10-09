@@ -20,11 +20,19 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose?: () =
   const ref = useRef<T>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // ⚠️ THE OPENER IS READ WHILE RENDERING, NOT IN THE EFFECT. A child with `autoFocus` (the rename
+  // field) takes focus in the commit, before the effect runs, so the effect read that CHILD as the
+  // opener; it left with the dialog and focus fell to <body> on close (importpad, 2026-10-02: B on
+  // Rename lost the pad's place on the robot page). The first render still sees what opened it.
+  const openerRef = useRef<HTMLElement | null>(null);
+  if (openerRef.current === null && typeof document !== 'undefined') openerRef.current = document.activeElement as HTMLElement | null;
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const opener = document.activeElement as HTMLElement | null;
+    const atOpen = document.activeElement as HTMLElement | null;
+    const first = openerRef.current;
+    const opener = first && !el.contains(first) ? first : atOpen && !el.contains(atOpen) ? atOpen : null;
     const items = (): HTMLElement[] => [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
     // a child that already focused itself on mount (autoFocus, an equip button) keeps it
     if (!el.contains(document.activeElement)) (items()[0] ?? el).focus();

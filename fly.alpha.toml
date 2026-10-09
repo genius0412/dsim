@@ -17,8 +17,8 @@
 #     has one or two testers, and the matchmaker has to live somewhere anyway.
 #   · min_machines_running = 0. Production keeps the matchmaker warm because a cold boot in
 #     front of a real player is a bad first impression. A preview can eat the ~7s wake.
-#   · shared-cpu-2x. Enough headroom for a couple of concurrent rooms without the
-#     shared-cpu-1x throttle-flap fly.toml warns about, at a fraction of the primary's size.
+#   · shared-cpu-4x. shared-cpu-2x throttled on 09-21 (3h) and 09-25 (1h), so the capacity
+#     checkup moved it up a step; it costs money only while the machine is started.
 #
 # Deploy with:  ./scripts/fly-deploy.sh --alpha
 # NEVER a bare `fly deploy` here either — it would pick up fly.toml and redeploy PRODUCTION.
@@ -46,6 +46,8 @@ primary_region = 'iad'
   # ungated rendezvous would have opened tab hosting in production while LAN is held back.
   # Set here for the same reason as the line above, and deliberately NOT in fly.toml.
   LAN_SIGNALLING = '1'
+  # multi-core rooms, as in fly.toml (docs/scaling-multicore.md): shared-cpu-4x gets three workers
+  SIM_WORKERS = 'auto'
 
 [http_service]
   internal_port = 8080
@@ -63,5 +65,5 @@ primary_region = 'iad'
     path = '/health'
 
 [[vm]]
-  size = 'shared-cpu-2x'
+  size = 'shared-cpu-4x'
   memory = '1024mb'

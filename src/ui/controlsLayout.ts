@@ -42,6 +42,7 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
   rotateCW: 'Turn right',
   intake: 'Intake (hold)',
   fire: 'Shoot (hold)',
+  flyPreset: 'Next flywheel speed',
   catalyst: 'Catalyst pick up / place',
   fling: 'Catapult throw',
   bbPlaceNectar: 'Place NECTAR',

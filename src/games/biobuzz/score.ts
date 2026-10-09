@@ -1,5 +1,5 @@
 import type { Alliance, Artifact, RobotState, World } from '../../types';
-import { robotCorners, robotIntersectsRect } from '../../sim/physics';
+import { robotCorners, robotHullWorld, robotIntersectsRect } from '../../sim/physics';
 import { START_TOUCH_TOL } from '../../config';
 import {
   BB_GARDEN,
@@ -123,7 +123,8 @@ export function bbWallsTouched(r: RobotState): number {
   const lim = BB_HALF_X - START_TOUCH_TOL;
   const limY = BB_HALF_Y - START_TOUCH_TOL;
   let walls = 0;
-  for (const c of robotCorners(r)) {
+  // an IMPORT touches with its hull's vertices, not the corners of its bounding box
+  for (const c of r.spec.imported ? robotHullWorld(r) : robotCorners(r)) {
     if (c.x > lim) walls |= BB_WALL.xPos;
     if (c.x < -lim) walls |= BB_WALL.xNeg;
     if (c.y > limY) walls |= BB_WALL.yPos;

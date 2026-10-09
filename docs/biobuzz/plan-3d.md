@@ -31,8 +31,8 @@ Decisions, one line each:
    no WebGL) and a lazily loaded Three.js r186 renderer (3D view). Both read the same `World`.
 6. **Prediction is a setting: Off, Light, Full.** Light (drive model plus walls, no 3D wasm) is
    the 2D default; Full (a small 3D prediction world) the 3D default; Off is pure interpolation.
-7. **Graphics: presets Auto / Low / Medium / High / Ultra / Custom** over sixteen detailed
-   settings, per device. Auto detects the GPU, benchmarks two seconds, and picks; software GL
+7. **Graphics: presets Auto / Low / Medium / High / Ultra / Extreme / Custom** over sixteen
+   detailed settings, per device. Auto never picks Extreme (2026-09-27). Auto detects the GPU, benchmarks two seconds, and picks; software GL
    falls back to the 2D view. `powerPreference: 'high-performance'`, hardware acceleration never
    disabled in the app.
 8. **Practice is local**: physics 2D or 3D, view 2D or 3D, AI opponents off or a tier. Practice
@@ -195,7 +195,8 @@ it saves about 300 KB gzipped; try it on Day 0, fall back to compat.
 Route weights, gzipped: main chunk 903 KB today (at most +10 KB; measured 907.88 after the
 implementation moved out of it); 3D physics chunk about 1.1 MB
 (compat) or 0.77 MB (raw wasm), loaded only as described; renderer chunk at most 250 KB (engine
-measured 139 KB tree-shaken); HDRI sets on demand. A 2D-view player pays the main chunk only.
+measured 139 KB tree-shaken); HDRI sets on demand; the post-processing chunk (ambient occlusion
+and bloom, 2026-09-27) only when either is on. A 2D-view player pays the main chunk only.
 `scripts/bundleaudit.mjs` (new, a `uiaudit`-shaped ratchet) fails on growth per chunk.
 
 ---
@@ -410,27 +411,37 @@ A **Graphics** section in Configure (beside Audio and Visual), stored per device
 `localStorage['decodesim.graphics']`, never in `GameSettings` (a GPU is a property of the machine).
 One preset picker and every setting under it; changing a setting switches the preset to Custom.
 
-| setting | values | Low | Medium | High | Ultra |
-|---|---|---|---|---|---|
-| Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 2.2 / 4.0 MP) | 75 | 100 | 100 | 100 |
-| Max frame rate | 30 / 60 / 120 / display | 60 | display | display | display |
-| Anti-aliasing | off / MSAA 2x / MSAA 4x / SMAA | off | MSAA 2x | MSAA 4x | MSAA 4x + SMAA |
-| Shadows | off / low 1024 / high 2048 / soft | off | low | high | soft |
-| Element shadows | none / blob / real | none | blob | real | real |
-| Ambient occlusion | off / SSAO | off | off | off | on |
-| Anisotropic filtering | 1 / 4 / 8 / 16 | 1 | 4 | 8 | 16 |
-| Mesh detail | low / high (two GLB decimation levels) | low | high | high | high |
-| Environment | procedural room / HDRI set (on demand, 4.5) | procedural | procedural | HDRI | HDRI |
-| Environment lighting | off / on | off | off | on | on |
-| Reflections | off / on (env map on metals) | off | off | on | on |
-| Effects | tracers, tint pulse, wheel spin, dust off | minimal | standard | standard | full |
-| Field of view | 60 to 90 | 70 | 70 | 70 | 70 |
-| Camera motion | full / reduced (also from `prefers-reduced-motion`) | reduced | full | full | full |
-| PiP minimap | off / on | on | on | off | off |
-| Performance overlay | off / fps / fps + p95 + draw calls | off | off | off | off |
+| setting | values | Low | Medium | High | Ultra | Extreme |
+|---|---|---|---|---|---|---|
+| Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP) | 75 | 100 | 100 | 100 | 150 |
+| Max frame rate | 30 / 60 / 120 / display | 60 | display | display | display | display |
+| Anti-aliasing | off / MSAA 2x / MSAA 4x | off | MSAA 2x | MSAA 4x | MSAA 4x | MSAA 4x |
+| Shadows | off / low 1024 / high 2048 / soft / max 4096 | off | low | high | soft | max |
+| Element shadows | none / blob / real | none | blob | real | real | real |
+| Ambient occlusion | off / on (GTAO) | off | off | off | off | on |
+| Anisotropic filtering | 1 / 4 / 8 / 16 | 1 | 4 | 8 | 16 | 16 |
+| Mesh detail | low / high (two GLB decimation levels) | low | high | high | high | high |
+| Environment | procedural room / HDRI set (on demand, 4.5) | procedural | procedural | HDRI | HDRI | HDRI |
+| Environment lighting | off / on | off | off | on | on | on |
+| Reflections | off / on (env map on metals) | off | off | on | on | on |
+| Bloom | off / on (venue lamps and hard glints; never a robot part) | off | off | off | off | off |
+| Materials | standard / physical (measured finishes + a room probe) | standard | standard | standard | standard | physical |
+| Effects | tracers, tint pulse, wheel spin, dust off | minimal | standard | standard | full | full |
+| Field of view | 60 to 90 | 70 | 70 | 70 | 70 | 70 |
+| Camera motion | full / reduced (also from `prefers-reduced-motion`) | reduced | full | full | full | full |
+| PiP minimap | off / on | on | on | off | off | off |
+| Performance overlay | off / fps / fps + p95 + draw calls | off | off | off | off | off |
 
 Motion blur is not offered. Every value is applied live; a change never reloads. A `Reset to Auto`
 button re-runs detection.
+
+**Extreme (2026-09-27).** Ultra's two hedged cells moved here: AO is on at Extreme only, and SMAA is
+not offered at all. Extreme renders at 150 % on top of MSAA 4x, which is sharper on this field's
+thin edges, and `SMAAPass` alone is 38 KB gzipped of lookup textures. AO and bloom are post passes
+in a lazy chunk fetched the first time either is on, so they apply live once it arrives. They draw
+in the match and the live replay viewer only: the builder preview has no post chain, and the
+replay export stays fixed at High (4.7). Auto never picks Extreme (4.6). Materials also switches
+to `physical` at Extreme only — its own lazy chunk, see `docs/area/biobuzz.md`'s PHYSICAL MATERIALS.
 
 ### 4.5 Environments
 
@@ -446,7 +457,8 @@ Auto is the default preset. On the first 3D launch: read the WebGL renderer stri
 (`WEBGL_debug_renderer_info`) and, where present, the WebGPU adapter info; combine with device
 memory, core count and DPR into a first guess (integrated GPU → Medium, discrete → High, phone →
 Low); then a **two-second warm-up** on the real scene measures frame-time p95 and moves the preset
-one step down if p95 exceeds 16.7 ms, one step up if it is under 6 ms with headroom. The result is
+one step down if p95 exceeds 16.7 ms, one step up if it is under 6 ms with headroom, never past
+Ultra (the warm-up measures CPU time, and Extreme's cost is GPU fill). The result is
 stored; a persistent slip of p95 above 25 ms in a match lowers the preset once and writes one
 event-log line. `WebGLRenderer` is created with `powerPreference: 'high-performance'` so dual-GPU
 laptops pick the discrete GPU. A software renderer string (SwiftShader, llvmpipe, Basic Render
@@ -708,7 +720,7 @@ until then); confirm the pitch-and-roll upgrade date after the yaw-only game is 
 | `BB3_HEIGHT_MIN/DEFAULT/MAX` | 12 / 18 / 29 in | rules |
 | `BB3_MECH_Z` turret/dumper/tube | 14 / 12 / 10 in | APPROX |
 | `PREDICT_ELEMENT_RADIUS` | 36 in | APPROX |
-| `GFX_PIXEL_BUDGET` Low/Medium/High/Ultra | 0.6 / 1.2 / 2.2 / 4.0 MP | budget |
+| `GFX_PIXEL_BUDGET` Low/Medium/High/Ultra/Extreme | 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP | budget |
 | `GFX_WARMUP_S`, `GFX_STEP_DOWN_P95_MS`, `GFX_STEP_UP_P95_MS`, `GFX_SLIP_P95_MS` | 2 s, 16.7, 6, 25 | APPROX |
 | `BB3_EYE_DEFAULT/MIN/MAX`, `BB3_DRIVER_SETBACK`, `BB3_CAM_FOV` | 62/44/72 in, 12 in, 70° | APPROX |
 | budgets | step 1.5 ms; cores/room 0.10; snapshot 10,000 B; Full reconcile 8 ms; Light 1 ms; renderer 250 KB gz; main +10 KB gz; field GLB 600 / 250 KB br | this document |

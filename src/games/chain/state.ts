@@ -17,6 +17,8 @@ import {
 import { type ChainEdge, MOUNT_ANGLE, RAIL_DIR, catalystMountOf, catalystMountPositions, catalystSwingOf, intakeMountEdges, intakeMountOf, isEdgePos, mountOrigin } from './mounts';
 import { CHAIN_CATALYST_NEAR, CHAIN_DEFAULT_CATALYST, CHAIN_TRACK_APPROACH, chainCatalystGeom } from './config';
 import { datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
+import { chainCatalystImportOrigin, chainImportMouths, chainImportRailHalf } from './importMech';
+import { rotatedPolyBounds } from '../../sim/imported';
 
 /**
  * LEGACY, for the frozen DECODE preview only.
@@ -68,9 +70,13 @@ export interface ChainIntakeMouth {
   x1: number;
   y0: number;
   y1: number;
+  /** an IMPORTED robot's mouth only: its chassis face along the edge's outward normal */
+  face?: number;
 }
 
 export function chainIntakeMouths(spec: RobotSpec): ChainIntakeMouth[] {
+  // an IMPORTED robot: the mouths fitted to its hull, off-centre if that is where they were placed
+  if (spec.imported) return chainImportMouths(spec);
   const it = CHAIN_INTAKES[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
   const reach = INTAKE_PRESETS[spec.intake].reach;
   const hl = spec.length / 2;
@@ -277,13 +283,24 @@ export function catalystRailHalf(spec: RobotSpec): number {
   if ((spec.catalystType ?? CHAIN_DEFAULT_CATALYST) !== 'rail') return 0;
   const pos = catalystMountOf(spec);
   if (!isEdgePos(pos)) return 0; // coerceSpec folds a rail onto an edge; belt and braces
+  // an IMPORT: as far as its hull runs along the rail from the rail's origin, both ways
+  if (spec.imported) return chainImportRailHalf(spec, pos);
   const span = pos === 'front' || pos === 'back' ? spec.width : spec.length;
   return Math.max(0, span / 2 - CHAIN_RAIL_MARGIN);
 }
 
+/**
+ * Where the catalyst mechanism at `pos` is bolted, robot-local — the point its reach is measured
+ * from. A standard robot: the mount cell on its frame line (`mountOrigin`). An IMPORT: where the
+ * hull ends along that position's direction from the placed base (`chainCatalystImportOrigin`).
+ */
+export function catalystOrigin(spec: RobotSpec, pos: Exclude<ChainMountPos, 'center'>): Vec2 {
+  return spec.imported ? chainCatalystImportOrigin(spec, pos) : mountOrigin(spec, pos);
+}
+
 /** the catalyst mechanism's mouth in WORLD space for ONE mount position. */
 function mouthAt(rob: RobotState, pos: Exclude<ChainMountPos, 'center'>): Vec2 {
-  const o = mountOrigin(rob.spec, pos);
+  const o = catalystOrigin(rob.spec, pos);
   // a RAIL carriage slides ALONG the mounted side, so its mouth is offset from the mount
   // point by wherever the carriage currently is. This is the whole mechanism: without it
   // the rail was drawn but the claw still worked from one fixed spot.
@@ -322,7 +339,7 @@ export function catalystRailTarget(rob: RobotState, target: Vec2 | null): number
   // the target in the ROBOT frame — the rail is a chassis axis, so the projection has to
   // happen there rather than in world space
   const d = rot({ x: target.x - rob.pos.x, y: target.y - rob.pos.y }, -rob.heading);
-  const o = mountOrigin(rob.spec, pos);
+  const o = catalystOrigin(rob.spec, pos);
   // project onto the SAME axis the carriage actually slides along (see `railOffset`)
   const dir = RAIL_DIR[pos];
   const along = (d.x - o.x) * dir.x + (d.y - o.y) * dir.y;
@@ -477,19 +494,47 @@ export function catalystDist(rob: RobotState, target: Vec2): number {
  *
  * At 0°/90° this is exactly the chassis, so an axis-aligned robot now gets the room its
  * true footprint deserves rather than being measured by its longer side.
+ *
+ * `ox`/`oy` are the offset from the robot's origin to that box's CENTRE, and every rule below is
+ * written against the box centre (`pos + o`), never the origin. A standard robot's box is centred
+ * on it (0, 0); an IMPORT's is not.
  */
 export function chainStartExtents(
   spec: RobotSpec,
   headingDeg: number,
-): { ex: number; ey: number } {
+  alliance: Alliance = 'blue',
+): { ex: number; ey: number; ox: number; oy: number } {
   // dcos/dsin, not Math.cos/sin — this is sim source, and the trig discipline is what
   // keeps two engines agreeing on a spawn position (see CLAUDE.md)
   const rad = (headingDeg * Math.PI) / 180;
+  /**
+   * AN IMPORTED ROBOT: its HULL turned to this heading — the box it occupies, plus the same
+   * margin, and where that box sits. Its origin is the wheelbase centre, so the box is OFF-CENTRE:
+   * measuring it as half-extents about the origin (the larger side each way) started a long-nosed
+   * robot 3 in outside the Lab, a long-tailed one on the Ring Stand, and found no legal pose at
+   * all for an 18-in hull with its origin 3 in off the middle (integration review 2026-10-02).
+   *
+   * ⚠️ RED SEES THE HULL MIRRORED. Poses are judged in the CANONICAL (blue) frame, and red's actual
+   * pose is that pose x-REFLECTED (`chainMirrorStart`). A reflection is not a rotation: red's real
+   * footprint is the reflection of the canonical footprint of the hull flipped left for right. The
+   * rules are symmetric under the reflection, so red is judged on the flipped hull. A standard
+   * footprint is symmetric left-right, so this changes nothing for it.
+   */
+  if (spec.imported) {
+    const hull = alliance === 'red' ? spec.imported.hull.map((p) => ({ x: p.x, y: -p.y })) : spec.imported.hull;
+    const b = rotatedPolyBounds(hull, dcos(rad), dsin(rad));
+    return {
+      ex: (b.maxX - b.minX) / 2 + 0.5,
+      ey: (b.maxY - b.minY) / 2 + 0.5,
+      ox: (b.maxX + b.minX) / 2,
+      oy: (b.maxY + b.minY) / 2,
+    };
+  }
   const c = Math.abs(dcos(rad));
   const s = Math.abs(dsin(rad));
   const hl = spec.length / 2;
   const hw = spec.width / 2;
-  return { ex: c * hl + s * hw + 0.5, ey: s * hl + c * hw + 0.5 };
+  return { ex: c * hl + s * hw + 0.5, ey: s * hl + c * hw + 0.5, ox: 0, oy: 0 };
 }
 
 /**
@@ -505,8 +550,9 @@ export function chainStartExtents(
  * different repairs: a bad POSITION is fixed by moving, a bad HEADING can only be
  * fixed by turning, and a snap that only ever moves would hunt forever.
  */
-export function chainHeadingFits(spec: RobotSpec, headingDeg: number): boolean {
-  const { ex, ey } = chainStartExtents(spec, headingDeg);
+export function chainHeadingFits(spec: RobotSpec, headingDeg: number, alliance: Alliance = 'blue'): boolean {
+  // the box's SIZE decides this, wherever its centre sits relative to the origin
+  const { ex, ey } = chainStartExtents(spec, headingDeg, alliance);
   const lo = CHAIN_HALF_X - CHAIN_LAB; // inner Lab edge
   const hi = CHAIN_HALF_X; // wall
   // (a) the Lab band exists on both axes
@@ -523,11 +569,11 @@ export function chainHeadingFits(spec: RobotSpec, headingDeg: number): boolean {
 /** the nearest heading (in whole degrees) at which the robot fits the Lab at all —
  *  the repair for a pose turned too far to be placeable. Returns `headingDeg`
  *  unchanged when it already fits; searches both ways so it turns the short way. */
-export function chainNearestFittingHeading(spec: RobotSpec, headingDeg: number): number {
-  if (chainHeadingFits(spec, headingDeg)) return headingDeg;
+export function chainNearestFittingHeading(spec: RobotSpec, headingDeg: number, alliance: Alliance = 'blue'): number {
+  if (chainHeadingFits(spec, headingDeg, alliance)) return headingDeg;
   for (let d = 1; d <= 90; d++) {
-    if (chainHeadingFits(spec, headingDeg + d)) return headingDeg + d;
-    if (chainHeadingFits(spec, headingDeg - d)) return headingDeg - d;
+    if (chainHeadingFits(spec, headingDeg + d, alliance)) return headingDeg + d;
+    if (chainHeadingFits(spec, headingDeg - d, alliance)) return headingDeg - d;
   }
   return headingDeg; // a robot too big for the Lab at ANY heading — caller reports it
 }
@@ -547,16 +593,20 @@ export function chainNearestFittingHeading(spec: RobotSpec, headingDeg: number):
  * corner-assembly push is conservative (AABB vs box can report an overlap two rotated
  * rects would not have), which is the right way to be wrong next to a solid post.
  *
- * `pos` is in the CANONICAL (blue, +x) frame, matching `CHAIN_START_POSES`.
+ * `pos` is in the CANONICAL (blue, +x) frame, matching `CHAIN_START_POSES`, and `alliance` is
+ * the robot's own (red is judged on its hull mirrored, see `chainStartExtents`). Everything is
+ * done to the footprint box's CENTRE (`pos + o`) and the origin is put back at the end.
  */
-export function chainSnapStart(spec: RobotSpec, pos: Vec2, headingDeg: number): Vec2 {
-  const { ex, ey } = chainStartExtents(spec, headingDeg);
+export function chainSnapStart(spec: RobotSpec, pos: Vec2, headingDeg: number, alliance: Alliance = 'blue'): Vec2 {
+  const { ex, ey, ox, oy } = chainStartExtents(spec, headingDeg, alliance);
   const clamp1 = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
   const lo = CHAIN_HALF_X - CHAIN_LAB;
+  const cx = pos.x + ox;
+  const cy = pos.y + oy;
   // into the Lab square: x always positive-side, y into whichever corner it is nearer
-  const x = clamp1(pos.x, lo + ex, CHAIN_HALF_X - ex);
-  const sy = pos.y >= 0 ? 1 : -1;
-  const y = sy * clamp1(Math.abs(pos.y), lo + ey, CHAIN_HALF_X - ey);
+  const x = clamp1(cx, lo + ex, CHAIN_HALF_X - ex);
+  const sy = cy >= 0 ? 1 : -1;
+  const y = sy * clamp1(Math.abs(cy), lo + ey, CHAIN_HALF_X - ey);
 
   /**
    * OUT OF THE CORNER ASSEMBLY.
@@ -574,13 +624,22 @@ export function chainSnapStart(spec: RobotSpec, pos: Vec2, headingDeg: number): 
    */
   const h = CHAIN_RINGSTAND_BOX / 2;
   let out = { x, y };
+  const escapes = (b: Vec2, ax: number, ay: number): Vec2[] => {
+    const cands: Vec2[] = [];
+    const rx = Math.sign(b.x || 1) * (Math.abs(b.x) - h - ax); // inward past its inner face
+    const ry = Math.sign(b.y || 1) * (Math.abs(b.y) - h - ay);
+    if (Math.abs(rx) >= lo + ax) cands.push({ x: rx, y: out.y });
+    if (Math.abs(ry) >= lo + ay) cands.push({ x: out.x, y: ry });
+    return cands;
+  };
   for (const b of ringStandBoxes()) {
     if (Math.abs(out.x - b.x) >= h + ex || Math.abs(out.y - b.y) >= h + ey) continue; // clear
-    const cands: Vec2[] = [];
-    const rx = Math.sign(b.x || 1) * (Math.abs(b.x) - h - ex); // inward past its inner face
-    const ry = Math.sign(b.y || 1) * (Math.abs(b.y) - h - ey);
-    if (Math.abs(rx) >= lo + ex) cands.push({ x: rx, y: out.y });
-    if (Math.abs(ry) >= lo + ey) cands.push({ x: out.x, y: ry });
+    let cands = escapes(b, ex, ey);
+    // AN IMPORT's hull may be 18 in, and an 18-in box has no room for the 0.5-in margin in a Lab
+    // with a Ring Stand in its corner (the reason a standard chassis is capped at 17). Seated by
+    // the margin it would stand half an inch in the post; seat it FLUSH (the hull's own box)
+    // instead. Still not `chainStartLegal`, which keeps the margin — the anchor it came from is.
+    if (cands.length === 0 && spec.imported) cands = escapes(b, ex - 0.5, ey - 0.5);
     if (cands.length === 0) continue; // no escape at this heading — chainHeadingFits says so
     let best = cands[0];
     let bestD = Infinity;
@@ -590,7 +649,7 @@ export function chainSnapStart(spec: RobotSpec, pos: Vec2, headingDeg: number): 
     }
     out = best;
   }
-  return out;
+  return { x: out.x - ox, y: out.y - oy };
 }
 
 
@@ -605,31 +664,58 @@ export function chainSnapStart(spec: RobotSpec, pos: Vec2, headingDeg: number): 
  * This is the chokepoint the SPAWN uses, so a hand-edited or spoofed pose — including a
  * deliberately diagonal one — cannot get a robot into a collider.
  */
-export function chainSnapStartPose(spec: RobotSpec, pose: StartPose): StartPose {
-  const headingDeg = chainNearestFittingHeading(spec, pose.headingDeg);
-  const p = chainSnapStart(spec, { x: pose.x, y: pose.y }, headingDeg);
+export function chainSnapStartPose(spec: RobotSpec, pose: StartPose, alliance: Alliance = 'blue'): StartPose {
+  const headingDeg = chainNearestFittingHeading(spec, pose.headingDeg, alliance);
+  const p = chainSnapStart(spec, { x: pose.x, y: pose.y }, headingDeg, alliance);
   return { x: p.x, y: p.y, headingDeg };
+}
+
+/**
+ * Where an IMPORTED robot starts at a named anchor (`CHAIN_START_POSES`, canonical): the anchor
+ * FITTED to its hull. The anchors are legal by construction for a standard chassis centred on its
+ * origin; an import's origin is its wheelbase centre and its hull up to 18 in, so unfitted a long
+ * tail at a STAND anchor started 3 in into the ring-stand solid and a long nose at a LAB anchor
+ * started outside the Lab (integration review 2026-10-02). The spawn and the start editor both
+ * call this, so the robot starts where it is drawn.
+ *
+ * A STAND ANCHOR STAYS ONE. It exists to arm the auto descent (`onRingStand` of the origin), and a
+ * long hull fitted at the anchor's heading can be pushed out of ascend range; then the quarter
+ * turns are tried, nearest first, and the first legal fit that is still at the stand wins. If none
+ * is, the fit at the anchor's heading stands (a legal floor start).
+ */
+export function chainFitAnchor(spec: RobotSpec, anchor: StartPose, alliance: Alliance): StartPose {
+  const fit = chainSnapStartPose(spec, anchor, alliance);
+  if (!onRingStand({ x: anchor.x, y: anchor.y }) || onRingStand(fit)) return fit;
+  for (const turn of [90, -90, 180]) {
+    const headingDeg = (((anchor.headingDeg + turn) % 360) + 360) % 360;
+    const f = chainSnapStartPose(spec, { x: anchor.x, y: anchor.y, headingDeg }, alliance);
+    if (onRingStand(f) && chainStartLegal(spec, f, f.headingDeg, alliance)) return f;
+  }
+  return fit;
 }
 
 /** Is a CANONICAL (blue-frame) start pose legal? G04 wants the robot COMPLETELY inside
  * a Lab-Area corner square, and the solid corner assembly must not be overlapped. This is
- * the predicate the editor colours its footprint with; `chainSnapStart` is the repair. */
-export function chainStartLegal(spec: RobotSpec, pos: Vec2, headingDeg: number): boolean {
+ * the predicate the editor colours its footprint with; `chainSnapStart` is the repair.
+ * `alliance` is the robot's own: red is judged on its hull mirrored (`chainStartExtents`). */
+export function chainStartLegal(spec: RobotSpec, pos: Vec2, headingDeg: number, alliance: Alliance = 'blue'): boolean {
   // The RULES themselves, not "the snap left it alone". Defining legality as the snap's
   // own fixed point made the two agree by construction — including when they were both
   // wrong, which is exactly how a position inside the corner assembly got reported legal.
   // Smoke asserts the direction that actually matters instead: whatever the snap returns
   // satisfies this predicate.
-  const { ex, ey } = chainStartExtents(spec, headingDeg);
+  const { ex, ey, ox, oy } = chainStartExtents(spec, headingDeg, alliance);
+  const cx = pos.x + ox;
+  const cy = pos.y + oy;
   const lo = CHAIN_HALF_X - CHAIN_LAB;
   const EPS = 0.01;
   const within = (v: number, e: number): boolean =>
     Math.abs(v) >= lo + e - EPS && Math.abs(v) <= CHAIN_HALF_X - e + EPS;
-  if (!within(pos.x, ex) || !within(pos.y, ey)) return false;
-  if (pos.x < 0) return false; // canonical poses live on the +x (blue) side
+  if (!within(cx, ex) || !within(cy, ey)) return false;
+  if (cx < 0) return false; // canonical poses live on the +x (blue) side
   const h = CHAIN_RINGSTAND_BOX / 2;
   for (const b of ringStandBoxes()) {
-    if (Math.abs(pos.x - b.x) < h + ex - EPS && Math.abs(pos.y - b.y) < h + ey - EPS) return false;
+    if (Math.abs(cx - b.x) < h + ex - EPS && Math.abs(cy - b.y) < h + ey - EPS) return false;
   }
   return true;
 }
@@ -640,6 +726,10 @@ export interface ChainStartLegality {
    * rules are checked against, and what the editor outlines */
   ex: number;
   ey: number;
+  /** where that box's centre sits relative to the robot's origin, CANONICAL frame (0, 0 for a
+   * standard robot; an import's box is off-centre) */
+  ox: number;
+  oy: number;
   /** fully inside one of the Lab-Area corner squares (G04) */
   inLab: boolean;
   /** clear of the SOLID Ring-Stand corner assembly */
@@ -661,29 +751,34 @@ export function chainEvalStart(
   spec: RobotSpec,
   pos: Vec2,
   headingDeg: number,
+  alliance: Alliance = 'blue',
 ): ChainStartLegality {
-  const { ex, ey } = chainStartExtents(spec, headingDeg);
+  const { ex, ey, ox, oy } = chainStartExtents(spec, headingDeg, alliance);
+  const cx = pos.x + ox;
+  const cy = pos.y + oy;
   const EPS = 0.01;
   const inRange = (v: number, e: number): boolean =>
     CHAIN_HALF_X - CHAIN_LAB + e <= CHAIN_HALF_X - e &&
     v >= CHAIN_HALF_X - CHAIN_LAB + e - EPS &&
     v <= CHAIN_HALF_X - e + EPS;
-  const inLab = inRange(pos.x, ex) && inRange(Math.abs(pos.y), ey);
+  const inLab = inRange(cx, ex) && inRange(Math.abs(cy), ey);
   const h = CHAIN_RINGSTAND_BOX / 2;
   let clearOfStand = true;
   for (const b of ringStandBoxes()) {
-    if (Math.abs(pos.x - b.x) < h + ex - EPS && Math.abs(pos.y - b.y) < h + ey - EPS) {
+    if (Math.abs(cx - b.x) < h + ex - EPS && Math.abs(cy - b.y) < h + ey - EPS) {
       clearOfStand = false;
     }
   }
   return {
     ex,
     ey,
+    ox,
+    oy,
     inLab,
     clearOfStand,
     onStand: onRingStand(pos),
-    headingFits: chainHeadingFits(spec, headingDeg),
-    legal: chainStartLegal(spec, pos, headingDeg),
+    headingFits: chainHeadingFits(spec, headingDeg, alliance),
+    legal: chainStartLegal(spec, pos, headingDeg, alliance),
   };
 }
 

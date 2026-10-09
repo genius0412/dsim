@@ -11,7 +11,7 @@ import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
-import { serverPhysics } from '../src/games/types';
+import { serverPhysics, type RankFactsAt } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
@@ -35,6 +35,8 @@ import {
   quantizeCommand,
   slimWorld,
   roomCapacity,
+  mergeRoomSettings,
+  type RoomSettings,
   DEFAULT_ROOM_CONFIG,
   RANKED_JOIN_GRACE_MS,
   READY3D_DEADLINE_MS,
@@ -53,19 +55,32 @@ import {
   type RecordRankInfo,
   type RoomConfig,
   type RoomKind,
+  type RecordKind,
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
+import {
+  IMPORT_START_REFUSED,
+  hasImportCap,
+  importAdmission,
+  importIdOf,
+  isImportedSpec,
+  setupsHaveImported,
+  stripImported,
+  stripTune,
+  type ImportRoomState,
+} from '../src/net/imported';
+import { VisualRelay } from './importVisuals';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
-import { chargedForParticipation, judgeParticipation } from '../src/standing';
+import { absenceOf, chargedForParticipation, EARLY_ABSENT_TICKS, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
    A value import here would drag a Postgres driver into the browser bundle — see
    `server/eloMode.ts` and `docs/lan-webrtc.md` §5. */
 import type { EloOutcome } from './ranked';
-import type { PendingMatch } from './matchTypes';
+import type { CompetitionTag, PendingMatch } from './matchTypes';
 
 /** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO
  *  failed and HOW; the penalty scale and the rolling window live outside it. */
@@ -78,6 +93,9 @@ export interface DodgeReport {
   /** the room it died in — recorded on the standing ledger so a moderator reading a
    *  player's history can line an offence up against the match it came from */
   roomCode: string;
+  /** a competition room's call that never became a match: charged to nobody's standing, and
+   *  reported to the competition instead (`competitionCallFailed`) */
+  competition?: CompetitionTag;
 }
 
 /**
@@ -121,8 +139,18 @@ const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, 
  * so the ~50% more frames over 20 Hz is cheap. */
 const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
- * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
-const HOLD_TICKS = 15;
+ * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO.
+ *
+ * ⚠️ 36 (600 ms), NOT 15. The WebSocket is TCP, so one lost segment stalls the input stream for
+ * a retransmit — routinely 200–500 ms on Wi-Fi — and every input sent during it arrives late in
+ * one burst. At 15 ticks the robot was stopped 250 ms into that stall while the driver's client
+ * kept predicting it driving, and the snapshot after it yanked the robot back. Measured through
+ * a real solo record room at 50 ms RTT with the stick HELD through the stall: 1.5 in for 300 ms
+ * and 10.6 in for 500 ms at 15 ticks, 0.03 in for both at 36. (A driver who CHANGED the stick
+ * during a stall is still corrected, and nothing here can help that — those inputs were not in
+ * the room in time.) A driver who has genuinely gone is still stopped, 0.35 s later than
+ * before; a closed socket is the reconnect grace's business, not this timer's. */
+const HOLD_TICKS = 36;
 /**
  * How far AHEAD of the live tick a buffered input may be stamped.
  *
@@ -342,6 +370,14 @@ export interface Client {
    * `[]` for a guest or when the lookup found nothing.
    */
   earnedCosmetics?: string[];
+  /**
+   * WHO PAYS for this client's imported-robot visuals (`server/importVisuals.ts`): a 32-bit hash
+   * of its account (`u:<id>`) or, signed out, its address (`ip:<addr>`), taken by the socket
+   * thread at the door (`visualSourceKey`). The process budget is charged per key as well as in
+   * all, so one source cannot hold the whole budget. Never the address itself: only the hash
+   * crosses into a room. Absent (the LAN tab host, a test) ⇒ the client id is the source.
+   */
+  budgetKey?: number;
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -355,9 +391,20 @@ export interface MatchParticipant {
   /** the full robot config this driver used (for record-board display) */
   spec: RobotSpec;
   assists: AssistConfig;
+  /** RANKED ONLY — what the rating update needs about this driver (see `computeGlicko`):
+   * the challenge token they queued under (from the staged roster), the share of the live
+   * match they were away for (1 = sat AFK), and whether they were missing for the whole
+   * opening window. Absent from a LAN upload or an older caller, which reads as "present,
+   * queued solo" — exactly the old rating. */
+  party?: string;
+  away?: number;
+  early?: boolean;
 }
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
+/** the host may move the same member at most this often */
+const MOVE_COOLDOWN_MS = 300;
+
 export interface MatchOutcome {
   /** which game was played. Persistence SKIPS unscored games (CR shell) so they
    * never touch ELO/records. Absent ⇒ 'decode'. */
@@ -386,10 +433,30 @@ export interface MatchOutcome {
   /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
    *  source in `play_counts`, folded into Custom on the homepage */
   discord?: boolean;
+  /** a competition match: the result is the competition's as well as the archive's
+   *  (`competitionMatchPlayed`, called by `persistMatch`) */
+  competition?: CompetitionTag;
+  /**
+   * A COMPETITION MATCH ONLY: what the game measured per alliance (`GameSimModule.rankFacts`,
+   * merged across its three instants), for the competition's ranking points. Absent when the game
+   * reports nothing or the read threw — unknown, never zero. Plain numbers: it crosses the worker
+   * boundary by structured clone.
+   */
+  rankFacts?: Record<Alliance, Record<string, number>>;
+  /**
+   * A RECORD RUN ONLY: the net points each alliance earned in AUTO and in TELEOP, for the Auto and
+   * TeleOp boards (`recordSplit`). Absent when the game reported no AUTO number.
+   */
+  split?: Record<Alliance, { auto: number; teleop: number }>;
+  /** A COMPETITION MATCH ONLY: every carded driver and the colour their robot ended the match on */
+  cards?: { userId: string; colour: 'yellow' | 'red' }[];
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
 }
+
+/** one read of `GameSimModule.rankFacts`, copied to plain finite numbers */
+type RankFacts = Record<Alliance, Record<string, number>>;
 
 /**
  * One room: lobby while `world` is null, then the authoritative match loop. The
@@ -406,6 +473,25 @@ export class Room {
   // READ-ONLY watchers: receive every broadcast (roster/matchStart/snapshot/result)
   // but hold no robot slot and never count toward capacity/roster/persistence.
   private readonly spectators = new Map<string, Client>();
+  /**
+   * IMPORTED ROBOTS' LOOKS (docs/area/netcode.md, VISUALS RELAY): the pictures and meshes a seat
+   * uploaded, held in THIS room's memory and streamed to the viewers that ask. It hangs off the
+   * room because the room knows who is seated, which robot each seat holds, and when either
+   * changes — and so that on a worker room the bytes and their validation stay on the worker.
+   * Freed with the seat, the robot, or the room (`emptied`).
+   */
+  private readonly visuals = new VisualRelay({
+    allows: () => this.allowsImportedRobots(),
+    find: (id) => this.clients.get(id) ?? this.spectators.get(id),
+    importId: (id) => this.clients.get(id)?.player.spec.imported?.id,
+    recipients: () => [...this.clients.values(), ...this.spectators.values()],
+    live: () => this.world !== null && this.phase === 'match' && !this.finalized,
+  });
+  /** the room has no one left: the registry may drop it, and the relay gives its bytes back */
+  private emptied(): void {
+    this.visuals.dispose();
+    this.onEmpty();
+  }
   private hostId = '';
   /** the seat `reserveHost` named, or '' for every room the cloud runs — see `detach` */
   private reservedHost = '';
@@ -487,6 +573,14 @@ export class Room {
   // the post-buzzer settle: the match is finalized once nothing left on the field can change
   // the score (see `src/sim/settle.ts`)
   private settle: SettleClock = newSettleClock();
+  /**
+   * A COMPETITION MATCH'S `rankFacts`, read at the two in-match instants (`captureRankFacts`);
+   * `'final'` is read in `finalizeMatch`. Absent = not asked yet, null = the game reports nothing
+   * or the read threw. Reset with `finalized`.
+   */
+  private rankAt: Partial<Record<'autoEnd' | 'teleopStart', RankFacts | null>> = {};
+  /** the FOUL points each alliance had been handed at the same two instants (a record run's split) */
+  private foulAt: Partial<Record<'autoEnd' | 'teleopStart', Record<Alliance, number>>> = {};
   // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
   // the world coasting at ZERO, but their client object is gone once grace lapses,
   // so they'd drop out of the finalize roster and the match would become unratable
@@ -728,6 +822,17 @@ export class Room {
    *  quietly make the room count as playtime again after the roster was already built around it. */
   private botsEverSeated = false;
 
+  /** the host-controlled shape of this room (mutable; `config.settings` is what it was created with).
+   *  Undefined ⇒ a legacy room, which behaves exactly as before. */
+  settings: RoomSettings | undefined;
+
+  /** seats in this room right now — `roomCapacity` of the creation config until the host changes it */
+  private get capacity(): number {
+    return this.settings
+      ? this.settings.perAlliance.red + this.settings.perAlliance.blue
+      : roomCapacity(this.config);
+  }
+
   /** how many seats are spoken for: connected drivers plus bots. */
   private get seatsTaken(): number {
     return this.clients.size + this.bots.length;
@@ -753,10 +858,12 @@ export class Room {
     if (this.pendingMatch || this.ranked) return 'A ranked match cannot have bots in it.';
     if (this.config.kind === 'record') return 'A record run cannot have bots in it.';
     if (this.world !== null || this.phase === 'match') return 'The match has already started.';
-    if (this.seatsTaken >= roomCapacity(this.config)) return 'The room is full.';
+    if (this.seatsTaken >= this.capacity) return 'The room is full.';
     const red = this.sideCount('red');
     const blue = this.sideCount('blue');
-    const alliance: Alliance = red <= blue ? 'red' : 'blue';
+    // the EMPTIER side, among the sides that still have a seat when the host set a split
+    const open = (a: Alliance): boolean => !this.settings || this.sideCount(a) < this.settings.perAlliance[a];
+    const alliance: Alliance = !open('red') ? 'blue' : !open('blue') ? 'red' : red <= blue ? 'red' : 'blue';
     const anchors = simModuleFor(this.game).startPoseCount;
     // the first anchor nobody on that alliance has claimed; past the anchors it wraps, exactly
     // as `startMatch` de-conflicts a human roster (the solver pushes an overlap apart)
@@ -784,6 +891,90 @@ export class Room {
     if (i < 0) return;
     this.bots.splice(i, 1);
     this.broadcastRoster();
+  }
+
+  /**
+   * The host controls only an ordinary open lobby: never a staged ranked / competition room
+   * (a host there could demote an opponent and have them charged a no-show), and never once the
+   * match is being set up or running.
+   */
+  private hostControlRefusal(): string | null {
+    if (!this.settings) return 'This room has no host controls.';
+    if (this.pendingMatch || this.ranked) return 'A ranked match cannot be changed.';
+    if (this.config.kind === 'record') return 'A record run cannot be changed.';
+    if (this.world !== null || this.phase !== 'connecting') return 'The match has already started.';
+    return null;
+  }
+
+  /**
+   * HOST ONLY. A duo-record room becomes an ordinary custom room: one-way, and only before the
+   * first run (a record room never recycles, so `world === null` is "before the first run").
+   * Records post only from a room that is still a record room, so this is what stops it posting.
+   */
+  unlockRecord(): string | null {
+    if (this.config.kind !== 'record' || !this.settings) return 'This room is already unlocked.';
+    if (this.pendingMatch || this.ranked) return 'A ranked match cannot be changed.';
+    if (this.world !== null || this.phase !== 'connecting') return 'The match has already started.';
+    // the record-only checks key on the config, so it is changed in place: kind and record go,
+    // and the settings open up to a custom room's (the seats stay as they were)
+    this.config.kind = 'versus';
+    delete this.config.record;
+    this.settings = { preset: 'custom', perAlliance: { ...this.settings.perAlliance }, teamSwitch: true, listed: false };
+    for (const c of this.clients.values()) c.player.ready = false;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** the parts of the config a worker room's socket-thread copy has to follow (`RoomFacts.cfg`) */
+  cfgFacts(): { kind: RoomKind; record?: RecordKind; settings?: RoomSettings } {
+    return { kind: this.config.kind, record: this.config.record, settings: this.settings };
+  }
+
+  /** HOST ONLY. Returns an error sentence, or null. A change clears everyone's ready. */
+  changeSettings(raw: unknown): string | null {
+    const refusal = this.hostControlRefusal();
+    if (refusal || !this.settings) return refusal;
+    const next = mergeRoomSettings(this.settings, raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {});
+    for (const a of ['red', 'blue'] as const) {
+      const over = this.sideCount(a) - next.perAlliance[a];
+      if (over > 0) return `Move ${over} ${over === 1 ? 'player' : 'players'} off ${a} first.`;
+    }
+    this.settings = next;
+    for (const c of this.clients.values()) c.player.ready = false;
+    this.broadcastRoster();
+    return null;
+  }
+
+  private readonly moveAt = new Map<string, number>();
+
+  /** HOST ONLY. Put a member (human or bot) on `alliance`, if it has a seat. */
+  moveMember(memberId: unknown, alliance: unknown): string | null {
+    const refusal = this.hostControlRefusal();
+    if (refusal || !this.settings) return refusal;
+    if (alliance !== 'red' && alliance !== 'blue') return null;
+    // a double-click or a macro is not two moves: repeated actions on one member are spaced out
+    const now = Date.now();
+    if (typeof memberId === 'string' && now - (this.moveAt.get(memberId) ?? 0) < MOVE_COOLDOWN_MS) return null;
+    if (typeof memberId === 'string') this.moveAt.set(memberId, now);
+    const human = typeof memberId === 'string' ? this.clients.get(memberId) : undefined;
+    const bot = typeof memberId === 'string' ? this.bots.find((b) => b.id === memberId) : undefined;
+    const was = human?.player.alliance ?? bot?.alliance;
+    if (!was || was === alliance) return null;
+    if (this.sideCount(alliance) >= this.settings.perAlliance[alliance]) return `The ${alliance} alliance is full.`;
+    if (human) {
+      human.player.alliance = alliance;
+      human.player.ready = false;
+    } else if (bot) bot.alliance = alliance;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** the side a joiner lands on: their pick if it has a seat, else the other one */
+  private allianceWithRoom(pick: Alliance): Alliance {
+    const s = this.settings;
+    if (!s) return pick;
+    const other: Alliance = pick === 'red' ? 'blue' : 'red';
+    return this.sideCount(pick) < s.perAlliance[pick] || this.sideCount(other) >= s.perAlliance[other] ? pick : other;
   }
 
   private sideCount(a: Alliance): number {
@@ -873,7 +1064,9 @@ export class Room {
      * the room itself only OBSERVES (it counts ticks), so tests/dev pass nothing and the
      * match behaves exactly as before. */
     private readonly onBehaviour?: (b: BehaviourReport) => void,
-  ) {}
+  ) {
+    this.settings = config.settings && structuredClone(config.settings);
+  }
 
   /**
    * PARTICIPATION, counted while the match is actually live.
@@ -887,6 +1080,9 @@ export class Room {
   private liveTicks = 0;
   private readonly driveTicks = new Map<number, number>();
   private readonly awayTicks = new Map<number, number>();
+  /** away ticks inside the OPENING window only (`EARLY_ABSENT_TICKS`) — a partner missing for
+   *  all of it voids a ranked 2v2 for the rest of the roster (`absenceOf`) */
+  private readonly earlyAwayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
    * game lock). Registered at match begin — and, for a ranked pairing, from the
@@ -912,7 +1108,7 @@ export class Room {
       // BOTS COUNT. A seat filled by an AI is a seat, and a human admitted past capacity would
       // be built a setup the roster has no room for — the same oversized-roster failure the LAN
       // host's `canSeat` was written for. The host gives a bot back to make room for a person.
-      this.seatsTaken < roomCapacity(this.config) &&
+      this.seatsTaken < this.capacity &&
       this.world === null &&
       this.phase !== 'strategy'
     );
@@ -951,12 +1147,12 @@ export class Room {
     const state: 'lobby' | 'strategy' | 'match' | 'full' =
       this.world !== null ? 'match'
       : this.phase === 'strategy' ? 'strategy'
-      : this.seatsTaken >= roomCapacity(this.config) ? 'full'
+      : this.seatsTaken >= this.capacity ? 'full'
       : 'lobby';
     return {
       code: this.code,
       players: this.seatsTaken,
-      capacity: roomCapacity(this.config),
+      capacity: this.capacity,
       kind: this.config.kind,
       game: this.config.game ?? 'decode',
       joinable: this.canJoin(),
@@ -984,7 +1180,7 @@ export class Room {
   canSeat(id: string): boolean {
     if (!this.canJoin()) return false;
     const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
-    return !hostPending || this.seatsTaken + 1 < roomCapacity(this.config);
+    return !hostPending || this.seatsTaken + 1 < this.capacity;
   }
 
   /**
@@ -1087,6 +1283,8 @@ export class Room {
       this.broadcast({ t: 'drop', robotId: rid, tick: this.world.tick });
     }
     this.clients.delete(c.id);
+    this.visuals.freeOwner(c.id);
+    this.visuals.dropRecipient(c.id);
     this.snapPrimed.delete(c.id);
     this.snapAck.delete(c.id);
     this.robotOf.delete(c.id);
@@ -1096,7 +1294,7 @@ export class Room {
     this.refreshRematch();
     if (this.clients.size === 0) {
       this.stop();
-      this.onEmpty();
+      this.emptied();
     }
     return true;
   }
@@ -1155,17 +1353,37 @@ export class Room {
   }
 
   add(client: Client): void {
+    /**
+     * THE ROOM'S OWN IMPORTED-ROBOT CHECK, behind the join door's (`server/index.ts`), which asks
+     * a mirror that can be a message behind when this room runs on a worker, and which the LAN
+     * tab host does not have at all (`src/lan/hostWorker.ts` calls this directly). Refused with
+     * the sentence and NOT seated: a robot this room may not field, a client that cannot play
+     * the one it holds, or a robot whose id another seat already holds, is not a seat.
+     */
+    const refusal = importAdmission(this.importState(client.id), {
+      imported: isImportedSpec(client.player.spec),
+      caps: client.caps,
+      id: importIdOf(client.player.spec),
+    });
+    if (refusal) {
+      client.send({ t: 'error', message: refusal });
+      return;
+    }
     // the first client to land defines the room's release channel (custom/record
-    // rooms are single-channel by construction — the matchmaker segregates ranked)
-    if (this.clients.size === 0 && client.channel) this.channel = client.channel;
+    // rooms are single-channel by construction — the matchmaker segregates ranked).
+    // NOT a competition room's: its result belongs to the competition on this server's
+    // database whatever build a driver arrived on, and the server's own sim decided it.
+    if (this.clients.size === 0 && client.channel && !this.pendingMatch?.competition) this.channel = client.channel;
     client.conn = ++this.connSeq;
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
+    if (this.settings) client.player.alliance = this.allianceWithRoom(client.player.alliance);
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
     this.broadcastRoster();
     this.moderatePlayerNames(client);
+    this.visuals.greet(client);
   }
 
   /**
@@ -1253,6 +1471,13 @@ export class Room {
    * robot id of -1) + a live snapshot immediately, then every broadcast. Never joins
    * the roster / capacity / persistence, and its messages are ignored. */
   addSpectator(client: Client): void {
+    // A WATCHER STEPS THE WORLD, so one on a build without imports cannot watch a match that
+    // holds an imported robot (see `importState`). The door asks the same question first.
+    const refusal = importAdmission(this.importState(), { imported: false, caps: client.caps });
+    if (refusal) {
+      client.send({ t: 'error', message: refusal });
+      return;
+    }
     this.spectators.set(client.id, client);
     client.send({ t: 'welcome', clientId: client.id });
     if (this.world && this.phase === 'match') {
@@ -1261,6 +1486,7 @@ export class Room {
     }
     this.broadcastRoster();
     this.broadcastSpectators();
+    this.visuals.greet(client);
   }
 
   /**
@@ -1350,6 +1576,16 @@ export class Room {
       spectators: this.visibleSpectators(),
       kind: record ? 'record' : 'versus',
       region: SERVER_REGION || undefined,
+      // a competition match is public (its page links here) and says which match it is
+      ...(this.pendingMatch?.competition
+        ? {
+            competition: {
+              slug: this.pendingMatch.competition.slug,
+              name: this.pendingMatch.competition.name,
+              label: this.pendingMatch.competition.label,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1454,6 +1690,7 @@ export class Room {
       this.spectators.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
+      this.visuals.dropRecipient(id);
       this.broadcastRoster();
       this.broadcastSpectators();
       return;
@@ -1514,7 +1751,25 @@ export class Room {
         this.broadcastRoster();
         return;
       }
+      /**
+       * A COMPETITION ROOM HOLDS ITS SEATS WHILE IT WAITS FOR ITS DRIVERS, clean close or not.
+       *
+       * The wait is minutes, not the ranked seconds, and a driver going back to the competition
+       * page or reloading the join screen is the ordinary way to spend it. Deleting the seat (and
+       * with the last one the ROOM) left the call claimed with no room behind it: every later join
+       * was refused as a match that was over. Nothing is charged here, so holding costs nobody
+       * anything, and the wait is bounded already — the call's own grace (`pendingTimer`) cancels
+       * the match and reports whoever never came back (`absentRoster` counts a held seat as absent).
+       */
+      if (this.pendingMatch?.competition && this.phase === 'connecting') {
+        c.connected = false;
+        c.disconnectAt = Date.now();
+        this.broadcastRoster();
+        return;
+      }
       this.clients.delete(id);
+      this.visuals.freeOwner(id);
+      this.visuals.dropRecipient(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
       this.passCrown(id);
@@ -1523,7 +1778,7 @@ export class Room {
       this.refreshRematch(); // the tally is against CONNECTED drivers
       if (this.clients.size === 0) {
         this.stop();
-        this.onEmpty();
+        this.emptied();
       } else if (this.customStart) {
         // the seat we were holding the start for has left: it cannot report in any more, so
         // re-ask rather than waiting out a deadline for somebody who is gone
@@ -1566,6 +1821,21 @@ export class Room {
       if (clean && soloRecord) {
         c.disconnectAt = -Infinity;
         this.checkGrace();
+        return;
+      }
+      /**
+       * A CLEAN LEAVE FROM A FINISHED MATCH FREES THE SEAT NOW. The score is saved and the
+       * client closed on purpose (MENU from the results, or the server releasing an idle
+       * socket — see `IDLE_RELEASE_MS` in index.ts). Holding the seat for the grace let the
+       * client's auto-reconnect reclaim it a second later, so a results screen left open in
+       * a background tab kept its satellite machine running all night. A dropped network
+       * (1006) or a closing tab (1001) is not clean and still keeps the grace.
+       */
+      if (clean && this.finalized) {
+        c.disconnectAt = -Infinity;
+        this.refreshRematch();
+        this.checkGrace();
+        if (this.clients.size > 0) this.broadcastRoster();
         return;
       }
       /**
@@ -1634,6 +1904,7 @@ export class Room {
     backlog?: () => number,
     token?: string,
     trusted = false,
+    caps?: string[],
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
@@ -1651,6 +1922,23 @@ export class Room {
      * behavioural tests for it build clients that advertise no caps.
      */
     if (!trusted && !this.seatOwner(c, token)) return null;
+    /**
+     * THE RETURNING SOCKET'S BUILD IS THE ONE THAT WILL PLAY, so its capabilities replace the ones
+     * the seat joined with (`caps`, from `rejoin` or the account reclaim; absent from a caller that
+     * has none to give, which keeps the old ones). It used to keep the join's: a tab that came back
+     * on an older build still read as able to play an imported robot, so a later `update` to one
+     * was admitted and that client predicted a rectangle. A build without the import capability
+     * coming back to a room that holds an imported robot (its own seat's included) is refused, as
+     * the door refuses it; `seatSecured` stays what the join made it.
+     */
+    if (caps !== undefined) {
+      const refusal = importAdmission(this.importState(), { imported: false, caps });
+      if (refusal) {
+        send({ t: 'error', message: refusal });
+        return null;
+      }
+      c.caps = caps;
+    }
     /**
      * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
      *
@@ -1720,10 +2008,12 @@ export class Room {
         intros: p ? this.intros : [],
         game: this.game,
         ...(p ? {} : { ranked: false }),
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster();
     this.refreshRematch(); // they are required again, and get the current tally
+    this.visuals.greet(c); // a new socket has been told nothing about what the room holds
     return c.conn;
   }
 
@@ -1790,6 +2080,8 @@ export class Room {
         this.onUserInactive?.(c.userId);
       }
       this.clients.delete(c.id);
+      this.visuals.freeOwner(c.id);
+      this.visuals.dropRecipient(c.id);
       this.snapPrimed.delete(c.id);
       this.snapAck.delete(c.id);
       this.robotOf.delete(c.id);
@@ -1798,7 +2090,7 @@ export class Room {
     }
     if (this.clients.size === 0) {
       this.stop();
-      this.onEmpty();
+      this.emptied();
     }
   }
 
@@ -1825,6 +2117,12 @@ export class Room {
   }
 
   onMessage(id: string, msg: ClientMsg): void {
+    // THE RELAY'S TWO MESSAGES come from a seat (an upload) or a seat or a watcher (a download),
+    // so they are answered before the lookup below, which a watcher would not pass.
+    if (msg.t === 'visualPut' || msg.t === 'visualGet') {
+      if (!this.cancelled) this.visuals.onMessage(id, msg);
+      return;
+    }
     const c = this.clients.get(id);
     if (!c) return;
     // a late message into a cancelled room (a ready landing after the deadline) must not
@@ -1832,9 +2130,15 @@ export class Room {
     if (this.cancelled) return;
     switch (msg.t) {
       case 'update': {
+        // an import is admitted or refused on the RAW patch, BEFORE anything is coerced: a refused
+        // one never reaches `coerceSpec` (see `vetImportedPatch`)
+        const raw = this.vetImportedPatch(c, msg.patch);
         // sanitize the patch against this player's current config: a spoofed
         // spec/size/assist patch is clamped to legal ranges before it applies
-        const patch = sanitizePlayerPatch(msg.patch, c.player, this.game);
+        const patch = sanitizePlayerPatch(raw, c.player, this.game);
+        // the sent spec has no import ⇒ the robot is standard, whatever the patch's base held
+        // (`coerceSpec` starts from the seat's CURRENT spec)
+        if (patch.spec && !isImportedSpec((raw as { spec?: unknown } | null)?.spec)) patch.spec = stripImported(patch.spec);
         // ENTITLEMENT STRIP (docs/cosmetics-plan.md §3.3), AFTER the shape clamp above and
         // BEFORE it lands on the roster: a re-pick is the other live point (besides join)
         // where a client DECLARES a spec, and `sanitizePlayerPatch` only shape-validated it
@@ -1849,8 +2153,16 @@ export class Room {
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
+        // the host's rules for sides: no self-service when team switching is off, and never onto
+        // a full side. Enforced HERE so an older client, which just sends the patch, obeys it too.
+        if (patch.alliance && this.settings && patch.alliance !== c.player.alliance) {
+          if (!this.settings.teamSwitch || this.sideCount(patch.alliance) >= this.settings.perAlliance[patch.alliance]) {
+            delete patch.alliance;
+          }
+        }
         const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
+        this.visuals.specChanged(c.id); // a seat's assets stay only while it holds the robot they are for
         /**
          * ⚠️ A RENAME IS MODERATED TOO — ONLY THE JOIN USED TO BE.
          *
@@ -1978,17 +2290,37 @@ export class Room {
         if (err) c.send({ t: 'error', message: err });
         break;
       }
+      case 'roomSettings': {
+        if (id !== this.hostId) break;
+        const err = this.changeSettings(msg.patch);
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
+      case 'unlockRoom': {
+        if (id !== this.hostId) break;
+        const err = this.unlockRecord();
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
+      case 'moveMember': {
+        if (id !== this.hostId) break;
+        const err = this.moveMember(msg.id, msg.alliance);
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
       case 'removeBot':
         if (id !== this.hostId) break;
         if (typeof msg.seat === 'string') this.removeBot(msg.seat);
         break;
       case 'rematch':
+        // a competition room plays its one match: a second would be a result nobody called
+        if (this.pendingMatch?.competition) break;
         this.voteRematch(id, msg.on === true);
         break;
       case 'lobby':
         // host only, exactly like `start` — the room is shared state and one player must
         // not tear the results screen out from under the rest of it.
-        if (id === this.hostId) this.returnToLobby();
+        if (id === this.hostId && !this.pendingMatch?.competition) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -2002,6 +2334,38 @@ export class Room {
       case 'join':
         break; // join is handled at the connection layer
     }
+  }
+
+  /**
+   * AN `update` PATCH THAT ADDS AN IMPORTED ROBOT (docs/area/netcode.md, IMPORTED ROBOTS), decided
+   * on what the client actually SENT, BEFORE `sanitizePlayerPatch` runs. Returns the patch to
+   * sanitize: the raw one, or — refused — a copy without its spec.
+   *
+   *  · the sent spec has one ⇒ it is allowed only where `importAdmission` says (a custom or LAN
+   *    room, a client with the cap, nobody in the room without it, no other seat holding its id).
+   *    Refused, the whole spec part of the patch is dropped and the seat keeps the robot it had;
+   *    the rest of the patch (ready, pose, name) still applies, and the seat is told why.
+   *  · ⚠️ BEFORE, NOT AFTER, THE COERCION. A refused import used to be coerced first and dropped
+   *    after, so a ranked or record room paid `coerceImported` for a robot it was about to refuse,
+   *    and a hostile one (16 bands of 256 far-off points, 62 KB) cost 70 ms of the thread every
+   *    room on it shares. The coercer is bounded now too; this keeps a refusal free.
+   *
+   * The other half (a sent spec WITHOUT an import makes the robot standard, whatever the seat's
+   * current spec held) is applied by the caller on the sanitised patch.
+   */
+  private vetImportedPatch(c: Client, rawPatch: unknown): unknown {
+    if (typeof rawPatch !== 'object' || rawPatch === null || !('spec' in rawPatch)) return rawPatch;
+    const sent = (rawPatch as { spec?: unknown }).spec;
+    if (!isImportedSpec(sent)) return rawPatch;
+    const refusal = importAdmission(this.importState(c.id), { imported: true, caps: c.caps, id: importIdOf(sent) });
+    if (!refusal) return rawPatch;
+    c.send({ t: 'error', message: refusal });
+    // the team fields ride the spec when one is sent, so they go with it
+    const rest = { ...(rawPatch as Record<string, unknown>) };
+    delete rest.spec;
+    delete rest.teamName;
+    delete rest.teamNumber;
+    return rest;
   }
 
   private onInput(id: string, tick: number, q: unknown, ack?: number, gen?: number): void {
@@ -2096,6 +2460,20 @@ export class Room {
           t: 'error',
           message: 'Both drivers must be signed in to save a Duo record run.',
         });
+        return;
+      }
+    }
+    /**
+     * AN IMPORTED ROBOT IN THE LINE-UP, AND A SEAT OR WATCHER WHO CANNOT PLAY IT (docs/area/netcode.md,
+     * IMPORTED ROBOTS). The doors keep that combination from forming; this is the last gate before
+     * a world exists, so a mirror that was a message behind, or a client that changed under us,
+     * still cannot start a match one side would predict wrongly. A room that does not ALLOW
+     * imports is not refused here — `beginMatch` strips them, so what starts is standard.
+     */
+    {
+      const st = this.importState();
+      if (st.allows && st.hasImport && st.capless) {
+        this.broadcast({ t: 'error', message: IMPORT_START_REFUSED });
         return;
       }
     }
@@ -2224,6 +2602,19 @@ export class Room {
     // ...and a ZENITH auto only survives into a custom room (`playsZenithAutos`). A staged or
     // rematch path that somehow carried one elsewhere loses it here, at the one chokepoint.
     if (!this.playsZenithAutos()) setups = setups.map((s) => (s.zenithAuto ? { ...s, zenithAuto: undefined } : s));
+    // ...and an IMPORTED ROBOT only survives into a room that allows one (`allowsImportedRobots`:
+    // custom and LAN). A staged ranked room, a record room, a rematch or any path that somehow
+    // carried one elsewhere is fielded as the standard robot its parametric fields describe.
+    // The same chokepoint as the two lines above, for the same reason.
+    if (!this.allowsImportedRobots()) {
+      setups = setups.map((s) => (isImportedSpec(s.spec) ? { ...s, spec: stripImported(s.spec) } : s));
+      this.visuals.reconcile();
+    }
+    // ...and an import's PRACTICE TUNING never plays in a room, any room (`stripTune`)
+    setups = setups.map((s) => {
+      const spec = s.spec ? stripTune(s.spec) : s.spec;
+      return spec === s.spec ? s : { ...s, spec };
+    });
     this.phase = 'match';
     this.matchGen++; // any input stamped with an older generation is now stale
     this.rematchVotes.clear();
@@ -2302,6 +2693,8 @@ export class Room {
     }
     this.finalized = false;
     this.settle = newSettleClock();
+    this.rankAt = {};
+    this.foulAt = {};
     this.departed.clear();
 
     // register each authed driver's single-game lock: while this match is live they
@@ -2399,7 +2792,10 @@ export class Room {
    * player reconnects (`maybeStartRanked`) or cancels after the join grace. */
   applyPending(p: PendingMatch): void {
     this.pendingMatch = p;
-    this.ranked = true;
+    // a COMPETITION match is staged exactly like a ranked pairing and rates nobody: no ELO, no
+    // standing, no dodge charge. What a no-show costs is the competition's call, made through the
+    // same dodge report (see `cancelPending`).
+    this.ranked = !p.competition;
     // the matchmaker groups a single channel; carry it so an alpha ranked match
     // is segregated + unpersisted just like custom/record alpha rooms
     if (p.channel) this.channel = p.channel;
@@ -2431,10 +2827,13 @@ export class Room {
     this.pendingTimer = setTimeout(
       () =>
         this.cancelPending(
-          'Match cancelled - an opponent did not connect.',
+          p.competition
+            ? 'The match didn’t start: not every driver connected in time. The referee will call it again.'
+            : 'Match cancelled - an opponent did not connect.',
           this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
         ),
-      RANKED_JOIN_GRACE_MS,
+      // a competition's call carries its own wait, what is left of it when the room was built
+      p.competition ? Math.max(30_000, p.competition.graceMs) : RANKED_JOIN_GRACE_MS,
     );
     if (this.pendingTimer.unref) this.pendingTimer.unref();
     this.maybeStartRanked(); // in case everyone is already here
@@ -2524,16 +2923,19 @@ export class Room {
       // the staged autoPath is a serialized string (and in practice unset); coerce it
       // to the AutoPathData shape RobotSetup expects (createWorld re-coerces anyway).
       const autoPath = coerceAutoPath(r.autoPath) ?? undefined;
+      const c = r.userId ? byUser.get(r.userId) : undefined;
+      // a competition stages a placeholder robot (it cannot know anyone's build when it calls
+      // the match), so the driver's own build from the join is the one that plays
+      const live = p.competition && c ? c.player : null;
       setups.push({
         id: i,
         alliance: r.alliance,
-        spec: r.spec,
-        assists: r.assists,
+        spec: live ? live.spec : r.spec,
+        assists: live ? live.assists : r.assists,
         startIndex: r.startIndex,
         autoPath,
         autoPathEnabled: autoPath ? r.autoPathEnabled === true : false,
       });
-      const c = r.userId ? byUser.get(r.userId) : undefined;
       if (c) this.robotOf.set(c.id, i);
     });
     this.beginMatch(setups, p.seed);
@@ -2569,9 +2971,20 @@ export class Room {
         mode: p.mode,
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
+  }
+
+  /**
+   * What a competition room adds to `strategyStart`: which competition and which match, so the
+   * window can say so and drop the rating column. ADDITIVE: an older client ignores it and shows
+   * the ranked window with "Unranked" chips, which is wrong in a word and right in every action.
+   */
+  private competitionWire(): { competition?: { slug: string; name: string; label: string } } {
+    const t = this.pendingMatch?.competition;
+    return t ? { competition: { slug: t.slug, name: t.name, label: t.label } } : {};
   }
 
   /**
@@ -2665,6 +3078,7 @@ export class Room {
         mode: p?.mode ?? '1v1',
         intros: this.intros,
         game: this.game,
+        ...this.competitionWire(),
       });
     }
     return true;
@@ -2688,7 +3102,11 @@ export class Room {
     const p = this.pendingMatch;
     if (!p || this.phase !== 'strategy' || this.world !== null) return;
     const connected = [...this.clients.values()].filter((c) => c.connected);
-    if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+    // A COMPETITION MATCH STARTS WHEN THE CLOCK SAYS SO, ready or not, as a field does: every
+    // driver is here, and re-calling the match because one of them did not press a button would
+    // cost the whole event the time the window was meant to bound.
+    const allHere = connected.length === p.roster.length;
+    if (allHere && (p.competition || connected.every((c) => c.player.ready))) {
       // a seat still loading its 3D chunk buys the window more time, once, up to the same
       // 45 s cap — see `extendStrategyForReady3d`
       if (this.extendStrategyForReady3d()) return;
@@ -2799,7 +3217,10 @@ export class Room {
      * sockets are still open at this point; `stop()` below closes them, so this has to fire
      * first and the verdict is relayed from the async reply.
      */
-    if (p && this.ranked && culprits.length && this.onDodge) {
+    /* A COMPETITION ROOM REPORTS THROUGH THE SAME DOOR, with its tag, and the persistence layer
+       routes it to the competition instead of the standing ledger (`persistDodges`). Always, even
+       with no culprit named: the competition has to learn that its call is over either way. */
+    if (p && (this.ranked ? culprits.length > 0 : !!p.competition) && this.onDodge) {
       const listeners = [...this.clients.values()].filter((c) => c.connected);
       void Promise.resolve(
         this.onDodge({
@@ -2808,6 +3229,7 @@ export class Room {
           game: this.game,
           rosterUserIds: p.roster.map((r) => r.userId).filter((u): u is string => !!u),
           roomCode: this.code,
+          ...(p.competition ? { competition: p.competition } : {}),
         }),
       )
         .then((verdicts) => {
@@ -2822,7 +3244,7 @@ export class Room {
     }
     this.broadcast({ t: 'error', message });
     this.stop();
-    this.onEmpty();
+    this.emptied();
   }
 
   /** roster members who are NOT currently connected here — the no-show set. */
@@ -2984,6 +3406,9 @@ export class Room {
       // "left the match".
       const away = this.departed.has(r.id) || !this.driverConnected(r.id);
       if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+      if (away && this.liveTicks <= EARLY_ABSENT_TICKS) {
+        this.earlyAwayTicks.set(r.id, (this.earlyAwayTicks.get(r.id) ?? 0) + 1);
+      }
     }
     // a driver the load hold started without is loading, not idle — see `loadingTicks`
     if (this.physics === '3d') {
@@ -3012,6 +3437,8 @@ export class Room {
     simModuleFor(this.game).step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
+    // after the record, so nothing a game's read does can cost the replay a tick
+    if (this.pendingMatch?.competition || this.config.kind === 'record') this.captureRankFacts(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
     // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
@@ -3021,6 +3448,98 @@ export class Room {
       this.finalizeMatch();
     }
     return due;
+  }
+
+  /**
+   * A COMPETITION MATCH'S IN-MATCH INSTANTS (`GameSimModule.rankFacts`): `'autoEnd'` on the first
+   * tick out of AUTO, `'teleopStart'` on the first TELEOP tick. Each is asked once, after the step,
+   * so a game whose gameplay runs before its phase machine (all three do) has the last AUTO tick's
+   * scoring in `'autoEnd'` and none of the transition's.
+   */
+  private captureRankFacts(w: World): void {
+    const p = w.match.phase;
+    if (this.rankAt.autoEnd === undefined && (p === 'transition' || p === 'teleop' || p === 'post')) {
+      this.rankAt.autoEnd = this.readRankFacts(w, 'autoEnd');
+      this.foulAt.autoEnd = this.foulsNow(w);
+    }
+    if (this.rankAt.teleopStart === undefined && p === 'teleop') {
+      this.rankAt.teleopStart = this.readRankFacts(w, 'teleopStart');
+      this.foulAt.teleopStart = this.foulsNow(w);
+    }
+  }
+
+  private foulsNow(w: World): Record<Alliance, number> {
+    return { red: w.match.scores.red.foulPoints, blue: w.match.scores.blue.foulPoints };
+  }
+
+  /**
+   * A RECORD RUN'S AUTO / TELEOP SPLIT, net of the fouls committed in each period (the same net
+   * the Total board uses: `recordScore`). A record room has no opponent, so the fouls the player
+   * committed are the points handed to the OTHER alliance.
+   *
+   * The AUTO points are the game's own `auto` fact, read at the instant that game counts them at
+   * (Chain `autoEnd`, BIOBUZZ `teleopStart`, DECODE `final`), and the fouls are the ones handed over
+   * by the matching instant: DECODE and BIOBUZZ book the transition as AUTO, Chain as TELEOP.
+   * TELEOP is everything else. A run whose net total is 0 (a void) is 0 in both. Absent when the
+   * game reported no AUTO number or the instant was never reached.
+   */
+  private recordSplit(w: World, result: ReplayResult): Record<Alliance, { auto: number; teleop: number }> | undefined {
+    const facts = this.mergedRankFacts(this.readRankFacts(w, 'final'));
+    const out = {} as Record<Alliance, { auto: number; teleop: number }>;
+    for (const a of ['red', 'blue'] as const) {
+      const opp: Alliance = a === 'red' ? 'blue' : 'red';
+      const autoG = facts?.[a]?.auto;
+      if (autoG === undefined) return undefined;
+      // the instant the game counts AUTO at: Chain reports at autoEnd, the others by teleopStart
+      const at = this.rankAt.autoEnd?.[a]?.auto !== undefined ? 'autoEnd' : 'teleopStart';
+      const autoF = this.foulAt[at]?.[opp];
+      if (autoF === undefined) return undefined;
+      const totalG = result.score[a];
+      const totalF = result.foulPoints[opp];
+      out[a] =
+        Math.max(0, totalG - totalF) === 0
+          ? { auto: 0, teleop: 0 }
+          : {
+              auto: Math.max(0, autoG - autoF),
+              teleop: Math.max(0, totalG - autoG - (totalF - autoF)),
+            };
+    }
+    return out;
+  }
+
+  /**
+   * One read of the game's `rankFacts`, COPIED to plain finite numbers. The copy is the point as much
+   * as the filter: a hook that handed back an object living in the world would keep changing after
+   * the instant it was asked about. A throw is logged and reads as unknown (null) — a competition
+   * ranks an unknown measure as unknown, never as 0, and the match itself is unaffected.
+   */
+  private readRankFacts(w: World, at: RankFactsAt): RankFacts | null {
+    const hook = simModuleFor(this.game).rankFacts;
+    if (!hook) return null;
+    try {
+      const raw = hook(w, at);
+      const out: RankFacts = { red: {}, blue: {} };
+      for (const a of ['red', 'blue'] as const) {
+        for (const [k, v] of Object.entries(raw?.[a] ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v)) out[a][k] = v;
+        }
+      }
+      return out;
+    } catch (err) {
+      console.error(`[room ${this.code}] rankFacts(${at}) failed; left unknown:`, err);
+      return null;
+    }
+  }
+
+  /** the three instants merged per alliance, the EARLIEST one winning a key reported twice; absent
+   *  when nothing was reported (unknown, never zero) */
+  private mergedRankFacts(final: RankFacts | null): RankFacts | undefined {
+    const { autoEnd, teleopStart } = this.rankAt;
+    const out: RankFacts = { red: {}, blue: {} };
+    for (const a of ['red', 'blue'] as const) {
+      out[a] = { ...final?.[a], ...teleopStart?.[a], ...autoEnd?.[a] };
+    }
+    return Object.keys(out.red).length || Object.keys(out.blue).length ? out : undefined;
   }
 
   /** the match reached phase 'post': broadcast the SERVER's authoritative score +
@@ -3036,6 +3555,10 @@ export class Room {
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
+    // a competition match's ranking-point measures: the end-of-match read, on the same settled
+    // world as the result, merged with the two taken during the match
+    const comp = this.pendingMatch?.competition;
+    const rankFacts = comp ? this.mergedRankFacts(this.readRankFacts(w, 'final')) : undefined;
     // MINT THE MATCH ID HERE, at the one moment a match becomes a thing that happened.
     // Every recipient of this broadcast gets the same id, which is what lets a
     // self-hosted match be uploaded by a client without the cloud having to guess
@@ -3079,6 +3602,7 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: c.player.assists,
+          ...this.rankedPresence(robot.id, c.userId),
         });
       }
       // include authed players who LEFT mid-match (their robot is still in the
@@ -3097,12 +3621,14 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: d.assists,
+          ...this.rankedPresence(robot.id, d.userId),
         });
       }
       this.reportBehaviour(participants);
       const ret = this.onResult({
         game: this.game,
-        config: this.config,
+        // the room as it ENDED: a host can have reshaped or unlocked it since creation
+        config: { ...this.config, settings: this.settings },
         ranked: this.ranked,
         // the format this match WAS, not the number of people left holding a controller at the
         // end of it: the queue bucket when the matchmaker staged this room, else the roster it
@@ -3110,6 +3636,10 @@ export class Room {
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
         discord: this.group !== '',
+        // a competition match also carries its measures and EVERY card, whoever was carded: cards
+        // cost ranking points there, which is separate from `reportBehaviour` (ranked only)
+        ...(comp ? { competition: comp, ...(rankFacts ? { rankFacts } : {}), cards: this.cardsOf(participants) } : {}),
+        ...(this.config.kind === 'record' ? (() => { const split = this.recordSplit(w, result); return split ? { split } : {}; })() : {}),
         result,
         replay,
         participants,
@@ -3211,23 +3741,8 @@ export class Room {
       else if (chargedForParticipation(kind, mode)) offenders.push({ userId: p.userId, kind });
       // else: an EXCUSED 1v1 leaver — neither charged nor credited as clean
     }
-    /**
-     * CARDS travel with the behaviour report, from the world the match was played in.
-     *
-     * `world.penalties.carded` is keyed by ROBOT id and holds the colour each carded robot
-     * currently shows — a second card escalates the same robot to red rather than adding a
-     * row, which is exactly the shape a standing charge wants: one event per carded driver,
-     * priced by what they ended the match holding.
-     */
-    const carded: { userId: string; colour: 'yellow' | 'red' }[] = [];
-    const held = this.world?.penalties.carded ?? {};
-    for (const p of participants) {
-      if (!p.userId) continue;
-      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
-      if (rid === undefined) continue;
-      const colour = held[rid];
-      if (colour === 'yellow' || colour === 'red') carded.push({ userId: p.userId, colour });
-    }
+    // CARDS travel with the behaviour report, from the world the match was played in
+    const carded = this.cardsOf(participants);
     if (!offenders.length && !cleanUserIds.length && !carded.length) return;
     this.onBehaviour({
       offenders,
@@ -3237,6 +3752,45 @@ export class Room {
       game: this.game,
       roomCode: this.code,
     });
+  }
+
+  /**
+   * What the rating update is told about one driver of a RANKED match: their party token
+   * from the staged roster, and how present they were (`absenceOf`). Nothing for any other
+   * room, so a custom game's outcome is exactly what it was.
+   */
+  private rankedPresence(robotId: number, userId?: string): Pick<MatchParticipant, 'party' | 'away' | 'early'> {
+    if (!this.ranked) return {};
+    const party = userId ? this.pendingMatch?.roster.find((r) => r.userId === userId)?.party : undefined;
+    const { away, early } = absenceOf({
+      liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(robotId) ?? 0)),
+      driveTicks: this.driveTicks.get(robotId) ?? 0,
+      awayTicks: this.awayTicks.get(robotId) ?? 0,
+      earlyAwayTicks: this.earlyAwayTicks.get(robotId) ?? 0,
+    });
+    return { party, away, early };
+  }
+
+  /**
+   * Every carded driver of the match just played, by account. Read by the behaviour report (ranked)
+   * and by a competition's outcome, each for its own reason.
+   *
+   * `world.penalties.carded` is keyed by ROBOT id and holds the colour each carded robot
+   * currently shows — a second card escalates the same robot to red rather than adding a
+   * row, which is exactly the shape a standing charge wants: one event per carded driver,
+   * priced by what they ended the match holding. A driver who left is found through `departed`.
+   */
+  private cardsOf(participants: MatchParticipant[]): { userId: string; colour: 'yellow' | 'red' }[] {
+    const carded: { userId: string; colour: 'yellow' | 'red' }[] = [];
+    const held = this.world?.penalties.carded ?? {};
+    for (const p of participants) {
+      if (!p.userId) continue;
+      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
+      if (rid === undefined) continue;
+      const colour = held[rid];
+      if (colour === 'yellow' || colour === 'red') carded.push({ userId: p.userId, colour });
+    }
+    return carded;
   }
 
   /** the robot a DEPARTED user was driving (their client is gone, so `robotOf` cannot
@@ -3284,6 +3838,8 @@ export class Room {
   }
 
   private broadcastRematch(): void {
+    // no vote to show in a competition room (see the `rematch` case)
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     const votes = ids.filter((i) => this.rematchVotes.has(i)).length;
     /**
@@ -3337,6 +3893,7 @@ export class Room {
   }
 
   private maybeRematch(): void {
+    if (this.pendingMatch?.competition) return;
     const ids = this.connectedDrivers();
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
@@ -3436,6 +3993,8 @@ export class Room {
     for (const c of [...this.clients.values()]) {
       if (c.connected) continue;
       this.clients.delete(c.id);
+      this.visuals.freeOwner(c.id);
+      this.visuals.dropRecipient(c.id);
       this.snapPrimed.delete(c.id);
       this.snapAck.delete(c.id);
       this.ackTick.delete(c.id);
@@ -3462,6 +4021,7 @@ export class Room {
     this.finalized = false;
     this.matchId = null; // `lastMatchId` is kept: a misscore claim still points at the game just played
     this.settle = newSettleClock();
+    this.rankAt = {};
     this.departed.clear();
     this.finishing = null;
     this.dropped.clear();
@@ -3478,6 +4038,7 @@ export class Room {
     this.liveTicks = 0;
     this.driveTicks.clear();
     this.awayTicks.clear();
+    this.earlyAwayTicks.clear();
     this.loadingTicks.clear();
     this.holdUntil = 0;
     // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in
@@ -3503,7 +4064,7 @@ export class Room {
 
     // the last driver may have closed their tab on the results screen; with the world gone
     // there is no loop and no grace reaper left to notice an empty room.
-    if (this.clients.size === 0) this.onEmpty();
+    if (this.clients.size === 0) this.emptied();
   }
 
   /** TEST SEAM: the live world, read-only. Lets a test assert what an input
@@ -3898,6 +4459,45 @@ export class Room {
     return !this.ranked && !this.pendingMatch && this.config.kind !== 'record' && simModuleFor(this.game).zenithAutos === true;
   }
 
+  /**
+   * MAY AN IMPORTED ROBOT PLAY IN THIS ROOM? (docs/area/netcode.md, IMPORTED ROBOTS.) A custom
+   * room, and a LAN room, which is the same `Room`: never a matchmaker-staged ranked room, never
+   * a record room, whose replay is leaderboard proof. `playsZenithAutos`' shape without the game
+   * flag, because every game can have an imported robot.
+   *
+   * `config.kind === 'versus'` is spelled out rather than "not record" so a third room kind is
+   * refused until somebody decides otherwise: this list errs toward refusing.
+   */
+  allowsImportedRobots(): boolean {
+    return !this.ranked && !this.pendingMatch && this.config.kind === 'versus';
+  }
+
+  /**
+   * WHAT THE ROOM HOLDS, as far as imported robots go (`importAdmission` reads it). `hasImport`
+   * looks at every seat's CURRENT robot and, while a match is being played, at the match's own
+   * setups: a spectator arriving mid-match steps those, not the lobby's. After a match ends the
+   * lobby's robots are what a rejoin will field, so the setups stop counting.
+   *
+   * ⚠️ `capless` is over seats AND spectators — a spectator steps the world like a driver's
+   * client does, so one on a build without imports would draw and predict a standard robot too.
+   *
+   * `ids` are the robot ids the seats hold, held seats included; `except` leaves one seat's out (a
+   * seat re-picking may keep its own id).
+   */
+  importState(except?: string): ImportRoomState {
+    let hasImport = this.phase === 'match' && setupsHaveImported(this.matchSetups);
+    let capless = false;
+    const ids: string[] = [];
+    for (const c of this.clients.values()) {
+      if (isImportedSpec(c.player.spec)) hasImport = true;
+      if (!hasImportCap(c.caps)) capless = true;
+      const id = c.id === except ? undefined : importIdOf(c.player.spec);
+      if (id !== undefined) ids.push(id);
+    }
+    for (const s of this.spectators.values()) if (!hasImportCap(s.caps)) capless = true;
+    return { allows: this.allowsImportedRobots(), hasImport, capless, ids };
+  }
+
   private broadcastRoster(): void {
     // a STAGED ranked room must never reveal opponent builds before the redacted
     // strategy roster: while still 'connecting' its clients self-report alliance
@@ -3918,7 +4518,7 @@ export class Room {
       const players = [...this.clients.values()]
         .map((c) => this.rosterPlayer(c))
         .concat(this.bots.map((b) => this.botPlayer(b)));
-      this.broadcast({ t: 'roster', players, hostId: this.hostId });
+      this.broadcast({ t: 'roster', players, hostId: this.hostId, ...(this.settings ? { settings: this.settings } : {}) });
       return;
     }
     // strategy window: ALLIANCE-ONLY reveal. Each recipient sees its own alliance's

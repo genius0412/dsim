@@ -8,7 +8,8 @@ import {
   subscribePredictionPref,
   type PredictionPref,
 } from '../net/predictionPref';
-import { OptRow } from './OptRow';
+import { getShowOthersImported, setShowOthersImported, subscribeShowOthersImported } from '../net/importVisualsPref';
+import { OptRow, ToggleRow } from './OptRow';
 
 /**
  * NETWORK — client prediction (`docs/biobuzz/plan-3d.md` §5).
@@ -32,24 +33,51 @@ import { OptRow } from './OptRow';
  * whether it does anything has not been joined yet, and hiding a control that will matter in
  * five minutes is how a player never finds it. The one line under the tiles says where it
  * applies — the one fact the tiles cannot carry.
+ *
+ * ── "IMPORTED ROBOTS" IS HERE, NOT IN GRAPHICS ──────────────────────────────────────────────
+ * Whether this device downloads other players' imported robots (`importVisualsPref.ts`, the room's
+ * visuals relay, docs/area/netcode.md) is per device like everything on this screen, and it
+ * concerns every game: a DECODE player's 2D picture is a download too. Graphics only exists for a
+ * game with a 3D view, so a DECODE player would never have found it there.
  */
 export function NetworkSection() {
   const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
   useEffect(() => subscribePredictionPref(setPrediction), []);
+  const [showImported, setShowImported] = useState(() => getShowOthersImported());
+  useEffect(() => subscribeShowOthersImported(setShowImported), []);
   return (
-    <section className="ds-panel">
-      <div className="ds-panel-h">
-        <h2 className="ds-panel-title">Prediction</h2>
-      </div>
-      <div className="ds-panel-body stack">
-        <OptRow<PredictionPref>
-          value={prediction}
-          cols="two"
-          onPick={setPredictionPref}
-          options={PREDICTION_PREFS.map((p) => ({ v: p, t: PREDICTION_LABELS[p], d: PREDICTION_BLURBS[p] }))}
-        />
-        <p className="ds-hint">Used only in 3D-physics rooms.</p>
-      </div>
-    </section>
+    <>
+      <section className="ds-panel">
+        <div className="ds-panel-h">
+          <h2 className="ds-panel-title">Prediction</h2>
+        </div>
+        <div className="ds-panel-body stack">
+          <OptRow<PredictionPref>
+            value={prediction}
+            cols="two"
+            lead
+            onPick={setPredictionPref}
+            options={PREDICTION_PREFS.map((p) => ({ v: p, t: PREDICTION_LABELS[p], d: PREDICTION_BLURBS[p] }))}
+          />
+          <p className="ds-hint">Used only in 3D-physics rooms.</p>
+        </div>
+      </section>
+
+      <section className="ds-panel">
+        <div className="ds-panel-h">
+          <h2 className="ds-panel-title">Imported robots</h2>
+        </div>
+        <div className="ds-panel-body stack">
+          {/* each side names what it costs, which is the only reason a sub-line is here */}
+          <ToggleRow
+            label="Show other players’ imported robots"
+            value={showImported}
+            onPick={setShowOthersImported}
+            onDesc="Downloads each robot’s picture, and its model in the BIOBUZZ 3D view"
+            offDesc="You see an outline instead. Nothing is downloaded"
+          />
+        </div>
+      </section>
+    </>
   );
 }

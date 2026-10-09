@@ -603,7 +603,11 @@ export function net3dChecks(check: Check): void {
     const ms = readFileSync('src/ui/MatchStrategy.tsx', 'utf8');
     check('ready3d: the strategy screen names the seats that are still loading', ms.includes('LOADING 3D'));
     check('ready3d: ...and says so instead of “Everyone ready. Starting…”', /loading3d\.length[\s\S]{0,160}Loading 3D physics/.test(ms));
-    check('ready3d: ...and hides the ELO column when the window is not ranked', /ranked && <span className="ds-chip">\{ratingChip\(/.test(ms));
+    // `rated` is `ranked && !competition` (0059): a competition window keeps the ranked gate, no ratings
+    check(
+      'ready3d: ...and hides the ELO column when the window is not ranked',
+      /rated && <span className="ds-chip">\{ratingChip\(/.test(ms) && /const rated = ranked && !competition;/.test(ms),
+    );
   }
 
   // ═══ 3. THE OLD-CLIENT PROOF: a 2D GAME's wire is what it always was ═══════
@@ -1221,7 +1225,7 @@ export function net3dChecks(check: Check): void {
     const game = readFileSync('src/game.ts', 'utf8');
     check(
       'predict: reconcile still replays `mod.step` for a room that is not predicted-3D',
-      /if \(this\.predicted3d\(\)\) this\.replayThroughPredictor\([\s\S]{0,80}else for \(const b of this\.inputBuf\) this\.mod\.step\(/.test(game),
+      /if \(this\.usesPredictor\(\)\) this\.replayThroughPredictor\([\s\S]{0,120}else \{[\s\S]{0,400}for \(const b of this\.inputBuf\) \{\s*this\.mod\.step\(/.test(game),
       'the 2D reconcile branch is not where it was',
     );
     check(
@@ -1234,6 +1238,20 @@ export function net3dChecks(check: Check): void {
     check(
       'predict: Auto probes with `probeFullReconcileMs` and the plan’s budget',
       /probeFullReconcileMs\(/.test(game) && /PREDICT_FULL_BUDGET_MS/.test(game),
+    );
+    // AUTO PICKED LIGHT ON FAST MACHINES (owner, 2026-09-27): its one probe was the COLD first
+    // run, 35-37 ms against warm runs of 4-7 on a fast desktop. These pin the three halves of the fix.
+    check(
+      '⚠️ predict: Auto throws away the cold first probe run and judges the BEST of the rest',
+      game.includes('const warm = this.autoProbeSamples.slice(1)') && game.includes('Math.min(...warm)') && /AUTO_PROBE_RUNS = [3-9]/.test(game),
+    );
+    check(
+      '⚠️ predict: a client that never got to probe (joined after the countdown) starts on FULL, not Light',
+      game.includes('if (!this.autoProbeFailed && (best === null || best <= PREDICT_WORLD_BUDGET_MS)) {'),
+    );
+    check(
+      '⚠️ predict: the slip rule steps down on the MEDIAN reconcile, not a p95 a few GC pauses decide',
+      game.includes('const median = sorted[Math.floor(sorted.length / 2)]') && game.includes('if (median <= (this.worldPredicted() ? PREDICT_WORLD_BUDGET_MS : PREDICT_FULL_BUDGET_MS)) return;'),
     );
     check(
       'predict: Off renders the local robot interpolated (displayWorld stops exempting it)',
@@ -1442,8 +1460,14 @@ export function net3dChecks(check: Check): void {
 
     const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8');
     check(
-      'ruling: the record board has no era filter and no per-row 2D/3D chip',
-      !/setEra|ds-seg \$\{era/.test(board) && !/physics\.toUpperCase\(\)/.test(board),
+      // the owner's 2026-10-05 decision (rooms plan v3) added ONE exception: the ALL-TIME board spans
+      // seasons and both eras exist, so it picks one. The season board still has no picker, and the
+      // client sends `era` only with `window=all`.
+      'ruling: the record board has no era filter and no per-row 2D/3D chip, except on the all-time board',
+      !/physics\.toUpperCase\(\)/.test(board) &&
+        /\{win === 'all' && threeD && \([\s\S]{0,600}setEra/.test(board) &&
+        (board.match(/setEra\(/g) ?? []).length === 1 &&
+        /view\?\.window === 'all' && view\.era/.test(readFileSync('src/net/api.ts', 'utf8')),
     );
     check(
       // the era is per season now (2026-09-24): keep the one the server echoes, 3D when an older
@@ -1646,7 +1670,11 @@ export function net3dChecks(check: Check): void {
    * balls on the field keep teleporting"). The client draws a predicted element on the
    * prediction's clock and every other one ~10 ticks behind it, so a shot dropped from the near
    * set mid-flight jumped back 14–25 in the frame it changed clocks. Each negative is paired with
-   * its positive: kept while moving, dropped once at rest, and never ADDED from outside.
+   * its positive: kept while moving, dropped once at rest.
+   * Since 2026-09-27 a moving element is carried WHEREVER it is (owner: "balls in server-required
+   * games are all very laggy and behind" — a far one was drawn on the interpolation clock, a
+   * median 13 ticks behind the local robot once the prediction ran a round trip ahead), so the
+   * stranger moving far away is now IN the set; a resting far one is still out.
    */
   {
     const w = mkWorld3d('match', 4243);
@@ -1688,8 +1716,9 @@ export function net3dChecks(check: Check): void {
       keptMoving && droppedAtRest,
     );
     check(
-      'predict: ...and a moving element that was never in the set is not added from outside it',
-      !strangerAtStart && !strangerStill,
+      'predict: a MOVING element far from the robot is carried too, so it is drawn on the local robot clock',
+      strangerAtStart && strangerStill,
+      `at start ${strangerAtStart}, after a reset ${strangerStill}`,
     );
   }
 }

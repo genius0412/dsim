@@ -41,6 +41,7 @@ export const BB_MODE_LABELS: Record<BbScoreMode, string> = {
   turret: 'Single turret',
   twinturret: 'Double turret',
   dumper: 'Dumper',
+  fixed: 'Fixed shooter',
 };
 
 /** the one-line TRADEOFF each launcher is actually picked for. A label says what it is; a
@@ -54,6 +55,7 @@ export const BB_MODE_BLURBS: Record<BbScoreMode, string> = {
   turret: 'POLLEN only · aims itself',
   twinturret: 'One POLLEN turret, one NECTAR turret',
   dumper: 'POLLEN and NECTAR · turn to aim',
+  fixed: 'POLLEN only · turn to aim, one range',
 };
 
 /** the label for a resolved LAUNCHER slot. One function so a picker option, a preset card and a
@@ -209,7 +211,9 @@ export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
       label: 'launcher',
       sub: bbIsTurreted(launcher)
         ? bbLauncherMountLabel(launcher)
-        : BB_MOUNT_POS_LABELS[launcher.mount],
+        : launcher.kind === 'fixed'
+          ? `${BB_MOUNT_POS_LABELS[launcher.mount]} · ${launcher.hoodDeg}° hood`
+          : BB_MOUNT_POS_LABELS[launcher.mount],
     },
     {
       value: bbLiftLabel(lift),

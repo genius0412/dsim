@@ -1,6 +1,7 @@
 import type { Alliance, RobotState, Vec2, World } from '../../types';
 import { hyp } from '../../math';
-import { robotCorners } from '../../sim/physics';
+import { robotCorners, robotHullWorld } from '../../sim/physics';
+import { polySatGap } from '../../sim/imported';
 import { awardFoul } from '../../sim/scoring';
 import { accelSide } from './state';
 import { CHAIN_DIAMOND_R, CHAIN_ENDGAME_S, CHAIN_FOUL_SLOP } from './config';
@@ -61,7 +62,8 @@ export function updateChainPenalties(world: World): void {
  * (its half of the field) and it is NOT in the neutral Particle Zone. */
 function protectedInAuto(r: RobotState): boolean {
   const side = accelSide(r.alliance); // red −x half, blue +x half
-  const corners = robotCorners(r);
+  // an IMPORT is "completely within" by its hull's vertices, not its bounding box's corners
+  const corners = r.spec.imported ? robotHullWorld(r) : robotCorners(r);
   const inOwnHalf = corners.every((c) => (side < 0 ? c.x < 0 : c.x > 0));
   const inParticleZone = Math.abs(r.pos.x) + Math.abs(r.pos.y) < CHAIN_DIAMOND_R;
   return inOwnHalf && !inParticleZone;
@@ -69,6 +71,8 @@ function protectedInAuto(r: RobotState): boolean {
 
 /** OBB–OBB contact (SAT) between two robot footprints, with a little bumper slack. */
 function robotsContact(A: RobotState, B: RobotState): boolean {
+  // a pair with an IMPORT in it: the shared hull SAT over every edge direction of both
+  if (A.spec.imported || B.spec.imported) return polySatGap(robotHullWorld(A), robotHullWorld(B)).gap <= CHAIN_FOUL_SLOP;
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [edgeNormal(ca[0], ca[1]), edgeNormal(ca[1], ca[2]), edgeNormal(cb[0], cb[1]), edgeNormal(cb[1], cb[2])];

@@ -1,0 +1,491 @@
+/* =====================================================================================
+   THE ROBOT IMPORT EDITOR (`src/robotImport/ui/`), lane 4 of the robot import.
+
+   Its own file because it is its own CHUNK: `ImportEditor.tsx` imports it, so Vite ships it
+   with the lazy editor and a player who never imports a robot downloads none of it. It sits in
+   `src/ui/` so `uiaudit` and `uiindex` read it like every other sheet, and `uiaudit`'s
+   `ds-outside-shell` rule exempts `.ds-import*` the way it exempts tutorial.css's `.ds-tut*`.
+
+   What the robot page itself draws for an import (the footprint picture, the hero image) is in
+   shell.css, because that page is in the main chunk. Everything else the editor needs is a
+   class that already existed (`docs/ui-components.md`): `.ds-tabs`, `.ds-opt-add`, `.ds-facts`,
+   `.ds-stats`, `.rec-track`, `.ds-segs` …
+   ===================================================================================== */
+
+/* ---- the layout: steps + body on the left, the preview on the right ----
+   A CONTAINER query on the editor's own width, not the viewport's: the nav rail and the friends
+   panel take different amounts of the page at the same window size (the hero's lesson). */
+.ds-import {
+  container: ri / inline-size;
+  /* the containing block for every `.ds-sr` inside. Without one, a visually hidden line is
+     positioned against the PAGE at its static spot, so the placement map's keyboard line, 1,500px
+     down `.ds-app`'s scroll, made the overflow-hidden ROOT 660px taller than the window — and any
+     `scrollIntoView` (a pad focus move) scrolled the root there, showing an empty screen. */
+  position: relative;
+}
+/* a container query cannot style its own container, so the grid is one level in */
+.ds-import-in {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'steps' 'preview' 'body' 'foot';
+  gap: var(--ds-s-4);
+  align-items: start;
+}
+.ds-import-in > .ds-import-steps {
+  grid-area: steps;
+}
+.ds-import-in > .ds-import-preview {
+  grid-area: preview;
+}
+.ds-import-in > .ds-import-body {
+  grid-area: body;
+  min-width: 0;
+}
+.ds-import-in > .ds-import-foot {
+  grid-area: foot;
+  align-self: start;
+}
+/* ---- the step rail: `.ds-tabs`, numbered, each with its check count ---- */
+.ds-import-steps {
+  margin: 0;
+  flex-wrap: wrap;
+  gap: var(--ds-s-1);
+}
+/* five steps on one row beside the preview: a little less air than a two-tab `.ds-tabs` */
+.ds-import-steps .ds-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-1);
+  padding-inline: var(--ds-s-3);
+}
+.ds-import-steps .ds-tab .n {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+}
+.ds-import-steps .ds-tab:disabled {
+  opacity: var(--ds-disabled-opacity);
+  cursor: not-allowed;
+}
+
+/* ---- the preview ---- */
+.ds-import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3);
+}
+/* the picture's box sets the height; the canvas fills it. A picture's size, not spacing. */
+.ds-import-preview-stage {
+  position: relative;
+  height: 300px;
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line-soft);
+  background: var(--ds-bg);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.ds-import-canvas-host {
+  width: 100%;
+  height: 100%;
+}
+.ds-import-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.ds-import-preview-empty {
+  max-width: 28ch;
+  text-align: center;
+  margin: 0;
+}
+.ds-import-preview-stage .ds-import-map-wrap {
+  width: min(100%, 280px);
+}
+.ds-import-preview-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  justify-content: space-between;
+}
+
+@container ri (min-width: 860px) {
+  .ds-import-in {
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 42%);
+    grid-template-areas: 'steps preview' 'body preview' 'foot preview';
+    /* the preview spans all three rows and is taller than the first two: the slack goes to the
+       LAST row, so the step body sits right under the rail instead of a gap opening between */
+    grid-template-rows: auto auto 1fr;
+  }
+  .ds-import-in > .ds-import-preview {
+    position: sticky;
+    top: 84px; /* clears the sticky top bar, the same number `.ds-subnav` uses */
+  }
+  .ds-import-preview-stage {
+    height: min(560px, calc(100dvh - 200px));
+  }
+}
+@container ri (max-width: 559px) {
+  .ds-import-preview-stage {
+    height: 240px;
+  }
+  /* five tabs do not fit a phone in a row: two a row (the `.ds-segs.even` rule) */
+  .ds-import-steps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---- the drop box: a `.ds-opt-add` tile with a floor height, so empty, reading and failed
+   are the same size ---- */
+.ds-import .ds-opt.ds-opt-add.ds-import-drop {
+  min-height: 200px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--ds-s-3);
+  cursor: default;
+}
+.ds-import-drop .rec-track {
+  flex: none;
+  width: min(100%, 320px);
+}
+.ds-import-drop .od.err {
+  color: var(--ds-danger);
+  max-width: 52ch;
+}
+.ds-import-drop-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  justify-content: center;
+}
+
+/* ---- Model step rows ---- */
+.ds-import-filerow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-3);
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
+}
+.ds-import-turns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
+
+/* ---- practice tuning ---- */
+.ds-import-tune {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-3);
+}
+.ds-import-tune-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-s-2);
+}
+
+/* ---- Moving parts: one row per part; the selected one opens its settings under it ---- */
+.ds-import-moving {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.ds-import-moving li {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  transition: border-color var(--ds-dur-fade);
+}
+.ds-import-moving li:hover {
+  border-color: var(--ds-line-strong);
+}
+.ds-import-moving li.on {
+  border-color: var(--ds-accent);
+}
+/* the row itself is the button that selects the part */
+.ds-import-moving-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+  width: 100%;
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 0;
+  border-radius: var(--ds-round);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ds-import-moving-row:active {
+  transform: translateY(1px);
+}
+.ds-import-moving-row:disabled {
+  cursor: not-allowed;
+  opacity: var(--ds-disabled-opacity);
+}
+.ds-import-moving .what {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
+}
+.ds-import-moving .what small {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-import-moving .go {
+  flex: none;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-accent);
+}
+.ds-import-moving-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  padding: 0 var(--ds-s-3) var(--ds-s-3);
+}
+.ds-import-moving-edit .ds-hint {
+  margin: 0;
+}
+.ds-import-moving-edit .ds-checkline {
+  font-size: var(--ds-t-md);
+}
+.ds-import-moving-hinge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--ds-s-2) var(--ds-s-3);
+}
+/* what the marks over the model mean, under the camera buttons */
+.ds-import-legend {
+  margin: 0;
+}
+.ds-import .ds-facts dd.warn {
+  color: var(--ds-warn);
+}
+
+/* ---- the top-down editor ----
+   An SVG in field inches with real buttons laid over it by percent. The picture's ground is the
+   panel's own (it is chrome, not the field), so every colour here is a themed token. */
+.ds-import-map-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  width: min(100%, 360px);
+}
+.ds-import-map {
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  touch-action: none;
+}
+.ds-import-map svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.ds-import-map .cube {
+  fill: none;
+  stroke: var(--ds-line-strong);
+  stroke-width: 0.12;
+  stroke-dasharray: 0.6 0.4;
+}
+.ds-import-map .hull {
+  fill: var(--ds-panel);
+  stroke: var(--ds-ink-dim);
+  stroke-width: 0.15;
+}
+.ds-import-map .contact {
+  fill: var(--ds-mut);
+}
+/* the rectangle the wheels sit on (the Model step's rectangle layout): its four lines, under the
+   handles, thin enough not to read as an edge of the robot */
+.ds-import-map .frame {
+  fill: none;
+  stroke: var(--ds-mut);
+  stroke-width: 0.08;
+  stroke-dasharray: 0.4 0.3;
+}
+.ds-import-map .span {
+  stroke: var(--ds-accent);
+  stroke-width: 0.6;
+  stroke-linecap: round;
+}
+.ds-import-map .span.bad {
+  stroke: var(--ds-danger);
+}
+.ds-import-map .origin line {
+  stroke: var(--ds-ink);
+  stroke-width: 0.12;
+}
+/* the front mark is a caption ABOVE the map (`TopDownMap.tsx`): on the map it sat where the
+   front intake's handles do, and a 32-px touch handle covered it */
+.ds-import-map-front {
+  align-self: center;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  pointer-events: none;
+}
+/* the status line under the map: ONE line, always present, so a message never moves the rows
+   under it (ui-standard §1.4) */
+.ds-import-map-status {
+  margin: 0;
+  min-height: calc(var(--ds-t-sm) * var(--ds-lh-prose));
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-mut);
+}
+
+/* a handle: 24px, the WCAG 2.5.8 floor (32 under a finger), centred on its point. It moves by
+   its percent position only; hover, focus, selection and the held state change colour and
+   shadow, never the box. */
+.ds-import-handle {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--ds-ink-dim);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-panel);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    background var(--ds-dur-fade),
+    border-color var(--ds-dur-fade),
+    box-shadow var(--ds-dur-fade);
+}
+.ds-import-handle.wheel {
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-ink-dim);
+}
+.ds-import-handle.end {
+  border-radius: var(--ds-round-sm);
+  border-color: var(--ds-accent);
+}
+.ds-import-handle.mid {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent-soft);
+}
+.ds-import-handle.point {
+  border-width: 1px;
+  box-shadow: inset 0 0 0 4px var(--ds-panel), inset 0 0 0 12px var(--ds-ink-dim);
+}
+/* a FIXED launcher's facing: the far end of the ray from its point, dragged round it */
+.ds-import-handle.aim {
+  border-radius: var(--ds-round-sm);
+  border-color: var(--ds-accent);
+  background: var(--ds-accent-soft);
+}
+.ds-import-handle:hover:not(:disabled) {
+  border-color: var(--ds-accent);
+}
+.ds-import-handle:active:not(:disabled) {
+  cursor: grabbing;
+}
+.ds-import-handle.on {
+  border-color: var(--ds-accent);
+  box-shadow: 0 0 0 3px var(--ds-accent-soft);
+}
+.ds-import-handle.point.on {
+  box-shadow: 0 0 0 3px var(--ds-accent-soft), inset 0 0 0 4px var(--ds-panel), inset 0 0 0 12px var(--ds-accent);
+}
+.ds-import-handle.held {
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+  box-shadow: 0 0 0 4px var(--ds-accent-soft);
+}
+.ds-import-handle.bad {
+  border-color: var(--ds-danger);
+}
+.ds-import-handle:disabled {
+  cursor: default;
+}
+.ds-import-handle:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .ds-import-handle {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* ---- Review: the check list ---- */
+.ds-import-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.ds-import-checks li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+}
+.ds-import-checks .g {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid currentColor;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-weight: 700;
+}
+.ds-import-checks li.ok .g {
+  color: var(--ds-ok-ink);
+}
+.ds-import-checks li.warn .g {
+  color: var(--ds-warn);
+}
+.ds-import-checks li.bad .g {
+  color: var(--ds-danger);
+}
+
+/* the header's Undo, Redo and Discard: one group on the right, which wraps under Back as a whole
+   on a phone instead of leaving Discard alone on a line of its own */
+.ds-import-headacts {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+/* the footer: Back on the left, the step's actions on the right */
+.ds-import-foot .ds-head-spacer {
+  flex: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-import-handle {
+    transition: none;
+  }
+}

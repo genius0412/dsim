@@ -3,6 +3,8 @@ import type { GameSettings } from '../types';
 import { moduleFor } from '../games';
 import {
   AUTO_LIBRARY_MAX,
+  LIBRARY_FULL,
+  autoTooLarge,
   loadAutoLibrary,
   saveAutoLibrary,
   upsertAuto,
@@ -12,6 +14,9 @@ import {
 import { ToggleRow } from './OptRow';
 
 type AutoModule = typeof import('./zenithEditor');
+
+/** the notice while Zenith's window is open; its `onClosed` clears exactly this line */
+const ZENITH_OPEN_NOTICE = 'Zenith is open in another window. Save there to bring the auto back here.';
 
 /**
  * THE AUTONOMOUS SECTION of Configure ▸ Match (docs/area/autos.md): the player's Zenith autos
@@ -34,6 +39,8 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(() => lib.activeId ?? lib.entries[0]?.id ?? null);
   const [notice, setNotice] = useState<{ bad: boolean; text: string } | null>(null);
+  /** the autos the open Zenith session was not given, and why (`onLeftOut`) */
+  const [leftOut, setLeftOut] = useState<string | null>(null);
   const [driven, setDriven] = useState<{ id: string; points: { x: number; y: number }[] } | null>(null);
 
   useEffect(() => {
@@ -53,6 +60,15 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
 
   // another tab (or Zenith's Save while this screen is open) may have written the library
   useEffect(() => setLib(loadAutoLibrary(game)), [game]);
+  // ...and so may a Zenith Save that landed while this screen was not the one that opened Zenith
+  // (left and came back while the popup was open: the save updates storage, and its callback
+  // goes to the screen that is gone). Reload on the way back from the popup, so the toggle below
+  // never commits a stale library over the auto Zenith just saved.
+  useEffect(() => {
+    const reload = (): void => setLib(loadAutoLibrary(game));
+    window.addEventListener('focus', reload);
+    return () => window.removeEventListener('focus', reload);
+  }, [game]);
 
   const commit = (next: GameAutoLibrary): void => {
     setLib(next);
@@ -75,6 +91,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
     }
   }, [mod, adapter, selected, settings.alliance, settings.spec]);
 
+  const full = lib.entries.length >= AUTO_LIBRARY_MAX;
   const running = lib.enabled && !!selected && lib.activeId === selected.id;
 
   // THE COMMANDS AN AUTO CAN USE on this build: read off the same robot file Zenith is handed, so
@@ -110,6 +127,8 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
     for (const a of autos) {
       try {
         const auto = mod.parseAutoText(a.text);
+        const tooLarge = autoTooLarge(a.text);
+        if (tooLarge) throw new Error(tooLarge);
         next = upsertAuto(next, {
           name: auto.name,
           auto: a.text,
@@ -159,8 +178,16 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
         setSelectedId(next.entries.find((e) => e.name === name)?.id ?? null);
         setNotice({ bad: false, text: `Saved ${name} from Zenith.` });
       },
+      onLeftOut: setLeftOut,
+      // the popup closed: drop the "open in another window" line and the session's left-out
+      // sentence, but keep a notice something else has put there since (a save, an import)
+      onClosed: () => {
+        setNotice((n) => (n?.text === ZENITH_OPEN_NOTICE ? null : n));
+        setLeftOut(null);
+      },
     });
-    setNotice(error ? { bad: true, text: error } : { bad: false, text: 'Zenith is open in another window. Save there to bring the auto back here.' });
+    if (error) setLeftOut(null);
+    setNotice(error ? { bad: true, text: error } : { bad: false, text: ZENITH_OPEN_NOTICE });
   }
 
   /** run the selected auto headless and draw what the robot really drove over the plan */
@@ -232,7 +259,19 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
             </div>
           );
         })}
-        {lib.entries.length < AUTO_LIBRARY_MAX && (
+        {full ? (
+          // FULL: both stay in place, disabled, and say why (they used to vanish at 12)
+          <>
+            <button className="ds-opt ds-opt-add" disabled title={LIBRARY_FULL}>
+              <span className="ot">Import .auto.json</span>
+              <span className="od">The library is full</span>
+            </button>
+            <button className="ds-opt ds-opt-add" disabled title={LIBRARY_FULL}>
+              <span className="ot">New in Zenith</span>
+              <span className="od">The library is full</span>
+            </button>
+          </>
+        ) : (
           <>
             <label className="ds-opt ds-opt-add">
               <span className="ot">Import .auto.json</span>
@@ -246,6 +285,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
           </>
         )}
       </div>
+      {full && <p className="ds-hint">{LIBRARY_FULL}</p>}
 
       {selected && (
         <div className="ds-auto">
@@ -267,7 +307,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
               {status?.text}
             </div>
             {v && (
-              <dl className="ds-auto-facts">
+              <dl className="ds-facts">
                 <dt>Written for</dt>
                 <dd>{v.fileAlliance}{v.mirrored ? `, mirrored for ${settings.alliance.toUpperCase()}` : ''}</dd>
                 {v.warnings.length > 0 && (
@@ -280,6 +320,12 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
                   <>
                     <dt>Not in DSIM</dt>
                     <dd>{v.unsupported.join(', ')}. These end at once.</dd>
+                  </>
+                )}
+                {v.notOnRobot.length > 0 && (
+                  <>
+                    <dt>Not on this robot</dt>
+                    <dd>{v.notOnRobot.map((c) => `${c.name}: ${c.why}`).join(' ')} {v.notOnRobot.length > 1 ? 'These end' : 'It ends'} at once.</dd>
                   </>
                 )}
               </dl>
@@ -326,6 +372,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
           {notice.text}
         </p>
       )}
+      {leftOut && <p className="ds-hint">{leftOut}</p>}
       <p className="ds-hint">
         In a match, solo or in a custom room, the robot starts where the auto does and drives it through AUTO. Ranked
         matches never run one. In Free drive the auto plays once, and Restart plays it again.

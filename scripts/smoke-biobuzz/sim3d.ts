@@ -712,8 +712,12 @@ export function sim3dChecks(check: Check): void {
 
     // AT REST ON STRUCTURE IS `ground`, NOT `flight` FOREVER. `capturePollen` and the AI's
     // element scan both read `ground` only, so the old tag put such an element out of play.
+    // ⚠️ ON THE PATCH-1 TRAY: this drop rested in the wedge `BB3_TRAY_OUTER_SKIN` removed, and the
+    // current hive has no perch left (NECTAR and POLLEN rained over both hives: 0/675). The tag
+    // rule does not read the geometry, so the old tray is still a fair place to test it.
     {
       const w = mkWorld3d('free', 31);
+      w.simPatch = 1;
       w.balls.length = 0;
       w.robots[0].hopper.length = 0;
       w.robots[0].pos = { x: 0, y: -60 };
@@ -953,6 +957,55 @@ export function sim3dChecks(check: Check): void {
         disposeEngineFor(w);
       }
       check('corner 3d: flat-wall rest distance is the outermost solid, both headings', bad.length === 0, bad.join(' | '));
+    }
+
+    /**
+     * ⚠️ **THE WALL SQUARE-UP IS A TURN THE SOLVE MAKES** (`SIM_PATCH` 3, `step3dImpl.ts` stage 6b;
+     * owner, 2026-10-02: "an invisible bump" against the wall, online). Written after the solve, the
+     * square-up's heading reached the body next tick as a rotation teleport the solver pushed back,
+     * and a robot squaring up against a wall alternated tick by tick — MEASURED at 16° in: yaw rate
+     * 0 / −0.75 / 0 / −0.82 rad/s. That limit cycle is what turned a client's small engine-state
+     * difference into a reconcile snap. The ZIGZAG is the sum, over every tick where the change in
+     * yaw rate reverses, of the smaller of the two changes, taken until the chassis is within 0.5°
+     * of flush; the old rule is run beside it (a patch-2 world, i.e. an old replay) so the check is
+     * not vacuous, and the new one must reach flush no later than the old one did.
+     */
+    {
+      const square = (patch?: number): { zig: number; flushAt: number } => {
+        const w = createBiobuzzWorld('match', 3, [setup(0, 'blue')], undefined, '3d');
+        if (patch !== undefined) w.simPatch = patch;
+        w.match.phase = 'teleop';
+        w.match.phaseTimeLeft = 1000;
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.heading = Math.PI / 2 + (16 * Math.PI) / 180;
+        r.pos.x = 0;
+        r.pos.y = BB_HALF_Y - robotExtents(r).front - 3;
+        const c = new Map([[0, cmd({ driveY: 0.8, driveX: 0.3 })]]);
+        const ws: number[] = [];
+        let flushAt = -1;
+        for (let t = 1; t <= 120; t++) {
+          step3d(w, 1 / 60, c);
+          const off = Math.abs(wrapAngle(r.heading - Math.PI / 2));
+          if (off > (0.5 * Math.PI) / 180) ws.push(r.angVel);
+          if (flushAt < 0 && off < (0.1 * Math.PI) / 180) flushAt = t;
+        }
+        disposeEngineFor(w);
+        let zig = 0;
+        for (let i = 2; i < ws.length; i++) {
+          const a = ws[i - 1] - ws[i - 2];
+          const b = ws[i] - ws[i - 1];
+          if (a * b < 0) zig += Math.min(Math.abs(a), Math.abs(b));
+        }
+        return { zig, flushAt };
+      };
+      const before = square(2);
+      const now = square();
+      check('wall square-up 3d: under the OLD rule (a patch-2 replay) the yaw rate zigzags while squaring up (non-vacuous)',
+        before.zig > 1, `zigzag ${before.zig.toFixed(3)} rad/s`);
+      check('wall square-up 3d: taken inside the solve it does not, and the chassis still reaches flush as soon as before',
+        now.zig < 0.5 && now.flushAt > 0 && now.flushAt <= before.flushAt + 1,
+        `zigzag ${now.zig.toFixed(3)} rad/s (was ${before.zig.toFixed(3)}), flush at tick ${now.flushAt} (was ${before.flushAt})`);
     }
 
     /**
@@ -1435,6 +1488,14 @@ export function sim3dChecks(check: Check): void {
      * the close edge shifted one step and everything from 26 in out is untouched. The TURRET, which
      * is what the shooter accuracy checks measure, is unchanged-to-better: 72→73, 68→70 and 68→68
      * of 80 over the three-archetype stand sweep (`scratch/shotsweep.ts`), nothing ever unlaunched.
+     *
+     * ⚠️ **AND IT BECAME A CLEAN STEP ON 2026-09-27 (`SIM_PATCH` 2).** The bottom row was clipping
+     * the cell floor's 1.5-in collider padding under the mouth lip, where the drawn floor is a thin
+     * plate; `BB3_TRAY_OUTER_SKIN` cut it to 0.5. MEASURED, this build (`scratch/dumprange.ts`),
+     * scored of 4, patch 1 → 2: 22: 0→0 · **24: 2→4** · 26…34: 4→4 (a front-only sweeper: 20: 2→2 ·
+     * **22: 2→4** · 24…: 4→4). A turret is untouched: 62/75 → 62/75 over three builds and 25
+     * stands, no stand changed (`scratch/shotsweep.ts`). So the edge is now asserted as 22 scores
+     * nothing and 24 scores the whole bucket.
      */
     {
       // ⚠️ THE INTAKE MOUNT IS PINNED TO WHAT THE RANGE TABLE WAS MEASURED ON. The dumper fires
@@ -1443,26 +1504,31 @@ export function sim3dChecks(check: Check): void {
       // MEASURED on the new default's front-only sweeper, same seed and stand: 4 of 4 clear at
       // 24 in, i.e. the close limit is a build fact and this fixture states its build rather than
       // inheriting one. (Nothing else moves it: swerve/mecanum and width 16.5/17 all score 4.)
-      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', { ...DUMPER, intakeMount: 'frontback' })], undefined, '3d');
-      const r = w.robots[0];
-      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 24 };
-      r.heading = Math.PI / 2;
-      r.vel = { x: 0, y: 0 };
-      r.angVel = 0;
-      const mine = new Set(
-        w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
-      );
-      const load = r.hopper.length;
-      const fire = new Map([[0, cmd({ fire: true })]]);
-      let best = 0;
-      for (let t = 0; t < 300; t++) {
-        step3d(w, 1 / 60, fire);
-        best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
-      }
+      const volley = (dist: number): { load: number; best: number } => {
+        const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', { ...DUMPER, intakeMount: 'frontback' })], undefined, '3d');
+        const r = w.robots[0];
+        r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + dist };
+        r.heading = Math.PI / 2;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const mine = new Set(
+          w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
+        );
+        const load = r.hopper.length;
+        const fire = new Map([[0, cmd({ fire: true })]]);
+        let best = 0;
+        for (let t = 0; t < 300; t++) {
+          step3d(w, 1 / 60, fire);
+          best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
+        }
+        return { load, best };
+      };
+      const near = volley(22);
+      const edge = volley(24);
       check(
-        'dump 3d: at 24 in the TOP row scores and the BOTTOM row clips — the documented close limit',
-        load === 4 && best > 0 && best < load,
-        `load=${load} scored=${best}`,
+        'dump 3d: at 22 in nothing scores and at 24 in the whole bucket does — the documented close limit',
+        near.load === 4 && near.best === 0 && edge.load === 4 && edge.best === edge.load,
+        `22 in: load=${near.load} scored=${near.best} · 24 in: load=${edge.load} scored=${edge.best}`,
       );
     }
 
@@ -3461,6 +3527,56 @@ export function sim3dChecks(check: Check): void {
         turret.z < 0.1 && turret.n === 1,
         `z=${turret.z.toFixed(2)} kind=${turret.kind}`,
       );
+    }
+
+    /**
+     * ── AN IMPORTED ROBOT'S FLAT CAD TOP IS A DECK TOO (`importTopIsBroad`, engineImpl.ts) ──────
+     * An import's bands are convex PRISMS, which Rapier builds as `ConvexPolyhedron`: the shape the
+     * narrow-hull rule kept for the field's decimated CAD hulls. A POLLEN on an import's flat top was
+     * kicked, and with no rolling law off the floor it rolled for the whole run and off the edge
+     * (measured: 2–3 in/s for 7 s). It rests now, on the top and on a band's ledge, like the standard
+     * deck above, and still falls when the robot drives away; a band that is a thin TOWER is narrow
+     * (the Box Tube rule) and the ball rolls off it.
+     */
+    {
+      const HULL = [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }];
+      const FLAT = { v: 1 as const, id: 'abababababababab', hull: HULL, heightIn: 12 };
+      const BANDS = { ...FLAT, id: 'cdcdcdcdcdcdcdcd', heightIn: 15, bands: [{ z0: 0, z1: 6, hull: HULL }, { z0: 6, z1: 15, hull: [{ x: -6, y: -6 }, { x: 4, y: -6 }, { x: 4, y: 6 }, { x: -6, y: 6 }] }] };
+      const THIN = { ...FLAT, id: 'efefefefefefefef', heightIn: 16, bands: [{ z0: 0, z1: 6, hull: HULL }, { z0: 6, z1: 16, hull: [{ x: -1, y: -1 }, { x: 0.3, y: -1 }, { x: 0.3, y: 1 }, { x: -1, y: 1 }] }] };
+      const drop = (imported: unknown, dx: number, dy: number, z: number, drive = false): { z: number; off: number; n: number } => {
+        const w = mkWorld3d('free', 94, { intakeMount: 'front', imported } as Partial<RobotSpec>);
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.fieldCentric = false;
+        r.pos = { x: 0, y: -30 };
+        r.heading = 0;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const id = 9002;
+        w.balls.push({ id, pos: { x: r.pos.x + dx, y: r.pos.y + dy }, vel: { x: 0, y: 0 }, z, vz: 0, r: BB_POLLEN_R, color: 'yellow', state: { kind: 'ground' } } as unknown as Artifact);
+        const still = new Map([[0, cmd({})]]);
+        const fwd = new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]);
+        for (let t = 0; t < 420; t++) step3d(w, C.SIM_DT, t < 90 || !drive ? still : fwd);
+        const b = w.balls.find((x) => x.id === id)!;
+        const out = { z: b.z, off: Math.hypot(b.pos.x - r.pos.x - dx, b.pos.y - r.pos.y - dy), n: w.balls.length };
+        disposeEngineFor(w);
+        return out;
+      };
+      const top = drop(FLAT, -3, 3, FLAT.heightIn + 2);
+      const band = drop(BANDS, -1, 0, BANDS.heightIn + 2);
+      const ledge = drop(BANDS, 6.2, 0, 6 + 2);
+      const away = drop(FLAT, -3, 3, FLAT.heightIn + 2, true);
+      const thin = drop(THIN, -0.35, 0, THIN.heightIn + 2);
+      check(
+        'imported robot 3d: a POLLEN set down on an import’s flat CAD top RESTS where it landed (on the top band and on a lower band’s ledge), like the standard deck',
+        Math.abs(top.z - FLAT.heightIn) < 0.1 && top.off < 0.05 &&
+          Math.abs(band.z - BANDS.heightIn) < 0.1 && band.off < 0.05 &&
+          Math.abs(ledge.z - 6) < 0.1 && ledge.off < 0.05 && top.n === 1,
+        `top z=${top.z.toFixed(2)} moved ${top.off.toFixed(3)}; band z=${band.z.toFixed(2)} moved ${band.off.toFixed(3)}; ledge z=${ledge.z.toFixed(2)} moved ${ledge.off.toFixed(3)}`,
+      );
+      check('imported robot 3d: ...it falls when the robot drives away from under it, and a thin tower band is no shelf (the ball rolls off it)',
+        away.z < 0.1 && away.n === 1 && thin.z < 0.1 && thin.n === 1,
+        `drove away z=${away.z.toFixed(2)}; thin tower z=${thin.z.toFixed(2)}`);
     }
 
     /**

@@ -22,10 +22,20 @@
 import type { RobotSpec, RobotState } from '../../types';
 import * as C from '../../config';
 import { roundRect, strokeInside, tintColor } from '../../render/drawRobot';
-import { type BbMountPos } from './mounts';
-import { bbLiftOf } from './mechs';
+import { wheelLocals } from '../../sim/robot';
+import { bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius, type BbMountPos } from './mounts';
+import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
+  BB3_DUMPER_PIVOT_BACK,
+  BB3_DUMPER_PIVOT_FRAC,
+  BB3_DUMPER_SPAN_FRAC,
+  BB3_NECTAR_TURRET_R,
+  BB3_NECTAR_TURRET_TOP_Z,
+  BB3_TURRET_R,
+  BB3_TURRET_TOP_Z,
   BB_DECK_Z,
+  BB_LAUNCH_Z0,
+  BB_TURRET_RING_H,
   bbBoxTubeFrame,
   bbBoxTubeStages,
   bbBoxTubeStowedBoxes,
@@ -107,16 +117,8 @@ export function drawChassisBody(
  * at ±45° (an X), and butterfly shows the set that is currently on the floor.
  */
 export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string, accent: string): void {
-  const hl = r.spec.length / 2;
-  const hw = r.spec.width / 2;
-  const wx = Math.max(hl - C.WHEEL_INSET, 1);
-  const wy = Math.max(hw - C.WHEEL_INSET, 1);
-  const corners = [
-    [wx, wy],
-    [wx, -wy],
-    [-wx, wy],
-    [-wx, -wy],
-  ] as const;
+  // [FL, FR, BL, BR] — `wheelLocals`, the list the sim steers `moduleAngles` against
+  const corners = wheelLocals(r.spec).map((w) => [w.x, w.y] as const);
   /**
    * ONE WHEEL, drawn as the wheel it actually is. `kind` picks the tread, which is the only
    * thing that distinguishes these from above and is exactly what the drivetrain choice buys:
@@ -331,43 +333,268 @@ export function bbBoxTubeGlyph(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT STANDS ON THE CHASSIS — so the chassis dressing gives way to it
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * WHERE AN END BAR HAS TO STOP for a Box Tube standing on the same rail: the y-span, in the robot
- * frame, of every stowed tower part that shares the bar's x-band and height band, padded 0.1.
- * `null` when the tube is not on this end. The bar is structure the tube's pivot plates bolt
- * through, so it gives way there rather than burying the pivot.
+ * ONE MECHANISM'S FOOTPRINT ON THE CHASSIS, in the robot frame: a disc (`r`) or an axis-aligned
+ * box (`hx`, `hy`) about (`cx`, `cy`), standing over the height band [`z0`, `z1`].
  */
-function endBarGap(
-  spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>,
-  x0: number,
-  x1: number,
-): { y0: number; y1: number } | null {
-  if (!spec.bbMech?.lift || spec.intake === undefined) return null;
-  const full = spec as RobotSpec;
-  const lift = bbLiftOf(full);
-  if (!lift) return null;
-  const g = bbBoxTubeGlyph(spec, lift.mount, bbLiftPlaceLocal(full));
-  const barTop = BB_DECK_Z + BB_END_BAR_H;
-  let y0 = Infinity;
-  let y1 = -Infinity;
-  for (const b of g.boxes) {
-    const r = bbTowerBoxRobot(g.frame, b);
-    if (r.z0 >= barTop || r.x1 <= x0 || r.x0 >= x1) continue;
-    y0 = Math.min(y0, r.y0);
-    y1 = Math.max(y1, r.y1);
-  }
-  return y0 <= y1 ? { y0: y0 - 0.1, y1: y1 + 0.1 } : null;
+export interface BbKeepOut {
+  what: 'turretRing' | 'turretHead' | 'dumper' | 'tube' | 'intakeArm';
+  cx: number;
+  cy: number;
+  r?: number;
+  hx?: number;
+  hy?: number;
+  z0: number;
+  z1: number;
 }
 
-/** an end bar's drawn pieces along y — the whole bar, or the two sides of its gap. */
-export function bbEndBarSegments(bar: { halfY: number; gap?: { y0: number; y1: number } | null }): { y0: number; y1: number }[] {
-  const lo = -bar.halfY;
-  const hi = bar.halfY;
-  if (!bar.gap) return [{ y0: lo, y1: hi }];
-  const out: { y0: number; y1: number }[] = [];
-  if (bar.gap.y0 > lo + 0.2) out.push({ y0: lo, y1: Math.min(hi, bar.gap.y0) });
-  if (bar.gap.y1 < hi - 0.2) out.push({ y0: Math.max(lo, bar.gap.y1), y1: hi });
+/** the dumper's two shaft posts (`renderRobots.ts`'s `buildDumper`): their side, and how far
+ * under `BB_LAUNCH_Z0` the shaft they carry sits (in) */
+const DUMPER_POST = 0.6;
+const DUMPER_SHAFT_DROP = 2.3;
+
+/** a DUMPER's mounted edge as a unit vector in the robot frame (no trig: the four are exact) */
+const EDGE_DIR: Record<'front' | 'back' | 'left' | 'right', { x: number; y: number }> = {
+  front: { x: 1, y: 0 },
+  back: { x: -1, y: 0 },
+  left: { x: 0, y: 1 },
+  right: { x: 0, y: -1 },
+};
+
+/**
+ * ⚠️ **EVERY MECHANISM'S FOOTPRINT, SO NOTHING DECORATIVE IS DRAWN THROUGH ONE** (owner,
+ * 2026-09-28: "The robot itself has a lot of overlapping parts"). The end bars, the deck arrow
+ * and the side plates' top caps are chassis DRESSING: none is a collider and none is hardware a
+ * mechanism bolts through. Measured over 2,381 builds (every launcher on every mount × every
+ * intake × every Box Tube cell), a turret on any front- or back-row cell ran its ring and head
+ * through the end bar on 1,080 of them and an edge or corner ring cut the top cap on 1,297; a
+ * centre turret sat on the deck arrow on 1,190. The dressing reads this list and yields.
+ *
+ * The numbers are the mechanisms' OWN: a turret is its fixed ring (`turretRadius`, drawn to
+ * `BB_TURRET_RING_H`) and, above it, the disc its head sweeps as it aims (`BB3_TURRET_R` /
+ * `BB3_NECTAR_TURRET_R`, measured off the built heads); a dumper is the box `bbMechEnvelopes` gives
+ * it; a Box Tube is its stowed tower boxes. Empty for a spec that says nothing about mechanisms.
+ */
+export function bbChassisKeepOuts(spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>): BbKeepOut[] {
+  if (!spec.bbMech && spec.scoreMode === undefined) return [];
+  const full = spec as RobotSpec;
+  const out: BbKeepOut[] = [];
+  const launcher = bbLauncherOf(full, 0);
+  if (bbIsTurreted(launcher)) {
+    const heads: [BbMountPos, number, number][] = [[launcher.mount, BB3_TURRET_R, BB3_TURRET_TOP_Z]];
+    if (launcher.kind === 'twinturret' && launcher.mount2) heads.push([launcher.mount2, BB3_NECTAR_TURRET_R, BB3_NECTAR_TURRET_TOP_Z]);
+    const ring = turretRadius(spec);
+    for (const [mount, sweep, top] of heads) {
+      const c = turretLocal(spec, mount);
+      out.push({ what: 'turretRing', cx: c.x, cy: c.y, r: ring, z0: BB_DECK_Z, z1: BB_DECK_Z + BB_TURRET_RING_H });
+      out.push({ what: 'turretHead', cx: c.x, cy: c.y, r: sweep, z0: BB_DECK_Z + BB_TURRET_RING_H, z1: top });
+    }
+  } else if (launcher.kind === 'fixed') {
+    // a FIXED shooter: the turret's head on a riser where the ring would be, facing one way — its
+    // keep-out is the disc a turret head at that cell would sweep, a safe over-approximation
+    const c = turretLocal(spec, launcher.mount);
+    out.push({ what: 'turretRing', cx: c.x, cy: c.y, r: turretRadius(spec), z0: BB_DECK_Z, z1: BB_DECK_Z + BB_TURRET_RING_H });
+    out.push({ what: 'turretHead', cx: c.x, cy: c.y, r: BB3_TURRET_R, z0: BB_DECK_Z + BB_TURRET_RING_H, z1: BB3_TURRET_TOP_Z });
+  } else if (launcher.kind === 'dumper') {
+    // Only the dumper's two POSTS reach the deck (`buildDumper`: 0.6-in square, at the pivot, just
+    // inside each end of the shaft). The bucket hangs off the shaft at `BB_LAUNCH_Z0 − 2.3` and its
+    // lowest point is over 6 in up — above the caps, the arrow and the end bars.
+    const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
+    const { dist, span } = edgeGeom(spec, edge);
+    const pivot = dist - Math.min(BB3_DUMPER_PIVOT_BACK, dist * BB3_DUMPER_PIVOT_FRAC);
+    const v = span * BB3_DUMPER_SPAN_FRAC - DUMPER_POST / 2;
+    const d = EDGE_DIR[edge];
+    for (const s of [1, -1] as const) {
+      out.push({
+        what: 'dumper',
+        cx: d.x * pivot - d.y * s * v,
+        cy: d.y * pivot + d.x * s * v,
+        hx: DUMPER_POST / 2,
+        hy: DUMPER_POST / 2,
+        z0: BB_DECK_Z,
+        z1: BB_LAUNCH_Z0 - DUMPER_SHAFT_DROP,
+      });
+    }
+  }
+  const lift = spec.bbMech?.lift && spec.intake !== undefined ? bbLiftOf(full) : null;
+  if (lift) {
+    const g = bbBoxTubeGlyph(spec, lift.mount, bbLiftPlaceLocal(full));
+    for (const b of g.boxes) {
+      const r = bbTowerBoxRobot(g.frame, b);
+      out.push({ what: 'tube', cx: (r.x0 + r.x1) / 2, cy: (r.y0 + r.y1) / 2, hx: (r.x1 - r.x0) / 2, hy: (r.y1 - r.y0) / 2, z0: r.z0, z1: r.z1 });
+    }
+  }
   return out;
+}
+
+/**
+ * THE SPANS OF A RAIL THAT A KEEP-OUT STANDS ON, merged and sorted. The rail runs `along` one axis
+ * (`'y'` for an end bar, `'x'` for a side plate's top cap), sits across the other in `band`, and
+ * occupies `zBand`; a keep-out only takes a span of it when their heights overlap. Padded by `pad`
+ * each side, so the two never touch face to face either.
+ */
+export function bbRailGaps(
+  keep: readonly BbKeepOut[],
+  along: 'x' | 'y',
+  band: readonly [number, number],
+  zBand: readonly [number, number],
+  pad = 0.1,
+): { a0: number; a1: number }[] {
+  const gaps: { a0: number; a1: number }[] = [];
+  for (const k of keep) {
+    if (k.z0 >= zBand[1] || k.z1 <= zBand[0]) continue;
+    const across = along === 'y' ? k.cx : k.cy;
+    const at = along === 'y' ? k.cy : k.cx;
+    if (k.r !== undefined) {
+      const d = across < band[0] ? band[0] - across : across > band[1] ? across - band[1] : 0;
+      if (d >= k.r) continue;
+      const half = Math.sqrt(k.r * k.r - d * d);
+      gaps.push({ a0: at - half - pad, a1: at + half + pad });
+    } else {
+      const hAcross = along === 'y' ? k.hx! : k.hy!;
+      const hAlong = along === 'y' ? k.hy! : k.hx!;
+      if (across + hAcross <= band[0] || across - hAcross >= band[1]) continue;
+      gaps.push({ a0: at - hAlong - pad, a1: at + hAlong + pad });
+    }
+  }
+  gaps.sort((p, q) => p.a0 - q.a0);
+  const merged: { a0: number; a1: number }[] = [];
+  for (const g of gaps) {
+    const last = merged[merged.length - 1];
+    if (last && g.a0 <= last.a1) last.a1 = Math.max(last.a1, g.a1);
+    else merged.push({ ...g });
+  }
+  return merged;
+}
+
+/** what is left of a rail `[lo, hi]` once its gaps are taken out; a piece under 0.2 in is dropped */
+export function bbRailSegments(lo: number, hi: number, gaps: readonly { a0: number; a1: number }[]): { a0: number; a1: number }[] {
+  const out: { a0: number; a1: number }[] = [];
+  let at = lo;
+  for (const g of gaps) {
+    if (g.a1 <= at) continue;
+    if (g.a0 >= hi) break;
+    if (g.a0 - at > 0.2) out.push({ a0: at, a1: g.a0 });
+    at = Math.max(at, g.a1);
+  }
+  if (hi - at > 0.2) out.push({ a0: at, a1: hi });
+  return out;
+}
+
+/** one drawn piece of an end bar: its span in y and its height above the deck */
+export interface BbBarPiece {
+  y0: number;
+  y1: number;
+  h: number;
+}
+
+/** an end bar's drawn pieces along y (`bbFrontMarks`). The 2D sprite fills their spans; 3D also
+ * reads each piece's height. */
+export function bbEndBarSegments(bar: { pieces: readonly BbBarPiece[] }): BbBarPiece[] {
+  return [...bar.pieces];
+}
+
+/** the lowest an end bar is drawn where it runs under a mechanism rather than stopping (in) */
+const BAR_LOW_MIN = 0.3;
+
+/**
+ * AN END BAR OVER `[x0, x1]`, LESS WHAT STANDS ON IT. Where a mechanism reaches down to the deck
+ * (a turret's fixed ring, a Box Tube's pivot plates) the bar STOPS; where one only passes OVER it
+ * (a turret's head, whose underside is `BB_TURRET_RING_H` above the deck) the bar runs on LOWER,
+ * just under it — so a front turret on a narrow chassis, whose head sweeps the whole front edge,
+ * still leaves a light bar across the front rather than none.
+ */
+export function bbEndBarPieces(keep: readonly BbKeepOut[], x0: number, x1: number, halfY: number): BbBarPiece[] {
+  const band: [number, number] = [x0, x1];
+  const zBand: [number, number] = [BB_DECK_Z, BB_DECK_Z + BB_END_BAR_H];
+  const hard = keep.filter((k) => k.z0 < BB_DECK_Z + BAR_LOW_MIN + 0.05);
+  const low = keep.filter((k) => k.z0 >= BB_DECK_Z + BAR_LOW_MIN + 0.05);
+  const segs = bbRailSegments(-halfY, halfY, bbRailGaps(hard, 'y', band, zBand));
+  const caps = low.flatMap((k) => bbRailGaps([k], 'y', band, zBand).map((g) => ({ ...g, h: Math.min(BB_END_BAR_H, k.z0 - BB_DECK_Z - 0.05) })));
+  const out: BbBarPiece[] = [];
+  for (const s of segs) {
+    const cuts = [s.a0, s.a1, ...caps.flatMap((c) => [c.a0, c.a1]).filter((v) => v > s.a0 && v < s.a1)].sort((p, q) => p - q);
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const y0 = cuts[i];
+      const y1 = cuts[i + 1];
+      if (y1 - y0 < 1e-6) continue;
+      const mid = (y0 + y1) / 2;
+      const h = caps.reduce((m, c) => (mid > c.a0 && mid < c.a1 ? Math.min(m, c.h) : m), BB_END_BAR_H);
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.y1 - y0) < 1e-9 && Math.abs(last.h - h) < 1e-9) last.y1 = y1;
+      else out.push({ y0, y1, h });
+    }
+  }
+  return out;
+}
+
+/**
+ * THE DECK ARROW'S PLACE: the biggest arrow, nearest the rear rail and the centreline, that stands
+ * clear of every mechanism's footprint at deck height (`bbChassisKeepOuts`, padded
+ * `ARROW_CLEAR`). It used to be one fixed triangle tucked against the rear bar, which a centre
+ * turret's ring sat on (1,190 of the 2,381 builds swept), and a back-row turret or a side dumper
+ * covered outright. `null` when no size fits anywhere on the deck — the light bar is then the
+ * whole front language, which it was designed to carry alone.
+ */
+const ARROW_CLEAR = 0.2;
+function placeArrow(
+  spec: Pick<RobotSpec, 'length' | 'width'>,
+  keep: readonly BbKeepOut[],
+  halfY: number,
+): { apex: number; base: number; half: number; cy: number } | null {
+  const hl = spec.length / 2;
+  const deckTop = BB_DECK_Z + 0.02 + BB_FRONT_ARROW_T;
+  const low = keep.filter((k) => k.z0 < deckTop);
+  const xMin = -hl + BB_END_BAR_T + BB_FRONT_ARROW_GAP;
+  const xMax = hl - BB_END_BAR_T - BB_FRONT_ARROW_GAP;
+  const yLim = halfY;
+  const clear = (px: number, py: number): boolean =>
+    low.every((k) =>
+      k.r !== undefined
+        ? (px - k.cx) * (px - k.cx) + (py - k.cy) * (py - k.cy) >= (k.r + ARROW_CLEAR) * (k.r + ARROW_CLEAR)
+        : Math.abs(px - k.cx) >= k.hx! + ARROW_CLEAR || Math.abs(py - k.cy) >= k.hy! + ARROW_CLEAR,
+    );
+  // the triangle, sampled: its three edges and a lattice inside it
+  const fits = (base: number, len: number, half: number, cy: number): boolean => {
+    if (base < xMin - 1e-9 || base + len > xMax + 1e-9 || Math.abs(cy) + half > yLim + 1e-9) return false;
+    const N = 10;
+    for (let i = 0; i <= N; i++) {
+      const f = i / N;
+      // along the two slanted edges and the base
+      if (!clear(base + len * f, cy + half * (1 - f)) || !clear(base + len * f, cy - half * (1 - f)) || !clear(base, cy + half * (2 * f - 1))) return false;
+      for (let j = 1; j < N - i; j++) {
+        const x = base + len * f;
+        const w = half * (1 - f);
+        if (!clear(x, cy + w * ((2 * j) / (N - i) - 1))) return false;
+      }
+    }
+    return true;
+  };
+  // ON THE CENTRELINE FIRST, shrinking in 5 % steps and then moving forward: an arrow off to one
+  // side reads as an accident. Only when no centred size fits anywhere does it slide sideways.
+  const sizes: [number, number][] = [];
+  for (let f = 1; f >= 0.55 - 1e-9; f -= 0.05) sizes.push([BB_FRONT_ARROW_LEN * f, Math.min(BB_FRONT_ARROW_HALF * f, yLim)]);
+  for (const sideways of [false, true]) {
+    for (const [len, h] of sizes) {
+      if (h < 0.8) continue;
+      // nearest the rear rail first (then, sideways, nearest the centreline); the first fit wins
+      const cands: { base: number; cy: number; score: number }[] = [];
+      for (let base = xMin; base + len <= xMax + 1e-9; base += 0.25) {
+        if (!sideways) {
+          cands.push({ base, cy: 0, score: base - xMin });
+          continue;
+        }
+        for (let cy = 0.25; cy <= yLim - h + 1e-9; cy += 0.25) for (const s of [1, -1]) cands.push({ base, cy: s * cy, score: base - xMin + 2 * cy });
+      }
+      cands.sort((p, q) => p.score - q.score || q.cy - p.cy);
+      for (const c of cands) if (fits(c.base, len, h, c.cy)) return { apex: c.base + len, base: c.base, half: h, cy: c.cy };
+    }
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,19 +675,31 @@ export const BB_FRONT_ARROW_T = 0.12;
  * ONE derivation, so the 2D sprite and the 3D chassis cannot drift apart about which end is
  * which, the same bargain `bbBoxTubeGlyph` already makes for the tube.
  *
- * `front`/`rear` are bars `[x0, x1] × [−halfY, halfY]`; `arrow` is the chevron's three points.
+ * `front`/`rear` are bars `[x0, x1] × [−halfY, halfY]` less their `gaps` (`bbEndBarSegments`);
+ * `arrow` is the chevron — apex `(apex, cy)`, base corners `(base, cy ± half)` — or `null` when no
+ * spot on the deck is clear of the mechanisms (`placeArrow`).
+ *
+ * CACHED per build: the 2D sprite asks every frame, and the arrow's placement is a search.
  */
-export function bbFrontMarks(spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>): {
-  front: { x0: number; x1: number; halfY: number; gap: { y0: number; y1: number } | null };
-  rear: { x0: number; x1: number; halfY: number; gap: { y0: number; y1: number } | null };
-  arrow: { apex: number; base: number; half: number };
-} {
+export interface BbFrontMarks {
+  front: { x0: number; x1: number; halfY: number; pieces: BbBarPiece[] };
+  rear: { x0: number; x1: number; halfY: number; pieces: BbBarPiece[] };
+  arrow: { apex: number; base: number; half: number; cy: number } | null;
+}
+const FRONT_MARKS_CACHE = new Map<string, BbFrontMarks>();
+export function bbFrontMarks(spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>): BbFrontMarks {
+  const key = JSON.stringify([spec.length, spec.width, spec.bbMech ?? null, spec.scoreMode ?? null, spec.shooterMount ?? null, spec.shooterRear ?? null, spec.intake ?? null, spec.intakeMount ?? null]);
+  const hit = FRONT_MARKS_CACHE.get(key);
+  if (hit) return hit;
   const hl = spec.length / 2;
   const halfY = Math.max(0.5, spec.width / 2 - BB_END_BAR_INSET);
-  const base = -hl + BB_END_BAR_T + BB_FRONT_ARROW_GAP;
-  return {
-    front: { x0: hl - BB_END_BAR_T, x1: hl, halfY, gap: endBarGap(spec, hl - BB_END_BAR_T, hl) },
-    rear: { x0: -hl, x1: -hl + BB_END_BAR_T, halfY, gap: endBarGap(spec, -hl, -hl + BB_END_BAR_T) },
-    arrow: { apex: base + BB_FRONT_ARROW_LEN, base, half: Math.min(BB_FRONT_ARROW_HALF, halfY) },
+  const keep = bbChassisKeepOuts(spec);
+  const marks: BbFrontMarks = {
+    front: { x0: hl - BB_END_BAR_T, x1: hl, halfY, pieces: bbEndBarPieces(keep, hl - BB_END_BAR_T, hl, halfY) },
+    rear: { x0: -hl, x1: -hl + BB_END_BAR_T, halfY, pieces: bbEndBarPieces(keep, -hl, -hl + BB_END_BAR_T, halfY) },
+    arrow: placeArrow(spec, keep, halfY),
   };
+  if (FRONT_MARKS_CACHE.size > 256) FRONT_MARKS_CACHE.clear();
+  FRONT_MARKS_CACHE.set(key, marks);
+  return marks;
 }

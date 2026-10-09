@@ -5,6 +5,7 @@ import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { fmtTime, timerPanel } from '../../ui/timerPanel';
 import { FoulChip } from '../../ui/FoulChip';
+import { PaceTag } from '../../ui/pace/PaceTag';
 import { BiobuzzBuilder } from './Builder';
 import { BbPassPicker } from './PassPicker';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
@@ -46,8 +47,8 @@ const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
  * component with a branch per season.
  *
  */
-export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
-  return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
+export function BiobuzzBuilderSlot({ spec, onChange, hideFrame }: GameBuilderProps) {
+  return <BiobuzzBuilder spec={spec} setSpec={onChange} hideFrame={hideFrame} />;
 }
 
 /**
@@ -465,6 +466,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           the alliance panel — the panel is the score, and the whole point of this figure is
           that it is not in the score yet (§10.5 C/E/F/G). */}
       <div className="breakdown-row" data-hud-band>
+        {/* the pace chip leads: it is the driver's own read-out, like PENDING (`PaceTag`) */}
+        <PaceTag hud={hud} />
         {f?.nectarLocked && (
           <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
         )}
@@ -513,7 +516,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
  * ⚠️ RANKING POINTS used to close this table: SWARM / POLLINATOR 1 / POLLINATOR 2, printed as
  * 1 / 0 off `BB_RP`. It was REMOVED on 2026-09-21 at the owner's request. `BbRankPoints` is
  * still computed in `score.ts` and still rides `BiobuzzFieldHud.rp`, so restoring the section
- * is one tuple — but until then NOTHING in the product surfaces a ranking point.
+ * is one tuple. The results screen stays RP-free, competition matches included: ranking points
+ * are shown on the competition pages, ranked by `src/competition/manual.ts`'s table.
  */
 export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] {
   const f: BiobuzzFieldHud | undefined = sliceOf(hud)?.field;

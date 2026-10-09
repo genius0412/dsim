@@ -1,7 +1,8 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import type { Alliance, Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
-import { clampBallPosToStatics, robotExtents } from './physics';
+import { clampBallPosToStatics, robotExtents, robotHullWorld } from './physics';
+import { polyBounds } from './imported';
 import { robotPenetration, type RobotSolids, type SolidShape } from './artifactSolids';
 import { shoveMass } from './drivetrain';
 import type { DriveWrench } from './robot';
@@ -169,6 +170,15 @@ function grewOut(now: number, was: number): number {
  * overriding a pose nothing put it in. Containment keeps you in; it does not teleport you in.
  */
 function outsideBy(r: RobotState, bounds: { halfX: number; halfY: number }): Vec2 {
+  if (r.spec.imported) {
+    // the hull's own world bounds — a pointed or offset hull reaches the wall where it does, not
+    // where its bounding box would
+    const b = polyBounds(robotHullWorld(r));
+    return {
+      x: Math.max(0, b.maxX - bounds.halfX) + Math.min(0, b.minX + bounds.halfX),
+      y: Math.max(0, b.maxY - bounds.halfY) + Math.min(0, b.minY + bounds.halfY),
+    };
+  }
   const e = robotExtents(r);
   const c = dcos(r.heading);
   const s = dsin(r.heading);
@@ -312,10 +322,21 @@ export function solveRobots(
      * about how hard this robot is to spin.
      */
     const m = shoveMass(r.spec, r.butterflyTank, r.powerDraw);
+    /**
+     * AN IMPORTED ROBOT COLLIDES AS ITS HULL — a convex polygon in the body frame, origin at the
+     * wheelbase centre — with the SAME stated mass properties: `shoveMass`, the centre of mass
+     * pinned at the body origin, and the hull's own rotational inertia (`chassisInertia`). The
+     * hull is already intake-inclusive, so nothing is shifted forward. `coerceImported`
+     * guarantees a non-degenerate hull; the box is a belt-and-braces fallback Rapier never needs.
+     */
+    const footDesc = r.spec.imported ? hullDesc(r.spec.imported.hull) : null;
     rw.createCollider(
-      RAPIER.ColliderDesc.cuboid(hx, e.half)
-        .setTranslation(forward, 0) // body-local (rotated by heading)
-        .setMassProperties(m, { x: -forward, y: 0 }, chassisInertia(m, r.spec))
+      (footDesc
+        ? footDesc.setMassProperties(m, { x: 0, y: 0 }, chassisInertia(m, r.spec))
+        : RAPIER.ColliderDesc.cuboid(hx, e.half)
+            .setTranslation(forward, 0) // body-local (rotated by heading)
+            .setMassProperties(m, { x: -forward, y: 0 }, chassisInertia(m, r.spec))
+      )
         .setRestitution(0)
         .setFriction(C.PHYS_FRICTION)
         .setCollisionGroups(R_FOOT),
@@ -573,6 +594,16 @@ const A_HELD = 0x0020;
 const A_DOOR = 0x0040;
 const A_BALLS = A_LOOSE | A_CLAIMED | A_DOOR;
 const groups = (membership: number, filter: number): number => (membership << 16) | filter;
+
+/** a convex-hull collider for a robot-local polygon, in the parent body's frame */
+function hullDesc(pts: readonly Vec2[]): RAPIER.ColliderDesc | null {
+  const flat = new Float32Array(pts.length * 2);
+  pts.forEach((p, i) => {
+    flat[2 * i] = p.x;
+    flat[2 * i + 1] = p.y;
+  });
+  return RAPIER.ColliderDesc.convexHull(flat);
+}
 
 /** a Rapier collider for one artifact-solid shape, in the parent body's frame */
 function solidDesc(sh: SolidShape): RAPIER.ColliderDesc | null {
