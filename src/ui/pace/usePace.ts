@@ -1,8 +1,53 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, MatchPhase } from '../../types';
+import type { HudSnapshot } from '../../game';
+import type { MatchResultInfo } from '../../net/session';
+import { recordScore } from '../../sim/replay';
 import type { PaceState } from './PaceTag';
+import { PaceCurveRecorder } from './curve';
 import { PACE_TAG, resolvePace, type PaceRun } from './resolve';
-import { curveFor, curveKey, PaceStale, storedCurve } from './store';
+import { curveFor, curveKey, PaceStale, playedRef, storeCurve, storedCurve } from './store';
+
+/**
+ * A RECORD RUN'S CURVE, MADE WHILE IT IS PLAYED, from the HUD's own 10 Hz reads.
+ *
+ * A record is simulated and stamped by the SERVER, whose sim can be behind this client's
+ * (`store.ts`): then nothing on this client can re-run it, and a PB set in a record room could
+ * never be raced. The run's own client saw every point of it, so it keeps them, under the replay's
+ * seed and length (`playedRef`) since the server's replay id never reaches it. Only a run seen
+ * from its pre-match is kept (a rejoin mid-match has a hole at the start), and its last point is
+ * the result's own net score, the number its board row carries.
+ */
+export function useRecordedRunCurve(
+  run: PaceRun | null,
+  hud: HudSnapshot | null,
+  result: () => MatchResultInfo | null,
+): void {
+  const rec = useRef<PaceCurveRecorder | null>(null);
+  const kept = useRef(false);
+  useEffect(() => {
+    if (run?.kind !== 'record' || !hud || hud.mode !== 'match') return;
+    if (hud.phase === 'pre') {
+      rec.current = new PaceCurveRecorder();
+      kept.current = false;
+      return;
+    }
+    const r = rec.current;
+    if (!r || kept.current) return;
+    if (hud.phase !== 'post') {
+      r.push(hud.phase, hud.timeLeft, Math.max(0, hud.score.total - hud.oppScore.foulPoints));
+      return;
+    }
+    const info = result(); // lands a moment after the buzzer
+    if (!info) return;
+    kept.current = true;
+    const game = info.replay.game ?? 'decode';
+    r.push('post', 0, recordScore(info.result, hud.alliance));
+    storeCurve(curveKey(playedRef(game, info.replay.seed, info.replay.ticks)), game, r.curve);
+    // `result` is a getter over a ref; the HUD poll is what moves this
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hud, run?.kind]);
+}
 
 /**
  * The pace for this screen, or null when the match is not one the pace runs in (or it is off).
@@ -62,7 +107,7 @@ export function usePace(
         // curve, not the old run's, or nothing while it is made — the old run under the new
         // run's name would be a number about a race nobody is running
         if (shownRun.current !== t.key && !storedCurve(curveKey(t.key))) setState({ tag, curve: null, why: '' });
-        const curve = await curveFor(t.key, settings.game, t.load, t.alliance, t.pin);
+        const curve = await curveFor(t.key, settings.game, t.load, t.alliance, t.pin, t.expect);
         if (!live) return;
         shownRun.current = t.key;
         setState({ tag, curve, why: '' });

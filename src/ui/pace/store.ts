@@ -27,6 +27,9 @@ interface Entry {
   at: number;
   game: GameId;
   pin?: true;
+  /** a drifted replay whose re-run here MISSED its recorded score (`curveFor`): kept so it is
+   *  not re-simulated at every match start only to be refused again; never read as a pace */
+  miss?: true;
   c: PaceCurve;
 }
 
@@ -39,7 +42,13 @@ const read = (): Record<string, Entry> => {
     for (const [key, e] of Object.entries(v as Record<string, Partial<Entry>>)) {
       const c = coerceCurve(e?.c);
       if (c && typeof e.at === 'number' && typeof e.game === 'string') {
-        out[key] = { at: e.at, game: e.game, c, ...(e.pin ? { pin: true as const } : {}) };
+        out[key] = {
+          at: e.at,
+          game: e.game,
+          c,
+          ...(e.pin ? { pin: true as const } : {}),
+          ...(e.miss ? { miss: true as const } : {}),
+        };
       }
     }
     return out;
@@ -61,13 +70,25 @@ const write = (all: Record<string, Entry>): void => {
 };
 
 export function storedCurve(key: string): PaceCurve | null {
-  return read()[key]?.c ?? null;
+  const e = read()[key];
+  return e && !e.miss ? e.c : null;
 }
 
-export function storeCurve(key: string, game: GameId, c: PaceCurve, pin = false): void {
+/** a drifted replay already re-run here and found not to land on its recorded score */
+export function missedCurve(key: string): boolean {
+  return read()[key]?.miss === true;
+}
+
+export function storeCurve(key: string, game: GameId, c: PaceCurve, pin = false, miss = false): void {
   const all = read();
   if (pin) for (const e of Object.values(all)) if (e.game === game) delete e.pin;
-  all[key] = { at: Date.now(), game, c, ...(pin || all[key]?.pin ? { pin: true as const } : {}) };
+  all[key] = {
+    at: Date.now(),
+    game,
+    c,
+    ...(pin || all[key]?.pin ? { pin: true as const } : {}),
+    ...(miss ? { miss: true as const } : {}),
+  };
   write(all);
 }
 
@@ -76,11 +97,26 @@ export function storeCurve(key: string, game: GameId, c: PaceCurve, pin = false)
 export const curveKey = (ref: string): string => `${ref}#${SIM_VERSION}.${BALANCE_VERSION}`;
 
 /**
- * THE REFERENCE MUST RE-RUN EXACTLY. Stricter than the viewer, which plays a replay whose sim has
- * moved under it with a note (`replayFidelity`'s drift): watching a drifted run is still worth it,
- * but pacing against one is not. Measured 2026-10-07, a 723-point DECODE record from sim v2
- * re-simulated on sim v5 finished on 40, so its curve would have the player "ahead of the record"
- * all match. So after a SIM_VERSION bump a PB or WR set before it has no pace until it is beaten.
+ * The ref for a curve RECORDED WHILE A RUN WAS PLAYED, named by what its replay carries (the
+ * server's replay id is not known to the client that played it). `curveFor` finds it again from
+ * the replay a PB or WR resolves to.
+ */
+export const playedRef = (game: GameId, seed: number, ticks: number): string => `l:run:${game}:${seed}:${ticks}`;
+
+/**
+ * THE REFERENCE MUST RE-RUN EXACTLY, OR BE SHOWN TO. Stricter than the viewer, which plays a
+ * replay whose sim has moved under it with a note (`replayFidelity`'s drift): watching a drifted
+ * run is still worth it, but pacing against one is not. Measured 2026-10-07, a 723-point DECODE
+ * record from sim v2 re-simulated on sim v5 finished on 40, so its curve would have the player
+ * "ahead of the record" all match.
+ *
+ * ⚠️ A RECORD IS STAMPED WITH THE SERVER'S SIM, NOT THE CLIENT'S. One Fly app serves every client
+ * version, so while alpha's client is ahead of the server, EVERY record — set today included — is
+ * a drift to it (2026-10-09: records stamped sim 4, alpha on 5; a tester's "WR doesn't exist,
+ * record runs don't work"). Two ways back in, both checked against the number the run is known by:
+ *   - a curve the player's own client RECORDED while playing the run (`playedRef`), and
+ *   - a drifted replay that re-runs here onto exactly its recorded score. DECODE's sim-4 records do
+ *     (719 → 719); BIOBUZZ's do not (850 → 99, 808 → 111, 784 → 203), and those stay refused.
  */
 export class PaceStale extends Error {
   constructor() {
@@ -131,6 +167,8 @@ export function curveFor(
   /** whose score; absent reads the replay's first seat */
   alliance?: Alliance,
   pin = false,
+  /** the score the run is known by (a board row's): lets a DRIFTED replay in, if it lands on it */
+  expect?: number,
 ): Promise<PaceCurve> {
   // the SIM is in the key: a replay re-simulated by a build whose sim moved can land somewhere
   // else (`replayFidelity`'s drift), so a curve is only reused by the sim that made it
@@ -140,11 +178,19 @@ export function curveFor(
     storeCurve(key, game, have, pin); // touch, so a curve in use is not the one evicted
     return Promise.resolve(have);
   }
+  if (missedCurve(key)) return Promise.reject(new PaceStale());
   const running = inFlight.get(key);
   if (running) return running;
   const job = (async () => {
     const r = await replay();
-    if (replayFidelity(r, BALANCE_VERSION, SIM_VERSION) !== 'ok') {
+    // played on this device: the curve made live is the run as it was scored
+    const played = storedCurve(curveKey(playedRef(r.game ?? 'decode', r.seed, r.ticks)));
+    if (played && (expect === undefined || played.s.at(-1) === expect)) {
+      storeCurve(key, game, played, pin);
+      return played;
+    }
+    const fidelity = replayFidelity(r, BALANCE_VERSION, SIM_VERSION);
+    if (fidelity === 'stale' || (fidelity === 'drift' && expect === undefined)) {
       throw new PaceStale();
     }
     const out = await new Promise<PaceWorkerOut>((resolve) => {
@@ -159,6 +205,10 @@ export function curveFor(
       getWorker().postMessage(msg);
     });
     if (!out.ok) throw new Error(out.error);
+    if (fidelity === 'drift' && out.curve.s.at(-1) !== expect) {
+      storeCurve(key, game, out.curve, false, true);
+      throw new PaceStale();
+    }
     storeCurve(key, game, out.curve, pin);
     return out.curve;
   })();

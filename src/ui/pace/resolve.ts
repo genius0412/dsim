@@ -2,7 +2,7 @@ import { fetchPracticeRuns, fetchRecords, fetchReplay, fetchUserStats } from '..
 import { listPracticeRuns, loadPracticeReplay } from '../../net/practiceRuns';
 import { BALANCE_VERSION, SIM_VERSION } from '../../config';
 import { replayFidelity, type Replay } from '../../sim/replay';
-import { curveKey, storedCurve } from './store';
+import { curveKey, missedCurve, storedCurve } from './store';
 import type { GameId, PaceReplayRef, PaceSource } from '../../types';
 
 /**
@@ -26,6 +26,8 @@ export interface PaceTarget {
   alliance?: PaceReplayRef['alliance'];
   /** keep the curve whatever else is evicted (a custom pick) */
   pin?: boolean;
+  /** the score the run is known by (its board row), which a drifted replay has to re-run onto */
+  expect?: number;
 }
 
 export type PaceResolution = { ok: true; target: PaceTarget } | { ok: false; why: string };
@@ -74,14 +76,17 @@ export async function resolvePace(
     if (best == null) return { ok: false, why: 'No record on this board yet.' };
     // A TIE AT THE TOP CAN BE RACED ON ANY OF ITS RUNS, and one may be playable when another is
     // not: a record set on an older season's balance stays on the board, but its replay is a
-    // different match on this build. So the first tied run this build can re-run is the pace.
+    // different match on this build. So the first tied run this build may be able to pace is the
+    // pace; a DRIFTED one is tried (`curveFor` re-runs it and checks it lands on `expect`), and
+    // one already tried and missed is passed over.
     for (const r of rows) {
       if (r.score !== best) break;
       if (!r.replayId) continue;
-      const target = fromServer(r.replayId);
+      const target: PaceTarget = { ...fromServer(r.replayId), expect: r.score };
       if (storedCurve(curveKey(target.key))) return { ok: true, target };
+      if (missedCurve(curveKey(target.key))) continue;
       const replay = await fetchReplay(r.replayId).catch(() => null);
-      if (replay && replayFidelity(replay, BALANCE_VERSION, SIM_VERSION) === 'ok') {
+      if (replay && replayFidelity(replay, BALANCE_VERSION, SIM_VERSION) !== 'stale') {
         return { ok: true, target: { ...target, load: () => Promise.resolve(replay) } };
       }
     }
@@ -94,7 +99,7 @@ export async function resolvePace(
     const stats = await fetchUserStats(userId, undefined, game);
     const best = stats.records.find((r) => r.mode === mode);
     return best?.replayId
-      ? { ok: true, target: fromServer(best.replayId) }
+      ? { ok: true, target: { ...fromServer(best.replayId), expect: best.best ?? undefined } }
       : { ok: false, why: `No ${mode} record yet. Finish a run to set one.` };
   }
 

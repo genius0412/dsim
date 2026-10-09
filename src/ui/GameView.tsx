@@ -39,7 +39,7 @@ import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { setPadMenuHandler } from './PadNavLayer';
 import { PaceContext, PaceTag } from './pace/PaceTag';
-import { usePace } from './pace/usePace';
+import { usePace, useRecordedRunCurve } from './pace/usePace';
 import type { PaceRun } from './pace/resolve';
 import type { PaceCurve } from './pace/curve';
 
@@ -352,6 +352,8 @@ export function GameView({
       ? { kind: 'practice' }
       : null;
   const pace = usePace(settings, paceRun, userId, hud?.phase ?? 'pre');
+  // a record run keeps its own curve, so it can be the PB even when the server's sim is not ours
+  useRecordedRunCurve(paceRun, hud, () => controllerRef.current?.getMatchResult() ?? null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
   const [editingLayout, setEditingLayout] = useState(editLayout);
   // gates the flanking ad columns. When false the <aside>s are not rendered at all
