@@ -981,7 +981,7 @@ function interact(b: Artifact, rob: RobotState, f: InteractFrame): 'absorbed' | 
   // An IMPORT plows with its hull, along the hull's nearest-feature normal — its bounding box
   // would shove particles from corners the robot does not have.
   if (rob.spec.imported) {
-    const f = polyFeature(rob.spec.imported.hull, local);
+    const f = polyFeature(rob.spec.imported.hull, { x: lx, y: ly });
     if (f.depth <= -r2) return 'none';
     const n = rot({ x: f.nx, y: f.ny }, rob.heading);
     b.pos.x += n.x * 0.6;
