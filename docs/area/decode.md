@@ -155,6 +155,8 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
 
 ## Shooter + intake (DECODE)
 
+- **The TURRET never misses** (the paragraph below). A FIXED SHOOTER can — see "Fixed shooters"
+  at the end of this section.
 - **The shooter NEVER misses**: no dispersion; `solveShot` uses the MINIMUM-SPEED trajectory to
   the goal opening — the adaptive hood angle sweeps ~89° (near-vertical lob at point-blank)
   down to ~45° far out, so an exact finite solution exists at EVERY distance and the required
@@ -262,10 +264,121 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
     crossing the mouth toward the seat must not be chassis-pinnable for not yet being under the
     wheel. `intakeSuction`'s `ahead` is now exactly `overIntakeRoof`'s front edge (`tip +
     BALL_RADIUS`), which matters because `drawIn` is above `INTAKE_LID_THROW` on every preset.
+- **NO INTAKE (`intake: 'none'`) AND HAND LOADING** (`humanPlayer.ts` `handLoad`, 2026-10-02). The kit
+  robot has no intake: its human player drops artifacts into it in the LOADING ZONE, which the manual
+  allows for any robot (G432: "DRIVE TEAM members may load SCORING ELEMENTS into a ROBOT that is
+  partially or fully in the LOADING ZONE"). `none` is a fourth `INTAKE_PRESETS` entry with reach 0 and
+  an all-zero mouth, but every capture path is gated on `noIntake(spec)`, not on those numbers: no
+  claim, suction, capture, roof or G408 mouth exemption; the footprint and the artifact solids are
+  the chassis box (an import: its whole hull, `decodeImportSolids`); the three held slots are the
+  standard line with the front skin at the face, inside a 15–18 in chassis (an import: on its
+  centreline, packed closer if its hull is short). The human player hands one artifact per
+  `HP_HAND_LOAD_S` (0.4 s) to a robot of its alliance with no intake that is partly in its own zone
+  (`robotIntersectsRect`), under `HP_HAND_LOAD_MAX_SPEED` / `_MAX_TURN` and with hopper room, teleop
+  and free drive only: from the box first, else a ground artifact off the zone's floor (no artifact is
+  created or lost). It goes straight into the next slot. A hand-off is that tick's one action, so
+  staging the grab row waits. **Robots with an intake are not hand loaded**, though the rule allows
+  it: the human player stages the grab row for them as before, and a world without a no-intake robot
+  steps byte-identically (the shared pins). Chain Reaction and BIOBUZZ coerce `none` to `sloped`. The
+  touch pad drops INTAKE for it, the import editor has no intake span to place, and the DECODE
+  tutorial swaps its intake step for a load step (drive into the zone, wait).
 - BASE PARKING counts only the four WHEEL ground-contact points (`wheelContacts`, inset
   `WHEEL_INSET`): intake/turret overhang neither earns nor spoils credit. The turret never
   protrudes (`TURRET_OFFSET_FRAC`). The chassis may be NARROWER than the intake
   (`ROBOT_MIN_WIDTH` 10 < vector's 17).
+- **AN IMPORTED ROBOT'S INTAKE** (`decodeImportMouth`, `src/sim/importedMech.ts`; the shared rules
+  are `docs/area/physics.md` "Imported robots: mechanisms"). FRONT ONLY. The preset keeps the depth
+  (reach, roller, nip, lid, cadences, the lip); the import moves the mouth to where its hull ends
+  inside the placed span (`tip`), puts the face `reach` behind it and gives it the span's width
+  (funnels `[throatHalf + 1.5, 9]`, vector `[5, 9]`), off-centre by `yc`. Every intake window —
+  claim, suction, capture, roof, classifier guard — reads that one mouth with `local.y − yc`, so
+  capture ⊆ suction ⊆ claim holds by construction. The artifact solids are the hull behind the
+  face plus the standard wedge quads (or the hull flanking the mouth with its rails); held slots
+  sit behind the import's own roller line on its centreline. The turret is the placed shooter,
+  the launch height the placed `z`, never under 10.5 in (a lower release would be pushed out of
+  its own hull by the flight-contact pass).
+
+## Fixed shooters (`src/sim/fixedShot.ts`, `src/sim/flywheel.ts`, 2026-10-02)
+
+Three optional spec fields, each ABSENT on every robot built before them, and absent means
+today's turret path byte for byte (`decodeShotSpecial` is the one gate; smoke `FX_PINS` were
+recorded before any of it existed):
+
+| field | absent | present |
+|---|---|---|
+| `launcher: 'fixed'` | the turret aims itself | bolted to the chassis: fires along the heading (an import: plus `mech.shooterYawDeg`), so the ROBOT aims |
+| `hoodDeg` (20–80, whole °) | the hood solves its angle | one angle |
+| `flywheel` `{ mode: 'fixed' \| 'presets', rpm[1..3], wheelMm, feedS }` | the speed is solved | a setpoint wheel |
+
+Whatever is not fixed is still solved (`decodePlannedShot`): a fixed hood with a solved speed
+solves the speed for that angle; a setpoint wheel under an adjustable hood solves the angle (high
+root first, 20–80°, 45° when out of reach). With both fixed nothing is solved: the artifact flies
+the one arc, and the unchanged flight stage and `checkGoalEntry` decide the hit.
+
+- **Read off the RAW input only** (`coerceSpec`, the `imported` rule): a client that switches
+  back to a turret sends none of the three, and a fallback to `base` would keep them. Chain
+  Reaction strips all three; BIOBUZZ keeps `flywheel` on its own fixed launcher only.
+- **The wheel is state** (`RobotState.flyRpm`, whole rpm, written only for a `flywheel` build):
+  it ramps to the setpoint at `FLY_RAMP_RPM_S` (slower with `flywheelInertia`), each shot takes
+  `FLY_SHOT_DROP` (less with inertia), and the feeder runs only at `FLY_FEED_MIN_FRAC` of the
+  setpoint (the kit OpMode's 1075/1125), `feedS` per artifact. The artifact leaves at
+  `FLY_EXIT_EFFICIENCY · π · wheel · flyRpm / 60` — the speed at the feed, not the setpoint.
+  Spawn seeds the wheel at its first setpoint (no spin-up before the first shot, the turret's rule).
+- **`FLY_EXIT_EFFICIENCY` 0.40 is CALIBRATED.** A wheel rolling an artifact along a fixed hood
+  gives it half the surface speed; 0.4 leaves a fifth of that to squeeze and slip. With the kit's
+  hood at `DECODE_KIT_HOOD_DEG` 70°, it is the value at which the kit's own autonomous (drive
+  against the goal, fire three) scores. Measured, muzzle to goal centroid along the face
+  normal: the kit scores from **12–22 in** (rising through the opening, the against-the-goal shot:
+  muzzle ≈ 18 in there) and **40–60 in** (falling into it); 24–38 and 62+ miss. 0.35 merges the
+  bands (14–44); 0.45 moves the far one to 58–66.
+- **Aim assist turns the chassis** while fire is held (`decodeFixedAimAssist`, a hook in
+  `world.ts` before `updateRobot`, written into `rotate` AND the tank side drives — BIOBUZZ's stage
+  2), lead-compensated over the arc's flight time; a held fire releases once within
+  `decodeFixedAimTol`. **A driver's shot is not range-gated**: out of band it leaves and
+  misses. **Auto fire** (the player default, every auto path) releases only a shot the flight
+  stage, run forward (`decodeShotEnters`), says would score.
+- ⚠️ **THE TURN IS A BRAKING PROFILE, NOT A P-GAIN** (`fixedAimTurn`, `src/sim/aimTurn.ts`, both
+  games; 2026-10-02, after "the robot shakes constantly while shooting and its cadence is really
+  slow"). Commanded spin `min(maxTurn, √(2a|e|), 15|e|)`, `a` half the chassis's braking authority
+  (`FIXED_AIM_DECEL_FRAC`, `FIXED_AIM_SETTLE_RATE`, `driveParams`). The old `clamp(4.5·e)` with a
+  dead band at the release tolerance parked the kit 0.045 rad off and crossed the aim on faster
+  chassis: TW (mecanum) 30° → −0.074, Cypher (swerve) 30° → −0.16, 90° → −0.32. Now nothing in the
+  drivetrain envelope crosses it, 10° to 172°, and each build ends within 0.02 rad (a swerve stops
+  0.015 off: its pods ignore a command under 2 % of top speed).
+  ⚠️ **Gated on `SIM_PATCH` 4**, with the feed clock's slack and DECODE's release tolerance: a
+  replay recorded before steps the `*_PRE4` rules, and smoke holds five scenes to the old code's
+  pins (`scripts/fixed-pre4-scenes.ts`). Keep both branches until a `SIM_VERSION` bump retires them.
+- **The aim leads only the velocity along the driver's stick** (`decodeFixedLeadVel`). Pressed on
+  the goal face, a turning chassis pivots on a corner and its centre moves sideways at about
+  ω × the half-diagonal; leading that moved the aim against the turn (±0.1–0.18 rad every tick,
+  6 in along the face). The release still carries the real velocity.
+- **A tank's forward yields to the turn**, down to nothing at the release tolerance: its own push is
+  what the face's square-up holds flush. 6 in along the face it chattered 0.05↔0.12 rad every 3
+  ticks (4.03 shots/s); with the push kept on it stuck 0.28 rad off. Holonomic drives keep their
+  stick, so pressed flush off-centre they cannot turn (TW never fires 6 in along, before or after).
+- **The release tolerance is the opening's angle** at the muzzle (`decodeFixedAimTol`: half of
+  `GOAL_OPENING_RADIUS` sideways; 0.11 rad at 50 in, at most 0.25 close in). The flat 0.06 was that
+  offset seen from 8 ft.
+- **The cadence is the feed's** (`flyFeedDue`): `world.time` is a sum of 1/60 and sat a few ulps
+  short of `fireReadyAt` on the 12th tick, so most 0.20-s feeds took 13 ticks (4.68/s). Now 12,
+  5.00/s from in band. The wheel's recovery (−10 %, back over the 95.6 % minimum in 2 ticks) is never
+  the limit at inertia 0. Smoke: `fixed aim (DECODE)`.
+- **Presets** step on `RobotCommand.flyPreset` (bit 1024, debounced edge; Z / R3, the mode-toggle
+  role shared with BIOBUZZ's Deploy ramp). DECODE only: BIOBUZZ's fixed launcher runs one setpoint.
+- **The kit card** (`ROBOT_PRESETS`, LAST so `DEFAULT_SPEC` still mirrors the first): tank 286,
+  NO intake (hand loaded, see "NO INTAKE" above), frame 17 in, fixed launcher, hood 70°, 2411 rpm on
+  96 mm, 0.20-s feed. Clamps: 13.5 lb → the 22-lb tank floor; width 16 APPROX.
+- ⚠️ **THE KIT'S 70° IS AN EFFECTIVE ANGLE, NOT ITS GUIDE'S.** Measured on the kit's CAD
+  (2026-10-02, the mecanum variant's STEP; the skid-steer kit's file is cut off at the source, and
+  its assembly PDF matches the mecanum variant's launcher dimension for dimension): the ramps end in
+  a straight vertical run bolted flat to a U-channel, so the artifact leaves at **90° ±2°**, 13.0 in
+  up, 3.2 in behind the robot's front (the launcher end: the kit's auto starts with it against the
+  goal, fires, then drives 4 in back). A 90° no-spin arc lands where it left. What carries the real
+  artifact over the goal face is the spin of the one-sided pinch, which curves it toward the
+  launcher end; `stepFlightBall` has no spin or drag. So the card flies the no-spin arc that lands
+  where the kit's auto says it does, from the sim's release point (the turret's, a sixth of the
+  length behind centre at `LAUNCH_HEIGHT`). Setting the guide's 90° would make the kit unable to
+  score at all. The honest fix is spin in the flight stage, calibrated against a real shot.
 
 ## Scoring + multi-robot
 
@@ -288,6 +401,10 @@ total. An older note here claimed the manual said 10/30; that was a PREVIOUS sea
   contact with the gate ARM (`robotIntersectsRect(r, gateArmRect(a))`), **even if it never
   opens**. Deliberately DIFFERENT from `updateGates`' physical `pushingGate` (which also needs
   an active shove). Touching your OWN gate is legal.
+  ⚠️ **The episode key is also G417.A's PATTERN RP award.** `decodeRankFacts`
+  (`src/games/decode/rankFacts.ts`, a competition's measures) reports `patternAward` for the
+  gate owner from any `penalties.episodes` key `G417:<owner>:<robot>`. Nothing prunes that map
+  on a DECODE world; pruning or re-keying it silently takes the award away, so change both.
 - **G418.B** — each classified artifact that LEAVES an opponent's RAMP because you opened their
   gate is a MAJOR **per artifact**. Billed **on the DRAIN, not on the touch**:
   `penalties.rampBallIds` holds last tick's committed non-overflow rail balls per goal and every

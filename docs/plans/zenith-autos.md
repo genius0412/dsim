@@ -7,7 +7,7 @@ rest is built end to end.
 ## 1. The goal in one paragraph
 
 A team draws an autonomous routine in **Zenith**, the same `*.auto.json` file their robot plays
-(`Horizon-36596/biobuzz` runs it through its Zenith runtime). **DSIM** plays that file in its AUTO
+through Zenith's robot runtime. **DSIM** plays that file in its AUTO
 period: the robot **drives itself through DSIM's own drivetrain and physics**, following the path
 the way Pedro Pathing v3 follows it, and runs the file's commands (intake, shoot) on DSIM's
 mechanisms. Zenith is the editor and the visualizer; DSIM is the field the auto is tried on. A run
@@ -145,8 +145,8 @@ build, so Zenith's estimate describes the robot DSIM will actually drive:
   deceleration, `1 / (2 * accel)`. Every number carries the provenance `SET FROM SIM` until
   headless runs calibrate it, which then relabels it `CALIBRATED FROM SIM`.
 - **Mouths and capacity:** from `bbMech.intake`.
-- **The command registry:** the biobuzz robot's own names, so **one file runs on both the robot and
-  DSIM**:
+- **The command registry:** names a robot repository registers with its Zenith runtime too, so
+  **one file runs on both the robot and DSIM**:
 
 | command | args | in DSIM |
 |---|---|---|
@@ -236,17 +236,18 @@ Zenith's UI in host mode:
 - **Both physics:** everything above under 2D and 3D.
 - **Handover:** at TELEOP the robot takes the driver's command again. In Free Drive the seat is
   inert until `T`.
-- **The real file:** biobuzz's `close.auto.json` plays to its end inside 30 s without a stall.
+- **Waypoint refs:** `preload-park.auto.json`, which names every pose by waypoint, loads, mirrors
+  and fires its preload.
+- **The robot file is DSIM's own:** every number in it is `SET FROM SIM` or `SET BY HAND`, and it
+  names no team repository.
 
 ## 6. Decisions I took (the owner can reverse any of them)
 
 - **BIOBUZZ only.** DECODE's `.pp` path is left exactly as it is, and removing it is a separate
   change.
-- **The robot's own command names**, so one auto file serves the robot and DSIM.
-- **Mirror headings too.** biobuzz's `PathBuilder.withHeading` passes `constant`, `linear` and
-  `facePoint` headings through unmirrored for the other alliance (`PathBuilder.java:213-234`),
-  which looks like a robot bug. DSIM follows Zenith's `mirrorAuto`, and the robot bug is filed
-  separately.
+- **Command names a robot also registers**, so one auto file serves the robot and DSIM.
+- **Mirror headings too.** DSIM follows Zenith's `mirrorAuto`, headings included, as Zenith's
+  robot runtime does.
 - **Vendored tarballs**, because nothing is on npm yet (`npm view` returns 404). The day the
   packages publish, the `file:` specs become version ranges.
 - **The auto chunk is lazy.** The main client bundle stays React + Rapier, per `CLAUDE.md`.
@@ -265,6 +266,6 @@ Zenith's UI in host mode:
 ## 8. Out of scope
 
 - DECODE and Chain Reaction autos.
-- Any change to the biobuzz robot repository.
+- Any change to a team's robot repository.
 - A Zenith field for any season but BIOBUZZ.
 - Any change to ranked scoring.

@@ -1,10 +1,11 @@
 import type { Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
-import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
+import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR, simPatchAtLeast } from '../../../config';
 import { updateRobot } from '../../../sim/robot';
 import { robotsEnabled } from '../../../sim/match';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
+import { robotExtents, robotHullWorld, squareUpTurnsWalls } from '../../../sim/physics';
+import { polySatGap, rotatedPolyBounds } from '../../../sim/imported';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
@@ -22,12 +23,14 @@ import { bbRampSettled } from '../robot';
 import { rapier3d, type Rapier3d } from './engine';
 import {
   buildHiveTray3d,
+  trayOuterSkin,
   buildStatics3d,
   chassisBoxDesc,
   chassisMechDesc,
   chassis3dMechShapes,
   chassis3dPocketShapes,
   chassis3dShapes,
+  import3dShapes,
   chassis3dReachShapes,
   clearChassis3dColliders,
   swapChassis3dReachColliders,
@@ -215,9 +218,33 @@ function cloneRobot(r: RobotState): RobotState {
  * velocity into the wall is zeroed so the next tick does not push straight back into it.
  */
 function clampToField(r: RobotState): void {
-  const fe = robotExtents(r);
   const c = dcos(r.heading);
   const s = dsin(r.heading);
+  /**
+   * AN IMPORT: its HULL turned to the heading. `robotExtents` is the hull's box with a SYMMETRIC
+   * `half` (the larger flank both ways), and the origin is the wheelbase centre, not the box's
+   * middle — so an asymmetric import strafed into a wall was held 5 in off it, the larger flank's
+   * worth, and corrected on every snapshot (integration review 2026-10-02).
+   */
+  if (r.spec.imported) {
+    const b = rotatedPolyBounds(r.spec.imported.hull, c, s);
+    if (r.pos.x + b.maxX > BB_HALF_X) {
+      r.pos.x = BB_HALF_X - b.maxX;
+      if (r.vel.x > 0) r.vel.x = 0;
+    } else if (r.pos.x + b.minX < -BB_HALF_X) {
+      r.pos.x = -BB_HALF_X - b.minX;
+      if (r.vel.x < 0) r.vel.x = 0;
+    }
+    if (r.pos.y + b.maxY > BB_HALF_Y) {
+      r.pos.y = BB_HALF_Y - b.maxY;
+      if (r.vel.y > 0) r.vel.y = 0;
+    } else if (r.pos.y + b.minY < -BB_HALF_Y) {
+      r.pos.y = -BB_HALF_Y - b.minY;
+      if (r.vel.y < 0) r.vel.y = 0;
+    }
+    return;
+  }
+  const fe = robotExtents(r);
   // the footprint's half-extents projected onto the world axes: a box `front`/`rear` long and
   // `half` wide, rotated by the heading. `forward` is the offset of its centre from the origin.
   const hx = (fe.front + fe.rear) / 2;
@@ -274,24 +301,35 @@ function footprint(r: RobotState): { cx: number; cy: number; ux: number; uy: num
  * shallowest one is the normal.
  */
 function separateLight(a: RobotState, b: RobotState): void {
-  const A = footprint(a);
-  const B = footprint(b);
-  const dx = A.cx - B.cx;
-  const dy = A.cy - B.cy;
   let best = Infinity;
   let nx = 0;
   let ny = 0;
-  for (const [ax, ay] of [[A.ux, A.uy], [-A.uy, A.ux], [B.ux, B.uy], [-B.uy, B.ux]]) {
-    const ra = A.hx * Math.abs(A.ux * ax + A.uy * ay) + A.hy * Math.abs(-A.uy * ax + A.ux * ay);
-    const rb = B.hx * Math.abs(B.ux * ax + B.uy * ay) + B.hy * Math.abs(-B.uy * ax + B.ux * ay);
-    const d = dx * ax + dy * ay;
-    const overlap = ra + rb - Math.abs(d);
-    if (overlap <= 0) return; // a separating axis: not touching
-    if (overlap < best) {
-      best = overlap;
-      const sgn = d >= 0 ? 1 : -1; // the normal points from B to A
-      nx = ax * sgn;
-      ny = ay * sgn;
+  if (a.spec.imported || b.spec.imported) {
+    // a pair with an IMPORT: the two FOOTPRINT POLYGONS (the hull, or a standard robot's
+    // rectangle), every edge direction of both — the shared SAT the 2D contact fouls use. The
+    // centred box below is wrong for a hull whose origin is not its middle.
+    const sat = polySatGap(robotHullWorld(a), robotHullWorld(b));
+    if (sat.gap >= 0) return; // separated (or just touching): nothing to push
+    best = -sat.gap;
+    nx = -sat.nx; // `polySatGap`'s normal points from a to b; this one from B to A
+    ny = -sat.ny;
+  } else {
+    const A = footprint(a);
+    const B = footprint(b);
+    const dx = A.cx - B.cx;
+    const dy = A.cy - B.cy;
+    for (const [ax, ay] of [[A.ux, A.uy], [-A.uy, A.ux], [B.ux, B.uy], [-B.uy, B.ux]]) {
+      const ra = A.hx * Math.abs(A.ux * ax + A.uy * ay) + A.hy * Math.abs(-A.uy * ax + A.ux * ay);
+      const rb = B.hx * Math.abs(B.ux * ax + B.uy * ay) + B.hy * Math.abs(-B.uy * ax + B.ux * ay);
+      const d = dx * ax + dy * ay;
+      const overlap = ra + rb - Math.abs(d);
+      if (overlap <= 0) return; // a separating axis: not touching
+      if (overlap < best) {
+        best = overlap;
+        const sgn = d >= 0 ? 1 : -1; // the normal points from B to A
+        nx = ax * sgn;
+        ny = ay * sgn;
+      }
     }
   }
   const ma = shoveMass(a.spec, a.butterflyTank, a.powerDraw);
@@ -322,8 +360,9 @@ function separateLight(a: RobotState, b: RobotState): void {
  * real body (`shoveMass`, `chassisInertia`). So on open floor Light is not an approximation of
  * the 3D solve — it IS the 3D solve, with the parts that only matter in contact left out.
  *
- * `squareUpRobotsWalls` runs after, exactly as `step3d` stage 8b runs it, so a robot driving
- * along a wall gets the same contact torque the real pipeline gives it.
+ * The wall square-up is worked out on the pose the tick starts from and added after the
+ * integration, which is what `step3d` stage 6b's extra yaw rate comes to with no contacts in the
+ * way, so a robot driving along a wall gets the same contact torque the real pipeline gives it.
  */
 export function createLightPredictor(world: World, localRobotId: number): Predictor {
   let local: RobotState | null = null;
@@ -358,9 +397,15 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
       if (!local || !scratch) return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
       for (const r of remotes.values()) preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
+      const turns = squareUpTurnsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
       integrateLight(scratch, local, cmd);
       for (const r of remotes.values()) integrateLight(scratch, r, otherCmds?.get(r.id) ?? ZERO_CMD);
-      squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
+      for (const r of [local, ...remotes.values()]) {
+        const t = turns.get(r.id);
+        if (!t) continue;
+        r.heading += t.dHeading;
+        r.angVel += t.dAngVel;
+      }
       for (const r of remotes.values()) separateLight(local, r);
       clampToField(local);
       for (const r of remotes.values()) {
@@ -444,11 +489,11 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   // worlds agree rather than trusting the copy.
   world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
-  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION, simPatchAtLeast(world, 7));
   // the trays are KINEMATIC here whatever `BB3_HIVE_DYNAMIC` says — see the header.
   const trays = {
-    red: buildKinematicTray(RAPIER, world3d, 'red'),
-    blue: buildKinematicTray(RAPIER, world3d, 'blue'),
+    red: buildKinematicTray(RAPIER, world3d, 'red', trayOuterSkin(world)),
+    blue: buildKinematicTray(RAPIER, world3d, 'blue', trayOuterSkin(world)),
   };
 
   let localBody: InstanceType<Rapier3d['RigidBody']> | null = null;
@@ -622,6 +667,9 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         if (rw.fx !== 0 || rw.fy !== 0) body.addForce({ x: rw.fx, y: rw.fy, z: 0 }, true);
         if (rw.tau !== 0) body.addTorque({ x: 0, y: 0, z: rw.tau }, true);
       }
+      // the wall square-up as one solve's extra yaw rate, worked out on the pose this tick starts
+      // from — `step3d` stage 6b, same reason
+      const turns = squareUpTurnsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
       const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
       const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
       const inertia = chassisInertia(m, local.spec);
@@ -636,6 +684,14 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       localBody.resetTorques(true);
       if (wr.fx !== 0 || wr.fy !== 0) localBody.addForce({ x: wr.fx, y: wr.fy, z: 0 }, true);
       if (wr.tau !== 0) localBody.addTorque({ x: 0, y: 0, z: wr.tau }, true);
+      const squareRate = new Map<number, number>();
+      for (const [id, t] of turns) {
+        const body = id === local.id ? localBody : others.get(id);
+        if (!body) continue;
+        const rate = t.dHeading / SIM_DT;
+        body.setAngvel({ x: 0, y: 0, z: body.angvel().z + t.dAngVel + rate }, true);
+        if (rate !== 0) squareRate.set(id, rate);
+      }
       world3d.step();
       const t = localBody.translation();
       const v = localBody.linvel();
@@ -664,9 +720,12 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         r.vz = round4(rv.z);
         r.angVel = round4(body.angvel().z);
       }
-      // the SAME stage 8b the real pipeline runs, for the same reason: a wall-flush robot's
-      // contact torque comes from this pass and not from the solver.
-      squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
+      // the SAME stage 8a the real pipeline runs: the square-up's rate turned this tick's
+      // chassis and is not spin. (`seatRobot` below puts the result on the bodies.)
+      for (const r of [local, ...remotes.values()]) {
+        const rate = squareRate.get(r.id);
+        if (rate !== undefined) r.angVel = round4(r.angVel - rate);
+      }
       seatRobot(localBody, local, localHeight);
       for (const r of remotes.values()) {
         const body = others.get(r.id);
@@ -695,11 +754,12 @@ function buildKinematicTray(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   alliance: 'red' | 'blue',
+  outerSkin: number | undefined,
 ): InstanceType<Rapier3d['RigidBody']> {
   // `buildHiveTray3d` honours `BB3_HIVE_DYNAMIC`; a prediction world always wants the kinematic
   // shape, so the dynamic branch's joint is simply discarded and the body driven by hand. That
   // is cheaper than a second collider builder and cannot drift from the real tray's geometry.
-  const built = buildHiveTray3d(RAPIER, world3d, alliance, 0);
+  const built = buildHiveTray3d(RAPIER, world3d, alliance, 0, outerSkin);
   return built.body;
 }
 
@@ -779,6 +839,33 @@ function fitChassis(
   heightIn: number,
   rampReady: boolean,
 ): void {
+  /**
+   * ⚠️ **AN IMPORTED ROBOT IS ITS BANDS** (`import3dShapes`, `bodies.ts`). The LOCAL robot gets the
+   * authority's own compound — the mouth carved below the slot, its pocket filler, the reach
+   * hardware — because an uncarved mouth is what predicts the wall-row lift below. A REMOTE robot
+   * gets the bands UNCARVED: at most three convex prisms, the import's analogue of the one cuboid
+   * plus mechanism shapes a standard remote robot gets.
+   */
+  if (r.spec.imported) {
+    const shapes = import3dShapes(r.spec, heightIn);
+    const local = body.isDynamic();
+    for (const sh of local ? shapes.chassis : shapes.remote) {
+      world3d.createCollider(
+        chassisMechDesc(RAPIER, sh).setTranslation(sh.cx, sh.cy, sh.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_CHASSIS),
+        body,
+      );
+    }
+    if (local) {
+      for (const pk of shapes.pocket) {
+        world3d.createCollider(
+          chassisMechDesc(RAPIER, pk).setTranslation(pk.cx, pk.cy, pk.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_POCKET),
+          body,
+        );
+      }
+    }
+    for (const sh of chassis3dReachShapes(r.spec, heightIn, rampReady)) world3d.createCollider(reachColliderDesc(RAPIER, sh), body);
+    return;
+  }
   const fe = robotExtents(r);
   const hx = (fe.front + fe.rear) / 2;
   const forward = (fe.front - fe.rear) / 2;
@@ -873,6 +960,10 @@ function fitChassis(
 /** how many colliders `fitChassis` puts on before the reach hardware — the cuboid plus one per
  * standing mechanism. `refitRobotBody`'s `keep` for a RAMP-only edge; it was a bare `1`. */
 function predictBaseColliderCount(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): number {
+  if (r.spec.imported) {
+    const shapes = import3dShapes(r.spec, heightIn);
+    return body.isDynamic() ? shapes.chassis.length + shapes.pocket.length : shapes.remote.length;
+  }
   if (usesCompound(body, r, heightIn)) {
     return predictChassisShapes(r.spec, heightIn).length + chassis3dPocketShapes(r.spec, heightIn).length;
   }

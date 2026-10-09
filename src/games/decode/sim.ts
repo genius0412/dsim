@@ -5,6 +5,7 @@ import { decodeSettled } from '../../sim/settle';
 import { step } from '../../sim/world';
 import type { GameSimModule } from '../types';
 import { decodeColliders } from './colliders';
+import { decodeRankFacts } from './rankFacts';
 
 /**
  * DECODE's SIMULATION module (DOM-free) — a thin wrapper over the existing
@@ -30,4 +31,6 @@ export const DECODE_SIM: GameSimModule = {
   step,
   // the match is finalized when nothing left can score — see `decodeSettled`
   settled: decodeSettled,
+  // a competition's ranking-point measures, all read at the end (see `decodeRankFacts`)
+  rankFacts: decodeRankFacts,
 };

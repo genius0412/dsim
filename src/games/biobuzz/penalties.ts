@@ -1,9 +1,10 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import { dcos, dsin, hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
-import { driveIntent, robotCorners } from '../../sim/physics';
+import { driveIntent, robotCorners, robotHullWorld } from '../../sim/physics';
+import { polyGap, polySatGap } from '../../sim/imported';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
-import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
+import { type ControlGeometry, controlKeyLive, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
@@ -14,6 +15,7 @@ import {
   bbHopperCap,
 } from './config';
 import { bbKindOf } from './score';
+import { bbImportSolids } from './importMech';
 import { biobuzzPhysics } from './state';
 
 /**
@@ -264,8 +266,8 @@ function bbControlGeometry(world: World): ControlGeometry {
   };
 }
 
-function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
-  return controlledArtifacts(world, r, dt, intaking, bbControlGeometry(world));
+function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean, geom: ControlGeometry): number {
+  return controlledArtifacts(world, r, dt, intaking, geom);
 }
 
 /**
@@ -290,24 +292,20 @@ function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean
  */
 function bbSweepControlClocks(world: World): void {
   const pen = world.penalties;
-  const live = new Set<string>();
   // ⚠️ THE SAME PREDICATE THE COUNT USES, and it has to be: a sweep that is stricter than the
   // count deletes the clock of an element the count is still looking at. That is precisely what
   // `kind === 'ground'` did here under the 3D solve — see `bbLooseElement`.
-  const isLoose = bbLooseElement(world);
-  for (const r of world.robots) {
-    for (const b of world.balls) if (isLoose(b)) live.add(`${r.id}:${b.id}`);
-  }
+  const live = controlKeyLive(world, bbLooseElement(world));
   pen.ballCarry ??= {};
   for (const key of Object.keys(pen.ballHold)) {
-    if (!live.has(key)) {
+    if (!live(key)) {
       delete pen.ballHold[key];
       delete pen.ballAnchor[key];
       delete pen.ballCarry[key];
     }
   }
-  for (const key of Object.keys(pen.ballAnchor)) if (!live.has(key)) delete pen.ballAnchor[key];
-  for (const key of Object.keys(pen.ballCarry)) if (!live.has(key)) delete pen.ballCarry[key];
+  for (const key of Object.keys(pen.ballAnchor)) if (!live(key)) delete pen.ballAnchor[key];
+  for (const key of Object.keys(pen.ballCarry)) if (!live(key)) delete pen.ballCarry[key];
 }
 
 /**
@@ -494,6 +492,8 @@ export function updateBiobuzzPenalties(
    */
   bbSweepControlClocks(world);
   const pen = world.penalties;
+  // one geometry for the tick — it reads only the world's physics tag and each robot at call time
+  const geom = bbControlGeometry(world);
   for (const r of world.robots) {
     /**
      * THE COUNT AND BOTH STRATEGIC CLOCKS RUN FOR EVERY ROBOT, passive included, and only the
@@ -505,7 +505,7 @@ export function updateBiobuzzPenalties(
      * its clocks still drain like anyone else's.
      */
     const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
-    const controlled = bbControlled(world, r, dt, intaking);
+    const controlled = bbControlled(world, r, dt, intaking, geom);
 
     // THE 5+ STREAK — rule (B)'s underlying instance count. One continuous stretch of
     // controlling 5+; the INSTANCE is counted the tick the stretch crosses MOMENTARY, exactly
@@ -954,6 +954,23 @@ export const BB_G402_REARM_S = 1; // APPROX, s
 
 export function bbIntrusion(r: RobotState): number {
   const want = r.alliance === 'red' ? 1 : -1; // the sign of x that is the OPPONENT's half
+  /**
+   * AN IMPORT'S FRAME IS ITS HULL BEHIND THE MOUTHS (`bbImportSolids().chassis`, the polygon the
+   * POLLEN solve meets), and its origin is the wheelbase centre, not the middle of that shape. So
+   * the depth is its deepest vertex along the line normal. The centred `length/2 × width/2` box
+   * below billed a hull wholly on its own half (a 6-in rear toward the line read 2.5 in across)
+   * and let a long side cross 3 in unseen.
+   */
+  if (r.spec.imported) {
+    const c = dcos(r.heading);
+    const s = dsin(r.heading);
+    let deepest = -Infinity;
+    for (const p of bbImportSolids(r.spec).chassis) {
+      const d = (r.pos.x + p.x * c - p.y * s) * want;
+      if (d > deepest) deepest = d;
+    }
+    return deepest > 0 ? deepest : 0;
+  }
   const reach =
     Math.abs((r.spec.length / 2) * dcos(r.heading)) + Math.abs((r.spec.width / 2) * dsin(r.heading));
   const deepest = r.pos.x * want + reach;
@@ -1003,6 +1020,9 @@ function bbShovedAcross(x: RobotState, y: RobotState, commands: Map<number, Robo
  * would be measuring the copy.
  */
 export function bbRobotsContact(A: RobotState, B: RobotState): boolean {
+  // a pair with an IMPORT in it: the shared hull SAT, every edge direction of both footprints
+  // (two edge normals per robot is a rectangle's assumption, and a pointed hull breaks it)
+  if (A.spec.imported || B.spec.imported) return polySatGap(robotHullWorld(A), robotHullWorld(B)).gap <= BB_FOUL_SLOP;
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [
@@ -1033,6 +1053,8 @@ export function bbRobotsContact(A: RobotState, B: RobotState): boolean {
  * the pin accumulator.
  */
 export function bbFootprintGap(A: RobotState, B: RobotState): number {
+  // an IMPORT: the exact distance between the two hulls, by the same vertex-to-edge argument
+  if (A.spec.imported || B.spec.imported) return polyGap(robotHullWorld(A), robotHullWorld(B));
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [edgeNormal(ca[0], ca[1]), edgeNormal(ca[1], ca[2]), edgeNormal(cb[0], cb[1]), edgeNormal(cb[1], cb[2])];

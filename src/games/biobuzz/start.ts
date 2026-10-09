@@ -13,6 +13,7 @@ import {
   type BbRect,
 } from './config';
 import { bbFootprint } from './robot';
+import { rotatedPolyBounds } from '../../sim/imported';
 
 /**
  * G304 START LEGALITY FOR BIOBUZZ — the evaluator and the snap, `evalStartPose`'s shape
@@ -93,6 +94,13 @@ function extents(spec: RobotSpec, headingDeg: number): { ax: number; ay: number;
   // smoke suite greps for. Radians, which is why the degrees are converted first.
   const c = dcos(h);
   const s = dsin(h);
+  // an IMPORTED robot: the axis-aligned box its HULL occupies at this heading — the same
+  // conservative AABB every clause here is written against, of the real shape rather than of
+  // the hull's own bounding box turned (which over-reaches at every angle but 0/90)
+  if (spec.imported) {
+    const b = rotatedPolyBounds(spec.imported.hull, c, s);
+    return { ax: (b.maxX - b.minX) / 2, ay: (b.maxY - b.minY) / 2, ox: (b.maxX + b.minX) / 2, oy: (b.maxY + b.minY) / 2 };
+  }
   const half = (e.front + e.rear) / 2;
   const off = (e.front - e.rear) / 2;
   return {

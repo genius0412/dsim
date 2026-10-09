@@ -1,6 +1,15 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import { INTAKE_RAIL_T, SIM_DT } from '../../config';
-import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
+import { importedSolids, type RobotSolids, type SolidShape } from '../../sim/artifactSolids';
+import { importedExtents } from '../../sim/imported';
+import {
+  bbDumpZ,
+  bbImportLaunchLine,
+  bbImportMouthRects,
+  bbImportPlacePoint,
+  bbImportSolids,
+  bbImportTurretAxleZ,
+} from './importMech';
 import { debouncedPress } from '../../sim/robot';
 import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
@@ -23,7 +32,7 @@ import {
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
-  BB_RAMP_DEPLOY_S,
+  bbRampDeployS,
   BB_RAMP_OUT,
   BB_SIDE_ROLLER_PROTRUDE,
   BB_TURRET_AXLE_Z,
@@ -74,6 +83,14 @@ import {
 } from './config';
 import { bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
 import { approach } from '../../math';
+import { EDGE_ANGLE } from './mounts';
+import {
+  BB_FIXED_FLY_DEFAULT,
+  BB_FIXED_HOOD_DEFAULT_DEG,
+  BB_FIXED_HOOD_MAX_DEG,
+  BB_FIXED_HOOD_MIN_DEG,
+} from './config';
+import { flyExitSpeed, flyFeedDue, flyPlannedSpeed, flyReady, flyShot } from '../../sim/flywheel';
 
 /**
  * BIOBUZZ ROBOT GEOMETRY — the Lane B contract surface (`docs/biobuzz-contract.md` §4).
@@ -118,6 +135,8 @@ import { approach } from '../../math';
  *  • FLANK edges (left/right) span the chassis LENGTH
  */
 export function bbMouths(spec: RobotSpec): LocalRect[] {
+  // an IMPORTED robot: the mouths fitted to its hull (`bbImportMouthRects`), each with its face
+  if (spec.imported) return bbImportMouthRects(spec);
   const it = BB_INTAKES[BB_DEFAULT_INTAKE];
   const reach = bbIntakeReach(spec);
   const hl = spec.length / 2;
@@ -152,6 +171,9 @@ export function bbMouths(spec: RobotSpec): LocalRect[] {
  * whose collision box is not a rectangle.
  */
 export function bbFootprint(spec: RobotSpec): { front: number; rear: number; half: number } {
+  // an IMPORTED robot: its hull's bounding box, exactly what `footprintExtents` returns for it
+  // (the hull already includes the sweeper — no reach is added)
+  if (spec.imported) return importedExtents(spec.imported);
   const reach = bbIntakeReach(spec);
   const mount = bbIntakeMountOf(spec);
   const ends = mount === 'front' || mount === 'frontback';
@@ -199,6 +221,9 @@ export function bbRobotSolids(
   heldBalls: readonly Artifact[],
   radius: number = BB_POLLEN_R,
 ): RobotSolids {
+  // an IMPORTED robot: its hull with the mouths open and a plate either side of each
+  // (`bbImportSolids`), plus what it holds
+  if (r.spec.imported) return importedSolids(r, heldBalls, radius, bbImportSolids(r.spec));
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const reach = bbIntakeReach(r.spec);
@@ -257,6 +282,10 @@ export { bbHopperCap };
 export interface BbMouthAxes {
   n: Vec2;
   p: Vec2;
+  /** the mouth's lateral CENTRE along `p` — exactly 0 for every standard mouth, which is centred
+   *  on its edge; an IMPORTED mouth sits wherever its span was placed. Every `v` read off these
+   *  axes is measured from it (`v − vc`), and every point built from them adds it back. */
+  vc: number;
   /** the chassis face on this edge (`hl` for an end, `hw` for a flank) — where `BB_PLACE_REACH`
    * and `config.ts`'s FLOWER-opening header measure "a chassis face flush" from, but NOT the
    * archetype "tip line" (`bbFlowerAtIntake` uses `uOut` for that — see its own comment for why
@@ -284,7 +313,9 @@ export function mouthAxes(m: LocalRect, hl: number, hw: number): BbMouthAxes {
   return {
     n,
     p,
-    dist: m.edge === 'front' || m.edge === 'back' ? hl : hw,
+    // an IMPORTED mouth carries its own face and centre; a standard one is centred on its edge
+    vc: m.face === undefined ? 0 : (vA + vB) / 2,
+    dist: m.face !== undefined ? m.face : m.edge === 'front' || m.edge === 'back' ? hl : hw,
     uIn: Math.min(uA, uB),
     uOut: Math.max(uA, uB),
     half: Math.abs(vB - vA) / 2,
@@ -431,7 +462,7 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
     for (let i = 0; i < axes.length; i++) {
       const g = axes[i];
       const u = local.x * g.n.x + local.y * g.n.y;
-      const v = local.x * g.p.x + local.y * g.p.y;
+      const v = local.x * g.p.x + local.y * g.p.y - g.vc;
       // INSIDE THE MOUTH, and no further. The outward bound is the roller line plus the
       // element's OWN radius (a NECTAR is 1.8 where a POLLEN is 1.4) plus the contact lip; the
       // inboard and lateral bounds stay the drawn rect's, so no edge can ever swallow something
@@ -514,9 +545,11 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
       const seated = arrived && (Math.abs(v) < throatHalf || pinned);
       const t = pinned ? 1 : clamp(Math.abs(v) / g.half, 0, 1);
       const closing = clamp(-relU / BB_INTAKE_CLOSE_REF, 0, 1);
-      const period =
+      const period0 =
         (BB_INTAKE_PERIOD_MIN + (BB_INTAKE_PERIOD_MAX - BB_INTAKE_PERIOD_MIN) * t) /
         (1 + BB_INTAKE_CLOSE_BONUS * closing);
+      const intakeK = r.spec.imported?.tune?.intakeTime;
+      const period = intakeK !== undefined ? period0 * intakeK : period0;
       cands.push({ ball: b, v, half: g.half, seated, period });
       break; // an element is in at most one mouth: opposite edges cannot both hold it
     }
@@ -560,9 +593,11 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
  * (`play.ts`), which applies the result as a rotate override while fire is held, and stage 5b,
  * which only calls a dumper ON TARGET once the chassis is within `BB_AIM_TOL` of it.
  */
-export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null {
+export function bbAimHeading(r: RobotState, target: ScoreTarget, spinLead = false): number | null {
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   if (bbIsTurreted(launcher)) return null; // the turret slews to it; the chassis is free
+  // a FIXED launcher aims its own arc from its own muzzle, with the lead (`bbFixedAimHeading`)
+  if (launcher.kind === 'fixed') return bbFixedAimHeading(r, target, spinLead);
   const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
   const bearing = datan2(target.pos.y - r.pos.y, target.pos.x - r.pos.x);
   // heading + EDGE_ANGLE[edge] === bearing  ⇒  heading = bearing − EDGE_ANGLE[edge]
@@ -688,17 +723,130 @@ export function bbTurretRelease(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE FIXED LAUNCHER — the turret's head bolted to an edge at one hood angle
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** a FIXED launcher's facing, robot-local rad: an import's `mech.shooterYawDeg` when it has one,
+ * otherwise straight out of its edge */
+export function bbFixedFacing(spec: RobotSpec): number {
+  const y = spec.imported?.mech?.shooterYawDeg;
+  if (y !== undefined) return (y * Math.PI) / 180;
+  const l = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  return EDGE_ANGLE[bbShooterEdgeOf({ shooterMount: l.mount })];
+}
+
+/** a FIXED launcher's hood, rad above level (the build angle, inside the head's travel) */
+export function bbFixedHood(spec: RobotSpec): number {
+  const deg = clamp(bbLauncherOf(spec, BB_FIXED_HOOD_DEFAULT_DEG).hoodDeg, BB_FIXED_HOOD_MIN_DEG, BB_FIXED_HOOD_MAX_DEG);
+  return (deg * Math.PI) / 180;
+}
+
+/**
+ * WHERE A FIXED LAUNCHER RELEASES, robot-local, and how high. A standard robot: the turret head's
+ * own muzzle (`bbMuzzleLocal`) at the hood angle, from the head's axis at its edge cell
+ * (`turretLocal`, pulled inboard by the ring radius exactly as a turret there would be) walked back
+ * along the facing — so the 3D head and the sim release are one point. An IMPORT: the placed lip
+ * (`mech.shooter`) at its placed height (`bbDumpZ`, the turretless reading of it).
+ */
+/**
+ * WHERE A FIXED LAUNCHER'S HEAD STANDS, robot-local: the axis both drawings put the head on. A
+ * standard robot: its edge cell (`turretLocal`), which `bbFixedLocal` walks back from. An IMPORT
+ * with a placed lip: the lip walked FORWARD along the facing by the muzzle's setback, so the drawn
+ * lip lands on the release. One answer for the 2D sprite and the 3D head (`buildFixedShooter`);
+ * either way `release = axis − facing · bbMuzzleLocal(hood).back`.
+ */
+export function bbFixedAxisLocal(spec: RobotSpec): Vec2 {
+  const placed = spec.imported?.mech?.shooter;
+  if (spec.imported && placed) {
+    const face = bbFixedFacing(spec);
+    const back = bbMuzzleLocal(bbFixedHood(spec), 0).back;
+    return { x: placed.x + dcos(face) * back, y: placed.y + dsin(face) * back };
+  }
+  return turretLocal(spec, bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG).mount);
+}
+
+export function bbFixedLocal(spec: RobotSpec): { x: number; y: number; z: number } {
+  const placed = spec.imported?.mech?.shooter;
+  if (spec.imported && placed) return { x: placed.x, y: placed.y, z: bbDumpZ(spec) };
+  const l = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const axis = turretLocal(spec, l.mount);
+  const face = bbFixedFacing(spec);
+  const m = bbMuzzleLocal(bbFixedHood(spec), 0);
+  return { x: axis.x - dcos(face) * m.back, y: axis.y - dsin(face) * m.back, z: m.z };
+}
+
+/**
+ * THE RELEASE a FIXED launcher makes RIGHT NOW at `speed` (the wheel's exit speed): along the
+ * chassis heading plus its facing, at its hood angle, carrying the muzzle's own velocity
+ * (`bbPointVel`) like every other launch. Stage 5b runs it forward, `bbLaunch` releases it and
+ * `shotPath.ts` draws it — one answer, three readers, the `bbTurretRelease` rule.
+ */
+export function bbFixedRelease(r: RobotState, speed: number): { origin: Vec2; z: number; vel: Vec3 } {
+  const loc = bbFixedLocal(r.spec);
+  const o = rot({ x: loc.x, y: loc.y }, r.heading);
+  const origin = { x: r.pos.x + o.x, y: r.pos.y + o.y };
+  const carry = bbPointVel(r, origin);
+  const h = r.heading + bbFixedFacing(r.spec);
+  const p = bbFixedHood(r.spec);
+  const vh = dcos(p);
+  return {
+    origin,
+    z: loc.z,
+    vel: { x: dcos(h) * speed * vh + carry.x, y: dsin(h) * speed * vh + carry.y, z: speed * dsin(p) },
+  };
+}
+
+/**
+ * THE CHASSIS HEADING THAT PUTS A FIXED LAUNCHER'S SHOT ON `target` — bearing from its own muzzle
+ * (which moves with the heading being solved for), led by the chassis's TRANSLATION over the arc's
+ * flight time at the PLANNED wheel speed. Four passes, always (`BB_TURRET_SOLVE_PASSES`' rule: no
+ * float-dependent trip count). It aims; it cannot change how far the arc reaches.
+ *
+ * ⚠️ NOT THE MUZZLE'S SPIN VELOCITY. This is a heading to HOLD, and a chassis holding a heading is
+ * not spinning. It used to lead with `bbPointVel` (translation plus ω × the muzzle's offset), so
+ * the aim moved by 0.047 s × ω on the kit robot, against the spin that was turning it there — a
+ * feedback on the chassis's own spin of −1.29 per tick under the old 27.5/s P loop. A tank turns
+ * hard enough to reverse its spin inside a tick, so it never settled: a ±1.27 rad/s, 30 Hz shake
+ * with the heading flipping 0.05–0.09 rad either side of the line (2D, the StarterBot), for as long
+ * as fire was held. A shot released WHILE spinning still carries the spin (`bbFixedRelease`), and
+ * the landing predicate still sees it.
+ */
+export function bbFixedAimHeading(r: RobotState, target: ScoreTarget, spinLead = false): number {
+  const loc = bbFixedLocal(r.spec);
+  const face = bbFixedFacing(r.spec);
+  const vh = Math.max(flyPlannedSpeed(r) * dcos(bbFixedHood(r.spec)), 1);
+  const v = r.vel;
+  let h = r.heading;
+  let tx = target.pos.x;
+  let ty = target.pos.y;
+  for (let i = 0; i < 4; i++) {
+    const o = rot({ x: loc.x, y: loc.y }, h);
+    const ox = r.pos.x + o.x;
+    const oy = r.pos.y + o.y;
+    const t = hyp(target.pos.x - ox, target.pos.y - oy) / vh;
+    // `spinLead`: the rule before `SIM_PATCH` 4, for a replay recorded then (`bbAimAssist`)
+    const lead = spinLead ? bbPointVel(r, { x: ox, y: oy }) : v;
+    tx = target.pos.x - lead.x * t;
+    ty = target.pos.y - lead.y * t;
+    h = wrapAngle(datan2(ty - oy, tx - ox) - face);
+  }
+  return h;
+}
+
 /** the mid-point of a turretless launcher's firing EDGE, in world space, plus that edge's
  * outward direction and the half-span a launch LINE spreads its release points across. */
 function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; perp: Vec2; half: number } {
   const g = edgeGeom(r.spec, edge);
-  const local = mountOrigin(r.spec, edge);
+  // an IMPORT releases from its placed lip, spread no wider than its hull (`bbImportLaunchLine`)
+  const imp = r.spec.imported ? bbImportLaunchLine(r.spec, edge, g.span * BB_LAUNCH_LINE_FRAC) : null;
+  const local = imp ? imp.origin : mountOrigin(r.spec, edge);
   const o = rot(local, r.heading);
   return {
     origin: { x: r.pos.x + o.x, y: r.pos.y + o.y },
     dir: rot(EDGE_DIR[edge], r.heading),
     perp: rot(EDGE_PERP[edge], r.heading),
-    half: g.span * BB_LAUNCH_LINE_FRAC,
+    half: imp ? imp.half : g.span * BB_LAUNCH_LINE_FRAC,
   };
 }
 
@@ -818,7 +966,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
      pass point and set `shot.lands` from the arc's REACH, so from here a pass is a shot like
      any other — same cadence, same feed, same LIFO top. Turret-only: `bbPass` is gated on
      `bbIsTurreted` where the shot is predicted, so a dumper never arms on it. */
-  const want = enabled && (cmd.fire || (cmd.bbPass && !dumper)) && armed;
+  const want = enabled && (cmd.fire || (cmd.bbPass && bbIsTurreted(launcher))) && armed;
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -849,7 +997,8 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     } else {
       // aim assist off and out of range: straight over the edge, a parallel line, lobbed as far
       // as a dumper throws
-      const lob = bbLobThrow(BB_DUMP_MAX_DIST, (target?.z ?? BB_LAUNCH_Z0) - BB_LAUNCH_Z0) ?? { vh: 0, vz: 0 };
+      const z0 = bbDumpZ(r.spec); // the tray's lip — `BB_LAUNCH_Z0` on a standard robot
+      const lob = bbLobThrow(BB_DUMP_MAX_DIST, (target?.z ?? z0) - z0) ?? { vh: 0, vz: 0 };
       const { origin, dir, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
       for (let i = 0; i < n; i++) {
         const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
@@ -865,7 +1014,25 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     r.lastFireAt = world.time;
     // A FLING IS ONE MOTION, so the re-arm is the full `BB_DUMP_RELOAD_S` either way. The
     // short "still pouring" re-arm the stagger needed is gone with the stagger.
-    r.fireReadyAt = world.time + BB_DUMP_RELOAD_S;
+    const reload = r.spec.imported?.tune?.reload;
+    r.fireReadyAt = world.time + (reload !== undefined ? reload : BB_DUMP_RELOAD_S);
+    return;
+  }
+
+  if (launcher.kind === 'fixed') {
+    // THE FIXED LAUNCHER: one element per feed, only while the wheel is back up to its minimum
+    // (`flyReady`, the kit OpMode's own gate), at the speed the wheel is turning NOW — a shot fed
+    // the moment it crosses the minimum leaves a little slow. The wheel gives some speed back
+    // (`flyShot`) and the feeder's own time sets the next one; recovery is the ready gate.
+    if (!flyFeedDue(r, world) || !flyReady(r)) return;
+    const colour = feed(0);
+    if (colour === undefined) return;
+    const rel = bbFixedRelease(r, flyExitSpeed(r));
+    releasePollen(world, r, rel.vel, undefined, rel.origin, colour, rel.z);
+    r.lastFireAt = world.time;
+    const tunedFeed = r.spec.imported?.tune?.shotInterval;
+    r.fireReadyAt = world.time + (tunedFeed !== undefined ? tunedFeed : (r.spec.flywheel?.feedS ?? BB_FIXED_FLY_DEFAULT.feedS));
+    flyShot(r);
     return;
   }
 
@@ -878,6 +1045,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   // with nothing of its kind in the hopper, or one still slewing, is SKIPPED — never a `break`,
   // which is what used to stall a loaded turret behind its partner.
   let beats = 0;
+  const tunedBeat = r.spec.imported?.tune?.shotInterval;
   while (r.fireReadyAt <= world.time && beats < BB_FIRE_BURST_MAX) {
     let released = false;
     for (const which of exits) {
@@ -891,7 +1059,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
       released = true;
     }
     if (!released) break; // nothing left either exit can fire: stop, and leave the clock alone
-    r.fireReadyAt += BB_FIRE_INTERVAL;
+    r.fireReadyAt += tunedBeat !== undefined ? tunedBeat : BB_FIRE_INTERVAL;
     beats++;
   }
   if (beats > 0) r.lastFireAt = world.time;
@@ -977,7 +1145,7 @@ export interface BbThrow {
 export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): BbThrow[] | null {
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   if (launcher.kind !== 'dumper') return null;
-  const dh = target.z - BB_LAUNCH_Z0;
+  const dh = target.z - bbDumpZ(r.spec);
   const { origin, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
   // THE TRAY MOVES WITH THE ROBOT TOO (owner, 2026-09-19). Same model as the turret's: the throw
   // inherits the release point's velocity, so it is solved against a target displaced by
@@ -1060,15 +1228,18 @@ export function bbDumpCluster(
   // release line every dump has always used — and for an edge that does carry one it is pushed
   // out past the roller, so the bucket is never born inside the intake's plates.
   const f = bbFootprint(r.spec);
-  const out =
-    (edge === 'front' ? f.front : edge === 'back' ? f.rear : f.half) -
-    (edge === 'front' || edge === 'back' ? r.spec.length / 2 : r.spec.width / 2);
+  // an IMPORT's line already starts at its placed lip (or the hull's own edge): nothing to clear
+  const out = r.spec.imported
+    ? 0
+    : (edge === 'front' ? f.front : edge === 'back' ? f.rear : f.half) -
+      (edge === 'front' || edge === 'back' ? r.spec.length / 2 : r.spec.width / 2);
+  const z0 = bbDumpZ(r.spec);
   const seats: { pos: Vec2; z: number }[] = [];
   let cx = 0;
   let cy = 0;
   for (let k = 0; k < count; k++) {
     const dv = (k % 2 === 0 ? -s : s) / 2;
-    const z = BB_LAUNCH_Z0 + (k < 2 ? 0 : s);
+    const z = z0 + (k < 2 ? 0 : s);
     const pos = { x: origin.x + dir.x * out + perp.x * dv, y: origin.y + dir.y * out + perp.y * dv };
     seats.push({ pos, z });
     cx += pos.x;
@@ -1081,7 +1252,7 @@ export function bbDumpCluster(
   // — which is the safe direction, since what a close-range lob clips is the structure BELOW the
   // opening. Solved from the mid-height instead, the bottom row sits `pitch/2` under that arc and
   // the grid below loses two rows (measured 18/28 poses against 20/28).
-  const dh = target.z - BB_LAUNCH_Z0;
+  const dh = target.z - z0;
   const tf = bbLobTime(dh);
   const v = bbPointVel(r, { x: cx, y: cy });
   const dx = target.pos.x - v.x * tf - cx;
@@ -1121,10 +1292,10 @@ export function bbDumpCluster(
  *
  * Deterministic trig (`dsin`/`dcos`), because this is sim code on the release path.
  */
-export function bbMuzzleLocal(pitch: number, which: 0 | 1 = 0): { back: number; z: number } {
+export function bbMuzzleLocal(pitch: number, which: 0 | 1 = 0, axleZ: number = BB_TURRET_AXLE_Z): { back: number; z: number } {
   const h = bbHead(which);
   const p = clamp(pitch, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
-  return { back: h.pathR * dsin(p) - h.axleX, z: BB_TURRET_AXLE_Z + h.pathR * dcos(p) };
+  return { back: h.pathR * dsin(p) - h.axleX, z: axleZ + h.pathR * dcos(p) };
 }
 
 /**
@@ -1144,7 +1315,9 @@ export function bbMuzzleLocal(pitch: number, which: 0 | 1 = 0): { back: number; 
  * elevation in hand means; `which` defaults to the POLLEN turret, which every turreted build has.
  */
 export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN, which: 0 | 1 = 0): number {
-  if (!bbIsTurreted(bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG))) return BB_LAUNCH_Z0;
+  if (!bbIsTurreted(bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG))) return spec.imported ? bbDumpZ(spec) : BB_LAUNCH_Z0;
+  // an IMPORT's axle sits where its placed release height puts it (`bbImportTurretAxleZ`)
+  if (spec.imported) return bbMuzzleLocal(pitch, which, bbImportTurretAxleZ(spec, which)).z;
   return bbMuzzleLocal(pitch, which).z;
 }
 
@@ -1382,7 +1555,8 @@ export function bbSlewTurret(
     const now = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
     const was = (which === 1 ? r.bbTurret2YawVel : r.bbTurretYawVel) ?? 0;
     // the CHASSIS's own yaw rate is the base the turret ring is bolted to — see `slewAxis`
-    const s = slewAxis(now, wantYaw, was, BB_TURRET_SLEW, BB_TURRET_ACCEL, r.angVel, dt, true);
+    const slew = r.spec.imported?.tune?.turretSlew;
+    const s = slewAxis(now, wantYaw, was, slew !== undefined ? (slew * Math.PI) / 180 : BB_TURRET_SLEW, BB_TURRET_ACCEL, r.angVel, dt, true);
     if (which === 1) {
       r.bbTurret2Heading = s.at;
       r.bbTurret2YawVel = s.vel;
@@ -1428,6 +1602,8 @@ export function bbSlewTurret(
  * the mount origin's coordinate (0 for an edge mid-point). `center` is never a tube mount.
  */
 export function bbPlacePointLocal(spec: RobotSpec): Vec2 | null {
+  // an IMPORT reaches out of its HULL from the placed base (`bbImportPlacePoint`)
+  if (spec.imported) return bbImportPlacePoint(spec);
   const lift = bbLiftOf(spec);
   if (!lift) return null;
   const d = MOUNT_DIR[lift.mount];
@@ -1529,8 +1705,9 @@ export function bbRampSwingProgress(r: RobotState, time: number): number | null 
   const at = r.bbRampAt;
   if (at === undefined) return null;
   const elapsed = time - at;
-  if (elapsed < 0 || elapsed >= BB_RAMP_DEPLOY_S) return null; // settled, either way
-  const t = clamp(elapsed / BB_RAMP_DEPLOY_S, 0, 1);
+  const swing = bbRampDeployS(r.spec);
+  if (elapsed < 0 || elapsed >= swing) return null; // settled, either way
+  const t = clamp(elapsed / swing, 0, 1);
   const e = t * t * (3 - 2 * t);
   return r.bbRampOut ? e : 1 - e;
 }
@@ -1546,7 +1723,7 @@ export function bbRampSwingProgress(r: RobotState, time: number): number | null 
  */
 export function bbRampReverse(r: RobotState, time: number, elapsed: number): void {
   r.bbRampOut = !r.bbRampOut;
-  r.bbRampAt = time - (BB_RAMP_DEPLOY_S - elapsed);
+  r.bbRampAt = time - (bbRampDeployS(r.spec) - elapsed);
   r.bbRampBlocked = true;
 }
 
@@ -1561,7 +1738,7 @@ export function bbRampReverse(r: RobotState, time: number, elapsed: number): voi
  * way (a staged scene, a future spawn default) with no matching stamp.
  */
 export function bbRampSettled(r: RobotState, time: number): boolean {
-  return !!r.bbRampOut && time - (r.bbRampAt ?? -Infinity) >= BB_RAMP_DEPLOY_S;
+  return !!r.bbRampOut && time - (r.bbRampAt ?? -Infinity) >= bbRampDeployS(r.spec);
 }
 
 /**

@@ -52,6 +52,7 @@ import type {
 import { catalystMountOf, catalystSwingOf, intakeMountOf } from './mounts';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { massLimits } from '../../sim/drivetrain';
+import { polyArea, polyBounds } from '../../sim/imported';
 
 /** millimetres → inches (the sim's world unit) */
 export const mm = (v: number): number => v / 25.4;
@@ -591,7 +592,8 @@ export function chainMountStoreMult(mount: ChainIntakeMount): number {
  * large; a SIDE intake (open flanks) holds fewest, FRONT+BACK is in between, and a lone
  * front/back sweeper costs nothing (`chainMountStoreMult`). */
 export function chainStorageMax(spec: RobotSpec): number {
-  const area = spec.length * spec.width;
+  // an IMPORT stores in its HULL's area (a chamfered robot holds less than its bounding box)
+  const area = spec.imported ? polyArea(spec.imported.hull) : spec.length * spec.width;
   const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
   const mult =
     (mode === 'turret'
@@ -863,6 +865,11 @@ export function chainCatapultYaw(spec: RobotSpec): number {
  * which is a different question from the starting cube (which the sweeper no longer has to
  * fit inside; see `CHAIN_MIN_LENGTH`). */
 function chainAxisExtent(spec: RobotSpec, edge: ChainCatalystMount): number {
+  if (spec.imported) {
+    // an IMPORT's hull is the whole robot, sweeper included: its extent along the axis, nothing added
+    const b = polyBounds(spec.imported.hull);
+    return edge === 'front' || edge === 'back' ? b.maxX - b.minX : b.maxY - b.minY;
+  }
   const reach = INTAKE_PRESETS[spec.intake].reach;
   const mount = intakeMountOf(spec);
   if (edge === 'front' || edge === 'back') {

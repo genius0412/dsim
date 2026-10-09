@@ -1,6 +1,7 @@
 import type { GameId } from '../types';
-import type { Replay, ReplayResult } from '../sim/replay';
+import { withLocalPatch, type Replay, type ReplayResult } from '../sim/replay';
 import { getViewPref } from '../games/biobuzz/graphics/store';
+import { replayHasImported } from './imported';
 
 /**
  * SOLO PRACTICE REPLAYS, kept on this device.
@@ -67,6 +68,13 @@ export interface PracticeRunMeta {
    * one of the old all-three line-ups — unknown, so no mark.
    */
   others?: number;
+  /**
+   * AN IMPORTED ROBOT DROVE IT (`RobotSpec.imported`). Such a run STAYS ON THIS DEVICE: it is never
+   * in `pendingPracticeUploads`, so it is never offered to `/api/practice` (which refuses it too).
+   * Off the container's own setups, so it cannot disagree with what the log holds. Absent ⇒ a
+   * standard robot, which is every run kept before imports existed.
+   */
+  imported?: true;
 }
 
 const readIndex = (): PracticeRunMeta[] => {
@@ -108,7 +116,7 @@ export function listPracticeRuns(): PracticeRunMeta[] {
 export function loadPracticeReplay(id: string): Replay | null {
   try {
     const raw = localStorage.getItem(bodyKey(id));
-    return raw ? (JSON.parse(raw) as Replay) : null;
+    return raw ? withLocalPatch(JSON.parse(raw) as Replay, readIndex().find((m) => m.id === id)?.at) : null;
   } catch {
     return null;
   }
@@ -145,6 +153,7 @@ export function savePracticeRun(replay: Replay, result: ReplayResult): PracticeR
     physics: replay.physics,
     view: getViewPref(),
     others: Math.max(0, replay.setups.length - 1),
+    ...(replayHasImported(replay) ? { imported: true as const } : {}),
   };
 
   const body = JSON.stringify(replay);
@@ -182,7 +191,8 @@ export function savePracticeRun(replay: Replay, result: ReplayResult): PracticeR
  */
 export function pendingPracticeUploads(): PracticeRunMeta[] {
   return readIndex()
-    .filter((m) => !m.remoteId)
+    // an imported robot's run never leaves the device (see `PracticeRunMeta.imported`)
+    .filter((m) => !m.remoteId && !m.imported)
     .sort((a, b) => a.at - b.at);
 }
 

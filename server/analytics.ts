@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { RATE_SWEEP_EVERY_MS, sweepGate } from './sweepGate';
-import { dbEnabled, pool, q, type DbClient } from './db/pool';
+import { dbEnabled, pool, q, tx, type Tx } from './db/pool';
 
 /**
  * FIRST-PARTY ANALYTICS — who a visitor is (for one day, and never beyond it), what their
@@ -97,6 +97,23 @@ export function clientIp(req: IncomingMessage): string {
   const one = (v: string | string[] | undefined): string =>
     (Array.isArray(v) ? v[0] : (v ?? '')).split(',')[0].trim();
   return one(req.headers['fly-client-ip']) || one(req.headers['x-forwarded-for']) || req.socket.remoteAddress || '';
+}
+
+/**
+ * The Host a request is counted under, with the PRIMARY ROUTER folded into this app.
+ *
+ * New clients reach the HTTP APIs through a separate router app (`router/`,
+ * `src/net/primaryHost.ts`) that `fly-replay`s to this one, and a replayed request keeps the
+ * router's Host. Any `*.fly.dev` name that reaches this process is this app, so it counts as
+ * `<FLY_APP_NAME>.fly.dev`, the name older clients send; otherwise one visitor would hash to
+ * two ids for the day while old and new clients mix. Other hosts (localhost, a LAN box) pass
+ * through unchanged.
+ */
+export function siteHost(req: IncomingMessage): string {
+  const host = (req.headers.host ?? '').toLowerCase();
+  const app = process.env.FLY_APP_NAME;
+  if (app && /^[a-z0-9-]+\.fly\.dev$/.test(host)) return `${app}.fly.dev`;
+  return host;
 }
 
 /**
@@ -601,11 +618,17 @@ export const SALT_RETENTION_DAYS = 2;
  * `MIGRATE_LOCK_KEY` in `server/db/migrate.ts`, because every machine must pick the same
  * number for a lock to mean anything.
  *
- * `pg_try_advisory_lock` rather than `pg_advisory_lock`: five regions wake on the same
- * interval, and a machine that finds the job already running should go back to sleep rather
- * than queue up to do the whole thing again the moment the first one finishes.
+ * A TRY lock rather than a waiting one: five regions wake on the same interval, and a machine
+ * that finds the job already running should go back to sleep rather than queue up to do the
+ * whole thing again the moment the first one finishes.
+ *
+ * ⚠️ A TRANSACTION LOCK, NOT A SESSION ONE (2026-09-27), for the reason `migrate()` gives:
+ * `DATABASE_URL` is Neon's transaction-mode pooler, so a session lock's unlock can land on a
+ * backend that never held it and leave the lock on a pooled backend other clients keep alive.
+ * For a try-lock that is no hang, just every machine skipping the job from then on. It is NOT
+ * the old session lock's key (0x414e4c59, 'ANLY'), which an older build may have leaked.
  */
-export const ANALYTICS_LOCK_KEY = 0x414e4c59; // 'ANLY'
+export const ANALYTICS_LOCK_KEY = 0x414e4c32; // 'ANL2'
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -626,8 +649,8 @@ function bucketRange(grain: 'hour' | 'day', from: Date, to: Date): [Date, Date] 
 }
 
 /** roll one grain's buckets over a range. Re-runs are free — the upsert is idempotent. */
-export async function runRollupGrain(grain: 'hour' | 'day', from: Date, to: Date): Promise<void> {
-  await q(rollupSql(grain), bucketRange(grain, from, to));
+export async function runRollupGrain(grain: 'hour' | 'day', from: Date, to: Date, run: Tx = q): Promise<void> {
+  await run(rollupSql(grain), bucketRange(grain, from, to));
 }
 
 /** roll a range up at both grains */
@@ -644,17 +667,17 @@ export async function runRollup(from: Date, to: Date): Promise<void> {
  * policy somebody could change their mind about and as a fact about what the database is able
  * to compute.
  */
-export async function sweepAnalytics(): Promise<void> {
+export async function sweepAnalytics(run: Tx = q): Promise<void> {
   // `make_interval(days => …)` rather than `($1 || ' days')::interval`: the concatenation form
   // leaves the parameter's type UNKNOWN, which Postgres then infers as whatever makes the
   // expression parse — and the delete either errors or, worse, silently compares against
   // something nobody meant. The days are constants here, but the shape is the point.
   const older = 'at < now() - make_interval(days => $1::int)';
-  await q(`delete from analytics_pageviews where ${older}`, [RAW_RETENTION_DAYS]);
-  await q(`delete from analytics_events where ${older}`, [RAW_RETENTION_DAYS]);
-  await q(`delete from analytics_hourly where hour < now() - make_interval(days => $1::int)`, [HOURLY_RETENTION_DAYS]);
-  await q(`delete from analytics_concurrency where ${older}`, [CONCURRENCY_RETENTION_DAYS]);
-  await q(`delete from analytics_salt where day < (now() at time zone 'UTC')::date - $1::int`, [SALT_RETENTION_DAYS]);
+  await run(`delete from analytics_pageviews where ${older}`, [RAW_RETENTION_DAYS]);
+  await run(`delete from analytics_events where ${older}`, [RAW_RETENTION_DAYS]);
+  await run(`delete from analytics_hourly where hour < now() - make_interval(days => $1::int)`, [HOURLY_RETENTION_DAYS]);
+  await run(`delete from analytics_concurrency where ${older}`, [CONCURRENCY_RETENTION_DAYS]);
+  await run(`delete from analytics_salt where day < (now() at time zone 'UTC')::date - $1::int`, [SALT_RETENTION_DAYS]);
 }
 
 /**
@@ -666,8 +689,8 @@ export async function sweepAnalytics(): Promise<void> {
  *
  * Returns how many rows it wrote, which is what arms and disarms the job below.
  */
-export async function sampleConcurrency(): Promise<number> {
-  const rows = await q<{ n: string }>(
+export async function sampleConcurrency(run: Tx = q): Promise<number> {
+  const rows = await run<{ n: string }>(
     `insert into analytics_concurrency (at, region, online, authed, rooms, q1v1, q2v2)
      select date_trunc('minute', now()), region,
             sum(online)::int, sum(jsonb_array_length(authed))::int,
@@ -739,42 +762,52 @@ export async function analyticsTick(now = Date.now()): Promise<void> {
   if (!sawTraffic) return;
   sawTraffic = false;
   busy = true;
-  // ⚠️ THE LOCK NEEDS ITS OWN CLIENT. A session-level advisory lock belongs to the connection
-  // that took it, and `q()` hands each statement to whichever pooled connection is free — so
-  // the unlock could land on a different session, fail, and leave the lock held by an idle
-  // pooled connection that every other machine then fails to take. Same shape as `migrate()`.
-  let lock: DbClient | null = null;
+  // ⚠️ THE WHOLE PASS IS ONE TRANSACTION, because the lock lives exactly as long as it: a
+  // transaction-mode pooler keeps a transaction on one backend, and commit or rollback releases
+  // the lock there, so nothing can be left held. Holding it open costs nothing material: the
+  // other machines are excluded by the lock and do not wait on it, the dashboard reads under
+  // MVCC, ingest only inserts fresh raw rows, and the sweep only deletes rows past retention.
+  // What it changes is that a failure rolls back the whole pass, so the DAILY part runs under a
+  // savepoint: a day rollup or sweep that throws must not discard the hourly rows before it,
+  // which were committed separately when every statement was its own transaction.
   try {
-    lock = await pool.connect();
-    const held = await lock.query<{ ok: boolean }>('select pg_try_advisory_lock($1) as ok', [ANALYTICS_LOCK_KEY]);
-    if (!held.rows[0]?.ok) {
-      // another machine has it. Its pass may have started before our rows landed, so ask again
-      // next tick rather than dropping them until the next beacon.
-      sawTraffic = true;
-      return;
-    }
-    try {
+    const out = await tx(async (run) => {
+      const [held] = await run<{ ok: boolean }>('select pg_try_advisory_xact_lock($1) as ok', [ANALYTICS_LOCK_KEY]);
+      if (!held?.ok) return null;
       // Re-roll the last three hours rather than only the one that just closed: a machine that
       // was restarting when a bucket ended would otherwise leave a permanent hole, and the
       // upsert makes redoing recent work free.
       const to = new Date(now);
       const from = new Date(now - 3 * HOUR_MS);
-      await runRollupGrain('hour', from, to);
-      if ((await sampleConcurrency()) > 0) sawTraffic = true; // people are on — keep sampling
+      await runRollupGrain('hour', from, to, run);
+      const online = (await sampleConcurrency(run)) > 0;
       const dailyDue = lastDailyAt === null || Math.floor(lastDailyAt / HOUR_MS) !== Math.floor(now / HOUR_MS);
+      let daily = false;
       if (dailyDue) {
         const dayFrom = new Date(Math.min(from.getTime(), lastDailyAt ?? from.getTime()));
-        await runRollupGrain('day', dayFrom, to);
-        await sweepAnalytics();
-        lastDailyAt = now;
+        await run('savepoint daily');
+        try {
+          await runRollupGrain('day', dayFrom, to, run);
+          await sweepAnalytics(run);
+          await run('release savepoint daily');
+          daily = true;
+        } catch (e) {
+          await run('rollback to savepoint daily');
+          console.error('[analytics] daily pass failed:', e);
+        }
       }
-    } finally {
-      await lock.query('select pg_advisory_unlock($1)', [ANALYTICS_LOCK_KEY]).catch(() => {});
+      return { online, daily };
+    });
+    // Another machine has the lock. Its pass may have started before our rows landed, so ask
+    // again next tick rather than dropping them until the next beacon.
+    if (!out) sawTraffic = true;
+    else {
+      if (out.online) sawTraffic = true; // people are on — keep sampling
+      if (out.daily) lastDailyAt = now; // only once it has committed
     }
   } catch (e) {
     console.error('[analytics] maintenance failed:', e);
   } finally {
-    lock?.release();
     busy = false;
   }
 }

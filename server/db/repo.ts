@@ -1,7 +1,7 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
-import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { BALANCE_VERSION, PLACEMENT_GAMES, RANKED_PLACEMENT } from '../../src/config';
 import { awardKey } from '../../src/awards';
 import {
   isBadgeId,
@@ -26,6 +26,8 @@ import {
   type LockdownScope,
 } from '../../src/net/protocol';
 import { scrubSpecNames } from '../moderation';
+import { isImportedSpec } from '../../src/net/imported';
+import { keepImportsFromOlderClient, keepTuneFromOlderClient, keepsImports, keepsTune } from '../../src/net/settingsKeep';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -567,7 +569,7 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
  * `coalesce(..., false)` matters on a LEFT JOIN: a solo run has no partner row,
  * and the predicate over all-NULL columns is NULL, not false.
  */
-function badgeCols(a: string, prefix?: string): string {
+export function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
   const badges = prefix ? `"${prefix}Badges"` : 'badges';
@@ -786,6 +788,29 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
     userId,
     JSON.stringify(settings),
   ]);
+}
+
+/**
+ * `POST /api/user/settings`'s write: the blob as sent from a build that keeps imported robots
+ * (`caps` names `SETTINGS_KEEPS_IMPORTS`), else merged with the stored one so an OLDER build's save
+ * cannot strip the account's imported robot (`keepImportsFromOlderClient`, `src/net/settingsKeep.ts`
+ * has the rules). The read and the write are one transaction with the row locked, so two saves
+ * cannot interleave between them. Returns what was stored. The profile row is ensured by the caller.
+ */
+export async function saveSettingsFromClient(userId: string, settings: Record<string, unknown>, caps: unknown): Promise<Record<string, unknown>> {
+  if (keepsImports(caps) && keepsTune(caps)) {
+    await saveUserSettings(userId, settings);
+    return settings;
+  }
+  return tx(async (query) => {
+    const rows = await query<{ settings: unknown }>(`select settings from profiles where user_id = $1 for update`, [userId]);
+    const stored = rows[0]?.settings ?? null;
+    // a build without imports loses the whole import; one with imports but not tuning, the tuning
+    const withImports = keepsImports(caps) ? settings : keepImportsFromOlderClient(stored, settings);
+    const kept = keepsTune(caps) ? withImports : keepTuneFromOlderClient(stored, withImports);
+    await query(`update profiles set settings = $2, updated_at = now() where user_id = $1`, [userId, JSON.stringify(kept)]);
+    return kept;
+  });
 }
 
 // ---------------------------------------------- supporter entitlements ------
@@ -2175,8 +2200,8 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
     replay.setups.map(async (s) => ({ ...s, spec: await scrubSpecNames(s.spec) })),
   );
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
@@ -2194,6 +2219,9 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       // absent tag is written as the string that default already means rather than as null —
       // playback DISPATCHES on this, and one nullable spelling of '2d' is one too many.
       replay.physics ?? '2d',
+      // ...and the SIM_PATCH it ran (0055). Written explicitly, never left to the column's
+      // default: an unstamped container is patch 0 and must read back as the old rules.
+      replay.patch ?? null,
     ],
   );
   return rows[0].id;
@@ -2217,8 +2245,9 @@ export async function getReplay(id: string): Promise<Replay | null> {
     setups: Replay['setups'];
     tracks: Replay['tracks'];
     physics: string | null;
+    sim_patch: number | null;
   }>(
-    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics, sim_patch
        from replays where id = $1`,
     [id],
   );
@@ -2235,6 +2264,8 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // rather than `behaviour`, so the viewer says "recorded before we tracked this" instead of
     // naming a version the recorder never claimed. Undefined, not 0, is what carries that.
     sim: r.behaviour_version ?? undefined,
+    // the rules it re-simulates under (0055); NULL ⇒ absent ⇒ patch 0, the old rules
+    patch: r.sim_patch ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     // WHICH SOLVE to re-simulate it on. Left UNDEFINED for anything that is not the one known
     // non-default value — a pre-0039 row, a null, or a string this build does not know — every
@@ -2295,7 +2326,7 @@ export async function getReplay(id: string): Promise<Replay | null> {
  * orphan — and a privacy gate whose unknown case is "allow" is one a later migration opens
  * by accident.
  */
-export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan';
+export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan' | 'competition';
 export interface ReplayAccessResult {
   access: 'ok' | 'private' | 'missing';
   /** what KIND of thing refused, so the refusal can say the right sentence. A private versus
@@ -2332,6 +2363,11 @@ export async function replayAccess(
          select p.user_id, 'practice', null from practice_runs p where p.replay_id = $1
          union all
          select l.host_user_id, 'lan', null from lan_runs l where l.replay_id = $1
+         union all
+         -- a COMPETITION MATCH (0059) is public: entering says so, and the event is watched
+         select null, 'competition', null from competition_matches cm
+           join competitions c on c.id = cm.competition_id
+          where cm.replay_id = $1 and c.status <> 'draft'
        )
        select o.kind, o.user_id, o.mode, coalesce(p.replays_public, false) as is_public
          from owners o left join profiles p on p.user_id = o.user_id`,
@@ -2349,6 +2385,9 @@ export async function replayAccess(
   if (viewerId && owners.some((o) => o.user_id === viewerId)) return { access: 'ok', kind };
 
   if (kind === 'record') return { access: 'ok', kind };
+  // a competition's matches are public whoever else holds the replay (it is also a versus match
+  // row): the entrants agreed to it when they signed up, and an event is meant to be watched
+  if (owners.some((o) => o.kind === 'competition')) return { access: 'ok', kind: 'competition' };
   if (
     kind === 'versus' &&
     versusReleased(
@@ -2812,6 +2851,9 @@ export interface RecordSubmit {
   game?: Game;
   /** which physics solve produced this run (0039). Absent ⇒ '2d'. */
   physics?: string;
+  /** the net points earned in AUTO and in TELEOP (0062); absent ⇒ unknown, off those two boards */
+  autoScore?: number;
+  teleopScore?: number;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
@@ -2834,9 +2876,19 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
     );
   }
+  /**
+   * AND AN IMPORTED ROBOT IS NOT A RECORD. A record room refuses one at the door and strips it at
+   * `beginMatch`, so this fires only for a caller that skipped both — which is exactly the case a
+   * data-layer chokepoint is for, the same way the physics check above is. `config.spec` is the
+   * robot the board DISPLAYS, so it is the field read; a replay is checked at `persistMatch`.
+   */
+  if (isImportedSpec(r.config?.spec) || isImportedSpec(r.config?.partnerSpec)) {
+    throw new Error('record refused: an imported robot cannot set a record');
+  }
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics,
+                          auto_score, teleop_score)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -2848,10 +2900,20 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.config ? JSON.stringify(r.config) : null,
       g(r.game),
       r.physics === '3d' ? '3d' : '2d',
+      r.autoScore ?? null,
+      r.teleopScore ?? null,
     ],
   );
   return rows[0].id;
 }
+
+/** which score a record board ranks by: the whole run, or the points of one period */
+export type BoardCategory = 'total' | 'auto' | 'teleop';
+export const BOARD_CATEGORIES: readonly BoardCategory[] = ['total', 'auto', 'teleop'];
+export const coerceCategory = (v: unknown): BoardCategory =>
+  BOARD_CATEGORIES.includes(v as BoardCategory) ? (v as BoardCategory) : 'total';
+/** the column behind each category — a closed map, so a request value never reaches the SQL text */
+const CATEGORY_COLUMN: Record<BoardCategory, string> = { total: 'score', auto: 'auto_score', teleop: 'teleop_score' };
 
 export interface BoardRow {
   userId: string;
@@ -2901,15 +2963,32 @@ export async function recordLeaderboard(opts: {
    * first makes the board "each player's best 3D run", which is what the board now means.
    */
   physics?: '2d' | '3d';
+  /** Total (default), or the points of one period (0062). Auto/TeleOp skip rows with no split. */
+  category?: BoardCategory;
+  /** only runs set at or after this instant: today / this week / this month (`boardWindow.ts`) */
+  since?: string;
+  /**
+   * LIFETIME: every season, but ONE physics, so a 2D run and a 3D run never share a board. The
+   * era is `physics` here, else the live solve of the game (none for a one-solve game).
+   */
+  lifetime?: boolean;
 }): Promise<BoardRow[]> {
-  const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
+  const col = CATEGORY_COLUMN[opts.category ?? 'total'];
+  // lifetime reads every season: $1 stays in the text (`is null`) so Postgres can type it
+  const params: unknown[] = [opts.lifetime ? null : opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let sinceFilter = '';
+  if (opts.since) {
+    params.push(opts.since);
+    sinceFilter = `and r.created_at >= $${params.length}`;
+  }
   let physFilter = '';
-  const phys = opts.physics ?? (await boardPhysics(g(opts.game), opts.balanceVersion));
+  const phys =
+    opts.physics ?? (opts.lifetime ? livePhysics(g(opts.game)) : await boardPhysics(g(opts.game), opts.balanceVersion));
   if (phys) {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
@@ -2918,10 +2997,11 @@ export async function recordLeaderboard(opts: {
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config, r.physics
+         r.user_id, r.partner_id, r.${col} as score, r.replay_id, r.created_at, r.config, r.physics
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter} ${physFilter}
-       order by r.user_id, r.score desc, r.created_at asc
+       where ${opts.lifetime ? '$1::int is null' : 'r.balance_version = $1'} and r.mode = $2 and r.game = $3
+         and r.${col} is not null ${dtFilter} ${sinceFilter} ${physFilter}
+       order by r.user_id, r.${col} desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
@@ -3226,6 +3306,82 @@ export async function deleteAccount(userId: string): Promise<boolean> {
          deleted_at = now()`,
       [userId, STANDING_MAX],
     );
+    /* COMPETITION ENTRIES KEEP THEIR ROW, NOT THEIR NAME (0059). An entry's `user_id` is SET NULL
+       by the cascade so a played schedule keeps both sides of every match, but the name is the
+       person's own handle or team name, and the account is gone. The private note goes too. */
+    await query(
+      `update competition_entries set name = 'Deleted account', note = null where user_id = $1`,
+      [userId],
+    );
+    /* ...AND THE COMPETITION LOG DROPS IT TOO (0060). A log line about an entry carries the name it
+       had then ("<name> was shown a red card"), and the public log would keep printing it after the
+       rename above. The lines are found by ENTRY ID: the account's entries now, plus each entry a
+       line says is the account's (`users`, on every line about an entry), which reaches an entry
+       row deleted before the start too (an organizer's removal, a pending duo withdrawn, the row a
+       re-add replaces). An entry that is still another captain's keeps its name: the account was
+       only its partner. Replaced: `name` (both names of a rename), and by position against their
+       ids a forfeit's `dq` (`dqEntries`), a failed call's `who` (`whoEntries`), the champions
+       (`championEntries`) and a reset's dropped `cards`. Lines written before those ids existed
+       keep their names. Before the profile delete: the cascade nulls `user_id`, and with it the
+       account's entries. Ids are compared as TEXT and arrays are read through a CASE, so a
+       malformed line is skipped rather than failing the whole deletion; the competitions those
+       entries are in bound the scan (the log's index), and `users` has its own. */
+    const about = await query<{ comp: string; entry: string }>(
+      `select competition_id::text as comp, id::text as entry from competition_entries where user_id = $1
+       union
+       select l.competition_id::text, l.data ->> 'entry'
+         from competition_log l
+        where l.data -> 'users' ? $1
+          and l.data ->> 'entry' is not null
+          and not exists (select 1 from competition_entries e
+                           where e.id = case when l.data ->> 'entry' ~ '^[0-9]{1,18}$' then (l.data ->> 'entry')::bigint end
+                             and e.user_id is distinct from $1)`,
+      [userId],
+    );
+    // names in `list`, replaced where the id at the same position in `ids` is one of the account's
+    const byPosition = (list: string, ids: string): string =>
+      `update competition_log l
+          set data = jsonb_set(l.data, '{${list}}', (
+                select coalesce(jsonb_agg(
+                         case when (l.data -> '${ids}' ->> (i - 1)::int) = any($2::text[])
+                              then '"Deleted account"'::jsonb else n end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> '${list}') with ordinality as t(n, i)))
+        where l.competition_id = any($1::uuid[])
+          and jsonb_typeof(l.data -> '${list}') = 'array'
+          and exists (select 1
+                        from jsonb_array_elements_text(case when jsonb_typeof(l.data -> '${ids}') = 'array'
+                                                            then l.data -> '${ids}' else '[]'::jsonb end) as d(v)
+                       where d.v = any($2::text[]))`;
+    const scrubs = [
+      // a line about one entry: its `name`, and both names of a rename
+      `update competition_log l
+          set data = l.data
+                || case when l.data ? 'name' then '{"name":"Deleted account"}'::jsonb else '{}'::jsonb end
+                || case when l.kind = 'entry.rename' then '{"from":"Deleted account","to":"Deleted account"}'::jsonb else '{}'::jsonb end
+        where l.competition_id = any($1::uuid[])
+          and (l.data ->> 'entry') = any($2::text[])`,
+      byPosition('dq', 'dqEntries'),
+      byPosition('who', 'whoEntries'),
+      byPosition('champions', 'championEntries'),
+      // a reset's dropped referee cards
+      `update competition_log l
+          set data = jsonb_set(l.data, '{cards}', (
+                select coalesce(jsonb_agg(
+                         case when (c ->> 'entry') = any($2::text[])
+                              then c || '{"name":"Deleted account"}'::jsonb else c end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> 'cards') with ordinality as t(c, i)))
+        where l.competition_id = any($1::uuid[])
+          and l.kind = 'match.reset'
+          and exists (select 1
+                        from jsonb_array_elements(case when jsonb_typeof(l.data -> 'cards') = 'array'
+                                                       then l.data -> 'cards' else '[]'::jsonb end) as x(c)
+                       where (c ->> 'entry') = any($2::text[]))`,
+    ];
+    if (about.length) {
+      const comps = [...new Set(about.map((r) => r.comp))];
+      const entries = [...new Set(about.map((r) => r.entry))];
+      for (const sql of scrubs) await query(sql, [comps, entries]);
+    }
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
   }).then((gone) => {
@@ -3284,6 +3440,8 @@ export interface AccountExport {
   ranked: { ratings: Record<string, unknown>[]; history: Record<string, unknown>[] };
   standing: Record<string, unknown> | null;
   standingEvents: Record<string, unknown>[];
+  /** what moderators told this account (0057) */
+  notices: Record<string, unknown>[];
   playtime: Record<string, unknown>[];
   friends: {
     friends: Record<string, unknown>[];
@@ -3299,6 +3457,11 @@ export interface AccountExport {
   rewards: Record<string, unknown>[];
   /** access groups (0051) — the group and when; never who granted it (another account's id) */
   accessGroups: Record<string, unknown>[];
+  /** competitions entered (0059), and the ones this account staffs */
+  competitions: Record<string, unknown>[];
+  competitionStaff: Record<string, unknown>[];
+  /** the cards and disqualifications recorded against this account's entries, per match (0060) */
+  competitionDiscipline: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3334,7 +3497,7 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
 
   const [
     presets, records, practice, lan, matches, ratings, history, standing, events, activity,
-    friends, reqIn, reqOut, blocked, invIn, invOut, payments,
+    friends, reqIn, reqOut, blocked, invIn, invOut, payments, notices,
   ] = await Promise.all([
     q<Record<string, unknown>>(
       `select slot, name, spec, updated_at from robot_presets where user_id = $1 order by slot`,
@@ -3447,6 +3610,12 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
          from kofi_payments where claimed_by = $1 order by claimed_at`,
       [userId],
     ),
+    // what moderators told this account (0057), including their own words
+    q<Record<string, unknown>>(
+      `select kind, game, data, message, created_at, read_at
+         from player_notices where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
   ]);
 
   /**
@@ -3502,6 +3671,7 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     ranked: { ratings, history },
     standing: standing[0] ?? null,
     standingEvents: events,
+    notices,
     playtime: activity,
     friends: {
       friends: named(friends),
@@ -3522,6 +3692,45 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     ),
     accessGroups: await q<Record<string, unknown>>(
       `select grp as "group", granted_at as "grantedAt" from access_members where user_id = $1 order by granted_at`,
+      [userId],
+    ),
+    // the entry's own facts (0059). A partner is another account, so "this was a duo" is a
+    // boolean here, as `records.partner_id` is above; the organizer's private note is theirs.
+    competitions: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, c.game, e.name, e.number, e.status, e.placement,
+              (e.user_id = $1) as captain, (e.partner_id is not null) as duo,
+              e.registered_at as "registeredAt", e.checked_in_at as "checkedInAt"
+         from competition_entries e join competitions c on c.id = e.competition_id
+        where e.user_id = $1 or e.partner_id = $1
+        order by e.registered_at`,
+      [userId],
+    ),
+    competitionStaff: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, s.role, s.added_at as "addedAt"
+         from competition_staff s join competitions c on c.id = s.competition_id
+        where s.user_id = $1 order by s.added_at`,
+      [userId],
+    ),
+    // a disciplinary record about the person behind an entry (0060): every card shown to it and
+    // every DQ in a match. One row each: the match's schedule label (a playoff match by its series
+    // key), the card's colour (null for a DQ) and its source: 'sim', 'referee', or 'dq'. The
+    // escalations the rankings derive from these (a second yellow, a surrogate's card) are not
+    // records of their own.
+    competitionDiscipline: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug,
+              case when m.stage = 'qual' then 'Q' || m.number else coalesce(m.series_key, 'P' || m.number) end as match,
+              x.colour, x.source, m.finished_at as "decidedAt"
+         from competition_entries e
+         join competitions c on c.id = e.competition_id
+         join competition_match_slots s on s.entry_id = e.id
+         join competition_matches m on m.id = s.match_id
+         cross join lateral (values
+           (m.cards ->> e.id::text, 'sim', coalesce(m.cards ? e.id::text, false)),
+           (m.ref_cards ->> e.id::text, 'referee', coalesce(m.ref_cards ? e.id::text, false)),
+           (null, 'dq', e.id = any(m.dq))
+         ) as x(colour, source, present)
+        where (e.user_id = $1 or e.partner_id = $1) and x.present
+        order by m.finished_at nulls last, m.id, x.source`,
       [userId],
     ),
   };
@@ -3649,6 +3858,16 @@ export async function getRating(
   return rows[0]?.rating ?? 1000;
 }
 
+/** one board row as the rating update reads it. `idleDays` is whole days since the row last
+ *  changed (`updated_at`), which drives the idle RD growth in `server/ranked.ts`. */
+export interface RatingRow {
+  rating: number;
+  rd: number;
+  vol: number;
+  games: number;
+  idleDays: number;
+}
+
 /** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
  * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
 /**
@@ -3671,11 +3890,11 @@ export async function getRatingsFull(
   /** a transaction to read in. With `lock`, the rows are LOCKED for the rest of it — see below */
   query: Tx = q,
   lock = false,
-): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
-  const out = new Map<string, { rating: number; rd: number; vol: number }>();
+): Promise<Map<string, RatingRow>> {
+  const out = new Map<string, RatingRow>();
   // sorted, so two transactions locking overlapping rosters take the locks in the same order
   const ids = [...new Set(userIds.filter(Boolean))].sort();
-  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
+  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06, games: 0, idleDays: 0 });
   if (!ids.length) return out;
   if (lock) {
     /* READ-MODIFY-WRITE NEEDS A ROW TO LOCK. A player with no row yet has nothing for
@@ -3690,14 +3909,50 @@ export async function getRatingsFull(
       [ids, mode, act, g(game)],
     );
   }
-  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number }>(
-    `select user_id, rating, rd, vol from elo_ratings
+  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number; games: number; idle_days: number }>(
+    `select user_id, rating, rd, vol, games,
+            greatest(0, floor(extract(epoch from (now() - updated_at)) / 86400))::int as idle_days
+       from elo_ratings
       where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
       order by user_id${lock ? ' for update' : ''}`,
     [ids, mode, act, g(game)],
   );
-  for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
+  for (const r of rows) {
+    out.set(r.user_id, {
+      rating: r.rating,
+      rd: r.rd,
+      vol: r.vol,
+      games: Number(r.games),
+      idleDays: Number(r.idle_days),
+    });
+  }
   return out;
+}
+
+/**
+ * Undo the LOCK SEED for players a rated match did not count for (a voided 2v2, see
+ * `computeGlicko`). `getRatingsFull(…, lock)` inserts a default row so there is something to
+ * lock; for a player whose result is then voided nothing is written over it, and an empty row
+ * is not the same as no row everywhere else — `eloUserStanding` answers "0 games" instead of
+ * "never played", and `lastRankedBoard` would pick it as their most recent board.
+ *
+ * Only a row still EXACTLY the seed goes: 1000 / RD 350 / 0 games. A row a behaviour charge
+ * created (games 0, rating under 1000) is real history and stays.
+ */
+export async function dropUntouchedRatings(
+  userIds: string[],
+  mode: '1v1' | '2v2',
+  act: number,
+  game: Game | undefined,
+  query: Tx = q,
+): Promise<void> {
+  if (!userIds.length) return;
+  await query(
+    `delete from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
+        and games = 0 and rating = 1000 and rd = 350`,
+    [userIds, mode, act, g(game)],
+  );
 }
 
 export async function getRatingFull(
@@ -4179,6 +4434,9 @@ export interface ScoreReportRow {
    * a moderator needs before deciding whether a claim is a mistake or a habit */
   reporterFiled: number;
   reporterRejected: number;
+  /** a moderator has already corrected this match's score — the queue says so beside UPHELD,
+   *  because the filer is told the corrected numbers when it is upheld (0057) */
+  corrected: boolean;
 }
 
 /**
@@ -4209,7 +4467,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
     id: string; match_id: string | null; replay_id: string | null; room_code: string;
     game: string; detail: string;
     status: string; smite: number; created_at: string; reporter_id: string;
-    handle: string; username: string | null; filed: string; rejected: string;
+    handle: string; username: string | null; filed: string; rejected: string; corrected: boolean;
   }>(
     // LEFT JOIN, because `score_reports.match_id` is nullable on purpose: a player looking at
     // a result that never finished writing is exactly the case worth hearing about, and it
@@ -4219,7 +4477,8 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
             sr.status, sr.smite, sr.created_at, sr.reporter_id, p.handle, p.username,
             (select count(*) from score_reports x where x.reporter_id = sr.reporter_id) as filed,
             (select count(*) from score_reports x
-              where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected
+              where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected,
+            exists (select 1 from match_score_corrections c where c.match_id = sr.match_id) as corrected
        from score_reports sr
        join profiles p on p.user_id = sr.reporter_id
        left join matches m on m.id = sr.match_id
@@ -4243,6 +4502,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
     reporterUsername: x.username,
     reporterFiled: Number(x.filed ?? 0),
     reporterRejected: Number(x.rejected ?? 0),
+    corrected: x.corrected === true,
   }));
 }
 
@@ -4262,16 +4522,21 @@ export async function resolveScoreReport(
   status: 'upheld' | 'rejected',
   adminId: string,
   smite = 0,
-): Promise<{ reporterId: string; roomCode: string; game: string } | null> {
-  const rows = await q<{ reporter_id: string; room_code: string; game: string }>(
+): Promise<{ reporterId: string; roomCode: string; game: string; matchId: string | null } | null> {
+  const rows = await q<{ reporter_id: string; room_code: string; game: string; match_id: string | null }>(
     `update score_reports
         set status = $2, reviewed_by = $3, reviewed_at = now(), smite = $4
       where id = $1::bigint and status = 'open'
-      returning reporter_id, room_code, game`,
+      returning reporter_id, room_code, game, match_id::text as match_id`,
     [id, status, adminId, Math.max(0, Math.floor(smite))],
   );
   if (!rows.length) return null;
-  return { reporterId: rows[0].reporter_id, roomCode: rows[0].room_code, game: rows[0].game };
+  return {
+    reporterId: rows[0].reporter_id,
+    roomCode: rows[0].room_code,
+    game: rows[0].game,
+    matchId: rows[0].match_id,
+  };
 }
 
 // ------------------------------------------------- match score corrections ---
@@ -4300,6 +4565,17 @@ export interface MatchScoreRow {
   }[];
   /** every correction ever applied to this match, newest first */
   corrections: MatchScoreCorrectionRow[];
+  /**
+   * The totals the match was ORIGINALLY recorded with: the oldest correction's "before", or the
+   * current totals when it was never corrected. The rating was computed from these, so a refund
+   * is judged against them (`ratingRefund`), never against an earlier correction.
+   */
+  original: { red: number; blue: number };
+  /** rating already given back on this match, one row per player (0057) */
+  refunds: { userId: string; points: number; at: string }[];
+  /** a ranked match on the ladder that is live now. A refund only ever goes to a live ladder: a
+   *  closed act's final standings have been paid out (`runRewardJob`) and are not rewritten. */
+  liveBoard: boolean;
 }
 
 export interface MatchScoreCorrectionRow {
@@ -4318,9 +4594,10 @@ export interface MatchScoreCorrectionRow {
 export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow | null> {
   const head = await q<{
     id: string; replay_id: string | null; game: string; mode: string;
-    ranked: boolean | null; created_at: string;
+    ranked: boolean | null; created_at: string; balance_version: number;
   }>(
-    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at
+    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at,
+            m.balance_version
        from matches m where m.id = $1::uuid`,
     [matchId],
   );
@@ -4341,6 +4618,14 @@ export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow |
   );
   const corrections = await listScoreCorrections(matchId);
   const sideOf = (a: 'red' | 'blue'): number => parts.find((x) => x.alliance === a)?.score ?? 0;
+  const first = corrections[corrections.length - 1];
+  const refunds = await q<{ user_id: string; points: number; at: string }>(
+    `select user_id, points, at from rating_refunds where match_id = $1::uuid order by at`,
+    [matchId],
+  );
+  const game = coerceGameId(m.game) as Game;
+  const liveBoard =
+    m.ranked === true && (await actForSeason(Number(m.balance_version), game)) === (await actFor(game));
   return {
     matchId: m.id,
     replayId: m.replay_id,
@@ -4362,7 +4647,215 @@ export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow |
       ratingAfter: x.rating_after === null ? null : Number(x.rating_after),
     })),
     corrections,
+    original: first ? { red: first.redBefore, blue: first.blueBefore } : { red: sideOf('red'), blue: sideOf('blue') },
+    refunds: refunds.map((r) => ({ userId: r.user_id, points: Number(r.points), at: r.at })),
+    liveBoard,
   };
+}
+
+/**
+ * GIVE BACK the rating a corrected result cost, once per player per match (0057).
+ *
+ * The amounts come from `ratingRefund` (src/notices.ts), which only ever returns a loss to a
+ * player whose result got BETTER, so nothing here can lower a rating. Each refund is its own
+ * transaction: the `rating_refunds` row is the once-only guard (its primary key), and the
+ * rating moves in the same transaction or not at all. A player with no rating row on the
+ * match's ladder (deleted since, or never had one) gets nothing and no row.
+ *
+ * ARITHMETIC ON THE ROW, never a value read earlier, for the reason `chargeRatingForBehaviour`
+ * states: the player may be finishing a ranked match at this moment. `updated_at` is left
+ * alone because `effectiveRd` reads it as "last played", and a refund is not a game.
+ *
+ * Refused for a ladder that is not live (see `MatchScoreRow.liveBoard`).
+ */
+export async function refundMatchRatings(
+  matchId: string,
+  refunds: { userId: string; points: number }[],
+  adminId: string,
+): Promise<{ userId: string; points: number }[]> {
+  const want = refunds.filter((r) => r.userId && Number.isFinite(r.points) && r.points > 0);
+  if (!want.length) return [];
+  const head = await q<{ mode: string; game: string; balance_version: number; ranked: boolean | null }>(
+    `select mode, game, balance_version, ranked from matches where id = $1::uuid`,
+    [matchId],
+  );
+  const m = head[0];
+  if (!m || m.ranked !== true) return [];
+  const game = coerceGameId(m.game) as Game;
+  const act = await actForSeason(Number(m.balance_version), game);
+  if (act !== (await actFor(game))) return [];
+  const applied: { userId: string; points: number }[] = [];
+  for (const r of want) {
+    const points = Math.round(r.points);
+    const ok = await tx(async (query) => {
+      const claimed = await query<{ user_id: string }>(
+        `insert into rating_refunds (match_id, user_id, points, admin_id)
+         select $1::uuid, $2, $3, $4 where exists (select 1 from profiles where user_id = $2)
+         on conflict do nothing returning user_id`,
+        [matchId, r.userId, points, adminId],
+      );
+      if (!claimed.length) return false;
+      const moved = await query<{ user_id: string }>(
+        `update elo_ratings set rating = rating + $5::int
+          where user_id = $1 and mode = $2 and game = $3 and act = $4 returning user_id`,
+        [r.userId, m.mode, g(game), act, points],
+      );
+      // no ladder row to give it back to: undo the claim rather than record a refund that
+      // never reached a rating
+      if (!moved.length) throw new NoRefundTarget();
+      return true;
+    }).catch((e) => {
+      if (e instanceof NoRefundTarget) return false;
+      throw e;
+    });
+    if (ok) applied.push({ userId: r.userId, points });
+  }
+  return applied;
+}
+
+class NoRefundTarget extends Error {}
+
+// ------------------------------------------------------------ player notices ---
+
+/** one notice as stored — the client words it (`noticeView`, src/notices.ts) */
+export interface NoticeRow {
+  id: string;
+  kind: string;
+  game: string | null;
+  data: Record<string, unknown>;
+  message: string | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface NewNotice {
+  userId: string;
+  kind: string;
+  game?: string | null;
+  data?: Record<string, unknown>;
+  message?: string | null;
+}
+
+/**
+ * Send notices — one statement for any number of recipients.
+ *
+ * A recipient with no `profiles` row is SKIPPED rather than failing the batch: the foreign key
+ * would refuse it, and a reporter who deleted their account in the meantime must not stop the
+ * reported player being told. Returns how many were written.
+ */
+export async function addNotices(rows: NewNotice[], query: Tx = q): Promise<number> {
+  const ok = rows.filter((r) => r.userId && r.kind);
+  if (!ok.length) return 0;
+  const out = await query<{ id: string }>(
+    // `with ordinality` + `order by`: ids follow the batch's own order, which is the tie-break
+    // `listNotices` reads when one batch shares a `created_at`
+    `insert into player_notices (user_id, kind, game, data, message)
+     select t.u, t.k, t.g, t.d, t.m
+       from unnest($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::text[])
+            with ordinality as t(u, k, g, d, m, ord)
+      where exists (select 1 from profiles p where p.user_id = t.u)
+      order by t.ord
+     returning id`,
+    [
+      ok.map((r) => r.userId),
+      ok.map((r) => r.kind),
+      ok.map((r) => r.game ?? null),
+      ok.map((r) => JSON.stringify(r.data ?? {})),
+      ok.map((r) => (r.message ?? '').slice(0, 500) || null),
+    ],
+  );
+  return out.length;
+}
+
+/** one account's inbox, newest first. Capped in the data layer like every list here. */
+export async function listNotices(userId: string, limit = 30): Promise<NoticeRow[]> {
+  const rows = await q<{
+    id: string; kind: string; game: string | null; data: Record<string, unknown> | null;
+    message: string | null; created_at: string; read_at: string | null;
+  }>(
+    `select id::text as id, kind, game, data, message, created_at, read_at
+       from player_notices where user_id = $1
+      order by created_at desc, id desc
+      limit $2`,
+    [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    game: r.game,
+    data: r.data ?? {},
+    message: r.message,
+    createdAt: r.created_at,
+    readAt: r.read_at,
+  }));
+}
+
+/** mark notices read — these ids, or every unread one. Only ever the caller's own rows. */
+export async function markNoticesRead(userId: string, ids: string[] | 'all'): Promise<number> {
+  if (ids !== 'all') {
+    const clean = ids.filter((x) => /^\d{1,18}$/.test(x));
+    if (!clean.length) return 0;
+    const rows = await q<{ id: string }>(
+      `update player_notices set read_at = now()
+        where user_id = $1 and id = any($2::bigint[]) and read_at is null returning id`,
+      [userId, clean],
+    );
+    return rows.length;
+  }
+  const rows = await q<{ id: string }>(
+    `update player_notices set read_at = now() where user_id = $1 and read_at is null returning id`,
+    [userId],
+  );
+  return rows.length;
+}
+
+/**
+ * Every report this account FILED, both kinds, newest first — the player's "My reports" (Epic's
+ * Safety Center shape). The reported player is named because the filer picked them by that
+ * name; the PENALTY is not, which is between that player and the moderators.
+ */
+export async function reportsFiledBy(userId: string, limit = 20): Promise<{
+  kind: 'player' | 'score';
+  id: string;
+  subject: string | null;
+  reason: string | null;
+  game: string;
+  status: string;
+  createdAt: string;
+  reviewedAt: string | null;
+  smite: number;
+}[]> {
+  const n = Math.min(50, Math.max(1, Math.floor(limit)));
+  const rows = await q<{
+    kind: string; id: string; subject: string | null; reason: string | null; game: string;
+    status: string; created_at: string; reviewed_at: string | null; smite: number;
+  }>(
+    `select * from (
+       select 'player' as kind, r.id::text as id,
+              coalesce(case when p.username is not null then '@' || p.username end, p.handle) as subject,
+              r.reason, r.game, r.status, r.created_at, r.reviewed_at, 0 as smite
+         from player_reports r left join profiles p on p.user_id = r.reported_id
+        where r.reporter_id = $1
+       union all
+       select 'score', s.id::text, null, null, s.game, s.status, s.created_at, s.reviewed_at, s.smite
+         from score_reports s
+        where s.reporter_id = $1
+     ) x
+     order by created_at desc
+     limit $2`,
+    [userId, n],
+  );
+  return rows.map((r) => ({
+    kind: r.kind === 'score' ? 'score' : 'player',
+    id: r.id,
+    subject: r.subject,
+    reason: r.reason,
+    game: r.game,
+    status: r.status,
+    createdAt: r.created_at,
+    reviewedAt: r.reviewed_at,
+    smite: Number(r.smite ?? 0),
+  }));
 }
 
 export async function listScoreCorrections(matchId: string): Promise<MatchScoreCorrectionRow[]> {
@@ -4398,7 +4891,8 @@ export async function listScoreCorrections(matchId: string): Promise<MatchScoreC
  * rated against the numbers it produced — so re-rating one match in the middle means
  * re-rating every match after it for everyone involved, and a moderation panel is not where
  * that decision belongs. `rating_before`/`rating_after` therefore stay exactly as they were
- * and the console says so out loud.
+ * and the console says so out loud. What CAN follow is a refund of a wrongly-recorded loss,
+ * a separate and opt-in step (`refundMatchRatings`, 0057).
  *
  * Returns the before/after pair, or null when the id names no match.
  */
@@ -4638,20 +5132,23 @@ export async function listReportsBy(userId: string, limit = 50): Promise<ReportF
 
 /** triage: mark every open report against a player reviewed or dismissed. Per-user rather
  *  than per-report because that is how the queue is actually worked — a moderator judges a
- *  PLAYER after watching their matches, not each complaint in isolation. */
+ *  PLAYER after watching their matches, not each complaint in isolation.
+ *
+ *  Returns the rows it CLOSED — who filed each and for what — because those are exactly the
+ *  people to tell (0057), and reading them separately would race a report filed in between. */
 export async function setReportsStatus(
   userId: string,
   status: 'reviewed' | 'dismissed',
   moderatorId: string,
-): Promise<number> {
-  const rows = await q<{ id: string }>(
+): Promise<{ id: string; reporterId: string; reason: string; game: string }[]> {
+  const rows = await q<{ id: string; reporter_id: string; reason: string; game: string }>(
     `update player_reports
         set status = $2, reviewed_by = $3, reviewed_at = now()
       where reported_id = $1 and status = 'open'
-      returning id`,
+      returning id::text as id, reporter_id, reason, game`,
     [userId, status, moderatorId],
   );
-  return rows.length;
+  return rows.map((r) => ({ id: r.id, reporterId: r.reporter_id, reason: r.reason, game: r.game }));
 }
 
 /**
@@ -4709,8 +5206,24 @@ export interface EloBoardRow {
   role?: StaffRole;
 }
 
+/** the placement every season of a game before this one was played under: 5 for both modes */
+const LEGACY_PLACEMENT = 5;
+/** each game's first season on `RANKED_PLACEMENT` — the live season when it shipped (2026-10-03).
+ *  Earlier seasons were ranked and AWARDED at 5 games, and their archived boards stay that way. */
+const PLACEMENT_FROM_SEASON: Readonly<Record<string, number>> = { decode: 7, chain: 5, biobuzz: 5 };
+
+/**
+ * The games a player needs on a board to be RANKED on it: on the leaderboard, with a rank on
+ * their profile, and in the act's podium awards. `season` is given for an ARCHIVED board, which
+ * keeps the rule it was played under; the live board always takes `RANKED_PLACEMENT`.
+ */
+export function boardMinGames(mode: '1v1' | '2v2', game?: Game, season?: number): number {
+  if (season !== undefined && season < (PLACEMENT_FROM_SEASON[g(game)] ?? 0)) return LEGACY_PLACEMENT;
+  return RANKED_PLACEMENT[mode];
+}
+
 /** The public leaderboard for an ACT's board — PLACED players only (games >=
- * PLACEMENT_GAMES). Players still in placements are intentionally omitted;
+ * `boardMinGames`). Players still in placements are intentionally omitted;
  * `eloUserStanding` reports the viewer's own standing separately. */
 export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
@@ -4727,7 +5240,7 @@ export async function eloLeaderboard(opts: {
      -- award computed off this board (rankedActGrants) names the same person the board does
      order by e.rating desc, e.games desc, e.user_id
      limit $3`,
-    [opts.act, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.act, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game), g(opts.game)],
   );
 }
 
@@ -4752,7 +5265,7 @@ export async function eloUserStanding(opts: {
      from elo_ratings e
      left join placed p on p.user_id = e.user_id
      where e.act = $1 and e.mode = $2 and e.game = $5 and e.user_id = $4`,
-    [opts.act, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.act, opts.mode, boardMinGames(opts.mode, opts.game), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -4799,7 +5312,7 @@ export async function eloHistoryLeaderboard(opts: {
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.games >= $4
      order by h.rating desc, h.games desc, h.user_id
      limit $3`,
-    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game, opts.balanceVersion), g(opts.game)],
   );
 }
 
@@ -4821,7 +5334,7 @@ export async function eloHistoryUserStanding(opts: {
      from elo_history h
      left join placed p on p.user_id = h.user_id
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.user_id = $4`,
-    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.balanceVersion, opts.mode, boardMinGames(opts.mode, opts.game, opts.balanceVersion), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -5027,13 +5540,20 @@ export async function getUserStats(
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from ${eloTable}
-         where ${eloKeyCol} = $1 and game = $4 and games >= $3
+         where ${eloKeyCol} = $1 and game = $4
+           and games >= case mode when '2v2' then $5::int else $3::int end
        )
        select e.mode, e.rating, e.games, p.rnk
        from ${eloTable} e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
        where e.${eloKeyCol} = $1 and e.game = $4 and e.user_id = $2`,
-      [eloKeyVal, userId, PLACEMENT_GAMES, gm],
+      [
+        eloKeyVal,
+        userId,
+        boardMinGames('1v1', gm, isLive ? undefined : balanceVersion),
+        gm,
+        boardMinGames('2v2', gm, isLive ? undefined : balanceVersion),
+      ],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
@@ -5205,10 +5725,15 @@ export async function saveMatch(
   /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
   physics?: string,
   query: Tx = q,
+  /** the rule set that rated it (0058, `RULE_SETS`); null for a custom match */
+  ratingRules: string | null = null,
+  /** the room's setup (0061): 'custom' | 'casual-1v1' | 'casual-2v2'; null for a ranked/staged match */
+  preset: string | null = null,
 ): Promise<string> {
   const rows = await query<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game, physics) values ($1, $2, $3, $4, $5, $6) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d'],
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules, preset)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules, preset],
   );
   return rows[0].id;
 }
@@ -5251,16 +5776,22 @@ export async function addMatchParticipants(
     won: boolean;
     ratingBefore: number | null;
     ratingAfter: number | null;
+    /** queued as a premade with their alliance partner (0056); null = unknown / custom */
+    premade?: boolean | null;
+    /** the absence the rating update was given (0058); null = custom, or before 0058 */
+    away?: number | null;
+    early?: boolean | null;
   }[],
   query: Tx = q,
 ): Promise<void> {
   if (!ps.length) return;
   await query(
     `insert into match_participants
-       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
-     select $1, u, a, d, s, w, rb, ra
-       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[])
-            as t(u, a, d, s, w, rb, ra)
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after, premade, away, early)
+     select $1, u, a, d, s, w, rb, ra, pm, aw, ea
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[], $9::bool[],
+                   $10::real[], $11::bool[])
+            as t(u, a, d, s, w, rb, ra, pm, aw, ea)
      on conflict (match_id, user_id) do nothing`,
     [
       matchId,
@@ -5271,6 +5802,9 @@ export async function addMatchParticipants(
       ps.map((p) => p.won),
       ps.map((p) => p.ratingBefore),
       ps.map((p) => p.ratingAfter),
+      ps.map((p) => p.premade ?? null),
+      ps.map((p) => p.away ?? null),
+      ps.map((p) => p.early ?? null),
     ],
   );
 }
@@ -6770,6 +7304,16 @@ export async function acceptFriendRequest(callerId: string, fromId: string): Pro
     );
     return true;
   });
+}
+
+/** every account this one is friends with (matchmaking: friends are never ranked opponents) */
+export async function friendIdsOf(userId: string): Promise<string[]> {
+  const rows = await q<{ id: string }>(
+    `select case when user_low = $1 then user_high else user_low end as id
+       from friendships where user_low = $1 or user_high = $1`,
+    [userId],
+  );
+  return rows.map((r) => r.id);
 }
 
 /** decline a request sent TO the caller (caller is the `to` side) */

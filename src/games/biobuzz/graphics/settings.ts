@@ -1,5 +1,5 @@
 /**
- * GRAPHICS SETTINGS — the seventeen dials of `docs/biobuzz/plan-3d.md` §4.4, their four preset
+ * GRAPHICS SETTINGS — the nineteen dials of `docs/biobuzz/plan-3d.md` §4.4, their five preset
  * columns, and the per-device store that holds them.
  *
  * ── WHY PER DEVICE, AND NOT IN `GameSettings` ──────────────────────────────────────────────
@@ -11,11 +11,11 @@
  *
  * ── THE SHAPE, AND WHY THERE ARE THREE FIELDS AND NOT ONE ──────────────────────────────────
  * `{ preset, tier, settings }`.
- *   • `settings` is the truth — seventeen values, and the only thing the renderer ever reads.
- *   • `preset` is what the PICKER shows: one of the four named columns, `auto`, or `custom`
+ *   • `settings` is the truth — nineteen values, and the only thing the renderer ever reads.
+ *   • `preset` is what the PICKER shows: one of the five named columns, `auto`, or `custom`
  *     the moment any single setting differs from the column it claims.
- *   • `tier` is one of the four columns ALWAYS, even under `custom`/`auto`, because the PIXEL
- *     BUDGET (§4.4's 0.6 / 1.2 / 2.2 / 4.0 MP) is a property of the preset COLUMN and not of
+ *   • `tier` is one of the five columns ALWAYS, even under `custom`/`auto`, because the PIXEL
+ *     BUDGET (§4.4's 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP) is a property of the preset COLUMN and not of
  *     any one setting — there is no setting it could be derived from. It is the column the
  *     current settings were last branched from, so a player who picks High and then turns
  *     shadows off keeps High's 2.2 MP backbuffer cap, which is what they asked for.
@@ -25,7 +25,7 @@
  * GraphicsSection.tsx` renders it. A headless smoke lane can import it with no DOM at all.
  */
 
-// ───────────────────────────────────────────────────────────────────── the seventeen values ──
+// ────────────────────────────────────────────────────────────────────── the nineteen values ──
 
 /**
  * §4.4 row 2 — the draw-loop frame cap, in frames per second, with TWO SENTINELS.
@@ -177,8 +177,13 @@ export function coerceMaxFps(v: unknown, fallback: MaxFps): MaxFps {
  */
 export type AntiAliasing = 'off' | 'msaa2' | 'msaa4';
 
-/** §4.4 row 4 — the sun's shadow map. `soft` is `high` plus a wider VSM blur radius. */
-export type ShadowQuality = 'off' | 'low' | 'high' | 'soft';
+/**
+ * §4.4 row 4 — the sun's shadow map. `soft` is `high` plus a wider VSM blur radius. `max` is
+ * Extreme's: a 4096 map, twice the texels per inch of `soft`, with a blur of about the same WORLD
+ * width drawn with twice the samples. It is a value of its own rather than a bigger `soft` so an
+ * Ultra player's stored `soft` keeps meaning the 2048 map it always did.
+ */
+export type ShadowQuality = 'off' | 'low' | 'high' | 'soft' | 'max';
 
 /**
  * §4.4 row 5. `real` is the elements' `InstancedMesh` casting into the sun's shadow map (56
@@ -187,9 +192,13 @@ export type ShadowQuality = 'off' | 'low' | 'high' | 'soft';
  */
 export type ElementShadows = 'none' | 'blob' | 'real';
 
-/** §4.4 row 6. See `GFX_NOT_OFFERED`: `ssao` is accepted by the type and by the store so a
- * later build can turn it on without a stored-settings migration, but nothing implements it
- * and the UI says so rather than offering a switch that does nothing. */
+/**
+ * §4.4 row 6. `ssao` is screen-space ambient occlusion, drawn by three's GTAO pass in the lazy
+ * post-processing chunk (`scene/renderPost.ts`). The stored value keeps the name `ssao` because
+ * the type and the store have accepted it since Day 3, when it was reserved and not drawn; a
+ * blob written by that build therefore needs no migration, and an older build reading one of
+ * ours keeps the value and ignores it.
+ */
 export type AmbientOcclusion = 'off' | 'ssao';
 
 /** §4.4 row 7 — `texture.anisotropy`, clamped to the GPU's own maximum at apply time. */
@@ -218,6 +227,24 @@ export type MeshDetail = 'low' | 'high';
  * forever if it fails — `scene/renderElements.ts` never blocks on it.
  */
 export type ElementDetail = 'sphere' | 'cad';
+
+/**
+ * The NINETEENTH row (2026-09-27, Extreme) — what the surfaces are made of.
+ *
+ *   standard — the flat-colour `MeshStandardMaterial`s every tier has always drawn
+ *   physical  — measured finishes (bare aluminium is a metal, powder coat and plastics are
+ *               dielectrics, rubber is rubber), procedural surface detail (foam stipple, powder-
+ *               coat orange peel, extrusion lines, roller pips), and a ROOM PROBE: metals and the
+ *               polycarbonate reflect the venue that is actually drawn, not the HDRI photograph
+ *               the venue geometry hides
+ *
+ * Owner, 2026-09-27, on the first Extreme: "Adding accurate texture, material, and reflection
+ * matters more [than glow]." A row of its own, asked of the SETTINGS like `wantsPost`, so a Custom
+ * branched from High can have it. The code lives in a lazy chunk (`scene/renderSurfaces.ts`),
+ * fetched the first time it is on. A string and not a boolean so a later step (a baked probe, a
+ * downloaded texture set) is a third value rather than a second row.
+ */
+export type MaterialModel = 'standard' | 'physical';
 
 /**
  * §4.4 row 12 — how much of the cosmetic layer runs.
@@ -286,7 +313,7 @@ export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'monochrome-studio',
 ];
 
-/** THE SEVENTEEN (§4.4 has sixteen rows; `elementDetail` is this build's own). In §4.4's own table order, so the two can be diffed by eye. */
+/** THE NINETEEN (§4.4's eighteen rows, Bloom and Materials among them since Extreme, plus `elementDetail`, this build's own). In §4.4's own table order, so the two can be diffed by eye. */
 export interface GraphicsSettings {
   /** 50–200 % of CSS pixels, before the tier's pixel budget caps the backbuffer. */
   renderScale: number;
@@ -298,11 +325,19 @@ export interface GraphicsSettings {
   anisotropy: Anisotropy;
   meshDetail: MeshDetail;
   elementDetail: ElementDetail;
+  materials: MaterialModel;
   environment: EnvironmentId;
   /** image-based lighting: `scene.environment` set, or lights only. */
   envLighting: boolean;
   /** the environment map's SPECULAR contribution on metals (`envMapIntensity`). */
   reflections: boolean;
+  /**
+   * The EIGHTEENTH row (2026-09-27, Extreme): a glow around the venue's lamps and the brightest
+   * glints, drawn by three's UnrealBloom pass in the lazy post-processing chunk. Never a robot part.
+   * A boolean, not a strength: the strength, radius and threshold are tuned once for this field
+   * (`scene/renderPost.ts`) and a slider would be a way to wash the field out.
+   */
+  bloom: boolean;
   effects: EffectsLevel;
   /**
    * HORIZONTAL degrees, `GFX_FOV_MIN`–`GFX_FOV_MAX` (60–120, the top being what both human eyes
@@ -326,8 +361,22 @@ export interface GraphicsSettings {
   perfOverlay: PerfOverlay;
 }
 
-export type GraphicsTier = 'low' | 'medium' | 'high' | 'ultra';
-export const GFX_TIERS: readonly GraphicsTier[] = ['low', 'medium', 'high', 'ultra'];
+export type GraphicsTier = 'low' | 'medium' | 'high' | 'ultra' | 'extreme';
+export const GFX_TIERS: readonly GraphicsTier[] = ['low', 'medium', 'high', 'ultra', 'extreme'];
+
+/**
+ * THE HIGHEST TIER AUTO WILL PICK. Extreme is past it on purpose, for four reasons:
+ *   • the warm-up measures CPU submit time (`renderScene.ts`), and Extreme's cost is almost all
+ *     GPU fill: a fast Ultra frame says nothing about whether a supersampled frame with two
+ *     post passes on it will hold 60 fps;
+ *   • after the warm-up only the 25 ms slip moves the tier, so a machine that climbed into
+ *     Extreme and landed at 45 fps would stay there for the whole match;
+ *   • `firstGuess` cannot tell machines apart at the top (`deviceMemory` caps at 8);
+ *   • Extreme downloads a chunk. Auto must not start a download nobody asked for.
+ * So Auto stops here, and Extreme is only ever a hand pick. `stepTier` takes this as its ceiling
+ * on the way up; `setGraphicsPreset('auto')` clamps to it.
+ */
+export const GFX_AUTO_MAX_TIER: GraphicsTier = 'ultra';
 
 export type GraphicsPreset = 'auto' | GraphicsTier | 'custom';
 
@@ -342,16 +391,20 @@ export const GFX_PIXEL_BUDGET: Record<GraphicsTier, number> = {
   medium: 1.2e6,
   high: 2.2e6,
   ultra: 4.0e6,
+  // a 4K UHD frame (3840 × 2160). Extreme renders at 150 %, so this is what lets a 1080p window
+  // supersample at all (1.5² × 2.07 MP = 4.7 MP, past Ultra's 4.0) and is still a ceiling on a
+  // HiDPI 4K panel, where 150 % of the device ratio would ask for 18 MP.
+  extreme: 8.3e6,
 };
 
 /**
- * THE PRESET TABLE — §4.4's four columns, transcribed. If this file and that table ever
+ * THE PRESET TABLE — §4.4's five columns, transcribed. If this file and that table ever
  * disagree, the table is right and this is a bug; `scripts/smoke-biobuzz/render.ts` asserts a
  * handful of the load-bearing cells so a silent edit here is caught.
  *
- * Two cells differ from the doc for a stated reason, both of them in the two rows the doc
- * itself hedges (`GFX_NOT_OFFERED`): Ultra's AA is `msaa4` rather than "MSAA 4x + SMAA", and
- * Ultra's AO is `off` rather than "on".
+ * Ultra's two hedged cells moved to Extreme when Extreme was added (2026-09-27): AO is on at
+ * Extreme alone, and SMAA is not offered at all (`GFX_NOT_OFFERED`) — Extreme supersamples on top
+ * of MSAA 4x instead. Ultra's column is otherwise unchanged, so a stored Ultra still reads Ultra.
  */
 /** the FOV slider's default, HORIZONTAL degrees — what the old default showed on a 16:9 screen
  * (70° vertical is 102° across), rounded. Declared here, above the presets that read it. */
@@ -368,9 +421,11 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     anisotropy: 1,
     meshDetail: 'low',
     elementDetail: 'sphere',
+    materials: 'standard',
     environment: 'room',
     envLighting: false,
     reflections: false,
+    bloom: false,
     effects: 'minimal',
     hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'reduced',
@@ -387,9 +442,11 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     anisotropy: 4,
     meshDetail: 'high',
     elementDetail: 'sphere',
+    materials: 'standard',
     environment: 'room',
     envLighting: false,
     reflections: false,
+    bloom: false,
     effects: 'standard',
     hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
@@ -406,9 +463,11 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     anisotropy: 8,
     meshDetail: 'high',
     elementDetail: 'cad',
+    materials: 'standard',
     environment: 'school-hall',
     envLighting: true,
     reflections: true,
+    bloom: false,
     effects: 'standard',
     hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
@@ -425,9 +484,37 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     anisotropy: 16,
     meshDetail: 'high',
     elementDetail: 'cad',
+    materials: 'standard',
     environment: 'school-hall',
     envLighting: true,
     reflections: true,
+    bloom: false,
+    effects: 'full',
+    hfov: GFX_FOV_DEFAULT,
+    cameraMotion: 'full',
+    minimap: false,
+    perfOverlay: 'off',
+  },
+  extreme: {
+    // SUPERSAMPLED: 150 % of the device ratio, capped by the 8.3 MP budget above. On the thin
+    // straight edges this field is made of (tape, frame rails, the seam teeth) that is the one
+    // AA step past MSAA 4x that is visible, and it is why SMAA is still not offered.
+    renderScale: 150,
+    maxFps: 0,
+    aa: 'msaa4',
+    shadows: 'max',
+    elementShadows: 'real',
+    ao: 'ssao',
+    anisotropy: 16,
+    meshDetail: 'high',
+    elementDetail: 'cad',
+    materials: 'physical',
+    environment: 'school-hall',
+    envLighting: true,
+    reflections: true,
+    // OFF, not on (owner, 2026-09-27): the Extreme budget goes to what surfaces ARE, not to glow.
+    // Bloom stays a switch for anyone who wants the lamps to flare.
+    bloom: false,
     effects: 'full',
     hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
@@ -437,34 +524,27 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
 };
 
 /**
- * THE TWO ROWS OF §4.4 THIS BUILD DOES NOT OFFER, with the reason each is refused rather than
- * shipped as a switch that does nothing. Rendered verbatim by the Graphics section, so the
- * answer to "where is SSAO?" is on the screen that would have had it.
+ * THE ROW OF §4.4 THIS BUILD DOES NOT OFFER, with the reason it is refused rather than shipped
+ * as a switch that does nothing. Rendered verbatim by the Graphics section, so the answer to
+ * "where is SMAA?" is on the screen that would have had it.
  *
- * Both are POST-PROCESSING PASSES, and this renderer has no composer: it draws the scene once,
- * into either the canvas or one multisampled render target, and blits. Adding either means
- * adding `EffectComposer` + `RenderPass` + the pass itself to a chunk budgeted at 250 KB
- * gzipped that is already at 187 (`scripts/bundleaudit.mjs`).
+ * There were two until Extreme (2026-09-27). Ambient occlusion is offered now: the post passes
+ * live in their own lazy chunk (`scene/renderPost.ts`), fetched only when AO or bloom is on, so
+ * the reason it was refused (the renderer chunk's download budget) no longer applies to it.
  *
- *   • SMAA — `three/examples/jsm/postprocessing/SMAAPass.js` is 50 KB of source, most of it two
- *     base64 lookup TEXTURES, which are already-encoded data and so gzip to very nearly their
- *     own size. With `EffectComposer` (8.5 KB) and `ShaderPass`/`CopyShader` behind it, it is
- *     most of the remaining 63 KB of headroom — for a second antialiasing pass ON TOP of the
- *     MSAA 4x this build does offer, which is the cheaper and sharper of the two on the thin
- *     straight edges (tape lines, frame rails) this field is made of.
- *   • SSAO — `SSAOPass.js` is a full second geometry pass into a depth+normal target plus a
- *     blur, on a scene whose ambient term is already an HDRI or a `RoomEnvironment` PMREM.
- *     §4.4 puts it on Ultra alone and the plan's own §11 lists post-processing as the first
- *     thing to drop; it is dropped.
+ *   • SMAA — `SMAAPass.js` is 38 KB gzipped on its own, almost all of it two base64 lookup
+ *     TEXTURES, which are already-encoded data and do not compress. That would quadruple the
+ *     post chunk (12 KB) for a second antialiasing pass on top of MSAA 4x, on the column (Extreme) that
+ *     already supersamples at 150 %, which is sharper on this field's thin straight edges than
+ *     either.
+ *
+ * A list and not a single object so a later refusal drops in without a UI change; the section
+ * renders nothing at all when the list is empty.
  */
 export const GFX_NOT_OFFERED: readonly { label: string; why: string }[] = [
   {
     label: 'SMAA',
-    why: 'the extra pass costs most of the 3D renderer’s remaining download budget, on top of the MSAA this build already does in hardware',
-  },
-  {
-    label: 'Ambient occlusion',
-    why: 'it needs a second full pass over the scene; the environment lighting below does the job this field needs',
+    why: 'Extreme already renders at 150% on top of MSAA 4×, which is sharper on this field’s thin edges, and SMAA would quadruple the download the effects need',
   },
 ];
 
@@ -476,7 +556,7 @@ import { desktop } from '../../../desktop';
 
 export interface GraphicsState {
   preset: GraphicsPreset;
-  /** always one of the four columns — see this file's header on why it is not derived. */
+  /** always one of the five columns — see this file's header on why it is not derived. */
   tier: GraphicsTier;
   settings: GraphicsSettings;
 }
@@ -526,15 +606,17 @@ export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): Gr
     renderScale: clampNum(o.renderScale, GFX_RENDER_SCALE_MIN, GFX_RENDER_SCALE_MAX, base.renderScale),
     maxFps: coerceMaxFps(o.maxFps, base.maxFps),
     aa: oneOf<AntiAliasing>(['off', 'msaa2', 'msaa4'], o.aa, base.aa),
-    shadows: oneOf<ShadowQuality>(['off', 'low', 'high', 'soft'], o.shadows, base.shadows),
+    shadows: oneOf<ShadowQuality>(['off', 'low', 'high', 'soft', 'max'], o.shadows, base.shadows),
     elementShadows: oneOf<ElementShadows>(['none', 'blob', 'real'], o.elementShadows, base.elementShadows),
     ao: oneOf<AmbientOcclusion>(['off', 'ssao'], o.ao, base.ao),
     anisotropy: oneOf<Anisotropy>([1, 4, 8, 16], o.anisotropy, base.anisotropy),
     meshDetail: oneOf<MeshDetail>(['low', 'high'], o.meshDetail, base.meshDetail),
     elementDetail: oneOf<ElementDetail>(['sphere', 'cad'], o.elementDetail, base.elementDetail),
+    materials: oneOf<MaterialModel>(['standard', 'physical'], o.materials, base.materials),
     environment: oneOf<EnvironmentId>(ENVIRONMENT_IDS, o.environment, base.environment),
     envLighting: typeof o.envLighting === 'boolean' ? o.envLighting : base.envLighting,
     reflections: typeof o.reflections === 'boolean' ? o.reflections : base.reflections,
+    bloom: typeof o.bloom === 'boolean' ? o.bloom : base.bloom,
     effects: oneOf<EffectsLevel>(['minimal', 'standard', 'full'], o.effects, base.effects),
     hfov: clampNum(o.hfov ?? legacyHfov((o as { fov?: unknown }).fov), GFX_FOV_MIN, GFX_FOV_MAX, base.hfov),
     cameraMotion: oneOf<CameraMotion>(['full', 'reduced'], o.cameraMotion, base.cameraMotion),
@@ -549,11 +631,21 @@ export function matchesPreset(settings: GraphicsSettings, tier: GraphicsTier): b
   return (Object.keys(p) as (keyof GraphicsSettings)[]).every((k) => settings[k] === p[k]);
 }
 
-function coerceState(raw: unknown): GraphicsState {
+/**
+ * Every value `preset` may hold, DERIVED from `GFX_TIERS`. It was a literal list once, and a
+ * literal list type-checks with a tier missing from it: a stored Extreme would have read back as
+ * `auto`, and detection would then have walked the player off the tier they picked on every
+ * reload, with nothing failing anywhere.
+ */
+export const GFX_PRESETS_ALL: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS, 'custom'];
+
+/** a stored blob → a state this build can run. Exported so the smoke lane can round-trip every
+ * preset through it (the literal-list bug above is exactly the kind a round trip catches). */
+export function coerceGraphicsState(raw: unknown): GraphicsState {
   const o = (raw ?? {}) as { preset?: unknown; tier?: unknown; settings?: unknown };
   const tier = oneOf<GraphicsTier>(GFX_TIERS, o.tier, GFX_DEFAULT_TIER);
   const settings = coerceGraphicsSettings(o.settings, GFX_PRESETS[tier]);
-  let preset = oneOf<GraphicsPreset>(['auto', 'low', 'medium', 'high', 'ultra', 'custom'], o.preset, 'auto');
+  let preset = oneOf<GraphicsPreset>(GFX_PRESETS_ALL, o.preset, 'auto');
   // A STORED PRESET NAME IS A CLAIM, NOT A FACT. If the settings under it no longer match the
   // column — an older build wrote a row this one coerced, or a column moved between releases —
   // the honest label is `custom`, because that is what the picker would otherwise lie about.
@@ -569,7 +661,7 @@ export function getGraphics(): GraphicsState {
   if (state) return state;
   try {
     const raw = localStorage.getItem(GRAPHICS_KEY);
-    state = raw ? coerceState(JSON.parse(raw)) : presetState(GFX_DEFAULT_TIER, 'auto');
+    state = raw ? coerceGraphicsState(JSON.parse(raw)) : presetState(GFX_DEFAULT_TIER, 'auto');
   } catch {
     // corrupt JSON, private browsing, a locked-down profile — the default is always available
     state = presetState(GFX_DEFAULT_TIER, 'auto');
@@ -577,7 +669,7 @@ export function getGraphics(): GraphicsState {
   return state;
 }
 
-/** just the seventeen — the shape every renderer call site actually wants. */
+/** just the nineteen — the shape every renderer call site actually wants. */
 export function getGraphicsSettings(): GraphicsSettings {
   return getGraphics().settings;
 }
@@ -631,11 +723,18 @@ function commit(next: GraphicsState): void {
   for (const fn of listeners) fn(next);
 }
 
+/** the lower of two tiers, by `GFX_TIERS` order. */
+function minTier(a: GraphicsTier, b: GraphicsTier): GraphicsTier {
+  return GFX_TIERS.indexOf(a) <= GFX_TIERS.indexOf(b) ? a : b;
+}
+
 /** pick a named column (or `auto`, which `graphics/auto.ts` then resolves into a tier). */
 export function setGraphicsPreset(preset: GraphicsPreset): void {
   if (preset === 'custom') return; // `custom` is a CONSEQUENCE of editing a setting, never a pick
   const cur = getGraphics();
-  const tier = preset === 'auto' ? cur.tier : preset;
+  // Auto keeps the tier it is on until detection runs, but never above its own ceiling: picking
+  // Auto while on Extreme must not leave "Auto" sitting on a tier Auto would never choose.
+  const tier = preset === 'auto' ? minTier(cur.tier, GFX_AUTO_MAX_TIER) : preset;
   commit({ preset, tier, settings: { ...GFX_PRESETS[tier] } });
 }
 
@@ -688,15 +787,68 @@ export function effectivePixelRatio(
   return Math.max(0.3, Math.min(wanted, cap));
 }
 
-/** the sun shadow map's square resolution for a quality level; `off` has no map at all. */
+/** the sun shadow map's square resolution for a quality level; `off` has no map at all (the
+ * 1024 it returns is never allocated). Every value is spelled out, so a new level cannot fall
+ * through to someone else's size. */
 export function shadowMapSize(q: ShadowQuality): number {
-  return q === 'low' ? 1024 : q === 'high' ? 2048 : 2048;
+  switch (q) {
+    case 'max':
+      return 4096;
+    case 'high':
+    case 'soft':
+      return 2048;
+    case 'low':
+    case 'off':
+      return 1024;
+  }
 }
 
 /** VSM blur radius in shadow-map texels. `soft` is the same 2048 map with a wider kernel —
- * which is what makes it a separate row from `high` rather than a fourth resolution. */
+ * which is what makes it a separate row from `high` rather than a fourth resolution. `max`'s 10
+ * texels at 4096 is 0.44 in, a little under `soft`'s 0.53: the same soft edge, drawn finer. */
 export function shadowBlurRadius(q: ShadowQuality): number {
-  return q === 'soft' ? 6 : 3;
+  return q === 'max' ? 10 : q === 'soft' ? 6 : 3;
+}
+
+/** VSM blur taps (`shadow.blurSamples`; three's default is 8). A 10-texel radius sampled 8
+ * times bands visibly, so `max` takes 16. */
+export function shadowBlurSamples(q: ShadowQuality): number {
+  return q === 'max' ? 16 : 8;
+}
+
+/**
+ * Does this set of settings need the POST-PROCESSING chunk (`scene/renderPost.ts`)? The one
+ * predicate the renderer asks, and it asks the SETTINGS, never the tier: a Custom preset branched
+ * from High with AO turned on must get AO, or the row is a switch that does nothing.
+ */
+export function wantsPost(s: GraphicsSettings): boolean {
+  return s.ao !== 'off' || s.bloom;
+}
+
+/** Does this set of settings need the SURFACES chunk (`scene/renderSurfaces.ts`: physical
+ * materials, procedural surface detail, the room probe)? Asked of the settings, like `wantsPost`. */
+export function wantsSurfaces(s: GraphicsSettings): boolean {
+  return s.materials === 'physical';
+}
+
+/**
+ * WHERE A LOST WEBGL CONTEXT LEAVES THE STORED PRESET: the tier to drop to, or `null` to leave it.
+ *
+ * A GPU that cannot hold Extreme-class settings (the post chain's targets, the 4096 shadow map,
+ * Extreme's 8.3 MP budget at a render scale past 100 %) loses the context, the scene falls back to 2D, and the next reload
+ * brings the same settings back and loses it again. So a state carrying any of them drops to
+ * its own column with them gone: Extreme to Ultra, a Custom to the column it branched from
+ * (never ABOVE Ultra, and never above where it was). It asks the SETTINGS, like `wantsPost`: a
+ * Custom branched from Ultra with AO and Max shadows turned on is exactly as heavy as Extreme,
+ * and a Custom branched from Extreme with all three turned back off is not heavy at all, so a
+ * driver reset must not cost that player their FOV and frame cap.
+ */
+export function contextLossTier(g: GraphicsState): GraphicsTier | null {
+  const s = g.settings;
+  // Extreme's budget only costs memory when something asks past 100 % of the device ratio
+  const bigBackbuffer = g.tier === 'extreme' && s.renderScale > 100;
+  if (!wantsPost(s) && s.shadows !== 'max' && !bigBackbuffer) return null;
+  return minTier(g.tier, GFX_AUTO_MAX_TIER);
 }
 
 /** how many multisamples a render target needs for `aa`; 0 means render straight to the
@@ -725,5 +877,6 @@ export const GFX_PRESET_LABEL: Record<GraphicsPreset, string> = {
   medium: 'Medium',
   high: 'High',
   ultra: 'Ultra',
+  extreme: 'Extreme',
   custom: 'Custom',
 };

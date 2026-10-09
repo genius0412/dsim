@@ -2,6 +2,8 @@ import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '
 import * as C from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { robotExtents } from '../../sim/physics';
+import { polyFeature } from '../../sim/imported';
+import { chainImportLaunchLine, chainImportLaunchZ } from './importMech';
 import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
@@ -52,6 +54,7 @@ import {
   CHAIN_THROWBACK_SPEED,
   CHAIN_THROWBACK_SPREAD,
   CHAIN_PARTICLE_R,
+  CHAIN_PARTICLE_SIM,
   CHAIN_PART_FRICTION,
   CHAIN_PART_REST_SPEED,
   CHAIN_PART_SEP_ITERS,
@@ -74,6 +77,7 @@ import {
   catalystTrackTarget,
   chainIntakeMouths,
   mouthContains,
+  type ChainIntakeMouth,
   hookPos,
   labAreas,
   onRingStand,
@@ -160,6 +164,17 @@ export function updateChain(
       const e = robotExtents(rob);
       const rel = rot({ x: c.pos.x - rob.pos.x, y: c.pos.y - rob.pos.y }, -rob.heading);
       const rr = CHAIN_CATALYST_OD / 2;
+      if (rob.spec.imported) {
+        // an IMPORT: off its hull, along the hull's own nearest-feature normal
+        const f = polyFeature(rob.spec.imported.hull, rel);
+        if (f.depth <= -rr) continue;
+        const push = rot({ x: f.nx, y: f.ny }, rob.heading);
+        c.pos.x += push.x * 0.9;
+        c.pos.y += push.y * 0.9;
+        const shove = Math.max(CHAIN_RING_SLIDE_MIN, hyp(rob.vel.x, rob.vel.y) * 0.25);
+        c.vel = { x: push.x * shove, y: push.y * shove };
+        break;
+      }
       if (rel.x > e.front + rr || rel.x < -e.rear - rr || Math.abs(rel.y) > e.half + rr) continue;
       // shallowest way out (robot-local), then convert back to the world
       const penFwd = e.front + rr - rel.x;
@@ -209,7 +224,8 @@ export function updateChain(
       // fly along the STALE heading and miss. The launch reads r.turretHeading (physical).
       // solved FROM the turret's own position (see turretOrigin), not the chassis centre
       const desiredTurret = leadDir(turretOrigin(r), mouth, CHAIN_SHOT_SPEED, r.vel);
-      r.turretHeading = slewAngle(r.turretHeading, desiredTurret, CHAIN_TURRET_SLEW * dt);
+      const tunedSlew = r.spec.imported?.tune?.turretSlew;
+      r.turretHeading = slewAngle(r.turretHeading, desiredTurret, (tunedSlew !== undefined ? (tunedSlew * Math.PI) / 180 : CHAIN_TURRET_SLEW) * dt);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         const twin = mode === 'twinturret';
         r.hopper.shift();
@@ -223,7 +239,9 @@ export function updateChain(
         // carries and the cadence averages EXACTLY its nominal rate; clamp forward when the
         // hopper has been idle so a resumed burst can't catch up on accumulated debt.
         // A twin divides the interval by CHAIN_TWIN_FIRE_MULT — two barrels, one indexer.
-        r.fireReadyAt += twin ? CHAIN_FIRE_INTERVAL / CHAIN_TWIN_FIRE_MULT : CHAIN_FIRE_INTERVAL;
+        // an import's practice tuning names the time between shots, both barrels together
+        const tunedShot = r.spec.imported?.tune?.shotInterval;
+        r.fireReadyAt += tunedShot !== undefined ? tunedShot : twin ? CHAIN_FIRE_INTERVAL / CHAIN_TWIN_FIRE_MULT : CHAIN_FIRE_INTERVAL;
         if (r.fireReadyAt < world.time) r.fireReadyAt = world.time;
         r.lastFireAt = world.time;
       }
@@ -250,7 +268,8 @@ export function updateChain(
           const n = r.hopper.length;
           r.hopper.length = 0;
           launchLine(world, chain, r, n, CHAIN_DUMP_SPEED, CHAIN_DUMP_SIDE_VAR);
-          r.fireReadyAt = world.time + CHAIN_DUMP_INTERVAL;
+          const reload = r.spec.imported?.tune?.reload;
+          r.fireReadyAt = world.time + (reload !== undefined ? reload : CHAIN_DUMP_INTERVAL);
         }
         r.lastFireAt = world.time;
       }
@@ -416,6 +435,9 @@ export function updateChain(
   // ── ground particles: friction, integrate, robot plow/intake ───────────────
   const out: Artifact[] = [];
   const ground: Artifact[] = [];
+  // everything `interact` needs from a robot, worked out ONCE per robot rather than once per
+  // particle per robot (see `InteractFrame`)
+  const frames = world.robots.map((rob) => interactFrame(rob, cmds.get(rob.id), enabled));
   for (const b of world.balls) {
     if (b.state.kind !== 'ground') {
       out.push(b);
@@ -436,8 +458,9 @@ export function updateChain(
     b.pos.y += b.vel.y * dt;
 
     let absorbed = false;
-    for (const rob of world.robots) {
-      if (interact(b, rob, cmds.get(rob.id), enabled) === 'absorbed') {
+    for (let i = 0; i < world.robots.length; i++) {
+      const rob = world.robots[i];
+      if (interact(b, rob, frames[i]) === 'absorbed') {
         rob.hopper.push('green');
         rob.lastIntakeAt = world.time;
         absorbed = true;
@@ -553,7 +576,7 @@ function launchToAccel(
   const netx = dir.x * horizSpeed + perp.x * latVel + r.vel.x;
   const nety = dir.y * horizSpeed + perp.y * latVel + r.vel.y;
   const netSpeed = Math.max(1, hyp(netx, nety));
-  const z0 = 8;
+  const z0 = r.spec.imported ? chainImportLaunchZ(r.spec, 8) : 8; // an IMPORT: its placed height
   const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // arc timing: sized to the goal distance
   const t = land / netSpeed;
   const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
@@ -693,8 +716,12 @@ function launchAt(
   // launch point: out to the edge along its normal, then `frac` across it (edge perpendicular)
   const dir = EDGE_DIR[edge];
   const perp = EDGE_PERP[edge];
-  const across = frac * 2 * span * CHAIN_LAUNCH_LINE_FRAC;
-  const w = rot({ x: dist * dir.x + across * perp.x, y: dist * dir.y + across * perp.y }, r.heading);
+  // an IMPORT's line is centred on its placed lip, no wider than its hull there
+  const line = r.spec.imported ? chainImportLaunchLine(r.spec, edge, span) : null;
+  const across = frac * 2 * (line ? line.half : span) * CHAIN_LAUNCH_LINE_FRAC;
+  const w = line
+    ? rot({ x: line.origin.x + across * perp.x, y: line.origin.y + across * perp.y }, r.heading)
+    : rot({ x: dist * dir.x + across * perp.x, y: dist * dir.y + across * perp.y }, r.heading);
   const px = r.pos.x + w.x;
   const py = r.pos.y + w.y;
   const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
@@ -710,7 +737,7 @@ function launchAt(
     state: { kind: 'flight', target: r.alliance },
     pos: { x: px, y: py },
     vel: { x: netx, y: nety },
-    z: CHAIN_LAUNCH_Z0,
+    z: r.spec.imported ? chainImportLaunchZ(r.spec, CHAIN_LAUNCH_Z0) : CHAIN_LAUNCH_Z0,
     vz: 0.5 * C.GRAVITY * tWall,
   });
 }
@@ -767,29 +794,85 @@ function landed(b: Artifact, pos: { x: number; y: number }): Artifact {
   return b;
 }
 
+/**
+ * THE SEPARATION GRID — a flat CELL LIST, reused across ticks, in place of a `Map` of arrays
+ * rebuilt twice a tick. It was the single largest cost in a Chain Reaction room (a third of a
+ * solo tick: nine `Map.get`s per particle per pass, plus a fresh array per occupied cell).
+ *
+ * ⚠️ IT MUST VISIT PAIRS IN EXACTLY THE ORDER THE MAP DID, because the pass moves particles as
+ * it goes and so the order is part of the answer. It does: each cell's list is appended in
+ * `ground` order (a tail pointer, never a push-front), the neighbour cells are walked in the
+ * same ox/oy order, a particle is bucketed from where it stood at the START of the pass and
+ * looked up from where it stands NOW, exactly as before. The dense grid covers
+ * |x|,|y| < `SEP_GRID_HALF`, which is the field plus the goals with room to spare; a particle
+ * outside it (one that landed past a wall this tick, before the clamp below runs) goes in a
+ * `Map` keyed the way the old grid keyed everything, so nothing is ever dropped.
+ */
+const SEP_CELL = 2 * CHAIN_PARTICLE_R;
+const SEP_GRID_HALF = 96;
+const SEP_OFF = Math.ceil(SEP_GRID_HALF / SEP_CELL) + 1;
+const SEP_N = 2 * SEP_OFF + 1;
+const sepHead = new Int32Array(SEP_N * SEP_N);
+const sepTail = new Int32Array(SEP_N * SEP_N);
+let sepNext = new Int32Array(CHAIN_PARTICLE_SIM);
+/** the old grid's key — used now only for the rare particle outside the dense grid */
+const sepKey = (cx: number, cy: number): number => (cx + 128) * 512 + (cy + 128);
+
 /** push overlapping ground particles apart (position-based) using a uniform grid so
  * 300 particles never rest on top of each other. A few passes settle a pile. */
 function separateParticles(ground: Artifact[]): void {
-  const cell = 2 * CHAIN_PARTICLE_R;
+  const cell = SEP_CELL;
   const minD = 2 * CHAIN_PARTICLE_R;
   const minD2 = minD * minD;
-  const key = (cx: number, cy: number): number => (cx + 128) * 512 + (cy + 128);
+  const n = ground.length;
+  if (sepNext.length < n) sepNext = new Int32Array(n);
   for (let iter = 0; iter < CHAIN_PART_SEP_ITERS; iter++) {
-    const grid = new Map<number, Artifact[]>();
-    for (const b of ground) {
-      const k = key(Math.floor(b.pos.x / cell), Math.floor(b.pos.y / cell));
-      const arr = grid.get(k);
-      if (arr) arr.push(b);
-      else grid.set(k, [b]);
+    sepHead.fill(-1);
+    let outside: Map<number, number[]> | null = null;
+    for (let i = 0; i < n; i++) {
+      const p = ground[i].pos;
+      const cx = Math.floor(p.x / cell);
+      const cy = Math.floor(p.y / cell);
+      const gx = cx + SEP_OFF;
+      const gy = cy + SEP_OFF;
+      sepNext[i] = -1;
+      if (gx >= 0 && gx < SEP_N && gy >= 0 && gy < SEP_N) {
+        const c = gx * SEP_N + gy;
+        if (sepHead[c] < 0) sepHead[c] = i;
+        else sepNext[sepTail[c]] = i;
+        sepTail[c] = i;
+      } else {
+        outside ??= new Map();
+        const k = sepKey(cx, cy);
+        const list = outside.get(k);
+        if (list) list.push(i);
+        else outside.set(k, [i]);
+      }
     }
-    for (const b of ground) {
+    for (let bi = 0; bi < n; bi++) {
+      const b = ground[bi];
       const cx = Math.floor(b.pos.x / cell);
       const cy = Math.floor(b.pos.y / cell);
       for (let ox = -1; ox <= 1; ox++) {
         for (let oy = -1; oy <= 1; oy++) {
-          const arr = grid.get(key(cx + ox, cy + oy));
-          if (!arr) continue;
-          for (const o of arr) {
+          const gx = cx + ox + SEP_OFF;
+          const gy = cy + oy + SEP_OFF;
+          const dense = gx >= 0 && gx < SEP_N && gy >= 0 && gy < SEP_N;
+          const list = dense ? undefined : outside?.get(sepKey(cx + ox, cy + oy));
+          if (!dense && !list) continue;
+          let at = dense ? sepHead[gx * SEP_N + gy] : -1;
+          let li = 0;
+          for (;;) {
+            let oi: number;
+            if (dense) {
+              if (at < 0) break;
+              oi = at;
+              at = sepNext[at];
+            } else {
+              if (li >= list!.length) break;
+              oi = list![li++];
+            }
+            const o = ground[oi];
             if (o.id <= b.id) continue;
             const dx = o.pos.x - b.pos.x;
             const dy = o.pos.y - b.pos.y;
@@ -811,53 +894,120 @@ function separateParticles(ground: Artifact[]): void {
 }
 
 /**
+ * What `interact` needs from one robot, computed ONCE per robot per tick. It used to be
+ * recomputed for every particle against every robot — `robotExtents`, `chainIntakeMouths` (a
+ * fresh array of fresh objects), `chainHopperCap`, the heading's sine and cosine twice and two
+ * `rot` objects — 300 × robots times a tick, about a fifth of a 2v2 room's tick. Every value
+ * here is a pure function of the robot's pose and spec, neither of which the particle loop
+ * changes; the one thing that DOES change mid-loop, the hopper's length, is still read live.
+ *
+ * `reach2` is a squared bounding circle around everything a particle can touch — the chassis
+ * box and every intake mouth, each padded by the particle radius exactly as the tests below
+ * pad them — so a particle outside it can answer 'none' without the rotation. It is a strict
+ * superset: nothing that the full test would have captured or plowed is outside it.
+ */
+interface InteractFrame {
+  e: { front: number; rear: number; half: number };
+  /**
+   * `rot(v, -heading)` and `rot(v, heading)`'s own sine and cosine, kept as TWO pairs: `dcos`
+   * is `dsin(x + π/2)`, so `dcos(-h)` is not bitwise `dcos(h)` and `dsin(-h)` is not bitwise
+   * `-dsin(h)`, and the output has to be the same bits `rot` produced.
+   */
+  lc: number;
+  ls: number;
+  wc: number;
+  ws: number;
+  intakeActive: boolean;
+  cap: number;
+  mouths: ChainIntakeMouth[];
+  reach2: number;
+  speed: number;
+}
+
+function interactFrame(rob: RobotState, cmd: RobotCommand | undefined, enabled: boolean): InteractFrame {
+  const e = robotExtents(rob);
+  const pad = CHAIN_PARTICLE_R;
+  const mouths = chainIntakeMouths(rob.spec);
+  let reach = hyp(Math.max(e.front, e.rear) + pad, e.half + pad);
+  for (const m of mouths) {
+    const mx = Math.max(Math.abs(m.x0), Math.abs(m.x1)) + pad;
+    const my = Math.max(Math.abs(m.y0), Math.abs(m.y1)) + pad;
+    reach = Math.max(reach, hyp(mx, my));
+  }
+  reach += 1e-6; // a particle exactly on the circle still takes the full test
+  return {
+    e,
+    lc: dcos(-rob.heading),
+    ls: dsin(-rob.heading),
+    wc: dcos(rob.heading),
+    ws: dsin(rob.heading),
+    intakeActive: enabled && (rob.autoIntake || (cmd?.intake ?? false)),
+    cap: chainHopperCap(rob.spec),
+    mouths,
+    reach2: reach * reach,
+    speed: hyp(rob.vel.x, rob.vel.y),
+  };
+}
+
+/**
  * Resolve one ground particle against one robot: intake it (front zone + active +
  * room) ⇒ 'absorbed'; else plow it out of the chassis (impart the robot's velocity).
  */
-function interact(
-  b: Artifact,
-  rob: RobotState,
-  cmd: RobotCommand | undefined,
-  enabled: boolean,
-): 'absorbed' | 'none' {
-  const e = robotExtents(rob);
-  const rel = { x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y };
-  const local = rot(rel, -rob.heading);
+function interact(b: Artifact, rob: RobotState, f: InteractFrame): 'absorbed' | 'none' {
+  const rx = b.pos.x - rob.pos.x;
+  const ry = b.pos.y - rob.pos.y;
+  if (rx * rx + ry * ry > f.reach2) return 'none';
+  const e = f.e;
+  // `rot(rel, -heading)`, term for term
+  const lx = rx * f.lc - ry * f.ls;
+  const ly = rx * f.ls + ry * f.lc;
   const r2 = CHAIN_PARTICLE_R;
 
-  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
+  const inBox = lx < e.front + r2 && lx > -e.rear - r2 && Math.abs(ly) < e.half + r2;
 
-  const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  const cap = chainHopperCap(rob.spec);
   // CR intake: capture every particle inside an intake MOUTH (`chainIntakeMouths` — the SAME
   // band the renderer draws, so the grab area is exactly the visible intake). It reaches the
   // collision front (the intake tip), so a particle at the intake is captured BEFORE the frame
   // would plow it forward — driving into a cluster collects fast instead of shoving them away.
-  if (intakeActive && rob.hopper.length < cap) {
+  if (f.intakeActive && rob.hopper.length < f.cap) {
     // ANY mounted edge grabs: one mouth for front/back, two for side (both flanks) and
     // frontback (both ends). The particle radius pads only each mouth's outward lip.
-    for (const m of chainIntakeMouths(rob.spec)) {
-      if (mouthContains(m, local.x, local.y, r2)) return 'absorbed';
+    for (const m of f.mouths) {
+      if (mouthContains(m, lx, ly, r2)) return 'absorbed';
     }
   }
 
-  // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint
+  // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint.
+  // An IMPORT plows with its hull, along the hull's nearest-feature normal — its bounding box
+  // would shove particles from corners the robot does not have.
+  if (rob.spec.imported) {
+    const f = polyFeature(rob.spec.imported.hull, { x: lx, y: ly });
+    if (f.depth <= -r2) return 'none';
+    const n = rot({ x: f.nx, y: f.ny }, rob.heading);
+    b.pos.x += n.x * 0.6;
+    b.pos.y += n.y * 0.6;
+    const rv = hyp(rob.vel.x, rob.vel.y);
+    b.vel.x = n.x * rv * 0.9;
+    b.vel.y = n.y * rv * 0.9;
+    return 'none';
+  }
   if (!inBox) return 'none';
 
   // push out along the min-penetration axis (robot-local), impart robot vel
-  const penX = e.front + r2 - local.x;
-  const penXneg = local.x + e.rear + r2;
-  const penY = e.half + r2 - Math.abs(local.y);
+  const penX = e.front + r2 - lx;
+  const penXneg = lx + e.rear + r2;
+  const penY = e.half + r2 - Math.abs(ly);
   let nx = 0;
   let ny = 0;
   if (Math.min(penX, penXneg) < penY) nx = penX < penXneg ? 1 : -1;
-  else ny = local.y >= 0 ? 1 : -1;
-  const world = rot({ x: nx, y: ny }, rob.heading);
-  b.pos.x += world.x * 0.6;
-  b.pos.y += world.y * 0.6;
-  const rv = hyp(rob.vel.x, rob.vel.y);
-  b.vel.x = world.x * rv * 0.9;
-  b.vel.y = world.y * rv * 0.9;
+  else ny = ly >= 0 ? 1 : -1;
+  // `rot({nx, ny}, heading)`
+  const wx = nx * f.wc - ny * f.ws;
+  const wy = nx * f.ws + ny * f.wc;
+  b.pos.x += wx * 0.6;
+  b.pos.y += wy * 0.6;
+  b.vel.x = wx * f.speed * 0.9;
+  b.vel.y = wy * f.speed * 0.9;
   return 'none';
 }
 

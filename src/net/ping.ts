@@ -20,7 +20,8 @@ export interface HomeProbe {
 }
 
 /** probe the connected server (over HTTP) for our home region + access latency.
- * `httpBase` is `gameServerHttpUrl()`. Returns null if the server is unreachable.
+ * `httpBase` is `nearestHttpUrl()`, the Anycast host: this measures the region nearest the
+ * player, so it must not go through the primary router. Returns null if the server is unreachable.
  *
  * The FIRST sample gets a much longer budget than the rest (`coldTimeoutMs`). Regions
  * auto-stop when idle, so the first request of a session is routinely the one that

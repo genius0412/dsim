@@ -4,7 +4,7 @@ import { robotsEnabled } from '../../sim/match';
 import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbIsTurreted, bbLauncherOf, bbTurretFor } from './mechs';
 import { bbTurretSolution } from './robot';
-import { bbAimTarget, bbCellSideOf, bbDumpShotEnters, bbPretendHive, bbTurretShotEnters, type BbFlightTrace } from './play';
+import { bbAimTarget, bbCellSideOf, bbDumpShotEnters, bbFixedShotEnters, bbPretendHive, bbTurretShotEnters, type BbFlightTrace } from './play';
 import { biobuzzPhysics } from './state';
 
 /**
@@ -125,6 +125,15 @@ export function solveShotPath(world: World, r: RobotState): boolean {
     return true;
   }
 
+  // A FIXED SHOOTER: the release it would make now, run forward — the fire gate's own predicate
+  // (`bbFixedShotEnters`), so a path is drawn exactly where holding fire would release
+  if (launcher.kind === 'fixed') {
+    if (!bbFixedShotEnters(hive, r, SIM_DT, TRACE)) return false;
+    SHOT.made = true;
+    SHOT.points = TRACE.n;
+    return true;
+  }
+
   // A DUMPER: the 3D CATAPULT's one fling of its bucket, or the 2D pipeline's converging throws —
   // the same `cluster` switch `BbShot` carries, read off the world's own physics so the drawn arc
   // is the arc THIS match will actually fly. "Made" is every element of it landing, which is the
@@ -163,7 +172,9 @@ export function bbCanFire(world: World, r: RobotState): boolean {
   if (r.passive || r.hopper.length === 0) return false;
   if (!robotsEnabled(world)) return false;
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
-  if (!bbIsTurreted(launcher) && r.fireReadyAt > world.time) return false;
+  // the DUMPER's re-arm only: a fixed shooter's feed beat is short like a turret's, and gating on
+  // it would strobe the path the same way
+  if (launcher.kind === 'dumper' && r.fireReadyAt > world.time) return false;
   return true;
 }
 

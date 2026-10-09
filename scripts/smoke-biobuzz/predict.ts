@@ -2,6 +2,8 @@ import type { Check } from './harness';
 import { cmd, mkWorld3d, mkWorld3dPair } from './harness';
 import { bbBotBuildByKey } from '../../src/games/biobuzz/ai/builds';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
+import { disposeEngineFor, rewindEngineTo, saveEngineState } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { BIOBUZZ_BOT } from '../../src/games/biobuzz/ai';
 import {
   createFullPredictor,
   createLightPredictor,
@@ -540,6 +542,138 @@ export function predictChecks(check: Check): void {
     const gap = other ? other.x - pose.pos.x : 0;
     check('predict: LIGHT pushes two overlapping robots apart instead of driving through',
       gap > 12, `centres ${gap.toFixed(2)} in apart after one tick (started 10)`);
+  }
+
+  /**
+   * FULL PREDICTS EVERYTHING by running the real `step3d` on the client, on ONE persistent engine
+   * REWOUND onto each snapshot (`rewindEngineTo`) — a rebuild is 15–40 ms and a snapshot lands 30
+   * times a second. The rewind has to reproduce what the server does from that snapshot: here a
+   * world is run on past a snapshot (the truth), then its engine is rewound onto the snapshot and
+   * the same inputs replayed. Measured when written: robots within 0.06 in, elements within
+   * 1.07 in, the HIVE trays exact — and a FRESH engine built from the same snapshot does worse on
+   * elements (0.45–4.4 in), because it loses the bodies' sleep and contact history.
+   */
+  {
+    const clone = (w: World): World => JSON.parse(JSON.stringify(w)) as World;
+    const cmdsAt = (t: number) => new Map([0, 1].map((id) => [id, cmd({ driveX: Math.sin(t / 40 + id) * 0.8, driveY: Math.cos(t / 55 + id) * 0.8, intake: true, fire: t % 90 < 20 })]));
+    const W = mkWorld3dPair('match', 11);
+    W.match.phase = 'teleop';
+    W.match.phaseTimeLeft = 110;
+    let t = 0;
+    for (; t < 400; t++) step3d(W, SIM_DT, cmdsAt(t));
+    let rob = 0, ball = 0, hive = 0, travelled = 0, allOk = true;
+    let live = W;
+    for (let trial = 0; trial < 4; trial++) {
+      for (let i = 0; i < 37; i++, t++) step3d(live, SIM_DT, cmdsAt(t));
+      const snap = clone(live);
+      const k = t;
+      const before = live.robots.map((r) => ({ ...r.pos }));
+      for (let i = 0; i < 12; i++) step3d(live, SIM_DT, cmdsAt(k + i));
+      const truth = clone(live);
+      live.robots.forEach((r, i) => { travelled = Math.max(travelled, Math.hypot(r.pos.x - before[i].x, r.pos.y - before[i].y)); });
+      const S = clone(snap);
+      allOk = rewindEngineTo(live, S) && allOk;
+      for (let i = 0; i < 12; i++) step3d(S, SIM_DT, cmdsAt(k + i));
+      for (const r of truth.robots) { const q = S.robots.find((x) => x.id === r.id)!; rob = Math.max(rob, Math.hypot(r.pos.x - q.pos.x, r.pos.y - q.pos.y)); }
+      for (const b of truth.balls) { const q = S.balls.find((x) => x.id === b.id)!; ball = Math.max(ball, Math.hypot(b.pos.x - q.pos.x, b.pos.y - q.pos.y, b.z - q.z)); }
+      for (const a of ['red', 'blue'] as const) hive = Math.max(hive, Math.abs((truth.biobuzz!.hives[a].angle ?? 0) - (S.biobuzz!.hives[a].angle ?? 0)));
+      live = S; // carry on from the rewound world, as the client does
+      t = k + 12;
+    }
+    disposeEngineFor(live);
+    check('⚠️ world predict: a rewound engine replays a snapshot the way the server ran it (robots < 0.2 in, elements < 2 in, trays exact)',
+      allOk && travelled > 3 && rob < 0.2 && ball < 2 && hive < 1e-4,
+      `robots ${rob.toFixed(4)} in, elements ${ball.toFixed(3)} in, trays ${hive.toExponential(1)} rad, robots travelled ${travelled.toFixed(1)} in per window`);
+    const A = mkWorld3dPair('match', 12);
+    step3d(A, SIM_DT, new Map());
+    const B = clone(A);
+    B.robots.pop();
+    check('world predict: a rewind onto a different robot set refuses (engineFor rebuilds instead)', !rewindEngineTo(A, B));
+    disposeEngineFor(B);
+  }
+
+  /**
+   * ⚠️ A REWIND ONTO A TICK THE CLIENT SAVED IS A ROLLBACK, AND ONLY THAT REPRODUCES THE ROOM'S
+   * CAPTURES (owner: "it just doesn't shoot sometimes" — the client fired elements it had wrongly
+   * picked up). The room W runs a bot with fire held most of the time; the client C runs the SAME
+   * commands 8 ticks ahead and is rewound onto an exact copy of W every 2 ticks, as the FULL world
+   * tier is. Without saves the rewind keeps a lead's worth of future contact state and replays end
+   * on a different capture or shot than W's; with `saveEngineState` on the snapshot ticks they
+   * never do.
+   */
+  {
+    const clone = (w: World): World => JSON.parse(JSON.stringify(w)) as World;
+    const LEAD = 8;
+    const make = (): World => {
+      const w = mkWorld3d('match', 5, bbBotBuildByKey('pollinator'));
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      return w;
+    };
+    const W = make();
+    const bot = BIOBUZZ_BOT.create(W, 0, 'hard', 7);
+    const cmds: RobotCommand[] = [];
+    const past = new Map<number, World>();
+    for (let t = 0; t < 600; t++) {
+      const c = bot.step(W);
+      cmds[W.tick + 1] = { ...c, fire: c.fire || t % 72 < 50 };
+      step3d(W, SIM_DT, new Map([[0, cmds[W.tick + 1]]]));
+      if (W.tick % 2 === 0) past.set(W.tick, clone(W));
+    }
+    disposeEngineFor(W);
+    // every pose the step writes, exactly: the rollback must end where the room did, not near it
+    const poses = (w: World): string =>
+      JSON.stringify([
+        w.robots.map((r) => [r.pos, r.z, r.heading, r.vel, r.vz, r.angVel]),
+        w.balls.map((b) => [b.id, b.pos, b.z, b.vel, b.vz]),
+        w.biobuzz?.hives,
+      ]);
+    const run = (saves: boolean): { rewinds: number; captures: number; shots: number; off: number; taken: number } => {
+      let C = make();
+      const save = (): void => {
+        if (saves && C.tick % 2 === 0) saveEngineState(C, C.tick - LEAD);
+      };
+      let rewinds = 0;
+      let captures = 0;
+      let shots = 0;
+      let off = 0;
+      for (let S = 60; S + LEAD < 600; S += 2) {
+        while (C.tick < S + LEAD) {
+          step3d(C, SIM_DT, new Map([[0, cmds[C.tick + 1]]]));
+          save();
+        }
+        const snap = clone(past.get(S)!);
+        if (!rewindEngineTo(C, snap)) break;
+        C = snap;
+        for (let k = S + 1; k <= S + LEAD; k++) {
+          step3d(C, SIM_DT, new Map([[0, cmds[k]]]));
+          save();
+        }
+        const truth = past.get(S + LEAD)!;
+        rewinds++;
+        if (C.robots[0].lastIntakeAt !== truth.robots[0].lastIntakeAt) captures++;
+        if (C.robots[0].lastFireAt !== truth.robots[0].lastFireAt) shots++;
+        if (poses(C) !== poses(truth)) off++;
+      }
+      disposeEngineFor(C);
+      const taken = past.get(598)!.robots[0].lastIntakeAt;
+      return { rewinds, captures, shots, off, taken };
+    };
+    const without = run(false);
+    const withSaves = run(true);
+    check('⚠️ world predict: WITHOUT a save, rewound replays end on a different capture or shot than the room (non-vacuous)',
+      without.rewinds > 200 && without.captures + without.shots > 0 && without.taken > 0,
+      `${without.captures} captures and ${without.shots} shots differ over ${without.rewinds} rewinds`);
+    check("⚠️ world predict: WITH the client's own save, every rewound replay ends on the room's captures and shots",
+      withSaves.rewinds === without.rewinds && withSaves.captures === 0 && withSaves.shots === 0,
+      `${withSaves.captures} captures and ${withSaves.shots} shots differ over ${withSaves.rewinds} rewinds`);
+    // The step's JSON is not the bodies' readback (`groundRoll3d` damps it, `derive.ts` zeroes a
+    // resting element's velocity), so a rewind that rewrote it from the bodies replayed without the
+    // room's damping: 264 of 266 replays ended off the room's poses, while the capture count above
+    // stayed 0 on most seeds.
+    check("⚠️ world predict: WITH the client's own save, every rewound replay ends on the room's exact poses (robots, elements, trays)",
+      withSaves.off === 0 && without.off > 0,
+      `${withSaves.off} of ${withSaves.rewinds} off with saves, ${without.off} without`);
   }
 }
 

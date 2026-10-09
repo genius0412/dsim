@@ -80,6 +80,8 @@ import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { COSMETIC_AXES, clampCosmetics, type Cosmetics } from '../cosmetics';
 import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
+import { coerceImported, polyBounds } from './imported';
+import { coerceFlywheel, flySeed } from './flywheel';
 import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
@@ -167,8 +169,12 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   // resolve INTAKE + DRIVETRAIN first (width's floor depends on the drivetrain —
   // swerve needs a wider base). Legacy preset names from older saves migrate.
   if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
+  else if (sp.intake === 'none') out.intake = 'none';
   else if (sp.intake === 'compact') out.intake = 'sloped';
   else if (sp.intake === 'extended') out.intake = 'vector';
+  // NO INTAKE is DECODE's (hand loading in its LOADING ZONE); the other games have no human
+  // player who loads a robot, so they get the sloped preset, from `sp` or from `base`
+  if (out.intake === 'none' && (game === 'chain' || game === 'biobuzz')) out.intake = 'sloped';
   if (
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
@@ -198,8 +204,28 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     game === 'chain'
       ? { min: crSize.minWidth, max: crSize.maxWidth }
       : widthLimits(out.intake, out.drivetrain);
-  out.length = clampFinite(sp.length, len.min, len.max, base.length);
-  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
+  /**
+   * AN IMPORTED ROBOT (`docs/robot-import-plan.md` §3.1), resolved HERE, with the size, because
+   * it decides the size: an import's `length`/`width` are its HULL's bounding box (x and y
+   * extent, intake INCLUDED — the hull is the whole robot seen from above), then clamped by this
+   * game's ordinary limits like any other length. They are the PARAMETRIC FALLBACK — what a
+   * reader that knows nothing about imports sees — and may therefore be smaller than the hull
+   * (DECODE's sloped intake caps `length` at 15, an 18-in hull stays 18 in); everything that
+   * collides, contacts or judges a start reads the hull itself. Resolving it any later would
+   * break IDEMPOTENCY: the storage ceiling below reads `length`, so a first pass would clamp
+   * storage against the raw length and a second against the hull's.
+   *
+   * FROM THE RAW INPUT ONLY, NEVER FROM `base`. A spec without `imported` is a standard robot —
+   * JSON drops an absent field, so a client switching back from an import sends exactly that —
+   * and falling back to `base` would keep the import on every `update` that meant to remove it.
+   * Carried for EVERY game; the BIOBUZZ arm below re-reads the size from the same hull.
+   */
+  const imported = coerceImported(sp.imported);
+  const hullBox = imported ? polyBounds(imported.hull) : null;
+  if (imported) out.imported = imported;
+  else delete out.imported;
+  out.length = clampFinite(hullBox ? hullBox.maxX - hullBox.minX : sp.length, len.min, len.max, base.length);
+  out.width = clampFinite(hullBox ? hullBox.maxY - hullBox.minY : sp.width, wid.min, wid.max, base.width);
 
   // 2) DRIVETRAIN → rpm range. BUTTERFLY has TWO geared wheel sets, so it has two
   // sliders: `driveRpm` is its mecanum set (the shared field) and `tankRpm` its traction
@@ -477,6 +503,34 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
 
   /**
+   * THE FIXED SHOOTER — DECODE's launcher aim, fixed hood and setpoint flywheel, and the setpoint
+   * flywheel BIOBUZZ's `fixed` launcher shares (`src/sim/flywheel.ts`).
+   *
+   * FROM THE RAW INPUT ONLY, NEVER FROM `base` — the `imported` rule above, for the same reason:
+   * absent means the turret with the adjustable hood and the solved speed every robot had before
+   * these existed, and a client switching back sends exactly that (JSON drops an absent field), so
+   * a fallback to `base` would keep a fixed launcher on the very update that removed it.
+   *
+   * Written only when PRESENT, so a spec without them is byte-for-byte what it was. Chain Reaction
+   * has none of the three. BIOBUZZ's hood lives on `bbMech.launcher.hoodDeg` and its arm below
+   * keeps the flywheel only on its `fixed` launcher. `game === undefined` is DECODE (`createWorld`
+   * passes it that way — see `coerceSetup`).
+   */
+  {
+    const fly = game === 'chain' ? undefined : coerceFlywheel(sp.flywheel);
+    if (fly) out.flywheel = fly;
+    else delete out.flywheel;
+    const decodeArm = game !== 'chain' && game !== 'biobuzz';
+    if (decodeArm && sp.launcher === 'fixed') out.launcher = 'fixed';
+    else delete out.launcher;
+    if (decodeArm && typeof sp.hoodDeg === 'number' && Number.isFinite(sp.hoodDeg)) {
+      out.hoodDeg = Math.round(clamp(sp.hoodDeg, C.DECODE_HOOD_MIN_DEG, C.DECODE_HOOD_MAX_DEG));
+    } else {
+      delete out.hoodDeg;
+    }
+  }
+
+  /**
    * THE BIOBUZZ ARM, LAST — this game's own clamps, over a spec every shared pass above has
    * already bounded.
    *
@@ -545,8 +599,10 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // ...and the SIZE, RAW, for the same reason. Step 1 sized it with DECODE's per-intake
     // `lengthLimits`, whose ceiling (18 − reach, 15 for sloped) is DECODE's in-cube roller rule;
     // a BIOBUZZ sweeper deploys, and `bbSizeLimits` is this game's whole envelope.
-    out.length = sp.length as RobotSpec['length'];
-    out.width = sp.width as RobotSpec['width'];
+    // (an IMPORTED robot's raw size is its hull's bounding box — see step 1 — and `imported`
+    // itself is already on `out`, which `coerceBiobuzzSpec` copies through)
+    out.length = (hullBox ? hullBox.maxX - hullBox.minX : sp.length) as RobotSpec['length'];
+    out.width = (hullBox ? hullBox.maxY - hullBox.minY : sp.width) as RobotSpec['width'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;
@@ -580,13 +636,31 @@ export function coerceAssists(raw: unknown, base: AssistConfig = DEFAULT_ASSISTS
 /** clamp a single path point's coordinates to the field (finite, in-bounds) so a
  * spoofed auto path can never teleport a robot out of the world or to NaN */
 function coercePathPoint(p: PathPoint): PathPoint {
-  const out: PathPoint = { ...p };
-  out.x = clampFinite(p.x, -C.FIELD_HALF, C.FIELD_HALF, 0);
-  out.y = clampFinite(p.y, -C.FIELD_HALF, C.FIELD_HALF, 0);
+  // an ALLOWLIST, not a spread: the path rides `RobotState`, every snapshot and every replay,
+  // so a key the sim never reads is only a way to smuggle bulk (or junk) into all three. Every
+  // field `pathTraversal` reads is kept exactly as it was read before — including a `heading`
+  // outside the enum, which is dropped rather than replaced, because an unknown heading and a
+  // missing one take the same fallback branch there.
+  const src = (typeof p === 'object' && p !== null ? p : {}) as Partial<PathPoint>;
+  const out = {
+    x: clampFinite(src.x, -C.FIELD_HALF, C.FIELD_HALF, 0),
+    y: clampFinite(src.y, -C.FIELD_HALF, C.FIELD_HALF, 0),
+  } as PathPoint;
+  if (src.heading === 'linear' || src.heading === 'constant' || src.heading === 'tangential') out.heading = src.heading;
   for (const k of ['startDeg', 'endDeg', 'degrees'] as const) {
-    if (out[k] !== undefined) out[k] = clampFinite(out[k], -720, 720, 0);
+    if (src[k] !== undefined) out[k] = clampFinite(src[k], -720, 720, 0);
   }
+  // read for its truthiness only, so its truthiness is what survives
+  if (src.reverse !== undefined) out.reverse = !!src.reverse;
   return out;
+}
+
+/** a path line or sequence id: `pathTraversal` matches them with `===`, so a string or a finite
+ *  number is kept as is (bounded), and anything else is dropped */
+function coercePathId(v: unknown): string | number | undefined {
+  if (typeof v === 'string') return v.slice(0, 120);
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return undefined;
 }
 
 /** Auto-path size bounds. An auto path arrives from a hand-editable file picker AND
@@ -613,8 +687,11 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
       fileName: d.fileName.slice(0, 120),
       startPoint: coercePathPoint(d.startPoint as PathPoint),
       lines: (d.lines as PathLine[]).slice(0, PATH_MAX_LINES).map((line) => {
-        const l: PathLine = { ...line };
-        l.endPoint = coercePathPoint(line.endPoint);
+        // an ALLOWLIST — see `coercePathPoint`. A null line still throws below and refuses the
+        // whole path, as it always did.
+        const l = { endPoint: coercePathPoint(line.endPoint) } as PathLine;
+        const lineIdKept = coercePathId(line.id);
+        if (lineIdKept !== undefined) l.id = lineIdKept as string;
         if (Array.isArray(line.controlPoints)) {
           // ⚠️ NEVER slice to 2. `renderer.ts` and `pathTraversal` both read LENGTH as the
           // curve order (1 ⇒ quadratic, 2 ⇒ cubic, 0 ⇒ straight), so truncating a long list
@@ -628,22 +705,28 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
         // every wait reaches `robot.pathWaitTimer` — all THREE of them, or the cap is
         // incoherent (see the sequence `durationMs` below)
         for (const k of ['waitBeforeMs', 'waitAfterMs'] as const) {
-          if (l[k] !== undefined) l[k] = clampFinite(l[k], 0, PATH_MAX_WAIT_MS, 0);
+          if (line[k] !== undefined) l[k] = clampFinite(line[k], 0, PATH_MAX_WAIT_MS, 0);
         }
-        // unread anywhere outside the importer — do not carry them into the world, a
-        // snapshot or a stored replay
-        delete l.waitBeforeName;
-        delete l.waitAfterName;
+        // `waitBeforeName`/`waitAfterName` are unread anywhere outside the importer, so the
+        // allowlist leaves them out — they never reach the world, a snapshot or a stored replay
         return l;
       }),
       // `shapes` is DROPPED, not capped: nothing reads it — no renderer, no sim, no HUD.
       // It was carried from the .pp importer through the coercer, the mirror and every
       // snapshot for nothing. Deletion beats a bound.
       sequence: Array.isArray(d.sequence)
-        ? (d.sequence as SequenceItem[]).slice(0, PATH_MAX_SEQUENCE).map((it) => {
-            const item: SequenceItem = { ...it };
-            if (item.durationMs !== undefined) {
-              item.durationMs = clampFinite(item.durationMs, 0, PATH_MAX_WAIT_MS, 0);
+        ? (d.sequence as SequenceItem[]).slice(0, PATH_MAX_SEQUENCE).map((raw) => {
+            const it = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<SequenceItem>;
+            // an allowlist too. A `kind` outside the enum is dropped: `pathTraversal` skips
+            // anything that is neither 'wait' nor 'path', absent or not.
+            const item = {} as SequenceItem;
+            if (it.kind === 'path' || it.kind === 'wait' || it.kind === 'action') item.kind = it.kind;
+            const itemId = coercePathId(it.id);
+            if (itemId !== undefined) item.id = itemId as string;
+            const lineId = coercePathId(it.lineId);
+            if (lineId !== undefined) item.lineId = lineId as string;
+            if (it.durationMs !== undefined) {
+              item.durationMs = clampFinite(it.durationMs, 0, PATH_MAX_WAIT_MS, 0);
             }
             return item;
           })
@@ -717,7 +800,10 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
   const raw = coerceStartPose(s.startPose);
   if (raw) startPose = mod.startSnap ? mod.startSnap(spec, alliance, raw) : raw;
   return {
-    id: s.id,
+    // the command-map key and the spawn sort key: a finite integer, whatever arrived. Callers
+    // that can refuse a bad id (`sanitizeReplay`) do so before this; a NaN here used to reach
+    // `createWorld`'s `p.id - q.id` sort comparator and every `Map<number, …>` keyed by it.
+    id: typeof s.id === 'number' && Number.isFinite(s.id) ? Math.round(s.id) : 0,
     alliance,
     spec,
     assists: coerceAssists(s.assists),
@@ -731,7 +817,8 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
     // the same rule as `autoPath`: a game that cannot play one never carries one
     zenithAuto: mod.zenithAutos ? coerceZenithAuto(s.zenithAuto) : undefined,
-    passive: s.passive,
+    // a boolean or absent — a truthy object here used to switch the robot's actions off
+    passive: typeof s.passive === 'boolean' ? s.passive : undefined,
   };
 }
 
@@ -930,6 +1017,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     // preloaded artifacts are PHYSICAL held balls (the hopper mirrors their colors);
     // step()'s positionHeldBalls parks them at the storage slots
     const created = robots[robots.length - 1];
+    // a SETPOINT flywheel starts at its first setpoint; writes nothing for any other build
+    flySeed(created);
     created.hopper.forEach((color, slot) => {
       const side = slot >= 1 ? (slot === 1 ? -1 : 1) : 0; // triangle front row: opposite sides
       const lp = heldSlotPos(created.spec, slot, side);

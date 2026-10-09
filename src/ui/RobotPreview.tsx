@@ -4,8 +4,11 @@ import * as C from '../config';
 import { coerceSpec, createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
 import { DEFAULT_SPEC } from '../sim/specDefaults';
 import { footprintExtents } from '../sim/field';
+import { polyBounds } from '../sim/imported';
 import { drawRobot } from '../render/drawRobot';
 import { clampCosmetics } from '../cosmetics';
+import { useImportedAssetVersion } from './useImportedAssets';
+import { importedFootprintLabel } from './FootprintSvg';
 
 /** clear space around the robot, as a fraction of its longest side */
 const PAD = 0.16;
@@ -75,6 +78,9 @@ export function RobotPreview({
   const key = specKey(spec);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tpl: RobotState = useMemo(() => previewRobot(spec), [key]);
+  // an IMPORT's top-down picture decodes AFTER the first draw — this moves when it lands, and the
+  // draw effect below re-runs on it (the match canvas redraws every frame and needs no such hook)
+  const assets = useImportedAssetVersion(spec.imported?.id);
 
   const fx = footprintExtents(spec);
   // NOSE UP: the robot is drawn at heading +90°, so its forward axis (+x in the robot
@@ -133,9 +139,14 @@ export function RobotPreview({
     ctx.globalAlpha = 0.75;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(`${spec.width}" wide · ${spec.length}" long`, size / 2, height - 6);
+    // an import's size is its hull's (its `length` is a clamped parametric mirror)
+    const hb = spec.imported ? polyBounds(spec.imported.hull) : null;
+    const dims = hb
+      ? `${(hb.maxY - hb.minY).toFixed(1)}" wide · ${(hb.maxX - hb.minX).toFixed(1)}" long`
+      : `${spec.width}" wide · ${spec.length}" long`;
+    ctx.fillText(dims, size / 2, height - 6);
     ctx.restore();
-  }, [tpl, spec, size, height, boxW, boxH, fx.front, fx.rear, caption]);
+  }, [tpl, spec, size, height, boxW, boxH, fx.front, fx.rear, caption, assets]);
 
   return (
     <canvas
@@ -143,7 +154,7 @@ export function RobotPreview({
       className="ds-robot-sprite"
       style={{ width: size, height }}
       role="img"
-      aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`}
+      aria-label={spec.imported ? importedFootprintLabel(spec.imported) : `${spec.width} by ${spec.length} inch robot, ${spec.intake === 'none' ? 'no intake' : `${spec.intake} intake`}`}
     />
   );
 }
@@ -172,5 +183,7 @@ function specKey(s: RobotSpec): string {
     s.length, s.width, s.intake, s.drivetrain, s.driveRpm,
     s.massLb, s.flywheelInertia, s.canSort, s.chassisColor,
     cosm.accent, cosm.decal, cosm.plate,
+    // an imported robot's descriptor (hull, wheels, mechanism placements) is its geometry
+    s.imported ? JSON.stringify(s.imported) : '',
   ].join('|');
 }

@@ -15,6 +15,7 @@ import {
 } from './config';
 import { otherSide } from './hive';
 import { bbIntakeAccepts } from './mechs';
+import { bbImportDumpZ } from './importMech';
 import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 import { bbEvalStart } from './start';
 
@@ -188,7 +189,8 @@ export function releasePollen(
   held.state = { kind: 'flight', target: r.alliance, by: r.alliance };
   held.pos = { x: o.x, y: o.y };
   held.vel = { x: v.x, y: v.y };
-  held.z = z ?? BB_LAUNCH_Z0;
+  // a dumper's tray lip: `BB_LAUNCH_Z0`, or an IMPORT's placed lip (`bbImportDumpZ`)
+  held.z = z ?? (r.spec.imported ? bbImportDumpZ(r.spec) : BB_LAUNCH_Z0);
   held.vz = v.z;
 }
 

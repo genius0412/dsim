@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   fetchUserStatsByUsername,
   fetchUserMatchesByUsername,
@@ -13,6 +13,10 @@ import { BadgeMarks } from './BadgeMark';
 import { ProfileFriendActions } from './ProfileFriendActions';
 import { useFriendsCtx } from './friendsContext';
 import type { CareerNav } from './Stats';
+import { fetchPlacements, type Placement } from '../net/myCompetitions';
+import { ordinal } from '../notices';
+import { seasonFor } from '../seasons';
+import { fmtDay } from './fmtDate';
 
 /**
  * Public player profile at `/profile/<username>` — anyone can view any player's
@@ -94,6 +98,7 @@ export function Profile({
   );
 
   return (
+    <>
     <CareerView
       loadStats={loadStats}
       fetchPage={fetchPage}
@@ -108,5 +113,56 @@ export function Profile({
       nav={nav}
       notFound={notFound}
     />
+    <Placements username={username} onOpen={nav.onOpenCompetition} />
+    </>
+  );
+}
+
+/**
+ * THE COMPETITIONS A PLAYER FINISHED, and where they placed (0059). Every season's, newest first:
+ * a placement is an account's history, not a season's board. Absent when there are none, so a
+ * profile with no competitions shows nothing new.
+ */
+function Placements({ username, onOpen }: { username: string; onOpen?: (slug: string) => void }) {
+  const [rows, setRows] = useState<Placement[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void fetchPlacements(username).then((r) => alive && setRows(r));
+    return () => {
+      alive = false;
+    };
+  }, [username]);
+  if (!rows.length) return null;
+  return (
+    <div className="ds-panel">
+      <div className="ds-panel-h">
+        <h2 className="ds-panel-title">Competitions</h2>
+      </div>
+      <div className="ds-table-scroll">
+        <table className="ds-table">
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.slug}>
+                <td className="rk">{r.place ? ordinal(r.place) : '—'}</td>
+                <td>
+                  {onOpen ? (
+                    <button className="mh-player link" onClick={() => onOpen(r.slug)}>
+                      {r.name}
+                    </button>
+                  ) : (
+                    r.name
+                  )}
+                  {r.official && <span className="ds-badge staff"> Official</span>}
+                </td>
+                <td className="ds-muted">
+                  {seasonFor(r.game).name} · of {r.entrants}
+                </td>
+                <td className="ds-muted">{r.completedAt ? fmtDay(r.completedAt) : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

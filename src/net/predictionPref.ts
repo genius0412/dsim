@@ -32,15 +32,15 @@ import { PREDICTION_KEY as PREDICT_KEY, PREDICTION_OFF_NOTICE_KEY as OFF_NOTICE_
 
 /** the stored preference — what the player asked for, which is not necessarily what is
  *  running (see `PredictionMode` for that). */
-export type PredictionPref = 'auto' | 'off' | 'light' | 'full';
+export type PredictionPref = 'auto' | 'off' | 'light' | 'balanced' | 'full';
 
 /** what is ACTUALLY running this match: `auto` has been resolved to one of the other three
  *  by the time a tick is stepped, so this is the narrower type the controller and the HUD use. */
-export type PredictionMode = 'off' | 'light' | 'full';
+export type PredictionMode = 'off' | 'light' | 'balanced' | 'full';
 
 /** the cycle order the in-match control walks. `auto` leads because it is the default and the
  *  answer a player who has never opened this should be able to get back to. */
-export const PREDICTION_PREFS: readonly PredictionPref[] = ['auto', 'off', 'light', 'full'];
+export const PREDICTION_PREFS: readonly PredictionPref[] = ['auto', 'off', 'light', 'balanced', 'full'];
 
 /** the words the two controls print, in one place so Controls and the in-match panel cannot
  *  drift. Sentence case per `docs/area/ui.md`. */
@@ -48,15 +48,17 @@ export const PREDICTION_LABELS: Record<PredictionPref, string> = {
   auto: 'Auto',
   off: 'Off',
   light: 'Light',
+  balanced: 'Balanced',
   full: 'Full',
 };
 
 /** one line under each option — what it costs and what it feels like. */
 export const PREDICTION_BLURBS: Record<PredictionPref, string> = {
-  auto: 'Measures this machine once before the match and picks Light or Full.',
+  auto: 'Measures this machine before the match and picks Full, Balanced or Light.',
   off: 'Your robot is drawn from the server’s updates. No guessing, about 80 ms of lag.',
   light: 'Predicts driving and walls. Instant on open floor; a nudge when you push.',
-  full: 'Predicts a small 3D world. Instant through a push; needs the 3D physics.',
+  balanced: 'Predicts your robot, the robots near it and the moving balls. Lighter than Full.',
+  full: 'Predicts the whole field: every robot, every ball, your shots. Needs the most CPU.',
 };
 
 const isPref = (v: unknown): v is PredictionPref =>

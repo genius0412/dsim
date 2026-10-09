@@ -20,8 +20,11 @@ COPY server ./server
 COPY src ./src
 # --packages=external keeps node_modules deps (ws, pg, @dimforge/rapier2d-compat with
 # its embedded WASM) as normal runtime imports; only our own code is bundled.
-RUN npx esbuild server/index.ts --bundle --platform=node --format=esm \
-    --packages=external --outfile=dist-server/index.js
+# TWO entries: the server, and the room worker it spawns when SIM_WORKERS is set
+# (server/roomHost.ts looks for roomWorker.js beside index.js; without it, rooms stay
+# in-process and the boot log says so).
+RUN npx esbuild server/index.ts server/roomWorker.ts --bundle --platform=node --format=esm \
+    --packages=external --outdir=dist-server
 
 FROM node:22-alpine
 WORKDIR /app

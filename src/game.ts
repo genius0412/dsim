@@ -27,6 +27,14 @@ import type { AutoSeatStatus, ZenithAutoSetup } from './auto/types';
  * plus the editor popup; a type-only import here, so the main chunk never contains Zenith) and the
  * file to play.
  */
+/**
+ * The auto seat's status as the HUD reads it: the seat's own, the file's name, and `problems`,
+ * the ERROR findings Zenith has for this file on this robot and alliance (a start in the other
+ * half, a path through a wall, a routine over 30 s). They do not stop the seat, so without this
+ * a file Zenith refuses drove in silence, or sat still, and nothing on the match screen said why.
+ */
+export type GameAutoStatus = AutoSeatStatus & { name: string; problems: string[] };
+
 export interface GameControllerZenithAuto extends ZenithAutoSetup {
   module: typeof import('./ui/zenithEditor');
   name: string;
@@ -40,7 +48,7 @@ import type { GameModule } from './games';
 import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
 import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } from './games/biobuzz/sim3d/engine';
-import { PREDICT_FULL_BUDGET_MS } from './games/biobuzz/config';
+import { PREDICT_FULL_BUDGET_MS, PREDICT_WORLD_BUDGET_MS } from './games/biobuzz/config';
 import { biobuzzPhysics } from './games/biobuzz/state';
 import {
   getPredictionPref,
@@ -56,10 +64,12 @@ import { chainCatalystPrompt } from './games/chain/play';
 import { beamRide } from './games/chain/beams';
 import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { netScore, PaceCurveRecorder, type PaceCurve } from './ui/pace/curve';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
 import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
+import { flyPresetIndex, flyReady, flySetpoint } from './sim/flywheel';
 import { InputManager } from './input/input';
 import { effectiveBindings, type ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
@@ -68,6 +78,7 @@ import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/ses
 import { localizeCommand } from './net/protocol';
 import { LeadController } from './net/leadControl';
 import { REMOTE_SMOOTH_HALFLIFE, blendPose, followDrawn, nearDrawWeight, type Pose } from './net/contactDraw';
+import { FULL_RESYNC_EVERY, cmdsAgree, digestsAgree, worldDigest, type WorldDigest } from './net/worldDigest';
 import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
 
@@ -166,6 +177,21 @@ const PREDICT_SLIP_WINDOW = 90;
 const AUTO_PROBE_RUNS = 6;
 
 /**
+ * THE WORLD-STEP PROBE: how many real `step3d` ticks each countdown frame times, on a throwaway
+ * copy of the match played as teleop with every robot driving and intaking — a quiet `pre` world
+ * is asleep and would read far cheaper than a live one. The per-tick cost is scaled to the window
+ * a reconcile actually replays (the lead, `WORLD_PROBE_MIN_WINDOW` at least) and judged against
+ * `PREDICT_FULL_BUDGET_MS` like the predictor probe is. Measured on a fast desktop: 0.28 ms a
+ * tick 1v1, 0.42 ms 2v2, so a 12-tick replay is 3.4–5 ms.
+ */
+const WORLD_PROBE_TICKS = 8;
+
+const WORLD_PROBE_MIN_WINDOW = 12;
+/** ticks the probe world runs, untimed, before its first timed run: a freshly copied world has
+ *  every element awake, which a settled match does not, and timing that overstated the cost */
+const WORLD_PROBE_SETTLE = 40;
+
+/**
  * The 3D predictor's shape, WITHOUT importing `sim3d/predict`.
  *
  * ⚠️ `docs/area/biobuzz.md`: only `sim3d/engine` and `sim3d/tilt` may be imported from outside
@@ -189,6 +215,8 @@ type PredictedElement = NonNullable<ReturnType<Predictor['elements']>>[number];
 const isCarried = (kind: string): boolean => kind === 'held' || kind === 'stock';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+/** the tick a `lastFireAt`/`lastIntakeAt` stamp was taken on (see `handleActionAudio`) */
+const actionTick = (t: number): number => Math.round(t / C.SIM_DT);
 /** shortest-arc angle lerp */
 const lerpAngle = (a: number, b: number, t: number): number =>
   a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
@@ -426,6 +454,10 @@ export interface HudSnapshot {
    * other drivetrain (no chip). Drives the HUD readout — the swap changes how the robot
    * handles AND whether strafe exists, so the driver has to be able to see it. */
   butterflyMode: 'tank' | 'mecanum' | null;
+  /** a SETPOINT FLYWHEEL (`spec.flywheel`, DECODE + BIOBUZZ): the speed it is running to, which
+   * preset that is, and whether the feeder may run (`flyReady`) — or null for every other build.
+   * A fixed shooter's range is its setpoint's, so a driver has to be able to read it. */
+  flywheel: { setpoint: number; preset: number; presets: number; ready: boolean } | null;
   /** park mode active (speed capped to parkSpeedPct); only activatable in
    * endgame / free drive, per canPark() */
   parked: boolean;
@@ -469,9 +501,10 @@ export interface HudSnapshot {
   tutorial: TutorialView | null;
   /**
    * THE ZENITH AUTO this solo run plays, and where it is (docs/area/autos.md): the status chip
-   * during AUTO, and the "Open run in Zenith" button once it has run. Null when none is playing.
+   * during AUTO, the pre-match panel's line (the auto, why it is off, or what Zenith flags in it),
+   * and the "Open run in Zenith" button once it has run. Null when none is playing.
    */
-  auto: (AutoSeatStatus & { name: string }) | null;
+  auto: GameAutoStatus | null;
 }
 
 export class GameController {
@@ -537,6 +570,14 @@ export class GameController {
    *  multiplayer, where the SERVER owns the recording) */
   private recorder: ReplayRecorder | null = null;
   /**
+   * The run's PACE CURVE, made as it is played, beside the replay (`src/ui/pace/curve.ts`).
+   * The same points a re-simulation of the saved replay would give — a practice replay re-runs
+   * exactly, and this is pushed after the same step the replay records — but without the
+   * re-simulation: a BIOBUZZ one took over a minute in the pace worker beside a live match, and
+   * for that minute a new best could not be raced. Opened and closed with `recorder`.
+   */
+  private paceRec: PaceCurveRecorder | null = null;
+  /**
    * Ticks of the run in flight on which the robots were actually ENABLED — the length
    * `src/replaySavePolicy.ts` judges an abandoned run by.
    *
@@ -550,7 +591,7 @@ export class GameController {
   /** the finished solo practice run, once the match reaches `post` */
   private practice: { replay: Replay; result: ReplayResult } | null = null;
   /** fired once when a solo practice run finishes, so the app can save + upload it */
-  onPracticeRun: ((replay: Replay, result: ReplayResult) => void) | null = null;
+  onPracticeRun: ((replay: Replay, result: ReplayResult, pace?: PaceCurve) => void) | null = null;
   private lastBeepAt = -1;
   private lastTransitionBeep = -1;
   private hudCountdown: number | null = null;
@@ -558,9 +599,9 @@ export class GameController {
   private frontFlipped = false;
   /** park mode: caps drive command magnitude to settings.parkSpeedPct while on */
   private parked = false;
-  // action-SFX edge trackers per robot id (seeded in seedActionAudio)
-  private prevFireAt: Record<number, number> = {};
-  private prevIntakeAt: Record<number, number> = {};
+  // action-SFX edge trackers per robot id, in TICKS (seeded in seedActionAudio)
+  private prevFireTick: Record<number, number> = {};
+  private prevIntakeTick: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
   private prevBeamOn: Record<number, number> = {}; // wheels-on-a-beam per robot (CR terrain SFX)
 
@@ -715,15 +756,27 @@ export class GameController {
   private predictor: Predictor | null = null;
   /** which kind `this.predictor` is, so a mode change rebuilds and a repeat does not. */
   private predictorKind: PredictionMode | null = null;
+  /** Auto's probe stage: the world step first, then (only if that does not fit) the predictor */
+  private autoStage: 'world' | 'predictor' = 'world';
+  /** the throwaway world the world-step probe runs on (its own engine, disposed after) */
+  private probeWorld: World | null = null;
   /** Auto has run its one probe for this match. */
   private autoProbed = false;
   /** what that probe measured, in ms — shown in the in-match panel, null before it runs. */
   private autoProbeMs: number | null = null;
-  /** Auto has already stepped Full down to Light once. It does not step back up: a machine
+  /** Auto has already stepped down to Light once. It does not step back up: a machine
    *  that missed the budget under load will miss it again, and flapping is worse than Light. */
   private autoDropped = false;
   /** the countdown's probe runs so far, the first of them cold — see `AUTO_PROBE_RUNS` */
   private autoProbeSamples: number[] = [];
+  /** FULL (world tier): the predicted world's digest at each tick, and the bookkeeping for skips */
+  private predictedDigests = new Map<number, WorldDigest>();
+  private prevRemoteCmds = new Map<number, RobotCommand>();
+  private snapsSinceResync = 0;
+  /** how many snapshots agreed with the prediction and skipped the replay (read-out, tests) */
+  skippedReconciles = 0;
+  /** the world-step probe's verdict (ms per reconcile), for the read-out */
+  private worldProbeMs: number | null = null;
   /** the probe THREW, which is the one thing that still sends Auto to Light unmeasured */
   private autoProbeFailed = false;
   /** recent reconcile costs in ms (Full only), the window the slip rule takes a p95 over. */
@@ -770,6 +823,8 @@ export class GameController {
    */
   private zenithAuto: GameControllerZenithAuto | null;
   private autoSeat: import('./auto/zenithAutos').AutoSeat | null = null;
+  /** the seat's Zenith ERROR findings, read once per seat (`GameAutoStatus.problems`) */
+  private autoProblems: string[] = [];
   /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
    *
@@ -1131,7 +1186,11 @@ export class GameController {
    */
   private adoptWorld(next: World): void {
     const prev = this.world;
-    if (prev && prev !== next) disposePhysics3dFor(prev);
+    if (prev && prev !== next) {
+      // FULL (world tier) keeps its engine: rewound onto the snapshot rather than rebuilt from it
+      const kept = this.worldPredicted() && physics3dImpl().rewindEngineTo(prev, next);
+      if (!kept) disposePhysics3dFor(prev);
+    }
     this.world = next;
   }
 
@@ -1173,8 +1232,10 @@ export class GameController {
       },
     ];
     // THE ZENITH AUTO seats the robot where the file starts, which is what a team does at the
-    // field. The start is still the game's to snap legal (`coerceSetup`), so an illegal start in
-    // the file is moved and the follower drives from where the robot really is.
+    // field. The pose goes through `coerceSetup` like any custom start, which snaps it only for a
+    // game with a `startSnap` (BIOBUZZ has none): an illegal start in the file (the other half,
+    // off the wall) is seated as written, and Zenith's START_ILLEGAL finding is what says so, on
+    // the pre-match panel (`autoStatus().problems`).
     const za = this.zenithAuto;
     const autoStart = za ? this.zenithAutoStart(za, s) : null;
     if (za) {
@@ -1182,8 +1243,12 @@ export class GameController {
       if (autoStart) setups[0].startPose = autoStart;
     }
     // THE PRACTICE SEATS — partner, opponent 1, opponent 2 — in Solo practice AND Free drive
-    // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds)
-    const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed);
+    // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds). The partner takes
+    // the anchor away from where the player REALLY starts: with an auto, that is the file's start,
+    // not `settings.startIndex`, or the partner spawns inside the robot the auto is about to drive.
+    const autoAnchor =
+      za && autoStart ? za.module.autoAdapterFor(this.gameId)?.defaultStartNear?.(autoStart) : undefined;
+    const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed, autoAnchor ?? s.startIndex);
     setups.push(...others);
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
@@ -1280,6 +1345,7 @@ export class GameController {
   private seatAuto(world: World): void {
     this.autoSeat?.dispose();
     this.autoSeat = null;
+    this.autoProblems = [];
     const za = this.zenithAuto;
     if (!za) return;
     const adapter = za.module.autoAdapterFor(this.gameId);
@@ -1287,6 +1353,7 @@ export class GameController {
     const seat = za.module.createAutoSeat(world, this.localRobotId, za, adapter);
     if (world.match.phase === 'freeplay') seat.arm();
     this.autoSeat = seat;
+    this.autoProblems = seat.loaded ? seat.loaded.findings.filter((f) => f.severity === 'error').map((f) => f.message) : [];
     // a file that cannot run says so in the event log, and the driver keeps the robot
     const st = seat.status();
     if (st.state === 'error') world.events.push(`AUTO OFF: ${st.error ?? 'the auto could not be loaded'}`);
@@ -1320,8 +1387,10 @@ export class GameController {
   }
 
   /** the auto seat's status for the HUD, or null when this run plays no auto */
-  autoStatus(): (AutoSeatStatus & { name: string }) | null {
-    return this.autoSeat && this.zenithAuto ? { ...this.autoSeat.status(), name: this.zenithAuto.name } : null;
+  autoStatus(): GameAutoStatus | null {
+    return this.autoSeat && this.zenithAuto
+      ? { ...this.autoSeat.status(), name: this.zenithAuto.name, problems: this.autoProblems }
+      : null;
   }
 
   /**
@@ -1664,13 +1733,13 @@ export class GameController {
   /** align the SFX edge trackers with a freshly created world so world
    * creation/restart never plays a phantom shoot/intake/gate cue */
   private seedActionAudio(): void {
-    this.prevFireAt = {};
-    this.prevIntakeAt = {};
+    this.prevFireTick = {};
+    this.prevIntakeTick = {};
     this.prevBeamOn = {};
     const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
-      this.prevFireAt[r.id] = r.lastFireAt;
-      this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      this.prevFireTick[r.id] = actionTick(r.lastFireAt);
+      this.prevIntakeTick[r.id] = actionTick(r.lastIntakeAt);
       this.prevBeamOn[r.id] = chain ? beamRide(r).onCount : 0;
     }
     this.prevGateOpen = {
@@ -1707,13 +1776,18 @@ export class GameController {
       // predicted shot's `lastFireAt` goes FORWARD, back to the server's value, and forward
       // again — and `!==` fired on every one of those, re-cueing the same shot two or three
       // times per reconcile. The mark only ever rises, so the replay's re-fire is silent and
-      // the next genuine shot (a later `world.time`) still sounds.
-      if (r.lastFireAt > (this.prevFireAt[r.id] ?? 0)) {
-        this.prevFireAt[r.id] = r.lastFireAt;
+      // the next genuine shot (a later tick) still sounds.
+      // ⚠️ AND IN TICKS, NOT SECONDS. A replay from a snapshot whose clock was rounded on the wire
+      // re-fires the same shot at a `world.time` a hair later, which cleared a mark in seconds
+      // on nearly every snapshot of the lead window (`src/net/wireClocks.ts`).
+      const fired = actionTick(r.lastFireAt);
+      if (fired > (this.prevFireTick[r.id] ?? 0)) {
+        this.prevFireTick[r.id] = fired;
         this.audio.sfxShoot();
       }
-      if (r.lastIntakeAt > (this.prevIntakeAt[r.id] ?? 0)) {
-        this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      const took = actionTick(r.lastIntakeAt);
+      if (took > (this.prevIntakeTick[r.id] ?? 0)) {
+        this.prevIntakeTick[r.id] = took;
         this.audio.sfxIntake();
       }
       // CR terrain: a "thunk" whenever a wheel newly mounts a beam (rising edge of the count)
@@ -1859,6 +1933,15 @@ export class GameController {
     this.localSmooth.x *= k;
     this.localSmooth.y *= k;
     this.localSmooth.heading *= k;
+    if (this.worldPredicted()) {
+      const kb = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
+      for (const [id, o] of this.ballSmooth) {
+        o.x *= kb;
+        o.y *= kb;
+        o.z *= kb;
+        if (Math.abs(o.x) + Math.abs(o.y) + Math.abs(o.z) < 0.005) this.ballSmooth.delete(id);
+      }
+    }
     const kr = Math.pow(2, -dtSec / REMOTE_SMOOTH_HALFLIFE);
     for (const o of this.remoteSmooth.values()) {
       o.x *= kr;
@@ -2061,6 +2144,7 @@ export class GameController {
       if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
+      this.paceRec?.push(this.world.match.phase, this.world.match.phaseTimeLeft, netScore(this.world, this.viewAlliance()));
       // counted HERE, beside the record call, because it must measure exactly the ticks that
       // went into the log — and only the ones the sim let the robot move on (`pre` and
       // `transition` are recorded but undrivable).
@@ -2251,11 +2335,12 @@ export class GameController {
     const snap = s.takeSnapshot();
     if (snap) {
       this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
+      this.prevRemoteCmds = this.remoteCmds;
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       // the LEAD, read against this snapshot BEFORE the reconcile moves the clock. A spectator
       // sends nothing, so it has no lead to keep.
       if (!this.spectator) {
-        const clock = this.predicted3d() ? this.predictTick : this.world.tick;
+        const clock = this.usesPredictor() ? this.predictTick : this.world.tick;
         this.lead.sample(clock, snap.serverTick, snap.ackInputTick, performance.now());
       }
       this.reconcile(snap);
@@ -2308,7 +2393,7 @@ export class GameController {
     if (this.acc > 0.25) this.acc = 0.25;
     let steps = 0;
     // A 3D ROOM PREDICTS ONE ROBOT, NOT A WORLD — see the prediction block's header.
-    const pred = this.predicted3d();
+    const pred = this.usesPredictor();
     while (this.acc >= C.SIM_DT && steps < 30) {
       // LEAD CAP: don't predict more than MAX_PREDICT_LEAD ticks past the newest
       // authoritative tick. During a snapshot stall this holds the local robot at
@@ -2333,6 +2418,10 @@ export class GameController {
         if (pose) this.applyPredictedPose(pose);
       } else {
         this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
+        if (this.worldPredicted()) {
+          this.noteDigest();
+          this.saveForRollback();
+        }
       }
       this.acc -= C.SIM_DT;
       steps++;
@@ -2417,6 +2506,21 @@ export class GameController {
     return !!this.session && !this.spectator && this.interp3d();
   }
 
+  /**
+   * IS THIS 3D ROOM PREDICTED BY THE REAL GAME STEP? Then it runs the 2D rooms' path end to end
+   * — `mod.step` in `stepServer`, `mod.step` replayed in `reconcile`, everything drawn off
+   * `this.world` — with one difference: `adoptWorld` REWINDS the persistent 3D engine onto each
+   * snapshot (`rewindEngineTo`) instead of throwing it away, because building one is 15–40 ms.
+   */
+  private worldPredicted(): boolean {
+    return this.predicted3d() && this.predictionMode === 'full' && physics3dReady();
+  }
+
+  /** a 3D room whose local robot comes from `sim3d/predict` (Light or Balanced) */
+  private usesPredictor(): boolean {
+    return this.predicted3d() && !this.worldPredicted();
+  }
+
   /** flip the chunk-loading latch and tell the view, in one place so the two cannot disagree. */
   private setPhysicsPending(pending: boolean): void {
     this.physicsPending = pending;
@@ -2451,6 +2555,8 @@ export class GameController {
         this.autoDropped = false;
         this.autoProbeSamples = [];
         this.autoProbeFailed = false;
+        this.autoStage = 'world';
+        this.disposeProbeWorld();
       }
       this.setPredictionMode(this.autoProbed ? this.predictionMode : 'light');
       return;
@@ -2461,6 +2567,30 @@ export class GameController {
   /** switch what is running. Rebuilds the predictor, clears the slip window, and earns Off its
    *  one-time explanation. A no-op when the mode is already the one asked for. */
   private setPredictionMode(mode: PredictionMode): void {
+    this.withTierTransition(() => this.setPredictionModeInner(mode));
+  }
+
+
+  /**
+   * MOVING BETWEEN THE WORLD STEP AND A PREDICTOR MID-MATCH. The two keep the predicted clock in
+   * different places — `world.tick` moves under the world step, `predictTick` under a predictor,
+   * where `this.world` stays the last snapshot — and `stepServer` stamps every input off one of
+   * them. Leaving the world step hands its tick to `predictTick`; entering it replays the buffered
+   * inputs onto the snapshot world so `world.tick` starts where the prediction already is. Either
+   * way the next reconcile rebuilds the prediction from the snapshot; this only keeps the inputs
+   * stamped right until then.
+   */
+  private withTierTransition(change: () => void): void {
+    const was = this.worldPredicted();
+    change();
+    const now = this.worldPredicted();
+    if (was && !now) this.predictTick = this.world.tick;
+    if (!was && now && this.gotSnapshot) {
+      for (const b of this.inputBuf) if (b.tick > this.world.tick) this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
+    }
+  }
+
+  private setPredictionModeInner(mode: PredictionMode): void {
     if (this.predictionMode === mode && (mode === 'off') === (this.predictor === null)) {
       this.ensurePredictor();
       return;
@@ -2485,7 +2615,7 @@ export class GameController {
    *  reconcile, and returns immediately when the live one is already the right kind. */
   private ensurePredictor(): void {
     const want = this.predictionMode;
-    if (want === 'off' || !this.predicted3d()) {
+    if (want === 'off' || !this.predicted3d() || this.worldPredicted()) {
       this.disposePredictor();
       return;
     }
@@ -2496,20 +2626,22 @@ export class GameController {
     if (!physics3dReady()) return;
     try {
       const impl = physics3dImpl();
+      // BALANCED is `sim3d/predict`'s FULL world (the local robot, the other robots on their held
+      // commands, the near and moving elements); FULL itself is the real game step and builds none
       this.predictor =
-        want === 'full'
+        want === 'balanced'
           ? impl.createFullPredictor(this.world, this.localRobotId)
           : impl.createLightPredictor(this.world, this.localRobotId);
       this.predictorKind = want;
     } catch (err) {
-      // A FULL predictor builds ~80 Rapier colliders and can fail where Light cannot. Fall to
+      // BALANCED builds ~80 Rapier colliders and can fail where Light cannot. Fall to
       // Light rather than to nothing: a room with no prediction at all is a worse answer than
       // the cheaper one, and Off is a choice the player makes, never an outcome they are given.
       // eslint-disable-next-line no-console
       console.warn('BIOBUZZ 3D prediction failed to build; falling back to Light.', err);
       this.predictor = null;
       this.predictorKind = null;
-      if (want === 'full') {
+      if (want === 'balanced') {
         this.predictionMode = 'light';
         this.ensurePredictor();
       }
@@ -2606,6 +2738,37 @@ export class GameController {
     }
   }
 
+  /** every free element's DRAWN pose (prediction + offset), for `noteWorldBallCorrection` */
+  private drawnBallPoses(): Map<number, { x: number; y: number; z: number }> {
+    const out = new Map<number, { x: number; y: number; z: number }>();
+    for (const b of this.world.balls) {
+      if (b.state.kind === 'held' || b.state.kind === 'stock') continue;
+      const o = this.ballSmooth.get(b.id);
+      out.set(b.id, { x: b.pos.x + (o?.x ?? 0), y: b.pos.y + (o?.y ?? 0), z: b.z + (o?.z ?? 0) });
+    }
+    return out;
+  }
+
+  /**
+   * FULL's world tier: a snapshot moved some elements' predicted poses; carry each difference as
+   * a decaying offset, so the drawn element glides onto the corrected prediction the way the
+   * local robot does (`localSmooth`). Past `BALL_SMOOTH_MAX` it snaps — a real teleport, or a
+   * shot the server did not take.
+   */
+  private noteWorldBallCorrection(before: Map<number, { x: number; y: number; z: number }>): void {
+    this.ballSmooth.clear();
+    for (const b of this.world.balls) {
+      if (b.state.kind === 'held' || b.state.kind === 'stock') continue;
+      const w = before.get(b.id);
+      if (!w) continue;
+      const x = w.x - b.pos.x;
+      const y = w.y - b.pos.y;
+      const z = w.z - b.z;
+      if (Math.hypot(x, y, z) > BALL_SMOOTH_MAX || Math.hypot(x, y, z) < 1e-4) continue;
+      this.ballSmooth.set(b.id, { x, y, z });
+    }
+  }
+
   /** accumulate each predicted element's re-seat correction into its visual offset, so the
    *  drawn position stays continuous across a reconcile and eases onto the new prediction. */
   private noteElementCorrection(before: PredictedElement[], after: PredictedElement[] | null): void {
@@ -2663,16 +2826,57 @@ export class GameController {
     if (!physics3dReady()) return; // still loading; the countdown is 3 s and this is idempotent
     let ms = Number.POSITIVE_INFINITY;
     try {
-      ms = physics3dImpl().probeFullReconcileMs(this.world, this.localRobotId, () => performance.now());
+      ms = this.autoStage === 'world'
+        ? this.probeWorldReconcileMs()
+        : physics3dImpl().probeFullReconcileMs(this.world, this.localRobotId, () => performance.now());
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('BIOBUZZ 3D prediction probe threw; taking Light.', err);
+      console.warn(`BIOBUZZ 3D prediction probe (${this.autoStage}) threw.`, err);
       this.autoProbeFailed = true;
       this.finishAutoProbe();
       return;
     }
     this.autoProbeSamples.push(ms);
     if (this.autoProbeSamples.length >= AUTO_PROBE_RUNS) this.finishAutoProbe();
+  }
+
+  /**
+   * ONE RUN OF THE WORLD-STEP PROBE (`WORLD_PROBE_TICKS`): the real game step on a throwaway copy
+   * of this match — its own 3D engine, built on the first run (which `finishAutoProbe` drops as
+   * the cold one) — played as a live match with every robot driving and intaking. Returns the cost
+   * of a reconcile at the window the lead controller is running.
+   */
+  private probeWorldReconcileMs(): number {
+    if (!this.probeWorld) {
+      const w = JSON.parse(JSON.stringify(this.world)) as World;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 100;
+      w.match.preCountdown = undefined;
+      this.probeWorld = w;
+      // built and settled on this, the cold run `finishAutoProbe` drops anyway
+      for (let i = 0; i < WORLD_PROBE_SETTLE; i++) this.mod.step(w, C.SIM_DT, new Map());
+    }
+    const w = this.probeWorld;
+    const tick = w.tick;
+    const cmds = new Map<number, RobotCommand>();
+    w.robots.forEach((r, i) => {
+      const a = tick / 30 + i;
+      cmds.set(r.id, { driveX: Math.sin(a) * 0.8, driveY: Math.cos(a) * 0.8, rotate: 0.2, leftDrive: 0.6, rightDrive: 0.6, intake: true, fire: false });
+    });
+    const t0 = performance.now();
+    for (let i = 0; i < WORLD_PROBE_TICKS; i++) this.mod.step(w, C.SIM_DT, cmds);
+    const perTick = (performance.now() - t0) / WORLD_PROBE_TICKS;
+    // a reconcile also restores one save and saves every other tick it replays (`saveForRollback`)
+    const s0 = performance.now();
+    physics3dImpl().saveEngineState(w, w.tick);
+    const save = performance.now() - s0;
+    const span = Math.max(WORLD_PROBE_MIN_WINDOW, (this.lead.target ?? 0) + 2);
+    return perTick * span + save * (span / 2 + 1);
+  }
+
+  private disposeProbeWorld(): void {
+    if (this.probeWorld) disposePhysics3dFor(this.probeWorld);
+    this.probeWorld = null;
   }
 
   /**
@@ -2683,18 +2887,35 @@ export class GameController {
    * slip rule steps a genuinely slow one down within seconds. Only a probe that THREW takes Light.
    */
   private finishAutoProbe(): void {
-    this.autoProbed = true;
     const warm = this.autoProbeSamples.slice(1).filter(Number.isFinite);
     const best = warm.length ? Math.min(...warm) : null;
-    this.autoProbeMs = best;
     this.autoProbeSamples = [];
+    if (this.autoStage === 'world') {
+      this.disposeProbeWorld();
+      this.worldProbeMs = best;
+      // THE WORLD STEP FITS, or nothing was measured (a late join — the slip rule is the net):
+      // FULL, predicting everything
+      if (!this.autoProbeFailed && (best === null || best <= PREDICT_WORLD_BUDGET_MS)) {
+        this.autoProbed = true;
+        this.autoProbeMs = best;
+        this.setPredictionMode('full');
+        return;
+      }
+      // it does not fit here: measure the predictor next (the next frames of the countdown), or,
+      // past the countdown already, take it unmeasured for the same reason as above
+      this.autoStage = 'predictor';
+      this.autoProbeFailed = false;
+      if (this.world.match.phase === 'pre') return;
+    }
+    this.autoProbed = true;
+    this.autoProbeMs = best;
     if (this.autoProbeFailed) this.setPredictionMode('light');
-    else this.setPredictionMode(best === null || best <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light');
+    else this.setPredictionMode(best === null || best <= PREDICT_FULL_BUDGET_MS ? 'balanced' : 'light');
   }
 
   /**
-   * THE SLIP RULE (plan §5): if Full's reconcile p95 climbs past the budget in a match, Auto
-   * drops to Light ONCE and says so.
+   * THE SLIP RULE (plan §5): if the reconciles cost more than the mode's budget in a match, Auto
+   * steps down ONE level and says so: Full → Balanced → Light.
    *
    * ⚠️ **ONLY WHEN THE MODE WAS AUTO'S TO PICK.** A player who chose Full explicitly keeps it,
    * however slow it gets — the plan's words are "the player's explicit choice is never
@@ -2706,7 +2927,7 @@ export class GameController {
    */
   private notePredictionCost(ms: number): void {
     this.lastReconcileMs = ms;
-    if (this.predictorKind !== 'full') return;
+    if (this.predictorKind !== 'balanced' && !this.worldPredicted()) return;
     const w = this.reconcileMs;
     w.push(ms);
     if (w.length > PREDICT_SLIP_WINDOW) w.shift();
@@ -2714,10 +2935,16 @@ export class GameController {
     if (w.length < PREDICT_SLIP_WINDOW) return;
     const sorted = [...w].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
-    if (median <= PREDICT_FULL_BUDGET_MS) return;
+    if (median <= (this.worldPredicted() ? PREDICT_WORLD_BUDGET_MS : PREDICT_FULL_BUDGET_MS)) return;
+    if (this.worldPredicted()) {
+      // the whole-field step does not fit this machine in THIS match: one level down
+      this.setPredictionMode('balanced');
+      this.netEvents.push('Prediction stepped down to Balanced. Full is too slow on this machine.');
+      return;
+    }
     this.autoDropped = true;
     this.setPredictionMode('light');
-    this.netEvents.push('Prediction stepped down to Light — full prediction is too slow here.');
+    this.netEvents.push('Prediction stepped down to Light. Balanced is too slow on this machine.');
   }
 
   /**
@@ -2737,8 +2964,10 @@ export class GameController {
     reconcileMs: number;
     /** p95 reconcile cost over the recent window, or null before the window fills */
     reconcileP95: number | null;
-    /** Auto stepped Full down to Light this match */
+    /** Auto stepped down to Light this match */
     stepped: boolean;
+    /** the world-step probe's verdict, ms per reconcile */
+    worldProbeMs: number | null;
   } | null {
     if (!this.predicted3d()) return null;
     const w = this.reconcileMs;
@@ -2755,6 +2984,7 @@ export class GameController {
       reconcileMs: this.lastReconcileMs,
       reconcileP95: p95,
       stepped: this.autoDropped,
+      worldProbeMs: this.worldProbeMs,
     };
   }
 
@@ -2823,7 +3053,7 @@ export class GameController {
     // A REMOTE ROBOT NEXT TO OURS IS DRAWN AT OUR MOMENT, not at the interpolation clock —
     // `src/net/contactDraw.ts`. A 2D room reads its predicted pose off `this.world`; a 3D room off
     // the FULL predictor, which steps it on its held command (LIGHT carries none: no blend).
-    const predictedRemotes = this.interp3d()
+    const predictedRemotes = this.interp3d() && this.usesPredictor()
       ? new Map((this.predictor?.robots() ?? []).map((x) => [x.id, x] as const))
       : null;
     const me = predictLocal && !this.spectator && (!predictedRemotes || predictedRemotes.size > 0)
@@ -2868,7 +3098,7 @@ export class GameController {
         heading: lerpAngle(p.heading, q.heading, a),
       };
     });
-    if (!this.interp3d()) {
+    if (!this.interp3d() || this.worldPredicted()) {
       // A HELD BALL RIDES ITS ROBOT AS DRAWN. The predicted world places it on the robot's
       // PREDICTED pose, which for a remote robot is not where the chassis is drawn — so every
       // correction to that prediction jumped the hopper (`contactDraw.ts`).
@@ -2876,7 +3106,13 @@ export class GameController {
       const worldById = new Map(this.world.robots.map((r) => [r.id, r] as const));
       let moved = false;
       const balls = this.world.balls.map((b) => {
-        if (b.state.kind !== 'held') return b;
+        if (b.state.kind !== 'held') {
+          // FULL's world tier: every other element is the prediction plus its easing offset
+          const o = this.worldPredicted() ? this.ballSmooth.get(b.id) : undefined;
+          if (!o) return b;
+          moved = true;
+          return { ...b, pos: { x: b.pos.x + o.x, y: b.pos.y + o.y }, z: b.z + o.z };
+        }
         const drawn = drawnById.get(b.state.robot);
         const at = worldById.get(b.state.robot);
         if (!drawn || !at || drawn === at) return b;
@@ -3030,8 +3266,7 @@ export class GameController {
    * COUNT on the wire (`eventsBase`) that this function adds to `evs.length`, which is a
    * protocol change and `CLIENT_CAPS` work, not a one-liner.
    */
-  private collectNetEvents(first: boolean): void {
-    const evs = this.world.events;
+  private collectNetEvents(first: boolean, evs: string[] = this.world.events): void {
     if (evs.length < this.shownEventCount) this.shownEventCount = 0;
     if (first) {
       this.shownEventCount = evs.length;
@@ -3041,8 +3276,53 @@ export class GameController {
     this.shownEventCount = evs.length;
   }
 
+  /** FULL (world tier): the predicted world just reached a new tick — remember what it looked like */
+  private noteDigest(): void {
+    this.predictedDigests.set(this.world.tick, worldDigest(this.world));
+    if (this.predictedDigests.size > MAX_PREDICT_LEAD + 8) {
+      for (const t of this.predictedDigests.keys()) if (t <= this.lastServerTick) this.predictedDigests.delete(t);
+    }
+  }
+
+  /**
+   * FULL (world tier): save the engine on the ticks the room sends snapshots for, so reconciling
+   * onto one is a rollback rather than moving each body back (`saveEngineState`, which has the
+   * measurement). The room snapshots every other tick; the parity is read off the last snapshot.
+   */
+  private saveForRollback(): void {
+    if ((this.world.tick - this.lastServerTick) % 2 !== 0) return;
+    physics3dImpl().saveEngineState(this.world, this.lastServerTick + 1);
+  }
+
+  /** does this snapshot say exactly what the prediction already said for its tick? */
+  private snapshotAgrees(snap: Snapshot): boolean {
+    if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;
+    const mine = this.predictedDigests.get(snap.serverTick);
+    if (!mine) return false;
+    for (const [id, c] of snap.cmds) {
+      if (id === this.localRobotId) continue;
+      if (!cmdsAgree(c, this.prevRemoteCmds.get(id))) return false;
+    }
+    return digestsAgree(mine, worldDigest(snap.world));
+  }
+
   private reconcile(snap: Snapshot): void {
     const firstSnap = !this.gotSnapshot;
+    /**
+     * FULL (world tier) AND THE SERVER AGREE: keep the prediction, skip the rewind and the replay
+     * (`AGREE_POS_IN`). Everything else a reconcile does that does not come from the replay
+     * still happens — the server's events reach the log, the clock and the input buffer advance.
+     */
+    if (this.worldPredicted() && !firstSnap && this.snapshotAgrees(snap)) {
+      this.reconciles++;
+      this.skippedReconciles++;
+      this.collectNetEvents(false, snap.world.events);
+      this.lastServerTick = snap.serverTick;
+      this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
+      this.lastCorrection = 0;
+      return;
+    }
+    this.snapsSinceResync = 0;
     // counted for the read-out's CORRECTIONS row. A count on its own says little; beside the
     // last correction's DISTANCE it is what separates "the server agrees with me 30 times a
     // second" from "the server is dragging me back 30 times a second".
@@ -3060,8 +3340,11 @@ export class GameController {
     // ...and every REMOTE robot's predicted pose, the same way: in a 2D room one standing next
     // to ours is DRAWN from the prediction (`contactDraw.ts`), so its correction needs the same
     // glide. A 3D room predicts no remote robot at all, and `this.world` there does not move.
+    // FULL's world tier draws every element off the prediction, so a snapshot's correction to one
+    // is eased exactly the way the robots' are (`noteWorldBallCorrection`)
+    const preBalls = this.worldPredicted() ? this.drawnBallPoses() : null;
     const preRemote = new Map<number, Pose>();
-    if (!this.predicted3d() && !this.spectator) {
+    if (!this.usesPredictor() && !this.spectator) {
       for (const r of this.world.robots) {
         if (r.id === this.localRobotId) continue;
         const o = this.remoteSmooth.get(r.id);
@@ -3069,6 +3352,7 @@ export class GameController {
       }
     }
 
+    const tAdopt = performance.now();
     this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
     this.lastServerTick = snap.serverTick;
@@ -3089,11 +3373,25 @@ export class GameController {
      * MY robot now) at a fraction of forty `step3d` calls. Everything downstream — the
      * `localSmooth` correction below, `displayWorld`, the render loop — is identical either way.
      */
-    if (this.predicted3d()) this.replayThroughPredictor(snap.serverTick);
-    else for (const b of this.inputBuf) this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
+    if (this.usesPredictor()) this.replayThroughPredictor(snap.serverTick);
+    else {
+      const world = this.worldPredicted();
+      if (world) this.predictedDigests.clear();
+      for (const b of this.inputBuf) {
+        this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
+        if (world) {
+          this.noteDigest();
+          this.saveForRollback();
+        }
+      }
+      // FULL's world tier is measured like the predictor is — the slip rule reads it. From the
+      // adopt, because the rollback's restore happens there.
+      if (this.worldPredicted()) this.notePredictionCost(performance.now() - tAdopt);
+    }
+    if (preBalls) this.noteWorldBallCorrection(preBalls);
 
     // a 3D room set its remote offsets inside `replayThroughPredictor` (`noteRemoteCorrection`)
-    if (!this.predicted3d()) this.remoteSmooth.clear();
+    if (!this.usesPredictor()) this.remoteSmooth.clear();
     for (const r of this.world.robots) {
       const p0 = preRemote.get(r.id);
       if (!p0) continue;
@@ -3166,6 +3464,9 @@ export class GameController {
     this.autoDropped = false;
     this.autoProbeSamples = [];
     this.autoProbeFailed = false;
+    this.autoStage = 'world';
+    this.worldProbeMs = null;
+    this.disposeProbeWorld();
     this.disposePredictor();
     if (this.predictionPref === 'auto') this.predictionMode = 'light';
     this.seedActionAudio();
@@ -3241,6 +3542,7 @@ export class GameController {
       this.gameId,
       this.interp3d() ? '3d' : '2d',
     );
+    this.paceRec = new PaceCurveRecorder();
     this.drivenTicks = 0;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -3274,6 +3576,7 @@ export class GameController {
     // on the rebuilt world. A RESTART is still not a replay of a MATCH — it is now a replay of
     // the DRIVING, which is what a practice replay was always for (see `replaySavePolicy`).
     this.recorder = null;
+    this.paceRec = null;
     this.practice = null;
     this.drivenTicks = 0;
     this.frontFlipped = false;
@@ -3345,6 +3648,8 @@ export class GameController {
   getEloResults(): EloResultRow[] | null {
     const s = this.session;
     if (!s || !s.ranked || s.eloResults.length === 0) return null;
+    // a ranked roster is 2 or 4 (ROSTER_SIZE); placement is per mode
+    const need = C.placementGamesFor(s.setups.length >= 4 ? '2v2' : '1v1');
     const rows = s.eloResults.map((d) => {
       const su = s.setups.find((x) => x.id === d.robotId);
       return {
@@ -3354,7 +3659,7 @@ export class GameController {
         before: d.before,
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
-        provisional: d.games < C.PLACEMENT_GAMES, // still in placements (games-based)
+        provisional: d.games < need, // still in placements (games-based)
         games: d.games,
       };
     });
@@ -3419,6 +3724,14 @@ export class GameController {
       frontFlipped: this.frontFlipped,
       butterflyMode:
         r.spec.drivetrain === 'butterfly' ? (r.butterflyTank ? 'tank' : 'mecanum') : null,
+      flywheel: r.spec.flywheel
+        ? {
+            setpoint: flySetpoint(r),
+            preset: flyPresetIndex(r),
+            presets: r.spec.flywheel.mode === 'presets' ? r.spec.flywheel.rpm.length : 1,
+            ready: flyReady(r),
+          }
+        : null,
       parked: this.parked,
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,
@@ -3470,13 +3783,15 @@ export class GameController {
     // closed before the branch: kept or not, the run is over, and a recorder left open would
     // keep appending to a run whose world is about to be thrown away.
     this.recorder = null;
+    const pace = this.paceRec?.curve;
+    this.paceRec = null;
     const replay = recorder.finish();
     const decision = practiceSaveDecision({ drivenTicks: this.drivenTicks, completed });
     this.drivenTicks = 0;
     if (!decision.keep) return;
     const kept = { replay, result: worldResult(this.world) };
     if (completed) this.practice = kept;
-    this.onPracticeRun?.(kept.replay, kept.result);
+    this.onPracticeRun?.(kept.replay, kept.result, pace);
   }
 
   dispose(): void {

@@ -1,7 +1,7 @@
 import type { Alliance, CardColor, GoalState, RobotState, ScoreBreakdown, World } from '../types';
 import * as C from '../config';
 import { baseZone, inDepot, inRect, launchSegments, other } from './field';
-import { robotCorners, wheelContacts } from './physics';
+import { robotCorners, robotHullWorld, wheelContacts } from './physics';
 import { distToSegment, hyp } from '../math';
 import { cardEventText, foulEventText } from './penaltyLog';
 
@@ -137,8 +137,12 @@ export function patternPoints(world: World, goal: GoalState): number {
 /** does the robot's footprint overlap any launch-line tape? */
 function robotOverLaunchLine(world: World, robotIdx: number): boolean {
   const r = world.robots[robotIdx];
-  const corners = robotCorners(r);
-  const halfDiag = hyp(r.spec.length, r.spec.width) / 2;
+  // an IMPORT is judged by its hull: its vertices, and (for the "under the chassis" test) the
+  // furthest of them from its centre in place of the rectangle's half-diagonal
+  const corners = r.spec.imported ? robotHullWorld(r) : robotCorners(r);
+  const halfDiag = r.spec.imported
+    ? Math.max(...r.spec.imported.hull.map((p) => hyp(p.x, p.y)))
+    : hyp(r.spec.length, r.spec.width) / 2;
   for (const [a, b] of launchSegments()) {
     // any corner close to the tape?
     if (corners.some((c) => distToSegment(c, a, b) < C.TAPE_W + 0.25)) return true;

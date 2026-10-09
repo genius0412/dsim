@@ -14,7 +14,7 @@ import {
   presetPose,
   snapStartToLegal,
 } from '../sim/field';
-import { categoryPresets, samePose, savedStartCap } from './startPositions';
+import { categoryPresets, samePose, savedStartCap, startHandleReach } from './startPositions';
 
 /**
  * Drag-and-drop editor for a robot's match START POSITION, constrained to a
@@ -175,7 +175,7 @@ export function StartPositionEditor({
     ctx.stroke();
 
     const hRad = robot.heading;
-    const front = spec.length / 2 + 8;
+    const front = startHandleReach(spec);
     const hx = pose.x + Math.cos(hRad) * front;
     const hy = pose.y + Math.sin(hRad) * front;
     ctx.strokeStyle = col;
@@ -221,7 +221,7 @@ export function StartPositionEditor({
 
   const handleWorld = () => {
     const hRad = (pose.headingDeg * Math.PI) / 180;
-    const front = spec.length / 2 + 8;
+    const front = startHandleReach(spec);
     return { x: pose.x + Math.cos(hRad) * front, y: pose.y + Math.sin(hRad) * front };
   };
 

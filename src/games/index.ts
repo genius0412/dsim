@@ -25,7 +25,8 @@ export const GAMES: Partial<Record<GameId, GameModule>> = {
 
 /** the module for a game id, defaulting to DECODE (undefined / unknown / old). */
 export function moduleFor(id: GameId | undefined | null): GameModule {
-  return (id && GAMES[id]) || DECODE_MODULE;
+  // own keys only — see `simModuleFor` (games/sim.ts): "constructor" is not a game
+  return (id && Object.prototype.hasOwnProperty.call(GAMES, id) && GAMES[id]) || DECODE_MODULE;
 }
 
 /** the module a world belongs to (its `game`, defaulting to DECODE). */

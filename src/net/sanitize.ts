@@ -149,12 +149,15 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
   for (const raws of r.setups) {
     if (!raws || typeof raws !== 'object') return null;
     const id = (raws as RobotSetup).id;
-    if (typeof id !== 'number' || !Number.isFinite(id) || id < 0 || id > 3) return null;
+    // an INTEGER slot, or nothing. This used to test the raw value for duplicates and then
+    // round it, so ids 0.6 and 1.4 passed as two robots and both spawned as robot 1 — two
+    // bodies answering to one command-map key. Every real container carries integer slots.
+    if (typeof id !== 'number' || !Number.isInteger(id) || id < 0 || id > 3) return null;
     if (seen.has(id)) return null; // two robots with one id cannot be spawned
     seen.add(id);
     // the SAME coercion `createWorld` runs, so a stored setup can never spawn a robot the
     // builder would not have offered
-    setups.push(coerceSetup({ ...(raws as RobotSetup), id: Math.round(id) }, replayGame));
+    setups.push(coerceSetup({ ...(raws as RobotSetup), id }, replayGame));
   }
 
   // tracks: flat number arrays keyed by a robot id that exists in `setups`, each a whole
@@ -181,6 +184,14 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
         ? Math.round(r.balanceVersion)
         : 0,
     sim: typeof r.sim === 'number' && Number.isFinite(r.sim) ? Math.round(r.sim) : undefined,
+    /**
+     * An upload is a FRESH recording (a practice save, a LAN host's archive), and an UNSTAMPED
+     * one comes from a site build that ran `SIM_PATCH` 1 before the recorder stamped it: the
+     * rule was live on the site from 2026-09-27 08:34:35Z, the stamp one deploy later. A
+     * pre-patch build would be a tab left open since before then. So absent reads 1 here, and
+     * only here — a stored replay read back through `getReplay` keeps its own column.
+     */
+    patch: typeof r.patch === 'number' && Number.isFinite(r.patch) ? Math.max(0, Math.round(r.patch)) : 1,
     game: replayGame,
     // AN ENUM, not a passthrough: `physics` reaches `createWorld` the moment anyone watches
     // this back, and anything that is not the one known non-default value must come out
