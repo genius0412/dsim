@@ -537,7 +537,7 @@ export async function persistVersusMatch(
     // taking both facts from one place means the row can never disagree with its own replay.
     // ...AND WITH THE RULE SET THAT RATED IT (0058), so a recalculation replays it as rated
     const id = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics, query,
-      ranked ? RATING_RULES.id : null);
+      ranked ? RATING_RULES.id : null, ranked ? null : (outcome.config.settings?.preset ?? null));
     // one multi-row insert rather than one per player — same rows, same conflict handling
     await addMatchParticipants(
       id,

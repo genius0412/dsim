@@ -1621,6 +1621,17 @@ async function main(): Promise<void> {
       ((await db.query(`select physics from matches where id = $1`, [mLegacy])).rows[0] as { physics: string }).physics === '2d',
     );
 
+    // the setup a custom room was (0061): kept beside `mode`, whose check constraint cannot say 3v1
+    const mPreset = await repo.saveMatch('2v2', SEASON, id2d, false, 'decode', '2d', undefined, null, 'custom');
+    check(
+      'preset: the setup of a custom room is stored beside its mode',
+      ((await db.query(`select mode, preset from matches where id = $1`, [mPreset])).rows[0] as { mode: string; preset: string }).preset === 'custom',
+    );
+    check(
+      'preset: a match saved without one reads null (ranked, or from before 0061)',
+      ((await db.query(`select preset from matches where id = $1`, [mLegacy])).rows[0] as { preset: string | null }).preset === null,
+    );
+
     // ---- practice runs: physics AND the view it was watched in ------------------------
     //
     // The two are different KINDS of fact and are sourced differently, which is the thing to

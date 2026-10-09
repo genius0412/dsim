@@ -200,6 +200,7 @@ function initialFacts(code: string, config: RoomConfig, capacity: number): RoomF
   return {
     ack: 0,
     lobby: { code, players: 0, capacity, kind: config.kind, game: config.game ?? 'decode', joinable: true, state: 'lobby' },
+    cfg: { kind: config.kind, record: config.record, settings: config.settings },
     seats: [],
     staging: false,
     summary: null,
@@ -493,6 +494,11 @@ export class RemoteRoom implements RoomHandle {
   applyFacts(rid: number, f: RoomFacts): void {
     if (rid !== this.rid) return; // from the instance before a `revive`
     this.facts = f;
+    // follow the room's config (a host can unlock a record room), in place: `config` is shared
+    this.config.kind = f.cfg.kind;
+    if (f.cfg.record) this.config.record = f.cfg.record;
+    else delete this.config.record;
+    this.config.settings = f.cfg.settings;
     while (this.unacked.length > 0 && this.unacked[0].seq <= f.ack) this.unacked.shift();
   }
 

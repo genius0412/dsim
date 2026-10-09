@@ -5695,11 +5695,13 @@ export async function saveMatch(
   query: Tx = q,
   /** the rule set that rated it (0058, `RULE_SETS`); null for a custom match */
   ratingRules: string | null = null,
+  /** the room's setup (0061): 'custom' | 'casual-1v1' | 'casual-2v2'; null for a ranked/staged match */
+  preset: string | null = null,
 ): Promise<string> {
   const rows = await query<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules)
-     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules],
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules, preset)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules, preset],
   );
   return rows[0].id;
 }
@@ -7251,6 +7253,16 @@ export async function acceptFriendRequest(callerId: string, fromId: string): Pro
     );
     return true;
   });
+}
+
+/** every account this one is friends with (matchmaking: friends are never ranked opponents) */
+export async function friendIdsOf(userId: string): Promise<string[]> {
+  const rows = await q<{ id: string }>(
+    `select case when user_low = $1 then user_high else user_low end as id
+       from friendships where user_low = $1 or user_high = $1`,
+    [userId],
+  );
+  return rows.map((r) => r.id);
 }
 
 /** decline a request sent TO the caller (caller is the `to` side) */

@@ -70,6 +70,8 @@ export interface RoomFacts {
   /** the newest populating `seq` the worker has applied */
   ack: number;
   lobby: ReturnType<Room['lobbySummary']>;
+  /** the config as the room holds it NOW (a host can unlock a record room), for the socket thread's copy */
+  cfg: ReturnType<Room['cfgFacts']>;
   /** [userId, clientId] for every signed-in seat, for `seatFor` */
   seats: [string, string][];
   staging: boolean;

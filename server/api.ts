@@ -7,7 +7,7 @@ import { authorizeUrl, exchangeForId, linkConfigured, readState } from './oauthL
 import { runStarSweep } from './stargazers';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
-import { CHALLENGE_FORMATS } from '../src/net/protocol';
+import { CHALLENGE_FORMATS, RETIRED_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
 import { replayHasImported } from '../src/net/imported';
 import { moderateName, scrubName } from './moderation';
@@ -1713,6 +1713,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           // party token that a challenge of the matching format actually created
           // (`challengeParty`). Validated against the allowlist here so a client
           // can't invent one.
+          // a retired format must not coerce to null below, which would turn an old client's
+          // rated challenge into a bogus casual invite carrying a party token as its "room"
+          if (RETIRED_FORMATS.includes(body.format as string)) {
+            return json(410, { error: 'Rated 1v1 challenges are gone. Invite your friend to a room, or queue Ranked 2v2 together.' }), true;
+          }
           const format = (CHALLENGE_FORMATS as readonly string[]).includes(body.format as string)
             ? (body.format as string)
             : null;

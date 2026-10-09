@@ -173,7 +173,7 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
         {/* "Enter the room code to watch one" was the heading, the input's placeholder
             and its aria-label said a third time. The sentence that stays answers a real
             question — why isn't my friend's room in the list above? */}
-        <p className="ds-hint">Custom rooms aren’t listed publicly.</p>
+        <p className="ds-hint">Rooms aren’t listed publicly.</p>
         <div className="ds-watchcode">
           <input
             className="ds-input"

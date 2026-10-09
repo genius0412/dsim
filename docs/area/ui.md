@@ -553,12 +553,12 @@ same arguments are not had again:
   which existed because five spellings of `Failed - check admin sign-in` had accumulated
   across two files, none of which said WHICH action failed.
 - **Sentence case** for `ds-btn`, every heading, and the mode tiles (`Solo practice`, `Free
-  drive`, `Custom room`). ALL CAPS is correct in exactly five places and they are all
+  drive`, `Room`). ALL CAPS is correct in exactly five places and they are all
   deliberate: `.overlay-buttons button` (13/13), the HUD chips (the FTC scoring display is
   uppercase), `ds-cta` (14/14), the admin console (29/34), and `.ds-panel-title` — mono,
   uppercased BY CSS, often an `<h2>`, so its source text stays sentence case.
 - **One name per thing.** The rating is "rating", never "ELO", in anything a player reads (the
-  system is Glicko-2). A player-made room is a **"Custom room"** everywhere it is named.
+  system is Glicko-2). A player-made room is a **"room"** everywhere it is named (the setup option that starts from scratch is "Custom").
 - **A CTA carries no trailing ▶**, and **no label is a dingbat alone**: a ✕ or ▶ is
   `aria-hidden` beside words or under an `aria-label` that names the target.
 - **Errors are plain language.** The raw text ("Failed to fetch", "HTTP 502", a server

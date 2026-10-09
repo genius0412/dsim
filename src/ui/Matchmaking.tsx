@@ -190,7 +190,7 @@ export function Matchmaking({
       <p className="ds-hint">Ranked matches run on the 3D physics.</p>
     ) : (
       <p className="ds-form-err">
-        ⚠ This server hasn’t been updated for 3D ranked matches yet. Custom rooms and practice
+        ⚠ This server hasn’t been updated for 3D ranked matches yet. Rooms and practice
         still work.
       </p>
     );
@@ -861,7 +861,7 @@ export function Matchmaking({
         {/* "finishing matches earns it back" is `dodgeNote`'s line, and the two
             notices can stand one above the other in the same panel. Said once, in
             one wording, by whichever one is up. */}
-        <span className="ds-muted">Custom rooms and solo practice are unaffected.</span>
+        <span className="ds-muted">Rooms and solo practice are unaffected.</span>
       </div>
     );
   };
@@ -975,7 +975,6 @@ export function Matchmaking({
         ? {
             token: challengeRef.current.token,
             format: challengeRef.current.format,
-            partyOnly: challengeRef.current.partyOnly,
           }
         : undefined,
     );
@@ -1056,7 +1055,7 @@ export function Matchmaking({
       '',
       <>
         <p className="ds-hint">
-          Ranked needs an account. Custom rooms are open to everyone.
+          Ranked needs an account. Rooms are open to everyone.
         </p>
         <div className="ds-actions">
           <button className="ds-cta" onClick={onSignIn}>
@@ -1126,19 +1125,11 @@ export function Matchmaking({
     if (ch) {
       return page(
         `Waiting for @${ch.opponent}`,
-        // a closed pair has no queue to report a depth for; a premade genuinely is
-        // in the open 2v2 pool once both have accepted, so show it
-        ch.partyOnly
-          ? `${formatLabel(ch.format)} · ${elapsed}s`
-          : `${formatLabel(ch.format)} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
+        // a premade genuinely is in the open 2v2 pool once both have accepted
+        `${formatLabel(ch.format)} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
         <>
-          {/* the rated line is gone: the sub two rows above already reads "Rated 1v1 ·
-              14s", and "they start the moment they accept" is what "Waiting for @name"
-              means. The premade line stays — being put on the SAME alliance is the one
-              thing here the title does not say. */}
-          {!ch.partyOnly && (
-            <p className="ds-hint">You queue together as a team once they accept.</p>
-          )}
+          {/* being put on the SAME alliance is the one thing the title does not say */}
+          <p className="ds-hint">You queue together as a team once they accept.</p>
           {/* the wait here is somebody else's response time, so it is the screen
               MOST worth telling people they can leave */}
           <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>

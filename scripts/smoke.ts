@@ -10273,11 +10273,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   // challenge into an ordinary open-queue entry on the way back in.
   {
     const ch = {
-      token: 'TMFX2K', format: 'rated1v1', mode: '1v1' as const,
-      partyOnly: true, game: 'chain' as const, opponent: 'bob',
+      token: 'TMFX2K', format: 'ranked2v2', mode: '2v2' as const,
+      game: 'chain' as const, opponent: 'bob',
     };
     parkQueue({
-      lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
+      lobby: {} as never, mode: '2v2', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
       assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
@@ -17775,6 +17775,118 @@ const recordDrive: CommandSource = (tick) => {
   );
   room.removeBot(live[1]);
   check('bot seats: the newest seat can be removed (it is not shadowed by an older twin)', botIds().length === 1, botIds().join(','));
+}
+
+// ---- room settings: the host-controlled shape (rooms plan M1) ------------------
+{
+  const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');
+  const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const lastRoster = (m: ServerMsg[]): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+    [...m].reverse().find((x): x is Extract<ServerMsg, { t: 'roster' }> => x.t === 'roster');
+  const errs = (m: ServerMsg[]): string[] => m.flatMap((x) => (x.t === 'error' ? [x.message] : []));
+
+  // coercion: never trust the label or the numbers
+  check('settings: no request ⇒ a legacy room', coerceRoomSettings('versus', undefined, undefined) === undefined);
+  const rec = coerceRoomSettings('record', 'solo', { preset: 'casual-2v2', listed: true, perAlliance: { red: 4, blue: 4 } });
+  check('settings: a record room is locked to its record shape, Private, whatever was sent',
+    rec?.perAlliance.blue === 1 && rec.perAlliance.red === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
+  const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 }, teamSwitch: false });
+  check('settings: a versus room cannot claim a record preset, and creation ignores the sides it sent',
+    fake?.preset === 'custom' && fake.perAlliance.red === 2 && fake.perAlliance.blue === 2 && fake.teamSwitch, JSON.stringify(fake));
+  const hostile = mergeRoomSettings(fake!, { perAlliance: { red: 99, blue: -3 }, teamSwitch: 'no' });
+  check('settings: a host patch is clamped to the ceiling and to sane numbers',
+    hostile.perAlliance.red + hostile.perAlliance.blue <= 4 && hostile.perAlliance.blue >= 0 && hostile.teamSwitch === true, JSON.stringify(hostile));
+  check('settings: capacity is the sum of the sides',
+    roomCapacity({ kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) }) === 2);
+  check('settings: Public is opt-in', coerceRoomSettings('versus', undefined, { preset: 'custom' })?.listed === false);
+
+  // a 1v1 preset: two seats, one a side
+  const seen: Record<string, ServerMsg[]> = { h: [], a: [], b: [] };
+  const cfg = { kind: 'versus' as const, settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) };
+  const room = new Room('smoke-set', () => {}, cfg);
+  const h = mk('h', 'red', seen.h);
+  const a = mk('a', 'red', seen.a); // asks for red, which is full
+  room.add(h);
+  room.add(a);
+  check('settings: a joiner whose side is full lands on the other', a.player.alliance === 'blue', a.player.alliance);
+  check('settings: the room is full at the sum of the sides', !room.canJoin());
+  check('settings: the roster carries the settings', lastRoster(seen.h)?.settings?.preset === 'casual-1v1');
+
+  // team switching
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: a self-switch onto a full side is dropped', a.player.alliance === 'blue');
+  room.onMessage('a', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: only the host changes settings', room.settings?.teamSwitch === true);
+  room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: the host can lock team switching', room.settings?.teamSwitch === false);
+  check('settings: a settings change clears everyone ready', !h.player.ready && !a.player.ready);
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+  a.player.ready = true;
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: team switching off ⇒ the self-switch is dropped even with a seat free', a.player.alliance === 'blue');
+
+  // host moves
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'red' });
+  check('settings: the host moves a member', a.player.alliance === 'red');
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'blue' });
+  check('settings: a second move of the same member inside the cooldown is ignored', a.player.alliance === 'red');
+  await new Promise((r) => setTimeout(r, 350));
+  check('settings: ...and a move clears that member ready', !a.player.ready);
+  room.onMessage('a', { t: 'moveMember', id: 'h', alliance: 'blue' });
+  check('settings: a guest cannot move anybody', h.player.alliance === 'red');
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 3 } } });
+  check('settings: a side cannot shrink below who is on it', room.settings?.perAlliance.red === 2 && errs(seen.h).some((e) => /Move 1 player off red/.test(e)), JSON.stringify(room.settings));
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });
+  check('settings: ...a shrink below the room total is refused too', room.settings?.perAlliance.red === 2);
+
+  // a duo-record room: seats are blue (the run alliance), locked, and Unlock opens it once
+  {
+    const sink: ServerMsg[] = [];
+    const dcfg = { kind: 'record' as const, record: 'duo' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const dr = new Room('smoke-duo', () => {}, dcfg);
+    const d1 = mk('d1', 'blue', sink);
+    const d2 = mk('d2', 'blue', []);
+    dr.add(d1);
+    dr.add(d2);
+    check('settings: a duo record seats both drivers on blue', d1.player.alliance === 'blue' && d2.player.alliance === 'blue');
+    dr.onMessage('d1', { t: 'roomSettings', patch: { teamSwitch: true } });
+    check('settings: a record room refuses settings changes', dr.settings?.teamSwitch === false);
+    dr.onMessage('d2', { t: 'unlockRoom' });
+    check('settings: only the host unlocks', dcfg.kind === 'record');
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlock turns a record room into a custom one (one-way)',
+      dcfg.kind === 'versus' && dcfg.record === undefined && dr.settings?.preset === 'custom' && dr.cfgFacts().kind === 'versus');
+    check('settings: ...and it is no longer a solo/duo record for the lock rules', !dr.soloRecord);
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlocking twice is refused', errs(sink).some((e) => /already unlocked/.test(e)));
+    dr.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    check('settings: an unlocked room takes the host controls', dr.settings?.perAlliance.red === 2);
+  }
+
+  // legacy rooms are untouched
+  const legacy = new Room('smoke-legacy', () => {}, { kind: 'versus' });
+  const lh = mk('lh', 'red', []);
+  legacy.add(lh);
+  legacy.onMessage('lh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a legacy room has no host controls', legacy.settings === undefined);
+  legacy.onMessage('lh', { t: 'update', patch: { alliance: 'blue' } });
+  check('settings: ...and everyone still picks their own side', lh.player.alliance === 'blue');
+
+  // a staged / ranked room refuses the host controls outright
+  const ranked = new Room('smoke-rank', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'custom' }) });
+  const rh = mk('rh', 'red', []);
+  const rsink: ServerMsg[] = [];
+  rh.send = (m) => rsink.push(m);
+  ranked.add(rh);
+  (ranked as unknown as { ranked: boolean }).ranked = true;
+  ranked.onMessage('rh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a ranked room refuses the host controls', ranked.settings?.teamSwitch === true && errs(rsink).length > 0);
 }
 
 {
@@ -28018,7 +28130,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
     /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',
