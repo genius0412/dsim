@@ -48,8 +48,58 @@ export interface PendingRosterEntry {
   party?: string;
 }
 
+/**
+ * THE ROOM CODE ONLY THE MATCHMAKER MINTS: `<host region>-<mode><seq><6 base36>`, e.g.
+ * `ord-1v13k2j9qz`. Minted and recognised here so the two cannot drift.
+ *
+ * The join path needs to recognise one, because `join` CREATES the room it names when there is
+ * none. That is right for a custom code and wrong for this one: a staged code with no live room
+ * and no `pending_matches` row is a match that is already over (cancelled at the join grace, or
+ * its machine restarted), and creating it made an EMPTY CUSTOM ROOM. A ranked client sitting in
+ * one gets a `welcome` and a roster and never a `strategyStart` or an `error`, so its "Match
+ * found" screen waited forever (2026-10-03, "stuck on loading into match"). See `joinRoom`.
+ */
+export function stagedRoomCode(hostRegion: string, mode: QueueMode, seq: number, tail: string): string {
+  return `${hostRegion}-${mode}${seq}${tail}`;
+}
+
+/** the matchmaker's shape, or a competition call's (`<region>-cm<8 base36>`, server/competitions.ts):
+ *  both are minted by the server alone, so for both a code with no room and no claimable row is a
+ *  match that is over */
+const STAGED_CODE = /^[a-z]{3}-(?:(?:1v1|2v2)\d+[0-9a-z]{6}|cm[0-9a-z]{8})$/;
+
+/** is this the shape `stagedRoomCode` (or a competition call) mints? (A custom code is bare: no
+ *  region, no dash.) */
+export function isStagedRoomCode(code: string): boolean {
+  return STAGED_CODE.test(code);
+}
+
+/**
+ * A COMPETITION MATCH'S IDENTITY, carried by its staged room (0059, `server/competitions.ts`).
+ *
+ * A competition match is staged like a ranked pairing (a fixed roster, a strategy window, a
+ * ready gate) and differs in what the room does around it: it rates nobody, charges no standing,
+ * waits `graceMs` for its drivers rather than the ranked grace, and reports both a finished match
+ * and a call that never became one back to the competition by this tag. `attempt` is the call it
+ * was built from: a referee who re-calls the match makes every older room's result moot.
+ */
+export interface CompetitionTag {
+  /** competitions.id */
+  id: string;
+  slug: string;
+  name: string;
+  game: GameId;
+  /** competition_matches.id */
+  matchId: number;
+  /** "Q12", "SF1-2" */
+  label: string;
+  attempt: number;
+  /** how long the room waits for its drivers, ms */
+  graceMs: number;
+}
+
 export interface PendingMatch {
-  /** region-coded room code `<hostRegion>-<rand>` */
+  /** region-coded room code, `stagedRoomCode` (or `competitionRoomCode` for a competition) */
   code: string;
   hostRegion: string;
   mode: QueueMode;
@@ -71,4 +121,7 @@ export interface PendingMatch {
    * Day 2, and every game that declares no 3D option).
    */
   physics?: Physics;
+  /** set for a competition match: an UNRATED staged room (see `CompetitionTag`). Never written to
+   *  `pending_matches` — a competition's call lives on its own row and is claimed from there. */
+  competition?: CompetitionTag;
 }

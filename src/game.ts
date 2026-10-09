@@ -27,6 +27,14 @@ import type { AutoSeatStatus, ZenithAutoSetup } from './auto/types';
  * plus the editor popup; a type-only import here, so the main chunk never contains Zenith) and the
  * file to play.
  */
+/**
+ * The auto seat's status as the HUD reads it: the seat's own, the file's name, and `problems`,
+ * the ERROR findings Zenith has for this file on this robot and alliance (a start in the other
+ * half, a path through a wall, a routine over 30 s). They do not stop the seat, so without this
+ * a file Zenith refuses drove in silence, or sat still, and nothing on the match screen said why.
+ */
+export type GameAutoStatus = AutoSeatStatus & { name: string; problems: string[] };
+
 export interface GameControllerZenithAuto extends ZenithAutoSetup {
   module: typeof import('./ui/zenithEditor');
   name: string;
@@ -56,10 +64,12 @@ import { chainCatalystPrompt } from './games/chain/play';
 import { beamRide } from './games/chain/beams';
 import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { netScore, PaceCurveRecorder, type PaceCurve } from './ui/pace/curve';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
 import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
+import { flyPresetIndex, flyReady, flySetpoint } from './sim/flywheel';
 import { InputManager } from './input/input';
 import { effectiveBindings, type ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
@@ -444,6 +454,10 @@ export interface HudSnapshot {
    * other drivetrain (no chip). Drives the HUD readout — the swap changes how the robot
    * handles AND whether strafe exists, so the driver has to be able to see it. */
   butterflyMode: 'tank' | 'mecanum' | null;
+  /** a SETPOINT FLYWHEEL (`spec.flywheel`, DECODE + BIOBUZZ): the speed it is running to, which
+   * preset that is, and whether the feeder may run (`flyReady`) — or null for every other build.
+   * A fixed shooter's range is its setpoint's, so a driver has to be able to read it. */
+  flywheel: { setpoint: number; preset: number; presets: number; ready: boolean } | null;
   /** park mode active (speed capped to parkSpeedPct); only activatable in
    * endgame / free drive, per canPark() */
   parked: boolean;
@@ -487,9 +501,10 @@ export interface HudSnapshot {
   tutorial: TutorialView | null;
   /**
    * THE ZENITH AUTO this solo run plays, and where it is (docs/area/autos.md): the status chip
-   * during AUTO, and the "Open run in Zenith" button once it has run. Null when none is playing.
+   * during AUTO, the pre-match panel's line (the auto, why it is off, or what Zenith flags in it),
+   * and the "Open run in Zenith" button once it has run. Null when none is playing.
    */
-  auto: (AutoSeatStatus & { name: string }) | null;
+  auto: GameAutoStatus | null;
 }
 
 export class GameController {
@@ -555,6 +570,14 @@ export class GameController {
    *  multiplayer, where the SERVER owns the recording) */
   private recorder: ReplayRecorder | null = null;
   /**
+   * The run's PACE CURVE, made as it is played, beside the replay (`src/ui/pace/curve.ts`).
+   * The same points a re-simulation of the saved replay would give — a practice replay re-runs
+   * exactly, and this is pushed after the same step the replay records — but without the
+   * re-simulation: a BIOBUZZ one took over a minute in the pace worker beside a live match, and
+   * for that minute a new best could not be raced. Opened and closed with `recorder`.
+   */
+  private paceRec: PaceCurveRecorder | null = null;
+  /**
    * Ticks of the run in flight on which the robots were actually ENABLED — the length
    * `src/replaySavePolicy.ts` judges an abandoned run by.
    *
@@ -568,7 +591,7 @@ export class GameController {
   /** the finished solo practice run, once the match reaches `post` */
   private practice: { replay: Replay; result: ReplayResult } | null = null;
   /** fired once when a solo practice run finishes, so the app can save + upload it */
-  onPracticeRun: ((replay: Replay, result: ReplayResult) => void) | null = null;
+  onPracticeRun: ((replay: Replay, result: ReplayResult, pace?: PaceCurve) => void) | null = null;
   private lastBeepAt = -1;
   private lastTransitionBeep = -1;
   private hudCountdown: number | null = null;
@@ -800,6 +823,8 @@ export class GameController {
    */
   private zenithAuto: GameControllerZenithAuto | null;
   private autoSeat: import('./auto/zenithAutos').AutoSeat | null = null;
+  /** the seat's Zenith ERROR findings, read once per seat (`GameAutoStatus.problems`) */
+  private autoProblems: string[] = [];
   /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
    *
@@ -1207,8 +1232,10 @@ export class GameController {
       },
     ];
     // THE ZENITH AUTO seats the robot where the file starts, which is what a team does at the
-    // field. The start is still the game's to snap legal (`coerceSetup`), so an illegal start in
-    // the file is moved and the follower drives from where the robot really is.
+    // field. The pose goes through `coerceSetup` like any custom start, which snaps it only for a
+    // game with a `startSnap` (BIOBUZZ has none): an illegal start in the file (the other half,
+    // off the wall) is seated as written, and Zenith's START_ILLEGAL finding is what says so, on
+    // the pre-match panel (`autoStatus().problems`).
     const za = this.zenithAuto;
     const autoStart = za ? this.zenithAutoStart(za, s) : null;
     if (za) {
@@ -1216,8 +1243,12 @@ export class GameController {
       if (autoStart) setups[0].startPose = autoStart;
     }
     // THE PRACTICE SEATS — partner, opponent 1, opponent 2 — in Solo practice AND Free drive
-    // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds)
-    const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed);
+    // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds). The partner takes
+    // the anchor away from where the player REALLY starts: with an auto, that is the file's start,
+    // not `settings.startIndex`, or the partner spawns inside the robot the auto is about to drive.
+    const autoAnchor =
+      za && autoStart ? za.module.autoAdapterFor(this.gameId)?.defaultStartNear?.(autoStart) : undefined;
+    const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed, autoAnchor ?? s.startIndex);
     setups.push(...others);
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
@@ -1314,6 +1345,7 @@ export class GameController {
   private seatAuto(world: World): void {
     this.autoSeat?.dispose();
     this.autoSeat = null;
+    this.autoProblems = [];
     const za = this.zenithAuto;
     if (!za) return;
     const adapter = za.module.autoAdapterFor(this.gameId);
@@ -1321,6 +1353,7 @@ export class GameController {
     const seat = za.module.createAutoSeat(world, this.localRobotId, za, adapter);
     if (world.match.phase === 'freeplay') seat.arm();
     this.autoSeat = seat;
+    this.autoProblems = seat.loaded ? seat.loaded.findings.filter((f) => f.severity === 'error').map((f) => f.message) : [];
     // a file that cannot run says so in the event log, and the driver keeps the robot
     const st = seat.status();
     if (st.state === 'error') world.events.push(`AUTO OFF: ${st.error ?? 'the auto could not be loaded'}`);
@@ -1354,8 +1387,10 @@ export class GameController {
   }
 
   /** the auto seat's status for the HUD, or null when this run plays no auto */
-  autoStatus(): (AutoSeatStatus & { name: string }) | null {
-    return this.autoSeat && this.zenithAuto ? { ...this.autoSeat.status(), name: this.zenithAuto.name } : null;
+  autoStatus(): GameAutoStatus | null {
+    return this.autoSeat && this.zenithAuto
+      ? { ...this.autoSeat.status(), name: this.zenithAuto.name, problems: this.autoProblems }
+      : null;
   }
 
   /**
@@ -2109,6 +2144,7 @@ export class GameController {
       if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
+      this.paceRec?.push(this.world.match.phase, this.world.match.phaseTimeLeft, netScore(this.world, this.viewAlliance()));
       // counted HERE, beside the record call, because it must measure exactly the ticks that
       // went into the log — and only the ones the sim let the robot move on (`pre` and
       // `transition` are recorded but undrivable).
@@ -3506,6 +3542,7 @@ export class GameController {
       this.gameId,
       this.interp3d() ? '3d' : '2d',
     );
+    this.paceRec = new PaceCurveRecorder();
     this.drivenTicks = 0;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -3539,6 +3576,7 @@ export class GameController {
     // on the rebuilt world. A RESTART is still not a replay of a MATCH — it is now a replay of
     // the DRIVING, which is what a practice replay was always for (see `replaySavePolicy`).
     this.recorder = null;
+    this.paceRec = null;
     this.practice = null;
     this.drivenTicks = 0;
     this.frontFlipped = false;
@@ -3610,6 +3648,8 @@ export class GameController {
   getEloResults(): EloResultRow[] | null {
     const s = this.session;
     if (!s || !s.ranked || s.eloResults.length === 0) return null;
+    // a ranked roster is 2 or 4 (ROSTER_SIZE); placement is per mode
+    const need = C.placementGamesFor(s.setups.length >= 4 ? '2v2' : '1v1');
     const rows = s.eloResults.map((d) => {
       const su = s.setups.find((x) => x.id === d.robotId);
       return {
@@ -3619,7 +3659,7 @@ export class GameController {
         before: d.before,
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
-        provisional: d.games < C.PLACEMENT_GAMES, // still in placements (games-based)
+        provisional: d.games < need, // still in placements (games-based)
         games: d.games,
       };
     });
@@ -3684,6 +3724,14 @@ export class GameController {
       frontFlipped: this.frontFlipped,
       butterflyMode:
         r.spec.drivetrain === 'butterfly' ? (r.butterflyTank ? 'tank' : 'mecanum') : null,
+      flywheel: r.spec.flywheel
+        ? {
+            setpoint: flySetpoint(r),
+            preset: flyPresetIndex(r),
+            presets: r.spec.flywheel.mode === 'presets' ? r.spec.flywheel.rpm.length : 1,
+            ready: flyReady(r),
+          }
+        : null,
       parked: this.parked,
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,
@@ -3735,13 +3783,15 @@ export class GameController {
     // closed before the branch: kept or not, the run is over, and a recorder left open would
     // keep appending to a run whose world is about to be thrown away.
     this.recorder = null;
+    const pace = this.paceRec?.curve;
+    this.paceRec = null;
     const replay = recorder.finish();
     const decision = practiceSaveDecision({ drivenTicks: this.drivenTicks, completed });
     this.drivenTicks = 0;
     if (!decision.keep) return;
     const kept = { replay, result: worldResult(this.world) };
     if (completed) this.practice = kept;
-    this.onPracticeRun?.(kept.replay, kept.result);
+    this.onPracticeRun?.(kept.replay, kept.result, pace);
   }
 
   dispose(): void {

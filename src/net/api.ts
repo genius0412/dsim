@@ -4,8 +4,13 @@ import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
 import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
+import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
-import { gameServerHttpUrl, setLanFromServer } from './env';
+import { gameServerHttpUrl, lanActive, lanServerHttpUrl, setLanFromServer } from './env';
+import { tabHosting } from '../lan/hosting';
+import { ROBOT_IMPORT_CAP, replayHasImported } from './imported';
+import { IMPORT_VISUALS_CAP } from './importVisuals';
+import { SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE } from './settingsKeep';
 import { getAuthToken } from '../lib/authClient';
 import { readAccountSettings, sendWithTokenRetry } from './authFetch';
 import { DISCORD_REGION } from './discordActivity';
@@ -105,7 +110,7 @@ export interface EloRow extends BadgeFields {
 }
 
 /** the viewing player's own standing on a board (placed or not). `rank` is null
- * while still in placements; derive placement from `games` against PLACEMENT_GAMES. */
+ * while still in placements; derive placement from `games` against the board's `minGames`. */
 export interface EloStanding {
   rank: number | null;
   rating: number;
@@ -200,14 +205,23 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
  * current server ignores it if an older client still sends one, and `Leaderboard` filters an
  * OLDER server's mixed response client-side.
  */
+export type RecordCategory = 'total' | 'auto' | 'teleop';
+export type RecordWindow = 'season' | 'day' | 'week' | 'month' | 'all';
+
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
   game?: GameId,
-): Promise<{ rows: RecordRow[]; physics?: string }> {
+  /** Total / Auto / TeleOp and the time window. An older server ignores both and answers Total, season. */
+  view?: { category?: RecordCategory; window?: RecordWindow; era?: '2d' | '3d' },
+): Promise<{ rows: RecordRow[]; physics?: string; category?: RecordCategory; window?: RecordWindow; resetsAt?: string | null }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
+  const v =
+    (view?.category && view.category !== 'total' ? `&category=${view.category}` : '') +
+    (view?.window && view.window !== 'season' ? `&window=${view.window}` : '') +
+    (view?.window === 'all' && view.era ? `&era=${view.era}` : '');
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${v}${gameParam(game)}`);
 }
 
 export function fetchElo(
@@ -215,9 +229,10 @@ export function fetchElo(
   season?: number,
   me?: string | null,
   game?: GameId,
-): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
+): Promise<{ rows: EloRow[]; me: EloStanding | null; minGames?: number }> {
   const s = season != null ? `&season=${season}` : '';
   const m = me ? `&me=${encodeURIComponent(me)}` : '';
+  // `minGames`: the games this board needs (absent from a server older than 2026-10-03)
   return getJson(`/api/elo?mode=${mode}${s}${m}${gameParam(game)}`);
 }
 
@@ -446,6 +461,51 @@ export function serverCaps(): Promise<string[]> {
 }
 
 /**
+ * MAY AN IMPORTED ROBOT BE SENT TO THE SERVER THIS ROOM IS ON? (docs/area/netcode.md, IMPORTED
+ * ROBOTS.) The server has to advertise `'robotImport'`: an older one drops `spec.imported` without
+ * a word and steps a standard robot while this client predicts the imported one.
+ *
+ * Three answers, because three servers can be on the other end of a room:
+ *  · a room THIS TAB hosts (`tabHosting`) runs this build's own `Room`, so yes;
+ *  · a LAN server reached by address is its own machine, with its own build (the desktop app
+ *    updates on the desktop's schedule), so its OWN presence is asked, not the cloud's;
+ *  · otherwise the cloud's `serverCaps()`.
+ * Any failure reads as "no": the caller then plays the standard robot, which is the safe direction.
+ */
+const lanCapsCache = new Map<string, Promise<string[]>>();
+/** the capabilities of the server THIS room is on: a LAN address's own presence, else the cloud's. */
+function roomServerCaps(): Promise<string[]> {
+  if (!lanActive()) return serverCaps();
+  const base = lanServerHttpUrl();
+  if (!base) return Promise.resolve([]);
+  let hit = lanCapsCache.get(base);
+  if (!hit) {
+    hit = fetch(`${base}/api/presence`, { cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<Presence>) : null))
+      .then((p) => (Array.isArray(p?.caps) ? p.caps : []))
+      .catch(() => []);
+    lanCapsCache.set(base, hit);
+  }
+  return hit;
+}
+export function roomTakesImportedRobots(): Promise<boolean> {
+  if (tabHosting()) return Promise.resolve(true);
+  return roomServerCaps().then((c) => c.includes(ROBOT_IMPORT_CAP));
+}
+
+/**
+ * DOES THE SERVER THIS ROOM IS ON RELAY AN IMPORTED ROBOT'S LOOK? (`'importVisuals'`,
+ * docs/area/netcode.md, VISUALS RELAY.) The same three answers as `roomTakesImportedRobots` — a
+ * tab-hosted room runs this build's own `Room`, a LAN address answers for itself, the cloud's
+ * `serverCaps()` otherwise — and the same safe direction: any failure reads as no, and an owner
+ * then uploads nothing, because an older server would drop 1.3 MB of frames without a word.
+ */
+export function roomTakesImportVisuals(): Promise<boolean> {
+  if (tabHosting()) return Promise.resolve(true);
+  return roomServerCaps().then((c) => c.includes(IMPORT_VISUALS_CAP));
+}
+
+/**
  * Live presence: who's online + how deep each ranked queue is, so a player can
  * see it BEFORE queueing. Cheap JSON off the same host; poll it (usePresence).
  *
@@ -629,7 +689,9 @@ export async function saveAccountSettings(settings: unknown): Promise<void> {
   const res = await fetchAuthed(token, base + '/api/user/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ settings }),
+    // `caps` says this build keeps imported robots in the blob, so the server stores it as sent; a
+    // save WITHOUT it is an older build's, which the server merges (`src/net/settingsKeep.ts`)
+    body: JSON.stringify({ settings, caps: [SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE] }),
   }).catch(() => null);
   // best-effort by design (the next edit saves again), but not SILENT: a refused save is the
   // one way the account copy drifts from this device without anybody noticing
@@ -773,6 +835,9 @@ export async function uploadPracticeRun(
   score: number,
   game?: GameId,
 ): Promise<PracticeRun | null> {
+  // A RUN WITH AN IMPORTED ROBOT NEVER LEAVES THE DEVICE. The caller keeps it out of its backlog
+  // (`pendingPracticeUploads`), the server refuses it, and this is the last line: no request at all.
+  if (replayHasImported(replay)) return null;
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -878,6 +943,9 @@ export async function uploadLanRun(
   participants: LanParticipant[],
   game?: GameId,
 ): Promise<LanRun | 'refused' | null> {
+  // as `uploadPracticeRun`: an imported robot's match stays on the host's device ('refused' retires
+  // it from the backlog rather than leaving it at the head of the queue)
+  if (replayHasImported(replay)) return 'refused';
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -1388,23 +1456,29 @@ export interface ModMatch {
   won: boolean | null;
 }
 
-/** triage every OPEN report against a player */
+/**
+ * Triage every OPEN report against a player. The two messages are a moderator's own words: to
+ * the players who REPORTED them (sent with either verdict), and to the reported player (sent
+ * only with an upheld one, beside what it cost them). An older server ignores both.
+ */
 export async function adminSetReportStatus(
   userId: string,
   status: 'reviewed' | 'dismissed',
-): Promise<boolean> {
+  messages: { reporters?: string; player?: string } = {},
+): Promise<{ notified: number | null } | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
-  if (!base || !token) return false;
+  if (!base || !token) return null;
+  const q = new URLSearchParams({ user: userId, status });
+  if (messages.reporters?.trim()) q.set('reporterMessage', messages.reporters.trim());
+  if (messages.player?.trim()) q.set('playerMessage', messages.player.trim());
   try {
-    const res = await fetchAuthed(
-      token,
-      `${base}/api/admin/reports?user=${encodeURIComponent(userId)}&status=${status}`,
-      { method: 'POST' },
-    );
-    return res.ok;
+    const res = await fetchAuthed(token, `${base}/api/admin/reports?${q.toString()}`, { method: 'POST' });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { notified?: number };
+    return { notified: typeof body.notified === 'number' ? body.notified : null };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1428,6 +1502,8 @@ export interface ScoreReport {
    *  rejected. The pattern is what separates a mistake from a habit before anyone smites. */
   reporterFiled: number;
   reporterRejected: number;
+  /** the match has already been corrected. Absent from an older server. */
+  corrected?: boolean;
 }
 
 export async function adminFetchScoreReports(status = 'open'): Promise<ScoreReport[] | null> {
@@ -1456,11 +1532,14 @@ export async function adminResolveScoreReport(
   id: string,
   verdict: 'upheld' | 'rejected',
   smite = 0,
+  /** the moderator's own words to the filer, sent with the verdict */
+  message?: string,
 ): Promise<boolean> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return false;
   const q = new URLSearchParams({ id, verdict, smite: String(Math.max(0, Math.round(smite))) });
+  if (message?.trim()) q.set('message', message.trim());
   try {
     const res = await fetchAuthed(token, `${base}/api/admin/score-reports?${q.toString()}`, {
       method: 'POST',
@@ -1474,6 +1553,8 @@ export async function adminResolveScoreReport(
 /** one finished match, as the score editor reads it */
 export interface AdminMatch {
   matchId: string;
+  /** a competition match: its referees correct it, from the match desk (absent: older server) */
+  competition?: { slug: string; name: string; label: string; refusal: string };
   replayId: string | null;
   game: string;
   mode: string;
@@ -1502,6 +1583,12 @@ export interface AdminMatch {
     note: string | null;
     at: string;
   }[];
+  /** what the match was first recorded as; the rating was computed from it (absent: older server) */
+  original?: { red: number; blue: number };
+  /** rating already given back on this match */
+  refunds?: { userId: string; points: number; at: string }[];
+  /** ranked, on the ladder that is live now — the only kind a refund can reach */
+  liveBoard?: boolean;
 }
 
 /** who played a match, what it scored, and every correction already applied to it */
@@ -1514,7 +1601,8 @@ export async function adminFetchMatch(matchId: string): Promise<AdminMatch | nul
       cache: 'no-store',
     });
     if (!res.ok) return null;
-    return ((await res.json()) as { match: AdminMatch }).match ?? null;
+    const body = (await res.json()) as { match: AdminMatch; competition?: AdminMatch['competition'] };
+    return body.match ? { ...body.match, ...(body.competition ? { competition: body.competition } : {}) } : null;
   } catch {
     return null;
   }
@@ -1523,16 +1611,27 @@ export async function adminFetchMatch(matchId: string): Promise<AdminMatch | nul
 /**
  * Set a finished match's alliance scores.
  *
- * The win/loss flag is re-derived by the server from the new numbers; the RATINGS are not
- * touched, because Glicko-2 is sequential and re-rating one match in the middle means
- * re-rating every match since. Returns the before/after pair, or null if it did not land.
+ * The win/loss flag is re-derived by the server from the new numbers. Ratings are NOT
+ * recalculated (Glicko-2 is sequential); with `refund`, a player whose result got better gets
+ * back the rating the wrong result cost them, once. Every player in the match is told (0057),
+ * with `note` as the moderator's message. Returns the before/after pair, or null if it did not
+ * land.
  */
 export async function adminCorrectMatchScore(
   matchId: string,
   red: number,
   blue: number,
   note?: string,
-): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  refund = false,
+): Promise<{
+  redBefore: number;
+  blueBefore: number;
+  redAfter: number;
+  blueAfter: number;
+  /** absent from an older server */
+  refunds?: { userId: string; points: number }[];
+  notified?: number;
+} | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -1542,12 +1641,16 @@ export async function adminCorrectMatchScore(
     blue: String(Math.max(0, Math.round(blue))),
   });
   if (note) q.set('note', note);
+  if (refund) q.set('refund', '1');
   try {
     const res = await fetchAuthed(token, `${base}/api/admin/match?${q.toString()}`, {
       method: 'POST',
       });
     if (!res.ok) return null;
-    return (await res.json()) as { redBefore: number; blueBefore: number; redAfter: number; blueAfter: number };
+    return (await res.json()) as {
+      redBefore: number; blueBefore: number; redAfter: number; blueAfter: number;
+      refunds?: { userId: string; points: number }[]; notified?: number;
+    };
   } catch {
     return null;
   }
@@ -2006,6 +2109,39 @@ async function authedJson<T>(path: string, init?: RequestInit): Promise<T> {
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
   return data as T;
+}
+
+/**
+ * THE NOTICE INBOX (0057): what moderators told this account, newest first.
+ *
+ * ⚠️ AN OLDER SERVER HAS NO ROUTE and answers 404 (`FriendsUnavailableError`), which is an
+ * empty inbox — a server from before the inbox never wrote one.
+ */
+export async function fetchNotices(): Promise<Notice[]> {
+  try {
+    return (await authedJson<{ notices?: Notice[] }>('/api/user/notices')).notices ?? [];
+  } catch (e) {
+    if (e instanceof FriendsUnavailableError) return [];
+    throw e;
+  }
+}
+
+/** mark these notices read, or every unread one */
+export async function markNoticesRead(ids: string[] | 'all'): Promise<void> {
+  await authedJson('/api/user/notices/read', {
+    method: 'POST',
+    body: JSON.stringify(ids === 'all' ? { all: true } : { ids }),
+  });
+}
+
+/** the reports this account filed and their status; [] from an older server */
+export async function fetchFiledReports(): Promise<FiledReport[]> {
+  try {
+    return (await authedJson<{ reports?: FiledReport[] }>('/api/user/reports')).reports ?? [];
+  } catch (e) {
+    if (e instanceof FriendsUnavailableError) return [];
+    throw e;
+  }
 }
 
 /** the caller's friends, requests and blocks. This request also records the

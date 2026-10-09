@@ -62,6 +62,7 @@ import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import { BB_TOUCH } from '../games/biobuzz/mobile';
 import type { BiobuzzHud } from '../games/biobuzz/hudRobot';
 import { CHAIN_TOUCH } from '../games/chain/mobile';
+import { decodeShotSpecial } from '../sim/fixedShot';
 
 /** an action the pad HOLDS DOWN — one `VirtualInput` boolean, released on touch end. */
 export type TouchHoldField =
@@ -74,7 +75,8 @@ export type TouchHoldField =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
-  | 'driveMode';
+  | 'driveMode'
+  | 'flyPreset';
 
 /** an action the pad PULSES once per tap (`InputManager.pressVirtual`). Flip and park are
  *  edge-triggered on the manager rather than bits on the command, so they cannot be held. */
@@ -191,9 +193,23 @@ export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'intake',
     side: 'left',
     slot: 'intake',
-    // `cmd.intake || r.autoIntake` in all three sims (2D and 3D), with no reverse or outtake
-    present: (c) => !c.autoIntake,
+    // `cmd.intake || r.autoIntake` in all three sims (2D and 3D), with no reverse or outtake;
+    // a DECODE robot with NO intake is loaded by the human player, so the bit does nothing
+    present: (c) => !c.autoIntake && !(c.game === 'decode' && c.spec.intake === 'none'),
     ready: (l) => l.held.length < l.cap,
+  },
+  {
+    // a SETPOINT FLYWHEEL with speed presets (DECODE's; BIOBUZZ runs one setpoint): step to the
+    // next one. Held like every command bit; the sim takes the press as one debounced edge.
+    action: 'flyPreset',
+    hold: 'flyPreset',
+    label: 'SPEED',
+    aria: 'Next flywheel speed',
+    glyph: '»',
+    cls: 'flypreset',
+    side: 'right',
+    // only a presets wheel with somewhere to go; every other build ignores the bit
+    present: (c) => c.spec.flywheel?.mode === 'presets' && c.spec.flywheel.rpm.length > 1,
   },
   {
     action: 'flipFront',
@@ -234,7 +250,13 @@ const GAME_TOUCH: Record<GameId, GameTouch> = {
   // DECODE's only actions are the shared ones — its artifacts are intaken and shot, and the
   // gate, basin and rail are field mechanisms the driver pushes with the chassis. Its turret
   // tracks on its own, so a held SHOOT never steers.
-  decode: { buttons: [] },
+  decode: {
+    buttons: [],
+    // a launcher that can MISS (a fixed launcher, a fixed hood or a setpoint wheel,
+    // `decodeShotSpecial`): auto fire releases only a shot that would score, while a held SHOOT is
+    // the driver's call — and with aim assist it turns a fixed launcher's chassis onto the goal
+    manualFireCounts: (c) => decodeShotSpecial(c.spec),
+  },
   chain: CHAIN_TOUCH,
   biobuzz: BB_TOUCH,
 };
@@ -274,7 +296,7 @@ export function touchButtonsFor(game: GameId): TouchButton[] {
   const own = GAME_TOUCH[game].buttons;
   // the game's own mechanisms sit between SHOOT/INTAKE and the three utilities:
   // they are what the season is about, and PARK/FLIP/WHEELS are pressed a handful of times.
-  const utility = new Set<KeyAction>(['flipFront', 'driveMode', 'park']);
+  const utility = new Set<KeyAction>(['flyPreset', 'flipFront', 'driveMode', 'park']);
   return [
     ...shared.filter((b) => !utility.has(b.action)),
     ...own,

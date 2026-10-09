@@ -73,6 +73,7 @@ export interface GamepadSample {
   bbRamp: boolean;
   bbPass: boolean;
   driveMode: boolean;
+  flyPreset: boolean;
   flipFront: boolean;
   park: boolean;
   start: boolean;
@@ -96,6 +97,7 @@ const EMPTY: GamepadSample = {
   bbRamp: false,
   bbPass: false,
   driveMode: false,
+  flyPreset: false,
   flipFront: false,
   park: false,
   start: false,
@@ -179,6 +181,7 @@ export class GamepadInput {
       bbRamp: on.bbRamp,
       bbPass: on.bbPass,
       driveMode: on.driveMode,
+      flyPreset: on.flyPreset,
       flipFront: on.flipFront && !this.prevFlip,
       park: on.park && !this.prevPark,
       start: on.start && !this.prevStart,

@@ -366,6 +366,97 @@ machine's memory at full population.
 | 12 | **An unbounded outbound queue per socket.** Nothing read `ws.bufferedAmount`, so a socket that stopped draining accumulated snapshots that were historical by the time they arrived — invisible to the room, which only ever knew it had *called* `send`. | **FIXED** — `SNAP_BACKLOG_BYTES` (256 KB): a backed-up client is skipped and unprimed, so the next snapshot it receives is a full keyframe of the world as it is then. Coalescing, not dropping; a delta keyed to a frame it never read would be worse than nothing. |
 | 13 | **No inbound `maxPayload` and no per-socket message rate limit.** ws's default cap is 100 MiB per socket, and nothing bounded how fast one socket could make the event loop — which runs every room in the region — run `JSON.parse`. | **FIXED** — `maxPayload` 64 KiB (three orders above the ~100 B hot path, an order above the largest legitimate `join`) and 240 msg/s per socket, 4× what a 60 Hz client produces; a sustained flood past 2,000/s is closed. |
 
+### 7b. Per-room CPU and snapshot spacing — the 2026-09-27 pass
+
+Asked by a lag report on the SOLO RECORD screen with ~30 players online and 50 ms ping — i.e. not
+a saturated fleet. Measured headlessly through the real `Room` (a scripted busy driver sending real
+`input` frames), on a Linux 4-vCPU box. The box is shared, so the ABSOLUTE times carry the §0
+caveat; every before/after below is an interleaved A/B on the same box in the same hour. The
+harness lives outside the repo; `npm run costprobe` is the in-repo instrument and was re-run
+before and after.
+
+**Where a warm solo room's tick goes** (full match): DECODE 0.86 ms (sim 87%, broadcast ~10%),
+Chain Reaction 1.12 ms (sim 54%, **broadcast 43%**), BIOBUZZ 3D 0.93 ms (sim 83%, broadcast 15%).
+Input handling, `frameCommands`, the recorder, participation and settle are under 3% together.
+GC is 4–9% of wall. No synchronous event-loop blocker was found (a match-end `matchResult` with
+its 209 KiB replay encodes in 0.9 ms; a practice upload parses and sanitizes in 1.7 ms; the
+presence beat and `siteStatus` are O(rooms) every 5 s).
+
+#### Snapshot encode (`server/snapshotWire.ts`)
+
+The per-ball diff key was `JSON.stringify(ball, round3)` for every ball on every broadcast; a
+replacer turns V8's fast serializer off. A rounded shadow walk now decides "changed", only moved
+balls are stringified, and the body splices those strings. **Wire bytes unchanged** — costprobe's
+bytes/snapshot column is identical to the byte before and after, and `npm test` "snapshot wire:"
+asserts byte identity against the old encoder on every frame.
+
+| per snapshot, real mid-match frames | before | after |
+|---|---|---|
+| CR diff (300 balls, ~37 changed) | 534 µs | 325 µs |
+| CR body | 126 µs | 81 µs |
+| DECODE diff | 72 µs | 29 µs |
+| BIOBUZZ 3D diff | 129 µs | 80 µs |
+
+`npm run costprobe`, cores/room (two interleaved runs each, before → after):
+
+| scenario | before | after |
+|---|---|---|
+| DECODE solo | 0.068 / 0.069 | 0.064 / 0.064 |
+| Chain Reaction solo | 0.065 / 0.067 | **0.056 / 0.052** |
+| Chain Reaction 2v2 | 0.087 / 0.087 | 0.078 / 0.079 |
+| BIOBUZZ 3D solo | 0.059 / 0.059 | 0.055 / 0.055 |
+| BIOBUZZ 3D 2v2 | 0.081 / 0.080 | 0.081 / 0.077 |
+
+#### Loop timing (`server/tickScheduler.ts`)
+
+On Linux, idle, `setInterval(1000/60)` fires every **16.32 ms (61.3 Hz)**. With the per-room
+`Date.now()` accumulator some fires ran 0 steps and some 2, so even ONE room sent snapshots 16 or
+48 ms apart. Every room now steps off one self-correcting `performance.now()` deadline, with the
+old catch-up rules applied once per process, and rooms alternate snapshot parity. Real `Room`s,
+N solo record rooms in one process, A/B interleaved (share of snapshot gaps more than 8 ms off
+33.3 ms; sd of the gap):
+
+| rooms | before | after |
+|---|---|---|
+| 1 DECODE (two runs) | 8.1% / 7.0%, sd 4.5 / 4.2, p99 49 ms | **0.1% / 0.0%, sd 1.3 / 0.9, p99 37 ms** |
+| 10 DECODE | 9.7%, sd 5.2, p99 50 ms | **1.7%, sd 3.7, p99 41 ms** |
+| 10 Chain Reaction | 19.9%, sd 7.1, p99 52 ms | **3.5%, sd 3.6, p99 44 ms** |
+
+CPU was within noise (±5%). ⚠️ One trade-off to watch: the rooms now step back to back inside
+one timer turn, so event-loop lag p99 (the time an INPUT frame can wait) rose from ~5 to ~13 ms
+at 10 rooms — every room's work used to be interleaved with I/O and is now one block. Still
+under a tick, and the snapshot spacing it buys is the thing players see; if a busy machine's
+input latency ever matters more, yield between rooms inside a turn.
+
+At 20 rooms per core both loops shed (DECODE 26–27 snapshots/s, CR 8): no scheduler fixes
+saturation. That remains multi-core (top of this file).
+
+#### Cold first match (`server/warmup.ts`)
+
+A fresh process's first match paid for V8 compiling the sim. First real match after boot, 1200
+ticks, CPU per tick, without → with the warm-up (900 ticks per game, ~7 s of CPU spread over
+~9 s after listen, sliced so `/health` and joins are served throughout):
+
+| game | cold | warmed |
+|---|---|---|
+| DECODE | 2.51 / 2.57 ms | 1.54 / 1.65 ms |
+| Chain Reaction | 1.56 / 1.43 ms | 0.94 / 1.03 ms |
+| BIOBUZZ 3D | 2.64 / 2.51 ms | 1.36 / 1.27 ms |
+
+Ticks over 8 ms roughly halve; 1800 warm ticks per game halves them again at twice the boot CPU.
+Satellites auto-stop, so this is the match the first player on a woken machine used to get.
+`WARMUP=0` disables it.
+
+#### Not done, to try on Fly
+
+- **GC flag A/B.** `--max-semi-space-size=64` in the Dockerfile CMD cut Chain Reaction minor GCs
+  267 → 102 and GC time by 35% on this box, but lengthened each pause (4.0 → 6.4 ms mean).
+  Marginal both ways; compare `/api/perf` loop lag and `snapSendGapMs` on one satellite with and
+  without it before adopting.
+- Output-changing work (needs a `SIM_VERSION` bump or a full-match `worldHash` A/B): reusing a
+  statics-only Rapier world instead of rebuilding it every tick (~25–30% of a DECODE room),
+  Chain Reaction's `separateParticles` (21.5%), BIOBUZZ 3D's JS↔wasm crossings (8.4%).
+
 ---
 
 ## 8. LAN / self-hosted servers — feasibility

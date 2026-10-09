@@ -3,6 +3,7 @@ import type { LobbyPlayer } from '../net/protocol';
 import { START_POSES, MAX_SAVED_STARTS, MAX_SAVED_STARTS_SUPPORTER } from '../config';
 import { chainAnchorCat, chainDefaultIndex } from '../games/chain/config';
 import { simModuleFor } from '../games/sim';
+import { footprintExtents } from '../sim/field';
 
 export const otherCat = (c: StartCat): StartCat => (c === 'close' ? 'far' : 'close');
 
@@ -155,6 +156,18 @@ export function deleteSavedStart(s: GameSettings, cat: StartCat, i: number): Par
   return {
     savedStartPoses: { ...s.savedStartPoses, [cat]: s.savedStartPoses[cat].filter((_, k) => k !== i) },
   };
+}
+
+/**
+ * How far ahead of the robot's origin the start editors put their HEADING HANDLE: 8 in past the
+ * robot's front, so a grab of the handle is never a grab of the robot. An IMPORT's front is its
+ * hull's (`footprintExtents`), which is not `length / 2`: the origin is the wheelbase centre, and
+ * DECODE caps an import's parametric `length` at 15 (sloped intake) while its hull runs to 18, so
+ * `length / 2 + 8` put the handle on or inside a long nose. A standard robot's handle is where it
+ * always was.
+ */
+export function startHandleReach(spec: RobotSpec): number {
+  return (spec.imported ? footprintExtents(spec).front : spec.length / 2) + 8;
 }
 
 /** are two poses effectively the same spot? (for highlighting the active pick) */

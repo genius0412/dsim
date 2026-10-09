@@ -14,15 +14,19 @@ import {
   workerPerf,
   type RoomHandle,
 } from './roomHost';
-import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
+import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
+import { visualSourceKey } from './importVisuals';
+import { clientIp } from './analytics';
+import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
+import { warmUp, warmupEnabled } from './warmup';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { legalRegion, routeTarget } from './routing';
+import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
@@ -32,6 +36,9 @@ import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
+import { cleanMessage, ratingRefund } from '../src/notices';
+import { noticeCorrection, noticeMisscore, noticeReportTriage, noticeStandingEdit, costOf } from './notices';
+import { recalcAct } from './ratingRecalc';
 import { handleApi } from './api';
 import { ADMIN_IDS, ADMIN_LIST, OWNER_ID } from './staff';
 import {
@@ -61,7 +68,11 @@ import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
 import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
+import { WakeTally } from './wakeLog';
 import { dbEnabled } from './db/pool';
+import { isStagedRoomCode, type PendingMatch } from './matchTypes';
+import { claimCompetitionRoom, competitionOfArchived, isCompetitionRoomCode, setCompetitionLive } from './competitions';
+import { startCompetitionRunner } from './competitionRunner';
 import {
   currentSeasonNumber,
   purgeSeasonReplays,
@@ -104,6 +115,7 @@ import {
   resolveScoreReport,
   submitScoreReport,
   setReportsStatus,
+  refundMatchRatings,
   userRecentMatches,
   getMaintenance,
   setMaintenance,
@@ -433,7 +445,7 @@ const stagedElsewhere = (userId: string): boolean => {
  * Returns null for an ordinary open-queue entry (no token — the common case),
  * `'bad-token'` for one to reject, or the verified token to enqueue under.
  */
-type VerifiedParty = { token: string; partyOnly: boolean } | null | 'bad-token';
+type VerifiedParty = { token: string } | null | 'bad-token';
 async function verifyParty(
   userId: string,
   msg: Extract<ClientMsg, { t: 'queue' }>,
@@ -443,15 +455,16 @@ async function verifyParty(
   const format = typeof msg.partyFormat === 'string' ? msg.partyFormat : '';
   const spec = RATED_FORMATS[format];
   // the format decides the queue it belongs in, so a token issued for one must not
-  // be spendable in the other
-  if (!spec || spec.mode !== msg.mode) return 'bad-token';
+  // be spendable in the other. A retired closed-pair format (`rated1v1`, or any queue
+  // still carrying `partyOnly`) is refused here, never downgraded into the open pool.
+  if (!spec || spec.mode !== msg.mode || msg.partyOnly) return 'bad-token';
   // no DB (local dev) ⇒ no challenges exist to verify against. Drop the party and
   // let them pair through the open queue, which on a single dev machine is the
   // same two people anyway.
   if (!dbEnabled) return null;
   const pair = await challengeParty(userId, token, format);
   if (!pair) return 'bad-token';
-  return { token, partyOnly: spec.partyOnly };
+  return { token };
 }
 /** a challenge is always exactly two people: the one who sent it and the one who
  * accepted. The matchmaker needs the number to know when the party is complete. */
@@ -522,6 +535,48 @@ function readAdminBody(req: import('node:http').IncomingMessage): Promise<string
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
+
+/**
+ * THIS MACHINE AUTO-STOPS WHEN IDLE: a satellite, not the always-warm primary (Fly sets
+ * `PRIMARY_REGION` from fly.toml's `primary_region`, and `min_machines_running` holds only
+ * that one up). A satellite is cheap only while it is stopped, so two things below apply to
+ * satellites alone: the idle-socket release and the wake log. Off locally and on a
+ * single-region deploy, where nothing auto-stops.
+ */
+const AUTO_STOPS = !!REGION && !!process.env.PRIMARY_REGION && REGION !== process.env.PRIMARY_REGION;
+
+/**
+ * A SOCKET THAT IS NOT IN A LIVE MATCH AND HAS SAID NOTHING FOR THIS LONG IS CLOSED (satellites
+ * only). A results screen or a lobby left open in a background tab held its socket — and the
+ * session pings every 300 ms on top — so the machine never went idle and ran all night for a
+ * game that had ended hours before. "Said nothing" ignores `ping` and `input`, which a client
+ * sends on a timer whether anybody is there or not. Closed with `IDLE_CLOSE_CODE`, which a
+ * current client treats as final (`transport.ts`); an older one reconnects once, finds its
+ * finished-room seat already freed (`Room.detach`, clean), is refused, and closes.
+ */
+const IDLE_RELEASE_MS = 15 * 60_000;
+const IDLE_CLOSE_CODE = 4002;
+/** every open socket's idle state, for the sweep below (satellites only) */
+const idleWatch = new Map<WebSocket, { saidAt: () => number; busy: () => boolean; release: () => void }>();
+if (AUTO_STOPS) {
+  const t = setInterval(() => {
+    const now = Date.now();
+    for (const s of [...idleWatch.values()]) {
+      if (!s.busy() && now - s.saidAt() > IDLE_RELEASE_MS) s.release();
+    }
+  }, 60_000);
+  t.unref?.();
+}
+
+/** see `server/wakeLog.ts` — one line a minute naming the HTTP requests a satellite answered */
+const wakeTally = new WakeTally();
+if (AUTO_STOPS) {
+  const t = setInterval(() => {
+    const line = wakeTally.drain(60);
+    if (line) console.log(line);
+  }, 60_000);
+  t.unref?.();
+}
 
 // ---- perf probe (GET /api/perf) ---------------------------------------------
 // Sizing evidence. The question "can this machine run on a SHARED cpu?" is not
@@ -930,6 +985,8 @@ function localLive(): LiveRoom[] {
 function isPublicLive(r: unknown): boolean {
   const room = r as Partial<LiveRoom>;
   if (room?.kind === 'record') return true;
+  // a competition match is an event: its page links straight to it (0059)
+  if (room?.competition) return true;
   return room?.ranked === true;
 }
 
@@ -940,25 +997,29 @@ function unionLive(local: LiveRoom[], global: unknown[]): unknown[] {
   return [...local, ...global.filter((r) => !seen.has((r as { room: string }).room))];
 }
 
+/* COMPETITIONS (0059) read the same union to show which called matches are live. */
+setCompetitionLive(async () => {
+  const local = localLive();
+  if (!dbEnabled) return local;
+  return unionLive(local, await aggregateLive()) as LiveRoom[];
+});
+
 const httpServer = createServer((req, res) => {
-  if (req.method === 'GET' && req.url?.startsWith('/health')) {
-    // `?region=<code>` lets the client ping a SPECIFIC region (the picker) or read
-    // its home region: on Fly we fly-replay the GET to that region's machine, which
-    // answers with its own x-region. Locally (REGION='') we just answer here.
-    const want = new URL(req.url, 'http://x').searchParams.get('region');
-    const already = !!req.headers['fly-replay-src'];
-    // ⚠️ VALIDATED, because this value reaches a `fly-replay` header — the same guard
-    // `/api/lobbies` carries, and the one this handler was flagged for missing. An unvalidated
-    // CRLF here throws inside the handler and leaves the socket hanging with no response.
-    if (REGION && want && legalRegion(want) && want !== REGION && !already) {
-      res.writeHead(200, {
-        'fly-replay': `region=${want}`,
-        'access-control-allow-origin': '*',
-        'cache-control': 'no-store',
-      });
-      res.end();
-      return;
+  // what woke / is keeping this satellite up (see wakeLog.ts). The platform's own health
+  // check (a `/health` with no Origin) and the operator's `/api/perf` are not callers.
+  if (AUTO_STOPS && req.url) {
+    const operator = req.url.startsWith('/api/perf') || (req.url.startsWith('/health') && !req.headers.origin);
+    if (!operator) {
+      wakeTally.add(req.method ?? '?', req.url, req.headers.origin, req.headers.referer, req.headers['user-agent']);
     }
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/health')) {
+    // `?region=<code>` USED to fly-replay this probe to that region's machine (the old
+    // per-region ping picker). It is answered HERE now, whatever it asks for: a replay BOOTS
+    // the target region (auto_start), so every client still running that picker woke every
+    // satellite on each visit. No current client sends it (`ping.ts` measures the home
+    // region and estimates the rest); an old one now reads its own region's latency for
+    // every row, which is a worse estimate and costs nothing.
     // CORS so the web client (different origin) can time this for the pre-connect
     // ping picker. Includes the region so a client can confirm which one answered.
     // `expose-headers` is REQUIRED for that: a cross-origin fetch can only read
@@ -1235,6 +1296,7 @@ const httpServer = createServer((req, res) => {
        *   GET  /api/admin/reports                  the queue (one row per reported player)
        *   GET  /api/admin/reports?user=<id>        that player's reports + recent matches
        *   POST /api/admin/reports?user=<id>&status=reviewed|dismissed
+       *        [&reporterMessage=…][&playerMessage=…]
        *
        * The per-user GET returns the MATCHES alongside the reports deliberately. A report
        * for cheating or throwing cannot be judged from its text — the moderator has to
@@ -1262,26 +1324,36 @@ const httpServer = createServer((req, res) => {
             res.end('bad request');
             return;
           }
-          const n = await setReportsStatus(target, status, user?.userId ?? 'admin');
+          const closed = await setReportsStatus(target, status, user?.userId ?? 'admin');
+          const n = closed.length;
           // UPHELD is the only event in the standing system a human has actually verified,
           // so it is the only one big enough to move a player two tiers — and unlike the raw
           // reports it replaces, it restricts. DISMISSED deliberately does nothing: the raw
           // nudges those reports already applied heal off on their own, and reversing them
           // would need a per-report ledger to undo exactly, which is a lot of machinery for
           // a few points that expire anyway.
-          if (status === 'reviewed' && n > 0) {
-            void chargeStanding(target, 'reportUpheld', {}).catch((e) =>
-              console.error('[standing] upheld charge failed:', e),
-            );
-          }
+          // AWAITED (0057): the penalty notice tells the player what was actually stored, so it
+          // needs the verdict. `chargeStanding` never throws; a null is "nothing charged".
+          const verdict =
+            status === 'reviewed' && n > 0 ? await chargeStanding(target, 'reportUpheld', {}) : null;
+          // THE PEOPLE IT CONCERNS ARE TOLD (0057): each reporter learns the outcome of their
+          // own report, and on an upheld verdict the player learns what it cost and why.
+          const reporterMessage = cleanMessage(u.searchParams.get('reporterMessage'));
+          const playerMessage = status === 'reviewed' ? cleanMessage(u.searchParams.get('playerMessage')) : null;
+          const notified = await noticeReportTriage({
+            target, status, closed, verdict, reporterMessage, playerMessage,
+          });
           await writeAudit({
             adminId: actor,
             action: status === 'reviewed' ? 'report.uphold' : 'report.dismiss',
             targetUser: target,
-            detail: { reports: n },
+            detail: { reports: n, notified },
+            note: [reporterMessage && `to reporters: ${reporterMessage}`, playerMessage && `to player: ${playerMessage}`]
+              .filter(Boolean)
+              .join(' | ') || undefined,
           });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, updated: n }));
+          res.end(JSON.stringify({ ok: true, updated: n, notified }));
           return;
         }
         if (target) {
@@ -1317,7 +1389,7 @@ const httpServer = createServer((req, res) => {
        * history — how many they have filed and how many were rejected — because that history
        * is what separates an honest confusion from a habit before anyone reaches for a smite.
        *
-       * POST ?id=&verdict=upheld|rejected&smite=N. The smite is standing points taken off the
+       * POST ?id=&verdict=upheld|rejected&smite=N[&message=…]. The smite is standing points taken off the
        * REPORTER for a claim found malicious, and it goes through the ordinary standing ledger
        * (`falseReport`) rather than a private one, so the player sees it where they see every
        * other penalty and the tier/cooldown machinery treats it like any other offence.
@@ -1347,12 +1419,23 @@ const httpServer = createServer((req, res) => {
           // right; charging them for being right is the failure mode this whole feature is
           // supposed to guard against, so the server refuses it rather than trusting the UI
           // to never offer it.
-          if (done && verdict === 'rejected' && smite > 0) {
-            void chargeStanding(done.reporterId, 'falseReport', {
-              roomCode: done.roomCode,
-              points: smite,
-            }).catch((e) => console.error('[standing] smite failed:', e));
-          }
+          const charged =
+            done && verdict === 'rejected' && smite > 0
+              ? await chargeStanding(done.reporterId, 'falseReport', { roomCode: done.roomCode, points: smite })
+              : null;
+          // THE FILER IS TOLD (0057): upheld with the corrected numbers when the match has been
+          // corrected, rejected with what the smite cost. `message` is the moderator's own words.
+          const message = cleanMessage(u.searchParams.get('message'));
+          const notified = done
+            ? await noticeMisscore({
+                reporterId: done.reporterId,
+                matchId: done.matchId,
+                game: done.game,
+                verdict,
+                cost: costOf(charged),
+                message,
+              })
+            : 0;
           if (done) {
             // the TARGET of this row is the REPORTER, not the match: a misscore claim is
             // resolved against a person only when it is smitten, and "what has been done to
@@ -1362,11 +1445,12 @@ const httpServer = createServer((req, res) => {
               action: `misscore.${verdict}`,
               targetUser: smite > 0 ? done.reporterId : null,
               targetId: id,
-              detail: { verdict, smite, roomCode: done.roomCode },
+              detail: { verdict, smite, roomCode: done.roomCode, notified },
+              note: message ?? undefined,
             });
           }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: Boolean(done) }));
+          res.end(JSON.stringify({ ok: Boolean(done), notified }));
           return;
         }
         const reports = await listScoreReports({ status: u.searchParams.get('status') ?? undefined });
@@ -1378,7 +1462,7 @@ const httpServer = createServer((req, res) => {
        * GET/POST /api/admin/match — READ or CORRECT one finished match's score.
        *
        *   GET  ?id=<matchId>                       who played, what it says, what has been done
-       *   POST ?id=<matchId>&red=N&blue=N&note=…   correct it
+       *   POST ?id=<matchId>&red=N&blue=N&note=…[&refund=1]   correct it
        *
        * This is the half the misscore queue was missing. Upholding a claim recorded that the
        * sim got a result wrong and then left the wrong number on the match, in both players'
@@ -1402,6 +1486,17 @@ const httpServer = createServer((req, res) => {
           res.end(dbEnabled ? 'bad request' : 'database disabled');
           return;
         }
+        /* A COMPETITION MATCH IS ITS REFEREES' TO CORRECT (0060). Its result lives on the
+           competition's own row, with facts and rulings this tool cannot edit, so a correction here
+           would change the history and tell the drivers while the competition (and every ranking
+           point) stayed as it was. The read says which competition match it is; a write is refused
+           with that sentence, and nobody is told anything. */
+        const comp = await competitionOfArchived(id);
+        if (req.method === 'POST' && comp) {
+          res.writeHead(409, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: comp.refusal, competition: comp }));
+          return;
+        }
         if (req.method === 'POST') {
           const red = Number(u.searchParams.get('red'));
           const blue = Number(u.searchParams.get('blue'));
@@ -1413,17 +1508,45 @@ const httpServer = createServer((req, res) => {
             res.end('bad score');
             return;
           }
-          const done = await correctMatchScore(
-            id,
-            { red, blue },
-            user?.userId ?? 'admin',
-            u.searchParams.get('note') ?? undefined,
-          );
+          // the note is SHOWN TO THE PLAYERS now (0057), so it goes through the same cleaning as
+          // every other moderator message
+          const note = cleanMessage(u.searchParams.get('note'));
+          const done = await correctMatchScore(id, { red, blue }, user?.userId ?? 'admin', note ?? undefined);
+          let refunds: { userId: string; points: number }[] = [];
+          let notified = 0;
           if (done) {
             console.log(
               `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
                 `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
             );
+            const after = { red: done.redAfter, blue: done.blueAfter };
+            const match = await matchScoreDetail(id);
+            /* RATING GIVEN BACK, when the moderator asked for it (VALORANT's ranked rollback,
+               lichess's refund). `ratingRefund` judges each player against the result the
+               rating was computed from, gives back only a LOSS, and only to a player whose
+               result got better; `refundMatchRatings` applies each once and only on a live
+               ladder. Nobody's rating goes down here. */
+            if (match && u.searchParams.get('refund') === '1' && match.liveBoard) {
+              const want = match.participants.map((p) => ({
+                userId: p.userId,
+                points: ratingRefund(p, match.original, after),
+              }));
+              refunds = await refundMatchRatings(id, want, user?.userId ?? 'admin').catch((e) => {
+                console.error('[admin] rating refund failed:', e);
+                return [];
+              });
+            }
+            // EVERY PLAYER IN THE MATCH IS TOLD (0057): the old and new totals, whether their
+            // result changed, and any rating given back.
+            if (match) {
+              notified = await noticeCorrection({
+                match,
+                before: { red: done.redBefore, blue: done.blueBefore },
+                after,
+                refunds,
+                message: note,
+              });
+            }
             await writeAudit({
               adminId: actor,
               action: 'match.rescore',
@@ -1431,17 +1554,19 @@ const httpServer = createServer((req, res) => {
               detail: {
                 before: `${done.redBefore}-${done.blueBefore}`,
                 after: `${done.redAfter}-${done.blueAfter}`,
+                refunds: refunds.map((r) => `${r.userId}:+${r.points}`),
+                notified,
               },
-              note: u.searchParams.get('note') ?? undefined,
+              note: note ?? undefined,
             });
           }
           res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
+          res.end(JSON.stringify(done ? { ok: true, ...done, refunds, notified } : { error: 'no such match' }));
           return;
         }
         const match = await matchScoreDetail(id);
         res.writeHead(match ? 200 : 404, { ...cors, 'content-type': 'application/json' });
-        res.end(JSON.stringify(match ? { match } : { error: 'no such match' }));
+        res.end(JSON.stringify(match ? { match, ...(comp ? { competition: comp } : {}) } : { error: 'no such match' }));
         return;
       }
       /**
@@ -1491,12 +1616,23 @@ const httpServer = createServer((req, res) => {
               : rawLock === 'clear'
                 ? (false as const)
                 : Math.max(0, Math.round(Number(rawLock) || 0));
+          const note = cleanMessage(u.searchParams.get('note'));
           const out = await adminEditStanding(target, user?.userId ?? 'admin', {
             score,
             pardonAll: pardon === 'all',
             pardonIds: pardon && pardon !== 'all' ? pardon.split(',').filter(Boolean) : undefined,
             lock,
-            note: u.searchParams.get('note') ?? undefined,
+            note: note ?? undefined,
+          });
+          // the ledger row already carries the note; the notice is what makes the player SEE it
+          // the next time they are in the menus, rather than when they next open their career
+          const notified = await noticeStandingEdit({
+            target,
+            scoreBefore: out.scoreBefore,
+            scoreAfter: out.scoreAfter,
+            pardoned: out.pardoned,
+            lock,
+            note,
           });
           console.log(
             `[standing] ${target} edited by ${user?.userId ?? 'admin'}: ` +
@@ -1513,11 +1649,12 @@ const httpServer = createServer((req, res) => {
               scoreAfter: out.scoreAfter,
               pardoned: out.pardoned,
               lock: lock === false ? 'cleared' : lock,
+              notified,
             },
-            note: u.searchParams.get('note') ?? undefined,
+            note: note ?? undefined,
           });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, ...out }));
+          res.end(JSON.stringify({ ok: true, ...out, notified }));
           return;
         }
         const [standings, events, profile] = await Promise.all([
@@ -1543,6 +1680,49 @@ const httpServer = createServer((req, res) => {
        * announces the window to everyone without locking anyone out yet, which is
        * the difference between scheduled maintenance and an outage.
        */
+      /**
+       * POST /api/admin/rating-recalc?game=biobuzz[&apply=1] — re-rate the game's current act
+       * under today's rules (`server/ratingRecalc.ts`).
+       *
+       * Without `apply` it is a DRY RUN: one read-only snapshot, nothing written, every board
+       * row old → new and whether the log replays exactly as it was rated. With `apply=1` it
+       * does the same under a lock on the rating tables and writes, refusing (409) unless that
+       * replay was exact. ADMIN_SECRET is accepted so the run can be driven from a shell.
+       */
+      if (req.method === 'POST' && u.pathname === '/api/admin/rating-recalc') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, cors);
+          res.end('database disabled');
+          return;
+        }
+        const game = coerceGameId(u.searchParams.get('game'));
+        const apply = u.searchParams.get('apply') === '1';
+        try {
+          const r = await recalcAct({ game, apply, adminId: actor });
+          if (r.applied) {
+            await writeAudit({
+              adminId: actor,
+              action: 'rating.recalc',
+              detail: { game: r.game, act: r.act, rules: r.rules, changed: r.changed, notices: r.notices },
+            });
+          }
+          const refused = apply && !r.applied;
+          res.writeHead(refused ? 409 : 200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(r));
+        } catch (e) {
+          console.error('[recalc] failed:', e);
+          res.writeHead(500, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: String((e as Error)?.message ?? e) }));
+        }
+        return;
+      }
       if (u.pathname === '/api/admin/maintenance') {
         // ADMIN_SECRET is accepted here, like the restart notice, the season roll and the
         // announcement routes. A deploy is scripted end to end (scripts/announce-deploy.sh),
@@ -2958,6 +3138,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
   let spectating = false;
+  /** the last time this socket sent something other than `ping`/`input` (see IDLE_RELEASE_MS) */
+  let saidAt = Date.now();
+  /** a LAN host waits on this socket for guests; it is not idle while it does */
+  let lanHosting = false;
+  /** the server closed this socket for idleness — its detach is a clean leave */
+  let idleReleased = false;
+  if (AUTO_STOPS) {
+    idleWatch.set(ws, {
+      saidAt: () => saidAt,
+      // in a LIVE match (driving or watching), or hosting a LAN room: never idle
+      busy: () => lanHosting || (room !== null && room.summary() !== null),
+      release: () => {
+        if (idleReleased) return;
+        idleReleased = true;
+        console.log(`[idle] releasing ${id} (${room ? `room ${room.code}` : 'no room'}) after ${Math.round((Date.now() - saidAt) / 60_000)} min`);
+        ws.close(IDLE_CLOSE_CODE, 'idle');
+      },
+    });
+  }
   const wasEmpty = onlineCount === 0;
   onlineCount++;
   liveSockets.set(id, { authed: false });
@@ -2984,7 +3183,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // than by ws's `threshold` option, which is inert while context takeover is on — see
   // COMPRESS_THRESHOLD. (With the extension off, ws ignores the flag entirely.)
   const write = (s: string): void => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(s, { compress: s.length >= COMPRESS_THRESHOLD });
+    // ⚠️ A `visualChunk` IS BASE64 OF A PNG OR A GLB, ALREADY COMPRESSED. Deflating it saves the
+    // 25% base64 added and costs a zlib pass on the socket thread per 33 KB, and — worse — it
+    // would fill this socket's shared LZ77 window (context takeover is on) with bytes that never
+    // repeat, so the next snapshot would compress against noise. Uncompressed frames contribute
+    // nothing to the window (see COMPRESS_THRESHOLD).
+    if (ws.readyState === WebSocket.OPEN) ws.send(s, { compress: s.length >= COMPRESS_THRESHOLD && !s.startsWith('{"t":"visualChunk"') });
   };
   const send = (m: ServerMsg): void => {
     write(encodeMsg(m));
@@ -3110,6 +3314,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // keep sending it and the config is echoed back in the operator snapshot; nothing
       // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
+      // the host-controlled shape is built from the untrusted request, never taken as sent; a
+      // staged ranked / competition code ignores it (they are not the host's to shape)
+      settings: isStagedRoomCode(code)
+        ? undefined
+        : coerceRoomSettings(msg.config?.kind === 'record' ? 'record' : 'versus', msg.config?.record, msg.config?.settings),
     };
     /**
      * READ BEFORE THE CAPACITY REFUSAL, not just before the group guard below, because the
@@ -3261,11 +3470,49 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
     }
     if (created && dbEnabled) {
-      const pending = await takePendingMatch(code).catch(() => null);
+      // one retry: a read that fails is usually Neon waking, and failing here strands a match.
+      // A COMPETITION call (0059) is claimed off its own row rather than `pending_matches`: it
+      // waits minutes for its drivers, longer than that table's reaper keeps anything.
+      const take = (): Promise<PendingMatch | null> =>
+        isCompetitionRoomCode(code) ? claimCompetitionRoom(code) : takePendingMatch(code);
+      let pending: PendingMatch | null = null;
+      let unread = false;
+      try {
+        pending = await take().catch(() => take());
+      } catch (e) {
+        unread = true;
+        console.error(`[admit] couldn't read the staged match for ${code}:`, e);
+      }
       if (pending) {
         // a room on a worker answers once the roster is in, so every read below sees it
         const applied = r.applyPending(pending);
         if (applied instanceof Promise) await applied;
+      } else if (isStagedRoomCode(code)) {
+        /**
+         * A MATCHMAKER CODE WITH NO ROOM AND NO ROW IS A MATCH THAT IS OVER. Its room was
+         * cancelled (the join grace or the strategy window ran out) or its machine restarted,
+         * and the row went with whoever claimed it first. Creating the room here made an empty
+         * custom room under a ranked code, and the client, which only ever waits for
+         * `strategyStart`, `matchStart` or `error`, sat on "Match found" until the socket was
+         * reaped: 15 minutes on a satellite, never on iad. It is usually a reconnect landing
+         * after the cancel it missed, or the reload path (`stagedMatch.ts`).
+         *
+         * Refused, so every client build treats it as the cancellation it is. A failed read is
+         * refused too: the opponent's join can still claim the row, and an empty room here
+         * would keep them out of it.
+         */
+        console.warn(`[admit] refused room ${code}: staged match ${unread ? 'unreadable' : 'gone'}`);
+        send({
+          t: 'error',
+          code: 'match_gone',
+          message: isCompetitionRoomCode(code)
+            ? 'That call is over. Check the competition page for your next match.'
+            : unread
+              ? 'Couldn’t load that match. Find a new one.'
+              : 'That match was cancelled before it started.',
+        });
+        abandon();
+        return;
       }
     }
     /**
@@ -3284,6 +3531,29 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       send({ t: 'error', message: BB3D_REFUSAL });
       abandon();
       return;
+    }
+    /**
+     * THE IMPORTED-ROBOT GATE (docs/area/netcode.md, IMPORTED ROBOTS), in the same place and for
+     * the same reason as the `'bb3d'` one above: after `applyPending`, so a staged ranked room
+     * already reads as one. Two refusals, both from `importAdmission`: a joiner bringing an
+     * imported robot into a room that may not field one (staged ranked, record) or that holds a
+     * seat or watcher without the capability, and a joiner without the capability walking into a
+     * room that already has an imported robot. The wire is read, not the sanitised player — what
+     * the client SENT is the intent, and it does not depend on what `coerceSpec` kept.
+     * `Room.add` asks the same question again for a mirror that was a message behind.
+     */
+    {
+      const refusal = importAdmission(r.importState(), {
+        imported: isImportedSpec(msg.player?.spec),
+        caps: coerceCaps(msg.caps),
+        // two seats may not hold one robot id (its look is relayed and drawn by that id)
+        id: importIdOf(msg.player?.spec),
+      });
+      if (refusal) {
+        send({ t: 'error', message: refusal });
+        abandon();
+        return;
+      }
     }
     let user: Awaited<ReturnType<typeof verifyAuthToken>> = null;
     if (msg.authToken) user = await verifyAuthToken(msg.authToken).catch(() => null);
@@ -3370,7 +3640,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (seat) {
         // TRUSTED: `seatFor` matched a VERIFIED user id off the signed auth token, which
         // proves more than the seat secret does. See the note in `Room.reattach`.
-        const reclaim = r.reattach(seat, send, sendRaw, backlog, undefined, true);
+        // the returning build's caps replace the seat's (an older build back in a room that
+        // holds an imported robot is refused there, as the door above refuses a new one)
+        const reclaim = r.reattach(seat, send, sendRaw, backlog, undefined, true, coerceCaps(msg.caps));
         // a room on a worker answers later; an in-process one answers now and keeps its timing
         const nc = reclaim instanceof Promise ? await reclaim : reclaim;
         if (nc !== null && (closed || room)) {
@@ -3509,6 +3781,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       caps: coerceCaps(msg.caps),
       // release channel: alpha rooms are segregated + never persisted (in-dev)
       channel: typeof msg.channel === 'string' ? msg.channel : undefined,
+      // who pays for this seat's imported-robot visuals: its account, else its address, hashed
+      budgetKey: visualSourceKey(user ? `u:${user.userId}` : `ip:${clientIp(req)}`),
     };
     if (user) {
       client.userId = user.userId;
@@ -3600,6 +3874,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       send({ t: 'error', message: BB3D_REFUSAL });
       return;
     }
+    // ...and the same for a watcher of a room that holds an imported robot: it steps that robot too
+    {
+      const refusal = importAdmission(r.importState(), { imported: false, caps: coerceCaps(msg.caps) });
+      if (refusal) {
+        send({ t: 'error', message: refusal });
+        return;
+      }
+    }
     const spec = {
       id,
       send,
@@ -3609,6 +3891,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       connected: true,
       disconnectAt: 0,
       caps: coerceCaps(msg.caps),
+      // a watcher only downloads visuals: its serve window is its address's
+      budgetKey: visualSourceKey(`ip:${clientIp(req)}`),
     };
     room = r; // route this socket's close → r.detach (drops the spectator)
     // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
@@ -3655,6 +3939,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     } catch {
       return; // ignore malformed frames
     }
+    // a person did something (timers send `ping` and `input` whether anyone is there or not)
+    if (msg.t !== 'ping' && msg.t !== 'input') saidAt = now;
+    if (msg.t === 'lanHost') lanHosting = true;
+    else if (msg.t === 'lanStopHosting') lanHosting = false;
     // never let a bad message take down the process (and every other room)
     try {
       if (msg.t === 'ping') {
@@ -3669,7 +3957,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
       if (msg.t === 'join') {
         if (room) return; // already in a room on this connection
-        void joinRoom(msg).catch((e) => console.error(`[server] join error from ${id}:`, e));
+        void joinRoom(msg).catch((e) => {
+          console.error(`[server] join error from ${id}:`, e);
+          // A join that throws used to answer nothing at all, and every waiting screen waits
+          // for an answer: a ranked client sat on "Match found" with nothing coming.
+          if (!room && !closed) send({ t: 'error', message: 'Couldn’t join that room. Try again.' });
+        });
       } else if (msg.t === 'spectate') {
         if (room) return;
         /* A CLOSED SITE CLOSES WATCHING TOO. Asked only while a site lockdown is armed, so the
@@ -3697,8 +3990,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
+        // ...and the fourth: a seat held in a room that has an imported robot, taken back by a
+        // build that cannot play it (a tab reloaded onto an older version across a deploy)
+        if (r) {
+          const refusal = importAdmission(r.importState(), { imported: false, caps: coerceCaps(msg.caps) });
+          if (refusal) {
+            send({ t: 'error', message: refusal });
+            return;
+          }
+        }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
-        const res = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
+        // the returning build's caps replace the seat's (`Room.reattach`)
+        const res = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken, false, coerceCaps(msg.caps)) : null;
         const clientId = msg.clientId;
         const settle = (nc: number | null): void => {
           if (r && nc !== null) {
@@ -3843,6 +4146,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
+        /**
+         * THE FIFTH DOOR: RANKED USES A STANDARD ROBOT, and it is refused HERE for the reason the
+         * BIOBUZZ one above is — before a pairing exists. Refusing at the staged room's door
+         * instead would cancel a pairing and charge the other players for it. Read off what the
+         * client SENT (`msg.player.spec`), not the sanitised spec, so it holds whatever
+         * `coerceSpec` keeps. This one door covers the open pool, a rated challenge and a ranked
+         * 2v2 party alike: they are all this message. (A record run is a `join`, gated above.)
+         */
+        if (isImportedSpec(msg.player?.spec)) {
+          send({ t: 'error', message: IMPORT_REFUSED_RANKED });
+          return;
+        }
         const gen = ++queueGen;
         /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
          *  seated in a room — while one of its awaits was outstanding? */
@@ -3952,11 +4267,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // have corrected it. `prof` (fetched above) carries supporter + earned in one
             // query, same as the join path.
             const queuedPlayer = sanitizePlayer(msg.player, coerceGameId(msg.game));
-            queuedPlayer.spec = stripUnentitledCosmetics(
+            // an import never reaches the pool: refused above, and dropped here as the backstop
+            queuedPlayer.spec = stripImported(stripUnentitledCosmetics(
               queuedPlayer.spec,
               !!prof?.supporter,
               prof?.cosmetics ?? [],
-            );
+            ));
             matchmaker.enqueue({
             id,
             send,
@@ -3985,7 +4301,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // "play a friend": only ever the VERIFIED token (see verifyParty) —
             // never the raw one off the wire
             party: party?.token,
-            partyOnly: party?.partyOnly,
             partySize: party ? PARTY_SIZE : undefined,
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,
@@ -4051,6 +4366,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   ws.on('close', (code: number) => {
     closed = true; // an in-flight async join must stop and hand its room back
+    idleWatch.delete(ws);
     onlineCount--;
     if (spectating) {
       spectating = false;
@@ -4071,7 +4387,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // 1000/1005 is the client closing on purpose (`transport.close()`: a restart, back to
     // the menu); a dropped network is 1006 and a closing tab 1001, both of which keep the
     // grace — a phone that backgrounds the tab may send 1001 and come straight back.
-    room?.detach(id, conn, code === 1000 || code === 1005);
+    // An idle release (IDLE_CLOSE_CODE) is clean too: nobody was there, and holding the seat
+    // for the grace only let the client's auto-reconnect take it straight back.
+    room?.detach(id, conn, code === 1000 || code === 1005 || idleReleased);
   });
 
   ws.on('error', () => {
@@ -4131,7 +4449,22 @@ const roomWorkers = startRoomWorkers(simWorkerCount());
 if (roomWorkers > 0) console.log(`[server] ${roomWorkers} room worker thread(s): rooms step off the socket thread`);
 
 Promise.all([initPhysics(), initPhysics3d()])
-  .then(() => console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled'))
+  .then(() => {
+    console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled');
+    // THE JIT WARM-UP (`server/warmup.ts`): a short headless busy match per game, so the first
+    // real player on a freshly woken machine does not pay for V8 compiling the sim (their match
+    // cost 30-60% more CPU, with 100-390 ms ticks). Sliced and yielding: `/health` and joins are
+    // served throughout, nothing waits on it. `WARMUP=0` turns it off.
+    if (!warmupEnabled(process.env.WARMUP)) return;
+    const cpu0 = process.cpuUsage();
+    void warmUp().then((r) => {
+      const cpu = process.cpuUsage(cpu0);
+      console.log(
+        `[server] JIT warm-up: ${r.ticks} ticks across ${r.games.join('/')} in ${Math.round(r.ms)} ms ` +
+          `(${Math.round((cpu.user + cpu.system) / 1000)} ms CPU)`,
+      );
+    });
+  })
   .catch((e) => {
     console.error('[server] failed to init physics:', e);
     process.exit(1);
@@ -4171,6 +4504,9 @@ migrate()
     await runRewardJob()
       .then((paid) => console.log(`[rewards] boot award job: ${paid.grants} grant(s) over ${paid.periods} new period(s)`))
       .catch((e) => console.error('[rewards] boot award job failed; the next boot or roll retries it:', e));
+    /* THE COMPETITION RUNNER (0059) — on the matchmaker's machine only, and asleep unless a
+       competition is running: one read at boot, then it arms itself from the API. */
+    startCompetitionRunner(REGION === '' || REGION === MATCHMAKER_REGION);
   })
   .catch((e) => console.error('[server] migration failed (records disabled):', e));
 

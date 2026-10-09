@@ -22,6 +22,7 @@ import { robotPenetration, robotSolids, type RobotSolids } from './artifactSolid
 import { decodeColliders } from '../games/decode/colliders';
 import { classifierRect } from './field';
 import { intakeClaims, intakeSuction, updateRobot, updateRobotActions, type DriveWrench } from './robot';
+import { decodeFixedAimAssist } from './fixedShot';
 import { driveParams } from './drivetrain';
 import { checkGoalEntry, doorwayArtifact, gateColliderPos, updateBasins, updateGates, updateRails } from './goal';
 import { updateHumanPlayers } from './humanPlayer';
@@ -188,6 +189,12 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
         r.autoPathActive = false;
       }
     }
+    // A FIXED LAUNCHER'S FIRE BUTTON STEERS THE CHASSIS (aim assist, `decodeFixedAimAssist`), so the
+    // turn replaces the command before the drivetrain model sees it — into `rotate` AND the tank side
+    // drives, because a tank turns only from those (BIOBUZZ's stage 2 does the same). Null for every
+    // robot without a fixed launcher, which leaves the command untouched.
+    const aimed = decodeFixedAimAssist(r, currentCmd, enabled, world);
+    if (aimed !== null) currentCmd = aimed;
     actualCommands.set(r.id, currentCmd);
   }
 
@@ -401,7 +408,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       for (const s of ballsAtStart) s.b.pos = { x: s.pos.x, y: s.pos.y };
     }
     preVels = solveRobots(world, dt, decodeColliders, gateCol, drive, pinned, solids);
-    solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom);
+    solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom, C.BALL_RADIUS, ground);
     /**
      * THE FIELD IS AN INVARIANT FOR ARTIFACTS TOO, and it is held HERE, before the pin test —
      * the same shape as  for robots. The artifact solve holds the perimeter,
@@ -632,7 +639,11 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     }
     for (const b of activeFlight) {
       if (b.z > C.ROBOT_HEIGHT) continue;
-      for (const r of world.robots) collideBallRobot(b, r);
+      for (const r of world.robots) {
+        // an imported robot is as tall as it measured, not `ROBOT_HEIGHT`
+        if (r.spec.imported && b.z > r.spec.imported.heightIn) continue;
+        collideBallRobot(b, r);
+      }
     }
   }
   for (const b of activeFlight) {

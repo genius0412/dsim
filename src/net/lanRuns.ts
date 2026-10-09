@@ -1,6 +1,7 @@
 import type { GameId } from '../types';
 import { withLocalPatch, type Replay } from '../sim/replay';
 import type { LanParticipant } from './api';
+import { replayHasImported } from './imported';
 
 /**
  * SELF-HOSTED (LAN) MATCHES, kept on the HOST's device until the cloud has them.
@@ -61,6 +62,9 @@ export interface LanRunMeta {
    *  — or 400). Kept on the device and shown in the host's list; simply never offered to the
    *  backlog again, because retrying it would block every match queued behind it. */
   refused?: boolean;
+  /** an imported robot played in it (`RobotSpec.imported`): the match stays on the host's device,
+   *  is never in `pendingLanUploads`, and `/api/lan` refuses it too. Absent on every older match. */
+  imported?: true;
 }
 
 const readIndex = (): LanRunMeta[] => {
@@ -149,6 +153,7 @@ export function saveLanRunLocal(
     ticks: replay.ticks,
     balanceVersion: replay.balanceVersion,
     sim: replay.sim ?? 0,
+    ...(replayHasImported(replay) ? { imported: true as const } : {}),
   };
 
   const body = JSON.stringify(replay);
@@ -183,7 +188,8 @@ export function saveLanRunLocal(
  */
 export function pendingLanUploads(): LanRunMeta[] {
   return readIndex()
-    .filter((m) => !m.remoteId && !m.refused)
+    // ...and an imported robot's match is never offered (see `LanRunMeta.imported`)
+    .filter((m) => !m.remoteId && !m.refused && !m.imported)
     .sort((a, b) => a.at - b.at);
 }
 

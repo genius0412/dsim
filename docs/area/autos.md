@@ -29,6 +29,11 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   `cancelAll`, and the conditions `hopperFull`, `hopperEmpty`. A robot repository that registers
   the same names with its Zenith runtime deploys the file it practises. A name DSIM does not run
   ends at once and is listed, never refused: a file must not stall on a future command.
+  ⚠️ **`setRamp` (`state: DEPLOY | STOW`) IS DSIM-ONLY**: the team's robot has no ramp today, so
+  its runtime would list it as unregistered. It presses the driver's own RAMP toggle
+  (`RobotCommand.bbRamp`) until the ramp is where the file wants it, then waits out the swing. A
+  build without the `ramp` intake ends it at once and the panel lists it as not on this robot
+  (`GameAutoAdapter.notOnRobot`), rather than as unknown to DSIM.
 - **THE ALLIANCE RULE IS THE ROBOT'S**: a file's `alliance` names the alliance its poses are
   written for; it is mirrored iff the robot plays the other one, headings and `facePoint` points
   included (Zenith's `mirrorAuto`). ⚠️ Waypoint `ref`s are INLINED FIRST (`load.ts`), because
@@ -39,6 +44,16 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   `SET BY HAND`. The follower runs on Pedro v3's defaults except the heading gain (3, tuned in the
   AUTO lane). ⚠️ **No team's numbers go in it**: this repository is public, and the AUTO lane
   fails a label that is not DSIM's own or a file that names a team repository.
+- ⚠️ **A TANK IS A MECANUM FILE, DRIVEN NOSE- OR TAIL-FIRST.** Zenith's follower and robot schema
+  are mecanum-only (no drivetrain kind). Pedro puts heading feedback before the drive vector, so
+  a tank asked to hold a heading it cannot reach drove NOTHING (StarterBot, the kit preset,
+  stalled on garden-cycle's first leg for all 30 s). For `adapter.holonomic(spec) === false`,
+  `load.ts` re-plans every path leg `tangent`/`tangentReversed` (`LoadedAuto.reheaded`) and
+  `drive.ts` `nonHolonomic` steers the request. The robot file states the forward speed as the
+  strafe cap (was 1 in/s: a 155 s estimate); what Zenith cannot price is the turn at a corner.
+- **STUCK IS SAID, NOT FIXED** (`seat.ts`): a path step with no `timeoutS` whose follower asks for
+  power while the robot stands still for 1.5 s reports `stuck`, and the HUD reads `AUTO STUCK ON
+  <STEP>`. Waits, commands and author-bounded shoves into a wall never count.
 - ⚠️ **THE FIELD DSIM HANDS ZENITH HAS DSIM'S WALLS.** Zenith's BIOBUZZ file is the manual's
   nominal 144 in (±72); DSIM is FIRST's CAD (±70.674). Against 72 a path 1.3 in past DSIM's wall
   plans clean and then wedges the robot, so the adapter overrides `sizeIn` and derives the season
@@ -80,6 +95,27 @@ Save comes back as `save` and is validated with `parseAutoText` before it is sto
 DSIM" is answered with `runAutoHeadless`'s trace. Messages are read only from the popup DSIM
 opened and from Zenith's origin (`VITE_ZENITH_URL`, default the public app). `zenithLaunch.ts`
 is the one place a screen opens it; `window.open` must run inside the click, so it is synchronous.
+⚠️ **THE PROJECT IS BUILT AT EVERY `ready`**, from the library as it is then: a reload in the popup
+(or the gate's re-login) used to get the project captured at launch, so saved edits came back old.
+A reload reopens the auto the session saved last. ⚠️ **A SAVE NEVER REPLACES AN AUTO THE SESSION
+DID NOT SEND**: every New in Zenith names its auto `new-auto`, so a save under a library name the
+session never sent is stored under a free one (`new-auto-2`), and a new auto into a full library
+(12) is refused with a sentence instead of dropping the oldest, which could be the one AUTO plays.
+⚠️ **ONE WAYPOINTS FILE, AND A CLASH IS LEFT OUT** (owner's ruling, option A: merge on DSIM's side,
+no protocol change; `src/auto/hostLibrary.ts`). The file sent is the opened auto's, with the other
+autos' names merged in, newest first. An auto that names a waypoint the merged file already holds at
+a different pose is NOT sent: Zenith would draw and edit it against the other auto's pose while DSIM
+plays its own. The Autonomous panel (or the match log) says in one sentence which auto and why; Edit
+in Zenith on that auto makes its file the base. Equal poses are not a clash. Zenith's `save` carries
+no waypoints, so a save stores the auto's OWN file unchanged plus only the names its text uses that
+the own file lacks, from the file the session sent (`waypointsForSave`): a pose it had never moves.
+At 12 autos Import and New in Zenith stay in the panel, disabled, with the reason (`LIBRARY_FULL`).
+⚠️ **NEW IN ZENITH SENDS THE LIBRARY WITH `newAuto: true`** (not an empty `autos`), so Zenith names the new
+auto clear of every auto sent (`new-auto-2`, …) and DSIM keeps that name; only a left-out auto's name,
+which Zenith could not see, is renamed, once. **Every `open` carries `hostBuild: HOST_BUILD`**
+(`src/ui/zenithOpen.ts`, with the message builder): Zenith says "DSIM is out of date" when a page's build
+is below the minimum it expects. ⚠️ Raise `HOST_BUILD` by one in the same commit as any change to what
+DSIM sends in `open`.
 
 ## Traces
 

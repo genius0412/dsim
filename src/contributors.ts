@@ -104,6 +104,7 @@ declare const __THIRD_PARTY_VERSIONS__:
       rapier2d: string;
       rapier3d: string;
       three: string;
+      occt: string;
       react: string;
       plusJakartaSans: string;
       spaceGrotesk: string;
@@ -116,6 +117,7 @@ const PKG_VERSIONS =
         rapier2d: '0.19.3',
         rapier3d: '0.20.0',
         three: '0.186.0',
+        occt: '0.0.23',
         react: '18.3.1',
         plusJakartaSans: '5.2.8',
         spaceGrotesk: '5.2.10',
@@ -179,7 +181,7 @@ const RAPIER_CREDITS: ThirdPartyAsset[] = [
   },
 ];
 
-/** Rendering and UI. MIT, both of them. */
+/** Rendering, STEP reading and UI. */
 const CODE_CREDITS: ThirdPartyAsset[] = [
   {
     name: 'Three.js',
@@ -189,6 +191,22 @@ const CODE_CREDITS: ThirdPartyAsset[] = [
     licenseUrl: MIT,
     page: 'https://github.com/mrdoob/three.js',
     use: 'BIOBUZZ 3D rendering',
+    source: 'npm',
+  },
+  {
+    // LGPL-2.1, so it ships as its own separately loaded module (a worker and a wasm file,
+    // fetched only when a STEP file is imported), which is what the licence asks of a library
+    // linked into a larger work. OpenCascade is LGPL-2.1 with its own linking exception.
+    name: 'occt-import-js (OpenCascade)',
+    version: PKG_VERSIONS.occt,
+    credits: [
+      { name: 'Viktor Kovacs', role: 'Author' },
+      { name: 'Open Cascade SAS', role: 'OpenCascade' },
+    ],
+    license: 'LGPL-2.1',
+    licenseUrl: 'https://opensource.org/license/lgpl-2-1',
+    page: 'https://github.com/kovacsv/occt-import-js',
+    use: 'Reading STEP files when you import a robot',
     source: 'npm',
   },
   {

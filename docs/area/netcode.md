@@ -63,6 +63,26 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   - Checks: `npm run test:workers` (`scripts/workersmoke.ts`) — the pool with fake sockets (a
     killed worker, backlog, dispose, revive, the awaited calls), then the same scenarios against a
     real server in-process and on two workers. Kept out of `npm test`.
+- ⚠️ **ROOM SETTINGS: A ROOM'S SHAPE IS THE HOST'S, AND THE SERVER BUILDS IT** (rooms plan M1,
+  2026-10-07; `docs/rooms-and-leaderboards-plan.md`). `RoomConfig.settings` (`RoomSettings`:
+  `preset`, `perAlliance`, `teamSwitch`, `listed`) is built by `coerceRoomSettings` from the first
+  joiner's UNTRUSTED request, which contributes only `preset` and `listed`; the sides come from the
+  preset, and a record room is locked to its record shape (all seats BLUE, record runs are forced
+  onto one alliance), Private. Capacity is the sum of the sides (`roomCapacity`, `Room.capacity`),
+  clamped to `ROOM_CAPACITY` (4) until 3-4 a side lands. **No `settings` = the legacy room, byte
+  for byte** (old clients, staged ranked/competition codes, LAN): everyone picks a side, any split
+  up to four seats. Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
+  client gates on `serverCaps()`; an older server ignores them) are refused in a staged/ranked room
+  (`hostControlRefusal`: a host there could demote an opponent and have them charged a no-show) and
+  once the match is set up. Sides are enforced in `add` (a joiner lands on a side with room) and in
+  `update` (a self-switch onto a full side, or with team switching off, is DROPPED, so an old client
+  obeys too). A shrink below who is seated is refused, never auto-demoting anyone; a settings change
+  clears everyone's ready, a move clears that member's. `unlockRoom` turns a duo record into a
+  custom room, one-way and only before the first run; it mutates `config.kind/record` IN PLACE, and
+  a worker room's socket-thread copy follows through `RoomFacts.cfg` (`applyFacts`), the same way the
+  capacity follows through `lobby.capacity`. `MatchOutcome.config.settings` is the room as it ENDED
+  and `matches.preset` (0061) stores it beside `mode`, whose check constraint cannot say 3v1.
+  Smoke: "settings:" (shared), `test:workers` "unlocking a worker room", `dbtest` "preset:".
 - ⚠️ **A MISSING INPUT TICK KEEPS THE LAST APPLIED BUTTONS** (`frameCommands`, 2026-09-25).
   Inputs ride the unreliable lane, one tick per packet, and a tick with none of its own is filled
   from `latest`, the newest command BY TICK. A client runs ahead, so that is usually a FUTURE
@@ -152,6 +172,19 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     save (~1.2 MB), 1.1 ms per rollback rewind, against a 0.8 ms `step3d`; about 30–40 ms of CPU per
     second of play. Full reconciles halve, because the prediction agrees more often. Auto's world
     probe counts the saves.
+    ⚠️ The save also keeps the world's kinematic JSON, and a snapshot within the wire's rounding of
+    it gets that JSON back exactly. The JSON a step ends on is not the bodies' readback
+    (`groundRoll3d` damps velocities, `derive.ts` zeroes a resting element's), and rewriting it
+    from the bodies replayed every rollback without the room's damping: 264 of 266 replays off the
+    room's poses, 5 captures wrong on one seed. Now 0.
+    ⚠️ **"0" ABOVE IS FOR A CLIENT ENGINE WITH THE ROOM'S HISTORY, AND A REAL ONE NEVER HAS IT.** The
+    checks build both engines from tick 0. A real client builds its engine from a snapshot, so its
+    contact state (warm starts, pair order — not on the wire) is its own for the whole match, and
+    the save it restores is its own too: with the client's engine built from JSON at tick 30, 310
+    of 310 rewinds ended off the room's poses. Mostly by thousandths; at walls and impacts by up to
+    2.5 in / 15° — the online "invisible bump" (2026-10-02, see `docs/area/biobuzz.md`, the wall
+    square-up). Giving the robot a fresh body on a divergent rewind made it worse (cold contacts
+    differ from the room's warm ones more than stale ones do).
   Measured against the old Full: your own shot appears on the frame you fire (was 117–233 ms and
   11–25 in into its flight), moving elements are drawn 0 ticks behind (was a median of 2–4 and a p95
   of 18–27), corrections equal or smaller; simulation CPU 68–200 ms per second of play against
@@ -315,6 +348,76 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - **A CUSTOM ROOM PLAYS ZENITH AUTOS** (`docs/area/autos.md`): `{ t: 'zenithAuto' }` behind the
   `'zenithAuto'` server cap, one message, never on the roster; the server's auto seat runs in
   `frameCommands` beside the bots, so its commands are recorded and ride `cmds`. Never ranked.
+- ⚠️ **IMPORTED ROBOTS PLAY IN CUSTOM AND LAN ROOMS ONLY** (`RobotSpec.imported`,
+  `docs/robot-import-plan.md`; rules and sentences in `src/net/imported.ts`). ⚠️ **A SERVER
+  CHANGE, it needs a deploy.** The server decides, the client only avoids sending what will be
+  refused.
+  - **The capability `'robotImport'` is in `CLIENT_CAPS` and `SERVER_CAPS`.** The client offers an
+    imported spec to a room only when the server advertises it (`roomTakesImportedRobots`: the
+    cloud's `serverCaps()`, a LAN server's own presence, or true for a room this tab hosts). An older
+    server's `coerceSpec` drops the field without a word, so the client would predict one robot
+    while the room stepped another. Otherwise the lobby sends the last standard robot and says so.
+  - **It is a hard gate on the room, like `'bb3d'`.** A room that holds an imported robot admits
+    only clients with the cap (join, rejoin, spectate: a watcher steps the world too), and an
+    imported robot is never added to a room that has a seat or watcher without it. One rule,
+    `importAdmission`, asked at the door (`server/index.ts`, from `RoomHandle.importState()`; a
+    worker room mirrors it in `RoomFacts.imports` and counts seats still in flight), again inside
+    `Room.add`/`addSpectator` (the mirror can be a message behind, and the LAN tab host has no door),
+    on an `update` patch that carries an import, at `startMatch` (refuses with a sentence), and in
+    `Room.reattach`.
+  - **One robot id per room.** A robot's look is relayed and drawn by its `imported.id`, so a seat
+    may not bring an id another seat holds (`IMPORT_ID_TAKEN`, a sentence that says to duplicate the
+    robot in the library). `importState().ids` carries the seats' ids (a re-picking seat's own is left
+    out), the worker mirror carries them in `RoomFacts.imports.ids` plus adds in flight, and the
+    join door, `Room.add` and `vetImportedPatch` all ask. Two teammates using one shared robot file
+    have one id: the second is refused until one duplicates it.
+  - **A returning socket's build is the one that plays.** `rejoin` and the account reclaim pass the
+    new socket's `caps` to `Room.reattach`, which re-runs `importAdmission` (a build without the cap
+    back in a room that holds an import, its own seat's included, is refused) and then REPLACES the
+    seat's caps. It used to keep the join's, so a tab back on an older build still read as able to
+    play an import and a later `update` to one was admitted. `seatSecured` stays the join's.
+  - **Where it is refused outright:** the ranked `queue` message, before any attempt exists (a late
+    refusal would charge the other players); a join to a staged ranked room or a record room; an
+    `update` there. `Room.allowsImportedRobots()` is `playsZenithAutos` without the game flag: a
+    `versus` room that is not staged. `beginMatch` strips `imported` from every setup in a room that
+    does not allow it, which covers a rematch and any path that skipped a door. `submitRecord` throws
+    on an imported robot, and `persistMatch` skips a record that holds one.
+  - **Read the wire, not `coerceSpec`.** The doors test what the client SENT (`msg.player.spec`,
+    `msg.patch.spec`). `coerceSpec` starts from the seat's current spec, so a patch that re-picks a
+    standard robot must drop the import itself (the `update` handler strips it); do not rely on
+    the coercer.
+  - ⚠️ **Decide before coercing.** `vetImportedPatch` runs on the RAW patch, BEFORE
+    `sanitizePlayerPatch`, and a refused import is removed from it, so a ranked or record room never
+    coerces a robot it is about to refuse. It ran after, and `coerceImported` on 16 bands of 256
+    far-off points (a 62 KB frame) cost 70 ms of the thread every room on a worker shares, at up to
+    240 messages a second. The coercer is bounded too (`docs/area/physics.md`): smoke holds the worst
+    64 KiB `update` under 1 ms (`imports/cost`), and `test:workers` sends sixty of them and times a
+    rename behind them.
+  - **Replays:** a container with an imported robot is written as `format: 3`
+    (`REPLAY_FORMAT_IMPORTED`); every other replay is still format 2, byte for byte
+    (`REPLAY_FORMAT_BASE`). An older build reads 3 as `future` and refuses it rather than playing a
+    rectangle robot. A custom room still saves its match and replay (watchable by its players and
+    staff, as before). **Practice and LAN runs with an imported robot stay on the device**: marked
+    `imported` in their local index, left out of `pendingPracticeUploads`/`pendingLanUploads`, and
+    refused (400) by `/api/practice` and `/api/lan` as the door behind that.
+  - **`hostWorker.seat()` sanitises the guest's player** (`sanitizePlayer`, caps through
+    `coerceCaps`) like the cloud join. It did not: the roster carried a guest's raw wire spec until
+    the match spawned.
+  - Checks: `smoke.ts` "imports/…" (rules, replay, device-only runs, settings, rooms, source pins
+    for the doors that need a socket), `npm run test:workers` (the mirror, and the real doors on both
+    server shapes), `npm run dbtest` ("imports:").
+- ⚠️ **AN IMPORTED ROBOT'S LOOK IS RELAYED THROUGH THE ROOM, ON REQUEST, AND NEVER STORED** (VISUALS RELAY: `src/net/importVisuals.ts`, `src/net/visualCheck.ts` (the validators, lazy in the client), `server/importVisuals.ts`, `src/net/importVisualsClient.ts`). ⚠️ **A SERVER CHANGE, it needs a deploy** (and a client one). The footprint rides the spec to everyone; the picture and the mesh live on the owner's device, so a custom or LAN room carries them.
+  - **Wire, all additive, behind `'importVisuals'`** (`CLIENT_CAPS` and `SERVER_CAPS`): `visualPut` (owner → room: `kind` `'top'` PNG ≤ 256 KiB or `'mesh'` GLB ≤ 1 MiB, the seat's `spec.imported.id`, `total`, `seq`, base64 `data` of 24 KiB, 32,768 characters, about 33 KB a frame, under the 64 KiB frame cap and a DataChannel's 64 KiB default), `visualGet` (viewer → room: `owner`, `id`, `kind`), and back `visualReady` (an asset can be asked for: to cap holders only, on completion and again to anyone who attaches or reclaims a seat), `visualChunk` (the stream, in order from 0, sent only to a viewer that asked) and `visualRefused` (a reason and a sentence). A client without the cap is sent none of it, and its `visualPut`/`visualGet` are ignored without a reply. An older server ignores them, so an owner uploads only to a server that says it relays (`roomTakesImportVisuals`: a tab host yes, a LAN address its own presence, else the cloud's). Nothing here is per tick.
+  - **The bytes live in the ROOM** (`VisualRelay`, one per `Room`), in memory, for the room's life: not a database row, not a replay (a replay carries the footprint), not a disk. On a worker room that puts the bytes, the base64, the GLB parse and the stream timer on the WORKER; the socket thread only writes the frames it would write anyway, and it is the thread that is already the ceiling. Freed with the owner (`freeOwner` beside every `clients.delete`), a robot change (`specChanged`), a start that stripped imports (`reconcile`) and the room emptying (`emptied`).
+  - **Budgets.** A room holds 4 × (1 MiB + 256 KiB), the process 64 MiB, and ONE SOURCE (an account, else an address) at most eight seats' sets (`VISUAL_SOURCE_BYTES`, 10 MiB): without it about 52 sockets held the whole budget. Over any of them, a polite `budget` refusal and the viewers keep the footprint. The process figure is ONE counter across threads: the pool makes a `SharedArrayBuffer` of per-thread slots (the socket thread 0, worker `i` is `i + 1`) plus a row of 256 source buckets per slot, and zeroes a dead worker's slot and row, so a crash cannot leak it. The source is `Client.budgetKey`, a 32-bit hash the socket thread takes at the door (`visualSourceKey` of `u:<account>` or `ip:<address>`); the address itself never enters a room. A half-sent upload is swept after 60 s by a TIMER while one is open (`sweepStale`, every 15 s), not only when somebody else uploads. Egress is the bill, so serving is capped too, as RATES over a rolling minute: 8 MiB per viewer source and 24 MiB per room, charged when a request is accepted, and 8 concurrent streams a viewer. They were lifetime totals: a busy room stopped serving after about nine viewer sessions, and a watcher could reset its own by coming back under a new client id. Nothing is sent to a client that did not ask.
+  - **Pacing.** The owner sends a frame every 30 ms (33 a second against the 240 bucket, beside 60 Hz input). The room's pump (20 ms) writes one chunk per viewer per tick, only while `Client.backlog()` is under 40 KiB (on a worker room that is the mirror, which reports from 16 KiB), a viewer in a live match is held to one chunk per 100 ms so its snapshots are not crowded out, and a socket the room cannot read (the LAN tab host) is paced by the pump alone. 40 KiB sits far under the 256 KB at which a snapshot is skipped (a skip makes the next one a keyframe). `visualChunk` is written UNCOMPRESSED (`index.ts` `write`): base64 of a PNG or GLB gains 25% for a zlib pass and would fill the socket's shared deflate window with noise; a worker's `out()` neither hashes nor mirrors it.
+  - **Validation, twice** (`validateTopPng`, `validateMeshGlb`: the room at the last frame, the viewer again on what it assembled). PNG: signature, an IHDR first with a legal depth and a side of 1–1024 (65,535 × 65,535 fits in 256 KiB and is a decompression bomb), chunk lengths that tile the file, an IDAT, an IEND that ends it. GLB: header and chunk lengths, JSON ≤ 256 KiB, **no `uri` anywhere** (the viewer's loader would FETCH it), no images or textures, no required extension, one BIN buffer with views and accessors inside it, triangles ≤ 150k (`VISUAL_MAX_TRIANGLES`; the importer's own cap is 400k now, and a relayed mesh is a float GLB under 1 MiB, about 20k on a real robot). The id must be the one in the seat's CURRENT imported spec, and two seats may not hold one id (`dup` here, `IMPORT_ID_TAKEN` at the doors), so a viewer keying a picture by robot id cannot be handed another seat's.
+  - ⚠️ **The GLB check is an ALLOWLIST**, because the viewer hands the file to three's GLTFLoader and every feature it has is something an owner could aim at every other player's browser. Measured in review: `EXT_mesh_gpu_instancing` drew 512 × 500,000 copies of a mesh from a 546 KB file, `EXT_meshopt_compression` allocated `count × byteStride` bytes it was told, an `images` OBJECT `{"0": …}` passed an `Array.isArray` test and the loader decoded a picture from it anyway, 512 nodes drawing one 150k mesh were 77M triangles, and a node cycle left the load hanging. So: no extension anywhere (`VISUAL_GLB_EXTENSIONS` is what our exporter writes, which is none); images, textures, samplers, skins, animations and cameras refused when PRESENT, whatever their type; every object's keys allowlisted; component types and shapes looked up as own properties; every attribute as long as the positions and every index value read and checked; the node graph a forest no deeper than 32; triangles counted per NODE that draws a mesh. Smoke `visuals/glb+` holds each crafted file; `visuals/lite` holds real GLTFExporter and `liteMesh` output passing.
+  - ⚠️ **A RE-UPLOAD KEEPS THE LAST GOOD LOOK UNTIL IT VALIDATES** (`Owner.up`). A reconnect sends the look again, and the new upload used to replace the ready asset at its FIRST frame, so a junk, oversized, interrupted or stale second upload left every viewer with nothing where it had a good look. An upload in progress lives beside the ready asset and replaces it only once it passes `validateVisual` (its streams end with it, and it is announced again); a refused or swept one is freed alone. The room's cap counts what the room will hold after the swap (`reserved − the ready asset of that kind + total`), so a full room still takes a replacement, and while it travels the room holds both, one asset over. Smoke `visuals/keep`.
+  - **The owner is told** (`ownLookTrouble`, the lobby's robot line): see `docs/area/robot-import.md`, "Relayed to a room". `visualRefused` already carried a reason; nothing showed it.
+  - **A mesh over 1 MiB, or a compressed one,** is cut once by the importer engine (`liteMesh`, in the stored mesh frame, colours kept, always a FLOAT GLB) and cached on the library record as `meshLite`; if even that does not fit, the picture alone goes. ⚠️ The stored mesh has been quantised and meshopt-packed since 2026-10-03, and every validator (this server, older servers, every client) refuses its two extensions, so the owner sends the stored file as it is only when `validateMeshGlb` takes it (a float mesh saved before) and `liteMesh`'s float copy otherwise. No wire or server change. Only a game with a 3D view (BIOBUZZ) uploads a mesh, and only a viewer in that view asks for one.
+  - **LAN.** The tab host runs the same `Room`, so it relays with no code of its own; its `Client`s have no `backlog`, and no frame is over 64 KiB. A viewer opts out per device (Configure ▸ Network ▸ "Show other players’ imported robots", `IMPORT_VISUALS_KEY`; Network and not Graphics because Graphics is hidden for a game with no 3D view and this concerns the 2D picture too): off means the footprint and no request. Received assets reach the renderers through `importedAssetsBridge.ts`, the one adapter to the asset registry (`registerImportedAssets`), and leaving the room takes them back. ⚠️ **An asset is (owner, robot id)**: the bridge binds each id to the owner whose look arrived first and refuses another owner's, the registry has one LENDER per id (`relay:<owner>`; this device's own, `''`, always wins and is never replaced by a relayed one), and a viewer never asks for, or lends, a look under its own seat's robot id or an id its own library holds.
+  - Checks: `smoke.ts` "visuals/…" (wire, validators including an external `uri` and an image in a mesh, pacing, budgets, a real `Room`, the client against a real `Room`, real GLTFExporter output through `liteMesh`), `npm run test:workers` (across the thread, the backlog pacing, the shared budget with a killed worker, the real doors on both server shapes), `npm run costprobe` (snapshot bytes unchanged).
 - ⚠️ **THE LOAD HOLD: A STARTED `'3d'` MATCH WAITS AT TICK 0 UNTIL EVERY SEAT CAN PLAY IT**
   (owner, 2026-09-24). The gate above was not enough and matches, record runs included, still
   opened behind the loading panel. `physicsReady` is sent from the LOBBY and covers the physics
@@ -344,6 +447,27 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.
+- ⚠️ **EVERY ROOM STEPS OFF ONE CLOCK, AND THE SNAPSHOT ENCODER IS SPLICED, NOT STRINGIFIED**
+  (2026-09-27, `docs/capacity.md` §7b). ⚠️ A SERVER CHANGE: it needs a deploy.
+  - `server/tickScheduler.ts` replaced a `setInterval(1000/60)` per room. On Linux that interval
+    fires every ~16.3 ms, so its `Date.now()` accumulator ran 0 or 2 steps on some fires and a
+    LONE room sent 7.7% of its snapshots 16/48 ms apart — jitter the client reads as stutter, on
+    an idle machine. One self-correcting `performance.now()` deadline; the old per-room rules
+    (≤8 steps a turn, debt past 250 ms forgiven, ONE coalesced broadcast per turn) apply once for
+    the process. Rooms alternate SNAPSHOT PARITY (`snapPhase`) so half of them encode on odd
+    ticks. `advanceForTest`/`pumpForTest` take a room off the clock and keep parity 0, so every
+    headless test sees the old even-tick cadence. Browser-safe: the LAN tab host bundles it.
+  - `server/snapshotWire.ts`: the diff used to `JSON.stringify(ball, round3)` EVERY ball on
+    EVERY broadcast (a replacer disables V8's fast path) to find the ~12% that moved — ~40% of a
+    Chain Reaction room's CPU. A rounded SHADOW walk (`sameR3`) decides "changed" and only those
+    are stringified; the body splices those cached strings. **The wire is byte-identical**, and
+    that is asserted, not argued: `npm test` "snapshot wire:" runs rooms of all three games with
+    the old encoder beside the new one (`Room.checkWireForTest`), lossy recipients, a backed-up
+    socket and a reattach included. Anything that changes what a snapshot CONTAINS goes through
+    `snapshotBody`/`BallWireCache` and must keep that check green.
+  - `server/warmup.ts`: a headless busy match per game after physics init, so a woken satellite's
+    first player does not pay for the JIT (their match cost 30–60% more). Sliced and never
+    awaited — `/health` and joins are served throughout. `WARMUP=0` is the kill switch.
 - **CONNECTION-QUALITY HUD**: `ping`/`pong` probe → smoothed RTT; snapshot arrival rate +
   inter-arrival JITTER measured client-side → SMOOTH/OK/CHOPPY dot. **Jitter is the real
   choppiness signal** — surface it when diagnosing lag reports.
@@ -403,6 +527,21 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   on, so the record launcher offers the way back into that match instead of a dead card; the
   sentence stays self-sufficient and the launcher matches on it too, because most of the fleet
   predates the code.
+- ⚠️ **A MATCHMAKER CODE WITH NO ROOM AND NO STAGED ROW IS REFUSED, NOT OPENED** (`match_gone`,
+  2026-10-03, "stuck on loading into match"). `join` creates the room it names, which is right for
+  a custom code. For a matchmaker code (`isStagedRoomCode`, server/matchTypes.ts) whose match is
+  already over (cancelled at the grace, or its machine restarted) it made an empty custom room,
+  and the ranked "Match found" screen, which moves only on `strategyStart`, `matchStart` or
+  `error`, waited until the socket was reaped: 15 min on a satellite, never on iad. Reproduced
+  against the real server (PGlite harness): the late joiner got `welcome, roster` and nothing
+  else. A failed staged-row read is refused the same way, and a join that throws now answers an
+  unseated socket. The client half also covers older servers: `LobbyClient.watchStagedStart`
+  drops a room socket that has not answered `STAGED_ANSWER_MS` after its first join
+  (`STAGED_CONNECT_MS` after the assignment if no join went out; `src/net/stagedStart.ts` says why
+  those cannot cut off a live room), a cancel RETIRES the room socket (`LobbyClient.retire`: a
+  reconnect closes it instead of re-joining the dead code, and it stays 10 s because the room's
+  `dodgeVerdict` follows its `error`), and a parked search carrying an error is adopted as ended.
+  ⚠️ Server change: deploy it.
 - **`GET /health` REPORTS `x-build`** (`BUILD_REF`, else Fly's `FLY_MACHINE_VERSION`, else
   `dev`). The body is still exactly `ok` — the platform probe reads it. It exists because "is
   this bug in the code or in the running image" had no answer from outside: `/api/presence`'s
@@ -702,6 +841,22 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   name against a strict allowlist before fetching anything, forwards Range/HEAD so downloads can
   resume, and never caches a response (a cached partial served for a different request would
   hand someone a truncated file).
+- **SATELLITES ARE CHEAP ONLY WHILE STOPPED, AND ANY REQUEST STARTS ONE.** A satellite stops a
+  few minutes after its last request, so one request every couple of minutes keeps it up all
+  day. Measured 2026-10-02, after the router moved the menu polls to iad: satellites still ran
+  10-22 h a day. Four causes, four fixes:
+  - the router fallback (`probePrimary`, env.ts) was PERMANENT for the tab after one failed
+    boot probe. It is a backoff now (`PrimaryHealth`: 30 s doubling to 5 min, offline does not
+    count, `online` re-probes);
+  - a results screen or lobby held its socket forever, pinging every 300 ms. A satellite closes a
+    socket that is outside a live match and has sent nothing but `ping`/`input` for 15 min
+    (`IDLE_RELEASE_MS`, close code `4002`, which `transport.ts` never reconnects), and a clean
+    leave from a FINISHED room frees the seat at once (`Room.detach`), so an old client's
+    reconnect is refused instead of taking the seat back;
+  - `/health?region=` fly-replayed to the named region, booting it. It is answered locally;
+  - two `usePresence` pollers ran per tab. There is one shared poller now.
+  Each satellite logs `[wake] N req/60s: …` once a minute it took HTTP requests (route, page
+  host, browser family; nothing per client). Read it before guessing what keeps one up.
 - **The one Fly app serves EVERY client version** (alpha/beta/main bake the same
   `VITE_GAME_SERVER_URL`), so protocol changes MUST stay backward-compatible. New clients
   advertise `caps` (`CLIENT_CAPS`) on `join`/`queue` and the server feature-gates on them.

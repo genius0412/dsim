@@ -136,7 +136,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
   `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
   positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
-- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLID BOXES**
+- ⚠️ **NO ROBOT MEETS A FLOWER'S RING TRIMESH; IT MEETS THE MIDDLE AND TOP PLATES AS SOLIDS**
   (`groups.ts`, `GROUP_FLOWER_RING` / `GROUP_FLOWER_SOLID` / `GROUP_CHASSIS`;
   `flowerTube.ts`, `buildFlowerSolids3d`). A trimesh has no inside. A chassis pressed past a
   plate's outer face was pushed out through the plate's top face: up onto the 0.354-in LOWER
@@ -147,6 +147,11 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   before, 1,025 drive-ins and 214 shoves lifted the chassis over 0.1 in and 2 drive-ins left it
   at z 0.34 where 4 s of any drive command moved it 0.004 in; lower plate removed alone, 55
   shoves sank it up to 1.5 in. After: 0 lifted, 0 sunk, 0 parked, deepest plate contact 0.38 in.
+  - **Since `SIM_PATCH` 7 each solid is the plate's measured outline** (`BB_FLOWER_PLATE_OUTLINE`,
+    about that plate's own bore, turned to the flower's mouth), not a box over `rect`. The plates
+    are near octagons, 2.39 in out from the bore and 2.97 along the wall but 3.11 at 45°, where the
+    box's corner was 3.82: a robot driven in at an angle stopped up to 0.7 in short. The RENDER lane
+    re-measures the outlines off the shipped `field.glb`. A replay recorded before keeps the boxes.
   - The lower plate gets no box: the middle plate's footprint contains it and every chassis spans
     the middle plate's z band, so it never stopped a chassis. Elements meet exactly the plates they
     met before, and a deployed ramp meets neither the trimesh nor the solids (the swing guard's
@@ -287,6 +292,36 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   because an element can chain through several perches on the way down and each restarts its own
   budget. `step3d` perf unaffected (measured 0.305 ms/tick with five perched elements, budget
   1.5); two-run determinism holds. Checks in `scripts/smoke-biobuzz/hive3d.ts`.
+- ⚠️ **ON HIVE STRUCTURE THE VIBRATION'S GIVE-UP IS A HOP, NOT A FREEZE** (found capturing the 3D
+  reel, 2026-10-01: a POLLEN sat on the blue HIVE's pivot from 11 s to the buzzer, another on
+  red's for 18 s, reading `flight` at zero velocity, then `ground` at z ≈ 40–45). A POLLEN on the
+  tray's centre bar between a cell's back wall and the pivot rolls down the UP side's bar and stops
+  on the two `goal_pivot_bracket` plates (1.07 in apart) against the damper holder — a CRADLE:
+  stable sideways, ~9 in/s to roll over a rail, against the vibration's 2–5. And 30 kicks is ~290
+  ticks, because each one waits out `BB3_REST_TICKS` again. `groundRoll3d` now gives an untagged
+  element touching only narrow hulls on HIVE structure (a tray body, or a FIXED hull inside the
+  frame footprint `BB3_HIVE_SHED_REGION_*`) `BB3_HIVE_SHED_AFTER` (4) kicks, then a hop of
+  `BB3_HIVE_SHED_SPEED` 14 in/s + `BB3_HIVE_SHED_VZ` 10 in/s up — across the tray axis (world x)
+  on even attempts, the vibration's hashed angle on odd ones — at most `BB3_HIVE_SHED_MAX` (8)
+  times per perch (`engine.hiveSheds`), then the old 30-kick budget and freeze, so a true cage
+  still lets `bbSettled` close. MEASURED (`scratch/barprobe.ts`: a ball staged on the bar top at
+  tray-local x −0.6..0.6, |v| 4..9, both alliances, both tray poses): POLLEN 38/480 perched for
+  good → 0/480, NECTAR 0/480; a staged perch leaves in 148–164 ticks and reads `flight` going
+  nowhere for 16–26 (old rule 184–231 and never leaves). A zero-velocity rain over the whole
+  footprint never finds this perch either side (0/598 POLLEN) — it is reached by shots arriving
+  sideways. Gated on `SIM_PATCH` 5 (`hiveShedOn`); the HIVE3D lane runs each scene under 2 too.
+  **A PAIR IS TWO PERCHES** (2026-10-03): two loose POLLEN that roll down the DOWN side's bar
+  into the corner at the down cell's back wall rest against each other, and another element is
+  BROAD, so neither was shed. Up on the HIVE (inside the footprint, bottom above
+  `BB3_HIVE_SHED_MIN_Z` 30) a contact with another LOOSE element up there counts as HIVE
+  structure; an element counted in a cell stays broad. Same patch. MEASURED on 2v2 hard-bot 3D
+  matches (`scratch/bbrec.ts`, a loose element above z 7 that has not moved 2 in): seeds 1–60,
+  stuck ≥ 3 s 434 → 7 with the shed alone (3 pairs, up to 12.5 s) → 1 with the pair rule; seeds
+  61–240 (2v2 hard, 2v2 medium, 1v1 hard) 887 → 1, ≥ 10 s 472 → 0, worst 71.2 s → 3.3 s. The
+  one left is a POLLEN between the two trays at x 0 (old rules: 6, worst 14.7 s). Of 175 sheds
+  none landed in a cell or a FLOWER. Post-buzzer settle over 240 matches each: mean 167 → 172
+  ticks, max 600 (one capped) → 462. All 60 old-rule recordings replay bit-identically (1,920
+  checkpoints).
 - ⚠️ **A CELL'S FLOOR AND BACK COLLIDERS STAND 0.5 IN OUTSIDE THE CAD FACE, NOT 1.5** (owner
   report 2026-09-27: "nectar get stuck on top of the main beam that connects two CELLs").
   `convert.py` pads every tray facet slab 1.5 in outward. Behind the DOWN cell that narrowed the
@@ -469,6 +504,30 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   they stage clear of the frame now. Smoke: "hive frame:" ×2 in `sim3d.ts`.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
+- ⚠️ **THE WALL SQUARE-UP IS A TURN THE 3D SOLVE MAKES, NOT A HEADING WRITTEN AFTER IT**
+  (`SIM_PATCH` 3, `step3dImpl.ts` stage 6b; owner, 2026-10-02: "sometimes in online games, when I
+  drive against the wall, there seems to be an invisible bump"). Written after readback, the turn
+  reached the body next tick as a rotation teleport the solver pushed back, and a robot squaring up
+  alternated every tick (yaw rate 0 / −0.75 / 0 / −0.82 rad/s at 16°). Now `squareUpTurnsWalls`
+  works the same turn out before the step, it rides one solve as extra yaw rate, and stage 8a takes
+  that rate off the read-back `angVel`; stage 8b only records (`recordRobotContacts`). The Balanced
+  and Light predictors do the same. A patch-2 world (an older replay) runs the old order.
+  - **Why it showed up online only:** online BIOBUZZ is always 3D, and the FULL client's engine is
+    built from a snapshot, so it never holds the room's contact state (warm starts, pair order).
+    Copying the bodies' exact poses into a client engine did not stop it parting from the room on
+    the first tick; restoring Rapier's whole world did. Near a wall that difference was amplified
+    into reconcile snaps. DECODE and Chain Reaction online measured clean (2D, stateless solve).
+  - **Measured.** Through a real `Room` at 66 ms with the FULL client restated (3 × 120 s of a
+    wall-heavy driver): wall corrections p99 0.12–0.25 → 0.02–0.04 in, worst heading snap
+    1.2–2.8° → 0.6–1.0°, corrections over 0.25 in 7 → 1. Offline, `scripts/zz-bb3d-wall-rollback.ts`
+    (client engine built from JSON, 12 seeds × 60 s; `PATCH=2` for the old rule): over 0.1 in or
+    0.5° 101 → 58, over 0.25 in or 1.5° 48 → 32, worst 2.46 → 0.87 in. **NOT ZERO:** a 3D wall
+    IMPACT turns a 5e-5 rad heading difference into 0.65° within a second on two fresh engines
+    (2D: 0.014°), under either rule, so a few degrees after a fast angled hit remain.
+  - **G402 side effect:** in the 210-duel chatter sweep one shape (victim 2 in deep, no offset,
+    −30°) now grinds down the −y wall instead of being kicked off it, has a 1.17 s gap with the
+    footprints within 3.9 in, and is billed TWICE under `BB_G402_REARM_S` (1.0 s). Every other gap
+    is ≤ 0.47 s. Widening the window is an owner call; `rules.ts` documents it.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
   `npm run field-cad` (cache OUTSIDE the repo at `%LOCALAPPDATA%/dsim/field-cad/`: the sha-pinned
   STEP v26-27.2 zip, a CadQuery venv) writes `public/models/biobuzz/{field.glb, field-low.glb,
@@ -502,6 +561,57 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   inside the perimeter. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
+- ⚠️ **`BB_TILE_SEAMS` ARE THE TILE JOINTS, AND THE 3D MAT IS THE STEP'S DOVETAIL** (owner,
+  2026-09-28: "Borders between field tiles are not accurate to real life"). The seams used to be
+  the tiles' bbox minima, which for an interior tile is the tip of its tabs, 0.405 in off the
+  joint; that was the whole of the "uneven 23.176 … 23.986" spacing. The joints are evenly spaced
+  at 23.502 (`emit-dims.mjs` derives them). The interlock is a dovetail, not a square wave: 1.247
+  flats, 0.810 deep, 2.369 period, flanks leaning 32.6° with 0.1247 fillets, an X of 45° cuts at
+  every junction and a 45° flip at the middle of every edge. `scene/renderTiles.ts` builds it,
+  each tile is its own polygon (`tileOutline`), and the clip to the tiled span is the CAD's straight
+  cut, which leaves the sockets as notches along every wall. The RENDER lane pins it to the STEP's
+  edge vertices (0.0007 in) and each variant's area (0.012 in²); the Extreme floor shader draws the
+  same curve. The seam is a dark hairline: the old light lip over a wide groove read as an
+  embossed outline and broke into a beaded line at range.
+- ⚠️ **NO TWO ROBOT PARTS SHARE A PLANE IN DIFFERENT FINISHES, AND NO DRESSING IS DRAWN THROUGH A
+  MECHANISM** (owner, 2026-09-28: "The robot itself has a lot of overlapping parts").
+  - Z-fighting: faces facing the same way within the depth buffer's resolution (0.023 in at the
+    orbit camera's 620 in, near plane 1) flicker when their finishes differ. `BB_PROUD` (0.04,
+    `renderRobots.ts`) is the offset: the Box Tube's slide blocks stand proud of their tubes and
+    clear the next stage's walls, the wrist sits under the yoke bar, the pivot axle stops inside its
+    pulley, the side-roller axle and the arm boss stand proud, the end plates stop under the deck,
+    the inner side plates stop inside the cross members. Measured by rendering each build's parts
+    in flat ID colours at three near planes and counting pixels whose visible part AND shaded
+    colour change: the tube went from ~11k flipping pixels to 11. The RENDER lane's
+    `robotOverlapChecks` holds 9 built robots to it (0.025 in, 0.02 in²). Same-material,
+    same-normal overlaps shade identically and are allowed; the physical-materials tier's detail is
+    per family, so the key is material + family.
+  - Dressing: the end bars, the deck arrow and the top caps read `bbChassisKeepOuts` (`parts.ts`:
+    turret ring, turret head sweep, dumper posts, Box Tube boxes) and, in 3D, the intake arms. A bar
+    STOPS where a part reaches the deck and runs LOW under a turret head, so a narrow chassis keeps a
+    light bar. The arrow stays centred and shrinks before it slides sideways; `null` if nothing fits.
+    Over 2,381 builds: turret × bar 1,080 → 0, ring × cap 1,297 → 0, ring × arrow 1,190 → 0.
+  - The Box Tube's slide-block cache key lacked the section length, so a second robot got the first
+    one's blocks at the wrong height. Keyed now.
+  - The butterfly's inboard traction wheels overlapped each other on every chassis under ~18.4 in;
+    one a side now, centred, in the largest Hogback that clears the mecanums (`butterflyTraction`).
+  - A turret's REST yaw (what the builder preview and thumbnails show; the match aims it on its
+    first frame) is measured, not fixed: `restTurretHeads` tries forward, square, back, diagonal
+    and keeps the first whose head stays out of the intakes, the Box Tube and the other turret —
+    both heads together first, then each alone. Facing forward, a head stood in one of them on 876
+    of 1,947 turreted builds; now 48, all a double turret at a corner beside a tube cell. In the
+    surface-crossing sweep, head × tube/intake went from 26 part pairs (worst 26.9 in of crossing
+    line) to 7 (worst 1.84 in: a double turret's plate grazing an intake arm or tube drive).
+  - STILL OPEN (build rules, not drawing): a Box Tube on a corner cell next to an intake mouth stands
+    in the intake arm (102–366 of 2,381 builds); a turret head's sweep reaches a tube on a
+    neighbouring cell (12–48), which is also where the 48 resting heads above are. Fixing these
+    means a coercer rule, which changes saved builds. Not measured: heads as the sim aims them
+    during a match.
+- ⚠️ **NO REPEATING RELIEF OR SPECK TEXTURE ON A FLOOR** (same day: "there should be nothing in
+  graphics that mesh and create weird visual effects"). The mat's grain normal map (four identical
+  copies per tile) and the venue ground's 200 hard-edged specks (identical in every 48-in repeat)
+  both read as a pattern stamped on a grid. The mat has no relief map; the ground mottle is smooth
+  wrapped value noise, and the RENDER lane bounds its texel-to-texel step.
 - ⚠️ **THE CAD GLB IS WOUND AT RANDOM, AND THE LOADER RE-ORIENTS EVERY SHELL** (owner report
   2026-09-21: "a lot of mounting brackets, especially black and gray ones with complex geometry,
   have holes in them from different angles and they are glitchy and broken"). MEASURED over every
@@ -536,15 +646,92 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   at all. The real defect is the exporter's, and `public/models/biobuzz/README.md` carries the
   note; this is a no-op the day `convert.py` orients its tessellation before merging.
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
-  `graphics/settings.ts` is the model — the seventeen dials (§4.4's sixteen plus
-  `elementDetail`, below), the four preset columns, the 0.6/1.2/2.2/4.0 MP pixel budgets,
+  `graphics/settings.ts` is the model — the nineteen dials (§4.4's sixteen plus
+  `elementDetail`, below, `bloom`, and `materials`), the five preset columns, the 0.6/1.2/2.2/4.0/8.3 MP pixel budgets,
   `localStorage['decodesim.graphics']` with field-by-field coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
   slip rule) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
   this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
   `scene/` — it is read by `src/ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary
   main-bundle files, and the RENDER lane asserts it. All but one apply LIVE; mesh detail
-  needs the next 3D view (it picks the GLB) and SSAO/SMAA are **not offered on this build**
+  needs the next 3D view (it picks the GLB) and SMAA is **not offered on this build**
   (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
+  - ⚠️ **EXTREME (2026-09-27) IS A HAND PICK, AND ITS EFFECTS ARE A LAZY CHUNK.** The fifth column:
+    150 % render scale under an 8.3 MP budget, MSAA 4x, a 4096 VSM map (`shadows: 'max'`, a value
+    of its own so a stored `soft` still means 2048), ambient occlusion and bloom. The rules:
+    - **Auto never picks it** (`GFX_AUTO_MAX_TIER`): the warm-up measures CPU submit time and
+      Extreme's cost is GPU fill, nothing corrects between 16.7 and 25 ms afterwards, and it
+      downloads a chunk. `stepTier` takes the ceiling on the way up and never walks a hand pick
+      down to it; `setGraphicsPreset('auto')` clamps. A lost WebGL context on Extreme lowers the
+      stored tier to Ultra before the 2D fallback, or the next reload loses it again.
+    - **AO and bloom are asked of the SETTINGS (`wantsPost`), never the tier**, so a Custom with
+      AO on gets AO. `scene/renderPost.ts` is fetched by `renderScene.ts`'s `import('./renderPost')`
+      the first time one is on and freed when both go off. It is the ONLY importer (a second one
+      hoists three.js out of the scene chunk; see ONE DYNAMIC SPECIFIER below). `bundleaudit`
+      routes it as `postfx` by filename, since it carries no three.js markers.
+    - **The passes are driven by hand, not through `EffectComposer`.** The blit stays the one
+      place tone mapping and sRGB happen; the stats read stays right after the scene pass; the
+      composer's `setSize` would square the pixel ratio. Nothing may draw INTO the multisampled
+      scene target after its resolve (three invalidates it), so bloom copies an MSAA input to a
+      0-sample target first. A throw inside post drops post for the scene's life, never to 2D.
+    - **GTAO is in INCHES** (radius 12, thickness 12; the defaults are metres) at half resolution,
+      clipped to the field. Its G-buffer pass hides every `depthWrite: false` mesh (the clear
+      panels, blobs, reticle), or the driver view gets AO on the glass it looks through, and
+      draws normals `DoubleSide`. Do not use `setGBuffer`: three 0.186 dereferences a target it
+      skipped creating. The perspective define is flipped when the overhead (ortho) shot is active.
+    - **Bloom is SELECTIVE.** A lit white panel (1.2–1.7 raw) is as bright as a lamp (1.0–1.95),
+      so no threshold separates them. Materials tagged `userData.bloomBase` (the hall, arena and
+      night lamp fittings) are raised for the match's own scene pass only and put back after it.
+      ⚠️ **A ROBOT PART NEVER GLOWS** (owner, 2026-09-27): the front light bar is untagged, and
+      the threshold has to sit above its own emissive plus lit white. The
+      threshold is divided by each environment's exposure. The clear panels' output is capped
+      (`setClearPanelCap`, a shared uniform, a no-op at rest) for the same pass, or a lit
+      perimeter wall blooms into a haze. Studio softboxes are untagged: a diffuser, not a lamp.
+    - **Match only.** The builder preview has no post chain and caps its shadow map at 2048; the
+      replay export and the gallery stay fixed at High, and a fixed-tier scene's governor
+      (`decide = false`) never writes the device preset.
+    - **The sun's shadow map is drawn once per frame, on every tier** (`shadowMap.autoUpdate =
+      false`, `needsUpdate` raised before the scene pass). Every `renderer.render` redrew it
+      before: the minimap's pass did, and AO's G-buffer pass would have. A directional shadow
+      does not depend on the view camera.
+    - ⚠️ The scene pass leaves a few NaN texels on robots at high resolution (4 of 7.9 M at
+      3744 × 2106). Bloom's high pass zeroes them; without that one blurred NaN blacked out the
+      whole frame. The source is still unfound.
+  - **PHYSICAL MATERIALS (2026-09-27) is a lazy chunk, reached from exactly two places.**
+    `scene/renderSurfaces.ts` (+ its `renderSurface*.ts` helpers) is imported only as
+    `import('./renderSurfaces')`, from `renderScene.ts` and `renderPreview.ts`. Standard mode is
+    pixel-identical whether the chunk ever loaded: every change is a TWIN swapped onto a mesh, no
+    base material is ever written, and a twin's own `dispose()` is a no-op (only the kit's
+    `releaseTwin` frees one, so a rebuild elsewhere can't recompile it out from under another
+    robot). `graphics/finishes.ts` is the source of truth — plain numbers, no `three` import, no
+    colour where colour carries meaning (alliance, elements, chassis fill, `TILE_MAT`, a HUD
+    contrast pin).
+    - **The room probe** is a `CubeCamera` (36 in above the field centre, `VENUE_OVERHEAD_LAYER`
+      included) box-projected to the venue's own room, cube size matched to the dome's. It
+      recaptures only when the environment resolves, the venue rebuilds, or the mode turns on —
+      never per frame — and is raised/lowered around the match's own scene pass only, because the
+      twins are shared with the builder preview's GL context. Diffuse irradiance stays on the
+      dome; only the specular reflection moves to the probe.
+    - **The probe's exposure gain is metals only** (`metalness === 1`), clamped to [1, 2.5]: the
+      drawn room is dimmer than the light the scene is actually lit by, so an un-gained probe
+      reads bronze on aluminium. The 2.5 ceiling is a legibility call, not physics — the same gain
+      would wash a light dielectric toward clipping. The gain also WHITE-BALANCES (`probeGains`'
+      tint, per channel, clamped, luminance 1): it adds the rig's hemisphere light, and in the
+      halls that light is white while the drawn room is warm, so without the tint aluminium came
+      out cream beside the white front bar (school hall ×0.89/1.01/1.25, gym ×0.84/1.01/1.37). A
+      half already brighter than its lighting keeps its own energy and colour.
+    - **`reflections` now does something in physical mode** (`bbSpecIbl` scales a twin's IBL
+      specular). In standard mode it stays a no-op: `envMapIntensity` is read only when a
+      material sets `envMap`, and none does (pre-existing, left).
+    - **Clear panels get true two-surface Fresnel** instead of the dead `×6.667` restore (a no-op
+      in three 0.186, same cause as the `reflections` no-op above), and lose their shadows — cast
+      AND receive — in physical mode only; standard mode keeps the old glass-casts-a-shadow bug.
+    - **The builder preview gets the same robot twins, with no room probe** — the one allowed
+      material difference from the match, because the preview has no venue to capture.
+    - Known gaps, left for the owner: glass still casts a shadow in STANDARD mode; the
+      `reflections` no-op in standard mode; the robot decal's colour-space bug is fixed in
+      physical mode only; the two tape reds (GLB `#ff0000` vs the patch's `#e02020`) are both
+      kept; the elements' small emissive (pollen 0.12, nectar 0.05) is unruled; the mecanum side
+      plates are drawn bare steel where the real part is yellow-coated.
   - ⚠️ **THE SCORING ELEMENTS ARE THE REAL PERFORATED CAD SOLID ON HIGH AND ULTRA** (owner,
     2026-09-21: "For higher graphics settings, model the balls accurately with the holes.
     Consider grabbing the actual accurate cad"). `public/models/biobuzz/elements.glb` is a REAL
@@ -794,8 +981,9 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
-  LAZY chunks — physics ≈ 1.12 MB gz (the wasm glue plus the implementation), scene ≤ 250 KB gz —
-  ratcheted by `npm run bundleaudit` (needs a build; not in `npm test`).
+  LAZY chunks — physics ≈ 1.12 MB gz (the wasm glue plus the implementation), scene ≤ 250 KB gz,
+  post effects ≈ 12 KB gz (only with AO or bloom on) — ratcheted by `npm run bundleaudit` (needs a
+  build; not in `npm test`).
 - ⚠️ **`sim3d/` IS LAZY, AND ONLY TWO OF ITS MODULES MAY BE IMPORTED FROM OUTSIDE IT** (done
   2026-09-18; it used to be otherwise, and the implementation sat in the main chunk). `engine.ts`
   is the LOADER — `initPhysics3d` / `physics3dReady` / `rapier3d` / `physics3dImpl` — and
@@ -830,6 +1018,69 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
   box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
   MATCH's bugs and all three are fixed there.
+- **IMPORTED ROBOTS IN 3D** (`docs/robot-import-plan.md` §1, 2026-10-01). Still ONE generator and
+  ONE key: `buildRobotGroup` branches on `spec.imported` into `buildImportedRobot` (same file), which
+  composes `scene/renderImported.ts`'s parts with this file's own sign, intake, turret and Box Tube
+  builders. `renderImported.ts` imports nothing from `renderRobots.ts`, so the dependency runs one
+  way.
+  - **With the mesh on this device** (the owner's robot, or a GLB lent to `render/importedAssets.ts`):
+    the stored GLB is parsed ONCE per id by the scene's own `GLTFLoader` (`renderElementsGlb.ts`'s
+    `loader()`, meshopt attached), kept as a reference-counted TEMPLATE (LRU of
+    `IMPORTED_MESH_TEMPLATE_CAP`) and cloned per robot; `disposeRobotGroup` skips everything a
+    template owns (`isImportShared`) and hands the reference back. The root node carries the
+    importer's `STORED_MESH_TO_ROBOT` (glTF metres, +Y up, +Z front → robot inches, +z up). Every
+    material's emissive is zeroed at parse (a robot part never glows), and the meshes carry NO
+    `bbFamily`, so the physical-materials swap leaves them on their own PBR materials in both
+    modes. On top: the two ROBOT SIGNS on the hull's flank-most edges and, for a turreted launcher,
+    an AIM SIGHT (a hub and a slim rod, NOT a hoop — a floating ring read as a marker) on the same
+    `turretHeads`/`turretPitches` handles `sync` already poses, built so the HUB IS THE SIM'S
+    MUZZLE: yaw node at `turretLocal`, an axle node `axleX` forward at `bbImportTurretAxleZ`, the
+    hub `pathR` above it, which is `bbMuzzleLocal(p, which, axleZ)` at every pitch. Nothing else
+    of the generator: a second intake or turret drawn through the CAD would be a second robot.
+  - **Without it** (a remote player's robot, or the parse still running): a PLACEHOLDER — each prism
+    (`bands`, else the hull to `heightIn`) SOLID from 0.5 in to the deck in the chassis fill, the
+    envelope above the deck as an OPEN TOWER, wheels at `importedWheels`, the front bar on the
+    forward-facing hull edge(s) and the deck arrow clear of the turrets, the signs, and the
+    standard intake / launcher / Box Tube where the accessors put them (so their `userData`
+    handles animate with no import branch in `sync`).
+  - ⚠️ **EVERY MECHANISM IS ON THE SIM'S GEOMETRY, NEVER THE BOUNDING BOX** (lane 6b, 2026-10-01).
+    The intake through `bbMouths` + `bbMouthFrame` (the mouth's own `face` and lateral centre); each
+    turret at its placed head, the standard assembly ridden up or down whole to
+    `bbImportTurretAxleZ` so its drawn lip is the muzzle; the dumper on `bbDumperFrame` (=
+    `bbImportLaunchLine`, asked with `launchLine`'s own arguments) at `bbDumpZ`, its tray no deeper
+    than the hull behind the lip; the Box Tube standing where the placer ray leaves the hull
+    (`bbBoxTubeFrame` → `importPlaceExit`). The RENDER lane pins node positions to those accessors
+    to 1e-4, and the 2D sprites are pinned the same way in the shared smoke.
+  - ⚠️ **THE IMPORT'S HEIGHT IS READ IN `renderImported.ts`, NEVER IN `renderRobots.ts`** — the
+    RENDER lane's "the generator reads no height at all" still holds. For a standard robot
+    `heightIn` is a declared collider; for an import it is the measured top of real hardware, and a
+    placeholder that stopped at the deck would hide half the robot a remote driver is about to hit.
+  - **THE KEY.** `bbSpecKey` appends the descriptor's digest (id + FNV-1a of its JSON) for an import
+    only, so a standard key is byte-identical. The MESH STATE (`importedMeshKey`:
+    `id@meshVersion#digest:hull|mesh`, which also starts the load) is per device, like the wheel tier.
+    ⚠️ A mesh SLOT is one DESCRIPTOR, not one id: the robot edited on another device arrives as the
+    same id with another hull while this device's library still holds the old model, and a slot keyed
+    by id alone wore it on the new hull. The slot loads through `importedMeshBlob(id, imp)`, which
+    refuses a copy made for another version (`docs/area/robot-import.md`, rule 5), so it is the
+    placeholder until the newest file is imported. RENDER lane "a mesh slot answers for one
+    DESCRIPTOR".
+    `sync` folds the mesh state into its local key and the preview into `setSpec`'s, and the preview also
+    `sync` folds it into its local key and the preview into `setSpec`'s, and the preview also
+    re-keys itself on `onImportedMeshChange`, because the parse lands between two React renders.
+    The placeholder swaps for the mesh on the first frame after the parse.
+  - ⚠️ **AN IMPORT'S FLAT TOP IS A DECK** (`importTopIsBroad`, `sim3d/engineImpl.ts`). Its bands are
+    convex prisms, which Rapier builds as `ConvexPolyhedron`, the shape `groundRoll3d`'s narrow-hull
+    rule keeps for the field's decimated CAD hulls, so a POLLEN set down on an import's top was
+    kicked and, with no rolling law off the floor, rolled at 2–3 in/s for the whole match and off the
+    edge. A `GROUP_CHASSIS` prism (only an import builds one; a standard robot is boxes, cylinders and
+    rounded boxes, so it is untouched) at least the element's diameter across (`planWidth` + the
+    contact skin each side) counts as broad, like the standard `Cuboid` deck; a thin tower band stays
+    narrow and the ball rolls off it, the Box Tube rule. SIM3D lane "imported robot 3d: a POLLEN set
+    down on an import's flat CAD top RESTS".
+  - RENDER lane: `importedRobotChecks` (placeholder bounds = hull/bands and inside the hull, the
+    key, the real GLTFLoader path from a byte-built GLB `fixtures/importGlb.ts`, the swap in `sync`,
+    disposal, the template cap). Pictures: `scripts/robot-import/render/` (an offscreen Electron
+    capture of a REAL importer bake through every renderer, both themes).
 - ⚠️ **WHICH END IS THE FRONT IS ONE LANGUAGE, DRAWN IN BOTH RENDERERS** (owner, 2026-09-22:
   "somehow make it clearer fundamentally which side is front and which is back in game. This is
   especially confusing in a symmetric robot in 3D"). `bbFrontMarks` (`parts.ts`) is the geometry
@@ -888,8 +1139,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     simplification should depend on graphics settings"). `bbWheelDetail(settings, tier)` reads two
     settings that already exist — `meshDetail` set by hand, and otherwise the preset COLUMN, the
     same input `GFX_PIXEL_BUDGET` uses and for the same reason (nothing separates Medium from High
-    but AA and shadows). Low/Medium get the cheap one, High/Ultra and the fixed-High replay export
-    the full one; **no seventeenth dial was added**, and the RENDER lane asserts that. A LOW mecanum
+    but AA and shadows). Low/Medium get the cheap one, High/Ultra/Extreme and the fixed-High replay
+    export the full one; **no seventeenth dial was added**, and the RENDER lane asserts that. A LOW mecanum
     still has eleven real 45° rollers — measured, not promised. It is baked at build time, so
     `sync` folds it into its own rebuild key beside `bbSpecKey` (NOT into `bbSpecKey`, which the
     main chunk's thumbnail cache reads and which must not carry a per-device setting).
@@ -1824,14 +2075,69 @@ to feed the mass floor (`4 · flywheelInertia`), and a new BIOBUZZ spec is seede
 The turret (5) and dumper (3.5) absorbed the pound the presets' old value added, so preset
 floors did not move.
 
+**THE FIXED LAUNCHER** (`bbMech.launcher.kind === 'fixed'`, 2026-10-02) is the kit robot's: the
+turret's own head with no slew ring, bolted at an EDGE cell (`turretLocal`), facing out of it (an
+import: `mech.shooterYawDeg`), at the build's `hoodDeg` (30–80, its own clamp; the dumper keeps
+70–85), at a setpoint (`RobotSpec.flywheel`, the shared wheel in `src/sim/flywheel.ts` — see
+`docs/area/decode.md`, "Fixed shooters"). It mirrors as `scoreMode: 'dumper'` (`bbScoreModeMirror`),
+spans no edge (a Box Tube may sit on the corner beside it), carries POLLEN only, weighs
+`BB_MASS_FIXED` 3.5, and is enveloped by the turret's cylinder in 3D.
+- **One head, one axis** (`bbFixedAxisLocal`): the edge cell on a standard robot, and on an import
+  the placed point walked FORWARD along the facing by the muzzle's setback, because the placed point
+  is the LIP. Both drawings stand the head there (the 2D sprite drew an import's axis on the lip,
+  a setback off the release, until 2026-10-02); `release = axis − facing · setback` either way.
+- **Nothing is solved.** It releases from the head's own muzzle (`bbFixedLocal` reads
+  `bbMuzzleLocal` at the hood angle) at the wheel's speed NOW, carrying `bbPointVel`. Stage 5b,
+  3D stage 11 and the shot path all ask `bbFixedShotEnters`; aim assist turns the chassis onto
+  `bbFixedAimHeading` with DECODE's controller (`fixedAimTurn`, no dead band — see
+  `docs/area/decode.md`, "Fixed shooters") and releases only a shot that lands. Out of band
+  nothing is released; with aim assist off the shot leaves and misses.
+- ⚠️ **THE AIM HEADING LEADS THE CHASSIS'S TRANSLATION, NOT ITS SPIN** (2026-10-02). It led
+  `bbPointVel` at the muzzle, so the aim moved 0.047 s per rad/s of the chassis's own spin, against
+  it: under the old 4.5 × 6.1 rad/s P loop a −1.29 feedback a tick, and a tank reverses its spin
+  inside a tick. The card in 2D shook ±1.27 rad/s at 30 Hz, the heading 0.05–0.09 rad either side
+  of the line, for as long as fire was held (3D overshot 0.10 and settled). Now every build settles
+  without crossing, and the release still carries the real spin. Feed: 18 ticks per 0.30 s
+  (`flyFeedDue`; it was 18 or 19, 3.2/s over ten shots, now 3.33). Smoke: `fixed aim:`. Gated on
+  `SIM_PATCH` 4: a replay recorded before keeps the spin lead and `BB_FIXED_AIM_TOL_PRE4`
+  (`bbAimAssist`, `bbAimHeading`'s `spinLead`).
+- **Dumpers keep their P-controller** (`BB_AIM_GAIN` 4.5, dead band `BB_AIM_TOL` 0.14), measured
+  2026-10-02 and left alone: no lead, so no shake, but they overshoot — 30° off, mecanum/swerve
+  cross by 0.03 (2D) to 0.14 (3D swerve); 69° off, 0.15–0.20 (2D) and 0.27–0.33 (3D) — then park
+  inside the dead band.
+- **One setpoint in this game**: both kit robots run one, and the pad has no free button (D-DOWN is
+  unbound on purpose), so `coerceBiobuzzSpec` folds a presets wheel to its first speed.
+- **The band** (`bbFixedBand`: the fire gate's own predicate at every inch on the mouth axis,
+  capped where the footprint meets the wall, measured on the side that faces it — the front, sweeper
+  included, for a back launcher; until 2026-10-02 it always used the rear). Kit setpoint 2679 rpm,
+  96 mm ⇒ 212 in/s with the shared efficiency. At the kit's measured 68° it scores from **41 in to
+  the wall** (robot centre to cell centre; 41–46 for the card, back to the cell, its front touching
+  the wall at 46); at 77° from 26–46 in; under ~2450 rpm no arc reaches the 53.4-in opening. The AI
+  stands in the band (`ai/policy.ts` `dRange`).
+- **The hood is measured** (`BB_FIXED_HOOD_DEFAULT_DEG` 68°, 2026-10-02): on the kit's CAD the
+  pollen leaves the wheel at 57–61° and rides the curved guide plate to its end, tangent 68° ±3°.
+  The launcher is at the BACK, the end opposite the sweeper; the kit's auto starts with its front on
+  the wall, launches all four there and backs 120 mm away, which is the far end of the card's band.
+  The flight has no spin; a one-sided pinch puts topspin on the pollen, which would dip the real arc
+  (a closer band). Not modelled.
+
 **THE PRESETS** are the StarterBot (`presets.ts`, the one real kit robot, still alone in front of
-the rule-off) and four demos in `config.ts`. Scored head-to-head against the StarterBot with HARD
-bots, 3D, a full 150-s match: **Sniper 70.4 · Skimmer 68.0 · Forager 63.6 · Pollinator 55.0 ·
-StarterBot 43.0.**
+the rule-off) and four demos in `config.ts`. Scored 2026-09-22 head-to-head against the StarterBot
+with HARD bots, 3D, a full 150-s match: **Sniper 70.4 · Skimmer 68.0 · Forager 63.6 · Pollinator
+55.0 · StarterBot 43.0** (the StarterBot then a front dumper).
+
+⚠️ **THE STARTERBOT IS A FIXED LAUNCHER SINCE 2026-10-02, RE-MEASURED ON THE BENCH** (`npm run
+bench:ai -- --builds preset:starterbot --tiers hard --seeds 5`, 3D, every bot on the card, seeds
+7000–7004). As measured on the CAD (back launcher, 68°): **solo 117.8** (40–194), **2v2 142.4** per
+alliance (106–174); its band is 5 in deep against a wall. The first fixed-launcher card (front,
+77° guessed): solo 166.2, 2v2 153.5. The front dumper before that: solo 242.6, 2v2 284.8. So the card scores about a
+third less solo and a half less in a 2v2: POLLEN only (no NECTAR), and a shot only from inside its
+26–46 in band (`bbFixedBand`). These are the bench's numbers, not the 2026-09-22 head-to-head
+protocol, so they do not compare with the column below; the demo cards were not re-measured.
 
 | card | build | mass | rpm | floor | score |
 |---|---|---|---|---|---|
-| StarterBot | tank · front sweeper · front dumper | 18 (ON its floor — no kit publishes a weight) | 286 | 18.00 | 43.0 |
+| StarterBot | tank · front sweeper · front FIXED launcher (a front dumper when scored) | 18 (ON its floor — no kit publishes a weight) | 286 | 18.00 | 43.0 as the dumper; the bench above for the fixed launcher |
 | **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 19.50 | 55.0 |
 | Forager | butterfly · FRONT+BACK sweepers · front dumper | 30.5 | 420 / 300 | 23.50 | 63.6 |
 | Skimmer | xdrive · front sweeper · right+left double turret | 27.5 | 520 | 21.50 | 68.0 |
@@ -1900,6 +2206,129 @@ false at every mount, and the coercer silently reset a SIDE or FRONT+BACK sweepe
 pinned the chassis half an inch over the ceiling. The game's own floor is capped to the intake's
 own ceiling now. It only ever reached a spec carried over from another game, because the BIOBUZZ
 builder has no intake-STYLE picker.
+
+**IMPORTED ROBOTS** (`importMech.ts`, `importChecks.ts`, `sim3d/bodies.ts` `import3dShapes`; the
+shared rules are `docs/area/physics.md` "Imported robots: mechanisms", the lane is `IMPORT` in
+`scripts/smoke-biobuzz/imported.ts`). The archetype controls stay the builder's; the CAD gives the
+positions.
+- **Mouths** (`bbMouths` → `bbImportMouthRects`): the rect on each mounted edge carries its own
+  `face`, and `mouthAxes` returns a lateral centre `vc` (0 for every standard mouth). EVERY site
+  that builds a point from mouth axes adds `vc` and every `v` read off them subtracts it —
+  `bbIntakeAct`, the flower gate, the ramp swing corners, the reach shapes, the tutorial, the AI.
+  A `siderollers` roller line sits `BB_SIDE_ROLLER_PROTRUDE` behind where the hull ends: the CAD's
+  front is the wheel's outer face, so the 3D wheels land on the hull's own face.
+- ⚠️ **SIDE ROLLERS AT A FLOWER, `SIM_PATCH` 6** (owner, 2026-10-04: "side rollers cant actually
+  intake from flower because of weird footprint ... on the biobuzz 3d gobilda mecanum"). Measured
+  on the descriptor the production editor saved for that vendor's mecanum starter bot
+  (`scripts/smoke-biobuzz/fixtures/sideRollerImport.ts`, numbers only: 17.8 × 17.8 × 12.2 in, bands
+  0–5 / 5–8.5 / 8.5–12.2, its two upright rollers r 1.41 about (8.32, ±6.14) robot-local, z
+  1.06–2.06, the hull's front corners lying on their circles). Built as side rollers on the front,
+  fixed launcher, no Box Tube. Three causes:
+  - **3D, the band.** The lowest band is one prism from the tiles to 5 in, and its front (x 9.55) is
+    the rollers' front. Below the slot the pocket filler (solid to statics) and above it the band
+    reached that front across the whole width, so the FLOWER's lower plate (z ≤ 0.354) and mid
+    plate (z ≥ 3.904) stopped it on their edge. The wheels' front is that same face, so they stood
+    **0.85 in** short of the bottom POLLEN (a wheel has to reach 1.004 past the plate edge). The
+    CAD has nothing there: under 1 in its front is the drive wheels (x ≤ 6.9), at the mid plate's
+    height x ≤ 8.7 (mesh vertices, `scratch/glbfront.mjs`).
+  - **The wheel's place.** `bbSideRollerY(half)` put each wheel 7.28 off the centre; the CAD's are
+    at 6.14. A driver lining up the visible roller missed the sim's by 1.14 in, and the sim's
+    poked 0.9 in out of the robot's side.
+  - **2D, the foot.** The 2D FLOWER foot is one solid rectangle. The import's hull holds its rollers,
+    so the hull's front meets the foot and the wheel axis sat 3.88 in from the ring axis against
+    the 3.25 grip; it took a POLLEN only when a yawed corner swung a wheel in.
+
+  The fix, all behind `spec.imported` and `siderollers`: `bbImportSideRollerV` moves each wheel
+  inboard until its circle is inside the hull (closed form per edge; an edge the wheel overhangs
+  even on the centre is a front not square to the wheelbase and does not bound it), 6.06 off
+  centre here, and a hull with square corners keeps the standard rule exactly.
+  `bbImportClipReach` takes the strip past the roller line inside the span out of every 3D prism
+  (carved, pocket, above the slot, remote), so the body ends at the roller line and the two wheel
+  cylinders stand past it, which is what a standard side-roller robot is; the wheels still stop on
+  a wall at the hull's front. The 2D gate measures an import's wheel from the hull's front
+  (`uw + BB_SIDE_ROLLER_PROTRUDE`), the depth the 3D wheel gets. `bbSideRollerOffsets` is the one
+  placement the gate, `chassis3dReachShapes`, the tutorial and both renderers read.
+
+  Real drive-ins (`scratch/srimport.ts`, 540 a row: four FLOWERS × lateral 0/±0.8/±1.5 × square
+  and ±10° × stick 0.4/0.7/1.0 × column 1/2/4, intake held, the robot's own roller lined up):
+
+  | | 2D | 3D |
+  |---|---|---|
+  | standard, 15 × 17 | 100 % | 93.3 % (straight-on 180/180) |
+  | standard, 18 × 18 | 100 % | 92.8 % (180/180) |
+  | import, before | 13.3 % (36/180 straight-on) | **0 %** |
+  | import, after | 100 % | 93.7 % (180/180), mean 0.79 s |
+
+  The 3D misses printed, import and standard alike, are the corner `SIDE ROLLERS RELOCATED`
+  already names: a 1.5-in offset with a 10° skew the same way, the settle yawing the wheel out
+  (19–25°).
+
+  `SIM_PATCH` 6 gates all three (`importSideRollersPre6`): a replay recorded before runs the old
+  geometry, and the IMPORT lane holds four scenes stepped under patch 5 to hashes measured on
+  e5c3f6a8 (`scripts/sideroller-pre6-scenes.ts`), and runs 36 drive-ins per engine on the fixture.
+  It is a `step()` change, so a server change (a room steps imports on the game server). Standard
+  robots are bit-identical (`IMP_STANDARD_PINS`, `L2_MECH_PINS`).
+- ⚠️ **AN IMPORT GOES INTO A FLOWER AS FAR AS ITS CAD DOES, `SIM_PATCH` 7** (owner, 2026-10-04: "For
+  the gobilda biobuzz robot, I know i can get closer into the flower but it blocks me"). The real
+  robot, every triangle of the full mesh swept straight in against everything the 3D robot meets at
+  a FLOWER (both plates over their outlines, the HIPS pipes and supports from the field CAD, the
+  wall), stops with its front point 0.38 in short of the ring axis, its intake's frame between the
+  rollers (x 7.67) on the middle plate. The sim stopped it at 0.77. Four causes, each measured:
+  - **The plates were boxes** whose corners stood up to 0.7 in proud (above).
+  - **A band is one convex prism.** Between its two side rollers the band at the plate's heights
+    bridged the gap at the roller line (8.08), 0.4 in past the frame.
+  - **A band boundary fell inside the plate** (z 5.0), so the band above, built for what the robot
+    carries higher up (8.0 in the centre), met the plate's top quarter inch; and the band under the
+    plate held the intake's cross bar (7.81) that passes under the real one.
+  - **A band ending under the mouth slot kept its top 0.1 in whole**, a bar across the mouth. Harmless
+    while the lowest band reached 5 in; the floor band (0–1 in) the importer writes since
+    2026-10-04 put it at the POLLEN's height, and the bottom POLLEN rode onto it (F2, 0.4 in or more
+    off line: 0 of 9).
+
+  The fix: the importer gives the middle plate a band of its own with the bands either side 0.1 in
+  clear (a prism's rounded edge catches a plate it passes 0.06 under), and measures each band's
+  cuts (`docs/area/robot-import.md`, "Height bands"). `bbImportClipReach` takes each band back to
+  its cut inside a side-roller mouth, never behind the mouth's face, and a band wholly under the
+  slot is carved top to bottom. Straight in, it stops 0.38 in short (0.38 real); at 10° and 20°
+  across three offsets it is never more than 0.05 in further out than the CAD. The 3D compound for
+  this robot is 20 colliders (9 with three bands) at no measurable tick cost; retrieval is 84 of 84
+  (four FLOWERS × seven offsets × three skews). It needs the robot re-saved: a library robot opened
+  in the importer re-measures its stored mesh. The 2D FLOWER (one foot rectangle) is unchanged; it
+  still stops this robot about 2 in short.
+
+  `SIM_PATCH` 7 gates all of it (`importBandCutsPre7`, the `plateOutlines` flag through
+  `buildStatics3d`): the IMPORT lane holds four plate-corner scenes stepped under patch 6 to their
+  pins (`scripts/flowerplate-pre7-scenes.ts`), the 3D standard-robot pins were re-recorded with the
+  old ones checked under patch 6, and `SIDE_ROLLER_IMPORT_V7` is the robot as the importer now
+  measures it.
+- **Launchers**: a turret is the placed `shooter` (`shooter2` for a double turret's NECTAR head);
+  its flywheel axle is the placed height less the head's path radius, so the rest-pitch release is
+  exactly the placed `z` (`bbImportTurretAxleZ`, read clamped to 7.5–18). A dumper's line is
+  centred on the placed lip at the placed height (`bbDumpZ`, 6–18) with no clearance push; the
+  Box Tube reaches `BB_PLACE_REACH` out of the hull from its placed base (`importPlacePoint`, the
+  same call in `bbLiftPlaceLocal`).
+- **Height**: `heightIn` is `imported.heightIn` rounded UP onto the 12–18 dial, with no stow height
+  (the CAD is the starting configuration, already inside R102's cube).
+- **3D is the CAD bands** (`import3dShapes`): per band, below `BB3_MOUTH_SLOT_Z` the 2D carve
+  (chassis + plates) with a `GROUP_POCKET` filler per mouth, above it the whole band (a band wholly
+  under the slot has no whole part since patch 7); no
+  `bbMechEnvelopes` shape (the bands hold the turret). Prisms are `convexHull`s with the chassis
+  boxes' edge break (eroded by `r`, contact skin `r`). A `ConvexPolyhedron` is NARROW to
+  `groundRoll3d`, so a POLLEN that lands on an import's top rolls off. The FULL predictor gives the
+  LOCAL import the authority's compound and a REMOTE one the uncarved bands; the PERF lane holds a
+  heavy import (16-vertex hull, four bands, side sweepers) to the standard budgets.
+- **The LIGHT predictor** clamps an import to the walls by its hull turned to the heading and
+  separates any pair with an import by `polySatGap` on the two footprint polygons. `robotExtents`
+  is a box with a SYMMETRIC flank, so an asymmetric import was drawn 5 in off a wall it was
+  pressed to (and 5.5 in off a robot), corrected on every snapshot. The IMPORT lane holds its
+  error to a standard robot's.
+- **G402's depth** (`bbIntrusion`) for an import is the deepest vertex of its FRAME — the hull
+  behind the mouths, `bbImportSolids().chassis`, the import's twin of the standard chassis box
+  without the sweeper — along the line normal. The centred `length/2 × width/2` box billed a hull
+  wholly on its own half (a 6-in tail read 2.5 in across) and let a long flank cross unseen.
+- **The Zenith robot file** writes the hull's box with the centre of rotation where the origin sits
+  in it (both axes), and the mouths `bbImportMouths` resolves (placed span, roller line), not the
+  whole edge of a symmetric box.
 
 **THE CHASSIS GOES TO 18 × 18** (owner, 2026-09-24: "why is max width/length 17 not 18?").
 `BB_MAX_LENGTH`/`BB_MAX_WIDTH` are `ROBOT_MAX_SIZE` (R102's cube); the 17 was a "working inch"

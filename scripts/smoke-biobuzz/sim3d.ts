@@ -4,8 +4,8 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
-import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { rapier3d, prebuildPhysics3dFor } from '../../src/games/biobuzz/sim3d/engine';
+import { disposeEngineFor, engineFor, robotBodyOf, syncElements, __clearStaticSnapshotForTests, __staticSnapshotCachedForTests } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadStatics, cadTrayRefTheta, cadTrayRiders, fieldColliders3d, type FieldStatic } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
@@ -957,6 +957,55 @@ export function sim3dChecks(check: Check): void {
         disposeEngineFor(w);
       }
       check('corner 3d: flat-wall rest distance is the outermost solid, both headings', bad.length === 0, bad.join(' | '));
+    }
+
+    /**
+     * ⚠️ **THE WALL SQUARE-UP IS A TURN THE SOLVE MAKES** (`SIM_PATCH` 3, `step3dImpl.ts` stage 6b;
+     * owner, 2026-10-02: "an invisible bump" against the wall, online). Written after the solve, the
+     * square-up's heading reached the body next tick as a rotation teleport the solver pushed back,
+     * and a robot squaring up against a wall alternated tick by tick — MEASURED at 16° in: yaw rate
+     * 0 / −0.75 / 0 / −0.82 rad/s. That limit cycle is what turned a client's small engine-state
+     * difference into a reconcile snap. The ZIGZAG is the sum, over every tick where the change in
+     * yaw rate reverses, of the smaller of the two changes, taken until the chassis is within 0.5°
+     * of flush; the old rule is run beside it (a patch-2 world, i.e. an old replay) so the check is
+     * not vacuous, and the new one must reach flush no later than the old one did.
+     */
+    {
+      const square = (patch?: number): { zig: number; flushAt: number } => {
+        const w = createBiobuzzWorld('match', 3, [setup(0, 'blue')], undefined, '3d');
+        if (patch !== undefined) w.simPatch = patch;
+        w.match.phase = 'teleop';
+        w.match.phaseTimeLeft = 1000;
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.heading = Math.PI / 2 + (16 * Math.PI) / 180;
+        r.pos.x = 0;
+        r.pos.y = BB_HALF_Y - robotExtents(r).front - 3;
+        const c = new Map([[0, cmd({ driveY: 0.8, driveX: 0.3 })]]);
+        const ws: number[] = [];
+        let flushAt = -1;
+        for (let t = 1; t <= 120; t++) {
+          step3d(w, 1 / 60, c);
+          const off = Math.abs(wrapAngle(r.heading - Math.PI / 2));
+          if (off > (0.5 * Math.PI) / 180) ws.push(r.angVel);
+          if (flushAt < 0 && off < (0.1 * Math.PI) / 180) flushAt = t;
+        }
+        disposeEngineFor(w);
+        let zig = 0;
+        for (let i = 2; i < ws.length; i++) {
+          const a = ws[i - 1] - ws[i - 2];
+          const b = ws[i] - ws[i - 1];
+          if (a * b < 0) zig += Math.min(Math.abs(a), Math.abs(b));
+        }
+        return { zig, flushAt };
+      };
+      const before = square(2);
+      const now = square();
+      check('wall square-up 3d: under the OLD rule (a patch-2 replay) the yaw rate zigzags while squaring up (non-vacuous)',
+        before.zig > 1, `zigzag ${before.zig.toFixed(3)} rad/s`);
+      check('wall square-up 3d: taken inside the solve it does not, and the chassis still reaches flush as soon as before',
+        now.zig < 0.5 && now.flushAt > 0 && now.flushAt <= before.flushAt + 1,
+        `zigzag ${now.zig.toFixed(3)} rad/s (was ${before.zig.toFixed(3)}), flush at tick ${now.flushAt} (was ${before.flushAt})`);
     }
 
     /**
@@ -2519,6 +2568,52 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // ---- THE STATIC FIELD IS A SNAPSHOT, AND A ROOM MAY BUILD ITS ENGINE BEFORE TICK 1 --------
+  //
+  // `engineImpl.ts` builds the static field (floor, walls, CAD hulls, flower TRIMESHES) once per
+  // process and RESTORES every later engine's statics from a Rapier snapshot, and the server
+  // builds a 3D match's engine when the room builds the world (`prebuildPhysics3dFor`) rather
+  // than inside its first tick. Both are cost moves only: the SAME match must come out
+  // byte-identical whichever way its engine was built. Two robots driving, intaking and
+  // firing for ten seconds, so there are contacts, captures and shots in it.
+  {
+    const play = (w: World): string => {
+      w.match.preCountdown = 0.05;
+      for (let t = 0; t < 600; t++) {
+        const p = t / 60;
+        step3d(
+          w,
+          C.SIM_DT,
+          new Map([
+            [0, cmd({ driveX: Math.sin(p), driveY: Math.cos(p * 0.7), rotate: 0.4 * Math.sin(p * 1.3), intake: true, fire: t % 90 > 20 })],
+            [1, cmd({ driveX: Math.cos(p * 0.8), driveY: Math.sin(p * 0.6), rotate: -0.3, intake: true, fire: t % 70 > 30 })],
+          ]),
+        );
+      }
+      const out = JSON.stringify(w);
+      disposeEngineFor(w);
+      return out;
+    };
+    __clearStaticSnapshotForTests();
+    const built = play(mkWorld3dPair('match', 11));
+    const cached = __staticSnapshotCachedForTests();
+    const restored = play(mkWorld3dPair('match', 11));
+    const early = mkWorld3dPair('match', 11);
+    prebuildPhysics3dFor(early);
+    const prebuilt = play(early);
+    check('statics snapshot: the first engine in a process BUILDS the static field and caches it', cached);
+    check(
+      'statics snapshot: a match whose statics were RESTORED from the snapshot is byte-identical to one that built them',
+      built === restored,
+      `${built.length} vs ${restored.length} chars`,
+    );
+    check(
+      'statics snapshot: a match whose engine the room built BEFORE tick 1 is byte-identical to one built inside it',
+      built === prebuilt,
+      `${built.length} vs ${prebuilt.length} chars`,
+    );
+  }
+
   // ---- THE GENERATED FILE IS THE MEASUREMENTS, still --------------------------------------
   //
   // `src/games/biobuzz/fieldDims.gen.ts` is what `config.ts` reads, and it is written by
@@ -3478,6 +3573,56 @@ export function sim3dChecks(check: Check): void {
         turret.z < 0.1 && turret.n === 1,
         `z=${turret.z.toFixed(2)} kind=${turret.kind}`,
       );
+    }
+
+    /**
+     * ── AN IMPORTED ROBOT'S FLAT CAD TOP IS A DECK TOO (`importTopIsBroad`, engineImpl.ts) ──────
+     * An import's bands are convex PRISMS, which Rapier builds as `ConvexPolyhedron`: the shape the
+     * narrow-hull rule kept for the field's decimated CAD hulls. A POLLEN on an import's flat top was
+     * kicked, and with no rolling law off the floor it rolled for the whole run and off the edge
+     * (measured: 2–3 in/s for 7 s). It rests now, on the top and on a band's ledge, like the standard
+     * deck above, and still falls when the robot drives away; a band that is a thin TOWER is narrow
+     * (the Box Tube rule) and the ball rolls off it.
+     */
+    {
+      const HULL = [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }];
+      const FLAT = { v: 1 as const, id: 'abababababababab', hull: HULL, heightIn: 12 };
+      const BANDS = { ...FLAT, id: 'cdcdcdcdcdcdcdcd', heightIn: 15, bands: [{ z0: 0, z1: 6, hull: HULL }, { z0: 6, z1: 15, hull: [{ x: -6, y: -6 }, { x: 4, y: -6 }, { x: 4, y: 6 }, { x: -6, y: 6 }] }] };
+      const THIN = { ...FLAT, id: 'efefefefefefefef', heightIn: 16, bands: [{ z0: 0, z1: 6, hull: HULL }, { z0: 6, z1: 16, hull: [{ x: -1, y: -1 }, { x: 0.3, y: -1 }, { x: 0.3, y: 1 }, { x: -1, y: 1 }] }] };
+      const drop = (imported: unknown, dx: number, dy: number, z: number, drive = false): { z: number; off: number; n: number } => {
+        const w = mkWorld3d('free', 94, { intakeMount: 'front', imported } as Partial<RobotSpec>);
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.fieldCentric = false;
+        r.pos = { x: 0, y: -30 };
+        r.heading = 0;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const id = 9002;
+        w.balls.push({ id, pos: { x: r.pos.x + dx, y: r.pos.y + dy }, vel: { x: 0, y: 0 }, z, vz: 0, r: BB_POLLEN_R, color: 'yellow', state: { kind: 'ground' } } as unknown as Artifact);
+        const still = new Map([[0, cmd({})]]);
+        const fwd = new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]);
+        for (let t = 0; t < 420; t++) step3d(w, C.SIM_DT, t < 90 || !drive ? still : fwd);
+        const b = w.balls.find((x) => x.id === id)!;
+        const out = { z: b.z, off: Math.hypot(b.pos.x - r.pos.x - dx, b.pos.y - r.pos.y - dy), n: w.balls.length };
+        disposeEngineFor(w);
+        return out;
+      };
+      const top = drop(FLAT, -3, 3, FLAT.heightIn + 2);
+      const band = drop(BANDS, -1, 0, BANDS.heightIn + 2);
+      const ledge = drop(BANDS, 6.2, 0, 6 + 2);
+      const away = drop(FLAT, -3, 3, FLAT.heightIn + 2, true);
+      const thin = drop(THIN, -0.35, 0, THIN.heightIn + 2);
+      check(
+        'imported robot 3d: a POLLEN set down on an import’s flat CAD top RESTS where it landed (on the top band and on a lower band’s ledge), like the standard deck',
+        Math.abs(top.z - FLAT.heightIn) < 0.1 && top.off < 0.05 &&
+          Math.abs(band.z - BANDS.heightIn) < 0.1 && band.off < 0.05 &&
+          Math.abs(ledge.z - 6) < 0.1 && ledge.off < 0.05 && top.n === 1,
+        `top z=${top.z.toFixed(2)} moved ${top.off.toFixed(3)}; band z=${band.z.toFixed(2)} moved ${band.off.toFixed(3)}; ledge z=${ledge.z.toFixed(2)} moved ${ledge.off.toFixed(3)}`,
+      );
+      check('imported robot 3d: ...it falls when the robot drives away from under it, and a thin tower band is no shelf (the ball rolls off it)',
+        away.z < 0.1 && away.n === 1 && thin.z < 0.1 && thin.n === 1,
+        `drove away z=${away.z.toFixed(2)}; thin tower z=${thin.z.toFixed(2)}`);
     }
 
     /**

@@ -149,12 +149,15 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
   for (const raws of r.setups) {
     if (!raws || typeof raws !== 'object') return null;
     const id = (raws as RobotSetup).id;
-    if (typeof id !== 'number' || !Number.isFinite(id) || id < 0 || id > 3) return null;
+    // an INTEGER slot, or nothing. This used to test the raw value for duplicates and then
+    // round it, so ids 0.6 and 1.4 passed as two robots and both spawned as robot 1 — two
+    // bodies answering to one command-map key. Every real container carries integer slots.
+    if (typeof id !== 'number' || !Number.isInteger(id) || id < 0 || id > 3) return null;
     if (seen.has(id)) return null; // two robots with one id cannot be spawned
     seen.add(id);
     // the SAME coercion `createWorld` runs, so a stored setup can never spawn a robot the
     // builder would not have offered
-    setups.push(coerceSetup({ ...(raws as RobotSetup), id: Math.round(id) }, replayGame));
+    setups.push(coerceSetup({ ...(raws as RobotSetup), id }, replayGame));
   }
 
   // tracks: flat number arrays keyed by a robot id that exists in `setups`, each a whole

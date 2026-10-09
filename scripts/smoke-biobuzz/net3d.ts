@@ -603,7 +603,11 @@ export function net3dChecks(check: Check): void {
     const ms = readFileSync('src/ui/MatchStrategy.tsx', 'utf8');
     check('ready3d: the strategy screen names the seats that are still loading', ms.includes('LOADING 3D'));
     check('ready3d: ...and says so instead of “Everyone ready. Starting…”', /loading3d\.length[\s\S]{0,160}Loading 3D physics/.test(ms));
-    check('ready3d: ...and hides the ELO column when the window is not ranked', /ranked && <span className="ds-chip">\{ratingChip\(/.test(ms));
+    // `rated` is `ranked && !competition` (0059): a competition window keeps the ranked gate, no ratings
+    check(
+      'ready3d: ...and hides the ELO column when the window is not ranked',
+      /rated && <span className="ds-chip">\{ratingChip\(/.test(ms) && /const rated = ranked && !competition;/.test(ms),
+    );
   }
 
   // ═══ 3. THE OLD-CLIENT PROOF: a 2D GAME's wire is what it always was ═══════
@@ -1456,8 +1460,14 @@ export function net3dChecks(check: Check): void {
 
     const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8');
     check(
-      'ruling: the record board has no era filter and no per-row 2D/3D chip',
-      !/setEra|ds-seg \$\{era/.test(board) && !/physics\.toUpperCase\(\)/.test(board),
+      // the owner's 2026-10-05 decision (rooms plan v3) added ONE exception: the ALL-TIME board spans
+      // seasons and both eras exist, so it picks one. The season board still has no picker, and the
+      // client sends `era` only with `window=all`.
+      'ruling: the record board has no era filter and no per-row 2D/3D chip, except on the all-time board',
+      !/physics\.toUpperCase\(\)/.test(board) &&
+        /\{win === 'all' && threeD && \([\s\S]{0,600}setEra/.test(board) &&
+        (board.match(/setEra\(/g) ?? []).length === 1 &&
+        /view\?\.window === 'all' && view\.era/.test(readFileSync('src/net/api.ts', 'utf8')),
     );
     check(
       // the era is per season now (2026-09-24): keep the one the server echoes, 3D when an older

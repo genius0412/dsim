@@ -117,7 +117,7 @@ function StorageGroup({ cat }: { cat: StorageCategory }) {
                   <td>
                     <code className="yd-key">{e.key}</code>
                     <span className="yd-store">
-                      {e.storage === 'session' ? 'Session storage' : 'Local storage'}
+                      {e.storage === 'session' ? 'Session storage' : e.storage === 'indexeddb' ? 'IndexedDB' : 'Local storage'}
                     </span>
                   </td>
                   <td>{e.purpose}</td>

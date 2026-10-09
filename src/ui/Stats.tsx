@@ -7,6 +7,7 @@ import { authEnabled, authClient } from '../lib/authClient';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { StandingCard } from './StandingCard';
+import { NoticeInbox } from './NoticeInbox';
 import { AuthPanel } from './AuthPanel';
 import { PracticeReplays } from './PracticeReplays';
 import { LanReplays } from './LanReplays';
@@ -17,6 +18,8 @@ export interface CareerNav {
    *  since there is no server id to fetch it by */
   onWatchLocal?: (replay: Replay) => void;
   onOpenProfile?: (username: string) => void;
+  /** open a competition's page (the profile's placements list) */
+  onOpenCompetition?: (slug: string) => void;
   /** which game's boards to show (DECODE default) — its own periods/records */
   game?: GameId;
 }
@@ -131,6 +134,9 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
       head={() => (
         <>
           <StandingCard />
+          {/* what moderators told this account, and the reports it filed (0057). Self-only
+              like StandingCard, and absent when there is nothing in either list. */}
+          <NoticeInbox />
           {/* SELF-ONLY, same reasoning as StandingCard above: practice runs are offline and
               unverified, and on a public profile they would read as competitive history. */}
           <PracticeReplays

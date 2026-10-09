@@ -31,7 +31,7 @@ import { bbElementRadius, flowerFits, flowerScore, type BbElementKind } from '..
 import { hiveLoad, hiveTakingSide, otherSide } from '../hive';
 import { bbCarriesNectar, bbIntakeAccepts, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
 import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, MOUNT_DIR, bbIntakeEdges, bbIntakeMountOf } from '../mounts';
-import { bbAimTarget, bbCellSideOf, bbFlightEnters } from '../play';
+import { bbAimTarget, bbCellSideOf, bbFixedBand, bbFlightEnters } from '../play';
 import {
   bbAimHeading,
   bbFlowerInReach,
@@ -384,7 +384,14 @@ function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState
   }
   const aimCell = hiveCellTarget(a, aimSide);
   const needFromHopper = aimSide === taking && !tipping ? hopperTipCount(r.hopper, load.pollen + inFlight, load.nectar) : Infinity;
-  const dBase = turreted ? [mem.w.turretD0, mem.w.turretD1] : [mem.w.dumpD0, mem.w.dumpD1];
+  // a FIXED launcher's band is its arc's, not a habit: it is measured off the fire gate itself
+  // (`bbFixedBand`) and held an inch inside at each end, because the robot only stands NEAR a point
+  const band = launcher.kind === 'fixed' ? bbFixedBand(r.spec) : null;
+  const dBase = turreted
+    ? [mem.w.turretD0, mem.w.turretD1]
+    : band
+      ? [band[0] + 1, Math.max(band[0] + 1, band[1] - 1)]
+      : [mem.w.dumpD0, mem.w.dumpD1];
   const carriesNectar = bbCarriesNectar(launcher);
   const lift = bbLiftOf(r.spec) !== null;
   const ctx: Ctx = {
@@ -422,8 +429,11 @@ function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState
     // `BB_AI_DUMP_FLOOR`: from 25 in a dump lands 25–75 % (medium forager −15 a solo match at 25.5)
     dRange: turreted
       ? [dBase[0] - t.envPad * 0.5, dBase[1] + t.envPad]
-      : [Math.min(dBase[0], Math.max(BB_AI_DUMP_FLOOR, dBase[0] - t.envPad * 0.6)), dBase[1]],
-    envAng: t.envAng + (launcher.kind === 'dumper' ? 0.2 : 0),
+      : band
+        ? [dBase[0], dBase[1]] // a FIXED arc has no sloppy edge to widen: out of band, it misses
+        : [Math.min(dBase[0], Math.max(BB_AI_DUMP_FLOOR, dBase[0] - t.envPad * 0.6)), dBase[1]],
+    // a FIXED arc is measured on the mouth axis; well off it the cell is crossed at an angle
+    envAng: launcher.kind === 'fixed' ? Math.min(t.envAng, 0.35) : t.envAng + (launcher.kind === 'dumper' ? 0.2 : 0),
     placeWindow: teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S,
     hoard: false,
   };
@@ -899,8 +909,9 @@ function approach(c: Ctx, at: Vec2, prefer?: number): { goal: Vec2; heading: num
       for (const u of [deep, lip]) {
         for (const v of [0, side, -side]) {
           // robot-frame offset of the element from the robot centre
-          const lx = EDGE_DIR[edge].x * u + EDGE_PERP[edge].x * v;
-          const ly = EDGE_DIR[edge].y * u + EDGE_PERP[edge].y * v;
+          // `+ ax.vc`: an imported robot's mouth need not be centred on its edge (0 otherwise)
+          const lx = EDGE_DIR[edge].x * u + EDGE_PERP[edge].x * (v + ax.vc);
+          const ly = EDGE_DIR[edge].y * u + EDGE_PERP[edge].y * (v + ax.vc);
           const off2 = rot({ x: lx, y: ly }, heading);
           const gx = at.x - off2.x;
           const gy = at.y - off2.y;

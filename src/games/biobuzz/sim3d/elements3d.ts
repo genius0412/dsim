@@ -1,5 +1,5 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { BB_HOOD_DEFAULT_DEG, BB_RAMP_DEPLOY_S, BB_RAMP_EMBED_DEPTH, bbHeightNow } from '../config';
+import { BB_HOOD_DEFAULT_DEG, BB_RAMP_EMBED_DEPTH, bbHeightNow, bbRampDeployS } from '../config';
 import { capturePollen } from '../elements';
 import {
   bbAimTarget,
@@ -9,6 +9,7 @@ import {
   bbPassTargetOf,
   bbPretendHive,
   bbTurretShotEnters,
+  bbFixedShotEnters,
 } from '../play';
 import {
   bbIntakeAct,
@@ -24,6 +25,7 @@ import {
   type BbShot,
 } from '../robot';
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
+import { flyStep } from '../../../sim/flywheel';
 import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
 import { engineFor, type Engine3d } from './engineImpl';
@@ -151,7 +153,7 @@ function bbRampSwingStep3d(world: World, r: RobotState): void {
   const e = bbRampSwingProgress(r, world.time);
   if (e === null) {
     if (bbRampSettled(r, world.time) && rampEmbedded(engineFor(world), r)) {
-      bbRampReverse(r, world.time, BB_RAMP_DEPLOY_S);
+      bbRampReverse(r, world.time, bbRampDeployS(r.spec));
     }
     return;
   }
@@ -241,7 +243,12 @@ export function elements3dAimAndLaunch(
      */
     const pretend = bb ? bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(bbAimTarget(world, rob))) : null;
     const asking = enabled && ((cmds.get(rob.id)?.fire ?? false) || passing) && rob.hopper.length > 0;
-    if (bbIsTurreted(launcher)) {
+    // the SETPOINT FLYWHEEL's tick, where 2D's stage 5b runs it (nothing for any other build)
+    flyStep(rob, cmds.get(rob.id), enabled, world.time, dt);
+    if (launcher.kind === 'fixed') {
+      // the FIXED launcher: 2D's own predicate (`bbFixedShotEnters`), against the pretend-up cell
+      shots.set(rob.id, { target, speed: [], lands: [asking && !!pretend && bbFixedShotEnters(pretend, rob, dt)] });
+    } else if (bbIsTurreted(launcher)) {
       const speed: (number | undefined)[] = [];
       const lands: boolean[] = [];
       const exits: readonly (0 | 1)[] = launcher.kind === 'twinturret' ? [0, 1] : [0];

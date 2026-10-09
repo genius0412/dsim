@@ -29,6 +29,30 @@ inches.
 Motifs (obelisk AprilTags): 21 = GPP, 22 = PGP, 23 = PPG. The motif repeats 3× over
 the 9 ramp positions, index 0 = nearest the gate.
 
+## Ranking points
+
+Competition Manual Team Update 32 (16 Apr 2026). Used by DSIM's competitions
+(`src/competition/manual.ts`, measured by `src/games/decode/rankFacts.ts`); the in-match results
+screen shows none. The manual is not explicit on every row, so each row names its basis.
+
+Table 10-2: WIN 3, TIE 1, LOSS 0 (there is no LOSS row). Bonus RPs are 1 each; thresholds are
+Table 10-3 (TU12 set the Regional column, TU30 the Championship one; Premier Events set their own).
+
+| RP | measure | All Other Events | Regional | Championship | basis |
+|---|---|---|---|---|---|
+| MOVEMENT | LEAVE + BASE points | 16 | 21 | 21 | manual; the two-robot bonus and a G427 BASE award are BASE (Q&A Q155) |
+| GOAL | ARTIFACTS through the SQUARE: CLASSIFIED + OVERFLOW, every pass | 36 | 42 | 67 | manual §10.5.1; a count, not points (Q&A Q83); a recycled ARTIFACT counts again (Q&A Q27, and 42/67 exceed the 36 on the field) |
+| PATTERN | AUTO + TELEOP PATTERN points | 18 | 22 | 22 | arithmetic: one assessment scores at most 18, under 22 |
+
+G417.A, G418.B, G419.B and G431.C award the opponent the PATTERN RP; G418.A (PATTERN) and G206
+(PATTERN and GOAL) make an alliance ineligible, which overrides any award (Table 10-4). The sim
+reports G417 itself (`patternAward`; G418.B can only follow a G417 here); referees rule on the rest.
+
+Table 13-1, after the RANKING SCORE (average RP): average match points minus fouls, average BASE
+points, average AUTO points (LEAVE + AUTO CLASSIFIED + AUTO OVERFLOW + AUTO PATTERN; the transition
+counts as AUTO, §10.5 A), random. A disqualified match counts 0 toward every criterion and
+surrogate matches are excluded (§13.6.3).
+
 ## Artifacts
 
 36 total: 24 purple, 12 green, 5 in diameter. Per alliance: 9 on spike marks

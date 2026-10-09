@@ -10,6 +10,7 @@ import {
   type QCommand,
 } from '../net/protocol';
 import { worldHash } from '../net/checksum';
+import { REPLAY_FORMAT_IMPORTED, REPLAY_FORMAT_TUNED, setupsHaveImported, setupsHaveTune } from '../net/imported';
 
 /**
  * Deterministic REPLAYS + record-chasing (score-attack) scaffolding — Phase 3
@@ -39,8 +40,18 @@ const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
  *    leftDrive/rightDrive (see robot.ts `saturation === 'tank'`) — so a tank or butterfly
  *    robot's entire drive input was thrown away and its replay played back with a dead
  *    drivetrain. The READER still understands format 1, so old replays keep playing.
+ * 3: the container holds an IMPORTED ROBOT (`RobotSpec.imported`). The stride is format 2's; the
+ *    number exists so a build that predates imports reads it as `'future'` and refuses to play
+ *    it, instead of re-simulating a rectangle robot and showing a match that never happened.
+ *    ⚠️ ONLY STAMPED WHEN A SETUP CARRIES AN IMPORT (`ReplayRecorder.finish`): every replay
+ *    without one is still written as format 2, byte for byte as it was.
+ * 4: an imported robot with PRACTICE TUNING (`ImportedRobot.tune`), which a format-3 build's coercer
+ *    drops, so it would re-simulate the untuned robot. Stamped only then; format 3 is unchanged.
  */
-export const REPLAY_FORMAT = 2;
+export const REPLAY_FORMAT = 4;
+
+/** what a container WITHOUT an imported robot is written as — the format before imports existed */
+export const REPLAY_FORMAT_BASE = 2;
 
 /** numbers per command entry, by container format. 1: [tick,dx,dy,rot,buttons] ·
  *  2: + [ld,rd] */
@@ -169,7 +180,9 @@ export class ReplayRecorder {
     const tracks: Record<number, CommandTrack> = {};
     for (const [id, t] of this.tracks) tracks[id] = t;
     return {
-      format: REPLAY_FORMAT,
+      // format 3 ONLY with an imported robot in the line-up; every other container is the format-2
+      // container it was before imports (see REPLAY_FORMAT)
+      format: setupsHaveTune(this.setups) ? REPLAY_FORMAT_TUNED : setupsHaveImported(this.setups) ? REPLAY_FORMAT_IMPORTED : REPLAY_FORMAT_BASE,
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
       patch: C.SIM_PATCH,

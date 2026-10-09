@@ -81,6 +81,34 @@ export interface RobotCommand {
    * that both halves of an alliance already know. Protocol bit 512 — the next one past `bbRamp`. Optional; absent reads false.
    */
   bbPass?: boolean;
+  /**
+   * DECODE, a flywheel built with SPEED PRESETS (`RobotSpec.flywheel.mode === 'presets'`): step to
+   * the next preset setpoint, wrapping (BIOBUZZ's fixed launcher runs one setpoint). EDGE-triggered and debounced like `driveMode`
+   * (`RobotState.flyPresetHeld`); ignored by every other build. Protocol bit 1024. Optional; absent
+   * reads false.
+   */
+  flyPreset?: boolean;
+}
+
+/**
+ * A FLYWHEEL WITH A SETPOINT (`src/sim/flywheel.ts`) — the speed half of a launcher that does not
+ * solve its own speed per shot. Absent on a spec = today's solved speed (`auto`).
+ *
+ *   • `fixed`   — one setpoint, `rpm[0]`, whatever the range.
+ *   • `presets` — up to three setpoints the driver steps through (`RobotCommand.flyPreset`).
+ *
+ * The artifact leaves at `FLY_EXIT_EFFICIENCY · π · wheelMm · rpm / 60` (in/s), where `rpm` is what
+ * the wheel is doing when the feeder runs, not the setpoint. `feedS` is the feeder's time per shot.
+ * Clamped in `coerceFlywheel`.
+ */
+export interface FlywheelSpec {
+  mode: 'fixed' | 'presets';
+  /** wheel setpoints, rpm: one for `fixed`, one to three for `presets` */
+  rpm: number[];
+  /** flywheel wheel diameter, mm */
+  wheelMm: number;
+  /** feeder time per shot, s */
+  feedS: number;
 }
 
 /** menu-configured driver assists */
@@ -91,7 +119,9 @@ export interface AssistConfig {
   autoFire: boolean;
 }
 
-export type IntakeStyle = 'sloped' | 'vector' | 'triangle';
+/** `none` is DECODE only: no intake, the human player loads the robot by hand in its LOADING
+ *  ZONE (G432). Chain Reaction and BIOBUZZ coerce it to `sloped`. */
+export type IntakeStyle = 'sloped' | 'vector' | 'triangle' | 'none';
 export type DrivetrainType = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'butterfly';
 
 export interface RobotSpec {
@@ -273,6 +303,139 @@ export interface RobotSpec {
    * clamp it to 18 (the RULE refuses at `startLegal`; clamping would make it true by construction).
    */
   stowHeightIn?: number;
+  /**
+   * IMPORTED ROBOT (`docs/robot-import-plan.md` §3.1): the measured geometry of a robot the
+   * player imported from CAD. Absent on every standard robot, and every sim branch that reads it
+   * runs only when it is present, so standard robots step byte-identically. An imported spec
+   * still carries the ordinary parametric fields (`length`/`width` = the hull's bounding box,
+   * `massLb`, `driveRpm`, the game's mechanism fields), so a reader that knows nothing about
+   * imports sees a legal rectangle robot. Sanitised by `coerceImported` (`src/sim/imported.ts`).
+   */
+  imported?: ImportedRobot;
+  /**
+   * DECODE: how the launcher is AIMED. Absent (or `'turret'`) is the turret every DECODE robot has
+   * always had; `'fixed'` is bolted to the chassis, firing along the chassis heading (an import:
+   * along `imported.mech.shooterYawDeg`), so the driver — or aim assist, while fire is held —
+   * turns the robot to aim. Only `'fixed'` is ever stored (`coerceSpec`).
+   */
+  launcher?: 'turret' | 'fixed';
+  /**
+   * DECODE: a FIXED HOOD, degrees above level (20..80). Absent = the adjustable hood that solves its
+   * own elevation per shot. BIOBUZZ keeps its hood on `bbMech.launcher.hoodDeg`.
+   */
+  hoodDeg?: number;
+  /**
+   * DECODE and BIOBUZZ: a flywheel run at a SETPOINT rather than at a speed solved per shot. Absent
+   * = solved (DECODE's `auto`). BIOBUZZ carries it only on the `fixed` launcher kind. See
+   * `FlywheelSpec`.
+   */
+  flywheel?: FlywheelSpec;
+}
+
+/**
+ * The sim descriptor of an imported robot. Robot-local inches, +x forward, +y left, origin at
+ * the wheelbase centre (the hull's bounding-box centre when wheels are unknown). Plain numbers
+ * only, no free text: it rides the roster, `matchStart` and replay setups like any spec field.
+ */
+export interface ImportedRobot {
+  v: 1;
+  /** library id, 16 lowercase hex chars. Names the mesh on the owner's device; never read by
+   *  the sim. */
+  id: string;
+  /** whole-robot footprint seen from above in the starting configuration: convex, CCW, 3..16
+   *  vertices, quantised to 1/64 in, bounding box within 18 × 18 in. */
+  hull: Vec2[];
+  /** top of the model above the floor, inches, (0, 18]. */
+  heightIn: number;
+  /** wheel contact points FL, FR, BL, BR, each inside the hull. Absent = the rectangle default. */
+  wheels?: Vec2[];
+  /** 3D only: up to 5 stacked convex prisms for the tall parts (z0 < z1 within [0, heightIn],
+   *  each hull ≤ 12 vertices). Absent = one prism of `hull` up to `heightIn`. */
+  bands?: ImportedBand[];
+  /** mechanism placements; each game reads the fields it knows. */
+  mech?: ImportedMech;
+  /** PRACTICE TUNING (`docs/area/robot-import.md`, "Practice tuning"): numbers the player sets to
+   *  make the robot behave like their real one. Read by the sim only beside an import, never in a
+   *  room (`Room.beginMatch` strips it), so it changes nothing ranked, recorded or shared. */
+  tune?: ImportTuning;
+}
+
+/**
+ * An imported robot's practice tuning. Every field is optional; an absent one is what the sim
+ * derives today. Ranges and steps: `IMPORT_TUNE` (`src/sim/imported.ts`), which `coerceImported`
+ * clamps and quantises to.
+ */
+export interface ImportTuning {
+  /** top drive speed, in/s */
+  topSpeed?: number;
+  /** drive acceleration, in/s² (the turn's follows it) */
+  accel?: number;
+  /** top turn rate, degrees/s */
+  turnRate?: number;
+  /** a FIXED launcher's aim assist turns the chassis no faster than this, degrees/s */
+  aimTurn?: number;
+  /** the shortest time between two shots, s (a turret's cadence; a setpoint wheel's feed) */
+  shotInterval?: number;
+  /** a setpoint flywheel's spin-up, rpm/s */
+  spinUp?: number;
+  /** the intake's time per element, as a multiple of what the sim derives */
+  intakeTime?: number;
+  /** a dumper's re-arm after a throw, s */
+  reload?: number;
+  /** a turret's top slew rate, degrees/s */
+  turretSlew?: number;
+  /** BIOBUZZ: the ramp's swing time, s */
+  rampDeployS?: number;
+}
+
+export interface ImportedBand {
+  z0: number;
+  z1: number;
+  hull: Vec2[];
+  /** where `hull` stands proud of the model at these heights (at most 8) */
+  cuts?: ImportedCut[];
+}
+
+/**
+ * A RECESS IN A BAND'S EDGE. Across `from..to` (the `ImportedMech.intakes` span convention:
+ * lateral for front/back, longitudinal for left/right, `from < to`) the model at the band's
+ * heights reaches no further out than `at` (robot-local x for front/back, y for left/right). A
+ * convex hull bridges the gap between two side rollers; a cut says how deep the gap really is.
+ */
+export interface ImportedCut {
+  edge: ImportedEdge;
+  from: number;
+  to: number;
+  at: number;
+}
+
+/** An edge of the hull's bounding box, as a robot-local direction. */
+export type ImportedEdge = 'front' | 'back' | 'left' | 'right';
+
+/**
+ * Mechanism placements on an imported robot, robot-local inches. POSITIONS only: WHICH edge an
+ * intake rides and which way a placer reaches stay the game's own mount fields (`intakeMount`,
+ * `shooterMount`, `bbMech.lift.mount`, `catalystMount`), and a span on an edge the mount does not
+ * use is ignored. Every point is inside the hull and every `z` in `[0, heightIn]`
+ * (`coerceImported`); each game clamps further when it READS (`src/sim/importedMech.ts`).
+ */
+export interface ImportedMech {
+  /** the launcher: a turret's AXIS, or a turretless launcher's release LIP centre. `z` is the
+   *  release height (a turret's at rest pitch). */
+  shooter?: { x: number; y: number; z: number };
+  /** a TURRETLESS launcher's facing, degrees CCW from robot forward, wrapped to (−180, 180] and
+   *  rounded to whole degrees; kept only beside `shooter`. DECODE's fixed launcher fires along it
+   *  (absent = forward); BIOBUZZ's fixed launcher reads it when present, else its mount edge. */
+  shooterYawDeg?: number;
+  /** BIOBUZZ double turret: the second (NECTAR) head, as `shooter`. */
+  shooter2?: { x: number; y: number; z: number };
+  /** intake mouths: which bounding-box edge, and the span along it (lateral coordinate for
+   *  front/back, longitudinal for left/right), `from < to`. At most one per edge, ordered
+   *  front, back, left, right. */
+  intakes?: { edge: ImportedEdge; from: number; to: number }[];
+  /** the BASE of the placer (BIOBUZZ Box Tube, Chain Reaction catalyst): it reaches out of the
+   *  hull from here along its mount's direction. `z` is for drawing only. */
+  place?: { x: number; y: number; z: number };
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
@@ -489,7 +652,7 @@ export interface RobotState {
   bbTurret2YawVel?: number;
   bbTurret2PitchVel?: number;
   /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
-   * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
+   * corner order [FL, FR, BL, BR] — `WHEEL_CORNERS`, so pod i is `wheelLocals(spec)[i]`. Each module has
    * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't
    * cancel — producing the real drift + yaw wobble when driving straight. The net
    * chassis motion is the forward-kinematics of the four modules. Unused by other
@@ -551,6 +714,18 @@ export interface RobotState {
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;
+  /**
+   * A SETPOINT FLYWHEEL's wheel speed right now, rpm (`src/sim/flywheel.ts`). Written ONLY for a
+   * build with `spec.flywheel`, so no other robot carries it on the wire or in its JSON. It ramps
+   * toward the setpoint, drops on every shot, and the feeder waits for it (`flyReady`).
+   */
+  flyRpm?: number;
+  /** a `presets` flywheel's selected setpoint index into `spec.flywheel.rpm`; absent reads 0. */
+  flyPreset?: number;
+  /** the `flyPreset` button's debounced edge latch (`debouncedPress`); presets builds only. */
+  flyPresetHeld?: boolean;
+  /** `world.time` the preset button went up while `flyPresetHeld` is still latched. */
+  flyPresetUpAt?: number;
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;
@@ -838,6 +1013,9 @@ export interface StartSel {
  * saved robots / start positions stay separate). Archived in `GameSettings.loadouts`. */
 export interface GameLoadout {
   spec: RobotSpec;
+  /** the most recent STANDARD robot this game had active — what ranked and record runs use while
+   *  the active robot is imported (`standardRobotFor`, `src/settings.ts`). Never an import. */
+  lastStandardSpec?: RobotSpec;
   savedRobots: RobotSpec[];
   startIndex: number;
   startPose?: StartPose | null;
@@ -856,6 +1034,21 @@ export interface PracticeSeat {
 /** partner, opponent 1, opponent 2 */
 export type PracticeSeats = [PracticeSeat, PracticeSeat, PracticeSeat];
 
+/** what the pace read-out compares against — see `GameSettings.pace` */
+export type PaceSource = 'off' | 'pb' | 'wr' | 'replay';
+
+/** a replay picked as the pace (`GameSettings.paceReplays`) */
+export interface PaceReplayRef {
+  /** the curve's store key (`src/ui/pace/store.ts`): `r:<replay id>` or `l:<local key>` */
+  key: string;
+  /** the server replay id, when it has one — what lets another device rebuild the curve */
+  replayId?: string;
+  /** whose score in that replay is the pace */
+  alliance: Alliance;
+  /** who and what, for Configure: "Saket · 212" */
+  label: string;
+}
+
 export interface GameSettings {
   /** which game the player has selected (DECODE / Chain Reaction). Drives spawn,
    * step, render, HUD, the builder, and the room/queue game key. Persists + syncs. */
@@ -863,6 +1056,13 @@ export interface GameSettings {
   mode: GameMode;
   alliance: Alliance;
   spec: RobotSpec;
+  /**
+   * The most recent STANDARD robot this game had active (per game, archived with the loadout).
+   * Ranked, rated challenges and record runs refuse an imported robot, so while `spec` is one they
+   * play this instead, and the swap picker preselects it. Absent until a standard robot has been
+   * active; never an imported spec (`coerceSettings` drops one that is).
+   */
+  lastStandardSpec?: RobotSpec;
   /** the player's saved robot library (up to MAX_SAVED_ROBOTS). `spec` is the
    * ACTIVE robot; loading a slot copies it into `spec`, saving copies `spec` in. */
   savedRobots: RobotSpec[];
@@ -980,6 +1180,18 @@ export interface GameSettings {
    *   graphs    + a frame-time and a ping sparkline
    */
   perfDisplay: PerfDisplay;
+  /**
+   * THE PACE READ-OUT: a +/- beside your score, against what another run had at the same point
+   * on the match clock (`src/ui/pace`). Solo practice and record runs only. Absent reads `off`,
+   * which is every blob written before it existed.
+   *   pb      your own best: the best record in the mode you are running, or in solo practice
+   *           your best practice run. Looked up again each match, so it follows a new best.
+   *   wr      the top of the record board for the mode (solo practice reads the solo board)
+   *   replay  one replay you picked (`paceReplays`, per game)
+   */
+  pace?: PaceSource;
+  /** the replay `pace: 'replay'` runs against, per game — a replay belongs to one game */
+  paceReplays?: Partial<Record<GameId, PaceReplayRef>>;
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;

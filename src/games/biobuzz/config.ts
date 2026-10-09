@@ -38,10 +38,11 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, DrivetrainType, RobotSpec, StartCat, Vec2, World } from '../../types';
+import type { Alliance, AssistConfig, DrivetrainType, FlywheelSpec, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { DRIVETRAIN_LIMITS, INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
 import { lengthLimits, widthLimits } from '../../sim/drivetrain';
+import { importPlaceExit, importPlacePoint } from '../../sim/importedMech';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
@@ -113,9 +114,10 @@ export const BB_HALF_Y = FIELD_HALF;
  * wide. BIOBUZZ draws its own grid from this and from `BB_TILE_SEAMS`; `C.TILE` (24) stays
  * DECODE's and Chain Reaction's, because their fields are still modelled on the nominal tile.
  *
- * The seams are NOT evenly spaced — a tile body is 24.312 in with its interlock tabs, and the
- * measured gaps run 23.176…23.986 — so anything DRAWING the grid uses `BB_TILE_SEAMS`, the seven
- * measured lines, and this constant is their mean, for the places that need one number.
+ * Anything DRAWING the grid uses `BB_TILE_SEAMS`: the two perimeter edges and the five tile
+ * JOINTS, evenly spaced at 23.502 (a 24.312-in tile body less one 0.810-in interlock), with the
+ * outer tiles cut straight to 23.581. This constant is the mean, for the places that need one
+ * number.
  */
 export const BB_TILE_PITCH = TILE_PITCH;
 export const BB_TILE_SEAMS = TILE_SEAMS;
@@ -534,6 +536,36 @@ export const BB_FLOWER_OUTER_R: readonly number[] = [
 ];
 export const BB_FLOWER_OUTER_MIN = 2.392;
 export const BB_FLOWER_OUTER_MAX = 3.113;
+
+/**
+ * THE MIDDLE AND TOP PLATES' OWN OUTLINES (in), about each plate's bore centre, in FLOWER 1's frame
+ * (the field side is +x, the wall side −x): the 2D convex hull of every `flower_0` vertex in the plate's
+ * z band (± 0.02) of the shipped `field.glb`, about that plate's own bore (`cadFlowerRings`; the middle
+ * one's sits 0.011 in off the top's). NOT the rectangle `fieldColliders`' `rect` bounds them by: the
+ * plates are close to octagons, 2.39 out from the bore and 2.97 along the wall but only 3.11 at 45°,
+ * where the rectangle's corner is 3.82 (owner, 2026-10-04, driving an imported goBILDA bot in at an
+ * angle: "I know i can get closer into the flower but it blocks me" — the box corner held it 0.84 in
+ * short). What a robot meets of a FLOWER from `SIM_PATCH` 7 (`sim3d/flowerTube.ts`,
+ * `buildFlowerSolids3d`). The RENDER lane re-measures the asset and pins these.
+ */
+export const BB_FLOWER_PLATE_OUTLINE: { readonly mid: readonly (readonly [number, number])[]; readonly top: readonly (readonly [number, number])[] } = {
+  mid: [
+    [-2.609, -1.025], [-2.333, -2.056], [-2.1, -2.304], [-1.807, -2.425], [-1.619, -2.486],
+    [-0.078, -2.961], [0.064, -2.973], [1.604, -2.486], [1.792, -2.425], [2.085, -2.304],
+    [2.317, -2.056], [2.393, -1.745], [2.393, 1.741], [2.38, 1.892], [2.317, 2.051],
+    [2.03, 2.295], [1.88, 2.376], [1.792, 2.421], [1.604, 2.482], [0.064, 2.968],
+    [-0.078, 2.956], [-1.619, 2.482], [-1.807, 2.421], [-1.922, 2.37], [-2.232, 2.191],
+    [-2.304, 2.034], [-2.407, 1.723], [-2.603, 1.032],
+  ],
+  top: [
+    [-2.385, -1.725], [-2.343, -1.854], [-2.213, -2.184], [-1.928, -2.356], [-1.796, -2.410],
+    [-1.608, -2.471], [-0.066, -2.947], [0.073, -2.958], [1.615, -2.471], [1.803, -2.410],
+    [1.935, -2.356], [2.170, -2.167], [2.379, -1.892], [2.392, -1.725], [2.392, 1.725],
+    [2.379, 1.891], [2.177, 2.174], [1.935, 2.355], [1.803, 2.410], [1.615, 2.471], [0.073, 2.958],
+    [-1.608, 2.471], [-1.796, 2.410], [-1.928, 2.355], [-2.213, 2.184], [-2.343, 1.854],
+    [-2.385, 1.725],
+  ],
+};
 
 /**
  * The flower's outer radius in the direction a mechanism approaches from — `theta` is the angle
@@ -1432,6 +1464,13 @@ export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
  * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
 export const BB_RAMP_DEPLOY_S = 0.3;
+/** the ramp's swing time for this robot: `BB_RAMP_DEPLOY_S`, or an import's practice tuning
+ *  (`ImportTuning.rampDeployS`). Every reader of the swing (the sim, the 3D jam guard, both
+ *  renderers) asks this, so the drawn ramp and the credited one stay one ramp. */
+export function bbRampDeployS(spec: RobotSpec): number {
+  const t = spec.imported?.tune?.rampDeployS;
+  return t !== undefined ? t : BB_RAMP_DEPLOY_S;
+}
 /** how deep a fixed body may press a SETTLED ramp vertically before it folds (in) — the 3D jam
  * guard in `elements3d.ts`'s `bbRampSwingStep3d`. Resting contact sits near `PHYS_ALLOWED_ERROR`
  * (0.01); the jam in replay 1dc6eb8f was 0.13 deep, the random-drive jams 0.38–0.45. */
@@ -1675,12 +1714,15 @@ export interface BbBoxTubeFrame {
  * on an edge and close to the diagonal at a corner.
  */
 export function bbBoxTubeFrame(
-  spec: Pick<RobotSpec, 'length' | 'width'>,
+  spec: Pick<RobotSpec, 'length' | 'width'> & Partial<Pick<RobotSpec, 'imported'>>,
   mount: BbMountPos,
   place: { x: number; y: number } | null,
 ): BbBoxTubeFrame {
   const pos: BbMountPos = mount === 'center' ? 'front' : mount;
-  const o = mountOrigin(spec, pos);
+  // an IMPORT's tower stands where the sim's placer ray leaves its HULL (`importPlaceExit` — the
+  // point `bbImportPlacePoint` reaches `BB_PLACE_REACH` beyond), not on its bounding box, whose
+  // corner cell a chamfered hull does not even contain
+  const o = spec.imported ? importPlaceExit(spec.imported, MOUNT_DIR[pos]) : mountOrigin(spec, pos);
   const d = MOUNT_DIR[pos];
   const corner = Math.abs(d.x) > 1e-9 && Math.abs(d.y) > 1e-9;
   const ins = corner ? BB_BOX_TUBE_CORNER_INSET : BB_BOX_TUBE_INSET;
@@ -1921,6 +1963,9 @@ export function bbTowerBoxRobot(frame: BbBoxTubeFrame, b: BbTowerBox): { x0: num
 export function bbLiftPlaceLocal(spec: RobotSpec): { x: number; y: number } | null {
   const lift = bbLiftOf(spec);
   if (!lift) return null;
+  // an IMPORT reaches out of its hull from the placed base — the SAME `importPlacePoint` the sim's
+  // `bbImportPlacePoint` calls, so the two cannot drift
+  if (spec.imported) return importPlacePoint(spec.imported, MOUNT_DIR[lift.mount], BB_PLACE_REACH);
   const d = MOUNT_DIR[lift.mount];
   const reach = bbIntakeReach(spec);
   const im = bbIntakeMountOf(spec);
@@ -1993,6 +2038,34 @@ export const BB_DUMP_APEX_ABOVE = 4;
 export const BB_HOOD_DEFAULT_DEG = 75;
 export const BB_HOOD_MIN_DEG = 70;
 export const BB_HOOD_MAX_DEG = 85;
+
+/**
+ * THE FIXED LAUNCHER (`bbMech.launcher.kind === 'fixed'`, 2026-10-02) — one flywheel head bolted to
+ * a chassis edge at one hood angle, run at a SETPOINT (`RobotSpec.flywheel`, `src/sim/flywheel.ts`).
+ * It is the turret's own head without the slew ring or the yaw motor, so it is DRAWN with the
+ * turret's dimension chain and RELEASES from the turret's muzzle at that pitch (`bbMuzzleLocal`),
+ * which keeps "one muzzle, two drawings" true for it too. Nothing is solved: the element flies the
+ * one arc the wheel and the hood throw, and it scores only from where that arc meets the cell.
+ *
+ * HOOD TRAVEL is the turret head's own pitch range above `BB_FIXED_HOOD_MIN_DEG` (below 30° no
+ * arc a kit wheel throws rises 45 in to the HIVE opening). The kit robot's guide angle is not
+ * published; `BB_FIXED_HOOD_DEFAULT_DEG` is MEASURED on the kit's CAD (2026-10-02): the pollen leaves
+ * the wheel at 57–61° and rides the curved guide plate on to its end, where its tangent is 68° ±3°
+ * (a bent sheet drawn in CAD, hence the spread). With the shared `FLY_EXIT_EFFICIENCY` the kit
+ * setpoint (2679 rpm, 96 mm) throws 212 in/s, and the FIXED lane measures the band it gives (robot
+ * centre to cell centre, on the mouth axis); the kit's own autonomous shoots from against the wall
+ * it starts at, and the band reaches the wall (41–46 in for the card, its back to the cell). Below ~2450 rpm no arc reaches the 53.4-in
+ * opening at all. (It was 77° APPROX before the measurement, a 26–46 in band.)
+ */
+export const BB_FIXED_HOOD_MIN_DEG = 30;
+export const BB_FIXED_HOOD_MAX_DEG = 80;
+export const BB_FIXED_HOOD_DEFAULT_DEG = 68;
+/** the kit launcher: one 96-mm wheel on a 1:1 motor at 1250 ticks/s (28 PPR ⇒ 2679 rpm). The feed
+ * is a continuous windmill whose rate is not published; 0.3 s an element is APPROX. */
+export const BB_FIXED_FLY_DEFAULT: FlywheelSpec = { mode: 'fixed', rpm: [2679], wheelMm: 96, feedS: 0.3 };
+/** BEFORE `SIM_PATCH` 4 (a replay recorded then): aim assist held a FIXED launcher still inside this
+ *  heading error (rad), turning by the dumper's P gain outside it */
+export const BB_FIXED_AIM_TOL_PRE4 = 0.04;
 
 /** how long a DUMPER takes to re-arm after a dump (s). APPROX — a tray swinging back down. It is
  * what stops a held fire button re-dumping on every capture. */
@@ -2904,6 +2977,9 @@ export const BB_MASS_TURRET2 = 3.5;
  * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
  * APPROX. */
 export const BB_MASS_DUMPER = 3.5;
+/** a FIXED launcher (lb): a turret's flywheel, hood, motor and plates with no slew ring and no yaw
+ * motor, plus its feeder. APPROX. */
+export const BB_MASS_FIXED = 3.5;
 /** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates, the
  * spool, the wrist servo and the claw. Offset lists its 2-stage Box Tube Slide Kit at about
  * 475 g (1.05 lb, 275 g of it moving); the wrist and claw take it to 1.5 (owner, 2026-09-24:
@@ -2937,7 +3013,7 @@ export function bbMassLimits(spec: RobotSpec): { min: number; max: number } {
   const raw =
     (BB_MASS_BASE[spec.drivetrain] ?? BB_MASS_BASE.mecanum) +
     edges * BB_MASS_SWEEPER_EDGE +
-    (launcher.kind === 'dumper' ? BB_MASS_DUMPER : BB_MASS_TURRET) +
+    (launcher.kind === 'dumper' ? BB_MASS_DUMPER : launcher.kind === 'fixed' ? BB_MASS_FIXED : BB_MASS_TURRET) +
     (launcher.kind === 'twinturret' ? BB_MASS_TURRET2 : 0) +
     (bbLiftOf(spec) ? BB_MASS_BOX_TUBE : 0);
   const max = DRIVETRAIN_LIMITS[spec.drivetrain]?.maxMass ?? DRIVETRAIN_LIMITS.mecanum.maxMass;
@@ -3376,6 +3452,37 @@ export const BB3_HIVE_CELL_WALL = 0.25;
  */
 export const BB3_TRAY_OUTER_SKIN = 0.5;
 
+/**
+ * THE HIVE SHED — what `groundRoll3d` (`sim3d/engineImpl.ts`) does with a loose element its
+ * narrow-hull vibration could not free from HIVE structure, instead of freezing it there.
+ *
+ * The case it was written for (found capturing the 3D reel, 2026-10-01): a POLLEN that lands on
+ * the tray's centre bar between the cells rolls down the up side's bar into the pivot and stops on
+ * the two `goal_pivot_bracket` plates, 1.07 in apart, against the damper holder. Two parallel
+ * edges under a 2.8-in ball are a CRADLE, stable sideways: to roll over one the centre has to rise
+ * ~0.11 in, which needs ~9 in/s, and the vibration kicks at 2–5. It gave up after
+ * `BB3_VIBE_GIVEUP_TICKS` and froze the ball on top of the HIVE for the rest of the match.
+ *
+ * `AFTER` is how many vibration kicks a HIVE perch gets before the hop (the general budget is
+ * `BB3_VIBE_GIVEUP_TICKS`, 30: each kick waits out `BB3_REST_TICKS` again, so 30 held a cradled
+ * ball ~290 ticks). `SPEED` is the horizontal hop (in/s) and `VZ` the lift (in/s) that clears
+ * the rail. `MAX` bounds the attempts per perch, after which the element
+ * freezes exactly as before: a true multi-hull cage has to lose eventually or `bbSettled` never
+ * closes (the reason `BB3_VIBE_GIVEUP_TICKS` exists). `REGION_X`/`_Y` is the HIVE frame's
+ * footprint (|x|, |y|, in) — a FIXED narrow hull is HIVE structure only inside it; a hull on a
+ * tray body always is. Gated on `SIM_PATCH` 5 (`hiveShedOn`).
+ */
+export const BB3_HIVE_SHED_AFTER = 4;
+export const BB3_HIVE_SHED_SPEED = 14;
+export const BB3_HIVE_SHED_VZ = 10;
+export const BB3_HIVE_SHED_MAX = 8;
+export const BB3_HIVE_SHED_REGION_X = 26;
+export const BB3_HIVE_SHED_REGION_Y = 22.5;
+/** element bottom height (in) above which a loose element inside the footprint is UP ON THE HIVE,
+ * where a contact with another loose element up there is not a support (`groundRoll3d`'s PAIR
+ * note). Above any legal robot (29, R105.A) and below the HIVE's lowest structure (30.652). */
+export const BB3_HIVE_SHED_MIN_Z = 30;
+
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
  * clears it (R105.A lets a robot stand 29 in). */
 export const BB3_WALL_H = 40;
@@ -3619,7 +3726,7 @@ export const BB3_DUMPER_WALL_T = 0.14;
  */
 export interface BbMechEnvelope {
   /** the mechanism's own name, for the smoke lanes' own reporting */
-  what: 'turret' | 'nectarTurret' | 'dumper' | 'liftBase' | 'liftColumn';
+  what: 'turret' | 'nectarTurret' | 'dumper' | 'fixedShooter' | 'liftBase' | 'liftColumn';
   cx: number;
   cy: number;
   /** a cylinder of this radius about `(cx, cy)`, or `undefined` for the box below */
@@ -3665,6 +3772,9 @@ export const BB3_LIFT_EDGE_R = 0.2;
  * never drawn.
  */
 export function bbMechEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelope[] {
+  // an IMPORTED robot's turret, dumper and tower are in its CAD height bands already
+  // (`sim3d/bodies.ts` `import3dShapes`) — a second, archetype-shaped solid would double them
+  if (spec.imported) return [];
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const cap = (z: number): number => Math.min(z, heightIn);
   const out: BbMechEnvelope[] = [];
@@ -3691,7 +3801,9 @@ export function bbMechEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelo
     return out;
   }
   const t0 = turretLocal(spec, launcher.mount);
-  out.push({ what: 'turret', cx: t0.x, cy: t0.y, r: BB3_TURRET_R, top: cap(BB3_TURRET_TOP_Z) });
+  // a FIXED launcher is the turret's head without its ring, at its edge cell (`turretLocal`), so
+  // the turret's own cylinder bounds it at any hood angle
+  out.push({ what: launcher.kind === 'fixed' ? 'fixedShooter' : 'turret', cx: t0.x, cy: t0.y, r: BB3_TURRET_R, top: cap(BB3_TURRET_TOP_Z) });
   if (launcher.kind === 'twinturret') {
     const m2 = launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined);
     const t1 = turretLocal(spec, m2);

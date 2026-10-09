@@ -23,6 +23,7 @@
  * breaks the day after it is written. Route by what a chunk actually contains instead:
  *   main       — the entry chunk (`index-*.js` at the top of `dist/assets`)
  *   hostWorker — the LAN host worker (`hostWorker-*.js`, its own Vite worker entry)
+ *   paceWorker — the pace worker (`paceWorker-*.js`, `src/ui/pace/`): fetched only while a pace is on
  *   physics3d  — a chunk (or wasm asset) whose bytes carry a rapier3d marker, OR one carrying a
  *                BIOBUZZ `sim3d/` marker: since the implementation moved behind
  *                `initPhysics3d()` (`sim3d/impl.ts`), the 3D physics arrives as THREE lazy
@@ -61,6 +62,40 @@
  *                content scans. ⚠️ THIS BUCKET IS WHY THE SPLIT HOLDS: without a route of its
  *                own the console's growth would land in `other`, whose near-zero baseline is
  *                meant to catch a chunk nobody meant to create.
+ *   postfx     — BIOBUZZ 3D's POST-PROCESSING (`renderPost-*.js`, 2026-09-27): ambient occlusion and
+ *                bloom, the Extreme tier's two effects, reached only through `renderScene.ts`'s
+ *                `import('./renderPost')` and fetched only when one of them is on. It imports
+ *                three.js from the scene chunk rather than carrying it, so it has none of the
+ *                `scene` markers and would otherwise land in `other`. Matched by FILENAME.
+ *   importer   — THE ROBOT IMPORTER ENGINE (`docs/robot-import-plan.md` §4, `docs/area/robot-import.md`):
+ *                `importerEngine-*.js`, the lazy three.js zone `src/robotImport/engine/` behind
+ *                `engineLoader.ts`'s one dynamic import — the loaders (glTF, STL, OBJ+MTL, 3MF with
+ *                fflate, PLY), meshopt's simplifier with its inlined wasm, GLTFExporter, the bake and
+ *                the preview. Matched by FILENAME. ⚠️ IT IMPORTS three.js, and so does the scene, so
+ *                once both are reachable Rollup HOISTS three (with the GLTFLoader, the meshopt decoder
+ *                and BufferGeometryUtils they share) into a shared chunk. That chunk keeps the
+ *                `WebGLRenderer` marker and is billed to `scene` below — a 3D player downloads it
+ *                either way — which is why `renderScene-*.js` is routed by FILENAME too: without
+ *                three inside it, its own bytes carry no `scene` marker.
+ *   step       — STEP support: `stepWorker-*.js` (the worker, with occt-import-js's 97 KB glue
+ *                inlined) and `occt-import-js-*.wasm` (OpenCascade, ~7.6 MB raw). Fetched only when
+ *                a STEP file is dropped. Matched by FILENAME.
+ *   importworker — the importer's two WORKERS (lane 9): `importWorker-*.js` (parse, weld, simplify
+ *                off the main thread), `measureWorker-*.js` (a measurement's orientation half) and
+ *                the import worker's lazy `meshoptDecoder-*.js` and `meshoptEncoder-*.js` (the bake's
+ *                stored-mesh writer, fetched on a Save). Fetched when a file is dropped on the
+ *                importer. Matched by FILENAME.
+ *   library    — the device ROBOT LIBRARY (`library-*.js`, `src/robotImport/library.ts`), reached
+ *                by a dynamic import from the renderers' asset seam the first time an imported
+ *                robot is drawn, and from the visuals relay's client the first time it reads an
+ *                asset the owner uploads. Matched by FILENAME. ⚠️ A STATIC import of it from any
+ *                main-side file folds it into `main` and this route reads `absent`: that is the
+ *                symptom to look for.
+ *   relay      — the VISUALS RELAY's VALIDATORS (`visualCheck-*.js`, `src/net/visualCheck.ts`): the PNG
+ *                and GLB structure checks, reached by `import()` from `importVisualsClient.ts` the
+ *                first time a look is uploaded or received. The room and the LAN host worker import
+ *                the same file statically (their bundles carry it), so only the client's copy is lazy.
+ *                Matched by FILENAME.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -75,7 +110,9 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
 
-const DIST = 'dist';
+// `BUNDLE_DIST` points the audit at another build: `scripts/robot-import/bundle.mjs` builds one
+// with the importer reachable, before the editor that will reach it exists.
+const DIST = process.env.BUNDLE_DIST || 'dist';
 const ASSETS = join(DIST, 'assets');
 
 if (!existsSync(ASSETS)) {
@@ -133,6 +170,10 @@ function routeFor(file, buf) {
   const base = file;
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
+  // THE PACE WORKER (`src/ui/pace/paceWorker.ts`): re-simulates a reference replay into the
+  // pace curve. It carries the whole server-safe sim, like the LAN host worker, and is fetched
+  // only when a pace is on and its curve is not already stored on the device.
+  if (/^paceWorker-[^/]*\.js$/.test(base)) return 'paceWorker';
   // the Embedded App SDK, reached only through `src/net/discordSdk.ts` (a facade that
   // exists precisely so this chunk is NOT named `index-*` — the package's own entry is
   // index.js, and without the facade it was billed against main's baseline).
@@ -151,6 +192,57 @@ function routeFor(file, buf) {
   // because the console imports the SEASONS registry and the standing model and a future
   // marker could otherwise claim it.
   if (/^Admin[A-Za-z]*-[^/]*\.js$/.test(base)) return 'admin';
+  // THE COMPETITION PAGES (0059), by FILENAME like the console: `App.tsx` lazy-loads
+  // `src/ui/Competitions.tsx` (the list, a competition's page, its editor and the join screen),
+  // and Vite names the chunk after it. The call bar and its one read are in main on purpose.
+  if (/^Competitions-[^/]*\.js$/.test(base)) return 'competitions';
+  // The post-processing chunk (AO + bloom), by FILENAME: Vite names it after `renderPost.ts`, and
+  // it imports three.js from `renderScene-*.js` instead of containing it, so no content marker
+  // here would recognise it. If a future chunking ever merged it into the scene chunk, the name
+  // would change and the `scene` marker below would claim it, which is the right answer.
+  if (/^renderPost-[^/]*\.js$/.test(base)) return 'postfx';
+  // The physical-materials chunk (the `materials` row), by FILENAME for the same reason: Vite
+  // names it after `renderSurfaces.ts`, its `renderSurface*.ts` helpers are merged into it (only
+  // it imports them), and it imports three.js from `renderScene-*.js` rather than containing it.
+  if (/^renderSurfaces-[^/]*\.js$/.test(base)) return 'surfaces';
+  // THE ROBOT IMPORTER, by FILENAME (see the route table). `engineLoader-*.js` exists only in the
+  // measurement build, where the loader is an entry of its own; in the app it is inlined.
+  // `geometry-*.js` is the measurement code (`src/robotImport/geometry.ts`) once the editor and the
+  // engine both import it: Rollup splits it into a chunk the two share, fetched with the engine.
+  // `fflate.module-*.js` is three's fflate, split out because the engine (the zip reader) and the
+  // main build's lazy `threeMf-*.js` share it: fetched with the engine
+  if (/^(importerEngine|engineLoader|geometry|fflate\.module)-[^/]*\.js$/.test(base)) return 'importer';
+  // `occtWorker-*.js` is the occt instance the STEP worker spawns (one per piece reader): Vite
+  // builds a worker made inside a worker as its own bundle too
+  if (/^(stepWorker|stepReader|occtWorker)-[^/]*\.js$/.test(base) || /^occt-import-js[^/]*\.wasm$/.test(base)) return 'step';
+  // THE RELAY'S VALIDATORS, by FILENAME: `importVisualsClient.ts` reaches them by `import()`, so a
+  // client that never uploads or receives an imported robot's look never fetches them
+  if (/^visualCheck-[^/]*\.js$/.test(base)) return 'relay';
+  // THE IMPORTER'S WORKERS (lane 9), by FILENAME: Vite builds each `new Worker(new URL(…))` entry
+  // as its own bundle, named after it. `meshoptDecoder-*.js` is the import worker's lazy chunk for a
+  // meshopt-compressed glTF, behind a facade so it is not named like the main build's shared three
+  // chunk (`meshopt_decoder.module-*.js`, routed `scene` by its marker).
+  // `threeMf-*.js` (three's 3MF loader, fflate's unzip and `miniDom.ts`) and `zip-*.js` (the zip
+  // reader) are the import worker's lazy chunks for a 3MF or a zip; the engine's main-thread fallback
+  // reaches `threeMf.ts` by the same `import()`, so the main build has one too, billed here as well.
+  // `meshoptEncoder-*.js` is meshoptimizer's encoder, which the bake's stored-mesh writer
+  // (`storedGlb.ts`) fetches on a Save; the worker and the engine's fallback share the one file
+  // `lite-*.js` is the worker's lazy chunk for a room's lighter mesh (`lite.ts` with GLTFExporter)
+  if (/^(importWorker|measureWorker|meshoptDecoder|meshoptEncoder|threeMf|zip|lite)-[^/]*\.js$/.test(base)) return 'importworker';
+  // THE ROBOT LIBRARY (`src/robotImport/library.ts`, IndexedDB), by FILENAME: the renderers' asset
+  // seam (`src/render/importedAssets.ts`) reaches it with a dynamic `import()` the first time an
+  // imported robot is drawn, so it is its own small chunk rather than a cost in `main`.
+  if (/^library-[^/]*\.js$/.test(base)) return 'library';
+  // THE IMPORTER'S UI (lane 4): the editor route, and what the robot page reaches by `import()` on a
+  // click (the share-file reader and writer, the export, the library dialogs). By FILENAME, before
+  // the content scans: none of them carries three.js, so they would otherwise land in `other`.
+  if (/^(ImportEditor|shareFile|draftStore|LibraryDialogs|exportRobot)-[^/]*\.js$/.test(base)) return 'importerui';
+  // Vite's preload helper is split out only when a SECOND entry shares it (the measurement
+  // build); in the app it is part of the entry chunk, so it is billed there
+  if (/^preload-helper-[^/]*\.js$/.test(base)) return 'main';
+  // the scene's own chunk, by FILENAME: once three.js is hoisted into a chunk shared with the
+  // importer, `renderScene-*.js` no longer carries the `WebGLRenderer` marker itself
+  if (/^renderScene-[^/]*\.js$/.test(base)) return 'scene';
   // filename-first for a standalone `.wasm` asset (cheap, and a real one would be named after
   // its source module, e.g. `rapier_wasm3d_bg-<hash>.wasm`), then a content scan for both .js
   // and .wasm alike — content is what actually decided this in the measured build, where the
@@ -340,11 +432,51 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               which had crept to within 0.18 KB of the tolerance; called out here, not folded in
  *               silently.
  *
+ * ── RE-MEASURED 2026-10-01, the robot import feature branch (bundle trim) ────────────────────
+ *   Built the same hour, same machine: the alpha base it forked from (3834b2a1) against the branch
+ *   with its lanes merged, and the main chunk taken apart by sourcemap, file by file.
+ *   main        1013.97 KB — RAISED from 984.28. The branch BUILT 1021.60 against alpha's 989.17
+ *               (+32.43). Three things that did not belong in the entry chunk moved out first, −7.63:
+ *               `robotImport/library.ts` (IndexedDB: the visuals relay's client imported it
+ *               statically, which is why its route read `absent`), the relay's PNG/GLB validators
+ *               (`net/visualCheck.ts`, ~3.3 KB, fetched on the first look) and the three games'
+ *               placement checks (`games/importMechChecks.ts`, ~2.6 KB, in the editor's chunk now).
+ *               What is left is +24.84 over alpha and is code a match or the robot page runs for an
+ *               imported robot, none of it lazy-able: the footprint polygon and mouth-carve sim
+ *               (`sim/imported.ts`, `importedMech.ts`: 5.3, run by prediction every tick), the 2D
+ *               sprite and asset seam, the two games' sprite and preview branches, `FootprintSvg`
+ *               (5.7), each game's `importMech.ts` (1.0), the robot page's row, panel and notices
+ *               (4.3), the sim/net plumbing (physics,
+ *               robot, spawn, field, mounts, the spec admission and the replay format: 3.4), the
+ *               visuals relay client (2.1) with its wire constants and bridge (0.9), and the app's
+ *               route, test-drive and lobby wiring (2.2). The other +4.89 of the distance from the
+ *               old 984.28 is alpha's own drift since 2026-09-27 (989.17), called out, not folded in.
+ *   hostWorker  797.84 KB — RAISED from 778.01. Alpha base 781.68 (+3.67 drift); the branch is +16.16:
+ *               a LAN host runs a `Room`, and a Room steps imported robots (`sim/imported.ts` and
+ *               `importedMech.ts`: 5.4) and relays their look (`server/importVisuals.ts` 2.3 and the
+ *               validators 2.8, which the room runs synchronously on the last frame, so they cannot
+ *               be lazy there as they are in the client). Only a LAN host downloads this worker.
+ *   scene       231.54 KB — RAISED from 226.59 (alpha base 226.61): +4.93 = `renderImported.ts` (+2.86,
+ *               the imported robot's 3D draw) and +1.98 from three.js now living in a chunk the
+ *               importer and the scene share, so the same bytes compress as two files.
+ *   relay        3.35 KB — NEW, `visualCheck-*.js` (see the route table).
+ *   library      2.26 KB — was 1.85, measured before the relay client reached it: the lite-mesh
+ *               cache reads (`meshLiteFor`, `putMeshLite`) are in the one shared chunk now.
+ *   importerui  24.18 KB — was 21.55 (+2.63): the placement checks and their shared helpers, which
+ *               moved here from `main`.
+ *   physics3d   1144.96 KB — NOT raised: alpha's own base already measures 1143.47 against the 1125.06
+ *               below (+1.49 is the branch), inside the 2% tolerance either way.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 984.28 * 1000 },
+  // 2026-10-08: 1013.97 -> 1034.49, RAISED on purpose and measured, not crept into: alpha's own
+  // base (c52b145a) already measures 1030.32 (+16.35 of drift on alpha, inside the 2% tolerance),
+  // and the pace line adds +4.17 — the score-bar tag, the Pace setting, the replay viewer's Use as
+  // pace, `usePace` and the resolver/curve store it calls, and the live curve solo practice records.
+  // The re-simulation itself is the lazy `paceWorker` route, not main.
+  main: { gzip: 1034.49 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
@@ -353,8 +485,22 @@ const BASELINE = {
   // tab, and a custom room now plays Zenith autos (docs/area/autos.md), so the room statically
   // imports the auto seat and with it Zenith's planner and follower (the `autos` chunk's content,
   // 55.75 KB). Only a player HOSTING a LAN room downloads this worker; nobody else pays for it.
-  hostWorker: { gzip: 778.01 * 1000 },
-  physics3d: { gzip: 1125.06 * 1000 },
+  // 2026-10-01: 778.01 -> 797.84 (+19.83), MEASURED: the imported robot's sim and the visuals relay,
+  // which a LAN host's Room runs (see the RE-MEASURED entry above). Alpha's own drift was +3.67 of it.
+  hostWorker: { gzip: 797.84 * 1000 },
+  // 2026-10-07: NEW, MEASURED. `paceWorker-*.js` (see the route table): the server-safe sim and
+  // Rapier 2D, the replay player and the curve. The same weight as the LAN host's sim, and like it
+  // fetched only by somebody who uses it: a player with a pace on whose curve is not yet stored.
+  paceWorker: { gzip: 725.11 * 1000 },
+  // 2026-10-04: 1125.06 -> 1147.60 (+22.54), MEASURED. 22.26 of it was already on alpha
+  // (e5c3f6a8 builds 1147.32, 0.24 under the tolerance edge); the side-roller import fix
+  // (`SIM_PATCH` 6: `bbImportClipReach`, the patch flag threaded through the 3D compound) is the
+  // last 0.28, which crossed it.
+  // 2026-10-07: 1147.60 -> 1177.08 (+29.48), MEASURED. +29.17 is the PACE WORKER's own copy of the 3D
+  // implementation (`impl-*.js`, byte-identical in size to the LAN host worker's): a worker bundle
+  // code-splits on its own, so it carries its own chunk. Fetched only to pace against a 3D replay.
+  // The other +0.31 is alpha's drift.
+  physics3d: { gzip: 1177.08 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
   // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
   // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a
@@ -409,7 +555,39 @@ const BASELINE = {
   // bar, the deck arrow, the ribbed hazard bar, one emissive material), the tube's smoothstep ease
   // and yaw/pitch/extension slew, and the rim-aim backoff. Nothing new is imported into the chunk;
   // the route list is unchanged. 29 KB of ceiling left.
-  scene: { gzip: 221.06 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-09-27, THE EXTREME TIER: measured at 223.86, under the 4.42 KB tolerance, so the number
+  // is NOT moved; recorded for the next pass that crosses it. Main at 023dc75e, built the same
+  // hour with no change, measured 222.62, so +1.56 of the overhang predates this and +1.24 is the
+  // tier: the lazy loader for `renderPost` (which carries the passes themselves, see `postfx`),
+  // the three.js core classes only those passes use (Rollup keeps three's own module in this
+  // chunk, so they are emitted here), the emissive and panel-cap wiring, and the preview clamp.
+  //
+  // 2026-09-27, PHYSICAL MATERIALS: measured at 224.92, +1.06 over the 223.86 above and still under
+  // the 4.42 KB tolerance (225.48), so the number is NOT moved; recorded, and the next pass will
+  // cross it. The +1.06 is the two scenes' wiring to the lazy `surfaces` chunk — `syncSurfaces`,
+  // the drop path, the probe-capture trigger and the raise/lower around the scene pass in
+  // `renderScene.ts`, the robots-only twin of it in `renderPreview.ts` — plus the three.js core
+  // classes only that chunk uses (`CubeCamera`, `WebGLCubeRenderTarget`, `DataTexture`), which
+  // Rollup emits here with the rest of three. The shaders, the finish table and the generators are
+  // in `surfaces`.
+  //
+  // 2026-09-27, THE ROBOT/FIELD/VENUE APPLIERS: measured at 225.14, +0.22 over the 224.92 above
+  // and still under the 4.42 KB tolerance (225.48), so the number is NOT moved. The appliers
+  // themselves are counted in `surfaces`, below; what lands here is the wiring `renderScene.ts`
+  // and `renderPreview.ts` do around them — the robot shadow row (`setRobotShadows`),
+  // `robotsChanged()`'s identity check replacing the old child-count one, and the probe recapture
+  // trigger.
+  //
+  // 2026-09-28, TILE JOINTS AND ROBOT OVERLAPS: 225.14 -> 226.59 (+1.45), which crossed the
+  // tolerance, so the baseline moves to it. What was added: the dovetail seam and tile outlines
+  // (`renderTiles.ts`), and in `renderRobots.ts` the intake-arm keep-outs, the butterfly traction
+  // placement, the top-cap and end-bar pieces and the measured turret rest pose (`restTurretHeads`).
+  //
+  // 2026-10-01, THE IMPORTED ROBOT: 226.59 -> 231.54 (+4.95), MEASURED. `renderImported.ts` (+2.86) and
+  // three.js moving into a chunk the importer shares (+1.98): see the RE-MEASURED entry above. 18 KB of
+  // ceiling left.
+  scene: { gzip: 231.54 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:
@@ -418,7 +596,26 @@ const BASELINE = {
   // which would have cost this route nothing and the PLAYER 13 MB. The PAINTING lives in
   // `scene/renderEnvironment.ts` and lands in the `scene` route, which did not move (216.61 ->
   // 216.60): a few hundred bytes of canvas calls against a 217 KB chunk.
+  //
+  // 2026-09-27, THE EXTREME TIER: measured at 6.68, still inside the tolerance, number not moved.
+  // Main at 023dc75e measured 6.52, so +0.16 is this pass (the Extreme tile, the AO and bloom rows,
+  // the Max shadow tile) and 2.51 was already over the 4.01 before it.
   graphics: { gzip: 4.01 * 1000 },
+  // 2026-09-27: NEW. `renderPost-*.js`, the post-processing chunk: three's GTAO pass (with its
+  // shaders and the simplex noise it seeds from) and UnrealBloom, plus `renderPost.ts`'s own
+  // subclass, high-pass shader and ping target, measured on the build that introduced it. Lazy:
+  // fetched only when ambient occlusion or bloom is on, which is the Extreme column and any Custom
+  // that turns one on. SMAA is deliberately not in it (its pass alone is 38 KB of lookup
+  // textures; `GFX_NOT_OFFERED`).
+  postfx: { gzip: 12.3 * 1000 },
+  // 2026-09-27: NEW. `renderSurfaces-*.js`, the physical-materials chunk, measured on the build
+  // that introduced it: the finish table (`graphics/finishes.ts`, 38 entries, inlined here because
+  // only this chunk reads it), the surface kit (procedural detail generators, the one shader patch,
+  // the twin swap), the room probe with its exposure and white balance, and the field, robot and
+  // venue appliers (the GLSL strings are most of the field's share). Lazy: fetched only when the
+  // `materials` row is `physical` (Extreme, or a Custom that turns it on); a 2D player and a
+  // standard-materials 3D player pay nothing.
+  surfaces: { gzip: 20.74 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.
@@ -438,6 +635,118 @@ const BASELINE = {
   // scope controls, and the analytics page's sponsor report and imported-history section. Admin
   // only, so no player downloads it.
   admin: { gzip: 29.75 * 1000 },
+  // 2026-10-04: NEW, the competition pages (0059), MEASURED on the build that introduced them:
+  // the list, a competition's page and its tabs (rankings, matches, the bracket, alliance
+  // selection, the organizer's desk), the editor, the join screen, the pure rankings/selection/
+  // bracket modules they render from, and the competition client. Lazy, so a player who never
+  // opens Competitions downloads none of it; what main carries is the call bar and its one read.
+  // 2026-10-04: 20.20 -> 26.34, raised on purpose: ranking points per the Competition Manual
+  // (`manual.ts` tables, the card/DQ pass, the new copy, the RP columns, the desk's ranking form
+  // and the editor's scheme section). Still lazy; no `manual-*.js` chunk of its own.
+  competitions: { gzip: 26.34 * 1000 },
+  // 2026-10-01: NEW, the robot importer (lane 3 of `docs/robot-import-plan.md`). MEASURED with
+  // `npm run bundleaudit:importer` (the app plus `engineLoader.ts` as an entry, because no screen
+  // imports the loader yet; a plain production build reports both routes absent). The engine
+  // chunk is 61.61 (loaders for six formats, meshopt's simplifier with its inlined wasm,
+  // GLTFExporter, OrbitControls, the bake and the preview) plus the 0.27 loader.
+  // What it does to `scene`: three.js, GLTFLoader, the meshopt decoder and BufferGeometryUtils
+  // move into a chunk the two zones share (178.86, routed `scene` by its marker) and
+  // `renderScene-*.js` drops to 49.67, so the route measures 228.53 against 226.55 without the
+  // importer: +1.98 of import/export glue and two separately compressed files, inside tolerance.
+  // 2026-10-01 (lane 4, with lanes 2, 6 and 7 merged): 62.81 = `importerEngine-*.js` 54.57 + the
+  // shared `geometry-*.js` 8.24 (the measurement code, which the editor imports too). The feature
+  // branch alone measured 61.75 with geometry inside the engine chunk; the +1.06 is the preview's
+  // camera presets and collision layer.
+  // 2026-10-01 (lane 9, importer performance): 62.82 -> 67.06, raised on purpose. The engine now
+  // drives two workers (`importSession.ts`, `measureSession.ts` and their protocols, +2.6) and keeps
+  // the main-thread fallback they replace (`parse.ts`, with the streamed STL reader, +1.2); the
+  // measurement's split into an orientation half and a finish half is +0.2 in `geometry-*.js`.
+  // 2026-10-02 (real CAD): 67.06 -> 69.10, raised on purpose. `importerEngine-*.js` 56.42 (the zip
+  // directory reader and the zip/STEP routing, the glTF merge as it reads; three's 3MF loader left
+  // for the lazy `threeMf-*.js`, billed to `importworker`), `geometry-*.js` 9.61 (+1.1: front
+  // detection) and `fflate.module-*.js` 3.07, three's fflate, now split out because the lazy 3MF
+  // chunk shares it (it was inside the engine chunk before).
+  // 2026-10-02 (moving parts): 69.10 -> 76.94, raised on purpose. `geometry-*.js` 13.62 (+4.0:
+  // `motion.ts`, the round-part fit, the wheel and axle finders and the fold planner, which the
+  // editor's picking reads too) and `importerEngine-*.js` 60.25 (+3.8: the preview's picking, tints
+  // and Play loop, the stored scene's export and read-back, the lighter mesh keeping its nodes).
+  // 2026-10-03 (compressed stored mesh): 76.94 -> 79.85, raised on purpose. `importerEngine-*.js`
+  // 60.31 -> 62.49 against ede417c4 built the same minute: the stored-mesh writer (`storedGlb.ts`,
+  // quantised attributes and the meshopt container) and `liteMesh` re-writing a compressed mesh as
+  // float for the relay. The encoder itself is lazy (`meshoptEncoder-*.js`, billed to `importworker`).
+  // 2026-10-03 (moving parts, round two): 79.85 -> 84.28, raised on purpose. `geometry-*.js` 16.82
+  // (+2.6: `motion.ts`'s flywheel, turret and deployed-part finders, upright side rollers, the wheel's
+  // turns-with rules, the generic spin / swing / slide joints and their gearing) and
+  // `importerEngine-*.js` 64.39 (+1.9: `splitLumps`, the preview playing joints and gearing).
+  // 2026-10-04 (FLOWER plate bands and cuts): 84.28 -> 89.72, raised on purpose. HEAD before it
+  // (14f373dd) already measured 88.24, inside tolerance; `geometry-*.js` +1.5: `computeBands`'s own
+  // plate band and `bandCuts`, which measures where each band's hull stands proud of the model.
+  // 2026-10-04 (moving parts, round four: Offset Robotics' concept robot): 89.72 -> 95.54, raised on
+  // purpose. HEAD before it (41396be9) measured 91.44, inside tolerance; `geometry-*.js` 23.04 -> 27.14
+  // (+4.1: `motion.ts`'s surgical-tubing spokes and stars, the staged and transfer rollers, what a
+  // wheel's shaft carries, the gears a wheel drives, the wheel click's own wheel; `geometry.ts`'s
+  // thin floor slab).
+  importer: { gzip: 95.54 * 1000 },
+  // 2026-10-01: NEW (lane 9). `importWorker-*.js` 104.06 (three.js core, the GLB/glTF, STL, OBJ+MTL
+  // and PLY loaders, meshopt's simplifier, the weld and the crease: the parse-to-prepared pipeline
+  // that used to block the main thread for seconds; and GLTFExporter for the bake's mesh half),
+  // `measureWorker-*.js` 6.50 (`geometry.ts`: the orientation half of a measurement) and
+  // `meshoptDecoder-*.js` 7.26 (fetched only for a meshopt-compressed glTF). Fetched when a file is
+  // dropped on the importer or a robot is saved, never otherwise.
+  // 2026-10-02 (real CAD): 117.82 -> 139.68, raised on purpose. `importWorker-*.js` 107.31 (+3.25: the
+  // glTF merge as it reads, the consuming simplification, zip requests) and three LAZY chunks it adds:
+  // `threeMf-*.js` 7.96 (three's 3MF loader, fflate's unzip and `miniDom.ts`: 3MF moved off the main
+  // thread, fetched only for a 3MF), the main build's copy of it for the no-Worker fallback 7.91, and
+  // `zip-*.js` 1.56 (fetched only for a zip). A GLB or STL import fetches none of the three.
+  // 2026-10-03 (compressed stored mesh): 139.68 -> 140.34 (ede417c4 measured 141.82 the same minute).
+  // NEW `meshoptEncoder-*.js` 8.13, meshoptimizer's encoder with its inlined wasm, fetched on a Save
+  // by the bake's writer; one file, since the worker's copy and the engine fallback's are the same
+  // bytes. `importWorker-*.js` 107.83 -> 99.66: the bake writes with the encoder now, so GLTFExporter
+  // left the worker's main chunk. Then 140.34 -> 154.05: NEW `lite-*.js` 12.26, `liteMesh` and the
+  // float writer (`floatGlb.ts`, GLTFExporter), lazy in the worker and fetched only when a room asks
+  // for the lighter mesh. It ran on the main thread, 0.3 s from the old 69k float mesh and 0.8 s
+  // from a 250k one (Node), which froze the lobby the first time a room asked.
+  // 2026-10-04 (FLOWER plate bands and cuts): 154.05 -> 159.18, raised on purpose. HEAD before it
+  // measured 157.80; `measureWorker-*.js` +1.4, the same `computeBands` / `bandCuts` code.
+  importworker: { gzip: 159.18 * 1000 },
+  // 2026-10-01: NEW. `occt-import-js-*.wasm` 3110.91 (OpenCascade, 7.6 MB raw), `stepWorker-*.js`
+  // 21.95 (the worker with occt's glue) and `stepReader-*.js` 0.42. Fetched only when a STEP file is
+  // dropped; every other import, and every player who never imports a robot, pays nothing.
+  // 2026-10-02 (real CAD): 3133.28 -> 3144.41. occt's glue moved into `occtWorker-*.js` 22.02 (one per
+  // piece reader, spawned by the STEP worker); `stepWorker-*.js` 10.72 is now the file reader, the
+  // zip inflater, the STEP splitter and the pool; `stepReader-*.js` 0.76.
+  step: { gzip: 3144.41 * 1000 },
+  // 2026-10-01: NEW (robot import, rendering lane). `library-*.js` 1.85: the device library behind
+  // `importedAssets`' dynamic import; the rest of that lane is +5.60 in `main` (the 2D sprites'
+  // import branches, the asset seam, FootprintSvg) and +2.86 in `scene` (`renderImported.ts`),
+  // both inside tolerance against the robot-import branch measured the same minute.
+  // 2026-10-01: 1.85 -> 2.26: the visuals relay's client reads it too, so `meshLiteFor` and `putMeshLite`
+  // are in the shared chunk.
+  library: { gzip: 2.26 * 1000 },
+  // 2026-10-01: NEW. `visualCheck-*.js`, the relay's PNG and GLB validators, behind `importVisualsClient.ts`'s
+  // dynamic import (prefetched when a look is asked for or an upload starts). They were in `main` (~3.3 KB
+  // of the entry chunk) until this build; the room and the LAN host worker still carry their own copy.
+  relay: { gzip: 3.35 * 1000 },
+  // 2026-10-01: NEW, the importer's UI (lane 4). `ImportEditor-*.js` 18.75 (the steps, the top-down
+  // editor, the preview host, drafts, the review checks), and what the robot page `import()`s on a
+  // click: `shareFile-*.js` 1.38, `LibraryDialogs-*.js` 0.75 and `exportRobot-*.js` 0.66. Fetched
+  // when a player opens the importer or acts on an imported robot. What the robot page itself
+  // carries for imports (the row, the panel, the notice, the test-drive and lobby wiring) is in
+  // `main`: +4.53 KB against the feature branch at 5d0e6aa5 (1017.05 -> 1021.58).
+  // 2026-10-01: 21.55 -> 24.18 (+2.63): `ImportEditor-*.js` now carries the placement checks
+  // (`games/importMechChecks.ts`, the three games' `importChecks.ts` and the shared helpers), which were in
+  // `main` as a `GameSimModule` slot and are reached only by the editor. Then +0.53 (lane 9): the
+  // editor's two-half measuring (the pending state, the Measuring… notice) and Cancel stopping the
+  // import's workers.
+  // 2026-10-02: 24.71 -> 28.96, raised on purpose. `ImportEditor-*.js` 26.16: the Moving parts panel
+  // and its picking (+3.3) and the rectangle wheel layout with its four fields and snapping (+0.9).
+  // 2026-10-04: 28.96 -> 33.14, raised on purpose. The base (alpha 239caa2e) already measured 32.32
+  // inside the tolerance (practice tuning, the Detail choice, the generic joints); +0.82 is the
+  // Moving parts step of its own (`MotionPanel` rows, Find again, the preview legend).
+  // 2026-10-04: 33.14 -> 36.06, raised on purpose. The base (alpha 7fb1d7ba) measured 34.06 inside the
+  // tolerance; +2.00 is undo and redo in the editor (`editorHistory.ts`, the edit names in `copy.ts`,
+  // the header buttons and the keys).
+  importerui: { gzip: 36.06 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

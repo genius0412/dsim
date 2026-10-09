@@ -168,17 +168,68 @@ export const DECISIVE_MARGIN = 0.3;
 /** the multiplier on a result at a zero margin, and at DECISIVE_MARGIN or wider */
 export const MOV_MIN = 0.8;
 export const MOV_MAX = 1.5;
+/**
+ * THE RULES A RATING IS COMPUTED UNDER, as named, dated sets.
+ *
+ * Every era of ranked history is one of these, and `matches.rating_rules` (0058) records which
+ * one rated each match, so a recalculation (`server/ratingRecalc.ts`) can first replay history
+ * exactly as it was rated and prove the log complete before re-rating it. A match row with no
+ * stamp predates 0058 and is dated by `ruleSetAt`.
+ *
+ *  - `plain-2026-09-25`: Glicko-2 per player against the opposing mean, at the STORED RD. What
+ *    ranked was until the 2026-09-27 review deployed (21:25Z, measured off production).
+ *  - `team-2026-09-27`: the review: team expectation, calibration floor 250 → 60 over 20
+ *    games, margin, absence. A new board was rated at its seeded RD 350.
+ *  - `team-2026-10-03`: the same, with RD never above 250 and the floor 200 → 60 over 20
+ *    games. Replayed over BIOBUZZ Act 2 it predicted results better than both (1v1 log-loss
+ *    0.5500 → 0.5405, 698 matches); a decisive first win over a 1226 pays +262 where 09-27 paid +413.
+ *
+ * Add a set, never edit one: a stamp that pointed at edited numbers would replay wrong.
+ */
+export interface RatingRules {
+  id: string;
+  model: 'plain' | 'team';
+  /** the highest RD a rating is ever rated at */
+  rdMax: number;
+  /** calibration RD floor `max(floorMin, floorStart − floorPerGame · games)` (team model) */
+  floorStart: number;
+  floorPerGame: number;
+  floorMin: number;
+}
+export const RULES_PLAIN_0925: RatingRules = {
+  id: 'plain-2026-09-25', model: 'plain', rdMax: 350, floorStart: 0, floorPerGame: 0, floorMin: 0,
+};
+export const RULES_TEAM_0927: RatingRules = {
+  id: 'team-2026-09-27', model: 'team', rdMax: 350, floorStart: 250, floorPerGame: 9.5, floorMin: 60,
+};
+export const RULES_TEAM_1003: RatingRules = {
+  id: 'team-2026-10-03', model: 'team', rdMax: 250, floorStart: 200, floorPerGame: 7, floorMin: 60,
+};
+/** the rules ranked rates under now */
+export const RATING_RULES = RULES_TEAM_1003;
+export const RULE_SETS: readonly RatingRules[] = [RULES_PLAIN_0925, RULES_TEAM_0927, RULES_TEAM_1003];
+/** when the 09-27 review went live on production (no stamp before 0058) */
+export const TEAM_0927_FROM = Date.parse('2026-09-27T21:25:00Z');
+/** the rule set that rated a match: its stamp, else dated by when it was played */
+export function ruleSetAt(stamp: string | null | undefined, playedAt: number): RatingRules {
+  const hit = stamp ? RULE_SETS.find((r) => r.id === stamp) : undefined;
+  if (hit) return hit;
+  return playedAt < TEAM_0927_FROM ? RULES_PLAIN_0925 : RULES_TEAM_0927;
+}
+
 /** calibration RD floor: `max(RD_FLOOR_MIN, RD_FLOOR_START − RD_FLOOR_PER_GAME · games)`,
  *  which reaches the minimum at game 20. The minimum is Lichess's per-game floor. */
-export const RD_FLOOR_START = 250;
-export const RD_FLOOR_PER_GAME = 9.5;
-export const RD_FLOOR_MIN = 60;
+export const RD_FLOOR_START = RATING_RULES.floorStart;
+export const RD_FLOOR_PER_GAME = RATING_RULES.floorPerGame;
+export const RD_FLOOR_MIN = RATING_RULES.floorMin;
 /** idle RD growth: after IDLE_GRACE_DAYS, `√(RD² + IDLE_RD_PER_DAY² · days)`, capped at
  *  IDLE_RD_CAP so a returning player is loosened without swinging like a new account */
 export const IDLE_GRACE_DAYS = 14;
 export const IDLE_RD_PER_DAY = 15;
 export const IDLE_RD_CAP = 150;
-export const RD_MAX = 350;
+/** the highest RD a rating is rated at. A new board is still SEEDED at 350 (the row default),
+ *  and read down to this, so no stored row has to change. */
+export const RD_MAX = RATING_RULES.rdMax;
 /** a premade whose two ratings are further apart than this moves at WIDE_PREMADE_MULT —
  *  team expectation otherwise makes carrying a friend up the ladder cheap (Valorant's party
  *  rank-disparity rule, Overwatch 2's wide groups) */
@@ -187,17 +238,17 @@ export const WIDE_PREMADE_MULT = 0.5;
 /** below this share of the match, an absence is a connection blip, not a partner leaving */
 export const ABSENT_MIN = 0.05;
 
-/** the RD a board's rating is rated at: the stored RD, grown by idleness and held up by
- *  the calibration floor. Pure. */
-export function effectiveRd(rd: number, games = Infinity, idleDays = 0): number {
+/** the RD a board's rating is rated at: the stored RD, grown by idleness, held up by the
+ *  calibration floor and capped at the rules' `rdMax`. Pure. */
+export function effectiveRd(rd: number, games = Infinity, idleDays = 0, rules: RatingRules = RATING_RULES): number {
   let r = rd;
   if (idleDays > IDLE_GRACE_DAYS) {
     const grown = Math.sqrt(r * r + IDLE_RD_PER_DAY * IDLE_RD_PER_DAY * (idleDays - IDLE_GRACE_DAYS));
     // never LOWER an RD that is already above the cap (a new account's 350)
     r = Math.max(r, Math.min(IDLE_RD_CAP, grown));
   }
-  const floor = Math.max(RD_FLOOR_MIN, RD_FLOOR_START - RD_FLOOR_PER_GAME * games);
-  return Math.min(RD_MAX, Math.max(r, floor));
+  const floor = Math.max(rules.floorMin, rules.floorStart - rules.floorPerGame * games);
+  return Math.min(rules.rdMax, Math.max(r, floor));
 }
 
 /** the margin-of-victory multiplier for one match. `eWinner` is the winning alliance's
@@ -253,7 +304,7 @@ const awayOf = (p: EloParticipant): number => {
 export function computeGlicko(
   participants: EloParticipant[],
   scores: Record<Alliance, number>,
-  opts: { mode?: '1v1' | '2v2' } = {},
+  opts: { mode?: '1v1' | '2v2'; rules?: RatingRules } = {},
 ): EloBoardUpdate[] {
   const sRed = scores.red > scores.blue ? 1 : scores.red < scores.blue ? 0 : 0.5;
   const updates: EloBoardUpdate[] = [];
@@ -261,8 +312,10 @@ export function computeGlicko(
   const red = participants.filter((p) => p.alliance === 'red');
   const blue = participants.filter((p) => p.alliance === 'blue');
   if (!red.length || !blue.length) return updates;
+  const rules = opts.rules ?? RATING_RULES;
+  if (rules.model === 'plain') return plainGlicko(participants, red, blue, sRed);
   const mode = opts.mode ?? eloMode(participants.length);
-  const rdOf = (p: EloParticipant): number => effectiveRd(p.rating.rd, p.games, p.idleDays);
+  const rdOf = (p: EloParticipant): number => effectiveRd(p.rating.rd, p.games, p.idleDays, rules);
   const agg = (ps: EloParticipant[]): { rating: number; rd: number } => ({
     rating: ps.reduce((s, p) => s + p.rating.rating, 0) / ps.length,
     rd: Math.sqrt(ps.reduce((s, p) => s + rdOf(p) * rdOf(p), 0) / ps.length),
@@ -341,6 +394,35 @@ export function computeGlicko(
     });
   }
   return updates;
+}
+
+/** `plain-2026-09-25`: each player against the opposing alliance's mean (RMS RD) at their own
+ *  stored rating and RD — no floor, no margin, no absence. Kept so a recalculation can replay
+ *  the matches it rated exactly as they were rated. */
+function plainGlicko(
+  all: EloParticipant[],
+  red: EloParticipant[],
+  blue: EloParticipant[],
+  sRed: number,
+): EloBoardUpdate[] {
+  const agg = (ps: EloParticipant[]): { rating: number; rd: number } => ({
+    rating: ps.reduce((s, p) => s + p.rating.rating, 0) / ps.length,
+    rd: Math.sqrt(ps.reduce((s, p) => s + p.rating.rd * p.rating.rd, 0) / ps.length),
+  });
+  const vsRed = agg(blue);
+  const vsBlue = agg(red);
+  return all.map((p) => {
+    const s = p.alliance === 'red' ? sRed : 1 - sRed;
+    const opp = p.alliance === 'red' ? vsRed : vsBlue;
+    const next = glicko2Update(p.rating, opp.rating, opp.rd, s);
+    return {
+      userId: p.userId,
+      before: Math.round(p.rating.rating),
+      after: Math.round(next.rating),
+      rd: Math.round(next.rd),
+      state: next,
+    };
+  });
 }
 
 /** did this player queue as a premade with somebody on their OWN alliance? (A rated 1v1
@@ -453,7 +535,9 @@ export async function persistVersusMatch(
     // TAGGED WITH THE SOLVE THAT PRODUCED IT (0039), read off the replay the room just recorded
     // rather than from a room flag: the container is what a later re-simulation will run, so
     // taking both facts from one place means the row can never disagree with its own replay.
-    const id = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics, query);
+    // ...AND WITH THE RULE SET THAT RATED IT (0058), so a recalculation replays it as rated
+    const id = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics, query,
+      ranked ? RATING_RULES.id : null, ranked ? null : (outcome.config.settings?.preset ?? null));
     // one multi-row insert rather than one per player — same rows, same conflict handling
     await addMatchParticipants(
       id,
@@ -468,6 +552,10 @@ export async function persistVersusMatch(
           ratingBefore: u ? u.before : null,
           ratingAfter: u ? u.after : null,
           premade: ranked ? isPremade(p, authed) : null,
+          // what `computeGlicko` was given about absence (0058) — a recalculation cannot
+          // recover it from the ratings alone
+          away: ranked ? (p.away ?? 0) : null,
+          early: ranked ? !!p.early : null,
         };
       }),
       query,

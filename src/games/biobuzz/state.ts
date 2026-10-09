@@ -35,6 +35,9 @@ export interface LocalRect {
   x1: number;
   y0: number;
   y1: number;
+  /** an IMPORTED robot's mouth only: its chassis face along the edge's outward normal (a standard
+   *  mouth's face is `hl`/`hw`, which `mouthAxes` derives); absent on every standard mouth */
+  face?: number;
 }
 
 /**

@@ -15,6 +15,9 @@ import { renderChecks } from './render';
 import { tutorialChecks } from './tutorial';
 import { net3dChecks } from './net3d';
 import { autoChecks } from './autos';
+import { goldenChecks } from './golden';
+import { importedChecks, importedPerfChecks } from './imported';
+import { fixedChecks } from './fixed';
 import type { Check } from './harness';
 
 /**
@@ -65,6 +68,8 @@ import type { Check } from './harness';
 
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
+  // step() output pinned per SIM_VERSION — see golden.ts and scripts/simGolden.ts
+  { name: 'GOLDEN', fn: goldenChecks },
   { name: 'SIM3D', fn: sim3dChecks },
   // Day 2 lane A: the DYNAMIC see-saw, the real FLOWER tube, and the two prediction worlds.
   { name: 'HIVE3D', fn: hive3dChecks },
@@ -99,6 +104,12 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // Zenith autos driven by an auto seat (docs/area/autos.md): no teleport, arrival, the heading
   // modes, the alliance rule, the commands, replay-without-seat, and the hand-back at the buzzer.
   { name: 'AUTO', fn: autoChecks },
+  // imported robots (docs/robot-import-plan.md): the mechanisms on a CAD hull — the placed mouth,
+  // the 3D bands, the placed launchers and Box Tube. The cross-game checks are in smoke.ts.
+  { name: 'IMPORT', fn: importedChecks },
+  // the FIXED launcher (2026-10-02): the kit robot's one-wheel launcher at a setpoint — the pins
+  // that prove every other launcher is untouched, where it scores from, and that the ROBOT aims
+  { name: 'FIXED', fn: fixedChecks },
   // EVERY ABSOLUTE WALL-CLOCK BUDGET ("this costs <= N ms"), and nothing else. A budget is a claim
   // about what the work costs on an idle machine, so `bbshard.mjs` never packs this lane beside
   // another: it runs alone after the other shards, and under `npm test` after the shared suite
@@ -127,6 +138,7 @@ function perfLane(check: Check): void {
     predictPerfChecks(record);
     aiPerfChecks(record);
     sim3dPerfChecks(record);
+    importedPerfChecks(record);
     const over = seen.filter(([, ok]) => !ok).map(([name]) => name);
     const wait = PERF_WAITS_S[attempt - 1];
     if (over.length === 0 || wait === undefined) {

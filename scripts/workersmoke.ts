@@ -18,6 +18,7 @@
  * Kept out of `npm test` for the same reason `test:mm` is: a red `npm test` must keep meaning
  * "physics broke", and this boots two servers and four worker threads.
  */
+import { coerceRoomSettings } from '../src/net/protocol';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { WebSocket } from 'ws';
 import {
@@ -29,6 +30,10 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
+import { IMPORT_ID_TAKEN, IMPORT_MEMBER_NEEDS_UPDATE, IMPORT_REFUSED_HERE, IMPORT_REFUSED_RANKED, IMPORT_ROOM_NEEDS_UPDATE } from '../src/net/imported';
+import * as IV from '../src/net/importVisuals';
+import { visualBytesInUse } from '../server/importVisuals';
+import { glbBytes, pngBytes } from './visualFixtures';
 import type { Alliance, RobotCommand } from '../src/types';
 import type { Client } from '../server/room';
 import {
@@ -70,6 +75,14 @@ function makePlayer(name: string, alliance: Alliance, startIndex: number): Omit<
     assists: { ...DEFAULT_ASSISTS },
   };
 }
+
+/** a minimal imported-robot descriptor — the wire only needs it to be present */
+const IMP = {
+  v: 1,
+  id: '0123456789abcdef',
+  heightIn: 12,
+  hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }],
+};
 
 /** a full-throw stick whose direction turns slowly. A straight one pins a DECODE start pose
  *  against its wall (0.1 in on BOTH servers), and one that wanders in magnitude can sit near
@@ -201,6 +214,26 @@ async function partA(): Promise<void> {
   check('A: a live summary is mirrored (Watch Live)', solo.summary()?.kind === 'record');
   check('A: presence is mirrored', solo.presenceSnapshot().players.some((p) => p.userId === 'u-a' && p.act === 'match'));
 
+  // ---- a host unlocks a duo-record room: the socket thread's copy of the config follows ------
+  {
+    const duoCfg = { kind: 'record' as const, record: 'duo' as const, game: 'decode' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const duo = createRoom('wt-duo', () => {}, duoCfg);
+    const ds = fakeSocket();
+    const cd = clientOn(ds, 'd1', 'u-d1', 'blue');
+    duo.add(cd);
+    await until(() => duo.lobbySummary().players === 1, 3000);
+    check('A: a duo record room mirrors its locked config', duo.config.kind === 'record' && duo.lobbySummary().capacity === 2);
+    duo.onMessage('d1', { t: 'unlockRoom' });
+    const unlocked = await until(() => duo.config.kind === 'versus', 3000);
+    check('A: unlocking a worker room updates the socket thread copy of the config (kind, record, settings)',
+      unlocked && duo.config.record === undefined && duo.config.settings?.preset === 'custom' && !duo.soloRecord);
+    duo.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    const grown = await until(() => duo.lobbySummary().capacity === 4, 3000);
+    check('A: a settings change on a worker room reaches the capacity the join door reads', grown);
+    duo.detach('d1', cd.conn, true); // leave, so the room empties and later room counts stay true
+    await sleep(300);
+  }
+
   // ---- a socket that stops draining is skipped, then resumes --------------------------------
   s1.setBacklog(300 * 1024);
   await sleep(250);
@@ -256,6 +289,47 @@ async function partA(): Promise<void> {
   const gone = await until(() => (workerPerf() ?? []).every((x) => x.rooms === 0), 10_000, 100);
   check('A: ...and is forgotten again when it empties', gone, JSON.stringify(workerPerf()?.map((x) => x.rooms)));
 
+  // ---- imported robots across the thread (docs/area/netcode.md, IMPORTED ROBOTS) ---------------
+  // The join, rejoin and spectate doors ask `importState()` of the room, and for a room on a
+  // worker that is a MIRROR a message behind plus whatever has been posted since — the same
+  // arrangement `canJoin` counts an add in flight for. The worker's own Room refuses the rest.
+  {
+    const imp = createRoom('wt-imp', () => {}, { kind: 'versus', game: 'decode' });
+    const si = fakeSocket();
+    const ci = clientOn(si, 'i1', 'u-i', 'red');
+    ci.player.spec = { ...ci.player.spec, imported: IMP } as typeof ci.player.spec;
+    check('A: a custom room on a worker allows imported robots (answered on the socket thread)', imp.importState().allows);
+    imp.add(ci);
+    check('A: an imported robot still in flight already counts', imp.importState().hasImport);
+    await until(() => si.msgs('welcome').length > 0, 5000);
+    await until(() => imp.lobbySummary().players === 1, 2000);
+    check('A: ...and so does the mirror once the worker has applied it', imp.importState().hasImport && !imp.importState().capless);
+    check('A: ...and its robot id rides the mirror (one id per room)', (imp.importState().ids ?? []).includes(IMP.id));
+    const sd = fakeSocket();
+    const cd = clientOn(sd, 'd1', 'u-d', 'blue');
+    cd.player.spec = { ...cd.player.spec, imported: IMP } as typeof cd.player.spec;
+    imp.add(cd);
+    check('A: a second seat with the same robot id, in flight, already shows its id', (imp.importState().ids ?? []).filter((x) => x === IMP.id).length === 2);
+    await sleep(400);
+    check(
+      'A: the worker room refuses a second seat with the same robot id, with the sentence, and does not seat it',
+      sd.msgs('welcome').length === 0 && sd.msgs('error').some((m) => (m as { message?: string }).message === IMPORT_ID_TAKEN),
+    );
+    const so = fakeSocket();
+    const co = clientOn(so, 'o1', 'u-o', 'blue');
+    co.caps = [];
+    imp.add(co);
+    check('A: a seat without the cap, in flight, counts as one (capless)', imp.importState().capless);
+    await sleep(400);
+    check(
+      'A: the worker room refuses that seat beside an imported robot, with the sentence, and does not seat it',
+      so.msgs('welcome').length === 0 && so.msgs('error').some((m) => (m as { message?: string }).message === IMPORT_ROOM_NEEDS_UPDATE),
+    );
+    check('A: ...and the mirror settles back to no seat without the cap', await until(() => !imp.importState().capless, 3000));
+    const rec = createRoom('wt-imp-rec', () => {}, { kind: 'record', record: 'solo', game: 'decode' });
+    check('A: a record room on a worker does not allow imported robots', !rec.importState().allows);
+  }
+
   // ---- reattach and the report resolvers answer across the thread ----------------------------
   const vs = createRoom('wt-vs', () => {}, { kind: 'versus', game: 'decode' });
   const sx = fakeSocket();
@@ -283,6 +357,76 @@ async function partA(): Promise<void> {
   const rj = await until(() => sz.msgs('rejoined').some((m) => (m as { ok: boolean }).ok), 3000);
   check('A: the reclaimed seat is told on its new socket', rj);
   check('A: ...and gets a snapshot there', await until(() => snaps(sz).length > 0, 3000));
+
+  // ---- the visuals relay across the thread (docs/area/netcode.md, VISUALS RELAY) ------------------
+  // The relay lives IN the worker's room: the bytes, their validation and the stream timer run on
+  // the worker, and the socket thread only writes the frames. What this proves is the part a
+  // headless Room cannot: frames crossing the batch boundary intact, the socket's backlog
+  // (a mirror, in steps of 16 KiB) pacing the worker's stream, and the process budget being ONE
+  // counter that the socket thread can read although a worker wrote it.
+  {
+    const png = pngBytes(128, 128, { noise: true, seed: 5 }); // 3 chunks
+    const mesh = glbBytes({ tris: 6000 }); // 216 KB, 9 chunks
+    const room = createRoom('wt-vis', () => {}, { kind: 'versus', game: 'decode' });
+    const so = fakeSocket();
+    const sv = fakeSocket();
+    const co = clientOn(so, 'vo', 'u-vo', 'red');
+    co.player.spec = { ...co.player.spec, imported: IMP } as typeof co.player.spec;
+    const cv = clientOn(sv, 'vv', 'u-vv', 'blue');
+    room.add(co);
+    room.add(cv);
+    await until(() => so.msgs('welcome').length > 0 && sv.msgs('welcome').length > 0, 5000);
+    const base = visualBytesInUse();
+    const put = (kind: IV.VisualKind, bytes: Uint8Array): void => {
+      for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+        const sp = IV.visualSpan(bytes.length, seq);
+        room.onMessage('vo', { t: 'visualPut', kind, id: IMP.id, total: bytes.length, seq, data: IV.bytesToBase64(bytes, sp.start, sp.end) });
+      }
+    };
+    const got = (sock: ReturnType<typeof fakeSocket>, kind: IV.VisualKind): Uint8Array => {
+      const cs = (sock.msgs('visualChunk') as Extract<ServerMsg, { t: 'visualChunk' }>[]).filter((m) => m.kind === kind);
+      const out = new Uint8Array(cs[0]?.total ?? 0);
+      for (const c of cs) out.set(IV.base64ToBytes(c.data) ?? new Uint8Array(0), IV.visualSpan(c.total, c.seq).start);
+      return out;
+    };
+    const eq = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.length > 0 && a.every((x, i) => x === b[i]);
+    put('top', png);
+    check('A: the owner’s upload is announced to the other seat across the thread', await until(() => sv.msgs('visualReady').length === 1, 3000));
+    check('A: ...and to the owner', so.msgs('visualReady').length === 1);
+    check('A: ⚠️ the process budget is one shared counter: the socket thread reads what the worker reserved', await until(() => visualBytesInUse() - base === png.length, 2000), String(visualBytesInUse() - base));
+    room.onMessage('vv', { t: 'visualGet', owner: 'vo', id: IMP.id, kind: 'top' });
+    check('A: a request is streamed from the worker, in order, identical', await until(() => got(sv, 'top').length === png.length && sv.msgs('visualChunk').length === 3, 3000) && eq(got(sv, 'top'), png));
+    check('A: the owner, who did not ask, was sent no chunk', so.msgs('visualChunk').length === 0);
+    // pacing by the socket's backlog: it is mirrored in 16 KiB steps and re-read by the pool
+    sv.setBacklog(64 * 1024);
+    put('mesh', mesh); // a write to the viewer's socket, which is what makes the pool read its backlog
+    await until(() => sv.msgs('visualReady').length === 2, 3000);
+    await sleep(150);
+    room.onMessage('vv', { t: 'visualGet', owner: 'vo', id: IMP.id, kind: 'mesh' });
+    await sleep(400);
+    check('A: ⚠️ a viewer whose socket is backed up is handed no chunk, however long it waits', sv.msgs('visualChunk').filter((m) => (m as { kind?: string }).kind === 'mesh').length === 0);
+    sv.setBacklog(0);
+    check('A: ...and the stream resumes the moment it drains, and arrives identical', await until(() => eq(got(sv, 'mesh'), mesh) && sv.msgs('visualChunk').length === 3 + 9, 5000), String(sv.msgs('visualChunk').length));
+    // the owner leaves the lobby: the worker frees, the shared counter shows it
+    room.detach('vo', co.conn, true);
+    check('A: the owner leaving frees the assets, and the budget with them (seen from the socket thread)', await until(() => visualBytesInUse() === base, 3000), String(visualBytesInUse() - base));
+    // a worker that dies with assets in its rooms must not leak the process budget
+    const sx2 = fakeSocket();
+    const room2 = createRoom('wt-vis2', () => {}, { kind: 'versus', game: 'decode' });
+    const cx2 = clientOn(sx2, 'vx', 'u-vx', 'red');
+    cx2.player.spec = { ...cx2.player.spec, imported: IMP } as typeof cx2.player.spec;
+    room2.add(cx2);
+    await until(() => sx2.msgs('welcome').length > 0, 5000);
+    const w2 = workerOfForTest(room2);
+    for (let seq = 0; seq < IV.visualFrames(png.length); seq++) {
+      const sp = IV.visualSpan(png.length, seq);
+      room2.onMessage('vx', { t: 'visualPut', kind: 'top', id: IMP.id, total: png.length, seq, data: IV.bytesToBase64(png, sp.start, sp.end) });
+    }
+    check('A: a second room on a worker holds a picture', await until(() => visualBytesInUse() - base === png.length, 3000));
+    await killWorkerForTest(w2);
+    check('A: ⚠️ a worker that dies with a picture in one of its rooms gives the bytes back (the pool zeroes its slot)', await until(() => visualBytesInUse() === base, 5000), String(visualBytesInUse() - base));
+    await until(() => !!workerPerf()?.[w2]?.ready, 30_000);
+  }
 }
 
 // =============================================================================================
@@ -587,6 +731,193 @@ async function scenarios(s: Server): Promise<void> {
     await sleep(100);
   }
   check(L('a solo record run is reaped on a clean close'), capAfter === capRun - 1, `${capRun} → ${capAfter}`);
+
+  // ---- imported robots at the real doors (docs/area/netcode.md, IMPORTED ROBOTS) -----------------
+  // Read off what the client SENT, so the first two do not depend on `coerceSpec` carrying the field.
+  const impP = (name: string, alliance: Alliance) => ({ ...makePlayer(name, alliance, 0), spec: { ...DEFAULT_SPEC, name, imported: IMP } as typeof DEFAULT_SPEC });
+  const stdP = (name: string, alliance: Alliance) => makePlayer(name, alliance, 0);
+  {
+    const X = await open();
+    X.send({ t: 'join', room: newCode(), config: { kind: 'record', record: 'solo', game: 'decode' }, player: impP('X', 'blue'), caps: CLIENT_CAPS });
+    const e = await X.until('error');
+    check(L('a record room refuses an imported robot at the door, with the sentence'), e?.message === IMPORT_REFUSED_HERE, e?.message);
+    X.close();
+    const Q = await open();
+    Q.send({ t: 'queue', mode: '1v1', player: impP('Q', 'red'), homeRegion: '', accessMs: 0, caps: CLIENT_CAPS, game: 'decode' });
+    const qe = await Q.until('error');
+    check(L('the ranked queue refuses an imported robot before any queue attempt exists'), qe?.message === IMPORT_REFUSED_RANKED, qe?.message);
+    Q.close();
+  }
+  {
+    // a seat without the cap is in first, and an import is not added beside it. Read off what the
+    // newcomer SENT, so it does not depend on `coerceSpec` carrying the field.
+    const room2 = newCode();
+    const K = await open();
+    K.send({ t: 'join', room: room2, config: versus, player: stdP('K', 'red'), caps: [] });
+    await K.until('welcome');
+    await K.until('roster', (m) => m.players.length === 1);
+    const M = await open();
+    M.send({ t: 'join', room: room2, config: versus, player: impP('M', 'blue'), caps: CLIENT_CAPS });
+    const me = await M.until('error');
+    check(L('an imported robot is not added to a room with a seat that lacks the cap'), me?.message === IMPORT_MEMBER_NEEDS_UPDATE, me?.message);
+    M.close();
+    K.close();
+  }
+  // the rest read the roster the room holds, which is what `coerceSpec` kept
+  {
+    const room = newCode();
+    const P = await open();
+    P.send({ t: 'join', room, config: versus, player: impP('P', 'red'), caps: CLIENT_CAPS });
+    check(L('a custom room seats an imported robot (client with the cap)'), !!(await P.until('welcome')));
+    await P.until('roster', (m) => m.players.length === 1);
+    const O = await open();
+    O.send({ t: 'join', room, config: versus, player: stdP('O', 'blue'), caps: [] });
+    const oe = await O.until('error');
+    check(L('...and turns away a build without the cap, with the sentence, at the door'), oe?.message === IMPORT_ROOM_NEEDS_UPDATE, oe?.message);
+    O.close();
+    const W = await open();
+    W.send({ t: 'spectate', room, caps: [] });
+    const we = await W.until('error');
+    check(L('...and a watcher without it'), we?.message === IMPORT_ROOM_NEEDS_UPDATE, we?.message);
+    W.close();
+    const G = await open();
+    G.send({ t: 'join', room, config: versus, player: stdP('G', 'blue'), caps: CLIENT_CAPS });
+    check(L('...while a build with it is seated'), !!(await G.until('welcome')));
+    const H = await open();
+    H.send({ t: 'join', room, config: versus, player: impP('H', 'blue'), caps: CLIENT_CAPS });
+    const he = await H.until('error');
+    check(L('...and a second imported robot with the SAME robot id is turned away at the door (one id per room)'), he?.message === IMPORT_ID_TAKEN, he?.message);
+    H.close();
+    // A HOSTILE UPDATE COSTS NOTHING (review 2026-10-01): 16 bands of 256 far-off points, 62 KB, cost
+    // 70 ms of the room's thread each. Sixty of them, then a rename: the rename must come straight back.
+    const far = Array.from({ length: 256 }, () => ({ x: 99, y: 0 }));
+    const hostile = { ...DEFAULT_SPEC, imported: { ...IMP, id: 'fedcba9876543210', bands: Array.from({ length: 16 }, () => ({ z0: 0, z1: 5, hull: far })) } };
+    const mark = G.log.length;
+    const t0 = Date.now();
+    for (let i = 0; i < 60; i++) G.send({ t: 'update', patch: { spec: hostile } });
+    G.send({ t: 'update', patch: { name: 'Gx' } });
+    const renamed = await G.until('roster', (m) => m.players.some((p) => p.name === 'Gx'), 10_000, mark);
+    const dt = Date.now() - t0;
+    check(L('⚠️ sixty hostile 62 KB updates do not stall the room: a rename right behind them comes back in under 1.5 s (it was over 4 s of one thread)'), !!renamed && dt < 1500, `${dt} ms`);
+    P.close();
+    G.close();
+  }
+  {
+    // A RETURNING SOCKET'S BUILD IS THE ONE THAT PLAYS (review 2026-10-01): a seat reclaimed by a
+    // build without the import cap reads as one from then on, on both server shapes
+    const room3 = newCode();
+    const K2 = await open();
+    K2.send({ t: 'join', room: room3, config: versus, player: stdP('K2', 'red'), caps: CLIENT_CAPS });
+    await K2.until('welcome');
+    const L2 = await open();
+    L2.send({ t: 'join', room: room3, config: versus, player: stdP('L2', 'blue'), caps: CLIENT_CAPS });
+    await L2.until('welcome');
+    await L2.until('roster', (m) => m.players.length === 2);
+    const K3 = await open();
+    K3.send({ t: 'rejoin', room: room3, clientId: K2.clientId, caps: ['strategy', 'seat'], seatToken: K2.seatToken });
+    const rj = await K3.until('rejoined');
+    check(L('a seat reclaimed by a build without the import cap is let back into a room with no import'), rj?.ok === true);
+    const mark = L2.log.length;
+    L2.send({ t: 'update', patch: { spec: { ...DEFAULT_SPEC, imported: IMP } } });
+    const le = await L2.until('error', () => true, 3000, mark);
+    check(L('⚠️ ...and the room now knows that build: an imported robot is not added beside it (the seat kept its join’s caps before)'), le?.message === IMPORT_MEMBER_NEEDS_UPDATE, le?.message);
+    K3.close();
+    K2.close();
+    L2.close();
+  }
+
+  await visuals(s);
+}
+
+/**
+ * THE VISUALS RELAY AT THE REAL DOOR (docs/area/netcode.md, VISUALS RELAY), on both server shapes:
+ * an owner uploads a picture and a mesh as paced frames over a real WebSocket, a seat and a watcher
+ * ask, and what they receive is byte-identical — through `ws`, the 64 KiB frame cap, the uncompressed
+ * `visualChunk` write, and (on two workers) the batch boundary. A client without the capability is
+ * sent nothing, and a record room refuses.
+ */
+async function visuals(s: Server): Promise<void> {
+  const L = (name: string): string => `B[${s.label}]: ${name}`;
+  const versus: RoomConfig = { kind: 'versus', game: 'decode' };
+  const impP = (name: string, alliance: Alliance) => ({ ...makePlayer(name, alliance, 0), spec: { ...DEFAULT_SPEC, name, imported: IMP } as typeof DEFAULT_SPEC });
+  const png = pngBytes(128, 128, { noise: true, seed: 8 }); // 3 chunks
+  const mesh = glbBytes({ tris: 29_000 }); // ~1 MiB, 43 chunks: the largest asset the relay takes
+  const noVisuals = CLIENT_CAPS.filter((c) => c !== IV.IMPORT_VISUALS_CAP);
+  const room = newCode();
+  const O = await new Sock(s.url).open();
+  O.send({ t: 'join', room, config: versus, player: impP('O', 'red'), caps: CLIENT_CAPS });
+  await O.until('welcome');
+  const V = await new Sock(s.url).open();
+  V.send({ t: 'join', room, config: versus, player: makePlayer('V', 'blue', 0), caps: CLIENT_CAPS });
+  await V.until('welcome');
+  const X = await new Sock(s.url).open();
+  X.send({ t: 'join', room, config: versus, player: makePlayer('X', 'blue', 1), caps: noVisuals });
+  await X.until('welcome');
+  const put = async (sock: Sock, kind: IV.VisualKind, bytes: Uint8Array): Promise<void> => {
+    for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+      const sp = IV.visualSpan(bytes.length, seq);
+      sock.send({ t: 'visualPut', kind, id: IMP.id, total: bytes.length, seq, data: IV.bytesToBase64(bytes, sp.start, sp.end) });
+      await sleep(IV.VISUAL_UPLOAD_GAP_MS / 3); // the real client paces at the gap; a third of it keeps this fast and far under 240/s
+    }
+  };
+  const got = (sock: Sock, kind: IV.VisualKind): Uint8Array => {
+    const cs = sock.log.filter((m) => m.t === 'visualChunk' && m.kind === kind) as Extract<ServerMsg, { t: 'visualChunk' }>[];
+    const out = new Uint8Array(cs[0]?.total ?? 0);
+    for (const c of cs) out.set(IV.base64ToBytes(c.data) ?? new Uint8Array(0), IV.visualSpan(c.total, c.seq).start);
+    return out;
+  };
+  const eq = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.length > 0 && a.every((x, i) => x === b[i]);
+  const ownerId = O.clientId;
+
+  await put(O, 'top', png);
+  const rdy = await V.until('visualReady', (m) => m.kind === 'top');
+  check(L('an upload over a real socket is announced to the other seat'), rdy?.owner === ownerId && rdy.id === IMP.id && rdy.bytes === png.length, JSON.stringify(rdy));
+  check(L('...and to the owner'), !!(await O.until('visualReady', (m) => m.kind === 'top')));
+  await sleep(150);
+  check(L('⚠️ a build without the capability is sent nothing at all'), !X.log.some((m) => m.t.startsWith('visual')));
+  V.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'top' });
+  await V.until('visualChunk', (m) => m.seq === 2);
+  check(L('a request is answered with the picture, byte for byte'), eq(got(V, 'top'), png));
+  X.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'top' });
+  await sleep(200);
+  check(L('...and a request from the build without the capability is ignored, unanswered'), !X.log.some((m) => m.t.startsWith('visual')));
+
+  await put(O, 'mesh', mesh);
+  check(L('a 1 MiB mesh (43 frames) is accepted'), !!(await V.until('visualReady', (m) => m.kind === 'mesh', 8000)));
+  const S = await new Sock(s.url).open();
+  S.send({ t: 'spectate', room, caps: CLIENT_CAPS });
+  await S.until('welcome');
+  check(L('a watcher who arrives later is told what is ready'), !!(await S.until('visualReady', (m) => m.kind === 'mesh')) && !!(await S.until('visualReady', (m) => m.kind === 'top')));
+  S.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'mesh' });
+  V.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'mesh' });
+  await S.until('visualChunk', (m) => m.kind === 'mesh' && m.seq === 42, 15_000);
+  await V.until('visualChunk', (m) => m.kind === 'mesh' && m.seq === 42, 15_000);
+  check(L('⚠️ two viewers stream the full 1 MiB mesh at once, each byte for byte (a watcher, and a seat)'), eq(got(S, 'mesh'), mesh) && eq(got(V, 'mesh'), mesh));
+  check(L('...in order, with no chunk repeated'), (V.log.filter((m) => m.t === 'visualChunk' && m.kind === 'mesh') as Extract<ServerMsg, { t: 'visualChunk' }>[]).every((m, i) => m.seq === i));
+
+  // a bad upload is refused at the door
+  const mark = O.log.length;
+  O.send({ t: 'visualPut', kind: 'top', id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+  const refusal = await O.until('visualRefused', () => true, 3000, mark);
+  check(L('bytes that are not a picture are refused with the format reason'), refusal?.op === 'put' && refusal.reason === 'format');
+
+  // the owner leaves: what it held is gone
+  O.close();
+  await V.until('roster', (m) => m.players.length === 2, 5000, V.log.length);
+  const m2 = V.log.length;
+  V.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'top' });
+  const none = await V.until('visualRefused', () => true, 3000, m2);
+  check(L('once the owner has left, a request for its picture is refused (none): the viewer keeps the outline'), none?.reason === 'none', JSON.stringify(none));
+
+  // a record room refuses an upload outright
+  const R = await new Sock(s.url).open();
+  R.join(newCode(), { kind: 'record', record: 'solo', game: 'decode' }, 'R', 'blue');
+  await R.until('welcome');
+  const m3 = R.log.length;
+  R.send({ t: 'visualPut', kind: 'top', id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+  const rr = await R.until('visualRefused', () => true, 3000, m3);
+  check(L('a record room refuses an upload, with the room reason'), rr?.reason === 'room', JSON.stringify(rr));
+  for (const k of [V, X, S, R]) k.close();
 }
 
 async function spread(s: Server): Promise<void> {

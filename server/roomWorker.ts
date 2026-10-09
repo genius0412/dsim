@@ -14,9 +14,10 @@
  * decided: every op is the same `Room` method the socket thread used to call directly, in the
  * same order, so the room's behaviour is the room's.
  */
-import { parentPort, threadId } from 'node:worker_threads';
+import { parentPort, threadId, workerData } from 'node:worker_threads';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { Room, type Client, type MatchOutcome, type PersistOutcome, type DodgeReport } from './room';
+import { configureVisualBudget } from './importVisuals';
 import { encodeMsg, type ServerMsg } from '../src/net/protocol';
 import type { DodgeVerdict } from '../src/dodge';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -37,6 +38,13 @@ import {
 const port = parentPort;
 if (!port) throw new Error('server/roomWorker.ts is a worker_threads entry, not a module to import');
 const tag = `[worker ${threadId}]`;
+
+// the process's imported-robot-visuals budget is one counter per thread in a shared buffer
+// (`server/importVisuals.ts`); this thread writes only its own slot
+{
+  const wd = workerData as { visualBudget?: SharedArrayBuffer; visualSlot?: number } | null;
+  configureVisualBudget(wd?.visualBudget, wd?.visualSlot ?? 0);
+}
 
 // the same containment the socket thread has: one bad tick must not take every room on this
 // thread with it (the Room's own loop already catches closer in)
@@ -94,10 +102,13 @@ function schedule(): void {
  * lookup that never hits is waste. And it does not mark the room dirty: it is 30 Hz and changes
  * nothing the socket thread mirrors except the live score and clock, which the once-a-second
  * sweep refreshes. Anything else a room says (roster, matchStart, results…) is a state change.
+ *
+ * A `visualChunk` is the same: one viewer's 33 KB slice of a robot's picture, unique to its
+ * recipient, so hashing it is waste, and it changes nothing the socket thread mirrors.
  */
 function out(rid: number, sock: number, s: string): void {
   let i: number | undefined;
-  if (s.startsWith('{"t":"snapshot"')) {
+  if (s.startsWith('{"t":"snapshot"') || s.startsWith('{"t":"visualChunk"')) {
     i = strs.push(s) - 1;
   } else {
     i = strIndex.get(s);
@@ -139,9 +150,11 @@ function pushFacts(rid: number): void {
     if (cid) seats.push([uid, cid]);
     else e.uids.delete(uid); // a seat, once gone, is not reclaimed by account
   }
+  const imp = r.importState();
   const f: RoomFacts = {
     ack: e.ack,
     lobby: r.lobbySummary(),
+    cfg: r.cfgFacts(),
     seats,
     staging: r.staging(),
     summary: r.summary(),
@@ -149,6 +162,7 @@ function pushFacts(rid: number): void {
     holds: r.holdsCapacity(),
     abandonable: r.isAbandonable(),
     spectators: r.spectatorCount(),
+    imports: { hasImport: imp.hasImport, capless: imp.capless, ids: [...(imp.ids ?? [])] },
   };
   const s = JSON.stringify(f);
   if (s === e.last) return;
@@ -300,7 +314,7 @@ function handle(op: Op): void {
     case 'reattach': {
       e.ack = op.seq;
       const s = senders(op.rid, op.sock);
-      const nc = r.reattach(op.id, s.send, s.sendRaw, s.backlog, op.token, op.trusted);
+      const nc = r.reattach(op.id, s.send, s.sendRaw, s.backlog, op.token, op.trusted, op.caps);
       if (nc !== null) connOf.set(op.sock, nc);
       reply(op.call, nc !== null);
       break;

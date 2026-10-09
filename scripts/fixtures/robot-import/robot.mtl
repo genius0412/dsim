@@ -1,0 +1,21 @@
+# dsim robot-import fixture
+newmtl m0
+Kd 0.7200 0.7300 0.7500
+newmtl m1
+Kd 0.1800 0.1900 0.2100
+newmtl m2
+Kd 0.1800 0.1900 0.2100
+newmtl m3
+Kd 0.9500 0.5500 0.1000
+newmtl m4
+Kd 0.2000 0.7000 0.3000
+newmtl m5
+Kd 0.1500 0.3500 0.9000
+newmtl m6
+Kd 0.0600 0.0600 0.0700
+newmtl m7
+Kd 0.0600 0.0600 0.0700
+newmtl m8
+Kd 0.0600 0.0600 0.0700
+newmtl m9
+Kd 0.0600 0.0600 0.0700

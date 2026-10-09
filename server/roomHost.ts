@@ -28,11 +28,13 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
 import { Room, type Client } from './room';
+import { configureVisualBudget, makeSharedVisualBudget, resetVisualSlot } from './importVisuals';
 import { DEFAULT_ROOM_CONFIG, roomCapacity, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import type { GameId, Physics } from '../src/types';
 import type { PendingMatch } from './matchTypes';
+import { hasImportCap, importIdOf, isImportedSpec, type ImportRoomState } from '../src/net/imported';
 import {
   CB_ACTIVE,
   CB_BEHAVIOUR,
@@ -76,6 +78,8 @@ export interface RoomHandle {
   holdsCapacity(): boolean;
   isAbandonable(): boolean;
   spectatorCount(): number;
+  /** what the room holds as far as imported robots go — the join, rejoin and spectate doors read it */
+  importState(): ImportRoomState;
   add(client: Client): void;
   /** a worker room answers with the socket key the spectator's `detach` must carry */
   addSpectator(client: Client): number | void;
@@ -88,6 +92,8 @@ export interface RoomHandle {
     backlog?: () => number,
     token?: string,
     trusted?: boolean,
+    /** the returning socket's capabilities, which replace the seat's (see `Room.reattach`) */
+    caps?: string[],
   ): number | null | Promise<number | null>;
   onMessage(id: string, msg: ClientMsg): void;
   applyPending(p: PendingMatch): void | Promise<void>;
@@ -194,6 +200,7 @@ function initialFacts(code: string, config: RoomConfig, capacity: number): RoomF
   return {
     ack: 0,
     lobby: { code, players: 0, capacity, kind: config.kind, game: config.game ?? 'decode', joinable: true, state: 'lobby' },
+    cfg: { kind: config.kind, record: config.record, settings: config.settings },
     seats: [],
     staging: false,
     summary: null,
@@ -201,6 +208,7 @@ function initialFacts(code: string, config: RoomConfig, capacity: number): RoomF
     holds: true,
     abandonable: true,
     spectators: 0,
+    imports: { hasImport: false, capless: false, ids: [] },
   };
 }
 
@@ -208,7 +216,18 @@ export class RemoteRoom implements RoomHandle {
   private facts: RoomFacts;
   private seq = 0;
   /** populating ops posted and not yet reflected in `facts` */
-  private readonly unacked: { seq: number; kind: 'add' | 'spec' | 'reattach' | 'pending'; uid?: string; id?: string }[] = [];
+  private readonly unacked: {
+    seq: number;
+    kind: 'add' | 'spec' | 'reattach' | 'pending';
+    uid?: string;
+    id?: string;
+    /** an `add` that brings an imported robot, and any `add`/`spec`/`reattach` whose client lacks
+     *  the cap — counted by `importState` until the worker's mirror has them */
+    imp?: boolean;
+    nocap?: boolean;
+    /** the imported robot's id an `add` brings, for the one-id-per-room rule */
+    iid?: string;
+  }[] = [];
   private pending: PendingMatch | null = null;
   private tag = '';
   /** keys of the sockets whose `room` is this one */
@@ -335,12 +354,34 @@ export class RemoteRoom implements RoomHandle {
   spectatorCount(): number {
     return this.facts.spectators + this.unackedOf('spec');
   }
+  /**
+   * `Room.importState`, from the mirror. `allows` is answered here (config + the roster this thread
+   * staged, as `stagedFor` is); the other two are the worker's last word PLUS the seats and
+   * watchers posted since, for the reason `canJoin` counts an `add` in flight: two joins inside a
+   * millisecond must each see the other. `ids` likewise: the seats' robot ids plus those of the
+   * adds in flight. `except` is the room's own concern (a seat re-picking), never the door's.
+   */
+  importState(): ImportRoomState {
+    const ids = [...(this.facts.imports.ids ?? [])];
+    for (const u of this.unacked) if (u.iid) ids.push(u.iid);
+    return {
+      allows: this.config.kind === 'versus' && !this.pending,
+      hasImport: this.facts.imports.hasImport || this.unacked.some((u) => u.imp),
+      capless: this.facts.imports.capless || this.unacked.some((u) => u.nocap),
+      ids,
+    };
+  }
 
   // ---- writes ----
 
-  private populate(kind: 'add' | 'spec' | 'reattach' | 'pending', uid?: string, id?: string): number {
+  private populate(
+    kind: 'add' | 'spec' | 'reattach' | 'pending',
+    uid?: string,
+    id?: string,
+    flags?: { imp?: boolean; nocap?: boolean; iid?: string },
+  ): number {
     const seq = ++this.seq;
-    this.unacked.push({ seq, kind, uid, id });
+    this.unacked.push({ seq, kind, uid, id, ...flags });
     return seq;
   }
 
@@ -355,7 +396,11 @@ export class RemoteRoom implements RoomHandle {
   add(client: Client): void {
     const sock = sockFor(client.send);
     this.reviveIfForgotten();
-    const seq = this.populate('add', client.userId, client.id);
+    const seq = this.populate('add', client.userId, client.id, {
+      imp: isImportedSpec(client.player.spec),
+      nocap: !hasImportCap(client.caps),
+      iid: importIdOf(client.player.spec),
+    });
     this.attached.add(sock);
     this.pool.post(this.slot, { k: 'add', rid: this.rid, seq, sock, client: dataOf(client) });
     // what index.ts reads back as this socket's `conn` and hands to `detach`
@@ -365,7 +410,7 @@ export class RemoteRoom implements RoomHandle {
   addSpectator(client: Client): number {
     const sock = sockFor(client.send);
     this.reviveIfForgotten();
-    const seq = this.populate('spec');
+    const seq = this.populate('spec', undefined, undefined, { nocap: !hasImportCap(client.caps) });
     this.attached.add(sock);
     this.pool.post(this.slot, { k: 'spec', rid: this.rid, seq, sock, client: dataOf(client) });
     return sock;
@@ -389,12 +434,14 @@ export class RemoteRoom implements RoomHandle {
     _backlog?: () => number,
     token?: string,
     trusted = false,
+    caps?: string[],
   ): Promise<number | null> {
     // the worker rebuilds all three senders around the socket key, so only `send` is needed
     // here, to find that key
     const sock = sockFor(send);
-    const seq = this.populate('reattach');
-    return this.request<boolean>((call) => ({ k: 'reattach', rid: this.rid, seq, call, id, sock, token, trusted })).then(
+    // a returning build without the import capability counts as one until the worker has it
+    const seq = this.populate('reattach', undefined, undefined, caps ? { nocap: !hasImportCap(caps) } : undefined);
+    return this.request<boolean>((call) => ({ k: 'reattach', rid: this.rid, seq, call, id, sock, token, trusted, caps })).then(
       (ok) => {
         if (!ok) return null;
         this.attached.add(sock);
@@ -447,6 +494,11 @@ export class RemoteRoom implements RoomHandle {
   applyFacts(rid: number, f: RoomFacts): void {
     if (rid !== this.rid) return; // from the instance before a `revive`
     this.facts = f;
+    // follow the room's config (a host can unlock a record room), in place: `config` is shared
+    this.config.kind = f.cfg.kind;
+    if (f.cfg.record) this.config.record = f.cfg.record;
+    else delete this.config.record;
+    this.config.settings = f.cfg.settings;
     while (this.unacked.length > 0 && this.unacked[0].seq <= f.ack) this.unacked.shift();
   }
 
@@ -546,10 +598,18 @@ export class RoomPool {
   private readonly watched = new Set<HostSocket>();
   private watchTimer: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * The process's imported-robot-visuals budget (`server/importVisuals.ts`): one counter per
+   * thread in one shared buffer, so the 64 MiB limit is the PROCESS's and not each worker's. This
+   * thread is slot 0, worker `i` is slot `i + 1`.
+   */
+  private readonly visualBudget = makeSharedVisualBudget();
+
   constructor(
     private readonly entry: URL,
     n: number,
   ) {
+    configureVisualBudget(this.visualBudget, 0);
     for (let i = 0; i < n; i++) {
       const slot: Slot = {
         index: i,
@@ -569,7 +629,7 @@ export class RoomPool {
   }
 
   private spawn(slot: Slot): void {
-    const w = new Worker(this.entry);
+    const w = new Worker(this.entry, { workerData: { visualBudget: this.visualBudget, visualSlot: slot.index + 1 } });
     slot.worker = w;
     slot.ready = false;
     w.on('message', (b: Batch) => this.onBatch(slot, b));
@@ -767,6 +827,8 @@ export class RoomPool {
     slot.queue = [];
     slot.flushScheduled = false;
     slot.stats = null;
+    // its rooms died with it, and so did their pictures: hand the bytes back to the budget
+    resetVisualSlot(this.visualBudget, slot.index + 1);
     console.error(`[workers] worker ${slot.index} exited (code ${code}); ${slot.rooms.size} room(s) lost`);
     for (const id of slot.calls) {
       const c = this.calls.get(id);

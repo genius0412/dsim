@@ -4,11 +4,19 @@ import { authClient, clearAuthToken } from '../lib/authClient';
 import { fetchAccountSettings } from '../net/api';
 import { coerceSettings } from '../settings';
 
-// Module-level so it survives this component unmounting (it's only mounted on
-// shell screens, not during a game): a given user is loaded from the server at
+// Module-level so it survives this component unmounting (it's mounted on the shell
+// screens and the ranked screen, not during a game): a given user is loaded from the server at
 // most once per session, so returning to the menu never re-fetches and clobbers
 // unsaved local edits. Reset when signed out.
 let syncedUser: string | null = null;
+/**
+ * The identity the JWT cache was last cleared for. Module-level for the same reason: this
+ * component remounts on every trip between the shell, the ranked screen and a match, and the
+ * session store hands the same user back on each one. A remount is not a sign-in, so it must not
+ * throw away a good cached token (every authenticated call would pay a `/token` round trip after
+ * each trip to the ranked screen). `undefined` = never seen, so the first answer always clears.
+ */
+let tokenUser: string | null | undefined;
 
 /**
  * Per-account settings sync (rendered only when auth is enabled → `authClient`
@@ -41,8 +49,12 @@ export function AccountSync({
     // so the in-memory JWT belongs to whoever was here before. Clearing it here
     // covers every sign-out button at once, since they all land on this effect.
     // Keyed on the identity ALONE: the load below retries on its own clock, and a retry
-    // is not an identity change that should throw away a good cached token.
-    clearAuthToken();
+    // is not an identity change that should throw away a good cached token. Nor is a remount
+    // (`tokenUser`).
+    if (uid !== tokenUser) {
+      tokenUser = uid;
+      clearAuthToken();
+    }
     onUser(uid);
     if (!uid) syncedUser = null;
   }, [uid, onUser]);
