@@ -14,6 +14,7 @@ import {
   bbSideRollerY,
 } from './config';
 import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
+import { bbSideRollerOffsets } from './importMech';
 import { bbCarriesNectar, bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbIndexElements } from './spawn';
 import { capturePollen } from './elements';
@@ -265,6 +266,12 @@ function stageAtFlower(world: World, robotId: number, local: Vec2, standoff: num
 function mouthPoint(spec: RobotSpec): Vec2 {
   const f = bbFootprint(spec);
   const m = bbMouths(spec)[0];
+  if (spec.imported && m) {
+    // an IMPORTED robot: on ITS mouth's roller line and off its own centre (`mouthAxes`' `vc`)
+    const ax = mouthAxes(m, 0, 0);
+    const v = ax.vc + (bbIntakeKindOf(spec) === 'siderollers' ? bbSideRollerOffsets(spec, ax)[0] : 0);
+    return { x: ax.n.x * ax.uOut + ax.p.x * v, y: ax.n.y * ax.uOut + ax.p.y * v };
+  }
   const edge = m?.edge ?? 'front';
   const lateral = m && bbIntakeKindOf(spec) === 'siderollers' ? bbSideRollerY(mouthAxes(m, spec.length / 2, spec.width / 2).half) : 0;
   if (edge === 'front') return { x: f.front, y: lateral };

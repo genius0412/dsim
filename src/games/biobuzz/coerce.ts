@@ -19,7 +19,12 @@ import {
   bbStorageMax,
   BB_HALF_X,
   BB_HALF_Y,
+  BB_FIXED_FLY_DEFAULT,
+  BB_FIXED_HOOD_DEFAULT_DEG,
+  BB_FIXED_HOOD_MAX_DEG,
+  BB_FIXED_HOOD_MIN_DEG,
 } from './config';
+import { coerceFlywheel } from '../../sim/flywheelSpec';
 import {
   BB_LIFT_KINDS,
   BB_LIFT_POSITIONS,
@@ -33,6 +38,7 @@ import {
   bbLiftOf,
   bbResolveLiftMount,
   bbResolveMount2,
+  bbScoreModeMirror,
 } from './mechs';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -148,9 +154,31 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
 
   const mech = coerceBbMech(raw);
   out.bbMech = mech;
-  out.scoreMode = mech.launcher.kind;
+  // A FIXED launcher mirrors as a DUMPER: the flat field is what an older peer or server reads,
+  // and a dumper on the same edge is the nearest hardware it can name (turretless, turns to aim).
+  // `ChainScoreMode` stays Chain Reaction's vocabulary that way, with no `fixed` in it.
+  out.scoreMode = bbScoreModeMirror(mech.launcher.kind);
   out.shooterMount = mech.launcher.mount;
   out.shooterRear = mech.launcher.mount === 'back';
+  /**
+   * THE SETPOINT FLYWHEEL — the FIXED launcher's speed, and only its. Every other launcher solves
+   * its own throw, so a `flywheel` left on a turret or a dumper (a build switched over in the
+   * builder, a hand-edited save) is dropped rather than carried as hardware the robot does not
+   * have. A fixed launcher without one gets the kit's (`BB_FIXED_FLY_DEFAULT`). The shared pass in
+   * `coerceSpec` has already shaped whatever arrived (`coerceFlywheel`); it is re-shaped here so a
+   * direct call cannot smuggle a malformed one, and re-shaping is idempotent.
+   */
+  if (mech.launcher.kind === 'fixed') {
+    const fly = coerceFlywheel(raw.flywheel) ?? { ...BB_FIXED_FLY_DEFAULT, rpm: [...BB_FIXED_FLY_DEFAULT.rpm] };
+    // ONE SETPOINT in this game: both kit robots run one, and the pad has no button left to step a
+    // preset with (D-DOWN is unbound on purpose), so a presets wheel keeps its first speed
+    out.flywheel = fly.mode === 'presets' ? { ...fly, mode: 'fixed', rpm: [fly.rpm[0]] } : fly;
+  } else {
+    delete out.flywheel;
+  }
+  // DECODE's launcher fields are not this game's (its hood is `bbMech.launcher.hoodDeg`)
+  delete out.launcher;
+  delete out.hoodDeg;
 
   // 1) INTAKE MOUNT. Resolved through `bbIntakeMountOf` so the legacy `intakeSide` boolean
   // still migrates, then checked for BUILDABILITY: a mount whose sweepers cannot fit the
@@ -211,7 +239,14 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // SNAPPED TO THE DIAL'S 1-in STEP for the same reason the two sizes above are: a clamp is not
   // a repair for a value that is already in range, and a 15-digit height would print the same
   // way a 15-digit width did. Both bounds are whole inches, so rounding cannot leave the range.
-  if (typeof raw.heightIn === 'number' && Number.isFinite(raw.heightIn)) {
+  //
+  // AN IMPORTED ROBOT'S HEIGHT IS ITS CAD's (`imported.heightIn`, the measured truth), rounded UP
+  // onto the dial and clamped to its range — up, so the cap `bbMechEnvelopes`/the 3D bands are
+  // built under never shaves the top off the model — and it declares NO stow height: the CAD is
+  // the starting configuration, already inside R102's cube, so stowed and deployed are one height.
+  if (out.imported && Number.isFinite(out.imported.heightIn)) {
+    out.heightIn = clamp(Math.ceil(out.imported.heightIn), BB3_HEIGHT_MIN, BB3_HEIGHT_MAX);
+  } else if (typeof raw.heightIn === 'number' && Number.isFinite(raw.heightIn)) {
     out.heightIn = Math.round(clamp(raw.heightIn, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX));
   } else {
     delete out.heightIn;
@@ -233,7 +268,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // `GameSimModule.startLegal` (`sim.ts`), and the builder says so before a player ever readies
   // up. Clamping here is how a legality check quietly becomes a decoration.
   const stow = (out as { stowHeightIn?: unknown }).stowHeightIn;
-  if (typeof stow === 'number' && Number.isFinite(stow)) {
+  if (out.imported) {
+    delete (out as { stowHeightIn?: number }).stowHeightIn;
+  } else if (typeof stow === 'number' && Number.isFinite(stow)) {
     (out as { stowHeightIn?: number }).stowHeightIn = Math.round(
       clamp(stow, BB3_HEIGHT_MIN, bbDeployedHeightIn(out)),
     );
@@ -292,7 +329,12 @@ function coerceBbMech(raw: RobotSpec): BbMechSpec {
     : BB_DEFAULT_SHOOTER_MOUNT) as BbMountPos;
   if (!isTurreted(kind)) mount = bbShooterEdgeOf({ shooterMount: mount });
   if (kind === 'twinturret') mount = bbFoldTwinMount(mount);
-  const hoodDeg = clampFinite(src.hoodDeg, BB_HOOD_MIN_DEG, BB_HOOD_MAX_DEG, BB_HOOD_DEFAULT_DEG);
+  // the FIXED launcher's hood is real and has its own travel (`BB_FIXED_HOOD_*`); every other
+  // kind keeps the dumper-era clamp it has always had, so a stored dumper or turret is untouched
+  const hoodDeg =
+    kind === 'fixed'
+      ? Math.round(clampFinite(src.hoodDeg, BB_FIXED_HOOD_MIN_DEG, BB_FIXED_HOOD_MAX_DEG, BB_FIXED_HOOD_DEFAULT_DEG))
+      : clampFinite(src.hoodDeg, BB_HOOD_MIN_DEG, BB_HOOD_MAX_DEG, BB_HOOD_DEFAULT_DEG);
   // Built without a `mount2` key for every kind but the double turret, so a stale one is dropped.
   const launcher: BbLauncherSpec =
     kind === 'twinturret'

@@ -1,0 +1,14 @@
+-- 0056 — A RANKED PARTICIPANT REMEMBERS WHETHER THEY QUEUED AS A PREMADE.
+--
+-- A ranked 2v2 premade (a "2v2 · Ranked" friend challenge) plays in the same pool as solo
+-- queuers. Whether it should ever get a queue and a ladder of its own depends on two numbers
+-- nothing recorded: how many 2v2 matches carry a premade, and whether premades win more than
+-- their ratings predict. The party token lives only in the staged roster, which is deleted the
+-- moment the host claims it, so without this column neither can be answered later.
+--
+-- true  — this player's partner on their alliance was their own premade
+-- false — a ranked match, queued solo (or a rated 1v1 challenge, whose "party" is the opponent)
+-- NULL  — a custom room, or a row written before this migration: unknown
+--
+-- Nullable with no default, so it rewrites no existing row and costs nothing to add.
+alter table match_participants add column if not exists premade boolean;

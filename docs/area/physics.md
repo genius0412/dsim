@@ -53,6 +53,12 @@ session and this is not needed by most of them. The `governs:` line above is rea
      robot to exist), which is how a robot held against a wall by an opponent feels that
      opponent's load in the STATIC pass. Rapier resolves the contact but does not tell the
      bespoke wall aligner who is leaning on whom.
+- **A PERSISTENT SOLVER TAKES THE WALL SQUARE-UP AS SPIN, NOT AS A WRITTEN HEADING.**
+  `squareUpTurnsWalls` returns the turn `squareUpRobotsWalls` would write, without writing it, and
+  `recordRobotContacts` is the record half. BIOBUZZ 3D uses the pair (`SIM_PATCH` 3): its Rapier
+  world persists, and a heading written after the solve came back as a rotation teleport the solver
+  fought every tick — the online wall bump, `docs/area/biobuzz.md`. The 2D solves rebuild their
+  world each tick and keep the post-solve write; DECODE and Chain Reaction step byte-identically.
 - **THE PAIR PASS ACCUMULATES; IT DOES NOT WRITE** (`ContactAcc`). It used to rotate both chassis
   before the walls / goal faces / classifier / gate arm were asked anything, so those surfaces
   worked out their geometry against a robot an opponent had already turned — the exact
@@ -263,6 +269,85 @@ session and this is not needed by most of them. The `governs:` line above is rea
 - `robotIntersectsRect` (SAT) exists because thin zones can be fully covered by a robot body
   with no corner inside.
 
+## Imported robots (`RobotSpec.imported`, `src/sim/imported.ts`)
+
+Contract: `docs/robot-import-plan.md` §3.1 and §4.
+
+- **Every imported-robot branch runs only when `spec.imported` is present.** Standard robots step
+  byte-identically, and smoke pins it (`IMP_STANDARD_PINS`: `worldHash` plus an FNV of the whole
+  world's JSON, a four-robot contact run in all three games and BIOBUZZ 3D, recorded before the
+  branches existed). Never send a standard robot down a hull path: edge normals taken from corner
+  differences round differently from `rot(…, heading)` and move `step()` for everybody.
+- `coerceImported` is the sanitiser: hull recomputed (monotone chain, CCW), 1/64-in grid, ≤ 16
+  vertices, bounding box ≤ 18 in (uniform scale), origin ≥ 1 in inside the hull (else recentred),
+  idempotent. `coerceSpec` resolves it in step 1, from the RAW input only (absent means a
+  standard robot, never `base`'s import), and sets `length`/`width` from the hull's bounding box
+  before the game's clamps. Those two are the parametric fallback, not the shape: DECODE's sloped
+  intake caps `length` at 15 while the hull stays 18.
+- ⚠️ **`coerceImported` runs on hostile input at a server's door, so its cost is bounded, not just
+  its output.** It reads 64 points a polygon (`IMPORT_MAX_INPUT_POINTS`) and the points of at most 6
+  bands (`IMPORT_MAX_BAND_INPUTS`); `pullInside` skips the candidates its edges prove are outside
+  and classifies the rest by their largest edge excess, calling `polyFeature` only within 1e-6 of an
+  edge line. Its answer is the old 65-step walk's BIT FOR BIT (smoke `imports/pull` compares them
+  over 50,000 points); the old walk with 16 × 256 band points cost 70 ms a message. Smoke
+  `imports/cost` holds the worst 64 KiB `update` under 1 ms. Any new loop over input points needs
+  the same bound.
+- The shape is `robotHullLocal(spec)` / `robotHullWorld(r)` (convex, CCW).
+  `footprintExtents` / `robotExtents` return the hull's bounding box with NO intake reach (the
+  hull includes the intake); treat them as a bound. `robotCorners` stays the four clockwise
+  corners of that box for every robot, because standard code indexes it and sums over it in order.
+- Collider: Rapier `convexHull`, stated `shoveMass`, centre of mass at the origin, inertia of a
+  uniform lamina in the hull's shape (`chassisInertia`). Turn rate comes from the wheelbase
+  (`importedHalfDiag`): wheels where a standard chassis puts them turn it exactly as fast.
+  `importedWheels` speaks FL, FR, BL, BR; `wheelLocals`/`wheelContacts` speak FL, FR, BR, BL.
+- The wall square-up's flush is the hull edge facing the surface (`importedFlushRel`), not
+  `mod π/2`. Contacts, SAT, start legality and every zone/contact foul read hull vertices and
+  edge normals (`polySatGap`, `polyGap`, `polysOverlap`, `polyFeature`).
+- BIOBUZZ 2D has no pin round, so a POLLEN pressed into a wall is squeezed into any chassis;
+  smoke pins that an import does exactly what a standard chassis does.
+
+### Imported robots: mechanisms (`src/sim/importedMech.ts`, each game's `importMech.ts`)
+
+- **`imported.mech` holds POSITIONS; the game's mount fields still say WHICH edge or direction**
+  (`intakeMount`, a turretless `shooterMount`, `bbMech.lift.mount`, `catalystMount`). A span on an
+  edge the mount does not use is ignored; DECODE reads `front` only. `coerceImported`'s mech rule
+  is game-blind (points moved inside the hull, z in `[0, heightIn]`, one span per edge in a fixed
+  order); each game's ranges are applied where it READS them, never written back.
+- **Import geometry reads `imported.hull`, never `spec.length/width`** (the clamped fallback), and
+  never assumes the hull's box is centred on the origin. The integration review (2026-10-02) found
+  four game rules that still measured an import as a box about its origin, each wrong by the
+  offset: BIOBUZZ G402's depth, Chain's beam block, Chain's start extents, and the BIOBUZZ 3D
+  LIGHT predictor. A one-sided question (how far toward THIS beam, wall or line) reads the hull
+  turned to the heading on THAT side (`rotatedPolyBounds`, or the deepest vertex); a symmetric
+  `max(front, rear, half)` over-reaches on the short side and teleports.
+- **A mouth is resolved, not stored** (`resolveImportMouth`): the roller line is where the hull ends
+  inside the span (less archetype hardware that stands past it inside the CAD — BIOBUZZ side
+  rollers), the face is the PRESET's reach behind it (the nip, lid, held slots and flower windows
+  are calibrated on that reach), the span is fitted to the hull's chord on the face line. EXACTLY
+  TWO PASSES, NO TOLERANCE. A mouth carries a lateral centre `vc` (BIOBUZZ `mouthAxes().vc`, DECODE
+  `yc`) that is exactly 0 for every standard mouth; every `v` read off mouth axes subtracts it.
+- **The artifact solids are the hull CARVED by the mouth** (`carveImportPlates`; DECODE funnels:
+  `decodeImportSolids`, the standard wedge quad clipped by the hull grown by the lip). Pieces under
+  0.05 in² are dropped BEFORE either solve or the pin test sees them. An import shaped like the
+  standard footprint carves exactly the standard solids, and smoke pins that for every DECODE
+  preset and the BIOBUZZ/Chain end mounts.
+- DECODE with NO intake (`intake: 'none'`, hand loaded): no mouth is resolved, the whole hull is
+  chassis (`decodeImportSolids`), and the held slots run along the robot's centreline behind the
+  hull's front there (`decodeImportHeldSlot`). See `docs/area/decode.md`, "NO INTAKE".
+- DECODE: a launch height under `4R + 0.5` is raised to it (`DECODE_IMPORT_LAUNCH_MIN`): flight
+  artifacts under `4R` run through the robot contact pass, so a lower shot would be pushed out of
+  its own hull on the release tick.
+- Placers (`importPlacePoint`) reach from their base along the mount direction to where the hull
+  ends, then the game's reach: "flush on the foot = dead centre" survives because the hull's edge
+  is what meets the field.
+- `IMP_STANDARD_PINS`' mechanism twin is `L2_MECH_PINS`: an intake/fire/place run per game (BIOBUZZ
+  2D and 3D), recorded before the mechanism branches existed.
+- **The renderers read these accessors and nothing else** (docs/area/ui.md, docs/area/biobuzz.md).
+  Two exist for them alone, beside the sim's own: `decodeImportGrabRect` (the nip about the axle,
+  across the mouth — the terms `updateIntake` captures with) and BIOBUZZ's `bbDumperFrame` (the
+  release line `launchLine` uses, in its edge's frame). A renderer that needs a position the sim
+  does not expose gets an accessor here, gated on `spec.imported`, rather than its own arithmetic.
+
 ## Robot spec, builder, and drive feel
 
 - ⚠️ **TOGGLE BUTTONS ARE DEBOUNCED** (`debouncedPress`, `src/sim/robot.ts`; `TOGGLE_DEBOUNCE_S`
@@ -324,7 +409,20 @@ modeled motor is the **MATRIX / goBILDA 5000-series 12VDC** brushed motor (5800 
 - **SWERVE = FOUR INDEPENDENT modules** (`RobotState.moduleAngles[4]`, FL/FR/BL/BR): real
   per-module inverse kinematics (target vel = translation + ω×r), WPILib-style module
   optimization (a >90° change FLIPS the pod + REVERSES drive, `MODULE_SLEW_RATE` 7), and
-  forward kinematics of the pods for the achieved chassis motion. **Balancing weakness is
+  forward kinematics of the pods for the achieved chassis motion.
+  **ONE WHEEL ORDER: `WHEEL_CORNERS` (`config.ts`) — FL, FR, BL, BR, +x forward, +y left.**
+  Pod i is the wheel at `WHEEL_CORNERS[i]`, and every site that pairs a pod with a position gets
+  the position from `wheelLocals` (or the constant): the IK/FK and the traction loop in
+  `updateRobot`, the three canvas `drawWheels` and BIOBUZZ 3D's `buildWheels`. Never index
+  `moduleAngles` against a hand-written corner list. `wheelLocals` used to walk the perimeter
+  (FL, FR, BR, BL), so the traction loop resisted the two REAR wheels' contact slip along each
+  other's pod axes (fixed in `SIM_VERSION` 5; measured, a swerve spinning off a wall took 2.05 s
+  to clear it where the bug took 1.6, and an X-locked swerve shoved off-centre from the side
+  yawed 7.9° where the bug gave 13.1°). Free-space drift and wobble did not move — they come from
+  the IK/FK, which was always consistent. `wheelContacts` is a polygon and still walks the
+  PERIMETER (`WHEEL_PERIMETER`); never pair its index with a pod. Smoke pins where each pod's
+  angle acts (read back out of the traction force) and where each sprite draws it.
+  **Balancing weakness is
   WOBBLE, not weight** (a heavy-swerve nerf was tried and reverted): each module's control
   loop is imperfect (`SWERVE_WOBBLE_AMP`/`_FREQ`, INDEPENDENT phase per pod) → real path
   drift + yaw wobble driving straight. **X-drive renders as a DIAMOND, not an X**: the omnis

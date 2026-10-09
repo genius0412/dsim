@@ -2,6 +2,8 @@ import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '
 import * as C from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { robotExtents } from '../../sim/physics';
+import { polyFeature } from '../../sim/imported';
+import { chainImportLaunchLine, chainImportLaunchZ } from './importMech';
 import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
@@ -160,6 +162,17 @@ export function updateChain(
       const e = robotExtents(rob);
       const rel = rot({ x: c.pos.x - rob.pos.x, y: c.pos.y - rob.pos.y }, -rob.heading);
       const rr = CHAIN_CATALYST_OD / 2;
+      if (rob.spec.imported) {
+        // an IMPORT: off its hull, along the hull's own nearest-feature normal
+        const f = polyFeature(rob.spec.imported.hull, rel);
+        if (f.depth <= -rr) continue;
+        const push = rot({ x: f.nx, y: f.ny }, rob.heading);
+        c.pos.x += push.x * 0.9;
+        c.pos.y += push.y * 0.9;
+        const shove = Math.max(CHAIN_RING_SLIDE_MIN, hyp(rob.vel.x, rob.vel.y) * 0.25);
+        c.vel = { x: push.x * shove, y: push.y * shove };
+        break;
+      }
       if (rel.x > e.front + rr || rel.x < -e.rear - rr || Math.abs(rel.y) > e.half + rr) continue;
       // shallowest way out (robot-local), then convert back to the world
       const penFwd = e.front + rr - rel.x;
@@ -209,7 +222,8 @@ export function updateChain(
       // fly along the STALE heading and miss. The launch reads r.turretHeading (physical).
       // solved FROM the turret's own position (see turretOrigin), not the chassis centre
       const desiredTurret = leadDir(turretOrigin(r), mouth, CHAIN_SHOT_SPEED, r.vel);
-      r.turretHeading = slewAngle(r.turretHeading, desiredTurret, CHAIN_TURRET_SLEW * dt);
+      const tunedSlew = r.spec.imported?.tune?.turretSlew;
+      r.turretHeading = slewAngle(r.turretHeading, desiredTurret, (tunedSlew !== undefined ? (tunedSlew * Math.PI) / 180 : CHAIN_TURRET_SLEW) * dt);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         const twin = mode === 'twinturret';
         r.hopper.shift();
@@ -223,7 +237,9 @@ export function updateChain(
         // carries and the cadence averages EXACTLY its nominal rate; clamp forward when the
         // hopper has been idle so a resumed burst can't catch up on accumulated debt.
         // A twin divides the interval by CHAIN_TWIN_FIRE_MULT — two barrels, one indexer.
-        r.fireReadyAt += twin ? CHAIN_FIRE_INTERVAL / CHAIN_TWIN_FIRE_MULT : CHAIN_FIRE_INTERVAL;
+        // an import's practice tuning names the time between shots, both barrels together
+        const tunedShot = r.spec.imported?.tune?.shotInterval;
+        r.fireReadyAt += tunedShot !== undefined ? tunedShot : twin ? CHAIN_FIRE_INTERVAL / CHAIN_TWIN_FIRE_MULT : CHAIN_FIRE_INTERVAL;
         if (r.fireReadyAt < world.time) r.fireReadyAt = world.time;
         r.lastFireAt = world.time;
       }
@@ -250,7 +266,8 @@ export function updateChain(
           const n = r.hopper.length;
           r.hopper.length = 0;
           launchLine(world, chain, r, n, CHAIN_DUMP_SPEED, CHAIN_DUMP_SIDE_VAR);
-          r.fireReadyAt = world.time + CHAIN_DUMP_INTERVAL;
+          const reload = r.spec.imported?.tune?.reload;
+          r.fireReadyAt = world.time + (reload !== undefined ? reload : CHAIN_DUMP_INTERVAL);
         }
         r.lastFireAt = world.time;
       }
@@ -553,7 +570,7 @@ function launchToAccel(
   const netx = dir.x * horizSpeed + perp.x * latVel + r.vel.x;
   const nety = dir.y * horizSpeed + perp.y * latVel + r.vel.y;
   const netSpeed = Math.max(1, hyp(netx, nety));
-  const z0 = 8;
+  const z0 = r.spec.imported ? chainImportLaunchZ(r.spec, 8) : 8; // an IMPORT: its placed height
   const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // arc timing: sized to the goal distance
   const t = land / netSpeed;
   const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
@@ -693,8 +710,12 @@ function launchAt(
   // launch point: out to the edge along its normal, then `frac` across it (edge perpendicular)
   const dir = EDGE_DIR[edge];
   const perp = EDGE_PERP[edge];
-  const across = frac * 2 * span * CHAIN_LAUNCH_LINE_FRAC;
-  const w = rot({ x: dist * dir.x + across * perp.x, y: dist * dir.y + across * perp.y }, r.heading);
+  // an IMPORT's line is centred on its placed lip, no wider than its hull there
+  const line = r.spec.imported ? chainImportLaunchLine(r.spec, edge, span) : null;
+  const across = frac * 2 * (line ? line.half : span) * CHAIN_LAUNCH_LINE_FRAC;
+  const w = line
+    ? rot({ x: line.origin.x + across * perp.x, y: line.origin.y + across * perp.y }, r.heading)
+    : rot({ x: dist * dir.x + across * perp.x, y: dist * dir.y + across * perp.y }, r.heading);
   const px = r.pos.x + w.x;
   const py = r.pos.y + w.y;
   const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
@@ -710,7 +731,7 @@ function launchAt(
     state: { kind: 'flight', target: r.alliance },
     pos: { x: px, y: py },
     vel: { x: netx, y: nety },
-    z: CHAIN_LAUNCH_Z0,
+    z: r.spec.imported ? chainImportLaunchZ(r.spec, CHAIN_LAUNCH_Z0) : CHAIN_LAUNCH_Z0,
     vz: 0.5 * C.GRAVITY * tWall,
   });
 }
@@ -841,7 +862,20 @@ function interact(
     }
   }
 
-  // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint
+  // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint.
+  // An IMPORT plows with its hull, along the hull's nearest-feature normal — its bounding box
+  // would shove particles from corners the robot does not have.
+  if (rob.spec.imported) {
+    const f = polyFeature(rob.spec.imported.hull, local);
+    if (f.depth <= -r2) return 'none';
+    const n = rot({ x: f.nx, y: f.ny }, rob.heading);
+    b.pos.x += n.x * 0.6;
+    b.pos.y += n.y * 0.6;
+    const rv = hyp(rob.vel.x, rob.vel.y);
+    b.vel.x = n.x * rv * 0.9;
+    b.vel.y = n.y * rv * 0.9;
+    return 'none';
+  }
   if (!inBox) return 'none';
 
   // push out along the min-penetration axis (robot-local), impart robot vel

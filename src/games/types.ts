@@ -12,6 +12,56 @@ import type {
 import type { RobotSetup } from '../sim/spawn';
 import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
+import type { ImportedEdge, ImportedMech } from '../types';
+
+/**
+ * IMPORTED ROBOTS — what the mechanism placement editor needs from a game (an `ImportMechSlot`
+ * per game, reached through `validateImportedMech` / `defaultImportedMech` / `mechHandles` in
+ * `./importMechChecks.ts`). DOM-free; every input is a COERCED spec (`coerceSpec(…, game)`)
+ * carrying `imported`.
+ *
+ * ⚠️ NOT A `GameSimModule` SLOT. The slots lived there until the bundle audit measured them in the
+ * entry chunk: the sim registry is reached from every page, and the checks are only ever asked by
+ * the importer editor (and the smoke suite). `importMechChecks.ts` is the one registry of them and
+ * only the editor imports it, so they are in the editor's lazy chunk.
+ */
+export type ImportMechHandleKey = 'shooter' | 'shooter2' | 'place' | `intake:${ImportedEdge}`;
+
+/** one thing the player may drag in the top-down editor for this build */
+export interface ImportMechHandle {
+  key: ImportMechHandleKey;
+  /** a POINT inside the hull (`mech.shooter` / `shooter2` / `place`), or a SPAN along `edge`
+   *  (`mech.intakes`) */
+  kind: 'point' | 'span';
+  /** sentence-case label for the editor */
+  label: string;
+  /** the edge a span runs along */
+  edge?: ImportedEdge;
+  /** a point with a release height: the height the sim uses now, and the range it accepts */
+  z?: number;
+  zMin?: number;
+  zMax?: number;
+  /** a TURRETLESS launcher's point also carries a FACING (`mech.shooterYawDeg`, degrees CCW from
+   *  robot forward): the direction the sim fires along now. The editor gives it a direction
+   *  handle beside the point. */
+  facingDeg?: number;
+}
+
+/** one plain-language check on a placement. `block` stops Save; `warn` is shown beside it. */
+export interface ImportMechIssue {
+  level: 'block' | 'warn';
+  code: string;
+  text: string;
+  /** the handle the issue is about, when there is one */
+  handle?: ImportMechHandleKey;
+}
+
+export interface ImportMechSlot {
+  issues(spec: RobotSpec): ImportMechIssue[];
+  /** the placements the importer pre-fills from the archetype and the hull (coerced) */
+  defaults(spec: RobotSpec): ImportedMech;
+  handles(spec: RobotSpec): ImportMechHandle[];
+}
 
 /**
  * The GAME-ABSTRACTION seam (DOM-free core types).
@@ -79,6 +129,9 @@ export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
  * PERMANENT and every stored world/snapshot/replay predates this field.
  */
 export type Physics = '2d' | '3d';
+
+/** when the room asks a game for its competition numbers — see `GameSimModule.rankFacts` */
+export type RankFactsAt = 'autoEnd' | 'teleopStart' | 'final';
 
 /**
  * WHICH PHYSICS EVERY SERVER-CONNECTED MATCH OF THIS GAME RUNS ON (owner ruling, 2026-09-18).
@@ -325,6 +378,20 @@ export interface GameSimModule {
    * the same on every machine. Absent ⇒ the field counts as settled at once.
    */
   settled?(world: World): boolean;
+  /**
+   * THE COMPETITION MANUAL'S NUMBERS for each alliance, read off the authoritative world for a
+   * competition's ranking points (`src/competition/manual.ts` lists each game's keys;
+   * `scripts/smoke.ts` checks they agree). A PURE READ — it must not touch the world.
+   *
+   * The room asks at three instants and merges them, the EARLIEST instant's value winning for a
+   * key reported more than once: `'autoEnd'` on the first tick the phase has left AUTO, `'teleopStart'`
+   * on the first TELEOP tick, `'final'` once the field has settled. A game reports each number at the
+   * instant its manual assesses it — what counts as AUTO is not the same in every manual (INTO THE
+   * DEEP counts the transition as TELEOP, DECODE and BIOBUZZ as AUTO). Plain numbers only: the result
+   * crosses a worker boundary and lands in jsonb. Absent ⇒ the game reports nothing, and a
+   * competition ranks it on win/tie/loss alone.
+   */
+  rankFacts?(world: World, at: RankFactsAt): Record<Alliance, Record<string, number>>;
   /**
    * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
    * `robotSolids` (`src/sim/artifactSolids.ts`).

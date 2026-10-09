@@ -13,6 +13,7 @@ import {
   GFX_PRESET_LABEL,
   GFX_RENDER_SCALE_MAX,
   GFX_RENDER_SCALE_MIN,
+  GFX_TIERS,
   getGraphics,
   MAX_FPS_UNLIMITED,
   MAX_FPS_VSYNC,
@@ -71,7 +72,7 @@ import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
 
 /**
- * GRAPHICS — the seventeen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
+ * GRAPHICS — the nineteen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
  * all at once, and the environment picker of §4.5.
  *
  * ── WHY IT IS ITS OWN SECTION AND NOT A BLOCK INSIDE "AUDIO AND VISUAL" ────────────────────
@@ -547,6 +548,31 @@ const CUSTOM_GESTURES: readonly { g: FreeCamGesture; label: string }[] = [
  * otherwise start Windows' autoscroll and a right press would open the context menu — over a
  * settings screen, not a canvas, so there is no other handler to be polite to.
  */
+/**
+ * EAT THE REST OF THE PRESS THAT WAS JUST BOUND.
+ *
+ * The capture binds on `mousedown`, but the same press still ends in a `click` (or `auxclick` /
+ * `contextmenu`) on whatever is under the pointer — usually the tile that armed the capture,
+ * whose toggle then saw no capture and ARMED IT AGAIN, so binding the left button never finished.
+ * On another tile it armed that one, and on a link it navigated. The swallowers go on the
+ * press's `mouseup`, one task later, which is after every event that press can still produce.
+ */
+function swallowRestOfPress(): void {
+  const kinds = ['click', 'auxclick', 'contextmenu'] as const;
+  const eat = (e: Event): void => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  const done = (): void => {
+    window.removeEventListener('mouseup', done, true);
+    window.setTimeout(() => {
+      for (const k of kinds) window.removeEventListener(k, eat, true);
+    }, 0);
+  };
+  for (const k of kinds) window.addEventListener(k, eat, true);
+  window.addEventListener('mouseup', done, true);
+}
+
 function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
   const [capture, setCapture] = useState<FreeCamGesture | null>(null);
   const navRef = useRef(nav);
@@ -562,6 +588,7 @@ function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
       const b = { button, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       const cur = navRef.current;
       setFreeCamNav({ ...cur, custom: bindFreeCamCustom(cur.custom, capture, b) });
+      swallowRestOfPress();
       setCapture(null);
     };
     const swallow = (e: Event): void => e.preventDefault();
@@ -605,7 +632,11 @@ function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
   );
 }
 
-const PRESETS: readonly GraphicsPreset[] = ['auto', 'low', 'medium', 'high', 'ultra'];
+// DERIVED FROM `GFX_TIERS`, not a literal list: a literal list type-checks with a tier
+// missing from it, which is exactly the bug `GFX_PRESETS_ALL` was written to stop happening
+// to the STORED preset (see that constant's own comment) — the picker is the other place a
+// hand-written list of tiers could silently drop one.
+const PRESETS: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS];
 
 /** megapixels, one decimal — the number the render-scale row is capped by, printed so the cap
  * is visible rather than mysterious when the slider stops making a difference. */
@@ -703,26 +734,35 @@ export function GraphicsSection() {
             label="Preset"
             value={gfx.preset}
             cols="three"
+            lead
             hint={gfx.preset === 'custom' ? `based on ${GFX_PRESET_LABEL[gfx.tier]}` : undefined}
             onPick={(p: GraphicsPreset) => setGraphicsPreset(p)}
             options={[
               ...PRESETS.map((p) => ({ v: p, t: GFX_PRESET_LABEL[p] })),
               // CUSTOM IS SHOWN BUT NOT PICKABLE-TO: it is what the picker says after you change
-              // any single setting below, never a thing you choose. Rendered as a disabled-
-              // looking `.static` tile so the row still reads as a complete set of states.
+              // any single setting below, never a thing you choose. `OptRow` has no separate
+              // look for "shown but not a choice" — it renders as an ordinary `.on` tile, same
+              // as any other selected pick — so what actually stops a click from doing anything
+              // is `setGraphicsPreset` itself, which returns immediately on `'custom'` because
+              // it is a CONSEQUENCE of editing a setting below, never a pick of its own.
               ...(gfx.preset === 'custom' ? [{ v: 'custom' as GraphicsPreset, t: 'Custom' }] : []),
             ]}
           />
           {/* the ONE thing the preset row cannot say for itself: Auto measures rather than
-              guesses, and it keeps measuring. */}
-          <p className="ds-hint">Auto measures two seconds of real frames, and lowers itself a step if a match keeps dropping under 40 fps.</p>
+              guesses, and it keeps measuring — and stops short of the top, because a hand
+              picks Extreme, Auto never does. */}
+          <p className="ds-hint">
+            Auto measures two seconds of real frames, and lowers itself a step if a match keeps
+            dropping under 40 fps. It stops at Ultra: Extreme is a hand pick only.
+          </p>
         </div>
       </section>
 
       {/* ── EVERYTHING BELOW IS AN OVERRIDE OF THE PRESET ────────────────────────────────
-          The Quality preset sets fifteen of these seventeen values, which six flat panels in a
-          row never said: the one control almost everybody wants had the same weight as sixteen
-          they will never touch. Folded, the preset is the screen; open, the panels are exactly
+          The Quality preset sets eighteen of these nineteen values, which six flat panels in a
+          row never said: the one control almost everybody wants had the same weight as eighteen
+          they will never touch. (The nineteenth, `perfOverlay`, has no row here at all — it moved
+          to Audio and Visual.) Folded, the preset is the screen; open, the panels are exactly
           as they were.
 
           THE PANELS KEEP THEIR OWN BODIES on purpose. A new row (an element or mesh detail, a
@@ -782,13 +822,14 @@ export function GraphicsSection() {
           <OptRow
             label="Shadows"
             value={s.shadows}
-            cols="four"
+            cols="five"
             onPick={set('shadows')}
             options={[
               { v: 'off' as const, t: 'Off' },
               { v: 'low' as const, t: 'Low' },
               { v: 'high' as const, t: 'High' },
               { v: 'soft' as const, t: 'Soft' },
+              { v: 'max' as const, t: 'Max' },
             ]}
           />
           <OptRow
@@ -802,8 +843,22 @@ export function GraphicsSection() {
               { v: 'real' as const, t: 'Real', d: '56 more shadow casters' },
             ]}
           />
+          {/* AMBIENT OCCLUSION (Extreme). Works on any tier — the post chunk it needs loads off
+              this setting, never the tier (`wantsPost`), so turning it on under a Custom built
+              from High gets AO even though High's own column leaves it off. */}
+          <OptRow
+            label="Ambient occlusion"
+            value={s.ao}
+            cols="two"
+            onPick={set('ao')}
+            options={[
+              { v: 'off' as const, t: 'Off' },
+              { v: 'ssao' as const, t: 'On', d: 'A second pass over the scene, plus a denoise. Downloads once, the first time you turn it on' },
+            ]}
+          />
           {/* THE ENVIRONMENT PICKER (§4.5). Each HDRI states its download size, because picking
-              one is the only control in this whole screen that costs bytes. */}
+              one costs bytes; the only other controls that do are AO and Bloom above, which
+              share one small chunk and say so. */}
           <OptRow
             label="Environment"
             value={s.environment}
@@ -826,6 +881,14 @@ export function GraphicsSection() {
             value={s.reflections}
             onPick={set('reflections')}
             onDesc="Metal parts pick up the room"
+          />
+          {/* BLOOM (Extreme). Same rule as ambient occlusion above: the setting decides, not the
+              tier, so this is a real switch on every preset, not just Extreme's own column. */}
+          <ToggleRow
+            label="Bloom"
+            value={s.bloom}
+            onPick={set('bloom')}
+            onDesc="A few extra passes. Downloads once, the first time you turn it on"
           />
         </div>
       </section>
@@ -871,6 +934,24 @@ export function GraphicsSection() {
             options={[
               { v: 'sphere' as const, t: 'Smooth' },
               { v: 'cad' as const, t: 'Perforated', d: '2,300 triangles each' },
+            ]}
+          />
+          {/* MATERIALS (Extreme). Physical is the measured-finish pass: metals are metals,
+              coatings and plastics are not, surfaces carry their real texture, and reflections
+              show the room that is drawn. Its cost is a download and a few more shader
+              programs, which the sub-line states. */}
+          <OptRow
+            label="Materials"
+            value={s.materials}
+            cols="two"
+            onPick={set('materials')}
+            options={[
+              { v: 'standard' as const, t: 'Standard' },
+              {
+                v: 'physical' as const,
+                t: 'Physical',
+                d: 'Measured finishes and room reflections. Downloads once, the first time you turn it on',
+              },
             ]}
           />
           <OptRow
@@ -935,19 +1016,23 @@ export function GraphicsSection() {
               ⚠️ THE LINE THAT SAID SO IS GONE TOO. A sentence whose whole content is where
               another screen is is signposting, not a setting — and this panel is called
               Camera now, so nothing on it claims a read-out to go looking for. */}
-          {/* §4.4 lists two rows this build does not ship. Saying so — with the reason — beats
+          {/* §4.4 lists rows this build does not ship. Saying so — with the reason — beats
               a disabled switch, which reads as a bug, and beats silence, which reads as an
-              oversight to anyone holding the plan doc. */}
-          <p className="ds-hint">
-            Not on this build:{' '}
-            {GFX_NOT_OFFERED.map((n, i) => (
-              <span key={n.label}>
-                {i > 0 && '; '}
-                <b>{n.label}</b> — {n.why}
-              </span>
-            ))}
-            .
-          </p>
+              oversight to anyone holding the plan doc. Guarded on length rather than assuming
+              one: `GFX_NOT_OFFERED` held two rows before Extreme, holds one now, and a build
+              that ever closes the list should not render "Not on this build:" over nothing. */}
+          {GFX_NOT_OFFERED.length > 0 && (
+            <p className="ds-hint">
+              Not on this build:{' '}
+              {GFX_NOT_OFFERED.map((n, i) => (
+                <span key={n.label}>
+                  {i > 0 && '; '}
+                  <b>{n.label}</b> — {n.why}
+                </span>
+              ))}
+              .
+            </p>
+          )}
         </div>
       </section>
         </div>

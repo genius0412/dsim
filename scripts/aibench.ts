@@ -30,6 +30,7 @@
  *   npx tsx scripts/aibench.ts --formats solo --physics 2d
  *   npx tsx scripts/aibench.ts --vs hard:easy --seeds 10
  *   npx tsx scripts/aibench.ts --builds default         # every bot on the stock default build
+ *   npx tsx scripts/aibench.ts --builds preset:starterbot --tiers hard   # every bot on one builder card
  *   npx tsx scripts/aibench.ts --json out.json          # every match row, for a diff
  *
  * Parallel across processes (`--jobs`, default min(cores − 1, 12)): each worker is this file with

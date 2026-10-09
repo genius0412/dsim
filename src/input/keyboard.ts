@@ -39,17 +39,42 @@ export class Keyboard {
     for (const k of keys) this.preventKeys.add(k);
   }
 
+  /**
+   * WHICH KEY EACH PHYSICAL KEY WENT DOWN AS (`KeyboardEvent.code` → the lowercased `key`).
+   *
+   * Bindings are by `key`, and `key` is not stable across one press: it depends on the
+   * modifiers held AT THAT MOMENT. Shift is the default intake, so pressing `1`, then holding
+   * Shift and letting go of `1` produced a keyup for `!` — and `1` stayed held, driving or
+   * firing, until the window lost focus. The same happens to any digit or punctuation bind and
+   * to a keyboard-layout switch mid-press. The release is therefore matched by the PHYSICAL key,
+   * and falls back to `key` only for an event that carries no `code`.
+   */
+  private codeKey = new Map<string, string>();
+  /**
+   * keys that went down while ⌘ was held. macOS sends NO keyup for a key released while Meta is
+   * down, so these are let go when Meta is — the only release they will ever get.
+   */
+  private underMeta = new Set<string>();
+
+  private releaseAll(): void {
+    this.down.clear();
+    this.pressed.clear();
+    this.codeKey.clear();
+    this.underMeta.clear();
+  }
+
   private onKeyDown = (e: KeyboardEvent): void => {
     if (typingInto(e.target)) {
       // ...and anything already held is RELEASED, so clicking into a field mid-drive does not
       // leave the robot pinned on the last key down (the same reason `onBlur` clears).
-      this.down.clear();
-      this.pressed.clear();
+      this.releaseAll();
       return;
     }
     const k = e.key.toLowerCase();
     if (!e.repeat) this.pressed.add(k);
     this.down.add(k);
+    if (e.code) this.codeKey.set(e.code, k);
+    if (e.metaKey && k !== 'meta') this.underMeta.add(k);
     if (this.preventKeys.has(k)) {
       e.preventDefault();
     }
@@ -59,15 +84,23 @@ export class Keyboard {
     // NOT guarded by `typingInto`: a key can go down on the field and come up somewhere else
     // (or the other way round), and a release must always be honoured — the failure mode of
     // missing one is a key stuck down forever.
-    this.down.delete(e.key.toLowerCase());
+    const k = e.key.toLowerCase();
+    const wentDownAs = e.code ? this.codeKey.get(e.code) : undefined;
+    if (e.code) this.codeKey.delete(e.code);
+    this.down.delete(k);
+    if (wentDownAs !== undefined) this.down.delete(wentDownAs);
+    this.underMeta.delete(k);
+    if (k === 'meta') {
+      for (const held of this.underMeta) this.down.delete(held);
+      this.underMeta.clear();
+    }
   };
 
   /** focus moving INTO a field releases everything, so a held key does not survive the
    * transition — you click the box while driving forward and the robot stops. */
   private onFocusIn = (e: FocusEvent): void => {
     if (!typingInto(e.target)) return;
-    this.down.clear();
-    this.pressed.clear();
+    this.releaseAll();
   };
 
   /**
@@ -97,6 +130,8 @@ export class Keyboard {
   private onBlur = (): void => {
     this.focused = false;
     this.down.clear();
+    this.codeKey.clear();
+    this.underMeta.clear();
   };
 
   /** the other half of `onBlur`: the keyboard is ours again, so the HUD's notice goes away */

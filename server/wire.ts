@@ -27,8 +27,11 @@
  * rounded serialisation. So the client is never more than 0.001 per field from the server, for
  * as long as the room runs, with no ratchet. The same holds for the two clocks (`world.time`
  * against `fireReadyAt`): both are rounded by this one replacer, so they are compared in the
- * same units, and a 0.5 ms disagreement can at worst flip a fire-ready test for a single tick
- * — which the next snapshot's snap-and-replay corrects, and which the SERVER decides anyway.
+ * same units, and a 0.5 ms disagreement can at worst flip a fire-ready test for a single tick.
+ * ⚠️ That flip is NOT harmless once the client runs a round trip ahead (`leadControl.ts`): every
+ * snapshot in the lead window re-decided each shot from rounded clocks, and the shot sound was
+ * cued 1.7–2.5 times per shot. The client rebuilds the clocks it can (`src/net/wireClocks.ts`);
+ * `fireReadyAt` it cannot, and sending that one unrounded is what would close the rest.
  * (An earlier design tried to exempt the clocks with a `TIME_KEYS` set. It cannot be built: it
  * omits `world.time`, the LEFT side of every one of those comparisons; two more clocks sit
  * under dynamic keys no `Set` reaches — `PenaltyState.episodes` and `ChainState.catalystReadyAt`

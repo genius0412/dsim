@@ -123,7 +123,8 @@ const ROSTER: readonly Entry[] = [
     },
   },
   {
-    // the kit robot's idea done properly: tank, front sweeper, front dumper, geared for pace
+    // the kit robot's layout with a dumper in place of its fixed flywheel: tank, front sweeper,
+    // front dumper, geared for pace
     key: 'bulldozer',
     label: 'Bulldozer',
     over: 3,

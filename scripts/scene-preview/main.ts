@@ -63,7 +63,7 @@ import { hiveCellLocalBox, hivePivotX } from '../../src/games/biobuzz/sim3d/bodi
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
-import { setGraphicsPreset } from '../../src/games/biobuzz/graphics/settings';
+import { GFX_TIERS, setGraphicsPreset, type GraphicsTier } from '../../src/games/biobuzz/graphics/settings';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 
@@ -98,12 +98,16 @@ const parkAtFlower = urlParams.get('park') === 'flower';
 const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
 const deployRamp = urlParams.get('ramp') === '1';
 // DRIVETRAIN PICTURES (2026-09-21, the goBILDA wheel pass): `?drivetrain=mecanum|tank|swerve|
-// xdrive|butterfly` builds every robot on that drivetrain, and `&gfx=low|medium|high|ultra` picks
-// a graphics COLUMN before the scene is created — which is how the wheels' two tessellation
+// xdrive|butterfly` builds every robot on that drivetrain, and `&gfx=<tier>` (any of `GFX_TIERS`:
+// low, medium, high, ultra, extreme) picks a graphics COLUMN before the scene is created — which is how the wheels' two tessellation
 // levels (`bbWheelDetail`) can be photographed side by side. `&tank=1` drops a butterfly's
 // traction set instead of its mecanum set.
 const drivetrainParam = urlParams.get('drivetrain');
 const gfxParam = urlParams.get('gfx');
+// `&mat=standard|physical` overrides the `materials` row AFTER `&gfx=` picked the column, so a
+// pair of pictures at the SAME tier differs in the material model alone (Extreme with and
+// without physical materials, or High with them turned on).
+const matParam = urlParams.get('mat');
 const butterflyTankParam = urlParams.get('tank') === '1';
 // `&wheelrig=1` stands the five real drive-wheel parts on bare tiles — see the block that builds
 // it for why a wheel on a ROBOT cannot be photographed at all.
@@ -188,8 +192,9 @@ async function main(): Promise<void> {
   // the scene mounted would only take effect on the next rebuild. Writing the real store (rather
   // than a private override) is also what makes the two tiers photographable through the same
   // path a player's own preset takes.
-  if (gfxParam === 'low' || gfxParam === 'medium' || gfxParam === 'high' || gfxParam === 'ultra') {
-    setGraphicsPreset(gfxParam);
+  // read off `GFX_TIERS`, not a literal list, so a new column is photographable the day it lands
+  if ((GFX_TIERS as readonly string[]).includes(gfxParam ?? '')) {
+    setGraphicsPreset(gfxParam as GraphicsTier);
     status(`graphics preset forced to ${gfxParam}`);
   }
   status('booting 2D physics...');
@@ -328,6 +333,7 @@ async function main(): Promise<void> {
     setGraphicsSetting('environment', envParam as EnvironmentId);
   }
   if (iblParam === '0' || iblParam === '1') setGraphicsSetting('envLighting', iblParam === '1');
+  if (matParam === 'standard' || matParam === 'physical') setGraphicsSetting('materials', matParam);
   const { createBiobuzzScene } = await import('../../src/games/biobuzz/scene/renderScene');
   const host = document.getElementById('host')!;
   const scene = await createBiobuzzScene(host);
@@ -338,6 +344,9 @@ async function main(): Promise<void> {
   // rather than widening the class's real public API for a debug hook.
   (window as unknown as { __bbScene: THREE.Scene }).__bbScene = (scene as unknown as { scene: THREE.Scene }).scene;
   (window as unknown as { __bbWorld: World }).__bbWorld = world;
+  // and the `GameScene` itself, for the same kind of inspection of its PRIVATE state — the
+  // physical-materials comparison reads `surfaces` (is the chunk live, did the probe capture)
+  (window as unknown as { __bbGameScene: unknown }).__bbGameScene = scene;
 
   // ── THE WHEEL RIG (2026-09-21) — `?wheelrig=1` ─────────────────────────────────────────────
   // ⚠️ A DRIVE WHEEL CANNOT BE PHOTOGRAPHED ON A ROBOT, and that is not a bug in the wheel. It

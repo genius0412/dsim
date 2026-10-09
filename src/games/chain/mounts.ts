@@ -25,6 +25,24 @@ import type {
  * Every read site goes through `intakeMountOf`/`shooterMountOf`, never the raw fields.
  */
 
+/**
+ * An IMPORTED robot's hull bounding box — its cells (`mountOrigin`) sit on THIS box, which need not
+ * be centred on the origin. An inline loop so this file stays a leaf.
+ */
+function hullBox(spec: RobotSpec): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of spec.imported!.hull) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
 export const CHAIN_INTAKE_MOUNTS = ['front', 'back', 'side', 'frontback'] as const;
 /** TURRETLESS firing edges. A drum/catapult launches along a LINE spanning one side, so a
  * corner or the centre is not a thing it can be built as — `coerceSpec` folds those away. */
@@ -306,22 +324,25 @@ export function intakeMountEdges(mount: ChainIntakeMount): ChainEdge[] {
  * so anything drawn across the full depth would be drawn over the chassis.
  */
 export function intakeMouthFrame(
-  m: { edge: ChainEdge; x0: number; x1: number; y0: number; y1: number },
+  m: { edge: ChainEdge; x0: number; x1: number; y0: number; y1: number; face?: number },
   hl: number,
   hw: number,
 ): { ox: number; oy: number; rot: number; depth: number; half: number; rail: number } {
   const end = isEndEdge(m.edge);
   const depth = end ? m.x1 - m.x0 : m.y1 - m.y0;
   const half = (end ? m.y1 - m.y0 : m.x1 - m.x0) / 2;
+  // the mouth's lateral centre (0 on every standard mouth) and an IMPORTED mouth's own face
+  const cy = end ? (m.y0 + m.y1) / 2 : 0;
+  const cx = end ? 0 : (m.x0 + m.x1) / 2;
   switch (m.edge) {
     case 'front':
-      return { ox: m.x0, oy: 0, rot: 0, depth, half, rail: hl - m.x0 };
+      return { ox: m.x0, oy: cy, rot: 0, depth, half, rail: (m.face ?? hl) - m.x0 };
     case 'back':
-      return { ox: m.x1, oy: 0, rot: Math.PI, depth, half, rail: m.x1 + hl };
+      return { ox: m.x1, oy: cy, rot: Math.PI, depth, half, rail: m.x1 + (m.face ?? hl) };
     case 'left':
-      return { ox: 0, oy: m.y0, rot: Math.PI / 2, depth, half, rail: hw - m.y0 };
+      return { ox: cx, oy: m.y0, rot: Math.PI / 2, depth, half, rail: (m.face ?? hw) - m.y0 };
     default: // right
-      return { ox: 0, oy: m.y1, rot: -Math.PI / 2, depth, half, rail: m.y1 + hw };
+      return { ox: cx, oy: m.y1, rot: -Math.PI / 2, depth, half, rail: m.y1 + (m.face ?? hw) };
   }
 }
 
@@ -361,6 +382,16 @@ export function isEndEdge(edge: ChainEdge): boolean {
 /** the mounting geometry of `edge` on `spec`: `dist` = how far the edge is from the robot
  * center along its outward normal, `span` = the edge's half-length across that normal. */
 export function edgeGeom(spec: RobotSpec, edge: ChainEdge): { dist: number; span: number } {
+  if (spec.imported) {
+    // an IMPORT: its hull box's edge (which need not be centred on the origin)
+    const b = hullBox(spec);
+    const L = (b.maxX - b.minX) / 2;
+    const W = (b.maxY - b.minY) / 2;
+    if (edge === 'front') return { dist: b.maxX, span: W };
+    if (edge === 'back') return { dist: -b.minX, span: W };
+    if (edge === 'left') return { dist: b.maxY, span: L };
+    return { dist: -b.minY, span: L };
+  }
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   return isEndEdge(edge) ? { dist: hl, span: hw } : { dist: hw, span: hl };
@@ -371,6 +402,15 @@ export function edgeGeom(spec: RobotSpec, edge: ChainEdge): { dist: number; span
  * source for "where is it bolted" — the launch origin, the claw pivot and both renderers all
  * read it, so a mount can never be drawn somewhere it doesn't act from. */
 export function mountOrigin(spec: RobotSpec, pos: ChainMountPos): { x: number; y: number } {
+  if (spec.imported) {
+    // an IMPORT's nine cells sit on its HULL BOX: corners, edge mid-points and the box's centre
+    const b = hullBox(spec);
+    const cx = (b.minX + b.maxX) / 2;
+    const cy = (b.minY + b.maxY) / 2;
+    if (pos === 'center') return { x: cx, y: cy };
+    const d = MOUNT_DIR[pos] ?? MOUNT_DIR.center;
+    return { x: d.x > 0 ? b.maxX : d.x < 0 ? b.minX : cx, y: d.y > 0 ? b.maxY : d.y < 0 ? b.minY : cy };
+  }
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   switch (pos) {
@@ -442,6 +482,10 @@ export const RAIL_DIR: Record<ChainMountPos, { x: number; y: number }> = Object.
  * because at 0.28 the ring covered more than half the width of a mid-size chassis and swamped
  * the drawing it is supposed to annotate. */
 export function turretRadius(spec: RobotSpec): number {
+  if (spec.imported) {
+    const b = hullBox(spec);
+    return Math.min(3.8, Math.min(b.maxX - b.minX, b.maxY - b.minY) * 0.24);
+  }
   return Math.min(3.8, Math.min(spec.length, spec.width) * 0.24);
 }
 
@@ -457,6 +501,17 @@ export function turretRadius(spec: RobotSpec): number {
  */
 export function turretLocal(spec: RobotSpec): { x: number; y: number } {
   const pos = shooterMountOf(spec);
+  if (spec.imported) {
+    // an IMPORT's turret is where it was PLACED on the CAD, else its cell on the hull box pulled
+    // inboard as below
+    const placed = spec.imported.mech?.shooter;
+    if (placed) return { x: placed.x, y: placed.y };
+    const o = mountOrigin(spec, pos);
+    if (pos === 'center') return o;
+    const d = MOUNT_DIR[pos];
+    const r = turretRadius(spec);
+    return { x: o.x - Math.sign(d.x) * r, y: o.y - Math.sign(d.y) * r };
+  }
   if (pos === 'center') return { x: 0, y: 0 };
   const o = mountOrigin(spec, pos);
   const d = MOUNT_DIR[pos];

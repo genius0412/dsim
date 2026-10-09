@@ -142,6 +142,14 @@ export function aiPlayChecks(check: Check): void {
     const blue = row.alliances.blue;
     check('a HARD bot scores over 150 in a full 3D match alone (seed 7000)', blue.total >= 150, `${blue.total} pts, ${blue.tips} tips, flower ${blue.flowerPts}, ${stuckLine(row)}`);
     check('…with the FLOWER plan paying (a Box Tube build places NECTAR in the last minute)', blue.flowerPts > 0, `flower ${blue.flowerPts}`);
+    /**
+     * …AND PLACED LAST. The plan used to start hoarding at 1:12 and placed from the 1:00 cue,
+     * and that measured 26–29 points a solo match BELOW never placing at all: ~30 s without a
+     * TIP for ~52 FLOWER points. It now starts when the tour's own time is what is left and the
+     * tour out-earns the bot's TIP rate (`hoardingNow`), which on this seed is inside 30 s.
+     */
+    const firstAt = row.firstPlaceLeftS.blue;
+    check('…placed at the END, not from the 1:00 cue (first NECTAR on a FLOWER with under 30 s left)', firstAt !== null && firstAt <= 30, `first placement at ${firstAt?.toFixed(1)} s left`);
     check('…and parks at both ends of the match (LEAVE + both PARKs)', blue.endPts >= 13, `end ${blue.endPts}`);
     check('…committing no fouls', foulPtsCommitted(row, 'blue') === 0, JSON.stringify(row.fouls.blue));
     check(`…and never stuck for more than ${MAX_STUCK_RUN_S} s`, row.bots.every((b) => b.maxStuckS <= MAX_STUCK_RUN_S), stuckLine(row));

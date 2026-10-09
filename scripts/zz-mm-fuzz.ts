@@ -53,22 +53,20 @@ function scene(rand: () => number, n: number): { entries: QueueEntry[]; mode: Qu
   let partySeq = 0;
   for (let i = 0; i < n; i++) {
     const r = rand();
-    // ~18% of entries belong to a party; half of those are CLOSED (a rated challenge)
+    // ~18% of entries belong to a party
     let party: string | undefined;
     let partySize: number | undefined;
-    let partyOnly: boolean | undefined;
     if (r < 0.18) {
       party = `pt${partySeq}`;
       partySize = 2;
-      partyOnly = rand() < 0.5 ? true : undefined;
       // the partner joins too, MOST of the time — a half-arrived party must not match
       if (rand() < 0.8 && i + 1 < n) {
-        entries.push(mk(entries.length, mode, rand, party, partySize, partyOnly));
+        entries.push(mk(entries.length, mode, rand, party, partySize));
         i++;
       }
       partySeq++;
     }
-    entries.push(mk(entries.length, mode, rand, party, partySize, partyOnly));
+    entries.push(mk(entries.length, mode, rand, party, partySize));
   }
   // a few clock stops so the widening schedule is crossed in both directions
   const clocks = [0, 3_000, 6_000, 12_000];
@@ -81,7 +79,6 @@ function mk(
   rand: () => number,
   party?: string,
   partySize?: number,
-  partyOnly?: boolean,
 ): QueueEntry {
   return {
     id: `e${i}`,
@@ -97,7 +94,6 @@ function mk(
     game: GAMES[Math.floor(rand() * GAMES.length)],
     party,
     partySize,
-    partyOnly,
     enqueuedAt: 0,
     expandBumps: rand() < 0.15 ? 1 + Math.floor(rand() * 2) : 0,
   } as QueueEntry;

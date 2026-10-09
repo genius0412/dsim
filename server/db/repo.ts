@@ -1,7 +1,7 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
-import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { BALANCE_VERSION, PLACEMENT_GAMES, RANKED_PLACEMENT } from '../../src/config';
 import { awardKey } from '../../src/awards';
 import {
   isBadgeId,
@@ -26,6 +26,8 @@ import {
   type LockdownScope,
 } from '../../src/net/protocol';
 import { scrubSpecNames } from '../moderation';
+import { isImportedSpec } from '../../src/net/imported';
+import { keepImportsFromOlderClient, keepTuneFromOlderClient, keepsImports, keepsTune } from '../../src/net/settingsKeep';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -121,8 +123,18 @@ export async function ensureSeason(
   // No baked-in name — the structured "Act X · Season Y" label is derived in
   // listSeasons. A brand-new game's first row seeds `initialAct` (Chain Reaction
   // starts at Act 1); on conflict we only re-activate — act is left untouched.
+  //
+  // ⚠️ `initialAct` IS FOR THE FIRST ROW ONLY ("the act this game's very first period opens
+  // in", src/games/types.ts). A code BALANCE_VERSION bump also lands here with a season number
+  // no row has yet, and seeding THAT row with `initialAct` dropped a game in Act 2 back into its
+  // beta act: every rating is keyed by act, so the whole ladder moved to the old board, and the
+  // real act never counted as closed for the reward job. So a new row CONTINUES the latest act
+  // the game has, and `initialAct` is only the fallback when there is none.
   await q(
-    `insert into seasons (game, balance_version, act, active) values ($1, $2, $3, true)
+    `insert into seasons (game, balance_version, act, active)
+     values ($1, $2,
+             coalesce((select act from seasons where game = $1 order by balance_version desc limit 1), $3),
+             true)
      on conflict (game, balance_version) do update set active = true`,
     [g(game), balanceVersion, initialAct],
   );
@@ -131,6 +143,7 @@ export async function ensureSeason(
     balanceVersion,
   ]);
   seasonEnsured.add(key);
+  clearSeasonsCache();
 }
 
 /**
@@ -213,6 +226,32 @@ export async function listSeasons(game?: Game): Promise<SeasonRow[]> {
   }));
 }
 
+/**
+ * `listSeasons` for the PUBLIC season picker, memoized per game.
+ *
+ * `/api/seasons` runs on every visit to Records, and `listSeasons` counts every record and
+ * every match of every season to fill two columns — a scan of both history tables per page
+ * view that grows with everything ever played, unauthenticated. The list changes when a season
+ * rolls (dropped below, and by `ensureSeason` seeding a new row) and otherwise only in its
+ * counts, which a picker does not need to the second. Same `{at, val}` shape as `statsCache`.
+ * The reward job and the admin console keep calling `listSeasons` directly: they want it exact.
+ */
+const SEASONS_TTL_MS = 60_000;
+const seasonsCache = new Map<string, { at: number; val: SeasonRow[] }>();
+
+export async function listSeasonsCached(game?: Game, now = Date.now()): Promise<SeasonRow[]> {
+  const hit = seasonsCache.get(g(game));
+  if (hit && now - hit.at < SEASONS_TTL_MS) return hit.val;
+  const val = await listSeasons(game);
+  seasonsCache.set(g(game), { at: now, val });
+  return val;
+}
+
+/** drop the memo — a roll, a newly seeded season, and tests */
+export function clearSeasonsCache(): void {
+  seasonsCache.clear();
+}
+
 /** Archive the live season and open a fresh one (admin action). The new
  * balance_version is one past the current, so its boards start empty; old
  * seasons stay fully queryable. `bumpAct` opens a new ACT (act++, its season
@@ -253,6 +292,7 @@ export async function startNewSeason(
     );
     return Number(cnt[0]?.n ?? 1);
   });
+  clearSeasonsCache();
 
   /**
    * THE CLOSED PERIODS ARE PAID OUT NOW, BY THE SAME JOB THE BOOT BACKFILL RUNS
@@ -384,16 +424,67 @@ export async function deleteAnnouncement(id: string): Promise<boolean> {
  * were provably no-ops. Bounded by the distinct users a machine sees before it
  * auto-stops; a restart simply re-learns them.
  */
-const profileEnsured = new Set<string>();
+const profileEnsured = new Map<string, number>();
 
-export async function ensureProfile(userId: string, handle: string): Promise<void> {
-  if (profileEnsured.has(userId)) return;
-  await q(
+/**
+ * ⚠️ THE MEMO EXPIRES, BECAUSE A PROFILE ROW CAN STOP EXISTING. "Can never do anything again"
+ * above is true only while the row lives, and `deleteAccount` removes it while the Neon Auth
+ * identity — and so the same user id — stays signed in. With a permanent memo every machine
+ * that had seen the account skipped the insert until it restarted, and every write keyed to the
+ * profile then failed: an FK violation in the middle of a ranked result (the opponents' ratings
+ * written, no match row), a record run thrown away, and `setUsername` / `saveUserSettings`
+ * updating zero rows while reporting success. `deleteAccount` drops its own machine's entry;
+ * the TTL bounds how long any OTHER machine can be wrong, and still collapses a 6-second poll
+ * to one insert per ten minutes.
+ */
+const PROFILE_MEMO_MS = 10 * 60_000;
+
+/**
+ * Create the profile row if it is missing. `fresh` skips the memo — for the writes that cannot
+ * afford a stale one (the match-end persist, a payment claim), which run once per event rather
+ * than once per poll.
+ */
+export async function ensureProfile(userId: string, handle: string, fresh = false): Promise<void> {
+  const at = profileEnsured.get(userId);
+  if (!fresh && at !== undefined && Date.now() - at < PROFILE_MEMO_MS) return;
+  const made = await q<{ user_id: string }>(
     `insert into profiles (user_id, handle) values ($1, $2)
-     on conflict (user_id) do nothing`,
+     on conflict (user_id) do nothing
+     returning user_id`,
     [userId, handle],
   );
-  profileEnsured.add(userId);
+  // a row that did not exist a moment ago may be a DELETED account coming back (0054)
+  if (made.length) await restoreTombstone(userId);
+  profileEnsured.set(userId, Date.now());
+}
+
+/**
+ * RE-APPLY A DELETED ACCOUNT'S SANCTIONS to its re-created profile, and drop the tombstone
+ * (0054). ONE statement, so two machines creating the same profile cannot both restore — only
+ * the insert that actually made the row gets here — and a half-applied restore cannot exist.
+ *
+ * A suspension or lock that has run out in the meantime is not re-applied; the standing score
+ * keeps its ORIGINAL `healed_at`, so the idle days since the deletion heal it on the next read
+ * exactly as they would have had the account never left.
+ */
+async function restoreTombstone(userId: string): Promise<void> {
+  await q(
+    `with t as (delete from account_tombstones where user_id = $1 returning *),
+     s as (
+       update profiles p set suspended_until = t.suspended_until, updated_at = now()
+         from t
+        where p.user_id = t.user_id and t.suspended_until > now()
+       returning 1
+     )
+     insert into account_standing (user_id, score, restricted_until, healed_at, updated_at)
+     select t.user_id, least($2::int, coalesce(t.standing_score, $2::int)),
+            case when t.restricted_until > now() then t.restricted_until end,
+            coalesce(t.standing_healed_at, now()), now()
+       from t
+      where t.standing_score is not null or t.restricted_until > now()
+     on conflict (user_id) do nothing`,
+    [userId, STANDING_MAX],
+  );
 }
 
 export async function setHandle(userId: string, handle: string): Promise<void> {
@@ -478,7 +569,7 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
  * `coalesce(..., false)` matters on a LEFT JOIN: a solo run has no partner row,
  * and the predicate over all-NULL columns is NULL, not false.
  */
-function badgeCols(a: string, prefix?: string): string {
+export function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
   const badges = prefix ? `"${prefix}Badges"` : 'badges';
@@ -699,6 +790,29 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
   ]);
 }
 
+/**
+ * `POST /api/user/settings`'s write: the blob as sent from a build that keeps imported robots
+ * (`caps` names `SETTINGS_KEEPS_IMPORTS`), else merged with the stored one so an OLDER build's save
+ * cannot strip the account's imported robot (`keepImportsFromOlderClient`, `src/net/settingsKeep.ts`
+ * has the rules). The read and the write are one transaction with the row locked, so two saves
+ * cannot interleave between them. Returns what was stored. The profile row is ensured by the caller.
+ */
+export async function saveSettingsFromClient(userId: string, settings: Record<string, unknown>, caps: unknown): Promise<Record<string, unknown>> {
+  if (keepsImports(caps) && keepsTune(caps)) {
+    await saveUserSettings(userId, settings);
+    return settings;
+  }
+  return tx(async (query) => {
+    const rows = await query<{ settings: unknown }>(`select settings from profiles where user_id = $1 for update`, [userId]);
+    const stored = rows[0]?.settings ?? null;
+    // a build without imports loses the whole import; one with imports but not tuning, the tuning
+    const withImports = keepsImports(caps) ? settings : keepImportsFromOlderClient(stored, settings);
+    const kept = keepsTune(caps) ? withImports : keepTuneFromOlderClient(stored, withImports);
+    await query(`update profiles set settings = $2, updated_at = now() where user_id = $1`, [userId, JSON.stringify(kept)]);
+    return kept;
+  });
+}
+
 // ---------------------------------------------- supporter entitlements ------
 /**
  * Supporter membership, backed by Ko-fi. See 0018_supporter.sql for why this is
@@ -800,10 +914,14 @@ export async function grantSupporter(
   note?: string,
 ): Promise<string | null> {
   const n = Math.max(1, Math.floor(months));
-  const rows = await q<{ until: string }>(EXTEND_SQL, [userId, String(n)]);
-  const until = rows[0]?.until ?? null;
-  if (rows[0]) await logGrant(userId, source, n, until, note ?? null);
-  return until;
+  // the extension and its audit row in ONE transaction, like the two Ko-fi paths: "every write
+  // to `supporter_until` logs a row" is only true if a failed log also undoes the write
+  return tx(async (query) => {
+    const rows = await query<{ until: string }>(EXTEND_SQL, [userId, String(n)]);
+    const until = rows[0]?.until ?? null;
+    if (rows[0]) await logGrant(userId, source, n, until, note ?? null, query);
+    return until;
+  });
 }
 
 /**
@@ -815,15 +933,17 @@ export async function grantSupporter(
  * that was. Returns false if there was nothing to revoke.
  */
 export async function revokeSupporter(userId: string, note?: string): Promise<boolean> {
-  const rows = await q<{ user_id: string }>(
-    `update profiles set supporter_until = null, updated_at = now()
-      where user_id = $1 and supporter_until is not null
-      returning user_id`,
-    [userId],
-  );
-  if (rows.length === 0) return false;
-  await logGrant(userId, 'revoke', 0, null, note ?? null);
-  return true;
+  return tx(async (query) => {
+    const rows = await query<{ user_id: string }>(
+      `update profiles set supporter_until = null, updated_at = now()
+        where user_id = $1 and supporter_until is not null
+        returning user_id`,
+      [userId],
+    );
+    if (rows.length === 0) return false;
+    await logGrant(userId, 'revoke', 0, null, note ?? null, query);
+    return true;
+  });
 }
 
 /**
@@ -846,27 +966,29 @@ export async function revokeSupporter(userId: string, note?: string): Promise<bo
  * when something really changed, so the sweep's own count is honest too.
  */
 export async function ensureSupporterFloor(userId: string, days: number): Promise<boolean> {
-  const rows = await q<{ until: string; moved: boolean }>(
-    /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
-       row AFTER the update, so `supporter_until < now() + grace` compared there is always
-       false — which silently made "did the floor move?" answer NO on every sweep including
-       the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
-    `with prev as (select supporter_until as before from profiles where user_id = $1)
-     update profiles p
-        set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
-            updated_at = now()
-       from prev
-      where p.user_id = $1
-      returning p.supporter_until as until,
-                (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
-    [userId, String(days)],
-  );
-  const row = rows[0];
-  if (!row) return false;
-  if (!row.moved) return false;
-  // months = 0 is a real, meaningful value here and 0019 already defines it as one.
-  await logGrant(userId, 'boost', 0, row.until, 'discord server boost');
-  return true;
+  return tx(async (query) => {
+    const rows = await query<{ until: string; moved: boolean }>(
+      /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
+         row AFTER the update, so `supporter_until < now() + grace` compared there is always
+         false — which silently made "did the floor move?" answer NO on every sweep including
+         the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
+      `with prev as (select supporter_until as before from profiles where user_id = $1)
+       update profiles p
+          set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
+              updated_at = now()
+         from prev
+        where p.user_id = $1
+        returning p.supporter_until as until,
+                  (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
+      [userId, String(days)],
+    );
+    const row = rows[0];
+    if (!row) return false;
+    if (!row.moved) return false;
+    // months = 0 is a real, meaningful value here and 0019 already defines it as one.
+    await logGrant(userId, 'boost', 0, row.until, 'discord server boost', query);
+    return true;
+  });
 }
 
 async function logGrant(
@@ -875,8 +997,9 @@ async function logGrant(
   months: number,
   until: string | null,
   note: string | null,
+  query: Tx = q,
 ): Promise<void> {
-  await q(
+  await query(
     `insert into supporter_grants (user_id, source, months, until, note)
      values ($1, $2, $3, $4, $5)`,
     [userId, source, months, until, note],
@@ -1837,7 +1960,11 @@ export async function recordKofiPayment(p: KofiEventRow): Promise<KofiRecordResu
          (message_id, kind, email, transaction_id, amount, currency,
           is_subscription, tier_name, months)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       on conflict (message_id) do nothing
+       -- NO conflict target, on purpose: the TRANSACTION id is unique too (0018), and an event
+       -- carrying a stored transaction under a new message id hit that index as an error. The
+       -- webhook answered 500, Ko-fi retried it forever, and the event was never recorded. The
+       -- same payment is a duplicate whichever key says so, and a duplicate grants nothing.
+       on conflict do nothing
        returning message_id`,
       [
         p.messageId,
@@ -2073,8 +2200,8 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
     replay.setups.map(async (s) => ({ ...s, spec: await scrubSpecNames(s.spec) })),
   );
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
@@ -2092,12 +2219,21 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       // absent tag is written as the string that default already means rather than as null —
       // playback DISPATCHES on this, and one nullable spelling of '2d' is one too many.
       replay.physics ?? '2d',
+      // ...and the SIM_PATCH it ran (0055). Written explicitly, never left to the column's
+      // default: an unstamped container is patch 0 and must read back as the old rules.
+      replay.patch ?? null,
     ],
   );
   return rows[0].id;
 }
 
+/** a replay id is a uuid column. Anything else is answered as absent here, rather than handed to
+ *  Postgres to refuse as a cast error — `/api/replay/<id>` takes `[\w-]+`, so a mistyped or
+ *  truncated link was a 500 and a stack trace in the log instead of a 404. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getReplay(id: string): Promise<Replay | null> {
+  if (!UUID_RE.test(id)) return null;
   const rows = await q<{
     format: number;
     balance_version: number;
@@ -2109,8 +2245,9 @@ export async function getReplay(id: string): Promise<Replay | null> {
     setups: Replay['setups'];
     tracks: Replay['tracks'];
     physics: string | null;
+    sim_patch: number | null;
   }>(
-    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics, sim_patch
        from replays where id = $1`,
     [id],
   );
@@ -2127,6 +2264,8 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // rather than `behaviour`, so the viewer says "recorded before we tracked this" instead of
     // naming a version the recorder never claimed. Undefined, not 0, is what carries that.
     sim: r.behaviour_version ?? undefined,
+    // the rules it re-simulates under (0055); NULL ⇒ absent ⇒ patch 0, the old rules
+    patch: r.sim_patch ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     // WHICH SOLVE to re-simulate it on. Left UNDEFINED for anything that is not the one known
     // non-default value — a pre-0039 row, a null, or a string this build does not know — every
@@ -2187,7 +2326,7 @@ export async function getReplay(id: string): Promise<Replay | null> {
  * orphan — and a privacy gate whose unknown case is "allow" is one a later migration opens
  * by accident.
  */
-export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan';
+export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan' | 'competition';
 export interface ReplayAccessResult {
   access: 'ok' | 'private' | 'missing';
   /** what KIND of thing refused, so the refusal can say the right sentence. A private versus
@@ -2204,6 +2343,7 @@ export async function replayAccess(
   replayId: string,
   viewerId: string | null,
 ): Promise<ReplayAccessResult> {
+  if (!UUID_RE.test(replayId)) return { access: 'missing', kind: null };
   // the owner fan-out and "does this id exist at all" are separate questions, and both are
   // primary-key lookups. Asking them together lets a MISSING replay come back as 404 rather
   // than as a privacy refusal — a purged season's dead link is not somebody keeping a secret.
@@ -2223,6 +2363,11 @@ export async function replayAccess(
          select p.user_id, 'practice', null from practice_runs p where p.replay_id = $1
          union all
          select l.host_user_id, 'lan', null from lan_runs l where l.replay_id = $1
+         union all
+         -- a COMPETITION MATCH (0059) is public: entering says so, and the event is watched
+         select null, 'competition', null from competition_matches cm
+           join competitions c on c.id = cm.competition_id
+          where cm.replay_id = $1 and c.status <> 'draft'
        )
        select o.kind, o.user_id, o.mode, coalesce(p.replays_public, false) as is_public
          from owners o left join profiles p on p.user_id = o.user_id`,
@@ -2240,6 +2385,9 @@ export async function replayAccess(
   if (viewerId && owners.some((o) => o.user_id === viewerId)) return { access: 'ok', kind };
 
   if (kind === 'record') return { access: 'ok', kind };
+  // a competition's matches are public whoever else holds the replay (it is also a versus match
+  // row): the entrants agreed to it when they signed up, and an event is meant to be watched
+  if (owners.some((o) => o.kind === 'competition')) return { access: 'ok', kind: 'competition' };
   if (
     kind === 'versus' &&
     versusReleased(
@@ -2703,6 +2851,9 @@ export interface RecordSubmit {
   game?: Game;
   /** which physics solve produced this run (0039). Absent ⇒ '2d'. */
   physics?: string;
+  /** the net points earned in AUTO and in TELEOP (0062); absent ⇒ unknown, off those two boards */
+  autoScore?: number;
+  teleopScore?: number;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
@@ -2725,9 +2876,19 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
     );
   }
+  /**
+   * AND AN IMPORTED ROBOT IS NOT A RECORD. A record room refuses one at the door and strips it at
+   * `beginMatch`, so this fires only for a caller that skipped both — which is exactly the case a
+   * data-layer chokepoint is for, the same way the physics check above is. `config.spec` is the
+   * robot the board DISPLAYS, so it is the field read; a replay is checked at `persistMatch`.
+   */
+  if (isImportedSpec(r.config?.spec) || isImportedSpec(r.config?.partnerSpec)) {
+    throw new Error('record refused: an imported robot cannot set a record');
+  }
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics,
+                          auto_score, teleop_score)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -2739,10 +2900,20 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.config ? JSON.stringify(r.config) : null,
       g(r.game),
       r.physics === '3d' ? '3d' : '2d',
+      r.autoScore ?? null,
+      r.teleopScore ?? null,
     ],
   );
   return rows[0].id;
 }
+
+/** which score a record board ranks by: the whole run, or the points of one period */
+export type BoardCategory = 'total' | 'auto' | 'teleop';
+export const BOARD_CATEGORIES: readonly BoardCategory[] = ['total', 'auto', 'teleop'];
+export const coerceCategory = (v: unknown): BoardCategory =>
+  BOARD_CATEGORIES.includes(v as BoardCategory) ? (v as BoardCategory) : 'total';
+/** the column behind each category — a closed map, so a request value never reaches the SQL text */
+const CATEGORY_COLUMN: Record<BoardCategory, string> = { total: 'score', auto: 'auto_score', teleop: 'teleop_score' };
 
 export interface BoardRow {
   userId: string;
@@ -2792,15 +2963,32 @@ export async function recordLeaderboard(opts: {
    * first makes the board "each player's best 3D run", which is what the board now means.
    */
   physics?: '2d' | '3d';
+  /** Total (default), or the points of one period (0062). Auto/TeleOp skip rows with no split. */
+  category?: BoardCategory;
+  /** only runs set at or after this instant: today / this week / this month (`boardWindow.ts`) */
+  since?: string;
+  /**
+   * LIFETIME: every season, but ONE physics, so a 2D run and a 3D run never share a board. The
+   * era is `physics` here, else the live solve of the game (none for a one-solve game).
+   */
+  lifetime?: boolean;
 }): Promise<BoardRow[]> {
-  const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
+  const col = CATEGORY_COLUMN[opts.category ?? 'total'];
+  // lifetime reads every season: $1 stays in the text (`is null`) so Postgres can type it
+  const params: unknown[] = [opts.lifetime ? null : opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let sinceFilter = '';
+  if (opts.since) {
+    params.push(opts.since);
+    sinceFilter = `and r.created_at >= $${params.length}`;
+  }
   let physFilter = '';
-  const phys = opts.physics ?? (await boardPhysics(g(opts.game), opts.balanceVersion));
+  const phys =
+    opts.physics ?? (opts.lifetime ? livePhysics(g(opts.game)) : await boardPhysics(g(opts.game), opts.balanceVersion));
   if (phys) {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
@@ -2809,10 +2997,11 @@ export async function recordLeaderboard(opts: {
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config, r.physics
+         r.user_id, r.partner_id, r.${col} as score, r.replay_id, r.created_at, r.config, r.physics
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter} ${physFilter}
-       order by r.user_id, r.score desc, r.created_at asc
+       where ${opts.lifetime ? '$1::int is null' : 'r.balance_version = $1'} and r.mode = $2 and r.game = $3
+         and r.${col} is not null ${dtFilter} ${sinceFilter} ${physFilter}
+       order by r.user_id, r.${col} desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
@@ -3093,8 +3282,112 @@ export async function deleteAccount(userId: string): Promise<boolean> {
       `update kofi_payments set email = null where claimed_by = $1`,
       [userId],
     );
+    /* THE SANCTIONS STAY (0054). Deleting DSIM's data does not delete the Neon Auth identity,
+       so without this a suspended or ranked-locked player was one DELETE away from a clean
+       slate — `getSuspension` reads a missing profile as "not suspended" and `getStanding` a
+       missing row as a full score. Written only when there is something to carry, and before
+       the profile delete below cascades `account_standing` away. On conflict the STRICTER of
+       the two wins, so deleting twice cannot launder anything either. */
+    await query(
+      `insert into account_tombstones (user_id, suspended_until, standing_score, standing_healed_at, restricted_until)
+       select p.user_id,
+              case when p.suspended_until > now() then p.suspended_until end,
+              case when s.score < $2::int then s.score end,
+              case when s.score < $2::int then s.healed_at end,
+              case when s.restricted_until > now() then s.restricted_until end
+         from profiles p left join account_standing s on s.user_id = p.user_id
+        where p.user_id = $1
+          and (p.suspended_until > now() or s.score < $2::int or s.restricted_until > now())
+       on conflict (user_id) do update set
+         suspended_until = greatest(account_tombstones.suspended_until, excluded.suspended_until),
+         standing_score = least(account_tombstones.standing_score, excluded.standing_score),
+         standing_healed_at = coalesce(excluded.standing_healed_at, account_tombstones.standing_healed_at),
+         restricted_until = greatest(account_tombstones.restricted_until, excluded.restricted_until),
+         deleted_at = now()`,
+      [userId, STANDING_MAX],
+    );
+    /* COMPETITION ENTRIES KEEP THEIR ROW, NOT THEIR NAME (0059). An entry's `user_id` is SET NULL
+       by the cascade so a played schedule keeps both sides of every match, but the name is the
+       person's own handle or team name, and the account is gone. The private note goes too. */
+    await query(
+      `update competition_entries set name = 'Deleted account', note = null where user_id = $1`,
+      [userId],
+    );
+    /* ...AND THE COMPETITION LOG DROPS IT TOO (0060). A log line about an entry carries the name it
+       had then ("<name> was shown a red card"), and the public log would keep printing it after the
+       rename above. The lines are found by ENTRY ID: the account's entries now, plus each entry a
+       line says is the account's (`users`, on every line about an entry), which reaches an entry
+       row deleted before the start too (an organizer's removal, a pending duo withdrawn, the row a
+       re-add replaces). An entry that is still another captain's keeps its name: the account was
+       only its partner. Replaced: `name` (both names of a rename), and by position against their
+       ids a forfeit's `dq` (`dqEntries`), a failed call's `who` (`whoEntries`), the champions
+       (`championEntries`) and a reset's dropped `cards`. Lines written before those ids existed
+       keep their names. Before the profile delete: the cascade nulls `user_id`, and with it the
+       account's entries. Ids are compared as TEXT and arrays are read through a CASE, so a
+       malformed line is skipped rather than failing the whole deletion; the competitions those
+       entries are in bound the scan (the log's index), and `users` has its own. */
+    const about = await query<{ comp: string; entry: string }>(
+      `select competition_id::text as comp, id::text as entry from competition_entries where user_id = $1
+       union
+       select l.competition_id::text, l.data ->> 'entry'
+         from competition_log l
+        where l.data -> 'users' ? $1
+          and l.data ->> 'entry' is not null
+          and not exists (select 1 from competition_entries e
+                           where e.id = case when l.data ->> 'entry' ~ '^[0-9]{1,18}$' then (l.data ->> 'entry')::bigint end
+                             and e.user_id is distinct from $1)`,
+      [userId],
+    );
+    // names in `list`, replaced where the id at the same position in `ids` is one of the account's
+    const byPosition = (list: string, ids: string): string =>
+      `update competition_log l
+          set data = jsonb_set(l.data, '{${list}}', (
+                select coalesce(jsonb_agg(
+                         case when (l.data -> '${ids}' ->> (i - 1)::int) = any($2::text[])
+                              then '"Deleted account"'::jsonb else n end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> '${list}') with ordinality as t(n, i)))
+        where l.competition_id = any($1::uuid[])
+          and jsonb_typeof(l.data -> '${list}') = 'array'
+          and exists (select 1
+                        from jsonb_array_elements_text(case when jsonb_typeof(l.data -> '${ids}') = 'array'
+                                                            then l.data -> '${ids}' else '[]'::jsonb end) as d(v)
+                       where d.v = any($2::text[]))`;
+    const scrubs = [
+      // a line about one entry: its `name`, and both names of a rename
+      `update competition_log l
+          set data = l.data
+                || case when l.data ? 'name' then '{"name":"Deleted account"}'::jsonb else '{}'::jsonb end
+                || case when l.kind = 'entry.rename' then '{"from":"Deleted account","to":"Deleted account"}'::jsonb else '{}'::jsonb end
+        where l.competition_id = any($1::uuid[])
+          and (l.data ->> 'entry') = any($2::text[])`,
+      byPosition('dq', 'dqEntries'),
+      byPosition('who', 'whoEntries'),
+      byPosition('champions', 'championEntries'),
+      // a reset's dropped referee cards
+      `update competition_log l
+          set data = jsonb_set(l.data, '{cards}', (
+                select coalesce(jsonb_agg(
+                         case when (c ->> 'entry') = any($2::text[])
+                              then c || '{"name":"Deleted account"}'::jsonb else c end order by i), '[]'::jsonb)
+                  from jsonb_array_elements(l.data -> 'cards') with ordinality as t(c, i)))
+        where l.competition_id = any($1::uuid[])
+          and l.kind = 'match.reset'
+          and exists (select 1
+                        from jsonb_array_elements(case when jsonb_typeof(l.data -> 'cards') = 'array'
+                                                       then l.data -> 'cards' else '[]'::jsonb end) as x(c)
+                       where (c ->> 'entry') = any($2::text[]))`,
+    ];
+    if (about.length) {
+      const comps = [...new Set(about.map((r) => r.comp))];
+      const entries = [...new Set(about.map((r) => r.entry))];
+      for (const sql of scrubs) await query(sql, [comps, entries]);
+    }
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
+  }).then((gone) => {
+    // this machine's memo would otherwise skip re-creating the row (see `PROFILE_MEMO_MS`)
+    profileEnsured.delete(userId);
+    return gone;
   });
 }
 
@@ -3147,6 +3440,8 @@ export interface AccountExport {
   ranked: { ratings: Record<string, unknown>[]; history: Record<string, unknown>[] };
   standing: Record<string, unknown> | null;
   standingEvents: Record<string, unknown>[];
+  /** what moderators told this account (0057) */
+  notices: Record<string, unknown>[];
   playtime: Record<string, unknown>[];
   friends: {
     friends: Record<string, unknown>[];
@@ -3162,6 +3457,11 @@ export interface AccountExport {
   rewards: Record<string, unknown>[];
   /** access groups (0051) — the group and when; never who granted it (another account's id) */
   accessGroups: Record<string, unknown>[];
+  /** competitions entered (0059), and the ones this account staffs */
+  competitions: Record<string, unknown>[];
+  competitionStaff: Record<string, unknown>[];
+  /** the cards and disqualifications recorded against this account's entries, per match (0060) */
+  competitionDiscipline: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3197,7 +3497,7 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
 
   const [
     presets, records, practice, lan, matches, ratings, history, standing, events, activity,
-    friends, reqIn, reqOut, blocked, invIn, invOut, payments,
+    friends, reqIn, reqOut, blocked, invIn, invOut, payments, notices,
   ] = await Promise.all([
     q<Record<string, unknown>>(
       `select slot, name, spec, updated_at from robot_presets where user_id = $1 order by slot`,
@@ -3310,6 +3610,12 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
          from kofi_payments where claimed_by = $1 order by claimed_at`,
       [userId],
     ),
+    // what moderators told this account (0057), including their own words
+    q<Record<string, unknown>>(
+      `select kind, game, data, message, created_at, read_at
+         from player_notices where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
   ]);
 
   /**
@@ -3365,6 +3671,7 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     ranked: { ratings, history },
     standing: standing[0] ?? null,
     standingEvents: events,
+    notices,
     playtime: activity,
     friends: {
       friends: named(friends),
@@ -3385,6 +3692,45 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     ),
     accessGroups: await q<Record<string, unknown>>(
       `select grp as "group", granted_at as "grantedAt" from access_members where user_id = $1 order by granted_at`,
+      [userId],
+    ),
+    // the entry's own facts (0059). A partner is another account, so "this was a duo" is a
+    // boolean here, as `records.partner_id` is above; the organizer's private note is theirs.
+    competitions: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, c.game, e.name, e.number, e.status, e.placement,
+              (e.user_id = $1) as captain, (e.partner_id is not null) as duo,
+              e.registered_at as "registeredAt", e.checked_in_at as "checkedInAt"
+         from competition_entries e join competitions c on c.id = e.competition_id
+        where e.user_id = $1 or e.partner_id = $1
+        order by e.registered_at`,
+      [userId],
+    ),
+    competitionStaff: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug, s.role, s.added_at as "addedAt"
+         from competition_staff s join competitions c on c.id = s.competition_id
+        where s.user_id = $1 order by s.added_at`,
+      [userId],
+    ),
+    // a disciplinary record about the person behind an entry (0060): every card shown to it and
+    // every DQ in a match. One row each: the match's schedule label (a playoff match by its series
+    // key), the card's colour (null for a DQ) and its source: 'sim', 'referee', or 'dq'. The
+    // escalations the rankings derive from these (a second yellow, a surrogate's card) are not
+    // records of their own.
+    competitionDiscipline: await q<Record<string, unknown>>(
+      `select c.name as competition, c.slug,
+              case when m.stage = 'qual' then 'Q' || m.number else coalesce(m.series_key, 'P' || m.number) end as match,
+              x.colour, x.source, m.finished_at as "decidedAt"
+         from competition_entries e
+         join competitions c on c.id = e.competition_id
+         join competition_match_slots s on s.entry_id = e.id
+         join competition_matches m on m.id = s.match_id
+         cross join lateral (values
+           (m.cards ->> e.id::text, 'sim', coalesce(m.cards ? e.id::text, false)),
+           (m.ref_cards ->> e.id::text, 'referee', coalesce(m.ref_cards ? e.id::text, false)),
+           (null, 'dq', e.id = any(m.dq))
+         ) as x(colour, source, present)
+        where (e.user_id = $1 or e.partner_id = $1) and x.present
+        order by m.finished_at nulls last, m.id, x.source`,
       [userId],
     ),
   };
@@ -3512,6 +3858,16 @@ export async function getRating(
   return rows[0]?.rating ?? 1000;
 }
 
+/** one board row as the rating update reads it. `idleDays` is whole days since the row last
+ *  changed (`updated_at`), which drives the idle RD growth in `server/ranked.ts`. */
+export interface RatingRow {
+  rating: number;
+  rd: number;
+  vol: number;
+  games: number;
+  idleDays: number;
+}
+
 /** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
  * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
 /**
@@ -3531,18 +3887,72 @@ export async function getRatingsFull(
   mode: '1v1' | '2v2',
   act: number,
   game?: Game,
-): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
-  const out = new Map<string, { rating: number; rd: number; vol: number }>();
-  const ids = [...new Set(userIds.filter(Boolean))];
-  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
+  /** a transaction to read in. With `lock`, the rows are LOCKED for the rest of it — see below */
+  query: Tx = q,
+  lock = false,
+): Promise<Map<string, RatingRow>> {
+  const out = new Map<string, RatingRow>();
+  // sorted, so two transactions locking overlapping rosters take the locks in the same order
+  const ids = [...new Set(userIds.filter(Boolean))].sort();
+  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06, games: 0, idleDays: 0 });
   if (!ids.length) return out;
-  const rows = await q<{ user_id: string; rating: number; rd: number; vol: number }>(
-    `select user_id, rating, rd, vol from elo_ratings
-      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4`,
+  if (lock) {
+    /* READ-MODIFY-WRITE NEEDS A ROW TO LOCK. A player with no row yet has nothing for
+       `for update` to hold, so two transactions could both read the default and the second
+       write would erase the first. Seeding the defaults first (games 0 — the same thing an
+       absent row means everywhere) makes the second one wait on the first's insert. It rolls
+       back with the transaction if the result is never written. */
+    await query(
+      `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
+       select id, $2, $3, $4, 1000, 350, 0.06, 0 from unnest($1::text[]) as id
+       on conflict (user_id, mode, game, act) do nothing`,
+      [ids, mode, act, g(game)],
+    );
+  }
+  const rows = await query<{ user_id: string; rating: number; rd: number; vol: number; games: number; idle_days: number }>(
+    `select user_id, rating, rd, vol, games,
+            greatest(0, floor(extract(epoch from (now() - updated_at)) / 86400))::int as idle_days
+       from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
+      order by user_id${lock ? ' for update' : ''}`,
     [ids, mode, act, g(game)],
   );
-  for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
+  for (const r of rows) {
+    out.set(r.user_id, {
+      rating: r.rating,
+      rd: r.rd,
+      vol: r.vol,
+      games: Number(r.games),
+      idleDays: Number(r.idle_days),
+    });
+  }
   return out;
+}
+
+/**
+ * Undo the LOCK SEED for players a rated match did not count for (a voided 2v2, see
+ * `computeGlicko`). `getRatingsFull(…, lock)` inserts a default row so there is something to
+ * lock; for a player whose result is then voided nothing is written over it, and an empty row
+ * is not the same as no row everywhere else — `eloUserStanding` answers "0 games" instead of
+ * "never played", and `lastRankedBoard` would pick it as their most recent board.
+ *
+ * Only a row still EXACTLY the seed goes: 1000 / RD 350 / 0 games. A row a behaviour charge
+ * created (games 0, rating under 1000) is real history and stays.
+ */
+export async function dropUntouchedRatings(
+  userIds: string[],
+  mode: '1v1' | '2v2',
+  act: number,
+  game: Game | undefined,
+  query: Tx = q,
+): Promise<void> {
+  if (!userIds.length) return;
+  await query(
+    `delete from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4
+        and games = 0 and rating = 1000 and rd = 350`,
+    [userIds, mode, act, g(game)],
+  );
 }
 
 export async function getRatingFull(
@@ -3571,8 +3981,9 @@ export async function upsertRating(
   rd: number,
   vol: number,
   game?: Game,
+  query: Tx = q,
 ): Promise<number> {
-  const rows = await q<{ games: number }>(
+  const rows = await query<{ games: number }>(
     `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
      values ($1, $2, $3, $4, $5, $6, $7, 1)
      on conflict (user_id, mode, game, act)
@@ -3610,20 +4021,43 @@ export async function chargeRatingForBehaviour(
   floor: number,
   game?: Game,
 ): Promise<{ before: number; after: number }> {
-  const cur = await getRatingFull(userId, mode, act, game);
-  const before = Math.round(cur.rating);
-  const after = Math.max(floor, before - Math.max(0, Math.round(charge)));
-  if (after === before) return { before, after };
-  // upsert WITHOUT touching games/rd/vol (see above). A player with no rating row on this
-  // board yet gets one seeded at the charged value, games still 0.
-  await q(
-    `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
-     values ($1, $2, $3, $4, $5, $6, $7, 0)
-     on conflict (user_id, mode, game, act)
-       do update set rating = excluded.rating, updated_at = now()`,
-    [userId, mode, act, g(game), after, cur.rd, cur.vol],
+  const c = Math.max(0, Math.round(charge));
+  if (c === 0) {
+    const r = Math.round((await getRatingFull(userId, mode, act, game)).rating);
+    return { before: r, after: r };
+  }
+  /* ⚠️ ONE STATEMENT, SUBTRACTING FROM WHATEVER IS STORED — never a value read earlier.
+     This runs at the SAME moment as the match's own rating write: the room fires the
+     behaviour report and the result side by side, and both used to read the rating, work in
+     JS, and write an absolute number back. Whichever wrote second erased the other — measured,
+     a +15 result and a −50 charge stored 1150 where 1165 was owed, while the match history and
+     the results screen said 1215. Arithmetic on the row itself cannot lose an update, and the
+     ranked write locks the rows it reads (`persistVersusMatch`), so either order now adds up.
+
+     Upsert WITHOUT touching games/rd/vol (see above). A player with no rating row on this board
+     yet gets one seeded at the charged value, games still 0. `least(current, …)` so a charge
+     can never RAISE a rating that already sits under the floor, and the `where` skips a write
+     that would change nothing — `updated_at` is what `lastRankedBoard` sorts by. */
+  const rows = await q<{ before: number; after: number }>(
+    `with prev as (
+       select round(rating)::int as r from elo_ratings
+        where user_id = $1 and mode = $2 and act = $3 and game = $4
+     ),
+     up as (
+       insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
+       values ($1, $2, $3, $4, least(1000, greatest($6::int, 1000 - $5::int)), 350, 0.06, 0)
+       on conflict (user_id, mode, game, act) do update
+         set rating = least(round(elo_ratings.rating), greatest($6::int, round(elo_ratings.rating) - $5::int)),
+             updated_at = now()
+         where least(round(elo_ratings.rating), greatest($6::int, round(elo_ratings.rating) - $5::int))
+               <> round(elo_ratings.rating)
+       returning round(rating)::int as r
+     )
+     select coalesce((select r from prev), 1000) as before,
+            coalesce((select r from up), (select r from prev), 1000) as after`,
+    [userId, mode, act, g(game), c, Math.round(floor)],
   );
-  return { before, after };
+  return { before: Number(rows[0]?.before ?? 1000), after: Number(rows[0]?.after ?? 1000) };
 }
 
 /**
@@ -3700,6 +4134,17 @@ export async function getStanding(userId: string): Promise<StandingSnapshot> {
     [userId, STANDING_MAX],
   );
   if (fast.length && !fast[0].heal_due) return snap(fast[0]);
+  if (!fast.length) {
+    // A DELETED account with a sanction to carry (0054) has no row here, and cannot be given
+    // one (the FK needs a profile). Answer READ-ONLY from the tombstone — the ranked lock is
+    // what `rankedLock` asks this for — and let `ensureProfile` re-apply it for real.
+    const tomb = await q<{ score: number | null; restricted_until: string | null }>(
+      `select standing_score as score, restricted_until from account_tombstones
+        where user_id = $1 and not exists (select 1 from profiles where user_id = $1)`,
+      [userId],
+    );
+    if (tomb.length) return snap({ score: tomb[0].score ?? STANDING_MAX, restricted_until: tomb[0].restricted_until });
+  }
 
   return tx(async (query) => {
     await query(
@@ -3768,27 +4213,39 @@ export async function writeStandingEvent(
   userId: string,
   v: StandingVerdict,
   ctx: { game?: Game; mode?: string; roomCode?: string } = {},
-): Promise<void> {
-  await tx(async (query) => {
-    await query(
+): Promise<number> {
+  /* ⚠️ THE EXISTING ROW TAKES THE DELTA, NOT THE VERDICT'S ABSOLUTE SCORE. The verdict was
+     worked out from a snapshot read a few round trips earlier (`chargeStanding` reads, looks up
+     the rung, maybe charges rating, then writes), and writing `scoreAfter` back verbatim erased
+     anything that landed in between: a clean-match heal from the same match end, a moderator's
+     `adminEditStanding`, or a second charge. Subtracting what THIS offence costs from whatever
+     is stored now keeps every one of them. A brand-new row has nothing to race with, so it
+     takes the verdict as computed (its base was the full score). Returns what was stored, which
+     the ledger row records and the caller reports. */
+  const delta = Math.max(0, v.scoreBefore - v.scoreAfter);
+  return tx(async (query) => {
+    const stored = await query<{ score: number }>(
       `insert into account_standing (user_id, score, restricted_until, healed_at, updated_at)
        values ($1, $2, $3, now(), now())
        on conflict (user_id) do update
-         set score = excluded.score,
+         set score = greatest(0, least($5::int, account_standing.score - $4::int)),
              restricted_until = greatest(
                coalesce(account_standing.restricted_until, to_timestamp(0)),
                coalesce(excluded.restricted_until, to_timestamp(0))
              ),
              healed_at = now(),
-             updated_at = now()`,
-      [userId, v.scoreAfter, v.restrictedUntil ? new Date(v.restrictedUntil).toISOString() : null],
+             updated_at = now()
+       returning score`,
+      [userId, v.scoreAfter, v.restrictedUntil ? new Date(v.restrictedUntil).toISOString() : null, delta, STANDING_MAX],
     );
+    const scoreAfter = Number(stored[0]?.score ?? v.scoreAfter);
     await query(
       `insert into standing_events (user_id, kind, points, score_after, cooldown_min, rating_charge, game, mode, room_code)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [userId, v.kind, v.points, v.scoreAfter, v.cooldownMin, v.ratingCharge,
+      [userId, v.kind, v.points, scoreAfter, v.cooldownMin, v.ratingCharge,
        ctx.game ? g(ctx.game) : null, ctx.mode ?? null, ctx.roomCode ?? null],
     );
+    return scoreAfter;
   });
 }
 
@@ -3977,6 +4434,9 @@ export interface ScoreReportRow {
    * a moderator needs before deciding whether a claim is a mistake or a habit */
   reporterFiled: number;
   reporterRejected: number;
+  /** a moderator has already corrected this match's score — the queue says so beside UPHELD,
+   *  because the filer is told the corrected numbers when it is upheld (0057) */
+  corrected: boolean;
 }
 
 /**
@@ -4007,7 +4467,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
     id: string; match_id: string | null; replay_id: string | null; room_code: string;
     game: string; detail: string;
     status: string; smite: number; created_at: string; reporter_id: string;
-    handle: string; username: string | null; filed: string; rejected: string;
+    handle: string; username: string | null; filed: string; rejected: string; corrected: boolean;
   }>(
     // LEFT JOIN, because `score_reports.match_id` is nullable on purpose: a player looking at
     // a result that never finished writing is exactly the case worth hearing about, and it
@@ -4017,7 +4477,8 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
             sr.status, sr.smite, sr.created_at, sr.reporter_id, p.handle, p.username,
             (select count(*) from score_reports x where x.reporter_id = sr.reporter_id) as filed,
             (select count(*) from score_reports x
-              where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected
+              where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected,
+            exists (select 1 from match_score_corrections c where c.match_id = sr.match_id) as corrected
        from score_reports sr
        join profiles p on p.user_id = sr.reporter_id
        left join matches m on m.id = sr.match_id
@@ -4041,6 +4502,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
     reporterUsername: x.username,
     reporterFiled: Number(x.filed ?? 0),
     reporterRejected: Number(x.rejected ?? 0),
+    corrected: x.corrected === true,
   }));
 }
 
@@ -4060,16 +4522,21 @@ export async function resolveScoreReport(
   status: 'upheld' | 'rejected',
   adminId: string,
   smite = 0,
-): Promise<{ reporterId: string; roomCode: string; game: string } | null> {
-  const rows = await q<{ reporter_id: string; room_code: string; game: string }>(
+): Promise<{ reporterId: string; roomCode: string; game: string; matchId: string | null } | null> {
+  const rows = await q<{ reporter_id: string; room_code: string; game: string; match_id: string | null }>(
     `update score_reports
         set status = $2, reviewed_by = $3, reviewed_at = now(), smite = $4
       where id = $1::bigint and status = 'open'
-      returning reporter_id, room_code, game`,
+      returning reporter_id, room_code, game, match_id::text as match_id`,
     [id, status, adminId, Math.max(0, Math.floor(smite))],
   );
   if (!rows.length) return null;
-  return { reporterId: rows[0].reporter_id, roomCode: rows[0].room_code, game: rows[0].game };
+  return {
+    reporterId: rows[0].reporter_id,
+    roomCode: rows[0].room_code,
+    game: rows[0].game,
+    matchId: rows[0].match_id,
+  };
 }
 
 // ------------------------------------------------- match score corrections ---
@@ -4098,6 +4565,17 @@ export interface MatchScoreRow {
   }[];
   /** every correction ever applied to this match, newest first */
   corrections: MatchScoreCorrectionRow[];
+  /**
+   * The totals the match was ORIGINALLY recorded with: the oldest correction's "before", or the
+   * current totals when it was never corrected. The rating was computed from these, so a refund
+   * is judged against them (`ratingRefund`), never against an earlier correction.
+   */
+  original: { red: number; blue: number };
+  /** rating already given back on this match, one row per player (0057) */
+  refunds: { userId: string; points: number; at: string }[];
+  /** a ranked match on the ladder that is live now. A refund only ever goes to a live ladder: a
+   *  closed act's final standings have been paid out (`runRewardJob`) and are not rewritten. */
+  liveBoard: boolean;
 }
 
 export interface MatchScoreCorrectionRow {
@@ -4116,9 +4594,10 @@ export interface MatchScoreCorrectionRow {
 export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow | null> {
   const head = await q<{
     id: string; replay_id: string | null; game: string; mode: string;
-    ranked: boolean | null; created_at: string;
+    ranked: boolean | null; created_at: string; balance_version: number;
   }>(
-    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at
+    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at,
+            m.balance_version
        from matches m where m.id = $1::uuid`,
     [matchId],
   );
@@ -4139,6 +4618,14 @@ export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow |
   );
   const corrections = await listScoreCorrections(matchId);
   const sideOf = (a: 'red' | 'blue'): number => parts.find((x) => x.alliance === a)?.score ?? 0;
+  const first = corrections[corrections.length - 1];
+  const refunds = await q<{ user_id: string; points: number; at: string }>(
+    `select user_id, points, at from rating_refunds where match_id = $1::uuid order by at`,
+    [matchId],
+  );
+  const game = coerceGameId(m.game) as Game;
+  const liveBoard =
+    m.ranked === true && (await actForSeason(Number(m.balance_version), game)) === (await actFor(game));
   return {
     matchId: m.id,
     replayId: m.replay_id,
@@ -4160,7 +4647,215 @@ export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow |
       ratingAfter: x.rating_after === null ? null : Number(x.rating_after),
     })),
     corrections,
+    original: first ? { red: first.redBefore, blue: first.blueBefore } : { red: sideOf('red'), blue: sideOf('blue') },
+    refunds: refunds.map((r) => ({ userId: r.user_id, points: Number(r.points), at: r.at })),
+    liveBoard,
   };
+}
+
+/**
+ * GIVE BACK the rating a corrected result cost, once per player per match (0057).
+ *
+ * The amounts come from `ratingRefund` (src/notices.ts), which only ever returns a loss to a
+ * player whose result got BETTER, so nothing here can lower a rating. Each refund is its own
+ * transaction: the `rating_refunds` row is the once-only guard (its primary key), and the
+ * rating moves in the same transaction or not at all. A player with no rating row on the
+ * match's ladder (deleted since, or never had one) gets nothing and no row.
+ *
+ * ARITHMETIC ON THE ROW, never a value read earlier, for the reason `chargeRatingForBehaviour`
+ * states: the player may be finishing a ranked match at this moment. `updated_at` is left
+ * alone because `effectiveRd` reads it as "last played", and a refund is not a game.
+ *
+ * Refused for a ladder that is not live (see `MatchScoreRow.liveBoard`).
+ */
+export async function refundMatchRatings(
+  matchId: string,
+  refunds: { userId: string; points: number }[],
+  adminId: string,
+): Promise<{ userId: string; points: number }[]> {
+  const want = refunds.filter((r) => r.userId && Number.isFinite(r.points) && r.points > 0);
+  if (!want.length) return [];
+  const head = await q<{ mode: string; game: string; balance_version: number; ranked: boolean | null }>(
+    `select mode, game, balance_version, ranked from matches where id = $1::uuid`,
+    [matchId],
+  );
+  const m = head[0];
+  if (!m || m.ranked !== true) return [];
+  const game = coerceGameId(m.game) as Game;
+  const act = await actForSeason(Number(m.balance_version), game);
+  if (act !== (await actFor(game))) return [];
+  const applied: { userId: string; points: number }[] = [];
+  for (const r of want) {
+    const points = Math.round(r.points);
+    const ok = await tx(async (query) => {
+      const claimed = await query<{ user_id: string }>(
+        `insert into rating_refunds (match_id, user_id, points, admin_id)
+         select $1::uuid, $2, $3, $4 where exists (select 1 from profiles where user_id = $2)
+         on conflict do nothing returning user_id`,
+        [matchId, r.userId, points, adminId],
+      );
+      if (!claimed.length) return false;
+      const moved = await query<{ user_id: string }>(
+        `update elo_ratings set rating = rating + $5::int
+          where user_id = $1 and mode = $2 and game = $3 and act = $4 returning user_id`,
+        [r.userId, m.mode, g(game), act, points],
+      );
+      // no ladder row to give it back to: undo the claim rather than record a refund that
+      // never reached a rating
+      if (!moved.length) throw new NoRefundTarget();
+      return true;
+    }).catch((e) => {
+      if (e instanceof NoRefundTarget) return false;
+      throw e;
+    });
+    if (ok) applied.push({ userId: r.userId, points });
+  }
+  return applied;
+}
+
+class NoRefundTarget extends Error {}
+
+// ------------------------------------------------------------ player notices ---
+
+/** one notice as stored — the client words it (`noticeView`, src/notices.ts) */
+export interface NoticeRow {
+  id: string;
+  kind: string;
+  game: string | null;
+  data: Record<string, unknown>;
+  message: string | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface NewNotice {
+  userId: string;
+  kind: string;
+  game?: string | null;
+  data?: Record<string, unknown>;
+  message?: string | null;
+}
+
+/**
+ * Send notices — one statement for any number of recipients.
+ *
+ * A recipient with no `profiles` row is SKIPPED rather than failing the batch: the foreign key
+ * would refuse it, and a reporter who deleted their account in the meantime must not stop the
+ * reported player being told. Returns how many were written.
+ */
+export async function addNotices(rows: NewNotice[], query: Tx = q): Promise<number> {
+  const ok = rows.filter((r) => r.userId && r.kind);
+  if (!ok.length) return 0;
+  const out = await query<{ id: string }>(
+    // `with ordinality` + `order by`: ids follow the batch's own order, which is the tie-break
+    // `listNotices` reads when one batch shares a `created_at`
+    `insert into player_notices (user_id, kind, game, data, message)
+     select t.u, t.k, t.g, t.d, t.m
+       from unnest($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::text[])
+            with ordinality as t(u, k, g, d, m, ord)
+      where exists (select 1 from profiles p where p.user_id = t.u)
+      order by t.ord
+     returning id`,
+    [
+      ok.map((r) => r.userId),
+      ok.map((r) => r.kind),
+      ok.map((r) => r.game ?? null),
+      ok.map((r) => JSON.stringify(r.data ?? {})),
+      ok.map((r) => (r.message ?? '').slice(0, 500) || null),
+    ],
+  );
+  return out.length;
+}
+
+/** one account's inbox, newest first. Capped in the data layer like every list here. */
+export async function listNotices(userId: string, limit = 30): Promise<NoticeRow[]> {
+  const rows = await q<{
+    id: string; kind: string; game: string | null; data: Record<string, unknown> | null;
+    message: string | null; created_at: string; read_at: string | null;
+  }>(
+    `select id::text as id, kind, game, data, message, created_at, read_at
+       from player_notices where user_id = $1
+      order by created_at desc, id desc
+      limit $2`,
+    [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    game: r.game,
+    data: r.data ?? {},
+    message: r.message,
+    createdAt: r.created_at,
+    readAt: r.read_at,
+  }));
+}
+
+/** mark notices read — these ids, or every unread one. Only ever the caller's own rows. */
+export async function markNoticesRead(userId: string, ids: string[] | 'all'): Promise<number> {
+  if (ids !== 'all') {
+    const clean = ids.filter((x) => /^\d{1,18}$/.test(x));
+    if (!clean.length) return 0;
+    const rows = await q<{ id: string }>(
+      `update player_notices set read_at = now()
+        where user_id = $1 and id = any($2::bigint[]) and read_at is null returning id`,
+      [userId, clean],
+    );
+    return rows.length;
+  }
+  const rows = await q<{ id: string }>(
+    `update player_notices set read_at = now() where user_id = $1 and read_at is null returning id`,
+    [userId],
+  );
+  return rows.length;
+}
+
+/**
+ * Every report this account FILED, both kinds, newest first — the player's "My reports" (Epic's
+ * Safety Center shape). The reported player is named because the filer picked them by that
+ * name; the PENALTY is not, which is between that player and the moderators.
+ */
+export async function reportsFiledBy(userId: string, limit = 20): Promise<{
+  kind: 'player' | 'score';
+  id: string;
+  subject: string | null;
+  reason: string | null;
+  game: string;
+  status: string;
+  createdAt: string;
+  reviewedAt: string | null;
+  smite: number;
+}[]> {
+  const n = Math.min(50, Math.max(1, Math.floor(limit)));
+  const rows = await q<{
+    kind: string; id: string; subject: string | null; reason: string | null; game: string;
+    status: string; created_at: string; reviewed_at: string | null; smite: number;
+  }>(
+    `select * from (
+       select 'player' as kind, r.id::text as id,
+              coalesce(case when p.username is not null then '@' || p.username end, p.handle) as subject,
+              r.reason, r.game, r.status, r.created_at, r.reviewed_at, 0 as smite
+         from player_reports r left join profiles p on p.user_id = r.reported_id
+        where r.reporter_id = $1
+       union all
+       select 'score', s.id::text, null, null, s.game, s.status, s.created_at, s.reviewed_at, s.smite
+         from score_reports s
+        where s.reporter_id = $1
+     ) x
+     order by created_at desc
+     limit $2`,
+    [userId, n],
+  );
+  return rows.map((r) => ({
+    kind: r.kind === 'score' ? 'score' : 'player',
+    id: r.id,
+    subject: r.subject,
+    reason: r.reason,
+    game: r.game,
+    status: r.status,
+    createdAt: r.created_at,
+    reviewedAt: r.reviewed_at,
+    smite: Number(r.smite ?? 0),
+  }));
 }
 
 export async function listScoreCorrections(matchId: string): Promise<MatchScoreCorrectionRow[]> {
@@ -4196,7 +4891,8 @@ export async function listScoreCorrections(matchId: string): Promise<MatchScoreC
  * rated against the numbers it produced — so re-rating one match in the middle means
  * re-rating every match after it for everyone involved, and a moderation panel is not where
  * that decision belongs. `rating_before`/`rating_after` therefore stay exactly as they were
- * and the console says so out loud.
+ * and the console says so out loud. What CAN follow is a refund of a wrongly-recorded loss,
+ * a separate and opt-in step (`refundMatchRatings`, 0057).
  *
  * Returns the before/after pair, or null when the id names no match.
  */
@@ -4436,20 +5132,23 @@ export async function listReportsBy(userId: string, limit = 50): Promise<ReportF
 
 /** triage: mark every open report against a player reviewed or dismissed. Per-user rather
  *  than per-report because that is how the queue is actually worked — a moderator judges a
- *  PLAYER after watching their matches, not each complaint in isolation. */
+ *  PLAYER after watching their matches, not each complaint in isolation.
+ *
+ *  Returns the rows it CLOSED — who filed each and for what — because those are exactly the
+ *  people to tell (0057), and reading them separately would race a report filed in between. */
 export async function setReportsStatus(
   userId: string,
   status: 'reviewed' | 'dismissed',
   moderatorId: string,
-): Promise<number> {
-  const rows = await q<{ id: string }>(
+): Promise<{ id: string; reporterId: string; reason: string; game: string }[]> {
+  const rows = await q<{ id: string; reporter_id: string; reason: string; game: string }>(
     `update player_reports
         set status = $2, reviewed_by = $3, reviewed_at = now()
       where reported_id = $1 and status = 'open'
-      returning id`,
+      returning id::text as id, reporter_id, reason, game`,
     [userId, status, moderatorId],
   );
-  return rows.length;
+  return rows.map((r) => ({ id: r.id, reporterId: r.reporter_id, reason: r.reason, game: r.game }));
 }
 
 /**
@@ -4507,8 +5206,24 @@ export interface EloBoardRow {
   role?: StaffRole;
 }
 
+/** the placement every season of a game before this one was played under: 5 for both modes */
+const LEGACY_PLACEMENT = 5;
+/** each game's first season on `RANKED_PLACEMENT` — the live season when it shipped (2026-10-03).
+ *  Earlier seasons were ranked and AWARDED at 5 games, and their archived boards stay that way. */
+const PLACEMENT_FROM_SEASON: Readonly<Record<string, number>> = { decode: 7, chain: 5, biobuzz: 5 };
+
+/**
+ * The games a player needs on a board to be RANKED on it: on the leaderboard, with a rank on
+ * their profile, and in the act's podium awards. `season` is given for an ARCHIVED board, which
+ * keeps the rule it was played under; the live board always takes `RANKED_PLACEMENT`.
+ */
+export function boardMinGames(mode: '1v1' | '2v2', game?: Game, season?: number): number {
+  if (season !== undefined && season < (PLACEMENT_FROM_SEASON[g(game)] ?? 0)) return LEGACY_PLACEMENT;
+  return RANKED_PLACEMENT[mode];
+}
+
 /** The public leaderboard for an ACT's board — PLACED players only (games >=
- * PLACEMENT_GAMES). Players still in placements are intentionally omitted;
+ * `boardMinGames`). Players still in placements are intentionally omitted;
  * `eloUserStanding` reports the viewer's own standing separately. */
 export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
@@ -4525,7 +5240,7 @@ export async function eloLeaderboard(opts: {
      -- award computed off this board (rankedActGrants) names the same person the board does
      order by e.rating desc, e.games desc, e.user_id
      limit $3`,
-    [opts.act, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.act, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game), g(opts.game)],
   );
 }
 
@@ -4550,7 +5265,7 @@ export async function eloUserStanding(opts: {
      from elo_ratings e
      left join placed p on p.user_id = e.user_id
      where e.act = $1 and e.mode = $2 and e.game = $5 and e.user_id = $4`,
-    [opts.act, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.act, opts.mode, boardMinGames(opts.mode, opts.game), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -4570,8 +5285,9 @@ export async function upsertEloHistory(
   vol: number,
   games: number,
   game?: Game,
+  query: Tx = q,
 ): Promise<void> {
-  await q(
+  await query(
     `insert into elo_history (user_id, mode, game, balance_version, rating, rd, vol, games)
      values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (user_id, mode, game, balance_version)
@@ -4596,7 +5312,7 @@ export async function eloHistoryLeaderboard(opts: {
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.games >= $4
      order by h.rating desc, h.games desc, h.user_id
      limit $3`,
-    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, boardMinGames(opts.mode, opts.game, opts.balanceVersion), g(opts.game)],
   );
 }
 
@@ -4618,7 +5334,7 @@ export async function eloHistoryUserStanding(opts: {
      from elo_history h
      left join placed p on p.user_id = h.user_id
      where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.user_id = $4`,
-    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+    [opts.balanceVersion, opts.mode, boardMinGames(opts.mode, opts.game, opts.balanceVersion), opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -4824,13 +5540,20 @@ export async function getUserStats(
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from ${eloTable}
-         where ${eloKeyCol} = $1 and game = $4 and games >= $3
+         where ${eloKeyCol} = $1 and game = $4
+           and games >= case mode when '2v2' then $5::int else $3::int end
        )
        select e.mode, e.rating, e.games, p.rnk
        from ${eloTable} e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
        where e.${eloKeyCol} = $1 and e.game = $4 and e.user_id = $2`,
-      [eloKeyVal, userId, PLACEMENT_GAMES, gm],
+      [
+        eloKeyVal,
+        userId,
+        boardMinGames('1v1', gm, isLive ? undefined : balanceVersion),
+        gm,
+        boardMinGames('2v2', gm, isLive ? undefined : balanceVersion),
+      ],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
@@ -5001,10 +5724,16 @@ export async function saveMatch(
   game?: Game,
   /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
   physics?: string,
+  query: Tx = q,
+  /** the rule set that rated it (0058, `RULE_SETS`); null for a custom match */
+  ratingRules: string | null = null,
+  /** the room's setup (0061): 'custom' | 'casual-1v1' | 'casual-2v2'; null for a ranked/staged match */
+  preset: string | null = null,
 ): Promise<string> {
-  const rows = await q<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game, physics) values ($1, $2, $3, $4, $5, $6) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d'],
+  const rows = await query<{ id: string }>(
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics, rating_rules, preset)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d', ratingRules, preset],
   );
   return rows[0].id;
 }
@@ -5047,15 +5776,22 @@ export async function addMatchParticipants(
     won: boolean;
     ratingBefore: number | null;
     ratingAfter: number | null;
+    /** queued as a premade with their alliance partner (0056); null = unknown / custom */
+    premade?: boolean | null;
+    /** the absence the rating update was given (0058); null = custom, or before 0058 */
+    away?: number | null;
+    early?: boolean | null;
   }[],
+  query: Tx = q,
 ): Promise<void> {
   if (!ps.length) return;
-  await q(
+  await query(
     `insert into match_participants
-       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
-     select $1, u, a, d, s, w, rb, ra
-       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[])
-            as t(u, a, d, s, w, rb, ra)
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after, premade, away, early)
+     select $1, u, a, d, s, w, rb, ra, pm, aw, ea
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[], $9::bool[],
+                   $10::real[], $11::bool[])
+            as t(u, a, d, s, w, rb, ra, pm, aw, ea)
      on conflict (match_id, user_id) do nothing`,
     [
       matchId,
@@ -5066,6 +5802,9 @@ export async function addMatchParticipants(
       ps.map((p) => p.won),
       ps.map((p) => p.ratingBefore),
       ps.map((p) => p.ratingAfter),
+      ps.map((p) => p.premade ?? null),
+      ps.map((p) => p.away ?? null),
+      ps.map((p) => p.early ?? null),
     ],
   );
 }
@@ -5131,8 +5870,10 @@ export async function userMatchHistory(
     viewerIsStaff?: boolean;
   },
 ): Promise<MatchHistoryPage> {
-  const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
-  const offset = Math.max(0, opts.offset ?? 0);
+  // FINITE first: these arrive from a query string, and `Math.max(1, NaN)` is NaN, which reached
+  // Postgres as `limit 'NaN'` and came back as a 500
+  const limit = Math.min(100, Math.max(1, Math.floor(Number.isFinite(opts.limit) ? opts.limit! : 25)));
+  const offset = Math.max(0, Math.floor(Number.isFinite(opts.offset) ? opts.offset! : 0));
 
   const conds: string[] = [];
   switch (opts.type) {
@@ -6466,9 +7207,23 @@ export type RequestOutcome = 'sent' | 'accepted' | 'already-friends' | 'blocked'
  * up with two pending requests and no friendship, each looking at a request
  * they can't tell is already reciprocated.
  */
+/**
+ * SERIALIZE every friendship write about one PAIR. A transaction alone does not: under READ
+ * COMMITTED, A and B pressing Add at the same moment each looked for the other's request, found
+ * nothing yet committed, and each inserted their own — two pending mirror requests and no
+ * friendship, which is the exact case `sendFriendRequest` exists to fold into an accept. A block
+ * landing between a request's block check and its insert let the request through the same way.
+ * One transaction-scoped advisory lock per unordered pair makes them queue instead.
+ */
+async function lockPair(query: Tx, a: string, b: string, scope = 'pair'): Promise<void> {
+  const [low, high] = a < b ? [a, b] : [b, a];
+  await query(`select pg_advisory_xact_lock(hashtext($1))`, [`${scope}:${low}:${high}`]);
+}
+
 export async function sendFriendRequest(fromId: string, toId: string): Promise<RequestOutcome> {
   if (fromId === toId) return 'duplicate';
   return tx(async (query) => {
+    await lockPair(query, fromId, toId);
     // a block in EITHER direction stops the request. The handler reports this
     // the same way as an ordinary failure — telling a sender they were blocked
     // is itself the signal that lets someone confirm they were blocked.
@@ -6532,6 +7287,16 @@ export async function acceptFriendRequest(callerId: string, fromId: string): Pro
   });
 }
 
+/** every account this one is friends with (matchmaking: friends are never ranked opponents) */
+export async function friendIdsOf(userId: string): Promise<string[]> {
+  const rows = await q<{ id: string }>(
+    `select case when user_low = $1 then user_high else user_low end as id
+       from friendships where user_low = $1 or user_high = $1`,
+    [userId],
+  );
+  return rows.map((r) => r.id);
+}
+
 /** decline a request sent TO the caller (caller is the `to` side) */
 export async function declineFriendRequest(callerId: string, fromId: string): Promise<boolean> {
   const del = await q(
@@ -6567,6 +7332,7 @@ export async function removeFriend(callerId: string, otherId: string): Promise<b
 export async function blockUser(callerId: string, targetId: string): Promise<boolean> {
   if (callerId === targetId) return false;
   return tx(async (query) => {
+    await lockPair(query, callerId, targetId);
     await query(
       `insert into friend_blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing`,
       [callerId, targetId],
@@ -6657,12 +7423,18 @@ export async function inviteToRoom(
   // own party token, so the recipient could accept a stale one and sit in a
   // private queue waiting for a challenger who is already waiting under a
   // different token. Replacing keeps exactly one token in play.
-  await q(`delete from room_invites where from_user_id = $1 and to_user_id = $2`, [fromId, toId]);
-  await q(
-    `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format, region)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [fromId, toId, room, game, kind, record, format, region || null],
-  );
+  //
+  // ...and the replace is ONE locked transaction, or it is not a replace: as two bare `q()`s, a
+  // double click ran both deletes before either insert and left two rows, two live tokens.
+  await tx(async (query) => {
+    await lockPair(query, fromId, toId, `invite>${fromId}`);
+    await query(`delete from room_invites where from_user_id = $1 and to_user_id = $2`, [fromId, toId]);
+    await query(
+      `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format, region)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [fromId, toId, room, game, kind, record, format, region || null],
+    );
+  });
   return 'sent';
 }
 
@@ -6999,12 +7771,19 @@ const NOT_SUSPENDED: Suspension = { until: null, reason: null };
 
 /** Is this account suspended RIGHT NOW? Read at the room-join and ranked-queue doors, so it
  *  answers `NOT_SUSPENDED` for an id with no profile row and for an expired deadline — a gate
- *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). */
+ *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). The one
+ *  exception is a DELETED account's tombstone (0054): that id is not unknown, it is banned. */
 export async function getSuspension(userId: string): Promise<Suspension> {
   if (!dbEnabled) return NOT_SUSPENDED;
+  // A DELETED account answers from its tombstone (0054) until its profile is re-created — the
+  // gap between a self-delete and the next API call is exactly when a banned player would try
+  // the door. The profile wins whenever it exists.
   const rows = await q<{ until: string | null; reason: string | null }>(
-    `select suspended_until as until, suspended_reason as reason
-       from profiles where user_id = $1`,
+    `select case when p.user_id is not null then p.suspended_until else t.suspended_until end as until,
+            p.suspended_reason as reason
+       from (select $1::text as id) x
+       left join profiles p on p.user_id = x.id
+       left join account_tombstones t on t.user_id = x.id`,
     [userId],
   );
   const until = rows[0]?.until ? new Date(rows[0].until).getTime() : null;

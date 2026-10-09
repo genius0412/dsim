@@ -2,6 +2,7 @@ import type { Alliance, RobotSpec, StartPose, Vec2 } from '../types';
 import * as C from '../config';
 import { rot, hyp, dsin, dcos } from '../math';
 import { intakeMountOf } from '../games/chain/mounts';
+import { importedExtents, polyAtPose, polyGrow } from './imported';
 
 export type { StartPose } from '../types';
 
@@ -345,8 +346,14 @@ export interface StartLegality {
 }
 
 /** footprint extents in the robot frame (chassis + intake reach). Single source
- * of truth reused by physics.robotExtents and the G304 start validator. */
+ * of truth reused by physics.robotExtents and the G304 start validator.
+ *
+ * AN IMPORTED ROBOT'S EXTENTS ARE ITS HULL'S BOUNDING BOX (`importedExtents`), with NO intake
+ * reach added — the hull is the whole robot seen from above, intake included. That makes this a
+ * BOUND for an import, not its shape: everything that collides, contacts or judges a start reads
+ * the hull itself (`robotHullLocal` below, `robotHullWorld` in `physics.ts`). */
 export function footprintExtents(spec: RobotSpec): { front: number; rear: number; half: number } {
+  if (spec.imported) return importedExtents(spec.imported);
   const reach = C.INTAKE_PRESETS[spec.intake].reach;
   // The intake is a PHYSICAL part of the robot, so it extends the collision hitbox on whichever
   // edge(s) it is mounted on (Chain Reaction lets it move; DECODE intakes are always front, and
@@ -362,14 +369,41 @@ export function footprintExtents(spec: RobotSpec): { front: number; rear: number
   };
 }
 
+/**
+ * THE ROBOT'S FOOTPRINT AS A POLYGON, robot frame, CONVEX and COUNTER-CLOCKWISE: an imported
+ * robot's hull (`RobotSpec.imported.hull`), or a standard robot's footprint rectangle (chassis +
+ * intake reach, `footprintExtents`) as its four corners.
+ *
+ * The accessor every new reader of "what shape is this robot" should use — mechanism placement,
+ * sprites, previews. It is NOT `robotCorners`: that stays the four corners of the footprint BOX
+ * for every robot (for an import, the hull's bounding box), in its own clockwise order, because
+ * standard-robot code indexes it and sums over it in that order.
+ */
+export function robotHullLocal(spec: RobotSpec): Vec2[] {
+  if (spec.imported) return spec.imported.hull.map((p) => ({ x: p.x, y: p.y }));
+  const e = footprintExtents(spec);
+  return [
+    { x: -e.rear, y: -e.half },
+    { x: e.front, y: -e.half },
+    { x: e.front, y: e.half },
+    { x: -e.rear, y: e.half },
+  ];
+}
+
 /** world-frame corners of a robot footprint (chassis + intake) at an arbitrary
- * pose, optionally grown outward by `pad` inches (a "touching" slack). */
+ * pose, optionally grown outward by `pad` inches (a "touching" slack).
+ *
+ * For an IMPORTED robot these are the hull's vertices (CCW, 3–16 of them), grown by `pad` as a
+ * Minkowski sum with a ±pad square in the robot frame — exactly what growing the rectangle does —
+ * or shrunk by `-pad` (and EMPTY when nothing is left). Every consumer here only iterates the
+ * points or runs a convex SAT over them, which is why the count may differ from four. */
 export function footprintCorners(
   spec: RobotSpec,
   pos: Vec2,
   heading: number,
   pad = 0,
 ): Vec2[] {
+  if (spec.imported) return polyAtPose(polyGrow(spec.imported.hull, pad), pos, dcos(heading), dsin(heading));
   const e = footprintExtents(spec);
   const local = [
     { x: e.front + pad, y: e.half + pad },

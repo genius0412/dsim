@@ -2,6 +2,7 @@ import type { DrivetrainType, RobotSpec, RobotState, Vec2, World } from '../../t
 import type { Rect } from '../../sim/field';
 import { robotExtents, robotIntersectsRect, wheelContacts } from '../../sim/physics';
 import { clamp, dcos, dsin, hyp, wrapAngle } from '../../math';
+import { rotatedPolyBounds } from '../../sim/imported';
 import {
   CHAIN_BEAM_HEIGHT,
   CHAIN_BEAM_MOMENTUM_REF,
@@ -399,20 +400,29 @@ export function beamBlock(world: World): void {
     if (canCrossBeams(r.spec)) continue;
     const e = robotExtents(r);
     const rad = Math.max(e.half, (e.front + e.rear) / 2) + 0.5;
+    /**
+     * AN IMPORT's hull need not be centred on its origin, so its reach toward the beam is read
+     * off the hull turned to its heading, on the side that faces the beam — not one radius for
+     * every side. `max(half, front, rear)` pushed a hull with a short rear 6.4 in clear of the
+     * beam in one tick (integration review 2026-10-02).
+     */
+    const hb = r.spec.imported ? rotatedPolyBounds(r.spec.imported.hull, dcos(r.heading), dsin(r.heading)) : null;
     for (const beam of CHAIN_BEAMS) {
       if (!robotIntersectsRect(r, beam.rect)) continue;
       if (beam.axis === 'y') {
         const bc = (beam.rect.y0 + beam.rect.y1) / 2;
         const bh = (beam.rect.y1 - beam.rect.y0) / 2;
         const side = r.pos.y >= bc ? 1 : -1;
-        const limit = bc + side * (bh + rad);
+        const toward = hb ? (side > 0 ? -hb.minY : hb.maxY) + 0.5 : rad;
+        const limit = bc + side * (bh + toward);
         r.pos.y = side > 0 ? Math.max(r.pos.y, limit) : Math.min(r.pos.y, limit);
         if (side * r.vel.y < 0) r.vel.y = 0;
       } else {
         const bc = (beam.rect.x0 + beam.rect.x1) / 2;
         const bw = (beam.rect.x1 - beam.rect.x0) / 2;
         const side = r.pos.x >= bc ? 1 : -1;
-        const limit = bc + side * (bw + rad);
+        const toward = hb ? (side > 0 ? -hb.minX : hb.maxX) + 0.5 : rad;
+        const limit = bc + side * (bw + toward);
         r.pos.x = side > 0 ? Math.max(r.pos.x, limit) : Math.min(r.pos.x, limit);
         if (side * r.vel.x < 0) r.vel.x = 0;
       }

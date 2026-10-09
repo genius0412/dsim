@@ -40,6 +40,7 @@ import {
   type PadBindings,
 } from '../input/bindings';
 import { PadCapture } from '../input/padChords';
+import { padButtonDown } from '../input/gamepad';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
@@ -259,7 +260,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       const thr = bindingsRef.current.pad.triggerThreshold;
       for (let i = 0; i < pad.buttons.length; i++) {
         const b = pad.buttons[i];
-        const down = !!b && (b.pressed || b.value > thr);
+        const down = padButtonDown(b, i, thr);
         if (first) {
           if (down) alreadyDown.add(i);
           continue;
@@ -395,7 +396,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         const threshold = bindingsRef.current.pad.triggerThreshold;
         const down = new Set<number>();
         for (let i = 0; i < pad.buttons.length; i++) {
-          if (pad.buttons[i].pressed || pad.buttons[i].value > threshold) down.add(i);
+          if (padButtonDown(pad.buttons[i], i, threshold)) down.add(i);
         }
         const s = cap.step(down, performance.now());
         if (s.t === 'remove') {

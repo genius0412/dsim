@@ -236,6 +236,8 @@ export function AdminAnalytics() {
   const [busy, setBusy] = useState(true);
   /** set once the first load has landed, so a refresh does not blank the page under the reader */
   const loadedOnce = useRef(false);
+  /** the most recent `load` — an older one landing after it is discarded */
+  const loadSeq = useRef(0);
 
   const spec = RANGES.find((r) => r.id === rangeId) ?? RANGES[1];
   const { from, to, grain } = useMemo(() => {
@@ -261,6 +263,10 @@ export function AdminAnalytics() {
   }, [from, to, game, grain, filters]);
 
   const load = useCallback(async () => {
+    // THE NEWEST REQUEST WINS. A few quick filter clicks start overlapping loads (eleven
+    // aggregate queries each), and they can land in any order — an older one arriving last
+    // painted numbers for a filter set that was no longer selected.
+    const seq = ++loadSeq.current;
     setBusy(true);
     try {
       // The product half ignores the dimension filters — a country cannot narrow a ranked
@@ -271,14 +277,16 @@ export function AdminAnalytics() {
         adminGet<Report>('/api/analytics', params),
         adminGet<ProductReport>('/api/analytics/product', productParams),
       ]);
+      if (seq !== loadSeq.current) return;
       setReport(r);
       setProduct(p);
       setErr(null);
       loadedOnce.current = true;
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setErr(e instanceof Error && e.message ? e.message : adminFail('load the analytics'));
     } finally {
-      setBusy(false);
+      if (seq === loadSeq.current) setBusy(false);
     }
   }, [params, from, to, game]);
 

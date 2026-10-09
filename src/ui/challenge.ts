@@ -1,5 +1,5 @@
 import type { GameId } from '../types';
-import { RATED_FORMATS, type QueueMode } from '../net/protocol';
+import { RATED_FORMATS, RETIRED_FORMATS, type QueueMode } from '../net/protocol';
 import type { RoomInvite, SentInvite } from '../net/api';
 
 /**
@@ -16,8 +16,6 @@ export interface PendingChallenge {
   token: string;
   format: string;
   mode: QueueMode;
-  /** true ⇒ the pair IS the match (rated 1v1); false ⇒ premade into the open pool */
-  partyOnly: boolean;
   game: GameId;
   /** the other player, for "Waiting for @them" */
   opponent: string;
@@ -34,13 +32,14 @@ export function challengeOf(
   inv: Pick<RoomInvite, 'room' | 'format' | 'game'>,
   opponent: string,
 ): PendingChallenge | null {
+  // a leftover `rated1v1` row is not a challenge any more: it reads null here and the
+  // invite list shows it as retired (`isRetired`), with only Dismiss
   const spec = inv.format ? RATED_FORMATS[inv.format] : undefined;
   if (!spec || !inv.format) return null;
   return {
     token: inv.room,
     format: inv.format,
     mode: spec.mode,
-    partyOnly: spec.partyOnly,
     game: inv.game,
     opponent,
   };
@@ -50,7 +49,7 @@ export function challengeOf(
 export function formatLabel(format: string | null): string {
   switch (format) {
     case 'rated1v1':
-      return 'Rated 1v1';
+      return 'Retired challenge';
     case 'ranked2v2':
       return 'Ranked 2v2';
     case 'casual2v2':
@@ -63,6 +62,9 @@ export function formatLabel(format: string | null): string {
       return 'Casual 1v1';
   }
 }
+
+/** a pending invite in a format that no longer exists (it can only be dismissed) */
+export const isRetired = (format: string | null): boolean => !!format && RETIRED_FORMATS.includes(format);
 
 /** the one-line "@x wants to play" subtitle, format-aware */
 export const challengeLine = (format: string | null): string => `wants to play · ${formatLabel(format)}`;

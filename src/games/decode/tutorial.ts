@@ -1,12 +1,15 @@
 import type { Alliance, RobotState, World } from '../../types';
 import type { TutorialSpec, TutorialStep } from '../../tutorial/types';
 import { control, driveHint, say } from '../../tutorial/hints';
-import { baseZone, driverSide } from '../../sim/field';
+import { baseZone, driverSide, footprintExtents, loadZone } from '../../sim/field';
+import { decodeImportMouth } from '../../sim/importedMech';
+import { BALL_RADIUS } from '../../config';
 import { robotInLaunchZone } from '../../sim/robot';
 import { wheelContacts } from '../../sim/physics';
 
 /**
- * THE DECODE TUTORIAL — four steps: drive, intake, score, return.
+ * THE DECODE TUTORIAL — four steps: drive, intake, score, return. A robot with NO intake gets a
+ * LOAD step (drive into the loading zone, the human player loads it) in the intake step's place.
  *
  * The short equivalent of BIOBUZZ's (`src/games/biobuzz/tutorial.ts`), and that file's header is
  * the one to read first: the rule that shapes every `stage` here is that a step's situation goes
@@ -64,15 +67,38 @@ function place(world: World, robotId: number, x: number, y: number, heading: num
  * reason BIOBUZZ's staging says so: the ball array is what a conservation check counts, and a
  * tutorial that made an artifact disappear would be the only thing in the repo that does.
  */
-function dropOneAhead(world: World, r: RobotState, ahead: number): void {
+function dropOneAhead(world: World, r: RobotState, ahead: number, lateral = 0): void {
   const ball = [...world.balls]
     .reverse()
     .find((b) => b.state.kind === 'held' && b.state.robot === r.id);
   if (!ball) return;
   ball.state = { kind: 'ground' };
   // straight out of the mouth, in the robot's own frame. `dcos`/`dsin` are not needed: the pose
-  // this is called from faces +y in the blue frame, so the offset is along y and mirrors with it.
-  ball.pos = { x: r.pos.x, y: r.pos.y + ahead };
+  // this is called from faces +y in the blue frame, so the offset is along y and mirrors with it,
+  // and the robot's LEFT (`lateral`, an import's mouth centre) is −x.
+  ball.pos = { x: r.pos.x - lateral, y: r.pos.y + ahead };
+  ball.z = 0;
+  ball.vel = { x: 0, y: 0 };
+  ball.vz = 0;
+  const at = r.hopper.lastIndexOf(ball.color);
+  if (at >= 0) r.hopper.splice(at, 1);
+  else r.hopper.pop();
+}
+
+/**
+ * PUT one held ARTIFACT on the floor in the middle of the robot's own LOADING ZONE — the hand-loading
+ * step's twin of `dropOneAhead`: a robot with NO intake gets it back from its human player
+ * (`handLoad`, `humanPlayer.ts`), who takes from the box or the zone's floor. A state change, not a
+ * deletion, for `dropOneAhead`'s reason.
+ */
+function dropInLoadingZone(world: World, r: RobotState): void {
+  const ball = [...world.balls]
+    .reverse()
+    .find((b) => b.state.kind === 'held' && b.state.robot === r.id);
+  if (!ball) return;
+  const z = loadZone(r.alliance as Alliance);
+  ball.state = { kind: 'ground' };
+  ball.pos = { x: (z.x0 + z.x1) / 2, y: (z.y0 + z.y1) / 2 };
   ball.z = 0;
   ball.vel = { x: 0, y: 0 };
   ball.vz = 0;
@@ -106,13 +132,38 @@ const steps: TutorialStep[] = [
   // because the intake stops taking at three.
   {
     id: 'intake',
+    // a robot with NO intake is loaded by hand instead (the step below)
+    applies: (spec) => spec.intake !== 'none',
     title: 'Pick up an artifact',
     hint: (c) =>
       say`Drive onto the artifact with ${control(c, 'intake', 'intake')} held. The hopper holds three.`,
     stage: (w, id) => {
       place(w, id, 34, -22, Math.PI / 2);
       const r = me(w, id);
-      if (r) dropOneAhead(w, r, 14);
+      // 14 in clears every standard chassis; an IMPORT's front is its hull's, up to 18 in long and
+      // off-centre, so it is dropped a radius and 2 in past that, in line with its mouth
+      if (r) dropOneAhead(w, r, r.spec.imported ? footprintExtents(r.spec).front + BALL_RADIUS + 2 : 14, r.spec.imported ? decodeImportMouth(r.spec).yc : 0);
+    },
+    done: (w, id) => {
+      const r = me(w, id);
+      return !!r && r.hopper.length >= PRELOAD;
+    },
+  },
+
+  // ── 2. LOAD (a robot with NO intake) ────────────────────────────────────────
+  // The kit robot has no intake: the human player drops artifacts into it while any part of it is
+  // in its LOADING ZONE (G432). One preload goes onto the zone's floor, and the robot is staged a
+  // short drive out along the audience wall, facing the zone and clear of the spike marks and the
+  // base, so the step is "drive in and wait for the human".
+  {
+    id: 'load',
+    applies: (spec) => spec.intake === 'none',
+    title: 'Get loaded by your human player',
+    hint: () => say`Stop in the loading zone in your corner. Your human player loads you there. The hopper holds three.`,
+    stage: (w, id) => {
+      place(w, id, 34, -60, 0);
+      const r = me(w, id);
+      if (r) dropInLoadingZone(w, r);
     },
     done: (w, id) => {
       const r = me(w, id);

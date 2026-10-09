@@ -5,17 +5,29 @@ Measured 2026-09-10 on branch `perf-load`, against the real server (`npm run ser
 exactly as `game.ts` does. Raw JSON in `.loadtest-out/`, reproduced by `scripts/loadsweep.sh` and
 tabulated by `scripts/loadsummary.ts`.
 
-## ⚠️ MULTI-CORE — URGENT, NOT STARTED (owner, 2026-09-24)
+## MULTI-CORE — BUILT 2026-09-27 (`SIM_WORKERS`)
 
-The game server is ONE Node process on ONE core: nothing in `server/` uses `worker_threads` or
-`cluster`. Every room on a machine shares that core, so a bigger VM (`shared-cpu-4x`, a
-`performance-2x`) buys headroom for the OS and nothing for rooms. This matters more now that
-every online BIOBUZZ room is a 3D solve (Act 2, 2026-09-24). Until it is built, satellites that
-carry real load stay on `performance-1x` (one dedicated core), and `SATELLITE_SIZES` in
-`scripts/fly-deploy.sh` says so. The owner wants this done as soon as possible after the Act 2
-release. The obvious shape is rooms spread over worker threads, each worker stepping its own
-rooms, with the socket layer and the room-code routing kept on the main thread. Rooms already
-live in process memory and nothing crosses between rooms, so that seam exists.
+Asked for by the owner on 2026-09-24. Rooms can run on `worker_threads`, each worker stepping its
+own rooms, with sockets, matchmaker, database and room-code registry on the main thread
+(`server/roomHost.ts`; rules in `docs/area/netcode.md`). `fly.toml` sets `SIM_WORKERS=auto`: one
+worker per vCPU beyond the first, so a `performance-1x` runs in-process as before and a bigger
+VM now DOES add rooms. Measured on the Windows dev box with `scripts/loadtest.ts`:
+
+| driven DECODE rooms | server | snapshot gap p50 / p99 | jitter | notes |
+|---|---|---|---|---|
+| 20 × 1v1 | in-process | 33.8 / 48 ms | 3.9 ms | socket thread 78% busy, RTT p99 10 ms |
+| 20 × 1v1 | 1 worker | 34.2 / 46 ms | 3.6 ms | socket thread 14%, worker 71%, RTT p99 3 ms |
+| 30 × 1v1 | in-process | **79 / 280 ms** | 36 ms | saturated, shedding |
+| 30 × 1v1 | 4 workers | 32.9 / 49 ms | 2.0 ms | workers 31–36% busy |
+| 60 × 1v1 | 8 workers | 33.0 / 51 ms | 3.2 ms | workers ~40% busy, 4.8 cores |
+| 30 × 2v2 | 8 workers | 32.8 / 50 ms | 2.5 ms | socket thread 38% busy (120 clients) |
+
+The ceiling moves to the SOCKET thread: about 0.3% of it per connected client, mostly `writev`
+and zlib, so one machine tops out near ~250 clients whatever its core count (240 clients on 8
+workers saturated it here). These are ratios from a Windows box, like the rest of this file;
+re-measure on Linux before sizing a fleet on them. Satellites that carry load are still
+`performance-1x` (`SATELLITE_SIZES` in `scripts/fly-deploy.sh`): upsizing one now adds rooms,
+and its `MAX_ROOMS` has to rise with it.
 
 **Read the next section before quoting any number from this file.** Half of what a capacity model
 normally reports is not measurable on the machine these runs came from, and the half that is
@@ -160,6 +172,10 @@ Snapshot anatomy (`slimWorld`, solo DECODE, ~2.3 KB, resent 30×/s):
 ---
 
 ## 3. The architectural ceiling: one process ≈ one core
+
+> Superseded 2026-09-27 by room workers (`SIM_WORKERS`, see "MULTI-CORE" at the top): rooms now
+> step on as many cores as the machine has, and the ceiling is the socket thread. Kept as the
+> reasoning that led there.
 
 Node is single-threaded. The room loop, the snapshot broadcast, the JSON encoding and the socket
 writes all run on one event loop. **A bigger Fly VM does not multiply room capacity**, because

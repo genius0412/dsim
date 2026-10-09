@@ -38,10 +38,12 @@ import { capturePollen } from './elements';
 import { bbFlowerDropSlack, bbFlowerScatter, flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
+import { rotatedPolyBounds } from '../../sim/imported';
 import { bbIntakeMountOf } from './mounts';
 import { bbSnapStart } from './start';
 import { bbWallsTouched } from './score';
 import { biobuzzPhysics, emptyBiobuzzState, type BiobuzzState } from './state';
+import { flySeed } from '../../sim/flywheel';
 import { BB_HOOD_DEFAULT_DEG, BB_TURRET_PITCH_REST } from './config';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf } from './mechs';
 
@@ -126,15 +128,18 @@ function bbFitPose(spec: RobotSpec, pose: Pose, footprint: { front: number; rear
   const e = footprint;
   const c = dcos(pose.heading);
   const s = dsin(pose.heading);
+  // an IMPORTED robot is fitted by the box its HULL occupies at this heading (its centre and
+  // half-extents), not by its bounding box turned — the hull is the whole robot, sweeper included
+  const hb = spec.imported ? rotatedPolyBounds(spec.imported.hull, c, s) : null;
   // the footprint's own centre — offset from the robot's origin whenever the sweeper makes it
   // asymmetric fore-and-aft (a front-only mount), and it rotates with the chassis
   const half = (e.front + e.rear) / 2;
   const off = (e.front - e.rear) / 2;
-  const cx = pose.pos.x + off * c;
-  const cy = pose.pos.y + off * s;
+  const cx = hb ? pose.pos.x + (hb.minX + hb.maxX) / 2 : pose.pos.x + off * c;
+  const cy = hb ? pose.pos.y + (hb.minY + hb.maxY) / 2 : pose.pos.y + off * s;
   // the axis-aligned half-extents of the rotated rectangle
-  const ax = Math.abs(half * c) + Math.abs(e.half * s);
-  const ay = Math.abs(half * s) + Math.abs(e.half * c);
+  const ax = hb ? (hb.maxX - hb.minX) / 2 : Math.abs(half * c) + Math.abs(e.half * s);
+  const ay = hb ? (hb.maxY - hb.minY) / 2 : Math.abs(half * s) + Math.abs(e.half * c);
   const limX = Math.max(0, BB_HALF_X - ax);
   const limY = Math.max(0, BB_HALF_Y - ay);
   return {
@@ -763,7 +768,10 @@ export function createBiobuzzWorld(
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
   for (const s of [...setups].sort((p, q) => p.id - q.id)) {
     const safe = coerceBiobuzzSetup(s);
-    robots.push(makeBiobuzzRobot(safe, allianceCount[safe.alliance]++, physics));
+    const made = makeBiobuzzRobot(safe, allianceCount[safe.alliance]++, physics);
+    // a FIXED launcher's setpoint wheel starts at its setpoint; nothing for any other build
+    flySeed(made);
+    robots.push(made);
   }
 
   const biobuzz = emptyBiobuzzState();
