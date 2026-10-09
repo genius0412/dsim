@@ -1034,6 +1034,21 @@ export interface PracticeSeat {
 /** partner, opponent 1, opponent 2 */
 export type PracticeSeats = [PracticeSeat, PracticeSeat, PracticeSeat];
 
+/** what the pace read-out compares against — see `GameSettings.pace` */
+export type PaceSource = 'off' | 'pb' | 'wr' | 'replay';
+
+/** a replay picked as the pace (`GameSettings.paceReplays`) */
+export interface PaceReplayRef {
+  /** the curve's store key (`src/ui/pace/store.ts`): `r:<replay id>` or `l:<local key>` */
+  key: string;
+  /** the server replay id, when it has one — what lets another device rebuild the curve */
+  replayId?: string;
+  /** whose score in that replay is the pace */
+  alliance: Alliance;
+  /** who and what, for Configure: "Saket · 212" */
+  label: string;
+}
+
 export interface GameSettings {
   /** which game the player has selected (DECODE / Chain Reaction). Drives spawn,
    * step, render, HUD, the builder, and the room/queue game key. Persists + syncs. */
@@ -1165,6 +1180,18 @@ export interface GameSettings {
    *   graphs    + a frame-time and a ping sparkline
    */
   perfDisplay: PerfDisplay;
+  /**
+   * THE PACE READ-OUT: a +/- beside your score, against what another run had at the same point
+   * on the match clock (`src/ui/pace`). Solo practice and record runs only. Absent reads `off`,
+   * which is every blob written before it existed.
+   *   pb      your own best: the best record in the mode you are running, or in solo practice
+   *           your best practice run. Looked up again each match, so it follows a new best.
+   *   wr      the top of the record board for the mode (solo practice reads the solo board)
+   *   replay  one replay you picked (`paceReplays`, per game)
+   */
+  pace?: PaceSource;
+  /** the replay `pace: 'replay'` runs against, per game — a replay belongs to one game */
+  paceReplays?: Partial<Record<GameId, PaceReplayRef>>;
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;

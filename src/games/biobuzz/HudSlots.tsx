@@ -5,6 +5,7 @@ import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { fmtTime, timerPanel } from '../../ui/timerPanel';
 import { FoulChip } from '../../ui/FoulChip';
+import { PaceTag } from '../../ui/pace/PaceTag';
 import { BiobuzzBuilder } from './Builder';
 import { BbPassPicker } from './PassPicker';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
@@ -465,6 +466,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           the alliance panel — the panel is the score, and the whole point of this figure is
           that it is not in the score yet (§10.5 C/E/F/G). */}
       <div className="breakdown-row" data-hud-band>
+        {/* the pace chip leads: it is the driver's own read-out, like PENDING (`PaceTag`) */}
+        <PaceTag hud={hud} />
         {f?.nectarLocked && (
           <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
         )}

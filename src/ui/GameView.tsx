@@ -38,6 +38,10 @@ import { getCameraPref, getViewPref, subscribeCameraPref, subscribeViewPref, typ
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { setPadMenuHandler } from './PadNavLayer';
+import { PaceContext, PaceTag } from './pace/PaceTag';
+import { usePace } from './pace/usePace';
+import type { PaceRun } from './pace/resolve';
+import type { PaceCurve } from './pace/curve';
 
 /**
  * ── WHERE THE CONNECTION CHIP AND THE PING GRAPH WENT ──────────────────────────────────────
@@ -221,7 +225,7 @@ interface Props {
    *  score cannot reach the leaderboard until there is an account to hang it on. */
   onSignIn?: () => void;
   /** a SOLO PRACTICE run just finished — the app keeps it (locally, and on the account) */
-  onPracticeRun?: (replay: Replay, result: ReplayResult) => void;
+  onPracticeRun?: (replay: Replay, result: ReplayResult, pace?: PaceCurve) => void;
   /** whether the player is signed in — drives the record results "sign in to
    * save & rank" prompt vs the live PB / WR / rank line */
   signedIn?: boolean;
@@ -273,6 +277,10 @@ interface Props {
    * recorded, so nothing leaves the device.
    */
   testDrive?: RobotSpec;
+  /** a RECORD run, and which board — the pace read-out runs here and in solo practice only */
+  recordMode?: 'solo' | 'duo';
+  /** the signed-in account, for the pace's own-best lookup; null signed out */
+  userId?: string | null;
 }
 
 export function GameView({
@@ -290,6 +298,8 @@ export function GameView({
   onBackToLobby,
   tutorial = false,
   testDrive,
+  recordMode,
+  userId = null,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
@@ -334,6 +344,14 @@ export function GameView({
     };
   }, []);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
+  // THE PACE (`src/ui/pace`): record runs (the App says which board) and solo practice — a
+  // local match with no server, that is not the tutorial or an importer test drive
+  const paceRun: PaceRun | null = recordMode
+    ? { kind: 'record', mode: recordMode }
+    : !session && settings.mode === 'match' && !tutorial && !testDrive
+      ? { kind: 'practice' }
+      : null;
+  const pace = usePace(settings, paceRun, userId, hud?.phase ?? 'pre');
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
   const [editingLayout, setEditingLayout] = useState(editLayout);
   // gates the flanking ad columns. When false the <aside>s are not rendered at all
@@ -525,7 +543,7 @@ export function GameView({
          that window was handed to nobody and lost. */
       controller.setRestartRequest(restartRunRef.current ?? null);
       controller.onPracticeRun = practiceRunRef.current
-        ? (r, res) => practiceRunRef.current?.(r, res)
+        ? (r, res, pace) => practiceRunRef.current?.(r, res, pace)
         : null;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise
       hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
@@ -642,7 +660,7 @@ export function GameView({
    */
   useEffect(() => {
     const c = controllerRef.current;
-    if (c) c.onPracticeRun = onPracticeRun ? (r, res) => onPracticeRun(r, res) : null;
+    if (c) c.onPracticeRun = onPracticeRun ? (r, res, pace) => onPracticeRun(r, res, pace) : null;
   }, [onPracticeRun]);
 
   /**
@@ -826,12 +844,14 @@ export function GameView({
         </MatchOverlay>
       )}
       {hud && (
-        <Hud
-          hud={hud}
-          showEventLog={settings.showEventLog}
-          perfLevel={perfLevel}
-          perfStats={perfStats}
-        />
+        <PaceContext.Provider value={pace}>
+          <Hud
+            hud={hud}
+            showEventLog={settings.showEventLog}
+            perfLevel={perfLevel}
+            perfStats={perfStats}
+          />
+        </PaceContext.Provider>
       )}
       {/* THE TUTORIAL STEP CARD — a HUD band, never an overlay over the field
           (`docs/area/ui.md`). It is a sibling of `<Hud>` rather than a child because `.hud` is
@@ -1134,6 +1154,7 @@ function Hud({
 
       {hud.mode === 'match' && dec && (
         <div className="breakdown-row" data-hud-band>
+          <PaceTag hud={hud} />
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
               end of AUTO and the end of the match, never live. */}
@@ -1150,6 +1171,7 @@ function Hud({
 
       {hud.mode === 'match' && cr && hud.chain && (
         <div className="breakdown-row" data-hud-band>
+          <PaceTag hud={hud} />
           {/* EACH FACT ONCE (design review 05-14, 22-11). MULT and CATALYSTS were printed here
               AND drawn as the badge + pips in `ChainHudChips`, which every pointer now gets, so
               the card is their one home. ASCENDED / PARKED is the `.park-status` card on a fine

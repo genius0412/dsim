@@ -486,13 +486,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-dialog-actions` | src/ui/shell.css:6376 | 11 |
-| `.ds-dialog-title` | src/ui/styles.css:1804 | 11 |
+| `.ds-dialog-title` | src/ui/styles.css:1830 | 11 |
 
 ## `ds-field` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:2209 | 97 |
+| `.ds-field` | src/ui/shell.css:2209 | 98 |
 | `.ds-field-row` | src/ui/shell.css:2098 | 12 |
 
 ## `ds-fold` — 2

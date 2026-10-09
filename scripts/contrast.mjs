@@ -265,6 +265,10 @@ const hudPairs = (t) => {
     // the forfeit line on the results screen: --ds-red as TEXT on the overlay panel
     ['Results forfeit notice', t('--ds-red-ink'), panel, AA],
     ['HUD .timer-panel.urgent', t('--ds-red-ink'), card, AA],
+    // the pace chip (`src/ui/pace/PaceTag.tsx`): ahead / behind / level, on the opaque card fill it takes in the chip row
+    ['HUD .breakdown-row .pace.ahead', t('--ds-ok-ink'), card, AA],
+    ['HUD .breakdown-row .pace.behind', t('--ds-red-ink'), card, AA],
+    ['HUD .breakdown-row .pace.level', t('--ds-ink'), card, AA],
     ['HUD .robot-status ink', t('--ds-ink-dim'), card, AA],
     ['HUD .game-btn ink', t('--ds-ink-dim'), card, AA],
     ['HUD .eventlog-line ink', t('--ds-ink-dim'), soft, AA],
@@ -547,6 +551,9 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim .timer-panel.warning (END GAME)', s('--ds-warn'), card, AA],
     ['3D scrim .timer-panel.urgent / .chip.desync', s('--ds-red-ink'), card, AA],
     ['3D scrim .perf-ping.ok / .chip.on', s('--ds-ok-ink'), card, AA],
+    ['3D scrim .breakdown-row .pace.ahead', s('--ds-ok-ink'), card, AA],
+    ['3D scrim .breakdown-row .pace.behind', s('--ds-red-ink'), card, AA],
+    ['3D scrim .breakdown-row .pace.level', s('--ds-ink'), card, AA],
     ['3D scrim .breakdown-row span.warn (PIN)', s('--ds-warn'), soft, AA],
     ['3D scrim .eventlog-line', s('--ds-ink-dim'), soft, AA],
     ['3D scrim .eventlog-pinned', s('--ds-warn'), soft, AA],

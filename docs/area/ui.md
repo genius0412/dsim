@@ -434,6 +434,35 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   and takes focus; the way in is Sign in, after which the status is asked again and the app
   replaces the screen with no reload. Copy: DSIM or "Alpha" is closed, never a game name.
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
+- **THE PACE LINE** (`src/ui/pace/`, 2026-10-07; owner asked for a "+/- of what PB would be at
+  the given time"): `+12 PB`, the FIRST CHIP in the row over the score bar (`.breakdown-row`,
+  beside NECTAR LOCKED / CLASSIFIED / PARTICLES), in SOLO PRACTICE and RECORD runs only.
+  Setting `GameSettings.pace` (Off · Your best · World record · Replay) in Audio and Visual beside
+  the other read-outs; the replay is picked with **Use as pace** in the replay viewer
+  (`paceReplays`, per game). A replay is an input log, so the reference's score-over-time is
+  re-simulated ONCE in `paceWorker.ts` and stored per replay (`PACE_CURVES_KEY`); the live run is
+  matched on the CLOCK `(phase, ticks left)`, never the tick, because practice starts AUTO on a
+  keypress and records count a pre-match in the sim. Score is NET (`recordScore`). PB/WR are
+  looked up again every match, so a new best is the pace from the next match on.
+  ⚠️ **ONLY AN EXACT RE-RUN IS A PACE** (`replayFidelity === 'ok'`), stricter than the viewer:
+  measured, a 723-point DECODE record from sim v2 re-ran as 40 on v5 and BIOBUZZ v3 records ran
+  598 → 96. WR takes the first PLAYABLE run tied at the top; practice PB the best run on this sim.
+  After a `SIM_VERSION` or `BALANCE_VERSION` bump every older PB/WR shows `—` until beaten — expected, not a bug.
+  The chip is rendered from the first frame of a paced match (`—` until there is a number), so
+  the row's height never changes mid-match. GREEN ahead, RED behind (ink and edge, like `.warn`),
+  plain `--ds-ink` level; on the opaque `--ds-hud` fill, not the row's soft one, because light
+  theme's green ink is 4.08:1 on `--ds-hud-soft` (contrast-checked, both themes and the 3D scrim).
+  ⚠️ **NOT IN THE SCORE BAR** (owner, 2026-10-08: in-panel versions "broke the clean, symmetrical
+  scoring look"; then "make it another chip like how NECTAR LOCKED is, in that row, of the same
+  style"). Under the total it made a BIOBUZZ panel four lines, beside it it pushed the total off
+  centre, and a tab on the panel's edge was a third shape in the HUD. The row now wraps as whole
+  chips at every size (it did only in the compact block): at 627px wide the extra chip made
+  NECTAR LOCKED and PENDING break their own words onto two lines.
+  ⚠️ **SOLO PRACTICE RECORDS ITS OWN CURVE WHILE IT IS PLAYED** (`GameController.paceRec`, stored
+  with the run by `keepPracticeRun`). Re-simulating a BIOBUZZ run in the worker beside a live match
+  took 70 s to 9 min here, and for all of it a new best could not be raced; smoke asserts the live
+  curve equals the re-simulated one. While a NEW run's curve is still being made the tag reads `—`,
+  never the previous run's curve under the new run's name (`usePace`'s `shownRun`).
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH

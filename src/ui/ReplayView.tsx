@@ -43,6 +43,8 @@ import { SIM_DT, BALANCE_VERSION, SIM_VERSION } from '../config';
 import { parsePenaltyEvent } from '../sim/penaltyLog';
 import { PenaltyLog, ScoreEditor, type PenaltyEntry } from './ReplayRail';
 import { importedTopsSettled } from '../render/importedAssets';
+import { curveFor } from './pace/store';
+import type { GameId, PaceReplayRef } from '../types';
 
 /** the longest an export waits for an imported robot's picture or mesh before its first frame (ms):
  *  a GLB of the library's 4 MB cap parses in well under a second; past this it is not coming */
@@ -135,6 +137,8 @@ export function ReplayView({
   viewerRobotId,
   adminMatchId,
   onClose,
+  paceKeys,
+  onUsePace,
 }: {
   replayId?: string;
   /** a replay already in hand (just-played run) — skips the fetch */
@@ -154,6 +158,11 @@ export function ReplayView({
    */
   adminMatchId?: string | null;
   onClose: () => void;
+  /** the replays picked as the pace (`GameSettings.paceReplays`), so the button can say this
+   *  one is it */
+  paceKeys?: string[];
+  /** make this replay the pace for its game — absent hides the button */
+  onUsePace?: (game: GameId, ref: PaceReplayRef) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale' | 'private'>(
@@ -174,6 +183,8 @@ export function ReplayView({
   /** detaches the visibilitychange listener that pauses the encoder with the render loop */
   const stopVisibility = useRef<(() => void) | null>(null);
   /** the download menu, and the byte count measured when it opened (see `openMenu`) */
+  /** Use as pace: re-simulating it into a curve, or why it could not be */
+  const [pacing, setPacing] = useState<'idle' | 'working' | 'failed'>('idle');
   const [menuOpen, setMenuOpen] = useState(false);
   const [dataBytes, setDataBytes] = useState(0);
   const menuRoot = useRef<HTMLDivElement>(null);
@@ -1329,6 +1340,50 @@ export function ReplayView({
                 ))}
               </div>
             )}
+            {/* USE AS PACE (`src/ui/pace`): this run becomes the +/- line under your score in
+                solo practice and records. The curve is made and kept NOW, while the replay is in
+                hand, because a run opened straight off the results screen has no server id and
+                nothing could fetch it again later. */}
+            {onUsePace && replay.current && (() => {
+              const r = replay.current;
+              const game: GameId = r.game ?? 'decode';
+              const key = replayId ? `r:${replayId}` : `l:${game}:${r.seed}:${r.ticks}`;
+              const isPace = paceKeys?.includes(key) ?? false;
+              // a run whose sim moved re-runs as a different match, so it cannot be a pace
+              // (`src/ui/pace/store.ts`), though it still plays here with its note
+              const exact = replayFidelity(r, BALANCE_VERSION, SIM_VERSION) === 'ok';
+              return (
+                <button
+                  className={`ds-btn${isPace ? ' primary' : ''}`}
+                  aria-pressed={isPace}
+                  disabled={recording || saving || pacing === 'working' || isPace || !exact}
+                  title={
+                    !exact || pacing === 'failed'
+                      ? 'Recorded on an older version of DSIM, so it cannot be raced.'
+                      : undefined
+                  }
+                  onClick={() => {
+                    const { alliance } = replayViewpoint(r.setups, viewerRobotId);
+                    setPacing('working');
+                    curveFor(key, game, () => Promise.resolve(r), alliance, true).then(
+                      (c) => {
+                        setPacing('idle');
+                        const final = c.s[c.s.length - 1] ?? 0;
+                        onUsePace(game, {
+                          key,
+                          ...(replayId ? { replayId } : {}),
+                          alliance,
+                          label: `${final}-point run`,
+                        });
+                      },
+                      () => setPacing('failed'),
+                    );
+                  }}
+                >
+                  {isPace ? 'Your pace' : pacing === 'working' ? 'Working…' : 'Use as pace'}
+                </button>
+              );
+            })()}
             <div className="ds-dl" ref={menuRoot}>
               <button
                 className={`ds-btn${menuOpen ? ' primary' : ''}`}

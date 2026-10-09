@@ -105,6 +105,8 @@ export const ACTIVE_GAME_KEY = 'decodesim.activeGame.v1';
 export const STAGED_MATCH_KEY = 'decodesim.stagedMatch.v1';
 /** index of your solo practice runs. Each run's log sits at `PRACTICE_RUNS_KEY.<id>` */
 export const PRACTICE_RUNS_KEY = 'decodesim.practice.v1';
+/** pace curves: what a reference run had scored at each point on the clock (`src/ui/pace`) */
+export const PACE_CURVES_KEY = 'decodesim.paceCurves.v1';
 /** index of self-hosted matches awaiting upload. Bodies at `LAN_RUNS_KEY.<id>` */
 export const LAN_RUNS_KEY = 'decodesim.lanruns.v1';
 /** which site banners you closed, as banner id → the revision you closed (`BannerStack.tsx`) */
@@ -289,6 +291,15 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     category: 'preference',
     purpose: 'The address of the self-hosted server you last joined, so you can rejoin it.',
     retention: 'Until you clear your browser data, or leave the self-hosted server.',
+  },
+  {
+    key: PACE_CURVES_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'For the pace read-out: the score another run (your best, the record, or a replay you picked) had at each point of its match, worked out once from its replay so it is not worked out again every match.',
+    retention:
+      'The last 24 are kept, plus the replay you picked for each game; the oldest goes first past that.',
   },
   {
     key: PREDICTION_KEY,

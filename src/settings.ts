@@ -1,4 +1,15 @@
-import type { Alliance, GameId, GameLoadout, GameSettings, PerfDisplay, PracticeSeat, PracticeSeats, RobotSpec } from './types';
+import type {
+  Alliance,
+  GameId,
+  GameLoadout,
+  GameSettings,
+  PaceReplayRef,
+  PaceSource,
+  PerfDisplay,
+  PracticeSeat,
+  PracticeSeats,
+  RobotSpec,
+} from './types';
 import {
   DEFAULT_ASSISTS,
   DEFAULT_SPEC,
@@ -61,6 +72,23 @@ export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
  * the next load.
  */
 export const PERF_DISPLAY_LEVELS: readonly PerfDisplay[] = ['off', 'simple', 'detailed', 'graphs'];
+
+/** the pace read-out's sources, in the order Configure shows them (`GameSettings.pace`) */
+export const PACE_SOURCES: readonly PaceSource[] = ['off', 'pb', 'wr', 'replay'];
+
+/** a stored pace replay, field by field; null drops it (the pace then reads "no replay") */
+function coercePaceReplay(v: unknown): PaceReplayRef | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.key !== 'string' || !/^[rl]:/.test(r.key) || r.key.length > 200) return null;
+  if (r.alliance !== 'red' && r.alliance !== 'blue') return null;
+  return {
+    key: r.key,
+    ...(typeof r.replayId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(r.replayId) ? { replayId: r.replayId } : {}),
+    alliance: r.alliance,
+    label: typeof r.label === 'string' ? r.label.slice(0, 80) : '',
+  };
+}
 
 export function defaultSettings(): GameSettings {
   return {
@@ -630,6 +658,15 @@ export function coerceSettings(raw: unknown): GameSettings {
       out.perfDisplay = s.perfDisplay as PerfDisplay;
     } else if (typeof s.perfDisplay === 'boolean') {
       out.perfDisplay = s.perfDisplay ? 'simple' : 'off';
+    }
+    if (PACE_SOURCES.includes(s.pace as PaceSource)) out.pace = s.pace as PaceSource;
+    if (typeof s.paceReplays === 'object' && s.paceReplays !== null) {
+      const pr: Partial<Record<GameId, PaceReplayRef>> = {};
+      for (const g of GAME_IDS) {
+        const ref = coercePaceReplay((s.paceReplays as Record<string, unknown>)[g]);
+        if (ref) pr[g] = ref;
+      }
+      out.paceReplays = pr;
     }
     if (typeof s.parkSpeedPct === 'number') {
       out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);

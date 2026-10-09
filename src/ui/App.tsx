@@ -111,6 +111,7 @@ import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } f
 import { loadStagedMatch } from '../net/stagedMatch';
 import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
+import type { PaceCurve } from './pace/curve';
 import {
   savePracticeRun,
   markPracticeUploaded,
@@ -1408,10 +1409,19 @@ export function App() {
    * practice figure that flattered you relative to a record run would be worse than useless
    * for the one thing practice is for.
    */
-  const keepPracticeRun = (replay: Replay, result: ReplayResult): void => {
+  const keepPracticeRun = (replay: Replay, result: ReplayResult, pace?: PaceCurve): void => {
     const alliance = replay.setups[0]?.alliance ?? 'blue';
     const score = recordScore(result, alliance);
-    savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    const kept = savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // the run's pace curve, made while it was played, under the key the pace looks it up by: a
+    // new best is raced from the very next match instead of after a re-simulation. A dynamic
+    // import because the store reaches the replay simulator (`replayFidelity`), which is not in
+    // the first download; the game screen that hands this over has already loaded it.
+    if (kept && pace) {
+      void import('./pace/store').then(({ curveKey, storeCurve }) =>
+        storeCurve(curveKey(`l:${kept.id}`), kept.game, pace),
+      );
+    }
     // the homepage's games-played counter, signed in or not (the upload below is account-only)
     reportPlayed(replay.game ?? 'decode', 'practice');
     // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
@@ -2024,6 +2034,8 @@ export function App() {
         tutorial={tutorialRun}
         testDrive={testDrive?.spec}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
+        recordMode={session && sessionKind === 'record' ? (sessionCoop ? 'duo' : 'solo') : undefined}
+        userId={accountUserId}
         onWatchReplay={(r) => {
           setReplayObj(r);
           // capture the seat NOW: `session` is torn down on the way out of the game
@@ -2232,6 +2244,16 @@ export function App() {
         viewerRobotId={replayObj ? replayRobot : null}
         adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
+        paceKeys={
+          settings.pace === 'replay'
+            ? Object.values(settings.paceReplays ?? {}).map((r) => r.key)
+            : undefined
+        }
+        onUsePace={(game, ref) => {
+          // the curve can take seconds to make, so read the settings as they are when it lands
+          const cur = settingsRef.current;
+          update({ ...cur, pace: 'replay', paceReplays: { ...cur.paceReplays, [game]: ref } });
+        }}
       />
     );
   }
