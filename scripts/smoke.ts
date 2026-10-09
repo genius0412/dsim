@@ -17195,6 +17195,15 @@ const forceRoomToPost = (room: Room): void => {
   check('split: a versus room reports none', (vs as MatchOutcome | null)?.split === undefined);
 }
 
+// ---- the leaderboard must not label a Total board as Auto / Today (older server) ----
+{
+  const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('board: a category or window the server did not echo shows no rows, not the Total board under a wrong label',
+    /category !== 'total' && r\.category !== category/.test(board) && /win !== 'season' && r\.window !== win/.test(board) && /Not available yet/.test(board));
+  const server = readFileSync('server/api.ts', 'utf8');
+  check('board: the server echoes the category and window it answered', /category, window, windowStart: start, resetsAt/.test(server));
+}
+
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------
 // A room used to be single-use: `world` was set once and never cleared, so after one
 // match `canJoin` refused every later joiner and the `start` gate refused every later
