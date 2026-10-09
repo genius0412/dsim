@@ -1,8 +1,8 @@
 <!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs -->
 # AUTOS: Zenith `*.auto.json` routines, driven by an auto seat
 
-A Zenith auto is the file a team's robot plays (`Horizon-36596/biobuzz` runs it through its
-Zenith runtime), drawn and checked in **Zenith** (`Horizon-36596/zenith`). DSIM plays the same
+A Zenith auto is the file a team's robot plays through Zenith's robot runtime, drawn and checked
+in **Zenith** (`Horizon-36596/zenith`). DSIM plays the same
 file in AUTO by **driving** the robot. The plan and its reasons are in
 `docs/plans/zenith-autos.md`; the AUTO smoke lane (`scripts/smoke-biobuzz/autos.ts`) is the
 contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE's `.pp` path
@@ -25,9 +25,9 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   at every world build, so Restart plays the auto again). Outside those it hands the driver's
   command back unchanged, so TELEOP is the driver's at the buzzer and Free Drive never freezes
   (the `.pp` path froze it, because its flag was set in every mode).
-- **ONE FILE, TWO ROBOTS.** The command and condition names are the robot's
-  (`shootAll`, `setIntake`, `launcherIdle`, `relocalize`, `cancelAll`; `hopperFull`,
-  `hopperEmpty`), so the file a team deploys is the file it practises. A name DSIM does not run
+- **THE COMMANDS DSIM RUNS** are `shootAll`, `setIntake`, `launcherIdle`, `relocalize`,
+  `cancelAll`, and the conditions `hopperFull`, `hopperEmpty`. A robot repository that registers
+  the same names with its Zenith runtime deploys the file it practises. A name DSIM does not run
   ends at once and is listed, never refused: a file must not stall on a future command.
   ⚠️ **`setRamp` (`state: DEPLOY | STOW`) IS DSIM-ONLY**: the team's robot has no ramp today, so
   its runtime would list it as unregistered. It presses the driver's own RAMP toggle
@@ -40,8 +40,10 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   `mirrorAuto` leaves a ref alone and `waypoints.json` is canonical.
 - **THE ROBOT FILE IS DERIVED, NEVER TYPED** (`src/games/biobuzz/auto/`): speeds, accel and turn
   rate from `driveParams`, the footprint from `bbFootprint` (intake reach INCLUDED: the bare
-  chassis parked the intake bar 3 in inside a wall), every number labelled `SET FROM SIM`. The
-  follower gains are the robot's measured ones (`CARRIED OVER`).
+  chassis parked the intake bar 3 in inside a wall), every number labelled `SET FROM SIM` or
+  `SET BY HAND`. The follower runs on Pedro v3's defaults except the heading gain (3, tuned in the
+  AUTO lane). ⚠️ **No team's numbers go in it**: this repository is public, and the AUTO lane
+  fails a label that is not DSIM's own or a file that names a team repository.
 - ⚠️ **A TANK IS A MECANUM FILE, DRIVEN NOSE- OR TAIL-FIRST.** Zenith's follower and robot schema
   are mecanum-only (no drivetrain kind). Pedro puts heading feedback before the drive vector, so
   a tank asked to hold a heading it cannot reach drove NOTHING (StarterBot, the kit preset,

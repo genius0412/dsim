@@ -2,10 +2,9 @@
  * BIOBUZZ'S HALF OF THE ZENITH AUTO SEAM (docs/area/autos.md). LAZY CHUNK: reached only through
  * `src/auto/games.ts`, never from the BIOBUZZ sim module, so Zenith stays out of the main chunk.
  *
- * ── ONE FILE, TWO ROBOTS ──────────────────────────────────────────────────────────────────────
- * The command and condition names are the ones `Horizon-36596/biobuzz` registers
- * (`AutoBase.registerNamedCommands`), with the same parameters, so the auto a team deploys to its
- * robot is the auto it practises here. Each one does what the name says on DSIM's mechanisms:
+ * ── THE COMMANDS DSIM RUNS ────────────────────────────────────────────────────────────────────
+ * A robot repository registers these names with its Zenith runtime, and a file that uses them
+ * plays here too. Each one does what the name says on DSIM's mechanisms:
  *
  * | name           | on the robot                                  | here                                          |
  * |----------------|-----------------------------------------------|-----------------------------------------------|
@@ -37,7 +36,7 @@ import { BB_HALF_X, BB_HALF_Y, BB_RAMP_DEPLOY_S, BB_START_POSES } from '../confi
 import { bbImportMouths } from '../importMech';
 import { polyBounds } from '../../../sim/imported';
 
-/** `Constants.AutoConstants.SHOT_SETTLE_MS` on the robot: the wait after the last launch. */
+/** The wait after the last launch, so the last piece has cleared before the robot drives off. */
 const SHOT_SETTLE_S = 0.25;
 
 /**
@@ -65,10 +64,11 @@ const valued = (value: number, provenance: string): { value: number; provenance:
 /**
  * THE ZENITH ROBOT FILE FOR A DSIM BUILD. Every number is read off the spec through the same
  * functions the sim drives with, so Zenith's estimate and its preview describe the robot DSIM
- * will actually drive, and every one says so (`SET FROM SIM`). The follower's gains are the
- * biobuzz robot's measured ones, which DSIM's velocity-servo drivetrain follows well (the AUTO
- * smoke lane holds the tracking error); the brake model is left to Zenith's default, stopping at
- * the robot file's deceleration, which for DSIM is the drivetrain's own `accel`.
+ * will actually drive, and every one says so (`SET FROM SIM`). The follower runs on Pedro v3's
+ * default gains except the heading gain, which is raised to 3 for DSIM: at Pedro's 1.5 the P-only
+ * heading loop lags a 90° turn by about 15°, past the AUTO smoke lane's bound, and at 3 it holds
+ * with room to spare. The brake model is left to Zenith's default, stopping at the robot file's
+ * deceleration, which for DSIM is the drivetrain's own `accel`.
  */
 /** Can this build strafe? The spec's own drive mode (a butterfly starts in mecanum). */
 export function bbHolonomic(spec: RobotSpec): boolean {
@@ -136,7 +136,6 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
         : mountRaw === 'side'
           ? [mouth('left', 'LEFT')]
           : [mouth('front', 'FRONT')];
-  const pedro = 'CARRIED OVER: Horizon-36596/biobuzz Constants.DriveConstants (MEASURED 2026-08-30 on the robot), used unchanged on DSIM';
   const box = hb
     ? { lengthIn: r4(hb.maxX - hb.minX), widthIn: r4(hb.maxY - hb.minY), provenance: SIM('imported robot: the bounding box of its CAD footprint hull') }
     : {
@@ -170,7 +169,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
       strafeDecelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel)')),
       accelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel)')),
       maxAngularVelRadPerS: valued(dp.maxTurn, SIM('turn rate (driveParams.maxTurn)')),
-      defaultPathSpeedFraction: valued(0.8, 'CARRIED OVER: Horizon-36596/biobuzz Constants.AutoConstants.AUTO_MAX_POWER'),
+      defaultPathSpeedFraction: valued(0.8, 'SET BY HAND: DSIM default path speed, below full so a path has headroom to correct'),
       settleS: valued(0.25, 'SET BY HAND: Zenith planner default'),
       // a tank never drives a leg sideways in DSIM, so the mecanum strafe-cost warning is off for it
       strafeFractionWarn: tank
@@ -181,14 +180,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
         library: 'pedro',
         version: '3.0.0-20260828.185437-17',
         holdEnd: true,
-        forwardTranslationalPowerPerIn: valued(0.1742, pedro),
-        strafeTranslationalPowerPerIn: valued(0.1707, pedro),
-        headingPowerPerRad: valued(2.5239, pedro),
-        coastPowerPerInPerS: valued(0, pedro),
-        brakeFeedforwardPowerPerInPerS: valued(0.005, pedro),
-        maxBrakingPower: valued(0.3, pedro),
-        headingDriveRatio: valued(0, pedro),
-        cosineScale: { value: false, provenance: pedro },
+        headingPowerPerRad: valued(3, SIM('heading gain, tuned in the AUTO smoke lane (Pedro v3 default 1.5 lags a 90° turn by 15°)')),
       },
     },
     mouths,

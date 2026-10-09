@@ -281,9 +281,9 @@ export function autoChecks(check: Check): void {
       }
       // Pedro hands over at t = 0.975 while still moving, so an intermediate end is judged
       // loosely; the LAST step is followed by the hold, and is judged at the end of the run.
-      // The heading bound is the looser one: a P-only heading loop (the robot's measured 2.52
-      // power/rad) lags a sweep by about rate / (P * maxTurn), and a 90° linear sweep over a
-      // 15 in leg hands over ~11° short — on the robot too — and finishes the turn on the next leg.
+      // The heading bound is the looser one: a P-only heading loop (DSIM's 3 power/rad, from
+      // src/games/biobuzz/auto) lags a sweep by about rate / (P * maxTurn), and a 90° linear sweep
+      // over a 15 in leg hands over ~8-12° short and finishes the turn on the next leg.
       const last = ps === plan.steps[plan.steps.length - 1];
       const r = world.robots[0];
       const at = last ? { x: r.pos.x, y: r.pos.y, h: r.heading } : end;
@@ -681,22 +681,31 @@ export function autoChecks(check: Check): void {
     check('AUTO room: a malformed auto is refused in the lobby', bad.some((m) => m.t === 'error'));
   }
 
-  // ── the team's own file: biobuzz's close.auto.json with its waypoints ────────────────────
+  // ── the robot file DSIM hands Zenith is DSIM's own: no number is carried over from a team ─
+  {
+    const robotFile = JSON.stringify(autoAdapterFor('biobuzz')!.robot({ ...BB_DEFAULT_SPEC }));
+    const labels = [...robotFile.matchAll(/"provenance":"([^"]*)"/g)].map((m) => m[1]);
+    const foreign = labels.filter((l) => !/^(SET FROM SIM: DSIM |SET BY HAND: )/.test(l));
+    check('AUTO: every number in the robot file DSIM hands Zenith is DSIM\'s own (SET FROM SIM or SET BY HAND)', labels.length > 0 && foreign.length === 0, foreign.join(' | '));
+    check('AUTO: the robot file DSIM hands Zenith names no team repository', !/Horizon-36596/i.test(robotFile));
+  }
+
+  // ── a file that names every pose by waypoint: preload-park.auto.json with its waypoints ──
   {
     const dir = join(here, 'fixtures', 'zenith');
-    const auto = readFileSync(join(dir, 'close.auto.json'), 'utf8');
+    const auto = readFileSync(join(dir, 'preload-park.auto.json'), 'utf8');
     const waypoints = readFileSync(join(dir, 'waypoints.json'), 'utf8');
     const red = stage({ auto, waypoints }, 'red', '2d');
     const blue = stage({ auto, waypoints }, 'blue', '2d');
-    check('AUTO: close.auto.json loads, refs and all, with nothing it names unsupported', red.seat.loaded !== null && red.seat.loaded.unsupported.length === 0, red.seat.status().error ?? red.seat.loaded?.unsupported.join(', '));
-    check('AUTO: close.auto.json (RED) is mirrored for BLUE and not for RED', red.seat.loaded?.mirrored === false && blue.seat.loaded?.mirrored === true);
+    check('AUTO: preload-park.auto.json loads, refs and all, with nothing it names unsupported', red.seat.loaded !== null && red.seat.loaded.unsupported.length === 0, red.seat.status().error ?? red.seat.loaded?.unsupported.join(', '));
+    check('AUTO: preload-park.auto.json (RED) is mirrored for BLUE and not for RED', red.seat.loaded?.mirrored === false && blue.seat.loaded?.mirrored === true);
     startMatch(red.world);
     const before = red.world.robots[0].hopper.length;
     drive(red.world, red.seat, 8);
     const trace = red.seat.trace();
-    const shots = trace?.steps.find((s) => s.id === 'Preload shots');
+    const shots = trace?.steps.find((s) => s.id === 'preload');
     check(
-      'AUTO: close.auto.json drives to its shoot pose and fires the whole preload',
+      'AUTO: preload-park.auto.json drives to its shoot pose and fires the whole preload',
       shots !== undefined && shots.endS > shots.startS && red.world.robots[0].hopper.length === 0 && before === 4,
       `preload ${before}, holds ${red.world.robots[0].hopper.length}, shots ${JSON.stringify(shots)}`,
     );
