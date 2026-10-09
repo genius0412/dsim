@@ -22,12 +22,16 @@ export function ChainHudChips({ hud }: GameHudProps) {
 
   const multSaid = `Multiplier ×${chain.mult}.`;
   const catalystsSaid = `${chain.catalysts} of 4 catalysts seated.`;
-  const holdSaid =
-    chain.ringAction !== null
-      ? 'Catalyst in reach — pick up or place available.'
-      : chain.carrying
-        ? 'Carrying a catalyst, out of range to place.'
-        : null;
+  // `ringAction` is ALSO 'fling' — carrying, nothing seatable in reach, but a catapult can
+  // throw it — and that is not "in reach": it keeps the carrying pip and says so.
+  const inReach = chain.ringAction === 'pickup' || chain.ringAction === 'place';
+  const holdSaid = inReach
+    ? 'Catalyst in reach — pick up or place available.'
+    : chain.carrying
+      ? chain.ringAction === 'fling'
+        ? 'Carrying a catalyst, out of range to place. Throw available.'
+        : 'Carrying a catalyst, out of range to place.'
+      : null;
   const storage = chain.storage > 0 ? Math.min(1, hud.hopper.length / chain.storage) : 0;
   const storageSaid = `Storage ${hud.hopper.length} of ${chain.storage}.`;
 
@@ -45,7 +49,7 @@ export function ChainHudChips({ hud }: GameHudProps) {
         </div>
         {holdSaid && (
           <span
-            className={`catalyst-pip${chain.ringAction !== null ? ' prompt' : ' carrying'}`}
+            className={`catalyst-pip${inReach ? ' prompt' : ' carrying'}`}
             role="img"
             aria-label={holdSaid}
           />

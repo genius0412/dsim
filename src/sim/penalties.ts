@@ -307,20 +307,17 @@ function updatePossession(
    *     one thing standing between herding and BULLDOZING.
    * Iteration is over a snapshot of the keys, in insertion order, so it stays deterministic.
    */
-  const live = new Set<string>();
-  for (const r of world.robots) {
-    for (const b of world.balls) if (b.state.kind === 'ground') live.add(`${r.id}:${b.id}`);
-  }
+  const live = controlKeyLive(world, (b) => b.state.kind === 'ground');
   pen.ballCarry ??= {};
   for (const key of Object.keys(pen.ballHold)) {
-    if (!live.has(key)) {
+    if (!live(key)) {
       delete pen.ballHold[key];
       delete pen.ballAnchor[key];
       delete pen.ballCarry[key];
     }
   }
-  for (const key of Object.keys(pen.ballAnchor)) if (!live.has(key)) delete pen.ballAnchor[key];
-  for (const key of Object.keys(pen.ballCarry)) if (!live.has(key)) delete pen.ballCarry[key];
+  for (const key of Object.keys(pen.ballAnchor)) if (!live(key)) delete pen.ballAnchor[key];
+  for (const key of Object.keys(pen.ballCarry)) if (!live(key)) delete pen.ballCarry[key];
 
   for (const r of world.robots) {
     // `cmd.intake || r.autoIntake` is what actually RUNS the intake (robot.ts), and the
@@ -610,6 +607,24 @@ export interface ControlGeometry {
   loose?(b: Artifact): boolean;
 }
 
+/**
+ * Is a per-(robot, artifact) clock key "robotId:ballId" still LIVE — a robot that exists and an
+ * artifact `isLoose` accepts? Exactly membership in the robots × loose-artifacts cross product
+ * both sweeps used to build as a `Set` of strings every tick (robots × balls allocations, 224
+ * of them a tick in a BIOBUZZ 2v2), answered from two small sets of id strings instead. Ids are
+ * numbers, so a key has exactly one ':' and its two halves are the two `${id}`s.
+ */
+export function controlKeyLive(world: World, isLoose: (b: Artifact) => boolean): (key: string) => boolean {
+  const robots = new Set<string>();
+  for (const r of world.robots) robots.add(`${r.id}`);
+  const loose = new Set<string>();
+  for (const b of world.balls) if (isLoose(b)) loose.add(`${b.id}`);
+  return (key) => {
+    const at = key.indexOf(':');
+    return at >= 0 && robots.has(key.slice(0, at)) && loose.has(key.slice(at + 1));
+  };
+}
+
 export function controlledArtifacts(
   world: World,
   r: RobotState,
@@ -631,6 +646,20 @@ export function controlledArtifacts(
   const isLoose = geom?.loose ?? ((b: Artifact): boolean => b.state.kind === 'ground');
   const loose = world.balls.filter(isLoose);
 
+  /**
+   * THE FAR REJECT. Nearly every loose artifact is nowhere near this robot, and each one used to
+   * cost a key string and a `closestPointOnRobot` just to reach the not-touching branch. An
+   * artifact farther from the robot's CENTRE than the chassis box's own half-diagonal plus its
+   * contact reach cannot be within that reach of the box, so it takes that branch, whose only
+   * work is draining a clock that EXISTS — and which of this robot's artifacts have one is read
+   * off the keys once, here. (`1e-6` of slack keeps the reject strictly inside the old test.)
+   */
+  const ext = robotExtents(r);
+  const boxR = hyp(Math.max(ext.front, ext.rear), ext.half);
+  const prefix = `${r.id}:`;
+  const clocked = new Set<number>();
+  for (const k of Object.keys(pen.ballHold)) if (k.startsWith(prefix)) clocked.add(Number(k.slice(prefix.length)));
+
   const held = new Set<number>();
   /**
    * Artifacts the robot is PHYSICALLY TOUCHING this tick, established hold or not.
@@ -642,6 +671,10 @@ export function controlledArtifacts(
    */
   const touching = new Set<number>();
   for (const b of loose) {
+    const fx = b.pos.x - r.pos.x;
+    const fy = b.pos.y - r.pos.y;
+    const farR = boxR + rad(b) + C.POSSESSION_CONTROL_MARGIN + 1e-6;
+    if (fx * fx + fy * fy > farR * farR && !clocked.has(b.id)) continue;
     const key = `${r.id}:${b.id}`;
     const cp = closestPointOnRobot(r, b.pos);
     // `rad(b)` rather than the flat `reach`, so a game with two element SIZES measures each
