@@ -42,7 +42,10 @@ export const SIM_GAMES: Partial<Record<GameId, GameSimModule>> = {
 
 /** the sim module for a game id, defaulting to DECODE (undefined / unknown / old). */
 export function simModuleFor(id: GameId | undefined | null): GameSimModule {
-  return (id && SIM_GAMES[id]) || DECODE_SIM;
+  // OWN keys only. `SIM_GAMES` is an ordinary object, so an untrusted string such as
+  // "constructor" or "toString" (a replay's `game`, say) used to find the Object prototype's
+  // member and hand it back as a game module instead of falling back to DECODE.
+  return (id && Object.prototype.hasOwnProperty.call(SIM_GAMES, id) && SIM_GAMES[id]) || DECODE_SIM;
 }
 
 /** the sim module a world belongs to (its `game`, defaulting to DECODE). */

@@ -12,7 +12,7 @@ import {
 } from '../src/replaySavePolicy';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
-import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { sanitizePlayer, sanitizePlayerPatch, sanitizeReplay } from '../src/net/sanitize';
 import { allianceDuo, derivedRole, savedStartCap, startHandleReach } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
@@ -39,6 +39,8 @@ import {
   setLaunchSearchForTests,
 } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
+import { clampBallPosToStatics as clampToStatics } from '../src/sim/physics';
+import { canonicalWorld, judgeGolden, runGolden, type GoldenScene } from './simGolden';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
@@ -628,6 +630,185 @@ const mkWorld = (
 const slotCount = (w: World, a: 'red' | 'blue') =>
   w.balls.filter((b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow)
     .length;
+
+// ---- GOLDEN HASHES: step() output is pinned per SIM_VERSION ------------------
+// See `scripts/simGolden.ts`. Each scene is a whole world hashed at checkpoints; a failure means
+// the sim's output moved. Byte-identical work (refactors, speed-ups) must leave every hash here
+// untouched; a real behaviour change bumps SIM_VERSION and adds a row. BIOBUZZ's scenes live in
+// its own suite (`scripts/smoke-biobuzz/golden.ts`). One block per scene, so the shard runner
+// can spread them.
+const GOLDEN: Record<number, Record<string, string[]>> = {
+  4: {
+    'decode solo': ['fb2a65c5dabfb38a', '7b715493f956ebd2', 'c818f0f50624ae57', '8bb36d9c5151f5a8', 'aeac450d900d63fe', '2719f93071f60cb2'],
+    'decode 2v2': ['1f80d772e026ba28', '974956cf37f76f09', '68c947be9e76ac19', '99fdba0d5c6495e0', '5222684bcff58964', 'fe6a16b8428fad99'],
+    'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
+    'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
+  },
+};
+const goldenArmed = (w: World): World => {
+  // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
+  w.match.preCountdown = 1;
+  return w;
+};
+const goldenSetup = (id: number, alliance: Alliance, startIndex: number, spec: Partial<RobotSpec>): RobotSetup => ({
+  id,
+  alliance,
+  spec: { ...DEFAULT_SPEC, ...spec },
+  assists: { ...PLAYER_ASSISTS, fieldCentric: id % 2 === 0 },
+  startIndex,
+});
+/** run one golden scene, judge it against `GOLDEN`, and hand back the final world */
+const goldenCheck = (scene: GoldenScene): World => {
+  const { hashes, world } = runGolden(scene, SIM_DT);
+  const [ok, detail] = judgeGolden(scene, hashes, GOLDEN, SIM_VERSION, 'scripts/smoke.ts (GOLDEN)');
+  check(`golden: ${scene.name} re-simulates bit-identically under SIM_VERSION ${SIM_VERSION}`, ok, detail);
+  return world;
+};
+const goldenScore = (w: World): number => w.match.scores.red.total + w.match.scores.blue.total;
+
+{
+  // one driven robot through the countdown, AUTO, the transition and into DRIVER-CONTROLLED with
+  // the human player restocking: the ground-artifact solve, intake, shooter, basin, rail, gate
+  // and scoring all run
+  const w = goldenCheck({
+    name: 'decode solo',
+    game: 'decode',
+    build: () => goldenArmed(createWorld('match', 20260927, [goldenSetup(0, 'blue', 0, {})])),
+    step,
+    ticks: 2700,
+    every: 450,
+  });
+  check('golden: decode solo is not vacuous (it reached DRIVER-CONTROLLED and scored)', w.match.phase === 'teleop' && goldenScore(w) > 0, `${w.match.phase} · ${goldenScore(w)} pts`);
+}
+
+{
+  // four drivetrains and all three intakes, so robot-robot contact, the pin rounds and the
+  // penalty engine run too (tank and butterfly steer through leftDrive/rightDrive)
+  const w = goldenCheck({
+    name: 'decode 2v2',
+    game: 'decode',
+    build: () =>
+      goldenArmed(
+        createWorld('match', 7, [
+          goldenSetup(0, 'blue', 0, { drivetrain: 'mecanum', intake: 'sloped' }),
+          goldenSetup(1, 'red', 0, { drivetrain: 'tank', intake: 'vector' }),
+          goldenSetup(2, 'blue', 1, { drivetrain: 'swerve', intake: 'triangle' }),
+          goldenSetup(3, 'red', 1, { drivetrain: 'butterfly', intake: 'sloped', canSort: true }),
+        ]),
+      ),
+    step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: decode 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+{
+  // the end of a match: ENDGAME, the buzzer, and the post-match settle scoring
+  const w = goldenCheck({
+    name: 'decode endgame',
+    game: 'decode',
+    build: () => {
+      const g = createWorld('match', 99, [goldenSetup(0, 'red', 1, { drivetrain: 'xdrive', intake: 'vector' })]);
+      g.match.phase = 'teleop';
+      g.match.phaseTimeLeft = 24;
+      return g;
+    },
+    step,
+    ticks: 1800,
+    every: 450,
+  });
+  check('golden: decode endgame is not vacuous (it reached the post-match settle)', w.match.phase === 'post', w.match.phase);
+}
+
+{
+  // Chain Reaction: the pre-match fling, 300 particles, all four scoring archetypes, the catalyst
+  // mechanisms and the accelerator loop
+  const chain = simModuleFor('chain');
+  const w = goldenCheck({
+    name: 'chain 2v2',
+    game: 'chain',
+    build: () =>
+      goldenArmed(
+        chain.createWorld('match', 11, [
+          { id: 0, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'turret', catalystType: 'arm' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 1, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'drum', catalystType: 'launcher' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 2, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'dumper', catalystType: 'turret', drivetrain: 'tank' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+          { id: 3, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'twinturret', catalystType: 'rail', drivetrain: 'swerve' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+        ]),
+      ),
+    step: chain.step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- untrusted-input edges that must not move a valid input ----------------
+{
+  // sanitizeReplay: an id is an INTEGER slot. It used to test the raw value for duplicates and
+  // round afterwards, so 0.6 and 1.4 were two robots that both spawned as robot 1.
+  const base = { format: REPLAY_FORMAT, mode: 'match', seed: 5, ticks: 10, balanceVersion: BALANCE_VERSION, sim: SIM_VERSION, tracks: {} };
+  const s0 = { alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 };
+  check('sanitizeReplay refuses fractional robot ids (0.6 and 1.4 both rounded to 1)', sanitizeReplay({ ...base, setups: [{ ...s0, id: 0.6 }, { ...s0, id: 1.4, alliance: 'red' }] }) === null);
+  const ok = sanitizeReplay({ ...base, setups: [{ ...s0, id: 0 }, { ...s0, id: 1, alliance: 'red' }] });
+  check('...and still takes integer ids unchanged', !!ok && ok.setups.map((x) => x.id).join() === '0,1', `${ok?.setups.map((x) => x.id)}`);
+
+  // coerceSetup: the id and `passive` are forced to their types; valid values pass unchanged
+  const cs = coerceSetup({ ...s0, id: NaN, passive: { yes: 1 } } as never);
+  check('coerceSetup forces a NaN id to a finite integer and a non-boolean passive to absent', cs.id === 0 && cs.passive === undefined, `${cs.id} ${cs.passive}`);
+  const cv = coerceSetup({ ...s0, id: 3, passive: true } as never);
+  check('...and keeps a valid id and passive flag exactly', cv.id === 3 && cv.passive === true);
+
+  // the registries answer OWN keys only: "constructor" is not a game
+  check('simModuleFor("constructor") falls back to DECODE, not Object', simModuleFor('constructor' as never).id === 'decode');
+  check('moduleFor("toString") falls back to DECODE too', moduleFor('toString' as never).id === 'decode');
+  check('...and a real id still resolves', simModuleFor('chain').id === 'chain' && moduleFor('chain').id === 'chain');
+
+  // the classifier clamp runs at the artifact's own radius, like the walls and goal faces: a
+  // point hugging the classifier's field-side face is cleared by exactly the radius asked for
+  const cr = classifierRect('red');
+  const probe = { x: cr.x0 - 0.5, y: (cr.y0 + cr.y1) / 2 };
+  const small = clampToStatics(probe, 1.5);
+  const big = clampToStatics(probe);
+  check(
+    'clampBallPosToStatics clears the classifier by the radius it is given (1.5 vs the default 2.5)',
+    Math.abs(small.x - (cr.x0 - 1.5)) < 1e-9 && Math.abs(big.x - (cr.x0 - BALL_RADIUS)) < 1e-9,
+    `${small.x.toFixed(3)} / ${big.x.toFixed(3)} vs face ${cr.x0}`,
+  );
+
+  // coerceAutoPath is an ALLOWLIST: a valid path comes through field for field, and a key the
+  // sim never reads does not ride into the world, every snapshot and every replay
+  const valid = {
+    fileName: 'p.pp',
+    startPoint: { x: 10, y: -20, heading: 'linear', startDeg: 0, endDeg: 90 },
+    lines: [
+      { id: 'a', endPoint: { x: 30, y: -20, heading: 'tangential', reverse: true }, controlPoints: [{ x: 20, y: -30 }], waitBeforeMs: 200 },
+      { id: 'b', endPoint: { x: 30, y: 10, heading: 'constant', degrees: 45 }, waitAfterMs: 100 },
+    ],
+    sequence: [{ kind: 'path', lineId: 'a' }, { kind: 'wait', id: 'w', durationMs: 500 }, { kind: 'path', lineId: 'b' }],
+    version: '1',
+    timestamp: 't',
+  };
+  const round = coerceAutoPath(JSON.parse(JSON.stringify(valid)));
+  check(
+    'coerceAutoPath passes a valid path through field for field',
+    !!round && canonicalWorld(round as never) === canonicalWorld(valid as never),
+    round ? '' : 'refused',
+  );
+  const junk = coerceAutoPath({
+    ...valid,
+    startPoint: { ...valid.startPoint, heading: 'sideways', blob: 'x'.repeat(1000) },
+    lines: [{ ...valid.lines[0], color: 'red', meta: { deep: [1, 2, 3] } }],
+    sequence: [{ kind: 'dance', lineId: 'a', extra: 1 }],
+  })!;
+  check(
+    'coerceAutoPath drops keys the sim never reads, and a heading/kind outside its enum',
+    !('blob' in junk.startPoint) && !('heading' in junk.startPoint) && !('color' in junk.lines[0]) && !('meta' in junk.lines[0]) &&
+      !('extra' in (junk.sequence?.[0] ?? {})) && !('kind' in (junk.sequence?.[0] ?? {})) && junk.sequence?.[0].lineId === 'a',
+    JSON.stringify(junk).slice(0, 200),
+  );
+}
 
 // ---- spawn sanity ----------------------------------------------------------
 {
