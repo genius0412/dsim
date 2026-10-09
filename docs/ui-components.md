@@ -666,7 +666,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:653 | 355 |
+| `.ds-btn` | src/ui/shell.css:653 | 357 |
 
 ## `ds-checkline` — 1
 
@@ -840,7 +840,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:4433 | 51 |
+| `.ds-opts` | src/ui/shell.css:4433 | 52 |
 
 ## `ds-padhint` — 1
 

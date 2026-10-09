@@ -1,3 +1,18 @@
+# HANDOFF — 2026-10-09 (pace for record runs: the server's sim is not alpha's)
+
+**State: branch `fix/pace-records` off `alpha`; client only, no server change, no deploy.** `build`, `server:check`, `uiaudit` (after `uiindex`), `docaudit`, `bundleaudit` pass.
+
+- **Report (beta tester on alpha, via Saket):** "wr doesn't exist or smth / tracking also just doesn't work in record runs / works fine in solo practice tho".
+- **Cause:** records are simulated and stamped by the ONE Fly app, which runs main's sim (sim 4, patch 5, even for records set today). Alpha's client is sim 5, so `replayFidelity` calls every record a drift and the pace refused all of them: PB and WR in records read `—` everywhere. The reason was only in the chip's `title`, which never shows (`.hud` is `pointer-events: none`). Practice is simulated locally, so it worked.
+- **Measured** (server replays re-run on alpha, `scratch/drift-check.ts`): DECODE sim-4 records land on their score (719 → 719); BIOBUZZ's do not (850 → 99, 808 → 111, 784 → 203).
+- **Fix** (`docs/area/ui.md`, THE PACE LINE):
+  - `PaceTarget.expect` = the score the run's board/stats row shows. A drifted replay is re-run and accepted only if it lands exactly on it; a miss is cached (`Entry.miss`), so it is not re-simulated at every match start. This brings back DECODE record PB/WR.
+  - `useRecordedRunCurve` (usePace.ts, wired in GameView): a record run records its own curve from the HUD while played, kept under `playedRef(game, seed, ticks)` (the client never learns the server's replay id). `curveFor` finds it from the fetched replay. Your own record PB works from your next PB on, BIOBUZZ included, and so does the WR if it is yours. 10 Hz sampling vs the worker's per-tick curve: same end (719), worst gap 13 points, the ≤0.1 s lag.
+  - Checked headless: `scratch/store-check.ts` (drift refused without `expect`, played curve adopted, miss cached and refused), `scratch/live-check.ts`.
+- **Still open (owner's call):** a BIOBUZZ WR set by someone else on the sim-4 server cannot be paced on alpha until the server runs sim 5 (a main + Fly deploy), or until the server keeps a score timeline per record (in the replay row, or a curve endpoint). Both are server changes and need a deploy. A BIOBUZZ record PB set before this fix also stays `—` until it is beaten.
+
+---
+
 # HANDOFF — 2026-09-27d (review lane 9: server correctness, PR #104)
 
 **State: PR #104 open against `alpha`, not merged, not deployed. SERVER CHANGE: it needs `./scripts/fly-deploy.sh` once merged.** It is the server-correctness lane of the 09-27 repo review, the one lane that was not yet on GitHub when history was rewritten. It was ported onto post-rewrite `alpha` by cherry-picking (new commits, no Claude signature, authored by the session user), never pushed from a pre-rewrite worktree.
