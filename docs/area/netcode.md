@@ -50,7 +50,8 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     their codes and respawns (not if it never loaded physics, or after 5 deaths in 10 min). With
     no live worker `createRoom` falls back to in-process. A late joiner adding itself to a room
     its worker already disposed REVIVES it, as an in-process `Room` would take them.
-  - `room.ts` stays browser-safe for the LAN tab host; worker plumbing lives in `roomWorker.ts`.
+  - `room.ts` stays browser-safe for the LAN tab host; worker plumbing lives in `roomWorker.ts`.
+- **BROWSE ROOMS (`Room.listing`, `GET /api/rooms`, 2026-10-10).** A PUBLIC room is a `RoomSettings.listed` custom versus room whose HOST IS SIGNED IN; ranked, competition, record, Discord-activity and legacy rooms never list. The card (`ListedRoom`, `protocol.ts`) names the host only. It rides the presence heartbeat in the SAME array as the live matches, marked `listing: true` (no migration, no second heartbeat): `/api/live` drops it because it is neither ranked nor a record, and the admin list filters it out. It crosses the worker boundary as `RoomFacts.listing`. `browseRooms` keeps ONE listed room per host account. ⚠️ **A SERVER CHANGE: it needs a deploy**, and `src/legalText.ts` still says a custom room is private to its code, which a Public room is not; that copy is the owner's to reword.
     The image builds TWO entries (`index.js`, `roomWorker.js`); the single-file LAN bundle has no
     worker and runs in-process.
   - `/api/perf` adds `workers[]` (rooms, loop lag, busy share over the last second) and

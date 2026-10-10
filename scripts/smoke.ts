@@ -18390,6 +18390,88 @@ const recordDrive: CommandSource = (tick) => {
   check('settings: a ranked room refuses the host controls', ranked.settings?.teamSwitch === true && errs(rsink).length > 0);
 }
 
+/**
+ * BROWSE ROOMS (`Room.listing`): which rooms are on the public list, and what a card says. The
+ * rule is conservative on purpose: a Public custom versus room whose host is signed in, and
+ * nothing else, because a listed room is reachable by anyone.
+ */
+{
+  const { coerceRoomSettings } = await import('../src/net/protocol');
+  const driver = (id: string, alliance: Alliance, signedIn = true): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: `Name ${id}`, teamName: 'Team ' + id, teamNumber: 7, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    ...(signedIn ? { userId: `u-${id}` } : {}),
+  });
+  const mkRoom = (code: string, listed: boolean, preset: 'casual-1v1' | 'custom' = 'casual-1v1') =>
+    new Room(code, () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset, listed }) });
+
+  const pub = mkRoom('browse-pub', true);
+  check('browse: an empty room has nobody to host it, so no card', pub.listing() === null);
+  pub.add(driver('h', 'red'));
+  const card = pub.listing();
+  check('browse: a Public room with a signed-in host lists, as a lobby', card?.state === 'lobby' && card.joinable === true);
+  check('browse: ...naming the host and the seats', card?.host === 'Name h' && card.seats === 1 && card.capacity === 2);
+  check('browse: ...the preset and the sides', card?.preset === 'casual-1v1' && card.perAlliance.red === 1 && card.perAlliance.blue === 1);
+  check('browse: ...and the host account, for the one-per-account rule', card?.hostUserId === 'u-h' && card.listing === true);
+  check('browse: the card names the host only, never a team or another driver',
+    /Name h/.test(JSON.stringify(card)) && !/Team|Name g/.test(JSON.stringify(card)));
+
+  pub.add(driver('g', 'blue'));
+  check('browse: a full room still lists but cannot be joined', pub.listing()?.seats === 2 && pub.listing()?.joinable === false);
+  pub.onMessage('h', { t: 'start' });
+  pub.advanceForTest(10);
+  check('browse: a running match lists as a match and is not joinable', pub.listing()?.state === 'match' && pub.listing()?.joinable === false);
+
+  const priv = mkRoom('browse-priv', false);
+  priv.add(driver('p', 'red'));
+  check('browse: a Private room never lists', priv.listing() === null);
+
+  const anon = mkRoom('browse-anon', true);
+  anon.add(driver('a', 'red', false));
+  check('browse: a Public room whose host is signed out does not list', anon.listing() === null);
+
+  const legacy = new Room('browse-legacy', () => {}, { kind: 'versus' });
+  legacy.add(driver('l', 'red'));
+  check('browse: a legacy room (no settings) never lists', legacy.listing() === null);
+
+  const rk = mkRoom('browse-ranked', true);
+  rk.add(driver('r', 'red'));
+  (rk as unknown as { ranked: boolean }).ranked = true;
+  check('browse: a ranked room never lists', rk.listing() === null);
+
+  const dc = mkRoom('browse-discord', true);
+  dc.add(driver('d', 'red'));
+  dc.group = 'activity-1';
+  check('browse: a Discord activity room never lists', dc.listing() === null);
+
+  const rec = new Room('browse-rec', () => {}, { kind: 'record', record: 'solo', settings: coerceRoomSettings('record', 'solo', { listed: true }) });
+  rec.add(driver('x', 'blue'));
+  check('browse: a record room never lists, whatever it asked for', rec.listing() === null);
+}
+
+/** BROWSE ROOMS, the endpoint half: what `browseRooms` makes of a heartbeat's worth of cards. */
+{
+  const { browseRooms, BROWSE_MAX } = await import('../server/browse');
+  const card = (room: string, host: string, seats: number, joinable = true) => ({
+    listing: true as const, hostUserId: host, room, game: 'decode' as const, host: `Name ${host}`,
+    state: 'lobby' as const, seats, capacity: 4, perAlliance: { red: 2, blue: 2 }, preset: 'casual-2v2' as const, joinable,
+  });
+  const live = { room: 'ranked-1', game: 'decode', mode: '1v1', ranked: true, players: [], score: { red: 0, blue: 0 }, spectators: 0 };
+  const out = browseRooms([live, card('a', 'u1', 1), card('b', 'u2', 3), card('c', 'u3', 4, false), card('d', 'u4', 2)]);
+  check('browse: a live match on the heartbeat is not a listing', !out.some((r) => r.room === 'ranked-1'));
+  check('browse: joinable rooms first, then the fullest', out.map((r) => r.room).join() === 'b,d,a,c', out.map((r) => r.room).join());
+  check('browse: the host account never reaches a client', out.every((r) => !('hostUserId' in r) && !('listing' in r)));
+  const dup = browseRooms([card('a', 'u1', 1), card('b', 'u1', 2), card('a', 'u2', 3)]);
+  check('browse: ONE listed room per account, and one card per code', dup.length === 1 && dup[0].room === 'a', dup.map((r) => r.room).join());
+  check('browse: a card with no host account is dropped', browseRooms([{ ...card('x', 'u9', 1), hostUserId: '' }]).length === 0);
+  const many = browseRooms(Array.from({ length: BROWSE_MAX + 20 }, (_, i) => card(`r${i}`, `u${i}`, 1)));
+  check('browse: one answer is capped', many.length === BROWSE_MAX);
+  check('browse: junk on the heartbeat is ignored, not thrown on', browseRooms([null, undefined, 3, 'x', {}, { listing: false }]).length === 0);
+}
+
 {
   const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,

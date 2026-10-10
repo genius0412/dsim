@@ -1020,6 +1020,35 @@ export interface LiveRoom {
   competition?: CompetitionRef;
 }
 
+/**
+ * One PUBLIC room's card in Browse rooms (`GET /api/rooms`).
+ *
+ * Deliberately NOT a `LiveRoom`: it describes a room that may still be in its LOBBY, where there
+ * is no match clock, score or driver list, and it names the host only (a lobby row shows no
+ * driver names; those appear once a match is running, as in Watch live). It rides the presence
+ * heartbeat in the same array as `LiveRoom`s, marked `listing: true`, which is what keeps it out
+ * of `/api/live` (it is neither ranked nor a record, so `isPublicLive` drops it) and lets an
+ * older server and client ignore it.
+ */
+export interface ListedRoom {
+  /** the code to join, region-coded like any room */
+  room: string;
+  game: GameId;
+  /** the host's display name; the only person named on a lobby row */
+  host: string;
+  /** a lobby that has not started, or a match in progress */
+  state: 'lobby' | 'match';
+  /** seats taken (drivers plus bots) of `capacity` */
+  seats: number;
+  capacity: number;
+  perAlliance: { red: number; blue: number };
+  preset: RoomPreset;
+  /** can a new driver walk in right now (a seat is free and no match is running) */
+  joinable: boolean;
+  /** which Fly region hosts it, so a join can aim its socket there */
+  region?: string;
+}
+
 /** a competition match, as a room describes itself to a client */
 export interface CompetitionRef {
   slug: string;

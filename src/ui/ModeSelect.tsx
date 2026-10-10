@@ -24,6 +24,7 @@ export function ModeSelect({
   onDuoRecord,
   onRanked,
   onCustomRoom,
+  onBrowse,
   onWatch,
   onCompetitions,
   compete = true,
@@ -46,6 +47,8 @@ export function ModeSelect({
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
+  /** the Public rooms list */
+  onBrowse: () => void;
   onWatch: () => void;
   /** the competitions list (0059). Absent: no tile (an older caller). */
   onCompetitions?: () => void;
@@ -196,6 +199,11 @@ export function ModeSelect({
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
             <span>
               <span className="t">Room</span>
+            </span>
+          </button>
+          <button className="ds-tile" onClick={onBrowse} disabled={!multiplayer}>
+            <span>
+              <span className="t">Browse rooms</span>
             </span>
           </button>
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>

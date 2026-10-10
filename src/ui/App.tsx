@@ -74,6 +74,7 @@ import {
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { SoloSetup } from './SoloSetup';
+import { RoomBrowser } from './RoomBrowser';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records, isRecordsTab, type RecordsTab } from './Records';
@@ -147,6 +148,8 @@ type Screen =
   | 'robotimport'
   | 'records'
   | 'lobby'
+  /** `/rooms`: Browse rooms, the Public rooms hosted right now */
+  | 'rooms'
   | 'discordlobbies'
   | 'record'
   | 'duorecord'
@@ -251,6 +254,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
+    case 'rooms':
+      return '/rooms';
     case 'discordlobbies':
       return '/discord-lobbies';
     case 'record':
@@ -340,6 +345,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/modes')) return at('modes');
   if (rest.startsWith('/solo-setup')) return at('solosetup');
   if (rest.startsWith('/lobby')) return at('lobby');
+  if (rest.startsWith('/rooms')) return at('rooms');
   /* ⚠️ THE DISCORD LOBBY BROWSER NEEDS A CASE HERE OR IT IS A WRITE-ONLY ROUTE. `screenSuffix`
      pushes `/discord-lobbies` and the canonicalise effect puts it in the address bar, but with
      no arm here the path fell through to `at('home')` — so a RELOAD while browsing lobbies
@@ -429,6 +435,7 @@ function navFor(screen: Screen): ShellNav {
   switch (screen) {
     case 'modes':
     case 'solosetup':
+    case 'rooms':
     case 'game':
     case 'lobby':
     case 'discordlobbies':
@@ -753,6 +760,9 @@ export function App() {
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
   // (see `onAutoJoinConsumed`), so a later NORMAL visit to the same screen never
   // re-triggers the join.
+  /** the Public/Private choice for the room about to be created: the dialog is open (`asking`), and
+   *  the answer (`listed`) the Lobby reads when it creates the room. Reset when the Lobby is left. */
+  const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
@@ -2089,11 +2099,13 @@ export function App() {
         onStart={(s) => {
           setResumedRoom(null);
           setPendingLanName(null);
+          setRoomChoice({ asking: false, listed: false });
           beginSession(s, 'custom');
         }}
         onCancel={() => {
           setResumedRoom(null);
           setPendingLanName(null);
+          setRoomChoice({ asking: false, listed: false });
           /**
            * BACK GOES WHERE YOU CAME FROM, and in an activity that is the lobby browser.
            *
@@ -2106,6 +2118,7 @@ export function App() {
         }}
         config={auto?.config}
         signedIn={signedIn}
+        listed={roomChoice.listed}
         displayName={handle}
         myUserId={accountUserId}
         onOpenProfile={openProfile}
@@ -2324,7 +2337,7 @@ export function App() {
         showAdmin={isAdmin}
         home={screen === 'home'}
         wide={screen === 'solosetup'}
-        onBack={() => (screen === 'solosetup' ? navigate('modes') : goNav('home'))}
+        onBack={() => (screen === 'solosetup' || screen === 'rooms' ? navigate('modes') : goNav('home'))}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
@@ -2388,6 +2401,54 @@ export function App() {
         />
       )}
 
+      {screen === 'rooms' && (
+        <RoomBrowser
+          onHost={() => setRoomChoice({ asking: true, listed: false })}
+          onJoin={(room, game, region) =>
+            guardStart(() => {
+              // the same hand-off an accepted invite makes: the INVITE names the game, and joining
+              // from the other one would leave the app configured for a game the room isn't playing
+              selectGame(game);
+              setPendingAutoJoin({ room, config: { kind: 'versus', game }, region });
+              navigate('lobby');
+            })
+          }
+        />
+      )}
+
+      {/* PUBLIC OR PRIVATE, asked before the lobby opens. Public needs an account: the server lists a
+          room only while its host is signed in (`Room.listing`), so offering it signed out would
+          promise a listing that never appears. Escape and the dismiss button both just close. */}
+      {roomChoice.asking && (
+        <OverlayDialog title="New room" onClose={() => setRoomChoice({ asking: false, listed: false })}>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button
+              className="secondary"
+              onClick={() => guardStart(() => {
+                setRoomChoice({ asking: false, listed: false });
+                navigate('lobby');
+              })}
+            >
+              Private room
+            </button>
+            <button
+              disabled={!signedIn}
+              onClick={() => guardStart(() => {
+                setRoomChoice({ asking: false, listed: true });
+                navigate('lobby');
+              })}
+            >
+              Public room
+            </button>
+          </div>
+          <p className="ds-sub overlay-sub">
+            {signedIn
+              ? 'A private room is for you and friends, by code. A public room shows in Browse rooms.'
+              : 'Sign in to host a public room. A private room is for you and friends, by code.'}
+          </p>
+        </OverlayDialog>
+      )}
+
       {screen === 'solosetup' && (
         <>
           <h1 className="ds-h1">Solo practice</h1>
@@ -2432,7 +2493,8 @@ export function App() {
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
-          onCustomRoom={() => guardStart(() => navigate('lobby'))}
+          onCustomRoom={() => setRoomChoice({ asking: true, listed: false })}
+          onBrowse={() => navigate('rooms')}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
           onCompetitions={() => navigate('competitions')}

@@ -73,6 +73,7 @@ export interface RoomHandle {
   stagedFor(userId: string): boolean;
   staging(): boolean;
   summary(): LiveRoom | null;
+  listing(): ReturnType<Room['listing']>;
   presenceSnapshot(): ReturnType<Room['presenceSnapshot']>;
   snapGapStats(reset?: boolean): { n: number; sumMs: number; maxMs: number };
   holdsCapacity(): boolean;
@@ -214,6 +215,7 @@ function initialFacts(code: string, config: RoomConfig, capacity: number): RoomF
     seats: [],
     staging: false,
     summary: null,
+    listing: null,
     presence: { players: [], guests: [] },
     holds: true,
     abandonable: true,
@@ -348,6 +350,9 @@ export class RemoteRoom implements RoomHandle {
   }
   summary(): LiveRoom | null {
     return this.facts.summary;
+  }
+  listing(): ReturnType<Room['listing']> {
+    return this.facts.listing;
   }
   presenceSnapshot(): ReturnType<Room['presenceSnapshot']> {
     return this.facts.presence;

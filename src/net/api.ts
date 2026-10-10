@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
 import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
-import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
+import type { AccessGroup, BannerKind, ListedRoom, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -339,6 +339,12 @@ export function reportPlayed(game: GameId, source: 'practice' | 'lan', mode?: '1
  * deliberately absent — they are reached by code (`fetchLiveRoom`). */
 export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
   return getJson(`/api/live`);
+}
+
+/** Browse rooms: every Public room, in every region (`GET /api/rooms`). An older server has no such
+ *  route and the read fails, which the page says. */
+export function fetchListedRooms(): Promise<{ region: string; rooms: ListedRoom[] }> {
+  return getJson(`/api/rooms`);
 }
 
 /** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */

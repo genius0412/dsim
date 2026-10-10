@@ -63,6 +63,9 @@ interface Props {
   onOpenProfile: (username: string) => void;
   onJoinInvite: (invite: RoomInvite) => void;
   onSpectate: (room: string, region?: string) => void;
+  /** create this room PUBLIC, so it shows in Browse rooms. Only a signed-in host can (the server
+   *  lists no other), so it is ignored signed out. Read once, when the room is created. */
+  listed?: boolean;
   /**
    * A LIVE SOCKET COMING BACK FROM A FINISHED MATCH, rather than a code to dial.
    *
@@ -193,6 +196,7 @@ export function Lobby({
   onCancel,
   config = { kind: 'versus' },
   signedIn = false,
+  listed = false,
   displayName,
   myUserId,
   onOpenProfile,
@@ -601,8 +605,10 @@ export function Lobby({
        * thing, and nothing is what the wire has always carried.
        */
       physics: physicsOffered ? '3d' : undefined,
-      // Public/Private lands with Browse rooms; until then every created room is Private
-      settings: creatingRef.current ? coerceRoomSettings('versus', undefined, { preset: setup, listed: false }) : undefined,
+      // Public shows in Browse rooms (`Room.listing` lists it only while its host is signed in)
+      settings: creatingRef.current
+        ? coerceRoomSettings('versus', undefined, { preset: setup, listed: listed && signedIn })
+        : undefined,
     };
   }
 

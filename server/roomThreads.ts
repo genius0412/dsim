@@ -78,6 +78,8 @@ export interface RoomFacts {
   seats: [string, string][];
   staging: boolean;
   summary: LiveRoom | null;
+  /** the room's Browse-rooms card, or null when it is not Public (`Room.listing`) */
+  listing: ReturnType<Room['listing']>;
   presence: ReturnType<Room['presenceSnapshot']>;
   holds: boolean;
   abandonable: boolean;

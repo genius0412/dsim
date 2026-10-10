@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { browseRooms } from './browse';
 import { createServer, type IncomingMessage } from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
@@ -1054,6 +1055,14 @@ function localLive(): LiveRoom[] {
   return [...rooms.values()].map((r) => r.summary()).filter((s): s is LiveRoom => s !== null);
 }
 
+type ListingEntry = NonNullable<ReturnType<RoomHandle['listing']>>;
+
+/** the Public rooms on THIS machine (`Room.listing`). They ride the presence beat beside the live
+ *  matches, marked `listing: true`, so no migration and no second heartbeat is needed. */
+function localListings(): ListingEntry[] {
+  return [...rooms.values()].map((r) => r.listing()).filter((l): l is ListingEntry => l !== null);
+}
+
 /**
  * May a stranger see this room in "Watch Live"? Everything EXCEPT custom rooms.
  *
@@ -1080,6 +1089,13 @@ function isPublicLive(r: unknown): boolean {
  *  Shared by `/api/live` and the admin view so the two can't disagree. */
 function unionLive(local: LiveRoom[], global: unknown[]): unknown[] {
   const seen = new Set(local.map((r) => r.room));
+  return [...local, ...global.filter((r) => !seen.has((r as { room: string }).room))];
+}
+
+/** this machine's Public rooms, then every other region's. The local card wins: it is newer than the
+ *  heartbeat row it will have been copied into. */
+function unionListings(local: unknown[], global: unknown[]): unknown[] {
+  const seen = new Set(local.map((r) => (r as { room: string }).room));
   return [...local, ...global.filter((r) => !seen.has((r as { room: string }).room))];
 }
 
@@ -1225,9 +1241,10 @@ const httpServer = createServer((req, res) => {
         // `/api/live` had. Custom and record rooms are kept here (they are filtered
         // out of the PUBLIC list, not out of the room summary), so "spectate any
         // game" means any game.
-        const liveRooms = dbEnabled
+        const liveRooms = (dbEnabled
           ? unionLive(localLive(), await aggregateLive().catch(() => []))
-          : localLive();
+          : localLive()
+        ).filter((r) => (r as { listing?: boolean }).listing !== true); // a lobby card is not a match
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(
           JSON.stringify({
@@ -2593,8 +2610,10 @@ const httpServer = createServer((req, res) => {
    * that typing the code into the join box did not already. Custom rooms are absent
    * from the public `/api/live` list precisely so they can only be reached this way.
    */
-  if (req.method === 'GET' && req.url?.startsWith('/api/room')) {
-    const code = (new URL(req.url, 'http://x').searchParams.get('code') ?? '').toLowerCase();
+  // ⚠️ `/api/room?code=` EXACTLY: a bare `startsWith('/api/room')` also answered `/api/rooms` (Browse
+  // rooms, below) with "no such live match"
+  if (req.method === 'GET' && /^\/api\/room(\?|$)/.test(req.url ?? '')) {
+    const code = (new URL(req.url ?? '', 'http://x').searchParams.get('code') ?? '').toLowerCase();
     const send = (room: LiveRoom | null): void => {
       res.writeHead(room ? 200 : 404, {
         'content-type': 'application/json',
@@ -2619,6 +2638,32 @@ const httpServer = createServer((req, res) => {
       (e) => {
         console.error('[live] room lookup failed:', e);
         send(null);
+      },
+    );
+    return;
+  }
+  // BROWSE ROOMS: the Public rooms across every region. Rides the same heartbeat and 3 s cache as
+  // `/api/live`, so a poll costs nothing extra. Only rooms whose host is signed in and who chose
+  // Public are on it (`Room.listing`); nothing here is a secret, a Private room's code never is.
+  if (req.method === 'GET' && req.url?.startsWith('/api/rooms')) {
+    const send = (list: unknown[]): void => {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+      });
+      res.end(JSON.stringify({ region: REGION, rooms: browseRooms(list) }));
+    };
+    const local = localListings();
+    if (!dbEnabled) {
+      send(local);
+      return;
+    }
+    aggregateLive().then(
+      (all) => send(unionListings(local, all)),
+      (e) => {
+        console.error('[rooms] listing failed:', e);
+        send(local);
       },
     );
     return;
@@ -4795,7 +4840,7 @@ if (dbEnabled) {
       // live rooms ride the SAME beat, so "Watch Live" sees every region (0021).
       // UNFILTERED — the admin view reads this too, and a beat that had already
       // dropped custom/record rooms could not be widened back at the endpoint.
-      localLive(),
+      [...localLive(), ...localListings()],
       snap.players, snap.anon, matchmaker.queueSizesByGame(), snap.guests,
     ).catch((e) => console.error('[presence] heartbeat failed:', e));
   };
