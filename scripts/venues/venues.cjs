@@ -28,8 +28,12 @@ module.exports = [
     gain: 1.3,
     quality: 0.9,
     // the lectern at the stage's front edge (blue, an alliance colour, and drawn flat across the
-    // floor beside the field): filled from the front row 22° round
-    patches: [{ th: [90, 109], e: [-41, -17], feather: 2, shift: -22 }],
+    // floor beside the field): filled from the front row 22° round; and the projector on the
+    // stage floor just past the field's +x+y corner, from the bare boards 16° round
+    patches: [
+      { th: [90, 109], e: [-41, -17], feather: 2, shift: -22 },
+      { th: [46, 63], e: [-47, -34], feather: 2, shift: 17 },
+    ],
   },
   {
     id: 'events-hall',

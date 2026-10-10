@@ -234,8 +234,8 @@ export interface PhotoVenue {
   backdrop: string;
   backdropLow: string;
   /** the light-gathering map: a small linear `.hdr` box-filtered from the same 4k source. The
-   * backdrop cannot do this job — it is 8-bit, and these rooms keep most of their light in a few
-   * very hot texels (`derive.cjs`, ENCODING). */
+   * backdrop cannot do this job — it is 8-bit, and some of these rooms keep most of their light in
+   * a few very hot texels (`derive.cjs`, ENCODING). */
   ibl: string;
   /** bytes of each, for the picker's note and the docs */
   bytes: { backdrop: number; backdropLow: number; ibl: number };
@@ -715,9 +715,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      *
      * PHOTOGRAPHED SINCE 2026-10-10: the field stands on the stage the panorama was taken from,
      * with the auditorium behind it (turned 180° so the seats are on the far side from the
-     * audience camera, `+y`). The stage is a small room — 7.6 × 11.9 lens heights — so the
-     * stage-level box takes the auditorium too: its floor is a metre lower than the stage, which
-     * a single floor plane draws about 0.6 × as deep as it is. The key comes from the auditorium
+     * audience camera, `+y`). The stage is small — 7.6 lens heights wide, its front edge under 2
+     * out — so the stage-level box takes the auditorium too (12.0 deep in all). The auditorium
+     * floor is a metre below the stage, and one floor plane draws it about 0.6 × as deep as it is. The key comes from the auditorium
      * lights, which is where the photograph's own light comes from (`fieldlight`: az 75°, el 35°).
      */
     id: 'school-hall',
@@ -736,7 +736,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     // what stands while the photograph loads, and if it cannot: the procedural hall
     venue: { kind: 'hall', floor: 0x8a7352, wall: 0xaaa392, trim: 0x796f5e, lamp: 0xfff8ec, lampPower: 1.1, half: 700, ceil: 330, gridded: true },
     photo: {
-      ...PHOTO_FILES('school-hall', 727_764, 221_954, 430_721),
+      ...PHOTO_FILES('school-hall', 726_594, 221_352, 430_592),
       gain: 1.3,
       intensity: 0.9,
       saturation: 0.85,

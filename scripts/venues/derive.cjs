@@ -23,11 +23,13 @@
 //     v = gain · x          e = v / (1 + v)          stored = sRGB(e), 8 bits
 // and the shader inverts it (`x = e / (1 − e) / gain`). The curve is near-linear in the shadows
 // and mid-tones, where the floor and walls are, and squeezes the highlights instead of clipping
-// them: the top code still decodes to ~110 × the floor's median, so a lamp is a lamp after the
-// blit. A plain `x / 4` headroom was the other candidate; it spends a quarter of the codes above
-// the floor's median and leaves the floor itself ~50 codes.
-// It is NOT the light-gathering map: the photographs keep most of their energy in a few very hot
-// texels (school hall: clipping at 32 × keeps 26 % of the up-facing irradiance), which no 8-bit
+// them: with `gain` putting the floor's median at v ≈ 0.25, the top usable code (v = 110) is
+// ~440 × that median, so a lamp is a lamp after the blit. A plain `x / 4` headroom was the other
+// candidate: it tops out at 4 (a lamp is flat grey again) and leaves a floor at 0.05–0.3 about 50
+// codes.
+// It is NOT the light-gathering map: some photographs keep most of their energy in a few very hot
+// texels (school hall: clipped where this curve tops out, x = 110 / gain, it keeps 30.4 % of its
+// up-facing irradiance; the events hall 89 %, the hangar 99.7 %), which no 8-bit
 // file carries — hence the separate small `.hdr`.
 'use strict';
 
