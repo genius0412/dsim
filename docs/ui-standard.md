@@ -71,10 +71,9 @@ uses most and drops the near-duplicates around it.
   8` when it separates things inside one component, `10 → 12` when it separates components.
 - **The one sanctioned exception: the chrome's 14/18/22 layout rhythm** (owner ruling on the
   2026-09-22 design review, G1). It is the page gutters and the gaps between layout blocks,
-  and only these: `.ds-bar` (`14px 22px`), `.ds-main` (`28px 22px 48px`), `.ds-rail`
-  (`24px 14px 40px`), `.ds-foot` (`16px 22px`), `.ds-subnav-layout` and `.ds-console-in`
-  (gap 22), `.ds-fields` (gap 18), `.ds-tiles`/`.ds-tile` (gap 14, `16px 18px`),
-  `.ds-menu-btn` (`16px 18px`) and `.overlay-panel` (gap 14). It is kept because it is the
+  and only these: `.ds-bar` (`14px 22px`), `.ds-main` (`28px 22px 48px`),
+  `.ds-foot` (`16px 22px`), `.ds-subnav-layout` and `.ds-console-in`
+  (gap 22), `.ds-fields` (gap 18), and `.overlay-panel` (gap 14). It is kept because it is the
   most visible spacing in the app and it is consistent. Inside a component, the grid binds.
   A new layout shell may join the list only by being added to it here.
 - **Padding is symmetric or it is on the grid.** `13px 15px` and `9px 11px` are banned. A

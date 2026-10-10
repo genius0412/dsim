@@ -50,7 +50,7 @@ export function Records({
           NAVIGATION, not an ARIA tablist. The old `role="tab"` + `aria-selected` was a
           partial tabs pattern — worse than none: a screen reader announced "tab, 1 of 2",
           the user pressed → expecting to move, and nothing happened (no tabpanel, no
-          aria-controls, no roving tabindex). Matches Configure's sub-nav and NavRail. */}
+          aria-controls, no roving tabindex). Matches Configure's sub-nav. */}
       <nav className="ds-tabs" aria-label="Records sections">
         {RECORDS_TABS.map((t) => (
           <button

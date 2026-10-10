@@ -72,7 +72,8 @@ import {
   type DiscordParticipant,
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
-import { ModeSelect } from './ModeSelect';
+import { MultiplayerMenu } from './MultiplayerMenu';
+import { SoloMenu } from './SoloMenu';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records, isRecordsTab, type RecordsTab } from './Records';
@@ -136,7 +137,8 @@ import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 
 type Screen =
   | 'home'
-  | 'modes'
+  | 'multiplayer'
+  | 'solo'
   | 'configure'
   /** `/configure/robot/import` and `/configure/robot/import/<id>`: the robot import editor. A screen
    *  of its own, not a Configure section, so its preview has the page's whole width. */
@@ -233,8 +235,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
   switch (screen) {
     case 'home':
       return '';
-    case 'modes':
-      return '/modes';
+    case 'multiplayer':
+      return '/multiplayer';
+    case 'solo':
+      return '/solo';
     case 'configure':
       return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
     case 'robotimport':
@@ -329,7 +333,9 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' });
   if (rest.startsWith('/stats')) return at('records', { sub: 'career' });
 
-  if (rest.startsWith('/modes')) return at('modes');
+  if (rest.startsWith('/multiplayer')) return at('multiplayer');
+  // `/modes` was the one Play page, whose first tile was Solo practice
+  if (rest.startsWith('/solo') || rest.startsWith('/modes')) return at('solo');
   if (rest.startsWith('/lobby')) return at('lobby');
   /* ⚠️ THE DISCORD LOBBY BROWSER NEEDS A CASE HERE OR IT IS A WRITE-ONLY ROUTE. `screenSuffix`
      pushes `/discord-lobbies` and the canonicalise effect puts it in the address bar, but with
@@ -418,18 +424,20 @@ function devRouteFor(game: GameId, rest: string): ComponentType | null {
 /** which rail/menu entry lights up for a given screen */
 function navFor(screen: Screen): ShellNav {
   switch (screen) {
-    case 'modes':
+    case 'solo':
     case 'game':
-    case 'lobby':
-    case 'discordlobbies':
     case 'record':
     case 'duorecord':
+      return 'solo';
+    case 'multiplayer':
+    case 'lobby':
+    case 'discordlobbies':
     case 'matchmaking':
     case 'watch':
     case 'lan':
     case 'competitions':
     case 'compmatch':
-      return 'play';
+      return 'multiplayer';
     case 'configure':
     case 'robotimport':
       return 'configure';
@@ -451,8 +459,10 @@ function screenForNav(n: ShellNav): Screen {
   switch (n) {
     case 'home':
       return 'home';
-    case 'play':
-      return 'modes';
+    case 'multiplayer':
+      return 'multiplayer';
+    case 'solo':
+      return 'solo';
     case 'configure':
       return 'configure';
     case 'records':
@@ -707,7 +717,7 @@ export function App() {
   // home before the player had done anything. The Play screen is where a match starts, and the
   // dialog is modal, so it is read before one can.
   useEffect(() => {
-    setShowChainDisclaimer(screen === 'modes' && settings.game === 'chain' && !chainDisclaimerSeen());
+    setShowChainDisclaimer((screen === 'solo' || screen === 'multiplayer') && settings.game === 'chain' && !chainDisclaimerSeen());
   }, [screen, settings.game]);
 
   /** the single way screens change — updates state AND the URL */
@@ -2092,7 +2102,7 @@ export function App() {
            * between them and the only thing they wanted, which is the other lobby, and Modes
            * in the embed is mostly entries that need an account they cannot have.
            */
-          navigate(inActivity && discordGroupId ? 'discordlobbies' : 'modes');
+          navigate(inActivity && discordGroupId ? 'discordlobbies' : 'multiplayer');
         }}
         config={auto?.config}
         signedIn={signedIn}
@@ -2126,7 +2136,7 @@ export function App() {
       <LanPanel
         signedIn={signedIn}
         game={settings.game}
-        onBack={() => navigate('modes')}
+        onBack={() => navigate('multiplayer')}
         displayName={handle}
         myUserId={accountUserId}
         onOpenProfile={openProfile}
@@ -2154,13 +2164,13 @@ export function App() {
         settings={settings}
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
-        onCancel={() => navigate('modes')}
+        onCancel={() => navigate('solo')}
         /* the launcher only offers this when the server refused with `active_game`, so the
            record is the match that refusal is about — go there instead of dead-ending. */
         onRejoinActive={() => {
           const ref = loadActiveGame();
           if (ref) rejoinGame(ref);
-          else navigate('modes');
+          else navigate('solo');
         }}
       />
     );
@@ -2173,7 +2183,7 @@ export function App() {
         onSettingsChange={update}
         config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record', true)}
-        onCancel={() => navigate('modes')}
+        onCancel={() => navigate('solo')}
         signedIn={signedIn}
         displayName={handle}
         myUserId={accountUserId}
@@ -2203,7 +2213,7 @@ export function App() {
           settings={settings}
           signedIn={signedIn}
           onStart={(s) => beginSession(s, 'ranked')}
-          onCancel={() => navigate('modes')}
+          onCancel={() => navigate('multiplayer')}
           onSignIn={() => navigate('account')}
           onSettingsChange={update}
           challenge={pendingChallenge ?? undefined}
@@ -2378,10 +2388,8 @@ export function App() {
         />
       )}
 
-      {screen === 'modes' && (
-        <ModeSelect
-          game={settings.game}
-          importedActive={!!settings.spec.imported}
+      {screen === 'multiplayer' && (
+        <MultiplayerMenu
           multiplayer={multiplayer}
           signedIn={signedIn}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
@@ -2390,6 +2398,30 @@ export function App() {
             if (ref) rejoinGame(ref);
             else setActiveGame(null);
           }}
+          onRanked={() => guardStart(() => navigate('matchmaking'))}
+          onCustomRoom={() => guardStart(() => navigate('lobby'))}
+          onJoinCode={(room) =>
+            guardStart(() => {
+              // the same one-shot hand-off an accepted invite makes: Lobby joins on mount and
+              // clears it. No region (a typed code does not carry one), so the socket lands on
+              // the nearest machine, as the Lobby's own "Have a code" does.
+              setPendingAutoJoin({ room, config: { kind: 'versus', game: settings.game } });
+              navigate('lobby');
+            })
+          }
+          onWatch={() => navigate('watch')}
+          onLan={() => navigate('lan')}
+          onCompetitions={() => navigate('competitions')}
+          compete={!inActivity}
+        />
+      )}
+
+      {screen === 'solo' && (
+        <SoloMenu
+          game={settings.game}
+          importedActive={!!settings.spec.imported}
+          multiplayer={multiplayer}
+          compete={!inActivity}
           onFreeDrive={() =>
             guardStart(() => {
               update({ ...settings, mode: 'free' });
@@ -2404,15 +2436,8 @@ export function App() {
           }
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
-          onRanked={() => guardStart(() => navigate('matchmaking'))}
-          onCustomRoom={() => guardStart(() => navigate('lobby'))}
-          onWatch={() => navigate('watch')}
-          onLan={() => navigate('lan')}
-          onCompetitions={() => navigate('competitions')}
-          compete={!inActivity}
           /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
-             no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
-             section rather than gaining a disabled tile. */
+             no tutorial — `SoloMenu` renders nothing for it either way. */
           onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
@@ -2593,7 +2618,7 @@ export function App() {
           nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile, onOpenCompetition: (slug) => navigate('competitions', { sub: slug }) }}
         />
       )}
-      {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
+      {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('multiplayer')} />}
       {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
       {/* legal pages are public and must stay reachable without an account —

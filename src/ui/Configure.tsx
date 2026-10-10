@@ -40,7 +40,7 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
 }
 
 /**
- * A HINT NAMES WHAT IS BEHIND THE LABEL; it never restates it (`NavRail` settled the rule for
+ * A HINT NAMES WHAT IS BEHIND THE LABEL; it never restates it (`navItems` settled the rule for
  * the four top-level destinations). Cut on 2026-09-22 and restored on 2026-09-23 (owner): every
  * row carries one, since a sub-nav where some rows have a second line and others do not reads
  * as unfinished. The narrow layouts hide `.sh` with the rail's `.rh`.

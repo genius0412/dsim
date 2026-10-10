@@ -95,7 +95,7 @@ function offlineFor(seconds: number | null): string {
 }
 
 /**
- * The friends list: a structural twin of `NavRail`, mirrored to the right edge.
+ * The friends list: a panel on the right edge of the shell body.
  * A flex sibling inside `.ds-body`, never `position: fixed` — `.ds-app` is the
  * app's only scroll container, and a fixed panel would scroll independently of it.
  *

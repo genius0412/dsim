@@ -4,16 +4,17 @@ import type { GameId } from '../types';
 import { APP_NAME, LINKS, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
-import { railItems } from './NavRail';
+import { navItems } from './navItems';
+import { MenuTile } from './MenuTile';
 import { QueueCounts } from './QueueCounts';
 import { SponsorPresents } from './Sponsor';
 import type { ShellNav } from './AppShell';
 import { discordAvatarUrl, discordDisplayName, inDiscordActivity, type DiscordParticipant } from '../net/discordActivity';
 
 /**
- * The main menu. The four top-level destinations sit CENTERED as chunky keycaps
- * — on every other screen the same four live in the left rail (`NavRail`), and
- * both read from `RAIL_ITEMS` so they can never drift apart.
+ * The main menu, and the app's only hub: the top-level destinations are a full-height stack of
+ * colour tiles (`NAV_ITEMS`), with the brand, the season switch and the counters in a column
+ * beside them. Every other screen comes back here through its Back button.
  *
  * It is also the site's landing page — a first-time visitor and a crawler both
  * arrive here with no other context — so the season, the app name, the
@@ -58,6 +59,7 @@ export function HomeMenu({
 
   return (
     <div className="ds-home">
+      <div className="ds-home-head">
       {discord && (
         <button
           className="ds-discord-join"
@@ -147,25 +149,6 @@ export function HomeMenu({
         </a>
       </div>
 
-      <nav className="ds-menu" aria-label="Main">
-        {/* the SAME filter the rail uses, so the two can never drift — and the home keycaps
-            are the FIRST thing a participant sees, so an entry that only ever reaches a
-            sign-in the embed cannot perform is the worst place to leave one */}
-        {railItems(inDiscordActivity()).map((it, i) => (
-          <button
-            key={it.id}
-            className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}
-            onClick={() => onNav(it.id)}
-          >
-            <span className="ml">
-              {it.label}
-              {it.id === 'play' && <QueueCounts className="menu" />}
-            </span>
-            <span className="mh">{it.hint}</span>
-          </button>
-        ))}
-      </nav>
-
       {stats && (
         <div className="ds-homestats">
           <div className="ds-stat">
@@ -204,6 +187,23 @@ export function HomeMenu({
           </div>
         </div>
       )}
+      </div>
+
+      {/* the tiles are the FIRST thing a participant sees in a Discord activity, so `navItems`
+          drops the entry that only ever reaches a sign-in the embed cannot perform */}
+      <nav className="ds-tilestack" aria-label="Main">
+        {navItems(inDiscordActivity()).map((it) => (
+          <MenuTile
+            key={it.id}
+            title={it.label}
+            hint={it.hint}
+            mono={it.mono}
+            hue={it.hue}
+            stat={it.id === 'multiplayer' ? <QueueCounts className="tile" /> : undefined}
+            onClick={() => onNav(it.id)}
+          />
+        ))}
+      </nav>
     </div>
   );
 }

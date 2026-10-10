@@ -66,7 +66,7 @@ export function Account({
    * while each still mounts a session hook that fires a request the frame refuses.
    *
    * The PAGE stays, and says so, rather than 404-ing or vanishing: the rail item is gone
-   * (see `NavRail`), but somebody who has an account on the website and went looking for it
+   * (see `navItems`), but somebody who has an account on the website and went looking for it
    * is owed an answer, and "Reset all settings" below is local-only and works here. That is
    * the whole judgement — remove what cannot work, explain it, keep what can.
    */
