@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-10 (UX flow redesign, branch `ux-flow-redesign` off `alpha`, NOT pushed, NOT deployed)
+
+**State:** five commits on `ux-flow-redesign` (`f0feddb2` shell, `bab6bd06` + its revert, `87857261` back to original buttons, `ea4d66a9` solo setup, `d090c1fe` public rooms, `b07149e2` results fit). `tsc` adds nothing beyond the 28 Zenith-stub errors, `uiaudit` / `docaudit` / `contrast` pass, the SHARED test lane passes (4413). The BIOBUZZ lane has 6 failures that are all `AUTO:` / `IMPORT:` checks, and they fail because this worktree's `node_modules` holds the 250-byte Zenith STUBS (copied from the main tree; the real tarballs are in a private repo). Not a regression; confirm on a machine with the real packages.
+
+- **Shell:** no left rail. Home is the only hub (Play, Configure, Records; Profile is the top-right menu). Every other shell screen has Back + its title in the bar. `TopStrip` reserves the ad space above the bar and shows the Offset banner when there is no ad (needs `VITE_ADSENSE_SLOT_TOP` for a real ad).
+- **Play page:** Solo set + Multiplayer set in the original tile style. Solo practice opens **Solo setup** (`/solo-setup`, was Configure ▸ Match; `/configure/match` redirects). Room asks Public/Private first; **Browse rooms** (`/rooms`) lists Public ones.
+- **SERVER CHANGE, needs `./scripts/fly-deploy.sh` from a `main` worktree:** `Room.listing`, `GET /api/rooms`, `server/browse.ts`, `/api/room` now matched exactly (it used to swallow `/api/rooms`). Public rooms ride the presence beat marked `listing: true` (no migration). Old clients ignore them. ⚠️ **`src/legalText.ts` still says a custom room is private to its code. A Public room is not; the owner must reword it before this ships.**
+- **Not built:** Records as a hub (the owner rejected colour coding and tiles, so it was left alone and needs a fresh brief); the ranked page restyle; spectating a lobby (Browse rooms JOINS as a driver instead); the per-account listing limit is enforced at the list, not at creation.
+- **Results screen:** fits 1920x1080, 1366x768, 1280x720, 1024x600, 390x844. 844x390 still scrolls ~45px. The VERSUS board could not be measured offline. The results ad now mounts only at 1180px tall (see ui.md).
+- **Gotchas:** this machine has no `pkill`; kill by pid. A `Stop-Process` filter that matches the worktree path kills its own shell. `sed -i` here flips CRLF to LF (git normalises, but edit multi-line with a CRLF-aware script).
+
+
 # HANDOFF — 2026-10-09 (alpha catch-up: seven PRs merged, DEPLOYED to `dsim-alpha` as v148)
 
 **State: `alpha` @ 7b56e305, deployed to `dsim-alpha` (release v148, 2026-10-09 04:35Z, by Saket; migrations 0061 + 0062 applied at boot). Production (`main`) has NONE of this. SERVER CHANGE: promoting needs `./scripts/fly-deploy.sh` from a `main` worktree, on the owner's word.** `npm test` on every merged branch: only the Zenith-STUB failures (5 AUTO checks + the IMPORT lane — this checkout has no real `vendor/zenith/*.tgz`). `test:workers` 152/152, `test:mm` 234, `dbtest`, `docaudit` pass on the #104 port. **Not run on alpha itself: `npm test` with real Zenith, `build`, `/verify`, any live match.**
