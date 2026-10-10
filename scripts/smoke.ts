@@ -25155,7 +25155,7 @@ const dumperSetup = (): RobotSetup => {
   /* ---- the terms gate ------------------------------------------------------ */
   check(
     'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
-    LEGAL_VERSION === '2026-09-25',
+    LEGAL_VERSION === '2026-10-10',
     LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
   );
   check(
@@ -25166,6 +25166,11 @@ const dumperSetup = (): RobotSetup => {
   check(
     'terms gate: an unparseable date still yields a stable key rather than throwing',
     legalVersionOf('sometime soon') === 'sometime-soon',
+  );
+  check(
+    'privacy: the policy says a Public room is listed, who can list one, and what is published',
+    /Browse rooms/.test(PRIVACY_MD) && /Public/.test(PRIVACY_MD) && /signed in/.test(PRIVACY_MD) && /room\s+code/.test(PRIVACY_MD),
+    'a listing is a publication of a name; the policy has to be able to be read against it',
   );
   check("terms gate: the current version accepted is 'ok'", termsGateState(LEGAL_VERSION) === 'ok');
   check("terms gate: never accepted is 'never'", termsGateState(null) === 'never');

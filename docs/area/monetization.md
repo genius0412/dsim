@@ -143,7 +143,7 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     - Imported days are whole UTC days: range ends round to the nearest midnight, and an hourly
       range that reaches them is returned by day (`grain`). The chart marks the boundary.
     - `imported` stays in the response as `null` so a pre-change admin page does not break.
-  - **`LEGAL_UPDATED` moved to September 25, 2026** (owner) for first-party analytics, the host's
+  - **`LEGAL_UPDATED` moved to October 10, 2026** (owner) for Public rooms: a signed-in host's in-room name, the game, the seats and the room code are listed in Browse rooms while the room is still a lobby. Earlier: **September 25, 2026** (owner) for first-party analytics, the host's
     count removed and browser DNT/GPC no longer gating it: every signed-in account accepts once.
 - Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.

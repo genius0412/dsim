@@ -336,7 +336,8 @@ export function reportPlayed(game: GameId, source: 'practice' | 'lan', mode?: '1
 
 /** every live RANKED match currently running (for the "Watch Live" list). Each
  * `room` code is spectated via `LobbyClient.spectate`. Custom and record rooms are
- * deliberately absent — they are reached by code (`fetchLiveRoom`). */
+ * deliberately absent — they are reached by code (`fetchLiveRoom`), and a Public room is on
+ * `fetchListedRooms`. */
 export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
   return getJson(`/api/live`);
 }
