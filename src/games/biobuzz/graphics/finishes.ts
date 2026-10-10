@@ -514,6 +514,12 @@ export const VENUE_FLOOR_FINISH: Record<EnvironmentId, FinishId> = {
   'cyc-light': 'studioPaint',
   'cyc-dark': 'studioPaint',
   'school-hall': 'mapleFloor',
+  // the photographed venues: these are the PROCEDURAL stand-in's floors (shown while the
+  // photograph loads, or if it cannot); the photograph itself is never twinned
+  'events-hall': 'sealedConcrete',
+  hangar: 'sealedConcrete',
+  court: 'outdoorAggregate',
+  quad: 'outdoorAggregate',
   'monochrome-studio': 'studioPaint',
 };
 

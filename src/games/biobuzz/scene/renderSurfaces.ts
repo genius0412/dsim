@@ -3,7 +3,7 @@ import type { EnvironmentDef } from '../graphics/environments';
 import type { BbFieldHandles } from './renderField';
 import { createFieldSurfaces } from './renderSurfaceField';
 import { lowerSurfaceUniforms, setDetailAnisotropy, SURFACE_UNIFORMS } from './renderSurfaceKit';
-import { createRoomProbe } from './renderSurfaceProbe';
+import { createRoomProbe, type ProbeBox } from './renderSurfaceProbe';
 import { applyRobotSurfaces, revertRobotSurfaces } from './renderSurfaceRobots';
 import { createVenueSurfaces } from './renderSurfaceVenue';
 
@@ -64,8 +64,16 @@ export interface BbSurfaces {
    * `{ probe: false }` instance, or when the scene has no cube-UV environment yet. Call it when the
    * room CHANGED — the environment resolved (a late HDRI included), the venue was rebuilt, the
    * mode was switched on — never per frame, and outside `raise`/`lower` and the bloom window.
+   * `room` overrides the box the probe is projected against — a live PHOTOGRAPHED venue's own
+   * (`renderPhotoVenue.ts`'s `photoRoomBox`), which is not the procedural `def.venue`'s.
    */
-  recapture(renderer: THREE.WebGLRenderer, scene: THREE.Scene, hidden: readonly THREE.Object3D[], def: EnvironmentDef): boolean;
+  recapture(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    hidden: readonly THREE.Object3D[],
+    def: EnvironmentDef,
+    room?: ProbeBox,
+  ): boolean;
   /** push THIS scene's surface uniforms (the probe, the reflections scale) — immediately before
    * its own scene pass */
   raise(scene: THREE.Scene): void;
@@ -109,8 +117,8 @@ export function createSurfaces(opts: SurfacesOptions): BbSurfaces {
       field.revertElements(g);
       venue.revertElements(g);
     },
-    recapture(renderer, scene, hidden, def): boolean {
-      return probe ? probe.capture(renderer, scene, hidden, def.venue) : false;
+    recapture(renderer, scene, hidden, def, room): boolean {
+      return probe ? probe.capture(renderer, scene, hidden, def.venue, room) : false;
     },
     raise(scene): void {
       SURFACE_UNIFORMS.bbSpecIbl.value = reflections ? 1 : 0;

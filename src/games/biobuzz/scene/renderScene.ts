@@ -44,9 +44,10 @@ import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots }
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
+import { bbPhotoDetail, buildPhotoVenue, loadPhotoBackdrop, photoBackdropOf, photoBlocked, photoRoomBox, venueAssetUrl } from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { environmentDefFor } from '../graphics/environments';
+import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import {
   SceneUnsupportedError,
@@ -270,6 +271,15 @@ class BiobuzzScene implements GameScene {
    * the drag. */
   private venue: THREE.Group | null = null;
   private venueKey = '';
+  /** the PHOTOGRAPHED venue's backdrop (`renderPhotoVenue.ts`) while one is live — a uniform, so
+   * `disposeObject3D` cannot see it: freed here, with the venue it belongs to (one 44.7 MB 4k
+   * texture per live venue, never two). */
+  private photoTex: THREE.Texture | null = null;
+  /** the backdrop fetch in flight (settled either way), and the environment's — what
+   * `assetsSettled` waits on, so an export does not start on the generated room and cut to the
+   * photograph a second in */
+  private photoLoading: Promise<void> = Promise.resolve();
+  private envLoading: Promise<void> = Promise.resolve();
 
   private cssW = 1;
   private cssH = 1;
@@ -542,7 +552,7 @@ class BiobuzzScene implements GameScene {
     // the ROOM PROBE (physical materials) is captured from the environment that is actually live,
     // so a resolve — the painted dome at once, an HDRI a second or two later — re-arms it. A flag
     // and nothing else: in standard materials nothing reads it.
-    void this.env.apply(s.environment, this.onQualityEvent, s.envLighting).then(() => {
+    this.envLoading = this.env.apply(s.environment, this.onQualityEvent, s.envLighting).then(() => {
       this.probeDirty = true;
     });
 
@@ -555,27 +565,16 @@ class BiobuzzScene implements GameScene {
     // It is added BEFORE `tuneMaterials` so the ground's own texture gets the anisotropy row,
     // which is the most grazing-angle surface in the scene once a driver camera is on it.
     const detail = bbVenueDetail(s, this.tier);
-    const key = `${def.id}:${detail}`;
+    // a PHOTOGRAPHED venue (`renderPhotoVenue.ts`) is keyed by its backdrop size too: Low/Medium
+    // draw the 2k file, High and up the 4k
+    const photo = def.photo ? bbPhotoDetail(s, this.tier, this.renderer.capabilities.maxTextureSize) : null;
+    const key = `${def.id}:${detail}:${photo ?? ''}`;
     if (key !== this.venueKey) {
-      if (this.venue) {
-        // the BASES back on their meshes first, so the walk below frees them and not the twins
-        const old = this.venue;
-        this.withSurfaces('could not be removed', (sf) => sf.revertVenue(old));
-        this.scene.remove(this.venue);
-        disposeObject3D(this.venue);
-      }
-      this.venue = buildBiobuzzVenue(def.venue, detail);
-      const fresh = this.venue;
-      this.withSurfaces('could not be applied', (sf) => sf.applyVenue(fresh, def));
-      this.probeDirty = true;
-      /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
-         over the field — the lighting grid, the ceiling fittings — sits on
-         `VENUE_OVERHEAD_LAYER`, and enabling it here for the side-on cameras only is what
-         keeps a 5×5 beam grid from being drawn as a giant cross across the overhead shot
-         and the PiP. Re-applied on every rebuild because the cameras outlive the venue. */
-      applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free]);
-      this.scene.add(this.venue);
+      // the PROCEDURAL venue first, always: a photographed one stands in it while its backdrop
+      // loads, and keeps it if the backdrop cannot load
+      this.swapVenue(buildBiobuzzVenue(def.venue, detail), def);
       this.venueKey = key;
+      if (def.photo && photo) this.loadPhoto(def, photo === 'hi' ? def.photo.backdrop : def.photo.backdropLow, key);
     }
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
@@ -586,6 +585,59 @@ class BiobuzzScene implements GameScene {
     this.syncPost();
     this.syncTarget();
     this.syncSize();
+  }
+
+  /**
+   * PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed (and its photograph
+   * with it), `next`'s twins applied, the probe re-armed. One path for a procedural venue and a
+   * photographed one, and for the swap from the first to the second when a backdrop lands.
+   */
+  private swapVenue(next: THREE.Group, def: EnvironmentDef): void {
+    if (this.venue) {
+      // the BASES back on their meshes first, so the walk below frees them and not the twins
+      const old = this.venue;
+      this.withSurfaces('could not be removed', (sf) => sf.revertVenue(old));
+      this.scene.remove(old);
+      disposeObject3D(old);
+    }
+    const tex = photoBackdropOf(next);
+    if (this.photoTex && this.photoTex !== tex) this.photoTex.dispose();
+    this.photoTex = tex;
+    this.venue = next;
+    this.withSurfaces('could not be applied', (sf) => sf.applyVenue(next, def));
+    this.probeDirty = true;
+    /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
+       over the field — the lighting grid, the ceiling fittings — sits on
+       `VENUE_OVERHEAD_LAYER`, and enabling it here for the side-on cameras only is what
+       keeps a 5×5 beam grid from being drawn as a giant cross across the overhead shot
+       and the PiP. Re-applied on every rebuild because the cameras outlive the venue. */
+    applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free]);
+    this.scene.add(next);
+  }
+
+  /**
+   * FETCH a photographed venue's backdrop and swap it in when it lands — if the scene still wants
+   * that same venue (`key`). Fire-and-forget like `env.apply`; a failure keeps the procedural venue
+   * standing, says so once, and is remembered (`photoBlocked`) so a scene build does not ask again.
+   */
+  private loadPhoto(def: EnvironmentDef, path: string, key: string): void {
+    if (photoBlocked(venueAssetUrl(path))) return;
+    const aniso = Math.min(this.settings.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
+    this.photoLoading = loadPhotoBackdrop(path, aniso)
+      .then((tex) => {
+        if (this.disposed || this.venueKey !== key) {
+          tex.dispose();
+          return;
+        }
+        this.swapVenue(buildPhotoVenue(def, tex), def);
+        this.tuneMaterials();
+        this.renderer.shadowMap.needsUpdate = true;
+      })
+      .catch((err: unknown) => {
+        if (this.disposed || this.venueKey !== key) return;
+        console.warn(`BIOBUZZ 3D: the ${def.name} backdrop failed to load; keeping the generated room.`, err);
+        this.onQualityEvent?.(`Couldn’t load the ${def.name} photograph. Showing a generated room instead.`);
+      });
   }
 
   /**
@@ -1104,8 +1156,10 @@ class BiobuzzScene implements GameScene {
       this.probeDirty = false;
       const hidden = this.probeHidden();
       const def = environmentDefFor(this.settings.environment);
+      // a live PHOTOGRAPHED venue is projected against its own room box, not the procedural one
+      const room = this.photoTex && def.photo ? photoRoomBox(def.photo) : undefined;
       this.withSurfaces('failed while capturing reflections', (sf) => {
-        sf.recapture(this.renderer, this.scene, hidden, def);
+        sf.recapture(this.renderer, this.scene, hidden, def, room);
       });
     }
 
@@ -1247,9 +1301,11 @@ class BiobuzzScene implements GameScene {
     r.setViewport(0, 0, this.cssW, this.cssH);
   }
 
-  /** `GameScene.assetsSettled`: every imported robot's mesh in `world`, parsed or known absent */
+  /** `GameScene.assetsSettled`: every imported robot's mesh in `world`, parsed or known absent —
+   * and the photographed venue's backdrop and the environment's light-gathering map, loaded or
+   * failed (2026-10-10: the replay export renders in the school hall, which is a photograph now) */
   assetsSettled(world: World): Promise<void> {
-    return importedMeshesSettled(world.robots.map((r) => r.spec));
+    return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.photoLoading, this.envLoading]).then(() => undefined);
   }
 
   /**
@@ -1310,6 +1366,8 @@ class BiobuzzScene implements GameScene {
         /* teardown carries on: a leak beats a scene that cannot be disposed */
       }
     }
+    this.photoTex?.dispose();
+    this.photoTex = null;
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();

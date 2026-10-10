@@ -384,6 +384,21 @@ import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerRead
 import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
 import type { SceneOverlayView } from '../../src/games/module';
 import { THIRD_PARTY } from '../../src/contributors';
+// -- THE PHOTOGRAPHED VENUES (2026-10-10), in their own import block ----------------------
+import { createRequire } from 'node:module';
+import { creditedEnvironments, environmentCredit, photoEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import {
+  PHOTO_FLOOR_Z,
+  PHOTO_KNEE,
+  PUSH_MARGIN_IN,
+  bbPhotoDetail,
+  buildPhotoVenue,
+  notePhotoFailure,
+  photoBlocked,
+  photoRoomBox,
+  photoUv,
+  pushedRoomBox,
+} from '../../src/games/biobuzz/scene/renderPhotoVenue';
 import { Renderer } from '../../src/render/renderer';
 import type { RobotSpec, World } from '../../src/types';
 import { mkWorld, type Check } from './harness';
@@ -1803,6 +1818,7 @@ export function renderChecks(check: Check): void {
   driverEyeChecks(check);
   importedRobotChecks(check);
   fixedShooterChecks(check);
+  photoVenueChecks(check);
 }
 
 /**
@@ -4747,7 +4763,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
   // ---- the environments, and that every fetched one is credited ---------------------------
   {
     check('the procedural room is first and costs nothing', BB_ENVIRONMENTS[0].id === 'room' && !BB_ENVIRONMENTS[0].hdri);
-    check('there are exactly two HDRI sets on this build', hdriEnvironments().length === 2, String(hdriEnvironments().length));
+    // ONE since 2026-10-10: the school hall became a photographed venue, whose files are this
+    // site's own (`photoEnvironments`, checked in the PHOTOGRAPHED VENUES block)
+    check('there is exactly one cross-origin HDRI set on this build', hdriEnvironments().length === 1, String(hdriEnvironments().length));
     for (const e of hdriEnvironments()) {
       const h = e.hdri!;
       check(`${e.id}: a 1k .hdr on Poly Haven\u2019s CDN, never a bundled copy`, /^https:\/\/dl\.polyhaven\.org\/.*_1k\.hdr$/.test(h.url), h.url);
@@ -10595,8 +10613,8 @@ function environmentAndReadoutChecks(check: Check): void {
     );
     check('every id resolves to a def with that id', BB_ENVIRONMENTS.every((e) => environmentDef(e.id) === e));
     check(
-      'the list grew to eleven and the room is still first',
-      BB_ENVIRONMENTS.length === 11 && BB_ENVIRONMENTS[0].id === 'room',
+      'the list grew to fifteen (four photographed venues, 2026-10-10) and the room is still first',
+      BB_ENVIRONMENTS.length === 15 && BB_ENVIRONMENTS[0].id === 'room',
       String(BB_ENVIRONMENTS.length),
     );
 
@@ -10652,8 +10670,10 @@ function environmentAndReadoutChecks(check: Check): void {
         JSON.stringify(BASE_RIG),
       );
       check(
-        'the three environments that predate the rigs carry BASE_RIG unchanged',
-        (['room', 'school-hall', 'monochrome-studio'] as const).every((id) => environmentDef(id).rig === BASE_RIG),
+        // the school hall left this list on 2026-10-10: its photograph is visible now, so its key
+        // follows the photograph's own light (`graphics/environments.ts`)
+        'the two environments that predate the rigs carry BASE_RIG unchanged',
+        (['room', 'monochrome-studio'] as const).every((id) => environmentDef(id).rig === BASE_RIG),
       );
     }
 
@@ -10996,7 +11016,7 @@ function environmentAndReadoutChecks(check: Check): void {
     // choices must not quietly become one of them.
     check('the fixed-High export tier still renders in the school hall', GFX_PRESETS.high.environment === 'school-hall');
     check('...and Ultra with it', GFX_PRESETS.ultra.environment === 'school-hall');
-    check('...and Extreme renders in the school hall too', GFX_PRESETS.extreme.environment === 'school-hall');
+    check('...and Extreme renders in the photographed events hall (2026-10-10)', GFX_PRESETS.extreme.environment === 'events-hall');
     check(
       'Low and Medium still default to the generated room',
       GFX_PRESETS.low.environment === 'room' && GFX_PRESETS.medium.environment === 'room',
@@ -11120,9 +11140,11 @@ function environmentAndReadoutChecks(check: Check): void {
 
     // IN THE EMBED THE SUBSTITUTION IS TOTAL: nothing resolves to a row that needs a download.
     check('inside the activity an HDRI is known to be unfetchable up front', !onHost('1234.discordsays.com', () => canFetchHdri()));
+    // since 2026-10-10 the school hall is a PHOTOGRAPHED venue whose files are same-origin, so
+    // the embed renders the real thing rather than its painted stand-in
     check(
-      'inside the activity the school hall resolves to the painted school gym',
-      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id) === 'gym',
+      'inside the activity the school hall is still the school hall (its files are same-origin)',
+      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id) === 'school-hall',
       onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id),
     );
     check(
@@ -11203,7 +11225,7 @@ function environmentAndReadoutChecks(check: Check): void {
         // itself a `catch (err)` with the set inside it — which is how this check first went
         // red. Counting the sites and pinning the one is the discriminator that holds.)
         (envSrc.match(/failedHdri\.set\(/g) ?? []).length === 1 &&
-          /loadAsync\(def\.hdri\.url\);\s*\} catch \(err\) \{\s*failedHdri\.set\(/.test(envSrc),
+          /loadAsync\(source\.url\);\s*\} catch \(err\) \{\s*failedHdri\.set\(/.test(envSrc),
       );
       check(
         '⚠️ ...and the count does not last the whole run: a success clears it, and it expires',
@@ -11212,7 +11234,7 @@ function environmentAndReadoutChecks(check: Check): void {
         'two blips in one Electron run used to mean the stand-in until a restart',
       );
       // and the failure lands on the entry's own stand-in rather than on the flattest row there is
-      check('a failed fetch falls back to the entry’s stand-in, not to `room`', /const alt = applyFallback\(def, lighting\);/.test(envSrc));
+      check('a failed fetch falls back to the entry’s stand-in, not to `room`', /const alt = applyFallback\(source\.fallback, lighting\);/.test(envSrc));
     }
   }
 
@@ -11846,5 +11868,364 @@ function environmentAndReadoutChecks(check: Check): void {
         /export function restoreTree[\s\S]{0,400}?restoreShadow\(mesh\);/.test(kitSrc2),
       );
     }
+  }
+}
+
+/**
+ * THE PHOTOGRAPHED VENUES (2026-10-10, owner: "Please add actual good quality scenes for
+ * backgrounds"). Five environments show a real room: a Poly Haven panorama re-encoded by
+ * `scripts/venues/derive.cjs` into `public/venues/` and projected onto a box the shape of the room
+ * it was taken in (`scene/renderPhotoVenue.ts`). What is pinned here: the files are the ones the
+ * rows describe; the projection agrees with the light-gathering map's orientation; the box holds
+ * every camera; the venue casts nothing and blooms nothing; a failure is remembered; and every
+ * photograph is credited.
+ */
+function photoVenueChecks(check: Check): void {
+  const photos = photoEnvironments();
+  check(
+    'photo venues: five, the school hall among them',
+    photos.length === 5 && photos.some((e) => e.id === 'school-hall'),
+    photos.map((e) => e.id).join(','),
+  );
+  const req = createRequire(import.meta.url);
+  const venuesCfg = req('../venues/venues.cjs') as {
+    id: string;
+    slug: string;
+    md5: string;
+    gain: number;
+    patches?: { room?: Record<string, number> }[];
+  }[];
+  const { decodeRgbe } = req('../venues/rgbe.cjs') as {
+    decodeRgbe: (b: Buffer) => { width: number; height: number; data: Float32Array };
+  };
+  /** a WebP's canvas size, from its RIFF header (lossy `VP8 `, or the extended `VP8X`) */
+  const webpSize = (buf: Buffer): [number, number] | null => {
+    if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return null;
+    const kind = buf.toString('latin1', 12, 16);
+    if (kind === 'VP8 ') return [buf.readUInt16LE(26) & 0x3fff, buf.readUInt16LE(28) & 0x3fff];
+    if (kind === 'VP8X') return [1 + buf.readUIntLE(24, 3), 1 + buf.readUIntLE(27, 3)];
+    return null;
+  };
+  const readme = readFileSync(join(root, 'public', 'venues', 'README.md'), 'utf8');
+  for (const e of photos) {
+    const p = e.photo!;
+    const cfg = venuesCfg.find((v) => v.id === e.id);
+    check(`photo ${e.id}: a row in scripts/venues/venues.cjs, from the same Poly Haven asset`, !!cfg && cfg.slug === p.slug);
+    // ⚠️ THE GAIN IS IN TWO PLACES AND MUST AGREE: the files were ENCODED with venues.cjs's and the
+    // shader DECODES with the environment row's. A mismatch is a uniformly wrong exposure.
+    check(`photo ${e.id}: the shader decodes with the gain the files were encoded with`, !!cfg && cfg.gain === p.gain, `${cfg?.gain} vs ${p.gain}`);
+    // SAME ORIGIN: relative paths, resolved against the app's base (the Electron build's is `./`)
+    check(
+      `photo ${e.id}: three relative public/ paths, never a CDN`,
+      [p.backdrop, p.backdropLow, p.ibl].every((u) => /^venues\/[a-z-]+-(4k\.webp|2k\.webp|ibl\.hdr)$/.test(u)),
+    );
+    for (const [path, bytes, size] of [
+      [p.backdrop, p.bytes.backdrop, [4096, 2048]],
+      [p.backdropLow, p.bytes.backdropLow, [2048, 1024]],
+    ] as [string, number, number[]][]) {
+      const file = join(root, 'public', path);
+      const buf = readFileSync(file);
+      check(`photo ${e.id}: ${path} is the size the row (and the picker's note) states`, buf.length === bytes, `${buf.length} vs ${bytes}`);
+      const wh = webpSize(buf);
+      check(`photo ${e.id}: ${path} is a ${size[0]} × ${size[1]} WebP`, !!wh && wh[0] === size[0] && wh[1] === size[1], String(wh));
+    }
+    {
+      const buf = readFileSync(join(root, 'public', p.ibl));
+      check(`photo ${e.id}: ${p.ibl} is the size the row states`, buf.length === p.bytes.ibl, `${buf.length} vs ${p.bytes.ibl}`);
+      const ibl = decodeRgbe(buf);
+      check(
+        `photo ${e.id}: the light-gathering map is a 2:1 linear .hdr at least 512 wide`,
+        ibl.width >= 512 && ibl.width === ibl.height * 2,
+        `${ibl.width}×${ibl.height}`,
+      );
+    }
+    // the brief's ceiling for one backdrop, and a picker note that states what High pays
+    check(`photo ${e.id}: the 4k backdrop is at most 1.5 MB`, p.bytes.backdrop <= 1.5e6, String(p.bytes.backdrop));
+    const mb = (p.bytes.backdrop + p.bytes.ibl) / 1e6;
+    check(
+      `photo ${e.id}: the picker's note states the High-tier download (4k + IBL) to 0.1 MB`,
+      e.note.includes(`${mb.toFixed(1)} MB`),
+      `${e.note} vs ${mb.toFixed(2)}`,
+    );
+    // the stand-in for the LIGHTING only: painted, and the same kind of room
+    const alt = environmentDef(p.fallback);
+    check(
+      `photo ${e.id}: its light stand-in is a painted entry of the same venue kind`,
+      alt.id === p.fallback && !!alt.look && alt.venue.kind === e.venue.kind,
+      p.fallback,
+    );
+    check(`photo ${e.id}: not also a cross-origin HDRI (one light source per row)`, !e.hdri);
+    // THE ROOM: the lens 1.6 m up (the court lines' measurement), the field well inside it, and a
+    // ceiling above the lens
+    const r = p.room;
+    check(`photo ${e.id}: the lens height is the measured 63 in`, p.height === 63);
+    check(
+      `photo ${e.id}: the room surrounds the field and its alliance areas (every wall 200+ in out)`,
+      r.x0 < -200 && r.x1 > 200 && r.y0 < -200 && r.y1 > 200,
+      JSON.stringify(r),
+    );
+    check(`photo ${e.id}: the ceiling is above the lens`, r.ceil > p.height + PUSH_MARGIN_IN, String(r.ceil));
+    check(
+      `photo ${e.id}: dim, colour and shadow are in range`,
+      p.intensity > 0 && p.intensity <= 1 && p.saturation >= 0.5 && p.saturation <= 1 && p.shadow > 0 && p.shadow <= 0.6,
+      `${p.intensity} / ${p.saturation} / ${p.shadow}`,
+    );
+    check(
+      `photo ${e.id}: public/venues/README.md names its source, md5 and authors`,
+      !!cfg && readme.includes(cfg.slug) && readme.includes(cfg.md5) && p.authors.every((a) => readme.includes(a.name)),
+    );
+    // a FURNITURE PATCH's room is the row's room in lens heights — the two must describe one box
+    for (const patch of cfg?.patches ?? []) {
+      if (!patch.room) continue;
+      const k = p.height;
+      const same = (['x0', 'x1', 'y0', 'y1', 'ceil'] as const).every((f) => Math.abs((patch.room![f] ?? NaN) * k - r[f]) <= 2);
+      check(`photo ${e.id}: the derive patch's room (× ${k} in) is the row's room, within 2 in`, same, JSON.stringify(patch.room));
+    }
+  }
+
+  // EVERY PHOTOGRAPH IS CREDITED, by construction (`environmentCredit`)
+  check(
+    'photo venues: every photographed or fetched environment has a CC0 row on the Contributors page',
+    creditedEnvironments().length === photos.length + hdriEnvironments().length &&
+      creditedEnvironments().every((e) => {
+        const c = environmentCredit(e)!;
+        return THIRD_PARTY.some((t) => t.name === e.name && t.license === 'CC0 1.0' && t.page === c.page && t.credits.length > 0);
+      }),
+  );
+
+  // THE DISCORD EMBED: same-origin files load there, so nothing photographed is substituted
+  {
+    const g = globalThis as { window?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(g, 'window');
+    const prev = g.window;
+    g.window = { location: { hostname: '1234.discordsays.com', search: '' }, sessionStorage: { getItem: () => null, setItem: () => undefined } };
+    try {
+      check('photo venues: inside a Discord Activity every photographed id resolves to itself', photos.every((e) => environmentDefFor(e.id) === e));
+      check('photo venues: ...and the picker still offers all of them there', photos.every((e) => pickableEnvironments().includes(e)));
+    } finally {
+      if (had) g.window = prev;
+      else delete g.window;
+    }
+  }
+
+  // THE PROJECTION AGREES WITH THE LIGHT-GATHERING MAP. The backdrop and the `.hdr` are the same
+  // panorama turned the same way (derive.cjs), and the `.hdr` is sampled by three through MAP_ROT
+  // (`renderEnvironment.ts`, which the renderer applies NEGATED). So three's own equirect lookup of
+  // a world direction turned −π/2 about x must land on the projection shader's (u, v).
+  {
+    const m = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+    let worst = 0;
+    for (const d of [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [-0.3, 0.6, -0.4],
+      [0.7, -0.2, 0.5],
+      [0.1, 0.9, -0.8],
+    ]) {
+      const v = new THREE.Vector3(d[0], d[1], d[2]).normalize().applyMatrix4(m);
+      // three's equirectUv: u = atan(z, x)/2π + 0.5, v = asin(y)/π + 0.5 (v = 1 at the top)
+      const u3 = Math.atan2(v.z, v.x) / (2 * Math.PI) + 0.5;
+      const v3 = Math.asin(v.y) / Math.PI + 0.5;
+      const [u, vt] = photoUv(d[0], d[1], d[2]);
+      const du = Math.abs(((u - u3 + 1.5) % 1) - 0.5);
+      worst = Math.max(worst, du, Math.abs(1 - vt - v3));
+    }
+    check('photo venues: the projection reads the panorama exactly where three reads the .hdr', worst < 1e-9, worst.toExponential(2));
+    const [ux] = photoUv(1, 0, 0);
+    const [uy] = photoUv(0, -1, 0);
+    const [, vz] = photoUv(0, 0, 1);
+    check(
+      'photo venues: +x is the middle column, −y a quarter turn clockwise, the zenith the top row',
+      ux === 0.5 && Math.abs(uy - 0.75) < 1e-12 && vz === 0,
+      `${ux} ${uy} ${vz}`,
+    );
+    const src = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+    check(
+      'photo venues: the fragment shader is that lookup, and takes the seam-safe gradient',
+      /float u = atan\( - d\.y, d\.x \) \* 0\.15915494309 \+ 0\.5;/.test(src) &&
+        /float v = 0\.5 - asin\( clamp\( d\.z, - 1\.0, 1\.0 \) \) \* 0\.31830988618;/.test(src) &&
+        /fract\( u \+ 0\.5 \)/.test(src) &&
+        /textureGrad\( bbMap, uv, dx, dy \)/.test(src),
+    );
+    check(
+      'photo venues: the vertex shader grows the box round the camera exactly as pushedRoomBox does',
+      /vec3 hi = max\( bbBoxMax, cameraPosition \+ bbMargin \);/.test(src) &&
+        /vec3 lo = min\( bbBoxMin, cameraPosition - bbMargin \);/.test(src) &&
+        /position\.z > c\.z \? hi\.z : bbBoxMin\.z/.test(src),
+    );
+    // the derive script's furniture patch reads columns in the same convention (u = 0.5 − θ/360)
+    const derive = readFileSync(join(root, 'scripts', 'venues', 'derive.cjs'), 'utf8');
+    check(
+      'photo venues: derive.cjs reads a column as θ = (0.5 − u) · 360, the shader’s convention',
+      /let th = \(0\.5 - \(i \+ 0\.5\) \/ W\) \* 360;/.test(derive),
+    );
+  }
+
+  // THE BOX HOLDS EVERY CAMERA. Inside the true room it IS the true room (exact walls); beyond a
+  // wall the wall moves out past the eye; and the far corner stays inside the 4000-in far plane.
+  {
+    const eyes: [number, number, number][] = [];
+    for (let yaw = 0; yaw < 360; yaw += 15) {
+      const a = (yaw * Math.PI) / 180;
+      for (const el of [0.08, 0.56, 1.0, 1.45]) {
+        // orbit: radius 620 at the extremes, about (0, 0, 24) (renderCameras.ts)
+        eyes.push([Math.cos(a) * Math.cos(el) * 620, Math.sin(a) * Math.cos(el) * 620, 24 + Math.sin(el) * 620]);
+      }
+      // free cam: dolly 420 at pitch 8°, its target panned to the field's corner margin
+      eyes.push([82.7 + Math.cos(a) * Math.cos(0.14) * 420, 82.7 + Math.sin(a) * Math.cos(0.14) * 420, Math.sin(0.14) * 420]);
+    }
+    eyes.push([0, 0, 800], [0, 0, 300]); // the overhead camera and the minimap's
+    let outside = 0;
+    let farthest = 0;
+    let moved = 0;
+    for (const e of photos) {
+      const box = photoRoomBox(e.photo!);
+      for (const eye of eyes) {
+        const b = pushedRoomBox(box, eye);
+        const inside =
+          eye[0] >= b.min[0] + PUSH_MARGIN_IN - 1e-9 &&
+          eye[0] <= b.max[0] - PUSH_MARGIN_IN + 1e-9 &&
+          eye[1] >= b.min[1] + PUSH_MARGIN_IN - 1e-9 &&
+          eye[1] <= b.max[1] - PUSH_MARGIN_IN + 1e-9 &&
+          eye[2] > b.min[2] &&
+          eye[2] <= b.max[2] - PUSH_MARGIN_IN + 1e-9;
+        if (!inside) outside++;
+        for (const cx of [b.min[0], b.max[0]]) {
+          for (const cy of [b.min[1], b.max[1]]) {
+            for (const cz of [b.min[2], b.max[2]]) farthest = Math.max(farthest, Math.hypot(cx - eye[0], cy - eye[1], cz - eye[2]));
+          }
+        }
+      }
+      // a chase eye (60 in behind a robot anywhere on the field, 40 up) and a driver just behind the
+      // wall: inside every room, so the box drawn for them is the room as photographed
+      for (const eye of [
+        [122, 0, 54],
+        [-122, 0, 54],
+        [0, 122, 54],
+        [0, -122, 54],
+        [148, 0, 62],
+        [-148, 0, 62],
+      ] as [number, number, number][]) {
+        const b = pushedRoomBox(box, eye);
+        if ([0, 1, 2].some((i) => b.min[i] !== box.min[i] || b.max[i] !== box.max[i])) moved++;
+      }
+    }
+    check('photo venues: every camera position the controls allow is inside the box it is drawn with', outside === 0, String(outside));
+    check('photo venues: ...and the box’s far corner is inside the cameras’ 4000-in far plane from all of them', farthest < 4000, farthest.toFixed(0));
+    check('photo venues: a chase or driver eye stands in the TRUE room (nothing pushed, walls exact)', moved === 0, String(moved));
+  }
+
+  // THE BUILT GROUP: three meshes, nothing casts, nothing blooms, the overlays never write depth
+  // (GTAO's G-buffer pass leaves them out) and lie between the photographed floor and the CAD's
+  // alliance tape (−0.589)
+  {
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    const def = environmentDef('events-hall');
+    const g = buildPhotoVenue(def, tex);
+    const room = g.getObjectByName('bb-venue:photo') as THREE.Mesh;
+    const shadow = g.getObjectByName('bb-venue:photo-shadow') as THREE.Mesh;
+    const contact = g.getObjectByName('bb-venue:photo-contact') as THREE.Mesh;
+    let meshes = 0;
+    let casters = 0;
+    let glow = 0;
+    let tris = 0;
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      meshes++;
+      if (m.castShadow) casters++;
+      if (typeof (m.material as THREE.Material).userData.bloomBase === 'number') glow++;
+      tris += (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3;
+    });
+    check(
+      'photo venues: one group named bb-venue with the room, the shadow catcher and the contact band',
+      g.name === 'bb-venue' && !!room && !!shadow && !!contact && meshes === 3,
+    );
+    check('photo venues: nothing casts, nothing is tagged for bloom', casters === 0 && glow === 0, `${casters} / ${glow}`);
+    check('photo venues: three draws and under 100 triangles', tris < 100, String(tris));
+    const rm = room.material as THREE.ShaderMaterial;
+    check(
+      'photo venues: the room is a BackSide box with no bounding volume to cull by (it surrounds the eye)',
+      rm.side === THREE.BackSide && room.frustumCulled === false && rm.uniforms.bbMap.value === tex,
+    );
+    check(
+      'photo venues: the decode divides the encode gain back out and applies the dim',
+      Math.abs(rm.uniforms.bbScale.value - def.photo!.intensity / def.photo!.gain) < 1e-12,
+    );
+    check(
+      'photo venues: the shadow catcher and the contact band never write depth and lie under the CAD tape',
+      (shadow.material as THREE.Material).depthWrite === false &&
+        (contact.material as THREE.Material).depthWrite === false &&
+        shadow.receiveShadow &&
+        [shadow, contact].every((m) => m.position.z > PHOTO_FLOOR_Z && m.position.z < -0.589),
+    );
+    const eye = rm.uniforms.bbEye.value as THREE.Vector3;
+    check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + 63);
+    // ⚠️ A PHOTOGRAPHED HIGHLIGHT NEVER OUTSHINES THE FIELD'S LIT WHITE PANELS (1.2–1.7 raw): the
+    // knee rolls everything off toward twice itself
+    check('photo venues: the highlight knee’s ceiling (2 × knee) is at or under the field’s lit white (1.2)', 2 * PHOTO_KNEE <= 1.2, String(PHOTO_KNEE));
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  }
+
+  // THE TIER LADDER: the 2k backdrop on Low and Medium (and on a GPU without 4096 textures), the 4k
+  // from High up
+  check(
+    'photo venues: the 4k backdrop from High up, the 2k on Low/Medium, meshDetail low, or a small GPU',
+    bbPhotoDetail(GFX_PRESETS.low, 'low', 16384) === 'lo' &&
+      bbPhotoDetail(GFX_PRESETS.medium, 'medium', 16384) === 'lo' &&
+      bbPhotoDetail(GFX_PRESETS.high, 'high', 16384) === 'hi' &&
+      bbPhotoDetail(GFX_PRESETS.ultra, 'ultra', 16384) === 'hi' &&
+      bbPhotoDetail(GFX_PRESETS.extreme, 'extreme', 16384) === 'hi' &&
+      bbPhotoDetail(GFX_PRESETS.extreme, 'extreme', 2048) === 'lo' &&
+      bbPhotoDetail({ meshDetail: 'low' }, 'ultra', 16384) === 'lo',
+  );
+
+  // A FAILED BACKDROP IS REMEMBERED: two tries, then it stops asking, for five minutes
+  {
+    const url = '/venues/__smoke-never.webp';
+    const t = 1_000_000;
+    const first = photoBlocked(url, t);
+    notePhotoFailure(url, t);
+    const afterOne = photoBlocked(url, t + 1);
+    notePhotoFailure(url, t + 2);
+    const afterTwo = photoBlocked(url, t + 3);
+    const expired = photoBlocked(url, t + 2 + 5 * 60_000);
+    check('photo venues: one failure is a blip, two stop the requests, and the count expires', !first && !afterOne && afterTwo && !expired);
+  }
+
+  // THE SCENE'S WIRING, by source: the generated room first, the photograph swapped in when it
+  // lands, its texture freed with its venue and with the scene, and the probe projected against
+  // the photographed room
+  {
+    const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    check(
+      'photo venues: the scene builds the generated venue first and then asks for the photograph',
+      /this\.swapVenue\(buildBiobuzzVenue\(def\.venue, detail\), def\);[\s\S]{0,200}this\.loadPhoto\(/.test(sc),
+    );
+    check('photo venues: a blocked backdrop is not requested again', /if \(photoBlocked\(venueAssetUrl\(path\)\)\) return;/.test(sc));
+    check(
+      'photo venues: a backdrop that lands after its venue was replaced is freed, not shown',
+      /if \(this\.disposed \|\| this\.venueKey !== key\) \{\s*tex\.dispose\(\);/.test(sc),
+    );
+    check(
+      'photo venues: the previous backdrop is freed on every swap, and with the scene',
+      /if \(this\.photoTex && this\.photoTex !== tex\) this\.photoTex\.dispose\(\);/.test(sc) && /this\.photoTex\?\.dispose\(\);/.test(sc),
+    );
+    check(
+      'photo venues: the room probe is projected against the photographed room when it is live',
+      /sf\.recapture\(this\.renderer, this\.scene, hidden, def, room\)/.test(sc),
+    );
+    const envSrc = readFileSync(join(SCENE_DIR, 'renderEnvironment.ts'), 'utf8');
+    check(
+      'photo venues: the light-gathering .hdr is the venue’s own same-origin file',
+      /if \(def\.photo\) return \{ url: venueAssetUrl\(def\.photo\.ibl\), fallback: def\.photo\.fallback \};/.test(envSrc),
+    );
   }
 }
