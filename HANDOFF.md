@@ -1,6 +1,6 @@
 # HANDOFF — 2026-10-10 (BIOBUZZ 3D: the online wall bump fix reaches main)
 
-**State: on `main`; PRODUCTION deploy started 2026-10-10 from `main` with a 2-minute announcement (see the follow-up line once done).** `npm test` (5176), `build`, `server:check`, `docaudit`, `bundleaudit`, `test:workers` (83) pass. Sim change behind `SIM_PATCH` 8 (it is 3 on `alpha`). No `SIM_VERSION` bump, no wire change.
+**State: on `main` (d0739721); DEPLOYED to PRODUCTION 2026-10-10 19:01Z from `main` (2-minute announcement, 17 clients notified, all 8 machines on the new image, client build d073972).** `npm test` (5176), `build`, `server:check`, `docaudit`, `bundleaudit`, `test:workers` (83) pass. Sim change behind `SIM_PATCH` 8 (it is 3 on `alpha`). No `SIM_VERSION` bump, no wire change.
 
 - **Owner:** "sometimes in online games, when I drive against the wall, there seems to be an invisible bump"; then "deploy to prod", then "deploy very soon".
 - **Cause and fix:** `docs/area/biobuzz.md`, "THE WALL SQUARE-UP IS A TURN THE 3D SOLVE MAKES". On `alpha` since 2026-10-02 (c91e709a).
