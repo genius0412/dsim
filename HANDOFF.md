@@ -1,3 +1,10 @@
+# HANDOFF — 2026-10-10c (the wall bump fix is on `main` and in production, as SIM_PATCH 8)
+
+**State: `alpha`'s patch 3 (the BIOBUZZ 3D wall square-up, 2026-10-02) is on `main` as SIM_PATCH 8 and DEPLOYED to production 2026-10-10 19:01Z. On `alpha` only `config.ts` changed: 8 is marked taken, so the next patch here is 9.**
+
+- **Why 8 on `main`:** `main` stamped replays 5 since 10-04 without the rule, so `>= 3` there would replay them with it. 40 bot 2v2 3D matches recorded on `main` before the port replay bit-identically after it (40 of 40 differ when forced onto the rule). `main` gates it `>= 8` in `step3dImpl.ts`; `alpha` keeps `>= 3`. When `alpha` (SIM_VERSION 5) lands on `main`, take `alpha`'s gate; `main`'s SIM_VERSION-4 replays play as DRIFT at that point anyway.
+- **Still open for the owner:** one G402 3D duel now bills twice (1.17 s gap vs the 1.0 s re-arm window), `scripts/smoke-biobuzz/rules.ts`.
+
 # HANDOFF — 2026-10-10 (Controls: BIOBUZZ's own binds in All games; turn with the triggers)
 
 **State: on `main` and `alpha`. Client only: no server change, no deploy needed beyond Vercel.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass on `main`.
