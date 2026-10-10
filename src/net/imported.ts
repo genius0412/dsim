@@ -19,6 +19,24 @@
  * that does not.
  */
 
+/**
+ * WHERE THE IMPORTER SHIPS, by release channel (owner, 2026-10-10: "We will not deploy the robot
+ * importer feature to main until I tell you to, but we will keep it on alpha. Note that things like
+ * fixed shooter should stay."). ONE rule for both halves of the gate: the client asks it of its
+ * build's channel (`VITE_APP_CHANNEL`, which the alpha site already bakes), the server of its own
+ * (`SERVER_CHANNEL`, which `fly.alpha.toml` already sets), so neither deployment needs a setting.
+ * An unknown channel is closed, the safe direction, as `seasonVisibleOn` does. It gates the
+ * importer only: the editor, the library, imported robots in rooms and the look relay. Mechanisms
+ * that landed beside it (the fixed shooter, hand loading) are everyone's. Opening production is
+ * adding `'stable'` here, and the rest of the list in `docs/area/robot-import.md` "Where it ships".
+ */
+export const IMPORTER_CHANNELS: readonly string[] = ['alpha'];
+
+/** is the importer open on a deployment of release channel `channel`? */
+export function importerOpenOn(channel: string | undefined): boolean {
+  return typeof channel === 'string' && IMPORTER_CHANNELS.includes(channel.trim());
+}
+
 /** advertised by clients on `join`/`queue`/`rejoin`/`spectate` (`CLIENT_CAPS`) and by the server on
  *  `/api/presence` (`SERVER_CAPS`). The client offers an imported robot online only when the
  *  server says it. */

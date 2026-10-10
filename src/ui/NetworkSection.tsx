@@ -10,6 +10,7 @@ import {
 } from '../net/predictionPref';
 import { getShowOthersImported, setShowOthersImported, subscribeShowOthersImported } from '../net/importVisualsPref';
 import { OptRow, ToggleRow } from './OptRow';
+import { importerEnabled } from '../seasonVisibility';
 
 /**
  * NETWORK — client prediction (`docs/biobuzz/plan-3d.md` §5).
@@ -38,7 +39,8 @@ import { OptRow, ToggleRow } from './OptRow';
  * Whether this device downloads other players' imported robots (`importVisualsPref.ts`, the room's
  * visuals relay, docs/area/netcode.md) is per device like everything on this screen, and it
  * concerns every game: a DECODE player's 2D picture is a download too. Graphics only exists for a
- * game with a 3D view, so a DECODE player would never have found it there.
+ * game with a 3D view, so a DECODE player would never have found it there. Not drawn where the
+ * importer is closed (`importerEnabled`); the stored preference is left as it is.
  */
 export function NetworkSection() {
   const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
@@ -63,21 +65,23 @@ export function NetworkSection() {
         </div>
       </section>
 
-      <section className="ds-panel">
-        <div className="ds-panel-h">
-          <h2 className="ds-panel-title">Imported robots</h2>
-        </div>
-        <div className="ds-panel-body stack">
-          {/* each side names what it costs, which is the only reason a sub-line is here */}
-          <ToggleRow
-            label="Show other players’ imported robots"
-            value={showImported}
-            onPick={setShowOthersImported}
-            onDesc="Downloads each robot’s picture, and its model in the BIOBUZZ 3D view"
-            offDesc="You see an outline instead. Nothing is downloaded"
-          />
-        </div>
-      </section>
+      {importerEnabled() && (
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <h2 className="ds-panel-title">Imported robots</h2>
+          </div>
+          <div className="ds-panel-body stack">
+            {/* each side names what it costs, which is the only reason a sub-line is here */}
+            <ToggleRow
+              label="Show other players’ imported robots"
+              value={showImported}
+              onPick={setShowOthersImported}
+              onDesc="Downloads each robot’s picture, and its model in the BIOBUZZ 3D view"
+              offDesc="You see an outline instead. Nothing is downloaded"
+            />
+          </div>
+        </section>
+      )}
     </>
   );
 }

@@ -1,5 +1,7 @@
 /* THE IMPORTER'S COST, MEASURED (lane 4). An OFFSCREEN Electron window against a PRODUCTION build
- * (`npm run build && npx vite preview --port 4173`), cold cache, a `longtask` observer on every page:
+ * (`VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173`: the importer ships on the
+ * alpha channel only, and the variable opens it in a local build), cold cache, a `longtask`
+ * observer on every page:
  *
  *   1. the robot page with no imports, then with six: what the import row adds to the main thread;
  *   2. the empty editor: its own chunk only, the engine NOT fetched;

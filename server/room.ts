@@ -75,7 +75,7 @@ import { VisualRelay } from './importVisuals';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { absenceOf, chargedForParticipation, EARLY_ABSENT_TICKS, judgeParticipation } from '../src/standing';
-import { roomPersists } from './channel';
+import { IMPORTS_OPEN_HERE, roomPersists } from './channel';
 import { joinClock, leaveClock, type Turn } from './tickScheduler';
 import { BallWireCache, referenceBody, referenceChanged, snapshotBody, snapshotParts } from './snapshotWire';
 import { eloMode } from './eloMode';
@@ -1096,7 +1096,11 @@ export class Room {
     private readonly onBehaviour?: (b: BehaviourReport) => void,
   ) {
     this.settings = config.settings && structuredClone(config.settings);
+    this.importsHere = config.imports ?? IMPORTS_OPEN_HERE;
   }
+
+  /** `RoomConfig.imports`, resolved once: may an imported robot play here on this deployment? */
+  private readonly importsHere: boolean;
 
   /**
    * PARTICIPATION, counted while the match is actually live.
@@ -4557,9 +4561,12 @@ export class Room {
    *
    * `config.kind === 'versus'` is spelled out rather than "not record" so a third room kind is
    * refused until somebody decides otherwise: this list errs toward refusing.
+   *
+   * And only where the importer ships (`importsHere`, from `RoomConfig.imports`): every door, the
+   * start refusal, `beginMatch`'s strip and the visuals relay ask this one method.
    */
   allowsImportedRobots(): boolean {
-    return !this.ranked && !this.pendingMatch && this.config.kind === 'versus';
+    return this.importsHere && !this.ranked && !this.pendingMatch && this.config.kind === 'versus';
   }
 
   /**

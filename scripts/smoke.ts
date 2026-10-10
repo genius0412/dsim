@@ -50,7 +50,8 @@ import { aimSolution, robotInLaunchZone, updateRobot, wheelLocals } from '../src
 import { drawWheels as drawWheelsDecode } from '../src/render/drawRobot';
 import { drawWheels as drawWheelsBiobuzz } from '../src/games/biobuzz/parts';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
-import { startMatch } from '../src/sim/match';
+import { allocBallId } from '../src/sim/ballIds';
+import { clockExpired, startMatch, stepMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
 import { muxMp4 } from '../src/ui/mp4';
 import { hudLabels } from '../src/ui/replayOverlay';
@@ -185,6 +186,9 @@ import {
   PLACEMENT_GAMES,
   ENDGAME_START,
   PRE_COUNTDOWN,
+  AUTO_DURATION,
+  TRANSITION_DURATION,
+  TELEOP_DURATION,
   COLORS,
   WHEEL_CORNERS,
   WHEEL_PERIMETER,
@@ -376,7 +380,8 @@ import {
 } from '../src/sim/penaltyLog';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
-import { roomPersists } from '../server/channel';
+import { advertisedCaps, importsOpen, IMPORTS_OPEN_HERE, roomPersists, SERVER_CHANNEL } from '../server/channel';
+import { hostRoomConfig } from '../src/lan/hostProtocol';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport, type MatchOutcome } from '../server/room';
 import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
 import { clockMembers } from '../server/tickScheduler';
@@ -401,6 +406,9 @@ import {
 } from '../src/net/imported';
 import { SERVER_CAPS } from '../src/net/protocol';
 import { rememberStandardRobot, sameBuild, standardRobotChoices, standardRobotFor } from '../src/settings';
+// the importer gate: the channel rule, and the projection a build without the importer renders from
+import * as IMPGATE from '../src/net/imported';
+import { keepImportActive as gateKeepImportActive, withoutImport as gateWithoutImport } from '../src/settings';
 import { SETTINGS_KEEPS_IMPORTS, keepImportsFromOlderClient, keepsImports, sameButDropped } from '../src/net/settingsKeep';
 import { pendingPracticeUploads, savePracticeRun } from '../src/net/practiceRuns';
 import { pendingLanUploads, saveLanRunLocal } from '../src/net/lanRuns';
@@ -665,6 +673,13 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
     'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', '223a5b21ffe4863f', '6c243b2e6ac9bf9e'],
   },
+  // exact phase lengths (`clockExpired`) and never-reused artifact ids (`World.nextBallId`)
+  6: {
+    'decode solo': ['2d126b8eff58a52e', '69880a216f5edbfc', '43fec73b03b36692', 'be59a3d52ce6c79c', 'a366239b68377195', '523dd1a09e25d9a6'],
+    'decode 2v2': ['d3022bac45c08d85', '27a27dbacf93a19e', '30957503e8bb1ace', '0a9156d4ac7e7195', 'f239c0530136017d', 'deab4f9a69fa97a2'],
+    'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
+    'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', 'a87422c57eb9ed68', '14894c2c59b82e12'],
+  },
 };
 const goldenArmed = (w: World): World => {
   // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
@@ -763,6 +778,75 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     every: 400,
   });
   check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- match clocks: every phase is exactly its duration in ticks ------------
+{
+  // The clocks count down by `-= 1/60`, which is inexact: after 1800 subtractions from 30 the
+  // remainder was +4e-13, so a plain `> 0` gave every phase one extra tick (AUTO 1801, the
+  // transition 481, DRIVER-CONTROLLED 7201) and the countdown too. `clockExpired` ends them on
+  // the tick grid.
+  const w = createWorld('match', 3, []);
+  w.match.preCountdown = PRE_COUNTDOWN;
+  const lengths: Record<string, number> = {};
+  let guard = 0;
+  while (w.match.phase !== 'post' && guard++ < 20000) {
+    const ph = w.match.phase;
+    stepMatch(w, SIM_DT);
+    lengths[ph] = (lengths[ph] ?? 0) + 1;
+  }
+  const want = { pre: PRE_COUNTDOWN * 60, auto: AUTO_DURATION * 60, transition: TRANSITION_DURATION * 60, teleop: TELEOP_DURATION * 60 };
+  check(
+    'match clock: countdown, AUTO, transition and DRIVER-CONTROLLED each last exactly duration x 60 ticks',
+    Object.entries(want).every(([k, v]) => lengths[k] === v),
+    JSON.stringify(lengths),
+  );
+  check('clockExpired: a remainder of float noise is out, a whole tick is not', clockExpired(4e-13) && clockExpired(0) && clockExpired(-1e-3) && !clockExpired(SIM_DT));
+
+  // Chain Reaction runs its own phase machine off the same helper
+  const cw = simModuleFor('chain').createWorld('match', 3, []);
+  cw.match.phase = 'auto';
+  cw.match.phaseTimeLeft = AUTO_DURATION;
+  let n = 0;
+  while (cw.match.phase === 'auto' && n < 4000) {
+    simModuleFor('chain').step(cw, SIM_DT, new Map());
+    n++;
+  }
+  check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
+}
+
+// ---- artifact ids are never reused within a match ---------------------------
+{
+  // The human player can collect the stray holding the HIGHEST id and place a fresh artifact in
+  // the same call. With `max(id) + 1` the fresh one got the collected one's id, and every table
+  // keyed by artifact id (the penalty engine's per-(robot, artifact) clocks, pinnedArtifacts,
+  // the snapshot delta) carried over to a different ball.
+  const w = createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  w.match.phase = 'teleop';
+  w.robots[0].pos = { x: 0, y: 0 };
+  const z = loadZone('blue');
+  const slots = loadSlots('blue');
+  w.balls = w.balls.filter((b) => !(b.state.kind === 'ground' && b.pos.x > z.x0 - 10 && b.pos.x < z.x1 + 10 && b.pos.y > z.y0 - 10 && b.pos.y < z.y1 + 10));
+  // the stray is the newest artifact on the field, so it holds the highest id there
+  const strayId = allocBallId(w);
+  const cx = (z.x0 + z.x1) / 2;
+  const cy = (z.y0 + z.y1) / 2;
+  let spot = { x: cx, y: cy };
+  for (const dx of [-8, 8, 0]) for (const dy of [-8, 8, 0]) {
+    const q = { x: cx + dx, y: cy + dy };
+    if (slots.every((sl) => Math.hypot(q.x - sl.x, q.y - sl.y) > 8)) spot = q;
+  }
+  w.balls.push({ id: strayId, color: 'green', state: { kind: 'ground' }, pos: spot, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  w.humanPlayers.blue.box = ['purple'];
+  w.humanPlayers.blue.nextPlaceAt = 0;
+  w.humanPlayers.red.nextPlaceAt = 1e9;
+  const before = w.balls.length;
+  updateHumanPlayers(w);
+  const placed = w.balls.find((b) => b.color === 'purple' && slots.some((sl) => sl.x === b.pos.x && sl.y === b.pos.y));
+  check('ball ids: the scene really collected the stray and placed a new artifact in one call', !w.balls.some((b) => b.id === strayId && b.color === 'green') && w.balls.length === before && !!placed, `${w.balls.length} vs ${before}`);
+  check('ball ids: the placed artifact does NOT reuse the collected one\'s id', !!placed && placed.id !== strayId && !w.balls.some((b) => b.id === strayId), `placed #${placed?.id}, collected #${strayId}`);
+  const ids = w.balls.map((b) => b.id);
+  check('ball ids: every id on the field is distinct', new Set(ids).size === ids.length);
 }
 
 // ---- untrusted-input edges that must not move a valid input ----------------
@@ -9436,7 +9520,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the room is built with NO persistence callbacks, so it cannot write a row',
-      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), m\.config\)/.test(hw),
+      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), hostRoomConfig\(m\)\)/.test(hw),
     );
     check(
       'lan tab: nothing in the Worker reaches the database or the ranked module',
@@ -9474,7 +9558,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
-      /async start\(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG\)/.test(hr) &&
+      /async start\(\s*code: string,\s*config: RoomConfig = DEFAULT_ROOM_CONFIG,\s*imports: boolean = importerEnabled\(\),\s*\)/.test(hr) &&
         /intro\.player/.test(hr),
     );
     check(
@@ -29082,7 +29166,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ discord guard: the start-pose check reads `settingsRef`, so a just-switched season is the one measured',
-    /const cur = settingsRef\.current;\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
+    // (through `shownOf`, the importer gate's view of it: the robot the run fields)
+    /const cur = shownOf\(settingsRef\.current\);\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
     'selectGame runs on the line above the guard; the render’s own `settings` would measure the season being LEFT and refuse a BIOBUZZ room over a DECODE pose',
   );
 
@@ -30658,6 +30743,131 @@ const dumperSetup = (): RobotSetup => {
   }
 }
 
+// ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha, not production, until the owner says) ----
+// `importerOpenOn` (src/net/imported.ts) is the one rule; the client asks it of its build's channel
+// through `importerEnabled` (src/seasonVisibility.ts, which reads `import.meta.env` and cannot be
+// imported here). A build without the importer HIDES a stored import and keeps it: its screens are
+// shown `withoutImport(stored)` and their writes are stored through `keepImportActive` (src/settings.ts).
+// The fixed shooter and the rest that landed beside the importer are not gated.
+{
+  const G = IMPGATE;
+  check('importer gate: open on the alpha channel', G.importerOpenOn('alpha'));
+  check(
+    'importer gate: closed on stable (production, Electron, a local build), beta, an empty or absent channel, and another spelling',
+    !G.importerOpenOn('stable') && !G.importerOpenOn('beta') && !G.importerOpenOn('') && !G.importerOpenOn(undefined) &&
+      !G.importerOpenOn('Alpha') && !G.importerOpenOn('alpha2') && !G.importerOpenOn('alpha,stable'),
+  );
+  check('importer gate: a padded channel reads as its trimmed self (`appChannel` trims too), so " alpha " is open and " stable " is not',
+    G.importerOpenOn(' alpha ') && !G.importerOpenOn(' stable '));
+  check('importer gate: production is closed until the owner opens it (opening it is adding stable here)',
+    G.IMPORTER_CHANNELS.includes('alpha') && !G.IMPORTER_CHANNELS.includes('stable'));
+
+  // ---- the projection, pure ----
+  const IMP = { v: 1, id: '0123456789abcdef', heightIn: 12, hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }] };
+  const base = defaultSettings();
+  const impAssists = { ...base.assists };
+  const stdAssists = { ...base.assists };
+  const impSpec = { ...DEFAULT_SPEC, name: 'Imp', imported: IMP, assists: impAssists } as typeof DEFAULT_SPEC;
+  const std = { ...DEFAULT_SPEC, name: 'Std', assists: stdAssists };
+  const saved = { ...DEFAULT_SPEC, name: 'Saved', length: 14 };
+  const archived = { biobuzz: { spec: impSpec, savedRobots: [], startIndex: 0, startPose: null, startCat: 'close' as const, savedStartPoses: { close: [], far: [] }, startMemory: base.startMemory } };
+  const stored = { ...base, spec: impSpec, assists: impAssists, lastStandardSpec: std, savedRobots: [saved], loadouts: archived };
+  const plain = { ...base, spec: std, assists: stdAssists };
+  const shown = gateWithoutImport(stored);
+  check('importer gate/projection: settings with no import are shown as they are (the same object)', gateWithoutImport(plain) === plain && gateWithoutImport(base) === base);
+  check('importer gate/projection: an imported active robot is shown as the last standard robot, with that robot’s assists',
+    !isImportedSpec(shown.spec) && shown.spec === std && shown.assists === stdAssists);
+  check('importer gate/projection: ...and the stored copy, the archived loadouts, the saved robots and lastStandardSpec are untouched',
+    isImportedSpec(stored.spec) && stored.assists === impAssists && shown.loadouts === archived && isImportedSpec(shown.loadouts?.biobuzz?.spec) &&
+      shown.savedRobots === stored.savedRobots && shown.lastStandardSpec === std);
+  const { assists: _noAssists, ...bare } = DEFAULT_SPEC;
+  check('importer gate/projection: a standard robot without assists keeps the settings’ assists (as `MatchStrategy` takes them)',
+    gateWithoutImport({ ...stored, lastStandardSpec: { ...bare, name: 'Bare' } }).assists === impAssists);
+  const variants = [
+    { lastStandardSpec: std },
+    { lastStandardSpec: undefined, savedRobots: [saved] },
+    { lastStandardSpec: undefined, savedRobots: [impSpec] },
+    { lastStandardSpec: undefined, savedRobots: [] },
+  ];
+  const games: GameId[] = ['decode', 'chain', 'biobuzz'];
+  const leaks = games.flatMap((game) => variants.map((v, i) => ({ game, i, s: gateWithoutImport({ ...stored, ...v, game }) }))).filter((x) => isImportedSpec(x.s.spec));
+  check('importer gate/projection: never shows an import, whatever the fallback (last standard, a saved robot, an import in the saved list, the game default) in every game',
+    leaks.length === 0, leaks.map((x) => `${x.game}#${x.i}`).join(','));
+
+  // ---- the write-back, pure ----
+  const unrelated = gateKeepImportActive(stored, shown, { ...shown, mode: 'match' as const });
+  check('importer gate/write-back: an edit that leaves the robot as shown keeps the import active with its assists, and lastStandardSpec as it was',
+    unrelated.mode === 'match' && unrelated.spec === impSpec && unrelated.assists === impAssists && unrelated.lastStandardSpec === std && unrelated.loadouts === archived);
+  const { lastStandardSpec: _drop, ...noStdRest } = stored;
+  const noStd = { ...noStdRest, savedRobots: [] };
+  const shownNoStd = gateWithoutImport(noStd);
+  const viaSame = gateKeepImportActive(noStd, shownNoStd, { ...shownNoStd, mode: 'match' as const });
+  // a screen holding an older render's view: the game default is rebuilt per call, equal but not the same object
+  const viaOld = gateKeepImportActive(noStd, gateWithoutImport(noStd), { ...shownNoStd, mode: 'match' as const });
+  check('importer gate/write-back: ...and does not invent a lastStandardSpec when there was none (the game default shown, even from an older render)',
+    viaSame.lastStandardSpec === undefined && viaOld.lastStandardSpec === undefined && isImportedSpec(viaSame.spec) && isImportedSpec(viaOld.spec));
+  const editedSpec = { ...shown.spec, name: 'Edited', assists: { ...stdAssists } };
+  const edited = gateKeepImportActive(stored, shown, { ...shown, spec: editedSpec, assists: editedSpec.assists });
+  check('importer gate/write-back: an edited standard robot becomes lastStandardSpec, the import stays active',
+    edited.spec === impSpec && edited.assists === impAssists && edited.lastStandardSpec === editedSpec);
+  check('importer gate/write-back: ...which is what the screen is shown next', gateWithoutImport(edited).spec === editedSpec && gateWithoutImport(edited).assists === editedSpec.assists);
+  const picked = gateKeepImportActive(stored, shown, { ...shown, spec: saved });
+  check('importer gate/write-back: a picked saved robot likewise', picked.spec === impSpec && picked.lastStandardSpec === saved);
+  const remembered = rememberStandardRobot(stored, edited);
+  check('importer gate/write-back: ...and App’s own lastStandardSpec bookkeeping (`rememberStandardRobot`) leaves both as they are',
+    remembered.spec === impSpec && remembered.lastStandardSpec === editedSpec);
+  const toStd = { ...plain, mode: 'match' as const };
+  check('importer gate/write-back: passes through when the stored robot is standard', gateKeepImportActive(plain, plain, toStd) === toStd);
+  const toImp = { ...shown, spec: { ...impSpec, name: 'Other import' } };
+  check('importer gate/write-back: passes through a write that carries an import', gateKeepImportActive(stored, shown, toImp) === toImp);
+  const toChain = switchGame(stored, 'chain');
+  check('importer gate/write-back: passes through a game switch (`switchGame` ran on the stored copy, which archived the import)',
+    gateKeepImportActive(stored, shown, toChain) === toChain && isImportedSpec(toChain.loadouts?.decode?.spec));
+
+  // ---- the cosmetic half, by source: each entry point reads the gate ----
+  const rdG = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const app = rdG('src/ui/App.tsx');
+  const sv = rdG('src/seasonVisibility.ts');
+  check('importer gate/client: `importerEnabled` is the dev server, the channel rule, or exactly VITE_ROBOT_IMPORT=1',
+    /export const importerEnabled = \(\): boolean =>\s*import\.meta\.env\.DEV \|\|\s*importerOpenOn\(appChannel\(\)\) \|\|\s*\(import\.meta\.env\.VITE_ROBOT_IMPORT as string \| undefined\)\?\.trim\(\) === '1';/.test(sv) &&
+      /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
+  check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
+    /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
+  check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
+    /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
+  check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
+    /const shown = useMemo\(\(\) => \(importerOn \? settings : withoutImport\(settings\)\), \[importerOn, settings\]\);/.test(app) &&
+      /const update = \(next: GameSettings\): void =>\s*commit\(importerOn \? next : keepImportActive\(settingsRef\.current, shownRef\.current, next\)\);/.test(app));
+  check('importer gate/client: every screen is handed `shown` (the editor alone gets the stored copy, and it renders only where they are the same)',
+    (app.match(/settings=\{settings\}/g) ?? []).length === 1 && /<ImportEditor\s+key=\{`[^`]*`\}\s+settings=\{settings\}/.test(app) &&
+      /<Account settings=\{shown\} onChange=\{update\} onReset=\{commit\}/.test(app) && /importedActive=\{!!shown\.spec\.imported\}/.test(app));
+  check('importer gate/client: `switchGame` runs on the stored copy only (the projection never reaches an archived loadout)',
+    !/switchGame\(shown/.test(app) && /update\(switchGame\(settings, g\)\)/.test(app) && /const ns = switchGame\(cur, s\.game\)/.test(app) &&
+      /const s = settingsRef\.current;\n    if \(s\.game === g\) return;\n    const next = switchGame\(s, g\);/.test(app));
+  check('importer gate/client: a settings reset is stored as given, not kept back by the gate',
+    /onReset\(defaultSettings\(\)\)/.test(rdG('src/ui/Account.tsx')));
+  const menu = rdG('src/ui/Menu.tsx');
+  check('importer gate/client: the robot page reads no library and draws no Imported robots row where the importer is closed',
+    /const importerOn = importerEnabled\(\);\n  const library = useLibrary\(settings\.game, importerOn\);/.test(menu) && /\{importerOn && \(\s*<ImportedRow/.test(menu));
+  const lobby = rdG('src/ui/Lobby.tsx');
+  check('importer gate/client: the custom room reads no library and offers no imported cards where the importer is closed',
+    /useLibrary\(settings\.game, importerOn\)/.test(lobby) && /\{importerOn && importOk === true && !isRecord/.test(lobby));
+  check('importer gate/client: Configure ▸ Network draws its Imported robots panel only where the importer is open',
+    /\{importerEnabled\(\) && \(\s*<section className="ds-panel">\s*<div className="ds-panel-h">\s*<h2 className="ds-panel-title">Imported robots<\/h2>/.test(rdG('src/ui/NetworkSection.tsx')));
+  const lib = rdG('src/robotImport/ui/useLibrary.ts');
+  check('importer gate/client: a disabled `useLibrary` loads no library chunk, opens no channel and answers NOT READ (entries null), not an empty list',
+    /export function useLibrary\(game: GameId, enabled = true\): LibraryView/.test(lib) &&
+      lib.indexOf('if (!enabled) return;') > 0 && lib.indexOf('if (!enabled) return;') < lib.indexOf('readLibrary(game)') &&
+      lib.indexOf('if (!enabled) return;') < lib.indexOf('onLibraryChange(read)') &&
+      /return enabled \? view : NOT_READ;/.test(lib) && /const NOT_READ: LibraryView = \{ entries: null,/.test(lib));
+  const api = rdG('src/net/api.ts');
+  check('importer gate/client: a room this tab hosts takes imports and their looks only where this build has the importer',
+    (api.match(/if \(tabHosting\(\)\) return Promise\.resolve\(importerEnabled\(\)\);/g) ?? []).length === 2 && !/if \(tabHosting\(\)\) return Promise\.resolve\(true\);/.test(api));
+  check('importer gate/client: the modules smoke and the server import read no `import.meta.env` (settings.ts, net/imported.ts)',
+    ['src/settings.ts', 'src/net/imported.ts'].every((f) => !/import\.meta\.env|from '\.\.?\/(?:seasonVisibility|net\/env|env)'/.test(rdG(f))));
+}
+
 // ---- AN OLDER BUILD'S SETTINGS SAVE KEEPS THE ACCOUNT'S IMPORTED ROBOT (`src/net/settingsKeep.ts`) ----
 // main and alpha rebuild the robot field by field and `/api/user/settings` stored what it was sent,
 // so one save from them deleted the import everywhere. The server now merges a cap-less save. The
@@ -30817,7 +31027,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a CUSTOM room (and a LAN room is this same class) ----------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-custom', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-custom', () => {}, { kind: 'versus', imports: true });
     check('imports/room: a custom room ALLOWS imported robots', room.allowsImportedRobots());
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     check('imports/room: ...and seats one (client with the cap)', welcomed(s, 'a') && room.importState().hasImport && !room.importState().capless);
@@ -30845,7 +31055,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a seat without the cap is in the room FIRST ---------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-old', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-old', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'old', [], DEFAULT_SPEC, 'blue'));
     check('imports/room: a build without the cap is seated in an ordinary room', welcomed(s, 'old'));
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
@@ -30860,7 +31070,7 @@ const dumperSetup = (): RobotSetup => {
     );
     // the start backstop: a seat that lost the capability under a room that holds an import (a
     // mirror that was behind). Simulated by taking the cap away from a seat directly.
-    const room2 = new Room('smoke-imp-start', () => {}, { kind: 'versus' });
+    const room2 = new Room('smoke-imp-start', () => {}, { kind: 'versus', imports: true });
     const s2: Sink = {};
     room2.add(mk(s2, 'a', CLIENT_CAPS, impSpec, 'red'));
     room2.add(mk(s2, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
@@ -30877,7 +31087,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- an update patch that ADDS an import in an allowing room ---------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-update', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-update', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     room.onMessage('a', { t: 'update', patch: { spec: impSpec } });
@@ -30891,7 +31101,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- ONE ROBOT ID PER ROOM (review 2026-10-01): a robot's look is relayed and drawn by its id ----
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-ids', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-ids', () => {}, { kind: 'versus', imports: true });
     const ownId = { ...DEFAULT_SPEC, imported: { ...IMP, id: 'fedcba9876543210' } } as typeof DEFAULT_SPEC;
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
@@ -30915,7 +31125,7 @@ const dumperSetup = (): RobotSetup => {
   {
     const clientsOf = (r: Room) => (r as unknown as { clients: Map<string, Client> }).clients;
     const s: Sink = {};
-    const room = new Room('smoke-imp-rejoin', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-rejoin', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     const back: ServerMsg[] = [];
@@ -30930,7 +31140,7 @@ const dumperSetup = (): RobotSetup => {
     room.stop();
     // no import yet: the downgraded seat is seated, and reads as capless from then on
     const s2: Sink = {};
-    const r2 = new Room('smoke-imp-rejoin2', () => {}, { kind: 'versus' });
+    const r2 = new Room('smoke-imp-rejoin2', () => {}, { kind: 'versus', imports: true });
     r2.add(mk(s2, 'k', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
     r2.add(mk(s2, 'l', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     const nc3 = r2.reattach('k', (m) => s2.k.push(m), undefined, undefined, undefined, true, ['strategy']);
@@ -30947,7 +31157,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a RECORD room -----------------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-rec', () => {}, { kind: 'record', record: 'solo' });
+    const room = new Room('smoke-imp-rec', () => {}, { kind: 'record', record: 'solo', imports: true });
     check('imports/room: a record room does NOT allow imported robots', !room.allowsImportedRobots());
     room.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'blue'));
     check('imports/room: a record room refuses an imported joiner, with the sentence, and does not seat it', !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !room.importState().hasImport, String(errs(s, 'x')[0]));
@@ -30968,7 +31178,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a STAGED ranked room ----------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-ranked', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-ranked', () => {}, { kind: 'versus', imports: true });
     room.applyPending({
       code: 'iad-imp', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
       roster: [
@@ -30985,6 +31195,100 @@ const dumperSetup = (): RobotSetup => {
     const ms = started(s, 'a');
     check('imports/room: ...and beginMatch STRIPS the staged import, so a ranked match is standard robots only', !!ms && ms.ranked === true && !anyImport(ms));
     room.stop();
+  }
+
+  // ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha only until he says) -----------------------
+  // `RoomConfig.imports`, resolved from the server's gate. The rooms above pass `imports: true`
+  // because they test what an OPEN room does; these are the same rooms closed, each paired with
+  // the room open, since a gate that refuses everything would pass "it refused".
+  {
+    check('imports/gate: the server rule: stable closed, alpha open, ROBOT_IMPORT=1 opens, LAN_MODE closes',
+      !importsOpen('stable', undefined, undefined) && importsOpen('alpha', undefined, undefined) && !importsOpen('', undefined, undefined) &&
+      importsOpen('stable', '1', undefined) && importsOpen('stable', ' 1 ', undefined) && !importsOpen('stable', '0', undefined) && !importsOpen('stable', 'true', undefined) &&
+      !importsOpen('alpha', undefined, '1'));
+    check('imports/gate: this process reads its gate by that rule', IMPORTS_OPEN_HERE === importsOpen(SERVER_CHANNEL, process.env.ROBOT_IMPORT, process.env.LAN_MODE));
+    const closedCaps = advertisedCaps(SERVER_CAPS, false);
+    const openCaps = advertisedCaps(SERVER_CAPS, true);
+    check('imports/gate: ⚠️ presence on a closed server lacks robotImport and importVisuals, and keeps every other word',
+      !closedCaps.includes(ROBOT_IMPORT_CAP) && !closedCaps.includes(IV.IMPORT_VISUALS_CAP) &&
+      closedCaps.length === SERVER_CAPS.length - 2 && closedCaps.every((c) => SERVER_CAPS.includes(c)), closedCaps.join(','));
+    check('imports/gate: ...and an open server advertises both (SERVER_CAPS itself is untouched)',
+      isDeepStrictEqual(openCaps, SERVER_CAPS) && SERVER_CAPS.includes(ROBOT_IMPORT_CAP) && SERVER_CAPS.includes(IV.IMPORT_VISUALS_CAP));
+
+    const closed = new Room('smoke-imp-closed', () => {}, { kind: 'versus', imports: false });
+    const open = new Room('smoke-imp-open', () => {}, { kind: 'versus', imports: true });
+    check('imports/gate: a custom room on a closed deployment does not allow imported robots; the same room open does',
+      !closed.allowsImportedRobots() && !closed.importState().allows && open.allowsImportedRobots() && open.importState().allows);
+    check('imports/gate: a room built with no `imports` takes this server’s own gate',
+      new Room('smoke-imp-default', () => {}, { kind: 'versus' }).allowsImportedRobots() === IMPORTS_OPEN_HERE);
+    const s: Sink = {};
+    const so: Sink = {};
+    closed.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ⚠️ a closed room refuses an imported joiner at the door, with the sentence, and does not seat it',
+      !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !closed.importState().hasImport, String(errs(s, 'x')[0]));
+    open.add(mk(so, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...the open room seats the same joiner', welcomed(so, 'x') && open.importState().hasImport);
+    closed.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    closed.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/gate: a closed room seats drivers with standard robots', welcomed(s, 'a') && welcomed(s, 'b'));
+    closed.onMessage('b', { t: 'update', patch: { spec: impSpec } });
+    check('imports/gate: ...refuses an update that brings an import, and the seat keeps its robot',
+      errs(s, 'b').includes(IMPORT_REFUSED_HERE) && !isImportedSpec(rosterSpec(s, 'b', 'b')), JSON.stringify(errs(s, 'b')));
+    // an import that slipped onto the closed room's roster some other way
+    (closed as unknown as { clients: Map<string, Client> }).clients.get('a')!.player.spec = { ...impSpec };
+    const put = () => ({ t: 'visualPut' as const, kind: 'top' as const, id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+    const refusal = (sink: Sink, id: string) => (sink[id].find((m) => m.t === 'visualRefused') as Extract<ServerMsg, { t: 'visualRefused' }> | undefined)?.reason;
+    closed.onMessage('a', put());
+    open.onMessage('x', put());
+    check('imports/gate: the look relay refuses an upload in a closed room with the room reason', refusal(s, 'a') === 'room', String(refusal(s, 'a')));
+    check('imports/gate: ...and the open room reads the same bytes (and refuses them only as no picture)', refusal(so, 'x') === 'format', String(refusal(so, 'x')));
+    closed.onMessage('a', { t: 'start' });
+    const ms = started(s, 'a');
+    check('imports/gate: ⚠️ beginMatch STRIPS an import that slipped into a closed room (no capless refusal: nothing imported may play)', !!ms && !anyImport(ms));
+    forceRoomToPost(closed);
+    check('imports/gate: ...so its replay is the format-2 container', result(s, 'a')?.replay.format === REPLAY_FORMAT_BASE, String(result(s, 'a')?.replay.format));
+    closed.stop();
+    open.stop();
+
+    // the LAN tab host: a Worker has no server gate, so the page's `open` message decides
+    const tabClosed = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus', imports: true } });
+    const tabOpen = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: true });
+    check('imports/gate: the tab host is closed unless `open` says so (a config carrying its own `imports` does not count)',
+      tabClosed.imports === false && tabOpen.imports === true &&
+      hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: false }).imports === false);
+    const tab = new Room('lanimp', () => {}, tabClosed);
+    const st: Sink = {};
+    check('imports/gate: ⚠️ ...so a tab-hosted room opened without it refuses an imported guest at the Worker’s door',
+      importAdmission(tab.importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === IMPORT_REFUSED_HERE);
+    tab.add(mk(st, 'g', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...and at the room’s own', !welcomed(st, 'g') && errs(st, 'g')[0] === IMPORT_REFUSED_HERE);
+    check('imports/gate: ...while one opened with it takes the guest',
+      importAdmission(new Room('lanimp2', () => {}, tabOpen).importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === null);
+    tab.stop();
+
+    // every place a room is built resolves `imports` from the server's gate; none says yes
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const serverSrc = ['server', 'server/db'].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.ts')).map((f) => `${d}/${f}`));
+    const opened = serverSrc.filter((f) => /\bimports:\s*true\b/.test(strip(rd(f))));
+    check('imports/gate: ⚠️ no server file builds a room with `imports: true`', opened.length === 0, opened.join(','));
+    const builders = serverSrc.filter((f) => /new (?:Room|RemoteRoom)\(/.test(strip(rd(f))));
+    check('imports/gate: ...and the places that build one are the known ones (a new one joins this list, and takes the gate)',
+      isDeepStrictEqual(builders.sort(), ['server/matchmaking.ts', 'server/roomHost.ts', 'server/roomWorker.ts', 'server/warmup.ts'].sort()) &&
+      /createRoom\(\s*code,/.test(rd('server/index.ts')), builders.join(','));
+    check('imports/gate: Room resolves an absent `imports` from IMPORTS_OPEN_HERE, once, in its constructor',
+      /this\.importsHere = config\.imports \?\? IMPORTS_OPEN_HERE;/.test(rd('server/room.ts')) &&
+      /allowsImportedRobots\(\): boolean \{\s*return this\.importsHere &&/.test(rd('server/room.ts')));
+    check('imports/gate: ⚠️ a worker room resolves it on the SOCKET thread and the worker reads no env for it',
+      /this\.config = \{ \.\.\.config, imports: config\.imports \?\? IMPORTS_OPEN_HERE \};/.test(rd('server/roomHost.ts')) &&
+      /allows: this\.config\.imports && /.test(rd('server/roomHost.ts')) &&
+      /\{ \.\.\.op\.config, imports: op\.config\.imports === true \}/.test(rd('server/roomWorker.ts')) &&
+      (strip(rd('server/roomHost.ts')).match(/new RemoteRoom\(/g) ?? []).length === 1);
+    const joinCfg = rd('server/index.ts').match(/const cfg: RoomConfig = \{[\s\S]*?\n {4}\};/)?.[0] ?? '';
+    check('imports/gate: a client cannot open a room: the join door builds its config field by field, without `imports`',
+      joinCfg.length > 0 && !/imports/.test(strip(joinCfg)));
+    check('imports/gate: the tab host builds its room from hostRoomConfig, and the page sends its gate in `open`',
+      /toWorker\(\{ k: 'open', code: claimed\.code, config, imports \}\)/.test(rd('src/lan/hostRuntime.ts')));
   }
 
   // ---- the source: the doors that need a socket, and the writers ----------------------------------
@@ -31100,8 +31404,8 @@ function impWorld(g: GameId | 'bb3d', patches: Partial<RobotSpec>[], seed = 4242
 // Re-pinned 2026-10-02 when alpha's swerve pod-order fix (`SIM_VERSION` 5) merged in: the 2D scenes
 // carry a swerve robot, so their digests moved with it; the bb3d pins (no traction loop in 3D) did not.
 const IMP_STANDARD_PINS: Record<string, string> = {
-  'decode auto': 'rr=2293 1318016677:3380270344 122560760:2278617322 910756242:1473121615',
-  'decode teleop': 'rr=2385 2830526011:638886374 1035015855:1468188252 2338123926:3682425943',
+  'decode auto': 'rr=2293 1318016677:716370217 122560760:3618211797 910756242:3042618166',
+  'decode teleop': 'rr=2385 2830526011:2226150112 1035015855:1004815490 2338123926:2164772925',
   'chain auto': 'rr=1281 2431124453:1990244503 2262003531:670134973 4134157598:4089625147',
   'chain teleop': 'rr=1281 2256841879:3095239556 3284001669:73183289 1872871630:404922659',
   'biobuzz auto': 'rr=991 4255951604:2662367511 660269574:1959277593 4168578138:2355650975',
@@ -31533,7 +31837,9 @@ function impBroken(c: ImportedRobot): string[] {
   });
   {
     const s: ServerMsg[] = [];
-    const room = new Room('smoke-imp-cost', () => {}, { kind: 'versus' });
+    // open to imports explicitly: closed (this process's gate, no SERVER_CHANNEL) it would time the
+    // free refusal instead, and pass whatever the accept path cost
+    const room = new Room('smoke-imp-cost', () => {}, { kind: 'versus', imports: true });
     room.add(mkSeat(s, 'a', DEFAULT_SPEC));
     let n = 0;
     const ms = median(
@@ -31541,7 +31847,9 @@ function impBroken(c: ImportedRobot): string[] {
       (m) => room.onMessage('a', m),
       15,
     );
-    check('imports/cost: ⚠️ a custom Room takes the hostile update (and the LAN tab host is this Room) in under 2 ms', ms < 2, `${ms.toFixed(3)} ms`);
+    const last = [...s].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    const took = !s.some((m) => m.t === 'error' && m.message === IMPORT_REFUSED_HERE) && isImportedSpec(last?.players.find((p) => p.clientId === 'a')?.spec);
+    check('imports/cost: ⚠️ a custom Room takes the hostile update (and the LAN tab host is this Room) in under 2 ms, on the accept path', took && ms < 2, `${ms.toFixed(3)} ms, accepted ${took}`);
     room.stop();
   }
   {
@@ -34118,7 +34426,7 @@ function impPlayCheck(g: GameId): void {
  */
 // `decode` re-pinned 2026-10-02 with the swerve pod-order fix (`SIM_VERSION` 5): its scene drives a swerve.
 const L2_MECH_PINS: Record<string, string> = {
-  decode: 'held=3611 2049313317:4014017715 2788731338:1360918128 1577943677:2318776227',
+  decode: 'held=3611 2049313317:2420555697 2788731338:1198073570 1577943677:3474038497',
   chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
   biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459',
   bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
@@ -35816,7 +36124,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   {
     const s: Sink = {};
     let emptied = 0;
-    const room = new Room('smoke-vis-custom', () => emptied++, { kind: 'versus' });
+    const room = new Room('smoke-vis-custom', () => emptied++, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     room.add(mk(s, 'x', noVisuals, DEFAULT_SPEC, 'blue')); // an imports build without the relay
@@ -35876,7 +36184,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   {
     const s: Sink = {};
     let emptied = 0;
-    const room = new Room('smoke-vis-empty', () => emptied++, { kind: 'versus' });
+    const room = new Room('smoke-vis-empty', () => emptied++, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     putAll(room, 'a', 'mesh', glb, ID);
     putAll(room, 'a', 'top', png, ID);
@@ -35889,7 +36197,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- a seat that drops mid-match keeps its assets for its reconnect, and loses them at the reap -----------
   {
     const s: Sink = {};
-    const room = new Room('smoke-vis-match', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-vis-match', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     putAll(room, 'a', 'top', png, ID);
@@ -35912,7 +36220,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- record and ranked rooms ------------------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-vis-record', () => {}, { kind: 'record', record: 'solo' });
+    const room = new Room('smoke-vis-record', () => {}, { kind: 'record', record: 'solo', imports: true });
     room.add(mk(s, 'r', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     putAll(room, 'r', 'top', png, ID);
     const first = s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined;
@@ -35921,7 +36229,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     room.onMessage('r', { t: 'visualGet', owner: 'r', id: ID, kind: 'top' });
     check('visuals/room: ...and refuses a request', (s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'room');
     room.stop();
-    const staged = new Room('smoke-vis-ranked', () => {}, { kind: 'versus' });
+    const staged = new Room('smoke-vis-ranked', () => {}, { kind: 'versus', imports: true });
     staged.applyPending({
       code: 'iad-vis', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
       roster: [{ userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 }],
@@ -36014,7 +36322,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- the round trip -------------------------------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-1', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-1', () => {}, { kind: 'versus', imports: true });
     const ownerCli = mkClient({ own: own(png, glb) });
     const viewCli = mkClient({});
     const ownerTx = join(room, 'a', impSpec(ID), ownerCli);
@@ -36041,7 +36349,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- the viewer's opt-out ----------------------------------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-2', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-2', () => {}, { kind: 'versus', imports: true });
     let show = false;
     const ownerCli = mkClient({ own: own(png, null) });
     const viewCli = mkClient({ showOthers: () => show });
@@ -36065,7 +36373,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- BIOBUZZ: the mesh, only for a viewer who wants it --------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-3', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-3', () => {}, { kind: 'versus', imports: true });
     let mesh = false;
     const ownerCli = mkClient({ own: own(png, glb) });
     const viewCli = mkClient({ meshWanted: () => mesh });
@@ -36090,7 +36398,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- an owner that has nothing to send, or whose robot changed ----------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-4', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-4', () => {}, { kind: 'versus', imports: true });
     const gone = mkClient({ own: own(null, null) });
     const goneTx = join(room, 'a', impSpec(ID), gone);
     gone.setOffered(true);
@@ -36099,7 +36407,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     gone.reset();
     room.stop();
 
-    const room2 = new Room('smoke-visc-5', () => {}, { kind: 'versus' });
+    const room2 = new Room('smoke-visc-5', () => {}, { kind: 'versus', imports: true });
     const junk = mkClient({ own: own(new Uint8Array(500).fill(9), null) });
     const junkTx = join(room2, 'a', impSpec(ID), junk);
     junk.setOffered(true);
@@ -36109,7 +36417,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     room2.stop();
 
     // the robot changes mid-upload: the frames stop
-    const room3 = new Room('smoke-visc-6', () => {}, { kind: 'versus' });
+    const room3 = new Room('smoke-visc-6', () => {}, { kind: 'versus', imports: true });
     const big = mkClient({ own: own(null, glb) });
     big.setGame('biobuzz');
     const bigTx = join(room3, 'a', impSpec(ID), big);
@@ -36928,9 +37236,9 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
 {
   const { pre4Pins } = await import('./fixed-pre4-scenes');
   const PRE4: Record<string, string> = {
-    decodeKit: 'fired=19 2612680600:2960403223',
-    decodeKitPress: 'fired=13 3719071965:4122911612',
-    decodeMecanum: 'fired=18 2015847934:2997278344',
+    decodeKit: 'fired=19 2612680600:116260255',
+    decodeKitPress: 'fired=13 3719071965:2201617972',
+    decodeMecanum: 'fired=18 2015847934:1003124048',
     bb2d: 'fired=13 971486037:2405579923',
     bb3d: 'fired=13 3312699138:1540063362',
   };
@@ -37385,8 +37693,8 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
  * the proof. Never re-record one to make a fixed-shooter change pass.
  */
 const FX_PINS: Record<'teleop' | 'auto', string> = {
-  teleop: 'fired=10 1820613857:1520241632 1451436679:3703651367 1378729317:382838410',
-  auto: 'fired=8 431843382:2627330122 1945519580:4026393436 861924408:426344017',
+  teleop: 'fired=10 1820613857:1576364050 1451436679:823477921 1378729317:1398275420',
+  auto: 'fired=8 431843382:2910236645 1945519580:504647061 861924408:79712380',
 };
 function fxPinCmd(w: World, i: number, tick: number): RobotCommand {
   const r = w.robots[i];

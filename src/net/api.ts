@@ -8,6 +8,8 @@ import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, lanActive, lanServerHttpUrl, setLanFromServer } from './env';
 import { tabHosting } from '../lan/hosting';
+// (not in the smoke import graph: this file reads `./env` at load already)
+import { importerEnabled } from '../seasonVisibility';
 import { ROBOT_IMPORT_CAP, replayHasImported } from './imported';
 import { IMPORT_VISUALS_CAP } from './importVisuals';
 import { SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE } from './settingsKeep';
@@ -466,7 +468,8 @@ export function serverCaps(): Promise<string[]> {
  * a word and steps a standard robot while this client predicts the imported one.
  *
  * Three answers, because three servers can be on the other end of a room:
- *  · a room THIS TAB hosts (`tabHosting`) runs this build's own `Room`, so yes;
+ *  · a room THIS TAB hosts (`tabHosting`) runs this build's own `Room`, so this build's own answer
+ *    (`importerEnabled`: yes where the importer is open);
  *  · a LAN server reached by address is its own machine, with its own build (the desktop app
  *    updates on the desktop's schedule), so its OWN presence is asked, not the cloud's;
  *  · otherwise the cloud's `serverCaps()`.
@@ -489,7 +492,7 @@ function roomServerCaps(): Promise<string[]> {
   return hit;
 }
 export function roomTakesImportedRobots(): Promise<boolean> {
-  if (tabHosting()) return Promise.resolve(true);
+  if (tabHosting()) return Promise.resolve(importerEnabled());
   return roomServerCaps().then((c) => c.includes(ROBOT_IMPORT_CAP));
 }
 
@@ -501,7 +504,7 @@ export function roomTakesImportedRobots(): Promise<boolean> {
  * then uploads nothing, because an older server would drop 1.3 MB of frames without a word.
  */
 export function roomTakesImportVisuals(): Promise<boolean> {
-  if (tabHosting()) return Promise.resolve(true);
+  if (tabHosting()) return Promise.resolve(importerEnabled());
   return roomServerCaps().then((c) => c.includes(IMPORT_VISUALS_CAP));
 }
 

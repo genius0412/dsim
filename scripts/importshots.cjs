@@ -5,6 +5,9 @@
  *   npx vite --port 5194 --strictPort            # in another shell (a dev server is fine)
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/importshots.cjs
  *
+ * The dev server always has the importer; a production build has it only on the alpha channel or
+ * with `VITE_ROBOT_IMPORT=1` (`importerEnabled`, src/seasonVisibility.ts).
+ *
  *   --port 5194              the server
  *   --sizes 1440x900,390x844 a subset of the three widths
  *   --theme dark             one theme

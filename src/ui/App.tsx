@@ -2,7 +2,7 @@ import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from '
 import type { ComponentType, ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
-import { hasStoredSettings, loadSettings, rememberStandardRobot, saveSettings, switchGame, syncAudioMirrors } from '../settings';
+import { hasStoredSettings, keepImportActive, loadSettings, rememberStandardRobot, saveSettings, switchGame, syncAudioMirrors, withoutImport } from '../settings';
 import {
   saveAccountSettings,
   fetchAdminStatus,
@@ -15,7 +15,7 @@ import {
 import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
 import { tabHosting } from '../lan/hosting';
 import { GAME_IDS } from '../games/types';
-import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
+import { devRoutesEnabled, gameVisible, importerEnabled } from '../seasonVisibility';
 import { moduleFor } from '../games';
 import { preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
@@ -315,9 +315,11 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
   if (comps) return at('competitions', { sub: comps[1] ?? null });
 
-  // BEFORE the configure match, which would read `/configure/robot/import` as the robot section
+  // BEFORE the configure match, which would read `/configure/robot/import` as the robot section.
+  // Where the importer is closed (`importerEnabled`) it is not matched at all and the path falls
+  // through to that robot section, the page the importer would return to.
   const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
-  if (robotImport) return at('robotimport', { sub: robotImport[1] ?? null });
+  if (robotImport && importerEnabled()) return at('robotimport', { sub: robotImport[1] ?? null });
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
@@ -615,6 +617,20 @@ export function App() {
   // kept current every render so the []-deps effects (popstate) read live settings
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  /**
+   * WHAT EVERY SCREEN IS SHOWN. `settings` is the STORED copy (localStorage, the account, the
+   * archived loadouts, `switchGame`); `shown` is it as this build may show it. Identical where the
+   * importer is open. Where it is closed (`importerEnabled`) an imported active robot is shown as
+   * the player's standard one (`withoutImport`), so practice, the tutorial, autos, the robot page,
+   * the lobby and the match all get a standard robot with no check of their own, and `update` runs
+   * every write back through `keepImportActive`, so the import is kept, never deleted.
+   */
+  const importerOn = importerEnabled();
+  const shown = useMemo(() => (importerOn ? settings : withoutImport(settings)), [importerOn, settings]);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  /** the settings a start or an edit reads through `settingsRef`, as this build shows them */
+  const shownOf = (s: GameSettings): GameSettings => (importerOn ? s : withoutImport(s));
   // the 3D view keys listen outside React (`graphics/viewKey.ts`), so they are handed the binds
   useEffect(() => setViewBindings(settings.bindings.keys), [settings.bindings]);
 
@@ -1048,7 +1064,8 @@ export function App() {
     if (settings.preferredServerId) setSelectedServer(settings.preferredServerId);
   }, [settings.preferredServerId]);
 
-  const update = (next: GameSettings): void => {
+  /** store `next` as it is: `update` without the importer gate's write-back, for a reset */
+  const commit = (next: GameSettings): void => {
     // keep the legacy audio booleans in step with the volume sliders before this
     // blob reaches localStorage or the account (old clients read only those two)
     // ...and keep `lastStandardSpec` in step, the standard robot ranked and record runs fall back
@@ -1062,6 +1079,11 @@ export function App() {
       saveTimer.current = setTimeout(() => void saveAccountSettings(s), 700);
     }
   };
+  /** every settings write from a screen: screens are shown `shown`, so where the importer is closed a
+   *  write made against the standard robot standing in for a stored import keeps that import active
+   *  (`keepImportActive`) and moves an edited standard robot into `lastStandardSpec` */
+  const update = (next: GameSettings): void =>
+    commit(importerOn ? next : keepImportActive(settingsRef.current, shownRef.current, next));
 
   /**
    * "EQUIP NOW" ON A COSMETIC — put a claimed decal (or any axis key) on the ACTIVE robot, the
@@ -1075,7 +1097,8 @@ export function App() {
     const axis = id.slice(0, i);
     const key = id.slice(i + 1);
     if (axis !== 'decal' && axis !== 'chassisColor' && axis !== 'accent' && axis !== 'plate') return;
-    const cur = settingsRef.current;
+    // the robot on screen: where the importer is closed, the standard one standing in for an import
+    const cur = shownOf(settingsRef.current);
     update({ ...cur, spec: { ...cur.spec, [axis]: key } });
   };
 
@@ -1833,7 +1856,8 @@ export function App() {
      * the season the player is LEAVING against that season's rules, and refuse entry to a
      * BIOBUZZ room over a DECODE pose the player is not about to use.
      */
-    const cur = settingsRef.current;
+    // (`shownOf`: the robot the run will field, which is what the pose must be legal for)
+    const cur = shownOf(settingsRef.current);
     const startOk = startSelectionLegal(cur.game, cur.spec, cur.alliance, cur.startPose);
     if (loadActiveGame()) setBlockedByActive(true);
     else if (lockedOut) setStartBlocked(true);
@@ -2025,7 +2049,7 @@ export function App() {
   if (screen === 'game') {
     return fullScreen(
       <GameView
-        settings={settings}
+        settings={shown}
         session={session}
         signedIn={signedIn}
         onExit={exitGame}
@@ -2072,7 +2096,7 @@ export function App() {
     const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
     return roomScreen(
       <Lobby
-        settings={settings}
+        settings={shown}
         onSettingsChange={update}
         /* Both exits from the lobby drop the handed-over socket reference, so a later,
            ordinary visit to this screen cannot re-adopt a room the player has left. */
@@ -2151,7 +2175,7 @@ export function App() {
   if (screen === 'record') {
     return fullScreen(
       <RecordRun
-        settings={settings}
+        settings={shown}
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
@@ -2169,7 +2193,7 @@ export function App() {
     const auto = pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin : undefined;
     return roomScreen(
       <Lobby
-        settings={settings}
+        settings={shown}
         onSettingsChange={update}
         config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record', true)}
@@ -2200,7 +2224,7 @@ export function App() {
             the same user straight back, and the settings load stays guarded by `syncedUser`. */}
         {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
         <Matchmaking
-          settings={settings}
+          settings={shown}
           signedIn={signedIn}
           onStart={(s) => beginSession(s, 'ranked')}
           onCancel={() => navigate('modes')}
@@ -2221,7 +2245,7 @@ export function App() {
         <LoadBoundary what="the match" fallback={<p className="ds-loading">Loading…</p>}>
           <CompMatchPlay
             slug={slug}
-            settings={settings}
+            settings={shown}
             signedIn={signedIn}
             onSettingsChange={update}
             onSelectGame={selectGame}
@@ -2362,7 +2386,7 @@ export function App() {
 
       {screen === 'home' && (
         <HomeMenu
-          settings={settings}
+          settings={shown}
           multiplayer={multiplayer}
           discord={inActivity ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={goNav}
@@ -2379,7 +2403,7 @@ export function App() {
       {screen === 'modes' && (
         <ModeSelect
           game={settings.game}
-          importedActive={!!settings.spec.imported}
+          importedActive={!!shown.spec.imported}
           multiplayer={multiplayer}
           signedIn={signedIn}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
@@ -2536,17 +2560,17 @@ export function App() {
 
       {screen === 'configure' && (
         <Configure
-          settings={settings}
+          settings={shown}
           onChange={update}
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
-          onImport={(id) => navigate('robotimport', { sub: id ?? null })}
+          onImport={importerOn ? (id) => navigate('robotimport', { sub: id ?? null }) : undefined}
           onEditTouchControls={editTouchControls}
           onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
 
-      {screen === 'robotimport' && (
+      {screen === 'robotimport' && importerOn && (
         <LoadBoundary what="the robot importer" fallback={<p className="ds-loading">Loading the importer…</p>}>
           <ImportEditor
             key={`${settings.game}:${route.sub ?? 'new'}`}
@@ -2609,7 +2633,8 @@ export function App() {
         />
       )}
       {screen === 'account' && route.sub !== 'appearance' && (
-        <Account settings={settings} onChange={update} onDonate={() => navigate('donate')} onTab={profileTab} />
+        // a reset is stored as given (`commit`): through `update` the gate would keep a hidden import
+        <Account settings={shown} onChange={update} onReset={commit} onDonate={() => navigate('donate')} onTab={profileTab} />
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}

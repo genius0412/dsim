@@ -422,7 +422,9 @@ that carries what an older build cannot read (`carriesNew`: a fixed launcher, ho
 wheel, or NO intake); the older build's rewrite of `intake: 'none'` (the sloped preset, the length
 clamped to 15, the width raised to 14.5, measured on alpha's coercer) counts as "not read"
 (`olderReading`), not as a change. A save WITH the cap is stored as sent, so a new
-build that drops the import on purpose is never "repaired". Backward-compatible both ways (an older
+build that drops the import on purpose is never "repaired". The importer's deployment gate
+(robot-import.md "Where it ships") does NOT drop the caps: a gated build keeps the import in its
+blob and still sends them. Backward-compatible both ways (an older
 server ignores `caps`). `npm run dbtest` "settings:" drives the write on PGlite; smoke "settings
 keep:" holds the rules, including the one robot an older build rewrites rather than strips (a
 BIOBUZZ fixed launcher reads as a turret there) and so is not re-attached. A second cap,

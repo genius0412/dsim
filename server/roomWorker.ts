@@ -230,7 +230,8 @@ function create(op: Extract<Op, { k: 'create' }>): void {
   const room = new Room(
     op.code,
     () => emit({ k: 'empty', rid }),
-    op.config,
+    // the socket thread's answer, never this thread's env: absent reads as closed
+    { ...op.config, imports: op.config.imports === true },
     cbs & CB_RESULT ? (o: MatchOutcome) => call(rid, 'result', o) as Promise<PersistOutcome | void> : undefined,
     cbs & CB_ACTIVE ? (uid: string) => emit({ k: 'lock', rid, uid, on: true }) : undefined,
     cbs & CB_INACTIVE ? (uid: string) => emit({ k: 'lock', rid, uid, on: false }) : undefined,

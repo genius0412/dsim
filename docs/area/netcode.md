@@ -351,7 +351,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - ⚠️ **IMPORTED ROBOTS PLAY IN CUSTOM AND LAN ROOMS ONLY** (`RobotSpec.imported`,
   `docs/robot-import-plan.md`; rules and sentences in `src/net/imported.ts`). ⚠️ **A SERVER
   CHANGE, it needs a deploy.** The server decides, the client only avoids sending what will be
-  refused.
+  refused. ⚠️ **ALPHA ONLY until the owner says** (robot-import.md "Where it ships"): a server whose
+  `IMPORTS_OPEN_HERE` is false (`server/channel.ts`: no `SERVER_CHANNEL=alpha`, no `ROBOT_IMPORT=1`, or
+  `LAN_MODE`) advertises neither `robotImport` nor `importVisuals` (`advertisedCaps`) and its rooms
+  allow none (`RoomConfig.imports`, resolved once on the socket thread and sent to the worker; a
+  test opens a room with `imports: true`, never by env).
   - **The capability `'robotImport'` is in `CLIENT_CAPS` and `SERVER_CAPS`.** The client offers an
     imported spec to a room only when the server advertises it (`roomTakesImportedRobots`: the
     cloud's `serverCaps()`, a LAN server's own presence, or true for a room this tab hosts). An older

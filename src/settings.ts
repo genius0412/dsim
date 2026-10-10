@@ -357,6 +357,39 @@ export function standardRobotFor(s: GameSettings): RobotSpec {
   return standardRobotChoices(s)[0] ?? coerceSpec(seed, seed, s.game);
 }
 
+// ---- A BUILD WITHOUT THE IMPORTER (`importerEnabled`, src/seasonVisibility.ts) -----------------
+//
+// Such a build can still meet a stored import: an account written by a build that has one. It
+// HIDES it and keeps it. `App` holds the stored settings and renders every screen from
+// `withoutImport(stored)`, and runs every write through `keepImportActive`, so nothing an import
+// carries is lost and no screen needs its own check. Both are pure, for smoke.
+
+/**
+ * The settings a build without the importer shows: an imported active robot is replaced by the robot
+ * played where an import is not allowed (`standardRobotFor`), with its assists as `MatchStrategy`
+ * takes them. `s` itself when the active robot is standard. Archived loadouts, saved robots and
+ * `lastStandardSpec` are untouched.
+ */
+export function withoutImport(s: GameSettings): GameSettings {
+  if (!isImportedSpec(s.spec)) return s;
+  const spec = standardRobotFor(s);
+  return { ...s, spec, assists: spec.assists ?? s.assists };
+}
+
+/**
+ * A write from a screen that was shown `shown = withoutImport(stored)`, made safe to store: the
+ * stored import stays the active robot with its assists, and a standard robot picked or edited there
+ * becomes `lastStandardSpec`, which is what `withoutImport` shows next (`MatchStrategy`'s pick does
+ * the same). A write that left the robot as shown keeps `lastStandardSpec` as it was. `next` itself
+ * when the stored robot is standard, when `next` carries an import, or when the game changed
+ * (`switchGame` runs on the stored copy, never on this one).
+ */
+export function keepImportActive(stored: GameSettings, shown: GameSettings, next: GameSettings): GameSettings {
+  if (!isImportedSpec(stored.spec) || isImportedSpec(next.spec) || next.game !== stored.game) return next;
+  const edited = next.spec !== shown.spec && JSON.stringify(next.spec) !== JSON.stringify(shown.spec);
+  return { ...next, spec: stored.spec, assists: stored.assists, ...(edited ? { lastStandardSpec: next.spec } : {}) };
+}
+
 /** a fresh loadout for a game: its default robot + empty libraries */
 function defaultLoadout(game: GameId): GameLoadout {
   const d = defaultSettings();
