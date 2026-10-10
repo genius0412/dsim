@@ -11,6 +11,22 @@
 
 # (prior) HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
 
+# HANDOFF — 2026-10-10c (the wall bump fix is on `main` and in production, as SIM_PATCH 8)
+
+**State: `alpha`'s patch 3 (the BIOBUZZ 3D wall square-up, 2026-10-02) is on `main` as SIM_PATCH 8 and DEPLOYED to production 2026-10-10 19:01Z. On `alpha` only `config.ts` changed: 8 is marked taken, so the next patch here is 9.**
+
+- **Why 8 on `main`:** `main` stamped replays 5 since 10-04 without the rule, so `>= 3` there would replay them with it. 40 bot 2v2 3D matches recorded on `main` before the port replay bit-identically after it (40 of 40 differ when forced onto the rule). `main` gates it `>= 8` in `step3dImpl.ts`; `alpha` keeps `>= 3`. When `alpha` (SIM_VERSION 5) lands on `main`, take `alpha`'s gate; `main`'s SIM_VERSION-4 replays play as DRIFT at that point anyway.
+- **Still open for the owner:** one G402 3D duel now bills twice (1.17 s gap vs the 1.0 s re-arm window), `scripts/smoke-biobuzz/rules.ts`.
+
+# HANDOFF — 2026-10-10 (Controls: BIOBUZZ's own binds in All games; turn with the triggers)
+
+**State: on `main` and `alpha`. Client only: no server change, no deploy needed beyond Vercel.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass on `main`.
+
+- **Owner:** people keep missing that BIOBUZZ's controls are on a separate panel; add an option to turn the drivetrain with the triggers; push to `main`.
+- **BIOBUZZ panel:** All games now lists the ACTIVE season's own actions on "{Season} mechanisms" and "{Season} 3D view" cards after Mechanisms (`allGamesPanels`, `controlsLayout.ts`). Season-only actions have one store (main), so both places edit the same bind. Intake/Shoot overrides stay in the season tab. `ControlsSection`'s `tutorialGame` prop is now `activeGame` (required).
+- **Turn with triggers:** `PadBindings.turnWith` ('stick' | 'triggers'), Controls ▸ Driving ▸ gamepad "Turn with". LT left, RT right, analog. Binds on LT/RT are PAUSED, not removed (`livePad`, `.ds-key.paused`), and come back when switched off; binding a trigger while on is refused as "Turn left/right". Hints and the start prompt read `livePadBinds`. Rules in `docs/area/ui.md`.
+- **Checked in the browser:** cards render at 1280 and 410 wide; a conflict on the BIOBUZZ card rings in place with no scope named; a rebind from All games shows in the BIOBUZZ tab; switching to triggers strikes LT/RT and shows the notice. Not checked with a physical pad; the pad path is covered by stubbed-`getGamepads` checks in `npm test`.
+
 # HANDOFF — 2026-10-09 (alpha catch-up: seven PRs merged, DEPLOYED to `dsim-alpha` as v148)
 
 **State: `alpha` @ 7b56e305, deployed to `dsim-alpha` (release v148, 2026-10-09 04:35Z, by Saket; migrations 0061 + 0062 applied at boot). Production (`main`) has NONE of this. SERVER CHANGE: promoting needs `./scripts/fly-deploy.sh` from a `main` worktree, on the owner's word.** `npm test` on every merged branch: only the Zenith-STUB failures (5 AUTO checks + the IMPORT lane — this checkout has no real `vendor/zenith/*.tgz`). `test:workers` 152/152, `test:mm` 234, `dbtest`, `docaudit` pass on the #104 port. **Not run on alpha itself: `npm test` with real Zenith, `build`, `/verify`, any live match.**

@@ -242,6 +242,9 @@ import {
   VIEW_ACTIONS,
   keyConflict,
   padConflict,
+  livePad,
+  livePadBinds,
+  padBindPaused,
   KEY_ACTIONS,
   PAD_ACTIONS,
   mergeBindings,
@@ -285,7 +288,7 @@ import {
   seasonUnbound,
   removePadBindInGame,
 } from '../src/input/bindings';
-import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanels } from '../src/ui/controlsLayout';
+import { ACTION_LABELS, ALL_GAMES_PANELS, allGamesPanels, seasonPanels } from '../src/ui/controlsLayout';
 import {
   TOUCH_BTN_SECONDARY,
   TOUCH_OTHER_ACTIONS,
@@ -302,7 +305,7 @@ import {
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
-import { GamepadInput, padButtonDown, shape as padShape, shapeStick } from '../src/input/gamepad';
+import { GamepadInput, padButtonDown, shape as padShape, shapeStick, triggerTravel } from '../src/input/gamepad';
 import {
   awardBadge,
   awardBoardWord,
@@ -40721,6 +40724,138 @@ function fxImportFixed(): RobotSpec {
       J(plain),
     );
   }
+}
+
+// ---- TURN WITH TRIGGERS (`PadBindings.turnWith`, owner 2026-10-10) and the active season's own
+// mechanisms in the All games scope (owner, same day: players missed the BIOBUZZ scope).
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  check(
+    'turn with: defaults to the stick, and a stored value is validated',
+    DEFAULT_BINDINGS.pad.turnWith === 'stick' &&
+      mergeBindings({ pad: { turnWith: 'triggers' } }).pad.turnWith === 'triggers' &&
+      mergeBindings({ pad: { turnWith: 'feet' } }).pad.turnWith === 'stick' &&
+      mergeBindings({ pad: { buttons: { fire: [2] } } }).pad.turnWith === 'stick' &&
+      cloneBindings({ ...DEFAULT_BINDINGS, pad: { ...DEFAULT_BINDINGS.pad, turnWith: 'triggers' } }).pad.turnWith === 'triggers',
+  );
+  check(
+    'turn with: a default map round-trips byte for byte with the new field',
+    J(mergeBindings(JSON.parse(J(DEFAULT_BINDINGS)))) === J(DEFAULT_BINDINGS),
+  );
+
+  const trig = cloneBindings(DEFAULT_BINDINGS);
+  trig.pad.turnWith = 'triggers';
+  trig.pad.combos.bbPlace = [[6, 12], [12, 13]];
+  check('turn with: on the stick, the pad map plays as stored', livePad(DEFAULT_BINDINGS.pad) === DEFAULT_BINDINGS.pad);
+  const live = livePad(trig.pad);
+  check(
+    'turn with: on the triggers, every bind on LT or RT is paused and nothing else is',
+    J(live.buttons.fire) === J([0]) && J(live.buttons.intake) === J([1]) && J(live.combos.bbPlace) === J([[12, 13]]) &&
+      J(live.buttons.bbPlace) === J(trig.pad.buttons.bbPlace) &&
+      // paused, not removed: the stored map still has them
+      J(trig.pad.buttons.fire) === J([7, 0]) && J(trig.pad.combos.bbPlace) === J([[6, 12], [12, 13]]),
+    J({ fire: live.buttons.fire, intake: live.buttons.intake, combos: live.combos.bbPlace }),
+  );
+  check(
+    'turn with: padBindPaused / livePadBinds name the paused binds',
+    padBindPaused(trig.pad, [7]) && padBindPaused(trig.pad, [6, 12]) && !padBindPaused(trig.pad, [0]) &&
+      !padBindPaused(DEFAULT_BINDINGS.pad, [7]) && J(livePadBinds(trig.pad, 'fire')) === J([[0]]),
+  );
+  check(
+    'turn with: a bind on a trigger is refused while the triggers turn, in every scope',
+    padConflict(trig, null, 'bbPass', [7])?.action === 'rotateCW' &&
+      padConflict(trig, 'biobuzz', 'bbPass', [6])?.action === 'rotateCCW' &&
+      padConflict(trig, null, 'park', [6, 13])?.action === 'rotateCCW' &&
+      padConflict(trig, null, 'fire', [7])?.action === 'rotateCW' &&
+      padConflict(trig, null, 'bbPass', [13]) === null &&
+      // on the stick the triggers are ordinary buttons again
+      padConflict(DEFAULT_BINDINGS, null, 'bbPass', [7])?.action === 'fire',
+  );
+  const lone = cloneBindings(trig);
+  lone.pad.buttons.bbPlace = [6];
+  lone.pad.combos.bbPlace = [];
+  check(
+    'turn with: a season action left with only a paused bind marks its season',
+    seasonUnbound(lone, 'biobuzz').includes('bbPlace') && !seasonUnbound({ ...lone, pad: { ...lone.pad, turnWith: 'stick' } }, 'biobuzz').includes('bbPlace'),
+  );
+  check(
+    'turn with: trigger travel is the analog value, and a digital trigger reads fully pulled',
+    triggerTravel({ pressed: false, value: 0.4 }) === 0.4 && triggerTravel({ pressed: true, value: 0 }) === 1 && triggerTravel(undefined) === 0,
+  );
+
+  // THE PAD ITSELF: `getGamepads()` stubbed, as in the dropout check above.
+  const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+  const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+  let pads: unknown[] = [];
+  Object.defineProperty(nav, 'getGamepads', { value: () => pads, configurable: true, writable: true });
+  try {
+    const mk = (axes: number[], pulled: Record<number, number>) => ({
+      connected: true,
+      axes,
+      buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: (pulled[i] ?? 0) > 0.5, value: pulled[i] ?? 0 })),
+    });
+    const s = (bind: typeof DEFAULT_BINDINGS.pad, axes: number[], pulled: Record<number, number>) => {
+      pads = [mk(axes, pulled)];
+      return new GamepadInput().sample(bind);
+    };
+    const rt = s(trig.pad, [0, 0, 0, 0], { 7: 1 });
+    const lt = s(trig.pad, [0, 0, 0, 0], { 6: 0.6 });
+    const both = s(trig.pad, [0, 0, 0, 0], { 6: 1, 7: 1 });
+    const stick = s(trig.pad, [0, 0, 0.9, 0], {});
+    const a = s(trig.pad, [0, 0, 0, 0], { 0: 1 });
+    check(
+      'turn with: RT turns right and LT left, analog, and neither shoots nor intakes',
+      rt.rotate === -1 && !rt.fire && lt.rotate > 0.4 && lt.rotate < 0.6 && !lt.intake && both.rotate === 0,
+      `rt=${rt.rotate} fire=${rt.fire} lt=${lt.rotate.toFixed(2)} intake=${lt.intake}`,
+    );
+    check('turn with: the other stick turns nothing while the triggers do', stick.rotate === 0, `rotate=${stick.rotate}`);
+    check('turn with: Shoot still fires on its other button', a.fire && a.rotate === 0);
+    const off = s(DEFAULT_BINDINGS.pad, [0, 0, 0.9, 0], { 7: 1 });
+    check(
+      'turn with: on the stick, RT shoots and the right stick turns, as before',
+      off.fire && off.rotate < -0.8,
+      `fire=${off.fire} rotate=${off.rotate.toFixed(2)}`,
+    );
+  } finally {
+    if (had) Object.defineProperty(nav, 'getGamepads', had);
+    else delete nav.getGamepads;
+  }
+
+  // ---- the ACTIVE season's own mechanisms are listed in All games too
+  const ids = (ps: { id: string }[]) => ps.map((p) => p.id);
+  const bb = allGamesPanels('biobuzz');
+  check(
+    'layout: All games carries the active season’s own cards, right after Mechanisms',
+    J(ids(bb)) === J(['driving', 'mechanisms', 'season', 'view', 'match']) &&
+      J(bb.find((p) => p.id === 'season')!.keys) === J(seasonKeyActions('biobuzz').filter((x) => actionIsSeasonOnly(x) && !(VIEW_ACTIONS as readonly string[]).includes(x))) &&
+      J(bb.find((p) => p.id === 'view')!.keys) === J(VIEW_ACTIONS) &&
+      bb.find((p) => p.id === 'season')!.title === 'BIOBUZZ mechanisms' &&
+      bb.find((p) => p.id === 'view')!.title === 'BIOBUZZ 3D view',
+    J(bb.map((p) => [p.id, p.title, p.keys])),
+  );
+  check(
+    'layout: …listing only season-only actions (Intake and Shoot stay on Mechanisms), each once per scope',
+    GAME_IDS.every((g) => {
+      const ps = allGamesPanels(g);
+      const keys = ps.flatMap((p) => p.keys);
+      const pads = ps.flatMap((p) => p.pads);
+      const own = ps.filter((p) => !ALL_GAMES_PANELS.some((q) => q.id === p.id));
+      return (
+        new Set(keys).size === keys.length &&
+        new Set(pads).size === pads.length &&
+        new Set(ids(ps)).size === ps.length &&
+        J([...own.flatMap((p) => p.keys)].sort()) === J(seasonKeyActions(g).filter(actionIsSeasonOnly).sort())
+      );
+    }),
+  );
+  // which seasons have no action of their own differs by branch (alpha's DECODE has one), so
+  // the check asks the model rather than naming a season
+  check(
+    'layout: a season with no mechanism of its own adds nothing to All games',
+    GAME_IDS.filter((g) => !seasonKeyActions(g).some(actionIsSeasonOnly)).every(
+      (g) => J(allGamesPanels(g)) === J(ALL_GAMES_PANELS),
+    ) && J(allGamesPanels(null)) === J(ALL_GAMES_PANELS),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
