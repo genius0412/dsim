@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ADSENSE_CLIENT,
   AD_TFCD,
@@ -81,10 +81,35 @@ export function MenuAd() {
   );
 }
 
+/**
+ * The results ad costs ~264px of a stage that is already `100dvh`, and a stage taller than the
+ * window scrolls (`.resx-stage` is the screen the redesign made a no-scroll rule for). Measured with
+ * a real match: the 1080p results screen has ~200px to spare, so a 300x250 unit scrolls it. The ad
+ * is therefore mounted only where it fits by construction, rather than hidden by CSS after it has
+ * loaded (a hidden ad is a policy problem and an unviewable impression). The owner's call whether
+ * to trade that inventory for a different placement.
+ */
+const RESULTS_AD_MIN_HEIGHT_PX = 1180;
+
+function useMinHeight(px: number): boolean {
+  const query = `(min-height: ${px}px)`;
+  const [ok, setOk] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia(query);
+    const on = (): void => setOk(m.matches);
+    on();
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [query]);
+  return ok;
+}
+
 /** the post-match results ad. Same reasoning as `MenuAd`; separate unit id so
  *  the two can be enabled, priced, and reported on independently. */
 export function ResultsAd() {
-  if (!useAdUnitActive('results')) return null;
+  const tall = useMinHeight(RESULTS_AD_MIN_HEIGHT_PX);
+  if (!useAdUnitActive('results') || !tall) return null;
   return (
     <div className="menu-ad">
       <AdSlot unit="results" />

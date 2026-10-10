@@ -2254,6 +2254,81 @@ button {
   }
 }
 
+/* ---- A SHORT OR NARROW WINDOW MUST NOT SCROLL THE RESULTS (UX redesign, 2026-10-10) ----
+   Measured with a real solo match at six sizes: 1920x1080, 1366x768 and 1280x720 fit, and 1024x600,
+   844x390 and 390x844 scrolled by 63, 320 and 244px. Two causes, and one fix each:
+   - the breakdown is ONE column of ~15 rows, and `--resx-u` bottoms out at 7px, so on a window under
+     ~640px tall the column alone is taller than the window. It becomes TWO columns of the same rows
+     (the solo table only: the versus table is three columns across two halves and is left alone).
+   - stacked on a phone, each half had `min-height: 40vh`, which is a third of the height before the
+     breakdown or the buttons arrive. It is a floor now, not a share.
+   The edge inset also shrinks here: 24px of padding on every side is a real fraction of 390px. */
+@media (max-height: 640px), (max-width: 720px) {
+  .resx-stage {
+    --resx-pad: clamp(12px, 2.4vmin, 24px);
+  }
+  .resx-breakdown-solo,
+  .resx-breakdown-solo tbody {
+    display: block;
+  }
+  .resx-breakdown-solo tbody {
+    column-count: 2;
+    column-gap: calc(2 * var(--resx-u));
+  }
+  .resx-breakdown-solo tr {
+    display: block;
+    break-inside: avoid;
+  }
+  .resx-breakdown-solo .resx-section {
+    break-after: avoid;
+  }
+  .resx-breakdown-solo .resx-section th,
+  .resx-breakdown-solo .resx-cat {
+    display: block;
+  }
+  /* the value is out of flow at the row's right edge, so the label only has to clear it */
+  .resx-breakdown-solo .resx-cat {
+    padding-inline: 0.4em 2.4em;
+    text-align: left;
+  }
+  /* the season line repeats what the eyebrow and the panel say, and a heading must not wrap */
+  .resx-season {
+    display: none;
+  }
+  .resx-breakdown {
+    margin-block: var(--ds-s-2);
+  }
+  .resx-section th {
+    letter-spacing: 0.08em;
+  }
+}
+/* a SHORT but WIDE window (a phone on its side, a small laptop): the alliance panel gives the
+   breakdown more of the width, so its two columns each have room for a label and a value. The
+   mirrored (blue) board has its own track rule above, so it is restated here after it. */
+@media (max-height: 640px) and (min-width: 721px) {
+  .resx-body-solo {
+    grid-template-columns: 42% minmax(0, 1fr);
+  }
+  .resx-body-solo:has(.resx-half.blue) {
+    grid-template-columns: minmax(0, 1fr) 42%;
+  }
+  /* the panel's three big things step down together, so the stack still fits its half */
+  .resx-total-num {
+    font-size: calc(8 * var(--resx-u));
+  }
+  .resx-winbanner,
+  .resx-body-solo .resx-roster-row {
+    font-size: calc(4 * var(--resx-u));
+  }
+}
+@media (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-half,
+  .resx-body-solo .resx-half.red,
+  .resx-body-solo .resx-half.blue {
+    min-height: 22vh;
+  }
+}
+
 /* the standing + roster block, and it CENTRES. The banner used to live in here and is a
    direct child of the half now, so it stays welded to the top edge while this grows into
    whatever is left between it and the total — which is what closes "name and stats towards

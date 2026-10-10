@@ -812,6 +812,16 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `auto-fit` grid and the friends chip is icon-only, its label visually hidden but still read. The
   profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
   stats three across below.
+- ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
+  solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,
+  320 and 244px. A short or narrow window (`max-height: 640px`, `max-width: 720px`) now lays the SOLO breakdown
+  out in two columns, shrinks the edge inset, and a stacked half is a `22vh` floor, not a `40vh` share; the
+  first five now fit. **844x390 (a phone on its side) still scrolls by ~45px** and the VERSUS board was not
+  measurable offline (it needs two drivers), so check it on a real room before relying on it. The results ad
+  (`ResultsAd`, a 300x250 in the one column) cost ~264px and scrolled even a 1080p stage, so it mounts only
+  at `min-height: 1180px`; that is inventory traded for the no-scroll rule, and moving it into the alliance
+  panel's empty middle is the way to win it back. To re-measure: `scratch/shot-results.cjs` style drive
+  (start Solo practice, press Enter, wait for `.resx-stage`, compare `scrollHeight` to `clientHeight`).
 - ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
   `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
   match `shell.css` by hand — change one, grep for the other.
