@@ -1,4 +1,4 @@
-import { keyLabel, keyName, padBindLabel, padBinds, type KeyAction, type PadAction } from '../input/bindings';
+import { keyLabel, keyName, livePadBinds, padBindLabel, type KeyAction, type PadAction } from '../input/bindings';
 import { ACTION_LABELS } from '../ui/controlsLayout';
 import type { Hint, HintKey, HintPart, TutorialHintCtx } from './types';
 
@@ -54,9 +54,10 @@ export function keyFor(ctx: TutorialHintCtx, action: KeyAction): HintKey {
 
 /** the FIRST pad bind of an action — a face label, or a combo's buttons joined by `+` — or a
  * `missing` part when it has none. `padBinds` lists singles before combos, so a player who kept a
- * single is told the single. */
+ * single is told the single. A bind paused by the triggers turning is skipped: Shoot on RT and A
+ * is "A" then. */
 export function padFor(ctx: TutorialHintCtx, action: PadAction): HintKey {
-  const b = padBinds(ctx.bindings.pad, action)[0];
+  const b = livePadBinds(ctx.bindings.pad, action)[0];
   return b === undefined ? { key: '', missing: actionName(action), pad: true } : { key: padBindLabel(b) };
 }
 
@@ -116,15 +117,16 @@ export function hintText(h: Hint): string {
  * The keyboard form lists the four translation keys and the two turn keys, in the order a
  * driver's hand sits on them, and it reads the bound values so a rebound WASD prints as
  * whatever it is now — each one its own keycap, so `NUM8NUM4…` cannot run together. The pad form
- * names the stick the player picked for driving (`pad.driveStick`) and says the other one turns,
- * which is the only thing about a pad a driver has to be told. It opens a sentence, so it is
- * capitalised in every form (design review 12-08).
+ * names the stick the player picked for driving (`pad.driveStick`) and what turns: the other
+ * stick, or LT and RT (`pad.turnWith`), which is the only thing about a pad a driver has to be
+ * told. It opens a sentence, so it is capitalised in every form (design review 12-08).
  */
 export function driveHint(ctx: TutorialHintCtx): Hint {
   if (!ctx.gamepad && ctx.touch) return ['Left stick to drive, right stick to turn'];
   if (ctx.gamepad) {
     const left = ctx.bindings.pad.driveStick === 'left';
-    return [left ? 'Left stick to drive, right stick to turn' : 'Right stick to drive, left stick to turn'];
+    const turn = ctx.bindings.pad.turnWith === 'triggers' ? 'LT and RT' : left ? 'right stick' : 'left stick';
+    return [`${left ? 'Left' : 'Right'} stick to drive, ${turn} to turn`];
   }
   const k = (a: KeyAction): HintKey => keyFor(ctx, a);
   return say`${k('driveUp')}${k('driveLeft')}${k('driveDown')}${k('driveRight')} to drive, ${k('rotateCCW')} and ${k('rotateCW')} to turn`;

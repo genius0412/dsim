@@ -1,4 +1,4 @@
-import type { PadBindings } from './bindings';
+import { PAD_TRIGGERS, livePad, type PadBindings } from './bindings';
 import { PadChordResolver } from './padChords';
 import { applyPadMask, clearPadMask } from './padNav';
 
@@ -35,7 +35,14 @@ export function shapeStick(x: number, y: number, deadzone: number, curve: number
 }
 
 /** the standard mapping's two ANALOG triggers — the buttons `triggerThreshold` governs */
-const TRIGGERS = new Set([6, 7]);
+const TRIGGERS = new Set(PAD_TRIGGERS);
+
+/** how far a trigger is pulled, 0..1. A trigger that reports no value (a digital one reads 0
+ *  while down) counts as fully pulled, for the reason `padButtonDown` gives. */
+export function triggerTravel(b: { pressed: boolean; value: number } | null | undefined): number {
+  if (!b) return 0;
+  return b.pressed && b.value === 0 ? 1 : Math.min(1, Math.max(0, b.value));
+}
 
 /**
  * IS THIS BUTTON DOWN? For a TRIGGER, that is the player's threshold and nothing else.
@@ -103,7 +110,8 @@ const EMPTY: GamepadSample = {
 };
 
 /** standard-mapping gamepad. Stick roles and button assignments come from the
- * user's PadBindings: the drive stick translates, the other stick's X turns.
+ * user's PadBindings: the drive stick translates, the other stick's X turns (or the
+ * triggers do, with `turnWith: 'triggers'`).
  * Which BUTTONS mean which ACTION — singles and combos alike — is the chord
  * resolver's answer (`padChords.ts`); this class only reads the hardware. */
 /**
@@ -123,6 +131,10 @@ export class GamepadInput {
   private prevFlip = false;
   private prevPark = false;
   private chords = new PadChordResolver();
+  /** `livePad(bindings)`, kept until the bindings object changes: it copies the lists when the
+   *  triggers turn, and this runs every frame */
+  private liveFrom: PadBindings | null = null;
+  private live: PadBindings | null = null;
 
   sample(bindings: PadBindings): GamepadSample {
     const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
@@ -154,7 +166,12 @@ export class GamepadInput {
        menu cannot also fire a shot on the way back in — `padNav.ts` says why. */
     const held = applyPadMask(raw);
     this.lostAt = 0;
-    const on = this.chords.resolve(held, bindings, now);
+    // with the triggers turning, the resolver plays a map with every bind on LT / RT dropped
+    if (this.liveFrom !== bindings) {
+      this.liveFrom = bindings;
+      this.live = livePad(bindings);
+    }
+    const on = this.chords.resolve(held, this.live ?? bindings, now);
     const ax = (i: number): number => shape(pad.axes[i] ?? 0, bindings.deadzone, bindings.curve);
     // left stick = axes 0/1, right stick = axes 2/3
     const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
@@ -162,11 +179,15 @@ export class GamepadInput {
     // the TRANSLATION stick is shaped as one 2D vector (radial deadzone); the turn axis and the
     // tank sticks are single axes and keep the 1D shape
     const [dx, dy] = shapeStick(pad.axes[drive[0]] ?? 0, pad.axes[drive[1]] ?? 0, bindings.deadzone, bindings.curve);
+    // TURN WITH TRIGGERS: LT turns left (+, counter-clockwise, as `rotateCCW`), RT right. The
+    // other stick then turns nothing, so a thumb resting on it cannot fight the triggers.
+    const trig = (i: number): number => shape(triggerTravel(pad.buttons[i]), bindings.deadzone, bindings.curve);
+    const rotate = bindings.turnWith === 'triggers' ? trig(PAD_TRIGGERS[0]) - trig(PAD_TRIGGERS[1]) : -ax(rotAxis);
     const sampleOut: GamepadSample = {
       connected: true,
       driveX: dx,
       driveY: -dy,
-      rotate: -ax(rotAxis),
+      rotate,
       leftY: -ax(1),
       rightY: -ax(3),
       fire: on.fire,

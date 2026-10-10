@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-10 (Controls: BIOBUZZ's own binds in All games; turn with the triggers)
+
+**State: on `main` and `alpha`. Client only: no server change, no deploy needed beyond Vercel.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass on `main`.
+
+- **Owner:** people keep missing that BIOBUZZ's controls are on a separate panel; add an option to turn the drivetrain with the triggers; push to `main`.
+- **BIOBUZZ panel:** All games now lists the ACTIVE season's own actions on "{Season} mechanisms" and "{Season} 3D view" cards after Mechanisms (`allGamesPanels`, `controlsLayout.ts`). Season-only actions have one store (main), so both places edit the same bind. Intake/Shoot overrides stay in the season tab. `ControlsSection`'s `tutorialGame` prop is now `activeGame` (required).
+- **Turn with triggers:** `PadBindings.turnWith` ('stick' | 'triggers'), Controls ▸ Driving ▸ gamepad "Turn with". LT left, RT right, analog. Binds on LT/RT are PAUSED, not removed (`livePad`, `.ds-key.paused`), and come back when switched off; binding a trigger while on is refused as "Turn left/right". Hints and the start prompt read `livePadBinds`. Rules in `docs/area/ui.md`.
+- **Checked in the browser:** cards render at 1280 and 410 wide; a conflict on the BIOBUZZ card rings in place with no scope named; a rebind from All games shows in the BIOBUZZ tab; switching to triggers strikes LT/RT and shows the notice. Not checked with a physical pad; the pad path is covered by stubbed-`getGamepads` checks in `npm test`.
+
 # HANDOFF — 2026-10-04 (BIOBUZZ 3D: nothing stays on the HIVE beam; the NECTAR wedge fix reaches main)
 
 **State: on `main` (9905c8cd) and `alpha` (0c7df0eb); DEPLOYED 2026-10-04 to PRODUCTION from `main` (04:00Z, 2-minute announcement, all 8 machines on the new image) and to `dsim-alpha`.** `npm test` (main 5175, alpha 5552), `build`, `server:check`, `docaudit`, `bundleaudit` pass on both; `test:workers` (83) on main. Sim change behind `SIM_PATCH` 5. No `SIM_VERSION` bump, no wire change.

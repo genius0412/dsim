@@ -121,7 +121,7 @@ export function Configure({
           {section === 'match' && <MatchSetup settings={settings} onChange={onChange} />}
           {section === 'controls' && (
             <ControlsSection
-              tutorialGame={settings.game}
+              activeGame={settings.game}
               bindings={settings.bindings}
               onChange={(bindings) => onChange({ ...settings, bindings })}
               onEditTouchControls={onEditTouchControls}
