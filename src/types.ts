@@ -1097,6 +1097,10 @@ export interface GameSettings {
    * blob, so this rides along with no protocol change).
    */
   practicePhysics?: Physics;
+  /** THE RUN LENGTH THIS PLAYER ASKS FOR: 'auto' ends the match at the AUTO buzzer (`World.runLength`).
+   *  Absent / 'full' = the whole match. Read by solo practice, and sent as the ASK when this player
+   *  creates a record room or a room (`RoomSettings.runLength`); a room already made decides for itself. */
+  runLength?: 'full' | 'auto';
   /**
    * SOLO PRACTICE OPPONENTS (plan §6): `'off'`, or a TIER from the active game's own
    * `GameSimModule.bot.tiers`. Absent reads `'off'`, which is every settings blob that predates

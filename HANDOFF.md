@@ -1,4 +1,15 @@
-# HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
+# HANDOFF — 2026-10-10c (AUTO-ONLY RUNS: rooms plan M4 + M6)
+
+**State: branch `rooms-m4-m6-auto-only`, stacked on #101 (SIM_VERSION 6). Shared smoke ALL PASS, `test:mm` 234, `test:workers` 170, `dbtest` all pass but 2 analytics checks that fail on #101's head too (not this work), BIOBUZZ lane has only the 6 Zenith-stub failures. SERVER CHANGE: migration 0063 + replay format 5, so a deploy (client first, server second).**
+
+- **Sim:** `World.runLength = 'auto'` (absent on a full run, so no golden moved) ends the match at the AUTO buzzer in DECODE, Chain Reaction and BIOBUZZ (`autoOnly()`, `sim/match.ts`). DECODE post assesses AUTO PATTERN only (no BASE/DEPOT/TELEOP PATTERN); Chain has no endgame credit; BIOBUZZ pays LEAVE/AUTO PARK/TIPs but not CELL/GARDEN/TELEOP PARK.
+- **Replays:** format 5 + `Replay.runLength`, stamped only for an auto-only run; `replayHasImported` no longer reads >=3 as imported. `ReplayPlayer` takes it off the container.
+- **Rooms/records:** `RoomSettings.runLength` (creation only), `matchStart.runLength` (also in `App.beginSession`), client cap `autoOnly` checked at the doors, server cap `autoOnly` checked by RecordRun/Lobby before asking. DB: `records.run_length` / `replays.run_length` (0063); only the Auto board reads auto-only rows; PB/rank/user stats filter 'full'.
+- **Offline/UI:** Practice ▸ Run length (`GameSettings.runLength`, one setting for practice, record rooms and rooms you create), an "Auto only" badge on the practice list, an Auto-board empty-state hint.
+- **Not done:** history/recent-match feeds list auto-only records unlabelled; no host control to change run length after creation; LAN rooms have none; Lobby has no Run length row of its own (it follows the Practice setting).
+- **Gotchas:** the local Zenith stub needed `simFollowerParams`; Python is not installed here (use node for scripted edits); heredoc backslashes collapse, so write `[0-9]` not `d`.
+
+# (prior) HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
 
 **State: on `alpha`. `src/auto/seat.ts` only. The server runs the seat too but never reads `stuck` (the HUD reads the client's seat), so no deploy; no wire change, no `SIM_PATCH`.** `npm test` 5592/5592 (the one BIOBUZZ failure in 10-10 below is fixed), `build`, `server:check`, `docaudit`, `bundleaudit` pass.
 

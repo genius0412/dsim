@@ -683,6 +683,9 @@ export const SERVER_CAPS: string[] = [
   'party',
   /** `'rooms2'` — host-controlled room settings (`roomSettings`, `moveMember`, `roster.settings`) */
   'rooms2',
+  /** `'autoOnly'` — `RoomSettings.runLength` is honoured. An older server drops the field and would run a FULL match,
+   *  so a client asks for an auto-only room only when this is here (`AUTO_ONLY_CAP`, the client's half). */
+  'autoOnly',
   /**
    * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
    *
@@ -1223,6 +1226,10 @@ export type ServerMsg =
        * mid-match gets `matchStart` and a snapshot in the same breath.
        */
       physics?: Physics;
+      /** 'auto' = this match ends at the AUTO buzzer (`RoomSettings.runLength`). Absent ⇒ a full match.
+       *  ⚠️ Listed field by field in `App.beginSession` too: a rejoin that misses it predicts a TELEOP
+       *  the server never runs. */
+      runLength?: 'auto';
       ranked?: boolean;
       intros?: PlayerIntro[];
       /**

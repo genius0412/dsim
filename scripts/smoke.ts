@@ -17333,6 +17333,33 @@ const forceRoomToPost = (room: Room): void => {
   await initPhysics3d(); // a BIOBUZZ record room is a 3D room
   const bio = runRecord('biobuzz', () => {});
   check('split: BIOBUZZ reports one (its AUTO is read at TELEOP start)', !!bio?.split && bio.split.blue.auto >= 0 && bio.split.blue.teleop >= 0, JSON.stringify(bio?.split));
+  // AN AUTO-ONLY RECORD ROOM: created with settings.runLength 'auto', it runs the real phase machine to
+  // the AUTO buzzer and ends there. The replay is format 5, the whole net total is the AUTO split, and
+  // matchStart tells every client.
+  {
+    const { coerceRoomSettings } = await import('../src/net/protocol');
+    let seen: MatchOutcome | null = null;
+    const sent: unknown[] = [];
+    const room = new Room('smoke-auto-only', () => {}, { kind: 'record', record: 'solo', game: 'decode', settings: coerceRoomSettings('record', 'solo', { runLength: 'auto' }) }, (o) => { seen = o; });
+    const c = solo('a1');
+    c.send = (m: unknown) => { sent.push(m); };
+    room.add(c);
+    room.onMessage('a1', { t: 'start' });
+    const phases: string[] = [];
+    for (let i = 0; i < 20000; i++) {
+      room.advanceForTest(1);
+      const w = room.worldForTest();
+      if (!w) break;
+      if (phases[phases.length - 1] !== w.match.phase) phases.push(w.match.phase);
+      if (w.match.phase === 'post') break;
+    }
+    room.advanceForTest(Math.round(MATCH_SETTLE_MAX_S / SIM_DT) + 10);
+    const ms = sent.map((m) => (typeof m === 'string' ? (() => { try { return JSON.parse(m); } catch { return null; } })() : m)).find((m) => (m as { t?: string } | null)?.t === 'matchStart') as { runLength?: string } | undefined;
+    check('auto-only room: the match goes pre > auto > post, with no transition or DRIVER-CONTROLLED', phases.join('>') === 'pre>auto>post', phases.join('>'));
+    check('auto-only room: matchStart carries runLength', ms?.runLength === 'auto', JSON.stringify(ms));
+    const so = seen as MatchOutcome | null;
+    check('auto-only room: the replay is stamped format 5 / auto and the split is all AUTO', so?.replay.runLength === 'auto' && so.replay.format === 5 && so.split?.blue.teleop === 0 && so.split.blue.auto === Math.max(0, so.result.score.blue - so.result.foulPoints.red), JSON.stringify([so?.replay.format, so?.split]));
+  }
   let vs: MatchOutcome | null = null;
   const vr = new Room('smoke-split-vs', () => {}, { kind: 'versus' }, (o) => { vs = o; });
   vr.add(solo('v1'));

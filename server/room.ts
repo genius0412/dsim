@@ -1552,6 +1552,8 @@ export class Room {
       // either way, but leaving it off keeps a 2D room's handshake byte-identical to the one
       // this server sent before Day 2, which is the property the NET3D lane asserts.
       physics: this.physics === '3d' ? '3d' : undefined,
+      // OMITTED for a full match (an older client never sees the key)
+      runLength: this.settings?.runLength,
       ranked: this.ranked,
       intros: this.ranked ? this.intros : undefined,
       // OMITTED when there is nobody to name, for the reason `physics` above is: an empty

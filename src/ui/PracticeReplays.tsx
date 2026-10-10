@@ -52,6 +52,8 @@ interface Row {
   view: string | null;
   /** other robots were on the field (`PracticeRunMeta.others`) — known only for a device copy */
   withRobots: boolean;
+  /** an AUTO-ONLY run (`Replay.runLength`) */
+  autoOnly: boolean;
 }
 
 /** merge the account's runs with this device's, newest first, without double-counting one
@@ -74,6 +76,7 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       physics: m.physics ?? match?.physics ?? null,
       view: m.view ?? match?.view ?? null,
       withRobots: (m.others ?? 0) > 0,
+      autoOnly: (m.runLength ?? match?.runLength) === 'auto',
     });
   }
   for (const r of remote) {
@@ -88,6 +91,7 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       physics: r.physics ?? null,
       view: r.view ?? null,
       withRobots: false,
+      autoOnly: r.runLength === 'auto',
     });
   }
   return rows.sort((a, b) => b.at - a.at);
@@ -179,6 +183,12 @@ export function PracticeReplays({
                         number (owner, 2026-09-23) */}
                     <td>
                       {fmtDay(r.at)}
+                      {r.autoOnly && (
+                        <>
+                          {' '}
+                          <span className="ds-badge">Auto only</span>
+                        </>
+                      )}
                       {r.withRobots && (
                         <>
                           {' '}

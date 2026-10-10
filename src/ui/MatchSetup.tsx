@@ -197,6 +197,20 @@ export function MatchSetup({
           </section>
         )}
 
+        <section className="ds-sec">
+          <h2>Run length</h2>
+          {/* one setting, three places it applies: Solo practice, and the record / custom rooms you create */}
+          <OptRow<'full' | 'auto'>
+            value={settings.runLength ?? 'full'}
+            cols="two"
+            onPick={(runLength) => set({ runLength })}
+            options={[
+              { v: 'full', t: 'Full match', d: 'AUTO, then DRIVER-CONTROLLED' },
+              { v: 'auto', t: 'Auto only', d: 'Ends when AUTO does' },
+            ]}
+          />
+        </section>
+
         {/* THE THREE OTHER ROBOTS, one block each: what the seat is, then — only in a game with
             an AI driver — its difficulty. The difficulty row is DISABLED rather than absent
             while the seat is not AI, so picking AI moves nothing below it. A Dummy is an inert

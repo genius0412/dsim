@@ -2551,6 +2551,8 @@ export interface PracticeRunRow {
   physics?: string;
   /** which renderer it was watched in, or null for a run recorded before the column */
   view?: string | null;
+  /** 'auto' = an AUTO-ONLY run (its replay's run_length, 0063); absent = a full match */
+  runLength?: 'auto';
 }
 
 /**
@@ -2630,8 +2632,10 @@ export async function listPracticeRuns(
     created_at: string;
     physics: string | null;
     view: string | null;
+    run_length: string | null;
   }>(
-    `select id, game, score, ticks, replay_id, created_at, physics, view
+    `select id, game, score, ticks, replay_id, created_at, physics, view,
+            (select run_length from replays where id = practice_runs.replay_id) as run_length
        from practice_runs
       where user_id = $1 and game = $2
       order by created_at desc
@@ -2647,6 +2651,7 @@ export async function listPracticeRuns(
     createdAt: r.created_at,
     physics: r.physics ?? '2d',
     view: r.view,
+    ...(r.run_length === 'auto' ? { runLength: 'auto' as const } : {}),
   }));
 }
 

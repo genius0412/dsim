@@ -71,7 +71,16 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   onto one alliance), Private. Capacity is the sum of the sides (`roomCapacity`, `Room.capacity`),
   clamped to `ROOM_CAPACITY` (4) until 3-4 a side lands. **No `settings` = the legacy room, byte
   for byte** (old clients, staged ranked/competition codes, LAN): everyone picks a side, any split
-  up to four seats. Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
+  up to four seats. **AUTO-ONLY RUNS** (rooms plan M4/M6): `World.runLength = 'auto'` ends the match at the
+  AUTO buzzer (AUTO → post, no transition; `autoOnly()` in `sim/match.ts`, read by each game's phase
+  machine). It is ABSENT on a full run, so no golden pin moved. A room asks via `RoomSettings.runLength`
+  at creation (never changed by a patch), `matchStart.runLength` tells clients (also listed field by field
+  in `App.beginSession` and re-read on every restart), and the replay is stamped **format 5** +
+  `Replay.runLength` (`REPLAY_FORMAT_AUTO`; `ReplayPlayer` reads it off the container, never the
+  settings). CLIENT cap `'autoOnly'` is checked at the join/spectate/rejoin doors (`runLengthAllowed`,
+  same sentence as `BB3D_REFUSAL`); SERVER cap `'autoOnly'` is what a client checks before asking, since an
+  older server would drop the field and run a FULL match. LAN rooms have no run length.
+  Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
   client gates on `serverCaps()`; an older server ignores them) are refused in a staged/ranked room
   (`hostControlRefusal`: a host there could demote an opponent and have them charged a no-show) and
   once the match is set up. Sides are enforced in `add` (a joiner lands on a side with room) and in
