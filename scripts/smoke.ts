@@ -376,7 +376,8 @@ import {
 } from '../src/sim/penaltyLog';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
-import { roomPersists } from '../server/channel';
+import { advertisedCaps, importsOpen, IMPORTS_OPEN_HERE, roomPersists, SERVER_CHANNEL } from '../server/channel';
+import { hostRoomConfig } from '../src/lan/hostProtocol';
 import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport, type MatchOutcome } from '../server/room';
 import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
 import { clockMembers } from '../server/tickScheduler';
@@ -9436,7 +9437,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the room is built with NO persistence callbacks, so it cannot write a row',
-      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), m\.config\)/.test(hw),
+      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), hostRoomConfig\(m\)\)/.test(hw),
     );
     check(
       'lan tab: nothing in the Worker reaches the database or the ranked module',
@@ -9474,7 +9475,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
-      /async start\(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG\)/.test(hr) &&
+      /async start\(\s*code: string,\s*config: RoomConfig = DEFAULT_ROOM_CONFIG,\s*imports: boolean = importerOpenOn\(appChannel\(\)\),\s*\)/.test(hr) &&
         /intro\.player/.test(hr),
     );
     check(
@@ -30808,7 +30809,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a CUSTOM room (and a LAN room is this same class) ----------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-custom', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-custom', () => {}, { kind: 'versus', imports: true });
     check('imports/room: a custom room ALLOWS imported robots', room.allowsImportedRobots());
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     check('imports/room: ...and seats one (client with the cap)', welcomed(s, 'a') && room.importState().hasImport && !room.importState().capless);
@@ -30836,7 +30837,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a seat without the cap is in the room FIRST ---------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-old', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-old', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'old', [], DEFAULT_SPEC, 'blue'));
     check('imports/room: a build without the cap is seated in an ordinary room', welcomed(s, 'old'));
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
@@ -30851,7 +30852,7 @@ const dumperSetup = (): RobotSetup => {
     );
     // the start backstop: a seat that lost the capability under a room that holds an import (a
     // mirror that was behind). Simulated by taking the cap away from a seat directly.
-    const room2 = new Room('smoke-imp-start', () => {}, { kind: 'versus' });
+    const room2 = new Room('smoke-imp-start', () => {}, { kind: 'versus', imports: true });
     const s2: Sink = {};
     room2.add(mk(s2, 'a', CLIENT_CAPS, impSpec, 'red'));
     room2.add(mk(s2, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
@@ -30868,7 +30869,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- an update patch that ADDS an import in an allowing room ---------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-update', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-update', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     room.onMessage('a', { t: 'update', patch: { spec: impSpec } });
@@ -30882,7 +30883,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- ONE ROBOT ID PER ROOM (review 2026-10-01): a robot's look is relayed and drawn by its id ----
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-ids', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-ids', () => {}, { kind: 'versus', imports: true });
     const ownId = { ...DEFAULT_SPEC, imported: { ...IMP, id: 'fedcba9876543210' } } as typeof DEFAULT_SPEC;
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
@@ -30906,7 +30907,7 @@ const dumperSetup = (): RobotSetup => {
   {
     const clientsOf = (r: Room) => (r as unknown as { clients: Map<string, Client> }).clients;
     const s: Sink = {};
-    const room = new Room('smoke-imp-rejoin', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-rejoin', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
     room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     const back: ServerMsg[] = [];
@@ -30921,7 +30922,7 @@ const dumperSetup = (): RobotSetup => {
     room.stop();
     // no import yet: the downgraded seat is seated, and reads as capless from then on
     const s2: Sink = {};
-    const r2 = new Room('smoke-imp-rejoin2', () => {}, { kind: 'versus' });
+    const r2 = new Room('smoke-imp-rejoin2', () => {}, { kind: 'versus', imports: true });
     r2.add(mk(s2, 'k', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
     r2.add(mk(s2, 'l', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     const nc3 = r2.reattach('k', (m) => s2.k.push(m), undefined, undefined, undefined, true, ['strategy']);
@@ -30938,7 +30939,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a RECORD room -----------------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-rec', () => {}, { kind: 'record', record: 'solo' });
+    const room = new Room('smoke-imp-rec', () => {}, { kind: 'record', record: 'solo', imports: true });
     check('imports/room: a record room does NOT allow imported robots', !room.allowsImportedRobots());
     room.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'blue'));
     check('imports/room: a record room refuses an imported joiner, with the sentence, and does not seat it', !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !room.importState().hasImport, String(errs(s, 'x')[0]));
@@ -30959,7 +30960,7 @@ const dumperSetup = (): RobotSetup => {
   // ---- a STAGED ranked room ----------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-imp-ranked', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-imp-ranked', () => {}, { kind: 'versus', imports: true });
     room.applyPending({
       code: 'iad-imp', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
       roster: [
@@ -30976,6 +30977,100 @@ const dumperSetup = (): RobotSetup => {
     const ms = started(s, 'a');
     check('imports/room: ...and beginMatch STRIPS the staged import, so a ranked match is standard robots only', !!ms && ms.ranked === true && !anyImport(ms));
     room.stop();
+  }
+
+  // ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha only until he says) -----------------------
+  // `RoomConfig.imports`, resolved from the server's gate. The rooms above pass `imports: true`
+  // because they test what an OPEN room does; these are the same rooms closed, each paired with
+  // the room open, since a gate that refuses everything would pass "it refused".
+  {
+    check('imports/gate: the server rule: stable closed, alpha open, ROBOT_IMPORT=1 opens, LAN_MODE closes',
+      !importsOpen('stable', undefined, undefined) && importsOpen('alpha', undefined, undefined) && !importsOpen('', undefined, undefined) &&
+      importsOpen('stable', '1', undefined) && importsOpen('stable', ' 1 ', undefined) && !importsOpen('stable', '0', undefined) && !importsOpen('stable', 'true', undefined) &&
+      !importsOpen('alpha', undefined, '1'));
+    check('imports/gate: this process reads its gate by that rule', IMPORTS_OPEN_HERE === importsOpen(SERVER_CHANNEL, process.env.ROBOT_IMPORT, process.env.LAN_MODE));
+    const closedCaps = advertisedCaps(SERVER_CAPS, false);
+    const openCaps = advertisedCaps(SERVER_CAPS, true);
+    check('imports/gate: ⚠️ presence on a closed server lacks robotImport and importVisuals, and keeps every other word',
+      !closedCaps.includes(ROBOT_IMPORT_CAP) && !closedCaps.includes(IV.IMPORT_VISUALS_CAP) &&
+      closedCaps.length === SERVER_CAPS.length - 2 && closedCaps.every((c) => SERVER_CAPS.includes(c)), closedCaps.join(','));
+    check('imports/gate: ...and an open server advertises both (SERVER_CAPS itself is untouched)',
+      isDeepStrictEqual(openCaps, SERVER_CAPS) && SERVER_CAPS.includes(ROBOT_IMPORT_CAP) && SERVER_CAPS.includes(IV.IMPORT_VISUALS_CAP));
+
+    const closed = new Room('smoke-imp-closed', () => {}, { kind: 'versus', imports: false });
+    const open = new Room('smoke-imp-open', () => {}, { kind: 'versus', imports: true });
+    check('imports/gate: a custom room on a closed deployment does not allow imported robots; the same room open does',
+      !closed.allowsImportedRobots() && !closed.importState().allows && open.allowsImportedRobots() && open.importState().allows);
+    check('imports/gate: a room built with no `imports` takes this server’s own gate',
+      new Room('smoke-imp-default', () => {}, { kind: 'versus' }).allowsImportedRobots() === IMPORTS_OPEN_HERE);
+    const s: Sink = {};
+    const so: Sink = {};
+    closed.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ⚠️ a closed room refuses an imported joiner at the door, with the sentence, and does not seat it',
+      !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !closed.importState().hasImport, String(errs(s, 'x')[0]));
+    open.add(mk(so, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...the open room seats the same joiner', welcomed(so, 'x') && open.importState().hasImport);
+    closed.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    closed.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/gate: a closed room seats drivers with standard robots', welcomed(s, 'a') && welcomed(s, 'b'));
+    closed.onMessage('b', { t: 'update', patch: { spec: impSpec } });
+    check('imports/gate: ...refuses an update that brings an import, and the seat keeps its robot',
+      errs(s, 'b').includes(IMPORT_REFUSED_HERE) && !isImportedSpec(rosterSpec(s, 'b', 'b')), JSON.stringify(errs(s, 'b')));
+    // an import that slipped onto the closed room's roster some other way
+    (closed as unknown as { clients: Map<string, Client> }).clients.get('a')!.player.spec = { ...impSpec };
+    const put = () => ({ t: 'visualPut' as const, kind: 'top' as const, id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+    const refusal = (sink: Sink, id: string) => (sink[id].find((m) => m.t === 'visualRefused') as Extract<ServerMsg, { t: 'visualRefused' }> | undefined)?.reason;
+    closed.onMessage('a', put());
+    open.onMessage('x', put());
+    check('imports/gate: the look relay refuses an upload in a closed room with the room reason', refusal(s, 'a') === 'room', String(refusal(s, 'a')));
+    check('imports/gate: ...and the open room reads the same bytes (and refuses them only as no picture)', refusal(so, 'x') === 'format', String(refusal(so, 'x')));
+    closed.onMessage('a', { t: 'start' });
+    const ms = started(s, 'a');
+    check('imports/gate: ⚠️ beginMatch STRIPS an import that slipped into a closed room (no capless refusal: nothing imported may play)', !!ms && !anyImport(ms));
+    forceRoomToPost(closed);
+    check('imports/gate: ...so its replay is the format-2 container', result(s, 'a')?.replay.format === REPLAY_FORMAT_BASE, String(result(s, 'a')?.replay.format));
+    closed.stop();
+    open.stop();
+
+    // the LAN tab host: a Worker has no server gate, so the page's `open` message decides
+    const tabClosed = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus', imports: true } });
+    const tabOpen = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: true });
+    check('imports/gate: the tab host is closed unless `open` says so (a config carrying its own `imports` does not count)',
+      tabClosed.imports === false && tabOpen.imports === true &&
+      hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: false }).imports === false);
+    const tab = new Room('lanimp', () => {}, tabClosed);
+    const st: Sink = {};
+    check('imports/gate: ⚠️ ...so a tab-hosted room opened without it refuses an imported guest at the Worker’s door',
+      importAdmission(tab.importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === IMPORT_REFUSED_HERE);
+    tab.add(mk(st, 'g', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...and at the room’s own', !welcomed(st, 'g') && errs(st, 'g')[0] === IMPORT_REFUSED_HERE);
+    check('imports/gate: ...while one opened with it takes the guest',
+      importAdmission(new Room('lanimp2', () => {}, tabOpen).importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === null);
+    tab.stop();
+
+    // every place a room is built resolves `imports` from the server's gate; none says yes
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const serverSrc = ['server', 'server/db'].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.ts')).map((f) => `${d}/${f}`));
+    const opened = serverSrc.filter((f) => /\bimports:\s*true\b/.test(strip(rd(f))));
+    check('imports/gate: ⚠️ no server file builds a room with `imports: true`', opened.length === 0, opened.join(','));
+    const builders = serverSrc.filter((f) => /new (?:Room|RemoteRoom)\(/.test(strip(rd(f))));
+    check('imports/gate: ...and the places that build one are the known ones (a new one joins this list, and takes the gate)',
+      isDeepStrictEqual(builders.sort(), ['server/matchmaking.ts', 'server/roomHost.ts', 'server/roomWorker.ts', 'server/warmup.ts'].sort()) &&
+      /createRoom\(\s*code,/.test(rd('server/index.ts')), builders.join(','));
+    check('imports/gate: Room resolves an absent `imports` from IMPORTS_OPEN_HERE, once, in its constructor',
+      /this\.importsHere = config\.imports \?\? IMPORTS_OPEN_HERE;/.test(rd('server/room.ts')) &&
+      /allowsImportedRobots\(\): boolean \{\s*return this\.importsHere &&/.test(rd('server/room.ts')));
+    check('imports/gate: ⚠️ a worker room resolves it on the SOCKET thread and the worker reads no env for it',
+      /this\.config = \{ \.\.\.config, imports: config\.imports \?\? IMPORTS_OPEN_HERE \};/.test(rd('server/roomHost.ts')) &&
+      /allows: this\.config\.imports && /.test(rd('server/roomHost.ts')) &&
+      /\{ \.\.\.op\.config, imports: op\.config\.imports === true \}/.test(rd('server/roomWorker.ts')) &&
+      (strip(rd('server/roomHost.ts')).match(/new RemoteRoom\(/g) ?? []).length === 1);
+    const joinCfg = rd('server/index.ts').match(/const cfg: RoomConfig = \{[\s\S]*?\n {4}\};/)?.[0] ?? '';
+    check('imports/gate: a client cannot open a room: the join door builds its config field by field, without `imports`',
+      joinCfg.length > 0 && !/imports/.test(strip(joinCfg)));
+    check('imports/gate: the tab host builds its room from hostRoomConfig, and the page sends its gate in `open`',
+      /toWorker\(\{ k: 'open', code: claimed\.code, config, imports \}\)/.test(rd('src/lan/hostRuntime.ts')));
   }
 
   // ---- the source: the doors that need a socket, and the writers ----------------------------------
@@ -35807,7 +35902,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   {
     const s: Sink = {};
     let emptied = 0;
-    const room = new Room('smoke-vis-custom', () => emptied++, { kind: 'versus' });
+    const room = new Room('smoke-vis-custom', () => emptied++, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     room.add(mk(s, 'x', noVisuals, DEFAULT_SPEC, 'blue')); // an imports build without the relay
@@ -35867,7 +35962,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   {
     const s: Sink = {};
     let emptied = 0;
-    const room = new Room('smoke-vis-empty', () => emptied++, { kind: 'versus' });
+    const room = new Room('smoke-vis-empty', () => emptied++, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     putAll(room, 'a', 'mesh', glb, ID);
     putAll(room, 'a', 'top', png, ID);
@@ -35880,7 +35975,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- a seat that drops mid-match keeps its assets for its reconnect, and loses them at the reap -----------
   {
     const s: Sink = {};
-    const room = new Room('smoke-vis-match', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-vis-match', () => {}, { kind: 'versus', imports: true });
     room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
     room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     putAll(room, 'a', 'top', png, ID);
@@ -35903,7 +35998,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- record and ranked rooms ------------------------------------------------------------------------------
   {
     const s: Sink = {};
-    const room = new Room('smoke-vis-record', () => {}, { kind: 'record', record: 'solo' });
+    const room = new Room('smoke-vis-record', () => {}, { kind: 'record', record: 'solo', imports: true });
     room.add(mk(s, 'r', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
     putAll(room, 'r', 'top', png, ID);
     const first = s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined;
@@ -35912,7 +36007,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     room.onMessage('r', { t: 'visualGet', owner: 'r', id: ID, kind: 'top' });
     check('visuals/room: ...and refuses a request', (s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'room');
     room.stop();
-    const staged = new Room('smoke-vis-ranked', () => {}, { kind: 'versus' });
+    const staged = new Room('smoke-vis-ranked', () => {}, { kind: 'versus', imports: true });
     staged.applyPending({
       code: 'iad-vis', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
       roster: [{ userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 }],
@@ -36005,7 +36100,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- the round trip -------------------------------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-1', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-1', () => {}, { kind: 'versus', imports: true });
     const ownerCli = mkClient({ own: own(png, glb) });
     const viewCli = mkClient({});
     const ownerTx = join(room, 'a', impSpec(ID), ownerCli);
@@ -36032,7 +36127,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- the viewer's opt-out ----------------------------------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-2', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-2', () => {}, { kind: 'versus', imports: true });
     let show = false;
     const ownerCli = mkClient({ own: own(png, null) });
     const viewCli = mkClient({ showOthers: () => show });
@@ -36056,7 +36151,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- BIOBUZZ: the mesh, only for a viewer who wants it --------------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-3', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-3', () => {}, { kind: 'versus', imports: true });
     let mesh = false;
     const ownerCli = mkClient({ own: own(png, glb) });
     const viewCli = mkClient({ meshWanted: () => mesh });
@@ -36081,7 +36176,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // ---- an owner that has nothing to send, or whose robot changed ----------------------------------------------------
   {
     reset();
-    const room = new Room('smoke-visc-4', () => {}, { kind: 'versus' });
+    const room = new Room('smoke-visc-4', () => {}, { kind: 'versus', imports: true });
     const gone = mkClient({ own: own(null, null) });
     const goneTx = join(room, 'a', impSpec(ID), gone);
     gone.setOffered(true);
@@ -36090,7 +36185,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     gone.reset();
     room.stop();
 
-    const room2 = new Room('smoke-visc-5', () => {}, { kind: 'versus' });
+    const room2 = new Room('smoke-visc-5', () => {}, { kind: 'versus', imports: true });
     const junk = mkClient({ own: own(new Uint8Array(500).fill(9), null) });
     const junkTx = join(room2, 'a', impSpec(ID), junk);
     junk.setOffered(true);
@@ -36100,7 +36195,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     room2.stop();
 
     // the robot changes mid-upload: the frames stop
-    const room3 = new Room('smoke-visc-6', () => {}, { kind: 'versus' });
+    const room3 = new Room('smoke-visc-6', () => {}, { kind: 'versus', imports: true });
     const big = mkClient({ own: own(null, glb) });
     big.setGame('biobuzz');
     const bigTx = join(room3, 'a', impSpec(ID), big);
