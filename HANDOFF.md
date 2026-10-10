@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # HANDOFF — 2026-10-09 (alpha catch-up: seven PRs merged, DEPLOYED to `dsim-alpha` as v148)
 
 **State: `alpha` @ 7b56e305, deployed to `dsim-alpha` (release v148, 2026-10-09 04:35Z, by Saket; migrations 0061 + 0062 applied at boot). Production (`main`) has NONE of this. SERVER CHANGE: promoting needs `./scripts/fly-deploy.sh` from a `main` worktree, on the owner's word.** `npm test` on every merged branch: only the Zenith-STUB failures (5 AUTO checks + the IMPORT lane — this checkout has no real `vendor/zenith/*.tgz`). `test:workers` 152/152, `test:mm` 234, `dbtest`, `docaudit` pass on the #104 port. **Not run on alpha itself: `npm test` with real Zenith, `build`, `/verify`, any live match.**
@@ -15,7 +14,7 @@
 - **Checked on the deployed server (2026-10-09):** `/health` ok, v148 complete, one machine in `iad`, new image, migrations 0061/0062 in the log, three worker threads, JIT warm-up 2700 ticks in ~3.2 s, no exceptions. The "health check failed" lines at each boot and the idle auto-stops are normal (the old release logged both). ⚠️ `/api/records` returns 200 on the OLD server too (it ignores unknown params), so a 200 there proves nothing; use the release number and the migration lines.
 - **Not tested, do this next:** (1) a real two-tab test on alpha — open one room in two tabs and confirm the first tab stops driving the seat; (2) leave a lobby idle past `LOBBY_IDLE_MINUTES` and confirm it closes (worker path especially: no `workersmoke` check drives the reaper or the host cap); (3) click through the Play page, the leaderboard Window selector and the pace line on the alpha client; (4) `npm test` with the real Zenith tarballs (`ZENITH_VENDOR_REPO`/`ZENITH_VENDOR_TOKEN`, `node scripts/fetch-zenith.mjs`).
 - **Deploy gotcha:** `fly-deploy.sh` stops without `vendor/zenith/*.tgz`; this machine has none and no token, so the alpha deploy was run from Saket's. `flyctl` is at `~/.fly/bin` (not on the bash PATH).
-=======
+
 # HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
 
 **State: on `alpha`. `src/auto/seat.ts` only. The server runs the seat too but never reads `stuck` (the HUD reads the client's seat), so no deploy; no wire change, no `SIM_PATCH`.** `npm test` 5592/5592 (the one BIOBUZZ failure in 10-10 below is fixed), `build`, `server:check`, `docaudit`, `bundleaudit` pass.
@@ -36,7 +35,6 @@
 - **Recipes:** import probes and `shiftaudit`'s import pass need `VITE_ROBOT_IMPORT=1 npm run build` (`npm run dev` is always open); a local game server needs `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`.
 - **Opening production** (owner's word only): add `'stable'` to `IMPORTER_CHANNELS`; the smoke check "production is closed until the owner opens it" fails on purpose then and is updated with it.
 - **Open:** (the BIOBUZZ "AUTO stuck" failure noted here is fixed in 10-10b.) A closed server's relay refusal says "Only custom and LAN rooms show imported robots", wrong inside a closed custom room; honest clients never get there (no `importVisuals` cap), so the copy was left.
->>>>>>> origin/alpha
 
 # HANDOFF — 2026-09-27d (review lane 9: server correctness, PR #104)
 
