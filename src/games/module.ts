@@ -668,7 +668,8 @@ export interface RobotPreviewScene {
   setSpec(spec: RobotSpec, alliance: Alliance): void;
   /** fix or release the quality tier (`null` follows the device preference again). No
    * `'extreme'`, same reason as `RobotPreviewOptions.quality` above: a fixed tier tops out at
-   * High, and Extreme is a hand pick on a live device, never a tier this is asked to pin to. */
+   * High, and Extreme is a live device's own (a hand pick, or Auto after a measured trial),
+   * never a tier this is asked to pin to. */
   setQuality(tier: 'low' | 'medium' | 'high' | 'ultra' | null): void;
   resize(width: number, height: number, dpr: number): void;
   /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL — of `spec` when

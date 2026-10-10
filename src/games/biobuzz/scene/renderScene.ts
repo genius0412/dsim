@@ -34,7 +34,8 @@ import {
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
-import { applyFirstGuess, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
+import { applyFirstGuess, contextLossTrial, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
+import { createGpuTimer, type GpuTimer } from './renderGpuTimer';
 import { installViewKey, viewActionOf } from '../graphics/viewKey';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
 import { setClearPanelCap } from './renderFieldGlb';
@@ -197,6 +198,13 @@ class BiobuzzScene implements GameScene {
   private readonly env: BbEnvironment;
   private readonly stats: BbStats;
   private readonly governor: QualityGovernor;
+  /** GPU time per frame where the browser offers it (`renderGpuTimer.ts`); null on a fixed-tier
+   * scene, whose governor never decides anything. */
+  private readonly gpuTimer: GpuTimer | null;
+  /** hands the timer's results to the governor; created once, so `poll` allocates nothing. */
+  private readonly gpuSink = (ms: number): void => this.governor.gpuSample(ms);
+  /** the WebGL renderer string, the key Auto's Extreme verdict is stored under. */
+  private readonly gpuName: string;
   private readonly hemi: THREE.HemisphereLight;
   private readonly sun: THREE.DirectionalLight;
   private readonly host: HTMLElement;
@@ -293,8 +301,9 @@ class BiobuzzScene implements GameScene {
   private dragX = 0;
   private dragY = 0;
 
-  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions, gpuName: string) {
     this.canvas = canvas;
+    this.gpuName = gpuName;
     this.host = host;
     this.onQualityEvent = opts.onQualityEvent;
     this.fixedTier = (opts.quality as GraphicsTier | undefined) ?? null;
@@ -354,7 +363,9 @@ class BiobuzzScene implements GameScene {
           try {
             const g = getGraphics();
             lowered = contextLossTier(g);
-            if (lowered) setGraphicsTier(lowered, g.preset === 'auto');
+            // an Auto device that lost the context ON Extreme also stores a FAILED verdict, so
+            // the next match does not trial its way back into the same loss
+            if (lowered) setGraphicsTier(lowered, g.preset === 'auto', contextLossTrial(g, this.gpuName));
           } catch {
             /* a settings listener failing on a dead context must not stop the fallback below */
           }
@@ -426,8 +437,13 @@ class BiobuzzScene implements GameScene {
     // the clock this scene's own frame loop already reads — `graphics/auto.ts` takes it as a
     // parameter rather than reading one itself (see its note on the determinism guard). A
     // FIXED-TIER scene (the replay export, the gallery) measures without deciding: a warm-up
-    // timed on an export drawn at High must not step the player's own stored tier.
-    this.governor = createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier);
+    // timed on an export drawn at High must not step the player's own stored tier. `ready` is
+    // what the Extreme trial waits for before it measures anything (`effectsReady`).
+    this.governor = createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier, {
+      gpu: this.gpuName,
+      ready: () => this.effectsReady(),
+    });
+    this.gpuTimer = this.fixedTier ? null : createGpuTimer(this.renderer.getContext() as WebGL2RenderingContext);
 
     this.applyQuality();
     this.bindTheme();
@@ -746,6 +762,19 @@ class BiobuzzScene implements GameScene {
     this.renderer.shadowMap.needsUpdate = true;
     console.warn(`[renderScene] physical materials ${what}`, err);
     this.onQualityEvent?.('Physical materials are unavailable here. Showing the standard materials.');
+  }
+
+  /**
+   * IS THIS SCENE DRAWING EVERYTHING ITS SETTINGS ASK FOR? The post chunk and the surfaces chunk
+   * each loaded (or failed, which is final for the scene's life), and the room probe captured
+   * when the physical materials are on. Auto's Extreme trial measures nothing until this is true:
+   * Extreme without its AO and its physical twins is a cheaper picture than the one being judged.
+   */
+  private effectsReady(): boolean {
+    const s = this.settings;
+    if (wantsPost(s) && !this.post && !this.postFailed) return false;
+    if (surfacesOn(s) && !this.surfaces && !this.surfacesFailed) return false;
+    return !(this.surfaces && this.probeDirty);
   }
 
   /** everything the room probe must NOT see: the field's structure (all of the field group but
@@ -1079,6 +1108,8 @@ class BiobuzzScene implements GameScene {
     // goes stale — this is a render cap, not a simulation one.
     if (this.frameInterval > 0 && t0 - this.lastDraw < this.frameInterval) return;
     this.lastDraw = t0;
+    // GPU times of frames drawn a few frames ago (`renderGpuTimer.ts`), before this one's query
+    this.gpuTimer?.poll(this.gpuSink);
 
     updateBiobuzzField(this.field, world);
     updateBiobuzzElements(this.elements, world);
@@ -1096,6 +1127,9 @@ class BiobuzzScene implements GameScene {
     this.lastViewAngle = frame.viewAngle;
     this.lastCamera = this.resolvedCamera(frame.camera);
     const camera = this.cameras.update(frame, world, this.lastCamera);
+
+    // THE FRAME'S GPU WORK starts here: the probe, the scene pass, post, the blit and the minimap
+    this.gpuTimer?.begin();
 
     // THE ROOM PROBE, when the room changed — before the target is bound and outside both the
     // bloom window and the surface raise below, so the lamps are at their own power and the twins
@@ -1161,6 +1195,7 @@ class BiobuzzScene implements GameScene {
     this.renderer.setRenderTarget(null);
 
     if (this.settings.minimap) this.renderMinimap(frame);
+    this.gpuTimer?.end();
 
     /**
      * WHAT THE GOVERNOR IS FED, AND WHY IT IS NOT THE FRAME PERIOD.
@@ -1175,6 +1210,12 @@ class BiobuzzScene implements GameScene {
      * purely GPU-bound frame — but only for one frame, because the driver's own backpressure
      * stalls the NEXT frame's submission inside this same span. A machine that cannot draw the
      * scene shows it here within a frame or two, which is all a two-second warm-up needs.
+     *
+     * The governor also takes the frame's PERIOD from this (`now() - cost` is when it began),
+     * but only as a count of LATE frames against the display's own period, never as a p95, and
+     * the GPU's own time from `gpuTimer`. Those two are what Auto's Extreme trial and the
+     * Extreme guard judge by: Extreme's cost is GPU fill, and the backpressure above does not
+     * reliably surface a GPU-bound frame in this span.
      */
     const cost = performance.now() - t0;
     this.governor.sample(cost);
@@ -1293,6 +1334,7 @@ class BiobuzzScene implements GameScene {
     for (const off of this.teardown) off();
     this.teardown.length = 0;
     this.governor.dispose();
+    this.gpuTimer?.dispose();
     this.stats.dispose();
     this.reticle.dispose();
     this.env.dispose();
@@ -1420,5 +1462,5 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
   host.appendChild(canvas);
   // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
   // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
-  return new BiobuzzScene(canvas, field, host, opts);
+  return new BiobuzzScene(canvas, field, host, opts, probe.renderer);
 };

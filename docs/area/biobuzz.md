@@ -648,21 +648,22 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
   `graphics/settings.ts` is the model — the nineteen dials (§4.4's sixteen plus
   `elementDetail`, below, `bloom`, and `materials`), the five preset columns, the 0.6/1.2/2.2/4.0/8.3 MP pixel budgets,
-  `localStorage['decodesim.graphics']` with field-by-field coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
-  slip rule) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
+  `localStorage['decodesim.graphics']` with field-by-field coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the Extreme trial →
+  the in-match slip rule and Extreme guard) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
   this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
   `scene/` — it is read by `src/ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary
   main-bundle files, and the RENDER lane asserts it. All but one apply LIVE; mesh detail
   needs the next 3D view (it picks the GLB) and SMAA is **not offered on this build**
   (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
-  - ⚠️ **EXTREME (2026-09-27) IS A HAND PICK, AND ITS EFFECTS ARE A LAZY CHUNK.** The fifth column:
+  - ⚠️ **EXTREME (2026-09-27) IS A HAND PICK OR AN AUTO TRIAL'S PASS, AND ITS EFFECTS ARE A LAZY CHUNK.** The fifth column:
     150 % render scale under an 8.3 MP budget, MSAA 4x, a 4096 VSM map (`shadows: 'max'`, a value
     of its own so a stored `soft` still means 2048), ambient occlusion and bloom. The rules:
-    - **Auto never picks it** (`GFX_AUTO_MAX_TIER`): the warm-up measures CPU submit time and
-      Extreme's cost is GPU fill, nothing corrects between 16.7 and 25 ms afterwards, and it
-      downloads a chunk. `stepTier` takes the ceiling on the way up and never walks a hand pick
-      down to it; `setGraphicsPreset('auto')` clamps. A lost WebGL context on Extreme lowers the
-      stored tier to Ultra before the 2D fallback, or the next reload loses it again.
+    - **Auto reaches it only through a measured trial** (2026-10-10, block below). The first
+      guess and the warm-up's up-step still stop at Ultra (`GFX_AUTO_STEP_MAX_TIER`): the warm-up
+      measures CPU submit time and Extreme's cost is GPU fill. `stepTier` takes that ceiling on
+      the way up and never walks a hand pick down to it; `setGraphicsPreset('auto')` clamps to it
+      unless a PASS is stored. A lost WebGL context on Extreme lowers the stored tier to Ultra
+      before the 2D fallback, or the next reload loses it again.
     - **AO and bloom are asked of the SETTINGS (`wantsPost`), never the tier**, so a Custom with
       AO on gets AO. `scene/renderPost.ts` is fetched by `renderScene.ts`'s `import('./renderPost')`
       the first time one is on and freed when both go off. It is the ONLY importer (a second one
@@ -696,6 +697,69 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     - ⚠️ The scene pass leaves a few NaN texels on robots at high resolution (4 of 7.9 M at
       3744 × 2106). Bloom's high pass zeroes them; without that one blurred NaN blacked out the
       whole frame. The source is still unfound.
+  - ⚠️ **AUTO PICKS EXTREME ONLY AFTER A MEASURED TRIAL** (owner, 2026-10-10: "Extreme should be
+    able to be picked by auto"). `GFX_AUTO_MAX_TIER` is `extreme`; the policy is
+    `createQualityGovernor` in `graphics/auto.ts`, every number a named constant there.
+    - **The path.** A warm-up that lands on Ultra runs a fresh 2 s Ultra BASELINE (the warm-up's
+      own p95 carries shader compiles). Entry needs CPU p95 under 6 ms, Ultra's median frame
+      period at most 18 ms, and, where the GPU is timed, Ultra's GPU p95 at most 14 / 3 =
+      4.67 ms. Then `setGraphicsTier('extreme', true)` and "Graphics: trying Extreme (auto)".
+      Nothing is measured until the scene reports ready (`effectsReady`: the post and surfaces
+      chunks loaded or failed, the room probe captured; 15 s without it abandons the trial and
+      stores nothing), then 0.5 s of settle for program compiles, then a 3 s window. PASS needs
+      GPU p95 at most 14 ms (when at least 20 GPU results arrived), at most 5 % late frames and
+      CPU p95 at most 16.7 ms. Otherwise Ultra, still Auto, with a line naming the number
+      ("On Extreme: 18.0 ms GPU p95.").
+    - **A late frame** has a period past max(1.5 × the baseline's median period, 18 ms): a missed
+      vsync on 60 Hz (25 ms), under ~56 fps on 144 Hz. The period comes from `now() - cpuMs` at
+      each sample. A late-frame COUNT against the display's own measured period is not the period
+      p95 the warm-up refused to use, which sits at the refresh on any healthy vsync-locked machine.
+    - **The entry factor of 3** is arithmetic (1.5² = 2.25× the pixels, plus GTAO and the physical
+      twins, plus the 4096 map) checked against one GPU: on an RTX 4070 Ti SUPER (offscreen
+      harness, 1922 × 1081, two cameras) Ultra measured 0.50 to 0.61 ms GPU p50 and 1.59 to
+      1.88 ms p95, Extreme 2.41 to 2.63 ms p50 and 2.59 to 2.85 ms p95; CPU p95 2.9 to 3.4 ms
+      against 4.3 to 5.2 ms. That is 4.3 to 4.8× on the median and 1.4 to 1.8× on the p95 the
+      gate reads. 3 errs toward trialling: a needless trial costs 3 s once per GPU, a strict gate
+      means a GPU that could hold Extreme never gets it.
+    - **The verdict is stored per GPU**: `extremeTrial: { gpu, pass, periodMs }` in the graphics
+      blob, coerced field by field (`coerceExtremeTrial`). A FAIL is not retried until "Reset to
+      Auto"; a verdict for another renderer string is ignored, so a new GPU trials; a PASS starts
+      the next page on Extreme (`applyFirstGuess`) with no second trial. A stored Auto on Extreme
+      without a PASS (a tab closed mid-trial) reads back as Auto on Ultra, and a scene disposed
+      mid-trial puts Ultra back itself. A pre-trial build ignores the field and drops it if it
+      writes the blob, which costs one more trial. `setGraphicsPreset('auto')` keeps Extreme
+      only with a stored PASS; whether it is THIS GPU's is checked at the governor's first check.
+    - **The Extreme guard** sits beside the 25 ms CPU slip and shares its "once". On Extreme's own
+      column (Auto or a hand pick; a Custom is left to the CPU slip) it judges each quarter second
+      between checks: bad with GPU p95 over 20 ms or more than 25 % late. Bad quarters back to
+      back for 3 s, counted from the start of the first, lower to Ultra. Auto also stores a FAIL;
+      a hand pick lands on a named Ultra and stores nothing. It applies to hand picks because the
+      CPU slip already overrides one and cannot see a GPU-bound frame. Quarter seconds, not a
+      rolling window, because a rolling window holds a one-second hiccup for its whole length. The
+      stall guard applies unchanged. A context loss on Auto Extreme stores a FAIL
+      (`contextLossTrial`).
+    - ⚠️ **The guard's late line follows the pace the session is drawn at** (the 5th-percentile
+      period, when that is slower than the stored one). The capture harness paints at 30 fps and
+      lowered a hand-picked Extreme in 3 s without it. Chrome's energy saver and Safari's low power
+      mode cap rAF at 30 the same way, and a PASS must not turn into a FAIL on battery. The cost:
+      an Extreme the GPU holds at a steady 30 fps is not caught by the late count, only by the
+      GPU p95 where the GPU is timed. The trial needs no such rule: a 30 fps session fails the
+      18 ms entry gate and stores nothing.
+    - ⚠️ **`scene/renderGpuTimer.ts` FLUSHES AFTER `endQuery`.** Without it the end of the query
+      waited in the command buffer until the browser's next flush, a frame later, and one query
+      around the frame read 29.9 ms p50 on Ultra in the harness: the period, not the work. With
+      the flush it reads 0.61 ms, which matches timing each draw on its own (scene pass 0.58,
+      blit 0.02). It was found because it lowered a hand-picked Extreme (GPU p95 30 > 20). The
+      timer is `EXT_disjoint_timer_query_webgl2` (desktop Chromium; Firefox and Safari run on late
+      frames alone): four queries in a ring, read from the next frame on, `GPU_DISJOINT_EXT`
+      drops what is in flight, a lost context makes every call a no-op, nothing is allocated per
+      frame, and a fixed-tier scene creates none.
+    - **Seen end to end** in the harness on that GPU: at 60 fps paint, `?gfx=auto` trialled and
+      passed for real ("Extreme (auto, 2.7 ms GPU p95, 0% of frames late)", period 16.6 ms); at
+      30 fps paint it did not enter and stored nothing. `&trial=pass|fail` swaps in a fake-clock
+      governor so both verdicts run through the real scene's tier switch and chunk loads.
+    - **UI**: the preset row's hint names the column Auto is on ("on Ultra"), and the copy says
+      Auto moves to Extreme only after timing it on this GPU.
   - **PHYSICAL MATERIALS (2026-09-27) is a lazy chunk, reached from exactly two places.**
     `scene/renderSurfaces.ts` (+ its `renderSurface*.ts` helpers) is imported only as
     `import('./renderSurfaces')`, from `renderScene.ts` and `renderPreview.ts`. Standard mode is

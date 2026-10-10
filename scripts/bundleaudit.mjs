@@ -587,6 +587,11 @@ const BASELINE = {
   // 2026-10-01, THE IMPORTED ROBOT: 226.59 -> 231.54 (+4.95), MEASURED. `renderImported.ts` (+2.86) and
   // three.js moving into a chunk the importer shares (+1.98): see the RE-MEASURED entry above. 18 KB of
   // ceiling left.
+  //
+  // 2026-10-10, AUTO'S EXTREME TRIAL: measured at 234.95 against 234.35 for be3dc944 built the same
+  // hour (+0.60: the GPU timer in `renderGpuTimer.ts`, the readiness check, the context-loss
+  // verdict), still under the tolerance, so the number is NOT moved. The base itself was already
+  // 2.81 over 231.54.
   scene: { gzip: 231.54 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
@@ -600,7 +605,15 @@ const BASELINE = {
   // 2026-09-27, THE EXTREME TIER: measured at 6.68, still inside the tolerance, number not moved.
   // Main at 023dc75e measured 6.52, so +0.16 is this pass (the Extreme tile, the AO and bloom rows,
   // the Max shadow tile) and 2.51 was already over the 4.01 before it.
-  graphics: { gzip: 4.01 * 1000 },
+  //
+  // 2026-10-10, AUTO'S EXTREME TRIAL: 6.74 at be3dc944 (built the same hour) -> 8.30 (+1.56), which
+  // crosses the 8.01 tolerance line, so the baseline moves to it. Almost all of it is `auto-*.js`
+  // (1.76 -> 3.29): the trial, the Extreme guard and their constants in `graphics/auto.ts`. That
+  // chunk is SHARED: `renderScene-*.js` imports the governor from it, so this route is billed for
+  // code every 3D player loads anyway; destructuring the Reset-to-Auto import does not shrink it
+  // (tried: 8.33). The section's Auto hint is +0.03. `settings-*.js` (2.34 -> 2.58) routes to
+  // `other` on both builds.
+  graphics: { gzip: 8.3 * 1000 },
   // 2026-09-27: NEW. `renderPost-*.js`, the post-processing chunk: three's GTAO pass (with its
   // shaders and the simplex noise it seeds from) and UnrealBloom, plus `renderPost.ts`'s own
   // subclass, high-pass shader and ping target, measured on the build that introduced it. Lazy:
