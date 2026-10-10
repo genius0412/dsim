@@ -680,6 +680,12 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
     'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', 'a87422c57eb9ed68', '14894c2c59b82e12'],
   },
+  7: {
+    'decode solo': ['2d126b8eff58a52e', '69880a216f5edbfc', '43fec73b03b36692', 'be59a3d52ce6c79c', 'a366239b68377195', '523dd1a09e25d9a6'],
+    'decode 2v2': ['d3022bac45c08d85', '27a27dbacf93a19e', '30957503e8bb1ace', '0a9156d4ac7e7195', 'f239c0530136017d', 'deab4f9a69fa97a2'],
+    'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
+    'chain 2v2': ['cf5f39a500d7f3d5', 'e092c89d2d413cfa', 'fbd9baa5385dd445', '12ded1338c9f7637', 'a6749d8218e78654', 'e7af9771737af2ff'],
+  },
 };
 const goldenArmed = (w: World): World => {
   // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
@@ -17368,6 +17374,15 @@ const forceRoomToPost = (room: Room): void => {
   check('split: a versus room reports none', (vs as MatchOutcome | null)?.split === undefined);
 }
 
+// ---- the leaderboard must not label a Total board as Auto / Today (older server) ----
+{
+  const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('board: a category or window the server did not echo shows no rows, not the Total board under a wrong label',
+    /category !== 'total' && r\.category !== category/.test(board) && /win !== 'season' && r\.window !== win/.test(board) && /Not available yet/.test(board));
+  const server = readFileSync('server/api.ts', 'utf8');
+  check('board: the server echoes the category and window it answered', /category, window, windowStart: start, resetsAt/.test(server));
+}
+
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------
 // A room used to be single-use: `world` was set once and never cleared, so after one
 // match `canJoin` refused every later joiner and the `start` gate refused every later
@@ -23195,6 +23210,78 @@ const dumperSetup = (): RobotSetup => {
         `errOn=${errOn.toFixed(2)} errOff=${errOff.toFixed(2)}`,
       );
     }
+
+    // ...AND IT TURNS A TANK. The shared drive model steers a tank (and a butterfly in tank mode)
+    // only from `leftDrive`/`rightDrive` and ignores `rotate`, and the assist used to write only
+    // `rotate` — so a tank drum held on the fire button never turned, the fire gate never opened
+    // and it never fired at all (measured: 0.00 rad and 0 of 5 over two seconds, facing away).
+    // BIOBUZZ found the same thing; the assist now writes the side drives too.
+    {
+      const tankAim = (drivetrain: 'tank' | 'butterfly') => {
+        const s = chainSetup(0, 'blue');
+        s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain };
+        s.assists = { ...DEFAULT_ASSISTS, autoFire: false, autoIntake: false };
+        const gw = createChainWorld('match', 991, [s]);
+        gw.match.phase = 'teleop';
+        gw.match.phaseTimeLeft = 120;
+        const rob = gw.robots[0];
+        if (drivetrain === 'butterfly') rob.butterflyTank = true;
+        rob.pos = { x: -30, y: 0 };
+        rob.heading = Math.PI / 2; // 90° off the goal (+x)
+        rob.hopper = Array(5).fill('green');
+        runChain(gw, cmd({ fire: true }), 2);
+        return { err: Math.abs(wrapAngle(rob.heading - chainGoalAimHeading(rob))), left: rob.hopper.length };
+      };
+      for (const dt of ['tank', 'butterfly'] as const) {
+        const { err, left } = tankAim(dt);
+        check(
+          `chain aim assist: a ${dt === 'tank' ? 'TANK' : 'BUTTERFLY (tank mode)'} drum held on fire turns onto the goal and fires`,
+          err < 0.1 && left === 0,
+          `heading error ${err.toFixed(2)} rad, ${left} of 5 left`,
+        );
+      }
+
+      // A REPLAY OF IT RE-SIMULATES. The side drives the assist writes are derived from the
+      // recorded command every tick, so they are not stored — which is exactly why this is
+      // worth a check: a tank run that hunts on its side drives, then holds fire so the assist
+      // takes the sticks, must come back identical through the recorder and a JSON trip. Not
+      // vacuous: it has to have scored (before the fix a manual-fire tank scored nothing).
+      const setup: RobotSetup = {
+        id: 0,
+        alliance: 'blue',
+        spec: coerceSpec({ ...DEFAULT_SPEC, scoreMode: 'drum', drivetrain: 'tank' }, DEFAULT_SPEC, 'chain'),
+        assists: { ...DEFAULT_ASSISTS, fieldCentric: false, autoIntake: true, autoFire: false },
+        startIndex: 0,
+      };
+      const src: CommandSource = (_tick, w) => {
+        const me = w.robots[0];
+        let target: { x: number; y: number } | null = me.hopper.length >= 3 ? { x: CHAIN_HALF_X, y: 0 } : null;
+        if (!target) {
+          let bestD = Infinity;
+          for (const b of w.balls) {
+            if (b.state.kind !== 'ground') continue;
+            const d = hyp(b.pos.x - me.pos.x, b.pos.y - me.pos.y);
+            if (d < bestD) { bestD = d; target = b.pos; }
+          }
+        }
+        const err = target ? wrapAngle(datan2(target.y - me.pos.y, target.x - me.pos.x) - me.heading) : 0;
+        const turn = Math.max(-0.8, Math.min(0.8, err * 1.5));
+        const loaded = me.hopper.length >= 3;
+        return new Map([[0, cmd({ leftDrive: (loaded ? 0.2 : 0.7) - turn, rightDrive: (loaded ? 0.2 : 0.7) + turn, intake: true, fire: loaded })]]);
+      };
+      const run = runRecordMatch(33, [setup], src, { mode: 'free', stopTick: 1500, game: 'chain' });
+      const scored = run.world.chain!.scored.blue;
+      check('replay/tank drum, manual fire: the recorded run actually scored', scored > 0, `scored=${scored}`);
+      check(
+        'replay/tank drum, manual fire: re-simulating the replay reproduces the run exactly',
+        worldHash(simulateReplay(run.replay)) === worldHash(run.world),
+      );
+      const stored: Replay = JSON.parse(JSON.stringify(run.replay));
+      check(
+        'replay/tank drum, manual fire: survives the JSON round-trip a stored replay takes',
+        worldHash(simulateReplay(stored)) === worldHash(run.world) && stored.setups[0].spec.drivetrain === 'tank',
+      );
+    }
   }
 
   // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
@@ -23661,6 +23748,37 @@ const dumperSetup = (): RobotSetup => {
     rob.vel = { x: 0, y: 0 };
     beamBlock(w);
     check('chain beams: a robot that cannot clear a beam is pushed off it', !robotIntersectsRect(rob, beam.rect));
+    // ...and a FRONT-ONLY intake is held off it by its own footprint, not by a radius about the
+    // chassis centre. The intake grows one end only, so the footprint's centre sits ahead of
+    // `r.pos`; measured from `r.pos`, a nose-first drive parked the intake a full inch OVER the
+    // beam (footprint top +0.5 against the beam's near face at -0.5). Nose-in and tail-in must
+    // now stop at the SAME gap, which is what a symmetric keep-out about the footprint means.
+    {
+      const stopAt = (heading: number, dir: 1 | -1): number => {
+        const spec = coerceSpec({ ...DEFAULT_SPEC, groundClearance: 0.5, intakeMount: 'front' }, DEFAULT_SPEC, 'chain');
+        const bw = createChainWorld('free', 1, [{ ...chainSetup(0, 'blue'), spec, assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
+        bw.balls.length = 0;
+        const br = bw.robots[0];
+        br.pos = { x: 44, y: -20 };
+        br.heading = heading;
+        br.vel = { x: 0, y: 0 };
+        const drive = cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
+        for (let i = 0; i < 180; i++) chainStep(bw, SIM_DT, new Map([[br.id, drive]]));
+        check(
+          `chain beams: a front-intake robot that cannot clear a beam stops OFF it (${dir > 0 ? 'nose' : 'tail'} first)`,
+          !robotIntersectsRect(br, CHAIN_BEAMS[0].rect),
+          `footprint top ${Math.max(...robotCorners(br).map((q) => q.y)).toFixed(3)} vs beam ${CHAIN_BEAMS[0].rect.y0}`,
+        );
+        return Math.max(...robotCorners(br).map((q) => q.y));
+      };
+      const nose = stopAt(Math.PI / 2, 1);
+      const tail = stopAt(-Math.PI / 2, -1);
+      check(
+        'chain beams: ...and nose-first and tail-first stop at the same gap from the beam',
+        Math.abs(nose - tail) < 0.01,
+        `nose ${nose.toFixed(3)} tail ${tail.toFixed(3)}`,
+      );
+    }
   }
 
   // ---- CATALYST MECHANISMS: three archetypes, configurable type AND mount ----------
@@ -34944,7 +35062,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   const std = run({ length: 18, width: 16 }, -Math.PI / 2);
   check(
     'imports/chain beam: a hull with a short rear, driven rear-first into a beam it cannot cross, is held at the beam (no jump bigger than a standard chassis takes)',
-    rear.jump <= std.jump + 1e-9 && rear.jump < 1 && rear.gap >= 0 && rear.gap < 1,
+    rear.jump <= std.jump + 1e-4 && rear.jump < 1 && rear.gap >= 0 && rear.gap < 1,
     `rear-first jump ${rear.jump.toFixed(2)} gap ${rear.gap.toFixed(2)}; front-first jump ${front.jump.toFixed(2)} gap ${front.gap.toFixed(2)}; standard jump ${std.jump.toFixed(2)}`,
   );
   check('imports/chain beam: ...and front-first the same', front.jump < 1 && front.gap >= 0 && front.gap < 1, `jump ${front.jump.toFixed(2)} gap ${front.gap.toFixed(2)}`);

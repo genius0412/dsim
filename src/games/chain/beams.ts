@@ -394,6 +394,16 @@ export function beamStrafeBlock(world: World): void {
 /**
  * POST-solve: a robot whose frame can't clear a beam is blocked like a wall — keep it on
  * the side it's on and stop its across-beam motion (it can still drive ALONGSIDE).
+ *
+ * The keep-out is a rotation-agnostic radius (the footprint's larger half-extent), measured
+ * from the FOOTPRINT'S OWN CENTRE — not from `r.pos`. The two differ whenever the footprint is
+ * not symmetric fore-and-aft: a front-only or back-only intake grows ONE end
+ * (`footprintExtents`), putting the footprint's centre `(front − rear) / 2` ahead of (or
+ * behind) the chassis centre. Measured from `r.pos`, the radius left a front-intake robot
+ * that drove nose-first into a beam parked with its intake `reach / 2 − 0.5` in OVER the beam
+ * (re-clamped there every tick), and held one that backed in `reach / 2` further off than its
+ * rear needed. A symmetric footprint (`frontback`, `side`, no reach) has the offset at exactly
+ * 0 and behaves as before, bit for bit.
  */
 export function beamBlock(world: World): void {
   for (const r of world.robots) {
@@ -407,22 +417,27 @@ export function beamBlock(world: World): void {
      * beam in one tick (integration review 2026-10-02).
      */
     const hb = r.spec.imported ? rotatedPolyBounds(r.spec.imported.hull, dcos(r.heading), dsin(r.heading)) : null;
+    const ahead = (e.front - e.rear) / 2; // footprint centre, along the heading from r.pos
     for (const beam of CHAIN_BEAMS) {
       if (!robotIntersectsRect(r, beam.rect)) continue;
       if (beam.axis === 'y') {
         const bc = (beam.rect.y0 + beam.rect.y1) / 2;
         const bh = (beam.rect.y1 - beam.rect.y0) / 2;
-        const side = r.pos.y >= bc ? 1 : -1;
+        // an import's hull bounds already say where its footprint is, so only a standard robot gets the centre offset
+        const off = hb || ahead === 0 ? 0 : ahead * dsin(r.heading);
+        const side = r.pos.y + off >= bc ? 1 : -1;
         const toward = hb ? (side > 0 ? -hb.minY : hb.maxY) + 0.5 : rad;
-        const limit = bc + side * (bh + toward);
+        const limit = bc + side * (bh + toward) - off;
         r.pos.y = side > 0 ? Math.max(r.pos.y, limit) : Math.min(r.pos.y, limit);
         if (side * r.vel.y < 0) r.vel.y = 0;
       } else {
         const bc = (beam.rect.x0 + beam.rect.x1) / 2;
         const bw = (beam.rect.x1 - beam.rect.x0) / 2;
-        const side = r.pos.x >= bc ? 1 : -1;
+        // an import's hull bounds already say where its footprint is, so only a standard robot gets the centre offset
+        const off = hb || ahead === 0 ? 0 : ahead * dcos(r.heading);
+        const side = r.pos.x + off >= bc ? 1 : -1;
         const toward = hb ? (side > 0 ? -hb.minX : hb.maxX) + 0.5 : rad;
-        const limit = bc + side * (bw + toward);
+        const limit = bc + side * (bw + toward) - off;
         r.pos.x = side > 0 ? Math.max(r.pos.x, limit) : Math.min(r.pos.x, limit);
         if (side * r.vel.x < 0) r.vel.x = 0;
       }
