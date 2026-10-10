@@ -47,11 +47,18 @@ const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
  *    without one is still written as format 2, byte for byte as it was.
  * 4: an imported robot with PRACTICE TUNING (`ImportedRobot.tune`), which a format-3 build's coercer
  *    drops, so it would re-simulate the untuned robot. Stamped only then; format 3 is unchanged.
+ * 5: an AUTO-ONLY run (`Replay.runLength` 'auto', `World.runLength`): the match ends when AUTO
+ *    does, so the container re-simulates only with the exit that ends it. Stamped ONLY then (format
+ *    4/3/2 stay what they were), so a build that predates it reads `format > REPLAY_FORMAT` as
+ *    `'future'` instead of playing the run on into a TELEOP that never happened.
  */
-export const REPLAY_FORMAT = 4;
+export const REPLAY_FORMAT = 5;
 
 /** what a container WITHOUT an imported robot is written as — the format before imports existed */
 export const REPLAY_FORMAT_BASE = 2;
+
+/** an auto-only container (`Replay.runLength`) — the same number as `REPLAY_FORMAT` */
+export const REPLAY_FORMAT_AUTO = 5;
 
 /** numbers per command entry, by container format. 1: [tick,dx,dy,rot,buttons] ·
  *  2: + [ld,rd] */
@@ -102,6 +109,8 @@ export interface Replay {
   ticks: number;
   /** per-robot-id command track (absent id ⇒ ZERO the whole match) */
   tracks: Record<number, CommandTrack>;
+  /** 'auto' = an AUTO-ONLY run (stamped format 5). ABSENT for a full run. */
+  runLength?: 'auto';
 }
 
 /** when `SIM_PATCH` 1 reached the site — a build from then on ran it but did not stamp it */
@@ -154,6 +163,8 @@ export class ReplayRecorder {
     /** which physics backend the run being recorded is stepping (`Replay.physics`). Default
      *  `'2d'` so every existing caller records exactly what it always did. */
     readonly physics: Physics = '2d',
+    /** 'auto' for an AUTO-ONLY run (`Replay.runLength`); absent for a full one */
+    readonly runLength?: 'auto',
   ) {}
 
   /** record the command map applied at `tick` (1-based, == world.tick after the
@@ -182,7 +193,7 @@ export class ReplayRecorder {
     return {
       // format 3 ONLY with an imported robot in the line-up; every other container is the format-2
       // container it was before imports (see REPLAY_FORMAT)
-      format: setupsHaveTune(this.setups) ? REPLAY_FORMAT_TUNED : setupsHaveImported(this.setups) ? REPLAY_FORMAT_IMPORTED : REPLAY_FORMAT_BASE,
+      format: this.runLength === 'auto' ? REPLAY_FORMAT_AUTO : setupsHaveTune(this.setups) ? REPLAY_FORMAT_TUNED : setupsHaveImported(this.setups) ? REPLAY_FORMAT_IMPORTED : REPLAY_FORMAT_BASE,
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
       patch: C.SIM_PATCH,
@@ -192,6 +203,7 @@ export class ReplayRecorder {
       // the one this build produced yesterday — which is exactly what the 2D-regression half
       // of the NET3D lane compares.
       physics: this.physics === '3d' ? '3d' : undefined,
+      runLength: this.runLength === 'auto' ? 'auto' : undefined,
       mode: this.mode,
       seed: this.seed,
       setups: this.setups.map((s) => ({
@@ -384,6 +396,8 @@ export class ReplayPlayer {
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
     // the rules this log was RECORDED under — an unstamped replay predates `SIM_PATCH` 1
     this.world.simPatch = replay.patch ?? 0;
+    // an auto-only run ends at the AUTO buzzer; the container says so (never the settings)
+    if (replay.runLength === 'auto') this.world.runLength = 'auto';
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
 
@@ -584,7 +598,7 @@ export function runRecordMatch(
   seed: number,
   setups: RobotSetup[],
   src: CommandSource,
-  opts: { mode?: GameMode; stopTick?: number; game?: GameId; physics?: Physics } = {},
+  opts: { mode?: GameMode; stopTick?: number; game?: GameId; physics?: Physics; runLength?: 'auto' } = {},
 ): RecordRun {
   const mode = opts.mode ?? 'match';
   const game = opts.game ?? 'decode';
@@ -592,7 +606,8 @@ export function runRecordMatch(
   const mod = simModuleFor(game);
   const world = mod.createWorld(mode, seed, setups, undefined, physics);
   if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(seed, setups, mode, game, physics);
+  if (opts.runLength === 'auto') world.runLength = 'auto';
+  const rec = new ReplayRecorder(seed, setups, mode, game, physics, opts.runLength);
   const cap = opts.stopTick ?? maxMatchTicks();
   while (world.match.phase !== 'post' && world.tick < cap) {
     const tick = world.tick + 1;

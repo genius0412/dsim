@@ -604,6 +604,7 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (s.practicePhysics === '2d' || s.practicePhysics === '3d') out.practicePhysics = s.practicePhysics;
+    if (s.runLength === 'full' || s.runLength === 'auto') out.runLength = s.runLength;
     /**
      * THE BOT TIER IS COERCED BY THE GAME THAT HAS ONE — and PRESERVED by the game that does not.
      *

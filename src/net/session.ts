@@ -102,6 +102,8 @@ export interface NetSession {
    * Mutable for the same reason `game` is — a host restart re-authors the match.
    */
   physics: Physics;
+  /** 'auto' = an AUTO-ONLY match (`matchStart.runLength`); absent ⇒ a full one */
+  runLength?: 'auto';
   /** the local player's robot id (assigned by the server at match start; -1 when
    * spectating — there is no local robot) */
   readonly localRobotId: number;

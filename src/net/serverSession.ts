@@ -65,6 +65,8 @@ export class ServerSession implements NetSession {
   /** which physics the ROOM runs on (`matchStart.physics`; absent ⇒ '2d'). Mutable for the
    *  same reason `game` is: a host restart re-authors the match. */
   physics: Physics;
+  /** 'auto' = an AUTO-ONLY match (`matchStart.runLength`); absent ⇒ a full one. Re-read on every restart. */
+  runLength?: 'auto';
   readonly localRobotId: number;
   /** read-only spectator session (no local robot; input suppressed) */
   readonly spectator: boolean;
@@ -177,6 +179,7 @@ export class ServerSession implements NetSession {
       yourRobotId: number;
       game?: GameId;
       physics?: Physics;
+      runLength?: 'auto';
       ranked?: boolean;
       intros?: PlayerIntro[];
       drivers?: MatchDriver[];
@@ -191,6 +194,7 @@ export class ServerSession implements NetSession {
     this.spectator = spectator;
     this.game = start.game ?? 'decode';
     this.physics = start.physics ?? '2d';
+    this.runLength = start.runLength;
     this.seed = start.seed;
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
@@ -569,6 +573,7 @@ export class ServerSession implements NetSession {
       // absent, and a stale '3d' here would have the client predict a pipeline the server is
       // no longer running. Absent means '2d', so read it as such.
       this.physics = m.physics ?? '2d';
+      this.runLength = m.runLength; // ALWAYS re-read: a recycled room may change it
       this.gen = m.gen ?? 0;
       this.rematch = { votes: 0, need: 0, mine: false }; // a new match, a clean tally
       this.ranked = m.ranked ?? false;

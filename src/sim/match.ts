@@ -17,6 +17,11 @@ export function clockExpired(left: number): boolean {
   return left <= C.PHASE_TIME_EPS;
 }
 
+/** is this an AUTO-ONLY run (`World.runLength`)? AUTO ends the match: AUTO → post, no transition. */
+export function autoOnly(world: { runLength?: 'auto' }): boolean {
+  return world.runLength === 'auto';
+}
+
 /** begin the match (pre -> auto) */
 export function startMatch(world: World): void {
   if (world.match.phase !== 'pre') return;
@@ -48,7 +53,8 @@ export function stepMatch(world: World, dt: number): void {
   // a ball still draining the ramp or a depot ball still rolling is folded in as it
   // stops, and the value naturally locks once motion ceases.
   if (m.phase === 'post') {
-    assessMatchEnd(world);
+    if (autoOnly(world)) assessAutoPattern(world); // only the AUTO lines exist; no BASE / DEPOT / TELEOP PATTERN
+    else assessMatchEnd(world);
     return;
   }
   m.phaseTimeLeft -= dt;
@@ -62,6 +68,13 @@ export function stepMatch(world: World, dt: number): void {
       assessLeave(world); // Rule E: LEAVE assessed at the end of AUTO
       assessAutoPattern(world); // seed; refreshed each transition tick
       for (const r of world.robots) { r.autoPathActive = false; }
+      if (autoOnly(world)) {
+        // AUTO-ONLY: straight to post. The settle is the post window (`post` keeps assessing AUTO PATTERN)
+        m.phase = 'post';
+        m.phaseTimeLeft = 0;
+        world.events.push('AUTO COMPLETE', 'MATCH COMPLETE');
+        break;
+      }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');

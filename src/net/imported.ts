@@ -95,7 +95,7 @@ export function setupsHaveImported(setups: readonly { spec?: unknown }[] | null 
 export function replayHasImported(replay: unknown): boolean {
   if (typeof replay !== 'object' || replay === null) return false;
   const r = replay as { format?: unknown; setups?: unknown };
-  if (typeof r.format === 'number' && r.format >= REPLAY_FORMAT_IMPORTED) return true;
+  if (typeof r.format === 'number' && (r.format === REPLAY_FORMAT_IMPORTED || r.format === REPLAY_FORMAT_TUNED)) return true; // 5 is auto-only, not imports
   return Array.isArray(r.setups) && setupsHaveImported(r.setups as { spec?: unknown }[]);
 }
 

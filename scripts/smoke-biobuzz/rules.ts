@@ -345,6 +345,43 @@ function scoringChecks(check: Check): void {
     check('SWING: `released` resets for the next swing', hive.released === false);
   }
 
+  // ── AN AUTO-ONLY RUN pays only what the AUTO buzzer assesses ─────────────────
+  {
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'red' },
+      { id: 2, alliance: 'blue' },
+    ]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    for (const id of [0, 1]) {
+      bb.leave[id] = true;
+      bb.parkAuto[id] = true;
+      bb.parkTele[id] = true; // would pay 10 at the end of a full match
+    }
+    bb.hives.red.tips = 2;
+    intoCell(w, 'red', ['yellow', 'yellow', 'red', 'red']);
+    w.balls.push(el('yellow', { kind: 'ground' }, -70, (BB_GARDEN.red.y0 + BB_GARDEN.red.y1) / 2));
+    w.match.phase = 'post';
+    const full = bbScoreWorld(w).red;
+    w.runLength = 'auto';
+    const s = bbScoreWorld(w).red;
+    check('AUTO-ONLY: LEAVE, AUTO PARK and the TIPs still pay', s.leave === 6 && s.parkAuto === 10 && s.tipPts === 40, `${s.leave} ${s.parkAuto} ${s.tipPts}`);
+    check('AUTO-ONLY: no TELEOP PARK, CELL or GARDEN (the end-of-match instants never happen)', s.parkTele === 0 && s.cellPts === 0 && s.gardenPts === 0, `${s.parkTele} ${s.cellPts} ${s.gardenPts}`);
+    check('AUTO-ONLY: ...while the same field as a full run pays them', full.parkTele === 10 && full.cellPts === 8 && full.gardenPts === 1, `${full.parkTele} ${full.cellPts} ${full.gardenPts}`);
+    // the phase exit itself
+    const g = bare([{ id: 0, alliance: 'red' }]);
+    g.runLength = 'auto';
+    g.match.phase = 'auto';
+    g.match.phaseTimeLeft = 30;
+    const seen: string[] = [];
+    for (let i = 0; i < 60 * 40 && g.match.phase !== 'post'; i++) {
+      biobuzzStep(g, SIM_DT, new Map());
+      if (seen[seen.length - 1] !== g.match.phase) seen.push(g.match.phase);
+    }
+    check('AUTO-ONLY: BIOBUZZ goes AUTO -> post with no transition', seen.join('>') === 'auto>post', seen.join('>'));
+  }
+
   // ── THE WHOLE TABLE, ON ONE HAND-BUILT FIELD ──────────────────────────────
   {
     const w = bare([

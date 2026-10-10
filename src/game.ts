@@ -1207,6 +1207,7 @@ export class GameController {
       // older server hosts.
       const w = build('match', this.session.seed, this.session.setups, this.settings, this.session.physics);
       w.match.preCountdown = C.PRE_COUNTDOWN;
+      if (this.session.runLength === 'auto') w.runLength = 'auto'; // the ROOM's run length, never the settings'
       // a rematch rebuilds the world: the local robot's auto seat goes with it, as in solo
       this.seatAuto(w);
       return w;
@@ -1252,6 +1253,8 @@ export class GameController {
     setups.push(...others);
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
+    // an AUTO-ONLY practice match (settings ▸ Practice): AUTO ends it. Free drive has no phases.
+    if (s.mode === 'match' && s.runLength === 'auto') world.runLength = 'auto';
     this.seatBots(world, seed, botTiers);
     this.seatAuto(world);
     /**
@@ -3541,6 +3544,7 @@ export class GameController {
       'match',
       this.gameId,
       this.interp3d() ? '3d' : '2d',
+      this.world.runLength, // stamped off the world, like the physics: format 5 for an auto-only run
     );
     this.paceRec = new PaceCurveRecorder();
     this.drivenTicks = 0;

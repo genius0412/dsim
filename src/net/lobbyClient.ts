@@ -42,6 +42,8 @@ export interface MatchStart {
    * latched `physicsPending`. Measured in a browser on 2026-09-18.
    */
   physics?: Physics;
+  /** 'auto' = the match ends at the AUTO buzzer (`matchStart.runLength`); absent ⇒ a full match */
+  runLength?: 'auto';
   /**
    * THE MATCH GENERATION (`matchStart.gen`; absent ⇒ 0) — and it is on this type for
    * EXACTLY the reason `physics` above it is.
