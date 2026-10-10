@@ -795,12 +795,13 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
-- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub: every other shell
-  screen carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as
-  the title lookup; Admin is a bar link). `.ds-app[data-screen]` swaps the six accent tokens per
-  section (Play coral, Configure blue, Records violet, Profile amber, the rest mint), so the bar,
-  buttons and page wash turn one colour together; the values are hand-tuned per theme and
-  `contrast.mjs` reads them out of the stylesheet. **`TopStrip`** sits above the bar on every
+- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
+  Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
+  carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as the title
+  lookup; Admin is a bar link). Play is ONE page with a Solo set and a Multiplayer set. ⚠️ **NO
+  PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
+  full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
+  keycaps and cards they were. **`TopStrip`** sits above the bar on every
   shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can
   run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
   answers `unfilled`, nothing once both are gone. At ≤900px `.ds-body` wraps so the collapsed

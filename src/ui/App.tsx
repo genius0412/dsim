@@ -2313,7 +2313,6 @@ export function App() {
         right={right}
         showAdmin={isAdmin}
         home={screen === 'home'}
-        screenKey={screen}
         onBack={() => goNav('home')}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}

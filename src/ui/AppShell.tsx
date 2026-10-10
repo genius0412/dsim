@@ -37,7 +37,7 @@ function PresenceChip({ p }: { p: Presence }) {
 /**
  * App chrome for the routed content screens. There is no persistent navigation: the home menu
  * is the only hub, so every other screen carries a Back button and its own title in the top bar,
- * and `data-screen` lets the stylesheet give each section its own dominant colour.
+ * and its own title.
  *
  * Full-screen surfaces (the game, lobby, record run, ranked, replay) render
  * outside this shell entirely and own their own back/Esc semantics.
@@ -49,7 +49,6 @@ export function AppShell({
   children,
   showAdmin,
   home = false,
-  screenKey,
   onBack,
   onDownload,
   onContributors,
@@ -72,8 +71,6 @@ export function AppShell({
   showAdmin?: boolean;
   /** home has no Back, no title and no friends panel, and its menu is the navigation */
   home?: boolean;
-  /** the current screen, stamped on `.ds-app` as `data-screen` for per-screen colour */
-  screenKey: string;
   /** Back, in the top bar of every screen but home */
   onBack: () => void;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
@@ -132,7 +129,7 @@ export function AppShell({
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
-    <div className="ds-app" data-screen={screenKey}>
+    <div className="ds-app">
       <TopStrip />
       <header className="ds-bar">
         {!home && (

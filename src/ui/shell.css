@@ -398,7 +398,7 @@
      the bar/rail/footer visibly stop short of. On macOS's overlay scrollbars this
      reserves nothing, so nothing changes there either way.) */
   overflow-y: scroll;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--ds-accent-soft) 35%, var(--ds-bg)), var(--ds-bg) 320px);
+  background: var(--ds-bg);
   color: var(--ds-ink);
   font-family: var(--ds-font-ui);
   display: flex;
@@ -421,8 +421,8 @@
   gap: 20px;
   padding: 14px 22px;
   min-height: var(--ds-bar-h);
-  border-bottom: 2px solid var(--ds-accent);
-  background: color-mix(in srgb, var(--ds-accent-soft) 40%, var(--ds-bar));
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bar);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -506,87 +506,6 @@
   gap: 12px;
 }
 
-/* ---- per-screen colour ---------------------------------------------------
-   Each section of the app owns one hue, and `.ds-app[data-screen]` (stamped by AppShell) swaps the
-   six accent tokens for it, so the bar, the tiles' edges, the buttons and the page wash all turn
-   that colour together. Home and everything unlisted keep the mint. The values are HAND-TUNED
-   per theme, not derived: every pair below is held to 4.5:1 in `scripts/contrast.mjs` (accent
-   fill vs its ink, accent on the page, soft ink and soft mut on the soft fill). Dark swaps the
-   ink to near-black, as the base dark block does. Only the shell is scoped: `.game-root` and the
-   other full-screen surfaces are outside `.ds-app`, so the field never changes colour. */
-.ds-app[data-screen='modes'],
-.ds-app[data-screen='watch'],
-.ds-app[data-screen='competitions'] {
-  --ds-accent: #8d3e25;
-  --ds-accent-ink: #ffffff;
-  --ds-accent-edge: #592718;
-  --ds-accent-soft: #f2d7cf;
-  --ds-accent-soft-ink: #54291c;
-  --ds-accent-soft-mut: #643426;
-}
-.ds-app[data-screen='configure'],
-.ds-app[data-screen='robotimport'] {
-  --ds-accent: #25528d;
-  --ds-accent-ink: #ffffff;
-  --ds-accent-edge: #183459;
-  --ds-accent-soft: #cfdef2;
-  --ds-accent-soft-ink: #1c3454;
-  --ds-accent-soft-mut: #264164;
-}
-.ds-app[data-screen='records'] {
-  --ds-accent: #56258d;
-  --ds-accent-ink: #ffffff;
-  --ds-accent-edge: #361859;
-  --ds-accent-soft: #dfcff2;
-  --ds-accent-soft-ink: #361c54;
-  --ds-accent-soft-mut: #432664;
-}
-.ds-app[data-screen='profile'],
-.ds-app[data-screen='account'] {
-  --ds-accent: #8d6725;
-  --ds-accent-ink: #ffffff;
-  --ds-accent-edge: #594118;
-  --ds-accent-soft: #f2e5cf;
-  --ds-accent-soft-ink: #54401c;
-  --ds-accent-soft-mut: #644d26;
-}
-:root[data-theme='dark'] .ds-app[data-screen='modes'],
-:root[data-theme='dark'] .ds-app[data-screen='watch'],
-:root[data-theme='dark'] .ds-app[data-screen='competitions'] {
-  --ds-accent: #d7947f;
-  --ds-accent-ink: #0f1214;
-  --ds-accent-edge: #9b5946;
-  --ds-accent-soft: #462d25;
-  --ds-accent-soft-ink: #eab4a4;
-  --ds-accent-soft-mut: #d3a192;
-}
-:root[data-theme='dark'] .ds-app[data-screen='configure'],
-:root[data-theme='dark'] .ds-app[data-screen='robotimport'] {
-  --ds-accent: #7fa5d7;
-  --ds-accent-ink: #0f1214;
-  --ds-accent-edge: #466b9b;
-  --ds-accent-soft: #253346;
-  --ds-accent-soft-ink: #a4c2ea;
-  --ds-accent-soft-mut: #92aed3;
-}
-:root[data-theme='dark'] .ds-app[data-screen='records'] {
-  --ds-accent: #a87fd7;
-  --ds-accent-ink: #0f1214;
-  --ds-accent-edge: #6d469b;
-  --ds-accent-soft: #342546;
-  --ds-accent-soft-ink: #c5a4ea;
-  --ds-accent-soft-mut: #b092d3;
-}
-:root[data-theme='dark'] .ds-app[data-screen='profile'],
-:root[data-theme='dark'] .ds-app[data-screen='account'] {
-  --ds-accent: #d7b77f;
-  --ds-accent-ink: #0f1214;
-  --ds-accent-edge: #9b7c46;
-  --ds-accent-soft: #463a25;
-  --ds-accent-soft-ink: #ead0a4;
-  --ds-accent-soft-mut: #d3bb92;
-}
-
 /* ---- the top strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
    Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
    an ad box is 90px + its 14px label, and the strip adds 4px above and below. Narrow viewports
@@ -630,14 +549,14 @@
 .ds-bar-back:hover,
 .ds-bar-link:hover {
   background: var(--ds-panel);
-  border-color: var(--ds-accent);
+  border-color: var(--ds-ink-dim);
 }
 .ds-bar-title {
   font-size: var(--ds-t-xl);
   font-weight: 800;
   letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
-  color: var(--ds-accent);
+  color: var(--ds-ink);
   white-space: nowrap;
 }
 
