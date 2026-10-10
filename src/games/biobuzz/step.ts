@@ -3,7 +3,7 @@ import * as C from '../../config';
 import { solveRobots, type SweepFrom } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
-import { clockExpired, robotsEnabled } from '../../sim/match';
+import { autoOnly, clockExpired, robotsEnabled } from '../../sim/match';
 import { BB_FLOWER_UNLOCK_S, BB_HALF_X, BB_HALF_Y } from './config';
 import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
@@ -256,6 +256,12 @@ export function biobuzzStepMatch(world: World, dt: number): void {
       // LEAVE and AUTO PARK, assessed at this instant and latched (Table 10-2). Before the
       // phase flips, so the predicates see the field as it was when the buzzer went.
       bbAssess(world, 'auto');
+      if (autoOnly(world)) {
+        m.phase = 'post';
+        m.phaseTimeLeft = 0;
+        world.events.push('AUTO COMPLETE', 'MATCH COMPLETE');
+        break;
+      }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');

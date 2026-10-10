@@ -3,6 +3,7 @@ import * as C from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { robotExtents } from '../../sim/physics';
 import { polyFeature } from '../../sim/imported';
+import { autoOnly } from '../../sim/match';
 import { chainImportLaunchLine, chainImportLaunchZ } from './importMech';
 import {
   CHAIN_ACCEL_DEPTH,
@@ -510,7 +511,8 @@ export function updateChain(
   }
 
   const isEndgame =
-    world.match.phase === 'post' ||
+    (world.match.phase === 'post' && !autoOnly(world)) || // an auto-only run has no endgame: no PARK / ASCEND credit
+
     (world.match.phase === 'teleop' && world.match.phaseTimeLeft <= CHAIN_ENDGAME_S);
   for (const rob of world.robots) {
     chain.endgame[rob.id] = isEndgame ? endgameOf(rob) : 'none';

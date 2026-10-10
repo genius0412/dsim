@@ -815,6 +815,40 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
 }
 
+// ---- auto-only runs: AUTO ends the match ------------------------------------
+{
+  // `World.runLength = 'auto'`: AUTO -> post at the buzzer, no transition, no DRIVER-CONTROLLED.
+  // Absent on every full run, which is why no golden pin moves.
+  const phases = (w: World, game: 'decode' | 'chain'): string[] => {
+    const seen: string[] = [];
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = AUTO_DURATION;
+    for (let i = 0; i < 60 * 40 && w.match.phase !== 'post'; i++) {
+      simModuleFor(game).step(w, SIM_DT, new Map());
+      if (seen[seen.length - 1] !== w.match.phase) seen.push(w.match.phase);
+    }
+    return seen;
+  };
+  for (const game of ['decode', 'chain'] as const) {
+    const w = simModuleFor(game).createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+    w.runLength = 'auto';
+    check(`auto-only: ${game} goes AUTO -> post, never transition or DRIVER-CONTROLLED`, JSON.stringify(phases(w, game)) === JSON.stringify(['auto', 'post']), JSON.stringify(w.match.phase));
+    check(`auto-only: ${game} says MATCH COMPLETE and has no teleop clock left`, w.events.includes('MATCH COMPLETE') && w.match.phaseTimeLeft === 0);
+  }
+  // DECODE: nothing is booked as TELEOP or at the buzzer — a ball drained after AUTO is AUTO's
+  const dw = createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  dw.runLength = 'auto';
+  phases(dw, 'decode');
+  addClassified(dw, 'blue');
+  check('auto-only: DECODE books a CLASSIFIED artifact in post as AUTO, not TELEOP', dw.match.scores.blue.autoClassified > 0 && dw.match.scores.blue.teleClassified === 0);
+  const bw = simModuleFor('decode').createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  bw.runLength = 'auto';
+  phases(bw, 'decode');
+  for (let i = 0; i < 120; i++) simModuleFor('decode').step(bw, SIM_DT, new Map());
+  const sc = bw.match.scores.blue;
+  check('auto-only: DECODE post awards no BASE, DEPOT or TELEOP PATTERN', sc.base === 0 && sc.depot === 0 && sc.telePattern === 0, JSON.stringify(sc));
+}
+
 // ---- artifact ids are never reused within a match ---------------------------
 {
   // The human player can collect the stray holding the HIGHEST id and place a fresh artifact in

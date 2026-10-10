@@ -1251,6 +1251,10 @@ export interface World {
   /** the `SIM_PATCH` a REPLAY was recorded under, set only by `ReplayPlayer`. Absent (every
    * live world) ⇒ the current rules. See `SIM_PATCH` in `config.ts`. */
   simPatch?: number;
+  /** 'auto' = an AUTO-ONLY run: the match ends when AUTO does (no transition, no TELEOP). ABSENT
+   * for a full run, so every full-run world and golden pin is byte-identical. Set after
+   * `createWorld`, the way `simPatch` is; see `autoOnly` in `sim/match.ts`. */
+  runLength?: 'auto';
   motif: Motif;
   robots: RobotState[];
   balls: Artifact[];

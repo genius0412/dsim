@@ -3,7 +3,7 @@ import * as C from '../../config';
 import { solveRobots } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
-import { clockExpired, robotsEnabled } from '../../sim/match';
+import { autoOnly, clockExpired, robotsEnabled } from '../../sim/match';
 import { CHAIN_HALF_X, CHAIN_HALF_Y } from './config';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
@@ -116,6 +116,12 @@ function chainStepMatch(world: World, dt: number): void {
   switch (m.phase) {
     case 'auto':
       for (const r of world.robots) r.autoPathActive = false;
+      if (autoOnly(world)) {
+        m.phase = 'post';
+        m.phaseTimeLeft = 0;
+        world.events.push('AUTO COMPLETE', 'MATCH COMPLETE');
+        break;
+      }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');
