@@ -16,16 +16,18 @@ per deployment, in two halves over one rule. **Do not open it on production with
 - **Client (cosmetic)**: `importerEnabled()` (`src/seasonVisibility.ts`), the build's
   `VITE_APP_CHANNEL` (the alpha site bakes `alpha`), or a dev server, or `VITE_ROBOT_IMPORT=1`.
   Closed, it hides the import route (the URL falls through to the robot page), the Imported robots
-  row, the lobby's library cards and the relay setting, and `useLibrary` loads nothing.
-- **Server (authoritative)**: `IMPORTS_OPEN_HERE` (`server/channel.ts`), the server's own
-  `SERVER_CHANNEL` (`fly.alpha.toml` sets `alpha`) or `ROBOT_IMPORT=1`. Closed, `/api/presence`
-  advertises neither `robotImport` nor `importVisuals`, and every room refuses an imported robot
-  at the door (`RoomConfig.imports`, resolved once and sent to a room's worker; the LAN tab host
-  takes the page's gate in its open message). The client's channel is never trusted for this.
+  row, the lobby's library cards and the relay setting, `useLibrary` loads nothing, and a room this
+  tab hosts takes no import (`hostRuntime.start` sends the same gate in its open message).
+- **Server (authoritative)**: `IMPORTS_OPEN_HERE` (`server/channel.ts`, `importsOpen`), the server's
+  own `SERVER_CHANNEL` (`fly.alpha.toml` sets `alpha`) or `ROBOT_IMPORT=1`; `LAN_MODE` closes it.
+  Closed, `/api/presence` advertises neither `robotImport` nor `importVisuals` (`advertisedCaps`),
+  and every room refuses an imported robot at the door (`RoomConfig.imports`, resolved once on the
+  socket thread and sent to the room's worker). The client's channel is never trusted for this.
 - **Nothing is stripped.** Production's database and origin have never held an import; alpha's
   are its own. A gated client that meets a stored import anyway (a dev client signed in to a
-  production account) shows and drives the player's standard robot from a projection while App
-  keeps the stored copy, and an edit there goes to `lastStandardSpec`. The settings save still
+  production account) shows and drives the player's standard robot (`withoutImport`, App's `shown`)
+  while App keeps the stored copy, and an edit there goes to `lastStandardSpec` (`keepImportActive`);
+  "Reset all settings" bypasses it, so a reset resets. The settings save still
   sends `robotImport`/`importTune` on every channel: without them the server's merge would put
   back a fixed launcher the player removed (accounts.md "SETTINGS SYNC").
 - **Not gated**: the DECODE and BIOBUZZ fixed shooters, fixed hood, setpoint flywheel, hand loading,

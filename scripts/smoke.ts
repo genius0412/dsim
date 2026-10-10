@@ -31748,7 +31748,9 @@ function impBroken(c: ImportedRobot): string[] {
   });
   {
     const s: ServerMsg[] = [];
-    const room = new Room('smoke-imp-cost', () => {}, { kind: 'versus' });
+    // open to imports explicitly: closed (this process's gate, no SERVER_CHANNEL) it would time the
+    // free refusal instead, and pass whatever the accept path cost
+    const room = new Room('smoke-imp-cost', () => {}, { kind: 'versus', imports: true });
     room.add(mkSeat(s, 'a', DEFAULT_SPEC));
     let n = 0;
     const ms = median(
@@ -31756,7 +31758,9 @@ function impBroken(c: ImportedRobot): string[] {
       (m) => room.onMessage('a', m),
       15,
     );
-    check('imports/cost: ⚠️ a custom Room takes the hostile update (and the LAN tab host is this Room) in under 2 ms', ms < 2, `${ms.toFixed(3)} ms`);
+    const last = [...s].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    const took = !s.some((m) => m.t === 'error' && m.message === IMPORT_REFUSED_HERE) && isImportedSpec(last?.players.find((p) => p.clientId === 'a')?.spec);
+    check('imports/cost: ⚠️ a custom Room takes the hostile update (and the LAN tab host is this Room) in under 2 ms, on the accept path', took && ms < 2, `${ms.toFixed(3)} ms, accepted ${took}`);
     room.stop();
   }
   {
