@@ -329,6 +329,13 @@ export interface RoomConfig {
    * than a 2D one, that gate is where an old client is turned away instead of downgraded.
    */
   physics?: Physics;
+  /**
+   * May an imported robot play in this room on this deployment? SERVER-AUTHORED, never read off a
+   * client's `join` (`joinRoom` builds the config field by field). Absent: the server's own gate,
+   * `IMPORTS_OPEN_HERE` (server/channel.ts). A worker room is sent it resolved by the socket thread;
+   * the LAN tab host takes the page's answer (`HostIn` `open`), and a tab has no server gate.
+   */
+  imports?: boolean;
 }
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };

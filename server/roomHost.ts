@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
 import { Room, MAX_REPORT_KEYS, type Client } from './room';
 import { configureVisualBudget, makeSharedVisualBudget, resetVisualSlot } from './importVisuals';
+import { IMPORTS_OPEN_HERE } from './channel';
 import { DEFAULT_ROOM_CONFIG, roomCapacity, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
@@ -260,13 +261,18 @@ export class RemoteRoom implements RoomHandle {
     public rid: number,
     readonly code: string,
     private readonly onEmpty: () => void,
-    readonly config: RoomConfig,
+    config: RoomConfig,
     private readonly cb: Callbacks,
     private readonly capacity: number,
   ) {
-    this.facts = initialFacts(code, config, capacity);
+    // `imports` RESOLVED HERE, on the socket thread, and posted with the config: the worker's Room
+    // and `importState().allows` answer from this one value, never from two reads of the env
+    this.config = { ...config, imports: config.imports ?? IMPORTS_OPEN_HERE };
+    this.facts = initialFacts(code, this.config, capacity);
     this.boot();
   }
+
+  readonly config: RoomConfig & { imports: boolean };
 
   private boot(): void {
     const cb = this.cb;
@@ -377,7 +383,7 @@ export class RemoteRoom implements RoomHandle {
     const ids = [...(this.facts.imports.ids ?? [])];
     for (const u of this.unacked) if (u.iid) ids.push(u.iid);
     return {
-      allows: this.config.kind === 'versus' && !this.pending,
+      allows: this.config.imports && this.config.kind === 'versus' && !this.pending,
       hasImport: this.facts.imports.hasImport || this.unacked.some((u) => u.imp),
       capless: this.facts.imports.capless || this.unacked.some((u) => u.nocap),
       ids,

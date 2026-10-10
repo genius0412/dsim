@@ -27,7 +27,7 @@ import { warmUp, warmupEnabled } from './warmup';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
-import { SERVER_CHANNEL, isAlphaServer } from './channel';
+import { IMPORTS_OPEN_HERE, SERVER_CHANNEL, advertisedCaps, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
 import { LanSignalling } from './lanSignal';
@@ -238,7 +238,9 @@ const LAN_ANON_HOSTS = !authConfigured;
  * where `process.env` does not belong — the client imports that module.
  */
 const presenceCaps: string[] = [
-  ...SERVER_CAPS,
+  /* `robotImport` and `importVisuals` only where the importer ships (`IMPORTS_OPEN_HERE`): a client
+     offers an imported robot, or uploads its look, only on those words */
+  ...advertisedCaps(SERVER_CAPS, IMPORTS_OPEN_HERE),
   /* `lan` SAYS THIS DEPLOYMENT OFFERS LAN AT ALL, and it is what lights the client's entry
      points — the Play tile, `/lan`, the banner, the Career rows. It exists because the
      client half used to be `VITE_LAN_ENABLED`, baked in at BUILD time, so switching LAN on
@@ -4636,7 +4638,7 @@ console.log(
       : 'none'
   }${LAN_MODE ? ' lan=1 (self-hosted: nothing here persists)' : ''}${
     isAlphaServer() ? ' (alpha results PERSIST here)' : ''
-  }`,
+  } imports=${IMPORTS_OPEN_HERE ? 'open' : 'closed'}`,
 );
 });
 /**
