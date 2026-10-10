@@ -3,7 +3,7 @@ import * as C from '../../config';
 import { solveRobots } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
-import { robotsEnabled } from '../../sim/match';
+import { clockExpired, robotsEnabled } from '../../sim/match';
 import { CHAIN_HALF_X, CHAIN_HALF_Y } from './config';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
@@ -102,7 +102,7 @@ function chainStepMatch(world: World, dt: number): void {
   if (m.phase === 'pre') {
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
-    if (m.preCountdown <= 0) {
+    if (clockExpired(m.preCountdown)) {
       m.preCountdown = undefined;
       m.phase = 'auto';
       m.phaseTimeLeft = C.AUTO_DURATION;
@@ -112,7 +112,7 @@ function chainStepMatch(world: World, dt: number): void {
   }
   if (m.phase === 'freeplay' || m.phase === 'post') return;
   m.phaseTimeLeft -= dt;
-  if (m.phaseTimeLeft > 0) return;
+  if (!clockExpired(m.phaseTimeLeft)) return; // see `clockExpired`: exact phase lengths
   switch (m.phase) {
     case 'auto':
       for (const r of world.robots) r.autoPathActive = false;

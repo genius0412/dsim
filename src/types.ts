@@ -1268,6 +1268,10 @@ export interface World {
    *  re-discovering the pin a hair later every tick. Derived state, plain JSON, in every
    *  snapshot; absent from an older snapshot ⇒ empty. See . */
   pinnedArtifacts?: number[];
+  /** the next artifact id to hand out (`allocBallId`, sim/ballIds.ts): a HIGH-WATER MARK, so an
+   *  id is never reused within a match. Absent from an older world or snapshot ⇒ the old
+   *  `max(id) + 1`. BIOBUZZ keeps its own counter on `world.biobuzz`. */
+  nextBallId?: number;
   /** persistent penalty-engine state (Section 11 fouls) */
   penalties: PenaltyState;
   // Add gameSettings to World interface
