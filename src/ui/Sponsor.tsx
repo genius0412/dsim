@@ -271,9 +271,9 @@ export function SponsorFooterMark() {
 /** TOP STRIP — the banner that fills the reserved ad strip above every shell screen whenever
  *  there is no ad to show. Rendered by `TopStrip`, which owns the sponsor-active check and the
  *  reserved height, so this is only the mark. */
-export function SponsorStripMark() {
+export function SponsorStripMark({ h }: { h: number }) {
   return (
-    <SponsorMark placement="strip" h={48} className="sponsor-mark strip">
+    <SponsorMark placement="strip" h={h} className="sponsor-mark strip">
       <span className="sponsor-pre">{SPONSOR.presents}</span>
     </SponsorMark>
   );

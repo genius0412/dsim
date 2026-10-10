@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { sponsorActive } from '../sponsor';
-import { AdSlot, useAdUnitActive } from './AdSlot';
+import { AdSlot, TOP_NARROW_PX, useAdUnitActive } from './AdSlot';
 import { SponsorStripMark } from './Sponsor';
 
 /** how long an ad gets to report a status before the banner takes the strip back */
@@ -15,8 +15,13 @@ const FILL_WAIT_MS = 5000;
  * `data-ad-status` on the `<ins>` when it settles, and a unit that stays silent past
  * `FILL_WAIT_MS` is treated as unfilled too (an extension that eats the script never answers).
  *
+ * BOTH FILL THE SAME FRAME, and that is what makes it a banner rather than two different things:
+ * a 728x90 box (320x50 on a phone) with its label above it, outlined by a hairline. The ad's label
+ * is "Advertisement" (an AdSense requirement) and the sponsor's is "Sponsored", because the sponsor
+ * is a placement we sold, not an AdSense unit. Same box, so the swap moves nothing.
+ *
  * Renders nothing, and so reserves nothing, once the sponsor term is over and there is no ad:
- * an empty strip is a gap, not a placeholder.
+ * an empty strip is a gap, not a placeholder. It is never rendered on Home (`AppShell`).
  */
 export function TopStrip() {
   const adOn = useAdUnitActive('top');
@@ -44,14 +49,37 @@ export function TopStrip() {
     };
   }, [adOn]);
 
+  const narrow = useNarrow();
   const showAd = adOn && !unfilled;
   const sponsor = sponsorActive();
   if (!showAd && !sponsor) return null;
   return (
-    // `compact` when no ad can ever arrive (blocked build, supporter, touch, desktop app): the
-    // banner alone does not need the 90px an ad box does
-    <div className={adOn ? 'ds-topstrip' : 'ds-topstrip compact'} ref={box}>
-      {showAd ? <AdSlot unit="top" /> : <SponsorStripMark />}
+    <div className="ds-topstrip" ref={box}>
+      {showAd ? (
+        <AdSlot unit="top" />
+      ) : (
+        <div className="ds-adframe">
+          <span className="ad-slot-label">Sponsored</span>
+          <div className="ds-adframe-box">
+            <SponsorStripMark h={narrow ? 24 : 44} />
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/** the phone-sized unit (320x50) below `TOP_NARROW_PX`, tracked live so a resize swaps the creative */
+function useNarrow(): boolean {
+  const query = `(max-width: ${TOP_NARROW_PX - 1}px)`;
+  const [narrow, setNarrow] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia(query);
+    const on = (): void => setNarrow(m.matches);
+    on();
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [query]);
+  return narrow;
 }

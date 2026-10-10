@@ -509,7 +509,8 @@
 /* ---- the top strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
    Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
    an ad box is 90px + its 14px label, and the strip adds 4px above and below. Narrow viewports
-   take the 320x50 unit (`TOP_NARROW_PX` in AdSlot). */
+   take the 320x50 unit (`TOP_NARROW_PX` in AdSlot). The sponsor's banner fills the SAME frame
+   (`.ds-adframe`), so swapping one for the other changes nothing but the picture. */
 .ds-topstrip {
   display: flex;
   align-items: center;
@@ -519,15 +520,45 @@
   background: var(--ds-bar);
   border-bottom: 1px solid var(--ds-line);
 }
-.ds-topstrip.compact {
-  height: 64px;
-}
 @media (max-width: 759px) {
   .ds-topstrip {
     height: 72px;
   }
-  .ds-topstrip.compact {
-    height: 56px;
+}
+/* a window under 520px tall (a phone on its side) cannot spare a banner's worth of height */
+@media (max-height: 519px) {
+  .ds-topstrip {
+    display: none;
+  }
+}
+/* the ad unit's frame, outlined so it reads as a unit and not as part of the page; the sponsor's
+   banner has the same dimensions, the label included (14px, the same as `AdSlot`'s `LABEL_H`) */
+.ds-topstrip .adsbygoogle,
+.ds-adframe-box {
+  outline: 1px solid var(--ds-line);
+  outline-offset: 0;
+  background: var(--ds-panel);
+}
+.ds-adframe {
+  display: block;
+  width: 728px;
+  height: 104px;
+}
+.ds-adframe-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 728px;
+  height: 90px;
+}
+@media (max-width: 759px) {
+  .ds-adframe {
+    width: 320px;
+    height: 64px;
+  }
+  .ds-adframe-box {
+    width: 320px;
+    height: 50px;
   }
 }
 

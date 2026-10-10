@@ -133,7 +133,9 @@ export function AppShell({
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
     <div className="ds-app">
-      <TopStrip />
+      {/* the ad strip is chrome for every screen but HOME: the first thing a visitor (and an AdSense
+          reviewer) sees should read as a product, not as inventory */}
+      {!home && <TopStrip />}
       <header className="ds-bar">
         {!home && (
           <button className="ds-bar-back" onClick={onBack}>
@@ -210,7 +212,7 @@ export function AppShell({
           />
         </div>
       ) : (
-        // The home screen deliberately gets NO page ad (the top strip is chrome, not inventory). It is the first thing a new
+        // The home screen deliberately gets NO ad of any kind (no page ad, and no top strip above). It is the first thing a new
         // visitor sees and the page an AdSense reviewer lands on; it should read
         // as a product, not as inventory.
         <main className="ds-main ds-main-home">{children}</main>

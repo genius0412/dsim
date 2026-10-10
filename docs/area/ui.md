@@ -803,10 +803,10 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   lookup; Admin is a bar link). Play is ONE page with a Solo set and a Multiplayer set. ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
-  keycaps and cards they were. **`TopStrip`** sits above the bar on every
+  keycaps and cards they were. **`TopStrip`** (NOT on Home) sits above the bar on every
   shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can
   run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
-  answers `unfilled`, nothing once both are gone. At ≤900px `.ds-body` wraps so the collapsed
+  answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. At ≤900px `.ds-body` wraps so the collapsed
   friends chip takes the first line and the content its own (`.ds-body > .ds-main`). In a room,
   friends drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the subnav becomes an
   `auto-fit` grid and the friends chip is icon-only, its label visually hidden but still read. The
