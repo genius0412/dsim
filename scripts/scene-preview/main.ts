@@ -66,6 +66,7 @@ import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/game
 import { GFX_TIERS, setGraphicsPreset, type GraphicsTier } from '../../src/games/biobuzz/graphics/settings';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
+import { tileJunctions } from '../../src/games/biobuzz/scene/renderTiles';
 
 const urlParams = new URLSearchParams(location.search);
 const physicsMode = urlParams.get('physics') === '3d' ? '3d' : '2d';
@@ -97,6 +98,9 @@ const intakeParam = urlParams.get('intake');
 const parkAtFlower = urlParams.get('park') === 'flower';
 const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
 const deployRamp = urlParams.get('ramp') === '1';
+// `&still=1` — no warm-up and no live stepping: every robot on its start pose and every element
+// staged, so two captures of the same query are the same frame (before/after pictures).
+const stillWorld = urlParams.get('still') === '1';
 // DRIVETRAIN PICTURES (2026-09-21, the goBILDA wheel pass): `?drivetrain=mecanum|tank|swerve|
 // xdrive|butterfly` builds every robot on that drivetrain, and `&gfx=<tier>` (any of `GFX_TIERS`:
 // low, medium, high, ultra, extreme) picks a graphics COLUMN before the scene is created — which is how the wheels' two tessellation
@@ -241,7 +245,7 @@ async function main(): Promise<void> {
     [2, drive],
     [3, drive],
   ]);
-  const warmupTicks = hiveProbeAlliance || parkAtFlower || parkOpen ? 0 : 180;
+  const warmupTicks = hiveProbeAlliance || parkAtFlower || parkOpen || stillWorld ? 0 : 180;
   for (let i = 0; i < warmupTicks; i++) biobuzzStep(world, SIM_DT, commands);
 
   if (parkOpen) {
@@ -949,6 +953,135 @@ async function main(): Promise<void> {
     };
   };
 
+  /**
+   * SEAM PROBE (2026-10-10, owner: "The edges between field tiles seem a little too dark").
+   *
+   * Renders the scene's OWN camera through its own pipeline with every mesh but the mat hidden
+   * (so no robot, element, tape or shadow lies over a joint), reads the frame back, and walks a
+   * profile ACROSS every interior joint every 1.5 in along it, junction X's left out. Per profile:
+   *   - `pxIn`  screen pixels per inch across the joint (the range that matters to a mip);
+   *   - `mat`   the median luma of a band of bare tile either side, clear of the seam;
+   *   - `cmin`  1 − (darkest luma in the seam band) / mat — how dark the line peaks;
+   *   - `dw`    Σ (1 − L/mat) dt over the seam band, in inches — the seam's darkness as an
+   *             equivalent width of black, which a mip or a box filter conserves.
+   * Bucketed by px/in (< 2, 2–4, 4–8, 8–16, 16+). Luma is Rec. 709 on the 8-bit output.
+   */
+  (window as unknown as { __bbSeamProbe: (opts?: { all?: boolean }) => unknown }).__bbSeamProbe = (opts = {}) => {
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    const hidden: THREE.Object3D[] = [];
+    if (!opts.all) {
+      three.traverse((o) => {
+        const k = o as THREE.Object3D & { isMesh?: boolean; isPoints?: boolean; isLine?: boolean; isSprite?: boolean };
+        if ((k.isMesh || k.isPoints || k.isLine || k.isSprite) && o.name !== 'floor' && o.visible) {
+          o.visible = false;
+          hidden.push(o);
+        }
+      });
+    }
+    // the frame-rate cap (Low's) would skip this draw and leave a cleared buffer to read
+    (scene as unknown as { lastDraw: number }).lastDraw = -Infinity;
+    scene.render(world, {
+      alpha: 1,
+      viewAngle: viewAngleOf(alliance),
+      camera,
+      localRobotId: alliance === 'red' ? 0 : 2,
+      width: host.clientWidth,
+      height: host.clientHeight,
+      dpr: window.devicePixelRatio || 1,
+    });
+    const f = readFrame();
+    for (const o of hidden) o.visible = true;
+    const sx = f.w / host.clientWidth;
+    const sy = f.h / host.clientHeight;
+    const pr = { x: 0, y: 0, visible: false };
+    const at = (wx: number, wy: number): [number, number] | null => {
+      scene.project?.(wx, wy, 0, pr);
+      if (!pr.visible) return null;
+      return [pr.x * sx, pr.y * sy];
+    };
+    const luma = (px: number, py: number): number => {
+      // bilinear, top-down screen coordinates over the bottom-up buffer
+      const x = Math.min(Math.max(px - 0.5, 0), f.w - 1.001);
+      const y = Math.min(Math.max(f.h - py - 0.5, 0), f.h - 1.001);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const fx = x - x0;
+      const fy = y - y0;
+      const l = (xx: number, yy: number): number => lum(f.data, (yy * f.w + xx) * 4);
+      return (
+        (l(x0, y0) * (1 - fx) + l(x0 + 1, y0) * fx) * (1 - fy) + (l(x0, y0 + 1) * (1 - fx) + l(x0 + 1, y0 + 1) * fx) * fy
+      );
+    };
+    const J = tileJunctions();
+    const lo = J[0] + 0.079;
+    const hi = J[J.length - 1] - 0.079;
+    type Row = { pxIn: number; mat: number; cmin: number; dw: number };
+    const rows: Row[] = [];
+    for (const axis of ['x', 'y'] as const) {
+      for (let i = 1; i < J.length - 1; i++) {
+        for (let s = lo + 2; s <= hi - 2; s += 1.5) {
+          if (J.some((j) => Math.abs(s - j) < 2)) continue;
+          const pt = (t: number): [number, number] | null => (axis === 'x' ? at(J[i] + t, s) : at(s, J[i] + t));
+          const a = pt(-1);
+          const b = pt(1);
+          if (!a || !b) continue;
+          const pxIn = Math.hypot(b[0] - a[0], b[1] - a[1]) / 2;
+          if (pxIn < 0.25) continue;
+          const band = Math.max(0.6, 1 / pxIn);
+          const m0 = Math.max(1.5, 2.5 / pxIn);
+          const m1 = m0 + Math.max(1.5, 3 / pxIn);
+          const h = Math.min(0.1, Math.max(0.01, 0.25 / pxIn));
+          const matL: number[] = [];
+          const bandL: [number, number][] = [];
+          let ok = true;
+          for (let t = -m1; t <= m1 + 1e-9; t += h) {
+            const p = pt(t);
+            if (!p || p[0] < 0 || p[1] < 0 || p[0] >= f.w || p[1] >= f.h) {
+              ok = false;
+              break;
+            }
+            const v = luma(p[0], p[1]);
+            const at2 = Math.abs(t);
+            if (at2 <= band) bandL.push([t, v]);
+            else if (at2 >= m0) matL.push(v);
+          }
+          if (!ok || matL.length < 4 || bandL.length < 2) continue;
+          matL.sort((p, q) => p - q);
+          const mat = matL[matL.length >> 1];
+          if (mat < 4) continue;
+          let mn = Infinity;
+          let dw = 0;
+          for (const [, v] of bandL) {
+            mn = Math.min(mn, v);
+            dw += (1 - v / mat) * h;
+          }
+          rows.push({ pxIn, mat, cmin: 1 - mn / mat, dw });
+        }
+      }
+    }
+    const bucket = (name: string, keep: (r: Row) => boolean): Record<string, number | string> => {
+      const rs = rows.filter(keep);
+      const mean = (g: (r: Row) => number): number => (rs.length ? rs.reduce((acc, r) => acc + g(r), 0) / rs.length : NaN);
+      const med = (g: (r: Row) => number): number => {
+        const v = rs.map(g).sort((p, q) => p - q);
+        return v.length ? v[v.length >> 1] : NaN;
+      };
+      const r3 = (v: number): number => Math.round(v * 1000) / 1000;
+      return { name, n: rs.length, pxIn: r3(med((r) => r.pxIn)), mat: r3(mean((r) => r.mat)), cmin: r3(mean((r) => r.cmin)), dw: r3(mean((r) => r.dw)) };
+    };
+    return {
+      w: f.w,
+      h: f.h,
+      buckets: [
+        bucket('<2', (r) => r.pxIn < 2),
+        bucket('2-4', (r) => r.pxIn >= 2 && r.pxIn < 4),
+        bucket('4-8', (r) => r.pxIn >= 4 && r.pxIn < 8),
+        bucket('8-16', (r) => r.pxIn >= 8 && r.pxIn < 16),
+        bucket('16+', (r) => r.pxIn >= 16),
+      ].filter((b) => (b.n as number) > 0),
+    };
+  };
+
   status('rendering (stepping the world live)...');
   let tick = 0;
   function frame(): void {
@@ -957,7 +1090,7 @@ async function main(): Promise<void> {
       requestAnimationFrame(frame);
       return;
     }
-    if (!probing) biobuzzStep(world, SIM_DT, commands);
+    if (!probing && !stillWorld) biobuzzStep(world, SIM_DT, commands);
     if (reticleDemo) pinReticleDemoRobot();
     tick++;
     const localRobotId = alliance === 'red' ? 0 : 2;
