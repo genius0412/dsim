@@ -1,6 +1,6 @@
 # Online rooms, run length, and leaderboard windows: scope (v3)
 
-**v3, 2026-10-05.** v3 adds the owner's decisions on friends in ranked, physics eras, the rollover hour and room creation. v2 was revised after four reviews against `alpha` @ `1f4528f2`. The findings, the evidence and the decisions still open for the owner are in [rooms-and-leaderboards-review.md](rooms-and-leaderboards-review.md); `R§n` points into it. **Progress (branch `rooms-m0-friends-ranked`): M0 done; M1 done (Public/Private control waits for M3). Everything else is not started.**
+**v3, 2026-10-05.** v3 adds the owner's decisions on friends in ranked, physics eras, the rollover hour and room creation. v2 was revised after four reviews against `alpha` @ `1f4528f2`. The findings, the evidence and the decisions still open for the owner are in [rooms-and-leaderboards-review.md](rooms-and-leaderboards-review.md); `R§n` points into it. **Progress (2026-10-09, all on `alpha`): M0, M1, M5 and M7 are implemented and merged (PRs #110, #111). Prerequisites #98, #99, #100, #104 are merged; #101, #102 and #103 are still open. Left: M2, M3 (then the Public/Private control), M4 and M6 (need #101), M8. `run_length` (0063) arrives with M6.**
 
 ## Context
 

@@ -261,6 +261,8 @@ export function Leaderboard({
   // lifetime spans seasons but never mixes eras; BIOBUZZ has both, so it picks one
   const [era, setEra] = useState<'2d' | '3d'>('3d');
   const [resetsAt, setResetsAt] = useState<string | null>(null);
+  // the server answered but cannot rank by this category or window (an older deploy)
+  const [unsupported, setUnsupported] = useState(false);
   // `now` for the "Resets in" line, refreshed once a minute and not announced
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -365,9 +367,21 @@ export function Leaderboard({
              * archived season is the solve it was played on (BIOBUZZ Act 1 is 2D). A server that
              * echoes nothing predates the ruling; its board is the 3D one.
              */
-            rows: threeD
-              ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
-              : r.rows,
+            /**
+             * ⚠️ AN OLDER SERVER IGNORES `category` AND `window` AND ANSWERS THE TOTAL SEASON BOARD.
+             * The client deploys first, so for a while a new client talks to a server that cannot
+             * rank by period or window; showing those rows under "Auto" or "Today" would be a wrong
+             * board with the right label. A current server echoes both, so a missing or different
+             * echo means "not available here yet" and the board is left empty with a sentence.
+             */
+            unsupported:
+              (category !== 'total' && r.category !== category) || (win !== 'season' && r.window !== win),
+            rows:
+              (category !== 'total' && r.category !== category) || (win !== 'season' && r.window !== win)
+                ? []
+                : threeD
+                  ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
+                  : r.rows,
             me: null as EloStanding | null,
             resetsAt: r.resetsAt ?? null,
           }))
@@ -376,6 +390,7 @@ export function Leaderboard({
       .then((r) => {
         if (!alive) return;
         setRows(r.rows);
+        setUnsupported('unsupported' in r && r.unsupported === true);
         setResetsAt('resetsAt' in r && typeof r.resetsAt === 'string' ? r.resetsAt : null);
         setMe(r.me);
         setMinGames('minGames' in r && typeof r.minGames === 'number' ? r.minGames : OLD_SERVER_PLACEMENT);
@@ -532,8 +547,10 @@ export function Leaderboard({
           ))}
         {status === 'ok' && rows.length === 0 && (
           <div className="ds-empty">
-            <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
-            {isRecords
+            <div className="big">{isRecords ? (unsupported ? 'Not available yet' : 'No entries yet') : 'No placed players yet'}</div>
+            {isRecords && unsupported
+              ? 'This server can’t rank by period or time window yet. Try again after the next update.'
+              : isRecords
               ? category === 'total'
                 ? 'Be the first to set a score on this board.'
                 : `No ${category === 'auto' ? 'Auto' : 'TeleOp'} scores yet. Runs set from now on are split by period and appear here.`
