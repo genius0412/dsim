@@ -266,6 +266,8 @@ export const SIM_VERSION = 5;
  *      wholly under the mouth slot is carved top to bottom, not left whole along its top 0.1 in
  *      (`import3dShapes`). goBILDA's BIOBUZZ bot stopped 0.77 in short of the ring axis driven
  *      straight in, its CAD 0.38; now 0.38.
+ *   8  (`main` only) 3 above, as it reached `main` on 2026-10-10: a `main` replay stamped 5 had not
+ *      run it, so it needed a number above 5 there. Taken; the next patch on this branch is 9.
  */
 export const SIM_PATCH = 7;
 
