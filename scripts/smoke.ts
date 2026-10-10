@@ -401,6 +401,9 @@ import {
 } from '../src/net/imported';
 import { SERVER_CAPS } from '../src/net/protocol';
 import { rememberStandardRobot, sameBuild, standardRobotChoices, standardRobotFor } from '../src/settings';
+// the importer gate: the channel rule, and the projection a build without the importer renders from
+import * as IMPGATE from '../src/net/imported';
+import { keepImportActive as gateKeepImportActive, withoutImport as gateWithoutImport } from '../src/settings';
 import { SETTINGS_KEEPS_IMPORTS, keepImportsFromOlderClient, keepsImports, sameButDropped } from '../src/net/settingsKeep';
 import { pendingPracticeUploads, savePracticeRun } from '../src/net/practiceRuns';
 import { pendingLanUploads, saveLanRunLocal } from '../src/net/lanRuns';
@@ -29073,7 +29076,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ discord guard: the start-pose check reads `settingsRef`, so a just-switched season is the one measured',
-    /const cur = settingsRef\.current;\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
+    // (through `shownOf`, the importer gate's view of it: the robot the run fields)
+    /const cur = shownOf\(settingsRef\.current\);\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
     'selectGame runs on the line above the guard; the render’s own `settings` would measure the season being LEFT and refuse a BIOBUZZ room over a DECODE pose',
   );
 
@@ -30647,6 +30651,131 @@ const dumperSetup = (): RobotSetup => {
       standardRobotChoices({ ...imported, lastStandardSpec: std, savedRobots: [impSpec, saved] }).every((r) => !isImportedSpec(r)));
     check('imports/settings: ...without listing the same build twice', standardRobotChoices({ ...imported, lastStandardSpec: std, savedRobots: [{ ...std }, saved] }).length === 2 && sameBuild(std, { ...std }));
   }
+}
+
+// ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha, not production, until the owner says) ----
+// `importerOpenOn` (src/net/imported.ts) is the one rule; the client asks it of its build's channel
+// through `importerEnabled` (src/seasonVisibility.ts, which reads `import.meta.env` and cannot be
+// imported here). A build without the importer HIDES a stored import and keeps it: its screens are
+// shown `withoutImport(stored)` and their writes are stored through `keepImportActive` (src/settings.ts).
+// The fixed shooter and the rest that landed beside the importer are not gated.
+{
+  const G = IMPGATE;
+  check('importer gate: open on the alpha channel', G.importerOpenOn('alpha'));
+  check(
+    'importer gate: closed on stable (production, Electron, a local build), beta, an empty or absent channel, and another spelling',
+    !G.importerOpenOn('stable') && !G.importerOpenOn('beta') && !G.importerOpenOn('') && !G.importerOpenOn(undefined) &&
+      !G.importerOpenOn('Alpha') && !G.importerOpenOn('alpha2') && !G.importerOpenOn('alpha,stable'),
+  );
+  check('importer gate: a padded channel reads as its trimmed self (`appChannel` trims too), so " alpha " is open and " stable " is not',
+    G.importerOpenOn(' alpha ') && !G.importerOpenOn(' stable '));
+  check('importer gate: production is closed until the owner opens it (opening it is adding stable here)',
+    G.IMPORTER_CHANNELS.includes('alpha') && !G.IMPORTER_CHANNELS.includes('stable'));
+
+  // ---- the projection, pure ----
+  const IMP = { v: 1, id: '0123456789abcdef', heightIn: 12, hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }] };
+  const base = defaultSettings();
+  const impAssists = { ...base.assists };
+  const stdAssists = { ...base.assists };
+  const impSpec = { ...DEFAULT_SPEC, name: 'Imp', imported: IMP, assists: impAssists } as typeof DEFAULT_SPEC;
+  const std = { ...DEFAULT_SPEC, name: 'Std', assists: stdAssists };
+  const saved = { ...DEFAULT_SPEC, name: 'Saved', length: 14 };
+  const archived = { biobuzz: { spec: impSpec, savedRobots: [], startIndex: 0, startPose: null, startCat: 'close' as const, savedStartPoses: { close: [], far: [] }, startMemory: base.startMemory } };
+  const stored = { ...base, spec: impSpec, assists: impAssists, lastStandardSpec: std, savedRobots: [saved], loadouts: archived };
+  const plain = { ...base, spec: std, assists: stdAssists };
+  const shown = gateWithoutImport(stored);
+  check('importer gate/projection: settings with no import are shown as they are (the same object)', gateWithoutImport(plain) === plain && gateWithoutImport(base) === base);
+  check('importer gate/projection: an imported active robot is shown as the last standard robot, with that robot’s assists',
+    !isImportedSpec(shown.spec) && shown.spec === std && shown.assists === stdAssists);
+  check('importer gate/projection: ...and the stored copy, the archived loadouts, the saved robots and lastStandardSpec are untouched',
+    isImportedSpec(stored.spec) && stored.assists === impAssists && shown.loadouts === archived && isImportedSpec(shown.loadouts?.biobuzz?.spec) &&
+      shown.savedRobots === stored.savedRobots && shown.lastStandardSpec === std);
+  const { assists: _noAssists, ...bare } = DEFAULT_SPEC;
+  check('importer gate/projection: a standard robot without assists keeps the settings’ assists (as `MatchStrategy` takes them)',
+    gateWithoutImport({ ...stored, lastStandardSpec: { ...bare, name: 'Bare' } }).assists === impAssists);
+  const variants = [
+    { lastStandardSpec: std },
+    { lastStandardSpec: undefined, savedRobots: [saved] },
+    { lastStandardSpec: undefined, savedRobots: [impSpec] },
+    { lastStandardSpec: undefined, savedRobots: [] },
+  ];
+  const games: GameId[] = ['decode', 'chain', 'biobuzz'];
+  const leaks = games.flatMap((game) => variants.map((v, i) => ({ game, i, s: gateWithoutImport({ ...stored, ...v, game }) }))).filter((x) => isImportedSpec(x.s.spec));
+  check('importer gate/projection: never shows an import, whatever the fallback (last standard, a saved robot, an import in the saved list, the game default) in every game',
+    leaks.length === 0, leaks.map((x) => `${x.game}#${x.i}`).join(','));
+
+  // ---- the write-back, pure ----
+  const unrelated = gateKeepImportActive(stored, shown, { ...shown, mode: 'match' as const });
+  check('importer gate/write-back: an edit that leaves the robot as shown keeps the import active with its assists, and lastStandardSpec as it was',
+    unrelated.mode === 'match' && unrelated.spec === impSpec && unrelated.assists === impAssists && unrelated.lastStandardSpec === std && unrelated.loadouts === archived);
+  const { lastStandardSpec: _drop, ...noStdRest } = stored;
+  const noStd = { ...noStdRest, savedRobots: [] };
+  const shownNoStd = gateWithoutImport(noStd);
+  const viaSame = gateKeepImportActive(noStd, shownNoStd, { ...shownNoStd, mode: 'match' as const });
+  // a screen holding an older render's view: the game default is rebuilt per call, equal but not the same object
+  const viaOld = gateKeepImportActive(noStd, gateWithoutImport(noStd), { ...shownNoStd, mode: 'match' as const });
+  check('importer gate/write-back: ...and does not invent a lastStandardSpec when there was none (the game default shown, even from an older render)',
+    viaSame.lastStandardSpec === undefined && viaOld.lastStandardSpec === undefined && isImportedSpec(viaSame.spec) && isImportedSpec(viaOld.spec));
+  const editedSpec = { ...shown.spec, name: 'Edited', assists: { ...stdAssists } };
+  const edited = gateKeepImportActive(stored, shown, { ...shown, spec: editedSpec, assists: editedSpec.assists });
+  check('importer gate/write-back: an edited standard robot becomes lastStandardSpec, the import stays active',
+    edited.spec === impSpec && edited.assists === impAssists && edited.lastStandardSpec === editedSpec);
+  check('importer gate/write-back: ...which is what the screen is shown next', gateWithoutImport(edited).spec === editedSpec && gateWithoutImport(edited).assists === editedSpec.assists);
+  const picked = gateKeepImportActive(stored, shown, { ...shown, spec: saved });
+  check('importer gate/write-back: a picked saved robot likewise', picked.spec === impSpec && picked.lastStandardSpec === saved);
+  const remembered = rememberStandardRobot(stored, edited);
+  check('importer gate/write-back: ...and App’s own lastStandardSpec bookkeeping (`rememberStandardRobot`) leaves both as they are',
+    remembered.spec === impSpec && remembered.lastStandardSpec === editedSpec);
+  const toStd = { ...plain, mode: 'match' as const };
+  check('importer gate/write-back: passes through when the stored robot is standard', gateKeepImportActive(plain, plain, toStd) === toStd);
+  const toImp = { ...shown, spec: { ...impSpec, name: 'Other import' } };
+  check('importer gate/write-back: passes through a write that carries an import', gateKeepImportActive(stored, shown, toImp) === toImp);
+  const toChain = switchGame(stored, 'chain');
+  check('importer gate/write-back: passes through a game switch (`switchGame` ran on the stored copy, which archived the import)',
+    gateKeepImportActive(stored, shown, toChain) === toChain && isImportedSpec(toChain.loadouts?.decode?.spec));
+
+  // ---- the cosmetic half, by source: each entry point reads the gate ----
+  const rdG = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const app = rdG('src/ui/App.tsx');
+  const sv = rdG('src/seasonVisibility.ts');
+  check('importer gate/client: `importerEnabled` is the dev server, the channel rule, or exactly VITE_ROBOT_IMPORT=1',
+    /export const importerEnabled = \(\): boolean =>\s*import\.meta\.env\.DEV \|\|\s*importerOpenOn\(appChannel\(\)\) \|\|\s*\(import\.meta\.env\.VITE_ROBOT_IMPORT as string \| undefined\)\?\.trim\(\) === '1';/.test(sv) &&
+      /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
+  check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
+    /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
+  check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
+    /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
+  check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
+    /const shown = useMemo\(\(\) => \(importerOn \? settings : withoutImport\(settings\)\), \[importerOn, settings\]\);/.test(app) &&
+      /const update = \(next: GameSettings\): void =>\s*commit\(importerOn \? next : keepImportActive\(settingsRef\.current, shownRef\.current, next\)\);/.test(app));
+  check('importer gate/client: every screen is handed `shown` (the editor alone gets the stored copy, and it renders only where they are the same)',
+    (app.match(/settings=\{settings\}/g) ?? []).length === 1 && /<ImportEditor\s+key=\{`[^`]*`\}\s+settings=\{settings\}/.test(app) &&
+      /<Account settings=\{shown\} onChange=\{update\} onReset=\{commit\}/.test(app) && /importedActive=\{!!shown\.spec\.imported\}/.test(app));
+  check('importer gate/client: `switchGame` runs on the stored copy only (the projection never reaches an archived loadout)',
+    !/switchGame\(shown/.test(app) && /update\(switchGame\(settings, g\)\)/.test(app) && /const ns = switchGame\(cur, s\.game\)/.test(app) &&
+      /const s = settingsRef\.current;\n    if \(s\.game === g\) return;\n    const next = switchGame\(s, g\);/.test(app));
+  check('importer gate/client: a settings reset is stored as given, not kept back by the gate',
+    /onReset\(defaultSettings\(\)\)/.test(rdG('src/ui/Account.tsx')));
+  const menu = rdG('src/ui/Menu.tsx');
+  check('importer gate/client: the robot page reads no library and draws no Imported robots row where the importer is closed',
+    /const importerOn = importerEnabled\(\);\n  const library = useLibrary\(settings\.game, importerOn\);/.test(menu) && /\{importerOn && \(\s*<ImportedRow/.test(menu));
+  const lobby = rdG('src/ui/Lobby.tsx');
+  check('importer gate/client: the custom room reads no library and offers no imported cards where the importer is closed',
+    /useLibrary\(settings\.game, importerOn\)/.test(lobby) && /\{importerOn && importOk === true && !isRecord/.test(lobby));
+  check('importer gate/client: Configure ▸ Network draws its Imported robots panel only where the importer is open',
+    /\{importerEnabled\(\) && \(\s*<section className="ds-panel">\s*<div className="ds-panel-h">\s*<h2 className="ds-panel-title">Imported robots<\/h2>/.test(rdG('src/ui/NetworkSection.tsx')));
+  const lib = rdG('src/robotImport/ui/useLibrary.ts');
+  check('importer gate/client: a disabled `useLibrary` loads no library chunk, opens no channel and answers NOT READ (entries null), not an empty list',
+    /export function useLibrary\(game: GameId, enabled = true\): LibraryView/.test(lib) &&
+      lib.indexOf('if (!enabled) return;') > 0 && lib.indexOf('if (!enabled) return;') < lib.indexOf('readLibrary(game)') &&
+      lib.indexOf('if (!enabled) return;') < lib.indexOf('onLibraryChange(read)') &&
+      /return enabled \? view : NOT_READ;/.test(lib) && /const NOT_READ: LibraryView = \{ entries: null,/.test(lib));
+  const api = rdG('src/net/api.ts');
+  check('importer gate/client: a room this tab hosts takes imports and their looks only where this build has the importer',
+    (api.match(/if \(tabHosting\(\)\) return Promise\.resolve\(importerEnabled\(\)\);/g) ?? []).length === 2 && !/if \(tabHosting\(\)\) return Promise\.resolve\(true\);/.test(api));
+  check('importer gate/client: the modules smoke and the server import read no `import.meta.env` (settings.ts, net/imported.ts)',
+    ['src/settings.ts', 'src/net/imported.ts'].every((f) => !/import\.meta\.env|from '\.\.?\/(?:seasonVisibility|net\/env|env)'/.test(rdG(f))));
 }
 
 // ---- AN OLDER BUILD'S SETTINGS SAVE KEEPS THE ACCOUNT'S IMPORTED ROBOT (`src/net/settingsKeep.ts`) ----

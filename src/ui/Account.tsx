@@ -47,11 +47,15 @@ import { trackEvent } from '../analytics';
 export function Account({
   settings,
   onChange,
+  onReset = onChange,
   onDonate,
   onTab,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
+  /** "Reset all settings": stored exactly as given (`App` routes an edit through the importer
+   *  gate, which would keep a hidden import active through a reset) */
+  onReset?: (s: GameSettings) => void;
   /** navigate to the Support page — the membership card links to it rather than
    * duplicating the tier pitch here */
   onDonate?: () => void;
@@ -134,7 +138,7 @@ export function Account({
                     'saved start positions, key bindings, audio and mobile layout. It cannot be undone.',
                 )
               ) {
-                onChange(defaultSettings());
+                onReset(defaultSettings());
               }
             }}
           >

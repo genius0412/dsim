@@ -1,7 +1,7 @@
 /* REAL ROBOT CAD THROUGH THE REAL EDITOR. An OFFSCREEN Electron window against a PRODUCTION build,
  * one file at a time (a big STEP keeps several cores and gigabytes busy for minutes):
  *
- *   npm run build && npx vite preview --port 4173 --strictPort
+ *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173 --strictPort
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/robot-import/realcadprobe.cjs \
  *       --files <path>[,<path>…] --out <dir> [--port 4173] [--game decode]
  *       [--gpu] [--details Full,Light] [--orbit] [--tiers low,medium,high,ultra,extreme] [--reps 2] [--seconds 6]
@@ -26,6 +26,8 @@
  *      chase camera on the last tier.
  * `--gpu` keeps hardware GL (frame times mean nothing on the software rasteriser). Writes
  * `<out>/<file>-*.png` and `<out>/results.json`. A measurement, not a test.
+ * `VITE_ROBOT_IMPORT=1`: the importer ships on the alpha channel only (`importerEnabled`), and a
+ * local build without it has no editor route to drive.
  */
 const { app, BrowserWindow, session } = require('electron');
 const http = require('node:http');

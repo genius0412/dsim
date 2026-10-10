@@ -4,7 +4,8 @@
  * step is asserted on the DOM. rAF does not run in a hidden browser tab, so this cannot be done in
  * a background browser; an offscreen Electron window keeps painting.
  *
- *   npx vite --port 5194 --strictPort            # in another shell
+ *   npx vite --port 5194 --strictPort            # in another shell (the dev server has the importer;
+ *                                                # a production build needs VITE_ROBOT_IMPORT=1)
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/importpad.cjs [--port 5194]
  *
  * The one step a pad cannot do is pick a file (an OS dialog): the run hands the editor the STL

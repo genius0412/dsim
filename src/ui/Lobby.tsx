@@ -44,6 +44,7 @@ import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
 import { useLibrary } from '../robotImport/ui/useLibrary';
+import { importerEnabled } from '../seasonVisibility';
 import { libraryEntryFor } from '../robotImport/libraryIds';
 
 interface Props {
@@ -320,8 +321,11 @@ export function Lobby({
   const importedActive = isImportedSpec(settings.spec);
   // THE IMPORTED ROBOTS on this device, offered in "Your robot" beside the saved ones when the room
   // takes them (the importer, lane 4). The server is asked as soon as there is one to offer, not
-  // only once one is active, so the cards can be shown before anybody picks one.
-  const importLibrary = useLibrary(settings.game);
+  // only once one is active, so the cards can be shown before anybody picks one. Neither the library
+  // nor the cards where the importer is closed (`importerEnabled`); `App` never hands this screen an
+  // imported robot there, so nothing here asks the server either.
+  const importerOn = importerEnabled();
+  const importLibrary = useLibrary(settings.game, importerOn);
   const hasImports = (importLibrary.entries?.length ?? 0) > 0;
   const [importOk, setImportOk] = useState<boolean | null>(null);
   useEffect(() => {
@@ -1696,8 +1700,9 @@ export function Lobby({
                   onPick={() => pickSpec({ ...r })}
                 />
               ))}
-              {/* imported robots, where this room can play them (never a record room) */}
-              {importOk === true && !isRecord
+              {/* imported robots, where this room can play them (never a record room) and this build
+                  has the importer */}
+              {importerOn && importOk === true && !isRecord
                 ? (importLibrary.entries ?? []).map((e) => (
                     <RobotCard
                       key={e.id}

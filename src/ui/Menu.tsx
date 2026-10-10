@@ -29,6 +29,7 @@ import { Marquee } from './Marquee';
 import { OptRow, ToggleRow } from './OptRow';
 import { BuiltinMechRows } from './builderMechs';
 import { useLibrary } from '../robotImport/ui/useLibrary';
+import { importerEnabled } from '../seasonVisibility';
 import { answersFor, libraryEntryFor, sameImportedRobot } from '../robotImport/libraryIds';
 import { ImportedPanel, ImportedRow, useImportedActions, useRobotNotice } from '../robotImport/ui/ImportedRobots';
 import { FootprintSvg } from './FootprintSvg';
@@ -427,8 +428,11 @@ export function Menu({ settings, onChange, onImport }: Props) {
 
   const spec = settings.spec;
   // ---- IMPORTED ROBOTS (the CAD importer, `src/robotImport/`): this device's library for this
-  // game, the actions on it, and the one-line notice the importer leaves after a save ----
-  const library = useLibrary(settings.game);
+  // game, the actions on it, and the one-line notice the importer leaves after a save. None of it
+  // where the importer is closed (`importerEnabled`): the library is not read and the row is not
+  // drawn, and `App` never hands this page an imported robot there ----
+  const importerOn = importerEnabled();
+  const library = useLibrary(settings.game, importerOn);
   const importActions = useImportedActions({ settings, applySpec, entries: library.entries });
   const notice = useRobotNotice();
   const importedId = spec.imported?.id ?? null;
@@ -654,21 +658,23 @@ export function Menu({ settings, onChange, onImport }: Props) {
               </div>
             )}
 
-            {/* IMPORTED ROBOTS: always here, because it is where an import starts. Empty, it is
-                the "Import a robot" card alone. */}
-            <ImportedRow
-              view={library}
-              activeId={importedEntry?.id ?? importedId}
-              // the card that answers for the active robot IS it: picking it again changes nothing,
-              // and applying an out-of-date copy's spec would put the old version back on the account
-              onPick={(e) => (answersFor(e, importedId) ? undefined : applySpec({ ...e.spec }))}
-              onDelete={importActions.requestDelete}
-              onImport={() => onImport?.()}
-              onDropFiles={(files) => {
-                handOffFiles(files);
-                onImport?.();
-              }}
-            />
+            {/* IMPORTED ROBOTS: here wherever the importer is open, because it is where an import
+                starts. Empty, it is the "Import a robot" card alone. */}
+            {importerOn && (
+              <ImportedRow
+                view={library}
+                activeId={importedEntry?.id ?? importedId}
+                // the card that answers for the active robot IS it: picking it again changes nothing,
+                // and applying an out-of-date copy's spec would put the old version back on the account
+                onPick={(e) => (answersFor(e, importedId) ? undefined : applySpec({ ...e.spec }))}
+                onDelete={importActions.requestDelete}
+                onImport={() => onImport?.()}
+                onDropFiles={(files) => {
+                  handOffFiles(files);
+                  onImport?.();
+                }}
+              />
+            )}
 
             <div className="ds-field">
               <span className="cap">Presets</span>
