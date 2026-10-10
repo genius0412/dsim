@@ -641,14 +641,15 @@ const checkCardIdentifiable = (themeName, t, card) => {
   }
 };
 
-/* ---------- hue scopes (`[data-hue]`, shell.css) ----------
+/* ---------- per-screen accent scopes (`.ds-app[data-screen]`, shell.css) ----------
    Each scope REPLACES the six accent tokens, so each must clear the same pairs the base mint does,
    in its own theme. Read from the stylesheet, not restated here, so an edit cannot drift. */
-for (const m of css.matchAll(/(:root\[data-theme='dark'\] )?\[data-hue='([a-z]+)'\] \{([\s\S]*?)\}/g)) {
-  const dark = !!m[1];
-  const v = Object.fromEntries([...m[3].matchAll(/(--ds-[a-z-]+):\s*(#[0-9a-fA-F]{6})/g)].map((x) => [x[1], x[2]]));
+for (const m of css.matchAll(/((?:(?::root\[data-theme='dark'\] )?\.ds-app\[data-screen='[a-z]+'\],?\s*)+)\{([\s\S]*?)\}/g)) {
+  const dark = m[1].includes("data-theme='dark'");
+  const names = [...m[1].matchAll(/data-screen='([a-z]+)'/g)].map((x) => x[1]).join('+');
+  const v = Object.fromEntries([...m[2].matchAll(/(--ds-[a-z-]+):\s*(#[0-9a-fA-F]{6})/g)].map((x) => [x[1], x[2]]));
   const t = getter(dark ? DARK : LIGHT, dark ? 'dark' : 'light');
-  const where = `[${dark ? 'dark' : 'light'}] hue ${m[2]}`;
+  const where = `[${dark ? 'dark' : 'light'}] screen ${names}`;
   for (const k of ['--ds-accent', '--ds-accent-ink', '--ds-accent-edge', '--ds-accent-soft', '--ds-accent-soft-ink', '--ds-accent-soft-mut']) {
     if (!v[k]) { console.log(`FAIL  ${where} defines no ${k}`); failed++; total++; }
   }
@@ -656,10 +657,8 @@ for (const m of css.matchAll(/(:root\[data-theme='dark'\] )?\[data-hue='([a-z]+)
   check(`${where}: accent on bg (text)`, v['--ds-accent'], t('--ds-bg'), AA);
   check(`${where}: accent on bar (title)`, v['--ds-accent'], t('--ds-bar'), AA);
   check(`${where}: soft-ink on soft`, v['--ds-accent-soft-ink'], v['--ds-accent-soft'], AA);
-  check(`${where}: soft-mut on soft (tile hint)`, v['--ds-accent-soft-mut'], v['--ds-accent-soft'], AA);
+  check(`${where}: soft-mut on soft`, v['--ds-accent-soft-mut'], v['--ds-accent-soft'], AA);
   check(`${where}: ink on soft`, t('--ds-ink'), v['--ds-accent-soft'], AA);
-  // the tile's 40px monogram is large text
-  check(`${where}: accent on soft (tile monogram)`, v['--ds-accent'], v['--ds-accent-soft'], NON_TEXT);
 }
 
 for (const [themeName, table] of [['light', LIGHT], ['dark', DARK]]) {

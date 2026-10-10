@@ -9,7 +9,7 @@ import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
-import { NAV_ITEMS, SCREEN_HUE } from './navItems';
+import { RAIL_ITEMS } from './NavRail';
 import { TopStrip } from './TopStrip';
 import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
@@ -18,10 +18,7 @@ import { LanBanner } from './LanBanner';
 import { PresenceProvider, QueueCounts } from './QueueCounts';
 import type { Presence, RoomInvite } from '../net/api';
 
-/** the tile-stack pages, which fill the shell body instead of sitting in a centred column */
-const MENU_PAGES: ReadonlySet<string> = new Set(['multiplayer', 'solo']);
-
-export type ShellNav = 'home' | 'multiplayer' | 'solo' | 'configure' | 'records' | 'profile' | 'admin';
+export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
 
 /** ambient "who's around" chip in the top bar: a live-green dot + the online /
  * signed-in tally. Renders nothing until presence lands (server unconfigured /
@@ -40,7 +37,7 @@ function PresenceChip({ p }: { p: Presence }) {
 /**
  * App chrome for the routed content screens. There is no persistent navigation: the home menu
  * is the only hub, so every other screen carries a Back button and its own title in the top bar,
- * and `data-hue` lets the stylesheet give each section its own dominant colour.
+ * and `data-screen` lets the stylesheet give each section its own dominant colour.
  *
  * Full-screen surfaces (the game, lobby, record run, ranked, replay) render
  * outside this shell entirely and own their own back/Esc semantics.
@@ -75,7 +72,7 @@ export function AppShell({
   showAdmin?: boolean;
   /** home has no Back, no title and no friends panel, and its menu is the navigation */
   home?: boolean;
-  /** the current screen; `SCREEN_HUE` turns it into the `data-hue` that colours the shell */
+  /** the current screen, stamped on `.ds-app` as `data-screen` for per-screen colour */
   screenKey: string;
   /** Back, in the top bar of every screen but home */
   onBack: () => void;
@@ -135,7 +132,7 @@ export function AppShell({
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
-    <div className="ds-app" data-hue={SCREEN_HUE[screenKey]}>
+    <div className="ds-app" data-screen={screenKey}>
       <TopStrip />
       <header className="ds-bar">
         {!home && (
@@ -157,7 +154,7 @@ export function AppShell({
           {season.name}
         </span>
         {/* a span, not a heading: every screen already has its own h1 */}
-        {!home && <span className="ds-bar-title">{NAV_ITEMS.find((it) => it.id === active)?.label ?? ''}</span>}
+        {!home && <span className="ds-bar-title">{RAIL_ITEMS.find((it) => it.id === active)?.label ?? ''}</span>}
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone
@@ -195,8 +192,7 @@ export function AppShell({
 
       {!home ? (
         <div className="ds-body">
-          {/* a menu page (tiles) owns the whole width and height; every other page is a column */}
-          <main className={MENU_PAGES.has(screenKey) ? 'ds-main ds-main-menu' : 'ds-main'}>
+          <main className="ds-main">
             {children}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
                 there is no clearance rule and no frame budget to protect. It

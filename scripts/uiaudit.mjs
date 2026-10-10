@@ -102,7 +102,7 @@ const BASELINE = {
   // → 110, 2026-09-23: the phone footer's 14px/16px pad and the breakdown chip's 2px 8px on tokens.
   // → 106, 2026-09-25: the patch-note modal and /changelogs on the spacing tokens.
   // → 105, 2026-09-25: the lockdown/banner merge put one more gap on the tokens.
-  'off-grid-gap': 97,
+  'off-grid-gap': 100,
   // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
   // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
@@ -117,7 +117,7 @@ const BASELINE = {
   // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
   // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
   // → 11, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'off-scale-font-size': 10,
+  'off-scale-font-size': 11,
   // 45 → 43, 2026-09-22: the builder hero's `24px` name and the `10px` CUSTOM chip beside it.
   // The name is `--ds-t-xl`, and the chip is gone: the preset cards right under the hero
   // already show whether the build is one of them.

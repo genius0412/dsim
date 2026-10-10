@@ -220,7 +220,7 @@ Flat by default, with a hard-edged "block" shadow standing in for real elevation
 
 Corners run a small defined scale: `--ds-round-sm` / `--ds-round` / `--ds-round-md` / `--ds-round-lg` at 4 / 8 / 12 / 16px, plus `--ds-round-full` (9999px). There is no 24px radius.
 
-- **Pills are the keycap shape.** `.ds-home-link` and `.ds-cta` are full pills, and so are chips and badges.
+- **Pills are the keycap shape.** The home menu's `.ds-menu-btn`, `.ds-home-link` and `.ds-cta` are full pills, and so are chips and badges.
 - The workhorse controls are 8px: `.ds-btn`, `.ds-seg`, `.ds-input` and `.ds-panel`.
 - Compact controls step down to 4px: `.ds-btn.small`, and `.ds-key`, the literal keyboard cap shown in hints.
 - `.ds-modal` is 12px.
@@ -253,7 +253,7 @@ Selection has one vocabulary, written down in the comment above `.ds-rail-btn.on
 - **Segmented** (`.ds-seg.on`): solid accent fill.
 - **Tab** (`.ds-tab.on`): accent ink and an underline.
 - **Toggle key** (`.game-btn.on`): solid accent fill, held flush on its edge.
-- **Menu tiles** (`.ds-menutile`) are full-width cards in a hue (`data-hue`), with a big monogram. They are the card family: lift on hover, press into the block.
+- **Recommended** (`.ds-tile.primary`) is NOT a selection. It is the ordinary tile with an accent edge and a kicker.
 
 ### Cards / Panels (`.ds-panel`)
 

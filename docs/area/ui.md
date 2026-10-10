@@ -795,14 +795,10 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
-- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub, a full-height stack of
-  colour `MenuTile`s (`navItems.ts`: Multiplayer, Solo, Records, Configure, Profile; the two
-  online/offline halves of the old Play page are `MultiplayerMenu` and `SoloMenu`, and `/modes` still
-  resolves, to Solo). Every other shell
+- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub: every other shell
   screen carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as
-  the title lookup; Admin is a bar link). `data-hue` swaps the six accent tokens per
-  section (`SCREEN_HUE`: Multiplayer coral, Solo violet, Configure blue, Profile amber, Records and the
-  rest mint) and per tile, so the bar,
+  the title lookup; Admin is a bar link). `.ds-app[data-screen]` swaps the six accent tokens per
+  section (Play coral, Configure blue, Records violet, Profile amber, the rest mint), so the bar,
   buttons and page wash turn one colour together; the values are hand-tuned per theme and
   `contrast.mjs` reads them out of the stylesheet. **`TopStrip`** sits above the bar on every
   shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can

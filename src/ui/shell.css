@@ -506,23 +506,17 @@
   gap: 12px;
 }
 
-/* ---- hues -----------------------------------------------------------------
-   Each section of the app owns one hue. `data-hue` swaps the six accent tokens, on `.ds-app` (set
-   per screen by AppShell from `SCREEN_HUE`) and on a `.ds-menutile` (its own colour), so the bar,
-   the buttons and the page wash turn that colour together. `mint` is the base palette, restated so
-   a tile inside a coloured screen can still be mint. The values are HAND-TUNED per theme, not
-   derived: `scripts/contrast.mjs` reads this block and holds every pair to 4.5:1 (the tile glyph to
-   3:1), and dark swaps the ink to near-black as the base dark block does. Only the shell is scoped:
-   `.game-root` and the other full-screen surfaces are outside `.ds-app`, so the field never turns. */
-[data-hue='mint'] {
-  --ds-accent: #366758;
-  --ds-accent-ink: #ffffff;
-  --ds-accent-edge: #24463b;
-  --ds-accent-soft: #b5ead7;
-  --ds-accent-soft-ink: #1c4f41;
-  --ds-accent-soft-mut: #2f6455;
-}
-[data-hue='coral'] {
+/* ---- per-screen colour ---------------------------------------------------
+   Each section of the app owns one hue, and `.ds-app[data-screen]` (stamped by AppShell) swaps the
+   six accent tokens for it, so the bar, the tiles' edges, the buttons and the page wash all turn
+   that colour together. Home and everything unlisted keep the mint. The values are HAND-TUNED
+   per theme, not derived: every pair below is held to 4.5:1 in `scripts/contrast.mjs` (accent
+   fill vs its ink, accent on the page, soft ink and soft mut on the soft fill). Dark swaps the
+   ink to near-black, as the base dark block does. Only the shell is scoped: `.game-root` and the
+   other full-screen surfaces are outside `.ds-app`, so the field never changes colour. */
+.ds-app[data-screen='modes'],
+.ds-app[data-screen='watch'],
+.ds-app[data-screen='competitions'] {
   --ds-accent: #8d3e25;
   --ds-accent-ink: #ffffff;
   --ds-accent-edge: #592718;
@@ -530,7 +524,8 @@
   --ds-accent-soft-ink: #54291c;
   --ds-accent-soft-mut: #643426;
 }
-[data-hue='blue'] {
+.ds-app[data-screen='configure'],
+.ds-app[data-screen='robotimport'] {
   --ds-accent: #25528d;
   --ds-accent-ink: #ffffff;
   --ds-accent-edge: #183459;
@@ -538,7 +533,7 @@
   --ds-accent-soft-ink: #1c3454;
   --ds-accent-soft-mut: #264164;
 }
-[data-hue='violet'] {
+.ds-app[data-screen='records'] {
   --ds-accent: #56258d;
   --ds-accent-ink: #ffffff;
   --ds-accent-edge: #361859;
@@ -546,7 +541,8 @@
   --ds-accent-soft-ink: #361c54;
   --ds-accent-soft-mut: #432664;
 }
-[data-hue='amber'] {
+.ds-app[data-screen='profile'],
+.ds-app[data-screen='account'] {
   --ds-accent: #8d6725;
   --ds-accent-ink: #ffffff;
   --ds-accent-edge: #594118;
@@ -554,15 +550,9 @@
   --ds-accent-soft-ink: #54401c;
   --ds-accent-soft-mut: #644d26;
 }
-:root[data-theme='dark'] [data-hue='mint'] {
-  --ds-accent: #5fb597;
-  --ds-accent-ink: #0f1214;
-  --ds-accent-edge: #3f7f69;
-  --ds-accent-soft: #22463c;
-  --ds-accent-soft-ink: #8fdcc2;
-  --ds-accent-soft-mut: #7cc0a8;
-}
-:root[data-theme='dark'] [data-hue='coral'] {
+:root[data-theme='dark'] .ds-app[data-screen='modes'],
+:root[data-theme='dark'] .ds-app[data-screen='watch'],
+:root[data-theme='dark'] .ds-app[data-screen='competitions'] {
   --ds-accent: #d7947f;
   --ds-accent-ink: #0f1214;
   --ds-accent-edge: #9b5946;
@@ -570,7 +560,8 @@
   --ds-accent-soft-ink: #eab4a4;
   --ds-accent-soft-mut: #d3a192;
 }
-:root[data-theme='dark'] [data-hue='blue'] {
+:root[data-theme='dark'] .ds-app[data-screen='configure'],
+:root[data-theme='dark'] .ds-app[data-screen='robotimport'] {
   --ds-accent: #7fa5d7;
   --ds-accent-ink: #0f1214;
   --ds-accent-edge: #466b9b;
@@ -578,7 +569,7 @@
   --ds-accent-soft-ink: #a4c2ea;
   --ds-accent-soft-mut: #92aed3;
 }
-:root[data-theme='dark'] [data-hue='violet'] {
+:root[data-theme='dark'] .ds-app[data-screen='records'] {
   --ds-accent: #a87fd7;
   --ds-accent-ink: #0f1214;
   --ds-accent-edge: #6d469b;
@@ -586,7 +577,8 @@
   --ds-accent-soft-ink: #c5a4ea;
   --ds-accent-soft-mut: #b092d3;
 }
-:root[data-theme='dark'] [data-hue='amber'] {
+:root[data-theme='dark'] .ds-app[data-screen='profile'],
+:root[data-theme='dark'] .ds-app[data-screen='account'] {
   --ds-accent: #d7b77f;
   --ds-accent-ink: #0f1214;
   --ds-accent-edge: #9b7c46;
@@ -639,116 +631,6 @@
 .ds-bar-link:hover {
   background: var(--ds-panel);
   border-color: var(--ds-accent);
-}
-.ds-main.ds-main-menu {
-  display: flex;
-  flex-direction: column;
-  max-width: none;
-}
-.ds-menupage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-4);
-  /* the page owns the viewport height under the bar, so the tile stack can fill it */
-  flex: 1;
-  min-height: 0;
-}
-.ds-codebar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-1);
-}
-.ds-codebar .ds-input {
-  width: 100%;
-}
-.ds-tilestack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-3);
-  flex: 1;
-  min-height: 0;
-}
-/* A menu tile: a coloured card, full width, that grows to share the height it is given. The hue
-   comes from `data-hue`, so the fill, edge and ink are the same tokens a screen of that hue uses.
-   It is the card family (`.ds-opt`): LIFTS on hover and presses INTO its block, by transform and
-   box-shadow only, so nothing around it moves (shiftaudit). */
-.ds-menutile {
-  display: flex;
-  align-items: center;
-  gap: var(--ds-s-5);
-  flex: 1 1 0;
-  min-height: 76px;
-  padding: var(--ds-s-3) var(--ds-s-5);
-  text-align: left;
-  font: inherit;
-  color: var(--ds-accent-soft-ink);
-  background: var(--ds-accent-soft);
-  border: 1px solid var(--ds-accent);
-  border-radius: var(--ds-round);
-  cursor: pointer;
-  box-shadow: 4px 4px 0 var(--ds-accent-edge);
-  transition:
-    transform var(--ds-dur-press) var(--ds-ease),
-    box-shadow var(--ds-dur-press) var(--ds-ease);
-}
-@media (hover: hover) {
-  .ds-menutile:where(:not(:disabled)):hover {
-    transform: translate(-1px, -1px);
-    box-shadow: 5px 5px 0 var(--ds-accent-edge);
-  }
-}
-.ds-menutile:where(:not(:disabled)):active {
-  transform: translate(4px, 4px);
-  box-shadow: 0 0 0 var(--ds-accent-edge);
-}
-.ds-menutile:disabled {
-  opacity: var(--ds-disabled-opacity);
-  cursor: not-allowed;
-}
-/* the monogram: the display face, big, in the hue's strong colour; a fixed cell so every tile's
-   title starts on the same line */
-.ds-menutile .mt-mono {
-  flex: none;
-  width: 96px;
-  font-family: var(--ds-font-mono);
-  font-size: 40px;
-  font-weight: 800;
-  line-height: var(--ds-lh-tight);
-  letter-spacing: var(--ds-track-caps);
-  color: var(--ds-accent);
-}
-.ds-menutile .mt-text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-1);
-  min-width: 0;
-}
-.ds-menutile .mt-title {
-  font-size: var(--ds-t-xl);
-  font-weight: 800;
-  letter-spacing: var(--ds-track-caps);
-  text-transform: uppercase;
-}
-.ds-menutile .mt-hint {
-  font-family: var(--ds-font-mono);
-  font-size: var(--ds-t-sm);
-  letter-spacing: var(--ds-track-caps);
-  text-transform: uppercase;
-  color: var(--ds-accent-soft-mut);
-}
-.ds-menutile .mt-stat {
-  margin-left: auto;
-  flex: none;
-}
-@media (max-width: 640px) {
-  .ds-menutile {
-    gap: var(--ds-s-3);
-    padding: var(--ds-s-3);
-  }
-  .ds-menutile .mt-mono {
-    width: 64px;
-    font-size: 28px;
-  }
 }
 .ds-bar-title {
   font-size: var(--ds-t-xl);
@@ -1370,25 +1252,20 @@
 }
 
 /* ---- home: the menu IS the navigation --------------------------------- */
-/* The home page uses the whole viewport: the brand column on the left, the tile stack filling the
-   rest, and the stack takes every pixel of height the viewport leaves (each tile is `flex: 1`). */
 .ds-main-home {
   display: flex;
-  max-width: none;
-  padding: var(--ds-s-5);
+  align-items: center;
+  justify-content: center;
 }
 .ds-home {
   width: 100%;
-  display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
-  gap: var(--ds-s-6);
-  align-items: stretch;
-}
-.ds-home-head {
+  max-width: 460px;
+  text-align: center;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
+  align-items: center;
+  gap: 0;
+  padding: 24px 0 8px;
 }
 .ds-home-title {
   font-size: clamp(44px, 7vw, 64px);
@@ -1405,7 +1282,7 @@
    smallest thing on the page, under the social pills. Colour/border only between states, so
    nothing moves on click (shiftaudit). */
 .ds-home-games {
-  justify-content: flex-start;
+  justify-content: center;
   gap: var(--ds-s-2);
   margin: 0 0 var(--ds-s-4);
 }
@@ -1422,7 +1299,7 @@
 .ds-home-links {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 10px;
   margin: 0 0 var(--ds-s-5);
 }
@@ -1554,6 +1431,47 @@
   .ds-home-link:hover {
     color: var(--ds-accent);
   }
+}
+.ds-menu {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ds-menu-btn {
+  font: inherit;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 16px 18px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid var(--ds-line);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  cursor: pointer;
+}
+.ds-menu-btn .ml {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+/* the keycap's hint line: what is behind the label (restored, owner 2026-09-23) */
+.ds-menu-btn .mh {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+}
+.ds-menu-btn.primary {
+  --cap-edge: var(--ds-accent-edge);
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  border-color: transparent;
+}
+.ds-menu-btn.primary .mh {
+  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
 }
 /* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
 .ds-subnav-layout {
@@ -1799,6 +1717,7 @@ button.ds-chip {
    The card family (`.ds-tile`, `.ds-opt`, `button.bb-cell`) is the other model: it LIFTS on
    hover and presses INTO its offset block, edge colour in `--card-edge`. */
 .ds-btn,
+.ds-menu-btn,
 .ds-home-link,
 .ds-discord-join,
 .ds-cta,
@@ -1820,6 +1739,7 @@ button.ds-key,
 }
 @media (hover: hover) {
   .ds-btn:where(:not(:disabled)):hover,
+  .ds-menu-btn:where(:not(:disabled)):hover,
   .ds-home-link:hover,
   .ds-discord-join:where(:not(:disabled)):hover,
   .ds-cta:where(:not(:disabled)):hover,
@@ -1837,6 +1757,7 @@ button.ds-key,
   }
 }
 .ds-btn:where(:not(:disabled)):active,
+.ds-menu-btn:where(:not(:disabled)):active,
 .ds-home-link:active,
 .ds-discord-join:where(:not(:disabled)):active,
 .ds-cta:where(:not(:disabled)):active,
@@ -1855,6 +1776,7 @@ button.ds-key:where(:not(:disabled)):active,
 /* the neutral caps' hover tint, the same one on each; primaries keep their own */
 @media (hover: hover) {
   .ds-btn:where(:not(:disabled)):hover,
+  .ds-menu-btn:where(:not(:disabled)):hover,
   .ds-home-link:hover,
   .ds-back:where(:not(:disabled)):hover,
   button.ds-key:where(:not(:disabled)):hover,
@@ -1863,6 +1785,7 @@ button.ds-key:where(:not(:disabled)):active,
     border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
   }
   .ds-btn.primary:where(:not(:disabled)):hover,
+  .ds-menu-btn.primary:where(:not(:disabled)):hover,
   .ds-cta:where(:not(:disabled)):hover {
     border-color: transparent;
     background: color-mix(in srgb, var(--ds-accent) 88%, white);
@@ -1997,7 +1920,7 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-homestats {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 12px;
   flex-wrap: wrap;
   margin: var(--ds-s-5) 0 0;
@@ -2044,6 +1967,89 @@ button.ds-key:where(:not(:disabled)):active,
   border: 1px solid var(--ds-accent);
   border-radius: var(--ds-round-md);
   background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
+}
+/* ---- play tiles ------------------------------------------------------ */
+/* auto-FIT, main's sizing (owner, 2026-09-23): the tiles in a set stretch to fill the row.
+   Design review 02-11 had made it auto-fill so column edges lined up across sets, which
+   left each two-tile set as two narrow tiles and an empty track; the owner wants main's
+   size back. */
+.ds-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+.ds-tile {
+  position: relative;
+  overflow: hidden;
+  text-align: left;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  padding: 16px 18px;
+  /* MAIN'S HEIGHT (owner, 2026-09-23): 78px is what a kicker + title measured on main.
+     NO KICKER, for good (owner): the mono eyebrow — SOLO over "Solo Practice", LIVE over
+     "Watch Live" — said the title again. So the title (+ an optional disabled-reason) is
+     CENTRED in the 78px rather than hugging its top edge. */
+  min-height: 78px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  cursor: pointer;
+  font: inherit;
+  /* Level-1 card: flat fill, 1px stroke, hard offset block toward the bottom-right
+     (the sun sits top-left). It lifts on hover and presses INTO its shadow. */
+  box-shadow: 4px 4px 0 var(--card-edge, var(--ds-line-soft));
+  transition:
+    transform var(--ds-dur-press) var(--ds-ease),
+    box-shadow var(--ds-dur-press) var(--ds-ease),
+    border-color var(--ds-dur-fade);
+}
+@media (hover: hover) {
+  .ds-tile:where(:not(:disabled)):hover {
+    border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0 var(--card-edge, var(--ds-line-soft));
+  }
+}
+/* PRESSED FLUSH: the travel equals the 4px block, so the card lands on its own shadow's base
+   (offset + shadow stays 4 in every state, the `.ds-btn` rule) instead of a base 1px higher */
+.ds-tile:where(:not(:disabled)):active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--card-edge, var(--ds-line-soft));
+}
+.ds-tile:disabled {
+  opacity: var(--ds-disabled-opacity);
+  cursor: not-allowed;
+}
+.ds-tile .t {
+  display: block;
+  font-size: 18px;
+  font-weight: 750;
+}
+.ds-tile .d {
+  display: block;
+  font-size: 13px;
+  color: var(--ds-mut);
+  margin-top: 3px;
+}
+/* RECOMMENDED, not selected: a solid accent fill here read as the current pick beside four
+   plain tiles (the same fill IS "selected" on a segmented control). The recommendation is an
+   accent edge + accent-edge block on the ordinary tile fill. */
+.ds-tile.primary {
+  --card-edge: var(--ds-accent-edge);
+  border-color: var(--ds-accent);
+}
+.ds-tile.primary:hover {
+  border-color: var(--ds-accent);
+}
+.ds-tile:disabled .t {
+  color: var(--ds-mut);
+}
+/* faint 24" tile grid behind the play area */
+/* home play sections (Practice / Compete / Custom) */
+.ds-tileset + .ds-tileset {
+  margin-top: 20px;
 }
 .ds-tileset-label {
   font-family: var(--ds-font-mono);
@@ -5908,11 +5914,7 @@ button.bb-cell:where(:not(:disabled)):active {
     margin-bottom: 16px;
   }
   .ds-main-home {
-    padding: var(--ds-s-4);
-  }
-  .ds-home {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--ds-s-4);
+    align-items: flex-start;
   }
   /* THREE ROWS, BY GROUP: the brand, the product links, then Privacy · Data · Terms.
      Left to wrap on its own, the link row broke wherever the width ran out, so a legal
@@ -6483,6 +6485,7 @@ a.ds-cta {
      heaviest member, so this is (0,2,1) and outranks every hover/press rule it cancels. */
   :is(
       .ds-btn,
+      .ds-menu-btn,
       .ds-home-link,
       .ds-discord-join,
       .ds-cta,
@@ -6495,8 +6498,8 @@ a.ds-cta {
       .overlay-buttons button,
       .sponsor-chip,
       .ann-cinema-btn,
+      .ds-tile,
       .ds-opt,
-      .ds-menutile,
       button.bb-cell
     ):is(:hover, :active) {
     transform: none;
@@ -6925,11 +6928,25 @@ a.ds-cta {
      indicator doesn't read as a different, smaller UI element */
   font-size: 13px;
 }
+/* ON A FILLED SURFACE the defaults above are wrong, and one of them was invisible:
+   the home menu's PLAY button is `.primary`, i.e. an --ds-accent FILL, and the count
+   painted --ds-accent on it — the same colour as its own background, 1:1. The muted
+   label was little better.
+
+   Every filled surface here already ships the ink tokens meant for it (the rail does
+   exactly this for its own sub-label), so use those rather than inventing a colour.
+   The label/number distinction is carried by WEIGHT on these surfaces, since a
+   second tinted ink would be another pair to keep above AA for no real gain. */
+.ds-menu-btn.primary .ds-qcount,
+.ds-menu-btn.primary .ds-qcount b {
+  color: var(--ds-accent-ink);
+}
 .ds-qcount-sep {
   opacity: 0.55;
 }
 /* beside a label rather than under it: the rail item, the home button, the tile */
 .ds-qcount.rail,
+.ds-qcount.menu,
 .ds-qcount.tile {
   margin-left: 8px;
 }
