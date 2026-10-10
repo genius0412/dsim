@@ -33,26 +33,31 @@ const SEAT_LABELS = ['Partner', 'Opponent 1', 'Opponent 2'] as const;
 const COLS = { 2: 'two', 3: 'three', 4: 'four', 5: 'five' } as const;
 
 /**
- * Match configuration — the pre-game options that belong to the MATCH, not the
- * robot: alliance, start position and the autonomous routine — and, in a card of its own,
- * the practice around the match: its physics and the three other robots.
- * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
- * Ranked and Custom assign alliance + start in the lobby / strategy screen.
+ * SOLO SETUP — the screen between the Play page's Solo practice tile and the field. It holds every
+ * pre-game option that belongs to a solo session rather than to the robot: alliance, start position
+ * and the autonomous routine, and, in a card of its own, the practice around the match (its physics
+ * and the three other robots), then the two ways in: Solo practice and Free drive.
+ * Ranked and Custom rooms assign alliance + start in the lobby / strategy screen instead.
  *
- * The MATCH section of `Configure`. It used to be a collapsed `<details>` on the
- * homepage; now it has a route of its own (`/configure/match`), so it renders
- * open. Kept separate from the robot loadout builder on purpose.
+ * It was the MATCH section of `Configure` until 2026-10-10 (`/configure/match`, which now lands
+ * here). Nothing in it is a setting of the robot, and a solo session is where all of it is used.
  *
  * ⚠️ THE `.pp` (Pedro Pathing visualizer) IMPORT IS GONE, on purpose (owner, 2026-09-25): a path
  * with no commands cannot be an auto a team would run on its robot. Autos are Zenith files, which
  * name the robot's own commands (`AutonomousSetup`).
  */
-export function MatchSetup({
+export function SoloSetup({
   settings,
   onChange,
+  onStart,
+  onFreeDrive,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
+  /** a full practice match. The caller wraps it in `guardStart()`. */
+  onStart: () => void;
+  /** free drive with the same seats. The caller wraps it in `guardStart()`. */
+  onFreeDrive: () => void;
 }) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   const setAlliance = (alliance: Alliance) => set({ alliance });
@@ -80,7 +85,8 @@ export function MatchSetup({
   };
 
   return (
-    <>
+    <div className="ds-setup">
+    <div className="ds-setup-cols">
     <section className="ds-panel">
       <div className="ds-panel-h">
         <h2 className="ds-panel-title">Match setup</h2>
@@ -232,6 +238,18 @@ export function MatchSetup({
         </section>
       </div>
     </section>
-    </>
+    </div>
+
+    {/* THE WAY IN stays on screen: the page owns the viewport height and the two cards scroll
+        inside it, so Start is never below a fold. Primary rightmost (ui-standard §6). */}
+    <div className="ds-setup-bar">
+      <button className="ds-btn" onClick={onFreeDrive}>
+        Free drive
+      </button>
+      <button className="ds-btn primary" onClick={onStart}>
+        Start solo practice
+      </button>
+    </div>
+    </div>
   );
 }

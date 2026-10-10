@@ -49,6 +49,7 @@ export function AppShell({
   children,
   showAdmin,
   home = false,
+  wide = false,
   onBack,
   onDownload,
   onContributors,
@@ -69,6 +70,8 @@ export function AppShell({
   children: ReactNode;
   /** show the Admin entry (only the signed-in admin account) */
   showAdmin?: boolean;
+  /** a screen that uses the whole width and height under the bar (Solo setup) instead of a column */
+  wide?: boolean;
   /** home has no Back, no title and no friends panel, and its menu is the navigation */
   home?: boolean;
   /** Back, in the top bar of every screen but home */
@@ -189,7 +192,7 @@ export function AppShell({
 
       {!home ? (
         <div className="ds-body">
-          <main className="ds-main">
+          <main className={wide ? 'ds-main wide' : 'ds-main'}>
             {children}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
                 there is no clearance rule and no frame budget to protect. It

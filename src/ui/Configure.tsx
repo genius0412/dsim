@@ -2,7 +2,6 @@ import { lazy } from 'react';
 import { LoadBoundary } from './LoadBoundary';
 import type { GameSettings } from '../game';
 import { Menu } from './Menu';
-import { MatchSetup } from './MatchSetup';
 import { ControlsSection } from './ControlsSection';
 import { AudioSection } from './AudioSection';
 import { NetworkSection } from './NetworkSection';
@@ -24,7 +23,7 @@ const GraphicsSection = lazy(() => import('./GraphicsSection').then((m) => ({ de
 
 /**
  * TASK ORDER, not the order the sections were built in: build the robot, learn to drive it,
- * set up the session you will drive it in, then the output settings, then the connection.
+ * then the output settings, then the connection.
  * `network` is last because it is the one a player opens least — it holds client prediction,
  * which moved out of Controls on 2026-09-22 (see `NetworkSection`).
  *
@@ -32,7 +31,7 @@ const GraphicsSection = lazy(() => import('./GraphicsSection').then((m) => ({ de
  * shipped, deep-linkable URL (`audio` is still the key for Audio and Visual), and reordering a
  * list must never break a link somebody has bookmarked.
  */
-export const CONFIGURE_SECTIONS = ['robot', 'controls', 'match', 'audio', 'graphics', 'network'] as const;
+export const CONFIGURE_SECTIONS = ['robot', 'controls', 'audio', 'graphics', 'network'] as const;
 export type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number];
 
 export function isConfigureSection(s: string | null): s is ConfigureSection {
@@ -48,7 +47,6 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
 const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
   robot: { label: 'Robot', hint: 'Presets, build, intake' },
   controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
-  match: { label: 'Match', hint: 'Alliance, start, autos' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and visual', hint: 'Sounds, voice & theme' },
   graphics: { label: 'Graphics', hint: '3D view quality' },
@@ -58,8 +56,8 @@ const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
 /**
  * Configure — everything you tune before a match, behind one destination with a
  * sub-nav. Each section is an EXISTING component, moved rather than rewritten:
- * `Menu` (the robot builder), `MatchSetup` (was a collapsed panel on Home), and
- * `ControlsSection` + `AudioSection` (were buried in Account). Account keeps only
+ * `Menu` (the robot builder), and `ControlsSection` + `AudioSection` (were buried in Account).
+ * The old Match section is `SoloSetup` now, a screen of its own off the Play page. Account keeps only
  * identity, server region, and the settings reset. `NetworkSection` is the one written for
  * it, when client prediction left Controls.
  *
@@ -121,7 +119,6 @@ export function Configure({
 
         <div className="ds-subnav-body">
           {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} />}
-          {section === 'match' && <MatchSetup settings={settings} onChange={onChange} />}
           {section === 'controls' && (
             <ControlsSection
               tutorialGame={settings.game}

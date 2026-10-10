@@ -190,7 +190,9 @@ that season has none) — then three bind panels —
   on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
   and swept the buttons still held into `alreadyDown` — the release then bound nothing. A
   single-press capture never showed it; commit-on-release made it a real window.
-- **Configure ▸ Match is two cards: Match setup, then Practice.** Practice holds Practice
+- **SOLO SETUP (`SoloSetup.tsx`, `/solo-setup`) IS NOT A CONFIGURE SECTION** (it was Configure ▸ Match until 2026-10-10;
+  `/configure/match` still resolves, to it). The Play page's Solo practice tile opens it and its sticky bar
+  starts Solo practice or Free drive, both behind `guardStart`. It is two cards: Match setup, then Practice. Practice holds Practice
   physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
   Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
   difficulty row, which is always rendered and DISABLED unless the seat is AI (§1.4: no rows
@@ -330,11 +332,11 @@ Controls screen stands the layer down the same way while a rebind is armed
   tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
   OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
 
-## Configure — the six sections, and the three rules that hold them together
+## Configure — the five sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes six sections at `/configure/<key>`. **The ARRAY is the order on
+`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
-rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics, Network:
+rename one. Order is task order — Robot, Controls, Audio and Visual, Graphics, Network:
 build it, learn to drive it, set up the session, the two output sections, then the connection.
 **Network** (`NetworkSection.tsx`) holds client prediction, which sat in a Controls fold until
 2026-09-22 (owner: "Network prediction should NOT be part of controls") — it is how this machine

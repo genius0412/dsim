@@ -84,7 +84,7 @@ export function StartPositionEditor({
   const presets = categoryPresets(cat);
   const savedList = saved[cat] ?? [];
   // extra saved-start slots are a supporter perk. Read here rather than passed in
-  // by each of the three call sites (MatchSetup / Lobby / MatchStrategy) so the
+  // by each of the three call sites (SoloSetup / Lobby / MatchStrategy) so the
   // cap cannot end up different depending on which screen you saved from. A
   // LAPSED supporter keeps every pose they already saved — this only hides the
   // button — because deleting someone's work is not how a subscription ends.

@@ -551,6 +551,46 @@
   background: var(--ds-panel);
   border-color: var(--ds-ink-dim);
 }
+.ds-main.wide {
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+}
+/* SOLO SETUP: the two cards sit side by side on a wide window and stack on a narrow one. The way in
+   (Start / Free drive) is a bar pinned to the bottom of the scroll container, so it is on screen
+   whatever the page height, and it is the only thing that follows the player down the page. */
+.ds-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  flex: 1;
+}
+.ds-setup-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--ds-s-4);
+  align-items: start;
+}
+.ds-setup-cols > .ds-panel + .ds-panel {
+  margin-top: 0;
+}
+@media (min-width: 1100px) {
+  .ds-setup-cols {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+.ds-setup-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) 0;
+  margin-top: auto;
+  border-top: 1px solid var(--ds-line);
+  background: var(--ds-bg);
+}
 .ds-bar-title {
   font-size: var(--ds-t-xl);
   font-weight: 800;
@@ -4382,7 +4422,7 @@ tr.lb-detail td {
 .ds-sec > .ds-panel + .ds-panel {
   margin-top: 0;
 }
-/* Match ▸ Practice: ONE robot seat — what it is, then its difficulty. The two rows sit at the
+/* Solo setup, Practice: ONE robot seat — what it is, then its difficulty. The two rows sit at the
    field's own 8px, closer than the section's 12, so a tier row reads as its seat's; the rule
    between seats is the second seat's, like `.ds-ctl-row`. */
 .ds-seat {

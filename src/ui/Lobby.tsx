@@ -39,7 +39,7 @@ import { activeZenithAuto } from '../auto/library';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
-import { botLabel } from './MatchSetup';
+import { botLabel } from './SoloSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
@@ -702,7 +702,7 @@ export function Lobby({
     // `join`/`resume` because `wire` is the one place both of them pass through.
     announcePhysicsReady(lobby, roomGame);
     // THIS PLAYER'S ZENITH AUTO (custom rooms only; docs/area/autos.md): the one on in
-    // Configure ▸ Match ▸ Autonomous, sent once the server says it can play it. Latched in the
+    // Solo setup ▸ Autonomous, sent once the server says it can play it. Latched in the
     // client like the readiness above, so a reconnect re-sends it. A record run never sends one.
     if (!isRecord && moduleFor(roomGame).zenithAutos) {
       void serverCaps().then((caps) => {

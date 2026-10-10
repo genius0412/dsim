@@ -73,6 +73,7 @@ import {
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
+import { SoloSetup } from './SoloSetup';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records, isRecordsTab, type RecordsTab } from './Records';
@@ -137,6 +138,9 @@ import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 type Screen =
   | 'home'
   | 'modes'
+  /** `/solo-setup`: alliance, start, autos, physics and the other robots, then Start. It was
+   *  Configure's Match section, so `/configure/match` lands here. */
+  | 'solosetup'
   | 'configure'
   /** `/configure/robot/import` and `/configure/robot/import/<id>`: the robot import editor. A screen
    *  of its own, not a Configure section, so its preview has the page's whole width. */
@@ -235,6 +239,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '';
     case 'modes':
       return '/modes';
+    case 'solosetup':
+      return '/solo-setup';
     case 'configure':
       return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
     case 'robotimport':
@@ -315,6 +321,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
   if (comps) return at('competitions', { sub: comps[1] ?? null });
 
+  // the old Match section of Configure, BEFORE the configure match below
+  if (/^\/configure\/match\/?$/.test(rest)) return at('solosetup');
   // BEFORE the configure match, which would read `/configure/robot/import` as the robot section
   const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
   if (robotImport) return at('robotimport', { sub: robotImport[1] ?? null });
@@ -330,6 +338,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/stats')) return at('records', { sub: 'career' });
 
   if (rest.startsWith('/modes')) return at('modes');
+  if (rest.startsWith('/solo-setup')) return at('solosetup');
   if (rest.startsWith('/lobby')) return at('lobby');
   /* ⚠️ THE DISCORD LOBBY BROWSER NEEDS A CASE HERE OR IT IS A WRITE-ONLY ROUTE. `screenSuffix`
      pushes `/discord-lobbies` and the canonicalise effect puts it in the address bar, but with
@@ -419,6 +428,7 @@ function devRouteFor(game: GameId, rest: string): ComponentType | null {
 function navFor(screen: Screen): ShellNav {
   switch (screen) {
     case 'modes':
+    case 'solosetup':
     case 'game':
     case 'lobby':
     case 'discordlobbies':
@@ -2313,7 +2323,8 @@ export function App() {
         right={right}
         showAdmin={isAdmin}
         home={screen === 'home'}
-        onBack={() => goNav('home')}
+        wide={screen === 'solosetup'}
+        onBack={() => (screen === 'solosetup' ? navigate('modes') : goNav('home'))}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
@@ -2377,6 +2388,28 @@ export function App() {
         />
       )}
 
+      {screen === 'solosetup' && (
+        <>
+          <h1 className="ds-h1">Solo practice</h1>
+          <SoloSetup
+            settings={settings}
+            onChange={update}
+            onStart={() =>
+              guardStart(() => {
+                update({ ...settings, mode: 'match' });
+                navigate('game');
+              })
+            }
+            onFreeDrive={() =>
+              guardStart(() => {
+                update({ ...settings, mode: 'free' });
+                navigate('game');
+              })
+            }
+          />
+        </>
+      )}
+
       {screen === 'modes' && (
         <ModeSelect
           game={settings.game}
@@ -2395,12 +2428,7 @@ export function App() {
               navigate('game');
             })
           }
-          onSoloMatch={() =>
-            guardStart(() => {
-              update({ ...settings, mode: 'match' });
-              navigate('game');
-            })
-          }
+          onSoloMatch={() => navigate('solosetup')}
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
@@ -2495,7 +2523,7 @@ export function App() {
               autoFocus
               onClick={() => {
                 setBadStart(false);
-                navigate('configure', { sub: 'match' });
+                navigate('solosetup');
               }}
             >
               Fix start position

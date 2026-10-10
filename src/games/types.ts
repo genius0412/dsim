@@ -305,7 +305,7 @@ export interface GameSimModule {
    * whole autonomous period with nothing anywhere saying why.
    *
    * Two readers, and they are the two ends of that path: the builder hides the section for
-   * a game that cannot run one (`MatchSetup`), and the spawn chokepoint drops `autoPath` /
+   * a game that cannot run one (`SoloSetup`), and the spawn chokepoint drops `autoPath` /
    * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
    * arriving off the wire never reaches a world, a snapshot or a replay.
    */

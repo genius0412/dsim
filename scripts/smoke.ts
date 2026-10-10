@@ -29519,18 +29519,19 @@ const dumperSetup = (): RobotSetup => {
  */
 {
   const rail = readFileSync('src/ui/NavRail.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const homeSrc = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
   const account = readFileSync('src/ui/Account.tsx', 'utf8').replace(/\r\n/g, '\n');
   const friendsSrc = readFileSync('src/ui/FriendsPanel.tsx', 'utf8').replace(/\r\n/g, '\n');
 
   check(
-    '⚠️ discord activity: the rail drops its Profile destination in the embed',
+    '⚠️ discord activity: the nav list drops its Profile destination in the embed',
     /return inActivity \? RAIL_ITEMS\.filter\(\(it\) => it\.id !== 'profile'\) : RAIL_ITEMS;/.test(rail) &&
-      /\{railItems\(inDiscordActivity\(\)\)\.map\(/.test(rail),
+      /railItems\(inDiscordActivity\(\)\)/.test(homeSrc),
     'both halves of Profile are an account, and the embed can never have one',
   );
   check(
     'discord activity: ...asked host-based, so a storage-blocked reload cannot bring it back',
-    /import \{ inDiscordActivity \} from '\.\.\/net\/discordActivity';/.test(rail),
+    /import \{[^}]*\binDiscordActivity\b[^}]*\} from '\.\.\/net\/discordActivity';/.test(homeSrc),
     '`discordGroup()` is empty there; the hostname is not',
   );
 
@@ -29643,9 +29644,10 @@ const dumperSetup = (): RobotSetup => {
   const appear = readFileSync('src/ui/Appearance.tsx', 'utf8').replace(/\r\n/g, '\n');
 
   check(
-    '⚠️ embed: the HOME keycaps use the same filter as the rail, so the two cannot drift',
-    /railItems\(inDiscordActivity\(\)\)\.map\(/.test(home) && !/\bRAIL_ITEMS\.map\(/.test(home),
-    'the rail hid Profile and the home menu kept it, which is the screen you actually land on',
+    '⚠️ embed: the HOME keycaps read the host-filtered list, and Profile is not one of them (it is the top-right menu)',
+    /railItems\(inDiscordActivity\(\)\)\s*\.filter\(\(it\) => it\.id !== 'profile'\)\s*\.map\(/.test(home) &&
+      !/\bRAIL_ITEMS\.map\(/.test(home),
+    'the home menu is the screen a participant lands on, so it must never offer Profile',
   );
   const noUser = appear.slice(appear.indexOf('if (!user) {'), appear.indexOf('if (!user) {') + 1600);
   check('appearance: the signed-out branch is still found (anchors the checks below)', noUser.length > 100);
