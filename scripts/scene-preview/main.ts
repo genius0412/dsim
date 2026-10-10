@@ -63,7 +63,8 @@ import { hiveCellLocalBox, hivePivotX } from '../../src/games/biobuzz/sim3d/bodi
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
-import { GFX_TIERS, setGraphicsPreset, type GraphicsTier } from '../../src/games/biobuzz/graphics/settings';
+import { GFX_TIERS, resetGraphicsToAuto, setGraphicsPreset, setGraphicsTier, type GraphicsTier } from '../../src/games/biobuzz/graphics/settings';
+import { createQualityGovernor, type QualityGovernor } from '../../src/games/biobuzz/graphics/auto';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 
@@ -103,6 +104,8 @@ const deployRamp = urlParams.get('ramp') === '1';
 // levels (`bbWheelDetail`) can be photographed side by side. `&tank=1` drops a butterfly's
 // traction set instead of its mecanum set.
 const drivetrainParam = urlParams.get('drivetrain');
+// `&gfx=auto` resets to Auto and logs the scene's quality lines as `[trial] …` warnings;
+// `&gfx=auto&trial=pass|fail` forces Auto's Extreme trial (see where the scene is created).
 const gfxParam = urlParams.get('gfx');
 // `&mat=standard|physical` overrides the `materials` row AFTER `&gfx=` picked the column, so a
 // pair of pictures at the SAME tier differs in the material model alone (Extreme with and
@@ -196,6 +199,12 @@ async function main(): Promise<void> {
   if ((GFX_TIERS as readonly string[]).includes(gfxParam ?? '')) {
     setGraphicsPreset(gfxParam as GraphicsTier);
     status(`graphics preset forced to ${gfxParam}`);
+  }
+  // `&gfx=auto` (2026-10-10): Auto from scratch, the stored Extreme verdict cleared, so the first
+  // guess, the warm-up and (on a GPU with headroom) the Extreme trial all run for real
+  if (gfxParam === 'auto') {
+    resetGraphicsToAuto();
+    status('graphics reset to auto');
   }
   status('booting 2D physics...');
   await initPhysics();
@@ -336,7 +345,47 @@ async function main(): Promise<void> {
   if (matParam === 'standard' || matParam === 'physical') setGraphicsSetting('materials', matParam);
   const { createBiobuzzScene } = await import('../../src/games/biobuzz/scene/renderScene');
   const host = document.getElementById('host')!;
-  const scene = await createBiobuzzScene(host);
+  // with `&gfx=auto` the scene's quality lines (Auto's picks, the Extreme trial's verdict) go to
+  // the console as warnings tagged `[trial]`, which is what the offscreen capture prints
+  const scene = await createBiobuzzScene(
+    host,
+    gfxParam === 'auto' ? { onQualityEvent: (line) => console.warn(`[trial] ${line}`) } : undefined,
+  );
+
+  // ── A FORCED EXTREME TRIAL (2026-10-10), `&gfx=auto&trial=pass|fail` ───────────────────────
+  // Swaps the scene's governor for one on a FAKE clock fed fixed numbers (3 ms CPU and 3 ms GPU at
+  // a 60 Hz period, then 9 or 18 ms GPU once Extreme is on trial), four fake frames per real one.
+  // The tier switch, the chunk loads and the readiness the trial waits for are the REAL scene's,
+  // so the trial path runs end to end on a machine that could never pass (or fail) one itself.
+  const trialParam = urlParams.get('trial');
+  if (gfxParam === 'auto' && (trialParam === 'pass' || trialParam === 'fail')) {
+    setGraphicsTier('ultra', true);
+    const sc = scene as unknown as { governor: QualityGovernor; gpuName: string; effectsReady(): boolean };
+    let fakeT = 0;
+    const inner = createQualityGovernor(() => fakeT, (line) => console.warn(`[trial] ${line}`), true, {
+      gpu: sc.gpuName,
+      ready: () => sc.effectsReady(),
+    });
+    const onTrialGpu = trialParam === 'pass' ? 9 : 18;
+    sc.governor = {
+      sample: () => {
+        for (let i = 0; i < 4; i++) {
+          fakeT += 1000 / 60;
+          inner.sample(3);
+          inner.gpuSample(inner.phase === 'trial' ? onTrialGpu : 3);
+        }
+      },
+      gpuSample: () => {},
+      get p95Ms() {
+        return inner.p95Ms;
+      },
+      get phase() {
+        return inner.phase;
+      },
+      dispose: () => inner.dispose(),
+    };
+    status(`forced Extreme trial: ${trialParam}`);
+  }
 
   // EXPOSE THE LIVE THREE.Scene for console / `javascript_tool` inspection — `BiobuzzScene`'s
   // `scene` field is `private` at the TYPE level only; at runtime it is a plain property, and
