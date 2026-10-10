@@ -9478,7 +9478,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
-      /async start\(\s*code: string,\s*config: RoomConfig = DEFAULT_ROOM_CONFIG,\s*imports: boolean = importerOpenOn\(appChannel\(\)\),\s*\)/.test(hr) &&
+      /async start\(\s*code: string,\s*config: RoomConfig = DEFAULT_ROOM_CONFIG,\s*imports: boolean = importerEnabled\(\),\s*\)/.test(hr) &&
         /intro\.player/.test(hr),
     );
     check(

@@ -5,6 +5,40 @@ The contract is `docs/robot-import-plan.md` (§3 and §4 bind). This guide is th
 which frame every number is in, how detection works, and what each budget is. Read it before
 touching `src/robotImport/**`.
 
+## Where it ships: ALPHA ONLY
+
+Owner, 2026-10-10: "We will not deploy the robot importer feature to main until I tell you to, but
+we will keep it on alpha. Note that things like fixed shooter should stay." So the importer is gated
+per deployment, in two halves over one rule. **Do not open it on production without his word.**
+
+- **The rule**: `importerOpenOn(channel)` over `IMPORTER_CHANNELS = ['alpha']` (`src/net/imported.ts`).
+  An unknown channel is closed.
+- **Client (cosmetic)**: `importerEnabled()` (`src/seasonVisibility.ts`), the build's
+  `VITE_APP_CHANNEL` (the alpha site bakes `alpha`), or a dev server, or `VITE_ROBOT_IMPORT=1`.
+  Closed, it hides the import route (the URL falls through to the robot page), the Imported robots
+  row, the lobby's library cards and the relay setting, and `useLibrary` loads nothing.
+- **Server (authoritative)**: `IMPORTS_OPEN_HERE` (`server/channel.ts`), the server's own
+  `SERVER_CHANNEL` (`fly.alpha.toml` sets `alpha`) or `ROBOT_IMPORT=1`. Closed, `/api/presence`
+  advertises neither `robotImport` nor `importVisuals`, and every room refuses an imported robot
+  at the door (`RoomConfig.imports`, resolved once and sent to a room's worker; the LAN tab host
+  takes the page's gate in its open message). The client's channel is never trusted for this.
+- **Nothing is stripped.** Production's database and origin have never held an import; alpha's
+  are its own. A gated client that meets a stored import anyway (a dev client signed in to a
+  production account) shows and drives the player's standard robot from a projection while App
+  keeps the stored copy, and an edit there goes to `lastStandardSpec`. The settings save still
+  sends `robotImport`/`importTune` on every channel: without them the server's merge would put
+  back a fixed launcher the player removed (accounts.md "SETTINGS SYNC").
+- **Not gated**: the DECODE and BIOBUZZ fixed shooters, fixed hood, setpoint flywheel, hand loading,
+  the StarterBot cards, the `SIM_PATCH`es, and the sim, renderer and relay support for imported
+  specs. They are everyone's.
+- **Local builds**: `npm run dev` is open; a `vite build` is closed unless `VITE_ROBOT_IMPORT=1` (the
+  import probes and `shiftaudit`'s import pass need it); a local server is closed unless
+  `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`. Desktop builds and desktop LAN hosts (`LAN_MODE`
+  forces `stable`) are closed.
+- **Opening production** (owner's word only): add `'stable'` to `IMPORTER_CHANNELS` (both halves,
+  the desktop build and desktop LAN hosts follow), merge to main, then deploy the client and the
+  server from a main worktree (deploy.md "Deploy ORDER").
+
 ## Layout and the lazy boundary
 
 | file | imports | chunk |
