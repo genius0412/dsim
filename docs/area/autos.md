@@ -54,6 +54,11 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
 - **STUCK IS SAID, NOT FIXED** (`seat.ts`): a path step with no `timeoutS` whose follower asks for
   power while the robot stands still for 1.5 s reports `stuck`, and the HUD reads `AUTO STUCK ON
   <STEP>`. Waits, commands and author-bounded shoves into a wall never count.
+  ⚠️ "Asks for power" means more than HALF the follower's braking cap (`maxBrakingPower`, read
+  from the parameters it runs on). A blocked robot's velocity is noise that flips sign each tick,
+  and Pedro caps power against it at that cap, so a blocked leg asks for only the cap on about
+  half its ticks. A fixed 0.25 floor over Pedro's default 0.2 reset the count there and nothing
+  read stuck (2026-10-10).
 - ⚠️ **THE FIELD DSIM HANDS ZENITH HAS DSIM'S WALLS.** Zenith's BIOBUZZ file is the manual's
   nominal 144 in (±72); DSIM is FIRST's CAD (±70.674). Against 72 a path 1.3 in past DSIM's wall
   plans clean and then wedges the robot, so the adapter overrides `sizeIn` and derives the season

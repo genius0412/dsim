@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
+
+**State: on `alpha`. `src/auto/seat.ts` only. The server runs the seat too but never reads `stuck` (the HUD reads the client's seat), so no deploy; no wire change, no `SIM_PATCH`.** `npm test` 5592/5592 (the one BIOBUZZ failure in 10-10 below is fixed), `build`, `server:check`, `docaudit`, `bundleaudit` pass.
+
+- **Cause: alpha code, not the Zenith packages.** Every worktree's installed `@horizon36596/zenith-*` is byte-identical to the tarballs `package-lock.json` pins (sha512 `+LtJbp04…`). `git bisect` with fixed node_modules: passes at `16061229` (where the check was added), fails from the merge `01192b52` (PR #105, `9a66db14`). PR #105 dropped the team's Pedro gains for Pedro's defaults, which took `maxBrakingPower` from 0.3 to 0.2.
+- **Mechanism:** a robot pressed into a wall in 2D measures a velocity of about ±1e-6 in/s whose sign flips each tick. Pedro's `clampBrakingPower` caps power against the measured motion at `maxBrakingPower`, so the follower's 0.8 path power reads 0.2 on about half the ticks. The seat's fixed 0.25 "asking" floor reset the stall count on each of those ticks. At 0.3 they had counted. 3D asks a steady 0.8 at the wall, which is why only the 2D check failed.
+- **Fix:** the floor is half the braking cap the follower runs on (`simFollowerParams(loaded.robot).maxBrakingPower / 2`), so a future change to the robot file's gains moves the floor with it. Rule in `docs/area/autos.md` (STUCK).
+- **Measured** (scratch probe, wall and the lane's ramp-into-FLOWER auto, 2D and 3D): the fix reads stuck at the same moments the pre-#105 gains with the 0.25 floor did (wall 6.98 s; FLOWER 1.90–2.28 s). Unfixed #105 never read stuck in the 2D wall or in either FLOWER scene. The lane's FLOWER auto is an untimed path ending 1 in inside the FLOWER, so it reads stuck by the rule; it did before #105 too.
+
 # HANDOFF — 2026-10-10 (the robot importer is gated to alpha; main does not get it until the owner says)
 
 **State: on `alpha`. SERVER CHANGE (`server/channel.ts`, `room.ts`, `roomHost.ts`, `roomWorker.ts`, presence in `index.ts`), but no behaviour change on `dsim-alpha`: its `SERVER_CHANNEL=alpha` keeps the importer open.** `npm test` shared 4447 pass; BIOBUZZ 5591/5592, the one failure pre-existing (below). `test:workers` 170, `test:mm` 234, `test:comp` 1365, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass.
@@ -8,7 +17,7 @@
 - **Checked live:** the alpha bundle bakes `"alpha"` as its channel and www bakes none; `fly.alpha.toml` sets `SERVER_CHANNEL='alpha'` in `[env]`, `fly.toml` does not. A stable build was walked by the client lane: the import URL lands on the robot page, no library chunk is fetched, a seeded import shows the standard robot and survives an edit. Adversarial review over five lenses (leak, data, alpha regression, ungated features, tests): one test defect confirmed and fixed (the custom-room cost check was timing the refusal path).
 - **Recipes:** import probes and `shiftaudit`'s import pass need `VITE_ROBOT_IMPORT=1 npm run build` (`npm run dev` is always open); a local game server needs `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`.
 - **Opening production** (owner's word only): add `'stable'` to `IMPORTER_CHANNELS`; the smoke check "production is closed until the owner opens it" fails on purpose then and is updated with it.
-- **Open:** BIOBUZZ "AUTO stuck: a leg the wall blocks reads stuck within 2 s…" (`scripts/smoke-biobuzz/autos.ts`) fails on a clean `7b56e305` too, with this checkout's node_modules; not this work. A closed server's relay refusal says "Only custom and LAN rooms show imported robots", wrong inside a closed custom room; honest clients never get there (no `importVisuals` cap), so the copy was left.
+- **Open:** (the BIOBUZZ "AUTO stuck" failure noted here is fixed in 10-10b.) A closed server's relay refusal says "Only custom and LAN rooms show imported robots", wrong inside a closed custom room; honest clients never get there (no `importVisuals` cap), so the copy was left.
 
 # HANDOFF — 2026-09-27d (review lane 9: server correctness, PR #104)
 
