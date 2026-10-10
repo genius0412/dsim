@@ -183,8 +183,9 @@ function after(src: string, anchor: string, add: string): string {
  * WHAT THE CANVAS KEEPS: every colour. `TILE_MAT`, the 0…−8 % per-tile tone (`tileTone`, which is
  * already the batch variance AndyMark warns of, and never goes lighter than the mat), the painted
  * seam — all of it is the HUD contrast measurement, and the twin reads the same `map`.
- * Nothing below makes a pixel LIGHTER than the canvas it sits on: the seam is a cavity, the tracks
- * multiply down, and the lip only turns the normal.
+ * Nothing below makes a pixel LIGHTER than the canvas it sits on: the gap and the rounded edge
+ * are one light factor of at most 1, and the tracks multiply down. No seam term turns the normal
+ * (the RENDER lane evaluates the shader's own expressions to hold both).
  *
  * WHAT IS NEW:
  *   • THE SEAM, ANALYTIC. The canvas has 14.5 texels to the inch, and at Extreme the driver-wall
@@ -193,9 +194,11 @@ function after(src: string, anchor: string, add: string): string {
  *     comb of flats and filleted flanks, the X at every junction, the 45° flip at the middle of
  *     every edge) as a distance field in world inches, and from it a 0.02-in gap (occluded: a
  *     5/8-in-deep slot is dark) and the die-cut rounded top edge (~1 mm radius, survey §1) as a
- *     normal that rolls into the gap. Both are BOX-FILTERED over the pixel's own footprint, so the
- *     line is crisp at 22 px/in, and both FADE OUT with that footprint (`FLOOR_SEAM_NEAR_IN` …
- *     `FAR_IN`, ~18 → ~5 px/in), so at range the painted seam carries the joint alone instead of
+ *     cavity that darkens as the edge turns down into the gap (`FLOOR_LIP_SHADE`). Both are
+ *     BOX-FILTERED over the pixel's own footprint, so the line is crisp at 22 px/in, and both FADE
+ *     OUT with that footprint (`FLOOR_SEAM_NEAR_IN` … `FAR_IN` of `bbH`, which is 0.71 of a pixel
+ *     with the screen's axes along the field's and 1.0 on a diagonal: ~18 → ~4.4 px/in aligned,
+ *     ~25 → ~6.3 px/in diagonal), so at range the painted seam carries the joint alone instead of
  *     the two stacking into a dark comb (owner, 2026-10-10: "The edges between field tiles seem a
  *     little too dark" — box filtering keeps a gap's darkness at any range, so before the fade
  *     the gap added 0.026 in of black to the painted 0.094 everywhere).
@@ -212,8 +215,10 @@ const FLOOR_GAP_HALF_IN = 0.01;
 const FLOOR_LIP_R_IN = 0.05;
 /** how much light the gap takes away at full coverage */
 const FLOOR_GAP_OCCLUSION = 0.6;
-/** the most the rolled edge's normal leans into the gap (the sine of its tilt) */
-const FLOOR_LIP_TILT = 0.6;
+/** how much light the rounded edge loses where it turns straight down into the gap. A cavity
+ * term, 1 − cos of the edge's tilt, so it only ever darkens. It used to tilt the normal instead,
+ * which lit the sunward edge brighter than the tile (a raised bead up close). */
+const FLOOR_LIP_SHADE = 0.5;
 /** THE FADE WITH RANGE, over the pixel's half-footprint `bbH` in inches: the analytic seam is
  * whole up to `NEAR` and gone by `FAR`, where the painted seam carries the joint alone. */
 const FLOOR_SEAM_NEAR_IN = 0.04;
@@ -330,7 +335,7 @@ function trackMask(): THREE.DataTexture | null {
  * the 45° cut at the middle; the four flats nearest it, each clipped clear of those cuts; and the
  * three flanks nearest it, each the canonical `tileFlankPoints` shape (a fillet and the straight
  * flank, twice, point-symmetric) in its own frame, mirrored across the joint on every other one.
- * What comes back is the nearest point, so the lip's normal is the direction to it.
+ * What comes back is the nearest point and its distance; the floor uses the distance.
  */
 const FLOOR_DECLS = /* glsl */ `
 varying vec2 vBbFloor;
@@ -372,11 +377,12 @@ vec3 bbSeamCell( vec2 st, float L, float sig ) {
 \tfloat hp = 0.5 * BB_P;
 \tfloat n0 = floor( ( st.x - mid ) / hp + 0.5 );
 \tfor ( int i = - 2; i <= 1; i ++ ) {
-\t\t// the flat after flank k: +sig A after an even one
+\t\t// the flat after flank k: +sig A after an even one. It starts where flank k's upper fillet
+\t\t// ends, E BEFORE that flank's centre, and runs to E past the next one's (the overhang)
 \t\tfloat k = n0 + float( i );
 \t\tfloat lvl = ( mod( k, 2.0 ) < 0.5 ? sig : - sig ) * BB_A;
-\t\tfloat a = mid + k * hp + BB_E;
-\t\tfloat b = mid + ( k + 1.0 ) * hp - BB_E;
+\t\tfloat a = mid + k * hp - BB_E;
+\t\tfloat b = mid + ( k + 1.0 ) * hp + BB_E;
 \t\tif ( a + b < L ) { a = max( a, BB_A ); b = min( b, mid - BB_A ); }
 \t\telse { a = max( a, mid + BB_A ); b = min( b, L - BB_A ); }
 \t\tif ( b > a ) bbKeep( st, vec2( clamp( st.x, a, b ), lvl ), best );
@@ -394,9 +400,9 @@ vec3 bbSeamCell( vec2 st, float L, float sig ) {
 \t}
 \treturn best;
 }
-// one axis' seams: distance to the nearest (x), the direction from it in (across, along) (yz),
-// and how many joints lie below the point (w) — the tile index along this axis
-vec4 bbSeamAxis( float across, float along, float sig ) {
+// one axis' seams: distance to the nearest (x), and how many joints lie below the point (y) —
+// the tile index along this axis
+vec2 bbSeamAxis( float across, float along, float sig ) {
 \tfloat jat = bbJoint[ 0 ];
 \tfor ( int i = 1; i < 7; i ++ ) if ( abs( across - bbJoint[ i ] ) < abs( across - jat ) ) jat = bbJoint[ i ];
 \tfloat idx = 0.0;
@@ -404,14 +410,13 @@ vec4 bbSeamAxis( float across, float along, float sig ) {
 \tvec2 ab = vec2( bbJoint[ 0 ], bbJoint[ 1 ] );
 \tfor ( int j = 1; j < 6; j ++ ) if ( along >= bbJoint[ j ] ) ab = vec2( bbJoint[ j ], bbJoint[ j + 1 ] );
 \tvec2 st = vec2( along - ab.x, across - jat );
-\tvec3 q = bbSeamCell( st, ab.y - ab.x, sig );
-\tvec2 away = vec2( st.y - q.y, st.x - q.x );
-\treturn vec4( q.z, away / max( q.z, 1e-5 ), idx );
+\treturn vec2( bbSeamCell( st, ab.y - ab.x, sig ).z, idx );
 }
 #endif
 `;
 
-function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUniforms) => void {
+/** exported for the RENDER lane, which runs it on a stub shader and evaluates the seam terms */
+export function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUniforms) => void {
   return (shader) => {
     const tracks = trackMask();
     shader.uniforms.bbTrackMap = { value: tracks };
@@ -448,12 +453,10 @@ function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUni
     );
     const seamBlock = seams
       ? /* glsl */ `
-\tvec4 bbSx = bbSeamAxis( vBbFloor.x, vBbFloor.y, BB_LEAN_X );
-\tvec4 bbSy = bbSeamAxis( vBbFloor.y, vBbFloor.x, BB_LEAN_Y );
-\t// the nearer seam, its outward gradient in WORLD (x, y)
-\tfloat bbSd = bbSx.x;
-\tvec2 bbSg = bbSx.yz;
-\tif ( bbSy.x < bbSd ) { bbSd = bbSy.x; bbSg = bbSy.zy; }
+\tvec2 bbSx = bbSeamAxis( vBbFloor.x, vBbFloor.y, BB_LEAN_X );
+\tvec2 bbSy = bbSeamAxis( vBbFloor.y, vBbFloor.x, BB_LEAN_Y );
+\t// the nearer seam
+\tfloat bbSd = min( bbSx.x, bbSy.x );
 \t// box-filter both profiles over this pixel's footprint, in inches
 \tfloat bbH = max( 0.5 * length( fwidth( vBbFloor ) ), 1e-4 );
 \tfloat bbGap = clamp( ( min( bbSd + bbH, ${FLOOR_GAP_HALF_IN.toFixed(4)} ) - max( bbSd - bbH, - ${FLOOR_GAP_HALF_IN.toFixed(4)} ) ) / ( 2.0 * bbH ), 0.0, 1.0 );
@@ -466,7 +469,7 @@ function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUni
 \tbbGap *= bbNear;
 \tbbLip *= bbNear;
 \t// per-tile sheen: the anti-static spray does not go on evenly
-\tfloat bbTileH = fract( sin( dot( vec2( bbSx.w, bbSy.w ), vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+\tfloat bbTileH = fract( sin( dot( vec2( bbSx.y, bbSy.y ), vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
 \troughnessFactor += ( bbTileH - 0.5 ) * ${(2 * FLOOR_TILE_ROUGH).toFixed(3)};
 `
       : '';
@@ -478,22 +481,12 @@ function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUni
     if (seams) {
       f = after(
         f,
-        '#include <normal_fragment_maps>',
-        /* glsl */ `
-\tif ( bbLip > 0.0 && dot( bbSg, bbSg ) > 0.0 ) {
-\t\t// rolls INTO the gap: the edge's normal leans toward the seam line
-\t\tvec3 bbTv = normalize( ( viewMatrix * vec4( - normalize( bbSg ), 0.0, 0.0 ) ).xyz );
-\t\tfloat bbL = ${FLOOR_LIP_TILT.toFixed(3)} * min( bbLip, 1.0 );
-\t\tnormal = normalize( normal * sqrt( 1.0 - bbL * bbL ) + bbTv * bbL );
-\t}
-`,
-      );
-      f = after(
-        f,
         '#include <aomap_fragment>',
         /* glsl */ `
 \t{
-\t\tfloat bbOcc = 1.0 - ${FLOOR_GAP_OCCLUSION.toFixed(3)} * bbGap;
+\t\t// the gap, and the rounded edge as a cavity: it turns away from the room, so it only loses light
+\t\tfloat bbS = min( bbLip, 1.0 );
+\t\tfloat bbOcc = 1.0 - ${FLOOR_GAP_OCCLUSION.toFixed(3)} * bbGap - ${FLOOR_LIP_SHADE.toFixed(3)} * ( 1.0 - sqrt( 1.0 - bbS * bbS ) );
 \t\treflectedLight.directDiffuse *= bbOcc;
 \t\treflectedLight.indirectDiffuse *= bbOcc;
 \t\treflectedLight.directSpecular *= bbOcc;

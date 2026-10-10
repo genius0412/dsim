@@ -574,31 +574,56 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   same curve. The seam is a dark hairline: the old light lip over a wide groove read as an
   embossed outline and broke into a beaded line at range. Since 2026-10-10 it is also a FAINT one
   (owner: "The edges between field tiles seem a little too dark"): core `TILE_JOINT` #333333 at
-  0.07 in over `TILE_JOINT_SHADE` #3e3e3e at 0.14 in (were #232323, #383838, 0.2 in).
+  0.07 in over `TILE_JOINT_SHADE` #3c3c3c at 0.24 in (were #232323, #383838, 0.2 in).
   - ⚠️ **THE JOINT'S DARKNESS AT RANGE IS WHAT THE MIPS KEEP, AND THEY KEEP IT IN LINEAR LIGHT.**
     A pressed EVA joint is a fine, low-contrast line from the driver station; it only reads darker
     up close or where tiles have pulled apart. Mipmaps and the analytic box filter both conserve a
     seam's linear darkening integrated across the joint, so that integral (inches of black per inch
     of joint) is the number that sets how dark a joint looks at range: **0.094** painted before,
-    **0.044** now. On top of it, Extreme's analytic gap (0.03 in at occlusion 0.85, box-filtered,
-    so its darkness is kept at any range too) added **0.026** at every distance, which is why
-    Extreme was the darkest tier and read as a dark comb. The analytic seam is now a 0.02-in gap
-    at occlusion 0.6 with the rolled edge leaning at most 0.6 (was 0.95), and both FADE OUT with
-    the pixel footprint (`FLOOR_SEAM_NEAR_IN` 0.04 → `FAR_IN` 0.16 in, ~18 → ~5 px/in, a
+    **0.072** now. The darkness up close is the core's own (44 % below the mat in linear light,
+    was 72 %), so the light, wide shade (24 %) is what carries the joint at range. On top of it,
+    Extreme's analytic gap (0.03 in at occlusion 0.85, box-filtered, so its darkness is kept at
+    any range too) added **0.026** at every distance, which is why Extreme was the darkest tier
+    and read as a dark comb. The analytic seam is now a 0.02-in gap at occlusion 0.6 and the
+    rounded edge as a cavity (`FLOOR_LIP_SHADE` 0.5 × (1 − cos of the edge's tilt)), and both FADE
+    OUT with the pixel footprint (`FLOOR_SEAM_NEAR_IN` 0.04 → `FAR_IN` 0.16 in of `bbH`, a
     smoothstep, so nothing pops): crisp up close, gone at range, where the painted seam carries the
-    joint alone.
+    joint alone. `bbH` is half of `length(fwidth(xy))`: 0.71 of a pixel with the screen's axes
+    along the field's, 1.0 on a diagonal, so the fade runs ~18 → ~4.4 px/in aligned and ~25 →
+    ~6.3 px/in on a diagonal.
+  - ⚠️ **A FAINTER JOINT MUST STILL BE A GRID ON MEDIUM.** The first pass (shade #3e3e3e over 0.14
+    in, 0.044 in of black) lost it: Medium's floor renders at luma ~62, where its far joints sat
+    0.9–1.7 8-bit levels below the darker tile and the field read as tile-tone patches with no
+    lines. 0.072 puts them 3.5–3.9 levels down between 2 and 4 px/in, and 1.6–2.8 under 2 px/in
+    (the old joint: 3.5–4.9). Measure a joint against the DARKER of its two tiles: neighbouring
+    tiles differ by up to 8 % (`tileTone`), and against the lighter one or a pooled median the
+    tone step counts as seam (~0.03 at range).
+  - ⚠️ **NO SEAM TERM MAY LIGHT THE FLOOR, SO THE ROUNDED EDGE IS A CAVITY, NOT A TILTED NORMAL.**
+    Tilting the edge's normal 0.6 into the gap turned the sunward edge toward the sun (60, −80,
+    140): up to ~15 % more direct light than flat floor, and at ~74 px/in the seam read as a raised
+    bead (light rim, dark gap, shade). One light factor of at most 1 on all four reflected-light
+    terms cannot do that. Also fixed: the shader stopped every flat 2E (0.0625 in) short of its
+    fillets, so the gap broke for a pixel at each flat/fillet junction up close; a flat runs from E
+    before one flank's centre to E past the next one's, as `tileSeamPolyline` lays it out.
   - MEASURED (`__bbSeamProbe` on the scene-preview, `&still=1`: the scene's own camera, every mesh
     but the mat hidden, a profile across every interior joint every 1.5 in; the darkest point of
-    the joint as a fraction below the mat, Rec. 709 luma of the output). At range (under 4 px/in):
-    Medium 0.08–0.13 → 0.04–0.07, High 0.08–0.14 → 0.04–0.07, Extreme 0.10–0.17 → 0.04–0.07,
-    Extreme with standard materials 0.07–0.13 → 0.04–0.06. Up close (8+ px/in): High 0.25–0.30 →
-    0.12–0.14, Extreme 0.31–0.45 → 0.13–0.23 (0.23 is the chase camera's nearest tiles, 17 px/in).
-    Low is unchanged and was never dark: its flat grid is the 2D `COLORS.tile` on `COLORS.mat`, a
-    line ~3 % LIGHTER than its own mat. `npm run contrast` is unchanged (both colours stay darker
-    than the darkest tile, #404040, so the mat is still the lightest ground). The RENDER lane holds
-    the rule as numbers, not constants (`tileSeamContrastChecks`): each colour's linear darkening
-    (core ≤ 50 %, shade ≤ 25 %), the painted integral (0.025–0.05 in), the gap's peak at 22 px/in
-    (10–25 %) and its integral (under a third of the painted one), and the fade's span and shape.
+    the joint below the darker tile, Rec. 709 luma of the output). At range (under 4 px/in), before
+    → now: Medium 0.055–0.108 → 0.026–0.063, High 0.064–0.121 → 0.039–0.071, Extreme 0.098–0.154
+    → 0.031–0.070, Extreme with standard materials 0.063–0.109 → 0.027–0.063 (the first pass:
+    0.014–0.048). Up close (8+ px/in): Medium 0.29 → 0.13, High 0.26–0.28 → 0.12–0.14, Extreme
+    0.31–0.51 → 0.14–0.22 (0.22 is the chase camera's nearest tiles, 17 px/in), standard materials
+    0.22–0.37 → 0.11–0.18. The brightest point of a joint over its own tile at ~80 px/in (free
+    camera, Extreme): +4.5 % before, +2.1 % now, against +1.9 % on bare tile (the review measured
+    +5.9 % with the tilt at 0.6, at 74 px/in). Low is unchanged and was never dark: its flat grid
+    is the 2D `COLORS.tile` on `COLORS.mat`, a line ~3 % LIGHTER than its own mat. `npm run
+    contrast` is unchanged (both colours stay darker than the darkest tile, #404040, so the mat is
+    still the lightest ground).
+    The RENDER lane holds the rule as numbers (`tileSeamContrastChecks`): each colour's linear
+    darkening (core ≤ 50 %, shade ≤ 25 %), the painted integral (0.06–0.08 in), and the analytic
+    seam run through the real `floorEdit` on a stub shader, its terms evaluated: the peak at
+    22 px/in (10–25 %), what it adds across the joint (at most a third of the painted seam), a
+    light factor inside [0, 1] everywhere, no `normal =`, the fade's ends in px/in on both
+    orientations, its shape, and the flats' ends against the polyline.
 - ⚠️ **NO TWO ROBOT PARTS SHARE A PLANE IN DIFFERENT FINISHES, AND NO DRESSING IS DRAWN THROUGH A
   MECHANISM** (owner, 2026-09-28: "The robot itself has a lot of overlapping parts").
   - Z-fighting: faces facing the same way within the depth buffer's resolution (0.023 in at the

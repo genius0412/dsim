@@ -960,10 +960,16 @@ async function main(): Promise<void> {
    * (so no robot, element, tape or shadow lies over a joint), reads the frame back, and walks a
    * profile ACROSS every interior joint every 1.5 in along it, junction X's left out. Per profile:
    *   - `pxIn`  screen pixels per inch across the joint (the range that matters to a mip);
-   *   - `mat`   the median luma of a band of bare tile either side, clear of the seam;
-   *   - `cmin`  1 − (darkest luma in the seam band) / mat — how dark the line peaks;
-   *   - `dw`    Σ (1 − L/mat) dt over the seam band, in inches — the seam's darkness as an
-   *             equivalent width of black, which a mip or a box filter conserves.
+   *   - `mat`   the median luma of bare tile clear of the seam, each SIDE on its own (two
+   *             neighbouring tiles differ by up to 8 %, `tileTone`), averaged for the record;
+   *   - `tone`  the step between the two sides, |N − P| / max — not the seam;
+   *   - `cmin`  1 − (darkest luma in the seam band) / (the DARKER side) — how far the line dips
+   *             below both tiles. Against the lighter side or a pooled median, the tone step
+   *             would count as seam (~0.03 at range, 2026-10-10 review);
+   *   - `cmax`  the brightest point of the band over its own side's tile, − 1 — a light rim;
+   *   - `dw`    Σ (1 − L/side) dt over the seam band, in inches — the seam's darkness as an
+   *             equivalent width of black, which a mip or a box filter conserves;
+   *   - `noise` the same `cmax` taken on bare tile further out: the floor `cmax` sits on.
    * Bucketed by px/in (< 2, 2–4, 4–8, 8–16, 16+). Luma is Rec. 709 on the 8-bit output.
    */
   (window as unknown as { __bbSeamProbe: (opts?: { all?: boolean }) => unknown }).__bbSeamProbe = (opts = {}) => {
@@ -1015,8 +1021,12 @@ async function main(): Promise<void> {
     const J = tileJunctions();
     const lo = J[0] + 0.079;
     const hi = J[J.length - 1] - 0.079;
-    type Row = { pxIn: number; mat: number; cmin: number; dw: number };
+    type Row = { pxIn: number; mat: number; tone: number; cmin: number; cmax: number; dw: number; noise: number };
     const rows: Row[] = [];
+    const median = (v: number[]): number => {
+      const s = [...v].sort((p, q) => p - q);
+      return s[s.length >> 1];
+    };
     for (const axis of ['x', 'y'] as const) {
       for (let i = 1; i < J.length - 1; i++) {
         for (let s = lo + 2; s <= hi - 2; s += 1.5) {
@@ -1031,8 +1041,10 @@ async function main(): Promise<void> {
           const m0 = Math.max(1.5, 2.5 / pxIn);
           const m1 = m0 + Math.max(1.5, 3 / pxIn);
           const h = Math.min(0.1, Math.max(0.01, 0.25 / pxIn));
-          const matL: number[] = [];
+          const negL: number[] = [];
+          const posL: number[] = [];
           const bandL: [number, number][] = [];
+          const ctrlL: [number, number][] = [];
           let ok = true;
           for (let t = -m1; t <= m1 + 1e-9; t += h) {
             const p = pt(t);
@@ -1043,19 +1055,35 @@ async function main(): Promise<void> {
             const v = luma(p[0], p[1]);
             const at2 = Math.abs(t);
             if (at2 <= band) bandL.push([t, v]);
-            else if (at2 >= m0) matL.push(v);
+            else if (at2 >= m0) {
+              (t < 0 ? negL : posL).push(v);
+              if (at2 <= m0 + 2 * band) ctrlL.push([t, v]);
+            }
           }
-          if (!ok || matL.length < 4 || bandL.length < 2) continue;
-          matL.sort((p, q) => p - q);
-          const mat = matL[matL.length >> 1];
-          if (mat < 4) continue;
+          if (!ok || negL.length < 4 || posL.length < 4 || bandL.length < 2) continue;
+          const matN = median(negL);
+          const matP = median(posL);
+          if (Math.min(matN, matP) < 4) continue;
+          const ref = (t: number): number => (t < 0 ? matN : matP);
           let mn = Infinity;
+          let cmax = -Infinity;
           let dw = 0;
-          for (const [, v] of bandL) {
+          for (const [t, v] of bandL) {
             mn = Math.min(mn, v);
-            dw += (1 - v / mat) * h;
+            cmax = Math.max(cmax, v / ref(t) - 1);
+            dw += (1 - v / ref(t)) * h;
           }
-          rows.push({ pxIn, mat, cmin: 1 - mn / mat, dw });
+          let noise = -Infinity;
+          for (const [t, v] of ctrlL) noise = Math.max(noise, v / ref(t) - 1);
+          rows.push({
+            pxIn,
+            mat: (matN + matP) / 2,
+            tone: Math.abs(matN - matP) / Math.max(matN, matP),
+            cmin: 1 - mn / Math.min(matN, matP),
+            cmax,
+            dw,
+            noise,
+          });
         }
       }
     }
@@ -1067,7 +1095,17 @@ async function main(): Promise<void> {
         return v.length ? v[v.length >> 1] : NaN;
       };
       const r3 = (v: number): number => Math.round(v * 1000) / 1000;
-      return { name, n: rs.length, pxIn: r3(med((r) => r.pxIn)), mat: r3(mean((r) => r.mat)), cmin: r3(mean((r) => r.cmin)), dw: r3(mean((r) => r.dw)) };
+      return {
+        name,
+        n: rs.length,
+        pxIn: r3(med((r) => r.pxIn)),
+        mat: r3(mean((r) => r.mat)),
+        tone: r3(mean((r) => r.tone)),
+        cmin: r3(mean((r) => r.cmin)),
+        cmax: r3(mean((r) => r.cmax)),
+        dw: r3(mean((r) => r.dw)),
+        noise: r3(mean((r) => r.noise)),
+      };
     };
     return {
       w: f.w,

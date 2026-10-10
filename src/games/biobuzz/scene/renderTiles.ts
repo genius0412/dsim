@@ -325,12 +325,15 @@ export const TILE_MAT = '#454545';
  *
  * ⚠️ AND A FAINT ONE (owner, 2026-10-10: "The edges between field tiles seem a little too dark").
  * A pressed EVA joint is a fine, low-contrast line from the driver station. At #232323 / #383838
- * over 0.07 / 0.2 in, the darkest point of a joint read 7–17 % under the mat at range (under 4
- * px/in) and 22–45 % up close (8+ px/in), on the rendered frame. At range a viewer sees what the
- * MIPS keep, and they average in linear light, so the number that sets it is the linear darkening
- * integrated across the joint: 0.094 in of black per inch of joint then, 0.044 now (the core 44 %
- * darker than the mat, the shade 19 %). Measured again: 4–7 % at range, 11–23 % up close. The
- * RENDER lane holds both colours and that integral.
+ * over 0.07 / 0.2 in, the darkest point of a joint sat 5–15 % below the darker of its two tiles at
+ * range (under 4 px/in) and 22–51 % up close (8+ px/in), on the rendered frame. At range a viewer
+ * sees what the MIPS keep, and they average in linear light, so the number that sets it is the
+ * linear darkening integrated across the joint: 0.094 in of black per inch of joint then, 0.072
+ * now (the core 44 % darker than the mat over 0.07 in, the shade 24 % over the rest of 0.24 in).
+ * Measured again: 3–7 % at range, 11–22 % up close. A first pass at 0.044 (shade #3e3e3e over
+ * 0.14 in) left Medium's far joints 1–2 8-bit levels below the darker tile, which is no grid at
+ * all; the wide, light shade puts the darkness back at range while the line up close stays about
+ * half as dark as the old one. The RENDER lane holds both colours and that integral.
  *
  * Both stay darker than the darkest tile (`tileTone`, #404040), and darker than the mat means
  * these can only WIDEN a `contrast.mjs` ratio: nothing measured there is ever compared against a
@@ -338,11 +341,11 @@ export const TILE_MAT = '#454545';
  */
 export const TILE_JOINT = '#333333';
 /** the rounded edges either side of the gap, falling off into the mat */
-export const TILE_JOINT_SHADE = '#3e3e3e';
+export const TILE_JOINT_SHADE = '#3c3c3c';
 /** stroke widths, in INCHES (the caller converts with its own texels-per-inch). The core is about
  * one texel at 2048: thinner than that and the canvas would only paint it as a fainter line. */
 export const TILE_JOINT_W = 0.07;
-export const TILE_JOINT_SHADE_W = 0.14;
+export const TILE_JOINT_SHADE_W = 0.24;
 /** where there is no tile inside the wall — the 0.089-in strip the tiles stop short of it, and the
  * socket notches the straight cut leaves along it (`tileOutline`): the floor 5/8 in down, in the
  * wall's shadow. */
