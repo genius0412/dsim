@@ -2913,11 +2913,15 @@ function robotOverlapChecks(check: Check): void {
       ['xdrive 18x18', mk({ drivetrain: 'xdrive', length: 18, width: 18 })],
       ['swerve 18x18 dumper', mk({ drivetrain: 'swerve', length: 18, width: 18, bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } } })],
     ];
+    // ...and on LOW, for the drivetrains with an inner plate: the two tones are on every tier, and
+    // an aluminium inner plate run up through the deck fought its top face there (2026-10-10)
+    const lowBuilds = new Set(['Pollinator low', 'tank low', 'butterfly low']);
+    builds.push(['Pollinator low', mk({})], ['tank low', mk({ drivetrain: 'tank' })], ['butterfly low', mk({ drivetrain: 'butterfly' })]);
     type Tri = { p: THREE.Vector3[]; n: THREE.Vector3; d: number; key: string; sn: THREE.Vector3; name: string };
     const fights: string[] = [];
     let triCount = 0;
     for (const [label, spec] of builds) {
-      const g = buildRobotGroup(spec, 1, 'red', 'high');
+      const g = buildRobotGroup(spec, 1, 'red', lowBuilds.has(label) ? 'low' : 'high');
       g.updateMatrixWorld(true);
       const tris: Tri[] = [];
       g.traverse((o) => {

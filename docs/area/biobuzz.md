@@ -583,7 +583,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     the inner side plates stop inside the cross members. Measured by rendering each build's parts
     in flat ID colours at three near planes and counting pixels whose visible part AND shaded
     colour change: the tube went from ~11k flipping pixels to 11. The RENDER lane's
-    `robotOverlapChecks` holds 9 built robots to it (0.025 in, 0.02 in²). Same-material,
+    `robotOverlapChecks` holds 16 built robots to it (0.025 in, 0.02 in²). Same-material,
     same-normal overlaps shade identically and are allowed; the physical-materials tier's detail is
     per family, so the key is material + family.
   - Dressing: the end bars, the deck arrow and the top caps read `bbChassisKeepOuts` (`parts.ts`:
@@ -1141,7 +1141,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     same input `GFX_PIXEL_BUDGET` uses and for the same reason (nothing separates Medium from High
     but AA and shadows). Low/Medium get the cheap one, High/Ultra/Extreme and the fixed-High replay
     export the full one; **no seventeenth dial was added**, and the RENDER lane asserts that. A LOW mecanum
-    still has eleven real 45° rollers — measured, not promised. It is baked at build time, so
+    still has eleven real 45° rollers — measured, not promised. (Since 2026-10-10 the same level
+    also carries the chassis detail in `ROBOT_LOD` — THE HIGH CHASSIS below.) It is baked at build time, so
     `sync` folds it into its own rebuild key beside `bbSpecKey` (NOT into `bbSpecKey`, which the
     main chunk's thumbnail cache reads and which must not carry a per-device setting).
   - **Handedness is `x * sy >= 0 ? 1 : -1`, the 2D sprite's own expression**, and `hand: 1` is a
@@ -1160,9 +1161,67 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     `endWheelSpanY`'s swerve half-extent is `BB_POD_INSET` rather than `BB_POD_W / 2` (the fork box
     stopped being the widest thing on a pod once it was built around the pod's own 72 mm wheel).
   - ⚠️ **A WHEEL CANNOT BE PHOTOGRAPHED ON A ROBOT**, and that is the chassis, not the wheel: it
-    lives in the channel between two side plates and the outer plate is solid but for three
-    lightening holes. `scripts/scene-preview/main.ts`'s `?wheelrig=1` stands the five real parts on
+    lives in the channel between two side plates and the outer plate is solid but for its cuts
+    (three evenly spaced lightening holes on Low; on High a window on each axle and a few pockets —
+    THE HIGH CHASSIS below). `scripts/scene-preview/main.ts`'s `?wheelrig=1` stands the five real parts on
     bare tiles for that; `?drivetrain=` and `?gfx=` are the other two params this pass added.
+- ⚠️ **THE HIGH CHASSIS: BROKEN EDGES, CUT SIDE PLATES, CAP SCREWS — AND LOW IS TODAY'S ROBOT**
+  (owner, 2026-10-10: "Make the robots more high quality"). The robot read as a black block for two
+  reasons the geometry could fix: dark on dark (the fill and `ALU_DK` everywhere) and knife edges
+  that catch no light at chase range (~13 px/in at 1080p, measured off the 17-in rear).
+  - **One level, no new dial.** `ROBOT_LOD` (`renderRobots.ts`) sits beside `WHEEL_LOD` and reads
+    the same `detail`, which `sync` and the preview already key on: `low` on Low and Medium, `high`
+    on High, Ultra, Extreme and the fixed-High exports. Low calls the pre-2026-10-10 builders with
+    an edge break of 0, which `chamferBox`/`plateExtrude` turn into the plain `BoxGeometry`/
+    `ExtrudeGeometry` call, and the RENDER lane pins Low's triangles, meshes and casters to the
+    2026-10-09 counts on 11 builds (`robot/lod`). An order-independent digest of every Low
+    triangle is unchanged on swerve and X-drive; on the others the one difference is the inner
+    side plates, which now stop at the deck's underside on every tier. Run up through the deck,
+    an aluminium inner plate fought the deck's top face: a silver line along both deck edges on
+    the first Low capture, which the z-fight sweep missed because it built High only. It builds
+    three Low robots now.
+  - **Edge breaks on High**: a 45° flat on every chassis box and plate — deck 0.05, top caps, end
+    plates, cross members and intake arms 0.04, side plates, belly pan and dumper 0.03, end bars
+    0.06, deck arrow 0.02. Under a pixel wide at chase range, and still a lit line along every
+    edge. A break only removes material, so every part's bounding box is the Low one
+    (`robot/footprint`). The outer side plates also stop at the deck's underside on High, as the
+    end plates always have: a square plate corner would stand through the deck's broken edge.
+  - **The outer side plate is cut round the wheels** (`bbSidePlateCut`). The old holes were
+    `round(length / 4.5)` evenly spaced: on a 15-in chassis at x = −5, 0, 5 against axles at ±4.75,
+    the middle one behind the sign. Now: a window on each wheel or pod's axle at its own centre
+    height (r ≤ 1.0), lightening pockets in what is left, webs ≥ 0.4, solid bands 0.5 at the edges,
+    the SIGN LAND (|u| ≤ 3.6, the widest sign frame) solid, at most four pockets a side, and no cut
+    under 0.45 across — the 2026-09-28 "nothing that meshes" rule: a goBILDA 4 mm hole is 2 px at
+    chase range. Swept over 5 drivetrains × 4 lengths × 3 widths (`robot/sideplate`).
+  - **Cap screws on High**: goBILDA 2802 M4 button heads (7.6 × 2.2 mm head, APPROX: ISO 7380) on
+    each top-cap piece, 72 mm apart, re-cut against the mechanisms at their own height. One mesh,
+    tagged `steel`, casting nothing (a 0.3-in head is under a texel). Not on the vertical faces: a
+    proud head there stands outside the footprint.
+  - **TWO TONES, every tier** (a colour is not a tessellation): the sheet parts — deck, outer
+    plates, caps, end plates, belly pan — carry the fill; the inner plates and cross members are
+    clear aluminium (`ALU`). The pan stays in the fill because it is the floor of a bay the deck
+    keeps in shade, and robots receive no shadow in standard mode. The rear bar stays `BB_REAR_INK`:
+    a silver one would compete with the white front bar. Mesh count unchanged.
+  - **Cost per robot, High** (triangles, 2026-10-09 → now): Pollinator 22,416 → 25,524, Forager
+    20,216 → 23,868, Skimmer 28,080 → 30,452, Sniper 17,284 → 19,448, StarterBot 18,464 → 20,612,
+    18 × 18 butterfly 29,792 → 34,012 (the worst, +4,220). +1 mesh (the screws), +0 shadow casters.
+    The RENDER lane holds every build to +7,000 / +2 / +1 (`robot/budget`).
+  - ⚠️ **THE MERGE CACHE IS BOUNDED NOW.** `FRAME_CACHE` grew without limit, one entry per layout,
+    and every drag of a builder slider is a layout: 200 builder-style rebuilds added 789 entries and
+    10.1 MB of positions at High, 25.5 MB with the High chassis. Each key a group used is counted
+    against it (`userData.frameKeys`) and handed back by `disposeRobotGroup`; past the 96 most
+    recently used entries no live group holds, the rest are disposed. The same sweep now ends at
+    96 unheld entries and 1.6 MB, and a live group's buffers are never freed (`robot/cache`).
+  - **Physical aluminium is bead-blasted**: `aluminiumClearAnodised` roughness 0.40 → 0.50. At 0.40
+    the turret's side plate mirrored the warm room probe as bronze — mean sRGB (176,162,145), HSV
+    saturation 0.18 on the Extreme front 3/4 close-up in the school hall; at 0.50, (204,192,178),
+    0.13. Standard mode was left alone: on the High close-up the same plate is (210,205,199), and
+    the candidates (metalness +0.2, a darker base) moved it only to 194–201.
+  - NOT DONE, because each reverses an owner ruling the RENDER lane enforces: pockets in the deck
+    (2026-09-21, "the plate covers the whole chassis"), pockets in the full back plate
+    (2026-09-20), and the bay hardware (motors, hubs, battery, wires) those pockets would show.
+    The z-fight sweep (`overlap/z-fight`) covers four more size-extreme builds and three Low ones,
+    and finds no coplanar pair on any of 16.
 - ⚠️ **ONLINE "FULL" IS NOW THE REAL `step3d` ON THE CLIENT** (2026-09-27, owner: "FULL should predict
   EVERYTHING"), on one engine REWOUND onto each snapshot (`rewindEngineTo`), replayed only when the
   snapshot disagrees with the prediction — `docs/area/netcode.md` has the rule and the numbers.

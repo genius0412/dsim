@@ -817,7 +817,9 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  *
  * ⚠️ **`low` CALLS TODAY'S CODE, AND THE RENDER LANE PINS THAT IT IS NOT HEAVIER.** Every Low path
  * below is the pre-2026-10-10 builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the
- * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. Low and Medium pay nothing for this.
+ * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. The one Low change is the inner side
+ * plates stopping under the deck (`buildFrame`), at the same triangle count. Low and Medium pay
+ * nothing for this.
  */
 const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean }> = {
   low: { chamfer: false, cut: false, fasteners: false },
@@ -1830,16 +1832,18 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
   const dropInner = spec.drivetrain === 'swerve' || spec.drivetrain === 'xdrive';
   const plateYs = dropInner ? [outerY] : [outerY, innerY];
 
-  // ⚠️ ON HIGH THE SIDE PLATES STOP UNDER THE DECK (`BB_DECK_Z − BB_DECK_T`), as the end plates
-  // always have. On Low they run up through it, sharing its top and edge faces in the same
-  // material, which is allowed; on High the deck's edges are broken, and a square plate corner
+  // ⚠️ THE SIDE PLATES STOP UNDER THE DECK (`BB_DECK_Z − BB_DECK_T`), as the end plates always have
+  // — on High all of them, on Low the inner ones. A plate run up through the deck shares the deck's
+  // top face: harmless for the OUTER plate on Low, which is the deck's own fill, and a z-fight for
+  // an aluminium INNER plate (TWO TONES below), which drew a silver line along both deck edges on
+  // the first Low capture. On High the deck's edges are broken too, and a square plate corner
   // standing through a chamfered deck edge would poke out of it.
-  const plateH = lod.chamfer ? BB_SIDE_PLATE_CUT_H : BB_PLATE_H;
   const sidePlate = (sy: 1 | -1, y: number): THREE.BufferGeometry => {
     // the INNER plate stops a plate's thickness short of each end: run to ±hl, its end face was in
     // the plane of a full END PLATE's outer face (`buildEndPlate`), which z-fights once the two
     // carry different surface detail (the physical-materials tier)
     const inner = y !== outerY;
+    const plateH = lod.chamfer || inner ? BB_SIDE_PLATE_CUT_H : BB_PLATE_H;
     const p =
       lod.cut && !inner
         ? cutSidePlate(spec, BB_PLATE_T, edgeFor(detail, 0.03))
