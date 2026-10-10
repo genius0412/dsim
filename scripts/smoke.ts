@@ -29533,9 +29533,13 @@ const dumperSetup = (): RobotSetup => {
       );
     }),
   );
+  // which seasons have no action of their own differs by branch (alpha's DECODE has one), so
+  // the check asks the model rather than naming a season
   check(
     'layout: a season with no mechanism of its own adds nothing to All games',
-    J(allGamesPanels('decode')) === J(ALL_GAMES_PANELS) && J(allGamesPanels(null)) === J(ALL_GAMES_PANELS),
+    GAME_IDS.filter((g) => !seasonKeyActions(g).some(actionIsSeasonOnly)).every(
+      (g) => J(allGamesPanels(g)) === J(ALL_GAMES_PANELS),
+    ) && J(allGamesPanels(null)) === J(ALL_GAMES_PANELS),
   );
 }
 
