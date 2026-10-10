@@ -815,6 +815,34 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   check('match clock: Chain Reaction AUTO lasts exactly AUTO_DURATION x 60 ticks too', n === AUTO_DURATION * 60, `${n}`);
 }
 
+// ---- auto-only runs: the replay container, the room setting and the door ------
+{
+  const { coerceRoomSettings, mergeRoomSettings, runLengthAllowed, CLIENT_CAPS: caps } = await import('../src/net/protocol');
+  const { REPLAY_FORMAT } = await import('../src/sim/replay');
+  const setup: RobotSetup = {
+    id: 0, alliance: 'blue',
+    spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'),
+    assists: { ...DEFAULT_ASSISTS }, startIndex: 0,
+  };
+  const full = runRecordMatch(9, [setup], () => new Map(), { stopTick: 60 * 60 });
+  const auto = runRecordMatch(9, [setup], () => new Map(), { runLength: 'auto' });
+  check('auto-only replay: stamped format 5 with runLength, and ends with AUTO (1800 ticks, no transition)', auto.replay.format === 5 && auto.replay.runLength === 'auto' && auto.replay.ticks >= 1800 && auto.replay.ticks < 1800 + 60 * 20, `format ${auto.replay.format} ticks ${auto.replay.ticks}`);
+  check('auto-only replay: a full run is still the format it was and carries no runLength key value', full.replay.format === 2 && full.replay.runLength === undefined && REPLAY_FORMAT === 5);
+  const back = sanitizeReplay(JSON.parse(JSON.stringify(auto.replay)));
+  check('auto-only replay: survives sanitizeReplay and the JSON round trip', back?.runLength === 'auto' && back.format === 5);
+  check('auto-only replay: an unknown runLength is dropped', sanitizeReplay({ ...JSON.parse(JSON.stringify(auto.replay)), runLength: 'teleop' })?.runLength === undefined);
+  check('auto-only replay: format 5 is not read as an imported robot', replayHasImported(auto.replay) === false);
+  const p = new ReplayPlayer(back!);
+  while (!p.done) p.stepOnce();
+  check('auto-only replay: the player re-simulates it to the same post phase and score', p.world.runLength === 'auto' && p.world.match.phase === 'post' && p.world.match.scores.blue.total === auto.world.match.scores.blue.total, `${p.world.match.phase}`);
+  // the room setting
+  const v = coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', runLength: 'auto' });
+  const r = coerceRoomSettings('record', 'solo', { runLength: 'auto' });
+  check('auto-only room: creation reads runLength for versus and record rooms, nothing else', v?.runLength === 'auto' && r?.runLength === 'auto' && coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', runLength: 'x' })?.runLength === undefined);
+  check('auto-only room: a settings patch cannot change it (members were admitted against it)', v && mergeRoomSettings(v, { runLength: 'full' }).runLength === 'auto' && mergeRoomSettings({ ...v, runLength: undefined }, { runLength: 'auto' }).runLength === undefined);
+  check('auto-only room: the door refuses a client without the cap, and a full room admits everyone', !runLengthAllowed(v, []) && !runLengthAllowed(v, undefined) && runLengthAllowed(v, ['autoOnly']) && runLengthAllowed(undefined, []) && runLengthAllowed({}, undefined) && caps.includes('autoOnly'));
+}
+
 // ---- auto-only runs: AUTO ends the match ------------------------------------
 {
   // `World.runLength = 'auto'`: AUTO -> post at the buzzer, no transition, no DRIVER-CONTROLLED.

@@ -949,7 +949,8 @@ export class Room {
     // and the settings open up to a custom room's (the seats stay as they were)
     this.config.kind = 'versus';
     delete this.config.record;
-    this.settings = { preset: 'custom', perAlliance: { ...this.settings.perAlliance }, teamSwitch: true, listed: false };
+    this.settings = { preset: 'custom', perAlliance: { ...this.settings.perAlliance }, teamSwitch: true, listed: false, ...(this.settings.runLength ? { runLength: this.settings.runLength } : {}) };
+    this.config.settings = this.settings;
     for (const c of this.clients.values()) c.player.ready = false;
     this.broadcastRoster();
     return null;
@@ -970,6 +971,7 @@ export class Room {
       if (over > 0) return `Move ${over} ${over === 1 ? 'player' : 'players'} off ${a} first.`;
     }
     this.settings = next;
+    this.config.settings = next; // admission (`runLengthAllowed`) reads the config, here and on a worker room's mirror
     for (const c of this.clients.values()) c.player.ready = false;
     this.broadcastRoster();
     return null;
@@ -2694,6 +2696,7 @@ export class Room {
     // argument is the only route a room's choice has into the builder. `undefined` for the
     // settings bag is what every server-side build already passed.
     const world = simModuleFor(this.game).createWorld('match', seed, setups, undefined, this.physics);
+    if (this.settings?.runLength === 'auto') world.runLength = 'auto';
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     // a 3D match's persistent engine, built now rather than inside tick 1 (no-op otherwise)
     prebuildPhysics3dFor(world);
@@ -2716,7 +2719,7 @@ export class Room {
     // the replay re-sims through the right module (CR vs DECODE).
     // STAMPED WITH THE ROOM'S PHYSICS. A replay is an input log, so a `'3d'` match replayed
     // against `step2d` is a different game from the one that was played — see `Replay.physics`.
-    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game, this.physics);
+    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game, this.physics, this.settings?.runLength);
     /**
      * SEAT THE AI DRIVERS, one per bot robot, seeded `(matchSeed, seat)` exactly as plan §6
      * asks. Every peer that ever re-runs this match — a re-simulation, a second server, the
@@ -3549,8 +3552,16 @@ export class Room {
    * game reported no AUTO number or the instant was never reached.
    */
   private recordSplit(w: World, result: ReplayResult): Record<Alliance, { auto: number; teleop: number }> | undefined {
-    const facts = this.mergedRankFacts(this.readRankFacts(w, 'final'));
     const out = {} as Record<Alliance, { auto: number; teleop: number }>;
+    if (w.runLength === 'auto') {
+      // an AUTO-ONLY run: the whole net total IS the AUTO points (the match ended with AUTO)
+      for (const a of ['red', 'blue'] as const) {
+        const opp: Alliance = a === 'red' ? 'blue' : 'red';
+        out[a] = { auto: Math.max(0, result.score[a] - result.foulPoints[opp]), teleop: 0 };
+      }
+      return out;
+    }
+    const facts = this.mergedRankFacts(this.readRankFacts(w, 'final'));
     for (const a of ['red', 'blue'] as const) {
       const opp: Alliance = a === 'red' ? 'blue' : 'red';
       const autoG = facts?.[a]?.auto;

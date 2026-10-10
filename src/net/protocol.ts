@@ -228,6 +228,10 @@ export interface RoomSettings {
   teamSwitch: boolean;
   /** Public (true) shows in Browse rooms; Private (false) is code/invite only */
   listed: boolean;
+  /** 'auto' = every run in this room ends at the AUTO buzzer (`World.runLength`). ABSENT = full.
+   *  Chosen at creation. Gated on the `'autoOnly'` cap: an older predictor would run the
+   *  transition (`runLengthAllowed`). */
+  runLength?: 'auto';
 }
 
 const PRESET_SHAPE: Record<Exclude<RoomPreset, 'custom'>, { red: number; blue: number; record?: RecordKind }> = {
@@ -258,6 +262,7 @@ export function coerceRoomSettings(
       perAlliance: { red: 0, blue: duo ? 2 : 1 },
       teamSwitch: false,
       listed: false,
+      ...(r.runLength === 'auto' ? { runLength: 'auto' as const } : {}),
     };
   }
   const asked = ROOM_PRESETS.includes(r.preset as RoomPreset) ? (r.preset as RoomPreset) : 'custom';
@@ -270,6 +275,7 @@ export function coerceRoomSettings(
     perAlliance: { red: shape.red, blue: shape.blue },
     teamSwitch: true,
     listed: r.listed === true,
+    ...(r.runLength === 'auto' ? { runLength: 'auto' as const } : {}),
   };
 }
 
@@ -291,6 +297,8 @@ export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unkn
     perAlliance: { red, blue },
     teamSwitch: typeof patch.teamSwitch === 'boolean' ? patch.teamSwitch : base.teamSwitch,
     listed: typeof patch.listed === 'boolean' ? patch.listed : base.listed,
+    // set at creation and never changed by a patch: the members' caps were checked against it
+    ...(base.runLength ? { runLength: base.runLength } : {}),
   };
 }
 
@@ -524,7 +532,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP];
+export const CLIENT_CAPS: string[] = ['strategy', 'autoOnly', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -550,6 +558,17 @@ export const BB3D_REFUSAL = 'Update DSIM to play this room.';
  *  is written around. Absent caps (an old client that sends none) ⇒ no capabilities. */
 export function physicsAllowed(physics: Physics | undefined, caps: readonly string[] | undefined): boolean {
   return (physics ?? '2d') !== '3d' || !!caps?.includes(BB3D_CAP);
+}
+
+/**
+ * `'autoOnly'` — THIS CLIENT ENDS A RUN AT THE AUTO BUZZER when the room says so
+ * (`RoomSettings.runLength`). An older build predicts the transition and DRIVER-CONTROLLED the
+ * server never runs, so it is turned away from an auto-only room with the same sentence
+ * `BB3D_REFUSAL` uses, at the same three doors (join, rejoin, spectate).
+ */
+export const AUTO_ONLY_CAP = 'autoOnly';
+export function runLengthAllowed(settings: { runLength?: 'auto' } | undefined, caps: readonly string[] | undefined): boolean {
+  return settings?.runLength !== 'auto' || !!caps?.includes(AUTO_ONLY_CAP);
 }
 
 /**

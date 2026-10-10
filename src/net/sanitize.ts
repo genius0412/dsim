@@ -197,6 +197,8 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
     // this back, and anything that is not the one known non-default value must come out
     // ABSENT rather than as a string a `switch` will not recognise. Absent reads `'2d'`.
     physics: r.physics === '3d' ? '3d' : undefined,
+    // AN ENUM too: it reaches `createWorld`'s caller (`ReplayPlayer`) and flips the match's exit
+    runLength: r.runLength === 'auto' ? 'auto' : undefined,
     mode: r.mode,
     seed,
     ticks,

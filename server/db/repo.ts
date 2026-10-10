@@ -2200,8 +2200,8 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
     replay.setups.map(async (s) => ({ ...s, spec: await scrubSpecNames(s.spec) })),
   );
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics, sim_patch, run_length)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
@@ -2222,6 +2222,8 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       // ...and the SIM_PATCH it ran (0055). Written explicitly, never left to the column's
       // default: an unstamped container is patch 0 and must read back as the old rules.
       replay.patch ?? null,
+      // ...and its RUN LENGTH (0063): null = a full run, 'auto' = ended at the AUTO buzzer
+      replay.runLength === 'auto' ? 'auto' : null,
     ],
   );
   return rows[0].id;
@@ -2246,8 +2248,9 @@ export async function getReplay(id: string): Promise<Replay | null> {
     tracks: Replay['tracks'];
     physics: string | null;
     sim_patch: number | null;
+    run_length: string | null;
   }>(
-    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics, sim_patch
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics, sim_patch, run_length
        from replays where id = $1`,
     [id],
   );
@@ -2271,6 +2274,7 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // non-default value — a pre-0039 row, a null, or a string this build does not know — every
     // one of which reads '2d' downstream, which is what such a row actually ran.
     physics: r.physics === '3d' ? '3d' : undefined,
+    runLength: r.run_length === 'auto' ? 'auto' : undefined,
     mode: 'match',
     seed: Number(r.seed),
     ticks: r.ticks,
@@ -2854,6 +2858,8 @@ export interface RecordSubmit {
   /** the net points earned in AUTO and in TELEOP (0062); absent ⇒ unknown, off those two boards */
   autoScore?: number;
   teleopScore?: number;
+  /** 'auto' = an AUTO-ONLY run (0063): off every board but Auto. Absent ⇒ a full run. */
+  runLength?: 'auto';
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
@@ -2887,8 +2893,8 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
   }
   const rows = await q<{ id: string }>(
     `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics,
-                          auto_score, teleop_score)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
+                          auto_score, teleop_score, run_length)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -2902,6 +2908,7 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.physics === '3d' ? '3d' : '2d',
       r.autoScore ?? null,
       r.teleopScore ?? null,
+      r.runLength === 'auto' ? 'auto' : 'full',
     ],
   );
   return rows[0].id;
@@ -3000,7 +3007,7 @@ export async function recordLeaderboard(opts: {
          r.user_id, r.partner_id, r.${col} as score, r.replay_id, r.created_at, r.config, r.physics
        from records r
        where ${opts.lifetime ? '$1::int is null' : 'r.balance_version = $1'} and r.mode = $2 and r.game = $3
-         and r.${col} is not null ${dtFilter} ${sinceFilter} ${physFilter}
+         and r.${col} is not null ${opts.category === 'auto' ? '' : `and r.run_length = 'full'`} ${dtFilter} ${sinceFilter} ${physFilter}
        order by r.user_id, r.${col} desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
@@ -3045,7 +3052,7 @@ export async function personalBest(
   }
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
-     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4
+     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4 and run_length = 'full'
        ${dtFilter} ${physFilter}`,
     params,
   );
@@ -3074,7 +3081,7 @@ export async function recordRank(
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
-       where balance_version = $1 and mode = $2 and game = $5
+       where balance_version = $1 and mode = $2 and game = $5 and run_length = 'full'
          and ($4::text is null or drivetrain = $4)
          ${phys ? 'and physics = $6' : ''}
        group by user_id
@@ -5557,7 +5564,7 @@ export async function getUserStats(
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
-       from records where user_id = $1 and balance_version = $2 and game = $3 ${recPhys}
+       from records where user_id = $1 and balance_version = $2 and game = $3 and run_length = 'full' ${recPhys}
        order by mode, score desc, created_at asc`,
       phys ? [userId, balanceVersion, gm, phys] : [userId, balanceVersion, gm],
     ),
@@ -5566,7 +5573,7 @@ export async function getUserStats(
       // one row per player, so filtering after it drops a player who has a 3D run
       `with best as (
          select user_id, mode, max(score) as score
-         from records where balance_version = $1 and game = $3 ${recPhys} group by user_id, mode
+         from records where balance_version = $1 and game = $3 and run_length = 'full' ${recPhys} group by user_id, mode
        ), ranked as (
          select user_id, mode, rank() over (partition by mode order by score desc) as rnk
          from best
