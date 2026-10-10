@@ -49,6 +49,8 @@ import {
   bbTileDetail,
   TILE_JOINT,
   TILE_JOINT_SHADE,
+  TILE_JOINT_SHADE_W,
+  TILE_JOINT_W,
   TILE_MAT,
   TILE_TEX_SIZE,
   TILE_VOID,
@@ -1315,6 +1317,7 @@ export function renderChecks(check: Check): void {
       const p1 = JSON.stringify(tileSeamPaths('tiles'));
       check('...and the same seams', p1 === JSON.stringify(tileSeamPaths('tiles')));
     }
+    tileSeamContrastChecks(check);
   }
 
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
@@ -11847,4 +11850,77 @@ function environmentAndReadoutChecks(check: Check): void {
       );
     }
   }
+}
+
+/**
+ * THE TILE JOINT IS A FAINT HAIRLINE (owner, 2026-10-10: "The edges between field tiles seem a
+ * little too dark"). Measured off the scene-preview's own frames, the joint read 10-17 % darker
+ * than the mat at range and 29-45 % up close. At range that is what the MIPS make of the painted
+ * line: they average it in linear light, so a seam's darkness there is its linear darkening
+ * integrated across the joint, in inches of black. These hold that integral, each colour's own
+ * darkening, and the Extreme floor's analytic gap, which used to add its own 0.026 in of black on
+ * top of the painted line at every range.
+ */
+function tileSeamContrastChecks(check: Check): void {
+  const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+  const lin = (v: number): number => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+  // how much darker than the mat, in linear light: 0 is the mat, 1 is black
+  const dark = (h: string): number => 1 - lin(parseInt(h.slice(1, 3), 16)) / lin(parseInt(TILE_MAT.slice(1, 3), 16));
+  const pct = (v: number): string => `${(v * 100).toFixed(1)} %`;
+  const core = dark(TILE_JOINT);
+  const shade = dark(TILE_JOINT_SHADE);
+  check('the joint core is darker than the mat by at most half, in linear light (a hairline, not ink)',
+    core > 0 && core <= 0.5, `${TILE_JOINT}: ${pct(core)} (#232323 was 72 %)`);
+  check('...and its shade by at most a quarter, and less than the core',
+    shade > 0 && shade <= 0.25 && shade < core, `${TILE_JOINT_SHADE}: ${pct(shade)} (#383838 was 34 %)`);
+  const texel = (2 * BB_HALF_X) / TILE_TEX_SIZE.tiles;
+  check('the core is a canvas texel wide (thinner and the canvas paints a faint trace that beads)',
+    TILE_JOINT_W >= texel - 0.002 && TILE_JOINT_SHADE_W > TILE_JOINT_W, `core ${TILE_JOINT_W} in, shade ${TILE_JOINT_SHADE_W} in, texel ${texel.toFixed(4)} in`);
+  // what a mip conserves: the core over its width, the shade over the rest of its own
+  const painted = TILE_JOINT_W * core + (TILE_JOINT_SHADE_W - TILE_JOINT_W) * shade;
+  check('⚠️ the painted seam at range is 0.025-0.05 in of black per inch of joint: about half the old 0.094, and still a line',
+    painted >= 0.025 && painted <= 0.05, `${painted.toFixed(4)} in`);
+
+  // ── the Extreme floor's analytic seam (`renderSurfaceField.ts`), its box filter restated ──
+  const src = readFileSync(join(SCENE_DIR, 'renderSurfaceField.ts'), 'utf8');
+  const num = (name: string): number => {
+    const m = new RegExp(`const ${name} = ([0-9.]+);`).exec(src);
+    return m ? Number(m[1]) : NaN;
+  };
+  const G = num('FLOOR_GAP_HALF_IN');
+  const occ = num('FLOOR_GAP_OCCLUSION');
+  const tilt = num('FLOOR_LIP_TILT');
+  const near = num('FLOOR_SEAM_NEAR_IN');
+  const far = num('FLOOR_SEAM_FAR_IN');
+  check('the analytic seam\'s five constants are found (else the checks below are vacuous)',
+    [G, occ, tilt, near, far].every((v) => Number.isFinite(v) && v > 0), `G ${G} occ ${occ} tilt ${tilt} near ${near} far ${far}`);
+  const fade = (h: number): number => {
+    const t = clamp01((h - near) / (far - near));
+    return 1 - t * t * (3 - 2 * t);
+  };
+  // coverage of the gap over a pixel whose half-footprint is h, at distance sd from the joint
+  const gapAt = (sd: number, h: number): number => clamp01((Math.min(sd + h, G) - Math.max(sd - h, -G)) / (2 * h)) * fade(h);
+  const peak = occ * gapAt(0, 0.03);
+  check('up close (bbH 0.03 in, ~22 px/in) the gap darkens the pixel on the joint by 10-25 %: crisp, not a black line',
+    peak >= 0.1 && peak <= 0.25, `${pct(peak)} (was 42 %)`);
+  check('...and across the joint it adds under a third of the painted seam\'s darkness',
+    2 * G * occ <= painted / 3, `${(2 * G * occ).toFixed(4)} vs ${painted.toFixed(4)} in (was 0.0255 on top of 0.094)`);
+  check('it is whole wherever the canvas is magnified (a footprint under one texel)', fade(texel / 2) === 1, `near ${near}, half a texel ${(texel / 2).toFixed(4)}`);
+  check('...and gone by a footprint of 2.5 texels, where the painted seam carries the joint alone (no doubled seam at range)',
+    far <= 2.5 * texel && fade(far) === 0 && gapAt(0, far) === 0, `far ${far} in`);
+  let step = 0;
+  let monotone = true;
+  for (let h = 0.001; h < 0.3; h += 0.0005) {
+    step = Math.max(step, Math.abs(fade(h + 0.0005) - fade(h)));
+    if (fade(h + 0.0005) > fade(h) + 1e-12) monotone = false;
+  }
+  check('...and the fade has no step and never comes back (no pop as a robot drives away)', monotone && step <= 0.01, `largest step ${step.toFixed(4)}`);
+  check('the rolled edge leans at most 0.7 (0.95 was an edge facing sideways, near black)', tilt <= 0.7, String(tilt));
+  check('nothing in the analytic seam can brighten the floor: occlusion inside (0, 1)', occ > 0 && occ < 1, String(occ));
+  check('the shader reads those constants: the fade on BOTH gap and edge, the occlusion, the lean',
+    src.includes('1.0 - smoothstep( ${FLOOR_SEAM_NEAR_IN.toFixed(4)}, ${FLOOR_SEAM_FAR_IN.toFixed(4)}, bbH )') &&
+      src.includes('bbGap *= bbNear;') &&
+      src.includes('bbLip *= bbNear;') &&
+      src.includes('1.0 - ${FLOOR_GAP_OCCLUSION.toFixed(3)} * bbGap') &&
+      src.includes('${FLOOR_LIP_TILT.toFixed(3)} * min( bbLip, 1.0 )'));
 }

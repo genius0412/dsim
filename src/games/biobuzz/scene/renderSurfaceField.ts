@@ -182,7 +182,7 @@ function after(src: string, anchor: string, add: string): string {
  *
  * WHAT THE CANVAS KEEPS: every colour. `TILE_MAT`, the 0…−8 % per-tile tone (`tileTone`, which is
  * already the batch variance AndyMark warns of, and never goes lighter than the mat), the painted
- * lip and groove — all of it is the HUD contrast measurement, and the twin reads the same `map`.
+ * seam — all of it is the HUD contrast measurement, and the twin reads the same `map`.
  * Nothing below makes a pixel LIGHTER than the canvas it sits on: the seam is a cavity, the tracks
  * multiply down, and the lip only turns the normal.
  *
@@ -191,11 +191,14 @@ function after(src: string, anchor: string, add: string): string {
  *     floor is seen at ~22 px/in, so the painted seam is magnified 1.5× and reads soft. The shader
  *     draws the same dovetail (`renderTiles.ts`'s `tileSeamPolyline`, reproduced exactly: the
  *     comb of flats and filleted flanks, the X at every junction, the 45° flip at the middle of
- *     every edge) as a distance field in world inches, and from it a real 0.03-in gap (occluded:
- *     a 5/8-in-deep slot is dark) and the die-cut rounded top edge (~1 mm radius, survey §1) as a
+ *     every edge) as a distance field in world inches, and from it a 0.02-in gap (occluded: a
+ *     5/8-in-deep slot is dark) and the die-cut rounded top edge (~1 mm radius, survey §1) as a
  *     normal that rolls into the gap. Both are BOX-FILTERED over the pixel's own footprint, so the
- *     line is crisp at 22 px/in and fades to nothing — onto the painted seam — at range instead of
- *     shimmering.
+ *     line is crisp at 22 px/in, and both FADE OUT with that footprint (`FLOOR_SEAM_NEAR_IN` …
+ *     `FAR_IN`, ~18 → ~5 px/in), so at range the painted seam carries the joint alone instead of
+ *     the two stacking into a dark comb (owner, 2026-10-10: "The edges between field tiles seem a
+ *     little too dark" — box filtering keeps a gap's darkness at any range, so before the fade
+ *     the gap added 0.026 in of black to the painted 0.094 everywhere).
  *   • THE FOAM. The table's `stipple` (0.005–0.02-in cells) as triplanar detail, filtered by the
  *     ANISOTROPY ROW (`setDetailAnisotropy`). The standard floor has no relief map at all.
  *   • WEAR. Faint rubber TRACKS in wheel pairs 14 in apart (a typical 18-in chassis' track), at
@@ -204,11 +207,17 @@ function after(src: string, anchor: string, add: string): string {
  * The FLAT tier (Low's straight 2-px grid) has no dovetail to match, so it gets the finish
  * and the wear but no seam.
  */
-const FLOOR_GAP_HALF_IN = 0.015;
+const FLOOR_GAP_HALF_IN = 0.01;
 /** the die-cut edge's radius, in */
 const FLOOR_LIP_R_IN = 0.05;
-/** how much light the gap lets out at full coverage */
-const FLOOR_GAP_OCCLUSION = 0.85;
+/** how much light the gap takes away at full coverage */
+const FLOOR_GAP_OCCLUSION = 0.6;
+/** the most the rolled edge's normal leans into the gap (the sine of its tilt) */
+const FLOOR_LIP_TILT = 0.6;
+/** THE FADE WITH RANGE, over the pixel's half-footprint `bbH` in inches: the analytic seam is
+ * whole up to `NEAR` and gone by `FAR`, where the painted seam carries the joint alone. */
+const FLOOR_SEAM_NEAR_IN = 0.04;
+const FLOOR_SEAM_FAR_IN = 0.16;
 /** per-tile roughness spread (anti-static spray), ± */
 const FLOOR_TILE_ROUGH = 0.035;
 /** the tracks: albedo multiplier down to 1 − this, roughness up by this, at full strength */
@@ -452,6 +461,10 @@ function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUni
 \tfloat bbLo = max( bbSd - bbH, ${FLOOR_GAP_HALF_IN.toFixed(4)} );
 \tfloat bbHi = min( bbSd + bbH, ${(FLOOR_GAP_HALF_IN + FLOOR_LIP_R_IN).toFixed(4)} );
 \tfloat bbLip = bbHi > bbLo ? ( ${(FLOOR_GAP_HALF_IN + FLOOR_LIP_R_IN).toFixed(4)} * ( bbHi - bbLo ) - 0.5 * ( bbHi * bbHi - bbLo * bbLo ) ) / ${FLOOR_LIP_R_IN.toFixed(4)} / ( 2.0 * bbH ) : 0.0;
+\t// at range the painted seam carries the joint alone: both fade out with the footprint
+\tfloat bbNear = 1.0 - smoothstep( ${FLOOR_SEAM_NEAR_IN.toFixed(4)}, ${FLOOR_SEAM_FAR_IN.toFixed(4)}, bbH );
+\tbbGap *= bbNear;
+\tbbLip *= bbNear;
 \t// per-tile sheen: the anti-static spray does not go on evenly
 \tfloat bbTileH = fract( sin( dot( vec2( bbSx.w, bbSy.w ), vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
 \troughnessFactor += ( bbTileH - 0.5 ) * ${(2 * FLOOR_TILE_ROUGH).toFixed(3)};
@@ -470,7 +483,7 @@ function floorEdit(seams: boolean): (shader: THREE.WebGLProgramParametersWithUni
 \tif ( bbLip > 0.0 && dot( bbSg, bbSg ) > 0.0 ) {
 \t\t// rolls INTO the gap: the edge's normal leans toward the seam line
 \t\tvec3 bbTv = normalize( ( viewMatrix * vec4( - normalize( bbSg ), 0.0, 0.0 ) ).xyz );
-\t\tfloat bbL = min( bbLip, 0.95 );
+\t\tfloat bbL = ${FLOOR_LIP_TILT.toFixed(3)} * min( bbLip, 1.0 );
 \t\tnormal = normalize( normal * sqrt( 1.0 - bbL * bbL ) + bbTv * bbL );
 \t}
 `,

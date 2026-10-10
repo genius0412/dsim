@@ -323,16 +323,26 @@ export const TILE_MAT = '#454545';
  * lip over a 0.44-in dark groove, which reads as an embossed outline — no tile has one — and its
  * light/dark pair broke into a beaded line wherever the teeth were a few pixels apart.
  *
- * Darker than the mat means these can only WIDEN a `contrast.mjs` ratio: nothing measured there
- * is ever compared against a ground below the mat.
+ * ⚠️ AND A FAINT ONE (owner, 2026-10-10: "The edges between field tiles seem a little too dark").
+ * A pressed EVA joint is a fine, low-contrast line from the driver station. At #232323 / #383838
+ * over 0.07 / 0.2 in, the darkest point of a joint read 7–17 % under the mat at range (under 4
+ * px/in) and 22–45 % up close (8+ px/in), on the rendered frame. At range a viewer sees what the
+ * MIPS keep, and they average in linear light, so the number that sets it is the linear darkening
+ * integrated across the joint: 0.094 in of black per inch of joint then, 0.044 now (the core 44 %
+ * darker than the mat, the shade 19 %). Measured again: 4–7 % at range, 11–23 % up close. The
+ * RENDER lane holds both colours and that integral.
+ *
+ * Both stay darker than the darkest tile (`tileTone`, #404040), and darker than the mat means
+ * these can only WIDEN a `contrast.mjs` ratio: nothing measured there is ever compared against a
+ * ground below the mat.
  */
-export const TILE_JOINT = '#232323';
+export const TILE_JOINT = '#333333';
 /** the rounded edges either side of the gap, falling off into the mat */
-export const TILE_JOINT_SHADE = '#383838';
+export const TILE_JOINT_SHADE = '#3e3e3e';
 /** stroke widths, in INCHES (the caller converts with its own texels-per-inch). The core is about
  * one texel at 2048: thinner than that and the canvas would only paint it as a fainter line. */
 export const TILE_JOINT_W = 0.07;
-export const TILE_JOINT_SHADE_W = 0.2;
+export const TILE_JOINT_SHADE_W = 0.14;
 /** where there is no tile inside the wall — the 0.089-in strip the tiles stop short of it, and the
  * socket notches the straight cut leaves along it (`tileOutline`): the floor 5/8 in down, in the
  * wall's shadow. */
