@@ -33,6 +33,7 @@ const THIRD_PARTY_VERSIONS = (() => {
     rapier2d: versionOf('@dimforge/rapier2d-compat'),
     rapier3d: versionOf('@dimforge/rapier3d-deterministic-compat'),
     three: versionOf('three'),
+    occt: versionOf('occt-import-js'),
     react: versionOf('react'),
     plusJakartaSans: versionOf('@fontsource-variable/plus-jakarta-sans'),
     spaceGrotesk: versionOf('@fontsource-variable/space-grotesk'),

@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactColor, RobotSpec, RobotState, World } from '../../types';
 import { BB_FLOWERS, BB_HALF_X, BB_HIVE_CELL_DY, BB_HIVE_X, BB_HOOD_DEFAULT_DEG, BB_NECTAR_R, BB_POLLEN_R } from './config';
 import { capturePollen } from './elements';
-import { type BbLauncherSpec, bbFoldTwinMount, bbResolveMount2 } from './mechs';
+import { type BbLauncherSpec, bbFoldTwinMount, bbResolveMount2, bbScoreModeMirror } from './mechs';
 import { BB_MOUNT_POSITIONS, BB_SCORE_MODES, BB_SHOOTER_EDGES, type BbMountPos, type BbScoreMode } from './mounts';
 import { bbFootprint, bbHopperCap } from './robot';
 import { bbCmd, bbRow, bbSetup, bbThrottle, bbWorld, type Scene } from './scenes';
@@ -169,7 +169,7 @@ function launcherOf(kind: BbScoreMode, mount: BbMountPos, mount2?: BbMountPos): 
  * coercer writes. */
 function loadout(kind: BbScoreMode, mount: BbMountPos, tube: BbMountPos | null, mount2?: BbMountPos): Partial<RobotSpec> {
   return {
-    scoreMode: kind,
+    scoreMode: bbScoreModeMirror(kind),
     shooterMount: mount,
     bbMech: { launcher: launcherOf(kind, mount, mount2), lift: tube ? { kind: 'vslide', mount: tube } : null },
   };

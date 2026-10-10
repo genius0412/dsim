@@ -14,9 +14,10 @@ import { rapier3d, type Rapier3d } from './engine';
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR, simPatchAtLeast } from '../../../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_FIT_DEPTH, BB3_FIT_MAX, BB3_FIT_STEP, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB3_HIVE_SHED_AFTER, BB3_HIVE_SHED_MAX, BB3_HIVE_SHED_MIN_Z, BB3_HIVE_SHED_REGION_X, BB3_HIVE_SHED_REGION_Y, BB3_HIVE_SHED_SPEED, BB3_HIVE_SHED_VZ, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
+import { importBandCutsPre7, importSideRollersPre6 } from '../importMech';
 import {
   addChassis3dColliders,
   chassis3dBaseColliderCount,
@@ -28,6 +29,7 @@ import {
 } from './bodies';
 import {
   buildHiveTray3d,
+  trayOuterSkin,
   buildStatics3d,
   statics3dKey,
   elementMass,
@@ -41,6 +43,7 @@ import {
 } from './bodies';
 import { hyp3, hypXY, quatMul, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
 import { datan2, dcos, dsin, nextRandom, rot } from '../../../math';
+import { polyFeature } from '../../../sim/imported';
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
  * against to decide "did something outside the solve move this" (see plan section 3.2). */
@@ -91,6 +94,10 @@ export interface Engine3d {
    * branch, NOT `restTicks`. Reset to 0 the instant the element leaves the branch for any reason
    * (it falls, it reaches a broad support, it gets tagged). See `BB3_VIBE_GIVEUP_TICKS`. */
   narrowVibeTicks: Map<number, number>;
+  /** element id -> how many times `groundRoll3d` has SHED it off HIVE structure after the
+   * vibration gave up (`BB3_HIVE_SHED_MAX`). Cleared when it reaches the tiles, a broad support
+   * or a cell/tube tag, the same exits as `narrowVibeTicks`. */
+  hiveSheds: Map<number, number>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
   /**
@@ -189,8 +196,8 @@ export function __staticSnapshotCachedForTests(): boolean {
   return staticSnapshot !== null;
 }
 
-function freshStaticWorld(RAPIER: Rapier3d): InstanceType<Rapier3d['World']> {
-  const key = statics3dKey(PHYS_WALL_FRICTION);
+function freshStaticWorld(RAPIER: Rapier3d, plateOutlines: boolean): InstanceType<Rapier3d['World']> {
+  const key = statics3dKey(PHYS_WALL_FRICTION, plateOutlines);
   if (staticSnapshot && staticSnapshot.key === key) {
     const restored = RAPIER.World.restoreSnapshot(staticSnapshot.bytes);
     if (restored) return restored;
@@ -224,19 +231,20 @@ function freshStaticWorld(RAPIER: Rapier3d): InstanceType<Rapier3d['World']> {
   // authoritative one and every landed shot reconciles with a snap. The SIM3D lane asserts it.
   world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
-  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION, plateOutlines);
   staticSnapshot = { key, bytes: world3d.takeSnapshot() };
   return world3d;
 }
 
 function buildEngine(world: World): Engine3d {
   const RAPIER = rapier3d();
-  const world3d = freshStaticWorld(RAPIER);
+  const world3d = freshStaticWorld(RAPIER, simPatchAtLeast(world, 7));
   // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
   // upright and then rotated into place is a body that falls for one tick, and an engine rebuilt
   // mid-swing (a reconcile, a scene restart) has to resume the swing, not restart it.
-  const trayRed = buildHiveTray3d(RAPIER, world3d, 'red', hiveTiltAngle(world, 'red'));
-  const trayBlue = buildHiveTray3d(RAPIER, world3d, 'blue', hiveTiltAngle(world, 'blue'));
+  const skin = trayOuterSkin(world);
+  const trayRed = buildHiveTray3d(RAPIER, world3d, 'red', hiveTiltAngle(world, 'red'), skin);
+  const trayBlue = buildHiveTray3d(RAPIER, world3d, 'blue', hiveTiltAngle(world, 'blue'), skin);
   const hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>> = {
     red: trayRed.body,
     blue: trayBlue.body,
@@ -254,6 +262,7 @@ function buildEngine(world: World): Engine3d {
     hiveHeld: { red: true, blue: true },
     restTicks: new Map(),
     narrowVibeTicks: new Map(),
+    hiveSheds: new Map(),
     lastRobot: new Map(),
     lastElement: new Map(),
     robotHeights: new Map(),
@@ -265,7 +274,7 @@ function buildEngine(world: World): Engine3d {
   // DETERMINISTIC BUILD ORDER: statics, the two trays (above), robots by ascending id, elements
   // by ascending id (plan section 3.2 / this lane's binding design point 1).
   for (const r of [...world.robots].sort((a, b) => a.id - b.id)) {
-    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time));
+    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), importSideRollersPre6(world), importBandCutsPre7(world));
   }
   for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, world, b);
   return engine;
@@ -329,8 +338,10 @@ function addChassisCollider(
   r: RobotState,
   heightIn: number,
   rampReady: boolean,
+  pre6: boolean,
+  pre7: boolean,
 ): void {
-  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn, rampReady);
+  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn, rampReady, pre6, pre7);
 }
 
 /** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
@@ -477,11 +488,18 @@ function chassisInsideStatic(parts: FitPart[], reach: number, statics: FitStatic
  * inside a static is the swing guard's and the embed fold's case (`elements3d.ts`), and moving
  * the robot here would take that decision away from them.
  */
-function setChassisClear(engine: Engine3d, body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, centreZ: number): boolean {
+function setChassisClear(
+  engine: Engine3d,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  r: RobotState,
+  centreZ: number,
+  pre6: boolean,
+  pre7: boolean,
+): boolean {
   const parts: FitPart[] = [];
   let reach = 0;
   // the chassis boxes, pocket filler and mechanism shapes come first; the reach hardware after
-  const n = Math.min(body.numColliders(), chassis3dBaseColliderCount(r.spec, builtHeight(engine, r)));
+  const n = Math.min(body.numColliders(), chassis3dBaseColliderCount(r.spec, builtHeight(engine, r), pre6, pre7));
   for (let i = 0; i < n; i++) {
     const c = body.collider(i);
     if (c.isSensor()) continue;
@@ -523,7 +541,15 @@ function setChassisClear(engine: Engine3d, body: InstanceType<Rapier3d['RigidBod
  * `solveRobots` picks it up fresh every rebuild. Setting mass properties does not move the body,
  * so it cannot fight the "leave a resting body alone" rule above.
  */
-function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight: number, rampReady: boolean): void {
+function syncRobot(
+  RAPIER: Rapier3d,
+  engine: Engine3d,
+  r: RobotState,
+  wantHeight: number,
+  rampReady: boolean,
+  pre6: boolean,
+  pre7: boolean,
+): void {
   const z = r.z ?? 0;
   const heightIn = wantHeight;
   const centreZ = z + heightIn / 2;
@@ -564,7 +590,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
      * end -- `hx`/`half` collapse to `spec.length/2`/`spec.width/2` for a mount with no reach,
      * so this is a strict generalization, not a behavior change, for a robot that has none.
      */
-    addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
+    addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6, pre7);
     engine.robots.set(r.id, body);
     engine.robotHeights.set(r.id, heightIn);
     engine.robotRampReady.set(r.id, rampReady);
@@ -594,9 +620,9 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
        */
       if (heightChanged) {
         clearChassis3dColliders(engine.world3d, body);
-        addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
+        addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady, pre6, pre7);
       } else {
-        swapChassis3dReachColliders(RAPIER, engine.world3d, body, chassis3dBaseColliderCount(r.spec, heightIn), r.spec, heightIn, rampReady);
+        swapChassis3dReachColliders(RAPIER, engine.world3d, body, chassis3dBaseColliderCount(r.spec, heightIn, pre6, pre7), r.spec, heightIn, rampReady, pre6);
       }
       engine.robotHeights.set(r.id, heightIn);
       engine.robotRampReady.set(r.id, rampReady);
@@ -641,7 +667,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
     Math.abs(last.y - r.pos.y) > POSE_EPS ||
     Math.abs(last.z - z) > POSE_EPS
   ) {
-    setChassisClear(engine, body, r, centreZ);
+    setChassisClear(engine, body, r, centreZ, pre6, pre7);
   }
   engine.lastRobot.set(r.id, {
     x: r.pos.x,
@@ -659,13 +685,29 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
  * into this module's internals for a per-robot loop it would otherwise have to duplicate. */
 export function syncRobots(world: World, engine: Engine3d): void {
   const RAPIER = rapier3d();
-  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time));
+  const pre6 = importSideRollersPre6(world);
+  const pre7 = importBandCutsPre7(world);
+  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time), pre6, pre7);
 }
 
 /** the robot a chassis-body TRANSLATION corresponds to, for `readback` and `robot3d.ts`'s yaw
  * readout -- kept here rather than duplicated, since it is one half of what `syncRobot` wrote. */
 export function robotBodyOf(engine: Engine3d, id: number): InstanceType<Rapier3d['RigidBody']> | undefined {
   return engine.robots.get(id);
+}
+
+/**
+ * Put a robot's JSON `angVel` back on its body AND its readback record, after something outside
+ * the solve changed it on purpose — the wall square-up's one-tick spin (`step3dImpl.ts`, stage
+ * 8a). Writing the record too is what keeps the next `syncRobot` from reading the change as an
+ * edit and re-seating the whole pose from the rounded JSON.
+ */
+export function setRobotSpin(engine: Engine3d, r: RobotState): void {
+  const body = engine.robots.get(r.id);
+  if (!body) return;
+  body.setAngvel({ x: 0, y: 0, z: r.angVel }, true);
+  const last = engine.lastRobot.get(r.id);
+  if (last) last.angVel = r.angVel;
 }
 
 /**
@@ -697,6 +739,7 @@ function removeElementBody(engine: Engine3d, id: number): void {
   engine.restTicks.delete(id);
   engine.narrowVibeTicks.delete(id);
   engine.asleepAtReadback.delete(id);
+  engine.hiveSheds.delete(id);
 }
 
 /**
@@ -712,6 +755,11 @@ function removeElementBody(engine: Engine3d, id: number): void {
  */
 /** the distance from a point to a `Chassis3dShape` box, both in the SAME robot frame; 0 inside. */
 function boxGap(s: Chassis3dShape, lx: number, ly: number, lz: number): number {
+  if (s.shape === 'prism' && s.pts) {
+    // an IMPORTED robot's prism: the exact distance to its polygon in plan, then to its z band
+    const g = Math.max(-polyFeature(s.pts, { x: lx - s.cx, y: ly - s.cy }).depth, 0);
+    return hyp3(g, 0, Math.max(Math.abs(lz - s.cz) - s.hz, 0));
+  }
   const dx = Math.max(Math.abs(lx - s.cx) - s.hx, 0);
   const dy = Math.max(Math.abs(ly - s.cy) - s.hy, 0);
   const dz = Math.max(Math.abs(lz - s.cz) - s.hz, 0);
@@ -861,6 +909,8 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
   const clamped = p.x !== b.pos.x || p.y !== b.pos.y || p.z !== z0;
 
   const solids: BirthSolid[] = [];
+  const pre6 = importSideRollersPre6(world);
+  const pre7 = importBandCutsPre7(world);
   for (const rob of world.robots) {
     const h = builtHeight(engine, rob);
     // ⚠️ THE ARCHETYPE REACH HARDWARE TOO, NOT JUST THE BARE FRAME (owner ruling 2026-09-20: a
@@ -877,7 +927,7 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
       py: rob.pos.y,
       pz: (rob.z ?? 0) + h / 2,
       heading: rob.heading,
-      shapes: [...chassis3dShapes(rob.spec, h), ...chassis3dReachShapes(rob.spec, h, bbRampSettled(rob, world.time))],
+      shapes: [...chassis3dShapes(rob.spec, h, pre6, pre7), ...chassis3dReachShapes(rob.spec, h, bbRampSettled(rob, world.time), pre6)],
     });
   }
   const writeBack = (): void => {
@@ -1071,7 +1121,7 @@ export function syncElements(world: World, engine: Engine3d): void {
 import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { hiveDetentHold, hiveTiltAngle } from './hive3d';
 import { tiltQuatX } from './math3';
-import { GROUP_NECTAR } from './groups';
+import { GROUP_CHASSIS, GROUP_NECTAR } from './groups';
 
 /**
  * Drive both hive trays' KINEMATIC rotation from `hiveTiltAngle` -- the Day 1 fallback
@@ -1100,6 +1150,306 @@ export function applyHiveTilt(world: World, engine: Engine3d): void {
     const theta = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     engine.hiveTrays[a].setNextKinematicRotation(tiltQuatX(theta));
   }
+}
+
+/** the client's own engine at one tick, for `rewindEngineTo` (see `saveEngineState`) */
+interface SavedEngine {
+  bytes: Uint8Array;
+  robots: [number, number][];
+  elements: [number, number][];
+  trays: Record<Alliance, number>;
+  joints: Record<Alliance, number | null>;
+  restTicks: Map<number, number>;
+  narrowVibeTicks: Map<number, number>;
+  hiveSheds: Map<number, number>;
+  hiveHeld: Record<Alliance, boolean>;
+  lastRobot: Map<number, LastRobot>;
+  lastElement: Map<number, LastElement>;
+  robotHeights: Map<number, number>;
+  robotRampReady: Map<number, boolean>;
+  /** the world's own kinematic JSON at the save, which is NOT the bodies' (see `rewindEngineTo`) */
+  robotJson: Map<number, RobotJson>;
+  elementJson: Map<number, LastElement>;
+  hiveJson: Record<Alliance, { angle?: number; angVel?: number }> | null;
+}
+interface RobotJson {
+  x: number;
+  y: number;
+  z?: number;
+  heading: number;
+  vx: number;
+  vy: number;
+  vz?: number;
+  angVel: number;
+}
+const SAVED = new WeakMap<Engine3d, Map<number, SavedEngine>>();
+
+/**
+ * SAVE `world`'s engine as it stands at `world.tick`, so a later `rewindEngineTo` onto a snapshot
+ * of that tick can restore it. The client's FULL world tier calls this on the ticks the room sends
+ * snapshots for; nothing on the server does. Saves before `keepFrom` are dropped: no snapshot at or
+ * before the newest one applied is coming.
+ *
+ * A save is Rapier's whole world (`takeSnapshot`, ~1.2 MB, ~0.5 ms on a desktop) plus the engine's
+ * own maps and the world's kinematic JSON. The bodies are kept as HANDLES: a restored world is a
+ * new object with the same handles.
+ */
+export function saveEngineState(world: World, keepFrom: number): void {
+  const e = ENGINES.get(world);
+  if (!e) return;
+  let saved = SAVED.get(e);
+  if (!saved) SAVED.set(e, (saved = new Map()));
+  for (const t of saved.keys()) if (t < keepFrom) saved.delete(t);
+  saved.set(world.tick, {
+    bytes: e.world3d.takeSnapshot(),
+    robots: [...e.robots].map(([id, b]) => [id, b.handle]),
+    elements: [...e.elements].map(([id, b]) => [id, b.handle]),
+    trays: { red: e.hiveTrays.red.handle, blue: e.hiveTrays.blue.handle },
+    joints: { red: e.hiveJoints.red?.handle ?? null, blue: e.hiveJoints.blue?.handle ?? null },
+    restTicks: new Map(e.restTicks),
+    narrowVibeTicks: new Map(e.narrowVibeTicks),
+    hiveSheds: new Map(e.hiveSheds),
+    hiveHeld: { ...e.hiveHeld },
+    lastRobot: new Map([...e.lastRobot].map(([id, r]) => [id, { ...r }])),
+    lastElement: new Map([...e.lastElement].map(([id, r]) => [id, { ...r }])),
+    robotHeights: new Map(e.robotHeights),
+    robotRampReady: new Map(e.robotRampReady),
+    robotJson: new Map(
+      world.robots.map((r) => [
+        r.id,
+        { x: r.pos.x, y: r.pos.y, z: r.z, heading: r.heading, vx: r.vel.x, vy: r.vel.y, vz: r.vz, angVel: r.angVel },
+      ]),
+    ),
+    elementJson: new Map(world.balls.map((b) => [b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz }])),
+    hiveJson: world.biobuzz
+      ? {
+          red: { angle: world.biobuzz.hives.red.angle, angVel: world.biobuzz.hives.red.angVel },
+          blue: { angle: world.biobuzz.hives.blue.angle, angVel: world.biobuzz.hives.blue.angVel },
+        }
+      : null,
+  });
+}
+
+/** within the wire's rounding; an absent field reads 0, as the sync reads it */
+function nearWire(a: number | undefined, b: number | undefined): boolean {
+  return Math.abs((a ?? 0) - (b ?? 0)) <= REWIND_EPS;
+}
+
+function restoreSaved(e: Engine3d, s: SavedEngine): void {
+  const next = rapier3d().World.restoreSnapshot(s.bytes);
+  e.world3d.free();
+  e.world3d = next;
+  e.robots = new Map(s.robots.map(([id, h]) => [id, next.getRigidBody(h)]));
+  e.elements = new Map(s.elements.map(([id, h]) => [id, next.getRigidBody(h)]));
+  e.hiveTrays = { red: next.getRigidBody(s.trays.red), blue: next.getRigidBody(s.trays.blue) };
+  e.hiveJoints = {
+    red: s.joints.red === null ? null : next.getImpulseJoint(s.joints.red),
+    blue: s.joints.blue === null ? null : next.getImpulseJoint(s.joints.blue),
+  };
+  e.restTicks = s.restTicks;
+  e.narrowVibeTicks = s.narrowVibeTicks;
+  e.hiveSheds = s.hiveSheds;
+  e.hiveHeld = s.hiveHeld;
+  e.lastRobot = s.lastRobot;
+  e.lastElement = s.lastElement;
+  e.robotHeights = s.robotHeights;
+  e.robotRampReady = s.robotRampReady;
+  FIT_STATICS.delete(e); // its colliders belonged to the world just freed
+}
+
+/**
+ * REWIND a live engine onto a SNAPSHOT — the client's FULL prediction, which runs this very step
+ * on its own copy of the world and must restart from every authoritative snapshot 30 times a
+ * second (`GameController.reconcile`). `engineFor` would REBUILD here, because the tick went
+ * backwards and the snapshot is a new `World` object, and a rebuild is the ~80 static colliders
+ * and the trimeshes: 15–40 ms, every snapshot. This keeps the statics.
+ *
+ * ⚠️ **IT IS A ROLLBACK WHEN IT CAN BE ONE.** When the client saved its own engine at the
+ * snapshot's tick (`saveEngineState`), that save is restored first: every body, Rapier's contact
+ * and solver state, the timers. Without it the engine was moved back from its predicted tick body
+ * by body and kept a lead's worth of FUTURE contact state, and the replay did not reproduce the
+ * room even from an exact snapshot: measured with no network at all (identical inputs, unrounded
+ * snapshots, lead 8), 9.8% of replays ended on a different capture than the room's and 7.3% on a
+ * different shot; restoring each body's position, spin and sleep got that to 8.7%, the full save
+ * to 0%. Through a real `Room` at 100 ms with the bot driving and fire held, captures the client
+ * showed that the room never made went from 24–75 to 1–6 per 150 s (owner: "it just doesn't shoot
+ * sometimes" — the client fired elements it had wrongly picked up). With no save for the tick (a
+ * new engine, a tier switch) the bodies are moved as before.
+ *
+ * Then every body whose state differs from `to`'s JSON loses its last-readback record, which is
+ * exactly the condition the next `syncRobot` / `syncElement` reads as "teleported" — so it is
+ * seated from the JSON by the same code that seats one on the server. The HIVE TRAYS are the one
+ * pose the sync never writes (on the server nothing but the solver moves them), so a tray that
+ * differs is seated here from `hives[a].angle` / `angVel`, the inverse of `readback`'s own write.
+ *
+ * Returns false (and leaves `engineFor` to build fresh) when there is no engine to move or the
+ * robot set changed, which is `engineFor`'s own rebuild rule.
+ *
+ * The per-engine TIMERS (`restTicks`, `narrowVibeTicks`, `hiveSheds`, `hiveHeld`) are not in the JSON. Without
+ * a save they are kept from the predicted tick, a few ticks ahead of the server's.
+ *
+ * ⚠️ "DIFFERS" MEANS BY MORE THAN THE WIRE'S ROUNDING (`REWIND_EPS`), NOT `POSE_EPS`. A snapshot's
+ * numbers are rounded to 1e-3 (`server/wire.ts`), so against `POSE_EPS` (1e-4) every body
+ * "differed" on every reconcile and was teleported and woken from the rounded JSON: a POLLEN
+ * lying still in the room dropped 0.04 in and read `flight` for a tick in the client's replay.
+ * A body inside that rounding keeps its live state, contacts and sleep, and its JSON and readback
+ * record are written the way `readback` writes them, so the next sync sees no edit and the next
+ * readback no motion.
+ *
+ * ⚠️ **AFTER A RESTORE, "MATCHES" IS JSON AGAINST THE SAVED JSON, NOT AGAINST THE BODY.** The
+ * JSON a step ends on is not the bodies' readback: `groundRoll3d` damps an element's velocity after
+ * it, `derive.ts` zeroes a resting one's, `squareUpRobotsWalls` edits a robot's. The next sync reads
+ * that difference as the edit to apply. Writing the body's own values back (the no-save rule)
+ * erased it, so every rollback replayed without the room's damping: 264 of 266 replays in the
+ * `predict.ts` check ended off the room's poses (up to 3.5 in), and on one seed 5 captures
+ * differed. So the save keeps the world's kinematic JSON too, and a snapshot within the wire's
+ * rounding of it gets it back exactly, with the save's readback records: 0 of 266.
+ */
+const REWIND_EPS = 1e-3;
+export function rewindEngineTo(from: World, to: World): boolean {
+  const e = ENGINES.get(from);
+  if (!e) return false;
+  ENGINES.delete(from);
+  const ids = to.robots.map((r) => r.id);
+  if (ids.length !== e.robots.size || !ids.every((id) => e.robots.has(id))) {
+    disposeEngine(e);
+    return false;
+  }
+  ENGINES.set(to, e);
+  const saves = SAVED.get(e);
+  const own = saves?.get(to.tick);
+  if (own) restoreSaved(e, own);
+  // every other save belongs to the prediction this rewind replaces; the replay saves again
+  saves?.clear();
+  e.lastTick = to.tick;
+  for (const r of to.robots) {
+    const body = e.robots.get(r.id);
+    if (!body) continue;
+    if (own) {
+      const k = own.robotJson.get(r.id);
+      if (
+        k &&
+        nearWire(k.x, r.pos.x) &&
+        nearWire(k.y, r.pos.y) &&
+        nearWire(k.z, r.z) &&
+        nearWire(k.heading, r.heading) &&
+        nearWire(k.vx, r.vel.x) &&
+        nearWire(k.vy, r.vel.y) &&
+        nearWire(k.vz, r.vz) &&
+        nearWire(k.angVel, r.angVel)
+      ) {
+        r.pos.x = k.x;
+        r.pos.y = k.y;
+        r.z = k.z;
+        r.heading = k.heading;
+        r.vel.x = k.vx;
+        r.vel.y = k.vy;
+        r.vz = k.vz;
+        r.angVel = k.angVel;
+      } else {
+        e.lastRobot.delete(r.id);
+      }
+      continue;
+    }
+    const h = e.robotHeights.get(r.id) ?? 0;
+    const t = body.translation();
+    const v = body.linvel();
+    const same =
+      Math.abs(t.x - r.pos.x) <= REWIND_EPS &&
+      Math.abs(t.y - r.pos.y) <= REWIND_EPS &&
+      Math.abs(t.z - ((r.z ?? 0) + h / 2)) <= REWIND_EPS &&
+      Math.abs(yawOfQuat(body.rotation()) - r.heading) <= REWIND_EPS &&
+      Math.abs(v.x - r.vel.x) <= REWIND_EPS &&
+      Math.abs(v.y - r.vel.y) <= REWIND_EPS &&
+      Math.abs(v.z - (r.vz ?? 0)) <= REWIND_EPS &&
+      Math.abs(body.angvel().z - r.angVel) <= REWIND_EPS;
+    if (!same) {
+      e.lastRobot.delete(r.id);
+      continue;
+    }
+    r.pos.x = round4(t.x);
+    r.pos.y = round4(t.y);
+    r.z = round4(t.z - builtHeight(e, r) / 2);
+    r.heading = round4(yawOfQuat(body.rotation()));
+    r.vel.x = round4(v.x);
+    r.vel.y = round4(v.y);
+    r.vz = round4(v.z);
+    r.angVel = round4(body.angvel().z);
+    e.lastRobot.set(r.id, { x: r.pos.x, y: r.pos.y, z: r.z, heading: r.heading, vx: r.vel.x, vy: r.vel.y, vz: r.vz, angVel: r.angVel });
+  }
+  for (const b of to.balls) {
+    const body = e.elements.get(b.id);
+    if (!body) continue; // the next sync creates it (or leaves it out) from the JSON
+    if (own) {
+      const k = own.elementJson.get(b.id);
+      if (
+        k &&
+        nearWire(k.x, b.pos.x) &&
+        nearWire(k.y, b.pos.y) &&
+        nearWire(k.z, b.z) &&
+        nearWire(k.vx, b.vel.x) &&
+        nearWire(k.vy, b.vel.y) &&
+        nearWire(k.vz, b.vz)
+      ) {
+        b.pos.x = k.x;
+        b.pos.y = k.y;
+        b.z = k.z;
+        b.vel.x = k.vx;
+        b.vel.y = k.vy;
+        b.vz = k.vz;
+      } else {
+        e.lastElement.delete(b.id);
+      }
+      continue;
+    }
+    const rad = b.r ?? BB_POLLEN_R;
+    const t = body.translation();
+    const v = body.linvel();
+    const same =
+      Math.abs(t.x - b.pos.x) <= REWIND_EPS &&
+      Math.abs(t.y - b.pos.y) <= REWIND_EPS &&
+      Math.abs(t.z - (b.z + rad)) <= REWIND_EPS &&
+      Math.abs(v.x - b.vel.x) <= REWIND_EPS &&
+      Math.abs(v.y - b.vel.y) <= REWIND_EPS &&
+      Math.abs(v.z - b.vz) <= REWIND_EPS;
+    if (!same) {
+      e.lastElement.delete(b.id);
+      continue;
+    }
+    b.pos.x = round4(t.x);
+    b.pos.y = round4(t.y);
+    b.z = round4(t.z - rad);
+    b.vel.x = round4(v.x);
+    b.vel.y = round4(v.y);
+    b.vz = round4(v.z);
+    e.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz });
+  }
+  if (useHiveDynamic() && to.biobuzz) {
+    for (const a of ['red', 'blue'] as const) {
+      const hv = to.biobuzz.hives[a];
+      const tray = e.hiveTrays[a];
+      if (hv.angle === undefined) continue;
+      const k = own?.hiveJson?.[a];
+      if (own && k?.angle !== undefined) {
+        if (nearWire(k.angle, hv.angle) && nearWire(k.angVel, hv.angVel)) {
+          hv.angle = k.angle;
+          hv.angVel = k.angVel;
+          continue;
+        }
+      } else {
+        const tilt = trayTilt(tray);
+        const spin = tray.angvel().x;
+        if (Math.abs(tilt - hv.angle) <= REWIND_EPS && Math.abs(spin - (hv.angVel ?? 0)) <= REWIND_EPS) {
+          hv.angle = round4(tilt);
+          hv.angVel = round4(spin);
+          continue;
+        }
+      }
+      tray.setRotation(tiltQuatX(hv.angle), true);
+      tray.setAngvel({ x: hv.angVel ?? 0, y: 0, z: 0 }, true);
+    }
+  }
+  return true;
 }
 
 /** the tray body's live tilt (rad) -- a pure x-axis rotation, since the revolute joint removes
@@ -1348,8 +1698,85 @@ function elementVibeSeed(id: number, tick: number, rngState: number): { x: numbe
   return { x: dcos(angle) * mag, y: dsin(angle) * mag };
 }
 
+/**
+ * ⚠️ **AN IMPORTED ROBOT'S FLAT TOP IS A DECK, LIKE THE STANDARD ONE** (robot import, 2026-10-02).
+ * An import's chassis is its CAD height bands, each a convex PRISM (`import3dShapes`, `bodies.ts`),
+ * and Rapier builds a prism as a `ConvexPolyhedron` — the shape type the narrow-hull rule below
+ * reserves for the field's decimated CAD hulls. So a POLLEN set down on an import's flat top got the
+ * "vibration" kick, and off the floor there is no rolling law to stop it again (the kick only fires
+ * on an element that reads at rest, so the give-up count never grew): measured, it rolled at
+ * 2–3 in/s for the whole 7 s and off the edge, where on the standard deck (`Cuboid`) it rests.
+ *
+ * A prism is told from a field hull by its groups: every robot chassis collider carries
+ * `GROUP_CHASSIS`, no field static does, and a STANDARD robot builds no `ConvexPolyhedron` at all
+ * (boxes, cylinders, rounded boxes), so this answers only for an import and a standard robot is
+ * untouched. It is broad when its plan is at least the element's diameter across at its narrowest
+ * (`planWidth` + the contact skin on each side): a band that is a thin lift tower is narrow, the
+ * Box Tube rule, and the ball still rolls off it.
+ */
+function importTopIsBroad(other: InstanceType<Rapier3d['Collider']>, ballR: number): boolean {
+  if (other.collisionGroups() >>> 0 !== GROUP_CHASSIS) return false;
+  const v = (other.shape as unknown as { vertices?: Float32Array }).vertices;
+  if (!v || v.length < 9) return false;
+  return planWidth(v) + 2 * other.contactSkin() >= 2 * ballR;
+}
+
+/** the narrowest plan width (in) of a point set (x, y, z triples): its 2D hull's minimum over edges
+ *  of the farthest point from that edge's line. Pure arithmetic, so the same answer everywhere. */
+function planWidth(v: Float32Array): number {
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 0; i + 2 < v.length; i += 3) pts.push({ x: v[i], y: v[i + 1] });
+  pts.sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: { x: number; y: number }[] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 1e-12) lower.pop();
+    lower.push(p);
+  }
+  const upper: { x: number; y: number }[] = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 1e-12) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 3) return 0;
+  let best = Infinity;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i];
+    const b = hull[(i + 1) % hull.length];
+    const len = Math.sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+    if (len < 1e-9) continue;
+    let far = 0;
+    for (const p of hull) far = Math.max(far, Math.abs(cross(a, b, p)) / len);
+    best = Math.min(best, far);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+/** `SIM_PATCH` 5: the HIVE shed (`BB3_HIVE_SHED_*`). A live world always runs it; a replay
+ * recorded before it keeps the old freeze. */
+function hiveShedOn(world: World): boolean {
+  return world.simPatch === undefined || world.simPatch >= 5;
+}
+
 export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
   const RAPIER = rapier3d();
+  const shedOn = hiveShedOn(world);
+  const trayRed = engine.hiveTrays.red.handle;
+  const trayBlue = engine.hiveTrays.blue.handle;
+  // the bodies of LOOSE elements up on the HIVE: touching one of them is not a support (see the
+  // PAIR note in the contact loop)
+  const looseUp = new Set<number>();
+  if (shedOn) {
+    for (const o of world.balls) {
+      if ((o.state.kind === 'ground' || o.state.kind === 'flight') && o.z > BB3_HIVE_SHED_MIN_Z) {
+        const ob = engine.elements.get(o.id);
+        if (ob) looseUp.add(ob.handle);
+      }
+    }
+  }
   for (const b of world.balls) {
     if (!wantsDynamicBody(b.state)) continue;
     const body = engine.elements.get(b.id);
@@ -1361,6 +1788,11 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     // body's velocity is zero, and none of them wake it), so skip the three wasm calls.
     if (onFloor && speed === 0 && b.vz === 0 && body.isSleeping()) continue;
     if (onFloor) {
+      // on the tiles, a later perch earns its own vibration and shed budget
+      if (shedOn) {
+        engine.narrowVibeTicks.delete(b.id);
+        engine.hiveSheds.delete(b.id);
+      }
       // the 2D law, verbatim: constant deceleration, then the hard snap.
       let ns = speed - BB3_ROLL_DECEL * dt;
       if (ns <= 0 || ns < BALL_REST_SPEED) ns = 0;
@@ -1442,6 +1874,7 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     };
     if (b.state.kind === 'element') {
       engine.narrowVibeTicks.delete(b.id);
+      engine.hiveSheds.delete(b.id);
       // the same zero-onto-zero skip as the floor branch above
       if (speed === 0 && b.vz === 0 && body.isSleeping()) continue;
       freeze();
@@ -1449,8 +1882,27 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     }
     let touchingBroad = false;
     let touchingNarrow = false;
+    let touchingHive = false;
+    const inHiveFootprint = Math.abs(b.pos.x) <= BB3_HIVE_SHED_REGION_X && Math.abs(b.pos.y) <= BB3_HIVE_SHED_REGION_Y;
+    const upOnHive = shedOn && inHiveFootprint && b.z > BB3_HIVE_SHED_MIN_Z;
     for (let i = 0; i < body.numColliders(); i++) {
       engine.world3d.contactPairsWith(body.collider(i), (other) => {
+        // ⚠️ **A PAIR ON THE BEAM IS TWO PERCHES, NOT A PILE** (2026-10-03). Another element is
+        // BROAD below so a garden-line pile can rest, but two loose POLLEN that roll down the DOWN
+        // side's bar into the corner at the down cell's back wall rest against each other, each
+        // reading the other as broad support, and both froze until the tray next swung (3 pairs
+        // in 60 bot matches, up to 12.5 s). Up on the HIVE, a contact with another LOOSE element
+        // up there counts as HIVE structure, so each gets the vibration and the shed. An element
+        // counted in a cell (`state.kind === 'element'`) is still broad: a ball sitting on a full
+        // cell's contents stays put.
+        if (upOnHive && other.shapeType() === RAPIER.ShapeType.Ball) {
+          const parent = other.parent();
+          if (parent && looseUp.has(parent.handle)) {
+            touchingNarrow = true;
+            touchingHive = true;
+            return;
+          }
+        }
         // ⚠️ **A CYLINDER IS NARROW FOR THE SAME REASON A HULL IS** (2026-09-21, with the drawn
         // height profile). Every cylinder in this world is a ROUND part of a robot — a turret's
         // swept disc (`bbMechEnvelopes`; the head is a hood, not a flat roof, and the disc is the
@@ -1461,8 +1913,17 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
         // ...and a ROUNDED box is narrow too: the one kind built is a Box Tube tower
         // (`BbMechEnvelope.narrow`), whose 1.3-in top carried a balanced POLLEN indefinitely
         const st = other.shapeType();
-        if (st === RAPIER.ShapeType.ConvexPolyhedron || st === RAPIER.ShapeType.Cylinder || st === RAPIER.ShapeType.RoundCuboid) {
+        // ...and an IMPORTED robot's prism wide enough to carry the ball is a deck (`importTopIsBroad`)
+        if (st === RAPIER.ShapeType.ConvexPolyhedron && importTopIsBroad(other, b.r ?? BB_POLLEN_R)) {
+          touchingBroad = true;
+        } else if (st === RAPIER.ShapeType.ConvexPolyhedron || st === RAPIER.ShapeType.Cylinder || st === RAPIER.ShapeType.RoundCuboid) {
           touchingNarrow = true;
+          // HIVE structure: anything on a tray body, or a FIXED hull inside the frame's footprint
+          // (every fixed narrow hull there is `hive_frame`; a robot's round parts are not fixed).
+          const parent = other.parent();
+          if (parent && (parent.handle === trayRed || parent.handle === trayBlue || (parent.isFixed() && inHiveFootprint))) {
+            touchingHive = true;
+          }
         } else {
           touchingBroad = true;
         }
@@ -1474,6 +1935,7 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     }
     if (touchingBroad) {
       engine.narrowVibeTicks.delete(b.id);
+      engine.hiveSheds.delete(b.id);
       freeze();
       continue;
     }
@@ -1484,7 +1946,37 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     // header: a real cage has to lose eventually, or `bbSettled` never closes).
     const vibeTicks = (engine.narrowVibeTicks.get(b.id) ?? 0) + 1;
     engine.narrowVibeTicks.set(b.id, vibeTicks);
-    if (vibeTicks > BB3_VIBE_GIVEUP_TICKS) {
+    /**
+     * ⚠️ **NOTHING LOOSE STAYS ON TOP OF THE HIVE** (found capturing the 3D reel, 2026-10-01: a
+     * POLLEN sat on the blue HIVE's pivot from 11 s to the buzzer, another on red's for 18 s).
+     * The vibration is too gentle for a CRADLE — two parallel narrow edges under the ball, the
+     * pivot brackets being the one that shipped — so on HIVE structure it gets
+     * `BB3_HIVE_SHED_AFTER` kicks, not `BB3_VIBE_GIVEUP_TICKS`, and the give-up is a HOP
+     * (`BB3_HIVE_SHED_*`) in the vibration's own hashed direction, with a fresh vibration budget
+     * after it, up to `BB3_HIVE_SHED_MAX` times per perch; only then the old budget and freeze.
+     * The short budget matters as much as the hop: each kick waits out `BB3_REST_TICKS` again, so
+     * 30 of them held a cradled ball ~290 ticks, reading `flight` going nowhere for most of it.
+     */
+    const sheds = engine.hiveSheds.get(b.id) ?? 0;
+    const canShed = shedOn && touchingHive && sheds < BB3_HIVE_SHED_MAX;
+    if (vibeTicks > (canShed ? BB3_HIVE_SHED_AFTER : BB3_VIBE_GIVEUP_TICKS)) {
+      if (canShed) {
+        engine.hiveSheds.set(b.id, sheds + 1);
+        engine.narrowVibeTicks.delete(b.id);
+        // EVEN attempts hop ACROSS the tray axis (world x — both pivots turn about x), the one way
+        // out of a cradle along the beam; ODD ones take the vibration's full hashed angle, for a
+        // perch with some other shape. The sign / angle is the vibration's hash either way.
+        const dir = elementVibeSeed(b.id, world.tick, world.rngState);
+        const across = sheds % 2 === 0;
+        const hx = across ? (dir.x >= 0 ? 1 : -1) : dir.x;
+        const hy = across ? 0 : dir.y;
+        const k = BB3_HIVE_SHED_SPEED / Math.sqrt(hx * hx + hy * hy);
+        b.vel.x = hx * k;
+        b.vel.y = hy * k;
+        b.vz = BB3_HIVE_SHED_VZ;
+        body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+        continue;
+      }
       freeze();
       continue;
     }

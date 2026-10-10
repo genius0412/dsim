@@ -44,6 +44,15 @@ export function CareerView({
   const [seasons, setSeasons] = useState<SeasonInfo[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [season, setSeason] = useState<number | null>(null); // null = live period
+  // a period belongs to ONE game: switching game drops the selection before anything fetches
+  // with it (the same derived-state reset `Leaderboard` makes, for the same reason)
+  const [periodGame, setPeriodGame] = useState(nav.game);
+  if (periodGame !== nav.game) {
+    setPeriodGame(nav.game);
+    setSeason(null);
+    setSeasons([]);
+    setCurrent(null);
+  }
 
   const [stats, setStats] = useState<UserStats | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error' | 'notfound'>('loading');

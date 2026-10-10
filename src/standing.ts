@@ -381,6 +381,32 @@ export const LEAVE_AWAY_FRACTION = 0.25;
 /** live ticks (60 Hz) a match must run before absence is judged at all — half a minute */
 export const MIN_JUDGED_TICKS = 30 * 60;
 
+/**
+ * THE OPENING WINDOW a ranked 2v2 is voided over: a driver away for ALL of the first 20 s of
+ * live play (or who never connected) leaves their partner a 1v2 from the start, and the match
+ * does not count for anyone else (`computeGlicko`, server/ranked.ts). A remake by rule rather
+ * than by vote, as League and VALORANT do for a round-one absence.
+ */
+export const EARLY_ABSENT_TICKS = 20 * 60;
+
+/**
+ * What the RATING update is told about one driver's presence: the share of the live match
+ * they were away for (1 when they sat AFK — present and doing nothing is as absent as gone),
+ * and whether they were missing for the whole opening window. Pure, like
+ * `judgeParticipation`, whose AFK rule it reuses.
+ */
+export function absenceOf(p: {
+  liveTicks: number;
+  driveTicks: number;
+  awayTicks: number;
+  earlyAwayTicks: number;
+}): { away: number; early: boolean } {
+  const early = p.liveTicks >= EARLY_ABSENT_TICKS && p.earlyAwayTicks >= EARLY_ABSENT_TICKS;
+  if (!Number.isFinite(p.liveTicks) || p.liveTicks <= 0) return { away: 0, early: false };
+  const afk = judgeParticipation(p) === 'afk';
+  return { away: afk ? 1 : Math.min(1, Math.max(0, p.awayTicks / p.liveTicks)), early };
+}
+
 export function judgeParticipation(p: {
   liveTicks: number;
   driveTicks: number;

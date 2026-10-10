@@ -14,7 +14,7 @@ export const DECODE_MODULE: GameModule = {
   drawField,
   drawOverlays: drawRampStrips,
   drawBalls,
-  ui: { showScoreHud: true, startEditor: true, intakes: ['sloped', 'vector', 'triangle'] },
+  ui: { showScoreHud: true, startEditor: true, intakes: ['sloped', 'vector', 'triangle', 'none'] },
   // the four-step tutorial (roadmap item 6) — content only; see `./tutorial.ts`.
   tutorial: DECODE_TUTORIAL,
 };

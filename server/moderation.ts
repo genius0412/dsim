@@ -41,6 +41,48 @@ const API_URL = envVar('MODERATION_API_URL') ?? 'https://api.openai.com/v1/moder
 const MODEL = envVar('MODERATION_MODEL') ?? 'omni-moderation-latest';
 const TIMEOUT_MS = Number(envVar('MODERATION_TIMEOUT_MS') ?? 4000);
 
+/**
+ * THE PROVIDER BUDGET — hosted calls per rolling minute, across this whole process.
+ *
+ * Every join can cost up to four uncached calls (driver, team, robot and robot-team name), and a
+ * live rename one call per round trip per seat. Nothing bounded the total, so anyone opening
+ * sockets with fresh names could spend the key's rate limit — after which every check fails, and
+ * a failed check ALLOWS (see `moderateName`). Past the budget a name is treated the same way,
+ * unchecked and allowed, but without the call: the key keeps working for everybody once the
+ * minute rolls over. The blocklist still applies to every name either way. 300/min is several
+ * times the busiest join rate the service has seen; `MODERATION_MAX_PER_MINUTE` overrides and
+ * `0` removes the limit.
+ */
+const BUDGET_PER_MIN = ((): number => {
+  const n = Number(envVar('MODERATION_MAX_PER_MINUTE') ?? 300);
+  return Number.isFinite(n) && n >= 0 ? n : 300;
+})();
+let budgetWindowAt = 0;
+let budgetUsed = 0;
+let budgetWarnedAt = 0;
+export function takeProviderBudget(now = Date.now()): boolean {
+  if (BUDGET_PER_MIN === 0) return true;
+  if (now - budgetWindowAt >= 60_000) {
+    budgetWindowAt = now;
+    budgetUsed = 0;
+  }
+  if (budgetUsed >= BUDGET_PER_MIN) {
+    if (now - budgetWarnedAt >= 60_000) {
+      budgetWarnedAt = now;
+      console.warn(`[moderation] hosted-check budget (${BUDGET_PER_MIN}/min) spent - names pass unchecked until it refills`);
+    }
+    return false;
+  }
+  budgetUsed++;
+  return true;
+}
+/** test seam: the budget as configured, and a reset */
+export const MODERATION_BUDGET_PER_MIN = BUDGET_PER_MIN;
+export function resetProviderBudgetForTests(): void {
+  budgetWindowAt = 0;
+  budgetUsed = 0;
+}
+
 /** the local word list — see `server/blocklist.ts`. Parsed once; only its SIZE is ever logged. */
 const BLOCKLIST = parseBlocklist(envVar('MODERATION_BLOCKLIST'));
 
@@ -107,6 +149,10 @@ export async function moderateName(raw: string): Promise<ModerationResult> {
   const key = text.toLowerCase();
   const cached = cache.get(key);
   if (cached !== undefined) return { allowed: cached, checked: true };
+
+  // OVER BUDGET: not checked, exactly as if the provider had failed — but WITHOUT spending a
+  // call, so a flood of unique names cannot exhaust the key and fail every check after it.
+  if (!takeProviderBudget()) return { allowed: true, checked: false };
 
   try {
     const allowed = await callProvider(text);

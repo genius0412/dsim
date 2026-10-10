@@ -289,9 +289,6 @@ export interface BbEnvironment {
 
 export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene, backdropHex: number): BbEnvironment {
   const pmrem = new THREE.PMREMGenerator(renderer);
-  // compiling the equirectangular shader up front keeps the first HDRI's `fromEquirectangular`
-  // off the frame it lands on — otherwise the swap costs a visible hitch on a cold shader cache
-  pmrem.compileEquirectangularShader();
 
   /** generated maps, per id, for the life of this scene. A PMREM is renderer-bound, so this
    * cache cannot be module-scope: two scenes (the gallery mounts several) would hand each
@@ -386,7 +383,11 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
     current = id;
   };
 
-  applyRoom();
+  // ⚠️ NOTHING IS GENERATED HERE. Both owners call `apply` straight after construction, and on
+  // Low and Medium that call has the lighting OFF — so a room PMREM built here (69 ms of shader
+  // compile and cube render, measured on entering Configure ▸ Robot, 2026-09-26) was thrown away
+  // unused, once per scene. The room's letterbox is the state until then.
+  applyRoom(false);
 
   return {
     get current(): EnvironmentId {
@@ -434,6 +435,11 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         return;
       }
       loading = true;
+      // the room lights the scene while the HDRI downloads, as it always did — and the
+      // equirectangular shader compiles now, during the fetch, so the swap costs no hitch on the
+      // frame it lands on (it used to be compiled at construction, for every scene)
+      if (!scene.environment) applyRoom(true);
+      pmrem.compileEquirectangularShader();
       try {
         /**
          * ⚠️ ONLY THE FETCH COUNTS AGAINST THE URL. Everything after it runs on the GPU, and a

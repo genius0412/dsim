@@ -39,7 +39,7 @@ Nothing else in this document means anything until this step has run. The goal i
 **what does `/api/perf` `loopLagMs.p99` read on an idle, healthy Fly machine?**
 
 ```bash
-curl -s https://dsim-alpha.fly.dev/api/perf?reset=1 > /dev/null
+curl -s "https://dsim-alpha.fly.dev/api/perf?reset=1&secret=$ADMIN_SECRET" > /dev/null  # the reset needs the operator secret on Fly
 sleep 60
 curl -s https://dsim-alpha.fly.dev/api/perf
 ```

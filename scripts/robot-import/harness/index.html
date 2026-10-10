@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Robot import harness</title>
+    <style>
+      body { margin: 0; background: #15171a; color: #e6e8eb; font: 13px system-ui, sans-serif; }
+      main { display: grid; grid-template-columns: 640px 1fr; gap: 16px; padding: 16px; }
+      #preview { width: 640px; height: 480px; display: block; background: #23262b; border-radius: 8px; }
+      #images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+      #images figure { margin: 0; background: #23262b; padding: 4px; border-radius: 6px; }
+      #images img { display: block; width: 192px; height: 192px; object-fit: contain; background: #3a3d42; }
+      #images figcaption { font-size: 11px; text-align: center; }
+      pre { margin: 0; white-space: pre-wrap; font: 12px ui-monospace, monospace; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <canvas id="preview" width="640" height="480"></canvas>
+        <div id="images"></div>
+      </section>
+      <pre id="log">running…</pre>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

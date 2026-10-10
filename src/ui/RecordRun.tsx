@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
+import type { RobotSpec } from '../types';
+import { isImportedSpec } from '../net/imported';
+import { sameBuild, standardRobotChoices, standardRobotFor } from '../settings';
+import { RobotCard } from './RobotCard';
+import { teamLine } from './robotLabels';
 import { gameServerUrl, gameServerUrlWith, multiServer, selectedServer } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
@@ -64,6 +69,16 @@ export function RecordRun({
    */
   const [attempt, setAttempt] = useState(0);
   const startedRef = useRef(false);
+  /**
+   * RECORD RUNS USE A STANDARD ROBOT. The server refuses an imported one at the door (a record is
+   * leaderboard proof), so while the ACTIVE robot is an import this screen stops to say so and to
+   * let the player pick the standard robot to run — the last one they used, preselected — before
+   * it dials. With a standard robot active nothing changes: it connects straight away, as it
+   * always did.
+   */
+  const importedActive = isImportedSpec(settings.spec);
+  const [chosen, setChosen] = useState<RobotSpec>(() => standardRobotFor(settings));
+  const [go, setGo] = useState(!importedActive);
 
   useEscape(onCancel); // Esc backs out, same as ← Back
 
@@ -71,6 +86,7 @@ export function RecordRun({
   // run, which made a one-time preference into a per-run prompt; it now lives in
   // the top bar (`ServerMenu`) and the run just uses the current selection.
   useEffect(() => {
+    if (!go) return; // waiting on the standard-robot pick above
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
       return;
@@ -153,18 +169,20 @@ export function RecordRun({
         if (!startedRef.current) setError((e) => e || 'Lost connection to the game server.');
       });
 
+      // the robot that runs: the active one, or — while that is an import — the standard one picked
+      const spec = importedActive ? chosen : settings.spec;
       lobby.join(
         room,
         {
-          name: settings.spec.teamName || 'Player',
-          teamName: settings.spec.teamName,
-          teamNumber: settings.spec.teamNumber,
+          name: spec.teamName || 'Player',
+          teamName: spec.teamName,
+          teamNumber: spec.teamNumber,
           alliance: 'blue', // record runs are forced to one alliance server-side
           startIndex: settings.startIndex,
           startPose: settings.startPose ?? null,
           ready: true,
-          spec: settings.spec,
-          assists: settings.assists,
+          spec,
+          assists: spec === settings.spec ? settings.assists : (spec.assists ?? settings.assists),
         },
         { kind: 'record', record: mode, game: settings.game },
       );
@@ -203,9 +221,10 @@ export function RecordRun({
       close?.();
     };
     // `attempt` is the retry: bumping it tears this effect down and dials again with a
-    // fresh room code. Nothing else here may go in the deps — the rest is read once.
+    // fresh room code; `go` is the standard-robot pick being confirmed. Nothing else here may go
+    // in the deps — the rest is read once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attempt]);
+  }, [attempt, go]);
 
   /** dial again from the top: clear the card, mint a new room, reset the nudge loop. */
   const retry = (): void => {
@@ -228,6 +247,36 @@ export function RecordRun({
   );
 
   const kind = mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0';
+
+  if (importedActive && !go && !error) {
+    return page(
+      <>Record run</>,
+      kind,
+      <>
+        <p className="ds-hint">Record runs use a standard robot.</p>
+        <div className="ds-opts robots">
+          {standardRobotChoices(settings).map((r, i) => (
+            <RobotCard
+              key={i}
+              spec={r}
+              game={settings.game}
+              on={sameBuild(r, chosen)}
+              team={teamLine(r)}
+              onPick={() => setChosen({ ...r })}
+            />
+          ))}
+        </div>
+        <div className="ds-actions">
+          <button className="ds-cta" onClick={() => setGo(true)}>
+            START RUN
+          </button>
+          <button className="ds-cta secondary" onClick={onCancel}>
+            BACK TO HOME
+          </button>
+        </div>
+      </>,
+    );
+  }
 
   if (error) {
     /**

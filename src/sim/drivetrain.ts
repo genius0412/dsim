@@ -1,6 +1,7 @@
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import * as C from '../config';
 import { clamp, approach, hyp } from '../math';
+import { importedHalfDiag } from './imported';
 
 /** derived per-robot drive parameters. Everything the drivetrain influences
  * comes from the spec: type multipliers × RPM (speed up / accel down) × mass
@@ -61,12 +62,17 @@ export function driveParams(spec: RobotSpec, tankMode = false): DriveParams {
     (C.REF_MASS_LB / spec.massLb) *
     p.accelMult;
   // rotation tops out at wheel speed / half track diagonal, like a real
-  // chassis: faster wheels or a smaller footprint turn quicker
-  const halfDiag = Math.sqrt(spec.length * spec.length + spec.width * spec.width) / 2;
+  // chassis: faster wheels or a smaller footprint turn quicker. An IMPORTED robot turns about its
+  // measured WHEELBASE (`importedHalfDiag`), not about its parametric box.
+  const halfDiag = spec.imported
+    ? importedHalfDiag(spec.imported)
+    : Math.sqrt(spec.length * spec.length + spec.width * spec.width) / 2;
   const maxTurn = Math.min(
     REF_TURN * (maxSpeed / REF_SPEED) * (REF_HALF_DIAG / halfDiag) * p.turnMult,
     C.TURN_MAX_SPEED,
   );
+  const tune = spec.imported?.tune;
+  if (tune) return tunedDrive(spec, tankMode, tune, { maxSpeed, strafeMult: p.strafeMult, maxTurn, accel, turnAccel: accel * C.TURN_ACCEL_PER_ACCEL, saturation: p.saturation });
   return {
     maxSpeed,
     strafeMult: p.strafeMult,
@@ -75,6 +81,23 @@ export function driveParams(spec: RobotSpec, tankMode = false): DriveParams {
     turnAccel: accel * C.TURN_ACCEL_PER_ACCEL,
     saturation: p.saturation,
   };
+}
+
+/**
+ * AN IMPORT'S PRACTICE TUNING over the derived drive (`ImportTuning`): top speed and acceleration
+ * as set, the turn rate as set or (when only the speed is) re-derived from the tuned speed the
+ * way `driveParams` derives it. A BUTTERFLY's two sets keep their ratio: the tuning names the
+ * mecanum set, and the traction set is scaled by the same factor. Only a robot with `tune` gets
+ * here, so every other robot's numbers are the expressions above, untouched.
+ */
+function tunedDrive(spec: RobotSpec, tankMode: boolean, tune: NonNullable<NonNullable<RobotSpec['imported']>['tune']>, d: DriveParams): DriveParams {
+  const base = tankMode && spec.drivetrain === 'butterfly' ? driveParams({ ...spec, imported: { ...spec.imported!, tune: undefined } }, false) : d;
+  const kSpeed = tune.topSpeed !== undefined ? tune.topSpeed / base.maxSpeed : 1;
+  const kAccel = tune.accel !== undefined ? tune.accel / base.accel : 1;
+  const maxSpeed = d.maxSpeed * kSpeed;
+  const accel = d.accel * kAccel;
+  const maxTurn = tune.turnRate !== undefined ? Math.min((tune.turnRate * Math.PI) / 180, C.TURN_MAX_SPEED) : Math.min(d.maxTurn * kSpeed, C.TURN_MAX_SPEED);
+  return { ...d, maxSpeed, maxTurn, accel, turnAccel: accel * C.TURN_ACCEL_PER_ACCEL };
 }
 
 /**

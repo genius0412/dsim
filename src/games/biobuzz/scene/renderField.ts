@@ -37,16 +37,15 @@ import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { cellPanelMaterial, loadFieldGlb, wallPanelMaterial, type FieldGroups } from './renderFieldGlb';
 import {
   bbTileDetail,
-  buildTileGrain,
+  tileOutline,
   tileSeamPaths,
   tileTone,
-  TILE_GRAIN_NORMAL_SCALE,
-  TILE_GROOVE,
-  TILE_GROOVE_W,
-  TILE_LINE,
-  TILE_LINE_W,
-  TILE_MAT,
+  TILE_JOINT,
+  TILE_JOINT_SHADE,
+  TILE_JOINT_SHADE_W,
+  TILE_JOINT_W,
   TILE_TEX_SIZE,
+  TILE_VOID,
   type BbTileDetail,
 } from './renderTiles';
 
@@ -303,9 +302,9 @@ function buildSupplementalTape(): THREE.Group {
  * THE MAT, PAINTED (`renderTiles.ts` carries the measurements and the tier ladder).
  *
  * `detail === 'tiles'` (everything but the Low column) paints the field as the 36 `am-2499` soft
- * tiles it is: a neutral mat, a per-tile tone, and the CAD's own square castellation where two
- * tiles meet, straight only where the mat's own perimeter edge really is straight. `'flat'` is
- * the 1024-texel field with straight 2-px seam lines that shipped before, unchanged.
+ * tiles it is: each tile its own polygon in its own tone, the CAD's dovetail where two tiles meet,
+ * and the notched straight cut along the walls. `'flat'` is the 1024-texel field with straight
+ * 2-px seam lines that shipped before, unchanged.
  */
 function buildFloorTexture(withTape: boolean, detail: BbTileDetail): THREE.CanvasTexture {
   const size = TILE_TEX_SIZE[detail];
@@ -316,61 +315,74 @@ function buildFloorTexture(withTape: boolean, detail: BbTileDetail): THREE.Canva
   const ctx = canvas.getContext('2d');
   if (!ctx) return new THREE.CanvasTexture(canvas);
   const pxPerIn = TEX_SCALE_AT(size);
-
-  ctx.fillStyle = tiled ? TILE_MAT : C.COLORS.mat;
-  ctx.fillRect(0, 0, size, size);
-
-  // ── the 36 MATS, each its own tone. A real field is thirty-six pieces of foam that have taken
-  // thirty-six matches' worth of scuffing, and a single flat fill is the loudest reason the
-  // before capture reads as one painted sheet. `tileTone` is deterministic and never goes UP
-  // (see its own comment: `COLORS.tile` is a measured ceiling).
-  if (tiled) {
-    for (let iy = 0; iy < BB_TILE_SEAMS.length - 1; iy++) {
-      for (let ix = 0; ix < BB_TILE_SEAMS.length - 1; ix++) {
-        const [x0, y0] = toTex(BB_TILE_SEAMS[ix], BB_TILE_SEAMS[iy + 1], size);
-        const [x1, y1] = toTex(BB_TILE_SEAMS[ix + 1], BB_TILE_SEAMS[iy], size);
-        ctx.fillStyle = tileTone(ix, iy);
-        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-      }
-    }
-  }
-
-  // tile SEAM GRID — the CAD's own seven measured seam lines per axis (`BB_TILE_SEAMS`), which is
-  // exactly what the 2D renderer draws, so the painted seams agree with the CAD tape lying on top
-  // of them and with the other panel. It used to step by `cadFloor()`'s pitch from the collider
-  // set's own floor extent, falling back to `C.TILE` — the same grid to about a hundredth, but
-  // reached two different ways in two files, and the fallback branch drew the 24-in grid the
-  // whole field-size finding is about.
-  //
-  // ⚠️ THE SEAM IS NOT A STRAIGHT LINE ON THE DETAILED TIER, AND THAT IS THE REQUEST. `am-2499`
-  // interlocks with a 50 %-duty SQUARE castellation, period 2.369 in, half-amplitude 0.405 in
-  // (measured off the STEP — `renderTiles.ts`'s header), and it is the single thing that makes a
-  // floor read as tiles rather than as a grid drawn on a sheet. The seam is painted twice: a
-  // GROOVE under a thin LIP, because a seam has depth and a one-pixel line does not.
-  const strokePath = (points: readonly [number, number][]): void => {
+  const tracePath = (points: readonly [number, number][], close: boolean): void => {
     ctx.beginPath();
     points.forEach(([wx, wy], i) => {
       const [px, py] = toTex(wx, wy, size);
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     });
-    ctx.stroke();
+    if (close) ctx.closePath();
   };
-  const paths = tileSeamPaths(detail);
+
   if (tiled) {
-    // the CAD's ~0.14-in broken corner arrives as the round join, not as modelled fillet arcs
+    // ── the 36 MATS, each its own polygon and its own tone. A real field is thirty-six pieces
+    // of foam that have taken thirty-six matches' worth of scuffing, and the tone changes where
+    // the FOAM changes — along the dovetail, not along a straight line through the teeth.
+    // `tileTone` is deterministic and never goes UP (`TILE_MAT` is a measured ceiling).
+    //
+    // Everything inside the wall that is not tile is `TILE_VOID`: the strip the tiles stop short
+    // of the wall, and the socket notches the straight cut leaves along it. The clip to the tiled
+    // span IS that cut (`tileOutline`).
+    ctx.fillStyle = TILE_VOID;
+    ctx.fillRect(0, 0, size, size);
+    const lo = BB_TILE_SEAMS[0];
+    const hi = BB_TILE_SEAMS[BB_TILE_SEAMS.length - 1];
+    const [cx0, cy0] = toTex(lo, hi, size);
+    const [cx1, cy1] = toTex(hi, lo, size);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(cx0, cy0, cx1 - cx0, cy1 - cy0);
+    ctx.clip();
+    const outlines: [number, number][][] = [];
+    for (let iy = 0; iy < BB_TILE_SEAMS.length - 1; iy++) {
+      for (let ix = 0; ix < BB_TILE_SEAMS.length - 1; ix++) {
+        const outline = tileOutline(ix, iy);
+        outlines.push(outline);
+        ctx.fillStyle = tileTone(ix, iy);
+        tracePath(outline, true);
+        ctx.fill();
+      }
+    }
+    // ── THE JOINT: a dark hairline over a softer shade, both darker than any tile. Every seam
+    // is stroked from both of its tiles, at the same place in the same opaque colour, and the
+    // strokes also cover the hairline of background the canvas's own anti-aliasing leaves
+    // between two filled polygons that share an edge.
     ctx.lineJoin = 'round';
-    ctx.lineCap = 'butt';
-    ctx.strokeStyle = TILE_GROOVE;
-    ctx.lineWidth = TILE_GROOVE_W * pxPerIn;
-    for (const p of paths) strokePath(p.points);
-    ctx.strokeStyle = TILE_LINE;
-    ctx.lineWidth = TILE_LINE_W * pxPerIn;
-    for (const p of paths) strokePath(p.points);
+    ctx.strokeStyle = TILE_JOINT_SHADE;
+    ctx.lineWidth = TILE_JOINT_SHADE_W * pxPerIn;
+    for (const o of outlines) {
+      tracePath(o, true);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = TILE_JOINT;
+    ctx.lineWidth = TILE_JOINT_W * pxPerIn;
+    for (const o of outlines) {
+      tracePath(o, true);
+      ctx.stroke();
+    }
+    ctx.restore();
   } else {
+    // tile SEAM GRID — `BB_TILE_SEAMS`, the perimeter edges and the five tile joints, which is
+    // exactly what the 2D renderer draws.
+    ctx.fillStyle = C.COLORS.mat;
+    ctx.fillRect(0, 0, size, size);
     ctx.strokeStyle = C.COLORS.tile;
     ctx.lineWidth = 2;
-    for (const p of paths) strokePath(p.points);
+    for (const p of tileSeamPaths(detail)) {
+      tracePath(p.points, false);
+      ctx.stroke();
+    }
   }
 
   // ⚠️ NO CENTRE MARK — the 2D renderer's reasoning, and the same removal (owner, 2026-09-19).
@@ -395,19 +407,15 @@ function buildFloor(withTape: boolean, detail: BbTileDetail): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(2 * BB_HALF_X, 2 * BB_HALF_Y);
   // ⚠️ NO `color` HERE, EVER. `MeshStandardMaterial` MULTIPLIES `color` by `map`, so a tone
   // passed as both comes out squared and near black — the venue's ground shipped exactly that
-  // bug once. The albedo is the canvas and the canvas alone; the grain below is relief and
-  // sheen, on two map slots that carry no colour at all and have their OWN UV transform (three
-  // r151+), which is how a 2.37-in tooth and a fine foam speckle can tile at different pitches
-  // off one plane.
+  // bug once. The albedo is the canvas and the canvas alone.
+  //
+  // ⚠️ AND NO GRAIN MAP (2026-09-28): `renderTiles.ts`'s closing note has why — it repeated four
+  // times per tile and read as a mottle that tiled. Foam is matte (the material's defaults,
+  // roughness 1, metalness 0).
   const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture(withTape, detail) });
-  const grain = buildTileGrain(detail);
-  if (grain) {
-    material.normalMap = grain.normalMap;
-    material.normalScale = new THREE.Vector2(TILE_GRAIN_NORMAL_SCALE, TILE_GRAIN_NORMAL_SCALE);
-    material.roughnessMap = grain.roughnessMap;
-    material.roughness = 1; // foam is matte; the map only MULTIPLIES this down
-    material.metalness = 0;
-  }
+  // which mat this is, for the physical-materials floor (`renderSurfaceField.ts`), which draws
+  // the dovetail itself on the detailed one
+  material.userData.bbTileDetail = detail;
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = 'floor';
   // a HAIR below z = 0. The CAD tape sits at z 0.000–0.010 and the GLB tile slab's top face is

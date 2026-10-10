@@ -708,8 +708,10 @@ export function robotChecks(check: Check): void {
     );
     check('mech: drum is not in the launcher vocabulary', !(BB_SCORE_MODES as readonly string[]).includes('drum'));
   }
-  /** MIGRATION: every archetype a flat spec names becomes that launcher. */
-  for (const mode of BB_SCORE_MODES) {
+  /** MIGRATION: every archetype a flat spec names becomes that launcher. The FIXED launcher has
+   * no flat spelling — it postdates the container, and its mirror is `dumper` (`bbScoreModeMirror`),
+   * the nearest hardware an older peer can name — so it is not in this loop. */
+  for (const mode of BB_SCORE_MODES.filter((m) => m !== 'fixed')) {
     const legacy = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: undefined, scoreMode: mode });
     const l = bbLauncherOf(legacy, BB_HOOD_DEFAULT_DEG);
     check(`mech: a legacy ${mode} spec migrates to that launcher`, l.kind === mode, `got ${l.kind}`);
@@ -1857,7 +1859,7 @@ export function robotChecks(check: Check): void {
   /** ...and the same rule THROUGH THE WORLD: a real intake, a real mouth, a real tick. */
   for (const kind of BB_SCORE_MODES) {
     for (const colour of ['yellow', 'blue', 'red'] as const) {
-      const w = mkWorld('free', 31, mech({ launcher: { kind, mount: kind === 'dumper' ? 'back' : 'center', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
+      const w = mkWorld('free', 31, mech({ launcher: { kind, mount: kind === 'dumper' || kind === 'fixed' ? 'back' : 'center', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
       const r = w.robots[0];
       emptyHopper(w, r);
       park(r, 0, 0, 0);
@@ -1872,7 +1874,8 @@ export function robotChecks(check: Check): void {
       // margin over the new PERIOD_MAX (0.12 s) rather than tightened — this check is about
       // WHICH colour is taken, not how fast, and a false failure here reads as a rules bug.
       run(w, cmd({ intake: true }), 0.35);
-      const want = colour === 'yellow' || (colour === 'blue' && kind !== 'turret');
+      // NECTAR only for the launchers that carry it: a double turret and a dumper
+      const want = colour === 'yellow' || (colour === 'blue' && (kind === 'twinturret' || kind === 'dumper'));
       const what = colour === 'yellow' ? 'POLLEN' : colour === 'blue' ? 'own NECTAR' : 'OPPONENT NECTAR';
       check(
         `intake [${kind}] ${what}: ${want ? 'taken' : 'left on the floor'}`,
@@ -2371,14 +2374,25 @@ export function robotChecks(check: Check): void {
   }
   /**
    * HOLD FIRE AND A DUMPER TURNS ALL THE WAY ONTO THE CELL, THEN DUMPS INTO IT — Chain Reaction's
-   * dumper feel — FOR A TANK TOO. The StarterBot is a tank dumper, and a tank's yaw comes only from
-   * its side drives (`src/sim/robot.ts`), so an aim hook that overrode `rotate` alone never turned
-   * it. Each robot starts facing directly AWAY from the cell, at a distance its own hood can dump
+   * dumper feel — FOR A TANK TOO. The StarterBot WAS a tank dumper (a fixed launcher since
+   * 2026-10-02, whose own turn is in the FIXED lane), and a tank's yaw comes only from its side
+   * drives (`src/sim/robot.ts`), so an aim hook that overrode `rotate` alone never turned it. Each robot starts facing directly AWAY from the cell, at a distance its own hood can dump
    * from (found by `bbDumpSolution`, not hard-coded, so a retuned hood does not break the check).
    */
   for (const [label, spec] of [
     ['default dumper', mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' })],
-    ['StarterBot (tank)', BB_STARTER_BOTS[0]],
+    // the StarterBot's old build, as a literal: a tank, a front sweeper, a front dumper
+    [
+      'tank dumper',
+      mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, {
+        drivetrain: 'tank',
+        driveRpm: 286,
+        length: 15,
+        width: 16,
+        intakeMount: 'front',
+        ballStorage: 4,
+      }),
+    ],
   ] as const) {
     const w = createBiobuzzWorld('free', 57, [{ ...setup(0, 'blue', spec), assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
     const r = w.robots[0];

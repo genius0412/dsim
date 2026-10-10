@@ -18,6 +18,7 @@ import { capturePollen, takeHeld } from '../elements';
 import { bbIntakeKindOf, bbLiftOf } from '../mechs';
 import { bbFlowerAtIntake, bbFlowerAtIntakeMouth } from '../play';
 import { bbFlowerInReach, bbRampSettled } from '../robot';
+import { importSideRollersPre6 } from '../importMech';
 import type { BbMouthAxes } from '../robot';
 import { flowerAtRetrieval } from './flowerTube';
 
@@ -323,7 +324,7 @@ export function flowerRetrieve3d(
   const kind = bbIntakeKindOf(rob.spec);
   const reach = bbFlowerReachOf(kind, bbRampSettled(rob, world.time));
   if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
-  const hit = bbFlowerAtIntakeMouth(rob, reach);
+  const hit = bbFlowerAtIntakeMouth(rob, reach, { pre6: importSideRollersPre6(world) });
   if (!hit) return false;
   const { i, ax } = hit;
   const stack = bb.flowers[i].stack;

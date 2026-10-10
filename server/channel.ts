@@ -1,4 +1,6 @@
 import { envVar } from './runtimeEnv';
+import { importerOpenOn, ROBOT_IMPORT_CAP } from '../src/net/imported';
+import { IMPORT_VISUALS_CAP } from '../src/net/importVisuals';
 
 /**
  * WHICH DEPLOYMENT THIS SERVER IS — stable (production) or alpha (the preview).
@@ -40,4 +42,31 @@ export const isAlphaServer = (): boolean => SERVER_CHANNEL === 'alpha';
 export function roomPersists(roomChannel: string | undefined, serverChannel = SERVER_CHANNEL): boolean {
   if (roomChannel !== 'alpha') return true;
   return serverChannel === 'alpha';
+}
+
+/**
+ * MAY AN IMPORTED ROBOT PLAY ON THIS SERVER? The importer ships to alpha only until the owner
+ * says otherwise (`importerOpenOn`, src/net/imported.ts, is the rule; the client asks it of its
+ * build's channel). Fail-closed: production sets no `SERVER_CHANNEL` and reads 'stable'.
+ *
+ * `ROBOT_IMPORT=1` opens it on a local server or a test run. A LAN server is closed:
+ * `enforceLanPolicy` forces the channel to 'stable', but only after this module has read it, so
+ * `LAN_MODE` is read here as well.
+ *
+ * A closed server does not advertise the two caps (`advertisedCaps`) and every room it builds
+ * refuses imports (`RoomConfig.imports`, `Room.allowsImportedRobots`). It hides and refuses; it
+ * never strips what a player has stored.
+ */
+export function importsOpen(channel: string, override: string | undefined, lanMode: string | undefined): boolean {
+  if ((override ?? '').trim() === '1') return true;
+  if ((lanMode ?? '').trim() === '1') return false;
+  return importerOpenOn(channel);
+}
+
+/** this process's answer, read once at boot */
+export const IMPORTS_OPEN_HERE: boolean = importsOpen(SERVER_CHANNEL, envVar('ROBOT_IMPORT'), envVar('LAN_MODE'));
+
+/** `caps` as `/api/presence` says them: without the importer's two words where imports are closed */
+export function advertisedCaps(caps: readonly string[], importsAllowed: boolean): string[] {
+  return importsAllowed ? [...caps] : caps.filter((c) => c !== ROBOT_IMPORT_CAP && c !== IMPORT_VISUALS_CAP);
 }

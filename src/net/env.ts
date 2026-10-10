@@ -29,6 +29,7 @@
 
 import { parseLanAddress } from './lanAddress';
 import { discordGameServerUrl } from './discordActivity';
+import { primaryWsBase, PrimaryHealth } from './primaryHost';
 
 export interface GameServer {
   /** stable id used to persist the player's preference */
@@ -264,8 +265,83 @@ export function roomServerUrlWith(params: Record<string, string>): string {
  * itself. A LAN box has none of those, so a version of this that followed the socket would
  * point a signed-in player's whole account at a laptop, and the first self-hosted match
  * would be uploaded into a void.
+ *
+ * It goes through the PRIMARY router when the server has one (`primaryHost.ts`), so a menu
+ * tab's polls reach iad and never start the player's nearest satellite. `nearestHttpUrl()`
+ * is the Anycast host, for the two reads that are about the nearest region.
  */
-export const gameServerHttpUrl = (): string => httpOf(selectedServer()?.url);
+export const gameServerHttpUrl = (): string => httpOf(primaryUrl() || selectedServer()?.url);
+
+/**
+ * The CLOUD server over HTTP through the Anycast host, i.e. the region NEAREST the player,
+ * never the primary router. Only for a request that is about that region: the `/health`
+ * latency probe (`ping.ts`) and the region-pinned `/api/lobbies` read. Everything else uses
+ * `gameServerHttpUrl()`, which does not wake a satellite (see `primaryHost.ts`).
+ */
+export const nearestHttpUrl = (): string => httpOf(selectedServer()?.url);
+
+/** the router's ws(s):// base for the selected server, whether or not it is answering */
+function routerBase(): string {
+  const url = selectedServer()?.url;
+  if (!url || selectedServer()?.id === 'discord') return '';
+  return primaryWsBase(url, (import.meta.env.VITE_GAME_PRIMARY_URL as string | undefined) ?? '');
+}
+
+const primaryHealth = new PrimaryHealth();
+
+/**
+ * The PRIMARY router's ws(s):// base, or '' (no router for this server, a Discord Activity, or
+ * the router failed its last probe and is inside its backoff window). See `primaryHost.ts`.
+ */
+function primaryUrl(): string {
+  return primaryHealth.usable(Date.now()) ? routerBase() : '';
+}
+
+/** the cloud WebSocket for a socket that must NOT wake a satellite (LAN signalling). The
+ *  primary router when there is one, else the Anycast host. Never a match or room socket:
+ *  those have to reach the room's own region. */
+export const primaryWsUrl = (): string => primaryUrl() || gameServerUrl();
+
+let probing = false;
+let probeRetry: ReturnType<typeof setTimeout> | null = null;
+let onlineHooked = false;
+
+/**
+ * Check that the router answers, and use the Anycast host while it does not — for a BACKOFF
+ * WINDOW, never for the rest of the page (`PrimaryHealth` says why that mattered). A failed
+ * probe schedules the next one; a probe that fails while the browser is offline is not held
+ * against the router, and coming back online probes again. Requests made before the first
+ * answer go to the router, and a failure there is handled like any other failed read. Called
+ * from `main.tsx`.
+ */
+export function probePrimary(timeoutMs = 8000): void {
+  const base = httpOf(routerBase());
+  if (!base || typeof fetch === 'undefined' || probing) return;
+  if (!onlineHooked && typeof window !== 'undefined') {
+    onlineHooked = true;
+    window.addEventListener('online', () => probePrimary(timeoutMs));
+  }
+  if (probeRetry) {
+    clearTimeout(probeRetry);
+    probeRetry = null;
+  }
+  probing = true;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const fail = (): void => {
+    // offline says nothing about the router: the `online` event probes again
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    const at = primaryHealth.failed(Date.now());
+    probeRetry = setTimeout(() => probePrimary(timeoutMs), Math.max(0, at - Date.now()));
+  };
+  fetch(base + '/health', { cache: 'no-store', signal: ctl.signal })
+    .then((r) => (r.ok ? primaryHealth.ok() : fail()))
+    .catch(fail)
+    .finally(() => {
+      clearTimeout(timer);
+      probing = false;
+    });
+}
 
 /** ws(s):// → http(s):// for any server's url */
 export const httpOf = (wsUrl: string | undefined): string =>

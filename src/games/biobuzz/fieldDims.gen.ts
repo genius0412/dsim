@@ -8,7 +8,7 @@
 // source STEP : FIRST field CAD v26-27.2 (2026-09-15), sha256 5e768b731f1ec8dcd14debba53225c43718877923c351ce08504305f68f7fe00
 //               captured 2026-09-17 from https://ftc-resources.firstinspires.org/ftc/archive/2027/field/field-cad-step
 // measured by : scripts/field-cad/convert.py → public/models/biobuzz/field-measurements.json
-//               sha256 3d8c1d4097bfb7536aadc925fc1efcc0e00b612678c41488ca6a40eebd9da6f0
+//               sha256 5555b9fd7bf0171b3c76796964858c7a1db450f94e5889a763067503f10cb65b
 // frame       : the sim frame — inches, origin at the field centre on the tile top surface,
 //               +x audience right, +y away from the audience. Rounded to 1e-3 in.
 //
@@ -16,8 +16,9 @@
 // FIELD_HALF   70.674  = mean |walls.innerFace.{left,right,rear,audience}| over 4 faces, worst residual 0in (the CAD's four faces ARE symmetric). Interior span 141.348in, against the 144 the manual's "12 ft field" implies.
 // WALL_H       11.644  = walls.assemblyZ[1] (the top rail's top). Glass alone spans z 0.09..10.965 (walls.glassZ).
 // TILE_PITCH   23.528  = tiles.pitch (a real FTC soft tile is 23.53 in on centre, not 24 — this is the whole field-size finding).
-// TILE_SEAMS   7 lines = tiles.x0Seams + tiles.extent.x[1]. The seams are NOT evenly spaced (23.176 … 23.986): the tile bodies
-//                are 24.312 with interlock tabs, so the grid is emitted as MEASURED POSITIONS and TILE_PITCH is their mean.
+// TILE_SEAMS   7 lines = the two perimeter edges and the five tile JOINTS, each the middle of the band where two columns'
+//                tabs overlap (tiles.x0Seams[i] .. −x0Seams[6−i], by the layout's point symmetry). The joints are evenly spaced at
+//                23.502in (residual 0); the outer tiles are cut straight and run 23.581in. TILE_PITCH is the mean.
 // TILE_SPAN_HALF 70.585  = mean |tiles.extent.{x,y}|, residual 0in — the tiles stop 0.089in short of the wall.
 // FLOWER_D     2.629  = FIELD_HALF − mean |top-ring bore centre, wall-normal axis| (68.045, residual 0in over 4 flowers).
 //                The old hand-entered 2.54 is 0.089in off — the flower was never misplaced, the FIELD was.
@@ -92,8 +93,8 @@ export const WALL_GLASS_Z: readonly [number, number] = [0.09, 10.965];
 export const TILE_PITCH = 23.528;
 /** half the tiled floor's own span (in) — the tiles stop short of the wall. */
 export const TILE_SPAN_HALF = 70.585;
-/** the seven measured seam lines, on both axes (in). Unevenly spaced — see the header. */
-export const TILE_SEAMS: readonly number[] = [-70.585, -47.409, -23.907, -0.405, 23.097, 46.599, 70.585];
+/** the seven seam lines, on both axes (in): the two perimeter edges and the five tile joints — see the header. */
+export const TILE_SEAMS: readonly number[] = [-70.585, -47.004, -23.502, 0, 23.502, 47.004, 70.585];
 
 /** a FLOWER's ring-bore centre, off its own wall's inner face (in). */
 export const FLOWER_D = 2.629;

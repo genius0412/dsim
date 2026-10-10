@@ -25,7 +25,7 @@
  * rate, is shoved by a partner, and cannot pass through anything. Nothing here writes a pose or
  * a heading: the heading teleport of the old path follower has no line of code to live on.
  */
-import { createLiveRun, type LiveRun, type SimTrace } from '@horizon36596/zenith-core';
+import { createLiveRun, flattenSteps, simFollowerParams, type LiveRun, type SimTrace } from '@horizon36596/zenith-core';
 import { SIM_DT } from '../config';
 import type { RobotCommand, World } from '../types';
 import { powersToCommand } from './drive';
@@ -50,6 +50,25 @@ export interface AutoSeat {
 /** A trial in Free Drive stops after one AUTO period, like the real one. */
 const TRIAL_S = 30;
 
+/**
+ * STUCK: a PATH step whose follower is asking for real power while the robot neither moves nor
+ * turns, for this long. Only path steps count, so a `wait`, a `shootAll` or a hold on a command
+ * (all of which stand still on purpose) never reads as stuck; the power floor keeps a settled
+ * hold at the end of a leg from counting either. A path with its own `timeoutS` is left out too:
+ * the author bounded it, and driving into a wall until the timeout is a real FTC move
+ * (garden-cycle's `sweep` does it), so it ends on its own rather than hanging. It is a report, not an action: the seat keeps
+ * driving, and a robot that is freed (a partner moves off it) carries on.
+ *
+ * ⚠️ The power floor is HALF the follower's braking cap (`maxBrakingPower`), read from the
+ * parameters the follower runs on. Against a wall the measured velocity is noise that flips sign
+ * each tick, and Pedro caps power against the measured motion at that cap (`clampBrakingPower`),
+ * so a blocked leg asks for only the cap on about half its ticks. A fixed 0.25 floor sat above
+ * Pedro's default 0.2 and reset the count on those ticks, so a blocked leg never read stuck.
+ */
+const STUCK_S = 1.5;
+const STUCK_SPEED_IN_PER_S = 1;
+const STUCK_TURN_RAD_PER_S = 0.2;
+
 class Seat implements AutoSeat {
   readonly loaded: LoadedAuto | null;
   private readonly error: string | null;
@@ -60,6 +79,11 @@ class Seat implements AutoSeat {
   private trialTicks = 0;
   /** the steps running as of the last tick, outermost first */
   private active: readonly string[] = [];
+  /** ids of the path steps with no timeout of their own, for the stuck test */
+  private readonly pathIds: ReadonlySet<string>;
+  /** the stuck test's power floor: half the follower's braking cap */
+  private readonly stuckPower: number;
+  private stalledTicks = 0;
 
   constructor(
     world: World,
@@ -80,6 +104,8 @@ class Seat implements AutoSeat {
     }
     this.loaded = loaded;
     this.error = error;
+    this.pathIds = new Set(loaded ? flattenSteps(loaded.plan.steps).filter((x) => x.step.kind === 'path' && x.step.timeoutS === undefined).map((x) => x.id) : []);
+    this.stuckPower = loaded ? simFollowerParams(loaded.robot).maxBrakingPower / 2 : 0;
     if (error) this.state = 'error';
   }
 
@@ -118,6 +144,7 @@ class Seat implements AutoSeat {
     this.host = null;
     this.state = 'waiting';
     this.active = [];
+    this.stalledTicks = 0;
     this.trial = true;
     this.trialTicks = 0;
   }
@@ -151,6 +178,11 @@ class Seat implements AutoSeat {
     });
     this.active = tick.activeStepIds;
     if (tick.finished && this.state === 'running') this.state = 'done';
+    const inner = this.active.length ? this.active[this.active.length - 1] : null;
+    const p = tick.powers;
+    const asking = Math.abs(p.forward) + Math.abs(p.strafe) + Math.abs(p.turn) > this.stuckPower;
+    const still = r.vel.x * r.vel.x + r.vel.y * r.vel.y < STUCK_SPEED_IN_PER_S ** 2 && Math.abs(r.angVel) < STUCK_TURN_RAD_PER_S;
+    this.stalledTicks = this.state === 'running' && inner !== null && this.pathIds.has(inner) && asking && still ? this.stalledTicks + 1 : 0;
     return powersToCommand(r, tick.powers, host.buttons());
   }
 
@@ -161,6 +193,7 @@ class Seat implements AutoSeat {
       state: this.state,
       stepId: active.length ? active[active.length - 1] : null,
       timeS: this.run?.timeS ?? 0,
+      ...(this.state === 'running' && this.stalledTicks * SIM_DT >= STUCK_S ? { stuck: true } : {}),
     };
   }
 

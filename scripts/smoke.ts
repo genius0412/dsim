@@ -12,10 +12,12 @@ import {
 } from '../src/replaySavePolicy';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
-import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
-import { allianceDuo, derivedRole, savedStartCap } from '../src/ui/startPositions';
+import { sanitizePlayer, sanitizePlayerPatch, sanitizeReplay } from '../src/net/sanitize';
+import { allianceDuo, derivedRole, savedStartCap, startHandleReach } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
+import { PRIMARY_HOSTS, primaryWsBase, PrimaryHealth } from '../src/net/primaryHost';
+import { WakeTally, wakeAgent, wakeRoute, wakeSource } from '../server/wakeLog';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
 import { enforceLanPolicy } from '../server/lanMode';
@@ -25,8 +27,10 @@ import { childEnv as lanChildEnv } from '../electron/lanHost.cjs';
 import {
   parkQueue, takeQueue, dropQueue, updateQueue, peekQueue, subscribeQueue, elapsedLabel, elapsedSeconds,
 } from '../src/ui/queueKeeper';
-import type { LobbyPlayer } from '../src/net/protocol';
+import { RANKED_JOIN_GRACE_MS, type LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
+import { isStagedRoomCode, stagedRoomCode } from '../server/matchTypes';
+import { STAGED_ANSWER_MS, STAGED_CONNECT_MS, stagedStartOverdue } from '../src/net/stagedStart';
 import {
   roomCodeForInstance,
   discordInstanceId,
@@ -35,10 +39,16 @@ import {
   setLaunchSearchForTests,
 } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
+import { clampBallPosToStatics as clampToStatics } from '../src/sim/physics';
+import { canonicalWorld, judgeGolden, runGolden, type GoldenScene } from './simGolden';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
+import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
+import { startPollLoop } from '../src/ui/pollLoop';
 import { updatePenalties } from '../src/sim/penalties';
-import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
+import { aimSolution, robotInLaunchZone, updateRobot, wheelLocals } from '../src/sim/robot';
+import { drawWheels as drawWheelsDecode } from '../src/render/drawRobot';
+import { drawWheels as drawWheelsBiobuzz } from '../src/games/biobuzz/parts';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
@@ -176,6 +186,8 @@ import {
   ENDGAME_START,
   PRE_COUNTDOWN,
   COLORS,
+  WHEEL_CORNERS,
+  WHEEL_PERIMETER,
 } from '../src/config';
 import {
   CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
@@ -189,7 +201,7 @@ import {
   wheelContacts,
 } from '../src/sim/physics';
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
-import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
+import { butterflyTankRpmLimits, driveParams, lengthLimits, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
 import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, hasStoredSettings, practiceSeatsFor, practiceSetups, saveSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import { legalRegion, routeTarget } from '../server/routing';
 import {
@@ -286,7 +298,7 @@ import {
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
-import { GamepadInput } from '../src/input/gamepad';
+import { GamepadInput, padButtonDown, shape as padShape, shapeStick } from '../src/input/gamepad';
 import {
   awardBadge,
   awardBoardWord,
@@ -335,6 +347,7 @@ import {
 import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
+import { buildPaceCurve, clockKey, coerceCurve, netScore, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
 import {
   runRecordMatch,
   simulateReplay,
@@ -343,6 +356,7 @@ import {
   recordScore,
   maxMatchTicks,
   REPLAY_FORMAT,
+  REPLAY_FORMAT_BASE,
   replayPlayable,
   replayRefusal,
   ReplayRecorder,
@@ -362,34 +376,94 @@ import {
 } from '../src/sim/penaltyLog';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
-import { roomPersists } from '../server/channel';
-import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
+import { advertisedCaps, importsOpen, IMPORTS_OPEN_HERE, roomPersists, SERVER_CHANNEL } from '../server/channel';
+import { hostRoomConfig } from '../src/lan/hostProtocol';
+import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport, type MatchOutcome } from '../server/room';
+import { BallWireCache, referenceChanged, sameR3 } from '../server/snapshotWire';
+import { clockMembers } from '../server/tickScheduler';
+import { warmUp, warmupEnabled } from '../server/warmup';
 import type { PendingRosterEntry } from '../server/matchTypes';
+import {
+  IMPORT_MEMBER_NEEDS_UPDATE,
+  IMPORT_REFUSED_HERE,
+  IMPORT_REFUSED_RANKED,
+  IMPORT_ROOM_NEEDS_UPDATE,
+  IMPORT_START_REFUSED,
+  IMPORT_ID_TAKEN,
+  REPLAY_FORMAT_IMPORTED,
+  ROBOT_IMPORT_CAP,
+  hasImportCap,
+  importAdmission,
+  importIdOf,
+  isImportedSpec,
+  replayHasImported,
+  setupsHaveImported,
+  stripImported,
+} from '../src/net/imported';
+import { SERVER_CAPS } from '../src/net/protocol';
+import { rememberStandardRobot, sameBuild, standardRobotChoices, standardRobotFor } from '../src/settings';
+// the importer gate: the channel rule, and the projection a build without the importer renders from
+import * as IMPGATE from '../src/net/imported';
+import { keepImportActive as gateKeepImportActive, withoutImport as gateWithoutImport } from '../src/settings';
+import { SETTINGS_KEEPS_IMPORTS, keepImportsFromOlderClient, keepsImports, sameButDropped } from '../src/net/settingsKeep';
+import { pendingPracticeUploads, savePracticeRun } from '../src/net/practiceRuns';
+import { pendingLanUploads, saveLanRunLocal } from '../src/net/lanRuns';
+import { sanitizeReplay } from '../src/net/sanitize';
 import { maintenanceBiting, lockdownPasses } from '../server/db/repo';
 import { isClosed as siteIsClosed, bypassLine as siteBypassLine, visibleBanners } from '../src/net/siteRules';
 import type { SiteAccess, SiteBanner, SiteLockdown } from '../src/net/protocol';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
+import { takeProviderBudget, resetProviderBudgetForTests, MODERATION_BUDGET_PER_MIN } from '../server/moderation';
+import {
+  ACCESS_MS_MAX,
+  coerceAccessMs,
+  coerceHomeRegion,
+  coerceRoomKind,
+  hostedBy,
+  isQueueMode,
+  legalRoomCode,
+  remoteLiveConflict,
+} from '../server/admission';
+import { sweepGate } from '../server/sweepGate';
 import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
 import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
 import { bestHost } from '../server/regions';
 import type { PendingMatch } from '../server/matchTypes';
-import { computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant } from '../server/ranked';
+import {
+  computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant,
+  marginMultiplier, effectiveRd, isPremade, MOV_MIN, MOV_MAX, DECISIVE_MARGIN, RD_FLOOR_MIN,
+  IDLE_RD_CAP, RD_MAX, RD_FLOOR_START, RATING_RULES, RULE_SETS, RULES_PLAIN_0925, RULES_TEAM_0927,
+  RULES_TEAM_1003, TEAM_0927_FROM, ruleSetAt,
+} from '../server/ranked';
 import { isReportReason, REPORT_REASONS } from '../src/report';
+import {
+  NOTICE_KINDS, NOTICE_MESSAGE_MAX, cleanMessage, durationWords, filedStatus, filedWhat, noticeView,
+  ratingRefund, resultOf,
+} from '../src/notices';
 import {
   STANDING_MAX, STANDING_COST, STANDING_TIERS, REPORT_CAP, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH,
   COOLDOWN_LADDER, RATING_LADDER, WINDOW_HOURS, ladderRung,
   tierOf, healed, clampScore, repeatMult, applyStandingEvent, queueLocked, lockRemaining,
   judgeParticipation, MIN_JUDGED_TICKS, AFK_DRIVE_FRACTION, LEAVE_AWAY_FRACTION,
-  RED_CARD_MULT, chargedForParticipation,
+  RED_CARD_MULT, chargedForParticipation, absenceOf, EARLY_ABSENT_TICKS,
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle, clamp } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { DECODE_KIT_HOOD_DEG, FLY_EXIT_EFFICIENCY, FLY_FEED_MIN_FRAC, TURRET_OFFSET_FRAC } from '../src/config';
+import { decodeFixedAim, decodeFixedAimErr, decodeFixedAimTol, decodeFixedRelease } from '../src/sim/fixedShot';
+import { coerceFlywheel, flyExitSpeedAt } from '../src/sim/flywheelSpec';
+import { flyReady, flySetpoint } from '../src/sim/flywheel';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
+import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
+import { restoreWireClocks } from '../src/net/wireClocks';
+import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
+import { AGREE_BALL_IN, AGREE_POS_IN, AGREE_STICK, cmdsAgree, digestsAgree, worldDigest } from '../src/net/worldDigest';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
+import { cmTable } from '../src/competition/manual';
 import { moduleFor, gameOf } from '../src/games';
 import { Renderer } from '../src/render/renderer';
 import type { GameScene } from '../src/games/module';
@@ -425,9 +499,10 @@ import {
   CHAIN_MIN_LENGTH,
   CHAIN_MAX_LENGTH,
   CHAIN_PRISM,
+  CHAIN_PTS,
   chainArmReach,
 } from '../src/games/chain/config';
-import { CHAIN_HOOKS_PER_GOAL, accelMultiplier, catalystRailHalf, catalystRailTarget, catalystMouth, catalystTrackTarget, chainEvalStart, chainStartExtents, chainHeadingFits, chainNearestFittingHeading, chainSnapStartPose, chainIntakeMouths, chainMirrorStart, chainSnapStart, chainStartLegal, hookPos, labAreas, onRingStand, ringStandBoxes, ringStands } from '../src/games/chain/state';
+import { CHAIN_HOOKS_PER_GOAL, accelSide, accelMultiplier, catalystRailHalf, catalystRailTarget, catalystMouth, catalystTrackTarget, chainEvalStart, chainFitAnchor, chainStartExtents, chainHeadingFits, chainNearestFittingHeading, chainSnapStartPose, chainIntakeMouths, chainMirrorStart, chainSnapStart, chainStartLegal, hookPos, labAreas, onRingStand, ringStandBoxes, ringStands } from '../src/games/chain/state';
 import {
   CHAIN_CATALYSTS,
   CHAIN_CATALYST_TYPES,
@@ -457,6 +532,76 @@ import {
   chainStorageMax,
 } from '../src/games/chain/config';
 import { CHAIN_CATALYST_MOUNTS, CHAIN_INTAKE_MOUNTS, CHAIN_TURRET_POSITIONS, MOUNT_ANGLE, RAIL_DIR, catalystMountOf, catalystMountPositions, catalystSwingOf, isSwingMount, swingAxesFor, intakeMountOf, isEdgePos, isTurreted, mountsClash, shooterMountOf, turretLocal, turretRadius } from '../src/games/chain/mounts';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  IMPORT_MAX_BAND_INPUTS,
+  IMPORT_MAX_EXTENT,
+  IMPORT_MAX_INPUT_POINTS,
+  IMPORT_ORIGIN_MARGIN,
+  IMPORT_QUANTUM,
+  coerceImported,
+  importedHalfDiag,
+  polyAtPose,
+  polyBounds,
+  polyCentroid,
+  polyFeature,
+  polyPointDepth,
+  pullInside,
+  rotatedPolyBounds,
+} from '../src/sim/imported';
+import { robotHullWorld } from '../src/sim/physics';
+import { robotHullLocal } from '../src/sim/field';
+import {
+  ANY_ID,
+  IMPORTED_MESH_CAP,
+  IMPORTED_MESH_TO_ROBOT,
+  IMPORTED_TOP_CAP,
+  importedAssetCacheSizes,
+  importedAssetVersion,
+  importedMeshBlob,
+  importedMeshVersion,
+  importedTopFrame,
+  importedTopImage,
+  importedTopsSettled,
+  importedTopUrl,
+  invalidateImportedAssets,
+  registerImportedAssets,
+  resetImportedAssetsForTests,
+  robotToTopPixel,
+  setImportedAssetSource,
+  subscribeImportedAssets,
+  topImageTransform,
+  topPixelToRobot,
+  unregisterImportedAssets,
+} from '../src/render/importedAssets';
+import { frontArrowSpot } from '../src/render/drawImported';
+import { drawRobot as drawDecodeSprite } from '../src/render/drawRobot';
+import { drawChainRobot } from '../src/games/chain/drawRobot';
+import { bbHeldSlots, drawBiobuzzRobot } from '../src/games/biobuzz/drawRobot';
+import { wheelLocals, chassisInertia } from '../src/sim/robot';
+import { placeGroundArtifact } from '../src/sim/world';
+import { bbFootprintGap, bbRobotsContact } from '../src/games/biobuzz/penalties';
+import { bbEvalStart, bbStartBox } from '../src/games/biobuzz/start';
+import type { ImportedRobot } from '../src/types';
+import type { Vec2 } from '../src/types';
+import * as IMPC from '../src/config';
+import type { SolidShape } from '../src/sim/artifactSolids';
+import { heldSlotPos } from '../src/sim/physics';
+import { turretWorldPos } from '../src/sim/robot';
+import { decodeImportLaunchZ, decodeImportMouth, DECODE_IMPORT_LAUNCH_MIN } from '../src/sim/importedMech';
+import { editSaveId, libraryEntryFor, planShareAdd, sameImportedRobot } from '../src/robotImport/libraryIds';
+import { DECODE_TUTORIAL } from '../src/games/decode/tutorial';
+import { defaultImportedMech, mechHandles, validateImportedMech } from '../src/games/importMechChecks';
+import { BB_DEFAULT_SPEC } from '../src/games/biobuzz/coerce';
+import { bbMouths, bbRobotSolids, mouthAxes } from '../src/games/biobuzz/robot';
+import * as PROTO from '../src/net/protocol';
+import * as IV from '../src/net/importVisuals';
+import * as VC from '../src/net/visualCheck';
+import * as SV from '../server/importVisuals';
+import * as VF from './visualFixtures';
+import * as IVC from '../src/net/importVisualsClient';
+import * as BR from '../src/net/importedAssetsBridge';
+import type { Transport } from '../src/net/transport';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -504,6 +649,191 @@ const mkWorld = (
 const slotCount = (w: World, a: 'red' | 'blue') =>
   w.balls.filter((b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow)
     .length;
+
+// ---- GOLDEN HASHES: step() output is pinned per SIM_VERSION ------------------
+// See `scripts/simGolden.ts`. Each scene is a whole world hashed at checkpoints; a failure means
+// the sim's output moved. Byte-identical work (refactors, speed-ups) must leave every hash here
+// untouched; a real behaviour change bumps SIM_VERSION and adds a row. BIOBUZZ's scenes live in
+// its own suite (`scripts/smoke-biobuzz/golden.ts`). One block per scene, so the shard runner
+// can spread them.
+const GOLDEN: Record<number, Record<string, string[]>> = {
+  4: {
+    'decode solo': ['fb2a65c5dabfb38a', '7b715493f956ebd2', 'c818f0f50624ae57', '8bb36d9c5151f5a8', 'aeac450d900d63fe', '2719f93071f60cb2'],
+    'decode 2v2': ['1f80d772e026ba28', '974956cf37f76f09', '68c947be9e76ac19', '99fdba0d5c6495e0', '5222684bcff58964', 'fe6a16b8428fad99'],
+    'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
+    'chain 2v2': ['186c3d4f3c75a58b', 'a17d776496e8b787', '058f9f9fab36be5b', '4080399a425361fc', 'e17d5cf81d0ebbf8', '956fb432d2e6dff4'],
+  },
+  5: {
+    'decode solo': ['fb2a65c5dabfb38a', '7b715493f956ebd2', 'c818f0f50624ae57', '8bb36d9c5151f5a8', 'aeac450d900d63fe', '2719f93071f60cb2'],
+    'decode 2v2': ['b22f51d0e7ef5db5', '396f5c5bc8b6f92b', '851f3b3466d66389', 'cbc02356dba29ba5', 'c07fadabb100d0b6', 'e2c4dd9317fe36c1'],
+    'decode endgame': ['d54c2a901c83ee7e', 'c798c8def2b7c958', '99e95c710f0febaf', '5f892d82a079dbea'],
+    'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', '223a5b21ffe4863f', '6c243b2e6ac9bf9e'],
+  },
+};
+const goldenArmed = (w: World): World => {
+  // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too
+  w.match.preCountdown = 1;
+  return w;
+};
+const goldenSetup = (id: number, alliance: Alliance, startIndex: number, spec: Partial<RobotSpec>): RobotSetup => ({
+  id,
+  alliance,
+  spec: { ...DEFAULT_SPEC, ...spec },
+  assists: { ...PLAYER_ASSISTS, fieldCentric: id % 2 === 0 },
+  startIndex,
+});
+/** run one golden scene, judge it against `GOLDEN`, and hand back the final world */
+const goldenCheck = (scene: GoldenScene): World => {
+  const { hashes, world } = runGolden(scene, SIM_DT);
+  const [ok, detail] = judgeGolden(scene, hashes, GOLDEN, SIM_VERSION, 'scripts/smoke.ts (GOLDEN)');
+  check(`golden: ${scene.name} re-simulates bit-identically under SIM_VERSION ${SIM_VERSION}`, ok, detail);
+  return world;
+};
+const goldenScore = (w: World): number => w.match.scores.red.total + w.match.scores.blue.total;
+
+{
+  // one driven robot through the countdown, AUTO, the transition and into DRIVER-CONTROLLED with
+  // the human player restocking: the ground-artifact solve, intake, shooter, basin, rail, gate
+  // and scoring all run
+  const w = goldenCheck({
+    name: 'decode solo',
+    game: 'decode',
+    build: () => goldenArmed(createWorld('match', 20260927, [goldenSetup(0, 'blue', 0, {})])),
+    step,
+    ticks: 2700,
+    every: 450,
+  });
+  check('golden: decode solo is not vacuous (it reached DRIVER-CONTROLLED and scored)', w.match.phase === 'teleop' && goldenScore(w) > 0, `${w.match.phase} · ${goldenScore(w)} pts`);
+}
+
+{
+  // four drivetrains and all three intakes, so robot-robot contact, the pin rounds and the
+  // penalty engine run too (tank and butterfly steer through leftDrive/rightDrive)
+  const w = goldenCheck({
+    name: 'decode 2v2',
+    game: 'decode',
+    build: () =>
+      goldenArmed(
+        createWorld('match', 7, [
+          goldenSetup(0, 'blue', 0, { drivetrain: 'mecanum', intake: 'sloped' }),
+          goldenSetup(1, 'red', 0, { drivetrain: 'tank', intake: 'vector' }),
+          goldenSetup(2, 'blue', 1, { drivetrain: 'swerve', intake: 'triangle' }),
+          goldenSetup(3, 'red', 1, { drivetrain: 'butterfly', intake: 'sloped', canSort: true }),
+        ]),
+      ),
+    step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: decode 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+{
+  // the end of a match: ENDGAME, the buzzer, and the post-match settle scoring
+  const w = goldenCheck({
+    name: 'decode endgame',
+    game: 'decode',
+    build: () => {
+      const g = createWorld('match', 99, [goldenSetup(0, 'red', 1, { drivetrain: 'xdrive', intake: 'vector' })]);
+      g.match.phase = 'teleop';
+      g.match.phaseTimeLeft = 24;
+      return g;
+    },
+    step,
+    ticks: 1800,
+    every: 450,
+  });
+  check('golden: decode endgame is not vacuous (it reached the post-match settle)', w.match.phase === 'post', w.match.phase);
+}
+
+{
+  // Chain Reaction: the pre-match fling, 300 particles, all four scoring archetypes, the catalyst
+  // mechanisms and the accelerator loop
+  const chain = simModuleFor('chain');
+  const w = goldenCheck({
+    name: 'chain 2v2',
+    game: 'chain',
+    build: () =>
+      goldenArmed(
+        chain.createWorld('match', 11, [
+          { id: 0, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'turret', catalystType: 'arm' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 1, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'drum', catalystType: 'launcher' }, assists: PLAYER_ASSISTS, startIndex: 0 },
+          { id: 2, alliance: 'blue', spec: { ...DEFAULT_SPEC, scoreMode: 'dumper', catalystType: 'turret', drivetrain: 'tank' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+          { id: 3, alliance: 'red', spec: { ...DEFAULT_SPEC, scoreMode: 'twinturret', catalystType: 'rail', drivetrain: 'swerve' }, assists: DEFAULT_ASSISTS, startIndex: 1 },
+        ]),
+      ),
+    step: chain.step,
+    ticks: 2400,
+    every: 400,
+  });
+  check('golden: chain 2v2 is not vacuous (it scored)', goldenScore(w) > 0, `${goldenScore(w)} pts`);
+}
+
+// ---- untrusted-input edges that must not move a valid input ----------------
+{
+  // sanitizeReplay: an id is an INTEGER slot. It used to test the raw value for duplicates and
+  // round afterwards, so 0.6 and 1.4 were two robots that both spawned as robot 1.
+  const base = { format: REPLAY_FORMAT, mode: 'match', seed: 5, ticks: 10, balanceVersion: BALANCE_VERSION, sim: SIM_VERSION, tracks: {} };
+  const s0 = { alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 };
+  check('sanitizeReplay refuses fractional robot ids (0.6 and 1.4 both rounded to 1)', sanitizeReplay({ ...base, setups: [{ ...s0, id: 0.6 }, { ...s0, id: 1.4, alliance: 'red' }] }) === null);
+  const ok = sanitizeReplay({ ...base, setups: [{ ...s0, id: 0 }, { ...s0, id: 1, alliance: 'red' }] });
+  check('...and still takes integer ids unchanged', !!ok && ok.setups.map((x) => x.id).join() === '0,1', `${ok?.setups.map((x) => x.id)}`);
+
+  // coerceSetup: the id and `passive` are forced to their types; valid values pass unchanged
+  const cs = coerceSetup({ ...s0, id: NaN, passive: { yes: 1 } } as never);
+  check('coerceSetup forces a NaN id to a finite integer and a non-boolean passive to absent', cs.id === 0 && cs.passive === undefined, `${cs.id} ${cs.passive}`);
+  const cv = coerceSetup({ ...s0, id: 3, passive: true } as never);
+  check('...and keeps a valid id and passive flag exactly', cv.id === 3 && cv.passive === true);
+
+  // the registries answer OWN keys only: "constructor" is not a game
+  check('simModuleFor("constructor") falls back to DECODE, not Object', simModuleFor('constructor' as never).id === 'decode');
+  check('moduleFor("toString") falls back to DECODE too', moduleFor('toString' as never).id === 'decode');
+  check('...and a real id still resolves', simModuleFor('chain').id === 'chain' && moduleFor('chain').id === 'chain');
+
+  // the classifier clamp runs at the artifact's own radius, like the walls and goal faces: a
+  // point hugging the classifier's field-side face is cleared by exactly the radius asked for
+  const cr = classifierRect('red');
+  const probe = { x: cr.x0 - 0.5, y: (cr.y0 + cr.y1) / 2 };
+  const small = clampToStatics(probe, 1.5);
+  const big = clampToStatics(probe);
+  check(
+    'clampBallPosToStatics clears the classifier by the radius it is given (1.5 vs the default 2.5)',
+    Math.abs(small.x - (cr.x0 - 1.5)) < 1e-9 && Math.abs(big.x - (cr.x0 - BALL_RADIUS)) < 1e-9,
+    `${small.x.toFixed(3)} / ${big.x.toFixed(3)} vs face ${cr.x0}`,
+  );
+
+  // coerceAutoPath is an ALLOWLIST: a valid path comes through field for field, and a key the
+  // sim never reads does not ride into the world, every snapshot and every replay
+  const valid = {
+    fileName: 'p.pp',
+    startPoint: { x: 10, y: -20, heading: 'linear', startDeg: 0, endDeg: 90 },
+    lines: [
+      { id: 'a', endPoint: { x: 30, y: -20, heading: 'tangential', reverse: true }, controlPoints: [{ x: 20, y: -30 }], waitBeforeMs: 200 },
+      { id: 'b', endPoint: { x: 30, y: 10, heading: 'constant', degrees: 45 }, waitAfterMs: 100 },
+    ],
+    sequence: [{ kind: 'path', lineId: 'a' }, { kind: 'wait', id: 'w', durationMs: 500 }, { kind: 'path', lineId: 'b' }],
+    version: '1',
+    timestamp: 't',
+  };
+  const round = coerceAutoPath(JSON.parse(JSON.stringify(valid)));
+  check(
+    'coerceAutoPath passes a valid path through field for field',
+    !!round && canonicalWorld(round as never) === canonicalWorld(valid as never),
+    round ? '' : 'refused',
+  );
+  const junk = coerceAutoPath({
+    ...valid,
+    startPoint: { ...valid.startPoint, heading: 'sideways', blob: 'x'.repeat(1000) },
+    lines: [{ ...valid.lines[0], color: 'red', meta: { deep: [1, 2, 3] } }],
+    sequence: [{ kind: 'dance', lineId: 'a', extra: 1 }],
+  })!;
+  check(
+    'coerceAutoPath drops keys the sim never reads, and a heading/kind outside its enum',
+    !('blob' in junk.startPoint) && !('heading' in junk.startPoint) && !('color' in junk.lines[0]) && !('meta' in junk.lines[0]) &&
+      !('extra' in (junk.sequence?.[0] ?? {})) && !('kind' in (junk.sequence?.[0] ?? {})) && junk.sequence?.[0].lineId === 'a',
+    JSON.stringify(junk).slice(0, 200),
+  );
+}
 
 // ---- spawn sanity ----------------------------------------------------------
 {
@@ -6252,9 +6582,9 @@ function queueTenth(w: World): void {
      CAN insist the two actions are the ones the design says. A future edit that parks an
      unrelated pair on one key passes every rule above and is still a surprise under the hand. */
   check(
-    'bindings: ...and the shared pairs are the intended ROLE pairs (place / send-away), not incidental collisions',
-    JSON.stringify([...sharedKeys].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass'].sort()) &&
-      JSON.stringify([...sharedPad].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass'].sort()),
+    'bindings: ...and the shared pairs are the intended ROLE pairs (place / send-away / mode toggle), not incidental collisions',
+    JSON.stringify([...sharedKeys].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass', 'flyPreset+bbRamp'].sort()) &&
+      JSON.stringify([...sharedPad].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass', 'flyPreset+bbRamp'].sort()),
     `keys ${sharedKeys.join(' ')} · pad ${sharedPad.join(' ')}`,
   );
   // Escape is reserved for menu / cancel and is never bindable.
@@ -7492,6 +7822,137 @@ function ramOffCentreSamples(
   check('swerve reversal drives BACKWARD via flipped motors', fwd < -5, `${fwd.toFixed(1)} in/s fwd`);
 }
 
+// ---- SWERVE POD ORDER: pod i acts, and is drawn, at wheel i (SIM_VERSION 5) --------------------
+// `moduleAngles` is [FL, FR, BL, BR] (`WHEEL_CORNERS`). The traction loop used to read it against
+// `wheelLocals` in perimeter order (FL, FR, BR, BL), so a swerve's two REAR wheels resisted contact
+// slip along each other's pod axes: invisible driving straight, a different machine in a shove or
+// spinning against a wall. These read the traction force back out of `updateRobot` to find WHERE
+// each pod's angle acts, and run every canvas sprite to find where each pod is drawn.
+{
+  const SPEC: Partial<RobotSpec> = { drivetrain: 'swerve', length: 16, width: 17 };
+  const probe = createWorld('free', 3, [setup(0, 'blue', SPEC, 0)]).robots[0];
+  const wl = wheelLocals(probe.spec);
+  const NAMES = ['FL', 'FR', 'BL', 'BR'];
+  check(
+    'pod order: wheelLocals is WHEEL_CORNERS — FL, FR, BL, BR (+x forward, +y left)',
+    JSON.stringify(WHEEL_CORNERS) === JSON.stringify([[1, 1], [1, -1], [-1, 1], [-1, -1]]) &&
+      wl.length === 4 &&
+      wl.every((p, i) => Math.sign(p.x) === WHEEL_CORNERS[i][0] && Math.sign(p.y) === WHEEL_CORNERS[i][1]),
+    JSON.stringify(wl),
+  );
+  {
+    const r = createWorld('free', 3, [setup(0, 'blue', SPEC, 0)]).robots[0];
+    r.pos = { x: 10, y: -20 };
+    r.heading = 0.7;
+    const wc = wheelContacts(r);
+    const c = Math.cos(0.7);
+    const s = Math.sin(0.7);
+    check(
+      'pod order: wheelContacts walks the SAME wheels round the perimeter (WHEEL_PERIMETER = FL, FR, BR, BL)',
+      JSON.stringify(WHEEL_PERIMETER) === '[0,1,3,2]' &&
+        wc.length === 4 &&
+        wc.every((p, k) => {
+          const q = wl[WHEEL_PERIMETER[k]];
+          return Math.abs(p.x - (10 + q.x * c - q.y * s)) < 1e-9 && Math.abs(p.y - (-20 + q.x * s + q.y * c)) < 1e-9;
+        }),
+    );
+  }
+  /** the wrench a contact's slip adds in `updateRobot`, isolated: the same state run once with
+   * the slip on the books and once without, so the motor and cornering terms cancel */
+  const tractionOf = (
+    pods: number[],
+    st: { vx?: number; vy?: number; w?: number; slipX?: number; slipY?: number; slipW?: number },
+  ): { fx: number; fy: number; tau: number } => {
+    const once = (slip: boolean) => {
+      const w = createWorld('free', 3, [setup(0, 'blue', SPEC, 0)]);
+      const r = w.robots[0];
+      r.fieldCentric = false;
+      r.pos = { x: 0, y: 0 };
+      r.heading = 0;
+      r.vel = { x: st.vx ?? 0, y: st.vy ?? 0 };
+      r.angVel = st.w ?? 0;
+      r.moduleAngles = pods.slice();
+      r.moduleTargets = pods.slice();
+      r.slipX = slip ? (st.slipX ?? 0) : 0;
+      r.slipY = slip ? (st.slipY ?? 0) : 0;
+      r.slipW = slip ? (st.slipW ?? 0) : 0;
+      return updateRobot(w, r, cmd({}), SIM_DT);
+    };
+    const a = once(true);
+    const b = once(false);
+    return { fx: a.fx - b.fx, fy: a.fy - b.fy, tau: a.tau - b.tau };
+  };
+  // (1) A PURE SPIN SLIDES NO POD SIDEWAYS when every pod is tangent at its OWN corner (the
+  // pattern the IK steers a rotation to), so a contact that spins the chassis meets no lateral
+  // grip. Read at each other's corners, the two rear pods are radial and grip hard. Pods all
+  // forward are the yardstick for "hard".
+  const tangent = wl.map((p) => {
+    const a = Math.atan2(p.x, -p.y); // under +ω the wheel at (x, y) rolls along (−y, x)
+    return Math.abs(a) > Math.PI / 2 ? Math.atan2(-Math.sin(a), -Math.cos(a)) : a;
+  });
+  const spinTan = tractionOf(tangent, { w: 2, slipW: 0.5 });
+  const spinFwd = tractionOf([0, 0, 0, 0], { w: 2, slipW: 0.5 });
+  check(
+    'pod order: a spin slides no TANGENT pod sideways (each pod read at its own corner)',
+    Math.abs(spinFwd.tau) > 1 &&
+      Math.abs(spinTan.tau) < 1e-9 * Math.abs(spinFwd.tau) &&
+      Math.hypot(spinTan.fx, spinTan.fy) < 1e-9 * Math.abs(spinFwd.tau),
+    `traction torque: tangent pods ${spinTan.tau.toExponential(2)}, forward pods ${spinFwd.tau.toFixed(1)}`,
+  );
+  // (2) WHERE POD k ACTS. Turn pod k across its roll axis from the other three: dragged
+  // sideways, it is the one wheel that gives no grip, so the force and torque left over name its
+  // x; dragged fore-aft with the pattern inverted, they name its y.
+  const found = [0, 1, 2, 3].map((k) => {
+    const lat = tractionOf([0, 1, 2, 3].map((i) => (i === k ? Math.PI / 2 : 0)), { vy: 0.01, slipY: 2 });
+    const lon = tractionOf([0, 1, 2, 3].map((i) => (i === k ? 0 : Math.PI / 2)), { vx: 0.01, slipX: 2 });
+    return { x: (-3 * lat.tau) / lat.fy, y: (3 * lon.tau) / lon.fx };
+  });
+  check(
+    "pod order: pod k's angle acts at wheelLocals[k], for every k",
+    found.every((p, k) => Math.abs(p.x - wl[k].x) < 0.01 && Math.abs(p.y - wl[k].y) < 0.01),
+    found.map((p, k) => `${NAMES[k]} (${p.x.toFixed(2)},${p.y.toFixed(2)}) want (${wl[k].x},${wl[k].y})`).join(' '),
+  );
+  // (3) THE SPRITES DRAW POD i AT WHEEL i — all three canvas `drawWheels`, against a recording
+  // stub that notes where each `rotate` happens. Each pod gets an angle no other pod has.
+  type DrawWheels = (ctx: CanvasRenderingContext2D, r: RobotState, color: string, accent: string) => void;
+  const podsAt = (draw: DrawWheels): boolean[] => {
+    let tx = 0;
+    let ty = 0;
+    const stack: [number, number][] = [];
+    const rots: { a: number; x: number; y: number }[] = [];
+    const noop: object = new Proxy(() => noop, { get: () => noop });
+    const base: Record<string, unknown> = {
+      save() { stack.push([tx, ty]); },
+      restore() { [tx, ty] = stack.pop() ?? [0, 0]; },
+      translate(x: number, y: number) { tx += x; ty += y; },
+      rotate(a: number) { rots.push({ a, x: tx, y: ty }); },
+    };
+    const ctx = new Proxy(base, {
+      get: (t, k) => (typeof k === 'string' && k in t ? t[k] : noop),
+      set: () => true,
+    }) as unknown as CanvasRenderingContext2D;
+    const angs = [0.11, 0.22, 0.33, 0.44];
+    const r = { spec: { ...probe.spec }, moduleAngles: angs.slice(), butterflyTank: false } as unknown as RobotState;
+    draw(ctx, r, '#ffffff', '#888888');
+    return angs.map((a, k) => {
+      const at = rots.filter((q) => Math.abs(q.a - a) < 1e-12);
+      return at.length > 0 && at.every((q) => Math.abs(q.x - wl[k].x) < 1e-9 && Math.abs(q.y - wl[k].y) < 1e-9);
+    });
+  };
+  for (const [name, draw] of [
+    ['DECODE', drawWheelsDecode],
+    ['Chain Reaction', drawWheels],
+    ['BIOBUZZ', drawWheelsBiobuzz],
+  ] as [string, DrawWheels][]) {
+    const ok = podsAt(draw);
+    check(
+      `pod order: the ${name} sprite draws pod i at wheel i`,
+      ok.every(Boolean),
+      ok.map((v, k) => `${NAMES[k]} ${v ? 'ok' : 'WRONG'}`).join(' '),
+    );
+  }
+}
+
 // ---- tank reads side-drive only (control STYLE resolved at the input layer) --
 {
   // The sim's tank branch must drive from leftDrive/rightDrive alone — the
@@ -7915,6 +8376,98 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- the primary router: idle polls must not start a satellite -------------------------
+  /**
+   * The game host is Anycast, so a poll lands on the nearest region and starts it. The HTTP
+   * APIs go to a router app pinned to iad instead (src/net/primaryHost.ts). These pin the
+   * mapping and that each routed host has a router config replaying to the right app, in iad.
+   */
+  {
+    check(
+      'primary router: production and alpha map to their routers, wss kept',
+      primaryWsBase('wss://dohun-sim-decode.fly.dev') === 'wss://dsim-primary.fly.dev' &&
+        primaryWsBase('wss://dsim-alpha.fly.dev') === 'wss://dsim-alpha-primary.fly.dev',
+    );
+    check(
+      'primary router: an unknown host, a LAN box or a bad URL has none',
+      primaryWsBase('wss://example.com') === '' &&
+        primaryWsBase('ws://192.168.1.20:8080') === '' &&
+        primaryWsBase('not a url') === '',
+    );
+    check(
+      'primary router: the build override wins, and `off` disables it',
+      primaryWsBase('wss://dohun-sim-decode.fly.dev', 'https://r.example.dev/') === 'wss://r.example.dev' &&
+        primaryWsBase('wss://dohun-sim-decode.fly.dev', 'off') === '',
+    );
+    const configs = readdirSync('router')
+      .filter((f) => f.endsWith('.toml'))
+      .map((f) => readFileSync(joinPath('router', f), 'utf8'));
+    const field = (toml: string, key: string): string =>
+      new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*'([^']*)'`, 'm').exec(toml)?.[1] ?? '';
+    for (const [game, router] of Object.entries(PRIMARY_HOSTS)) {
+      const app = router.replace(/\.fly\.dev$/, '');
+      const cfg = configs.find((t) => field(t, 'app') === app);
+      check(
+        `primary router: ${app} has a config replaying to ${game} in iad`,
+        !!cfg &&
+          field(cfg, 'TARGET_APP') === game.replace(/\.fly\.dev$/, '') &&
+          field(cfg, 'TARGET_REGION') === 'iad' &&
+          field(cfg, 'primary_region') === 'iad',
+      );
+    }
+    // ⚠️ A FAILED ROUTER PROBE IS A BACKOFF, NOT A VERDICT FOR THE LIFE OF THE TAB (2026-10-02).
+    // It was permanent, so a tab restored before the Wi-Fi came up polled the nearest
+    // satellite all day and kept it from ever auto-stopping.
+    const h = new PrimaryHealth(30_000, 300_000);
+    const t0 = 1_000_000;
+    const ok0 = h.usable(t0);
+    const retry1 = h.failed(t0);
+    const down1 = !h.usable(t0 + 29_999);
+    const up1 = h.usable(t0 + 30_000);
+    const retry2 = h.failed(retry1);
+    let retry = retry2;
+    for (let i = 0; i < 10; i++) retry = h.failed(retry);
+    const capped = h.failed(retry) - retry;
+    check(
+      '⚠️ primary router: a failed probe falls back for a WINDOW, then the router is used again',
+      ok0 && retry1 === t0 + 30_000 && down1 && up1,
+      `retry1=${retry1 - t0} down=${down1} up=${up1}`,
+    );
+    check('primary router: repeated failures back off (doubling, capped at 5 min)', retry2 - retry1 === 60_000 && capped === 300_000, `second=${retry2 - retry1} capped=${capped}`);
+    h.ok();
+    check('primary router: one good answer resets the backoff', h.usable(0) && h.failed(t0) === t0 + 30_000);
+  }
+
+  // ---- the satellite wake log: which requests keep an auto-stopping machine up ------------
+  {
+    check(
+      'wake log: routes drop the query and collapse ids',
+      wakeRoute('/api/presence?full=1') === '/api/presence' &&
+        wakeRoute('/api/user/2f7c9a10-0d0e-4c0b-9b52-1d2e3f4a5b6c') === '/api/user/:id' &&
+        wakeRoute('/') === '/',
+    );
+    check(
+      'wake log: the source is the page host, never a path or an address',
+      wakeSource('https://www.playdsim.com', undefined) === 'www.playdsim.com' &&
+        wakeSource(undefined, 'https://abc.discordsays.com/.proxy/x?y=1') === 'abc.discordsays.com' &&
+        wakeSource('null', undefined) === '-' &&
+        wakeSource(undefined, undefined) === '-',
+    );
+    check(
+      'wake log: the agent is a family, not the user-agent string',
+      wakeAgent('Mozilla/5.0 (Windows NT 10.0) Chrome/130') === 'browser' && wakeAgent('curl/8.4.0') === 'curl' && wakeAgent(undefined) === '-',
+    );
+    const t = new WakeTally();
+    for (let i = 0; i < 3; i++) t.add('GET', '/api/presence', 'https://www.playdsim.com', undefined, 'Mozilla/5.0');
+    t.add('GET', '/health', undefined, undefined, 'curl/8');
+    const line = t.drain(60) ?? '';
+    check(
+      'wake log: one line per window, busiest first, then reset',
+      line.startsWith('[wake] 4 req/60s: GET /api/presence ← www.playdsim.com browser ×3') && t.drain(60) === null,
+      line,
+    );
+  }
+
   // ---- LAN: what address may be joined, and from which page --------------
   /**
    * AN https PAGE CANNOT OPEN A ws:// SOCKET, AND IT FAILS SILENTLY.
@@ -8129,9 +8682,9 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'sfx: the fire/intake cues are HIGH-WATER MARKS, so a reconcile replay cannot re-cue a shot',
-      /r\.lastFireAt > \(this\.prevFireAt/.test(gm) &&
-        /r\.lastIntakeAt > \(this\.prevIntakeAt/.test(gm) &&
-        !/lastFireAt !== this\.prevFireAt/.test(gm),
+      /fired > \(this\.prevFireTick/.test(gm) &&
+        /took > \(this\.prevIntakeTick/.test(gm) &&
+        !/!== this\.prevFireTick/.test(gm),
     );
     // A PUBLIC PROFILE IS PER GAME. The server falls back to DECODE when `?game=` is absent, so
     // a profile that dropped the game showed a player's DECODE career on /biobuzz/profile/<name>
@@ -8825,8 +9378,8 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        the same trap the lan launcher checks above fell into. */
     const sigCode = sigc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     check(
-      'lan signal client: the rendezvous is always the CLOUD, never a LAN address',
-      /gameServerUrl\(\)/.test(sigCode) && !/lanServerUrl/.test(sigCode),
+      'lan signal client: the rendezvous is always the CLOUD (the primary router), never a LAN address',
+      /primaryWsUrl\(\)/.test(sigCode) && !/lanServerUrl|roomServerUrl/.test(sigCode),
     );
     check(
       'lan signal client: the host token is read here, so a caller cannot assert one',
@@ -8887,7 +9440,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the room is built with NO persistence callbacks, so it cannot write a row',
-      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), m\.config\)/.test(hw),
+      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), hostRoomConfig\(m\)\)/.test(hw),
     );
     check(
       'lan tab: nothing in the Worker reaches the database or the ranked module',
@@ -8925,7 +9478,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
-      /async start\(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG\)/.test(hr) &&
+      /async start\(\s*code: string,\s*config: RoomConfig = DEFAULT_ROOM_CONFIG,\s*imports: boolean = importerEnabled\(\),\s*\)/.test(hr) &&
         /intro\.player/.test(hr),
     );
     check(
@@ -9052,7 +9605,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const roomSrc = readFileSync('server/room.ts', 'utf8');
     check(
       'lan tab: the room itself stops its loop when it empties, so nothing steps an empty room',
-      /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
+      /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.emptied\(\);/.test(roomSrc) && /private emptied\(\): void \{\s*\n\s*this\.visuals\.dispose\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
     );
     /**
      * ⚠️ **A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER, AND THE RESTART BUTTON IS WHY.**
@@ -9782,6 +10335,133 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  /**
+   * "MATCH FOUND" MUST END (2026-10-03, "stuck on loading into match"). That screen moves only on
+   * `strategyStart`, `matchStart` or `error`. Joining a staged code whose match was already over
+   * (a reconnect after the cancel, the reload path) made an EMPTY custom room on the server, which
+   * sends none of them, so the player waited until the socket was reaped. Reproduced against the
+   * real server (PGlite + local JWKS): the late joiner got `welcome, roster` and nothing else.
+   */
+  {
+    // the server half: only the matchmaker's codes are refused when their room is gone
+    for (const [mode, seq, tail] of [['1v1', 0, '0s84ac'], ['2v2', 41, 'zz9k01']] as const) {
+      const code = stagedRoomCode('ord', mode, seq, tail);
+      check(`match gone: a minted code is recognised (${code})`, isStagedRoomCode(code));
+    }
+    for (const code of ['bcdf23', 'play42', 'mm-1v1-3', 'iad-abc123', 'iad-1v1', 'iad-1v13abc', 'iad-3v31abcdef', 'iadd-1v11abcdef']) {
+      check(`match gone: "${code}" is not a matchmaker code`, !isStagedRoomCode(code));
+    }
+    const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'match gone: a created room with no staged row under a matchmaker code is refused, not opened empty',
+      /\} else if \(isStagedRoomCode\(code\)\) \{[\s\S]{0,1600}?code: 'match_gone'[\s\S]{0,300}?abandon\(\);\s*\n\s*return;/.test(idx),
+    );
+    check(
+      'match gone: a join that throws still answers an unseated socket',
+      /void joinRoom\(msg\)\.catch\(\(e\) => \{[\s\S]{0,400}?if \(!room && !closed\) send\(\{ t: 'error'/.test(idx),
+    );
+
+    // the client half: a staged room that never answers is given up on
+    const a = 1_000_000;
+    check('match gone: no join sent yet, inside the connect allowance → keep waiting', !stagedStartOverdue(a, null, a + STAGED_CONNECT_MS));
+    check('match gone: ...past it → give up', stagedStartOverdue(a, null, a + STAGED_CONNECT_MS + 1));
+    check('match gone: join sent, inside the answer window → keep waiting', !stagedStartOverdue(a, a + 30_000, a + 30_000 + STAGED_ANSWER_MS));
+    check('match gone: ...a late join is measured from the join, not the assignment', !stagedStartOverdue(a, a + 30_000, a + STAGED_CONNECT_MS + 1));
+    check('match gone: ...past the answer window → give up', stagedStartOverdue(a, a + 30_000, a + 30_000 + STAGED_ANSWER_MS + 1));
+    check(
+      'match gone: the answer window outlasts the room’s own join grace (a live room always answers first)',
+      STAGED_ANSWER_MS >= RANKED_JOIN_GRACE_MS + 10_000,
+    );
+    const lc = readFileSync('src/net/lobbyClient.ts', 'utf8').replace(/\r\n/g, '\n');
+    for (const t of ['matchStart', 'strategyStart', 'error']) {
+      check(
+        `match gone: the watch stops on ${t}`,
+        new RegExp(`m\\.t === '${t}'\\) \\{\\s*\\n\\s*this\\.stopStagedWatch\\(\\);`).test(lc),
+      );
+    }
+    check('match gone: ...and on dispose', /dispose\(\): void \{\s*\n\s*this\.stopStagedWatch\(\);/.test(lc));
+    check(
+      'match gone: giving up raises the CURRENT error handler (the screen, or the keeper when parked)',
+      /this\.dispose\(\);\s*\n\s*this\.handlers\.error\?\.\(STAGED_TIMEOUT_MESSAGE, 'match_gone'\);/.test(lc),
+    );
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'match gone: every assigned room socket is watched',
+      /lobby\.join\(room, playerInfoRef\.current\(\)\);[\s\S]{0,200}?lobby\.watchStagedStart\(\);/.test(mm),
+    );
+    check(
+      'match gone: a cancelled match retires its socket, so a reconnect cannot re-join the dead code',
+      /const strategyCancelled = \(msg: string\): void => \{[\s\S]{0,500}?lobby\?\.retire\(VERDICT_WAIT_MS\);/.test(mm),
+    );
+    // ...but not on the `error` itself: the room's `dodgeVerdict` arrives after it (probe:
+    // `welcome, error, dodgeVerdict`), and closing on the error lost "what it cost you"
+    check(
+      'match gone: a retired socket hears the verdict, and a reconnect closes it instead of re-joining',
+      /retire\(ms: number\): void \{\s*\n\s*this\.stopStagedWatch\(\);\s*\n\s*this\.transport\.onReopen\(\(\) => this\.dispose\(\)\);\s*\n\s*setTimeout\(\(\) => this\.dispose\(\), ms\);/.test(lc) &&
+        Number(/const VERDICT_WAIT_MS = ([\d_]+);/.exec(mm)?.[1].replace(/_/g, '') ?? 0) >= 5_000,
+    );
+    check(
+      'match gone: a parked room that errors forgets the way back and drops the socket',
+      /const parkedEnd = \(msg: string\): void => \{\s*\n\s*clearStagedMatch\(\);\s*\n\s*lobby\.dispose\(\);/.test(mm),
+    );
+    check(
+      'match gone: adopting a parked search that ended shows the error, not "Match found"',
+      /if \(p\.error && !p\.start\) \{\s*\n\s*strategyCancelled\(p\.error\);\s*\n\s*return true;/.test(mm) &&
+        mm.indexOf('if (p.error && !p.start) {') < mm.indexOf('setFound(p.found);'),
+    );
+  }
+
+  /**
+   * A PAGE LOAD ON /ranked KNOWS THE ACCOUNT, AND THE RELOAD PATH WAITS FOR IT (2026-10-04).
+   * `signedIn` is `accountUserId !== null`, set by AccountSync alone, and the ranked screen is an
+   * early return in App that skipped it: a reload there (or the staged-match redirect, which goes
+   * there on purpose) told a signed-in player "Ranked needs an account". And the staged-match
+   * rejoin ran on mount and dropped its record on a signed-out first render, which is every page
+   * load, so the reload it exists for lost the seat and was charged the no-show.
+   */
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const ranked = /if \(screen === 'matchmaking'\) \{[\s\S]*?\n {2}\}\n/.exec(app)?.[0] ?? '';
+    check(
+      'ranked reload: the ranked screen mounts AccountSync, ahead of Matchmaking',
+      /\{authEnabled && <AccountSync onUser=\{onSyncUser\} onLoad=\{onSyncLoad\} seed=\{onSyncSeed\} \/>\}/.test(ranked) &&
+        ranked.indexOf('<AccountSync') < ranked.indexOf('<Matchmaking'),
+    );
+    const sync = readFileSync('src/ui/AccountSync.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'ranked reload: an AccountSync remount with the same user keeps the cached token',
+      /if \(uid !== tokenUser\) \{\s*\n\s*tokenUser = uid;\s*\n\s*clearAuthToken\(\);\s*\n\s*\}\s*\n\s*onUser\(uid\);/.test(sync) &&
+        (sync.match(/clearAuthToken\(\)/g) ?? []).length === 1,
+    );
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'ranked reload: the staged record is read only in the effect keyed on signedIn',
+      (mm.match(/loadStagedMatch\(\)/g) ?? []).length === 1 &&
+        /const staged = loadStagedMatch\(\);\s*\n\s*if \(staged\) \{\s*\n\s*joinAssignedMatch\(staged\.room\);\s*\n\s*return;\s*\n\s*\}[\s\S]{0,400}?\}, \[signedIn\]\);/.test(mm),
+    );
+    check(
+      'ranked reload: a signed-out render drops the record only on the signed-in → signed-out edge',
+      /if \(!signedIn\) \{\s*\n\s*if \(wasSignedIn\) clearStagedMatch\(\);\s*\n\s*return;\s*\n\s*\}/.test(mm),
+    );
+    check(
+      'ranked reload: the rejoin runs once, never over an open socket or a parked search',
+      /if \(arrivedRef\.current\) return;\s*\n\s*arrivedRef\.current = true;\s*\n\s*if \(lobbyRef\.current \|\| peekQueue\(\)\) return;\s*\n\s*const staged = loadStagedMatch\(\);/.test(mm),
+    );
+    check(
+      'ranked reload: an adopted search counts as the arrival, so nothing rejoins or re-queues after it',
+      /const p = takeQueue\(\);\s*\n\s*if \(!p\) return false;[\s\S]{0,200}?arrivedRef\.current = true;/.test(mm),
+    );
+    check(
+      'ranked reload: the mount effect only adopts',
+      /useEffect\(\(\) => \{\s*\n\s*adoptParked\(\);\s*\n[^}]*\}, \[\]\);/.test(mm),
+    );
+    check(
+      'ranked reload: while the session is still loading the screen says so, not "Ranked needs an account"',
+      /if \(!signedIn\) \{\s*\n\s*if \(authResolving\) return page\(/.test(mm) &&
+        /const authResolving = !signedIn && !!session && \(session\.isPending \|\| !!session\.data\?\.user\);/.test(mm),
+    );
+  }
+
   {
     check('queue keeper: elapsed formats as m:ss', elapsedLabel(0, 67_000) === '1:07', elapsedLabel(0, 67_000));
     check('queue keeper: ...pads the seconds', elapsedLabel(0, 65_000) === '1:05');
@@ -9800,11 +10480,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   // challenge into an ordinary open-queue entry on the way back in.
   {
     const ch = {
-      token: 'TMFX2K', format: 'rated1v1', mode: '1v1' as const,
-      partyOnly: true, game: 'chain' as const, opponent: 'bob',
+      token: 'TMFX2K', format: 'ranked2v2', mode: '2v2' as const,
+      game: 'chain' as const, opponent: 'bob',
     };
     parkQueue({
-      lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
+      lobby: {} as never, mode: '2v2', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
       assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
@@ -14657,7 +15337,7 @@ function pinScene(
     };
     const r = runRecordMatch(3, [setup], (tick) =>
       new Map([[0, cmd({ leftDrive: tick < 60 ? 1 : -1, rightDrive: 1 })]]), { stopTick: 120 }).replay;
-    check('replay: the container records at the tank-aware stride', r.format === REPLAY_FORMAT && trackStride(r.format) === 7);
+    check('replay: the container records at the tank-aware stride', r.format === REPLAY_FORMAT_BASE && trackStride(r.format) === 7);
     const track = r.tracks[0] ?? [];
     check(
       'replay: a tank robot records MORE than one entry (its input is only ld/rd)',
@@ -15404,6 +16084,169 @@ function pinScene(
   gapRoom.stop();
 }
 
+// ---- ONE CLOCK FOR THE PROCESS (`server/tickScheduler.ts`) ------------------------
+// Rooms used to own a `setInterval` each; they now take turns on one self-correcting 60 Hz
+// deadline and are split across two snapshot PARITIES. This is the one block that runs rooms
+// on REAL timers (everything else pumps `advanceForTest`), so it proves the live path steps at
+// all, at the right rate, broadcasts on the parity it was given, and lets the clock go idle.
+{
+  const sends: Record<string, { at: number; tick: number }[]> = { k1: [], k2: [] };
+  const mk = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => {
+      if (str.startsWith('{"t":"snapshot"')) sends[id].push({ at: performance.now(), tick: (JSON.parse(str) as { serverTick: number }).serverTick });
+    },
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const before = clockMembers();
+  const a = new Room('smoke-clock-a', () => {}, { kind: 'record', record: 'solo' });
+  const b = new Room('smoke-clock-b', () => {}, { kind: 'record', record: 'solo' });
+  a.add(mk('k1'));
+  b.add(mk('k2'));
+  a.onMessage('k1', { t: 'start' });
+  b.onMessage('k2', { t: 'start' });
+  check('clock: a started room is ON the shared clock (one member per live room)', clockMembers() === before + 2, `${clockMembers() - before}`);
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, 1000));
+  const ticks = a.tickForTest();
+  const secs = (performance.now() - t0) / 1000;
+  // generous below: this box also runs other shards, and the first second of a match is a cold
+  // JIT. The claims are "it steps" and "it never runs ahead of the wall clock" — not a latency
+  // number (docs/capacity.md §0 on what a loaded dev box can measure).
+  check('clock: a live room steps off the shared clock, never faster than 60 Hz', ticks > 10 * secs && ticks <= 60 * secs + 2, `${ticks} ticks in ${secs.toFixed(2)} s`);
+  // parity is read off the rooms rather than off their snapshot ticks: a turn that catches up
+  // several ticks (a cold JIT, a loaded box) broadcasts at its NEWEST tick, whatever its parity
+  const phase = (r: Room): number => (r as unknown as { snapPhase: number }).snapPhase;
+  check('clock: both live rooms broadcast (the clock drives the snapshot path, not just the step)', sends.k1.length > 0 && sends.k2.length > 0, `${sends.k1.length} / ${sends.k2.length}`);
+  // only asserted from an EMPTY clock: a block earlier in this shard that left a room running
+  // would skew the counts the parity is balanced against
+  if (before === 0) {
+    check('clock: two rooms on an empty clock get OPPOSITE snapshot parities, so their encodes land on different ticks', phase(a) !== phase(b), `${phase(a)} / ${phase(b)}`);
+  }
+  a.stop();
+  b.stop();
+  check('clock: stopped rooms leave it (an idle machine sleeps, nothing keeps stepping)', clockMembers() === before, `${clockMembers() - before}`);
+  check('clock: a stopped room is reset to the old even-tick parity', phase(a) === 0 && phase(b) === 0);
+  const cadence = new Room('smoke-clock-c', () => {}, { kind: 'record', record: 'solo' });
+  const seen: number[] = [];
+  cadence.add({ ...mk('k3'), sendRaw: (str) => { if (str.startsWith('{"t":"snapshot"')) seen.push((JSON.parse(str) as { serverTick: number }).serverTick); } });
+  cadence.onMessage('k3', { t: 'start' });
+  cadence.advanceForTest(20);
+  check('clock: a room driven by advanceForTest is OFF the clock and keeps the old even-tick cadence', clockMembers() === before && seen.length > 0 && seen.every((t) => t % 2 === 0), `${seen}`);
+  cadence.stop();
+}
+
+// ---- BOOT JIT WARM-UP (`server/warmup.ts`) -----------------------------------------
+// A headless busy match per game after physics init, so the first real player on a woken
+// machine does not pay for V8 compiling the sim. It must warm EVERY game (on its server
+// physics), leave nothing behind (no room on the clock, no user lock), and have a kill switch
+// that honours the spellings an operator reaches for under pressure.
+{
+  await initPhysics3d();
+  check('warmup: on by default, and WARMUP=0/false/no/off turns it off', warmupEnabled(undefined) && warmupEnabled('1') && ['0', 'false', 'NO', ' off '].every((v) => !warmupEnabled(v)));
+  const before = clockMembers();
+  const r = await warmUp(60);
+  check('warmup: every registered game is warmed', r.games.join() === GAME_IDS.join(), `${r.games} of ${GAME_IDS}`);
+  check('warmup: it actually stepped each game (not vacuous)', r.ticks === 60 * GAME_IDS.length, `${r.ticks} ticks`);
+  check('warmup: nothing is left on the room clock afterwards', clockMembers() === before, `${clockMembers() - before}`);
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check(
+    'warmup: the server starts it only after physics init and does not await it (joins and /health are never gated)',
+    /initPhysics3d\(\)\]\)[\s\S]{0,800}void warmUp\(\)/.test(idx) && !/await warmUp\(/.test(idx),
+  );
+}
+
+// ---- SNAPSHOT WIRE: the cheap encoder is the old encoder, byte for byte -------------
+// `server/snapshotWire.ts` replaced a `JSON.stringify(ball, round3)` per ball per broadcast with
+// a shadow walk (`sameR3`) that only stringifies what moved, and builds the body by splicing
+// those cached strings instead of re-serializing the balls. It is a pure CPU change, so the one
+// thing to prove is that NOTHING on the wire moved: the room runs the old encoder beside the new
+// one on every broadcast (`checkWireForTest`) and every disagreement is reported. Real rooms,
+// every game, driven and shooting, with the recipients that take the unusual paths — a LOSSY one
+// keyed to stale acks, one that backs up and is unprimed, and a reattach mid-match.
+//
+// ⚠️ NOT VACUOUS: a room where nothing moves agrees with any encoder, so each game asserts that
+// the frames carried real ball updates and that deltas (not only keyframes) were compared.
+{
+  // the leaf rules first, on hand-built values: each is a way the walk could disagree with the string
+  const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a, round3) === JSON.stringify(b, round3);
+  const cases: [unknown, unknown][] = [
+    [{ x: 1.0004, y: 2 }, { x: 1.0001, y: 2 }], // same after rounding
+    [{ x: 1.0006, y: 2 }, { x: 1.0001, y: 2 }], // not
+    [{ x: -0.0001 }, { x: 0 }], // -0 prints as 0
+    [{ x: NaN }, { x: null }], [{ x: Infinity }, { x: NaN }],
+    [{ a: 1, b: 2 }, { b: 2, a: 1 }], // key ORDER is part of the string
+    [{ a: 1, u: undefined }, { a: 1 }], // an undefined property is omitted
+    [{ a: [1, undefined] }, { a: [1, null] }], // ...and is null in an array
+    [{ s: { kind: 'held', robot: 1 } }, { s: { kind: 'held', robot: 2 } }],
+    [{ s: { kind: 'ground' } }, { s: { kind: 'flight', target: 'red' } }],
+    [{ a: [1, 2] }, { a: [1, 2, 3] }], [{ a: [] }, { a: {} }], [{ a: 'x' }, { a: 'y' }], [{ a: true }, { a: false }],
+  ];
+  let bad = 0;
+  for (const [prev, cur] of cases) {
+    const shadow = JSON.parse(JSON.stringify(prev, round3));
+    if (sameR3(shadow, cur) !== eq(prev, cur)) bad++;
+  }
+  check('snapshot wire: sameR3 agrees with the rounded string on every edge case (rounding, -0, NaN, key order, undefined)', bad === 0, `${bad}/${cases.length}`);
+  // a ball that LEAVES and comes back identical must read as changed — the client dropped it
+  const c = new BallWireCache();
+  const ball = (id: number, x: number): Artifact => ({ id, color: 'purple', state: { kind: 'ground' }, pos: { x, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 }) as Artifact;
+  c.diff([ball(1, 0), ball(2, 5)]);
+  c.diff([ball(1, 0)]);
+  const back = c.diff([ball(1, 0), ball(2, 5)]);
+  const ref = referenceChanged(referenceChanged(new Map(), [ball(1, 0)]).cur, [ball(1, 0), ball(2, 5)]).changed;
+  check('snapshot wire: a ball that left the world and returned unchanged is SENT again (as the old diff did)', back.join() === '2' && ref.join() === '2', `[${back}] vs [${ref}]`);
+}
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  if (serverPhysics(simModuleFor(game)) === '3d') await initPhysics3d();
+  const got: Record<string, string[]> = { r1: [], b1: [], l1: [] };
+  let backed = false;
+  const mk = (id: string, alliance: Alliance, extra: Partial<Client> = {}): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => got[id].push(str),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+    ...extra,
+  });
+  const room = new Room('smoke-wire-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('r1', 'red'));
+  room.add(mk('b1', 'blue', { backlog: () => (backed ? 1 << 30 : 0) }));
+  room.add(mk('l1', 'blue', { lossy: true }));
+  room.checkWireForTest(); // on BEFORE the first snapshot, so the reference shares the baseline
+  room.onMessage('r1', { t: 'start' });
+  room.advanceForTest(1);
+  const gen = (room as unknown as { matchGen: number }).matchGen;
+  let lastSnap = 0;
+  for (let i = 0; i < 700; i++) {
+    const w = room.worldForTest();
+    if (!w) break;
+    const t = w.tick + 1;
+    const p = t / 60;
+    const drive = (seat: number): RobotCommand => cmd({ driveX: Math.sin(p * 0.9 + seat), driveY: Math.cos(p * 0.7 + seat), rotate: Math.sin(p * 1.3) * 0.5, intake: true, fire: t % 90 > 20 });
+    room.onMessage('r1', { t: 'input', tick: t, q: quantizeCommand(drive(0)), ack: lastSnap, gen });
+    room.onMessage('b1', { t: 'input', tick: t, q: quantizeCommand(drive(1)), ack: lastSnap, gen });
+    // the lossy recipient confirms only every ~7th frame, so its deltas are cut against old baselines
+    if (i % 14 === 0) room.onMessage('l1', { t: 'input', tick: t, q: quantizeCommand(cmd({})), ack: lastSnap, gen });
+    backed = i >= 200 && i < 206; // a backed-up socket is skipped and unprimed, then keyframed
+    if (i === 400) room.detach('r1');
+    if (i === 430) room.reattach('r1', () => {}, (str) => got.r1.push(str), undefined, undefined, true);
+    room.advanceForTest(1);
+    lastSnap = room.worldForTest()?.tick ?? lastSnap;
+  }
+  const res = room.checkWireForTest();
+  const snaps = [...got.r1, ...got.b1, ...got.l1].filter((x) => x.startsWith('{"t":"snapshot"')).map((x) => JSON.parse(x) as Extract<ServerMsg, { t: 'snapshot' }>);
+  const upd = snaps.reduce((n, m) => n + m.balls.upd.length, 0);
+  const deltas = snaps.filter((m) => m.balls.upd.length < m.balls.order.length).length;
+  check(`snapshot wire/${game}: the room broadcast and the reference ran on every frame`, res.frames >= 300, `${res.frames} frames`);
+  check(`snapshot wire/${game}: ...and moved real ball data, in deltas as well as keyframes (not vacuous)`, upd > 0 && deltas > 100 && snaps.length - deltas >= 4, `${upd} ball updates, ${deltas} delta frames, ${snaps.length - deltas} keyframes`);
+  check(`snapshot wire/${game}: bodies were compared for more baselines than frames (keyframes + lossy acks, not just the shared delta)`, res.bodies > res.frames, `${res.bodies} bodies over ${res.frames} frames`);
+  check(`snapshot wire/${game}: every change set AND every body is byte-identical to the old encoder`, res.mismatches.length === 0, res.mismatches.slice(0, 3).join(' | '));
+  room.stop();
+}
+
 // ---- A MISSING INPUT TICK CANNOT INVENT A BUTTON EDGE -------------------------------
 // Inputs ride the unreliable lane. A tick with no input of its own is filled from `latest`, the
 // newest command by tick, which for a client running ahead is a FUTURE one. Its buttons used to
@@ -15449,6 +16292,463 @@ function pinScene(
     `dx=${gapDx[0]}`,
   );
   room.stop();
+}
+
+// ---- THE PREDICTION LEAD: every input reaches the room BEFORE its tick -------------------
+// The reconcile keeps only inputs stamped past the snapshot, so the client clock came out as
+// `max(own clock, newest snapshot tick)` — about a downlink BEHIND the room. Every input then
+// landed a round trip after its tick had been stepped, the room's exact-tick buffer never hit,
+// and the prediction was the server's robot plus a tick or two. Worse, nothing ever LOWERED the
+// clock, so a server stall left the client further ahead for good, toward the forty-tick replay
+// cap. `LeadController` (src/net/leadControl.ts) slews the clock onto "the round trip plus a
+// tick" by running the accumulator a few percent fast or slow.
+//
+// This drives a REAL solo record `Room` against a client that restates `stepServer` +
+// `reconcile` (GameController needs a DOM), over a network with a real UPLINK — the existing
+// latency probes deliver inputs instantly, which is exactly why this never showed. Each input
+// carries a per-tick stick value, so "the room applied tick k's command on tick k" is a direct
+// comparison rather than an inference from arrival times.
+{
+  type Snap = { serverTick: number; world: World; cmds: Map<number, RobotCommand>; ack: number };
+  const LAT_MS = 33; // one-way: a 66 ms round trip
+  const runLead = (opts: { control: boolean; seconds: number; stallAt?: number; stallMs?: number }) => {
+    let now = 0;
+    let s = 99;
+    const rnd = (): number => ((s = (s * 1664525 + 1013904223) >>> 0), s / 2 ** 32);
+    const oneWay = (): number => LAT_MS + rnd() * 4;
+    const down: { at: number; m: ServerMsg }[] = [];
+    const up: { at: number; tick: number; q: ReturnType<typeof quantizeCommand> }[] = [];
+    let lastDown = 0;
+    let lastUp = 0;
+    let setups: RobotSetup[] = [];
+    let seedW = 0;
+    const c: Client = {
+      id: 'lead-1',
+      send: (m) => {
+        if (m.t === 'matchStart') {
+          setups = m.setups;
+          seedW = m.seed;
+        }
+        lastDown = Math.max(lastDown, now + oneWay()); // one TCP stream: in order
+        down.push({ at: lastDown, m: JSON.parse(JSON.stringify(m, round3)) as ServerMsg });
+      },
+      player: { clientId: 'lead-1', name: 'lead', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+    };
+    const room = new Room('smoke-lead', () => {}, { kind: 'record', record: 'solo' });
+    room.add(c);
+    room.onMessage('lead-1', { t: 'start' });
+    room.advanceForTest(0); // drops the real-time timer; this loop owns the ticks
+    const mod = simModuleFor('decode');
+    const ctrl = new LeadController();
+    // the command a tick was stamped with, so the room's frame can be compared against it
+    const stamped = new Map<number, number>();
+    const stickFor = (tick: number): number => Math.round((((tick * 37) % 255) - 127)) / 127;
+    const ran = new Map<number, number>();
+    let world: World | null = null;
+    const baseBalls = new Map<number, Artifact>();
+    let applied = -1;
+    let pending: Snap | null = null;
+    let buf: { tick: number; cmd: RobotCommand }[] = [];
+    let lastServerTick = 0;
+    let got = false;
+    let acc = 0;
+    let cLast = 0;
+    let cNext = 0;
+    let sDue = 0;
+    const leads: { at: number; lead: number }[] = [];
+    const predictOne = (): void => {
+      const w = world as World;
+      const tick = w.tick + 1;
+      const cmd: RobotCommand = { driveX: stickFor(tick), driveY: 0.6, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
+      lastUp = Math.max(lastUp, now + oneWay());
+      up.push({ at: lastUp, tick, q: quantizeCommand(cmd) });
+      stamped.set(tick, localizeCommand(cmd).driveX);
+      const local = localizeCommand(cmd);
+      buf.push({ tick, cmd: local });
+      mod.step(w, SIM_DT, new Map([[0, local]]));
+    };
+    const endMs = opts.seconds * 1000;
+    for (now = 0; now < endMs; now++) {
+      while (up.length && up[0].at <= now) {
+        const u = up.shift()!;
+        room.onMessage('lead-1', { t: 'input', tick: u.tick, q: u.q, ack: applied >= 0 ? applied : undefined });
+      }
+      // the room: 60 Hz, a stall that freezes it, and the real loop's 0.25 s catch-up clamp
+      const stalled = opts.stallAt !== undefined && now >= opts.stallAt && now < opts.stallAt + (opts.stallMs ?? 0);
+      if (!stalled) {
+        if (now - sDue > 250) sDue = now - 250;
+        while (now >= sDue) {
+          room.advanceForTest(1);
+          // judged after the run: an uncontrolled client stamps a tick AFTER the room steps it
+          if (now > 5000) ran.set(room.tickForTest(), room.lastFrameForTest().get(0)?.driveX ?? NaN);
+          sDue += 1000 / 60;
+        }
+      }
+      while (down.length && down[0].at <= now) {
+        const m = down.shift()!.m;
+        if (m.t === 'matchStart' && !world) {
+          world = mod.createWorld('match', seedW, setups);
+          world.match.preCountdown = C_PRE_COUNTDOWN;
+          cLast = now;
+          cNext = now;
+        } else if (m.t === 'snapshot' && m.serverTick > applied) {
+          const balls = applyBallDelta(baseBalls, m.balls);
+          const w = unslimWorld(m.w, balls, (id) => (setups.find((x) => x.id === id) ?? setups[0]).spec);
+          pending = { serverTick: m.serverTick, world: w, cmds: new Map(), ack: m.ackInputTick };
+          applied = m.serverTick;
+        }
+      }
+      if (world && now >= cNext) {
+        const dtS = Math.min((now - cLast) / 1000, 0.25);
+        cLast = now;
+        cNext = now + 16 + Math.floor(rnd() * 3);
+        if (pending) {
+          const snap = pending as Snap;
+          pending = null;
+          if (opts.control) ctrl.sample(world.tick, snap.serverTick, snap.ack, now);
+          leads.push({ at: now, lead: world.tick - snap.serverTick });
+          world = snap.world;
+          lastServerTick = snap.serverTick;
+          got = true;
+          buf = buf.filter((b) => b.tick > snap.serverTick);
+          if (buf.length > 40) buf.splice(0, buf.length - 40);
+          for (const b of buf) mod.step(world, SIM_DT, new Map([[0, b.cmd]]));
+        }
+        acc += opts.control ? dtS * (1 + ctrl.rate(now)) : dtS;
+        let steps = 0;
+        while (acc >= SIM_DT && steps < 30) {
+          if (got && world.tick - lastServerTick >= 40) {
+            acc = 0;
+            break;
+          }
+          predictOne();
+          acc -= SIM_DT;
+          steps++;
+        }
+      }
+    }
+    room.stop();
+    let exact = 0;
+    let judged = 0;
+    for (const [t, dx] of ran) {
+      const want = stamped.get(t);
+      if (want === undefined) continue;
+      judged++;
+      if (Math.abs(dx - want) < 1e-9) exact++;
+    }
+    const leadAt = (from: number, to: number): number => {
+      const xs = leads.filter((l) => l.at >= from && l.at < to).map((l) => l.lead);
+      return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
+    };
+    return { onTime: judged ? exact / judged : 0, judged, leadAt, target: ctrl.target };
+  };
+
+  const off = runLead({ control: false, seconds: 7 });
+  const on = runLead({ control: true, seconds: 7 });
+  check(
+    'lead: WITHOUT the controller almost no input reaches the room on its own tick (the bug, non-vacuous)',
+    off.judged > 60 && off.onTime < 0.1,
+    `${(off.onTime * 100).toFixed(1)}% of ${off.judged} ticks at 66 ms RTT`,
+  );
+  check(
+    'lead: WITH it, >90% of ticks run the exact command the client stamped for them at 66 ms RTT',
+    on.judged > 60 && on.onTime > 0.9,
+    `${(on.onTime * 100).toFixed(1)}% of ${on.judged} ticks (was ${(off.onTime * 100).toFixed(1)}%)`,
+  );
+  check(
+    'lead: ...and it aims for the round trip plus a tick, not for the hard cap',
+    on.target !== null && on.target >= 4 && on.target <= 8 && on.leadAt(5000, 7000) <= 9,
+    `target ${on.target}, mean lead ${on.leadAt(5000, 7000).toFixed(1)} ticks over the last 2 s`,
+  );
+
+  // a 400 ms server freeze: the room's 0.25 s clamp throws away ~9 ticks it never gets back
+  const stallOff = runLead({ control: false, seconds: 10, stallAt: 5500, stallMs: 400 });
+  const stallOn = runLead({ control: true, seconds: 10, stallAt: 5500, stallMs: 400 });
+  const before = stallOn.leadAt(4500, 5500);
+  check(
+    'lead: WITHOUT the controller a server stall leaves the client permanently further ahead (non-vacuous)',
+    stallOff.leadAt(8500, 10000) - stallOff.leadAt(4500, 5500) >= 6,
+    `lead ${stallOff.leadAt(4500, 5500).toFixed(1)} before, ${stallOff.leadAt(8500, 10000).toFixed(1)} after`,
+  );
+  check(
+    'lead: WITH it, the lead comes back down within ~3 s of a server stall',
+    Number.isFinite(before) && stallOn.leadAt(8500, 10000) <= before + 2,
+    `lead ${before.toFixed(1)} before, ${stallOn.leadAt(8500, 10000).toFixed(1)} after (${stallOff.leadAt(8500, 10000).toFixed(1)} uncontrolled)`,
+  );
+}
+
+// ---- LeadController: its limits, as a unit --------------------------------------------------
+{
+  const k = new LeadController();
+  // a 600 ms round trip: the target clamps, well under the forty-tick hard cap
+  for (let i = 0; i < 40; i++) k.sample(1000 + i * 2, 1000 + i * 2, 1000 + i * 2 - 36, i * 33);
+  check('lead unit: the target never exceeds LEAD_TARGET_MAX, which sits under MAX_PREDICT_LEAD (40)', k.target === LEAD_TARGET_MAX && LEAD_TARGET_MAX < 40, String(k.target));
+  check('lead unit: ...and speeding up is capped at LEAD_MAX_FAST', k.rate(40 * 33) === LEAD_MAX_FAST, String(k.rate(40 * 33)));
+  check('lead unit: no snapshot for LEAD_GAP_MS ⇒ rate 0 (a stall is not chased)', k.rate(40 * 33 + LEAD_GAP_MS + 1) === 0);
+  const old = new LeadController();
+  for (let i = 0; i < 10; i++) old.sample(100 + i, 100 + i, undefined, i * 33);
+  check('lead unit: a server that sends no ackInputTick leaves the clock alone (rate 0)', old.rate(10 * 33) === 0 && old.target === null);
+  const gap = new LeadController();
+  for (let i = 0; i < 10; i++) gap.sample(100 + 2 * i, 100 + 2 * i, 104 + 2 * i, i * 33);
+  gap.sample(200, 150, 190, 9 * 33 + 400); // after a 400 ms hole: a stall reading, not a sample
+  check('lead unit: the snapshot after a gap is not taken as a sample', gap.rate(9 * 33 + 401) === 0);
+  // a lead far above target slows the clock, bounded by LEAD_MAX_SLOW
+  const hi = new LeadController();
+  for (let i = 0; i < 20; i++) hi.sample(1040 + 2 * i, 1000 + 2 * i, 1036 + 2 * i, i * 33);
+  const r = hi.rate(19 * 33);
+  check('lead unit: a lead far past target SLOWS the clock, never past LEAD_MAX_SLOW', r < 0 && r >= -LEAD_MAX_SLOW, String(r));
+}
+
+// ---- CONTACT DRAW: a remote robot next to ours is drawn at our moment (src/net/contactDraw.ts) ----
+{
+  check('contact draw: far away a remote robot stays interpolated, touching it is fully predicted',
+    nearDrawWeight(CONTACT_DRAW_FAR_IN) === 0 && nearDrawWeight(200) === 0 && nearDrawWeight(CONTACT_DRAW_FULL_IN) === 1 && nearDrawWeight(0) === 1);
+  const mid = nearDrawWeight((CONTACT_DRAW_FULL_IN + CONTACT_DRAW_FAR_IN) / 2);
+  check('contact draw: ...and it blends linearly between, so no clock jumps in one frame', Math.abs(mid - 0.5) < 1e-9, String(mid));
+  check('contact draw: a NaN distance draws interpolated (never a NaN pose)', nearDrawWeight(NaN) === 0);
+  const b = blendPose({ x: 0, y: 0, heading: 3.0 }, { x: 10, y: -4, heading: -3.0 }, 0.5);
+  check('contact draw: the heading blends along the SHORT arc across ±π',
+    Math.abs(b.x - 5) < 1e-9 && Math.abs(b.y + 2) < 1e-9 && Math.abs(Math.abs(b.heading) - Math.PI) < 0.02, JSON.stringify(b));
+  // a ball held 9 in ahead of a robot facing +x, robot drawn 5 in to the left and turned 90°
+  const p = followDrawn({ x: 9, y: 0 }, { x: 0, y: 0, heading: 0 }, { x: -5, y: 0, heading: Math.PI / 2 });
+  check('contact draw: a held ball rides the robot AS DRAWN (translation and rotation)', Math.abs(p.x + 5) < 1e-9 && Math.abs(p.y - 9) < 1e-9, JSON.stringify(p));
+  const same = followDrawn({ x: 3, y: 4 }, { x: 1, y: 1, heading: 0.7 }, { x: 1, y: 1, heading: 0.7 });
+  check('contact draw: ...and does not move when the robot is drawn where the world has it', Math.abs(same.x - 3) < 1e-9 && Math.abs(same.y - 4) < 1e-9);
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('contact draw source: displayWorld blends a near remote robot toward its PREDICTED pose, 2D only',
+    game.includes('const me = predictLocal && !this.spectator && (!predictedRemotes || predictedRemotes.size > 0)') &&
+      game.includes('const w = nearDrawWeight(d);') &&
+      game.includes('blendPose(interp, predicted, w)'));
+  const capAt = game.indexOf('preRemote.set(r.id,');
+  const adoptAt = game.indexOf('this.adoptWorld(snap.world);', capAt);
+  const setAt = game.indexOf('this.remoteSmooth.set(r.id,', adoptAt);
+  check('contact draw source: the reconcile captures remote poses BEFORE adopting the snapshot and smooths the difference',
+    capAt > 0 && adoptAt > capAt && setAt > adoptAt);
+  check('contact draw source: a 2D room draws held balls with followDrawn', game.includes('pos: followDrawn(b.pos,'));
+  check('contact draw source: a rebuilt match drops the remote offsets',
+    /this\.localSmooth = \{ x: 0, y: 0, heading: 0 \};\s*this\.remoteSmooth\.clear\(\);/.test(game));
+}
+
+// ---- FULL (world tier) skips a replay only when the snapshot AGREES (src/net/worldDigest.ts) ----
+{
+  const w = createWorld('match', 5, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }, { id: 1, alliance: 'red', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  const copy = (): World => JSON.parse(JSON.stringify(w)) as World;
+  const base = worldDigest(w);
+  check('world digest: the same world agrees with itself', digestsAgree(base, worldDigest(copy())));
+  const r1 = copy(); r1.robots[0].pos.x += AGREE_POS_IN * 0.5;
+  const r2 = copy(); r2.robots[0].pos.x += AGREE_POS_IN * 2;
+  check('world digest: a robot inside the tolerance agrees, one outside it does not', digestsAgree(base, worldDigest(r1)) && !digestsAgree(base, worldDigest(r2)));
+  const b1 = copy(); b1.balls[0].pos.y += AGREE_BALL_IN * 0.8;
+  const b2 = copy(); b2.balls[0].pos.y += AGREE_BALL_IN * 1.5;
+  check('world digest: an element gets its own, looser tolerance', digestsAgree(base, worldDigest(b1)) && !digestsAgree(base, worldDigest(b2)) && AGREE_BALL_IN > AGREE_POS_IN);
+  const k = copy(); k.balls[0].state = { kind: 'flight', target: 'blue' };
+  const h = copy(); h.robots[0].hopper.push('purple');
+  const sc = copy(); sc.match.scores.blue.total += 1;
+  check('world digest: an element changing state, a hopper or a score never agrees, however close the poses', !digestsAgree(base, worldDigest(k)) && !digestsAgree(base, worldDigest(h)) && !digestsAgree(base, worldDigest(sc)));
+  const c = { driveX: 0.5, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: false };
+  check('world digest: a remote stick drifting inside AGREE_STICK is the same command, a turn past it is not', cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 0.5 }) && !cmdsAgree(c, { ...c, driveX: 0.5 + AGREE_STICK * 2 }));
+  check('world digest: ...and any button changing is a different command', !cmdsAgree(c, { ...c, fire: true }) && !cmdsAgree(c, { ...c, intake: false }) && !cmdsAgree(c, undefined));
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('world predict source: FULL in a 3D room is the WHOLE game step; BALANCED is the sim3d/predict world',
+    game.includes("return this.predicted3d() && this.predictionMode === 'full' && physics3dReady();") &&
+      game.replace(/\r\n/g, '\n').includes("want === 'balanced'\n          ? impl.createFullPredictor("));
+  check('world predict source: Auto and the slip rule step Full, then Balanced, then Light',
+    game.includes("this.setPredictionMode('balanced');") && game.includes("? 'balanced' : 'light'") && game.includes("this.setPredictionMode('full');"));
+  check('world predict source: adoptWorld REWINDS the 3D engine in the world tier instead of throwing it away', game.includes('this.worldPredicted() && physics3dImpl().rewindEngineTo(prev, next)'));
+  check('world predict source: FULL saves its engine on the snapshot ticks while predicting AND while replaying, so a reconcile is a rollback',
+    (game.match(/this\.noteDigest\(\);\s*this\.saveForRollback\(\);/g) ?? []).length === 2 &&
+      game.includes('physics3dImpl().saveEngineState(this.world, this.lastServerTick + 1)'));
+  check('world predict source: a snapshot that agrees skips the replay, and a full resync is still forced every FULL_RESYNC_EVERY', game.includes('if (this.worldPredicted() && !firstSnap && this.snapshotAgrees(snap))') && game.includes('if (++this.snapsSinceResync >= FULL_RESYNC_EVERY) return false;'));
+  check('world predict source: Auto probes the world step FIRST, then the predictor only if that does not fit', game.includes("this.autoStage === 'world'") && game.includes('this.probeWorldReconcileMs()'));
+}
+// ---- the controller is what game.ts actually runs (GameController needs a DOM) -----------------
+{
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('lead source: stepServer samples the lead BEFORE the reconcile, off the 3D clock in a 3D room',
+    /const clock = this\.usesPredictor\(\) \? this\.predictTick : this\.world\.tick;\s*this\.lead\.sample\(clock, snap\.serverTick, snap\.ackInputTick, performance\.now\(\)\);\s*\}\s*this\.reconcile\(snap\);/.test(game));
+  check('lead source: frameLogic folds the rate in ONLINE only, so solo adds exactly dt',
+    /this\.acc \+= this\.session \? dtS \* \(1 \+ this\.lead\.rate\(performance\.now\(\)\)\) : dtS;/.test(game));
+  check('lead source: a rebuilt match resets the controller', /this\.gotSnapshot = false;\s*this\.lead\.reset\(\);/.test(game));
+  check('lead source: MAX_PREDICT_LEAD is still the hard cap', /const MAX_PREDICT_LEAD = 40;/.test(game));
+  check('raf source: online, rAF drives the sim and the timer steps only once rAF has gone quiet',
+    /if \(performance\.now\(\) - this\.lastRafAt < RAF_STALE_MS\) return;/.test(game) &&
+      /this\.lastRafAt = performance\.now\(\);\s*try \{\s*this\.netTick\(\);/.test(game));
+}
+
+// ---- WIRE CLOCKS: a snapshot's rounded clocks come back exactly (src/net/wireClocks.ts) ---------
+// The server rounds every non-integer to 3 decimals and the prediction compares clocks tick by
+// tick, so a client stepping on from rounded ones fired shots a tick off the room's and re-cued
+// the same shot on most snapshots of its lead (owner: "spams the shooting sound a ton").
+{
+  const w = createWorld('match', 9, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+  w.match.preCountdown = C_PRE_COUNTDOWN;
+  const hold = new Map([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: true } as RobotCommand]]);
+  const wire = (x: World): World => unslimWorld(JSON.parse(JSON.stringify(slimWorld(x), round3)), x.balls, () => DEFAULT_SPEC);
+  const clocks = (x: World): number[] => [x.time, x.match.preCountdown ?? -1, x.match.phaseTimeLeft, ...x.robots.flatMap((r) => [r.lastFireAt, r.lastIntakeAt])];
+  const same = (a: number[], b: number[]): boolean => a.every((v, i) => Object.is(v, b[i]));
+  let exact = true;
+  let rounded = 0;
+  const phases = new Set<string>();
+  for (let t = 1; t <= 2700; t++) {
+    step(w, SIM_DT, hold);
+    if (t % 13 !== 0) continue;
+    const got = wire(w);
+    if (!same(clocks(got), clocks(w))) rounded++;
+    restoreWireClocks(got);
+    if (!same(clocks(got), clocks(w))) exact = false;
+    phases.add(w.match.phase);
+  }
+  check('wire clocks: time, both countdowns and the shot stamps come back bit for bit through round3',
+    exact && rounded > 100 && w.robots[0].lastFireAt > 0 && ['pre', 'auto', 'transition', 'teleop'].every((p) => phases.has(p)),
+    `${rounded} rounded samples, phases ${[...phases].join('/')}, lastFireAt ${w.robots[0].lastFireAt}`);
+  const off = wire(w);
+  off.robots[0].lastFireAt = 12.3456;
+  restoreWireClocks(off);
+  const bad = wire(w);
+  const t0 = bad.time;
+  bad.tick = 1e12;
+  restoreWireClocks(bad);
+  check('wire clocks: a clock off the tick grid, and a snapshot with an absurd tick, are left alone',
+    off.robots[0].lastFireAt === 12.3456 && bad.time === t0);
+  const session = readFileSync('src/net/serverSession.ts', 'utf8');
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('wire clocks source: every snapshot world is restored as it is decoded',
+    /const world = unslimWorld\(m\.w, balls, this\.specById\);[\s\S]{0,160}restoreWireClocks\(world\);/.test(session));
+  check('wire clocks source: the shot and intake cues are high-water marks in TICKS',
+    /const fired = actionTick\(r\.lastFireAt\);\s*if \(fired > \(this\.prevFireTick\[r\.id\] \?\? 0\)\)/.test(game) &&
+      /const took = actionTick\(r\.lastIntakeAt\);\s*if \(took > \(this\.prevIntakeTick\[r\.id\] \?\? 0\)\)/.test(game));
+}
+
+// ---- ...and through a real Room: every shot is cued once, on the tick the room fired it ----------
+// A solo DECODE record room at 66 ms RTT and a client that restates `stepServer`, `reconcile` and
+// `handleActionAudio`. Without the fix the three preloads were cued six times, the first two a
+// tick before the room fired them (AUTO started a tick early off a rounded `preCountdown`).
+{
+  type Snap = { serverTick: number; world: World; ack: number };
+  const runShots = (fix: boolean): { cues: number[]; shots: number[] } => {
+    let now = 0;
+    let s = 7;
+    const rnd = (): number => ((s = (s * 1664525 + 1013904223) >>> 0), s / 2 ** 32);
+    const oneWay = (): number => 33 + (rnd() < 0.9 ? rnd() * 6 : rnd() * 40);
+    const down: { at: number; m: ServerMsg }[] = [];
+    const up: { at: number; tick: number; q: ReturnType<typeof quantizeCommand>; ack?: number }[] = [];
+    let lastDown = 0;
+    let lastUp = 0;
+    let setups: RobotSetup[] = [];
+    let seedW = 0;
+    const c: Client = {
+      id: 'shot-1',
+      send: (m) => {
+        if (m.t === 'matchStart') {
+          setups = m.setups;
+          seedW = m.seed;
+        }
+        lastDown = Math.max(lastDown, now + oneWay());
+        down.push({ at: lastDown, m: JSON.parse(JSON.stringify(m, round3)) as ServerMsg });
+      },
+      player: { clientId: 'shot-1', name: 'shot', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+    };
+    const room = new Room('smoke-shots', () => {}, { kind: 'record', record: 'solo' });
+    room.add(c);
+    room.onMessage('shot-1', { t: 'start' });
+    room.advanceForTest(0);
+    const mod = simModuleFor('decode');
+    const lead = new LeadController();
+    const cmd: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: true, fire: true };
+    const mark = (t: number): number => (fix ? Math.round(t / SIM_DT) : t);
+    const baseBalls = new Map<number, Artifact>();
+    const cues: number[] = [];
+    const shots: number[] = [];
+    let world: World | null = null;
+    let pending: Snap | null = null;
+    let buf: { tick: number; cmd: RobotCommand }[] = [];
+    let applied = -1;
+    let lastServerTick = 0;
+    let got = false;
+    let acc = 0;
+    let cLast = 0;
+    let cNext = 0;
+    let sDue = 0;
+    let prev = 0;
+    let srvFire = -10;
+    for (now = 0; now < 7000; now++) {
+      while (up.length && up[0].at <= now) {
+        const u = up.shift()!;
+        room.onMessage('shot-1', { t: 'input', tick: u.tick, q: u.q, ack: u.ack });
+      }
+      if (now - sDue > 250) sDue = now - 250;
+      while (now >= sDue) {
+        room.advanceForTest(1);
+        const r = room.worldForTest()?.robots[0];
+        if (r && r.lastFireAt !== srvFire) {
+          srvFire = r.lastFireAt;
+          if (r.lastFireAt > 0) shots.push(Math.round(r.lastFireAt / SIM_DT));
+        }
+        sDue += 1000 / 60;
+      }
+      while (down.length && down[0].at <= now) {
+        const m = down.shift()!.m;
+        if (m.t === 'matchStart' && !world) {
+          world = mod.createWorld('match', seedW, setups);
+          world.match.preCountdown = C_PRE_COUNTDOWN;
+          prev = mark(world.robots[0].lastFireAt);
+          cLast = now;
+          cNext = now;
+        } else if (m.t === 'snapshot' && m.serverTick > applied) {
+          const w = unslimWorld(m.w, applyBallDelta(baseBalls, m.balls), (id) => (setups.find((x) => x.id === id) ?? setups[0]).spec);
+          if (fix) restoreWireClocks(w);
+          pending = { serverTick: m.serverTick, world: w, ack: m.ackInputTick };
+          applied = m.serverTick;
+        }
+      }
+      if (!world || now < cNext) continue;
+      const dtS = Math.min((now - cLast) / 1000, 0.25);
+      cLast = now;
+      cNext = now + 16 + Math.floor(rnd() * 3);
+      if (pending) {
+        const snap: Snap = pending;
+        pending = null;
+        lead.sample(world.tick, snap.serverTick, snap.ack, now);
+        world = snap.world;
+        lastServerTick = snap.serverTick;
+        got = true;
+        buf = buf.filter((b) => b.tick > snap.serverTick);
+        for (const b of buf) mod.step(world, SIM_DT, new Map([[0, b.cmd]]));
+      }
+      acc = Math.min(acc + dtS * (1 + lead.rate(now)), 0.25);
+      for (let n = 0; acc >= SIM_DT && n < 30; n++) {
+        if (got && world.tick - lastServerTick >= 40) {
+          acc = 0;
+          break;
+        }
+        const tick = world.tick + 1;
+        lastUp = Math.max(lastUp, now + oneWay());
+        up.push({ at: lastUp, tick, q: quantizeCommand(cmd), ack: applied >= 0 ? applied : undefined });
+        buf.push({ tick, cmd: localizeCommand(cmd) });
+        mod.step(world, SIM_DT, new Map([[0, localizeCommand(cmd)]]));
+        acc -= SIM_DT;
+      }
+      const r = world.robots[0];
+      if (mark(r.lastFireAt) > prev) {
+        prev = mark(r.lastFireAt);
+        cues.push(Math.round(r.lastFireAt / SIM_DT));
+      }
+    }
+    room.stop();
+    return { cues, shots };
+  };
+  const before = runShots(false);
+  const after = runShots(true);
+  check('shot cues: WITHOUT the restore, rounded snapshots cue the same shots more than once (non-vacuous)',
+    before.shots.length >= 3 && before.cues.length > before.shots.length,
+    `${before.cues.length} cues (ticks ${before.cues.join(' ')}) for ${before.shots.length} shots (${before.shots.join(' ')})`);
+  check('shot cues: WITH it, each shot is cued once, on the tick the room fired it',
+    after.shots.length >= 3 && after.cues.length === after.shots.length && after.cues.every((k, i) => k === after.shots[i]),
+    `${after.cues.length} cues (ticks ${after.cues.join(' ')}) for ${after.shots.length} shots (${after.shots.join(' ')})`);
 }
 
 // ---- predict/reconcile parity ----------------------------------------------
@@ -15829,6 +17129,75 @@ const forceRoomToPost = (room: Room): void => {
   w.match.preCountdown = undefined;
   room.advanceForTest(Math.round(MATCH_SETTLE_MAX_S / SIM_DT) + 10);
 };
+
+// ---- a record run's AUTO / TELEOP split, and the board windows (rooms plan M5/M7) ----
+// The Auto and TeleOp boards need what a run earned in each period, net of the fouls committed in
+// it. The room reads the game's own `auto` fact at the instant that game counts AUTO at and the
+// fouls handed over at that instant; the rest is TELEOP.
+{
+  const { windowBounds, coerceWindow } = await import('../server/boardWindow');
+  const at = (iso: string) => windowBounds('day', new Date(iso));
+  check('window: after 08:00 UTC the day started today at 08:00', at('2026-10-07T09:00:00Z').start === '2026-10-07T08:00:00.000Z');
+  check('window: before 08:00 UTC it is still yesterday', at('2026-10-07T07:00:00Z').start === '2026-10-06T08:00:00.000Z');
+  check('window: the day resets 24 hours after it starts', at('2026-10-07T09:00:00Z').resetsAt === '2026-10-08T08:00:00.000Z');
+  const wk = (iso: string) => windowBounds('week', new Date(iso));
+  check('window: the week starts on Monday 08:00 UTC', wk('2026-10-07T09:00:00Z').start === '2026-10-05T08:00:00.000Z');
+  check('window: Monday before 08:00 is still last week', wk('2026-10-05T07:59:00Z').start === '2026-09-28T08:00:00.000Z');
+  check('window: the week resets next Monday', wk('2026-10-07T09:00:00Z').resetsAt === '2026-10-12T08:00:00.000Z');
+  const mo = (iso: string) => windowBounds('month', new Date(iso));
+  check('window: the month starts on the 1st at 08:00', mo('2026-10-07T09:00:00Z').start === '2026-10-01T08:00:00.000Z');
+  check('window: the 1st before 08:00 is still last month, across a year end', mo('2027-01-01T07:00:00Z').start === '2026-12-01T08:00:00.000Z');
+  check('window: the month resets on the next 1st', mo('2026-12-15T00:00:00Z').resetsAt === '2027-01-01T08:00:00.000Z');
+  check('window: the season and all-time boards have no window', windowBounds('season', new Date()).start === null && windowBounds('all', new Date()).resetsAt === null);
+  check('window: an unknown value is the season board', coerceWindow('decade') === 'season' && coerceWindow(undefined) === 'season');
+
+  const solo = (id: string): Client => ({
+    id, send: () => {}, connected: true, disconnectAt: 0, userId: `u-${id}`,
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+  });
+  const runRecord = (game: 'decode' | 'chain' | 'biobuzz', tweak: (w: World, phase: string) => void): MatchOutcome | null => {
+    let seen: MatchOutcome | null = null;
+    const room = new Room(`smoke-split-${game}`, () => {}, { kind: 'record', record: 'solo', game }, (o) => { seen = o; });
+    room.add(solo('s1'));
+    room.onMessage('s1', { t: 'start' });
+    let last = '';
+    for (let i = 0; i < 20000; i++) {
+      room.advanceForTest(1);
+      const w = room.worldForTest();
+      if (!w) break;
+      if (w.match.phase !== last) { last = w.match.phase; tweak(w, last); }
+      if (w.match.phase === 'teleop') break;
+    }
+    forceRoomToPost(room);
+    return seen;
+  };
+  // DECODE: 10 in AUTO (leave), 5 foul points handed over during TELEOP
+  const dec = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') w.match.scores.blue.leave = 10;
+    if (ph === 'teleop') w.match.scores.red.foulPoints = 5;
+  });
+  check('split: DECODE reports one', !!dec?.split, JSON.stringify(dec?.split));
+  check('split: DECODE AUTO is the AUTO points, TELEOP is the rest net of fouls',
+    dec?.split?.blue.auto === 10 && (dec?.split?.blue.teleop ?? -1) >= 0 && dec.split.blue.auto + dec.split.blue.teleop <= (dec.result.score.blue ?? 0),
+    JSON.stringify([dec?.split?.blue, dec?.result.score.blue, dec?.result.foulPoints.red]));
+  const decF = runRecord('decode', (w, ph) => {
+    if (ph === 'auto') { w.match.scores.blue.leave = 10; w.match.scores.red.foulPoints = 4; }
+  });
+  check('split: a foul committed in AUTO comes off AUTO', decF?.split?.blue.auto === 6, JSON.stringify(decF?.split?.blue));
+  const chn = runRecord('chain', (w, ph) => {
+    if (ph === 'auto' && w.chain) w.chain.particlePoints.blue = 20;
+  });
+  check('split: Chain Reaction reports one, AUTO is the particle points', chn?.split?.blue.auto === 20, JSON.stringify(chn?.split?.blue));
+  await initPhysics3d(); // a BIOBUZZ record room is a 3D room
+  const bio = runRecord('biobuzz', () => {});
+  check('split: BIOBUZZ reports one (its AUTO is read at TELEOP start)', !!bio?.split && bio.split.blue.auto >= 0 && bio.split.blue.teleop >= 0, JSON.stringify(bio?.split));
+  let vs: MatchOutcome | null = null;
+  const vr = new Room('smoke-split-vs', () => {}, { kind: 'versus' }, (o) => { vs = o; });
+  vr.add(solo('v1'));
+  vr.onMessage('v1', { t: 'start' });
+  forceRoomToPost(vr);
+  check('split: a versus room reports none', (vs as MatchOutcome | null)?.split === undefined);
+}
 
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------
 // A room used to be single-use: `world` was set once and never cleared, so after one
@@ -16338,9 +17707,18 @@ const recordDrive: CommandSource = (tick) => {
   // would mean re-running a full decode match a second time just to get it, which
   // costs strictly more than keeping the two together.
   const solo = recordSetups(DEFAULT_SPEC, 'solo', DEFAULT_ASSISTS, undefined, true);
-  const run = runRecordMatch(0x51ce, solo, recordDrive);
+  // the pace curve as solo practice makes it, WHILE the run is played (`GameController.paceRec`):
+  // a source is handed the world as the previous step left it, so this is a push after every
+  // step, and the last one is pushed off the final world below
+  const livePace = new PaceCurveRecorder();
+  const run = runRecordMatch(0x51ce, solo, (t, w) => {
+    livePace.push(w.match.phase, w.match.phaseTimeLeft, netScore(w, 'blue'));
+    return recordDrive(t, w);
+  });
+  livePace.push(run.world.match.phase, run.world.match.phaseTimeLeft, netScore(run.world, 'blue'));
   check('record match runs to phase "post"', run.world.match.phase === 'post');
-  check('replay stamped with format + balance version', run.replay.format === REPLAY_FORMAT && run.replay.balanceVersion === BALANCE_VERSION);
+  // format 2: a replay with no imported robot is the container it was before imports (format 3)
+  check('replay stamped with format + balance version', run.replay.format === REPLAY_FORMAT_BASE && run.replay.balanceVersion === BALANCE_VERSION);
   // the SIM-BEHAVIOUR stamp: what decides whether THIS build can re-simulate the
   // log at all. Separate from balanceVersion so a determinism fix can invalidate
   // stale replays without resetting the competitive season (config.ts SIM_VERSION).
@@ -16360,6 +17738,24 @@ const recordDrive: CommandSource = (tick) => {
   // referential determinism: a second re-sim is identical
   check('simulateReplay is referentially stable', worldHash(simulateReplay(run.replay)) === v.hash);
 
+  // THE PACE CURVE (`src/ui/pace/curve.ts`) off the same full record match: its last point is
+  // the run's NET record score, it never goes backwards on the clock, and it reads the score the
+  // run had at a moment rather than its final one.
+  {
+    const curve = buildPaceCurve(run.replay, 'blue');
+    const net = recordScore(run.result, 'blue');
+    check('pace: a curve ends on the net record score of the run', curve.s[curve.s.length - 1] === net, `${curve.s[curve.s.length - 1]} vs ${net}`);
+    check('pace: the curve is in clock order', curve.k.every((k, i) => i === 0 || k > curve.k[i - 1]));
+    check('pace: the curve is compact (a point per change, not per tick)', curve.k.length > 1 && curve.k.length * 10 < run.replay.ticks, `${curve.k.length} points`);
+    check('pace: 0 at the first moment of AUTO', paceAt(curve, 'auto', 30) === 0);
+    check('pace: no pace before AUTO (pre has no clock to match)', paceAt(curve, 'pre', 3) === null);
+    check('pace: the final whistle reads the final score', paceAt(curve, 'post', 0) === net);
+    const mid = paceAt(curve, 'teleop', 60);
+    check('pace: half way through TELEOP is between 0 and the final', mid !== null && mid >= 0 && mid <= net, `${mid}`);
+    check('pace: the curve made while the run is played is the one its replay re-simulates into', JSON.stringify(livePace.curve) === JSON.stringify(curve), `${livePace.curve.k.length} vs ${curve.k.length} points`);
+    check('pace: a curve survives a storage round trip', JSON.stringify(coerceCurve(JSON.parse(JSON.stringify(curve)))) === JSON.stringify(curve));
+  }
+
   // CHAIN REACTION replays: a CR run must re-simulate through the CR module (createWorld +
   // chainStep), stamp game:'chain', and reproduce its outcome byte-for-byte (the replay is
   // watchable + verifiable exactly like a DECODE one).
@@ -16377,6 +17773,46 @@ const recordDrive: CommandSource = (tick) => {
     // module is actually chosen from replay.game, not hardcoded.
     check('CR replay: re-sims via the chain module (differs from a decode re-sim)', crV.hash !== v.hash);
   }
+}
+{
+  // PACE CLOCK (`src/ui/pace/curve.ts`): moments compare by phase, then by time left COUNTING
+  // DOWN, so a run that started its clock on a keypress and one that counted a pre-match in the
+  // sim line up on the same match moment.
+  const a = clockKey('auto', 29)!;
+  const b = clockKey('auto', 1)!;
+  const c = clockKey('transition', 7)!;
+  const d = clockKey('teleop', 119)!;
+  const e = clockKey('post', 0)!;
+  check('pace clock: later in a phase is a larger key', b > a);
+  check('pace clock: phases order auto < transition < teleop < post', a < c && c < d && d < e);
+  check('pace clock: pre and free drive have no key', clockKey('pre', 3) === null && clockKey('freeplay', 0) === null);
+  const rec = new PaceCurveRecorder();
+  rec.push('auto', 30, 0);
+  rec.push('auto', 29, 0);
+  rec.push('auto', 20, 5);
+  rec.push('teleop', 100, 5);
+  rec.push('teleop', 50, 12);
+  rec.push('post', 0, 12);
+  rec.push('post', 0, 15); // the field settling folds a point in after the buzzer
+  check('pace recorder: keeps only the changes', rec.curve.s.join(',') === '0,5,12,15', rec.curve.s.join(','));
+  check('pace recorder: post keeps its latest score', paceAt(rec.curve, 'post', 0) === 15);
+  check('pace lookup: holds the last change', paceAt(rec.curve, 'auto', 10) === 5 && paceAt(rec.curve, 'teleop', 80) === 5 && paceAt(rec.curve, 'teleop', 49) === 12);
+  check('pace lookup: a curve that never ran reads nothing', paceAt({ k: [], s: [] }, 'auto', 10) === null);
+  check('pace: coerceCurve refuses a mismatched pair', coerceCurve({ k: [1, 2], s: [1] }) === null && coerceCurve('x') === null);
+
+  // the SETTING: absent is off, a stored one survives, garbage falls back per field
+  const def = coerceSettings({});
+  check('pace setting: absent reads off', (def.pace ?? 'off') === 'off');
+  const kept = coerceSettings({
+    pace: 'replay',
+    paceReplays: { decode: { key: 'r:abc', replayId: 'abc', alliance: 'blue', label: '120-point run' }, chain: { key: 'zz', alliance: 'blue' } },
+  });
+  check('pace setting: a source and a picked replay survive a load', kept.pace === 'replay' && kept.paceReplays?.decode?.replayId === 'abc');
+  check('pace setting: a picked replay with a bad key is dropped, not kept', kept.paceReplays?.chain === undefined);
+  check('pace setting: an unknown source falls back to off', (coerceSettings({ pace: 'ghost' }).pace ?? 'off') === 'off');
+  // the replay id goes into a fetch path, so one that is not a plain id is dropped from the pick
+  const odd = coerceSettings({ paceReplays: { decode: { key: 'r:x', replayId: '../admin?x=1', alliance: 'red', label: '' } } });
+  check('pace setting: a replay id with path characters is not kept', odd.paceReplays?.decode !== undefined && odd.paceReplays.decode.replayId === undefined);
 }
 {
   // DUO (2v0) short run: two command tracks, both re-simulate deterministically.
@@ -16844,6 +18280,118 @@ const recordDrive: CommandSource = (tick) => {
   );
   room.removeBot(live[1]);
   check('bot seats: the newest seat can be removed (it is not shadowed by an older twin)', botIds().length === 1, botIds().join(','));
+}
+
+// ---- room settings: the host-controlled shape (rooms plan M1) ------------------
+{
+  const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');
+  const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const lastRoster = (m: ServerMsg[]): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+    [...m].reverse().find((x): x is Extract<ServerMsg, { t: 'roster' }> => x.t === 'roster');
+  const errs = (m: ServerMsg[]): string[] => m.flatMap((x) => (x.t === 'error' ? [x.message] : []));
+
+  // coercion: never trust the label or the numbers
+  check('settings: no request ⇒ a legacy room', coerceRoomSettings('versus', undefined, undefined) === undefined);
+  const rec = coerceRoomSettings('record', 'solo', { preset: 'casual-2v2', listed: true, perAlliance: { red: 4, blue: 4 } });
+  check('settings: a record room is locked to its record shape, Private, whatever was sent',
+    rec?.perAlliance.blue === 1 && rec.perAlliance.red === 0 && !rec.teamSwitch && !rec.listed && rec.preset === 'solo-record', JSON.stringify(rec));
+  const fake = coerceRoomSettings('versus', undefined, { preset: 'solo-record', perAlliance: { red: 99, blue: -3 }, teamSwitch: false });
+  check('settings: a versus room cannot claim a record preset, and creation ignores the sides it sent',
+    fake?.preset === 'custom' && fake.perAlliance.red === 2 && fake.perAlliance.blue === 2 && fake.teamSwitch, JSON.stringify(fake));
+  const hostile = mergeRoomSettings(fake!, { perAlliance: { red: 99, blue: -3 }, teamSwitch: 'no' });
+  check('settings: a host patch is clamped to the ceiling and to sane numbers',
+    hostile.perAlliance.red + hostile.perAlliance.blue <= 4 && hostile.perAlliance.blue >= 0 && hostile.teamSwitch === true, JSON.stringify(hostile));
+  check('settings: capacity is the sum of the sides',
+    roomCapacity({ kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) }) === 2);
+  check('settings: Public is opt-in', coerceRoomSettings('versus', undefined, { preset: 'custom' })?.listed === false);
+
+  // a 1v1 preset: two seats, one a side
+  const seen: Record<string, ServerMsg[]> = { h: [], a: [], b: [] };
+  const cfg = { kind: 'versus' as const, settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' }) };
+  const room = new Room('smoke-set', () => {}, cfg);
+  const h = mk('h', 'red', seen.h);
+  const a = mk('a', 'red', seen.a); // asks for red, which is full
+  room.add(h);
+  room.add(a);
+  check('settings: a joiner whose side is full lands on the other', a.player.alliance === 'blue', a.player.alliance);
+  check('settings: the room is full at the sum of the sides', !room.canJoin());
+  check('settings: the roster carries the settings', lastRoster(seen.h)?.settings?.preset === 'casual-1v1');
+
+  // team switching
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: a self-switch onto a full side is dropped', a.player.alliance === 'blue');
+  room.onMessage('a', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: only the host changes settings', room.settings?.teamSwitch === true);
+  room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: the host can lock team switching', room.settings?.teamSwitch === false);
+  check('settings: a settings change clears everyone ready', !h.player.ready && !a.player.ready);
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+  a.player.ready = true;
+  room.onMessage('a', { t: 'update', patch: { alliance: 'red' } });
+  check('settings: team switching off ⇒ the self-switch is dropped even with a seat free', a.player.alliance === 'blue');
+
+  // host moves
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'red' });
+  check('settings: the host moves a member', a.player.alliance === 'red');
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: 'blue' });
+  check('settings: a second move of the same member inside the cooldown is ignored', a.player.alliance === 'red');
+  await new Promise((r) => setTimeout(r, 350));
+  check('settings: ...and a move clears that member ready', !a.player.ready);
+  room.onMessage('a', { t: 'moveMember', id: 'h', alliance: 'blue' });
+  check('settings: a guest cannot move anybody', h.player.alliance === 'red');
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 3 } } });
+  check('settings: a side cannot shrink below who is on it', room.settings?.perAlliance.red === 2 && errs(seen.h).some((e) => /Move 1 player off red/.test(e)), JSON.stringify(room.settings));
+  room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });
+  check('settings: ...a shrink below the room total is refused too', room.settings?.perAlliance.red === 2);
+
+  // a duo-record room: seats are blue (the run alliance), locked, and Unlock opens it once
+  {
+    const sink: ServerMsg[] = [];
+    const dcfg = { kind: 'record' as const, record: 'duo' as const, settings: coerceRoomSettings('record', 'duo', {}) };
+    const dr = new Room('smoke-duo', () => {}, dcfg);
+    const d1 = mk('d1', 'blue', sink);
+    const d2 = mk('d2', 'blue', []);
+    dr.add(d1);
+    dr.add(d2);
+    check('settings: a duo record seats both drivers on blue', d1.player.alliance === 'blue' && d2.player.alliance === 'blue');
+    dr.onMessage('d1', { t: 'roomSettings', patch: { teamSwitch: true } });
+    check('settings: a record room refuses settings changes', dr.settings?.teamSwitch === false);
+    dr.onMessage('d2', { t: 'unlockRoom' });
+    check('settings: only the host unlocks', dcfg.kind === 'record');
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlock turns a record room into a custom one (one-way)',
+      dcfg.kind === 'versus' && dcfg.record === undefined && dr.settings?.preset === 'custom' && dr.cfgFacts().kind === 'versus');
+    check('settings: ...and it is no longer a solo/duo record for the lock rules', !dr.soloRecord);
+    dr.onMessage('d1', { t: 'unlockRoom' });
+    check('settings: unlocking twice is refused', errs(sink).some((e) => /already unlocked/.test(e)));
+    dr.onMessage('d1', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 2 } } });
+    check('settings: an unlocked room takes the host controls', dr.settings?.perAlliance.red === 2);
+  }
+
+  // legacy rooms are untouched
+  const legacy = new Room('smoke-legacy', () => {}, { kind: 'versus' });
+  const lh = mk('lh', 'red', []);
+  legacy.add(lh);
+  legacy.onMessage('lh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a legacy room has no host controls', legacy.settings === undefined);
+  legacy.onMessage('lh', { t: 'update', patch: { alliance: 'blue' } });
+  check('settings: ...and everyone still picks their own side', lh.player.alliance === 'blue');
+
+  // a staged / ranked room refuses the host controls outright
+  const ranked = new Room('smoke-rank', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'custom' }) });
+  const rh = mk('rh', 'red', []);
+  const rsink: ServerMsg[] = [];
+  rh.send = (m) => rsink.push(m);
+  ranked.add(rh);
+  (ranked as unknown as { ranked: boolean }).ranked = true;
+  ranked.onMessage('rh', { t: 'roomSettings', patch: { teamSwitch: false } });
+  check('settings: a ranked room refuses the host controls', ranked.settings?.teamSwitch === true && errs(rsink).length > 0);
 }
 
 {
@@ -17468,6 +19016,32 @@ const recordDrive: CommandSource = (tick) => {
     r.room.pumpForTest(maxMatchTicks());
     check('versus buzzer: a match everybody left MID-MATCH is still not saved (unchanged)', r.saved() === 0, `saved=${r.saved()}`);
   }
+  // ⚠️ A CLEAN LEAVE FROM A FINISHED MATCH FREES THE SEAT AT ONCE (2026-10-02). Holding it for
+  // the grace let the client's auto-reconnect take it straight back, so a results screen left
+  // in a background tab held its satellite awake all night — and the server's idle release
+  // (IDLE_RELEASE_MS) is a clean close, so it relies on exactly this.
+  {
+    const r = vsRun('smoke-vs-results-clean', ['a', 'b']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.pumpForTest(maxMatchTicks()); // settled and finalized: the results are up
+    const savedFirst = r.saved();
+    r.room.detach('a', undefined, true);
+    const back = r.room.reattach('a', () => {});
+    check('⚠️ results: a CLEAN leave from a finished match frees the seat at once (a reconnect is refused)', savedFirst === 1 && back === null, `saved=${savedFirst} reattach=${String(back)}`);
+    check('results: ...without closing the room on the driver still reading it', r.gone() === 0, `${r.gone()}`);
+    r.room.detach('b', undefined, true);
+    check('results: ...and the last clean leave frees the room without waiting out the grace', r.gone() === 1, `${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-results-drop', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.pumpForTest(maxMatchTicks());
+    r.room.detach('a'); // a network drop, not a leave
+    const back = r.room.reattach('a', () => {});
+    check('results: a NETWORK drop from a finished match still keeps the seat for the reconnect', typeof back === 'number', `${String(back)}`);
+  }
 
   // ---- THE SETTLE: a match is finalized when the field comes to REST, not on a timer -------
   // The buzzer ends driving, not scoring. The server (and solo practice) finalize once the game
@@ -17864,6 +19438,198 @@ const recordDrive: CommandSource = (tick) => {
   );
   const aT = team.find((u) => u.userId === 'a')!;
   check('favored winner gains modestly', aT.after - aT.before > 0 && aT.after - aT.before < 40, `+${aT.after - aT.before}`);
+}
+
+// ---- ranked rating adjustments (2026-09-27 ranked review) -----------------
+// Team expectation, the margin multiplier, the calibration/idle RD, wide premades and
+// partner absence. All pure (`computeGlicko`, `marginMultiplier`, `effectiveRd`,
+// `absenceOf`), so these are exact. Established players (games 100, RD 70) unless a check
+// is about calibration, so the floor stays out of the way.
+{
+  const P = (
+    userId: string,
+    alliance: 'red' | 'blue',
+    rating = 1200,
+    extra: Partial<EloParticipant> = {},
+  ): EloParticipant => ({ userId, alliance, rating: { rating, rd: 70, vol: 0.06 }, games: 100, ...extra });
+  const d = (us: ReturnType<typeof computeGlicko>, id: string): number => {
+    const u = us.find((x) => x.userId === id)!;
+    return u.after - u.before;
+  };
+
+  // MARGIN: the multiplier's shape
+  const kBig = marginMultiplier(550, 300, 0.5);
+  check('margin: 550–300 (a decisive BIOBUZZ win) pays close to the full ×1.5',
+    kBig > 1.45 && kBig <= MOV_MAX, kBig.toFixed(3));
+  check('margin: at or past DECISIVE_MARGIN it is exactly MOV_MAX',
+    marginMultiplier(100, 0, 0.5) === MOV_MAX && marginMultiplier(65, 35, 0.5) === MOV_MAX,
+    `${marginMultiplier(100, 0, 0.5)} / ${marginMultiplier(65, 35, 0.5)} (m=${DECISIVE_MARGIN})`);
+  check('margin: a one-point win is close to ×0.8', Math.abs(marginMultiplier(301, 300, 0.5) - MOV_MIN) < 0.01,
+    marginMultiplier(301, 300, 0.5).toFixed(3));
+  check('margin: a draw is ×1', marginMultiplier(40, 40, 0.5) === 1);
+  check('margin: 0–0 is a draw, not a division by zero', marginMultiplier(0, 0, 0.5) === 1);
+  check('margin: a wider margin never pays less',
+    marginMultiplier(100, 90, 0.5) < marginMultiplier(100, 70, 0.5) &&
+      marginMultiplier(100, 70, 0.5) <= marginMultiplier(100, 40, 0.5));
+  const kFav = marginMultiplier(550, 300, 0.9);
+  check('margin: a 90% favourite gets a fifth of the bonus (538 damping)',
+    Math.abs(kFav - (1 + (kBig - 1) * 0.2)) < 1e-9, kFav.toFixed(3));
+  check('margin: damping never pushes a result below ×1 or a close one above it',
+    marginMultiplier(550, 300, 0.99) >= 1 && marginMultiplier(301, 300, 0.1) < 1);
+
+  // 1v1 is plain Glicko-2 times the margin
+  const one = computeGlicko([P('a', 'red'), P('b', 'blue')], { red: 550, blue: 300 });
+  const plain = glicko2Update({ rating: 1200, rd: 70, vol: 0.06 }, 1200, 70, 1).rating - 1200;
+  check('1v1: team expectation changes nothing — a 1v1 is plain Glicko-2 × the margin',
+    Math.abs(d(one, 'a') - Math.round(plain * kBig)) <= 1, `${d(one, 'a')} vs ${(plain * kBig).toFixed(1)}`);
+  const close = computeGlicko([P('a', 'red'), P('b', 'blue')], { red: 301, blue: 300 });
+  check('1v1: a blowout win gains more than a one-point win', d(one, 'a') > d(close, 'a'),
+    `${d(one, 'a')} vs ${d(close, 'a')}`);
+  check('1v1: and a blowout loss costs more than a one-point loss', d(one, 'b') < d(close, 'b'),
+    `${d(one, 'b')} vs ${d(close, 'b')}`);
+  // a rated 1v1 challenge (one token on both alliances) takes no margin multiplier
+  const chal = computeGlicko(
+    [P('a', 'red', 1200, { party: 'tok' }), P('b', 'blue', 1200, { party: 'tok' })],
+    { red: 550, blue: 300 },
+  );
+  check('1v1: a rated friend challenge is ×1 whatever the margin (no blowout farming)',
+    Math.abs(d(chal, 'a') - Math.round(plain)) <= 1, `${d(chal, 'a')} vs ${plain.toFixed(1)}`);
+
+  // TEAM EXPECTATION: a carry and the carried move together
+  const carryLoss = computeGlicko(
+    [P('c', 'red', 1500), P('w', 'red', 900), P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 50, blue: 60 },
+  );
+  check('2v2: a 1500 and a 900 losing to 1200+1200 lose the SAME amount (equal RD)',
+    d(carryLoss, 'c') === d(carryLoss, 'w') && d(carryLoss, 'c') < 0,
+    `${d(carryLoss, 'c')} / ${d(carryLoss, 'w')}`);
+  check('2v2: ...and the carry no longer pays the old −23-for-an-even-match',
+    d(carryLoss, 'c') > -20, `${d(carryLoss, 'c')}`);
+  const carryWin = computeGlicko(
+    [P('c', 'red', 1500), P('w', 'red', 900), P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 60, blue: 50 },
+  );
+  check('2v2: a win is shared the same way', d(carryWin, 'c') === d(carryWin, 'w') && d(carryWin, 'c') > 0,
+    `${d(carryWin, 'c')} / ${d(carryWin, 'w')}`);
+  const mixedRd = computeGlicko(
+    [P('c', 'red', 1400), P('n', 'red', 1000, { rating: { rating: 1000, rd: 250, vol: 0.06 }, games: 3 }),
+      P('x', 'blue', 1200), P('y', 'blue', 1200)],
+    { red: 50, blue: 60 },
+  );
+  check('2v2: the less certain teammate absorbs more of the correction',
+    d(mixedRd, 'n') < d(mixedRd, 'c') && d(mixedRd, 'c') < 0, `${d(mixedRd, 'n')} / ${d(mixedRd, 'c')}`);
+
+  // CALIBRATION + IDLE RD
+  check('rd: a fresh board is held at RD_FLOOR_START (200) or more', effectiveRd(100, 0) === RD_FLOOR_START && RD_FLOOR_START === 200,
+    `${effectiveRd(100, 0)}`);
+  check('rd: a new board seeded at 350 is RATED at RD_MAX (250)', effectiveRd(350, 0) === 250 && RD_MAX === 250, `${effectiveRd(350, 0)}`);
+  check('rd: the floor is gone by game 20', effectiveRd(100, 20) === 100, `${effectiveRd(100, 20)}`);
+  check('rd: and never below RD_FLOOR_MIN', effectiveRd(40, 500) === RD_FLOOR_MIN, `${effectiveRd(40, 500)}`);
+  check('rd: no games count given ⇒ no floor (every older caller)', effectiveRd(70) === 70);
+  check('rd: two idle weeks change nothing', effectiveRd(70, 100, 14) === 70);
+  const idle60 = effectiveRd(70, 100, 60);
+  check('rd: two idle months loosen it, under the cap', idle60 > 70 && idle60 < IDLE_RD_CAP, idle60.toFixed(1));
+  check('rd: a long absence stops at IDLE_RD_CAP', effectiveRd(70, 100, 5000) === IDLE_RD_CAP);
+  check('rd: idle growth never lifts an RD past RD_MAX', effectiveRd(350, 0, 5000) === RD_MAX);
+  const early6 = computeGlicko(
+    [P('a', 'red', 1200, { rating: { rating: 1200, rd: 90, vol: 0.06 }, games: 6 }), P('b', 'blue')],
+    { red: 60, blue: 50 },
+  );
+  const settled6 = computeGlicko(
+    [P('a', 'red', 1200, { rating: { rating: 1200, rd: 90, vol: 0.06 }, games: 100 }), P('b', 'blue')],
+    { red: 60, blue: 50 },
+  );
+  check('rd: a player six games in moves more than an established one on the same result',
+    d(early6, 'a') > d(settled6, 'a') * 1.5, `${d(early6, 'a')} vs ${d(settled6, 'a')}`);
+
+  // WIDE PREMADE
+  const noParty = computeGlicko(
+    [P('p1', 'red', 1800), P('p2', 'red', 1000), P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  const wide = computeGlicko(
+    [P('p1', 'red', 1800, { party: 'pp' }), P('p2', 'red', 1000, { party: 'pp' }),
+      P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  check('premade: partners 800 apart move at half',
+    Math.abs(d(wide, 'p2') - d(noParty, 'p2') / 2) <= 1, `${d(wide, 'p2')} vs ${d(noParty, 'p2')}`);
+  check('premade: ...and their opponents are unaffected', d(wide, 'x') === d(noParty, 'x'));
+  const narrow = computeGlicko(
+    [P('p1', 'red', 1450, { party: 'pp' }), P('p2', 'red', 1350, { party: 'pp' }),
+      P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  const narrowSolo = computeGlicko(
+    [P('p1', 'red', 1450), P('p2', 'red', 1350), P('x', 'blue', 1400), P('y', 'blue', 1400)],
+    { red: 60, blue: 50 },
+  );
+  check('premade: a narrow premade rates exactly like two solos', d(narrow, 'p1') === d(narrowSolo, 'p1'));
+
+  // PARTNER ABSENCE (2v2)
+  const roster = (red2: Partial<EloParticipant>, red1: Partial<EloParticipant> = {}): EloParticipant[] => [
+    P('r1', 'red', 1200, red1), P('r2', 'red', 1200, red2), P('b1', 'blue'), P('b2', 'blue'),
+  ];
+  const lost = { red: 50, blue: 60 };
+  const base = computeGlicko(roster({}), lost);
+  const half = computeGlicko(roster({ away: 0.5 }), lost);
+  check('absence: a partner gone half the match waives the loss', d(half, 'r1') === 0, `${d(half, 'r1')}`);
+  check('absence: ...the one who left takes the full loss', d(half, 'r2') === d(base, 'r2'));
+  check('absence: ...and the opponents’ win over a short-handed alliance is halved',
+    Math.abs(d(half, 'b1') - d(base, 'b1') / 2) <= 1, `${d(half, 'b1')} vs ${d(base, 'b1')}`);
+  const quarter = computeGlicko(roster({ away: 0.25 }), lost);
+  check('absence: a partner gone a quarter of it halves the loss',
+    Math.abs(d(quarter, 'r1') - d(base, 'r1') / 2) <= 1, `${d(quarter, 'r1')} vs ${d(base, 'r1')}`);
+  const blip = computeGlicko(roster({ away: 0.03 }), lost);
+  check('absence: a connection blip is not an absence', d(blip, 'r1') === d(base, 'r1') && d(blip, 'b1') === d(base, 'b1'));
+  const ownPremade = computeGlicko(roster({ away: 0.5, party: 'pp' }, { party: 'pp' }), lost);
+  check('absence: YOUR OWN premade walking out protects nothing', d(ownPremade, 'r1') === d(base, 'r1'),
+    `${d(ownPremade, 'r1')} vs ${d(base, 'r1')}`);
+  const bothGone = computeGlicko(roster({ away: 0.5 }, { away: 0.5 }), lost);
+  check('absence: somebody away as long as their partner is not protected by them',
+    d(bothGone, 'r1') === d(base, 'r1'), `${d(bothGone, 'r1')}`);
+  const wonAnyway = computeGlicko(roster({ away: 0.5 }), { red: 60, blue: 50 });
+  const baseWin = computeGlicko(roster({}), { red: 60, blue: 50 });
+  check('absence: winning 1v2 keeps the full win', d(wonAnyway, 'r1') === d(baseWin, 'r1'));
+  check('absence: and the opponents losing to one robot lose in full', d(wonAnyway, 'b1') === d(baseWin, 'b1'));
+
+  // EARLY ABSENCE VOIDS
+  const voided = computeGlicko(roster({ early: true, away: 1 }), { red: 60, blue: 50 });
+  const others = voided.filter((u) => u.userId !== 'r2');
+  check('void: a partner missing from the start voids the match for the other three',
+    others.length === 3 && others.every((u) => u.voided && u.after === u.before), JSON.stringify(others.map((u) => u.after - u.before)));
+  check('void: a voided player’s stored state is untouched (RD too)',
+    others.every((u) => u.state.rd === 70 && u.state.rating === 1200));
+  check('void: the absentee concedes, even though their alliance won', d(voided, 'r2') < 0 && !voided.find((u) => u.userId === 'r2')!.voided,
+    `${d(voided, 'r2')}`);
+  const shortSeat = computeGlicko([P('r1', 'red'), P('b1', 'blue'), P('b2', 'blue')], lost, { mode: '2v2' });
+  check('void: a 2v2 with a seat nobody ever filled is voided for everyone',
+    shortSeat.length === 3 && shortSeat.every((u) => u.voided), `${shortSeat.map((u) => u.voided).join(',')}`);
+  const oneEarly = computeGlicko([P('a', 'red', 1200, { early: true }), P('b', 'blue')], { red: 50, blue: 60 });
+  check('void: 1v1 has no void rule (the opponent is simply handed the win)', oneEarly.every((u) => !u.voided));
+
+  // WHAT THE ROOM REPORTS
+  const L = 3 * 60 * 60; // a three-minute match
+  const present = absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: 0, earlyAwayTicks: 0 });
+  check('presence: a driver who played is away 0, not early', present.away === 0 && !present.early);
+  const gone = absenceOf({ liveTicks: L, driveTicks: L / 4, awayTicks: L / 2, earlyAwayTicks: 0 });
+  check('presence: away half the match reads 0.5', gone.away === 0.5, `${gone.away}`);
+  const afk = absenceOf({ liveTicks: L, driveTicks: 10, awayTicks: 0, earlyAwayTicks: 0 });
+  check('presence: sitting AFK reads as fully away', afk.away === 1, `${afk.away}`);
+  check('presence: missing the whole opening window is EARLY',
+    absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: EARLY_ABSENT_TICKS, earlyAwayTicks: EARLY_ABSENT_TICKS }).early);
+  check('presence: back one tick before it closes is not',
+    !absenceOf({ liveTicks: L, driveTicks: L / 2, awayTicks: EARLY_ABSENT_TICKS - 1, earlyAwayTicks: EARLY_ABSENT_TICKS - 1 }).early);
+  check('presence: a match that never went live reports nothing',
+    absenceOf({ liveTicks: 0, driveTicks: 0, awayTicks: 0, earlyAwayTicks: 0 }).away === 0);
+
+  // THE PREMADE FLAG written to match_participants (0056)
+  const pv = (userId: string, alliance: 'red' | 'blue', party?: string) => ({ userId, alliance, party });
+  const four = [pv('a', 'red', 't'), pv('b', 'red', 't'), pv('c', 'blue'), pv('d', 'blue')];
+  check('premade flag: two partners on one alliance are premades', isPremade(four[0], four) && isPremade(four[1], four));
+  check('premade flag: their solo opponents are not', !isPremade(four[2], four));
+  const chal1 = [pv('a', 'red', 't'), pv('b', 'blue', 't')];
+  check('premade flag: a rated 1v1 challenge is not a premade (the token is the opponent)', !isPremade(chal1[0], chal1));
 }
 
 
@@ -18320,6 +20086,59 @@ const recordDrive: CommandSource = (tick) => {
     `${eloOf(starts()[1], 0)} / ${eloOf(starts()[1], 1)}`,
   );
   room.advanceForTest(1); // stops the rematch's real-time loop
+}
+
+// ---- a RANKED outcome tells the rating update who was there (2026-09-27) ----
+// `computeGlicko` voids or reduces a result on a partner's absence, and it can only do that
+// on what the ROOM measured: each driver's share of the live match away, whether they missed
+// the whole opening window, and the party token from the staged roster.
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, teamNumber: number): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: {
+      clientId: id, name: id, teamName: 'T', teamNumber, alliance: 'red', startIndex: 0, ready: false,
+      spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  let seen: MatchOutcome | null = null;
+  const room = new Room('smoke-presence', () => {}, { kind: 'versus' }, (o) => {
+    seen = o;
+  });
+  room.applyPending({
+    code: 'iad-presence',
+    hostRegion: 'iad',
+    mode: '1v1',
+    seed: 7,
+    ranked: true,
+    roster: [
+      { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200, party: 'tok-p' },
+      { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+    ],
+  });
+  room.add(mkC('red', 'u-red', 111));
+  room.add(mkC('blue', 'u-blue', 222));
+  room.maybeStartRanked();
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  // blue's connection drops before the match goes live and stays down (inside the grace)
+  room.detach('blue');
+  room.advanceForTest(EARLY_ABSENT_TICKS + 600);
+  forceRoomToPost(room);
+  const out = seen as MatchOutcome | null;
+  const red = out?.participants.find((p) => p.userId === 'u-red');
+  const blue = out?.participants.find((p) => p.userId === 'u-blue');
+  check('presence: a ranked outcome carries the party token from the staged roster', red?.party === 'tok-p' && blue?.party === undefined,
+    `${red?.party} / ${blue?.party}`);
+  check('presence: the driver who stayed is present and not early', red?.away === 0 && red?.early === false,
+    `${red?.away} ${red?.early}`);
+  check('presence: the one gone from the start reads early and away', blue?.early === true && (blue?.away ?? 0) > 0.5,
+    `${blue?.away} ${blue?.early}`);
 }
 
 // ---- pre-match STRATEGY window: reveal / re-pick / ready gate / redaction ----
@@ -25033,8 +26852,8 @@ const dumperSetup = (): RobotSetup => {
     GAME_IDS.every((g) => seasonKeyActions(g).every((a) => !actionIsShared(a)) && seasonPadActions(g).every((a) => !actionIsShared(a))),
   );
   check(
-    'kinds: DECODE, with no mechanism of its own, lists Intake and Shoot and nothing else',
-    J(seasonKeyActions('decode')) === J(['intake', 'fire']),
+    'kinds: DECODE lists Intake, Shoot and its one mechanism of its own, the flywheel preset, and nothing else',
+    J(seasonKeyActions('decode')) === J(['intake', 'fire', 'flyPreset']),
     J(seasonKeyActions('decode')),
   );
 
@@ -25929,8 +27748,8 @@ const dumperSetup = (): RobotSetup => {
   // the per-game SETS, spelled out — the coverage check above says nothing is missing, and
   // these say what each season's driver actually gets
   check(
-    'touch: DECODE is shoot, intake and the three utilities',
-    touchButtonsFor('decode').map((b) => b.action).join(',') === 'fire,intake,flipFront,driveMode,park',
+    'touch: DECODE is shoot, intake, the flywheel preset and the three utilities',
+    touchButtonsFor('decode').map((b) => b.action).join(',') === 'fire,intake,flyPreset,flipFront,driveMode,park',
     touchButtonsFor('decode').map((b) => b.action).join(','),
   );
   check(
@@ -26782,13 +28601,14 @@ const dumperSetup = (): RobotSetup => {
   check('seat: abandonSlot checks it', /if \(!this\.seatOwner\(c, token\)\) return false;/.test(room));
   check(
     '⚠️ seat: the ONLY trusted reclaim is the one holding a verified account id',
-    (idx.match(/reattach\([^)]*true\)/g) ?? []).length === 1 &&
-      /seatFor\(user\.userId\)[\s\S]{0,400}?reattach\(seat, send, sendRaw, backlog, undefined, true\)/.test(idx),
+    // the sixth argument is `trusted`; the seventh (the returning socket's caps) is not a bypass
+    (idx.match(/reattach\([^;]*?,\s*true\s*[,)]/g) ?? []).length === 1 &&
+      /seatFor\(user\.userId\)[\s\S]{0,600}?reattach\(seat, send, sendRaw, backlog, undefined, true, coerceCaps\(msg\.caps\)\)/.test(idx),
     'a trusted bypass anywhere else would undo the seat secret from the door next to it',
   );
   check(
     'seat: both doors forward the frame’s token to the room',
-    /r\.reattach\(msg\.clientId, send, sendRaw, backlog, msg\.seatToken\)/.test(idx) &&
+    /r\.reattach\(msg\.clientId, send, sendRaw, backlog, msg\.seatToken, false, coerceCaps\(msg\.caps\)\)/.test(idx) &&
       /abandonSlot\(msg\.clientId, msg\.seatToken\)/.test(idx),
   );
   check(
@@ -26942,7 +28762,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
     /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',
@@ -27163,10 +28983,13 @@ const dumperSetup = (): RobotSetup => {
   check('region: legalRegion agrees with the router', legalRegion('iad') && !legalRegion('IAD') && !legalRegion('ia') && !legalRegion('iad\n'));
 
   const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
+  // /health no longer fly-replays at all (2026-10-02): a replay booted the named region, so an
+  // old per-region ping picker woke every satellite. With no replay there is no header to guard.
+  const health = idx.slice(idx.indexOf("req.url?.startsWith('/health')"), idx.indexOf("res.end('ok');"));
   check(
-    'region: /health validates before building its replay header',
-    /legalRegion\(want\)/.test(idx),
-    'the sibling handler carried the guard and this one did not — the comment there named this exact file',
+    'region: /health is answered where it lands and never builds a replay header',
+    health.length > 0 && !/fly-replay/.test(health.replace(/\/\/.*$/gm, '')),
+    'a /health?region= replay boots that region (auto_start) for a latency number',
   );
 }
 
@@ -27357,7 +29180,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ discord guard: the start-pose check reads `settingsRef`, so a just-switched season is the one measured',
-    /const cur = settingsRef\.current;\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
+    // (through `shownOf`, the importer gate's view of it: the robot the run fields)
+    /const cur = shownOf\(settingsRef\.current\);\n    const startOk = startSelectionLegal\(cur\.game, cur\.spec, cur\.alliance, cur\.startPose\);/.test(app),
     'selectGame runs on the line above the guard; the render’s own `settings` would measure the season being LEFT and refuse a BIOBUZZ room over a DECODE pose',
   );
 
@@ -28059,6 +29883,10660 @@ const dumperSetup = (): RobotSetup => {
       showFn[0].indexOf('screenRef.current !== from') < showFn[0].indexOf('shown = true'),
     'consumed before the bail, a player who moved during the 1.5s wait was left holding a live session and a held seat with no screen',
   );
+}
+
+/**
+ * THE AUTHENTICATED-REQUEST RULES (`src/net/authFetch.ts`). All three fail SILENTLY when wrong:
+ *
+ * - `readAccountSettings` — `null` licenses `AccountSync` to SEED the account from this device.
+ *   It used to be `null` on any failure too, so a sign-in while the server cold-booted (a 502)
+ *   overwrote the account's real bindings, robots and starts with a fresh device's defaults.
+ * - `sendWithTokenRetry` — the once-on-401 retry `authedJson` always had and the ~35 helpers
+ *   that called `fetch` themselves never did.
+ * - `createTokenCache` — concurrent callers share one `/token` fetch, and a fetch that started
+ *   before a sign-out never lands in the cache after it.
+ */
+{
+  const resp = (ok: boolean, status: number, body: unknown) => ({ ok, status, json: async () => body });
+  const throws = async (p: Promise<unknown>): Promise<boolean> => p.then(() => false, () => true);
+  check(
+    '⚠️ account settings: a failed read THROWS, it never reads as "never saved"',
+    (await throws(readAccountSettings(resp(false, 502, {})))) &&
+      (await throws(readAccountSettings(resp(false, 401, { error: 'x' })))) &&
+      (await throws(readAccountSettings(null))),
+    'null here makes AccountSync seed the account from this device, overwriting it',
+  );
+  check(
+    'account settings: a real answer reads through, and an account with none reads null',
+    JSON.stringify(await readAccountSettings(resp(true, 200, { settings: { game: 'chain' } }))) === '{"game":"chain"}' &&
+      (await readAccountSettings(resp(true, 200, {}))) === null,
+  );
+
+  // the retry: one send on success, exactly one more on a 401 with a NEW token, none otherwise
+  const run = async (statuses: number[], fresh: string | null) => {
+    const sent: string[] = [];
+    const forced: boolean[] = [];
+    let n = 0;
+    const res = await sendWithTokenRetry(
+      'old',
+      async (force) => {
+        forced.push(!!force);
+        return fresh;
+      },
+      async (t) => {
+        sent.push(t);
+        return { status: statuses[Math.min(n++, statuses.length - 1)] };
+      },
+    );
+    return { sent, forced, status: res.status };
+  };
+  const ok = await run([200], 'new');
+  check('auth retry: a 200 is sent once and never refreshes', ok.sent.join() === 'old' && ok.forced.length === 0);
+  const re = await run([401, 200], 'new');
+  check(
+    '⚠️ auth retry: a 401 retries ONCE with a force-refreshed token',
+    re.sent.join() === 'old,new' && re.forced.join() === 'true' && re.status === 200,
+    `sent=${re.sent.join()} forced=${re.forced.join()}`,
+  );
+  const twice = await run([401, 401], 'new');
+  check('auth retry: ...and only once, however the retry is answered', twice.sent.length === 2 && twice.status === 401);
+  const gone = await run([401], null);
+  const same = await run([401], 'old');
+  check(
+    'auth retry: signed out, or the same token back, returns the 401 as-is without resending',
+    gone.sent.length === 1 && gone.status === 401 && same.sent.length === 1,
+  );
+
+  // the token cache
+  let fetches = 0;
+  const pending: ((t: string | null) => void)[] = [];
+  const cache = createTokenCache(
+    () =>
+      new Promise<string | null>((res) => {
+        fetches++;
+        pending.push(res);
+      }),
+    () => 1_000_000,
+  );
+  const a = cache.get();
+  const b = cache.get();
+  const c = cache.get();
+  pending.shift()!('tok-1');
+  const got = await Promise.all([a, b, c]);
+  check(
+    '⚠️ token cache: three callers on an empty cache share ONE /token fetch',
+    fetches === 1 && got.every((t) => t === 'tok-1'),
+    `fetches=${fetches}`,
+  );
+  const hit = await cache.get();
+  check('token cache: ...and the next caller is served from the cache', fetches === 1 && hit === 'tok-1');
+  const forcedGet = cache.get(true);
+  check('token cache: a forced get goes to the network', fetches === 2);
+  pending.shift()!('tok-2');
+  await forcedGet;
+  // a fetch that started under the OLD identity and lands after clear()
+  const stale = cache.get(true);
+  cache.clear();
+  const afterClear = cache.get();
+  check('token cache: a get after clear() does not join the old identity’s fetch', fetches === 4);
+  pending.shift()!('old-user');
+  pending.shift()!('new-user');
+  const [staleTok, freshTok] = await Promise.all([stale, afterClear]);
+  const next = await cache.get();
+  check(
+    '⚠️ token cache: a token fetched before a sign-out is never CACHED after it',
+    staleTok === 'old-user' && freshTok === 'new-user' && next === 'new-user' && fetches === 4,
+    `stale=${staleTok} fresh=${freshTok} next=${next} fetches=${fetches}`,
+  );
+  // a token with no readable `exp` is still served from the cache for its fallback TTL
+  let clock = 0;
+  let plainFetches = 0;
+  const plain = createTokenCache(async () => {
+    plainFetches++;
+    return 'no-exp';
+  }, () => clock);
+  await plain.get();
+  clock = 30_000;
+  await plain.get();
+  check(
+    'token cache: a token with no readable exp is cached, not refetched on every call',
+    plainFetches === 1,
+    `fetches=${plainFetches} (the fallback TTL equalled the refresh skew, so it expired on arrival)`,
+  );
+  // a network failure is not a miss: the cache keeps what it had
+  const flaky = createTokenCache(async () => {
+    throw new Error('offline');
+  });
+  check('token cache: a network failure reads as no token, never a throw', (await flaky.get()) === null);
+}
+
+/**
+ * THE FRIENDS POLL, WOKEN THREE TIMES AT ONCE (`src/ui/pollLoop.ts`).
+ *
+ * A tab coming forward fires `visibilitychange`, `focus` and the idle detector's wake together.
+ * The inline loop ran a poll per wake while one was already in flight, and each finished poll
+ * armed a timer over the handle of the last, so every return to the tab left another poll chain
+ * running forever against `/api/friends`. Driven here with a fake clock: whatever the wakes, one
+ * request in flight and one timer pending.
+ */
+{
+  let nextId = 1;
+  const timers = new Map<number, () => void>();
+  let requests = 0;
+  const settle: (() => void)[] = [];
+  const loop = startPollLoop<number>({
+    run: () => {
+      requests++;
+      return new Promise<number>((res) => settle.push(() => res(20_000)));
+    },
+    setTimer: (fn) => {
+      const id = nextId++;
+      timers.set(id, fn);
+      return id;
+    },
+    clearTimer: (id) => void timers.delete(id),
+    fallbackMs: 20_000,
+  });
+  check('poll loop: it polls once on start', requests === 1 && timers.size === 0);
+  loop.wake();
+  loop.wake();
+  loop.wake();
+  check(
+    '⚠️ poll loop: three wakes while a poll is in flight start NO second request',
+    requests === 1,
+    `requests=${requests}`,
+  );
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  check('poll loop: the answer arms exactly ONE timer', timers.size === 1, `timers=${timers.size}`);
+  loop.wake();
+  loop.wake();
+  check(
+    '⚠️ poll loop: a wake between polls cancels the pending timer and polls once',
+    requests === 2 && timers.size === 0,
+    `requests=${requests} timers=${timers.size}`,
+  );
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const [fire] = [...timers.values()];
+  timers.clear();
+  fire();
+  check('poll loop: the timer firing polls again', requests === 3);
+  loop.stop();
+  settle.shift()!();
+  await Promise.resolve();
+  await Promise.resolve();
+  loop.wake();
+  check('poll loop: once stopped, nothing re-arms and a wake does nothing', timers.size === 0 && requests === 3);
+  // an idle page makes no request and just re-checks later
+  const idleTimers: number[] = [];
+  const idle = startPollLoop<number>({
+    run: () => 5_000,
+    setTimer: (_fn, ms) => (idleTimers.push(ms), idleTimers.length),
+    clearTimer: () => {},
+    fallbackMs: 20_000,
+  });
+  idle.stop();
+  check('poll loop: a synchronous answer (no request) just reschedules', idleTimers.join() === '5000');
+}
+
+/**
+ * THE REPLAY VIEWER FREES THE 3D WORLDS IT STOPS USING.
+ *
+ * A `'3d'` replay's world is solved in a Rapier world that lives in wasm linear memory, and the
+ * `WeakMap` holding it cannot return it (`disposeEngineFor`). The viewer built a fresh
+ * `ReplayPlayer` on every backward scrub, "play again", restart and video export, and dropped
+ * the old one — a whole 3D world leaked each time. Every swap now goes through ONE helper.
+ */
+{
+  const rv = readFileSync('src/ui/ReplayView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const assigns = rv.match(/player\.current = /g) ?? [];
+  check(
+    '⚠️ replay viewer: the on-screen player is only ever swapped through replacePlayer',
+    assigns.length === 1 && /const replacePlayer = [\s\S]{0,200}?player\.current = next;[\s\S]{0,120}?disposePhysics3dFor\(prev\.world\)/.test(rv),
+    `${assigns.length} direct assignments (a bare one drops a 3D world without freeing it)`,
+  );
+  check(
+    'replay viewer: ...the export frees its own player, and leaving frees the on-screen one',
+    /disposePhysics3dFor\(shot\.world\)/.test(rv) && /\(\) => \(\) => \{\n\s*\/\/[^\n]*\n\s*replacePlayer\(null\);/.test(rv),
+  );
+  check(
+    'replay viewer: a PRELOADED replay still gets the unmount guard its async load relies on',
+    /use\(preloadReplay\);[\s\S]{0,200}?return \(\) => \{\s*dead = true;/.test(rv),
+    'the bare return left `dead` false, so a 3D chunk landing after the viewer closed built a player on a dead screen',
+  );
+}
+
+/**
+ * A KEY IS RELEASED AS THE PHYSICAL KEY IT WENT DOWN AS.
+ *
+ * `e.key` depends on the modifiers held at that moment, and Shift is the default INTAKE. Press
+ * `1`, hold Shift, let go of `1`: the keyup says `!`, and the old handler deleted `!` — so `1`
+ * stayed held, driving or firing, until the window lost focus. And macOS sends no keyup at all
+ * for a key released while ⌘ is down.
+ */
+{
+  const kb = new Keyboard();
+  const listeners: Record<string, ((e: unknown) => void)[]> = {};
+  const realWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    addEventListener: (t: string, fn: (e: unknown) => void) => {
+      (listeners[t] ??= []).push(fn);
+    },
+    removeEventListener: () => {},
+  };
+  kb.attach();
+  (globalThis as { window?: unknown }).window = realWindow;
+  const target = { tagName: 'CANVAS', isContentEditable: false };
+  const send = (type: string, key: string, code?: string, metaKey = false) => {
+    for (const fn of listeners[type] ?? []) fn({ key, code, metaKey, target, repeat: false, preventDefault: () => {} });
+  };
+  send('keydown', '1', 'Digit1');
+  send('keydown', 'Shift', 'ShiftLeft');
+  send('keyup', '!', 'Digit1'); // the same physical key, reported under the modifier now held
+  check(
+    '⚠️ keyboard: a digit released while Shift is held is RELEASED, not stuck down',
+    !kb.held('1') && kb.held('shift'),
+    `held(1)=${kb.held('1')} held(shift)=${kb.held('shift')}`,
+  );
+  send('keyup', 'Shift', 'ShiftLeft');
+  // the other order: pressed UNDER Shift, released after it
+  send('keydown', 'Shift', 'ShiftLeft');
+  send('keydown', '?', 'Slash');
+  send('keyup', 'Shift', 'ShiftLeft');
+  send('keyup', '/', 'Slash');
+  check('keyboard: ...and one pressed under Shift and released after it lets go too', !kb.held('?') && !kb.held('/'));
+  // no `code` at all (a synthetic event): the old by-key release still works
+  send('keydown', 'w');
+  send('keyup', 'w');
+  check('keyboard: an event with no code still releases by key', !kb.held('w'));
+  // ⌘ swallows the keyup of anything released under it
+  send('keydown', 'Meta', 'MetaLeft', true);
+  send('keydown', 'k', 'KeyK', true);
+  send('keyup', 'Meta', 'MetaLeft');
+  check(
+    'keyboard: a key pressed under ⌘ is let go when ⌘ is (macOS never sends its keyup)',
+    !kb.held('k') && !kb.held('meta'),
+    `held(k)=${kb.held('k')}`,
+  );
+  send('keydown', 'w', 'KeyW');
+  send('keydown', 'Meta', 'MetaLeft', true);
+  send('keyup', 'Meta', 'MetaLeft');
+  check('keyboard: ...but a key already held before ⌘ keeps driving', kb.held('w'));
+}
+
+/**
+ * THE STICK AND TRIGGER SETTINGS DO WHAT THEY SAY (a feel change, on purpose).
+ *
+ * - The deadzone is documented as RADIAL and was applied per AXIS — a cross-shaped deadzone
+ *   that zeroed the small component of any near-cardinal push, so at the default 0.12 no angle
+ *   under ~7° off straight ahead was reachable at full throw.
+ * - The trigger threshold was `pressed || value > threshold`, and Chrome reports an analog
+ *   trigger `pressed` from ~0.12 of travel, so raising the threshold did nothing.
+ */
+{
+  const DZ = DEFAULT_BINDINGS.pad.deadzone;
+  // 5° off straight ahead, full throw
+  const a = (5 * Math.PI) / 180;
+  const [x, y] = shapeStick(Math.sin(a), Math.cos(a), DZ, 1);
+  const perAxisX = padShape(Math.sin(a), DZ, 1);
+  check(
+    '⚠️ gamepad: a push 5° off straight ahead keeps its sideways component (radial deadzone)',
+    x > 0.05 && perAxisX === 0 && Math.abs(Math.atan2(x, y) - a) < 1e-9,
+    `radial x=${x.toFixed(3)} (per-axis gave ${perAxisX})`,
+  );
+  check(
+    'gamepad: inside the deadzone in any direction is dead centre',
+    shapeStick(DZ * 0.7, DZ * 0.7, DZ, 1).every((v) => v === 0) && shapeStick(0, 0, DZ, 1).every((v) => v === 0),
+  );
+  const [cx, cy] = shapeStick(1, 1, DZ, 1.8); // a square gate's corner reads past 1
+  check('gamepad: a square-gate corner is capped at full deflection, not more', Math.abs(Math.hypot(cx, cy) - 1) < 1e-9);
+  const [hx] = shapeStick(0.5, 0, DZ, 1);
+  check('gamepad: along an axis the radial shape equals the old 1D one', Math.abs(hx - padShape(0.5, DZ, 1)) < 1e-12);
+
+  const thr = 0.6;
+  check(
+    '⚠️ gamepad: a trigger Chrome calls "pressed" at 0.2 is NOT down under a 0.6 threshold',
+    !padButtonDown({ pressed: true, value: 0.2 }, 7, thr) && padButtonDown({ pressed: true, value: 0.7 }, 7, thr),
+  );
+  check(
+    'gamepad: a digital trigger (value 0 while pressed) and every other button still read pressed',
+    padButtonDown({ pressed: true, value: 0 }, 6, thr) && padButtonDown({ pressed: true, value: 0.2 }, 0, thr),
+  );
+}
+
+/**
+ * THE DOUBLE-TAP-ZOOM GUARD LETS A BUTTON'S TAP THROUGH. `preventDefault` on a touchend cancels
+ * the click it would have synthesized, so a thumb lifted off the joystick followed by a tap on
+ * MENU / RESET / REMATCH within 300 ms did nothing. (`touch-action: none` on the game surface
+ * and the touch pad is what keeps a control from zooming.)
+ */
+{
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const fn = gv.match(/const onTouchEnd = \(e: TouchEvent\): void => \{[\s\S]*?\n    \};/);
+  check(
+    '⚠️ touch: the double-tap guard skips buttons, links and form controls',
+    !!fn &&
+      /closest\?\.\('button, a, input, select, textarea, \[role="button"\]'\)/.test(fn[0]) &&
+      /if \(!onControl && now - lastTouchEnd <= 300\) e\.preventDefault\(\)/.test(fn[0]),
+    'a tap on MENU within 300 ms of lifting a joystick thumb was swallowed',
+  );
+}
+
+/**
+ * ONE OWNER FOR A DOWNLOAD'S OBJECT URL (`src/ui/saveBlob.ts`). `a.click()` only starts a
+ * download; the account export and the admin CSVs revoked the URL on the very next line, which
+ * can cut the transfer off before the browser has taken the blob.
+ */
+{
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory() ? walk(joinPath(dir, d.name)) : /\.tsx?$/.test(d.name) ? [joinPath(dir, d.name)] : [],
+    );
+  // `render/importedAssets.ts` is the one owner of DISPLAY object URLs (an imported robot's top-down
+  // picture, revoked when its cache entry goes) — never a download, so it is not this rule's case
+  const revokers = walk('src').filter((f) => /revokeObjectURL/.test(readFileSync(f, 'utf8')) && !/importedAssets\.ts$/.test(f));
+  const sb = readFileSync('src/ui/saveBlob.ts', 'utf8');
+  check(
+    '⚠️ downloads: only saveBlob revokes an object URL, and it waits well past the hand-off',
+    revokers.length === 1 && /saveBlob\.ts$/.test(revokers[0]) && /setTimeout\(\(\) => URL\.revokeObjectURL\(url\), BLOB_URL_TTL_MS\)/.test(sb),
+    revokers.join(', '),
+  );
+}
+
+/**
+ * BINDING THE LEFT MOUSE BUTTON FINISHES. The free-camera capture binds on `mousedown`, and the
+ * same press's `click` then landed on the tile that armed it — whose toggle saw no capture and
+ * armed it again.
+ */
+{
+  const gs = readFileSync('src/ui/GraphicsSection.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ free camera: the press that was bound is swallowed before the capture clears',
+    /bindFreeCamCustom\(cur\.custom, capture, b\) \}\);\s*swallowRestOfPress\(\);\s*setCapture\(null\);/.test(gs) &&
+      /function swallowRestOfPress\(\)[\s\S]{0,700}?'click', 'auxclick', 'contextmenu'/.test(gs),
+  );
+}
+
+/**
+ * STALE STATE ACROSS A CHANGE THE SCREEN OUTLIVES — each of these read the wrong value silently.
+ */
+{
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const gv = rd('src/ui/GameView.tsx');
+  const bootAt = gv.indexOf('controllerRef.current = controller;');
+  const bootTail = gv.slice(bootAt, bootAt + 1400);
+  check(
+    '⚠️ game view: boot registers the practice-run and restart callbacks itself',
+    /controller\.setRestartRequest\(restartRunRef\.current \?\? null\);/.test(bootTail) &&
+      /controller\.onPracticeRun = practiceRunRef\.current/.test(bootTail),
+    'the effects that keep them current ran before an async (3D) boot built the controller, and registered nothing',
+  );
+  check(
+    'game view: Escape leaves through the live onExit, not the mount-time copy',
+    /if \(e\.key === 'Escape'\) exitRef\.current\(\);/.test(gv) && !/if \(e\.key === 'Escape'\) onExit\(\);/.test(gv),
+  );
+  for (const [file, gameExpr] of [
+    ['src/ui/Leaderboard.tsx', 'game'],
+    ['src/ui/CareerView.tsx', 'nav.game'],
+  ] as const) {
+    const src = rd(file);
+    const esc = gameExpr.replace('.', '\\.');
+    check(
+      `⚠️ ${file.split('/').pop()}: switching game drops the selected period during render`,
+      new RegExp(`if \\(periodGame !== ${esc}\\) \\{\\s*setPeriodGame\\(${esc}\\);\\s*setSeason\\(null\\);`).test(src),
+      'an archived DECODE period was sent as a Chain Reaction query',
+    );
+  }
+  check(
+    'practice replays: the cloud list is cleared when the account or game changes',
+    /setLocal\(listPracticeRuns\(\)\);[\s\S]{0,300}?setRemote\(\[\]\);[\s\S]{0,40}?if \(!signedIn\)/.test(rd('src/ui/PracticeReplays.tsx')),
+  );
+  const app = rd('src/ui/App.tsx');
+  check(
+    'practice flush: a trigger that arrives mid-flush asks for another pass instead of being dropped',
+    /if \(flushingPractice\.current\) \{\s*flushPracticeAgain\.current = true;\s*return;/.test(app) &&
+      /\} while \(flushPracticeAgain\.current && signedInRef\.current\);/.test(app),
+  );
+  const spe = rd('src/ui/StartPositionEditor.tsx');
+  const onMove = spe.match(/const onMove = \(e: React\.PointerEvent\) => \{[\s\S]*?\n  \};/);
+  check(
+    'start editor: a drag saves on release, not on every pointermove',
+    !!onMove && !/\bedit\(|commit\(/.test(onMove[0]) && /setDraft\(next\)/.test(onMove[0]),
+    'each save is a whole-settings localStorage write',
+  );
+}
+
+/**
+ * THREE LOOPS THAT KEPT RUNNING, OR STOPPED, FOR THE WRONG REASON.
+ */
+{
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const main = rd('src/main.tsx');
+  check(
+    '⚠️ stale chunk: the reload guard is once PER BUILD, not once per tab forever',
+    /if \(sessionStorage\.getItem\(CHUNK_RELOAD_KEY\) === build\) return;\s*sessionStorage\.setItem\(CHUNK_RELOAD_KEY, build\);/.test(main),
+    "a bare '1' never cleared: a long-lived tab reloaded for the first deploy and showed the error page for every one after",
+  );
+  const aa = rd('src/ui/AdminAnalytics.tsx');
+  check(
+    'admin analytics: an older load landing after a newer one is discarded',
+    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*setReport\(r\);/.test(aa),
+  );
+  const wl = rd('src/ui/WatchLive.tsx');
+  check(
+    'watch live: an unattended page does not poll /api/live, and catches up when someone is back',
+    /const load = \(\): void => \{[\s\S]{0,600}?if \(userIdle\(\)\) return;/.test(wl) && /onUserActive\(load\)/.test(wl),
+  );
+}
+
+// ---- ADMISSION: room codes, room kinds, queue inputs, the cross-machine lock (server/admission.ts)
+{
+  // EVERY code the product mints must pass, or the gate refuses a real room. Each generator is
+  // called rather than a sample copied, so a format change fails here first.
+  const minted: [string, string][] = [
+    ['custom/duo/LAN code', generateRoomCode().toLowerCase()],
+    ['Discord activity code', roomCodeForInstance('1234567890abcdef').toLowerCase()],
+    ['record run', 'rec-' + Math.random().toString(36).slice(2, 9)],
+    ['staged ranked', `iad-1v1${12}${Math.floor(Math.random() * 0x7fffffff).toString(36).padStart(6, '0').slice(-6)}`],
+    ['staged 2v2', 'syd-2v27abc123'],
+    ['no-DB matchmaker fallback', 'mm-2v2-41'],
+    ['load harness region-prefixed', `lhr-${generateRoomCode().toLowerCase()}`],
+    ['the fallback code', 'play42'],
+  ];
+  for (const [what, code] of minted) check(`admission: a minted ${what} code passes (${code})`, legalRoomCode(code));
+  check('admission: an empty code is refused', !legalRoomCode(''));
+  check('admission: a 65-char code is refused', !legalRoomCode('a'.repeat(65)));
+  check('admission: a code with a newline is refused (log injection)', !legalRoomCode('abc\n[server] fake'));
+  check('admission: a non-string code is refused', !legalRoomCode(42) && !legalRoomCode(null));
+  check('admission: non-ASCII is refused', !legalRoomCode('äbc123'));
+
+  check('admission: record + duo stays duo', JSON.stringify(coerceRoomKind({ kind: 'record', record: 'duo' })) === '{"kind":"record","record":"duo"}');
+  check(
+    '⚠️ admission: a record room with NO record kind is SOLO (persist filed it on the solo board while soloRecord read false)',
+    JSON.stringify(coerceRoomKind({ kind: 'record' })) === '{"kind":"record","record":"solo"}',
+  );
+  check('admission: an unknown record kind is solo', coerceRoomKind({ kind: 'record', record: 'trio' }).record === 'solo');
+  check('admission: an unknown room kind is versus, with no record', JSON.stringify(coerceRoomKind({ kind: 'ranked', record: 'duo' })) === '{"kind":"versus"}');
+  check('admission: a non-object config is versus', coerceRoomKind('abc').kind === 'versus' && coerceRoomKind(null).kind === 'versus');
+
+  check('admission: the two queue modes are accepted', isQueueMode('1v1') && isQueueMode('2v2'));
+  check('admission: anything else is refused before enqueue', !isQueueMode('3v3') && !isQueueMode('__proto__') && !isQueueMode(undefined));
+
+  check('admission: a huge accessMs is capped (it pinned the host to the liar)', coerceAccessMs(1e6) === ACCESS_MS_MAX);
+  check('admission: a string / NaN / negative accessMs reads 0', coerceAccessMs('abc') === 0 && coerceAccessMs(NaN) === 0 && coerceAccessMs(-40) === 0);
+  check('admission: an honest accessMs passes through', coerceAccessMs(37) === 37);
+  check('admission: a region-shaped homeRegion is kept, anything else dropped', coerceHomeRegion('syd') === 'syd' && coerceHomeRegion('syd\r\nx') === '' && coerceHomeRegion(5) === '');
+
+  // the cross-machine single-game lock
+  const local = new Set(['abc123', 'rec-local']);
+  const isLocal = (c: string) => local.has(c);
+  check('cross-machine lock: no live entry, no conflict', !remoteLiveConflict(undefined, 'rec-x', isLocal, true));
+  check(
+    '⚠️ cross-machine lock: a live versus on ANOTHER machine refuses a new record run',
+    remoteLiveConflict({ room: 'k7m2p9', region: 'lhr' }, 'rec-x', isLocal, true),
+  );
+  check('cross-machine lock: ...and the ranked queue', remoteLiveConflict({ room: 'k7m2p9', region: 'lhr' }, '', isLocal, false));
+  check('cross-machine lock: the SAME room (a reconnect) is never a conflict', !remoteLiveConflict({ room: 'K7M2P9', region: 'lhr' }, 'k7m2p9', isLocal, true));
+  check('cross-machine lock: a room on THIS machine is left to the local lock', !remoteLiveConflict({ room: 'abc123', region: 'iad' }, 'rec-x', isLocal, true));
+  check(
+    'cross-machine lock: a remote SOLO record run yields to its owner at the join door (restart)',
+    !remoteLiveConflict({ room: 'rec-far', region: 'syd', soloRecord: true }, 'rec-x', isLocal, true),
+  );
+  check(
+    'cross-machine lock: ...but the queue still refuses it, like the local queue guard',
+    remoteLiveConflict({ room: 'rec-far', region: 'syd', soloRecord: true }, '', isLocal, false),
+  );
+
+  // per-network hosting count
+  const rs = [
+    { host: 'n1', counts: true },
+    { host: 'n1', counts: true },
+    { host: 'n1', counts: false },
+    { host: 'n2', counts: true },
+    { host: undefined, counts: true },
+  ];
+  check('host cap: counts only this network’s rooms that count', hostedBy(rs, 'n1', (r) => r.host, (r) => r.counts) === 2);
+  check('host cap: another network is independent', hostedBy(rs, 'n2', (r) => r.host, (r) => r.counts) === 1);
+
+}
+
+// ---- ROOM abuse guards: replaced sockets, lobby locks, idle lobbies, reports, roster fan-out
+{
+  const mkA = (id: string, box: ServerMsg[], userId?: string): Client => ({
+    id,
+    send: (m) => box.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    ...(userId ? { userId } : {}),
+  });
+  const rosterAlliance = (box: ServerMsg[], id: string) => {
+    const r = [...box].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    return r?.players.find((p) => p.clientId === id)?.alliance;
+  };
+
+  // A REPLACED SOCKET NO LONGER SPEAKS FOR THE SEAT
+  const oldBox: ServerMsg[] = [];
+  const newBox: ServerMsg[] = [];
+  const room = new Room('smoke-conn', () => {}, { kind: 'versus' });
+  const cl = mkA('c1', oldBox, 'u-c1');
+  room.add(cl);
+  const oldConn = cl.conn as number;
+  const newConn = room.reattach('c1', (m) => newBox.push(m), undefined, undefined, undefined, true) as number;
+  check('replaced socket: the reclaim issues a new generation', typeof newConn === 'number' && newConn !== oldConn);
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'red' } }, oldConn);
+  check('⚠️ replaced socket: a frame from the OLD socket is ignored', rosterAlliance(newBox, 'c1') !== 'red');
+  await new Promise((r) => setTimeout(r, 60)); // clear the roster throttle window
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'red' } }, newConn);
+  check('replaced socket: the NEW socket’s frame lands', rosterAlliance(newBox, 'c1') === 'red');
+  room.onMessage('c1', { t: 'update', patch: { alliance: 'blue' } });
+  await new Promise((r) => setTimeout(r, 60));
+  check('replaced socket: a caller with no generation (tests, the LAN host) is unaffected', rosterAlliance(newBox, 'c1') === 'blue');
+
+  // THE ROSTER AFTER A BURST OF PATCHES: one now, one trailing, the final state
+  const fanBox: ServerMsg[] = [];
+  const fan = new Room('smoke-fanout', () => {}, { kind: 'versus' });
+  fan.add(mkA('f1', fanBox));
+  await new Promise((r) => setTimeout(r, 60));
+  fanBox.length = 0;
+  for (let i = 0; i < 50; i++) fan.onMessage('f1', { t: 'update', patch: { alliance: i % 2 ? 'blue' : 'red' } });
+  const burst = fanBox.filter((m) => m.t === 'roster').length;
+  check('roster fan-out: a 50-patch burst broadcasts ONCE immediately', burst === 1, String(burst));
+  await new Promise((r) => setTimeout(r, 80));
+  const after = fanBox.filter((m) => m.t === 'roster').length;
+  check('roster fan-out: ...and once more, trailing', after === 2, String(after));
+  check('roster fan-out: the trailing roster carries the FINAL state', rosterAlliance(fanBox, 'f1') === 'blue');
+
+  // A LOBBY SEAT HOLDS NO LOCK, AND LEAVING ONE RELEASES WHATEVER THE REGISTRY THOUGHT IT HAD
+  const inactive: string[] = [];
+  const active: string[] = [];
+  const lob = new Room('smoke-lobbylock', () => {}, { kind: 'versus' }, undefined, (u) => active.push(u), (u) => inactive.push(u));
+  lob.add(mkA('l1', [], 'u-l1'));
+  lob.add(mkA('l2', [], 'u-l2'));
+  check('lobby lock: a lobby seat holds no single-game lock', !lob.holdsLockFor('u-l1') && active.length === 0);
+  lob.detach('l1', undefined, true);
+  check('⚠️ lobby lock: leaving a lobby hands the lock back (it leaked when a reclaim had set it)', inactive.includes('u-l1'));
+  lob.onMessage('l2', { t: 'start' });
+  check('lobby lock: a LIVE match does hold it', lob.holdsLockFor('u-l2') && active.includes('u-l2'));
+  lob.advanceForTest(1);
+
+  // HOST CAP: which rooms count
+  const capLobby = new Room('smoke-cap1', () => {}, { kind: 'versus' });
+  capLobby.add(mkA('h1', [], 'u-h1'));
+  check('host cap: a lobby counts', capLobby.countsTowardHostCap());
+  capLobby.onMessage('h1', { t: 'start' });
+  capLobby.advanceForTest(1);
+  check('⚠️ host cap: a live match with a signed-in driver NEVER counts (a school full of real matches)', !capLobby.countsTowardHostCap());
+  const anon = new Room('smoke-cap2', () => {}, { kind: 'record', record: 'solo' });
+  anon.add(mkA('h2', []));
+  anon.onMessage('h2', { t: 'start' });
+  anon.advanceForTest(1);
+  check('host cap: an anonymous live run does count', anon.countsTowardHostCap());
+
+  // IDLE LOBBY REAPER
+  let emptied = 0;
+  const idleBox: ServerMsg[] = [];
+  const idleUnlock: string[] = [];
+  const idle = new Room('smoke-idle', () => emptied++, { kind: 'versus' }, undefined, undefined, (u) => idleUnlock.push(u));
+  idle.add(mkA('i1', idleBox, 'u-i1'));
+  check('idle lobby: a fresh lobby is not idle', idle.idleLobbyMs() < 1000);
+  idle.setLastActivityForTest(Date.now() - 21 * 60_000);
+  check('idle lobby: 21 minutes untouched reads as idle', idle.idleLobbyMs() >= 20 * 60_000);
+  idle.onMessage('i1', { t: 'update', patch: {} });
+  check('idle lobby: any driver frame resets the clock', idle.idleLobbyMs() < 1000);
+  idle.setLastActivityForTest(Date.now() - 21 * 60_000);
+  idle.closeIdleLobby('closed for idleness');
+  check('idle lobby: closing it empties the room (the registry drops it)', emptied === 1);
+  check('idle lobby: the driver is told why', idleBox.some((m) => m.t === 'error' && m.message === 'closed for idleness'));
+  check('idle lobby: and its lock (if any) is handed back', idleUnlock.includes('u-i1'));
+  check('idle lobby: a room with a match is never an idle lobby', capLobby.idleLobbyMs(Date.now() + 3_600_000) === 0);
+
+  // ONE REPORT ROW PER KEY PER ROOM
+  check('reports: the first report of a key passes', room.claimReportSlot('player|a|b|griefing'));
+  check('⚠️ reports: a repeat never reaches the database', !room.claimReportSlot('player|a|b|griefing'));
+  check('reports: a different reason is a different row', room.claimReportSlot('player|a|b|language'));
+  let passed = 0;
+  for (let i = 0; i < 400; i++) if (room.claimReportSlot(`score|x|${i}`)) passed++;
+  check('reports: the per-room set is bounded', passed < 400 && passed > 100, String(passed));
+
+  // TICK ERRORS STOP A BROKEN MATCH
+  const errBox: ServerMsg[] = [];
+  const err = new Room('smoke-tickerr', () => {}, { kind: 'versus' });
+  err.add(mkA('e1', errBox, 'u-e1'));
+  err.onMessage('e1', { t: 'start' });
+  check('tick errors: the loop is running', err.loopRunningForTest());
+  const origErr = console.error;
+  console.error = () => {};
+  try {
+    for (let i = 0; i < 119; i++) err.noteTickErrorForTest(new Error('boom'));
+    check('tick errors: a burst below the limit keeps the match', err.loopRunningForTest());
+    err.noteTickErrorForTest(new Error('boom'));
+  } finally {
+    console.error = origErr;
+  }
+  check('⚠️ tick errors: a world that throws every tick is STOPPED, not logged forever', !err.loopRunningForTest());
+  check('tick errors: its drivers are told', errBox.some((m) => m.t === 'error' && /server error/.test(m.message)));
+  for (const r of [room, fan, lob, capLobby, anon]) r.advanceForTest(0);
+}
+
+// ---- THE RECORD ROW's ASSISTS ARE THE ONES THE ROBOT PLAYED WITH ------------------------
+{
+  let outcome: { participants: { assists: { autoFire: boolean; autoIntake: boolean } }[] } | null = null;
+  const room = new Room('smoke-assists', () => {}, { kind: 'record', record: 'solo' }, (o) => {
+    outcome = o as never;
+  });
+  room.add({
+    id: 'a1',
+    send: () => {},
+    player: { clientId: 'a1', name: 'a1', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS, autoFire: true, autoIntake: true } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-a1',
+  });
+  room.onMessage('a1', { t: 'start' });
+  room.advanceForTest(10);
+  // mid-match, the roster copy is patched to claim no assists at all
+  room.onMessage('a1', { t: 'update', patch: { assists: { ...DEFAULT_ASSISTS, autoFire: false, autoIntake: false } } });
+  const w = room.worldForTest() as World;
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 0.05;
+  room.advanceForTest(2000);
+  const got = (outcome as { participants: { assists: { autoFire: boolean; autoIntake: boolean } }[] } | null)?.participants[0]?.assists;
+  check('record assists: the match finalized with a participant', !!got);
+  check(
+    '⚠️ record assists: a mid-match roster patch cannot relabel a run driven WITH auto-fire',
+    got?.autoFire === true && got?.autoIntake === true,
+    JSON.stringify(got),
+  );
+}
+
+// ---- SERVER WIRING (index.ts cannot be imported headlessly, so its seams are pinned in source)
+{
+  const idx = readFileSync(pathResolve('server/index.ts'), 'utf8');
+  check('wiring: the join path validates the room code before it can name a room', /const code = typeof msg\.room === 'string'[\s\S]{0,120}if \(!legalRoomCode\(code\)\)/.test(idx));
+  check('wiring: the room kind is coerced to its enums', idx.includes('...coerceRoomKind(msg.config ?? DEFAULT_ROOM_CONFIG)'));
+  check('wiring: onEmpty drops only the room it belongs to', /if \(rooms\.get\(code\) === created0\) rooms\.delete\(code\);/.test(idx));
+  check('wiring: the per-network host cap runs after the staged-pairing claim', idx.indexOf('takePendingMatch(code)') < idx.indexOf('MAX_HOSTED_PER_IP > 0 && !r.staging()') && idx.indexOf('MAX_HOSTED_PER_IP > 0 && !r.staging()') > 0);
+  check('wiring: the join path asks the cross-machine heartbeat, with the solo-record exemption', /remoteLiveConflict\(live\.get\(user\.userId\), code, \(c\) => rooms\.has\(c\), true\)/.test(idx));
+  check('wiring: ...and the queue asks it too, without the exemption', /remoteLiveConflict\(live\.get\(u\.userId\), '', \(c\) => rooms\.has\(c\), false\)/.test(idx));
+  check('wiring: a seat reclaim re-asserts the lock only where the room holds one', idx.includes('if (r.holdsLockFor(user.userId)) userRoom.set(user.userId, code);'));
+  check('wiring: room frames carry the socket generation', idx.includes('room.onMessage(id, msg, conn || undefined);'));
+  check('wiring: spectators are capped per network', idx.includes('(spectatorsByNet.get(netKey) ?? 0) >= MAX_SPECTATORS_PER_IP'));
+  check('wiring: reports are de-duplicated before the database', (idx.match(/claimReportSlot\(/g) ?? []).length === 2);
+  check('wiring: the queue refuses an unknown mode before enqueue', idx.includes('if (!isQueueMode(msg.mode)) {'));
+  check('wiring: accessMs and homeRegion are coerced', idx.includes('accessMs: coerceAccessMs(msg.accessMs),') && idx.includes('coerceHomeRegion(msg.homeRegion)'));
+  check('wiring: every queue step has a catch', (idx.match(/\.catch\(queueFailed\)/g) ?? []).length === 3);
+  check('wiring: the idle-lobby sweep is armed', idx.includes('r.closeIdleLobby(LOBBY_IDLE_MESSAGE)'));
+  check('wiring: the old socket’s close only deletes its own liveSockets row', idx.includes('if (liveSockets.get(id) === mySock) liveSockets.delete(id);'));
+}
+
+// ---- REQUEST-PATH LOAD: rate-limit sweeps and the moderation provider budget --------------
+{
+  // the request-path limiters sweep at most once per interval (server/sweepGate.ts)
+  const due = sweepGate(1000);
+  check('sweepGate: the first call sweeps', due(10_000));
+  check('sweepGate: a call inside the interval does not', !due(10_500));
+  check('sweepGate: the next interval sweeps again', due(11_000));
+
+  // the moderation provider budget (server/moderation.ts)
+  resetProviderBudgetForTests();
+  let took = 0;
+  const t0 = 1_000_000;
+  for (let i = 0; i < MODERATION_BUDGET_PER_MIN + 5; i++) if (takeProviderBudget(t0)) took++;
+  check('moderation budget: at most the per-minute budget of hosted calls', took === MODERATION_BUDGET_PER_MIN, `${took}/${MODERATION_BUDGET_PER_MIN}`);
+  check('moderation budget: it refills after a minute', takeProviderBudget(t0 + 60_000));
+  resetProviderBudgetForTests();
+
+  const idx = readFileSync(pathResolve('server/index.ts'), 'utf8');
+  check('wiring: the /api/perf reset needs the operator secret on Fly', /const gapReset =[\s\S]{0,200}perfQs\.get\('secret'\) === process\.env\.ADMIN_SECRET/.test(idx));
+  check('wiring: the admin body reader stops at its cap (the shared readBody)', idx.includes('return readBody(req, 16 * 1024);'));
+  check('wiring: the presence and live-rooms reads are shared while in flight', idx.includes('if (!presenceInFlight) {') && idx.includes('if (!liveInFlight) {'));
+  const site = readFileSync(pathResolve('server/siteState.ts'), 'utf8');
+  check('wiring: the lockdown and banner reads are shared while in flight', site.includes('if (!force && lockInFlight) return lockInFlight;') && site.includes('if (!force && bannersInFlight) return bannersInFlight;'));
+  const auth = readFileSync(pathResolve('server/auth.ts'), 'utf8');
+  check('wiring: a missing token is not logged (the ordinary anonymous case)', !auth.includes('no token on join'));
+  check('wiring: a failed verify is logged at a bounded rate', auth.includes('logVerifyFailure(e);') && auth.includes('VERIFY_FAIL_LOG_MS'));
+}
+
+/**
+ * IMPORTED ROBOTS ON THE WIRE (docs/area/netcode.md, IMPORTED ROBOTS) — THE RULES, PURE.
+ *
+ * The capability, the predicates, the one admission rule every door asks, the replay stamp and
+ * the device-only rule for practice and LAN runs. The rooms are next.
+ *
+ * `coerceSpec` carries `imported` (the sim lane landed), so the roster checks below read what the
+ * room actually kept.
+ */
+{
+  const IMP = {
+    v: 1, id: '0123456789abcdef', heightIn: 12,
+    hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }],
+  };
+  const impSpec = { ...DEFAULT_SPEC, imported: IMP } as typeof DEFAULT_SPEC;
+
+  check('imports: this client advertises the capability', CLIENT_CAPS.includes(ROBOT_IMPORT_CAP) && ROBOT_IMPORT_CAP === 'robotImport');
+  check('imports: the server advertises it too (the client offers imports only on that word)', SERVER_CAPS.includes(ROBOT_IMPORT_CAP));
+  check('imports: hasImportCap reads the list', hasImportCap(CLIENT_CAPS) && !hasImportCap([]) && !hasImportCap(undefined));
+
+  check(
+    'imports: isImportedSpec reads an import, and only an object',
+    isImportedSpec(impSpec) && !isImportedSpec(DEFAULT_SPEC) && !isImportedSpec(null) && !isImportedSpec('x') &&
+      !isImportedSpec({ imported: null }) && !isImportedSpec({ imported: 'yes' }) && !isImportedSpec({ imported: [] }),
+  );
+  const stripped = stripImported(impSpec);
+  check(
+    'imports: stripImported is a standard COPY (the original keeps its import), a standard spec is returned as is',
+    !isImportedSpec(stripped) && isImportedSpec(impSpec) && stripped.length === impSpec.length && stripImported(DEFAULT_SPEC) === DEFAULT_SPEC,
+  );
+  check('imports: setupsHaveImported', setupsHaveImported([{ spec: DEFAULT_SPEC }, { spec: impSpec }]) && !setupsHaveImported([{ spec: DEFAULT_SPEC }]) && !setupsHaveImported(undefined));
+
+  // ---- the ONE admission rule --------------------------------------------------------------
+  const custom = { allows: true, hasImport: false, capless: false };
+  const staged = { allows: false, hasImport: false, capless: false };
+  const none: string[] = [];
+  check('imports/admit: a custom room takes an imported robot from a client with the cap', importAdmission(custom, { imported: true, caps: CLIENT_CAPS }) === null);
+  check('imports/admit: a room that does not allow imports (staged ranked, record) refuses one', importAdmission(staged, { imported: true, caps: CLIENT_CAPS }) === IMPORT_REFUSED_HERE);
+  check('imports/admit: a client WITHOUT the cap cannot bring one', importAdmission(custom, { imported: true, caps: none }) === IMPORT_ROOM_NEEDS_UPDATE);
+  check('imports/admit: an import is not added beside a seat or watcher without the cap', importAdmission({ ...custom, capless: true }, { imported: true, caps: CLIENT_CAPS }) === IMPORT_MEMBER_NEEDS_UPDATE);
+  check('imports/admit: a standard robot from a client without the cap is admitted to an ordinary room', importAdmission(custom, { imported: false, caps: none }) === null);
+  check('imports/admit: ...but not to a room that holds an imported robot', importAdmission({ ...custom, hasImport: true }, { imported: false, caps: none }) === IMPORT_ROOM_NEEDS_UPDATE);
+  check('imports/admit: ...while a client with the cap is', importAdmission({ ...custom, hasImport: true }, { imported: false, caps: CLIENT_CAPS }) === null);
+  check('imports/admit: a ranked room is untouched for a client without the cap (ranked never holds an import)', importAdmission(staged, { imported: false, caps: none }) === null);
+  check('imports/admit: ⚠️ an imported robot whose id another seat holds is refused (its look is relayed and drawn by that id)',
+    importAdmission({ ...custom, ids: ['0123456789abcdef'] }, { imported: true, caps: CLIENT_CAPS, id: '0123456789abcdef' }) === IMPORT_ID_TAKEN
+      && importAdmission({ ...custom, ids: ['0123456789abcdef'] }, { imported: true, caps: CLIENT_CAPS, id: 'fedcba9876543210' }) === null
+      && importAdmission({ ...custom, ids: ['0123456789abcdef'] }, { imported: false, caps: CLIENT_CAPS }) === null);
+  check('imports/admit: the raw id is read with coerceImported’s own rule (16 lowercase hex), so a bad one is not an id',
+    importIdOf({ imported: { id: '0123456789abcdef' } }) === '0123456789abcdef' && importIdOf({ imported: { id: '0123456789ABCDEF' } }) === undefined
+      && importIdOf({ imported: { id: 5 } }) === undefined && importIdOf({}) === undefined && importIdOf(null) === undefined);
+  check(
+    'imports/copy: every refusal is a plain sentence — Couldn’t, a next step, typographic apostrophe, no ASCII one',
+    [IMPORT_REFUSED_RANKED, IMPORT_REFUSED_HERE, IMPORT_ROOM_NEEDS_UPDATE, IMPORT_MEMBER_NEEDS_UPDATE, IMPORT_START_REFUSED, IMPORT_ID_TAKEN]
+      .every((s) => s.startsWith('Couldn’t') && !s.includes("'") && s.endsWith('.') && s.split('. ').length >= 2),
+  );
+
+  // ---- the replay container ----------------------------------------------------------------
+  const runOf = (spec: typeof DEFAULT_SPEC) =>
+    runRecordMatch(11, recordSetups(spec, 'solo'), () => new Map([[0, cmd({ driveY: 1 })]]), { stopTick: 90 });
+  const runStd = runOf(DEFAULT_SPEC);
+  const runImp = runOf(impSpec);
+  check('imports/replay: a replay with NO imported robot is still format 2', runStd.replay.format === REPLAY_FORMAT_BASE && REPLAY_FORMAT_BASE === 2);
+  check('imports/replay: ...and one WITH an imported robot is format 3', runImp.replay.format === REPLAY_FORMAT_IMPORTED && REPLAY_FORMAT_IMPORTED === 3);
+  check('imports/replay: REPLAY_FORMAT (what this build reads) is at least the imported format, so an older build calls it `future`', REPLAY_FORMAT >= REPLAY_FORMAT_IMPORTED);
+  {
+    const r = runStd.replay;
+    // the container as the build BEFORE imports wrote it: same keys, same order, format 2
+    const before = { format: 2, balanceVersion: r.balanceVersion, sim: r.sim, patch: r.patch, game: r.game, mode: r.mode, seed: r.seed, setups: r.setups, ticks: r.ticks, tracks: r.tracks };
+    check('imports/replay: a standard replay is BYTE-IDENTICAL to the one written before imports', JSON.stringify(r) === JSON.stringify(before));
+    check('imports/replay: ...and plays on this build', replayRefusal(JSON.parse(JSON.stringify(r)) as Replay, r.balanceVersion, r.sim ?? 0) === null);
+  }
+  {
+    const back = JSON.parse(JSON.stringify(runImp.replay)) as Replay;
+    check('imports/replay: a format-3 container survives JSON and still carries the import in its setups', isImportedSpec(back.setups[0].spec) && back.format === 3);
+    check('imports/replay: ...is playable on this build (it reads format 3)', replayRefusal(back, back.balanceVersion, back.sim ?? 0) === null);
+    // a build that predates imports reads up to format 2 (REPLAY_FORMAT_BASE), and the rule it
+    // applies to anything above that is the `future` refusal this pins
+    check('imports/replay: ...and is newer than the format-2 builds that predate imports, who refuse a newer container as `future`', REPLAY_FORMAT_IMPORTED > REPLAY_FORMAT_BASE && replayRefusal({ ...back, format: REPLAY_FORMAT + 1 }, back.balanceVersion, back.sim ?? 0) === 'future');
+    check('imports/replay: a recorded format-3 run re-simulates to the hash it recorded', verifyReplay(back).hash === runImp.result.hash, `${verifyReplay(back).hash} vs ${runImp.result.hash}`);
+    const san = sanitizeReplay(back, 'decode');
+    check('imports/replay: sanitizeReplay accepts the format-3 container (it reads what it writes)', san !== null && san.format === 3);
+    check('imports/replay: replayHasImported sees it by setups and by stamp, and never on a standard one',
+      replayHasImported(back) && replayHasImported({ format: 3, setups: [] }) && !replayHasImported(runStd.replay) && !replayHasImported(null));
+  }
+
+  // ---- practice and LAN runs: an imported robot stays on the device -------------------------
+  {
+    const store = new Map<string, string>();
+    const g = globalThis as { localStorage?: unknown };
+    const had = 'localStorage' in g;
+    const prev = g.localStorage;
+    g.localStorage = {
+      getItem: (k: string): string | null => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string): void => void store.set(k, v),
+      removeItem: (k: string): void => void store.delete(k),
+    };
+    try {
+      const mStd = savePracticeRun(runStd.replay, runStd.result);
+      const mImp = savePracticeRun(runImp.replay, runImp.result);
+      const ids = pendingPracticeUploads().map((m) => m.id);
+      check('imports/practice: a practice run with an imported robot is marked as one', mImp?.imported === true && mStd?.imported === undefined);
+      check('imports/practice: ...is NEVER in the upload backlog (it stays on the device)', !!mStd && !!mImp && ids.includes(mStd.id) && !ids.includes(mImp.id), ids.join(','));
+      const gid = (n: string): string => `${n.repeat(8)}-${n.repeat(4)}-${n.repeat(4)}-${n.repeat(4)}-${n.repeat(12)}`;
+      const lStd = saveLanRunLocal(gid('a'), runStd.replay, runStd.result.score, []);
+      const lImp = saveLanRunLocal(gid('b'), runImp.replay, runImp.result.score, []);
+      const lids = pendingLanUploads().map((m) => m.id);
+      check('imports/lan: a LAN match with an imported robot is marked and never offered to /api/lan', lImp?.imported === true && !!lStd && !!lImp && lids.includes(lStd.id) && !lids.includes(lImp.id), lids.join(','));
+    } finally {
+      if (had) g.localStorage = prev;
+      else delete g.localStorage;
+    }
+  }
+
+  // ---- the standard robot ranked and record fall back to ---------------------------------------
+  {
+    const base = defaultSettings();
+    const std = { ...DEFAULT_SPEC, name: 'Std' };
+    const saved = { ...DEFAULT_SPEC, name: 'Saved', length: 14 };
+    const imported = { ...base, spec: impSpec };
+    check('imports/settings: lastStandardSpec survives a settings round-trip', coerceSettings({ ...base, lastStandardSpec: std }).lastStandardSpec?.name === 'Std');
+    check('imports/settings: ...and an IMPORTED one is dropped, not repaired (it must be a standard spec)', coerceSettings({ ...base, lastStandardSpec: impSpec }).lastStandardSpec === undefined);
+    check('imports/settings: ...junk is dropped too', coerceSettings({ ...base, lastStandardSpec: 'x' }).lastStandardSpec === undefined && coerceSettings({ ...base, lastStandardSpec: 7 }).lastStandardSpec === undefined);
+    check('imports/settings: absent stays absent (no key written for a player with no import)', !('lastStandardSpec' in coerceSettings(base)));
+    // per game: each game archives and restores its own
+    const withD = { ...base, lastStandardSpec: std };
+    const toChain = switchGame(withD, 'chain');
+    check('imports/settings: switching game does not carry the last standard robot across', toChain.lastStandardSpec === undefined, String(toChain.lastStandardSpec?.name));
+    check('imports/settings: ...and switching back restores it', switchGame(toChain, 'decode').lastStandardSpec?.name === 'Std');
+    const viaJson = coerceSettings(JSON.parse(JSON.stringify(toChain)));
+    check('imports/settings: ...even through storage (the archived loadout is coerced)', switchGame(viaJson, 'decode').lastStandardSpec?.name === 'Std');
+
+    // rememberStandardRobot
+    const s1 = rememberStandardRobot(base, { ...base, spec: std });
+    check('imports/settings: an active standard robot IS the last standard robot', s1.lastStandardSpec === s1.spec);
+    check('imports/settings: ...and an unchanged settings object is returned as is', rememberStandardRobot(s1, s1) === s1);
+    const s2 = rememberStandardRobot(s1, { ...s1, spec: impSpec });
+    check('imports/settings: activating an import keeps the standard robot it replaced', s2.lastStandardSpec?.name === 'Std' && isImportedSpec(s2.spec));
+    const s3 = rememberStandardRobot({ ...base, spec: std }, { ...base, spec: impSpec });
+    check('imports/settings: ...even when nothing was remembered yet', s3.lastStandardSpec?.name === 'Std');
+    check('imports/settings: an import never becomes the last standard robot', !isImportedSpec(s3.lastStandardSpec));
+    const s4 = rememberStandardRobot({ ...base, game: 'chain', spec: std }, { ...base, game: 'decode', spec: impSpec });
+    check('imports/settings: nothing is carried across a game switch', s4.lastStandardSpec === undefined);
+
+    // standardRobotFor / choices
+    check('imports/settings: a standard active robot is its own standard robot', standardRobotFor({ ...base, spec: std }) === std);
+    check('imports/settings: an import falls back to the last standard robot, preselected first', standardRobotFor({ ...imported, lastStandardSpec: std, savedRobots: [saved] }).name === 'Std'
+      && standardRobotChoices({ ...imported, lastStandardSpec: std, savedRobots: [saved] })[0].name === 'Std');
+    check('imports/settings: ...else a saved robot', standardRobotFor({ ...imported, savedRobots: [saved] }).name === 'Saved');
+    check('imports/settings: ...else the game default, which is standard', !isImportedSpec(standardRobotFor(imported)));
+    check('imports/settings: the picker offers standard robots only (an import in the saved list is skipped)',
+      standardRobotChoices({ ...imported, lastStandardSpec: std, savedRobots: [impSpec, saved] }).every((r) => !isImportedSpec(r)));
+    check('imports/settings: ...without listing the same build twice', standardRobotChoices({ ...imported, lastStandardSpec: std, savedRobots: [{ ...std }, saved] }).length === 2 && sameBuild(std, { ...std }));
+  }
+}
+
+// ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha, not production, until the owner says) ----
+// `importerOpenOn` (src/net/imported.ts) is the one rule; the client asks it of its build's channel
+// through `importerEnabled` (src/seasonVisibility.ts, which reads `import.meta.env` and cannot be
+// imported here). A build without the importer HIDES a stored import and keeps it: its screens are
+// shown `withoutImport(stored)` and their writes are stored through `keepImportActive` (src/settings.ts).
+// The fixed shooter and the rest that landed beside the importer are not gated.
+{
+  const G = IMPGATE;
+  check('importer gate: open on the alpha channel', G.importerOpenOn('alpha'));
+  check(
+    'importer gate: closed on stable (production, Electron, a local build), beta, an empty or absent channel, and another spelling',
+    !G.importerOpenOn('stable') && !G.importerOpenOn('beta') && !G.importerOpenOn('') && !G.importerOpenOn(undefined) &&
+      !G.importerOpenOn('Alpha') && !G.importerOpenOn('alpha2') && !G.importerOpenOn('alpha,stable'),
+  );
+  check('importer gate: a padded channel reads as its trimmed self (`appChannel` trims too), so " alpha " is open and " stable " is not',
+    G.importerOpenOn(' alpha ') && !G.importerOpenOn(' stable '));
+  check('importer gate: production is closed until the owner opens it (opening it is adding stable here)',
+    G.IMPORTER_CHANNELS.includes('alpha') && !G.IMPORTER_CHANNELS.includes('stable'));
+
+  // ---- the projection, pure ----
+  const IMP = { v: 1, id: '0123456789abcdef', heightIn: 12, hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }] };
+  const base = defaultSettings();
+  const impAssists = { ...base.assists };
+  const stdAssists = { ...base.assists };
+  const impSpec = { ...DEFAULT_SPEC, name: 'Imp', imported: IMP, assists: impAssists } as typeof DEFAULT_SPEC;
+  const std = { ...DEFAULT_SPEC, name: 'Std', assists: stdAssists };
+  const saved = { ...DEFAULT_SPEC, name: 'Saved', length: 14 };
+  const archived = { biobuzz: { spec: impSpec, savedRobots: [], startIndex: 0, startPose: null, startCat: 'close' as const, savedStartPoses: { close: [], far: [] }, startMemory: base.startMemory } };
+  const stored = { ...base, spec: impSpec, assists: impAssists, lastStandardSpec: std, savedRobots: [saved], loadouts: archived };
+  const plain = { ...base, spec: std, assists: stdAssists };
+  const shown = gateWithoutImport(stored);
+  check('importer gate/projection: settings with no import are shown as they are (the same object)', gateWithoutImport(plain) === plain && gateWithoutImport(base) === base);
+  check('importer gate/projection: an imported active robot is shown as the last standard robot, with that robot’s assists',
+    !isImportedSpec(shown.spec) && shown.spec === std && shown.assists === stdAssists);
+  check('importer gate/projection: ...and the stored copy, the archived loadouts, the saved robots and lastStandardSpec are untouched',
+    isImportedSpec(stored.spec) && stored.assists === impAssists && shown.loadouts === archived && isImportedSpec(shown.loadouts?.biobuzz?.spec) &&
+      shown.savedRobots === stored.savedRobots && shown.lastStandardSpec === std);
+  const { assists: _noAssists, ...bare } = DEFAULT_SPEC;
+  check('importer gate/projection: a standard robot without assists keeps the settings’ assists (as `MatchStrategy` takes them)',
+    gateWithoutImport({ ...stored, lastStandardSpec: { ...bare, name: 'Bare' } }).assists === impAssists);
+  const variants = [
+    { lastStandardSpec: std },
+    { lastStandardSpec: undefined, savedRobots: [saved] },
+    { lastStandardSpec: undefined, savedRobots: [impSpec] },
+    { lastStandardSpec: undefined, savedRobots: [] },
+  ];
+  const games: GameId[] = ['decode', 'chain', 'biobuzz'];
+  const leaks = games.flatMap((game) => variants.map((v, i) => ({ game, i, s: gateWithoutImport({ ...stored, ...v, game }) }))).filter((x) => isImportedSpec(x.s.spec));
+  check('importer gate/projection: never shows an import, whatever the fallback (last standard, a saved robot, an import in the saved list, the game default) in every game',
+    leaks.length === 0, leaks.map((x) => `${x.game}#${x.i}`).join(','));
+
+  // ---- the write-back, pure ----
+  const unrelated = gateKeepImportActive(stored, shown, { ...shown, mode: 'match' as const });
+  check('importer gate/write-back: an edit that leaves the robot as shown keeps the import active with its assists, and lastStandardSpec as it was',
+    unrelated.mode === 'match' && unrelated.spec === impSpec && unrelated.assists === impAssists && unrelated.lastStandardSpec === std && unrelated.loadouts === archived);
+  const { lastStandardSpec: _drop, ...noStdRest } = stored;
+  const noStd = { ...noStdRest, savedRobots: [] };
+  const shownNoStd = gateWithoutImport(noStd);
+  const viaSame = gateKeepImportActive(noStd, shownNoStd, { ...shownNoStd, mode: 'match' as const });
+  // a screen holding an older render's view: the game default is rebuilt per call, equal but not the same object
+  const viaOld = gateKeepImportActive(noStd, gateWithoutImport(noStd), { ...shownNoStd, mode: 'match' as const });
+  check('importer gate/write-back: ...and does not invent a lastStandardSpec when there was none (the game default shown, even from an older render)',
+    viaSame.lastStandardSpec === undefined && viaOld.lastStandardSpec === undefined && isImportedSpec(viaSame.spec) && isImportedSpec(viaOld.spec));
+  const editedSpec = { ...shown.spec, name: 'Edited', assists: { ...stdAssists } };
+  const edited = gateKeepImportActive(stored, shown, { ...shown, spec: editedSpec, assists: editedSpec.assists });
+  check('importer gate/write-back: an edited standard robot becomes lastStandardSpec, the import stays active',
+    edited.spec === impSpec && edited.assists === impAssists && edited.lastStandardSpec === editedSpec);
+  check('importer gate/write-back: ...which is what the screen is shown next', gateWithoutImport(edited).spec === editedSpec && gateWithoutImport(edited).assists === editedSpec.assists);
+  const picked = gateKeepImportActive(stored, shown, { ...shown, spec: saved });
+  check('importer gate/write-back: a picked saved robot likewise', picked.spec === impSpec && picked.lastStandardSpec === saved);
+  const remembered = rememberStandardRobot(stored, edited);
+  check('importer gate/write-back: ...and App’s own lastStandardSpec bookkeeping (`rememberStandardRobot`) leaves both as they are',
+    remembered.spec === impSpec && remembered.lastStandardSpec === editedSpec);
+  const toStd = { ...plain, mode: 'match' as const };
+  check('importer gate/write-back: passes through when the stored robot is standard', gateKeepImportActive(plain, plain, toStd) === toStd);
+  const toImp = { ...shown, spec: { ...impSpec, name: 'Other import' } };
+  check('importer gate/write-back: passes through a write that carries an import', gateKeepImportActive(stored, shown, toImp) === toImp);
+  const toChain = switchGame(stored, 'chain');
+  check('importer gate/write-back: passes through a game switch (`switchGame` ran on the stored copy, which archived the import)',
+    gateKeepImportActive(stored, shown, toChain) === toChain && isImportedSpec(toChain.loadouts?.decode?.spec));
+
+  // ---- the cosmetic half, by source: each entry point reads the gate ----
+  const rdG = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const app = rdG('src/ui/App.tsx');
+  const sv = rdG('src/seasonVisibility.ts');
+  check('importer gate/client: `importerEnabled` is the dev server, the channel rule, or exactly VITE_ROBOT_IMPORT=1',
+    /export const importerEnabled = \(\): boolean =>\s*import\.meta\.env\.DEV \|\|\s*importerOpenOn\(appChannel\(\)\) \|\|\s*\(import\.meta\.env\.VITE_ROBOT_IMPORT as string \| undefined\)\?\.trim\(\) === '1';/.test(sv) &&
+      /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
+  check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
+    /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
+  check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
+    /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
+  check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
+    /const shown = useMemo\(\(\) => \(importerOn \? settings : withoutImport\(settings\)\), \[importerOn, settings\]\);/.test(app) &&
+      /const update = \(next: GameSettings\): void =>\s*commit\(importerOn \? next : keepImportActive\(settingsRef\.current, shownRef\.current, next\)\);/.test(app));
+  check('importer gate/client: every screen is handed `shown` (the editor alone gets the stored copy, and it renders only where they are the same)',
+    (app.match(/settings=\{settings\}/g) ?? []).length === 1 && /<ImportEditor\s+key=\{`[^`]*`\}\s+settings=\{settings\}/.test(app) &&
+      /<Account settings=\{shown\} onChange=\{update\} onReset=\{commit\}/.test(app) && /importedActive=\{!!shown\.spec\.imported\}/.test(app));
+  check('importer gate/client: `switchGame` runs on the stored copy only (the projection never reaches an archived loadout)',
+    !/switchGame\(shown/.test(app) && /update\(switchGame\(settings, g\)\)/.test(app) && /const ns = switchGame\(cur, s\.game\)/.test(app) &&
+      /const s = settingsRef\.current;\n    if \(s\.game === g\) return;\n    const next = switchGame\(s, g\);/.test(app));
+  check('importer gate/client: a settings reset is stored as given, not kept back by the gate',
+    /onReset\(defaultSettings\(\)\)/.test(rdG('src/ui/Account.tsx')));
+  const menu = rdG('src/ui/Menu.tsx');
+  check('importer gate/client: the robot page reads no library and draws no Imported robots row where the importer is closed',
+    /const importerOn = importerEnabled\(\);\n  const library = useLibrary\(settings\.game, importerOn\);/.test(menu) && /\{importerOn && \(\s*<ImportedRow/.test(menu));
+  const lobby = rdG('src/ui/Lobby.tsx');
+  check('importer gate/client: the custom room reads no library and offers no imported cards where the importer is closed',
+    /useLibrary\(settings\.game, importerOn\)/.test(lobby) && /\{importerOn && importOk === true && !isRecord/.test(lobby));
+  check('importer gate/client: Configure ▸ Network draws its Imported robots panel only where the importer is open',
+    /\{importerEnabled\(\) && \(\s*<section className="ds-panel">\s*<div className="ds-panel-h">\s*<h2 className="ds-panel-title">Imported robots<\/h2>/.test(rdG('src/ui/NetworkSection.tsx')));
+  const lib = rdG('src/robotImport/ui/useLibrary.ts');
+  check('importer gate/client: a disabled `useLibrary` loads no library chunk, opens no channel and answers NOT READ (entries null), not an empty list',
+    /export function useLibrary\(game: GameId, enabled = true\): LibraryView/.test(lib) &&
+      lib.indexOf('if (!enabled) return;') > 0 && lib.indexOf('if (!enabled) return;') < lib.indexOf('readLibrary(game)') &&
+      lib.indexOf('if (!enabled) return;') < lib.indexOf('onLibraryChange(read)') &&
+      /return enabled \? view : NOT_READ;/.test(lib) && /const NOT_READ: LibraryView = \{ entries: null,/.test(lib));
+  const api = rdG('src/net/api.ts');
+  check('importer gate/client: a room this tab hosts takes imports and their looks only where this build has the importer',
+    (api.match(/if \(tabHosting\(\)\) return Promise\.resolve\(importerEnabled\(\)\);/g) ?? []).length === 2 && !/if \(tabHosting\(\)\) return Promise\.resolve\(true\);/.test(api));
+  check('importer gate/client: the modules smoke and the server import read no `import.meta.env` (settings.ts, net/imported.ts)',
+    ['src/settings.ts', 'src/net/imported.ts'].every((f) => !/import\.meta\.env|from '\.\.?\/(?:seasonVisibility|net\/env|env)'/.test(rdG(f))));
+}
+
+// ---- AN OLDER BUILD'S SETTINGS SAVE KEEPS THE ACCOUNT'S IMPORTED ROBOT (`src/net/settingsKeep.ts`) ----
+// main and alpha rebuild the robot field by field and `/api/user/settings` stored what it was sent,
+// so one save from them deleted the import everywhere. The server now merges a cap-less save. The
+// older build is simulated by what its `coerceSettings` was MEASURED to send back (2026-10-02, the
+// real main and alpha coercers on a blob from this branch): the robot minus `imported` (and minus
+// DECODE's `launcher`/`hoodDeg`/`flywheel`), no `lastStandardSpec` anywhere.
+{
+  const IMP_D = { v: 1 as const, id: '0123456789abcdef', heightIn: 12, hull: [{ x: -7, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -7, y: 8 }] };
+  const IMP_B = { ...IMP_D, id: 'fedcba9876543210', heightIn: 14 };
+  type Blob = Record<string, unknown> & { spec?: Record<string, unknown>; loadouts?: Record<string, Record<string, unknown>> };
+  const json = (x: unknown): Blob => JSON.parse(JSON.stringify(x));
+  /** a blob this branch writes: BIOBUZZ archived with an import, DECODE active with one (a fixed launcher) */
+  const fresh = (): Blob => {
+    let s = coerceSettings({ game: 'biobuzz' });
+    s = rememberStandardRobot(s, { ...s, spec: coerceSpec({ ...s.spec, imported: IMP_B }, undefined, 'biobuzz') });
+    s = switchGame(s, 'decode');
+    s = rememberStandardRobot(s, { ...s, spec: coerceSpec({ ...s.spec, launcher: 'fixed', hoodDeg: 70, imported: IMP_D }, undefined, 'decode') });
+    return json(s);
+  };
+  const strip = (spec: unknown): Record<string, unknown> => {
+    const o = { ...(spec as Record<string, unknown>) };
+    for (const k of ['imported', 'launcher', 'hoodDeg', 'flywheel']) delete o[k];
+    return o;
+  };
+  /** what an older build sends back for `b` */
+  const older = (b: Blob): Blob => {
+    const o = json(b);
+    o.spec = strip(o.spec);
+    delete o.lastStandardSpec;
+    for (const g of Object.keys(o.loadouts ?? {})) {
+      o.loadouts![g].spec = strip(o.loadouts![g].spec);
+      delete o.loadouts![g].lastStandardSpec;
+    }
+    return o;
+  };
+  const st = fresh();
+  check('settings keep: the blob this branch writes holds both imports and both standard robots (the premise)',
+    isImportedSpec(st.spec) && (st.spec as { launcher?: string }).launcher === 'fixed' && !!st.lastStandardSpec && isImportedSpec(st.loadouts?.biobuzz?.spec) && !!st.loadouts?.biobuzz?.lastStandardSpec);
+  check('settings keep: this build\'s settings save says it keeps imports (`caps` on the POST body)',
+    /body: JSON\.stringify\(\{ settings, caps: \[SETTINGS_KEEPS_IMPORTS(, SETTINGS_KEEPS_TUNE)?\] \}\)/.test(readFileSync('src/net/api.ts', 'utf8')));
+  check('settings keep: only a save whose caps name the import cap is taken as sent',
+    keepsImports([SETTINGS_KEEPS_IMPORTS]) && keepsImports(['x', 'robotImport']) && !keepsImports(undefined) && !keepsImports([]) && !keepsImports('robotImport') && !keepsImports({ 0: 'robotImport' }));
+
+  const sent = older(st);
+  const before = JSON.stringify([st, sent]);
+  const kept = keepImportsFromOlderClient(st, sent) as Blob;
+  check('settings keep: an older build\'s save of the SAME robot keeps the stored one whole: the import, and the fixed launcher it dropped too',
+    JSON.stringify(kept.spec) === JSON.stringify(st.spec), JSON.stringify(kept.spec).slice(0, 120));
+  check('settings keep: ...and its last standard robot', JSON.stringify(kept.lastStandardSpec) === JSON.stringify(st.lastStandardSpec));
+  check('settings keep: ...and the archived game\'s import and its last standard robot',
+    JSON.stringify(kept.loadouts?.biobuzz?.spec) === JSON.stringify(st.loadouts?.biobuzz?.spec) && JSON.stringify(kept.loadouts?.biobuzz?.lastStandardSpec) === JSON.stringify(st.loadouts?.biobuzz?.lastStandardSpec));
+  check('settings keep: ...while everything else the older build sent stands (a toggle it changed is not reverted)',
+    keepImportsFromOlderClient(st, { ...sent, practiceDummies: !st.practiceDummies }).practiceDummies === !st.practiceDummies);
+  check('settings keep: neither argument is mutated', JSON.stringify([st, sent]) === before);
+  const back = coerceSettings(json(kept));
+  check('settings keep: the merged blob reads back through this branch\'s coerceSettings with both imports',
+    back.spec.imported?.id === IMP_D.id && back.spec.launcher === 'fixed' && !!back.lastStandardSpec && switchGame(back, 'biobuzz').spec.imported?.id === IMP_B.id);
+
+  // a deliberate change on the older build is respected
+  const preset = { ...older(st), spec: { ...strip(st.spec), length: 14, width: 15, driveRpm: 300 } };
+  const p = keepImportsFromOlderClient(st, preset) as Blob;
+  check('settings keep: another robot picked on the older build (a preset keeps the name) stays picked: no import, no stale standard robot',
+    !isImportedSpec(p.spec) && p.spec?.length === 14 && p.lastStandardSpec === undefined);
+  check('settings keep: ...and the OTHER game\'s import is still kept', isImportedSpec(p.loadouts?.biobuzz?.spec));
+  const slid = { ...older(st), spec: { ...strip(st.spec), driveRpm: (st.spec?.driveRpm as number) + 10 } };
+  check('settings keep: one slider moved on the older build is a change too', !isImportedSpec((keepImportsFromOlderClient(st, slid) as Blob).spec));
+  // the older build switched game: the DECODE import is archived in ITS loadouts now
+  const sw = json(switchGame(coerceSettings(older(st)), 'chain'));
+  const swKept = keepImportsFromOlderClient(st, sw) as Blob;
+  check('settings keep: an older build that switched game: the import is re-attached where it now lives (loadouts.decode)',
+    sw.game === 'chain' && !isImportedSpec(swKept.spec) && JSON.stringify(swKept.loadouts?.decode?.spec) === JSON.stringify(st.spec) && isImportedSpec(swKept.loadouts?.biobuzz?.spec));
+  // a game the older build did not send at all
+  const noBb = older(st);
+  delete noBb.loadouts!.biobuzz;
+  check('settings keep: a game the older build sent nothing for keeps its stored loadout with its import',
+    isImportedSpec((keepImportsFromOlderClient(st, noBb) as Blob).loadouts?.biobuzz?.spec));
+  // nothing to keep
+  const plain = json(coerceSettings({ game: 'decode' }));
+  const plainSent = older(plain);
+  check('settings keep: a store with no import changes nothing (the incoming blob is returned as is)', keepImportsFromOlderClient(plain, plainSent) === plainSent);
+  const inc = older(st);
+  check('settings keep: no stored blob (a first save) changes nothing', keepImportsFromOlderClient(null, inc) === inc && keepImportsFromOlderClient('junk', inc) === inc);
+  check('settings keep: sameButDropped refuses a robot that carries an import, one without a name or size, and a different value',
+    !sameButDropped(st.spec, st.spec) && !sameButDropped({ drivetrain: 'tank' }, st.spec) && !sameButDropped({ ...strip(st.spec), massLb: -1 }, st.spec) && sameButDropped(strip(st.spec), st.spec));
+  // ⚠️ the documented limit: an older build REWRITES a BIOBUZZ fixed launcher (it reads 'fixed' as a
+  // turret and re-derives the mass), so that save really did change the robot and is not undone
+  const bbFixed = (() => {
+    let s = coerceSettings({ game: 'biobuzz' });
+    const spec = coerceSpec({ ...s.spec, bbMech: { launcher: { kind: 'fixed', mount: 'front', hoodDeg: 77 }, lift: null }, imported: IMP_B }, undefined, 'biobuzz');
+    s = { ...s, spec };
+    return json(s);
+  })();
+  const rewritten = { ...older(bbFixed), spec: { ...strip(bbFixed.spec), bbMech: { launcher: { kind: 'turret', mount: 'front', hoodDeg: 77 }, lift: null } } };
+  check('settings keep: (limit) a BIOBUZZ fixed launcher an older build turned into a turret is a changed robot, and is not re-attached',
+    (bbFixed.spec?.bbMech as { launcher?: { kind?: string } }).launcher?.kind === 'fixed' && !isImportedSpec((keepImportsFromOlderClient(bbFixed, rewritten) as Blob).spec));
+
+  // A STANDARD DECODE robot with what an older build cannot read: the kit card (NO intake, a fixed
+  // launcher, a setpoint wheel). Alpha's coercer, measured 2026-10-02, sends it back as the sloped
+  // preset (length clamped to 15, width raised to 14.5) without the three shooter fields.
+  const kitSpec = coerceSpec({ ...DEFAULT_SPEC, name: 'Kit', intake: 'none', length: 16.5, width: 14, drivetrain: 'tank', driveRpm: 286, launcher: 'fixed', hoodDeg: 70, flywheel: { mode: 'fixed', rpm: [2411], wheelMm: 96, feedS: 0.2 } });
+  const kitSt = json({ ...coerceSettings({ game: 'decode' }), spec: kitSpec });
+  const olderKit = (b: Blob): Blob => {
+    const o = json(b);
+    const sp = strip(o.spec);
+    if (sp.intake === 'none') Object.assign(sp, { intake: 'sloped', length: Math.min(sp.length as number, 15), width: Math.max(sp.width as number, 14.5) });
+    o.spec = sp;
+    return o;
+  };
+  const kitSent = olderKit(kitSt);
+  const kitKept = keepImportsFromOlderClient(kitSt, kitSent) as Blob;
+  check('settings keep: a standard DECODE robot with no intake and a fixed launcher, saved unchanged by an older build, is kept whole',
+    kitSpec.intake === 'none' && kitSent.spec?.intake === 'sloped' && kitSent.spec?.length === 15 && kitSent.spec?.width === 14.5 &&
+      JSON.stringify(kitKept.spec) === JSON.stringify(kitSt.spec) && kitKept.lastStandardSpec === undefined,
+    JSON.stringify({ sent: [kitSent.spec?.intake, kitSent.spec?.length, kitSent.spec?.width], kept: [kitKept.spec?.intake, kitKept.spec?.launcher] }),
+  );
+  check('settings keep: ...but a slider moved on the older build is a change, and the sloped robot it sent stands',
+    (keepImportsFromOlderClient(kitSt, { ...kitSent, spec: { ...kitSent.spec, driveRpm: 300 } }) as Blob).spec?.intake === 'sloped');
+  const fxSt = json({ ...coerceSettings({ game: 'decode' }), spec: coerceSpec({ ...DEFAULT_SPEC, launcher: 'fixed', hoodDeg: 60 }) });
+  check('settings keep: a fixed hood on a standard robot (an intake kept) survives an older build\'s unchanged save',
+    (keepImportsFromOlderClient(fxSt, olderKit(fxSt)) as Blob).spec?.hoodDeg === 60);
+  check('settings keep: a plain standard robot still changes nothing (the incoming blob is returned as is)',
+    keepImportsFromOlderClient(plain, olderKit(plain)) !== undefined && (() => { const s2 = olderKit(plain); return keepImportsFromOlderClient(plain, s2) === s2; })());
+}
+
+/**
+ * IMPORTED ROBOTS IN A REAL `Room` — who may be seated, who may watch, what the match is built from.
+ *
+ * A custom room (and a LAN room, the same class) takes an imported robot; a staged ranked room and
+ * a record room refuse it; a seat or watcher whose build lacks `'robotImport'` is kept out of a room
+ * that has one, and an import is never added beside such a seat. Every refusal is paired with the
+ * acceptance one message later, since a room that refuses everything would pass "it refused".
+ */
+{
+  const IMP = {
+    v: 1, id: '0123456789abcdef', heightIn: 12,
+    hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }],
+  };
+  const impSpec = { ...DEFAULT_SPEC, imported: IMP } as typeof DEFAULT_SPEC;
+  type Sink = Record<string, ServerMsg[]>;
+  const mk = (sink: Sink, id: string, caps: string[] | undefined, spec: typeof DEFAULT_SPEC, alliance: Alliance = 'red', userId?: string): Client => {
+    sink[id] ??= [];
+    return {
+      id,
+      send: (m) => sink[id].push(m),
+      player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...spec }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true, disconnectAt: 0, caps, userId: userId ?? 'u-' + id,
+    };
+  };
+  const welcomed = (s: Sink, id: string): boolean => s[id].some((m) => m.t === 'welcome');
+  const errs = (s: Sink, id: string): string[] => s[id].filter((m) => m.t === 'error').map((m) => (m as Extract<ServerMsg, { t: 'error' }>).message);
+  const rosterSpec = (s: Sink, id: string, of: string) =>
+    ([...s[id]].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined)?.players.find((p) => p.clientId === of)?.spec;
+  const started = (s: Sink, id: string) => s[id].find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  const result = (s: Sink, id: string) => s[id].find((m) => m.t === 'matchResult') as Extract<ServerMsg, { t: 'matchResult' }> | undefined;
+  const anyImport = (m: Extract<ServerMsg, { t: 'matchStart' }> | undefined): boolean => !!m && m.setups.some((x) => isImportedSpec(x.spec));
+
+  // ---- a CUSTOM room (and a LAN room is this same class) ----------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-custom', () => {}, { kind: 'versus', imports: true });
+    check('imports/room: a custom room ALLOWS imported robots', room.allowsImportedRobots());
+    room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/room: ...and seats one (client with the cap)', welcomed(s, 'a') && room.importState().hasImport && !room.importState().capless);
+    room.add(mk(s, 'old', [], DEFAULT_SPEC, 'blue'));
+    check(
+      'imports/room: a build WITHOUT the cap is not seated in a room that has an imported robot',
+      !welcomed(s, 'old') && errs(s, 'old')[0] === IMPORT_ROOM_NEEDS_UPDATE && !room.importState().capless,
+      String(errs(s, 'old')[0]),
+    );
+    room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/room: ...a build WITH it is', welcomed(s, 'b'));
+    room.onMessage('a', { t: 'start' });
+    const ms = started(s, 'b');
+    check('imports/room: START keeps the imported robot in the setups (the room allows it)', !!ms && anyImport(ms));
+    room.addSpectator(mk(s, 'oldspec', []));
+    check('imports/room: a watcher without the cap cannot watch a match that holds one', !s.oldspec.some((m) => m.t === 'welcome') && errs(s, 'oldspec')[0] === IMPORT_ROOM_NEEDS_UPDATE);
+    room.addSpectator(mk(s, 'spec', CLIENT_CAPS));
+    check('imports/room: ...a watcher with it can', s.spec.some((m) => m.t === 'welcome') && s.spec.some((m) => m.t === 'matchStart'));
+    forceRoomToPost(room);
+    const res = result(s, 'a');
+    check('imports/room: the custom match’s replay is stamped format 3', res?.replay.format === REPLAY_FORMAT_IMPORTED, String(res?.replay.format));
+    room.stop();
+  }
+
+  // ---- a seat without the cap is in the room FIRST ---------------------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-old', () => {}, { kind: 'versus', imports: true });
+    room.add(mk(s, 'old', [], DEFAULT_SPEC, 'blue'));
+    check('imports/room: a build without the cap is seated in an ordinary room', welcomed(s, 'old'));
+    room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/room: an imported robot is NOT added beside it', !welcomed(s, 'a') && errs(s, 'a')[0] === IMPORT_MEMBER_NEEDS_UPDATE, String(errs(s, 'a')[0]));
+    room.add(mk(s, 'c', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    check('imports/room: ...but a standard robot with the cap is', welcomed(s, 'c'));
+    room.onMessage('c', { t: 'update', patch: { spec: impSpec } });
+    check(
+      'imports/room: an update that ADDS an import beside it is refused with the sentence, and the seat keeps its robot',
+      errs(s, 'c').includes(IMPORT_MEMBER_NEEDS_UPDATE) && !isImportedSpec(rosterSpec(s, 'c', 'c')),
+      JSON.stringify(errs(s, 'c')),
+    );
+    // the start backstop: a seat that lost the capability under a room that holds an import (a
+    // mirror that was behind). Simulated by taking the cap away from a seat directly.
+    const room2 = new Room('smoke-imp-start', () => {}, { kind: 'versus', imports: true });
+    const s2: Sink = {};
+    room2.add(mk(s2, 'a', CLIENT_CAPS, impSpec, 'red'));
+    room2.add(mk(s2, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    (room2 as unknown as { clients: Map<string, Client> }).clients.get('b')!.caps = [];
+    room2.onMessage('a', { t: 'start' });
+    check('imports/room: START is refused, with the sentence, when a seat cannot play the imported robot', errs(s2, 'a').includes(IMPORT_START_REFUSED) && room2.worldForTest() === null, JSON.stringify(errs(s2, 'a')));
+    (room2 as unknown as { clients: Map<string, Client> }).clients.get('b')!.caps = CLIENT_CAPS;
+    room2.onMessage('a', { t: 'start' });
+    check('imports/room: ...and goes through once everyone can (the refusal was the cap)', room2.worldForTest() !== null);
+    room.stop();
+    room2.stop();
+  }
+
+  // ---- an update patch that ADDS an import in an allowing room ---------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-update', () => {}, { kind: 'versus', imports: true });
+    room.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    room.onMessage('a', { t: 'update', patch: { spec: impSpec } });
+    check('imports/room: a custom room takes an update that brings an import (no refusal)', errs(s, 'a').length === 0, JSON.stringify(errs(s, 'a')));
+    check('imports/room: ...and the roster now carries it', isImportedSpec(rosterSpec(s, 'b', 'a')));
+    room.onMessage('a', { t: 'update', patch: { spec: { ...DEFAULT_SPEC } } });
+    check('imports/room: a re-pick of a STANDARD robot drops the import (the base spec must not keep it)', !isImportedSpec(rosterSpec(s, 'b', 'a')));
+    room.stop();
+  }
+
+  // ---- ONE ROBOT ID PER ROOM (review 2026-10-01): a robot's look is relayed and drawn by its id ----
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-ids', () => {}, { kind: 'versus', imports: true });
+    const ownId = { ...DEFAULT_SPEC, imported: { ...IMP, id: 'fedcba9876543210' } } as typeof DEFAULT_SPEC;
+    room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
+    room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/ids: the room knows the robot ids its seats hold', isDeepStrictEqual(room.importState().ids, [IMP.id]));
+    room.onMessage('b', { t: 'update', patch: { spec: impSpec } });
+    check('imports/ids: ⚠️ an update to a robot whose id another seat holds is refused with the sentence, and the seat keeps its robot',
+      errs(s, 'b').includes(IMPORT_ID_TAKEN) && !isImportedSpec(rosterSpec(s, 'b', 'b')), JSON.stringify(errs(s, 'b')));
+    room.onMessage('b', { t: 'update', patch: { spec: ownId } });
+    check('imports/ids: ...an imported robot with an id of its own is taken', isImportedSpec(rosterSpec(s, 'b', 'b')) && errs(s, 'b').length === 1);
+    room.onMessage('a', { t: 'update', patch: { spec: impSpec, ready: false } });
+    check('imports/ids: a seat re-sending its OWN robot is not refused for holding its own id', errs(s, 'a').length === 0 && isImportedSpec(rosterSpec(s, 'b', 'a')));
+    room.add(mk(s, 'c', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/ids: ⚠️ a joiner bringing an id a seat holds is not seated, with the sentence', !welcomed(s, 'c') && errs(s, 'c')[0] === IMPORT_ID_TAKEN, String(errs(s, 'c')[0]));
+    room.detach('a');
+    room.add(mk(s, 'd', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/ids: ...and once that seat has left the lobby, the id is free', welcomed(s, 'd'));
+    room.stop();
+  }
+
+  // ---- A RETURNING SOCKET'S BUILD IS THE ONE THAT PLAYS (review 2026-10-01) ----------------------
+  {
+    const clientsOf = (r: Room) => (r as unknown as { clients: Map<string, Client> }).clients;
+    const s: Sink = {};
+    const room = new Room('smoke-imp-rejoin', () => {}, { kind: 'versus', imports: true });
+    room.add(mk(s, 'a', CLIENT_CAPS, impSpec, 'red'));
+    room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    const back: ServerMsg[] = [];
+    const nc = room.reattach('b', (m) => back.push(m), undefined, undefined, undefined, true, []);
+    check('imports/rejoin: ⚠️ a seat coming back on a build WITHOUT the import cap, to a room that holds an imported robot, is refused with the sentence',
+      nc === null && back.some((m) => m.t === 'error' && m.message === IMPORT_ROOM_NEEDS_UPDATE) && hasImportCap(clientsOf(room).get('b')!.caps));
+    const nc2 = room.reattach('b', (m) => back.push(m), undefined, undefined, undefined, true, CLIENT_CAPS);
+    check('imports/rejoin: ...and taken back on a build with it', nc2 !== null);
+    const own: ServerMsg[] = [];
+    check('imports/rejoin: a seat whose OWN robot is imported cannot come back on a build without the cap',
+      room.reattach('a', (m) => own.push(m), undefined, undefined, undefined, true, ['strategy']) === null && own.some((m) => m.t === 'error'));
+    room.stop();
+    // no import yet: the downgraded seat is seated, and reads as capless from then on
+    const s2: Sink = {};
+    const r2 = new Room('smoke-imp-rejoin2', () => {}, { kind: 'versus', imports: true });
+    r2.add(mk(s2, 'k', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    r2.add(mk(s2, 'l', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    const nc3 = r2.reattach('k', (m) => s2.k.push(m), undefined, undefined, undefined, true, ['strategy']);
+    check('imports/rejoin: a seat back on an older build, in a room with no import, is seated with ITS caps now',
+      nc3 !== null && isDeepStrictEqual(clientsOf(r2).get('k')!.caps, ['strategy']) && r2.importState().capless);
+    r2.onMessage('l', { t: 'update', patch: { spec: impSpec } });
+    check('imports/rejoin: ⚠️ ...so an imported robot is no longer added beside it (the seat used to keep the join’s caps, and this was admitted)',
+      errs(s2, 'l').includes(IMPORT_MEMBER_NEEDS_UPDATE) && !isImportedSpec(rosterSpec(s2, 'l', 'l')), JSON.stringify(errs(s2, 'l')));
+    const nc4 = r2.reattach('l', (m) => s2.l.push(m), undefined, undefined, undefined, true);
+    check('imports/rejoin: a caller with no caps to give keeps the seat’s own', nc4 !== null && hasImportCap(clientsOf(r2).get('l')!.caps));
+    r2.stop();
+  }
+
+  // ---- a RECORD room -----------------------------------------------------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-rec', () => {}, { kind: 'record', record: 'solo', imports: true });
+    check('imports/room: a record room does NOT allow imported robots', !room.allowsImportedRobots());
+    room.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'blue'));
+    check('imports/room: a record room refuses an imported joiner, with the sentence, and does not seat it', !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !room.importState().hasImport, String(errs(s, 'x')[0]));
+    room.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/room: ...and takes the same driver with a standard robot', welcomed(s, 'b'));
+    room.onMessage('b', { t: 'update', patch: { spec: impSpec } });
+    check('imports/room: an update to an imported robot in a record room is refused', errs(s, 'b').includes(IMPORT_REFUSED_HERE) && !isImportedSpec(rosterSpec(s, 'b', 'b')), JSON.stringify(errs(s, 'b')));
+    // the backstop: an import that got onto the roster some other way is fielded as a standard robot
+    (room as unknown as { clients: Map<string, Client> }).clients.get('b')!.player.spec = { ...impSpec };
+    room.onMessage('b', { t: 'start' });
+    const ms = started(s, 'b');
+    check('imports/room: beginMatch STRIPS an import in a record room (the backstop behind the door)', !!ms && !anyImport(ms));
+    forceRoomToPost(room);
+    check('imports/room: ...so the record’s replay is the format-2 container', result(s, 'b')?.replay.format === REPLAY_FORMAT_BASE, String(result(s, 'b')?.replay.format));
+    room.stop();
+  }
+
+  // ---- a STAGED ranked room ----------------------------------------------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-imp-ranked', () => {}, { kind: 'versus', imports: true });
+    room.applyPending({
+      code: 'iad-imp', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
+      roster: [
+        // the staged spec carries an import: however it got there, it must not be fielded
+        { userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...impSpec }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      ],
+    });
+    check('imports/room: a staged ranked room does NOT allow imported robots', !room.allowsImportedRobots());
+    room.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'red', 'u-x'));
+    check('imports/room: ...and refuses an imported joiner', !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE);
+    // no 'strategy' cap ⇒ the immediate start, which builds from the STAGED spec
+    room.add(mk(s, 'a', [], DEFAULT_SPEC, 'red', 'u-a'));
+    room.maybeStartRanked();
+    const ms = started(s, 'a');
+    check('imports/room: ...and beginMatch STRIPS the staged import, so a ranked match is standard robots only', !!ms && ms.ranked === true && !anyImport(ms));
+    room.stop();
+  }
+
+  // ---- WHERE THE IMPORTER SHIPS (owner, 2026-10-10: alpha only until he says) -----------------------
+  // `RoomConfig.imports`, resolved from the server's gate. The rooms above pass `imports: true`
+  // because they test what an OPEN room does; these are the same rooms closed, each paired with
+  // the room open, since a gate that refuses everything would pass "it refused".
+  {
+    check('imports/gate: the server rule: stable closed, alpha open, ROBOT_IMPORT=1 opens, LAN_MODE closes',
+      !importsOpen('stable', undefined, undefined) && importsOpen('alpha', undefined, undefined) && !importsOpen('', undefined, undefined) &&
+      importsOpen('stable', '1', undefined) && importsOpen('stable', ' 1 ', undefined) && !importsOpen('stable', '0', undefined) && !importsOpen('stable', 'true', undefined) &&
+      !importsOpen('alpha', undefined, '1'));
+    check('imports/gate: this process reads its gate by that rule', IMPORTS_OPEN_HERE === importsOpen(SERVER_CHANNEL, process.env.ROBOT_IMPORT, process.env.LAN_MODE));
+    const closedCaps = advertisedCaps(SERVER_CAPS, false);
+    const openCaps = advertisedCaps(SERVER_CAPS, true);
+    check('imports/gate: ⚠️ presence on a closed server lacks robotImport and importVisuals, and keeps every other word',
+      !closedCaps.includes(ROBOT_IMPORT_CAP) && !closedCaps.includes(IV.IMPORT_VISUALS_CAP) &&
+      closedCaps.length === SERVER_CAPS.length - 2 && closedCaps.every((c) => SERVER_CAPS.includes(c)), closedCaps.join(','));
+    check('imports/gate: ...and an open server advertises both (SERVER_CAPS itself is untouched)',
+      isDeepStrictEqual(openCaps, SERVER_CAPS) && SERVER_CAPS.includes(ROBOT_IMPORT_CAP) && SERVER_CAPS.includes(IV.IMPORT_VISUALS_CAP));
+
+    const closed = new Room('smoke-imp-closed', () => {}, { kind: 'versus', imports: false });
+    const open = new Room('smoke-imp-open', () => {}, { kind: 'versus', imports: true });
+    check('imports/gate: a custom room on a closed deployment does not allow imported robots; the same room open does',
+      !closed.allowsImportedRobots() && !closed.importState().allows && open.allowsImportedRobots() && open.importState().allows);
+    check('imports/gate: a room built with no `imports` takes this server’s own gate',
+      new Room('smoke-imp-default', () => {}, { kind: 'versus' }).allowsImportedRobots() === IMPORTS_OPEN_HERE);
+    const s: Sink = {};
+    const so: Sink = {};
+    closed.add(mk(s, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ⚠️ a closed room refuses an imported joiner at the door, with the sentence, and does not seat it',
+      !welcomed(s, 'x') && errs(s, 'x')[0] === IMPORT_REFUSED_HERE && !closed.importState().hasImport, String(errs(s, 'x')[0]));
+    open.add(mk(so, 'x', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...the open room seats the same joiner', welcomed(so, 'x') && open.importState().hasImport);
+    closed.add(mk(s, 'a', CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    closed.add(mk(s, 'b', CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    check('imports/gate: a closed room seats drivers with standard robots', welcomed(s, 'a') && welcomed(s, 'b'));
+    closed.onMessage('b', { t: 'update', patch: { spec: impSpec } });
+    check('imports/gate: ...refuses an update that brings an import, and the seat keeps its robot',
+      errs(s, 'b').includes(IMPORT_REFUSED_HERE) && !isImportedSpec(rosterSpec(s, 'b', 'b')), JSON.stringify(errs(s, 'b')));
+    // an import that slipped onto the closed room's roster some other way
+    (closed as unknown as { clients: Map<string, Client> }).clients.get('a')!.player.spec = { ...impSpec };
+    const put = () => ({ t: 'visualPut' as const, kind: 'top' as const, id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+    const refusal = (sink: Sink, id: string) => (sink[id].find((m) => m.t === 'visualRefused') as Extract<ServerMsg, { t: 'visualRefused' }> | undefined)?.reason;
+    closed.onMessage('a', put());
+    open.onMessage('x', put());
+    check('imports/gate: the look relay refuses an upload in a closed room with the room reason', refusal(s, 'a') === 'room', String(refusal(s, 'a')));
+    check('imports/gate: ...and the open room reads the same bytes (and refuses them only as no picture)', refusal(so, 'x') === 'format', String(refusal(so, 'x')));
+    closed.onMessage('a', { t: 'start' });
+    const ms = started(s, 'a');
+    check('imports/gate: ⚠️ beginMatch STRIPS an import that slipped into a closed room (no capless refusal: nothing imported may play)', !!ms && !anyImport(ms));
+    forceRoomToPost(closed);
+    check('imports/gate: ...so its replay is the format-2 container', result(s, 'a')?.replay.format === REPLAY_FORMAT_BASE, String(result(s, 'a')?.replay.format));
+    closed.stop();
+    open.stop();
+
+    // the LAN tab host: a Worker has no server gate, so the page's `open` message decides
+    const tabClosed = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus', imports: true } });
+    const tabOpen = hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: true });
+    check('imports/gate: the tab host is closed unless `open` says so (a config carrying its own `imports` does not count)',
+      tabClosed.imports === false && tabOpen.imports === true &&
+      hostRoomConfig({ k: 'open', code: 'lanimp', config: { kind: 'versus' }, imports: false }).imports === false);
+    const tab = new Room('lanimp', () => {}, tabClosed);
+    const st: Sink = {};
+    check('imports/gate: ⚠️ ...so a tab-hosted room opened without it refuses an imported guest at the Worker’s door',
+      importAdmission(tab.importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === IMPORT_REFUSED_HERE);
+    tab.add(mk(st, 'g', CLIENT_CAPS, impSpec, 'red'));
+    check('imports/gate: ...and at the room’s own', !welcomed(st, 'g') && errs(st, 'g')[0] === IMPORT_REFUSED_HERE);
+    check('imports/gate: ...while one opened with it takes the guest',
+      importAdmission(new Room('lanimp2', () => {}, tabOpen).importState(), { imported: true, caps: CLIENT_CAPS, id: IMP.id }) === null);
+    tab.stop();
+
+    // every place a room is built resolves `imports` from the server's gate; none says yes
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const serverSrc = ['server', 'server/db'].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.ts')).map((f) => `${d}/${f}`));
+    const opened = serverSrc.filter((f) => /\bimports:\s*true\b/.test(strip(rd(f))));
+    check('imports/gate: ⚠️ no server file builds a room with `imports: true`', opened.length === 0, opened.join(','));
+    const builders = serverSrc.filter((f) => /new (?:Room|RemoteRoom)\(/.test(strip(rd(f))));
+    check('imports/gate: ...and the places that build one are the known ones (a new one joins this list, and takes the gate)',
+      isDeepStrictEqual(builders.sort(), ['server/matchmaking.ts', 'server/roomHost.ts', 'server/roomWorker.ts', 'server/warmup.ts'].sort()) &&
+      /createRoom\(\s*code,/.test(rd('server/index.ts')), builders.join(','));
+    check('imports/gate: Room resolves an absent `imports` from IMPORTS_OPEN_HERE, once, in its constructor',
+      /this\.importsHere = config\.imports \?\? IMPORTS_OPEN_HERE;/.test(rd('server/room.ts')) &&
+      /allowsImportedRobots\(\): boolean \{\s*return this\.importsHere &&/.test(rd('server/room.ts')));
+    check('imports/gate: ⚠️ a worker room resolves it on the SOCKET thread and the worker reads no env for it',
+      /this\.config = \{ \.\.\.config, imports: config\.imports \?\? IMPORTS_OPEN_HERE \};/.test(rd('server/roomHost.ts')) &&
+      /allows: this\.config\.imports && /.test(rd('server/roomHost.ts')) &&
+      /\{ \.\.\.op\.config, imports: op\.config\.imports === true \}/.test(rd('server/roomWorker.ts')) &&
+      (strip(rd('server/roomHost.ts')).match(/new RemoteRoom\(/g) ?? []).length === 1);
+    const joinCfg = rd('server/index.ts').match(/const cfg: RoomConfig = \{[\s\S]*?\n {4}\};/)?.[0] ?? '';
+    check('imports/gate: a client cannot open a room: the join door builds its config field by field, without `imports`',
+      joinCfg.length > 0 && !/imports/.test(strip(joinCfg)));
+    check('imports/gate: the tab host builds its room from hostRoomConfig, and the page sends its gate in `open`',
+      /toWorker\(\{ k: 'open', code: claimed\.code, config, imports \}\)/.test(rd('src/lan/hostRuntime.ts')));
+  }
+
+  // ---- the source: the doors that need a socket, and the writers ----------------------------------
+  {
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const idx = rd('server/index.ts');
+    check('imports/doors: join, spectate and rejoin each ask importAdmission of the room', (idx.match(/importAdmission\(r\.importState\(\)/g) ?? []).length === 3);
+    check(
+      'imports/doors: the ranked queue refuses an import BEFORE a queue attempt exists (a late refusal would charge the other players)',
+      /isImportedSpec\(msg\.player\?\.spec\)\) \{\s*send\(\{ t: 'error', message: IMPORT_REFUSED_RANKED \}\);\s*return;\s*\}\s*const gen = \+\+queueGen;/.test(idx),
+    );
+    check('imports/doors: ...and what is queued is stripped as the backstop', /queuedPlayer\.spec = stripImported\(/.test(idx));
+    check('imports/doors: a join reads what the client SENT (msg.player.spec), not what coerceSpec kept', /imported: isImportedSpec\(msg\.player\?\.spec\)/.test(idx));
+    const api = rd('server/api.ts');
+    check('imports/doors: /api/practice and /api/lan both refuse an imported replay', (api.match(/replayHasImported\(body\.replay\)/g) ?? []).length === 2);
+    check('imports/doors: submitRecord refuses an imported record, and persistMatch skips one', /isImportedSpec\(r\.config\?\.spec\)/.test(rd('server/db/repo.ts')) && /SKIP record — an imported robot cannot set a record/.test(rd('server/persist.ts')));
+    const hw = rd('src/lan/hostWorker.ts');
+    check('imports/doors: the LAN tab host sanitises a guest’s player like the cloud join does', /player: \{ \.\.\.sanitizePlayer\(player\.player, game\), clientId: id \}/.test(hw) && /caps: coerceCaps\(player\.caps\)/.test(hw));
+    check('imports/doors: ...and asks the same admission rule before it seats one', /importAdmission\(room\.importState\(\)/.test(hw));
+    const rh = rd('server/roomHost.ts');
+    check('imports/doors: a worker room mirrors what it holds (RoomFacts.imports) and counts seats still in flight', /imports: \{ hasImport: imp\.hasImport/.test(rd('server/roomWorker.ts')) && /this\.unacked\.some\(\(u\) => u\.imp\)/.test(rh));
+    check('imports/ui: ranked, record and the custom lobby play a standard robot while the active one is an import',
+      /const spec = standardRobotFor\(settings\);/.test(rd('src/ui/Matchmaking.tsx')) &&
+      /Record runs use a standard robot\./.test(rd('src/ui/RecordRun.tsx')) &&
+      /Ranked uses a standard robot\./.test(rd('src/ui/MatchStrategy.tsx')) &&
+      /roomTakesImportedRobots/.test(rd('src/ui/Lobby.tsx')));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// IMPORTED ROBOTS — the sim core (`docs/robot-import-plan.md` §3.1, §4)
+// ════════════════════════════════════════════════════════════════════════════
+
+/** a pentagon with a pointed nose: 18 long (−8..10), 16 wide, the nose a vertex at (10, 0) */
+const IMP_NOSE: ImportedRobot = {
+  v: 1,
+  id: '0123456789abcdef',
+  hull: [{ x: -8, y: -8 }, { x: 4, y: -8 }, { x: 10, y: 0 }, { x: 4, y: 8 }, { x: -8, y: 8 }],
+  heightIn: 14,
+};
+/** a diamond — a square turned 45°, 18 × 18 bounding box, every corner of the box empty */
+const IMP_DIAMOND: ImportedRobot = {
+  v: 1,
+  id: 'fedcba9876543210',
+  hull: [{ x: 9, y: 0 }, { x: 0, y: 9 }, { x: -9, y: 0 }, { x: 0, y: -9 }],
+  heightIn: 12,
+};
+
+/** FNV-1a of a string — the exact-bytes digest the standard-robot pins use */
+function impFnv(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** the scripted driver for the pinned runs: chase a robot, then the one after, then a wall corner */
+function impChase(w: World, i: number, tick: number, quiet = false): RobotCommand {
+  const r = w.robots[i];
+  const n = w.robots.length;
+  const phase = Math.floor(tick / 240) % 3;
+  let target = w.robots[(i + 1 + (phase === 1 ? 1 : 0)) % n].pos;
+  if (phase === 2 && i % 2 === 0) target = { x: (i === 0 ? 1 : -1) * 200, y: (tick % 480 < 240 ? 1 : -1) * 200 };
+  const local = rot({ x: target.x - r.pos.x, y: target.y - r.pos.y }, -r.heading);
+  const ang = datan2(local.y, local.x);
+  const driveY = clamp(local.x / 12, -1, 1);
+  const rotate = clamp(-wrapAngle(ang) * 0.8 + (i === 3 ? 0.3 : 0), -1, 1);
+  return {
+    driveY,
+    driveX: clamp(-local.y / 12, -1, 1),
+    rotate,
+    leftDrive: clamp(driveY - rotate, -1, 1),
+    rightDrive: clamp(driveY + rotate, -1, 1),
+    intake: !quiet && tick % 90 < 45,
+    fire: !quiet && tick % 120 === 60,
+  };
+}
+
+/** a four-robot world of game `g` ('bb3d' = BIOBUZZ with 3D physics), seed 4242, robot-centric
+ * drive, with per-slot spec patches */
+function impWorld(g: GameId | 'bb3d', patches: Partial<RobotSpec>[], seed = 4242): { w: World; step: (w: World, dt: number, c: Map<number, RobotCommand>) => void } {
+  const mod = simModuleFor(g === 'bb3d' ? 'biobuzz' : g);
+  const w = mod.createWorld(
+    'match',
+    seed,
+    patches.map((s, i) => ({
+      id: i,
+      alliance: i % 2 === 0 ? 'blue' : 'red',
+      spec: { ...DEFAULT_SPEC, ...s },
+      assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false },
+      startIndex: Math.floor(i / 2),
+    })),
+    undefined,
+    g === 'biobuzz' ? '2d' : g === 'bb3d' ? '3d' : undefined,
+  );
+  return { w, step: (ww, dt, c) => mod.step(ww, dt, c) };
+}
+
+/**
+ * THE SCRIPTED STANDARD-ROBOT RUN (plan §4: "a check pins `worldHash` for a scripted
+ * standard-robot run before and after"). Four standard robots — mecanum, a 42 lb 300 rpm tank, a
+ * 16-wide swerve, a 13 × 14 x-drive — chasing each other into contact and into the walls, in AUTO
+ * and in TELEOP, in all three games and in BIOBUZZ 3D. Every 300 ticks: `worldHash` and an FNV of
+ * the WHOLE world's JSON, so a single bit anywhere moves the pin.
+ *
+ * The expected strings were recorded on the tree BEFORE any imported-robot branch existed
+ * (feat/robot-import 350be69d). They are the proof that every one of those branches is
+ * unreachable for a standard robot. If a later, deliberate sim change moves them, re-record them
+ * in the same change and say so — never to make an import change pass.
+ */
+// Re-pinned 2026-10-02 when alpha's swerve pod-order fix (`SIM_VERSION` 5) merged in: the 2D scenes
+// carry a swerve robot, so their digests moved with it; the bb3d pins (no traction loop in 3D) did not.
+const IMP_STANDARD_PINS: Record<string, string> = {
+  'decode auto': 'rr=2293 1318016677:3380270344 122560760:2278617322 910756242:1473121615',
+  'decode teleop': 'rr=2385 2830526011:638886374 1035015855:1468188252 2338123926:3682425943',
+  'chain auto': 'rr=1281 2431124453:1990244503 2262003531:670134973 4134157598:4089625147',
+  'chain teleop': 'rr=1281 2256841879:3095239556 3284001669:73183289 1872871630:404922659',
+  'biobuzz auto': 'rr=991 4255951604:2662367511 660269574:1959277593 4168578138:2355650975',
+  'biobuzz teleop': 'rr=991 1190480768:2589840997 1619190486:802938886 1865481434:3779862946',
+  'bb3d auto': 'rr=669 1607295770:1409803632 2200351981:4275673017',
+  'bb3d teleop': 'rr=669 2836792230:1383244223 880852445:3017784053',
+};
+// Re-pinned 2026-10-04 for `SIM_PATCH` 7: a robot meets a FLOWER's middle and top plates over their
+// measured outline, not a box. These are the pins they had; a world stepped under patch 6 lands on them.
+const IMP_STANDARD_PINS_PATCH6: Record<string, string> = {
+  'bb3d auto': 'rr=693 3060472950:2940359141 1030663276:691242207',
+  'bb3d teleop': 'rr=693 3798170826:4183526500 3022533868:2001194370',
+};
+// Re-pinned 2026-10-02 for `SIM_PATCH` 3: BIOBUZZ 3D takes the wall square-up inside its solve
+// (`sim3d/step3dImpl.ts` stage 6b), and these robots chase each other into the walls. The pins they
+// had before are kept below, and a world stepped under patch 2 must still land on them — which is
+// both the proof that the patch gate holds for old replays and that nothing else moved.
+const IMP_STANDARD_PINS_PATCH2: Record<string, string> = {
+  'bb3d auto': 'rr=536 3017453969:3234063733 3359223633:3518342206',
+  'bb3d teleop': 'rr=536 1542058217:1431457225 162820593:121201075',
+};
+const IMP_STANDARD_SPECS: Partial<RobotSpec>[] = [
+  { drivetrain: 'mecanum' },
+  { drivetrain: 'tank', massLb: 42, driveRpm: 300 },
+  { drivetrain: 'swerve', width: 16 },
+  { drivetrain: 'xdrive', length: 13, width: 14 },
+];
+function impStandardRun(g: GameId | 'bb3d', phase: 'auto' | 'teleop', patch?: number): string {
+  const { w, step: st } = impWorld(g, IMP_STANDARD_SPECS);
+  // a replay recorded under an older `SIM_PATCH` — hashed WITHOUT the field, so the pin is the world's
+  if (patch !== undefined) w.simPatch = patch;
+  w.match.phase = phase;
+  w.match.phaseTimeLeft = phase === 'auto' ? 30 : 25;
+  const out: string[] = [];
+  let rr = 0;
+  for (let t = 0; t < (g === 'bb3d' ? 600 : 900); t++) {
+    const cmds = new Map<number, RobotCommand>();
+    for (let i = 0; i < w.robots.length; i++) cmds.set(w.robots[i].id, impChase(w, i, t));
+    st(w, 1 / 60, cmds);
+    rr += w.rrContacts.length;
+    if ((t + 1) % 300 === 0) out.push(`${worldHash(w)}:${impFnv(JSON.stringify(patch === undefined ? w : { ...w, simPatch: undefined }))}`);
+  }
+  return `rr=${rr} ${out.join(' ')}`;
+}
+
+function impStandardCheck(g: GameId | 'bb3d'): void {
+  for (const phase of ['auto', 'teleop'] as const) {
+    const key = `${g} ${phase}`;
+    const got = impStandardRun(g, phase);
+    check(`imported robots: STANDARD robots step byte-identically — ${key} (worldHash + whole-world JSON, ${g === 'bb3d' ? 600 : 900} ticks)`, got === IMP_STANDARD_PINS[key], got);
+    const before = IMP_STANDARD_PINS_PATCH2[key];
+    if (before) {
+      const old = impStandardRun(g, phase, 2);
+      check(`imported robots: ...and under SIM_PATCH 2 (a replay recorded before the 3D wall square-up moved into the solve) the same scene still steps to its old pin — ${key}`, old === before, old);
+    }
+    const before6 = IMP_STANDARD_PINS_PATCH6[key];
+    if (before6) {
+      const old = impStandardRun(g, phase, 6);
+      check(`imported robots: ...and under SIM_PATCH 6 (square FLOWER plates) the same scene steps to the pin it had before patch 7 — ${key}`, old === before6, old);
+    }
+  }
+}
+// one block per game, so the sharder can spread them
+{
+  impStandardCheck('decode');
+}
+{
+  impStandardCheck('chain');
+}
+{
+  impStandardCheck('biobuzz');
+}
+{
+  await initPhysics3d();
+  impStandardCheck('bb3d');
+}
+
+/** every invariant a coerced descriptor promises (plan §3.1), as a list of what is broken */
+function impBroken(c: ImportedRobot): string[] {
+  const bad: string[] = [];
+  const onGrid = (v: number) => Number.isFinite(v) && Math.round(v / IMPORT_QUANTUM) * IMPORT_QUANTUM === v && !Object.is(v, -0);
+  const h = c.hull;
+  if (h.length < 3 || h.length > 16) bad.push(`hull has ${h.length} vertices`);
+  for (let i = 0; i < h.length; i++) {
+    const a = h[i];
+    const b = h[(i + 1) % h.length];
+    const d = h[(i + 2) % h.length];
+    if ((b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x) <= 0) bad.push(`hull not strictly convex CCW at ${i}`);
+    if (!onGrid(a.x) || !onGrid(a.y)) bad.push(`hull vertex ${i} off the 1/64 grid`);
+  }
+  const b = polyBounds(h);
+  if (b.maxX - b.minX > IMPORT_MAX_EXTENT || b.maxY - b.minY > IMPORT_MAX_EXTENT) bad.push('bounding box over 18 in');
+  if (polyFeature(h, { x: 0, y: 0 }).depth < IMPORT_ORIGIN_MARGIN) bad.push('origin not inside by the margin');
+  if (!(c.heightIn >= 1 && c.heightIn <= 18) || !onGrid(c.heightIn)) bad.push(`heightIn ${c.heightIn}`);
+  if (!/^[0-9a-f]{16}$/.test(c.id) || c.v !== 1) bad.push('id/v');
+  if (c.wheels) {
+    if (c.wheels.length !== 4) bad.push('wheel count');
+    for (const w of c.wheels) if (polyFeature(h, w).depth < 0 || !onGrid(w.x) || !onGrid(w.y)) bad.push('wheel outside the hull / off grid');
+  }
+  if (c.bands) {
+    if (c.bands.length > 5) bad.push('more than 5 bands');
+    for (let i = 0; i < c.bands.length; i++) {
+      const bd = c.bands[i];
+      if (!(bd.z0 < bd.z1 && bd.z0 >= 0 && bd.z1 <= c.heightIn)) bad.push(`band ${i} z range`);
+      if (i > 0 && c.bands[i - 1].z0 > bd.z0) bad.push('bands not sorted');
+      if (bd.hull.length < 3 || bd.hull.length > 12) bad.push(`band ${i} has ${bd.hull.length} vertices`);
+      for (const p of bd.hull) if (polyFeature(h, p).depth < 0) bad.push(`band ${i} outside the hull`);
+      if (bd.cuts) {
+        if (bd.cuts.length === 0 || bd.cuts.length > 8) bad.push(`band ${i} has ${bd.cuts.length} cuts`);
+        for (const ct of bd.cuts) {
+          if (!['front', 'back', 'left', 'right'].includes(ct.edge)) bad.push(`band ${i} cut edge ${ct.edge}`);
+          if (!(ct.from < ct.to) || ![ct.from, ct.to, ct.at].every((v) => Number.isFinite(v) && onGrid(v))) bad.push(`band ${i} cut ${JSON.stringify(ct)}`);
+        }
+      }
+    }
+  }
+  if (c.mech?.intakes) {
+    if (c.mech.intakes.length > 4) bad.push('more than 4 intakes');
+    for (const it of c.mech.intakes) if (!(it.to - it.from >= 1)) bad.push('intake narrower than 1 in or from >= to');
+    const order = ['front', 'back', 'left', 'right'];
+    for (let i = 1; i < c.mech.intakes.length; i++) {
+      if (!(order.indexOf(c.mech.intakes[i - 1].edge) < order.indexOf(c.mech.intakes[i].edge))) bad.push('intakes not one per edge, front/back/left/right');
+    }
+  }
+  for (const k of ['shooter', 'shooter2', 'place'] as const) {
+    const p = c.mech?.[k];
+    if (!p) continue;
+    if (polyFeature(h, p).depth < 0 || !onGrid(p.x) || !onGrid(p.y)) bad.push(`${k} outside the hull / off grid`);
+    if (!(p.z >= 0 && p.z <= c.heightIn) || !onGrid(p.z)) bad.push(`${k} z ${p.z}`);
+  }
+  // 16 + 5 × 12 vertices and 5 × 8 cuts at their longest: about 5.2 KB (`docs/area/robot-import.md`)
+  if (JSON.stringify(c).length > 6144) bad.push(`descriptor is ${JSON.stringify(c).length} bytes`);
+  return bad;
+}
+
+/**
+ * `coerceImported` over a HOSTILE MATRIX: every input either comes back undefined, or comes back
+ * satisfying every invariant AND as a fixed point — `coerce(coerce(x))` deep-equals `coerce(x)`,
+ * which is what lets it run at settings load, server ingress, `createWorld` and replay re-sim.
+ */
+{
+  const circle = (n: number, r: number, cx = 0, cy = 0) =>
+    Array.from({ length: n }, (_, i) => ({ x: cx + r * dcos((2 * Math.PI * i) / n), y: cy + r * dsin((2 * Math.PI * i) / n) }));
+  const base = IMP_NOSE;
+  const cases: [string, unknown][] = [
+    ['the reference pentagon', base],
+    ['clockwise input', { ...base, hull: [...base.hull].reverse() }],
+    ['duplicate + interior points', { ...base, hull: [...base.hull, ...base.hull, { x: 0, y: 0 }, { x: 1, y: 1 }] }],
+    ['100 vertices on a circle', { ...base, hull: circle(100, 8.7) }],
+    ['NaN / Infinity / strings mixed in', { ...base, hull: [...base.hull, { x: NaN, y: 1 }, { x: Infinity, y: 0 }, { x: '3', y: 2 }, null, 7] }],
+    ['millimetres (25.4×)', { ...base, hull: base.hull.map((p) => ({ x: p.x * 25.4, y: p.y * 25.4 })), heightIn: 14 * 25.4 }],
+    ['slightly oversized (20 wide)', { ...base, hull: [{ x: -9, y: -10 }, { x: 9, y: -10 }, { x: 9, y: 10 }, { x: -9, y: 10 }] }],
+    ['astronomically large', { ...base, hull: base.hull.map((p) => ({ x: p.x * 1e300, y: p.y * 1e300 })) }],
+    ['origin outside the hull (offset 100 in)', { ...base, hull: base.hull.map((p) => ({ x: p.x + 100, y: p.y })) }],
+    ['off-grid noise', { ...base, hull: base.hull.map((p, i) => ({ x: p.x + 0.0031 * i, y: p.y - 0.0017 * i })) }],
+    ['all collinear', { ...base, hull: [{ x: -5, y: 0 }, { x: 0, y: 0 }, { x: 5, y: 0 }] }],
+    ['a 2 × 2 speck', { ...base, hull: [{ x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }] }],
+    ['an 18 × 0.5 sliver', { ...base, hull: [{ x: -9, y: -0.25 }, { x: 9, y: -0.25 }, { x: 9, y: 0.25 }, { x: -9, y: 0.25 }] }],
+    ['uppercase id', { ...base, id: '0123456789ABCDEF' }],
+    ['15-char id', { ...base, id: '0123456789abcde' }],
+    ['numeric id', { ...base, id: 12345 }],
+    ['v 2', { ...base, v: 2 }],
+    ['heightIn NaN', { ...base, heightIn: NaN }],
+    ['heightIn 40', { ...base, heightIn: 40 }],
+    ['heightIn -3', { ...base, heightIn: -3 }],
+    ['wheels outside the hull', { ...base, wheels: [{ x: 30, y: 30 }, { x: 30, y: -30 }, { x: -30, y: 30 }, { x: -30, y: -30 }] }],
+    ['wheels in a scrambled order', { ...base, wheels: [{ x: -5, y: -5 }, { x: 3, y: 5 }, { x: -5, y: 5 }, { x: 3, y: -5 }] }],
+    ['three wheels', { ...base, wheels: [{ x: 3, y: 3 }, { x: 3, y: -3 }, { x: -3, y: 3 }] }],
+    ['a NaN wheel', { ...base, wheels: [{ x: 3, y: 3 }, { x: 3, y: -3 }, { x: -3, y: 3 }, { x: NaN, y: 0 }] }],
+    ['four wheels on one point', { ...base, wheels: [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }] }],
+    ['five bands, unsorted, one inverted, one outside', {
+      ...base,
+      bands: [
+        { z0: 10, z1: 14, hull: circle(30, 3) },
+        { z0: 5, z1: 2, hull: circle(5, 2) },
+        { z0: 0, z1: 6, hull: circle(20, 40) },
+        { z0: 2, z1: 99, hull: circle(8, 4, 2, 0) },
+        { z0: 1, z1: 3, hull: circle(6, 1) },
+        { z0: 3, z1: 5, hull: circle(7, 1) },
+        { z0: 6, z1: 9, hull: circle(9, 2) },
+      ],
+    }],
+    ['a band with a degenerate hull', { ...base, bands: [{ z0: 0, z1: 5, hull: [{ x: 0, y: 0 }, { x: 1, y: 0 }] }] }],
+    ['band cuts: junk, reversed, zero-wide, far off, twenty of them', {
+      ...base,
+      bands: [
+        {
+          z0: 0,
+          z1: 5,
+          hull: circle(12, 6),
+          cuts: [
+            { edge: 'front', from: 2, to: -2, at: 5.0001 },
+            { edge: 'top', from: -1, to: 1, at: 3 },
+            { edge: 'left', from: 1, to: 1, at: 3 },
+            { edge: 'back', from: NaN, to: 1, at: 3 },
+            { edge: 'right', from: -1e9, to: 1e9, at: -1e9 },
+            null,
+            'cut',
+            ...Array.from({ length: 20 }, (_, i) => ({ edge: 'left', from: i, to: i + 0.5, at: 4 })),
+          ],
+        },
+        { z0: 5, z1: 9, hull: circle(8, 4), cuts: [{ edge: 'front', from: 'a', to: 1, at: 2 }] },
+      ],
+    }],
+    ['band cuts on a model 2× over the cube', {
+      ...base,
+      hull: [{ x: -18, y: -16 }, { x: 18, y: -16 }, { x: 18, y: 16 }, { x: -18, y: 16 }],
+      bands: [{ z0: 0, z1: 6, hull: [{ x: -18, y: -16 }, { x: 18, y: -16 }, { x: 18, y: 16 }, { x: -18, y: 16 }], cuts: [{ edge: 'front', from: -10, to: 10, at: 16 }, { edge: 'back', from: -4, to: 6, at: -12 }] }],
+    }],
+    ['mech: far shooter, bad edges, reversed spans, ten intakes', {
+      ...base,
+      mech: {
+        shooter: { x: 500, y: -500, z: 99 },
+        place: { x: 0, y: 0, z: -4 },
+        intakes: [
+          { edge: 'top', from: 0, to: 1 },
+          { edge: 'front', from: 5, to: -5 },
+          ...Array.from({ length: 10 }, (_, i) => ({ edge: 'left', from: -i, to: i + 1 })),
+        ],
+      },
+    }],
+    ['mech with nothing valid', { ...base, mech: { shooter: { x: NaN, y: 0, z: 0 }, intakes: [{ edge: 'front', from: 2, to: 2 }] } }],
+    ['mech: duplicate edges out of order, a narrow span, a second head off the robot', {
+      ...base,
+      mech: {
+        shooter2: { x: -40, y: 3, z: 6 },
+        intakes: [
+          { edge: 'left', from: -3, to: 4 },
+          { edge: 'right', from: 1, to: 1.5 },
+          { edge: 'front', from: -6, to: 6 },
+          { edge: 'left', from: -8, to: 8 },
+          { edge: 'back', from: 2, to: -2 },
+        ],
+      },
+    }],
+    ['100 000 points', { ...base, hull: circle(100000, 8) }],
+    ['null', null],
+    ['a string', 'imported'],
+    ['an array', [base]],
+    ['hull not an array', { ...base, hull: { x: 1, y: 1 } }],
+  ];
+  let valid = 0;
+  for (const [name, raw] of cases) {
+    const c1 = coerceImported(raw);
+    if (!c1) continue;
+    valid++;
+    const c2 = coerceImported(c1);
+    check(`coerceImported idempotent: ${name}`, isDeepStrictEqual(c1, c2), JSON.stringify(c1).slice(0, 160));
+    const bad = impBroken(c1);
+    check(`coerceImported invariants hold: ${name}`, bad.length === 0, bad.join('; '));
+  }
+  check('coerceImported: the hostile matrix exercised both outcomes', valid >= 15 && valid < cases.length, `${valid} of ${cases.length} survived`);
+  const ref = coerceImported(base)!;
+  const want = (name: string) => coerceImported(cases.find(([n]) => n === name)![1]);
+  check('coerceImported: the hull is recomputed — CW input and repeated/interior points give the reference hull', isDeepStrictEqual(want('clockwise input'), ref) && isDeepStrictEqual(want('duplicate + interior points'), ref));
+  check('coerceImported: non-finite points are dropped, not propagated', isDeepStrictEqual(want('NaN / Infinity / strings mixed in'), ref));
+  check('coerceImported: 100 vertices are cut to 16', want('100 vertices on a circle')!.hull.length === 16);
+  {
+    const mm = want('millimetres (25.4×)')!;
+    const b = polyBounds(mm.hull);
+    check('coerceImported: a model in millimetres is scaled uniformly to the 18-in cube (height too)', b.maxX - b.minX <= 18 && b.maxX - b.minX > 17.9 && mm.heightIn < 15, `${b.maxX - b.minX} long, ${mm.heightIn} tall`);
+  }
+  check('coerceImported: an offset hull is recentred on its centroid', polyFeature(want('origin outside the hull (offset 100 in)')!.hull, { x: 0, y: 0 }).depth > 5);
+  for (const n of ['all collinear', 'a 2 × 2 speck', 'an 18 × 0.5 sliver', 'uppercase id', '15-char id', 'numeric id', 'v 2', 'heightIn NaN', 'null', 'a string', 'an array', 'hull not an array']) {
+    check(`coerceImported refuses: ${n}`, want(n) === undefined);
+  }
+  check('coerceImported: heightIn is clamped into [1, 18]', want('heightIn 40')!.heightIn === 18 && want('heightIn -3')!.heightIn === 1);
+  check('coerceImported: wheels outside the hull are walked inside', !!want('wheels outside the hull')!.wheels);
+  check(
+    'coerceImported: wheels are sorted FL, FR, BL, BR',
+    isDeepStrictEqual(want('wheels in a scrambled order')!.wheels, [{ x: 3, y: 5 }, { x: 3, y: -5 }, { x: -5, y: 5 }, { x: -5, y: -5 }]),
+    JSON.stringify(want('wheels in a scrambled order')!.wheels),
+  );
+  check('coerceImported: three wheels, a NaN wheel or no spread drop the wheels', !want('three wheels')!.wheels && !want('a NaN wheel')!.wheels && !want('four wheels on one point')!.wheels);
+  {
+    const bands = want('five bands, unsorted, one inverted, one outside')!.bands ?? [];
+    check('coerceImported: bands — at most 5, the inverted one dropped, sorted by z0', bands.length === 5 && bands.every((b, i) => i === 0 || bands[i - 1].z0 <= b.z0), JSON.stringify(bands.map((b) => [b.z0, b.z1, b.hull.length])));
+  }
+  {
+    const bands = want('band cuts: junk, reversed, zero-wide, far off, twenty of them')!.bands ?? [];
+    const cuts = bands[0]?.cuts ?? [];
+    check(
+      'coerceImported: band cuts — junk and zero-wide ones dropped, a reversed one put in order, one far off clamped, at most 8, none on a band whose only cut is junk',
+      cuts.length === 8 && isDeepStrictEqual(cuts[0], { edge: 'front', from: -2, to: 2, at: 5 }) && cuts[1].edge === 'right' && cuts[1].to === 10000 && cuts[1].at === -10000 &&
+        cuts.slice(2).every((ct) => ct.edge === 'left') && bands.length === 2 && bands[1].cuts === undefined,
+      JSON.stringify(cuts),
+    );
+  }
+  {
+    const c = want('band cuts on a model 2× over the cube')!;
+    const s = (polyBounds(c.hull).maxX - polyBounds(c.hull).minX) / 36;
+    const cuts = c.bands?.[0]?.cuts ?? [];
+    const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1 / 64;
+    check(
+      'coerceImported: a model scaled to the cube scales its band cuts with it (span and line alike)',
+      cuts.length === 2 && near(cuts[0].from, -10 * s) && near(cuts[0].to, 10 * s) && near(cuts[0].at, 16 * s) && near(cuts[1].from, -4 * s) && near(cuts[1].at, -12 * s),
+      `scale ${s}: ${JSON.stringify(cuts)}`,
+    );
+  }
+  {
+    const c = want('mech: far shooter, bad edges, reversed spans, ten intakes')!;
+    const m = c.mech!;
+    check(
+      'coerceImported: mech — the shooter is moved INSIDE the hull with z capped at heightIn, a negative z is 0, and the ten left spans keep only the first',
+      polyFeature(c.hull, m.shooter!).depth >= 0 && m.shooter!.z === c.heightIn && m.place!.z === 0 &&
+        m.intakes!.length === 2 && m.intakes![0].edge === 'front' && m.intakes![0].from === -5 && m.intakes![0].to === 5 &&
+        m.intakes![1].edge === 'left' && m.intakes![1].from === 0 && m.intakes![1].to === 1,
+      JSON.stringify(m),
+    );
+  }
+  {
+    const c = want('mech: duplicate edges out of order, a narrow span, a second head off the robot')!;
+    const m = c.mech!;
+    check(
+      'coerceImported: mech — one span per edge (the first wins), sorted front/back/left/right, a span under 1 in dropped, shooter2 kept inside the hull',
+      isDeepStrictEqual(m.intakes!.map((i) => [i.edge, i.from, i.to]), [['front', -6, 6], ['back', -2, 2], ['left', -3, 4]]) &&
+        polyFeature(c.hull, m.shooter2!).depth >= 0 && m.shooter2!.z === 6,
+      JSON.stringify(m),
+    );
+  }
+  check('coerceImported: a mech with nothing valid is dropped', want('mech with nothing valid')!.mech === undefined);
+}
+
+/**
+ * THE COERCER'S COST ON HOSTILE INPUT (review 2026-10-01). `coerceImported` runs at the door, in
+ * every `update` patch, at `createWorld` and in every `coerceSpec`. With 16 bands of 256 far-off
+ * points a 62 KB `update` cost 66–78 ms of the room's thread (every room on a worker shares it), at
+ * up to 240 messages a second. Now: points read are bounded (`IMPORT_MAX_INPUT_POINTS`,
+ * `IMPORT_MAX_BAND_INPUTS`), `pullInside` is a single pass whose answer is the old 65-step walk's
+ * bit for bit, and a room decides a refused import before anything is coerced.
+ *
+ * MEASURED (dev box, idle): the worst frame below sanitises in 0.12 ms median (0.7 ms max over 200).
+ * The bound is 1 ms for the median of 25, about 8× that, so a loaded shard does not trip it while
+ * the old 70 ms would fail it by 70×.
+ */
+{
+  const ID_A = '0123456789abcdef';
+  const ID_B = 'fedcba9876543210';
+  // the old walk, kept here as the reference the new one must equal
+  const qz = (v: number): number => Math.round(v / IMPORT_QUANTUM) * IMPORT_QUANTUM + 0;
+  const oldPull = (hull: { x: number; y: number }[], p: { x: number; y: number }, snap: boolean): { x: number; y: number } => {
+    for (let j = 0; j <= 64; j++) {
+      const k = 1 - j / 64;
+      const c = snap ? { x: qz(p.x * k), y: qz(p.y * k) } : { x: p.x * k, y: p.y * k };
+      if (polyPointDepth(hull, c) >= 0) return c;
+    }
+    return { x: 0, y: 0 };
+  };
+  {
+    const rnd = VF.prng(2026);
+    let compared = 0;
+    let diffs = 0;
+    let firstDiff = '';
+    for (let h = 0; h < 1500; h++) {
+      const m = 3 + Math.floor(rnd() * 14);
+      const imp = coerceImported({ v: 1, id: ID_A, heightIn: 10, hull: Array.from({ length: m }, () => ({ x: qz(rnd() * 18 - 9), y: qz(rnd() * 18 - 9) })) });
+      if (!imp) continue;
+      const hull = imp.hull;
+      for (let i = 0; i < 30; i++) {
+        const r = rnd();
+        const v = hull[Math.floor(rnd() * hull.length)];
+        const p =
+          r < 0.3 ? { x: rnd() * 40 - 20, y: rnd() * 40 - 20 }
+          : r < 0.5 ? { x: rnd() * 2e4 - 1e4, y: rnd() * 2e4 - 1e4 }
+          : r < 0.8 ? { x: v.x * (1 + (rnd() - 0.5) * 0.05), y: v.y * (1 + (rnd() - 0.5) * 0.05) }
+          : { x: qz(v.x + Math.round((rnd() - 0.5) * 6) / 64), y: qz(v.y + Math.round((rnd() - 0.5) * 6) / 64) };
+        for (const snap of [true, false]) {
+          const a = oldPull(hull, p, snap);
+          const b = pullInside(hull, p, snap);
+          compared++;
+          if (!Object.is(a.x, b.x) || !Object.is(a.y, b.y)) {
+            diffs++;
+            firstDiff ||= JSON.stringify({ hull, p, snap, a, b });
+          }
+        }
+      }
+    }
+    check('imports/pull: ⚠️ the single-pass pull equals the old 65-step walk BIT FOR BIT (far points, near-boundary points, on-grid points, snapped and not)',
+      diffs === 0 && compared > 50_000, `${diffs} of ${compared}: ${firstDiff.slice(0, 300)}`);
+  }
+
+  // ---- the worst frame that fits the 64 KiB cap ----------------------------------------------------
+  const far = Array.from({ length: 256 }, () => ({ x: 99, y: 0 }));
+  const circle16 = Array.from({ length: 16 }, (_, i) => ({ x: Math.round(9 * dcos((2 * Math.PI * i) / 16) * 64) / 64, y: Math.round(9 * dsin((2 * Math.PI * i) / 16) * 64) / 64 }));
+  const hostileImp = (id: string) => ({
+    v: 1, id, heightIn: 10, hull: circle16,
+    bands: Array.from({ length: 16 }, () => ({ z0: 0, z1: 5, hull: far })),
+    wheels: far.slice(0, 4),
+    mech: { shooter: { x: 99, y: 99, z: 9 }, shooter2: { x: -99, y: 9, z: 9 }, place: { x: 9, y: -99, z: 9 }, intakes: Array.from({ length: 16 }, () => ({ edge: 'front', from: -99, to: 99 })) },
+  });
+  const frame = JSON.stringify({ t: 'update', patch: { spec: { ...DEFAULT_SPEC, imported: hostileImp(ID_A) } } });
+  check('imports/cost: the hostile frame fits the server’s 64 KiB cap (it is a real attack, not a hypothetical one)', frame.length < 64 * 1024 && frame.length > 60_000, String(frame.length));
+  check('imports/cost: the input bounds are what the importer needs and no more (64 points a polygon, 10 bands read for the 5 kept)',
+    IMPORT_MAX_INPUT_POINTS === 64 && IMPORT_MAX_BAND_INPUTS === 10);
+  /** the median of `n` timed calls, after 10 untimed ones (JIT); `inputs` are parsed BEFORE the clock
+   *  starts, so what is measured is the coercion, not `JSON.parse` of 62 KB */
+  const median = <T,>(make: () => T, f: (x: T) => void, n = 25): number => {
+    for (let i = 0; i < 10; i++) f(make());
+    const inputs = Array.from({ length: n }, make);
+    const t: number[] = [];
+    for (const x of inputs) {
+      const s0 = performance.now();
+      f(x);
+      t.push(performance.now() - s0);
+    }
+    t.sort((a, b) => a - b);
+    return t[n >> 1];
+  };
+  const cur = { ...sanitizePlayer(undefined, 'decode'), clientId: 'x' };
+  for (const g of ['decode', 'chain', 'biobuzz'] as GameId[]) {
+    const ms = median(() => (JSON.parse(frame) as { patch: unknown }).patch, (patch) => sanitizePlayerPatch(patch, cur, g));
+    check(`imports/cost: ⚠️ the worst 64 KiB update sanitises in under 1 ms (median of 25) — ${g}`, ms < 1, `${ms.toFixed(3)} ms`);
+  }
+  {
+    // the LAN tab host seats a guest through `sanitizePlayer` (`hostWorker.seat`) and runs the same Room
+    const player = JSON.stringify({ ...cur, spec: { ...DEFAULT_SPEC, imported: hostileImp(ID_A) } });
+    const ms = median(() => JSON.parse(player) as unknown, (pl) => sanitizePlayer(pl, 'biobuzz'));
+    check('imports/cost: ...and the LAN tab host’s seat (`sanitizePlayer`) is as cheap', ms < 1, `${ms.toFixed(3)} ms`);
+  }
+  const coerced = coerceImported(hostileImp(ID_A));
+  check('imports/cost: what it coerces to is still a canonical robot (bands from the first readable ones, mech moved inside)',
+    !!coerced && coerced.hull.length <= 16 && (coerced.bands?.length ?? 0) <= 3 && isDeepStrictEqual(coerceImported(coerced), coerced));
+
+  // ---- through a real Room: the custom room's accept path, and a refusal that costs nothing ---------------
+  const mkSeat = (s: ServerMsg[], id: string, spec: typeof DEFAULT_SPEC, caps: string[] = CLIENT_CAPS): Client => ({
+    id, send: (m) => s.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...spec }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps,
+  });
+  {
+    const s: ServerMsg[] = [];
+    // open to imports explicitly: closed (this process's gate, no SERVER_CHANNEL) it would time the
+    // free refusal instead, and pass whatever the accept path cost
+    const room = new Room('smoke-imp-cost', () => {}, { kind: 'versus', imports: true });
+    room.add(mkSeat(s, 'a', DEFAULT_SPEC));
+    let n = 0;
+    const ms = median(
+      () => JSON.parse(JSON.stringify({ t: 'update', patch: { spec: { ...DEFAULT_SPEC, imported: hostileImp(n++ % 2 ? ID_A : ID_B) } } })) as PROTO.ClientMsg,
+      (m) => room.onMessage('a', m),
+      15,
+    );
+    const last = [...s].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    const took = !s.some((m) => m.t === 'error' && m.message === IMPORT_REFUSED_HERE) && isImportedSpec(last?.players.find((p) => p.clientId === 'a')?.spec);
+    check('imports/cost: ⚠️ a custom Room takes the hostile update (and the LAN tab host is this Room) in under 2 ms, on the accept path', took && ms < 2, `${ms.toFixed(3)} ms, accepted ${took}`);
+    room.stop();
+  }
+  {
+    const s: ServerMsg[] = [];
+    const room = new Room('smoke-imp-cost-rec', () => {}, { kind: 'record', record: 'solo' });
+    room.add(mkSeat(s, 'r', DEFAULT_SPEC));
+    // a record room refuses the import on the RAW patch: nothing is coerced, and the rest still applies
+    const patch = { spec: { ...DEFAULT_SPEC, imported: hostileImp(ID_A) }, name: 'renamed', teamName: 'Nope' };
+    const ms = median(() => JSON.parse(JSON.stringify({ t: 'update', patch })) as PROTO.ClientMsg, (m) => room.onMessage('r', m), 15);
+    const last = [...s].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    const me = last?.players.find((p) => p.clientId === 'r');
+    check('imports/cost: a record room refuses it before coercing anything (a refusal is free), and the rest of the patch still applies',
+      ms < 1 && s.some((m) => m.t === 'error' && m.message === IMPORT_REFUSED_HERE) && !isImportedSpec(me?.spec) && me?.name === 'renamed' && me?.teamName === 'T',
+      `${ms.toFixed(3)} ms, name ${me?.name}, team ${me?.teamName}`);
+    room.stop();
+  }
+}
+
+/**
+ * `coerceSpec` CARRIES `imported` for every game, through `sanitizePlayer` and `createWorld`, sets
+ * `length`/`width` from the hull's bounding box (then the game's clamps), and stays idempotent.
+ */
+{
+  for (const g of ['decode', 'chain', 'biobuzz'] as GameId[]) {
+    const s = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, g);
+    check(`coerceSpec keeps the import — ${g}`, isDeepStrictEqual(s.imported, coerceImported(IMP_NOSE)));
+    check(`coerceSpec is idempotent with an import — ${g}`, isDeepStrictEqual(coerceSpec(s, DEFAULT_SPEC, g), s));
+    // the hull is 18 × 16; the game's own clamps then apply (DECODE's sloped intake caps length at 15)
+    const lenOk = g === 'decode' ? s.length === 15 : s.length >= 16.5 && s.length <= 18;
+    check(`coerceSpec sizes an import from its hull — ${g}`, lenOk && s.width === 16, `${s.length} × ${s.width}`);
+    const p = sanitizePlayer({ spec: { ...DEFAULT_SPEC, imported: IMP_NOSE } }, g);
+    check(`sanitizePlayer keeps the import — ${g}`, isDeepStrictEqual(p.spec.imported, s.imported));
+    // settings load, through a JSON round trip (localStorage / the account blob)
+    const st = coerceSettings(JSON.parse(JSON.stringify({ game: g, spec: { ...DEFAULT_SPEC, imported: IMP_NOSE } })));
+    check(`settings load keeps the import — ${g}`, isDeepStrictEqual(st.spec.imported, s.imported));
+    const { w } = impWorld(g, [{ imported: IMP_NOSE }, {}]);
+    check(`createWorld keeps the import — ${g}`, isDeepStrictEqual(w.robots[0].spec.imported, s.imported) && w.robots[1].spec.imported === undefined);
+    // absent means a STANDARD robot, never the base's import
+    const back = coerceSpec({ ...DEFAULT_SPEC }, s, g);
+    check(`coerceSpec drops an import the input does not carry, whatever the base had — ${g}`, back.imported === undefined);
+  }
+  {
+    // an in-room `update` that sends a standard spec over an imported one leaves a standard robot
+    const cur = { ...sanitizePlayer({ spec: { ...DEFAULT_SPEC, imported: IMP_NOSE } }, 'decode'), clientId: 'c1' } as LobbyPlayer;
+    const patch = sanitizePlayerPatch(JSON.parse(JSON.stringify({ spec: { ...DEFAULT_SPEC } })), cur, 'decode');
+    const keep = sanitizePlayerPatch(JSON.parse(JSON.stringify({ spec: cur.spec })), cur, 'decode');
+    check('sanitizePlayerPatch: a standard spec over an imported one removes the import; resending the import keeps it', patch.spec?.imported === undefined && isDeepStrictEqual(keep.spec?.imported, cur.spec.imported));
+  }
+  const bad = coerceSpec({ ...DEFAULT_SPEC, imported: { ...IMP_NOSE, id: 'nope' } }, DEFAULT_SPEC, 'decode');
+  check('coerceSpec: an unrecoverable import plays as its parametric fallback', bad.imported === undefined && bad.length === DEFAULT_SPEC.length);
+  const s = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, 'decode');
+  const e = footprintExtents(s);
+  check('footprintExtents of an import is its hull bounding box, no intake reach added', e.front === 10 && e.rear === 8 && e.half === 8, JSON.stringify(e));
+  check('robotHullLocal of an import is its hull; of a standard robot, its footprint rectangle (CCW)', isDeepStrictEqual(robotHullLocal(s), s.imported!.hull) && robotHullLocal(DEFAULT_SPEC).length === 4);
+  const d = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_DIAMOND }, DEFAULT_SPEC, 'chain');
+  // a diamond of side 9√2: J = A·s²/6, so I = m·s²/6 = 27·m
+  check('chassisInertia of an import is its hull lamina about the origin', Math.abs(chassisInertia(10, d) - 270) < 1e-9, `${chassisInertia(10, d)}`);
+}
+
+/**
+ * A POINTED ROBOT MEETS A WALL WITH ITS POINT. Driven nose-first into the audience wall at 30°
+ * off square, the pentagon's nose vertex is the first and deepest thing to touch — where the
+ * bounding box's corner would already be 4 in through the wall — and it then settles with one of
+ * its OWN edges flush (the hull's edge picked for the square-up), not at a rectangle's 90°.
+ */
+{
+  const { w, step: st } = impWorld('decode', [{ imported: IMP_NOSE }]);
+  w.balls.length = 0;
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 100;
+  const r = w.robots[0];
+  r.pos = { x: 0, y: -50 };
+  r.heading = (-60 * Math.PI) / 180;
+  r.vel = { x: 0, y: 0 };
+  let firstDeepest = -1;
+  let worstHull = Infinity;
+  let worstBox = Infinity;
+  for (let t = 0; t < 240; t++) {
+    st(w, SIM_DT, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]));
+    const hull = robotHullWorld(r);
+    let lo = Infinity;
+    let at = -1;
+    hull.forEach((p, i) => {
+      if (p.y < lo) {
+        lo = p.y;
+        at = i;
+      }
+    });
+    worstHull = Math.min(worstHull, lo);
+    worstBox = Math.min(worstBox, ...robotCorners(r).map((c) => c.y));
+    if (firstDeepest < 0 && lo < -FIELD_HALF + 0.5) firstDeepest = at;
+  }
+  const noseIdx = r.spec.imported!.hull.findIndex((p) => p.x === 10 && p.y === 0);
+  check('import vs wall: the NOSE vertex is the first part of the hull to reach the wall', firstDeepest === noseIdx, `vertex ${firstDeepest}, nose ${noseIdx}`);
+  check('import vs wall: the hull never goes through the wall (the collider is the hull)', worstHull > -FIELD_HALF - 0.8, `deepest ${(worstHull + FIELD_HALF).toFixed(2)} in`);
+  check('import vs wall: ...while its bounding box would have been well through it', worstBox < -FIELD_HALF - 2, `box ${(worstBox + FIELD_HALF).toFixed(2)} in`);
+  // flush: some hull edge's outward normal points straight into the wall (−y)
+  const hull = r.spec.imported!.hull;
+  let best = Infinity;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i];
+    const b = hull[(i + 1) % hull.length];
+    const n = rot({ x: b.y - a.y, y: -(b.x - a.x) }, r.heading);
+    best = Math.min(best, Math.abs(wrapAngle(datan2(n.y, n.x) + Math.PI / 2)));
+  }
+  const rectOff = Math.abs(wrapAngle(r.heading * 4) / 4);
+  check('import vs wall: it settles with one of its OWN edges flush, not at a rectangle angle', best < (3 * Math.PI) / 180 && rectOff > (5 * Math.PI) / 180, `edge off ${((best * 180) / Math.PI).toFixed(2)}°, heading ${((r.heading * 180) / Math.PI).toFixed(1)}°`);
+}
+
+/**
+ * ROBOT-ROBOT CONTACT IS THE HULLS'. Two diamonds whose bounding boxes overlap but whose hulls are
+ * 5.7 in apart record NO `rrContacts` (every zone foul reads them) and the per-game contact tests
+ * agree; nudged until the hulls overlap, all of them do.
+ */
+{
+  const scene = (bx: number, by: number, bSpec: Partial<RobotSpec> = { imported: IMP_DIAMOND }) => {
+    const { w, step: st } = impWorld('decode', [{ imported: IMP_DIAMOND }, bSpec]);
+    w.balls.length = 0;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 100;
+    w.robots[0].pos = { x: 0, y: -20 };
+    w.robots[1].pos = { x: bx, y: -20 + by };
+    for (const r of w.robots) {
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+    }
+    const boxesOverlap = polysOverlapBox(w.robots[0], w.robots[1]);
+    st(w, SIM_DT, new Map());
+    return { w, boxesOverlap };
+  };
+  const polysOverlapBox = (a: RobotState, b: RobotState) => {
+    const A = polyBounds(robotCorners(a));
+    const B = polyBounds(robotCorners(b));
+    return A.minX < B.maxX && B.minX < A.maxX && A.minY < B.maxY && B.minY < A.maxY;
+  };
+  const far = scene(13, 13);
+  check('rrContacts: two imports whose BOXES overlap but whose hulls do not record no contact', far.boxesOverlap && far.w.rrContacts.length === 0, `boxes ${far.boxesOverlap}, contacts ${far.w.rrContacts.length}`);
+  check('BIOBUZZ contact + gap read the hulls: no contact, 5.66 in apart', !bbRobotsContact(far.w.robots[0], far.w.robots[1]) && Math.abs(bbFootprintGap(far.w.robots[0], far.w.robots[1]) - 8 / Math.SQRT2) < 0.05, `${bbFootprintGap(far.w.robots[0], far.w.robots[1]).toFixed(3)}`);
+  const near = scene(8.8, 8.8);
+  check('rrContacts: the same two imports with their hulls overlapping do record the contact', near.w.rrContacts.length === 1, `${near.w.rrContacts.length}`);
+  check('BIOBUZZ contact reads the hulls: overlapping hulls are in contact, gap 0', bbRobotsContact(near.w.robots[0], near.w.robots[1]) && bbFootprintGap(near.w.robots[0], near.w.robots[1]) === 0);
+  // a STANDARD robot beside an import: its box against the diamond's empty corner
+  const mixed = scene(16, 16, {});
+  check('rrContacts: a standard robot in the empty corner of an import\'s box is not in contact', mixed.boxesOverlap && mixed.w.rrContacts.length === 0, `boxes ${mixed.boxesOverlap}, contacts ${mixed.w.rrContacts.length}`);
+}
+
+/**
+ * START LEGALITY JUDGES THE HULL — DECODE's G304 (`evalStartPose`), BIOBUZZ's (`bbEvalStart`) and
+ * Chain Reaction's Lab fit (`chainStartExtents`) — and every game spawns an import legally.
+ */
+{
+  const s = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, 'decode');
+  const h45 = 45;
+  const c = dcos(Math.PI / 4);
+  const hb = rotatedPolyBounds(s.imported!.hull, c, c);
+  const boxB = rotatedPolyBounds([{ x: -8, y: -8 }, { x: 10, y: -8 }, { x: 10, y: 8 }, { x: -8, y: 8 }], c, c);
+  // up against the far wall at 45°: the hull clears it by 2 in, the bounding box would be through
+  // it. (Touching is the footprint grown by START_TOUCH_TOL as a square in the ROBOT frame — what
+  // growing the rectangle has always meant — so at 45° it reaches 1.25·√2 = 1.77 in.)
+  const pose = { x: 0, y: FIELD_HALF - hb.maxY - 2, headingDeg: h45 };
+  const ev = evalStartPose(s, pose, 'blue');
+  check('G304 judges the hull: contained where the bounding box would overhang', ev.contained && pose.y + boxB.maxY > FIELD_HALF, `hull top ${(pose.y + hb.maxY).toFixed(2)}, box top ${(pose.y + boxB.maxY).toFixed(2)}`);
+  check('G304 judges the hull: 2 in off the wall is NOT touching (the box corner would be through it)', !ev.touching);
+  check('G304 judges the hull: within START_TOUCH_TOL of the wall IS touching', evalStartPose(s, { ...pose, y: pose.y + 1 }, 'blue').touching);
+  check('footprintCorners of an import are its hull vertices', footprintCorners(s, { x: 0, y: 0 }, 0).length === 5);
+  for (const g of ['decode', 'chain', 'biobuzz'] as GameId[]) {
+    const { w } = impWorld(g, [{ imported: IMP_NOSE }, { imported: IMP_NOSE }, { imported: IMP_DIAMOND }, {}]);
+    const mod = simModuleFor(g);
+    const inside = w.robots.every((r) => {
+      const b = polyBounds(robotHullWorld(r));
+      return b.minX >= -mod.bounds.halfX - 1e-6 && b.maxX <= mod.bounds.halfX + 1e-6 && b.minY >= -mod.bounds.halfY - 1e-6 && b.maxY <= mod.bounds.halfY + 1e-6;
+    });
+    check(`an import spawns with its whole hull inside the field — ${g}`, inside);
+    if (g === 'decode') {
+      const legal = w.robots.every((r) => evalStartPose(r.spec, { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI }, r.alliance).legal);
+      check('DECODE spawns every import G304-legal by its hull', legal);
+    }
+    if (g === 'biobuzz') {
+      const legal = w.robots.every((r) => bbEvalStart(r.spec, { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI }, r.alliance).legal);
+      check('BIOBUZZ seats every import G304-legal by its hull', legal);
+    }
+  }
+  const bs = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, 'biobuzz');
+  const box = bbStartBox(bs, { x: 0, y: 0, headingDeg: 45 });
+  check('BIOBUZZ start box at 45° is the turned HULL\'s box, not the turned bounding box', Math.abs(box.x1 - box.x0 - (hb.maxX - hb.minX)) < 1e-9 && box.x1 - box.x0 < boxB.maxX - boxB.minX - 2, `${(box.x1 - box.x0).toFixed(2)} vs ${(boxB.maxX - boxB.minX).toFixed(2)}`);
+  const cs = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_DIAMOND }, DEFAULT_SPEC, 'chain');
+  const ce = chainStartExtents(cs, 45);
+  check('Chain Reaction start extents read the hull: a diamond at 45° is a 12.7 in square, not the 25.5 in box', Math.abs(ce.ex - (9 * c + 0.5)) < 1e-9 && chainHeadingFits(cs, 45), `${ce.ex.toFixed(3)}`);
+  const snapped = chainSnapStartPose(cs, { x: 60, y: 60, headingDeg: 45 });
+  check('Chain Reaction snaps an import to a legal Lab pose', chainStartLegal(cs, { x: snapped.x, y: snapped.y }, snapped.headingDeg));
+}
+
+/**
+ * AN IMPORT PLAYS A MATCH: two imports (a pointed nose on a mecanum, a diamond on a tank) and two
+ * standard robots, chasing into each other and the walls for 900 ticks in every game. No NaN, no
+ * hull past the perimeter, contacts happen, and:
+ *  · DECODE: no ground artifact's centre is ever inside an imported hull — the artifact solve, the
+ *    pin round and `placeGroundArtifact` all read the closed hull.
+ *  · BIOBUZZ: none AWAY FROM THE PERIMETER. Against a wall this game's solve has no pin round, so a
+ *    POLLEN a robot presses into a wall is squeezed into ANY chassis — measured identical for a
+ *    standard robot below — and that is the game's, not the import's.
+ *  · Chain Reaction: its particles are a bespoke 0.6 in/tick plow, not the shared solve, so the
+ *    import is held to the standard robots' own record: particle-ticks inside the two imported
+ *    hulls, against the same two slots' standard footprints in the same scripted run.
+ * Shots are off outside DECODE: an element LANDING on a robot is a landing question, not solids.
+ */
+function impPlayRun(g: GameId, patches: Partial<RobotSpec>[]): { nan: boolean; worstOut: number; rr: number; inside: number[] } {
+  const { w, step: st } = impWorld(g, patches, 77);
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 100;
+  const bounds = simModuleFor(g).bounds;
+  let worstOut = 0;
+  let nan = false;
+  let rr = 0;
+  const inside = w.robots.map(() => 0);
+  for (let t = 0; t < 900; t++) {
+    const cmds = new Map<number, RobotCommand>();
+    for (let i = 0; i < w.robots.length; i++) cmds.set(w.robots[i].id, impChase(w, i, t, g !== 'decode'));
+    st(w, SIM_DT, cmds);
+    rr += w.rrContacts.length;
+    w.robots.forEach((r, i) => {
+      if (!Number.isFinite(r.pos.x) || !Number.isFinite(r.pos.y) || !Number.isFinite(r.heading)) nan = true;
+      const b = polyBounds(robotHullWorld(r));
+      worstOut = Math.max(worstOut, b.maxX - bounds.halfX, -bounds.halfX - b.minX, b.maxY - bounds.halfY, -bounds.halfY - b.minY);
+      const shape = robotHullLocal(r.spec);
+      for (const ball of w.balls) {
+        if (ball.state.kind !== 'ground' || ball.z > 0.5) continue;
+        const R = ball.r ?? BALL_RADIUS;
+        const atWall = Math.abs(ball.pos.x) > bounds.halfX - R - 0.25 || Math.abs(ball.pos.y) > bounds.halfY - R - 0.25;
+        if (g === 'biobuzz' && atWall) continue;
+        if (polyFeature(shape, rot({ x: ball.pos.x - r.pos.x, y: ball.pos.y - r.pos.y }, -r.heading)).depth > 0) inside[i]++;
+      }
+    });
+  }
+  return { nan, worstOut, rr, inside };
+}
+function impPlayCheck(g: GameId): void {
+  const run = impPlayRun(g, [
+    { drivetrain: 'mecanum', imported: IMP_NOSE },
+    { drivetrain: 'tank', imported: IMP_DIAMOND },
+    { drivetrain: 'swerve' },
+    { drivetrain: 'mecanum' },
+  ]);
+  // within the solver's resting penetration (`PHYS_CONTAIN_SLOP` 0.75 in): a robot leaning on a
+  // wall sits a hair into it, standard or imported
+  check(`an import plays 900 ticks — ${g}: no NaN, hull inside the perimeter`, !run.nan && run.worstOut < 1, `worst ${run.worstOut.toFixed(3)} in out`);
+  check(`an import plays 900 ticks — ${g}: robots met (rrContacts)`, run.rr > 100, `${run.rr}`);
+  const imp = run.inside[0] + run.inside[1];
+  if (g === 'chain') {
+    const std = impPlayRun(g, [{ drivetrain: 'mecanum' }, { drivetrain: 'tank' }, { drivetrain: 'swerve' }, { drivetrain: 'mecanum' }]);
+    check('an import plays 900 ticks — chain: the plow keeps particles out of an imported hull at least as well as out of a standard footprint', imp <= std.inside[0] + std.inside[1], `import ${imp}, standard ${std.inside[0] + std.inside[1]} particle-ticks`);
+  } else {
+    check(`an import plays 900 ticks — ${g}: no ground artifact centre ever inside an imported hull${g === 'biobuzz' ? ' (away from the perimeter)' : ''}`, imp === 0, `${imp} element-ticks`);
+  }
+}
+/** BIOBUZZ parity: pressing a wall POLLEN, an import and a standard chassis of the same size end
+ * the same — the game's solve squeezes both (no pin round), and the import adds nothing to it */
+{
+  const press = (imported?: ImportedRobot) => {
+    const { w, step: st } = impWorld('biobuzz', [{ length: 18, width: 16, imported }], 5);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 100;
+    const half = simModuleFor('biobuzz').bounds.halfY;
+    const ball = w.balls.find((b) => b.state.kind === 'ground')!;
+    w.balls = [ball];
+    const R = ball.r ?? 1.4;
+    ball.pos = { x: 0, y: -half + R };
+    ball.vel = { x: 0, y: 0 };
+    const r = w.robots[0];
+    r.pos = { x: 0, y: -half + 20 };
+    r.heading = Math.PI / 2;
+    r.vel = { x: 0, y: 0 };
+    for (let t = 0; t < 120; t++) st(w, SIM_DT, new Map([[0, cmd({ driveY: -1, leftDrive: -1, rightDrive: -1 })]]));
+    return polyFeature([{ x: -9, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -9, y: 8 }], rot({ x: ball.pos.x - r.pos.x, y: ball.pos.y - r.pos.y }, -r.heading)).depth;
+  };
+  const box: ImportedRobot = { ...IMP_NOSE, hull: [{ x: -9, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -9, y: 8 }] };
+  const a = press(undefined);
+  const b = press(box);
+  check('BIOBUZZ: an import squeezes a wall POLLEN exactly as a standard chassis of the same size does', Math.abs(a - b) < 0.05, `standard ${a.toFixed(3)}, import ${b.toFixed(3)}`);
+}
+{
+  impPlayCheck('decode');
+}
+{
+  impPlayCheck('chain');
+}
+{
+  impPlayCheck('biobuzz');
+}
+
+/**
+ * AN ARTIFACT IS NEVER LEFT INSIDE AN IMPORT: the solids are the hull CARVED by the game's intake
+ * (`importedMech.ts` — the chassis behind the mouth face, the funnel wedges or side plates), every
+ * piece inside the hull (a funnel's lip pokes `INTAKE_LIP` past it, as on a standard robot), and
+ * `placeGroundArtifact` walks one dropped onto the robot's centre out of every piece.
+ */
+{
+  const { w } = impWorld('decode', [{ imported: IMP_NOSE }]);
+  const r = w.robots[0];
+  const sol = robotSolids(r, []);
+  const hull = r.spec.imported!.hull;
+  const ptsOf = (sh: { kind: string; pts?: Vec2[] }) => sh.pts ?? [];
+  const inHull = (p: Vec2, pad: number) => polyFeature(hull, p).depth >= -pad - 1e-9;
+  check(
+    'robotSolids of an import: the hull behind the intake face plus the funnel wedges, every piece inside the hull (the lip excepted)',
+    sol.chassis.kind === 'poly' && sol.structure.length === 2 && ptsOf(sol.chassis).every((p) => inHull(p, 0)) && sol.structure.every((s) => ptsOf(s).every((p) => inHull(p, INTAKE_LIP))),
+    JSON.stringify(sol.structure.map(ptsOf)).slice(0, 200),
+  );
+  const bb = simModuleFor('biobuzz').artifactSolids!(r, [], 1.4);
+  check('BIOBUZZ artifactSolids of an import: its own carve — the hull behind the sweeper face and a plate either side, all inside the hull', bb.chassis.kind === 'poly' && bb.structure.length === 2 && [bb.chassis, ...bb.structure].every((s) => ptsOf(s).every((p) => inHull(p, 0))));
+  const ball = w.balls.find((b) => b.state.kind === 'ground')!;
+  ball.pos = { x: r.pos.x + 1, y: r.pos.y + 0.5 };
+  placeGroundArtifact(w, ball, new Map([[r.id, sol]]));
+  const q = robotPenetration(r, sol, ball.pos, BALL_RADIUS);
+  check('placeGroundArtifact walks an artifact out of every solid of an imported robot', q === null || q.pen <= 1e-6, q ? `pen ${q.pen.toFixed(3)} in ${q.part}` : 'clear');
+}
+
+/**
+ * THE WHEELS OVERRIDE TRACTION AND TURN. Same hull, two wheelbases: the narrow one turns faster (its
+ * half-diagonal is its wheelbase's), the traction model and BASE parking read the stated wheels, and
+ * a wheelbase exactly where a standard chassis would put its wheels turns exactly as fast as it.
+ */
+{
+  const narrow = coerceSpec({ ...DEFAULT_SPEC, imported: { ...IMP_NOSE, wheels: [{ x: 2, y: 2 }, { x: 2, y: -2 }, { x: -2, y: 2 }, { x: -2, y: -2 }] } }, DEFAULT_SPEC, 'decode');
+  const wide = coerceSpec({ ...DEFAULT_SPEC, imported: { ...IMP_NOSE, wheels: [{ x: 5, y: 6.5 }, { x: 5, y: -6.5 }, { x: -6, y: 6.5 }, { x: -6, y: -6.5 }] } }, DEFAULT_SPEC, 'decode');
+  check('wheels: wheelLocals reads the stated wheels, in `WHEEL_CORNERS` order (FL, FR, BL, BR, the descriptor’s own)', isDeepStrictEqual(wheelLocals(wide), [{ x: 5, y: 6.5 }, { x: 5, y: -6.5 }, { x: -6, y: 6.5 }, { x: -6, y: -6.5 }]));
+  const tn = driveParams(narrow).maxTurn;
+  const tw = driveParams(wide).maxTurn;
+  check('wheels: a narrower wheelbase turns faster', tn > tw * 1.2, `${tn.toFixed(2)} vs ${tw.toFixed(2)} rad/s`);
+  const spin = (spec: RobotSpec) => {
+    const { w, step: st } = impWorld('decode', [spec]);
+    w.balls.length = 0;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 100;
+    w.robots[0].pos = { x: 0, y: -20 };
+    let turned = 0;
+    for (let t = 0; t < 60; t++) {
+      const h0 = w.robots[0].heading;
+      st(w, SIM_DT, new Map([[0, cmd({ rotate: 1, leftDrive: -1, rightDrive: 1 })]]));
+      turned += Math.abs(wrapAngle(w.robots[0].heading - h0));
+    }
+    return turned;
+  };
+  const sn = spin(narrow);
+  const sw = spin(wide);
+  check('wheels: in the sim, the narrow wheelbase spins further in one second', sn > sw * 1.2, `${sn.toFixed(2)} vs ${sw.toFixed(2)} rad`);
+  // a wheelbase where a standard 18 × 16 chassis would put its wheels (inset 2.6) turns like that chassis
+  const boxHull: ImportedRobot = { ...IMP_NOSE, hull: [{ x: -9, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -9, y: 8 }] };
+  const boxImp = coerceImported(boxHull)!;
+  check('wheels: default wheels on a rectangular hull give the rectangle\'s own half-diagonal', Math.abs(importedHalfDiag(boxImp) - hyp(9, 8)) < 1e-9, `${importedHalfDiag(boxImp)}`);
+  // BASE parking counts the WHEELS: the same robot is fully in on a narrow wheelbase, partly on the default
+  const park = (spec: RobotSpec) => {
+    const { w } = impWorld('decode', [spec]);
+    const zone = baseZone('blue');
+    w.robots[0].pos = { x: (zone.x0 + zone.x1) / 2 - 5, y: (zone.y0 + zone.y1) / 2 };
+    w.robots[0].heading = 0;
+    assessMatchEnd(w);
+    return w.match.scores.blue.base;
+  };
+  const dflt = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, 'decode');
+  check('wheels: BASE parking counts the stated wheels (narrow: full, default: partial)', park(narrow) === 10 && park(dflt) === 5, `${park(narrow)} / ${park(dflt)}`);
+}
+
+/**
+ * ---- IMPORTED ROBOT VISUALS: the asset seam and its two frames (`src/render/importedAssets.ts`) ----
+ *
+ * The seam stores nothing: a source answers by id, in-memory blobs are lent, and a capped LRU holds
+ * decoded pictures whose object URLs must be revoked when they leave it. Node has no `Image`, so a
+ * stub decodes on the next microtask; `URL.createObjectURL`/`revokeObjectURL` are wrapped to count.
+ */
+{
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 6; i++) await new Promise<void>((r) => setTimeout(r, 0));
+  };
+  const g = globalThis as unknown as { Image?: unknown };
+  const hadImage = 'Image' in g;
+  const prevImage = g.Image;
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  const live = new Set<string>();
+  let created = 0;
+  let revokedTwice = 0;
+  let revokedUnknown = 0;
+  URL.createObjectURL = (b: Blob): string => {
+    const u = `blob:test/${++created}`;
+    live.add(u);
+    void b;
+    return u;
+  };
+  URL.revokeObjectURL = (u: string): void => {
+    if (!live.has(u)) {
+      if (u.startsWith('blob:test/') && Number(u.slice(10)) <= created) revokedTwice++;
+      else revokedUnknown++;
+    }
+    live.delete(u);
+  };
+  class StubImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    decoding = '';
+    naturalWidth = 512;
+    private s = '';
+    set src(v: string) {
+      this.s = v;
+      queueMicrotask(() => this.onload?.());
+    }
+    get src(): string {
+      return this.s;
+    }
+  }
+  g.Image = StubImage;
+  try {
+    resetImportedAssetsForTests();
+    // ── the TOP-DOWN PICTURE's frame — the one map from its pixels to robot inches ──
+    const hull = IMP_NOSE.hull; // x −8..10, y −8..8
+    const f = importedTopFrame(hull);
+    check('imported assets: the top frame is the hull box, centred, max side + 1 in, 512 px',
+      f.cx === 1 && f.cy === 0 && f.sideIn === 19 && f.px === 512 && Math.abs(f.inPerPx - 19 / 512) < 1e-12, JSON.stringify(f));
+    let worst = 0;
+    for (const p of hull) {
+      const { u, v } = robotToTopPixel(p, f);
+      const q = topPixelToRobot(u, v, f);
+      worst = Math.max(worst, Math.hypot(q.x - p.x, q.y - p.y));
+    }
+    check('imported assets: robot → pixel → robot round-trips every hull vertex', worst < 1e-9, worst.toExponential(2));
+    const front = topPixelToRobot(f.px / 2, 0, f);
+    const left = topPixelToRobot(0, f.px / 2, f);
+    check('imported assets: image UP is robot +x (front), image LEFT is robot +y (left)',
+      front.x > f.cx + 9 && Math.abs(front.y - f.cy) < 1e-9 && left.y > f.cy + 9 && Math.abs(left.x - f.cx) < 1e-9);
+    const [a, b, c, d, e, ff] = topImageTransform(f);
+    let tw = 0;
+    for (const [u, v] of [[0, 0], [512, 0], [37, 411], [256, 256]]) {
+      const want = topPixelToRobot(u, v, f);
+      tw = Math.max(tw, Math.hypot(a * u + c * v + e - want.x, b * u + d * v + ff - want.y));
+    }
+    check('imported assets: the canvas transform IS the frame (drawImage lands where topPixelToRobot says)', tw < 1e-9, tw.toExponential(2));
+    // the sprite's chain to the SCREEN: robot frame → world (a nose-up heading, +90°) → the camera's
+    // y-flip. Image right must be screen right and image down screen down: never mirrored.
+    const toScreen = (u: number, v: number): [number, number] => {
+      const rx = a * u + c * v + e;
+      const ry = b * u + d * v + ff;
+      const wx = -ry; // rotate +90°
+      const wy = rx;
+      return [wx, -wy]; // y-flip
+    };
+    const o0 = toScreen(0, 0);
+    const ou = toScreen(1, 0);
+    const ov = toScreen(0, 1);
+    check('imported assets: drawn nose-up, the picture is NOT mirrored (image right = screen right, down = down)',
+      ou[0] - o0[0] > 0 && Math.abs(ou[1] - o0[1]) < 1e-9 && ov[1] - o0[1] > 0 && Math.abs(ov[0] - o0[0]) < 1e-9);
+    // ── the STORED MESH frame: glTF metres (+Y up, +Z front, +X left) → robot inches ──
+    const M = IMPORTED_MESH_TO_ROBOT;
+    const apply = (x: number, y: number, z: number): [number, number, number] => [
+      M[0] * x + M[4] * y + M[8] * z + M[12],
+      M[1] * x + M[5] * y + M[9] * z + M[13],
+      M[2] * x + M[6] * y + M[10] * z + M[14],
+    ];
+    const near = (p: number[], q: number[]): boolean => p.every((v, i) => Math.abs(v - q[i]) < 1e-9);
+    const det =
+      M[0] * (M[5] * M[10] - M[9] * M[6]) - M[4] * (M[1] * M[10] - M[9] * M[2]) + M[8] * (M[1] * M[6] - M[5] * M[2]);
+    check('imported assets: mesh frame — glTF +Z (1 in) is robot front, +X is left, +Y is up, and it is a proper rotation',
+      near(apply(0, 0, 0.0254), [1, 0, 0]) && near(apply(0.0254, 0, 0), [0, 1, 0]) && near(apply(0, 0.0254, 0), [0, 0, 1]) && det > 0,
+      `det ${det}`);
+
+    // ── the SOURCE, the cache, the cap, and revocation ──
+    const asked: string[] = [];
+    const meshAsked: string[] = [];
+    const blob = (s: string): Blob => new Blob([s], { type: 'image/png' });
+    setImportedAssetSource({
+      top: async (id) => {
+        asked.push(id);
+        return id.startsWith('0') ? null : blob(id);
+      },
+      mesh: async (id) => {
+        meshAsked.push(id);
+        return id.startsWith('0') ? null : new Blob([id], { type: 'model/gltf-binary' });
+      },
+    });
+    const ids = Array.from({ length: IMPORTED_TOP_CAP + 3 }, (_, i) => `a${String(i).padStart(15, '0')}`);
+    const heard: string[] = [];
+    const off = subscribeImportedAssets((id) => heard.push(id));
+    check('imported assets: the first ask is null (not loaded YET) and starts exactly one load', importedTopImage(ids[0]) === null && asked.length === 1);
+    importedTopImage(ids[0]);
+    check('...a second ask while it loads does not start another', asked.length === 1);
+    await flush();
+    const img0 = importedTopImage(ids[0]);
+    check('imported assets: once decoded the picture is returned, with its URL, and readers were told',
+      img0 !== null && importedTopUrl(ids[0]) === (img0 as unknown as StubImage).src && heard.includes(ids[0]) && importedAssetVersion(ids[0]) > 0);
+    for (const id of ids) importedTopImage(id);
+    await flush();
+    const sizes = importedAssetCacheSizes();
+    check(`imported assets: the picture cache is capped at ${IMPORTED_TOP_CAP}`, sizes.tops <= IMPORTED_TOP_CAP, String(sizes.tops));
+    check('imported assets: every evicted picture\'s URL was revoked — live URLs = cached pictures, none revoked twice',
+      live.size === sizes.tops && revokedTwice === 0 && revokedUnknown === 0, `live ${live.size} cached ${sizes.tops} twice ${revokedTwice} unknown ${revokedUnknown}`);
+    check('imported assets: the LRU kept the most recent and dropped the oldest',
+      importedTopUrl(ids[ids.length - 1]) !== null && !live.has(`blob:test/1`));
+    // a MISS (not on this device) is remembered for pictures, and never makes a URL
+    const before = created;
+    importedTopImage('0000000000000001');
+    await flush();
+    check('imported assets: a picture this device does not have resolves null and creates no URL',
+      importedTopImage('0000000000000001') === null && created === before);
+
+    // ── LENT blobs win, replace cleanly, and leave cleanly ──
+    const draft = 'b000000000000001';
+    registerImportedAssets(draft, { top: blob('draft-1') });
+    importedTopImage(draft);
+    await flush();
+    const u1 = importedTopUrl(draft);
+    const v1 = importedAssetVersion(draft);
+    const mv1 = importedMeshVersion(draft);
+    registerImportedAssets(draft, { top: blob('draft-2') });
+    check('imported assets: re-lending a draft\'s picture revokes the old URL and moves its version (not its MESH version)',
+      u1 !== null && !live.has(u1) && importedAssetVersion(draft) > v1 && importedMeshVersion(draft) === mv1);
+    importedTopImage(draft);
+    await flush();
+    const u2 = importedTopUrl(draft);
+    check('...and the new picture decodes under a new URL', u2 !== null && u2 !== u1 && live.has(u2));
+    check('imported assets: a lent draft never asked the source', !asked.includes(draft));
+    unregisterImportedAssets(draft);
+    check('imported assets: unregistering revokes the draft\'s URL', u2 !== null && !live.has(u2));
+    const aid = ids[ids.length - 1];
+    const ua = importedTopUrl(aid);
+    const ma = importedMeshVersion(aid);
+    invalidateImportedAssets(aid);
+    check('imported assets: invalidate drops the cached picture (URL revoked) and moves the mesh version',
+      ua !== null && !live.has(ua) && importedMeshVersion(aid) > ma);
+
+    // ── meshes: lent wins, the source is cached (capped), a miss is not ──
+    const lent = new Blob(['lent'], { type: 'model/gltf-binary' });
+    registerImportedAssets('c000000000000001', { mesh: lent });
+    check('imported assets: a lent mesh is returned as is', (await importedMeshBlob('c000000000000001')) === lent && !meshAsked.includes('c000000000000001'));
+    const m1 = importedMeshBlob(ids[1]);
+    check('imported assets: a mesh lookup is cached (same promise, one ask)', importedMeshBlob(ids[1]) === m1 && meshAsked.filter((x) => x === ids[1]).length === 1);
+    for (const id of ids) void importedMeshBlob(id);
+    await flush();
+    check(`imported assets: the mesh lookup cache is capped at ${IMPORTED_MESH_CAP}`, importedAssetCacheSizes().meshes <= IMPORTED_MESH_CAP);
+    await importedMeshBlob('0000000000000002');
+    await flush();
+    await importedMeshBlob('0000000000000002');
+    check('imported assets: a mesh MISS is not cached — a mesh that arrives later is found', meshAsked.filter((x) => x === '0000000000000002').length === 2);
+
+    // ── a load that lands after its entry left the cache is revoked, not leaked ──
+    let release: (b: Blob | null) => void = () => undefined;
+    setImportedAssetSource({ top: () => new Promise((r) => (release = r)), mesh: async () => null });
+    const slow = 'd000000000000001';
+    importedTopImage(slow);
+    invalidateImportedAssets(slow);
+    release(blob('late'));
+    await flush();
+    check('imported assets: a decode that lands for an evicted entry leaves no live URL behind', live.size === importedAssetCacheSizes().tops, `live ${live.size}`);
+    // ── swapping the SOURCE moves every id's version (a settled "no mesh" retries) ──
+    const anyBefore = heard.filter((x) => x === ANY_ID).length;
+    const vBefore = importedMeshVersion('0000000000000003');
+    setImportedAssetSource(null);
+    check('imported assets: swapping the source moves EVERY id\'s mesh version and tells readers',
+      importedMeshVersion('0000000000000003') > vBefore && heard.filter((x) => x === ANY_ID).length === anyBefore + 1);
+    off();
+    // no DOM at all: nothing throws, nothing loads
+    g.Image = undefined;
+    let threw = false;
+    try {
+      threw = importedTopImage('e000000000000001') !== null;
+    } catch {
+      threw = true;
+    }
+    check('imported assets: with no DOM (the server, a worker) a picture ask is a quiet null', !threw);
+    // THE DEFAULT SOURCE IS THE DEVICE LIBRARY, reached lazily: a player who never meets an import
+    // never downloads it, and with no IndexedDB (Node here) a mesh ask is a quiet null
+    resetImportedAssetsForTests();
+    const seamSrc = readFileSync('src/render/importedAssets.ts', 'utf8');
+    check('imported assets: the library is the default source, behind a dynamic import (never a static one)',
+      /let source: ImportedAssetSource \| null = LIBRARY_ASSET_SOURCE;/.test(seamSrc) &&
+        /import\('\.\.\/robotImport\/library'\)/.test(seamSrc) && !/from '\.\.\/robotImport\/library'/.test(seamSrc));
+    check('imported assets: ...and with no IndexedDB the library answers a mesh ask with a quiet null',
+      (await importedMeshBlob('f000000000000001')) === null);
+    check('imported assets: the frames ARE the importer\'s (one definition, re-exported)',
+      /importedTopFrame = topImageFrame/.test(seamSrc) && /IMPORTED_MESH_TO_ROBOT: readonly number\[\] = STORED_MESH_TO_ROBOT/.test(seamSrc));
+  } finally {
+    resetImportedAssetsForTests();
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    if (hadImage) g.Image = prevImage;
+    else delete g.Image;
+  }
+}
+
+/*
+ * ---- THE IMPORTER'S MOVING PARTS STEP (2026-10-04, owner: "UI is very unintuitive") ----
+ * Moving parts left the Mechanisms step for a step of its own; rows are named by kind and numbered
+ * only when two share one; Find moving parts looks again for every row the player has not edited,
+ * keeping the edited ones and moving their links with them.
+ */
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { COPY } = await import('../src/robotImport/ui/copy');
+  type G = import('../src/robotImport/types').MotionGroup;
+  check('import UI steps: five, Moving parts fourth, Review last; a check with no step counts on Review',
+    COPY.steps.length === 5 && COPY.steps[3] === 'Moving parts' && COPY.steps[4] === 'Review' && em.stepOf({ id: 'x', level: 'warn', text: 't' }) === 4);
+  const groups: G[] = [
+    { role: 'wheel', bodies: [1], corner: 0, found: true },
+    { role: 'roller', bodies: [2], found: true },
+    { role: 'roller', bodies: [3] },
+    { role: 'flywheel', bodies: [4] },
+    { role: 'spin', bodies: [5], follows: { group: 3, ratio: 2 }, rideOn: 1 },
+    { role: 'swing', bodies: [6], rideOn: 4 },
+  ];
+  const names = em.motionNames(groups);
+  check('import UI moving parts: a wheel by its corner, two rollers numbered, the rest by kind',
+    names[0] === 'Front-left wheel' && names[1] === 'Intake roller 1' && names[2] === 'Intake roller 2' && names[3] === 'Flywheel' && names[4] === 'Spinning part');
+  const kept = em.keepEditedMotion(groups);
+  check('import UI moving parts: Find again keeps only the edited rows, in order', kept.length === 4 && kept.map((g) => g.bodies[0]).join() === '3,4,5,6');
+  check('import UI moving parts: a kept link follows its row; a link to a dropped row goes',
+    kept[2].follows?.group === 1 && kept[2].follows?.ratio === 2 && kept[2].rideOn === undefined && kept[3].rideOn === 2);
+  check('import UI moving parts: the input is not changed', groups.length === 6 && groups[4].rideOn === 1 && groups[4].follows?.group === 3);
+}
+
+/*
+ * ---- A NEW IMPORT'S MECHANISMS FROM ITS MODEL (2026-10-04, owner on goBILDA's BIOBUZZ mecanum bot:
+ * "side rollers are not selected by default, single static shooter is not selected by default, offset
+ * boxtube is selected even though I dont have it") ----
+ * `readBuild` reads the intake and the launcher off the model before anything is placed, and
+ * `buildFromCad` sets the game's mechanisms from it. The real bots, measured: goBILDA BIOBUZZ 6WD and
+ * mecanum side rollers at the front and a fixed shooter; goBILDA DECODE and REV DUO no intake and a
+ * fixed launcher; AndyMark Robits ×3 a front sweeper and a fixed shooter.
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+  const { bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
+  const { decodeFixedLauncher } = await import('../src/sim/fixedShot');
+  const { DEFAULT_SPEC } = await import('../src/sim/spawn');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: import('./robot-import/synthRobot').Prism[]): P[] =>
+    synth.synthParts(prisms).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  // a frame, two upright side rollers on their pins at the front corners, and a flywheel up high on its shaft
+  const robot = [
+    synth.box('frame', G, -8, 7, -7, 7, 1, 2),
+    synth.cylZ('side_roller_l', G, 7.5, 6, 1.4, 0.8, 2.6, 24),
+    synth.cylZ('pin_l', G, 7.5, 6, 0.1, 0.5, 3.0, 8),
+    synth.cylZ('side_roller_r', G, 7.5, -6, 1.4, 0.8, 2.6, 24),
+    synth.cylZ('pin_r', G, 7.5, -6, 0.1, 0.5, 3.0, 8),
+    synth.cylY('flywheel', G, -3, 6.8, 1.9, -0.4, 0.4, 32),
+    synth.cylY('fly_shaft', G, -3, 6.8, 0.2, -1.6, 1.6, 8),
+  ];
+  const cad = motion.readBuild(mk(robot), new Set());
+  check('cad build: upright rollers at the front are side rollers there; a flywheel up high is the launcher, no turret',
+    cad.intake?.edge === 'front' && cad.intake.upright && !!cad.launcher && !cad.launcher.turret && Math.abs(cad.launcher.at[2] - 6.8) < 0.3, J(cad));
+  const flat = motion.readBuild(mk([synth.box('frame', G, -8, 7, -7, 7, 1, 2)]), new Set());
+  check('cad build: a bare frame shows no intake and no launcher', flat.intake === null && flat.launcher === null, J(flat));
+
+  // BIOBUZZ: the first preset is a turret with a Box Tube and a sweeper; the model says otherwise
+  const pollinator = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
+  const bb = em.buildFromCad('biobuzz', { ...pollinator, name: 'bot' }, cad);
+  check('cad build: BIOBUZZ takes side rollers at the front, a fixed shooter and no Box Tube, and says so',
+    !!bb && bbIntakeKindOf(bb.spec) === 'siderollers' && bb.spec.intakeMount === 'front' && bbLauncherOf(bb.spec, 75).kind === 'fixed' && bbLiftOf(bb.spec) === null && bb.spec.name === 'bot' && bb.set.length === 3,
+    J(bb && { set: bb.set, mech: bb.spec.bbMech, mount: bb.spec.intakeMount }));
+  const bbRing = em.buildFromCad('biobuzz', pollinator, { intake: { edge: 'front', upright: false }, launcher: { at: [0, 0, 9], turret: true } });
+  check('cad build: BIOBUZZ rollers along an edge are a sweeper, a ring under the flywheel a single turret', !!bbRing && bbIntakeKindOf(bbRing.spec) === 'sweeper' && bbLauncherOf(bbRing.spec, 75).kind === 'turret', J(bbRing?.spec.bbMech));
+  const bbBlank = em.buildFromCad('biobuzz', pollinator, { intake: null, launcher: null });
+  check('cad build: BIOBUZZ with nothing shown keeps its intake and launcher, and still drops the Box Tube',
+    !!bbBlank && bbIntakeKindOf(bbBlank.spec) === bbIntakeKindOf(pollinator) && bbLauncherOf(bbBlank.spec, 75).kind === bbLauncherOf(pollinator, 75).kind && bbLiftOf(bbBlank.spec) === null);
+  // DECODE: no roller is loaded by hand
+  const dc = em.buildFromCad('decode', { ...DEFAULT_SPEC, intake: 'sloped' }, { intake: null, launcher: { at: [-1, 0, 10], turret: false } });
+  check('cad build: DECODE with no roller is loaded by hand, and a flywheel without a ring is a fixed launcher', !!dc && dc.spec.intake === 'none' && decodeFixedLauncher(dc.spec), J(dc?.set));
+  check('cad build: Chain Reaction is left alone', em.buildFromCad('chain', DEFAULT_SPEC, cad) === null);
+  // THE SHOT, READ OFF THE HOOD (`readShot`, 2026-10-04, owner: "Based on the flywheel, I think it
+  // should be able to determine what type of shooter it is and where it is"): a flywheel with a
+  // straight sheet over it, one POLLEN less a squeeze off the wheel, rising 40° to the back
+  {
+    const D = 2.8;
+    const cx = -1;
+    const cz = 8;
+    const d = 1.9 + 0.7 * D;
+    const th = (50 * Math.PI) / 180;
+    const n = [Math.cos(th), Math.sin(th)];
+    const t = [-Math.cos((40 * Math.PI) / 180), Math.sin((40 * Math.PI) / 180)];
+    const P0 = [cx + d * n[0], cz + d * n[1]];
+    const end = (k: number, off: number): [number, number, number] => [P0[0] + k * t[0] + off * n[0], -1.5, P0[1] + k * t[1] + off * n[1]];
+    const sheet: import('./robot-import/synthRobot').Prism = { name: 'hood', color: G, base: [end(-3, 0), end(3, 0), end(3, 0.08), end(-3, 0.08)], extrude: [0, 3, 0] };
+    const launcher = [
+      synth.box('frame', G, -8, 7, -7, 7, 1, 2),
+      synth.cylY('flywheel', G, cx, cz, 1.9, -0.4, 0.4, 48),
+      synth.cylY('fly_shaft', G, cx, cz, 0.2, -1.6, 1.6, 8),
+    ];
+    const hooded = motion.readBuild(mk([...launcher, sheet]), new Set(), D).launcher;
+    const s = hooded?.shot;
+    // the release: half an element off the sheet, toward the wheel, at the sheet's high end
+    const want = [P0[0] + 3 * t[0] - (D / 2) * n[0], P0[1] + 3 * t[1] - (D / 2) * n[1]];
+    check('cad shot: a flywheel under a sheet rising 40° to the back throws out the back at 40° (±1.5), from half an element under the sheet\'s high end (±0.25 in)',
+      !!s && Math.abs(s.elevDeg - 40) < 1.5 && s.dir[0] < -0.7 && Math.abs(s.dir[1]) < 0.02 && Math.hypot(s.release[0] - want[0], s.release[2] - want[1]) < 0.25,
+      J(s && { ...s, want }));
+    const bare = motion.readBuild(mk(launcher), new Set(), D).launcher;
+    check('cad shot: with no hood, or no element size, there is no shot to read',
+      !!bare && !bare.shot && !motion.readBuild(mk([...launcher, sheet]), new Set()).launcher?.shot, J(bare));
+    const cadShot = { intake: null, launcher: hooded! };
+    const bs = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, cadShot);
+    const bl = bs && bbLauncherOf(bs.spec, 75);
+    check('cad shot: BIOBUZZ builds a fixed shooter on the edge the hood throws toward, at its angle, placed where it releases and facing that way',
+      !!bs && !!bl && bl.kind === 'fixed' && bl.mount === 'back' && bl.hoodDeg === Math.round(s!.elevDeg) && bs.mech?.shooterYawDeg === 180 &&
+        Math.abs(bs.mech.shooter!.x - s!.release[0]) <= 1 / 64 && Math.abs(bs.mech.shooter!.z - s!.release[2]) <= 1 / 64 && bs.set.some((x) => x.includes('back') && x.includes(`${bl.hoodDeg}°`)),
+      J(bs && { l: bl, mech: bs.mech, set: bs.set }));
+    const ds = em.buildFromCad('decode', { ...DEFAULT_SPEC }, cadShot);
+    check('cad shot: DECODE builds a fixed launcher placed where it releases, facing the way it throws (its hood stays its own)',
+      !!ds && decodeFixedLauncher(ds.spec) && ds.mech?.shooterYawDeg === 180 && ds.spec.hoodDeg === undefined && ds.mech.shooter!.z >= 10.5,
+      J(ds && { mech: ds.mech, hood: ds.spec.hoodDeg }));
+    const ringed = motion.readBuild(mk([...launcher, sheet, synth.cylZ('ring', G, cx, 0, 3, 4, 4.5, 48)]), new Set(), D).launcher;
+    const tm = em.cadLauncherMech('biobuzz', { intake: null, launcher: ringed! });
+    check('cad shot: a turret is placed on its ring\'s axis, at the height its hood releases from',
+      !!ringed?.turret && !!ringed.shot && !!tm?.shooter && Math.abs(tm.shooter.x - cx) < 0.1 && Math.abs(tm.shooter.y) < 0.1 && Math.abs(tm.shooter.z - ringed.shot.release[2]) <= 1 / 64 && tm.shooterYawDeg === undefined,
+      J({ ringed, tm }));
+  }
+  // BOX TUBES (`findBoxTubes`, 2026-10-04, owner on Offset Robotics' robot: "boxtubes (plural)" were
+  // not found): two upright three-stage slides at the back, an insert at the final stage's foot, and a
+  // shaft in a tube that is not a slide
+  {
+    const slide = (y: number): import('./robot-import/synthRobot').Prism[] => [
+      synth.box('outer', G, -7.6, -6.0, y - 0.8, y + 0.8, 3.5, 15.3),
+      synth.box('middle', G, -7.4, -6.2, y - 0.6, y + 0.6, 4.0, 16.0),
+      synth.box('final', G, -7.2, -6.4, y - 0.4, y + 0.4, 4.9, 17.5),
+      synth.box('final_insert', G, -7.1, -6.5, y - 0.3, y + 0.3, 4.5, 5.0),
+    ];
+    const robot = [
+      synth.box('frame', G, -8, 8, -8, 8, 1, 2),
+      ...slide(5),
+      ...slide(-5),
+      synth.box('tube', G, 2, 3.6, -0.8, 0.8, 3, 12),
+      synth.cylZ('shaft', G, 2.8, 0, 0.15, 2.5, 12.5, 12),
+    ];
+    const parts = mk(robot);
+    const tubes = motion.findBoxTubes(parts, new Set());
+    const names = robot.map((p) => p.name);
+    const nameOf = (b: number): string => names[b];
+    const okStages = tubes.every((t) => t.stages.length === 3 && nameOf(t.tubes[0]) === 'outer' && nameOf(t.tubes[2]) === 'final' && t.stages[2].some((b) => nameOf(b) === 'final_insert'));
+    check('box tubes: two nested three-stage slides are found, outer first, an insert at a stage\'s foot riding on that stage; a shaft in a tube is no slide',
+      tubes.length === 2 && okStages && tubes.every((t) => t.k === 2 && Math.abs(t.base[2] - 3.5) < 1e-6 && !t.tubes.some((b) => nameOf(b) === 'tube' || nameOf(b) === 'shaft')),
+      J(tubes.map((t) => ({ k: t.k, stages: t.stages.map((s) => s.map(nameOf)), base: t.base, travel: t.travel }))));
+    const groups = motion.boxTubeGroups(tubes, 5);
+    check('box tubes: each moving stage slides, the first one driven by placing, the rest following it a stage-count times as far',
+      groups.length === 4 && groups[0].drive === 'place' && (groups[0].amount ?? 0) > 5 && groups.slice(1).map((g) => `${g.follows?.group}:${g.follows?.ratio}`).join() === '5:2,5:1,5:2' &&
+        groups.every((g) => g.role === 'slide' && g.axis === 'part' && g.found),
+      J(groups.map((g) => ({ n: g.bodies.length, drive: g.drive, amount: g.amount, follows: g.follows }))));
+    const cadTubes = motion.readBuild(parts, new Set());
+    const bt = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, cadTubes);
+    check('box tubes: BIOBUZZ builds a Box Tube on the cell the slides stand in (the back), placed at their base, and says so',
+      !!bt && bbLiftOf(bt.spec)?.mount === 'back' && !!bt.mech?.place && Math.abs(bt.mech.place.x + 6.8) < 0.05 && Math.abs(bt.mech.place.y) < 0.05 && bt.set.some((x) => x.includes('box tube') && x.includes('back')),
+      J(bt && { lift: bbLiftOf(bt.spec), place: bt.mech?.place, set: bt.set }));
+    const none = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { intake: null, launcher: null, lift: null });
+    check('box tubes: with none in the model there is no Box Tube', !!none && bbLiftOf(none.spec) === null);
+  }
+  // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
+  // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
+  // front wheels from 1 in: under 1 in only the wheels stand, so a field element's low plate slides under
+  {
+    const geo = await import('../src/robotImport/geometry');
+    const robot = [
+      synth.cylY('wheel_fl', G, 5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_fr', G, 5, 2, 2, -8, -6.5, 24),
+      synth.cylY('wheel_bl', G, -5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_br', G, -5, 2, 2, -8, -6.5, 24),
+      synth.box('frame', G, -8, 7, -6.5, 6.5, 1, 5),
+      synth.box('intake', G, 7, 9.7, -8, 8, 1, 4),
+      synth.box('tower', G, -4, 2, -3, 3, 5, 12),
+    ];
+    const bands = geo.computeBands(mk(robot), 12) ?? [];
+    const front = (h: readonly { x: number }[]): number => Math.max(...h.map((p) => p.x));
+    check('cad build: a band of its own under the intake: from the tiles to the frame, its front at the wheels, and the band above out to the intake',
+      bands.length >= 2 && bands[0].z0 === 0 && bands[0].z1 <= 1 && front(bands[0].hull) < 7.1 && front(bands[1].hull) > 9.6,
+      J(bands.map((b) => [b.z0, b.z1, front(b.hull)])));
+  }
+  // A FLOWER'S MIDDLE PLATE IS A BAND OF ITS OWN, AND A RECESS IS CUT (`computeBands`, `bandCuts`,
+  // 2026-10-04): two side rollers stand to x 9.7 at |y| 5..8, the frame between them only to 7.5, and
+  // a cross bar under the plate to 8.2. The convex band bridges the rollers at 9.7; the cut takes the
+  // band at the plate's heights back to the frame, and nothing of the model is past it
+  {
+    const geo = await import('../src/robotImport/geometry');
+    const { FLOWER_RING_Z } = await import('../src/games/biobuzz/fieldDims.gen');
+    const { IMPORT_EDGE_N, IMPORT_EDGE_P } = await import('../src/sim/importedMech');
+    const robot = [
+      synth.cylY('wheel_fl', G, 5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_fr', G, 5, 2, 2, -8, -6.5, 24),
+      synth.cylY('wheel_bl', G, -5, 2, 2, 6.5, 8, 24),
+      synth.cylY('wheel_br', G, -5, 2, 2, -8, -6.5, 24),
+      synth.box('frame', G, -8, 7.5, -8, 8, 1, 7),
+      synth.box('roller_l', G, 6, 9.7, 5, 8, 1, 7),
+      synth.box('roller_r', G, 6, 9.7, -8, -5, 1, 7),
+      synth.box('bar', G, 6, 8.2, -5, 5, 2.5, 3.5),
+      synth.box('tower', G, -4, 2, -3, 3, 7, 12),
+    ];
+    const parts = mk(robot);
+    const bands = geo.computeBands(parts, 12) ?? [];
+    const [p0, p1] = FLOWER_RING_Z.mid;
+    const plate = bands.find((b) => b.z0 <= p0 && b.z1 >= p1 && b.z1 - b.z0 < 1.4);
+    const below = bands.filter((b) => b.z1 <= p0);
+    const above = bands.filter((b) => b.z0 >= p1);
+    const cut = plate?.cuts?.find((c) => c.edge === 'front');
+    // every model point at the band's heights inside the cut's span stands no further out than it
+    let worst = -Infinity;
+    if (plate && cut) {
+      for (const p of parts) {
+        for (let i = 0; i < p.positions.length; i += 3) {
+          const [x, y, z] = [p.positions[i], p.positions[i + 1], p.positions[i + 2]];
+          if (z >= plate.z0 && z <= plate.z1 && y >= cut.from && y <= cut.to) worst = Math.max(worst, x);
+        }
+      }
+    }
+    check(
+      "band cuts: a FLOWER's middle plate is a band of its own (to the 1/64 grid), the bands either side end 0.1 in clear of it, and nothing below it carries a cut",
+      !!plate && plate.z0 === Math.floor(p0 * 64) / 64 && plate.z1 === Math.ceil(p1 * 64) / 64 &&
+        below.length >= 1 && below.every((b) => !b.cuts && b.z1 <= p0 - 0.1) && above.length >= 1 && above.every((b) => b.z0 >= p1 + 0.1),
+      J(bands.map((b) => [b.z0, b.z1, b.cuts?.length ?? 0])),
+    );
+    check(
+      "band cuts: between the side rollers the plate's band is cut back to the frame (7.5 + 1/16), across the gap, and no model point there is past it",
+      !!cut && cut.at === 7.5 + 1 / 16 && cut.from <= -4 && cut.to >= 4 && cut.from > -5.1 && cut.to < 5.1 && worst <= cut.at && Math.max(...plate!.hull.map((q) => q.x)) > 9.6,
+      J({ cut, worst }),
+    );
+    check("band cuts: the importer's FLOWER plate heights are the field CAD's (FLOWER_RING_Z.mid)", isDeepStrictEqual([...geo.BAND_FLOWER_PLATE_Z], [...FLOWER_RING_Z.mid]), J(FLOWER_RING_Z.mid));
+    check(
+      "band cuts: the importer's edge frames are the sim's (IMPORT_EDGE_N / IMPORT_EDGE_P)",
+      geo.BAND_CUT_EDGES.length === 4 && geo.BAND_CUT_EDGES.every((e) => isDeepStrictEqual(e.n, IMPORT_EDGE_N[e.edge]) && isDeepStrictEqual(e.p, IMPORT_EDGE_P[e.edge])),
+    );
+    const mc = geo.moveCut({ edge: 'back', from: -2, to: 3, at: -7 }, { x: 1, y: 0.5 }, 0.5);
+    const ml = geo.moveCut({ edge: 'left', from: -2, to: 3, at: 7 }, { x: 1, y: 0.5 });
+    check(
+      'band cuts: moved into the robot frame, an end edge shifts its span by y and its line by x, a flank the other way round, and both scale',
+      isDeepStrictEqual(mc, { edge: 'back', from: -1.25, to: 1.25, at: -4 }) && isDeepStrictEqual(ml, { edge: 'left', from: -3, to: 2, at: 6.5 }),
+      J([mc, ml]),
+    );
+  }
+  // a Gecko wheel modelled fin by fin: a round core to 1.4 in on its pin, fin tips as 0.09 in slivers
+  // standing 0.03 in past it, and a frame screw beside it at 1.9 in
+  {
+    const fins = Array.from({ length: 12 }, (_, k) => {
+      const a = (2 * Math.PI * k) / 12;
+      const x = 7.5 + 1.385 * Math.cos(a);
+      const y = 6 + 1.385 * Math.sin(a);
+      return synth.box(`fin${k}`, G, x - 0.045, x + 0.045, y - 0.045, y + 0.045, 1.4, 1.6);
+    });
+    const prisms = [
+      synth.cylZ('core', G, 7.5, 6, 1.4, 1.0, 2.0, 32),
+      synth.cylZ('pin', G, 7.5, 6, 0.1, 0.6, 2.4, 8),
+      ...fins,
+      synth.box('frame_screw', G, 9.35, 9.45, 5.95, 6.05, 1.2, 1.8),
+    ];
+    const parts = mk(prisms);
+    const got = motion.coaxialBodies(parts, 0, 'roller').map((b) => prisms[b].name);
+    check('cad build: a roller takes the fin slivers standing just past its core, and not a screw beside it',
+      fins.every((f) => got.includes(f.name)) && got.includes('pin') && !got.includes('frame_screw'), J(got));
+  }
+  check('cad build: the note lists what was set', /^Set from the model: side rollers at the front, a fixed shooter and no box tube\./.test((await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set)), (await import('../src/robotImport/ui/copy')).COPY.cadBuild(bb!.set));
+}
+
+/*
+ * ---- FULL DETAIL READS EVERY PART (2026-10-04, owner: "Can you just import it 100%?") ----
+ * A STEP read in pieces left out parts under `MIN_PART_MM` (a screw definition is placed hundreds of
+ * times). Full detail keeps them: the import passes `isFullDetail(budget)` to the STEP read, and the
+ * worker plans with no size floor. Light keeps the faster read.
+ */
+{
+  const fs = await import('node:fs');
+  const session = fs.readFileSync('src/robotImport/engine/importSession.ts', 'utf8');
+  const worker = fs.readFileSync('src/robotImport/engine/stepWorker.ts', 'utf8');
+  const split = await import('../src/robotImport/engine/stepSplit');
+  const geo = await import('../src/robotImport/geometry');
+  check('full detail: the import asks the STEP read to keep every part at Full (both paths)',
+    /readStepFile\(r, [^;]*isFullDetail\(opts\.budget\)\)/.test(session) && /keepSmall: isFullDetail\(opts\.budget\)/.test(session));
+  check('full detail: the worker plans with no size floor when asked to keep small parts', /minPartMm: keepSmall \? 0 : MIN_PART_MM/.test(worker));
+  check('full detail: Full is the default detail and Light is not Full', geo.isFullDetail(geo.DEFAULT_TRI_BUDGET) && !geo.isFullDetail(geo.LIGHT_TRI_BUDGET));
+  // the fixture's parts are all over 16 mm, so a floor high enough to leave some out shows the switch
+  const ix = split.indexStep(new Uint8Array(fs.readFileSync('scripts/fixtures/robot-import/robot.step')));
+  const floor = split.planPieces(ix, { pieceBytes: 1 << 20, minPartMm: 200 });
+  const none = split.planPieces(ix, { pieceBytes: 1 << 20, minPartMm: 0 });
+  check('full detail: with no floor no part is left out (the same file with a floor leaves some out)', floor.skipped.length > 0 && none.skipped.length === 0, `floor ${floor.skipped.length}, none ${none.skipped.length}`);
+}
+
+/**
+ * ---- AN OUT-OF-DATE LIBRARY COPY IS NOT DRAWN (`importedAssets` "AN OUT-OF-DATE COPY IS NOT DRAWN") ----
+ * The account syncs the active robot's spec, never its model: after an edit on device A, device B's
+ * library still holds the old model under the same id, and drew it on the new hull. A source says
+ * what it holds (`describe`), and a reader that passes the robot it draws gets null for another
+ * version of it: the footprint, as for a robot this device does not have.
+ */
+{
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 6; i++) await new Promise<void>((r) => setTimeout(r, 0));
+  };
+  const g = globalThis as unknown as { Image?: unknown };
+  const hadImage = 'Image' in g;
+  const prevImage = g.Image;
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  let n = 0;
+  URL.createObjectURL = (): string => `blob:stale/${++n}`;
+  URL.revokeObjectURL = (): void => undefined;
+  class StubImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    decoding = '';
+    set src(_v: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  g.Image = StubImage;
+  try {
+    resetImportedAssetsForTests();
+    const OLD: ImportedRobot = { v: 1, id: '5a5a5a5a5a5a5a5a', hull: [{ x: -8, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -8, y: 8 }], heightIn: 14 };
+    const NEW: ImportedRobot = { ...OLD, hull: [{ x: -8, y: -8 }, { x: 11, y: -8 }, { x: 11, y: 8 }, { x: -8, y: 8 }] };
+    let held: ImportedRobot = OLD; // what this device's library record says
+    setImportedAssetSource({
+      top: async () => new Blob(['top'], { type: 'image/png' }),
+      mesh: async () => new Blob(['mesh'], { type: 'model/gltf-binary' }),
+      describe: async () => held,
+    });
+    importedTopImage(OLD.id, NEW);
+    await flush();
+    check('stale copy: a library picture made for an OLDER version of the robot is not drawn for the new one (the footprint is)',
+      importedTopImage(OLD.id, NEW) === null && importedTopUrl(OLD.id, NEW) === null);
+    check('stale copy: ...while it IS drawn for the version it was made for, and for a reader that passes no robot',
+      importedTopImage(OLD.id, OLD) !== null && importedTopImage(OLD.id, { ...OLD, id: 'ffffffffffffffff' }) !== null && importedTopImage(OLD.id) !== null);
+    check('stale copy: the mesh likewise: null for the new version, the blob for its own',
+      (await importedMeshBlob(OLD.id, NEW)) === null && (await importedMeshBlob(OLD.id, OLD)) !== null);
+    // the file is imported again: the record now holds the new version, and the library save invalidates
+    held = NEW;
+    invalidateImportedAssets(OLD.id);
+    importedTopImage(OLD.id, NEW);
+    await flush();
+    check('stale copy: once the newest file is imported (the record replaced, the cache invalidated) the new version is drawn',
+      importedTopImage(OLD.id, NEW) !== null && (await importedMeshBlob(OLD.id, NEW)) !== null);
+    // a LENT look (the editor's draft, a room's relay) is current by construction
+    held = OLD;
+    registerImportedAssets('6b6b6b6b6b6b6b6b', { top: new Blob(['draft']), mesh: new Blob(['draft-mesh']) });
+    importedTopImage('6b6b6b6b6b6b6b6b', NEW);
+    await flush();
+    check('stale copy: a lent picture or mesh is drawn for any version (never compared)',
+      importedTopImage('6b6b6b6b6b6b6b6b', NEW) !== null && (await importedMeshBlob('6b6b6b6b6b6b6b6b', NEW)) !== null);
+    // a source that does not describe (a test, an older seam) is drawn as before
+    setImportedAssetSource({ top: async () => new Blob(['top']), mesh: async () => null });
+    importedTopImage('7c7c7c7c7c7c7c7c', NEW);
+    await flush();
+    check('stale copy: a source that does not describe what it holds is drawn as before', importedTopImage('7c7c7c7c7c7c7c7c', NEW) !== null);
+    // every reader passes the robot it draws
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    check('stale copy: the 2D sprite, both SVG previews and the 3D mesh slot pass the robot they draw',
+      /importedTopImage\(imp\.id, imp\)/.test(rd('src/render/drawImported.ts')) &&
+        /useImportedTopUrl\(imp\?\.id, imp\)/.test(rd('src/games/biobuzz/RobotPreview.tsx')) &&
+        /useImportedTopUrl\(imp\?\.id, imp\)/.test(rd('src/games/chain/RobotPreview.tsx')) &&
+        /importedMeshBlob\(id, imp\)/.test(rd('src/games/biobuzz/scene/renderImported.ts')) &&
+        /function slotKey\(imp: ImportedRobot\)/.test(rd('src/games/biobuzz/scene/renderImported.ts')) &&
+        /describe: \(id\) => import\('\.\.\/robotImport\/library'\)\.then\(\(lib\) => lib\.descriptorFor\(id\)\)/.test(rd('src/render/importedAssets.ts')));
+    const menu = rd('src/ui/Menu.tsx');
+    const panel = rd('src/robotImport/ui/ImportedRobots.tsx');
+    check('stale copy: the robot page compares the record with the active robot, draws the footprint in the hero, says so in one line, and offers the file instead of Edit',
+      /const importedStale = !!importedEntry && !!spec\.imported && !sameImportedRobot\(importedEntry\.spec\.imported, spec\.imported\)/.test(menu) &&
+        /importedEntry && !importedStale \? library\.thumbs\[importedEntry\.id\]/.test(menu) &&
+        /stale=\{importedStale\}/.test(menu) &&
+        /entry && stale \? <p className="ds-hint warn">\{COPY\.staleText\}<\/p>/.test(panel) &&
+        /entry && stale \? \(\s*<button type="button" className="ds-btn small" onClick=\{onImportFile\}>/.test(panel));
+    check('stale copy: picking the card that answers for the active robot changes nothing (an old copy cannot be re-applied over the new spec)',
+      /onPick=\{\(e\) => \(answersFor\(e, importedId\) \? undefined : applySpec\(\{ \.\.\.e\.spec \}\)\)\}/.test(menu) &&
+        /libraryEntryFor\(importLibrary\.entries, mySpec\.imported\?\.id\)\?\.id === e\.id \? undefined : pickSpec/.test(rd('src/ui/Lobby.tsx')));
+  } finally {
+    resetImportedAssetsForTests();
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    if (hadImage) g.Image = prevImage;
+    else delete g.Image;
+  }
+}
+
+/**
+ * ---- LOOKING DOES NOT CREATE THE LIBRARY (`src/robotImport/library.ts` `dbExists`) ----
+ * The renderers ask the library the first time any imported robot is drawn, and `indexedDB.open`
+ * creates a database that is not there: a viewer who never imported anything got an empty
+ * `decodesim.robots`. A stub IndexedDB counts opens and creations, both ways of asking.
+ */
+{
+  const g = globalThis as unknown as { indexedDB?: unknown };
+  const had = 'indexedDB' in g;
+  const prev = g.indexedDB;
+  const lib = await import('../src/robotImport/library');
+  try {
+    // (1) `databases()` says there is none: nothing is opened at all
+    let opens = 0;
+    g.indexedDB = {
+      databases: async () => [{ name: 'something-else' }],
+      open: () => {
+        opens++;
+        throw new Error('must not open');
+      },
+    };
+    const top = await lib.topFor('9a9a9a9a9a9a9a9a');
+    const mesh = await lib.meshFor('9a9a9a9a9a9a9a9a');
+    const desc = await lib.descriptorFor('9a9a9a9a9a9a9a9a');
+    const list = await lib.listRobots('decode');
+    const drafts = await lib.listDrafts('decode');
+    const got = await lib.getRobot('9a9a9a9a9a9a9a9a');
+    check('library: with no database on this device, every READ answers "nothing here" without opening one',
+      opens === 0 && top === null && mesh === null && desc === null && list.ok && list.value.length === 0 && drafts.ok && drafts.value.length === 0 && !got.ok && got.error === 'not-found',
+      `opens ${opens}`);
+    // (2) no `databases()`: an open WITHOUT a version whose upgrade from 0 is aborted
+    let created = 0;
+    let aborted = 0;
+    let versioned = 0;
+    g.indexedDB = {
+      open: (_name: string, version?: number) => {
+        if (version !== undefined) versioned++;
+        const req: Record<string, unknown> = { transaction: { abort: () => aborted++ } };
+        setTimeout(() => {
+          created++;
+          (req.onupgradeneeded as ((e: unknown) => void) | undefined)?.({ oldVersion: 0 });
+          setTimeout(() => (req.onerror as (() => void) | undefined)?.(), 0); // the abort's AbortError
+        }, 0);
+        return req;
+      },
+    };
+    const top2 = await lib.topFor('8b8b8b8b8b8b8b8b');
+    const list2 = await lib.listRobots('decode');
+    check('library: ...and where `databases()` is missing, the look opens without a version and ABORTS the creation (no versioned open)',
+      top2 === null && list2.ok && list2.value.length === 0 && versioned === 0 && aborted === created && created >= 2, `created ${created} aborted ${aborted} versioned ${versioned}`);
+    // (3) a WRITE is what creates it
+    let writeOpens = 0;
+    g.indexedDB = {
+      databases: async () => [],
+      open: (_name: string, version?: number) => {
+        if (version !== undefined) writeOpens++;
+        const req: Record<string, unknown> = {};
+        setTimeout(() => (req.onerror as (() => void) | undefined)?.(), 0);
+        return req;
+      },
+    };
+    await lib.putDraft({ key: 'decode:new', game: 'decode', updated: 0 });
+    check('library: a write (a draft, a save) is what opens and creates the database', writeOpens === 1, `opens ${writeOpens}`);
+  } finally {
+    if (had) g.indexedDB = prev;
+    else delete g.indexedDB;
+  }
+}
+
+/**
+ * ---- IMPORTED ROBOTS, 2D: every game's sprite draws an import from its HULL ----
+ *
+ * Run against a recording context: the first clip after the robot's transform must be the hull
+ * polygon, vertex for vertex (the sprite cannot exceed what collides); with a picture lent the body
+ * is one `drawImage` through `topImageTransform`; without one there is none; a standard robot still
+ * clips to a rectangle. Both turreted and turretless builds, all three games.
+ */
+{
+  interface Rec {
+    ctx: CanvasRenderingContext2D;
+    clips: Vec2[][];
+    images: number[][];
+    calls: number;
+  }
+  const recorder = (): Rec => {
+    let path: Vec2[] = [];
+    let lastTransform: number[] = [];
+    const rec: Rec = { ctx: null as unknown as CanvasRenderingContext2D, clips: [], images: [], calls: 0 };
+    const target: Record<string, unknown> = {
+      beginPath: () => {
+        path = [];
+      },
+      moveTo: (x: number, y: number) => path.push({ x, y }),
+      lineTo: (x: number, y: number) => path.push({ x, y }),
+      rect: (x: number, y: number, w: number, h: number) => {
+        path.push({ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h });
+      },
+      clip: () => rec.clips.push(path.slice()),
+      transform: (...m: number[]) => {
+        lastTransform = m;
+      },
+      drawImage: () => rec.images.push(lastTransform),
+      createLinearGradient: () => ({ addColorStop: () => undefined }),
+      measureText: () => ({ width: 0 }),
+    };
+    rec.ctx = new Proxy(target, {
+      get(t, k) {
+        rec.calls++;
+        if (k in t) return t[k as string];
+        return () => undefined;
+      },
+      set() {
+        return true;
+      },
+    }) as unknown as CanvasRenderingContext2D;
+    return rec;
+  };
+  const g = globalThis as unknown as { Image?: unknown };
+  const hadImage = 'Image' in g;
+  const prevImage = g.Image;
+  class StubImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    decoding = '';
+    set src(_v: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  g.Image = StubImage;
+  try {
+    resetImportedAssetsForTests();
+    const imp = coerceImported(IMP_NOSE)!;
+    const sameHull = (p: Vec2[]): boolean =>
+      p.length === imp.hull.length && p.every((q, i) => Math.abs(q.x - imp.hull[i].x) < 1e-9 && Math.abs(q.y - imp.hull[i].y) < 1e-9);
+    type Draw = (ctx: CanvasRenderingContext2D, w: World) => void;
+    const games: [GameId, Partial<RobotSpec>[], Draw][] = [
+      ['decode', [{}], (ctx, w) => drawDecodeSprite(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w)],
+      ['chain', [{ scoreMode: 'turret' }, { scoreMode: 'drum' }], (ctx, w) => drawChainRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w)],
+      [
+        'biobuzz',
+        [
+          { bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } },
+          { bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'ramp' } } },
+        ] as Partial<RobotSpec>[],
+        (ctx, w) => drawBiobuzzRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w),
+      ],
+    ];
+    for (const [game, variants, draw] of games) {
+      for (const [vi, patch] of variants.entries()) {
+        const { w } = impWorld(game, [{ ...patch, imported: IMP_NOSE }]);
+        const r = w.robots[0];
+        r.hopper = game === 'biobuzz' ? ['yellow', 'red'] : ['green'];
+        const tag = `${game}#${vi}`;
+        check(`imported 2D ${tag}: the world kept the import`, !!r.spec.imported);
+        // SILHOUETTE: no picture anywhere
+        const s = recorder();
+        let threw = '';
+        try {
+          draw(s.ctx, w);
+        } catch (err) {
+          threw = String(err);
+        }
+        check(`imported 2D ${tag}: the silhouette draws without throwing`, threw === '' && s.calls > 50, threw);
+        check(`imported 2D ${tag}: its clip is the HULL, vertex for vertex`, s.clips.length > 0 && sameHull(s.clips[0]), JSON.stringify(s.clips[0]));
+        check(`imported 2D ${tag}: no picture is drawn without one`, s.images.length === 0);
+        // PICTURED: a picture lent for this id
+        registerImportedAssets(imp.id, { top: new Blob(['png'], { type: 'image/png' }) });
+        importedTopImage(imp.id);
+        for (let i = 0; i < 6; i++) await new Promise<void>((res) => setTimeout(res, 0));
+        const p = recorder();
+        threw = '';
+        try {
+          draw(p.ctx, w);
+        } catch (err) {
+          threw = String(err);
+        }
+        const want = topImageTransform(importedTopFrame(r.spec.imported!.hull));
+        check(`imported 2D ${tag}: with a picture it draws without throwing`, threw === '', threw);
+        check(`imported 2D ${tag}: the picture is ONE drawImage through the frame's transform, inside the hull clip`,
+          p.images.length === 1 && p.images[0].every((v, i) => Math.abs(v - want[i]) < 1e-9) && sameHull(p.clips[0]),
+          JSON.stringify(p.images));
+        unregisterImportedAssets(imp.id);
+      }
+      // a STANDARD robot of the same game still clips to its rectangle and draws no picture
+      const { w } = impWorld(game, [{}]);
+      const s = recorder();
+      draw(s.ctx, w);
+      check(`imported 2D ${game}: a STANDARD robot still clips to a rectangle and draws no picture`,
+        s.clips.length > 0 && s.clips[0].length === 4 && s.images.length === 0, JSON.stringify(s.clips[0]));
+    }
+    // BIOBUZZ's held-element slots are searched on an import's HULL, not its box: every disc on the deck
+    {
+      const bbSpec = coerceSpec({ ...DEFAULT_SPEC, imported: IMP_NOSE }, DEFAULT_SPEC, 'biobuzz');
+      const { bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
+      const slots = bbHeldSlots(bbSpec, bbLauncherOf(bbSpec, 45), bbLiftOf(bbSpec));
+      const worst = Math.min(...slots.map((s) => polyFeature(bbSpec.imported!.hull, s).depth));
+      check('imported 2D: BIOBUZZ held-element slots are searched on the hull — every disc lies on the deck',
+        slots.length === 4 && worst >= 0.85, `worst depth ${worst.toFixed(2)}`);
+    }
+    // the deck arrow (which end is the front) is never under a turret ring — a centre turret moves it forward
+    const free = frontArrowSpot(imp.hull);
+    const ring = { ...polyCentroid(imp.hull), r: 3 };
+    const moved = frontArrowSpot(imp.hull, [ring]);
+    check('imported 2D: the deck arrow sits on the centroid, and moves ahead of a centre turret ring rather than under it',
+      Math.hypot(free.x - ring.x, free.y - ring.y) < 1e-9 && Math.hypot(moved.x - ring.x, moved.y - ring.y) >= ring.r + moved.len / 2 &&
+        moved.x > ring.x && polyFeature(imp.hull, { x: moved.x + moved.len / 2, y: moved.y }).depth > 0,
+      JSON.stringify(moved));
+  } finally {
+    resetImportedAssetsForTests();
+    if (hadImage) g.Image = prevImage;
+    else delete g.Image;
+  }
+}
+
+/**
+ * ---- IMPORTED ROBOTS, 2D: THE MECHANISMS ARE DRAWN WHERE THE SIM PUTS THEM ----
+ *
+ * An import with PLACED mechanisms (an off-centre mouth, placed turrets, a placed base), drawn at
+ * the origin facing +x through a recorder that tracks the full canvas transform, so every drawn
+ * point is in the robot frame. Each game's drawn mouth (the state fill over a picture, the tray of
+ * the hardware on a silhouette), turret ring, place marker and catalyst origin must equal the sim's
+ * own accessor to 1e-9 — and the drawn mouth must sit ON the hull: never past the hull's own extent
+ * along its normal (beyond it by no more than the roller grab DECODE's nip allows), with the ends of
+ * its face line inside the hull.
+ */
+{
+  interface Pt { x: number; y: number }
+  interface Fill { style: string; pts: Pt[] }
+  const recorder = () => {
+    let m = [1, 0, 0, 1, 0, 0];
+    const stack: number[][] = [];
+    let fillStyle = '';
+    let strokeStyle = '';
+    const fills: Fill[] = [];
+    const arcs: { c: Pt; r: number }[] = [];
+    const points: Pt[] = [];
+    const frames: { o: Pt; angle: number }[] = [];
+    const ap = (x: number, y: number): Pt => ({ x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] });
+    const mul = (n: number[]) => {
+      m = [
+        m[0] * n[0] + m[2] * n[1],
+        m[1] * n[0] + m[3] * n[1],
+        m[0] * n[2] + m[2] * n[3],
+        m[1] * n[2] + m[3] * n[3],
+        m[0] * n[4] + m[2] * n[5] + m[4],
+        m[1] * n[4] + m[3] * n[5] + m[5],
+      ];
+    };
+    const target: Record<string, unknown> = {
+      save: () => stack.push(m.slice()),
+      restore: () => {
+        m = stack.pop() ?? m;
+      },
+      translate: (x: number, y: number) => mul([1, 0, 0, 1, x, y]),
+      rotate: (t: number) => {
+        mul([Math.cos(t), Math.sin(t), -Math.sin(t), Math.cos(t), 0, 0]);
+        frames.push({ o: ap(0, 0), angle: Math.atan2(m[1], m[0]) });
+      },
+      scale: (sx: number, sy: number) => mul([sx, 0, 0, sy, 0, 0]),
+      transform: (...n: number[]) => mul(n),
+      fillRect: (x: number, y: number, w: number, h: number) => fills.push({ style: fillStyle, pts: [ap(x, y), ap(x + w, y), ap(x + w, y + h), ap(x, y + h)] }),
+      arc: (x: number, y: number, r: number) => arcs.push({ c: ap(x, y), r }),
+      moveTo: (x: number, y: number) => points.push(ap(x, y)),
+      lineTo: (x: number, y: number) => points.push(ap(x, y)),
+      createLinearGradient: () => ({ addColorStop: () => undefined }),
+      measureText: () => ({ width: 0 }),
+    };
+    const ctx = new Proxy(target, {
+      get: (t, k) => (k === 'fillStyle' ? fillStyle : k === 'strokeStyle' ? strokeStyle : k in t ? t[k as string] : () => undefined),
+      set: (_t, k, v) => {
+        if (k === 'fillStyle') fillStyle = String(v);
+        if (k === 'strokeStyle') strokeStyle = String(v);
+        return true;
+      },
+    }) as unknown as CanvasRenderingContext2D;
+    return { ctx, fills, arcs, points, frames };
+  };
+  const box = (pts: Pt[]) => ({
+    x0: Math.min(...pts.map((p) => p.x)),
+    x1: Math.max(...pts.map((p) => p.x)),
+    y0: Math.min(...pts.map((p) => p.y)),
+    y1: Math.max(...pts.map((p) => p.y)),
+  });
+  const same = (a: { x0: number; x1: number; y0: number; y1: number }, b: { x0: number; x1: number; y0: number; y1: number }) =>
+    Math.abs(a.x0 - b.x0) < 1e-9 && Math.abs(a.x1 - b.x1) < 1e-9 && Math.abs(a.y0 - b.y0) < 1e-9 && Math.abs(a.y1 - b.y1) < 1e-9;
+  const near = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y) < 1e-9;
+  // a mouth's fill, live or idle (a world before the start whistle draws the idle one)
+  const STATE = new Set(['rgba(34,197,94,0.16)', 'rgba(160,175,195,0.07)']);
+  const TRAY = new Set(['rgba(34,197,94,0.11)', 'rgba(160,175,195,0.06)']);
+  const N: Record<string, Pt> = { front: { x: 1, y: 0 }, back: { x: -1, y: 0 }, left: { x: 0, y: 1 }, right: { x: 0, y: -1 } };
+  const P: Record<string, Pt> = { front: { x: 0, y: 1 }, back: { x: 0, y: -1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+  /** the mouth sits ON the hull: no further out along n than the hull reaches (+ `slack`), and the
+   *  two ends of its face line inside the hull */
+  const onHull = (hull: Pt[], edge: string, r: { x0: number; x1: number; y0: number; y1: number }, face: number, slack: number): string => {
+    const n = N[edge];
+    const p = P[edge];
+    const corners = [{ x: r.x0, y: r.y0 }, { x: r.x1, y: r.y0 }, { x: r.x1, y: r.y1 }, { x: r.x0, y: r.y1 }];
+    const out = Math.max(...corners.map((c) => c.x * n.x + c.y * n.y));
+    const support = Math.max(...hull.map((h) => h.x * n.x + h.y * n.y));
+    if (out > support + slack + 1e-9) return `reaches ${(out - support).toFixed(3)} past the hull`;
+    const vs = corners.map((c) => c.x * p.x + c.y * p.y);
+    for (const v of [Math.min(...vs), Math.max(...vs)]) {
+      const q = { x: n.x * face + p.x * v, y: n.y * face + p.y * v };
+      if (polyFeature(hull, q).depth < -1e-6) return `face-line end ${JSON.stringify(q)} outside the hull`;
+    }
+    return '';
+  };
+  const g = globalThis as unknown as { Image?: unknown };
+  const hadImage = 'Image' in g;
+  const prevImage = g.Image;
+  class StubImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    decoding = '';
+    set src(_v: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  g.Image = StubImage;
+  const IMP_PLACED: ImportedRobot = {
+    ...IMP_NOSE,
+    id: '00ddee1122334455',
+    mech: {
+      intakes: [{ edge: 'front', from: -2, to: 5 }],
+      shooter: { x: -3, y: 2.5, z: 11 },
+      shooter2: { x: -3, y: -3, z: 12 },
+      place: { x: -2, y: -1, z: 6 },
+    },
+  };
+  const im = await import('../src/sim/importedMech');
+  const cfg = await import('../src/config');
+  const bbr = await import('../src/games/biobuzz/robot');
+  const bbmt = await import('../src/games/biobuzz/mounts');
+  const bbmc = await import('../src/games/biobuzz/mechs');
+  const bbim = await import('../src/games/biobuzz/importMech');
+  const bbc = await import('../src/games/biobuzz/config');
+  const chs = await import('../src/games/chain/state');
+  const chim = await import('../src/games/chain/importMech');
+  const chdr = await import('../src/games/chain/drawRobot');
+  const chm = await import('../src/games/chain/mounts');
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) await new Promise<void>((res) => setTimeout(res, 0));
+  };
+  const drawBoth = async (game: GameId, patch: Partial<RobotSpec>, draw: (ctx: CanvasRenderingContext2D, w: World) => void) => {
+    const { w } = impWorld(game, [{ ...patch, imported: IMP_PLACED }]);
+    const r = w.robots[0];
+    r.pos = { x: 0, y: 0 };
+    r.heading = 0;
+    r.turretHeading = 0;
+    const sil = recorder();
+    draw(sil.ctx, w);
+    registerImportedAssets(IMP_PLACED.id, { top: new Blob(['png'], { type: 'image/png' }) });
+    importedTopImage(IMP_PLACED.id);
+    await settle();
+    const pic = recorder();
+    draw(pic.ctx, w);
+    unregisterImportedAssets(IMP_PLACED.id);
+    return { r, spec: r.spec, sil, pic };
+  };
+  try {
+    resetImportedAssetsForTests();
+    // ── DECODE ──────────────────────────────────────────────────────────────────────────────
+    {
+      const { r, spec, sil, pic } = await drawBoth('decode', {}, (ctx, w) => drawDecodeSprite(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w));
+      const want = im.decodeImportGrabRect(spec);
+      const d = im.decodeImportMouth(spec);
+      const drawn = pic.fills.filter((f) => STATE.has(f.style)).map((f) => box(f.pts));
+      check('imported 2D DECODE: the drawn grab band IS the sim\'s (`decodeImportGrabRect`: the nip about this mouth\'s axle, across its span)',
+        drawn.length === 1 && same(drawn[0], want), JSON.stringify({ drawn, want }));
+      const beam = sil.fills.filter((f) => f.style === '#166534').map((f) => box(f.pts));
+      check('imported 2D DECODE: the silhouette\'s roller beam stands on the sim\'s axle, across the sim\'s span',
+        beam.length === 1 && Math.abs((beam[0].x0 + beam[0].x1) / 2 - d.axle) < 1e-9 &&
+          Math.abs(beam[0].y0 - (d.yc - d.mouth.mouthHalf)) < 1e-9 && Math.abs(beam[0].y1 - (d.yc + d.mouth.mouthHalf)) < 1e-9,
+        JSON.stringify({ beam, axle: d.axle, yc: d.yc }));
+      const nip = cfg.intakeNip(spec);
+      const why = drawn.length ? onHull(spec.imported!.hull, 'front', drawn[0], d.face, nip.front - cfg.intakeRollerDia(spec) / 2) : 'none drawn';
+      check('imported 2D DECODE: the drawn mouth sits on the hull (past it only by the nip the roller grabs in)', why === '', why);
+      const t = turretWorldPos(r);
+      check('imported 2D DECODE: the turret ring is drawn at the sim\'s turret (the placed shooter), in both bodies',
+        near(t, { x: IMP_PLACED.mech!.shooter!.x, y: IMP_PLACED.mech!.shooter!.y }) && pic.arcs.some((a) => near(a.c, t)) && sil.arcs.some((a) => near(a.c, t)),
+        JSON.stringify(t));
+    }
+    // ── BIOBUZZ ─────────────────────────────────────────────────────────────────────────────
+    {
+      const patch = { bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } } as Partial<RobotSpec>;
+      const { spec, sil, pic } = await drawBoth('biobuzz', patch, (ctx, w) => drawBiobuzzRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w));
+      const mouths = bbr.bbMouths(spec);
+      const drawn = pic.fills.filter((f) => STATE.has(f.style)).map((f) => box(f.pts));
+      check('imported 2D BIOBUZZ: the drawn grab areas ARE `bbMouths` (fitted to the hull, off-centre where placed)',
+        mouths.length === 1 && drawn.length === 1 && same(drawn[0], mouths[0]) && Math.abs((mouths[0].y0 + mouths[0].y1) / 2) > 0.5,
+        JSON.stringify({ drawn, mouths }));
+      const tray = sil.fills.filter((f) => TRAY.has(f.style)).map((f) => box(f.pts));
+      check('imported 2D BIOBUZZ: the silhouette\'s sweeper fills the mouth from the sim\'s face to its roller line',
+        tray.length === 1 && Math.abs(tray[0].x0 - mouths[0].face!) < 1e-9 && Math.abs(tray[0].x1 - mouths[0].x1) < 1e-9 &&
+          Math.abs(tray[0].y0 - mouths[0].y0) < 1e-9 && Math.abs(tray[0].y1 - mouths[0].y1) < 1e-9,
+        JSON.stringify({ tray, mouth: mouths[0] }));
+      const why = onHull(spec.imported!.hull, 'front', mouths[0], mouths[0].face!, 0);
+      check('imported 2D BIOBUZZ: the drawn mouth sits on the hull — no further out than the hull, its face line inside it', why === '', why);
+      const launcher = bbmc.bbLauncherOf(spec, 45);
+      const t0 = bbmt.turretLocal(spec, launcher.mount);
+      const t1 = bbmt.turretLocal(spec, launcher.mount2!);
+      check('imported 2D BIOBUZZ: both turrets are drawn at the sim\'s heads — POLLEN at `shooter`, NECTAR at `shooter2` — in both bodies',
+        near(t0, { x: IMP_PLACED.mech!.shooter!.x, y: IMP_PLACED.mech!.shooter!.y }) && near(t1, { x: IMP_PLACED.mech!.shooter2!.x, y: IMP_PLACED.mech!.shooter2!.y }) &&
+          [t0, t1].every((t) => pic.arcs.some((a) => near(a.c, t)) && sil.arcs.some((a) => near(a.c, t))),
+        JSON.stringify({ t0, t1 }));
+      const place = bbr.bbPlacePointLocal(spec)!;
+      check('imported 2D BIOBUZZ: the place marker is drawn at the sim\'s placement point (out of the hull from the placed base)',
+        !!place && near(place, bbim.bbImportPlacePoint(spec)!) && pic.arcs.some((a) => near(a.c, place) && Math.abs(a.r - 1) < 2) && sil.arcs.some((a) => near(a.c, place)),
+        JSON.stringify(place));
+      const frame = bbc.bbBoxTubeFrame(spec, 'back', place);
+      check('imported 2D/3D BIOBUZZ: the Box Tube stands inside the hull, on the sim\'s placer ray',
+        polyFeature(spec.imported!.hull, frame.outer).depth > 0, JSON.stringify(frame.outer));
+      // the DUMPER on the sim's release line
+      const dpatch = { bbMech: { launcher: { kind: 'dumper', mount: 'front', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } }, intakeMount: 'back' } as Partial<RobotSpec>;
+      const { spec: ds } = await drawBoth('biobuzz', dpatch, (ctx, w) => drawBiobuzzRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w));
+      const f = bbim.bbDumperFrame(ds, 'front');
+      const line = bbim.bbImportLaunchLine(ds, 'front', bbmt.edgeGeom(ds, 'front').span * bbc.BB_LAUNCH_LINE_FRAC);
+      check('imported BIOBUZZ: the dumper is drawn on the sim\'s release line (`bbDumperFrame` = `bbImportLaunchLine`, centre and half)',
+        Math.abs(f.dist - line.origin.x) < 1e-9 && Math.abs(f.lateral - line.origin.y) < 1e-9 && Math.abs(f.span * bbc.BB_LAUNCH_LINE_FRAC - line.half) < 1e-9 &&
+          Math.abs(line.origin.x - IMP_PLACED.mech!.shooter!.x) < 1e-9,
+        JSON.stringify({ f, line }));
+    }
+    // ── CHAIN REACTION ──────────────────────────────────────────────────────────────────────
+    {
+      const patch = { scoreMode: 'turret', catalystType: 'arm', catalystMount: 'back' } as Partial<RobotSpec>;
+      const { spec, sil, pic } = await drawBoth('chain', patch, (ctx, w) => drawChainRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w));
+      const mouths = chs.chainIntakeMouths(spec);
+      const drawn = pic.fills.filter((f) => STATE.has(f.style)).map((f) => box(f.pts));
+      check('imported 2D Chain: the drawn grab areas ARE `chainIntakeMouths` (fitted to the hull, off-centre where placed)',
+        mouths.length === 1 && drawn.length === 1 && same(drawn[0], mouths[0]), JSON.stringify({ drawn, mouths }));
+      const tray = sil.fills.filter((f) => TRAY.has(f.style)).map((f) => box(f.pts));
+      check('imported 2D Chain: the silhouette\'s sweeper fills the mouth from the sim\'s face to its roller line',
+        tray.length === 1 && Math.abs(tray[0].x0 - mouths[0].face!) < 1e-9 && Math.abs(tray[0].x1 - mouths[0].x1) < 1e-9 &&
+          Math.abs(tray[0].y0 - mouths[0].y0) < 1e-9 && Math.abs(tray[0].y1 - mouths[0].y1) < 1e-9,
+        JSON.stringify({ tray, mouth: mouths[0] }));
+      const why = onHull(spec.imported!.hull, mouths[0].edge, mouths[0], mouths[0].face!, 0);
+      check('imported 2D Chain: the drawn mouth sits on the hull', why === '', why);
+      const t = turretLocal(spec);
+      check('imported 2D Chain: the turret is drawn at the sim\'s turret (the placed shooter), in both bodies',
+        near(t, { x: IMP_PLACED.mech!.shooter!.x, y: IMP_PLACED.mech!.shooter!.y }) && pic.arcs.some((a) => near(a.c, t)) && sil.arcs.some((a) => near(a.c, t)),
+        JSON.stringify(t));
+      const o = chs.catalystOrigin(spec, 'back');
+      check('imported 2D Chain: the catalyst arm is drawn from where the sim measures its reach (`catalystOrigin`)',
+        sil.frames.some((fr) => near(fr.o, o) && Math.abs(Math.cos(fr.angle - MOUNT_ANGLE.back) - 1) < 1e-9),
+        JSON.stringify({ o, frames: sil.frames.slice(0, 6) }));
+      // the DRUM on the sim's launch line
+      const { spec: ds } = await drawBoth('chain', { scoreMode: 'drum' } as Partial<RobotSpec>, (ctx, w) => drawChainRobot(ctx, w.robots[0], true, [], { x: 0, y: 1 }, w));
+      const edge = shooterMountOf(ds) as 'front' | 'back' | 'left' | 'right';
+      const f = chdr.launcherFrame(ds, edge);
+      const line = chim.chainImportLaunchLine(ds, edge, chm.edgeGeom(ds, edge).span);
+      const n = N[edge];
+      const p = P[edge];
+      check('imported Chain: the drum is drawn on the sim\'s launch line (`launcherFrame` = `chainImportLaunchLine`, centre and half)',
+        Math.abs(f.dist - (line.origin.x * n.x + line.origin.y * n.y)) < 1e-9 && Math.abs(f.lateral - (line.origin.x * p.x + line.origin.y * p.y)) < 1e-9 &&
+          Math.abs(f.span - line.half) < 1e-9,
+        JSON.stringify({ f, line }));
+    }
+  } finally {
+    resetImportedAssetsForTests();
+    if (hadImage) g.Image = prevImage;
+    else delete g.Image;
+  }
+}
+
+/**
+ * ---- IMPORTED ROBOTS: FootprintSvg (cards, the hero, the SVG builder previews) ----
+ *
+ * Nose up through `matrix(0,-1,-1,0,0,0)` (robot left = screen left), and the picture placed in
+ * screen space by the SAME frame the sprite uses — so a hull vertex and the picture's pixel for
+ * that vertex land on one screen point.
+ */
+{
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { createElement } = await import('react');
+  const { FootprintSvg } = await import('../src/ui/FootprintSvg');
+  const imp = coerceImported(IMP_NOSE)!;
+  const html = renderToStaticMarkup(
+    createElement(FootprintSvg, {
+      imported: imp,
+      drivetrain: 'xdrive',
+      marks: { mouths: [{ edge: 'front', x0: 8, x1: 10, y0: -3, y1: 3 }], turrets: [{ x: -2, y: 0, r: 3 }], place: { x: 11, y: 0 } },
+      image: 'blob:test/x',
+      caption: true,
+      label: 'Imported robot',
+    }),
+  );
+  check('FootprintSvg: draws the hull in the bird\'s-eye frame matrix(0,-1,-1,0,0,0), never rotate(-90)',
+    html.includes('matrix(0,-1,-1,0,0,0)') && !html.includes('rotate(-90') && html.includes(imp.hull.map((p) => `${p.x},${p.y}`).join(' ')));
+  check('FootprintSvg: with a picture — no silhouette wheels, the picture clipped to the hull, the caption, an accessible name',
+    (html.match(/<rect[^>]*rx="0.5"/g) ?? []).length === 0 && html.includes('<image') && html.includes('clip-path="url(#') &&
+      html.includes('wide · ') && html.includes('aria-label="Imported robot"'));
+  const num = (attr: string): number => Number(new RegExp(`<image[^>]* ${attr}="([^"]+)"`).exec(html)?.[1]);
+  const f = importedTopFrame(imp.hull);
+  let worst = 0;
+  for (const p of imp.hull) {
+    const { u, v } = robotToTopPixel(p, f);
+    const sx = num('x') + u * (num('width') / f.px);
+    const sy = num('y') + v * (num('height') / f.px);
+    worst = Math.max(worst, Math.hypot(sx - -p.y, sy - -p.x));
+  }
+  check('FootprintSvg: the picture\'s pixel for each hull vertex lands ON that vertex (one frame, not mirrored)', worst < 1e-9, worst.toExponential(2));
+  const bare = renderToStaticMarkup(createElement(FootprintSvg, { imported: imp }));
+  check('FootprintSvg: without a picture it draws the silhouette and four wheels; unlabelled it is decorative',
+    !bare.includes('<image') && (bare.match(/rx="0.5"/g) ?? []).length === 4 && bare.includes('aria-hidden="true"'));
+  // THE BUILDER PREVIEWS' MARKS ARE THE SIM'S: a placed BIOBUZZ import's preview draws `bbMouths`,
+  // the placed heads and `bbPlacePointLocal`; a placed Chain import's, the catalyst's `catalystOrigin`
+  {
+    const placedImp: ImportedRobot = {
+      ...IMP_NOSE,
+      mech: { intakes: [{ edge: 'front', from: -2, to: 5 }], shooter: { x: -3, y: 2.5, z: 11 }, shooter2: { x: -3, y: -3, z: 13 }, place: { x: -2, y: -1, z: 6 } },
+    };
+    const { BiobuzzRobotPreview } = await import('../src/games/biobuzz/RobotPreview');
+    const { ChainRobotPreview } = await import('../src/games/chain/RobotPreview');
+    const bbr = await import('../src/games/biobuzz/robot');
+    const chs = await import('../src/games/chain/state');
+    const bbSpec = coerceSpec(
+      { ...DEFAULT_SPEC, imported: placedImp, bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } },
+      DEFAULT_SPEC,
+      'biobuzz',
+    );
+    const bbHtml = renderToStaticMarkup(createElement(BiobuzzRobotPreview, { spec: bbSpec }));
+    const m = bbr.bbMouths(bbSpec)[0];
+    const pl = bbr.bbPlacePointLocal(bbSpec)!;
+    check('FootprintSvg: a BIOBUZZ import\'s preview marks its sim mouth, both placed heads and its placement point',
+      bbHtml.includes(`x="${m.x0}" y="${m.y0}" width="${m.x1 - m.x0}" height="${m.y1 - m.y0}"`) &&
+        bbHtml.includes('translate(-3 2.5)') && bbHtml.includes('translate(-3 -3)') && bbHtml.includes(`cx="${pl.x}" cy="${pl.y}"`),
+      bbHtml.slice(0, 200));
+    const chSpec = coerceSpec({ ...DEFAULT_SPEC, imported: placedImp, scoreMode: 'turret', catalystType: 'arm', catalystMount: 'back' }, DEFAULT_SPEC, 'chain');
+    const chHtml = renderToStaticMarkup(createElement(ChainRobotPreview, { spec: chSpec }));
+    const co = chs.catalystOrigin(chSpec, 'back');
+    check('FootprintSvg: a Chain import\'s preview marks the catalyst where the sim measures its reach from (`catalystOrigin`)',
+      chHtml.includes(`cx="${co.x}" cy="${co.y}"`), JSON.stringify(co));
+  }
+}
+
+/**
+ * ROBOT IMPORT, the importer's DOM-free half (`docs/robot-import-plan.md`, lane 3;
+ * `docs/area/robot-import.md`): the drivetrain catalogue and its mapping onto the sim's 104 mm
+ * wheel, the measuring (hull, reduction, wheels, bands, units, up axis, handedness), the
+ * descriptor's contract shape, the frame constants, and the share file's byte-level GLB edit.
+ * The three.js half is proven in a browser by `scripts/robot-import/harness/`.
+ */
+{
+  const drive = await import('../src/robotImport/drive');
+  const geo = await import('../src/robotImport/geometry');
+  const share = await import('../src/robotImport/shareFile');
+  const rtypes = await import('../src/robotImport/types');
+  const synth = await import('./robot-import/synthRobot');
+  const { driveParams: dp, pushForce: pf, massLimits: ml } = await import('../src/sim/drivetrain');
+  const near = (a: number, b: number, eps = 1e-9): boolean => Math.abs(a - b) <= eps;
+  const Q = 1 / 64;
+  const onGrid = (v: number): boolean => Number.isInteger(v / Q);
+
+  // ---- drive.ts: the catalogue and the mapping -------------------------------------------
+  check(
+    'robot import: goBILDA 19.2:1 direct on a 104 mm wheel is 312 sim rpm',
+    drive.equivalentDriveRpm(drive.motorFreeRpm({ kind: 'gobilda', ratio: '19.2' }), 1, drive.wheelDiameterMm({ kind: 'catalogue', id: 'gobilda-gripforce-104' })) === 312,
+  );
+  {
+    // goBILDA publishes 188:1 as 30 rpm where 6000 ÷ 188.61 is 31.8; every other listing is within 2 %
+    const bad = Object.entries(drive.GOBILDA_RATIOS).filter(([k, r]) => Math.abs(6000 / r.ratio - r.freeRpm) / r.freeRpm > (k === '188' ? 0.07 : 0.02));
+    check('robot import: every goBILDA listed free rpm agrees with 6000 ÷ its exact ratio (2 %; 188:1 is listed rounded)', bad.length === 0, bad.map(([k]) => k).join(', '));
+  }
+  check(
+    'robot import: UltraPlanetary uses the ACTUAL ratios (84:29, 76:21, 68:13), not 3/4/5',
+    near(drive.ULTRAPLANETARY[3], 84 / 29) && near(drive.ULTRAPLANETARY[4], 76 / 21) && near(drive.ULTRAPLANETARY[5], 68 / 13) &&
+      near(drive.motorFreeRpm({ kind: 'revHdHex', cartridges: [4, 5] }), 6000 / ((76 / 21) * (68 / 13))),
+  );
+  check(
+    'robot import: Core Hex 125, NeveRest Orbital 20 344, a 96 mm wheel scales by 96/104, a 2:1 belt halves',
+    drive.motorFreeRpm({ kind: 'revCoreHex' }) === 125 &&
+      drive.motorFreeRpm({ kind: 'neverest', model: 'orbital20' }) === 344 &&
+      near(drive.equivalentDriveRpm(435, 1, 96), (435 * 96) / 104) &&
+      near(drive.equivalentDriveRpm(312, 2, 104), 156),
+  );
+  {
+    const spec = { ...DEFAULT_SPEC, drivetrain: 'mecanum' as const, driveRpm: 312, massLb: 30 };
+    const ro = drive.driveReadout(spec);
+    check(
+      'robot import: the readout IS driveParams / pushForce of the spec (sim truth, not a second model)',
+      ro.topSpeedInS === dp(spec).maxSpeed && ro.accelInS2 === dp(spec).accel && near(ro.pushLbf, pf(spec) / 386.0886) && ro.checks.length === 0,
+    );
+    const hot = drive.driveReadout(spec, { driveRpm: 1620, massLb: 12 });
+    const floor = ml('mecanum', spec.flywheelInertia).min;
+    check(
+      'robot import: rpm and weight outside the sim are CLAMPED and SAID (rpm-high, mass-low)',
+      hot.driveRpm === 600 && hot.massLb === floor && hot.checks.some((c) => c.code === 'rpm-high') && hot.checks.some((c) => c.code === 'mass-low'),
+      `${hot.driveRpm} ${hot.massLb} ${hot.checks.map((c) => c.code)}`,
+    );
+    const bf = drive.driveReadout({ ...spec, drivetrain: 'butterfly', massLb: 30 }, { driveRpm: 312, tankRpm: 900 });
+    check('robot import: a butterfly traction set is clamped to its own envelope', bf.tankRpm === 560 && bf.checks.some((c) => c.code === 'tank-rpm-clamped'));
+    const f = drive.importedDriveFields(spec, { drivetrain: 'tank', motor: { kind: 'gobilda', ratio: '13.7' }, externalRatio: 1, wheel: { kind: 'catalogue', id: 'gobilda-mecanum-96' }, massLb: 33 }, { length: 19, width: 14.5 });
+    check('robot import: the parametric fields carry the clamped gearing and a legal box', f.drivetrain === 'tank' && near(f.driveRpm, Math.round(((435 * 96) / 104) * 100) / 100) && f.massLb === 33 && f.length === 18 && f.width === 14.5);
+  }
+
+  // ---- geometry.ts: hull and reduction ----------------------------------------------
+  {
+    const sq = geo.convexHull([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 2 }, { x: 0, y: 2 }, { x: 1, y: 1 }, { x: 1, y: 0 }, { x: 0.5, y: 0.5 }]);
+    check('robot import: hull drops interior and collinear points, CCW, starts at the lowest x', sq.length === 4 && geo.polygonArea(sq) === 4 && sq[0].x === 0 && sq[0].y === 0);
+    const circle = Array.from({ length: 64 }, (_, k) => ({ x: 9 * Math.cos((2 * Math.PI * k) / 64), y: 9 * Math.sin((2 * Math.PI * k) / 64) }));
+    const r = geo.reduceHull(geo.convexHull(circle), 16);
+    // the largest distance from any input vertex to the reduced polygon's boundary, measured here
+    let worst = 0;
+    for (const p of circle) {
+      let d = Infinity;
+      for (let i = 0; i < r.hull.length; i++) {
+        const a = r.hull[i];
+        const b = r.hull[(i + 1) % r.hull.length];
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2)));
+        d = Math.min(d, Math.hypot(a.x + t * (b.x - a.x) - p.x, a.y + t * (b.y - a.y) - p.y));
+      }
+      worst = Math.max(worst, d);
+    }
+    check(
+      'robot import: a 64-gon reduces to ≤ 16 vertices, an inner approximation, and REPORTS its measured deviation',
+      r.hull.length <= 16 && r.hull.every((p) => circle.some((c) => c.x === p.x && c.y === p.y)) && near(r.deviation, worst, 1e-6),
+      `dev ${r.deviation.toFixed(4)} worst ${worst.toFixed(4)}`,
+    );
+    check('robot import: the reduction deviation of a 16-gon cut of a 9-in circle is under r(1 − cos π/16)', r.deviation <= 9 * (1 - Math.cos(Math.PI / 16)) + 1e-6, r.deviation.toFixed(4));
+    const fin = geo.finishHull(circle, 16);
+    check(
+      'robot import: a finished hull is on the 1/64 grid, convex CCW, and re-quantising it changes nothing',
+      fin.hull.every((p) => onGrid(p.x) && onGrid(p.y)) && geo.polygonArea(fin.hull) > 0 && JSON.stringify(geo.quantiseHull(fin.hull)) === JSON.stringify(fin.hull),
+    );
+  }
+
+  // ---- wheels -----------------------------------------------------------------------
+  {
+    // three points within the 1-in link of each other: one wheel's contact patch
+    const patch = (cx: number, cy: number): number[] => [cx - 0.3, cy - 0.4, cx + 0.3, cy - 0.4, cx, cy + 0.4];
+    const four = [...patch(6, 6), ...patch(6, -6), ...patch(-6, 6), ...patch(-6, -6)];
+    const d4 = geo.detectWheels(four);
+    check(
+      'robot import: four contact patches → FL, FR, BL, BR in that order',
+      !!d4.wheels && d4.wheels[0].x > 0 && d4.wheels[0].y > 0 && d4.wheels[1].x > 0 && d4.wheels[1].y < 0 && d4.wheels[2].x < 0 && d4.wheels[2].y > 0 && d4.wheels[3].x < 0 && d4.wheels[3].y < 0,
+      JSON.stringify(d4.wheels),
+    );
+    const six = [...four, ...patch(0, 6), ...patch(0, -6)];
+    const d6 = geo.detectWheels(six);
+    check(
+      'robot import: a 6-wheel tank keeps the four CORNER wheels and says so',
+      !!d6.wheels && d6.wheels.every((w) => Math.abs(w.x) > 5) && /corner/.test(d6.note),
+      d6.note,
+    );
+    const three = [...patch(6, 6), ...patch(6, -6), ...patch(-6, 0)];
+    const d3 = geo.detectWheels(three);
+    check('robot import: three contacts fail with a reason, not a guess', d3.wheels === null && /3 wheels/.test(d3.note), d3.note);
+    // an intake roller lying on the floor across the front: one long contact, left out
+    const roller = [9, -6, 9, 6];
+    const dr = geo.detectWheels([...four, ...roller], [12, 13]);
+    check('robot import: a long floor contact (an intake) is not a wheel', !!dr.wheels && dr.wheels.every((w) => Math.abs(w.x) === 6) && /long floor contact/.test(dr.note), dr.note);
+    // one wheel's contact line is two cap vertices a wheel-width apart, joined by a mesh EDGE
+    const capPairs = [6, 5.2, 6, 6.8, 6, -5.2, 6, -6.8, -6, 5.2, -6, 6.8, -6, -5.2, -6, -6.8];
+    const de = geo.detectWheels(capPairs, [0, 1, 2, 3, 4, 5, 6, 7]);
+    const unjoined = geo.detectWheels(capPairs);
+    check(
+      'robot import: a wheel’s two contact ends joined by a mesh edge are ONE wheel (without the edge, two)',
+      !!de.wheels && de.contacts.length === 4 && unjoined.contacts.length === 8,
+      de.note,
+    );
+    const reversed: number[] = [];
+    for (let i = four.length - 2; i >= 0; i -= 2) reversed.push(four[i], four[i + 1]);
+    const dd = geo.detectWheels(reversed);
+    check('robot import: wheel detection does not depend on point order', JSON.stringify(dd.wheels) === JSON.stringify(d4.wheels));
+  }
+
+  // ---- units, up axis, handedness, on the synthetic robot in every file frame ----------
+  {
+    const ID = '0123456789abcdef';
+    type Fmt = import('../src/robotImport/types').ModelFormat;
+    const frames: [string, Fmt, (v: [number, number, number]) => [number, number, number], string, string][] = [
+      ['glTF m Y-up', 'glb', synth.FRAMES.gltf, 'm', '+y'],
+      ['STL mm Z-up', 'stl', synth.FRAMES.cadMm, 'mm', '+z'],
+      ['PLY cm Z-up', 'ply', synth.FRAMES.cadCm, 'cm', '+z'],
+      ['OBJ in Y-up (format default +Z)', 'obj', synth.FRAMES.yUpIn, 'in', '+y'],
+    ];
+    const descriptors: string[] = [];
+    for (const [label, fmt, map, unit, up] of frames) {
+      const parts = synth.synthParts(synth.synthRobot(), map);
+      const { measurement: m } = geo.measureParts(parts, geo.defaultImportSetup(), { format: fmt });
+      const d = geo.buildDescriptor({ id: ID, measurement: m });
+      descriptors.push(JSON.stringify(d));
+      const ys = d.hull.map((p) => p.y);
+      check(
+        `robot import [${label}]: units ${unit}, up ${up}, 18 × 14.5 × 15 in`,
+        m.units === unit && m.up === up && near(m.size.length, 18, 1e-3) && near(m.size.width, 14.5, 1e-3) && near(m.size.height, 15, 1e-3),
+        `${m.units} ${m.up} ${m.size.length.toFixed(3)} ${m.size.width.toFixed(3)} ${m.size.height.toFixed(3)}`,
+      );
+      check(
+        `robot import [${label}]: NOT MIRRORED — the left-side flag is at +y 7.5, the right rail at −7`,
+        near(Math.max(...ys), 7.5) && near(Math.min(...ys), -7),
+        JSON.stringify(d.hull),
+      );
+      check(
+        `robot import [${label}]: wheels at (±5.5, ±5.5) about the wheelbase centre`,
+        JSON.stringify(d.wheels) === JSON.stringify([{ x: 5.5, y: 5.5 }, { x: 5.5, y: -5.5 }, { x: -5.5, y: 5.5 }, { x: -5.5, y: -5.5 }]),
+        JSON.stringify(d.wheels),
+      );
+    }
+    check('robot import: all four file frames give the same hull and wheels', new Set(descriptors.map((s) => JSON.stringify({ h: JSON.parse(s).hull, w: JSON.parse(s).wheels }))).size === 1);
+
+    // every one of the six "up" orientations of a Z-up mm file is found from the geometry
+    const misses: string[] = [];
+    for (const U of rtypes.UP_AXES) {
+      const R = geo.orientation(U, 0);
+      const map = (v: [number, number, number]): [number, number, number] => [0, 1, 2].map((k) => (R[0][k] * v[0] + R[1][k] * v[1] + R[2][k] * v[2]) * 25.4) as [number, number, number];
+      for (const six of [false, true]) {
+        const { measurement: m } = geo.measureParts(synth.synthParts(synth.synthRobot({ sixWheel: six }), map), geo.defaultImportSetup(), { format: 'stl' });
+        if (m.up !== U || m.wheelSource !== 'detected') misses.push(`${U}${six ? ' 6w' : ''} → ${m.up}`);
+      }
+    }
+    check('robot import: the up axis is found in all six orientations, 4- and 6-wheel', misses.length === 0, misses.join(', '));
+
+    check(
+      'robot import: units from the largest extent — 457.2 → mm, 0.4572 → m, 45.72 → cm, 18 → in',
+      geo.detectUnits(457.2, null).unit === 'mm' && geo.detectUnits(0.4572, null).unit === 'm' && geo.detectUnits(45.72, null).unit === 'cm' && geo.detectUnits(18, null).unit === 'in',
+    );
+    {
+      // a millimetre file the player forced to inches: oversize, and the hint names mm
+      const parts = synth.synthParts(synth.synthRobot(), synth.FRAMES.cadMm);
+      const { measurement: m } = geo.measureParts(parts, { ...geo.defaultImportSetup(), units: 'in' }, { format: 'stl' });
+      const d = geo.buildDescriptor({ id: ID, measurement: m });
+      const b = geo.bbox(d.hull);
+      check(
+        'robot import: a mm file read as inches is blocked as oversize, with a units hint that names mm',
+        m.checks.some((c) => c.code === 'oversize' && c.level === 'block') && m.checks.some((c) => c.code === 'units-suspect' && /set Units to mm/.test(c.message)),
+        m.checks.map((c) => c.code).join(','),
+      );
+      check('robot import: even then the descriptor is legal (scaled into 18 × 18, heights clamped)', b.maxX - b.minX <= 18 && b.maxY - b.minY <= 18 && d.heightIn <= 18);
+    }
+  }
+
+  // ---- the descriptor's contract shape ------------------------------------------------
+  {
+    const parts = synth.synthParts(synth.synthRobot(), synth.FRAMES.cadMm);
+    const run = (): ReturnType<typeof geo.buildDescriptor> => {
+      const { measurement } = geo.measureParts(parts, geo.defaultImportSetup(), { format: 'step', fileUnit: 'mm' });
+      return geo.buildDescriptor({ id: '0123456789abcdef', measurement, mech: { intakes: [{ edge: 'front', from: 5.25, to: -4.75 }], shooter: { x: -1, y: 0.25, z: 14 } } });
+    };
+    const d = run();
+    const nums: number[] = [];
+    const walk = (v: unknown): void => {
+      if (typeof v === 'number') nums.push(v);
+      else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+    };
+    walk({ hull: d.hull, wheels: d.wheels, bands: d.bands, mech: d.mech, heightIn: d.heightIn });
+    const b = geo.bbox(d.hull);
+    check(
+      'robot import: descriptor v1, 16-hex id, CCW hull of 3..16 inside 18 × 18, height (0, 18]',
+      d.v === 1 && /^[0-9a-f]{16}$/.test(d.id) && d.hull.length >= 3 && d.hull.length <= 16 && geo.polygonArea(d.hull) > 0 && b.maxX - b.minX <= 18 && b.maxY - b.minY <= 18 && d.heightIn > 0 && d.heightIn <= 18,
+    );
+    check('robot import: every descriptor number is a multiple of 1/64 in', nums.every(onGrid), nums.filter((n) => !onGrid(n)).join(','));
+    check('robot import: every wheel is inside the hull', (d.wheels ?? []).every((w) => geo.insetDepth(w, d.hull) >= 0));
+    check(
+      'robot import: ≤ 5 bands, z0 < z1 inside [0, height], ≤ 12 vertices each, the tower band narrower than the base',
+      !!d.bands && d.bands.length >= 2 && d.bands.length <= 5 && d.bands.every((x) => x.z0 < x.z1 && x.z0 >= 0 && x.z1 <= d.heightIn && x.hull.length >= 3 && x.hull.length <= 12) &&
+        Math.abs(geo.polygonArea(d.bands[d.bands.length - 1].hull)) < Math.abs(geo.polygonArea(d.bands[0].hull)) / 2,
+      JSON.stringify(d.bands?.map((x) => [x.z0, x.z1, x.hull.length])),
+    );
+    check(
+      'robot import: mechanism spans shift into robot-local and sort (from < to)',
+      !!d.mech?.intakes && d.mech.intakes[0].from < d.mech.intakes[0].to && !!d.mech.shooter && d.mech.shooter.x === 0 && d.mech.shooter.y === 0.5,
+      JSON.stringify(d.mech),
+    );
+    check('robot import: the descriptor is ≤ 2 KB of JSON and deterministic', JSON.stringify(d).length <= 2048 && JSON.stringify(run()) === JSON.stringify(d), String(JSON.stringify(d).length));
+  }
+
+  // ---- frames --------------------------------------------------------------------------
+  {
+    const M = rtypes.STORED_MESH_TO_ROBOT;
+    const N = rtypes.ROBOT_TO_STORED_MESH;
+    const app = (m: readonly number[], v: number[]): number[] => [0, 1, 2].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r]);
+    const k = 1 / 0.0254;
+    check(
+      'robot import: stored GLB → robot: glTF +Z (front) is +x, +X is +y (left), +Y is +z (up), metres → inches',
+      JSON.stringify(app(M, [0, 0, 1]).map((v) => v / k)) === '[1,0,0]' && JSON.stringify(app(M, [1, 0, 0]).map((v) => v / k)) === '[0,1,0]' && JSON.stringify(app(M, [0, 1, 0]).map((v) => v / k)) === '[0,0,1]',
+    );
+    const rt = app(M, app(N, [3, -2, 7]));
+    check('robot import: the two stored-mesh matrices are inverses', rt.every((v, i) => near(v, [3, -2, 7][i], 1e-9)));
+    const f = geo.topImageFrame([{ x: -8, y: -7 }, { x: 10, y: -7 }, { x: 10, y: 7.5 }, { x: -8, y: 7.5 }]);
+    const front = geo.robotToTopPixel({ x: 9, y: f.cy }, f);
+    const left = geo.robotToTopPixel({ x: f.cx, y: 7 }, f);
+    const back = geo.topPixelToRobot(front.u, front.v, f);
+    check(
+      'robot import: top image — front is image UP, left is image LEFT, side = box + 1 in, and the mapping inverts',
+      front.v < f.px / 2 && near(front.u, f.px / 2) && left.u < f.px / 2 && near(f.sideIn, 19) && near(back.x, 9, 1e-9) && near(back.y, f.cy, 1e-9),
+    );
+  }
+
+  // ---- shareFile.ts: byte-level GLB edit ------------------------------------------------
+  {
+    const bin = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
+    const glb = share.buildGlb({ asset: { version: '2.0', extras: { keep: 1 } }, buffers: [{ byteLength: 7 }] }, bin);
+    const setup = geo.defaultImportSetup();
+    const out = share.writeShareFile(glb, { game: 'biobuzz', name: 'Test bot', spec: { ...DEFAULT_SPEC, name: 'Test bot' }, setup });
+    const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    const jl = dv.getUint32(12, true);
+    const binAt = 20 + jl;
+    const r = share.readShareFile(out);
+    const jsonBytes = out.subarray(20, 20 + jl);
+    const close = jsonBytes.lastIndexOf(0x7d); // the JSON's final '}'
+    check(
+      'robot import: share file — header length matches, chunks 4-aligned, JSON padded with spaces, BIN copied byte for byte',
+      dv.getUint32(8, true) === out.byteLength && out.byteLength % 4 === 0 && jl % 4 === 0 && jsonBytes.subarray(close + 1).every((b) => b === 0x20) &&
+        dv.getUint32(binAt + 4, true) === 0x004e4942 && JSON.stringify(Array.from(out.subarray(binAt + 8, binAt + 8 + 7))) === '[1,2,3,4,5,6,7]',
+    );
+    check(
+      'robot import: share file round trip — format, version, game, name, setup survive; other extras kept',
+      r.ok && r.payload.game === 'biobuzz' && r.payload.name === 'Test bot' && JSON.stringify(r.payload.setup) === JSON.stringify(setup) &&
+        (r.json.asset as { extras: { keep: number } }).extras.keep === 1,
+    );
+    const again = share.writeShareFile(out, { game: 'chain', name: 'Renamed', spec: DEFAULT_SPEC, setup });
+    const r2 = share.readShareFile(again);
+    check('robot import: writing a share file twice replaces the block, never stacks it', r2.ok && r2.payload.name === 'Renamed' && again.byteLength < out.byteLength + 64);
+    const errs = [
+      share.readShareFile(glb),
+      share.readShareFile(out.subarray(0, out.byteLength - 8)),
+      share.readShareFile(new Uint8Array(out.byteLength).fill(7)),
+      share.readShareFile(share.writeShareFile(glb, { game: 'decode', name: 'x', spec: DEFAULT_SPEC, setup }).slice(0, 10)),
+    ].map((x) => (x.ok ? 'ok' : x.error));
+    const future = share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 2, game: 'biobuzz', spec: {}, setup: {}, name: 'x' } } } });
+    const badGame = share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'pong', spec: {}, setup: {}, name: 'x' } } } });
+    const r3 = share.readShareFile(future);
+    const r4 = share.readShareFile(badGame);
+    check(
+      'robot import: malformed share files are refused with a reason (plain GLB, truncated, not GLB, too short, newer, unknown game)',
+      JSON.stringify(errs) === JSON.stringify(['not-dsim', 'bad-length', 'not-glb', 'too-short']) && !r3.ok && r3.error === 'newer-version' && !r4.ok && r4.error === 'bad-payload',
+      JSON.stringify(errs),
+    );
+  }
+
+  // ---- the boundaries the main chunk relies on --------------------------------------------
+  {
+    const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
+    const domFree = ['types.ts', 'geometry.ts', 'drive.ts', 'shareFile.ts'].map((f) => joinPath('src', 'robotImport', f));
+    const offenders = domFree.filter((f) => /\b(document|window|indexedDB|localStorage)\b|from ['"]three/.test(rd(f)));
+    check('robot import: types, geometry, drive and shareFile touch no DOM and no three.js', offenders.length === 0, offenders.join(', '));
+    const lib = rd(joinPath('src', 'robotImport', 'library.ts'));
+    check(
+      'robot import: the library opens IndexedDB under the REGISTERED name, and imports no three.js',
+      /indexedDB\.open\(ROBOT_LIBRARY_DB,/.test(lib) && /from '\.\.\/storageKeys'/.test(lib) && !/from ['"]three/.test(lib),
+    );
+    const opens: string[] = [];
+    const walkIdb = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = joinPath(dir, e.name);
+        if (e.isDirectory()) walkIdb(p);
+        else if (/\.tsx?$/.test(e.name) && /indexedDB\.open\(/.test(rd(p))) opens.push(p);
+      }
+    };
+    walkIdb('src');
+    check('robot import: nothing else in src/ opens an IndexedDB database', opens.length === 1 && opens[0].endsWith(joinPath('robotImport', 'library.ts')), opens.join(', '));
+  }
+}
+
+/**
+ * ROBOT IMPORT AT REAL-CAD SCALE (lane 9; `docs/area/robot-import.md`, "Workers and the two-half
+ * measurement"). Parsing, welding and simplifying moved into a worker and the measurement split in
+ * two cached halves, and every one of those moves is held here to the SAME OUTPUT, bit for bit:
+ * the two halves against `measureParts`, the model frame a worker's matrix rebuilds against the one
+ * measured on, the streamed STL reader against three's loader, the weld without its three arrays
+ * against the weld with them, and the fast `partsFromObject` against `Vector3.applyMatrix4`. Node has
+ * no `Worker`, so the engine's main-thread fallbacks run here, which is the same code the workers run.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  const { weld } = await import('../src/robotImport/engine/meshOps');
+  const { simplifyParts } = await import('../src/robotImport/engine/simplify');
+  const parse = await import('../src/robotImport/engine/parse');
+  const { importModel } = await import('../src/robotImport/engine/importSession');
+  const { loadModel } = await import('../src/robotImport/engine/load');
+  const { simplifyModel } = await import('../src/robotImport/engine/prepare');
+  const THREE = await import('three');
+  const { STLLoader } = await import('three/examples/jsm/loaders/STLLoader.js');
+  const sameBits = (a: ArrayBufferView | null | undefined, b: ArrayBufferView | null | undefined): boolean => {
+    if (!a || !b) return !a && !b;
+    if (a.byteLength !== b.byteLength) return false;
+    const x = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    const y = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  };
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const samePart = (a: P[], b: P[]): boolean =>
+    a.length === b.length && a.every((p, i) => sameBits(p.positions, b[i].positions) && sameBits(p.indices, b[i].indices) && sameBits(p.normals ?? null, b[i].normals ?? null) && JSON.stringify(p.color) === JSON.stringify(b[i].color));
+
+  // ---- the two halves, and the cache over them ----------------------------------------------------
+  {
+    const parts = synth.synthParts(synth.synthRobot(), synth.FRAMES.cadMm) as P[];
+    const prepared = { name: 'synth.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts, trisIn: geo.triangleCount(parts), notes: [], trisOut: geo.triangleCount(parts), simplifyError: 0 };
+    const base = geo.defaultImportSetup();
+    const setups = [
+      base,
+      { ...base, units: 'in' as const },
+      { ...base, up: '+y' as const },
+      { ...base, yaw: 3 as const },
+      { ...base, hullMaxVerts: 6 },
+      { ...base, bands: false },
+      { ...base, wheels: [{ x: 5, y: 5.25 }, { x: 5, y: -5.25 }, { x: -6, y: 5.25 }, { x: -6, y: -5.25 }] },
+    ];
+    const meas = new Measurer(prepared);
+    const bad = setups.filter((s) => {
+      const ref = geo.measureParts(parts, s, { format: 'stl' });
+      const got = meas.normalise(s);
+      return JSON.stringify(ref.measurement) !== JSON.stringify({ ...got.measurement }) || !samePart(ref.modelParts, got.modelParts);
+    });
+    check('robot import (scale): the cached two-half measurement IS measureParts, field for field and float for float, over units, up, yaw, hull cap, bands and manual wheels', bad.length === 0, bad.map((s) => JSON.stringify(s).slice(0, 80)).join(' | '));
+    const a = meas.normalise(base);
+    const driven = meas.normalise({ ...base, drive: { ...base.drive, massLb: 41 } });
+    const dragged = meas.normalise({ ...base, wheels: [{ x: 5.25, y: 5.5 }, { x: 5.25, y: -5.5 }, { x: -5.5, y: 5.5 }, { x: -5.5, y: -5.5 }] });
+    check(
+      'robot import (scale): a wheel drag re-runs only the light half (same model-frame arrays, new origin); a drivetrain edit returns the very same measurement',
+      dragged.modelParts === a.modelParts && dragged.measurement.origin.x !== a.measurement.origin.x && driven === a && meas.ready({ ...base, wheels: null }) && !meas.ready({ ...base, units: 'cm' }),
+    );
+    // the model frame a worker's `sourceToModel` rebuilds is the one the worker measured on
+    const frames = [base, { ...base, yaw: 1 as const }, { ...base, up: '-x' as const, units: 'cm' as const }];
+    const rebuildBad = frames.filter((s) => {
+      const { oriented, modelParts } = geo.orientParts(parts, s, { format: 'stl' });
+      return !samePart(modelParts, geo.toModelFrame(parts, oriented.sourceToModel));
+    });
+    check('robot import (scale): toModelFrame(sourceToModel) rebuilds the measured model frame bit for bit (the main thread trusts a worker’s matrix)', rebuildBad.length === 0);
+    const o = geo.orientParts(parts, base, { format: 'stl' }).oriented;
+    check('robot import (scale): an OrientedMeasure survives a structured clone (it is what the measure worker posts)', JSON.stringify(structuredClone(o)) === JSON.stringify(o) && geo.finishMeasure(structuredClone(o), base).hull.length === geo.finishMeasure(o, base).hull.length);
+  }
+
+  // ---- the weld, without its three arrays ------------------------------------------------------
+  {
+    // the weld as it was: quantised coordinates kept in three Int32Arrays
+    const weldRef = (part: P, eps: number): { positions: Float32Array; indices: Uint32Array } => {
+      const src = part.positions;
+      const n = src.length / 3;
+      const inv = 1 / eps;
+      let cap = 1;
+      while (cap < n * 2) cap <<= 1;
+      const table = new Int32Array(cap).fill(-1);
+      const qx = new Int32Array(n);
+      const qy = new Int32Array(n);
+      const qz = new Int32Array(n);
+      const remap = new Uint32Array(n);
+      const out = new Float32Array(src.length);
+      let count = 0;
+      for (let i = 0; i < n; i++) {
+        const x = Math.round(src[3 * i] * inv);
+        const y = Math.round(src[3 * i + 1] * inv);
+        const z = Math.round(src[3 * i + 2] * inv);
+        let h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & (cap - 1);
+        for (;;) {
+          const slot = table[h];
+          if (slot < 0) {
+            table[h] = count;
+            qx[count] = x;
+            qy[count] = y;
+            qz[count] = z;
+            out.set([src[3 * i], src[3 * i + 1], src[3 * i + 2]], 3 * count);
+            remap[i] = count++;
+            break;
+          }
+          if (qx[slot] === x && qy[slot] === y && qz[slot] === z) {
+            remap[i] = slot;
+            break;
+          }
+          h = (h + 1) & (cap - 1);
+        }
+      }
+      const tris: number[] = [];
+      for (let k = 0; k + 2 < n; k += 3) {
+        const a = remap[k];
+        const b = remap[k + 1];
+        const c = remap[k + 2];
+        if (a !== b && b !== c && a !== c) tris.push(a, b, c);
+      }
+      return { positions: out.slice(0, count * 3), indices: Uint32Array.from(tris) };
+    };
+    // near-duplicates, exact duplicates, −0, NaN, and coordinates 4000 extents from the origin
+    // (past int32 once quantised: the case the `| 0` exists for)
+    const pts: number[] = [];
+    let s = 7;
+    const rnd = (): number => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 2 ** 32);
+    for (let t = 0; t < 3000; t++) {
+      for (let k = 0; k < 3; k++) {
+        const far = t % 50 === 7 ? 20000 : 0;
+        const base = Math.floor(rnd() * 40) / 8 + far;
+        pts.push(base + (t % 3 === 0 ? 1e-7 : 0), t % 11 === 0 ? -0 : Math.floor(rnd() * 40) / 8, t % 97 === 5 && k === 1 ? NaN : Math.floor(rnd() * 40) / 8);
+      }
+    }
+    const part: P = { positions: new Float32Array(pts), indices: null, color: [1, 1, 1], name: 'w' };
+    const eps = 5 * 1e-6;
+    const got = weld(part, eps);
+    const ref = weldRef(part, eps);
+    check('robot import (scale): the weld without its quantised-coordinate arrays welds exactly as it did (duplicates, −0, NaN, and coordinates 4000 extents from the origin, past int32 once quantised)', sameBits(got.positions, ref.positions) && sameBits(got.indices, ref.indices), `${got.positions.length / 3} vs ${ref.positions.length / 3} vertices`);
+  }
+
+  // ---- the streamed STL reader against three's loader ------------------------------------------
+  {
+    const writeStl = (tris: number[][][]): Uint8Array => {
+      const buf = new ArrayBuffer(84 + tris.length * 50);
+      const dv = new DataView(buf);
+      dv.setUint32(80, tris.length, true);
+      tris.forEach((t, i) => t.forEach((v, j) => v.forEach((c, k) => dv.setFloat32(84 + i * 50 + 12 + j * 12 + k * 4, c, true))));
+      return new Uint8Array(buf);
+    };
+    const viaLoader = (bytes: Uint8Array): P[] => {
+      const geo3 = new STLLoader().parse(bytes.slice().buffer);
+      const mesh = new THREE.Mesh(geo3, new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...parse.DEFAULT_LINEAR) }));
+      return parse.partsFromObject(mesh, true);
+    };
+    const fixture = new Uint8Array(readFileSync(joinPath('scripts', 'fixtures', 'robot-import', 'robot.stl')));
+    // the fixture, plus a mesh with shared corners, −0, a degenerate and a NaN vertex
+    const odd = writeStl([
+      [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+      [[1, 0, 0], [1, 1, 0], [0, 1, 0]],
+      [[-0, 0, 0], [0, -0, 1], [1, 0, 1]],
+      [[2, 2, 2], [2, 2, 2], [3, 2, 2]],
+      [[5, NaN, 5], [5, 5, 5], [6, 5, 5]],
+      [[5, NaN, 5], [5, 5, 5], [6, 6, 5]],
+    ]);
+    let allSame = true;
+    const notes: string[] = [];
+    for (const [label, bytes] of [['fixture', fixture], ['odd', odd]] as const) {
+      const streamed = await parse.parseBinaryStlWelded(new File([bytes], 'x.stl'));
+      if (!streamed) {
+        allSame = false;
+        notes.push(`${label}: not streamed`);
+        continue;
+      }
+      const ref = viaLoader(bytes);
+      const a = await simplifyParts([streamed], 100_000);
+      const b = await simplifyParts(ref, 100_000);
+      if (!samePart(a.parts, b.parts) || a.trisIn !== b.trisIn) {
+        allSame = false;
+        notes.push(`${label}: ${a.trisIn}/${b.trisIn} tris, ${a.parts[0]?.positions.length}/${b.parts[0]?.positions.length}`);
+      }
+    }
+    check('robot import (scale): a binary STL read in slices and welded as it streams prepares to the same arrays as three’s STLLoader would (fixture, and −0, a degenerate and NaN vertices)', allSame, notes.join('; '));
+    const colour = writeStl([[[0, 0, 0], [1, 0, 0], [0, 1, 0]]]);
+    colour.set(new TextEncoder().encode('COLOR='), 10);
+    const short = fixture.slice(0, fixture.length - 50);
+    check(
+      'robot import (scale): a colour STL, or one whose length disagrees with its count, is left to three’s loader (the streamed reader says no)',
+      (await parse.parseBinaryStlWelded(new File([colour], 'c.stl'))) === null && (await parse.parseBinaryStlWelded(new File([short], 's.stl'))) === null,
+    );
+  }
+
+  // ---- partsFromObject's direct read against Vector3.applyMatrix4 ------------------------------
+  {
+    const g = new THREE.BufferGeometry();
+    const pos = new Float32Array(300);
+    for (let i = 0; i < pos.length; i++) pos[i] = Math.sin(i * 12.9898) * 43.758 + (i % 7 === 0 ? -0 : 0);
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(Array.from({ length: 99 }, (_, i) => (i * 7) % 100));
+    const root = new THREE.Group();
+    const a = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
+    a.position.set(0.3, -2, 7.25);
+    a.rotation.set(0.4, -1.1, 2.3);
+    a.scale.set(1, -1.5, 2); // mirrored
+    const inst = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial(), 2);
+    inst.setMatrixAt(1, new THREE.Matrix4().makeRotationZ(0.7).setPosition(3, 1, -1));
+    root.add(a, inst);
+    root.updateMatrixWorld(true);
+    const parts = parse.partsFromObject(root, false);
+    // the reference: Vector3.applyMatrix4 per vertex, as the loader always did
+    const refPos = (m: InstanceType<typeof THREE.Matrix4>): Float32Array => {
+      const out = new Float32Array(pos.length);
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.length / 3; i++) {
+        v.set(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]).applyMatrix4(m);
+        out.set([v.x, v.y, v.z], 3 * i);
+      }
+      return out;
+    };
+    const m1 = new THREE.Matrix4();
+    inst.getMatrixAt(1, m1);
+    const want = [refPos(a.matrixWorld), refPos(inst.matrixWorld.clone().multiply(new THREE.Matrix4())), refPos(inst.matrixWorld.clone().multiply(m1))];
+    const flipped = parts[0].indices![1] === g.index!.getX(2) && parts[0].indices![2] === g.index!.getX(1);
+    check(
+      'robot import (scale): partsFromObject reading the array directly gives Vector3.applyMatrix4’s floats exactly (a mirrored mesh, an instanced one), and still flips a mirrored winding',
+      parts.length === 3 && parts.every((p, i) => sameBits(p.positions, want[i])) && flipped,
+    );
+  }
+
+  // ---- the stated tolerance: measured on the SIMPLIFIED mesh, against the full model -------------
+  {
+    // the stress robot's smallest level (472k triangles: goBILDA channel full of holes, mecanum
+    // rollers, screws and nuts, a chain), as an STL-style loader would hand it over, simplified to
+    // the editor's 100k budget. The engine measures the simplified mesh; the full one is the truth.
+    const stress = await import('./robot-import/stress');
+    const { mergeByColour } = await import('../src/robotImport/engine/meshOps');
+    const raw = stress.flatParts(stress.buildRobot(stress.LEVELS.s)) as P[];
+    const loaded = { name: 'stress.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts: mergeByColour(raw), trisIn: geo.triangleCount(raw), notes: [] };
+    const prepared = await simplifyModel(loaded, 100_000);
+    const setup = geo.defaultImportSetup();
+    const simp = new Measurer(prepared).normalise(setup).measurement;
+    const full = geo.measureParts(loaded.parts, setup, { format: 'stl' }).measurement;
+    const ds = geo.buildDescriptor({ id: '0123456789abcdef', measurement: simp });
+    const df = geo.buildDescriptor({ id: '0123456789abcdef', measurement: full });
+    // the farthest any vertex of `a` lies outside convex polygon `b`
+    const outside = (a: { x: number; y: number }[], b: { x: number; y: number }[]): number =>
+      Math.max(0, ...a.map((p) => -geo.insetDepth(p, b)));
+    const hullErr = Math.max(outside(df.hull, ds.hull), outside(ds.hull, df.hull));
+    const wheelErr = ds.wheels && df.wheels ? Math.max(...ds.wheels.map((w, i) => Math.hypot(w.x - df.wheels![i].x, w.y - df.wheels![i].y))) : Infinity;
+    const sizeErr = Math.max(Math.abs(simp.size.length - full.size.length), Math.abs(simp.size.width - full.size.width), Math.abs(simp.size.height - full.size.height));
+    check(
+      `robot import (scale): measuring the 100k-triangle simplification of a 472k CAD robot stays within the stated tolerance of measuring all of it — units and up the same, hull ≤ 1/16 in, wheels ≤ 0.15 in, size ≤ 0.02 in, the same band count`,
+      simp.units === full.units && simp.up === full.up && hullErr <= 1 / 16 && wheelErr <= 0.15 && sizeErr <= 0.02 && (ds.bands?.length ?? 0) === (df.bands?.length ?? 0) && prepared.trisOut <= 100_000,
+      `hull ${hullErr.toFixed(4)} wheels ${wheelErr.toFixed(4)} size ${sizeErr.toFixed(4)} bands ${ds.bands?.length}/${df.bands?.length} tris ${prepared.trisOut}`,
+    );
+  }
+
+  // ---- the editor's import entry, and its seams -------------------------------------------------
+  {
+    const stl = new File([readFileSync(joinPath('scripts', 'fixtures', 'robot-import', 'robot.stl'))], 'robot.stl');
+    const viaSession = await importModel([stl], { budget: 100_000 });
+    const viaMain = await simplifyModel(await loadModel([stl]), 100_000);
+    check('robot import (scale): importModel (no Worker here: its main-thread fallback) prepares the same model as loadModel + simplifyModel', samePart(viaSession.parts, viaMain.parts) && viaSession.trisIn === viaMain.trisIn);
+    const ac = new AbortController();
+    ac.abort();
+    let name = '';
+    try {
+      await importModel([stl], { budget: 100_000, signal: ac.signal });
+    } catch (e) {
+      name = e instanceof Error ? e.name : '';
+    }
+    check('robot import (scale): a cancelled import rejects with an AbortError (which the editor shows nothing for)', name === 'AbortError');
+    const src = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const ed = src('src/robotImport/ui/ImportEditor.tsx');
+    check(
+      'robot import (scale): the editor reads a dropped file through importModel and measures through prepareMeasure, and Cancel aborts the import (terminating its workers)',
+      /e\.importModel\(files,/.test(ed) && /e\.prepareMeasure\(prepared, setup\)/.test(ed) && !/e\.loadModel\(files, \(stage\)/.test(ed) && /onCancel=\{\(\) => \{[^}]*importAbort\.current\?\.abort\(\)/.test(ed),
+    );
+    // the worker modules touch no DOM: their whole graph must run where there is none
+    const workerSide = ['importWorker.ts', 'measureWorker.ts', 'parse.ts', 'prepare.ts', 'simplify.ts', 'meshOps.ts', 'bakeMesh.ts', 'meshGroup.ts', 'importError.ts', 'storedGlb.ts', 'meshoptEncoder.ts', 'lite.ts', 'floatGlb.ts'].map((f) => joinPath('src', 'robotImport', 'engine', f));
+    const domUsers = workerSide.filter((f) => /\b(document|window|localStorage|indexedDB)\b/.test(src(f).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '')));
+    check('robot import (scale): what the import and measure workers run uses no DOM (no document, window, storage)', domUsers.length === 0, domUsers.join(', '));
+    const spawns = ['importSession.ts', 'measureSession.ts', 'stepReader.ts'].map((f) => src(joinPath('src', 'robotImport', 'engine', f)));
+    check(
+      'robot import (scale): each worker is made with `new Worker(new URL(…, import.meta.url), { type: \'module\' })`, the form Vite bundles as its own chunk',
+      /new Worker\(new URL\('\.\/importWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(spawns[0]) && /new Worker\(new URL\('\.\/measureWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(spawns[1]) && /new Worker\(new URL\('\.\/stepWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(spawns[2]),
+    );
+  }
+}
+
+/**
+ * ROBOT IMPORT: REAL CAD (`docs/area/robot-import.md`, "Real CAD"). The vendors' starter bots
+ * showed what synthetic robots did not: occt's 2 GB heap (a 125 MB STEP "succeeded" with zero
+ * triangles), 390–420 MB STEP files published zipped, a STEP published cut off, and fronts that
+ * no convention can promise. What is held here, all of it on the fixtures and in-memory robots:
+ * a STEP read in PIECES gives the triangles of the whole read (whole roots and split solids,
+ * colours included); every piece is a complete STEP file; the part-size filter measures parts as
+ * they are; a cut-off file is caught before occt; a zip is read through its directory; the import
+ * worker's small DOM gives three's 3MF loader the parts Chromium's `DOMParser` gives; the glTF
+ * reader's merge-as-it-reads is `mergeByColour(partsFromObject())` bit for bit; a consumed
+ * simplification is the same simplification; and the front is found, or said to be assumed.
+ */
+{
+  const split = await import('../src/robotImport/engine/stepSplit');
+  const conv = await import('../src/robotImport/engine/stepConvert');
+  const zip = await import('../src/robotImport/engine/zip');
+  const load = await import('../src/robotImport/engine/load');
+  const parse = await import('../src/robotImport/engine/parse');
+  const { mergeByColour } = await import('../src/robotImport/engine/meshOps');
+  const { simplifyModel } = await import('../src/robotImport/engine/prepare');
+  const { importModel } = await import('../src/robotImport/engine/importSession');
+  const errs = await import('../src/robotImport/engine/importError');
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const mfs = await import('./robot-import/threeMfSample');
+  const mf3 = await import('../src/robotImport/engine/threeMf');
+  const { frontAssumed, reviewItems, buildSpec, draftKey } = await import('../src/robotImport/ui/editorModel');
+  const { zipSync, strToU8 } = await import('three/examples/jsm/libs/fflate.module.js');
+  const THREE = await import('three');
+  const occtMod = (await import('occt-import-js')) as unknown as { default: (a: { locateFile: (f: string) => string }) => Promise<{ ReadStepFile: (b: Uint8Array, p: unknown) => unknown }> };
+  const occt = await occtMod.default({ locateFile: (f: string) => joinPath('node_modules', 'occt-import-js', 'dist', f) });
+  const fixtureDir = joinPath('scripts', 'fixtures', 'robot-import');
+  const stepBytes = new Uint8Array(readFileSync(joinPath(fixtureDir, 'robot.step')));
+  const u8 = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  const sameBits = (a: ArrayBufferView | null | undefined, b: ArrayBufferView | null | undefined): boolean => {
+    if (!a || !b) return !a && !b;
+    if (a.byteLength !== b.byteLength) return false;
+    const x = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    const y = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  };
+  type Tri = { positions: Float32Array; indices: Uint32Array; color: readonly number[] };
+  /** every triangle as text (colour, then its corners from the smallest), sorted: a multiset */
+  const triSet = (parts: readonly Tri[]): string[] => {
+    const out: string[] = [];
+    for (const p of parts) {
+      const c = p.color.map((v) => Math.round(v * 255)).join('/');
+      for (let t = 0; t < p.indices.length; t += 3) {
+        const v = [0, 1, 2].map((k) => Array.from(p.positions.subarray(3 * p.indices[t + k], 3 * p.indices[t + k] + 3)).join(','));
+        let m = 0;
+        for (let k = 1; k < 3; k++) if (v[k] < v[m]) m = k;
+        out.push(`${c}|${v[m]}|${v[(m + 1) % 3]}|${v[(m + 2) % 3]}`);
+      }
+    }
+    return out.sort();
+  };
+  const readOcct = (bytes: Uint8Array): Tri[] => {
+    const r = conv.stepToParts(occt.ReadStepFile(bytes, conv.STEP_PIECE_PARAMS) as never);
+    if (r.kind !== 'done') throw new Error(r.message);
+    return r.parts;
+  };
+  const sameList = (a: string[], b: string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  // ---- what a file is ----
+  const cut = stepBytes.slice(0, Math.floor(stepBytes.length * 0.6));
+  let cutIndex = '';
+  try {
+    split.indexStep(cut);
+  } catch (e) {
+    cutIndex = e instanceof split.StepSyntaxError && e.truncated ? 'truncated' : String(e);
+  }
+  const padded = new Uint8Array(stepBytes.length + 3);
+  padded.set(stepBytes);
+  padded.set(u8('\r\n\n'), stepBytes.length);
+  check(
+    'robot import (real CAD): a STEP file that stops partway (no END-ISO-10303-21) is CUT OFF, said before occt sees it; whole files, trailing blank lines and all, pass; a non-STEP is not STEP',
+    split.checkStepText(stepBytes).ok && split.checkStepText(padded).ok && JSON.stringify(split.checkStepText(cut)) === '{"ok":false,"reason":"truncated"}' && JSON.stringify(split.checkStepText(u8('solid robot\nfacet'))) === '{"ok":false,"reason":"not-step"}' && cutIndex === 'truncated',
+    cutIndex,
+  );
+  const ix = split.indexStep(stepBytes);
+  const instances = (new TextDecoder().decode(stepBytes).match(/^#\d+\s*=/gm) ?? []).length;
+  let unresolved = 0;
+  for (const r of ix.refs) if (r < 0) unresolved++;
+  check('robot import (real CAD): the STEP index finds every entity instance, and every reference resolves', ix.count === instances && unresolved === 0, `${ix.count} of ${instances}, ${unresolved} unresolved`);
+
+  // ---- pieces = the whole file ----
+  const whole = triSet(readOcct(stepBytes));
+  const piecesOf = (pieceBytes: number, minPartMm = 0): { plan: ReturnType<typeof split.planPieces>; tris: string[]; complete: boolean } => {
+    const plan = split.planPieces(ix, { pieceBytes, minPartMm });
+    const parts: Tri[] = [];
+    let complete = true;
+    for (let k = 0; k < plan.pieces.length; k++) {
+      const text = split.pieceText(ix, plan, k);
+      const pix = split.indexStep(text);
+      if (!split.checkStepText(text).ok || pix.refs.some((r) => r < 0)) complete = false;
+      parts.push(...readOcct(text));
+    }
+    return { plan, tris: triSet(parts), complete };
+  };
+  const byRoot = piecesOf(40 * 1024);
+  const byFace = piecesOf(8 * 1024);
+  check(
+    'robot import (real CAD): a STEP read in PIECES gives the whole read’s triangles, colours included, by whole parts and with every solid split into faces',
+    whole.length === 360 && sameList(byRoot.tris, whole) && sameList(byFace.tris, whole) && byRoot.plan.pieces.length > 1 && byRoot.plan.carriers.size === 0 && byFace.plan.carriers.size === 10,
+    `${whole.length} / ${byRoot.tris.length} in ${byRoot.plan.pieces.length} / ${byFace.tris.length} in ${byFace.plan.pieces.length}`,
+  );
+  check('robot import (real CAD): every piece is a complete STEP file (whole, and no reference left dangling)', byRoot.complete && byFace.complete);
+  // the four wheels: 104 mm across, 1.5 in wide, so √(104² + 104² + 38.1²) = 151.9 mm; the belly 16 × 12.6 × 0.5 in
+  const sized = split.planPieces(ix, { minPartMm: 200 });
+  const sizes = sized.roots.map((r) => r.sizeMm ?? -1);
+  const wheelsAt = sizes.filter((s) => Math.abs(s - 151.9) < 0.3).length;
+  check(
+    'robot import (real CAD): the part-size filter measures a part by the points ON it, and leaves out exactly the parts under its size',
+    wheelsAt === 4 && sized.skipped.length === sizes.filter((s) => s < 200).length && sized.skipped.every((k) => sizes[k] < 200) && Math.abs(Math.max(...sizes) - 517.4) < 0.5,
+    sizes.map((s) => s.toFixed(1)).join(' '),
+  );
+
+  // ---- zips ----
+  const zipFile = (name: string, entries: Record<string, Uint8Array | [Uint8Array, { level: 0 }]>): File => new File([zipSync(entries) as Uint8Array<ArrayBuffer>], name);
+  const zstep = zipFile('starter.zip', { 'robot/robot.step': stepBytes, 'readme.txt': strToU8('hello') });
+  const rz = await load.resolveFiles([zstep]);
+  const inner = rz.zip ? await zip.zipEntryBytes(zstep, rz.zip.entry, zstep.name) : new Uint8Array(0);
+  const stored = zipFile('stored.zip', { 'robot.step': [stepBytes, { level: 0 }] });
+  const rs = await load.resolveFiles([stored]);
+  const storedBytes = rs.zip ? await zip.zipEntryBytes(stored, rs.zip.entry, stored.name) : new Uint8Array(0);
+  let noModel = '';
+  try {
+    await load.resolveFiles([zipFile('photos.zip', { 'readme.txt': strToU8('x'), 'bot.png': strToU8('y') })]);
+  } catch (e) {
+    noModel = e instanceof errs.ImportError ? `${e.code}: ${e.message}` : String(e);
+  }
+  check(
+    'robot import (real CAD): a dropped zip is read through its directory: the STEP inside is the model, named as itself, and inflates (or copies, stored) to its exact bytes',
+    rz.format === 'step' && rz.zip?.name === 'robot.step' && sameBits(inner, stepBytes) && rs.format === 'step' && sameBits(storedBytes, stepBytes),
+  );
+  check('robot import (real CAD): a zip with no model says what it holds (Couldn’t find a robot model … readme.txt, bot.png)', /^zip: Couldn’t find a robot model in photos\.zip: it holds readme\.txt, bot\.png\./.test(noModel), noModel);
+  const objText = readFileSync(joinPath(fixtureDir, 'robot.obj'));
+  const mtlText = readFileSync(joinPath(fixtureDir, 'robot.mtl'));
+  const zobj = zipFile('obj.zip', { 'robot.obj': new Uint8Array(objText), 'robot.mtl': new Uint8Array(mtlText) });
+  const ro = await load.resolveFiles([zobj]);
+  const glbBytes = new Uint8Array(readFileSync(joinPath(fixtureDir, 'robot.glb')));
+  const viaZip = await importModel([zipFile('glb.zip', { 'robot.glb': glbBytes })], { budget: 100_000 });
+  const viaGlb = await importModel([new File([glbBytes], 'robot.glb')], { budget: 100_000 });
+  check(
+    'robot import (real CAD): an .obj in a zip brings its .mtl, and a GLB in a zip imports exactly as the GLB (main-thread fallback here)',
+    ro.format === 'obj' && ro.zip?.entries.map((e) => e.name).join(',') === 'robot.obj,robot.mtl' && viaZip.parts.length === viaGlb.parts.length && viaZip.parts.every((p, i) => sameBits(p.positions, viaGlb.parts[i].positions) && sameBits(p.indices, viaGlb.parts[i].indices)) && viaZip.name === 'robot.glb',
+  );
+
+  // ---- the messages ----
+  const said = [errs.EXPORT_HINT, errs.stepCutOff('bot.step').message, errs.notStep('bot.step').message, noModel];
+  check(
+    'robot import (real CAD): the STEP failures say Couldn’t …, name the exact export menus in Onshape, Fusion, SolidWorks and Inventor, and keep the copy rules',
+    said.every((s) => !/'|\.\.\.|\s-\s|"/.test(s)) && /^Couldn’t read bot\.step: the file is cut off\./.test(said[1]) && ['Onshape', 'Fusion', 'SolidWorks', 'Inventor', 'GLB', 'STL'].every((w) => errs.EXPORT_HINT.includes(w)),
+  );
+
+  // ---- 3MF off the main thread ----
+  const mfFixture = new Uint8Array(readFileSync(joinPath(fixtureDir, 'robot.3mf')));
+  const sample = mfs.threeMfSample();
+  const hadDom = typeof (globalThis as { DOMParser?: unknown }).DOMParser;
+  const hFixture = mfs.partsHash(mf3.parseThreeMf(mfFixture.slice().buffer, 'mini'));
+  const hSample = mfs.partsHash(mf3.parseThreeMf(sample.slice().buffer, 'mini'));
+  check(
+    // measured 2026-10-02 in Chromium (Electron), `harness/main.ts`: the page's DOMParser gave these
+    'robot import (real CAD): 3MF in the import worker — the small DOM gives three’s loader the parts Chromium’s DOMParser does (fixture and an XML-heavy sample), and leaves no DOMParser behind',
+    hFixture === '10:40d00c49' && hSample === '9:8324917' && typeof (globalThis as { DOMParser?: unknown }).DOMParser === hadDom && parse.WORKER_FORMATS.includes('3mf'),
+    `${hFixture} ${hSample}`,
+  );
+
+  // ---- the glTF merge as it reads ----
+  const glbScene = async (bytes: Uint8Array): Promise<THREE.Object3D> => {
+    const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+    return (await new GLTFLoader().parseAsync(bytes.slice().buffer, '')).scene;
+  };
+  const twoStep = (scene: THREE.Object3D): MeshPartLike[] => mergeByColour(parse.partsFromObject(scene, false).filter((p) => p.positions.length >= 9));
+  type MeshPartLike = { positions: Float32Array; indices: Uint32Array | null; color: readonly number[]; name: string };
+  const identical = (a: MeshPartLike[], b: MeshPartLike[] | null): boolean =>
+    !!b && a.length === b.length && a.every((p, i) => p.name === b[i].name && p.color.every((c, k) => c === b[i].color[k]) && sameBits(p.positions, b[i].positions) && sameBits(p.indices, b[i].indices));
+  const scene = new THREE.Group();
+  const box = new THREE.BoxGeometry(1, 2, 3);
+  const mats = [0, 1, 2, 3, 4, 5].map((k) => new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(k / 6, 0.5, 1 - k / 6) }));
+  const multi = new THREE.Mesh(box, mats);
+  multi.position.set(1, 2, 3);
+  const mirror = new THREE.Mesh(box, mats[2]);
+  mirror.scale.set(-1, 1, 1);
+  const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.5, 8, 6), new THREE.MeshStandardMaterial({ color: 0x336699 }), 4);
+  for (let i = 0; i < 4; i++) inst.setMatrixAt(i, new THREE.Matrix4().makeTranslation(i, 0, -i));
+  scene.add(multi, mirror, inst, new THREE.Mesh(box, mats[0]));
+  const flat = new THREE.BoxGeometry(0.5, 0.5, 0.5).toNonIndexed();
+  for (let i = 0; i < 60; i++) {
+    const m = new THREE.Mesh(flat, new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(i / 60, 0.7, 0.5) }));
+    m.position.set(i * 0.3, 5, 0);
+    scene.add(m);
+  }
+  const ref = twoStep(scene);
+  const merged = parse.mergedPartsFromObject(scene);
+  const fixRef = twoStep(await glbScene(glbBytes));
+  const fixMerged = parse.mergedPartsFromObject(await glbScene(glbBytes));
+  const vc = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true }));
+  vc.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(vc.geometry.getAttribute('position').count * 3).fill(0.5), 3));
+  check(
+    'robot import (real CAD): the glTF reader’s merge as it reads IS mergeByColour(partsFromObject()), bit for bit (groups, instances, a mirror, shared and unindexed geometry, 60 colours), and steps aside for vertex colours',
+    identical(ref, merged) && identical(fixRef, fixMerged) && ref.length > 1 && parse.mergedPartsFromObject(vc) === null,
+  );
+  const stlFile = new File([readFileSync(joinPath(fixtureDir, 'robot.stl'))], 'robot.stl');
+  const keep = await simplifyModel(await load.loadModel([stlFile]), 1000);
+  const loadedForConsume = await load.loadModel([stlFile]);
+  const consumed = await simplifyModel(loadedForConsume, 1000, undefined, { consume: true });
+  check(
+    'robot import (real CAD): a CONSUMED simplification (the worker lets each loaded part go once welded) is the same simplification, and leaves the loaded parts empty',
+    consumed.parts.length === keep.parts.length && consumed.parts.every((p, i) => sameBits(p.positions, keep.parts[i].positions) && sameBits(p.indices, keep.parts[i].indices)) && loadedForConsume.parts.length === 0,
+  );
+
+  // ---- the front ----
+  type V3 = [number, number, number];
+  const synthParts = (prisms: ReturnType<typeof synth.synthRobot>): { positions: Float32Array; indices: null; color: [number, number, number]; name: string }[] =>
+    prisms.map((pr) => {
+      const tris: V3[][] = synth.prismTriangles(pr);
+      const pos = new Float32Array(tris.length * 9);
+      tris.forEach((t, i) => t.forEach((v, k) => pos.set(v.map((c) => c * 25.4), 9 * i + 3 * k)));
+      return { positions: pos, indices: null, color: pr.color, name: pr.name };
+    });
+  const rots: number[][][] = [];
+  const axes: V3[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const a of axes) for (const b of axes) {
+    if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] !== 0) continue;
+    rots.push([a, b, [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]]);
+  }
+  const apply = (R: number[][], v: readonly number[]): V3 => [0, 1, 2].map((r) => R[r][0] * v[0] + R[r][1] * v[1] + R[r][2] * v[2]) as V3;
+  const frontRuns = (parts: ReturnType<typeof synthParts>, front: V3): { right: number; wrong: number; assumed: number } => {
+    const tally = { right: 0, wrong: 0, assumed: 0 };
+    for (const R of rots) {
+      const p = parts.map((q) => {
+        const out = new Float32Array(q.positions.length);
+        for (let i = 0; i < out.length; i += 3) out.set(apply(R, q.positions.subarray(i, i + 3)), i);
+        return { ...q, positions: out };
+      });
+      const { measurement: m } = geo.measureParts(p, geo.defaultImportSetup(), { format: 'stl', fileUnit: 'mm' });
+      if (!m.front.detected) {
+        tally.assumed++;
+        continue;
+      }
+      const rows = geo.orientation(m.up, m.front.yaw);
+      const f = apply(R, front);
+      const d = [0, 1, 2].map((k) => rows[k][0] * f[0] + rows[k][1] * f[1] + rows[k][2] * f[2]);
+      if (d[0] > 0.99) tally.right++;
+      else tally.wrong++;
+    }
+    return tally;
+  };
+  const forward = frontRuns(synthParts(synth.synthRobot()), [1, 0, 0]);
+  const backward = frontRuns(
+    synthParts(synth.synthRobot()).map((q) => {
+      const out = new Float32Array(q.positions.length);
+      for (let i = 0; i < out.length; i += 3) out.set([-q.positions[i], -q.positions[i + 1], q.positions[i + 2]], i);
+      return { ...q, positions: out };
+    }),
+    [-1, 0, 0],
+  );
+  const six = frontRuns(synthParts(synth.synthRobot({ sixWheel: true })), [1, 0, 0]);
+  // no intake, the tower centred: nothing says which way it faces
+  const blank = synth.synthRobot().filter((pr) => pr.name !== 'intake' && pr.name !== 'tower' && pr.name !== 'flag');
+  const plain = frontRuns(synthParts(blank), [1, 0, 0]);
+  check(
+    'robot import (real CAD): the front is FOUND from a front intake in all 24 orientations (4- and 6-wheel, and facing the other way), never wrongly',
+    forward.right === 24 && backward.right === 24 && six.right === 24 && forward.wrong + backward.wrong + six.wrong === 0,
+    JSON.stringify({ forward, backward, six }),
+  );
+  check('robot import (real CAD): a robot with no front cue is ASSUMED to face its CAD front, never guessed', plain.assumed === 24, JSON.stringify(plain));
+  {
+    // the wheel-axle cue (`wheelAxleVotes`, 2026-10-04): a robot drives square to its axles
+    const { wheelAxleVotes } = await import('../src/robotImport/motion');
+    const turned = synthParts(synth.synthRobot()).map((q) => {
+      const out = new Float32Array(q.positions.length);
+      for (let i = 0; i < out.length; i += 3) out.set([-q.positions[i + 1], q.positions[i], q.positions[i + 2]], i);
+      return { ...q, positions: out };
+    });
+    // a body per part, as every read has by the time it is measured
+    const votes = (raw: ReturnType<typeof synthParts>) => {
+      const parts = raw.map((q, i) => ({ ...q, body: new Uint32Array(q.positions.length / 3).fill(i) }));
+      const r = geo.measureParts(parts, geo.defaultImportSetup(), { format: 'stl', fileUnit: 'mm' });
+      return wheelAxleVotes(r.modelParts, r.measurement.wheelsUsed ?? []);
+    };
+    const a = votes(synthParts(synth.synthRobot()));
+    const b = votes(turned);
+    check("robot import (real CAD): all four wheels' axles are read one way, and turning the robot a quarter reads them the other",
+      a.x + a.y === 4 && a.x * a.y === 0 && b.x === a.y && b.y === a.x, JSON.stringify({ a, b }));
+  }
+  const docOf = (front: 'detected' | 'assumed', yaw: 0 | 1 | 2 | 3, savedModel = false) => ({ detected: { units: 'mm' as const, up: '+z' as const, yaw: 0 as const, front }, savedModel, setup: { ...geo.defaultImportSetup(), yaw } });
+  const m0 = geo.measureParts(synthParts(synth.synthRobot()), geo.defaultImportSetup(), { format: 'stl', fileUnit: 'mm' }).measurement;
+  const doc0 = {
+    v: 1, key: draftKey('decode', null), game: 'decode', id: '0123456789abcdef', editId: null, step: 0,
+    setup: geo.defaultImportSetup({ massLb: 30 }), detected: null, mech: null,
+    spec: coerceSpec(DEFAULT_SPEC, undefined, 'decode'), source: null, savedModel: false, created: null, sourceName: null, updated: 0,
+  } as never;
+  const built0 = buildSpec(doc0, m0);
+  check(
+    'robot import (real CAD): the editor says ASSUMED truthfully — a Review note while the assumed front stands, none once it is turned, found, or a saved robot’s',
+    frontAssumed(docOf('assumed', 0)) && !frontAssumed(docOf('assumed', 1)) && !frontAssumed(docOf('detected', 0)) && !frontAssumed(docOf('assumed', 0, true)) && !frontAssumed(null) &&
+      reviewItems(m0, built0, 'decode', true).some((i) => i.id === 'front-assumed' && i.level === 'info' && i.fix?.focus === 'ri-front') &&
+      !reviewItems(m0, built0, 'decode', false).some((i) => i.id === 'front-assumed'),
+  );
+
+  // ---- the workers ----
+  const src = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const eng = (f: string): string => src(joinPath('src', 'robotImport', 'engine', f));
+  check(
+    'robot import (real CAD): the STEP worker makes its occt workers with `new Worker(new URL(…, import.meta.url), { type: \'module\' })`, and is handed the FILE, never its bytes on the main thread',
+    /new Worker\(new URL\('\.\/occtWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(eng('stepWorker.ts')) && /worker\.postMessage\(\{ file, name, entry(, keepSmall)? \}/.test(eng('stepReader.ts')) && !/arrayBuffer\(\)/.test(eng('stepReader.ts')),
+  );
+  const workerSide = ['stepWorker.ts', 'occtWorker.ts', 'stepSplit.ts', 'stepConvert.ts', 'zip.ts', 'miniDom.ts', 'threeMf.ts'];
+  // comments and string literals out (the small DOM's own node name is the string '#document')
+  const domUsers = workerSide.filter((f) => /\b(document|window|localStorage|indexedDB)\b/.test(eng(f).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '').replace(/'[^'\n]*'/g, "''")));
+  check('robot import (real CAD): the STEP, zip and 3MF worker code uses no DOM', domUsers.length === 0, domUsers.join(', '));
+}
+
+/**
+ * ROBOT IMPORT: THE STEP COLOURS occt CANNOT FIND (`docs/area/robot-import.md`, "Real CAD").
+ * occt-import-js looks a solid's colour up at its PLACED location, which finds it only when the
+ * solid is its part's whole shape: every body of a multi-body part placed in an assembly, and every
+ * shell of a solid split into faces, came back grey (a third of goBILDA's BIOBUZZ bot by area). The
+ * fixture's 10-body part placed twice in an assembly reproduces it; the reader's colour hint gives
+ * each body its own styled colour back, in a whole read, across pieces and from split solids.
+ */
+{
+  const split = await import('../src/robotImport/engine/stepSplit');
+  const conv = await import('../src/robotImport/engine/stepConvert');
+  const occtMod = (await import('occt-import-js')) as unknown as { default: (a: { locateFile: (f: string) => string }) => Promise<{ ReadStepFile: (b: Uint8Array, p: unknown) => unknown }> };
+  const occt = await occtMod.default({ locateFile: (f: string) => joinPath('node_modules', 'occt-import-js', 'dist', f) });
+  const fixture = readFileSync(joinPath('scripts', 'fixtures', 'robot-import', 'robot.step'), 'latin1').replace(/\r\n/g, '\n');
+  const idOf = (re: RegExp): string => re.exec(fixture)?.[1] ?? '?';
+  const pc = idOf(/#(\d+)=PRODUCT_CONTEXT\(/);
+  const pdc = idOf(/#(\d+)=PRODUCT_DEFINITION_CONTEXT\(/);
+  const pd = idOf(/#(\d+)=PRODUCT_DEFINITION\(/);
+  const [, rep, axis, ctx] = /#(\d+)=ADVANCED_BREP_SHAPE_REPRESENTATION\('',\(#(\d+),[^;]*,#(\d+)\);/.exec(fixture) ?? [];
+  // the robot part twice in an assembly: once turned a quarter about z, once moved
+  const asm = [
+    `#90001=PRODUCT('asm','asm','',(#${pc}));`,
+    "#90002=PRODUCT_DEFINITION_FORMATION('','',#90001);",
+    `#90003=PRODUCT_DEFINITION('design','',#90002,#${pdc});`,
+    "#90004=PRODUCT_DEFINITION_SHAPE('','',#90003);",
+    "#90005=DIRECTION('',(0.,0.,1.));",
+    "#90006=DIRECTION('',(0.,1.,0.));",
+    "#90007=DIRECTION('',(1.,0.,0.));",
+    "#90008=CARTESIAN_POINT('',(100.,20.,0.));",
+    "#90009=AXIS2_PLACEMENT_3D('',#90008,#90005,#90006);",
+    "#90010=CARTESIAN_POINT('',(-300.,0.,50.));",
+    "#90011=AXIS2_PLACEMENT_3D('',#90010,#90005,#90007);",
+    `#90012=SHAPE_REPRESENTATION('',(#90009,#90011),#${ctx});`,
+    '#90013=SHAPE_DEFINITION_REPRESENTATION(#90004,#90012);',
+    `#90020=NEXT_ASSEMBLY_USAGE_OCCURRENCE('a','a','',#90003,#${pd},$);`,
+    "#90021=PRODUCT_DEFINITION_SHAPE('','',#90020);",
+    `#90022=ITEM_DEFINED_TRANSFORMATION('','',#${axis},#90009);`,
+    `#90023=(REPRESENTATION_RELATIONSHIP('','',#${rep},#90012)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#90022)SHAPE_REPRESENTATION_RELATIONSHIP());`,
+    '#90024=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#90023,#90021);',
+    `#90030=NEXT_ASSEMBLY_USAGE_OCCURRENCE('b','b','',#90003,#${pd},$);`,
+    "#90031=PRODUCT_DEFINITION_SHAPE('','',#90030);",
+    `#90032=ITEM_DEFINED_TRANSFORMATION('','',#${axis},#90011);`,
+    `#90033=(REPRESENTATION_RELATIONSHIP('','',#${rep},#90012)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#90032)SHAPE_REPRESENTATION_RELATIONSHIP());`,
+    '#90034=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#90033,#90031);',
+  ];
+  const latin = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  const fixBytes = latin(fixture);
+  const asmBytes = latin(fixture.replace(/ENDSEC;\s*END-ISO-10303-21;\s*$/, `${asm.join('\n')}\nENDSEC;\nEND-ISO-10303-21;\n`));
+  type Part = { positions: Float32Array; indices: Uint32Array; color: readonly number[]; body?: Uint32Array };
+  const read = (bytes: Uint8Array, hint?: ReturnType<typeof split.colourHint> | null): Part[] => {
+    const r = conv.stepToParts(occt.ReadStepFile(bytes, conv.STEP_PIECE_PARAMS) as never, hint);
+    if (r.kind !== 'done') throw new Error(r.message);
+    return r.parts;
+  };
+  /** triangles per EXACT colour */
+  const perColour = (parts: readonly Part[]): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const p of parts) m.set(p.color.join(','), (m.get(p.color.join(',')) ?? 0) + p.indices.length / 3);
+    return m;
+  };
+  const same = (a: Map<string, number>, b: Map<string, number>): boolean => a.size === b.size && [...a].every(([c, n]) => b.get(c) === n);
+  const show = (m: Map<string, number>): string => [...m].map(([c, n]) => `${c.split(',').map((v) => Math.round(Number(v) * 255)).join('/')}:${n}`).join(' ');
+  const twice = (m: Map<string, number>): Map<string, number> => new Map([...m].map(([c, n]) => [c, 2 * n]));
+  const grey = '0.48,0.5,0.52';
+  // what occt finds itself, the part at the top level
+  const native = perColour(read(fixBytes));
+  const plain = perColour(read(asmBytes));
+  const hinted = perColour(read(asmBytes, split.wholeHint(asmBytes)));
+  check(
+    'robot import (STEP colours): a 10-body part placed twice in an assembly reads all grey from occt (the bug), and the hint gives every body its own colour back, bit for bit what occt gives the part at the top level',
+    native.size === 6 && plain.size === 1 && plain.get(grey) === 720 && same(hinted, twice(native)),
+    `${show(plain)} | ${show(hinted)}`,
+  );
+
+  const ix = split.indexStep(asmBytes);
+  const inPieces = (bytes: Uint8Array, pieceBytes: number, minPartMm = 0, hint = true): { plan: ReturnType<typeof split.planPieces>; colours: Map<string, number> } => {
+    const pix = bytes === asmBytes ? ix : split.indexStep(bytes);
+    const plan = split.planPieces(pix, { pieceBytes, minPartMm });
+    const parts: Part[] = [];
+    for (let k = 0; k < plan.pieces.length; k++) parts.push(...read(split.pieceText(pix, plan, k), hint ? split.colourHint(pix, plan, plan.pieces[k]) : null));
+    return { plan, colours: perColour(parts) };
+  };
+  const byRoot = inPieces(asmBytes, 40 * 1024);
+  const byFace = inPieces(asmBytes, 8 * 1024);
+  const facesAlone = byFace.plan.pieces.every((p) => new Set(p.map((u) => (byFace.plan.units[u].face >= 0 ? byFace.plan.units[u].root : -1))).size === 1);
+  check(
+    'robot import (STEP colours): the part’s body list CUT across pieces keeps every body’s colour, and so does every solid split into faces (a split solid’s faces get pieces of their own)',
+    same(byRoot.colours, twice(native)) && same(byFace.colours, twice(native)) && byRoot.plan.pieces.length > 1 && byRoot.plan.carriers.size === 0 && byFace.plan.carriers.size === 10 && facesAlone,
+    `${show(byRoot.colours)} | ${show(byFace.colours)}`,
+  );
+  // the size filter cuts the list too (the four wheels and the flag go at 200 mm)
+  const sized = inPieces(asmBytes, 1 << 30, 200);
+  const sizedTop = inPieces(fixBytes, 1 << 30, 200, false);
+  check(
+    'robot import (STEP colours): a body list cut by the part-size filter keeps the colours of the bodies it keeps',
+    sized.plan.skipped.length === 5 && sizedTop.plan.skipped.length === 5 && same(sized.colours, twice(sizedTop.colours)) && !sized.colours.has(grey),
+    `${show(sized.colours)} | ${show(sizedTop.colours)}`,
+  );
+
+  // colours that already worked: the same parts, bit for bit
+  const res = occt.ReadStepFile(fixBytes, conv.STEP_PIECE_PARAMS) as never;
+  const before = conv.stepToParts(res);
+  const after = conv.stepToParts(res, split.wholeHint(fixBytes));
+  const bits = (a: ArrayBufferView | undefined, b: ArrayBufferView | undefined): boolean =>
+    !!a && !!b && a.byteLength === b.byteLength && Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength), Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
+  check(
+    'robot import (STEP colours): a file whose colours occt finds reads exactly as before with the hint (parts, colours and body ids, bit for bit)',
+    before.kind === 'done' && after.kind === 'done' && before.parts.length === after.parts.length &&
+      before.parts.every((p, i) => p.color.join() === after.parts[i].color.join() && bits(p.positions, after.parts[i].positions) && bits(p.indices, after.parts[i].indices) && bits(p.body, after.parts[i].body)),
+  );
+
+  // the matcher: never a guess
+  const mesh = (faces: number, name = '', color?: [number, number, number]) => ({ name, color, brep_faces: Array.from({ length: faces }, () => ({ first: 0, last: -1, color: null })), attributes: { position: { array: [] } }, index: { array: [] } });
+  const red: [number, number, number] = [1, 0, 0];
+  const blue: [number, number, number] = [0, 0, 1];
+  const body = (faces: number, color: [number, number, number] | null) => ({ faces, color });
+  const twins = conv.lostColours([mesh(6), mesh(6)] as never, { runs: [[body(6, red), body(6, red)], [body(6, blue), body(6, blue)]], fill: null });
+  const agree = conv.lostColours([mesh(6), mesh(6)] as never, { runs: [[body(6, red), body(6, red)], [body(6, red), body(6, red)]], fill: null });
+  const mixed = conv.lostColours([mesh(6), mesh(18), mesh(6, 'part', [0, 1, 0]), mesh(6), mesh(18), mesh(12)] as never, { runs: [[body(6, red), body(18, blue)]], fill: null });
+  check(
+    'robot import (STEP colours): two parts with the same face counts and different colours stay grey, never guessed; a named or coloured mesh is never touched; a mesh nothing explains stays grey',
+    twins.every((c) => c === null) && agree.every((c) => c === red) && mixed[0] === red && mixed[1] === blue && mixed[2] === null && mixed[3] === red && mixed[4] === blue && mixed[5] === null,
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// IMPORTED ROBOTS: MECHANISMS (`src/sim/importedMech.ts`, each game's `importMech.ts` /
+// `importChecks.ts`; `docs/area/physics.md` "Imported robots: mechanisms"). Mouths carved from the
+// hull at the placed span, the launcher and placer where they were placed, BIOBUZZ 3D built from
+// the CAD bands, and the placement editor's checks. Standard robots step byte-identically.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * THE MECHANISM-HEAVY STANDARD RUN: four standard robots per game, each a different archetype,
+ * driving at the nearest loose element with the intake running, firing whenever they hold
+ * anything, pressing the catalyst / ramp / place buttons on a cadence. Every intake, launch and
+ * placement path the import branches sit beside runs for a standard robot here, so a branch that
+ * reached a standard robot moves the pin. Recorded on feat/robot-import a882e8c2, BEFORE the
+ * mechanism branches existed; never re-record one to make an import change pass.
+ */
+// `decode` re-pinned 2026-10-02 with the swerve pod-order fix (`SIM_VERSION` 5): its scene drives a swerve.
+const L2_MECH_PINS: Record<string, string> = {
+  decode: 'held=3611 2049313317:4014017715 2788731338:1360918128 1577943677:2318776227',
+  chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
+  biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459',
+  bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
+};
+// `bb3d` re-pinned 2026-10-04 for `SIM_PATCH` 7 (the FLOWER plates over their measured outline); the
+// old pin is the patch-6 run's, checked beside it.
+const L2_MECH_PINS_PATCH6 = { bb3d: 'held=693 385226777:3749707125 2128002571:24819118' };
+// `bb3d` re-pinned 2026-10-02 for `SIM_PATCH` 3 (the 3D wall square-up inside the solve); the old
+// pin is the patch-2 run's, checked beside it — see `IMP_STANDARD_PINS_PATCH2`.
+const L2_MECH_PINS_PATCH2 = { bb3d: 'held=907 4176744764:1760924406 112866128:1298346330' };
+const L2_MECH_SPECS: Record<'decode' | 'chain' | 'biobuzz', Partial<RobotSpec>[]> = {
+  decode: [
+    { intake: 'sloped', canSort: true },
+    { intake: 'vector', drivetrain: 'tank', massLb: 30 },
+    { intake: 'triangle', drivetrain: 'swerve', width: 16, length: 12 },
+    { intake: 'sloped', drivetrain: 'xdrive', flywheelInertia: 0.5 },
+  ],
+  chain: [
+    { scoreMode: 'turret', intakeMount: 'front', catalystType: 'arm', catalystMount: 'front' },
+    { scoreMode: 'drum', intakeMount: 'side', shooterMount: 'front', catalystType: 'rail', catalystMount: 'back' },
+    { scoreMode: 'dumper', intakeMount: 'frontback', shooterMount: 'left', catalystType: 'arm', catalystMount: 'center', catalystSwing: 'lr' },
+    { scoreMode: 'twinturret', intakeMount: 'back', shooterMount: 'frontleft', catalystType: 'turret', catalystMount: 'frontright' },
+  ],
+  biobuzz: [
+    { scoreMode: 'turret', intakeMount: 'front', bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } } },
+    { scoreMode: 'twinturret', intakeMount: 'side', bbMech: { launcher: { kind: 'twinturret', mount: 'frontleft', mount2: 'backright', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } },
+    { scoreMode: 'dumper', intakeMount: 'frontback', bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 50 }, lift: { kind: 'vslide', mount: 'front' }, intake: { kind: 'ramp' } } },
+    { scoreMode: 'turret', intakeMount: 'back', intake: 'triangle', bbMech: { launcher: { kind: 'turret', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'sweeper' } } },
+  ],
+};
+
+/** drive at the nearest loose element with the intake running; fire once anything is held */
+function l2MechCmd(w: World, i: number, tick: number): RobotCommand {
+  const r = w.robots[i];
+  let best: { x: number; y: number } | null = null;
+  let bd = Infinity;
+  for (const b of w.balls) {
+    if (b.state.kind !== 'ground') continue;
+    const d = hyp(b.pos.x - r.pos.x, b.pos.y - r.pos.y);
+    if (d < bd) {
+      bd = d;
+      best = b.pos;
+    }
+  }
+  const full = r.hopper.length >= 3;
+  const target = !best || (full && tick % 240 < 120) ? { x: (i % 2 === 0 ? 1 : -1) * 30, y: (i < 2 ? 1 : -1) * 30 } : best;
+  const local = rot({ x: target.x - r.pos.x, y: target.y - r.pos.y }, -r.heading);
+  const ang = datan2(local.y, local.x);
+  const driveY = clamp(local.x / 10, -1, 1);
+  const rotate = clamp(-wrapAngle(ang) * 0.9, -1, 1);
+  return {
+    driveY,
+    driveX: clamp(-local.y / 14, -1, 1),
+    rotate,
+    leftDrive: clamp(driveY - rotate, -1, 1),
+    rightDrive: clamp(driveY + rotate, -1, 1),
+    intake: tick % 200 < 170,
+    fire: r.hopper.length > 0 && tick % 30 < 20,
+    catalyst: tick % 150 === 75,
+    fling: tick % 400 === 390,
+    bbRamp: tick % 300 < 4,
+    bbPlace: tick % 90 < 3,
+    bbPlaceNectar: tick % 90 > 45 && tick % 90 < 48,
+  };
+}
+
+function l2MechRun(g: GameId | 'bb3d', ticks: number, patch?: number): string {
+  const key = g === 'bb3d' ? 'biobuzz' : g;
+  const mod = simModuleFor(key);
+  const w = mod.createWorld(
+    'match',
+    777,
+    L2_MECH_SPECS[key].map((s, i) => ({
+      id: i,
+      alliance: i % 2 === 0 ? 'blue' : 'red',
+      spec: { ...DEFAULT_SPEC, ...s } as RobotSpec,
+      assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false },
+      startIndex: Math.floor(i / 2),
+    })),
+    undefined,
+    g === 'biobuzz' ? '2d' : g === 'bb3d' ? '3d' : undefined,
+  );
+  if (patch !== undefined) w.simPatch = patch;
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 90;
+  const out: string[] = [];
+  let held = 0;
+  for (let t = 0; t < ticks; t++) {
+    const cmds = new Map<number, RobotCommand>();
+    for (let i = 0; i < w.robots.length; i++) cmds.set(w.robots[i].id, l2MechCmd(w, i, t));
+    mod.step(w, 1 / 60, cmds);
+    for (const r of w.robots) held += r.hopper.length;
+    if ((t + 1) % 300 === 0) out.push(`${worldHash(w)}:${impFnv(JSON.stringify(patch === undefined ? w : { ...w, simPatch: undefined }))}`);
+  }
+  return `held=${held} ${out.join(' ')}`;
+}
+{
+  const got = l2MechRun('decode', 900);
+  check('imported mechanisms: STANDARD robots step byte-identically through intake/fire/sort — decode (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.decode, got);
+}
+{
+  const got = l2MechRun('chain', 900);
+  check('imported mechanisms: STANDARD robots step byte-identically through intake/launch/catalyst — chain (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.chain, got);
+}
+{
+  const got = l2MechRun('biobuzz', 900);
+  check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 2D (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.biobuzz, got);
+}
+{
+  await initPhysics3d();
+  const got = l2MechRun('bb3d', 600);
+  check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 3D (worldHash + whole-world JSON, 600 ticks)', got === L2_MECH_PINS.bb3d, got);
+  const old = l2MechRun('bb3d', 600, 2);
+  check('imported mechanisms: ...and under SIM_PATCH 2 the biobuzz 3D scene still steps to the pin it had before the wall square-up moved into the solve', old === L2_MECH_PINS_PATCH2.bb3d, old);
+  const old6 = l2MechRun('bb3d', 600, 6);
+  check('imported mechanisms: ...and under SIM_PATCH 6 the biobuzz 3D scene steps to the pin it had before the FLOWER plates took their measured outline (patch 7)', old6 === L2_MECH_PINS_PATCH6.bb3d, old6);
+}
+
+/** an 18 × 16 robot with its front corners chamfered: a hull no box describes */
+const L2_OCT: ImportedRobot = {
+  v: 1,
+  id: 'a1a1a1a1a1a1a1a1',
+  hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 10, y: -6 }, { x: 10, y: 6 }, { x: 8, y: 8 }, { x: -8, y: 8 }],
+  heightIn: 14,
+};
+const L2_ASSISTS = { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false };
+
+function l2Pts(sh: SolidShape): Vec2[] {
+  if (sh.kind === 'poly') return sh.pts;
+  if (sh.kind === 'box') {
+    return [
+      { x: sh.cx - sh.hx, y: sh.cy - sh.hy },
+      { x: sh.cx + sh.hx, y: sh.cy - sh.hy },
+      { x: sh.cx + sh.hx, y: sh.cy + sh.hy },
+      { x: sh.cx - sh.hx, y: sh.cy + sh.hy },
+    ];
+  }
+  return [];
+}
+/** two convex polygons with the same vertex SET, to `eps` */
+function l2SamePoly(a: Vec2[], b: Vec2[], eps = 1e-9): boolean {
+  return a.length === b.length && a.every((p) => b.some((q) => Math.abs(p.x - q.x) < eps && Math.abs(p.y - q.y) < eps));
+}
+/** a standard footprint rectangle as an imported hull */
+function l2RectImport(x0: number, x1: number, y0: number, y1: number): ImportedRobot {
+  return { v: 1, id: 'b2b2b2b2b2b2b2b2', heightIn: 14, hull: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] };
+}
+
+/**
+ * REDUCES TO STANDARD: an import whose hull IS a standard robot's footprint rectangle, with the
+ * standard span, gets exactly that robot's mechanisms — the carve, the held slots, the mouth's
+ * face/roller line/axle/width — so the import path is the standard model generalised, not a
+ * second model. DECODE ×3 presets, BIOBUZZ and Chain front/back (a side or front-and-back sweeper
+ * puts a standard footprint over the 18-in cube an import is held to).
+ */
+{
+  for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+    const std = coerceSpec({ ...DEFAULT_SPEC, intake, width: 16, length: INTAKE_PRESETS[intake].maxLength }, DEFAULT_SPEC, 'decode');
+    const hl = std.length / 2;
+    const hw = std.width / 2;
+    const tip = hl + INTAKE_PRESETS[intake].reach;
+    const mh = intakeMouth(std).mouthHalf;
+    const sp = coerceSpec({ ...std, imported: { ...l2RectImport(-hl, tip, -hw, hw), mech: { intakes: [{ edge: 'front', from: -mh, to: mh }] } } }, DEFAULT_SPEC, 'decode');
+    const mk = (s: RobotSpec) => createWorld('free', 1, [{ id: 0, alliance: 'blue', spec: s, assists: L2_ASSISTS, startIndex: 0 }]).robots[0];
+    const a = robotSolids(mk(std), []);
+    const b = robotSolids(mk(sp), []);
+    check(
+      `imported mechanisms: DECODE ${intake} — an import shaped like the standard footprint carves EXACTLY the standard chassis and ${INTAKE_PRESETS[intake].mouth.wedge ? 'funnel wedges' : 'rails'}`,
+      l2SamePoly(l2Pts(a.chassis), l2Pts(b.chassis)) && a.structure.length === b.structure.length && a.structure.every((s, i) => l2SamePoly(l2Pts(s), l2Pts(b.structure[i]))),
+      JSON.stringify(b.structure.map(l2Pts)).slice(0, 240),
+    );
+    check(
+      `imported mechanisms: DECODE ${intake} — ...stores its artifacts in the standard slots`,
+      [0, 1, 2].every((k) => [1, -1].every((side) => {
+        const p = heldSlotPos(std, k, side);
+        const q = heldSlotPos(sp, k, side);
+        return Math.abs(p.x - q.x) < 1e-9 && Math.abs(p.y - q.y) < 1e-9;
+      })),
+    );
+    const d = decodeImportMouth(sp);
+    check(
+      `imported mechanisms: DECODE ${intake} — ...with the standard face, roller line, axle, width and a centred mouth`,
+      d.face === hl && d.tip === tip && Math.abs(d.axle - intakeAxleX(std)) < 1e-12 && d.mouth.mouthHalf === mh && d.yc === 0,
+      JSON.stringify({ face: d.face, tip: d.tip, axle: d.axle, mh: d.mouth.mouthHalf, yc: d.yc }),
+    );
+  }
+  for (const mount of ['front', 'back'] as const) {
+    const std = coerceSpec({ ...BB_DEFAULT_SPEC, intakeMount: mount }, BB_DEFAULT_SPEC, 'biobuzz');
+    const hl = std.length / 2;
+    const hw = std.width / 2;
+    const reach = INTAKE_PRESETS[std.intake].reach;
+    const imp = mount === 'front' ? l2RectImport(-hl, hl + reach, -hw, hw) : l2RectImport(-hl - reach, hl, -hw, hw);
+    const sp = coerceSpec({ ...std, imported: imp }, BB_DEFAULT_SPEC, 'biobuzz');
+    const a = bbMouths(std);
+    const b = bbMouths(sp);
+    check(
+      `imported mechanisms: BIOBUZZ ${mount} — an import shaped like the standard footprint has the standard mouth rect`,
+      a.length === b.length && a.every((m, i) => m.edge === b[i].edge && m.x0 === b[i].x0 && m.x1 === b[i].x1 && m.y0 === b[i].y0 && m.y1 === b[i].y1),
+      JSON.stringify({ a, b }),
+    );
+    const ax = mouthAxes(a[0], hl, hw);
+    const bx = mouthAxes(b[0], sp.length / 2, sp.width / 2);
+    check(`imported mechanisms: BIOBUZZ ${mount} — ...the standard face and roller line, centred`, ax.dist === bx.dist && ax.uOut === bx.uOut && bx.vc === 0 && ax.half === bx.half);
+    const sa = bbRobotSolids({ spec: std, id: 0 } as RobotState, []);
+    const sb = bbRobotSolids({ spec: sp, id: 0 } as RobotState, []);
+    check(
+      `imported mechanisms: BIOBUZZ ${mount} — ...and the standard chassis and side plates`,
+      l2SamePoly(l2Pts(sa.chassis), l2Pts(sb.chassis)) && sa.structure.length === sb.structure.length && sa.structure.every((s) => sb.structure.some((t) => l2SamePoly(l2Pts(s), l2Pts(t)))),
+    );
+  }
+  for (const mount of ['front', 'back'] as const) {
+    const std = coerceSpec({ ...DEFAULT_SPEC, intakeMount: mount, length: 15, width: 15 }, DEFAULT_SPEC, 'chain');
+    const hl = std.length / 2;
+    const hw = std.width / 2;
+    const reach = INTAKE_PRESETS[std.intake].reach;
+    const imp = mount === 'front' ? l2RectImport(-hl, hl + reach, -hw, hw) : l2RectImport(-hl - reach, hl, -hw, hw);
+    const sp = coerceSpec({ ...std, imported: imp }, DEFAULT_SPEC, 'chain');
+    const a = chainIntakeMouths(std);
+    const b = chainIntakeMouths(sp);
+    check(
+      `imported mechanisms: Chain ${mount} — an import shaped like the standard footprint has the standard mouth rect`,
+      a.length === b.length && a.every((m, i) => m.x0 === b[i].x0 && m.x1 === b[i].x1 && m.y0 === b[i].y0 && m.y1 === b[i].y1),
+      JSON.stringify({ a, b }),
+    );
+  }
+}
+
+/** a DECODE scene: one robot at (−10, −30) facing +x, one artifact at `local` in its frame */
+function l2DecodeScene(spec: RobotSpec, local: Vec2): { w: World; ball: Artifact } {
+  const w = createWorld('free', 3, [{ id: 0, alliance: 'blue', spec, assists: L2_ASSISTS, startIndex: 0 }]);
+  const r = w.robots[0];
+  r.hopper = [];
+  r.pos = { x: -10, y: -30 };
+  r.heading = 0;
+  r.vel = { x: 0, y: 0 };
+  r.fieldCentric = false;
+  const ball = w.balls[0];
+  w.balls.length = 0;
+  w.balls.push(ball);
+  ball.state = { kind: 'ground' };
+  ball.pos = { x: r.pos.x + local.x, y: r.pos.y + local.y };
+  ball.vel = { x: 0, y: 0 };
+  ball.z = 0;
+  ball.vz = 0;
+  return { w, ball };
+}
+
+/** DECODE: the intake takes artifacts through the PLACED mouth and nowhere else */
+{
+  for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+    const sp = coerceSpec({ ...DEFAULT_SPEC, intake, imported: { ...L2_OCT, mech: { intakes: [{ edge: 'front', from: -7, to: 1 }] } } }, DEFAULT_SPEC, 'decode');
+    const d = decodeImportMouth(sp);
+    const inMouth = l2DecodeScene(sp, { x: d.tip + 4, y: d.yc });
+    run(inMouth.w, cmd({ driveY: 0.4, intake: true }), 2);
+    const beside = l2DecodeScene(sp, { x: 13, y: 5 });
+    run(beside.w, cmd({ driveY: 0.4, intake: true }), 2);
+    const r = beside.w.robots[0];
+    const loc = rot({ x: beside.ball.pos.x - r.pos.x, y: beside.ball.pos.y - r.pos.y }, -r.heading);
+    const depth = polyFeature(sp.imported!.hull, loc).depth;
+    // a funnel deflects it out past the flank (as a standard funnel does an artifact outboard of
+    // its mouth); the vector's flat face pushes it ahead. Either way: not taken, never inside.
+    check(
+      `imported mechanisms: DECODE ${intake} — an artifact on the placed (off-centre) mouth is captured; one in front of the hull beside it is never taken and never inside the hull`,
+      inMouth.w.robots[0].hopper.length === 1 && r.hopper.length === 0 && depth < -(BALL_RADIUS - 0.3),
+      `mouth y ${d.yc} ± ${d.mouth.mouthHalf}; in ${inMouth.w.robots[0].hopper.length}, beside ${r.hopper.length} (ball at ${loc.x.toFixed(2)}, ${loc.y.toFixed(2)}; depth ${depth.toFixed(2)})`,
+    );
+    const held = [0, 1, 2].map((k) => heldSlotPos(sp, k, 1));
+    check(`imported mechanisms: DECODE ${intake} — every held slot is inside the hull, behind the mouth`, held.every((p) => polyFeature(sp.imported!.hull, p).depth > 0 && p.x < d.tip), JSON.stringify(held));
+  }
+}
+
+/** DECODE: the shot leaves from the placed turret at the placed height (and the floor holds) */
+{
+  const sp = coerceSpec({ ...DEFAULT_SPEC, intake: 'sloped', imported: { ...L2_OCT, mech: { shooter: { x: -4, y: 3, z: 13.5 } } } }, DEFAULT_SPEC, 'decode');
+  const w = createWorld('free', 3, [{ id: 0, alliance: 'blue', spec: sp, assists: L2_ASSISTS, startIndex: 0 }]);
+  const r = w.robots[0];
+  r.pos = { x: 20, y: 20 };
+  r.heading = 0.7;
+  const tp = turretWorldPos(r);
+  const want = rot({ x: -4, y: 3 }, 0.7);
+  check('imported mechanisms: DECODE — the turret is where it was placed', hyp(tp.x - r.pos.x - want.x, tp.y - r.pos.y - want.y) < 1e-9);
+  let shot: Artifact | undefined;
+  let from = { x: 0, y: 0 };
+  const before = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+  for (let i = 0; i < 120 && !shot; i++) {
+    from = turretWorldPos(r);
+    step(w, SIM_DT, new Map([[0, cmd({ fire: true })]]));
+    shot = w.balls.find((b) => b.state.kind === 'flight' && !before.has(b.id));
+  }
+  // undo the one flight step the release tick also took (`stepFlightBall`)
+  const vz0 = shot ? shot.vz + IMPC.GRAVITY * SIM_DT : 0;
+  const z0 = shot ? shot.z - vz0 * SIM_DT : 0;
+  const p0 = shot ? { x: shot.pos.x - shot.vel.x * SIM_DT, y: shot.pos.y - shot.vel.y * SIM_DT } : { x: 0, y: 0 };
+  check('imported mechanisms: DECODE — the shot leaves from the placed turret at the placed height', !!shot && Math.abs(z0 - 13.5) < 1e-9 && hyp(p0.x - from.x, p0.y - from.y) < 1e-9, `z0 ${z0}`);
+  const low = coerceSpec({ ...sp, imported: { ...sp.imported!, mech: { shooter: { x: -4, y: 3, z: 6 } } } }, DEFAULT_SPEC, 'decode');
+  check('imported mechanisms: DECODE — a launch height under 4 artifact radii is raised to the floor (a lower shot would be pushed out of its own hull)', decodeImportLaunchZ(low) === DECODE_IMPORT_LAUNCH_MIN && DECODE_IMPORT_LAUNCH_MIN > 4 * BALL_RADIUS);
+}
+
+/* BIOBUZZ's own import checks — the placed mouth in 2D and 3D, the CAD bands, the placed turret,
+   lip and Box Tube, and the PERF budgets for heavy imports — are the IMPORT lane of
+   scripts/smoke-biobuzz (imported.ts). */
+
+/** Chain Reaction: mouths, turret, catalyst and storage come off the hull and the placements */
+{
+  const imp: ImportedRobot = { ...L2_OCT, mech: { intakes: [{ edge: 'front', from: -7, to: 1 }], shooter: { x: -2, y: 4, z: 13 }, place: { x: 2, y: -3, z: 6 } } };
+  const sp = coerceSpec({ ...DEFAULT_SPEC, scoreMode: 'turret', intakeMount: 'front', catalystType: 'arm', catalystMount: 'front', imported: imp }, DEFAULT_SPEC, 'chain');
+  const m = chainIntakeMouths(sp)[0];
+  check('imported mechanisms: Chain — the mouth sits on the placed span, off-centre, its lip on the hull', m.y0 === -7 && m.y1 === 1 && m.x1 === 10, JSON.stringify(m));
+  check('imported mechanisms: Chain — the turret is where it was placed', turretLocal(sp).x === -2 && turretLocal(sp).y === 4);
+  const w = createChainWorld('free', 5, [{ id: 0, alliance: 'blue', spec: sp, assists: L2_ASSISTS, startIndex: 0 }]);
+  const r = w.robots[0];
+  r.pos = { x: 0, y: 0 };
+  r.heading = 0;
+  const mouth = catalystMouth(r);
+  check('imported mechanisms: Chain — the catalyst works from where the hull ends ahead of its placed base', Math.abs(mouth.x - 10) < 1e-9 && Math.abs(mouth.y + 3) < 1e-9, JSON.stringify(mouth));
+  const cut = coerceSpec({ ...sp, imported: { ...L2_OCT, hull: [{ x: -8, y: -4 }, { x: -4, y: -8 }, { x: 6, y: -8 }, { x: 10, y: -4 }, { x: 10, y: 4 }, { x: 6, y: 8 }, { x: -4, y: 8 }, { x: -8, y: 4 }], mech: imp.mech } }, DEFAULT_SPEC, 'chain');
+  const rect = coerceSpec({ ...sp, imported: { ...l2RectImport(-8, 10, -8, 8), mech: imp.mech } }, DEFAULT_SPEC, 'chain');
+  check('imported mechanisms: Chain — storage reads the hull area (a robot with its corners cut holds less than its bounding box)', chainStorageMax(cut) < chainStorageMax(rect), `${chainStorageMax(cut)} vs ${chainStorageMax(rect)}`);
+  // a particle in an AABB corner the chamfered hull does not cover is neither plowed nor taken
+  const w2 = createChainWorld('free', 5, [{ id: 0, alliance: 'blue', spec: sp, assists: L2_ASSISTS, startIndex: 0 }]);
+  const r2 = w2.robots[0];
+  r2.pos = { x: 0, y: -20 };
+  r2.heading = 0;
+  r2.vel = { x: 0, y: 0 };
+  const g = w2.balls[0];
+  for (const b of w2.balls) if (b !== g && b.state.kind === 'ground' && hyp(b.pos.x - r2.pos.x, b.pos.y - r2.pos.y) < 30) b.pos = { x: 60, y: 60 };
+  g.state = { kind: 'ground' };
+  g.pos = { x: 10.5, y: -20 + 8.5 };
+  g.vel = { x: 0, y: 0 };
+  g.z = 0;
+  g.vz = 0;
+  const before = { ...g.pos };
+  chainStep(w2, SIM_DT, new Map([[0, cmd({ intake: true })]]));
+  check('imported mechanisms: Chain — a particle in a bounding-box corner the hull does not cover is left alone (not plowed, not taken)', g.state.kind === 'ground' && hyp(g.pos.x - before.x, g.pos.y - before.y) < 0.5, JSON.stringify(g.pos));
+}
+
+/** the placement editor's API: handles, pre-fills and plain-language checks, every game */
+{
+  const tall: ImportedRobot = { ...L2_OCT, bands: [{ z0: 0, z1: 6, hull: L2_OCT.hull }, { z0: 6, z1: 14, hull: [{ x: -4, y: -4 }, { x: 4, y: -4 }, { x: 4, y: 4 }, { x: -4, y: 4 }] }] };
+  for (const g of ['decode', 'biobuzz', 'chain'] as GameId[]) {
+    const base = g === 'biobuzz' ? BB_DEFAULT_SPEC : DEFAULT_SPEC;
+    const sp = coerceSpec({ ...base, imported: tall }, base, g);
+    const handles = mechHandles(g, sp);
+    const d = defaultImportedMech(g, sp);
+    const filled = coerceSpec({ ...sp, imported: { ...sp.imported!, mech: d } }, base, g);
+    check(`imported mechanisms: ${g} — the editor gets an intake span per mounted edge and a launcher point with its height range`, handles.some((h) => h.kind === 'span') && handles.some((h) => h.key === 'shooter' && h.z !== undefined && h.zMin !== undefined), JSON.stringify(handles));
+    check(`imported mechanisms: ${g} — the pre-filled placements are already coerced (saving them changes nothing)`, isDeepStrictEqual(filled.imported!.mech, d), JSON.stringify(d));
+    check(`imported mechanisms: ${g} — the pre-filled placements pass every check`, validateImportedMech(filled, g).length === 0, JSON.stringify(validateImportedMech(filled, g)));
+    check(`imported mechanisms: ${g} — an unplaced launcher is a warning, not a block`, validateImportedMech(sp, g).some((i) => i.code === 'shooter-default' && i.level === 'warn') && !validateImportedMech(sp, g).some((i) => i.level === 'block'));
+    // a nose too narrow at the face line for any mouth: BLOCK, on the intake handle
+    const nose: ImportedRobot = { ...tall, hull: [{ x: -8, y: -8 }, { x: -2, y: -8 }, { x: 10, y: -0.5 }, { x: 10, y: 0.5 }, { x: -2, y: 8 }, { x: -8, y: 8 }] };
+    const sn = coerceSpec({ ...base, imported: nose }, base, g);
+    const blocks = validateImportedMech(sn, g).filter((i) => i.level === 'block');
+    check(`imported mechanisms: ${g} — a front edge with no room for an intake blocks Save, in plain language`, blocks.some((i) => i.code === 'mouth-no-room' && i.handle === 'intake:front' && /needs/.test(i.text)), JSON.stringify(blocks));
+    check(`imported mechanisms: ${g} — no check text uses an ASCII apostrophe (docs/area/ui.md)`, [...validateImportedMech(sp, g), ...validateImportedMech(sn, g)].every((i) => !i.text.includes("'")));
+  }
+  // DECODE reads the front only; BIOBUZZ's double turret needs its heads apart
+  const sd = coerceSpec({ ...DEFAULT_SPEC, imported: { ...tall, mech: { intakes: [{ edge: 'left', from: -4, to: 4 }] } } }, DEFAULT_SPEC, 'decode');
+  check('imported mechanisms: DECODE — a span on any edge but the front is reported as unused', validateImportedMech(sd, 'decode').some((i) => i.code === 'mouth-ignored' && i.handle === 'intake:left'));
+  const twin = coerceSpec({ ...BB_DEFAULT_SPEC, bbMech: { launcher: { kind: 'twinturret', mount: 'frontleft', mount2: 'backright', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } }, imported: { ...tall, mech: { shooter: { x: 0, y: 0, z: 10 }, shooter2: { x: 2, y: 2, z: 10 } } } }, BB_DEFAULT_SPEC, 'biobuzz');
+  check('imported mechanisms: BIOBUZZ — two turret heads closer than 6 in block Save', validateImportedMech(twin, 'biobuzz').some((i) => i.code === 'twin-too-close' && i.level === 'block'));
+  check('imported mechanisms: BIOBUZZ — a double turret offers both heads', mechHandles('biobuzz', twin).filter((h) => h.key === 'shooter' || h.key === 'shooter2').length === 2);
+  check('imported mechanisms: a STANDARD spec has nothing to place and nothing to check', mechHandles('decode', DEFAULT_SPEC).length === 0 && validateImportedMech(DEFAULT_SPEC, 'decode').length === 0 && isDeepStrictEqual(defaultImportedMech('decode', DEFAULT_SPEC), {}));
+}
+
+/** two runs of an import scene, every game, end on one hash (determinism) */
+{
+  await initPhysics3d();
+  const imp: ImportedRobot = { ...L2_OCT, bands: [{ z0: 0, z1: 6, hull: L2_OCT.hull }, { z0: 6, z1: 14, hull: [{ x: -4, y: -4 }, { x: 4, y: -4 }, { x: 4, y: 4 }, { x: -4, y: 4 }] }], mech: { intakes: [{ edge: 'front', from: -6, to: 3 }], shooter: { x: -3, y: 1, z: 12 } } };
+  for (const g of ['decode', 'chain', 'biobuzz', 'bb3d'] as const) {
+    const key = g === 'bb3d' ? 'biobuzz' : g;
+    const patches = L2_MECH_SPECS[key].map((s) => ({ ...s, imported: imp }) as Partial<RobotSpec>);
+    const once = () => {
+      const mod = simModuleFor(key);
+      const w = mod.createWorld('match', 99, patches.map((s, i) => ({ id: i, alliance: i % 2 === 0 ? 'blue' : 'red', spec: { ...DEFAULT_SPEC, ...s } as RobotSpec, assists: L2_ASSISTS, startIndex: Math.floor(i / 2) })), undefined, g === 'biobuzz' ? '2d' : g === 'bb3d' ? '3d' : undefined);
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      let held = 0;
+      for (let t = 0; t < 300; t++) {
+        const cmds = new Map<number, RobotCommand>();
+        for (let i = 0; i < w.robots.length; i++) cmds.set(w.robots[i].id, l2MechCmd(w, i, t));
+        mod.step(w, SIM_DT, cmds);
+        for (const r of w.robots) held += r.hopper.length;
+      }
+      const finite = w.robots.every((r) => Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)) && w.balls.every((b) => Number.isFinite(b.pos.x) && Number.isFinite(b.z));
+      return { h: `${worldHash(w)}:${impFnv(JSON.stringify(w))}`, held, finite };
+    };
+    const a = once();
+    const b = once();
+    check(`imported mechanisms: four imports with placed mechanisms play deterministically — ${g} (two runs, one hash; nothing non-finite; something was intaken)`, a.h === b.h && a.finite && a.held > 0, `${a.h} / ${b.h}, held ${a.held}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// IMPORTED ROBOTS: INTEGRATION (review 2026-10-02) — off-centre hulls where the sim core meets
+// each game's own rules (Chain beams and starts, the start editors, the DECODE tutorial, the
+// Zenith robot file) and the library's id rule across two devices. The hulls are the review's.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** the review's test hulls, robot-local inches, +x forward. The origin (the wheelbase centre)
+ *  is OFF the middle of most of them, which is the whole point. */
+const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
+  nose: IMP_NOSE,
+  diamond: IMP_DIAMOND,
+  longFront: { v: 1, id: '1111111111111111', hull: [{ x: -6, y: -8 }, { x: 12, y: -8 }, { x: 12, y: 8 }, { x: -6, y: 8 }], heightIn: 14 },
+  longRear: { v: 1, id: '2222222222222222', hull: [{ x: -12, y: -8 }, { x: 6, y: -8 }, { x: 6, y: 8 }, { x: -12, y: 8 }], heightIn: 14 },
+  asymL: { v: 1, id: '3333333333333333', hull: [{ x: -8, y: -4 }, { x: 8, y: -4 }, { x: 8, y: 9 }, { x: -8, y: 9 }], heightIn: 14 },
+  sq18: { v: 1, id: '5555555555555555', hull: [{ x: -9, y: -9 }, { x: 9, y: -9 }, { x: 9, y: 9 }, { x: -9, y: 9 }], heightIn: 14 },
+};
+
+// ---- Chain Reaction: a beam blocks an import at the hull's extent TOWARD it ----------------
+{
+  const LONG = IMP_REVIEW_HULLS.longFront;
+  const run = (patch: Partial<RobotSpec>, heading: number) => {
+    const spec = coerceSpec({ ...DEFAULT_SPEC, ...patch, groundClearance: 0.5, drivetrain: 'tank' }, DEFAULT_SPEC, 'chain');
+    const w = createChainWorld('free', 5, [{ id: 0, alliance: 'blue', spec, assists: { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: false }, startIndex: 0 }]);
+    w.balls.length = 0;
+    const r = w.robots[0];
+    r.pos = { x: 40, y: -22 };
+    r.heading = heading;
+    r.vel = { x: 0, y: 0 };
+    const toward = Math.sin(heading) > 0 ? 1 : -1; // drive toward +y (the beam on y = 0)
+    const m = new Map<number, RobotCommand>([[0, { driveX: 0, driveY: 0.6 * toward, rotate: 0, leftDrive: 0.6 * toward, rightDrive: 0.6 * toward, intake: false, fire: false }]]);
+    let jump = 0;
+    let prev = r.pos.y;
+    for (let t = 0; t < 240; t++) {
+      simModuleFor('chain').step(w, SIM_DT, m);
+      jump = Math.max(jump, prev - r.pos.y);
+      prev = r.pos.y;
+    }
+    return { jump, gap: -0.5 - polyBounds(robotHullWorld(r)).maxY };
+  };
+  const rear = run({ imported: LONG }, -Math.PI / 2);
+  const front = run({ imported: LONG }, Math.PI / 2);
+  const std = run({ length: 18, width: 16 }, -Math.PI / 2);
+  check(
+    'imports/chain beam: a hull with a short rear, driven rear-first into a beam it cannot cross, is held at the beam (no jump bigger than a standard chassis takes)',
+    rear.jump <= std.jump + 1e-4 && rear.jump < 1 && rear.gap >= 0 && rear.gap < 1,
+    `rear-first jump ${rear.jump.toFixed(2)} gap ${rear.gap.toFixed(2)}; front-first jump ${front.jump.toFixed(2)} gap ${front.gap.toFixed(2)}; standard jump ${std.jump.toFixed(2)}`,
+  );
+  check('imports/chain beam: ...and front-first the same', front.jump < 1 && front.gap >= 0 && front.gap < 1, `jump ${front.jump.toFixed(2)} gap ${front.gap.toFixed(2)}`);
+}
+
+// ---- Chain Reaction starts: an import's anchors are FITTED to its off-centre hull ----------
+{
+  const bad: string[] = [];
+  const standLost: string[] = [];
+  for (const [name, imp] of Object.entries(IMP_REVIEW_HULLS)) {
+    const spec = coerceSpec({ ...DEFAULT_SPEC, imported: imp }, DEFAULT_SPEC, 'chain');
+    for (const alliance of ['blue', 'red'] as const) {
+      for (let idx = 0; idx < CHAIN_START_POSES.length; idx++) {
+        const w = createChainWorld('free', 7, [{ id: 0, alliance, spec, assists: { ...DEFAULT_ASSISTS }, startIndex: idx }]);
+        const r = w.robots[0];
+        const p0 = { x: r.pos.x, y: r.pos.y };
+        const b = polyBounds(robotHullWorld(r));
+        // the REAL hull, completely inside an own-side Lab square (touching counts, G04)
+        const s = alliance === 'red' ? -1 : 1;
+        const x0 = Math.min(b.minX * s, b.maxX * s);
+        const x1 = Math.max(b.minX * s, b.maxX * s);
+        const inLab = x0 >= CHAIN_HALF_X - CHAIN_LAB - 1e-6 && x1 <= CHAIN_HALF_X + 1e-6 &&
+          ((b.minY >= CHAIN_HALF_Y - CHAIN_LAB - 1e-6 && b.maxY <= CHAIN_HALF_Y + 1e-6) || (b.maxY <= -CHAIN_HALF_Y + CHAIN_LAB + 1e-6 && b.minY >= -CHAIN_HALF_Y - 1e-6));
+        const hs = CHAIN_RINGSTAND_BOX / 2;
+        const pen = Math.max(0, ...ringStandBoxes().map((c) => Math.min(b.maxX - (c.x - hs), c.x + hs - b.minX, b.maxY - (c.y - hs), c.y + hs - b.minY)));
+        const m = new Map<number, RobotCommand>([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false }]]);
+        for (let t = 0; t < 30; t++) simModuleFor('chain').step(w, SIM_DT, m);
+        const moved = hyp(r.pos.x - p0.x, r.pos.y - p0.y);
+        if (!inLab || pen > 1e-6 || moved > 0.05) bad.push(`${name} ${alliance} #${idx} lab=${inLab} pen=${pen.toFixed(2)} moved=${moved.toFixed(2)}`);
+        if (onRingStand(CHAIN_START_POSES[idx].pos) && !onRingStand(p0)) standLost.push(`${name} ${alliance} #${idx}`);
+      }
+    }
+  }
+  check('imports/chain starts: at EVERY anchor, both alliances, every review hull starts completely in its Lab, clear of the ring-stand solid, and does not move on tick one', bad.length === 0, bad.join('; '));
+  check('imports/chain starts: a STAND anchor still starts an import at the stand (the descent is armed), turning it a quarter if its hull needs to', standLost.length === 0, standLost.join('; '));
+
+  // the review's three cases, against the rule the editor colours with
+  const sp = (name: string) => coerceSpec({ ...DEFAULT_SPEC, imported: IMP_REVIEW_HULLS[name] }, DEFAULT_SPEC, 'chain');
+  check(
+    'imports/chain starts: the raw LAB anchor is NOT legal for a long nose (it would start outside the Lab), the fitted one is',
+    !chainStartLegal(sp('longFront'), CHAIN_START_POSES[0].pos, 180) &&
+      (() => {
+        const f = chainFitAnchor(sp('longFront'), { x: 57, y: 57, headingDeg: 180 }, 'blue');
+        return chainStartLegal(sp('longFront'), f, f.headingDeg);
+      })(),
+  );
+  const found = (name: string, a: 'blue' | 'red') => {
+    let n = 0;
+    for (let x = 48; x <= 72; x += 0.5) for (let y = 48; y <= 72; y += 0.5) if (chainStartLegal(sp(name), { x, y }, 180, a)) n++;
+    return n;
+  };
+  check(
+    'imports/chain starts: an 18-in hull with its origin 3 in off the middle HAS legal custom poses (the editor can save one) — longFront and longRear, both alliances',
+    chainHeadingFits(sp('longFront'), 180) && chainHeadingFits(sp('longRear'), 180) && found('longFront', 'blue') > 0 && found('longRear', 'blue') > 0 && found('longFront', 'red') > 0 && found('longRear', 'red') > 0,
+    `${found('longFront', 'blue')} / ${found('longRear', 'blue')} poses at 180°`,
+  );
+  // RED SEES THE HULL MIRRORED: a pose that is legal for red's asymL and not for blue's
+  const asym = sp('asymL');
+  const pose = { x: 57, y: 54, headingDeg: 180 };
+  const redLegal = chainStartLegal(asym, pose, 180, 'red');
+  const blueLegal = chainStartLegal(asym, pose, 180, 'blue');
+  const w = createChainWorld('match', 3, [{ id: 0, alliance: 'red', spec: asym, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, startPose: pose }]);
+  const r = w.robots[0];
+  const hb = polyBounds(robotHullWorld(r));
+  check(
+    'imports/chain starts: red is judged on its hull MIRRORED (a reflection is not a rotation): a red-legal pose spawns where it was placed, with the real hull in the Lab',
+    redLegal && !blueLegal && Math.abs(r.pos.x + pose.x) < 1e-9 && Math.abs(r.pos.y - pose.y) < 1e-9 && hb.minY >= CHAIN_HALF_Y - CHAIN_LAB - 1e-6 && hb.maxY <= CHAIN_HALF_Y + 1e-6,
+    `red ${redLegal} blue ${blueLegal}; spawned (${r.pos.x.toFixed(2)}, ${r.pos.y.toFixed(2)}), hull y ${hb.minY.toFixed(2)}…${hb.maxY.toFixed(2)}`,
+  );
+  check('imports/chain starts: the module predicate passes the alliance through', simModuleFor('chain').startLegal!(asym, 'red', pose) && !simModuleFor('chain').startLegal!(asym, 'blue', pose));
+  // whatever the custom snap returns is legal, for every review hull that fits at all, both alliances
+  const snapBad: string[] = [];
+  for (const name of Object.keys(IMP_REVIEW_HULLS)) {
+    if (name === 'sq18') continue;
+    for (const a of ['blue', 'red'] as const) {
+      for (const p of [{ x: 0, y: 0, headingDeg: 180 }, { x: 71, y: 71, headingDeg: 0 }, { x: 60, y: -60, headingDeg: 45 }, { x: 50, y: 66, headingDeg: 90 }]) {
+        const s = chainSnapStartPose(sp(name), p, a);
+        if (!chainStartLegal(sp(name), s, s.headingDeg, a)) snapBad.push(`${name} ${a} (${p.x},${p.y},${p.headingDeg})`);
+      }
+    }
+  }
+  check('imports/chain starts: the snap lands every review hull on a pose its own rule calls legal', snapBad.length === 0, snapBad.join('; '));
+  // an 18 × 18 hull has no room for the clearance margin (a standard chassis is capped at 17 for
+  // this): it is never legal, and the snap seats it FLUSH rather than in the post
+  const big = sp('sq18');
+  const flush = chainSnapStartPose(big, { x: 57, y: 57, headingDeg: 180 });
+  const fb = polyBounds(polyAtPose(big.imported!.hull, flush, dcos(Math.PI), dsin(Math.PI)));
+  const post = CHAIN_HALF_X - CHAIN_RINGSTAND_BOX; // the stand's inner faces
+  const lab = CHAIN_HALF_X - CHAIN_LAB;
+  check(
+    'imports/chain starts: an 18 × 18 hull is never legal, and its snap is flush against the ring stand, not in it',
+    found('sq18', 'blue') === 0 && (fb.maxX <= post + 1e-6 || fb.maxY <= post + 1e-6) && fb.minX >= lab - 1e-6 && fb.minY >= lab - 1e-6,
+    `hull x ${fb.minX.toFixed(2)}…${fb.maxX.toFixed(2)} y ${fb.minY.toFixed(2)}…${fb.maxY.toFixed(2)}`,
+  );
+  // the spawn and the editor read the one fit
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'imports/chain starts: the spawn and the start editor both place an imported anchor with chainFitAnchor',
+    /chainFitAnchor\(spec, \{ x: p\.pos\.x/.test(rd('src/games/chain/spawn.ts')) && /chainFitAnchor\(spec, anchorPose, alliance\)/.test(rd('src/ui/ChainStartEditor.tsx')),
+  );
+}
+
+// ---- the start editors: the heading handle is past the HULL's front, and they draw the hull --
+{
+  // DECODE caps an import's `length` at 15 (sloped intake) while its hull runs to 18, and the
+  // origin is the wheelbase centre: `length / 2 + 8` put the handle on or inside a long nose
+  const frontLong: ImportedRobot = { v: 1, id: '6666666666666666', hull: [{ x: -1, y: -8 }, { x: 17, y: -8 }, { x: 17, y: 8 }, { x: -1, y: 8 }], heightIn: 14 };
+  const inside: string[] = [];
+  for (const g of ['decode', 'chain', 'biobuzz'] as const) {
+    for (const [name, imp] of Object.entries({ ...IMP_REVIEW_HULLS, frontLong })) {
+      const s = coerceSpec({ ...DEFAULT_SPEC, imported: imp }, DEFAULT_SPEC, g);
+      if (!s.imported) continue;
+      const reach = startHandleReach(s);
+      // the grab radius is 6 in: the whole grab disc is off the hull
+      if (polyFeature(s.imported.hull, { x: reach, y: 0 }).depth > -6) inside.push(`${g} ${name} ${reach.toFixed(2)}`);
+    }
+  }
+  const s = coerceSpec({ ...DEFAULT_SPEC, imported: frontLong }, DEFAULT_SPEC, 'decode');
+  check(
+    'imports/start editors: the heading handle sits a full grab radius off every imported hull, in every game (`length / 2 + 8` did not: non-vacuous)',
+    inside.length === 0 && polyFeature(frontLong.hull, { x: s.length / 2 + 8, y: 0 }).depth > -6,
+    inside.join('; ') || `decode length ${s.length}, old handle ${s.length / 2 + 8} vs hull front 17`,
+  );
+  check('imports/start editors: a standard robot’s handle is where it always was', startHandleReach(DEFAULT_SPEC) === DEFAULT_SPEC.length / 2 + 8);
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const eds = ['src/ui/StartPositionEditor.tsx', 'src/games/biobuzz/StartEditor.tsx', 'src/ui/ChainStartEditor.tsx'];
+  check(
+    'imports/start editors: all three place the handle with startHandleReach (draw and grab), none with length / 2 + 8',
+    eds.every((f) => (rd(f).match(/startHandleReach\(spec\)/g) ?? []).length === 2 && !/spec\.length \/ 2 \+ 8/.test(rd(f))),
+  );
+  check(
+    'imports/start editors: BIOBUZZ and Chain Reaction outline an import’s HULL (footprintCorners), and the Chain preview is rebuilt when only the import changes',
+    /footprintCorners\(spec/.test(rd('src/games/biobuzz/StartEditor.tsx')) && /footprintCorners\(spec/.test(rd('src/ui/ChainStartEditor.tsx')) &&
+      /const specKey[\s\S]{0,300}JSON\.stringify\(s\.imported\)/.test(rd('src/ui/ChainStartEditor.tsx')),
+  );
+}
+
+// ---- the DECODE tutorial drops its artifact ahead of an import's HULL, in line with its mouth --
+{
+  const intakeStep = DECODE_TUTORIAL.steps.find((x) => x.id === 'intake')!;
+  // the review's long nose, and one with its placed mouth off the centreline
+  const hulls: Record<string, ImportedRobot> = {
+    ...IMP_REVIEW_HULLS,
+    frontOff: { v: 1, id: '7777777777777777', hull: [{ x: -3, y: -8 }, { x: 15, y: -8 }, { x: 15, y: 8 }, { x: -3, y: 8 }], heightIn: 14, mech: { intakes: [{ edge: 'front', from: -8, to: 0 }] } },
+  };
+  const bad: string[] = [];
+  for (const [name, imp] of Object.entries(hulls)) {
+    for (const alliance of ['blue', 'red'] as const) {
+      const spec = coerceSpec({ ...DEFAULT_SPEC, imported: imp }, DEFAULT_SPEC, 'decode');
+      const w = createWorld('free', 20260918, [{ id: 0, alliance, spec, assists: { ...DEFAULT_ASSISTS, fieldCentric: false, autoIntake: false, autoFire: false }, startIndex: 0 }]);
+      DECODE_TUTORIAL.seedWorld?.(w, 0);
+      const held = new Set(w.balls.filter((b) => b.state.kind === 'held').map((b) => b.id));
+      intakeStep.stage!(w, 0);
+      const r = w.robots[0];
+      const ball = w.balls.find((b) => b.state.kind === 'ground' && held.has(b.id))!;
+      const loc = rot({ x: ball.pos.x - r.pos.x, y: ball.pos.y - r.pos.y }, -r.heading);
+      const depth = polyFeature(spec.imported!.hull, loc).depth;
+      const p0 = { x: ball.pos.x, y: ball.pos.y };
+      const idle: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
+      for (let t = 0; t < 20; t++) step(w, SIM_DT, new Map([[0, idle]]));
+      const moved = hyp(ball.pos.x - p0.x, ball.pos.y - p0.y);
+      let taken = -1;
+      for (let t = 0; t < 180 && taken < 0; t++) {
+        step(w, SIM_DT, new Map([[0, { ...idle, driveY: 0.4, leftDrive: 0.4, rightDrive: 0.4, intake: true }]]));
+        if (ball.state.kind === 'held') taken = t;
+      }
+      const mouthY = decodeImportMouth(spec).yc;
+      if (depth > -(IMPC.BALL_RADIUS + 1) || moved > 0.01 || taken < 0 || Math.abs(loc.y - mouthY) > 1e-6) {
+        bad.push(`${name} ${alliance}: depth ${depth.toFixed(2)} moved ${moved.toFixed(2)} taken ${taken} lateral ${loc.y.toFixed(2)} vs mouth ${mouthY.toFixed(2)}`);
+      }
+    }
+  }
+  check('imports/decode tutorial: the intake step’s artifact rests clear of every review hull, in front of its mouth, and driving straight at it takes it', bad.length === 0, bad.join('; '));
+}
+
+// ---- THE ACTIVE ROBOT ACROSS TWO DEVICES (`src/robotImport/libraryIds.ts`) -----------------
+{
+  const X: ImportedRobot = { v: 1, id: 'aaaaaaaaaaaaaaaa', hull: [{ x: -8, y: -8 }, { x: 9, y: -8 }, { x: 9, y: 8 }, { x: -8, y: 8 }], heightIn: 14 };
+  const withId = (imp: ImportedRobot, id: string): ImportedRobot => ({ ...imp, id });
+  type Row = { id: string; sharedFrom?: string; spec: { imported?: ImportedRobot } };
+  const row = (imp: ImportedRobot, sharedFrom?: string): Row => ({ id: imp.id, ...(sharedFrom ? { sharedFrom } : {}), spec: { imported: imp } });
+  const specOf = (e: Row) => e.spec.imported;
+
+  // the lookup: its own id first, then a share-file copy that carried it, else nothing
+  const own = row(X);
+  const copy = row(withId(X, 'bbbbbbbbbbbbbbbb'), X.id);
+  check('imports/library ids: a record answers for its own id first, then for the share-file id it carried, else nothing',
+    libraryEntryFor([copy, own], X.id) === own && libraryEntryFor([copy], X.id) === copy && libraryEntryFor([copy], 'cccccccccccccccc') === null && libraryEntryFor(null, X.id) === null);
+  check('imports/library ids: the same robot is the same descriptor whatever its id; a moved vertex is another robot',
+    sameImportedRobot(X, withId(X, 'dddddddddddddddd')) && !sameImportedRobot(X, { ...X, hull: [{ x: -8, y: -8 }, { x: 10, y: -8 }, { x: 10, y: 8 }, { x: -8, y: 8 }] }) && !sameImportedRobot(X, undefined));
+
+  /**
+   * THE PING-PONG, PLAYED OUT. One account, two devices. The account holds ONE active spec; each
+   * device a library. A makes X; B gets the synced spec, has no model, and imports A's file. Under
+   * the old rule B minted Y, Y became active and synced, and A's own X was "not on this device".
+   */
+  let active: ImportedRobot = X;
+  const devA: Row[] = [row(X)];
+  const devB: Row[] = [];
+  const addShared = (dev: Row[], file: ImportedRobot): void => {
+    const plan = planShareAdd(file, active, dev, specOf);
+    const id = plan.kind === 'adopt' ? plan.id : plan.kind === 'ask' ? plan.have.id : 'eeeeeeeeeeeeeeee';
+    const at = dev.findIndex((e) => e.id === id);
+    const rec = row(withId(file, id), file.id);
+    if (at >= 0) dev[at] = rec;
+    else dev.push(rec);
+    if (plan.kind === 'adopt' && plan.retire) dev.splice(dev.findIndex((e) => e.id === plan.retire), 1);
+    active = rec.spec.imported!; // the add makes it the active robot, which syncs
+  };
+  addShared(devB, X);
+  check('imports/library ids: B adding A’s file for the account’s active robot keeps its id, so the synced robot is on BOTH devices (no ping-pong)',
+    active.id === X.id && libraryEntryFor(devA, active.id) !== null && libraryEntryFor(devB, active.id) !== null && devB.length === 1, JSON.stringify({ active: active.id, b: devB.map((e) => e.id) }));
+  addShared(devA, X);
+  check('imports/library ids: ...and A adding it back changes nothing either', active.id === X.id && devA.length === 1);
+
+  // a TEAMMATE (another account) still gets a fresh id per device, or one room could not seat both
+  const mate = planShareAdd(X, withId({ ...X, heightIn: 12 }, 'ffffffffffffffff'), [], specOf);
+  check('imports/library ids: a share file that is not the account’s active robot still gets a fresh id (two teammates, one room)', mate.kind === 'fresh');
+  // ...and THAT teammate's second device adopts the teammate's id, which the file does not carry
+  const z = withId(X, '1212121212121212');
+  const t2 = planShareAdd(X, z, [], specOf);
+  check('imports/library ids: a teammate’s second device adopts the TEAMMATE’s id for the same robot (the descriptor decides, not the file’s id)', t2.kind === 'adopt' && t2.id === z.id);
+  // a copy made under its own id before this rule is replaced, not kept beside the adopted one
+  const legacy = planShareAdd(X, X, [copy], specOf);
+  check('imports/library ids: an older copy of the active robot under another id is retired when the file is added again', legacy.kind === 'adopt' && legacy.id === X.id && legacy.retire === copy.id);
+  // this device already has the file's robot but it is not the active one: the old question
+  const dup = planShareAdd(X, withId({ ...X, heightIn: 12 }, 'ffffffffffffffff'), [own], specOf);
+  check('imports/library ids: a file whose robot is here but not active asks replace or keep both, as before', dup.kind === 'ask' && dup.have === own);
+
+  // every place that turns the active id into a library record reads the rule
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  check('imports/library ids: the robot page, the lobby picker, the actions, the asset source and the share-file add all resolve through libraryIds',
+    /libraryEntryFor\(library\.entries, importedId\)/.test(rd('src/ui/Menu.tsx')) &&
+      /libraryEntryFor\(importLibrary\.entries, mySpec\.imported\?\.id\)/.test(rd('src/ui/Lobby.tsx')) &&
+      /libraryEntryFor\(entries, active\)/.test(rd('src/robotImport/ui/ImportedRobots.tsx')) &&
+      /const rid = await answeringId\(db, id\)/.test(rd('src/robotImport/library.ts')) &&
+      /planShareAdd\(spec\.imported, settings\.spec\.imported/.test(rd('src/robotImport/ui/ImportEditor.tsx')));
+  check('imports/library ids: a duplicate is a robot of its own and does not answer for the original’s share file', /const \{ sharedFrom: _from, \.\.\.rest \} = src/.test(rd('src/robotImport/library.ts')));
+
+  /**
+   * AN EDIT NEVER RE-KEYS THE ACTIVE ROBOT (`editSaveId`). Device B added A's file BEFORE rule 2,
+   * so its copy has an id of its own (`copy`, sharedFrom X). Rule 1 finds it for the synced X, so
+   * the robot page offers it for editing, and the editor saved under the COPY's id, which then
+   * became active and synced: A's robot was "not on this device" again.
+   */
+  check('imports/library ids: editing this device’s pre-rule copy of the active robot saves under the ACTIVE id',
+    editSaveId(copy.id, X.id, [copy]) === X.id);
+  check('imports/library ids: ...a record that HAS the active id keeps it, and a copy that answers for nothing active keeps its own',
+    editSaveId(X.id, X.id, [copy, own]) === X.id &&
+      editSaveId(copy.id, X.id, [copy, own]) === copy.id && // the record with X answers for X, not the copy
+      editSaveId(copy.id, null, [copy]) === copy.id &&
+      editSaveId(copy.id, 'cccccccccccccccc', [copy]) === copy.id);
+  {
+    // played out on B: the edit saves under X, the copy is retired, and the account's id never moves
+    let acct: ImportedRobot = X;
+    const devB2: Row[] = [copy];
+    const id = editSaveId(copy.id, acct.id, devB2);
+    const edited = { ...X, heightIn: 15, id };
+    devB2.splice(devB2.findIndex((e) => e.id === copy.id), 1, row(edited));
+    acct = edited; // the editor's save makes it the active robot, which syncs
+    check('imports/library ids: ...played out: the account keeps X, B’s library answers for it, the old copy is gone',
+      acct.id === X.id && libraryEntryFor(devB2, acct.id)?.id === X.id && devB2.length === 1 && libraryEntryFor(devA, acct.id) !== null);
+  }
+  check('imports/library ids: the editor saves through editSaveId and retires the old record',
+    /const id = cur\.doc\.editId && listed\?\.ok \? editSaveId\(cur\.doc\.editId, settings\.spec\.imported\?\.id, listed\.value\) : cur\.doc\.id;/.test(rd('src/robotImport/ui/ImportEditor.tsx')) &&
+      /if \(id !== cur\.doc\.id\) await deleteRobot\(cur\.doc\.id\);/.test(rd('src/robotImport/ui/ImportEditor.tsx')));
+  check('imports/library ids: libraryIds.ts imports types only (the robot page and the lobby are in `main`)',
+    rd('src/robotImport/libraryIds.ts').split('\n').filter((l) => /^import /.test(l)).every((l) => /^import type /.test(l)));
+}
+
+// ---- THE REPLAY EXPORT waits for an import's picture (2D) or mesh (3D) before frame 0 --------
+{
+  // the export draws its frames in one synchronous burst, so a picture still decoding when it
+  // starts is drawn as the silhouette until the browser gets a turn. `importedTopsSettled` is the
+  // wait; Node has no `Image`, so a stub decodes on a later macrotask, as a browser would.
+  const g = globalThis as unknown as { Image?: unknown };
+  const hadImage = 'Image' in g;
+  const prevImage = g.Image;
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  let n = 0;
+  URL.createObjectURL = (): string => `blob:settle/${++n}`;
+  URL.revokeObjectURL = (): void => {};
+  class SlowImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    decoding = '';
+    set src(_v: string) {
+      setTimeout(() => this.onload?.(), 5);
+    }
+  }
+  g.Image = SlowImage;
+  try {
+    resetImportedAssetsForTests();
+    let release: (() => void) | null = null;
+    setImportedAssetSource({
+      // the picture comes back only when the test says so (the library's IndexedDB read)
+      top: (id) => (id.startsWith('0') ? Promise.resolve(null) : new Promise<Blob>((r) => (release = () => r(new Blob([id]))))),
+      mesh: async () => null,
+    });
+    const id = 'abcabcabcabcabc1';
+    const missing = '0000000000000002';
+    let done = false;
+    const wait = importedTopsSettled([id, missing]).then(() => {
+      done = true;
+    });
+    await new Promise<void>((r) => setTimeout(r, 10));
+    const heldBack = !done && importedTopImage(id) === null;
+    release!();
+    await wait;
+    check(
+      'imports/export: importedTopsSettled waits until an import’s top picture is DECODED (and a missing one settles too), so frame 0 has it',
+      heldBack && done && importedTopImage(id) !== null && importedTopImage(missing) === null,
+    );
+    // an entry dropped while loading settles too, rather than holding the export to its timeout
+    let release2: (() => void) | null = null;
+    setImportedAssetSource({ top: () => new Promise<Blob>((r) => (release2 = () => r(new Blob(['x'])))), mesh: async () => null });
+    const id2 = 'abcabcabcabcabc2';
+    let done2 = false;
+    const wait2 = importedTopsSettled([id2]).then(() => {
+      done2 = true;
+    });
+    invalidateImportedAssets(id2);
+    release2!();
+    await Promise.race([wait2, new Promise<void>((r) => setTimeout(r, 200))]);
+    check('imports/export: ...and a load that is dropped meanwhile settles as well', done2);
+  } finally {
+    resetImportedAssetsForTests();
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    if (hadImage) g.Image = prevImage;
+    else delete g.Image;
+  }
+  const rd = (f: string) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const rv = rd('src/ui/ReplayView.tsx');
+  const at = rv.indexOf('blob = await recordFast({');
+  const wait = rv.indexOf('await Promise.race([settled');
+  check(
+    'imports/export: the replay export awaits the pictures (2D) or the scene’s assetsSettled (3D), bounded, BEFORE recordFast draws frame 0; the BIOBUZZ scene implements it',
+    wait > 0 && wait < at && /scene\.assetsSettled\?\.\(shot\.world\)/.test(rv) && /importedTopsSettled\(importIds\)/.test(rv) &&
+      /assetsSettled\(world: World\): Promise<void> \{\s*return importedMeshesSettled\(/.test(rd('src/games/biobuzz/scene/renderScene.ts')),
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// IMPORTED ROBOT VISUALS RELAY (docs/area/netcode.md, VISUALS RELAY) — the wire rules, pure
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const { glbBytes, glbFrom, pngBytes, pngChunk, concat } = VF;
+  const png = pngBytes(8, 8);
+  const glb = glbBytes({ tris: 3 });
+
+  check('visuals/caps: the capability is on both lists, and a client without it is not a participant',
+    PROTO.CLIENT_CAPS.includes(IV.IMPORT_VISUALS_CAP) && PROTO.SERVER_CAPS.includes(IV.IMPORT_VISUALS_CAP) && IV.IMPORT_VISUALS_CAP === 'importVisuals'
+      && IV.hasVisualsCap(PROTO.CLIENT_CAPS) && !IV.hasVisualsCap([]) && !IV.hasVisualsCap(undefined) && !IV.hasVisualsCap(['robotImport']));
+  check('visuals/caps: coerceCaps still keeps every cap this build advertises (16 is the ceiling)', PROTO.coerceCaps(PROTO.CLIENT_CAPS).length === PROTO.CLIENT_CAPS.length && PROTO.CLIENT_CAPS.length <= 16);
+
+  // ---- a frame fits every transport it crosses ------------------------------------------------
+  {
+    check('visuals/frame: a chunk is 24 KiB of payload and exactly 32,768 base64 characters', IV.VISUAL_CHUNK_BYTES === 24 * 1024 && IV.VISUAL_CHUNK_CHARS === 32768);
+    const put = JSON.stringify({ t: 'visualPut', kind: 'mesh', id: '0123456789abcdef', total: 1048576, seq: 42, data: 'A'.repeat(IV.VISUAL_CHUNK_CHARS) });
+    const chunk = JSON.stringify({ t: 'visualChunk', owner: 'c'.repeat(36), id: '0123456789abcdef', kind: 'mesh', total: 1048576, seq: 42, data: 'A'.repeat(IV.VISUAL_CHUNK_CHARS) });
+    check('visuals/frame: the fullest upload frame is well under the server’s 64 KiB inbound cap', put.length < 34000 && put.length < 64 * 1024, String(put.length));
+    check('visuals/frame: ...and the fullest download frame is under the 64 KiB default of a WebRTC DataChannel message', chunk.length < 34000 && chunk.length < 64 * 1024, String(chunk.length));
+    check('visuals/frame: a mesh is 43 frames and a top picture 11 (the 1 MiB and 256 KiB caps)', IV.visualFrames(IV.VISUAL_MAX_BYTES.mesh) === 43 && IV.visualFrames(IV.VISUAL_MAX_BYTES.top) === 11);
+    // the spans tile an asset exactly, whatever its length
+    let tiled = true;
+    for (const total of [1, 2, 24575, 24576, 24577, 65752, 1048576]) {
+      let at = 0;
+      for (let seq = 0; seq < IV.visualFrames(total); seq++) {
+        const s = IV.visualSpan(total, seq);
+        if (s.start !== at || s.end <= s.start || s.end - s.start > IV.VISUAL_CHUNK_BYTES) tiled = false;
+        at = s.end;
+      }
+      if (at !== total) tiled = false;
+    }
+    check('visuals/frame: the frame spans tile every length exactly, none over a chunk', tiled);
+  }
+
+  // ---- pacing ---------------------------------------------------------------------------------
+  {
+    check('visuals/pace: the owner’s upload is under a quarter of the 240 msg/s bucket, beside the 60 Hz input stream',
+      1000 / IV.VISUAL_UPLOAD_GAP_MS <= 240 / 4 && 1000 / IV.VISUAL_UPLOAD_GAP_MS + 60 < 240, String(1000 / IV.VISUAL_UPLOAD_GAP_MS));
+    check('visuals/pace: a full 1 MiB mesh uploads in about a second and a half', IV.visualFrames(IV.VISUAL_MAX_BYTES.mesh) * IV.VISUAL_UPLOAD_GAP_MS < 2000);
+    const m = IV.streamMayWrite;
+    check('visuals/pace: an idle socket is written to', m({ backlog: 0, now: 1000, lastAt: 0, live: false }));
+    check('visuals/pace: a socket with a backlog at the limit is not, and one just under it is',
+      !m({ backlog: IV.VISUAL_STREAM_BACKLOG_BYTES, now: 1000, lastAt: 0, live: false }) && m({ backlog: IV.VISUAL_STREAM_BACKLOG_BYTES - 1, now: 1000, lastAt: 0, live: false }));
+    check('visuals/pace: a socket the room cannot read (LAN, a test) is paced by time alone', m({ backlog: undefined, now: 1000, lastAt: 999, live: false }));
+    check('visuals/pace: during a live match a viewer is held to one chunk per gap, and released after it',
+      !m({ backlog: 0, now: 1050, lastAt: 1000, live: true }) && m({ backlog: 0, now: 1000 + IV.VISUAL_STREAM_LIVE_GAP_MS, lastAt: 1000, live: true }));
+    check('visuals/pace: the live cap is about 240 KB/s, so a snapshot stream beside it is not crowded out',
+      (IV.VISUAL_CHUNK_BYTES * 1000) / IV.VISUAL_STREAM_LIVE_GAP_MS <= 250_000);
+    check('visuals/pace: the backlog limit sits far under the snapshot-skip threshold (256 KB), so a download can never cause a keyframe',
+      IV.VISUAL_STREAM_BACKLOG_BYTES + IV.VISUAL_CHUNK_BYTES * 2 < 256 * 1024);
+  }
+
+  // ---- budgets, as numbers -------------------------------------------------------------------------
+  check('visuals/budget: a room holds four seats of (a 1 MiB mesh + a 256 KiB picture), the process 64 MiB',
+    IV.VISUAL_ROOM_BYTES === 4 * (1024 * 1024 + 256 * 1024) && IV.VISUAL_PROCESS_BYTES === 64 * 1024 * 1024 && IV.VISUAL_ROOM_BYTES < IV.VISUAL_PROCESS_BYTES);
+  check('visuals/budget: one viewer may be sent a full room twice over and not 100 times (egress is the bill)',
+    IV.VISUAL_SERVE_CLIENT_BYTES >= IV.VISUAL_ROOM_BYTES && IV.VISUAL_SERVE_CLIENT_BYTES <= 2 * IV.VISUAL_ROOM_BYTES && IV.VISUAL_SERVE_ROOM_BYTES <= 10 * IV.VISUAL_ROOM_BYTES);
+
+  // ---- base64 ----------------------------------------------------------------------------------------
+  {
+    let rt = true;
+    const rnd = VF.prng(3);
+    for (const n of [0, 1, 2, 3, 4, 5, 1000, IV.VISUAL_CHUNK_BYTES, IV.VISUAL_CHUNK_BYTES + 1]) {
+      const b = Uint8Array.from({ length: n }, () => Math.floor(rnd() * 256));
+      const back = IV.base64ToBytes(IV.bytesToBase64(b));
+      if (!back || back.length !== n || !back.every((x, i) => x === b[i])) rt = false;
+    }
+    check('visuals/base64: round-trips every length around a chunk', rt);
+    const b = Uint8Array.from({ length: 100 }, (_, i) => i);
+    check('visuals/base64: a sub-range encodes just that range', IV.base64ToBytes(IV.bytesToBase64(b, 10, 20))?.join(',') === b.subarray(10, 20).join(','));
+    check('visuals/base64: a stray character is refused (Node’s own decoder would skip it)', IV.base64ToBytes('AAA*') === null && IV.base64ToBytes('AA A') === null && IV.base64ToBytes('AAA=A') === null);
+    check('visuals/base64: a length that is not a multiple of 4, a non-string, and misplaced padding are refused',
+      IV.base64ToBytes('AAA') === null && IV.base64ToBytes(5) === null && IV.base64ToBytes(null) === null && IV.base64ToBytes('A=AA') === null);
+  }
+
+  // ---- a PNG --------------------------------------------------------------------------------------
+  {
+    const v = VC.validateTopPng;
+    check('visuals/png: a real PNG passes', v(png) === null && v(pngBytes(512, 512)) === null);
+    const sig = (b: Uint8Array, at: number, val: number): Uint8Array => {
+      const c = Uint8Array.from(b);
+      c[at] = val;
+      return c;
+    };
+    check('visuals/png: a wrong signature is refused', v(sig(png, 1, 0x51)) === 'not a PNG');
+    check('visuals/png: a truncated file is refused (no IEND)', v(png.subarray(0, png.length - 12)) !== null && v(png.subarray(0, png.length - 5)) !== null);
+    check('visuals/png: bytes after IEND are refused (a polyglot)', v(concat([png, Uint8Array.of(1, 2, 3)])) !== null);
+    const ihdr = (w: number, h: number, depth = 8, colour = 6): Uint8Array => {
+      const be = (n: number): number[] => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+      return pngChunk('IHDR', Uint8Array.from([...be(w), ...be(h), depth, colour, 0, 0, 0]));
+    };
+    const withIhdr = (chunk: Uint8Array): Uint8Array => concat([png.subarray(0, 8), chunk, png.subarray(8 + 25)]);
+    check('visuals/png: a 65,535 × 65,535 picture is refused whatever its size on the wire (a decompression bomb)', v(withIhdr(ihdr(65535, 65535))) === 'picture size');
+    check('visuals/png: ...as are a side of 0 and one just over 1024', v(withIhdr(ihdr(0, 8))) === 'picture size' && v(withIhdr(ihdr(1025, 8))) === 'picture size' && v(withIhdr(ihdr(1024, 1024))) === null);
+    check('visuals/png: an impossible bit depth or colour type is refused', v(withIhdr(ihdr(8, 8, 7, 6))) === 'IHDR' && v(withIhdr(ihdr(8, 8, 8, 5))) === 'IHDR');
+    check('visuals/png: no IHDR first, or a second IHDR, is refused',
+      v(concat([png.subarray(0, 8), pngChunk('IDAT', Uint8Array.of(1)), png.subarray(8 + 25)])) === 'no IHDR' && v(concat([png.subarray(0, 8 + 25), ihdr(8, 8), png.subarray(8 + 25)])) === 'second IHDR');
+    check('visuals/png: a chunk type that is not letters, and a chunk longer than the file, are refused',
+      v(concat([png.subarray(0, 8 + 25), pngChunk('ID4T', Uint8Array.of(1)), png.subarray(8 + 25)])) === 'chunk type'
+      && v(concat([png.subarray(0, 8 + 25), Uint8Array.of(0, 0, 0xff, 0xff, 0x49, 0x44, 0x41, 0x54, 1, 2, 3)])) !== null);
+    check('visuals/png: a file with no IDAT is refused', v(concat([png.subarray(0, 8 + 25), pngChunk('IEND')])) !== null);
+    check('visuals/png: over 256 KiB is refused, at 256 KiB or under is not', v(pngBytes(260, 260, { noise: true })) !== null && v(pngBytes(250, 250, { noise: true })) === null,
+      `${pngBytes(260, 260, { noise: true }).length} / ${pngBytes(250, 250, { noise: true }).length}`);
+  }
+
+  // ---- a GLB ---------------------------------------------------------------------------------------
+  {
+    const v = VC.validateMeshGlb;
+    check('visuals/glb: a real binary glTF with its buffer in the BIN chunk passes', v(glb) === null && v(glbBytes({ tris: 20000 })) === null);
+    const bad = (edit: (j: Record<string, any>) => void): string | null => v(glbBytes({ edit }));
+    check('visuals/glb: ⚠️ an EXTERNAL buffer (a uri) is refused outright — the viewer’s loader would fetch it', bad((j) => { j.buffers[0].uri = 'https://example.invalid/robot.bin'; }) === 'external reference');
+    check('visuals/glb: ...a data: URI buffer too (everything must be in the BIN chunk)', bad((j) => { j.buffers[0].uri = 'data:application/octet-stream;base64,AAAA'; }) === 'external reference');
+    check('visuals/glb: ...a uri hidden in `extras`, deep, or in an array is found', bad((j) => { j.extras = { a: [{ b: { uri: 'x' } }] }; }) === 'external reference'
+      && bad((j) => { j.materials[0].extensions = { X: { uri: 'x' } }; }) === 'external reference');
+    check('visuals/glb: an IMAGE inside a mesh is refused (even one with no uri, from a buffer view)', bad((j) => { j.images = [{ bufferView: 0, mimeType: 'image/png' }]; }) === 'images');
+    check('visuals/glb: textures are refused', bad((j) => { j.textures = [{ source: 0 }]; }) === 'textures');
+    check('visuals/glb: a REQUIRED extension (a decoder this client may not have) is refused', bad((j) => { j.extensionsRequired = ['KHR_draco_mesh_compression']; }) === 'required extension');
+    check('visuals/glb: an accessor that reads past its buffer view is refused', bad((j) => { j.accessors[0].count += 1000; }) === 'accessor range');
+    check('visuals/glb: a buffer view past the buffer is refused', bad((j) => { j.bufferViews[0].byteLength += 64; }) === 'bufferView');
+    check('visuals/glb: a sparse accessor and an accessor with no buffer view are refused', bad((j) => { j.accessors[0].sparse = { count: 1 }; }) === 'accessor'
+      && bad((j) => { delete j.accessors[0].bufferView; }) === 'accessor has no buffer view');
+    check('visuals/glb: a primitive that is not triangles, or has no positions, is refused', bad((j) => { j.meshes[0].primitives[0].mode = 1; }) === 'primitive mode'
+      && bad((j) => { delete j.meshes[0].primitives[0].attributes.POSITION; }) === 'primitive has no positions');
+    check('visuals/glb: a file with no geometry is refused', bad((j) => { j.meshes = []; }) === 'no geometry');
+    check('visuals/glb: more triangles than the importer’s own 150,000 cap are refused', v(glbBytes({ tris: 150_001 }), 64 * 1024 * 1024) === 'too many triangles');
+    check('visuals/glb: a second buffer is refused', bad((j) => { j.buffers.push({ byteLength: 4 }); }) === 'buffers');
+    const g = glbBytes({ tris: 3 });
+    const poke = (at: number, val: number, little = true): Uint8Array => {
+      const c = Uint8Array.from(g);
+      new DataView(c.buffer).setUint32(at, val, little);
+      return c;
+    };
+    check('visuals/glb: a wrong magic, a wrong version and a lying total length are refused', v(poke(0, 0)) === 'not a GLB' && v(poke(4, 1)) === 'not glTF 2' && v(poke(8, g.length + 4)) === 'GLB length');
+    check('visuals/glb: a JSON chunk longer than the file is refused', v(poke(12, 0xfffffff0)) === 'chunk length');
+    check('visuals/glb: a file whose first chunk is not JSON, and one that is not 4-byte aligned, are refused', v(poke(16, 0x004e4942)) === 'first chunk is not JSON' && v(g.subarray(0, g.length - 1)) !== null);
+    check('visuals/glb: a third chunk is refused', v(glbFrom({ asset: { version: '2.0' } }, null)) !== null && v(concat([g, Uint8Array.of(0, 0, 0, 0)])) !== null);
+    check('visuals/glb: invalid UTF-8 and JSON that does not parse are refused', (() => {
+      const c = Uint8Array.from(g);
+      c[21] = 0xff;
+      c[22] = 0xfe;
+      return v(c) === 'JSON';
+    })());
+    check('visuals/glb: over 1 MiB is refused, just under it is not', v(glbBytes({ tris: 30_000 })) === 'too large' && v(glbBytes({ tris: 29_000 })) === null,
+      `${glbBytes({ tris: 30_000 }).length} / ${glbBytes({ tris: 29_000 }).length}`);
+    check('visuals/glb: validateVisual picks the validator by kind', VC.validateVisual('top', png) === null && VC.validateVisual('mesh', glb) === null && VC.validateVisual('top', glb) !== null && VC.validateVisual('mesh', png) !== null);
+  }
+  check('visuals/copy: every refusal is a plain sentence — Couldn’t or a clear statement, the next thing the viewer sees, a typographic apostrophe, no ASCII one',
+    Object.values(IV.VISUAL_REFUSAL_COPY).every((s) => /\.$/.test(s) && !/'/.test(s) && s.length < 140) && IV.isVisualKind('top') && IV.isVisualKind('mesh') && !IV.isVisualKind('thumb'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE GLB ALLOWLIST (review 2026-10-01): files three's GLTFLoader would turn on every viewer
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const { glbBytes, glbFrom } = VF;
+  const v = VC.validateMeshGlb;
+  const bad = (edit: (j: Record<string, any>) => void, tris = 3): string | null => v(glbBytes({ tris, edit }));
+  const roots = (j: Record<string, any>): void => {
+    j.scenes[0].nodes = j.nodes.map((_: unknown, i: number) => i);
+  };
+  const { buildBoxesGlb, IMPORT_FIXTURE_BOXES } = await import('./smoke-biobuzz/fixtures/importGlb');
+  check('visuals/glb+: our own GLBs pass — the fixture, a 20k-triangle one, and the synthetic importer robot (real exporter and liteMesh output: visuals/lite)',
+    v(glbBytes()) === null && v(glbBytes({ tris: 20_000 })) === null && v(new Uint8Array(buildBoxesGlb(IMPORT_FIXTURE_BOXES))) === null,
+    String(v(new Uint8Array(buildBoxesGlb(IMPORT_FIXTURE_BOXES)))));
+  check('visuals/glb+: our exporter writes no extension, so none is allowed', VC.VISUAL_GLB_EXTENSIONS.length === 0);
+
+  // ---- the five crafted files of the review ----------------------------------------------------------
+  check('visuals/glb+: ⚠️ GPU INSTANCING (512 nodes × 500,000 copies from a 546 KB file) is refused, declared or not',
+    bad((j) => {
+      j.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+      j.nodes = Array.from({ length: 512 }, () => ({ mesh: 0, extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 0 } } } }));
+      roots(j);
+    }) === 'extension'
+      && bad((j) => { j.nodes[0].extensions = { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 0 } } }; }) === 'extension');
+  check('visuals/glb+: ⚠️ a MESHOPT buffer view (it allocates count × byteStride, here 1.6 GB) is refused',
+    bad((j) => { j.bufferViews[0].extensions = { EXT_meshopt_compression: { buffer: 0, byteOffset: 0, byteLength: 36, byteStride: 4, count: 4e8, mode: 'ATTRIBUTES' } }; }) === 'extension');
+  check('visuals/glb+: ⚠️ images and textures sent as OBJECTS (the loader indexes `{"0": …}` like an array) are refused, as is a texture slot on a material',
+    bad((j) => {
+      j.images = { 0: { bufferView: 0, mimeType: 'image/png' } };
+      j.textures = { 0: { source: 0 } };
+      j.materials[0].pbrMetallicRoughness.baseColorTexture = { index: 0 };
+    }) === 'images'
+      && bad((j) => { j.textures = { 0: { source: 0 } }; }) === 'textures'
+      && bad((j) => { j.materials[0].pbrMetallicRoughness.baseColorTexture = { index: 0 }; }) === 'textures'
+      && bad((j) => { j.materials[0].normalTexture = { index: 0 }; }) === 'textures'
+      && bad((j) => { j.samplers = []; }) === 'samplers' && bad((j) => { j.images = []; }) === 'images');
+  check('visuals/glb+: ⚠️ one mesh drawn by 512 nodes is counted 512 times (512 × 1,000 triangles is over the 150,000 cap), while 100 nodes is not',
+    bad((j) => { j.nodes = Array.from({ length: 512 }, () => ({ mesh: 0 })); roots(j); }, 1000) === 'too many triangles'
+      && bad((j) => { j.nodes = Array.from({ length: 100 }, () => ({ mesh: 0 })); roots(j); }, 1000) === null);
+  check('visuals/glb+: ⚠️ a node CYCLE (the load never settles), a node that is its own child, and a node with two parents are refused',
+    bad((j) => { j.nodes = [{ mesh: 0, children: [1] }, { children: [0] }]; }) === 'node graph'
+      && bad((j) => { j.nodes = [{ mesh: 0, children: [0] }]; }) === 'node graph'
+      && bad((j) => { j.nodes = [{ mesh: 0 }, { children: [0] }, { children: [0] }]; j.scenes[0].nodes = [1, 2]; }) === 'node graph');
+  {
+    const chain = (n: number) => (j: Record<string, any>): void => {
+      j.nodes = Array.from({ length: n }, (_, i) => (i < n - 1 ? { children: [i + 1] } : { mesh: 0 }));
+    };
+    check('visuals/glb+: a node more than 32 deep is refused, 30 deep is not', bad(chain(40)) === 'node graph' && bad(chain(30)) === null);
+  }
+  check('visuals/glb+: a scene that lists a child as a root, or a root twice, is refused',
+    bad((j) => { j.nodes = [{ mesh: 0, children: [1] }, {}]; j.scenes[0].nodes = [0, 1]; }) === 'scene'
+      && bad((j) => { j.scenes[0].nodes = [0, 0]; }) === 'scene' && bad((j) => { j.scene = 3; }) === 'scene');
+
+  // ---- own-property lookups, and what the loader would read past --------------------------------------
+  check('visuals/glb+: ⚠️ a component type or a type that is a PROTOTYPE key (`constructor`, `toString`) is refused, as is an unknown one',
+    bad((j) => { j.accessors[0].componentType = 'constructor'; }) === 'accessor' && bad((j) => { j.accessors[0].type = 'toString'; }) === 'accessor'
+      && bad((j) => { j.accessors[0].componentType = 5130; }) === 'accessor');
+  {
+    // three vertices and a real index buffer: [0, 1, 2] passes, [0, 1, 3] names a vertex that is not there
+    const withIndices = (ix: number[], type = 5123): Uint8Array => {
+      const bin = new Uint8Array(36 + 8);
+      new Float32Array(bin.buffer, 0, 9).set([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      const dv = new DataView(bin.buffer);
+      ix.forEach((x, i) => dv.setUint16(36 + 2 * i, x, true));
+      return glbFrom({
+        asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, mode: 4 }] }],
+        buffers: [{ byteLength: bin.length }],
+        bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }],
+        accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: type, count: ix.length, type: 'SCALAR' }],
+      }, bin);
+    };
+    check('visuals/glb+: ⚠️ an index past the last vertex is refused (the values are read, not just the counts)',
+      v(withIndices([0, 1, 2])) === null && v(withIndices([0, 1, 3])) === 'index out of range' && v(withIndices([0, 1, 2, 0], 5121)) === 'primitive indices', String(v(withIndices([0, 1, 2]))));
+  }
+  check('visuals/glb+: an attribute with fewer entries than the positions is refused (the loader would read past it)',
+    bad((j) => {
+      j.accessors.push({ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' });
+      j.meshes[0].primitives[0].attributes.NORMAL = 1;
+    }, 4) === 'primitive attribute count');
+  check('visuals/glb+: skinning, custom and morph attributes are refused; so are a node skin or camera and an unknown top-level key',
+    bad((j) => { j.meshes[0].primitives[0].attributes.JOINTS_0 = 0; }) === 'primitive attribute'
+      && bad((j) => { j.meshes[0].primitives[0].targets = [{ POSITION: 0 }]; }) === 'primitive'
+      && bad((j) => { j.nodes[0].skin = 0; }) === 'node' && bad((j) => { j.nodes[0].camera = 0; }) === 'node'
+      && bad((j) => { j.skins = []; }) === 'skins' && bad((j) => { j.animations = []; }) === 'animations' && bad((j) => { j.cameras = []; }) === 'cameras'
+      && /^unexpected/.test(bad((j) => { j.lights = []; }) ?? ''));
+  check('visuals/glb+: an `extensionsRequired` that is not an empty list, and any declared extension, are refused',
+    bad((j) => { j.extensionsRequired = { 0: 'KHR_draco_mesh_compression' }; }) === 'required extension'
+      && bad((j) => { j.extensionsUsed = ['KHR_lights_punctual']; }) === 'extension'
+      && bad((j) => { j.extensionsUsed = []; j.extensionsRequired = []; }) === null);
+  check('visuals/glb+: a node transform that is not finite numbers, and a vertex stride that is not a multiple of 4, are refused',
+    bad((j) => { j.nodes[0].translation = [null, 0, 0]; }) === 'node transform' && bad((j) => { j.nodes[0].matrix = [1, 0, 0]; }) === 'node transform'
+      && bad((j) => { j.bufferViews[0].byteStride = 3; }) === 'bufferView stride');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE RELAY, with a stand-in room: uploads, refusals, budgets, freeing, the pump
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const { glbBytes, pngBytes } = VF;
+  const ID_A = '00000000000000a1';
+  const ID_B = '00000000000000b2';
+  const ID_C = '00000000000000c3';
+  type Msg = PROTO.ServerMsg;
+  interface FC {
+    id: string;
+    caps: string[] | undefined;
+    got: Msg[];
+    backlogBytes: number | undefined;
+    robot: string | undefined;
+    c: Client;
+  }
+  const fakes = new Map<string, FC>();
+  let allows = true;
+  let liveMatch = false;
+  const mkFake = (id: string, caps: string[] | undefined, robot?: string): FC => {
+    const f: FC = { id, caps, got: [], backlogBytes: 0, robot, c: null as unknown as Client };
+    f.c = {
+      id,
+      send: (m: Msg) => f.got.push(m),
+      backlog: () => f.backlogBytes as number,
+      player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+      caps,
+    } as Client;
+    fakes.set(id, f);
+    return f;
+  };
+  const host: SV.RelayHost = {
+    allows: () => allows,
+    find: (id) => fakes.get(id)?.c,
+    importId: (id) => fakes.get(id)?.robot,
+    recipients: () => [...fakes.values()].map((f) => f.c),
+    live: () => liveMatch,
+  };
+  const reset = (limit = IV.VISUAL_PROCESS_BYTES) => {
+    fakes.clear();
+    allows = true;
+    liveMatch = false;
+    const budget = SV.localVisualBudget(limit);
+    return { relay: new SV.VisualRelay(host, budget), budget };
+  };
+  const msgs = (f: FC, t: string): Msg[] => f.got.filter((m) => m.t === t);
+  const refusals = (f: FC): string[] => (msgs(f, 'visualRefused') as Extract<Msg, { t: 'visualRefused' }>[]).map((m) => `${m.op}:${m.reason}`);
+  /** send `bytes` as the owner would, one frame per chunk */
+  const put = (relay: SV.VisualRelay, f: FC, kind: IV.VisualKind, bytes: Uint8Array, id = f.robot ?? '', skip = -1): void => {
+    const from = f.got.length;
+    for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+      if (seq === skip) continue;
+      const s = IV.visualSpan(bytes.length, seq);
+      relay.onMessage(f.id, { t: 'visualPut', kind, id, total: bytes.length, seq, data: IV.bytesToBase64(bytes, s.start, s.end) });
+      // an owner stops at a refusal; the frames after it would only be refused for their own seq
+      if (f.got.slice(from).some((m) => m.t === 'visualRefused')) return;
+    }
+  };
+  const get = (relay: SV.VisualRelay, f: FC, owner: string, id: string, kind: IV.VisualKind): void => relay.onMessage(f.id, { t: 'visualGet', owner, id, kind });
+  const pump = (relay: SV.VisualRelay): void => (relay as unknown as { pump(): void }).pump();
+  const drain = (relay: SV.VisualRelay, rounds = 400): void => {
+    for (let i = 0; i < rounds; i++) pump(relay);
+  };
+  /** the bytes a viewer was streamed for one asset, in the order they arrived */
+  const received = (f: FC, owner: string, kind: IV.VisualKind): { bytes: Uint8Array; seqs: number[] } => {
+    const cs = (msgs(f, 'visualChunk') as Extract<Msg, { t: 'visualChunk' }>[]).filter((m) => m.owner === owner && m.kind === kind);
+    const total = cs[0]?.total ?? 0;
+    const bytes = new Uint8Array(total);
+    for (const c of cs) bytes.set(IV.base64ToBytes(c.data) ?? new Uint8Array(0), IV.visualSpan(total, c.seq).start);
+    return { bytes, seqs: cs.map((c) => c.seq) };
+  };
+  const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  const png = pngBytes(128, 128, { noise: true }); // 3 chunks
+  const glb = glbBytes({ tris: 2000 }); // 72 KB, 3 chunks
+
+  // ---- upload, announce, stream ----------------------------------------------------------------
+  {
+    const { relay, budget } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    const old = mkFake('old', ['robotImport']);
+    const spec = mkFake('spec', PROTO.CLIENT_CAPS);
+    put(relay, a, 'top', png);
+    const ready = msgs(b, 'visualReady') as Extract<Msg, { t: 'visualReady' }>[];
+    check('visuals/relay: a completed upload is announced to every participant, the owner included, with the size',
+      ready.length === 1 && ready[0].owner === 'a' && ready[0].id === ID_A && ready[0].kind === 'top' && ready[0].bytes === png.length && msgs(a, 'visualReady').length === 1 && msgs(spec, 'visualReady').length === 1);
+    check('visuals/relay: ...and to NOBODY who did not advertise the capability (a cap-less client is sent nothing)', old.got.length === 0);
+    check('visuals/relay: the room has reserved exactly the asset’s bytes from the budget', relay.stats().reserved === png.length && budget.used() === png.length && relay.stats().ready === 1);
+
+    get(relay, b, 'a', ID_A, 'top');
+    check('visuals/relay: ⚠️ nothing is streamed until the pump runs (nothing is sent that was not asked for, and not in the same tick)', msgs(b, 'visualChunk').length === 0 && relay.stats().streams === 1);
+    drain(relay);
+    const r = received(b, 'a', 'top');
+    check('visuals/relay: a viewer that asked receives the asset IDENTICAL, chunks in order from 0', same(r.bytes, png) && r.seqs.join() === '0,1,2', r.seqs.join());
+    check('visuals/relay: the stream is finished and removed (no timer left running for nothing)', relay.stats().streams === 0 && !(relay as unknown as { timer: unknown }).timer);
+    check('visuals/relay: the spectator, who did not ask, was sent no chunk at all', msgs(spec, 'visualChunk').length === 0);
+    check('visuals/relay: a second upload of the other kind is held beside the first', (() => {
+      put(relay, a, 'mesh', glb);
+      return relay.stats().ready === 2 && relay.stats().reserved === png.length + glb.length;
+    })());
+    get(relay, spec, 'a', ID_A, 'mesh');
+    drain(relay);
+    check('visuals/relay: a watcher (not a seat) can ask too, and gets the mesh identical', same(received(spec, 'a', 'mesh').bytes, glb));
+    check('visuals/relay: a client attaching later is told what is ready (`greet`), one message per asset', (() => {
+      const late = mkFake('late', PROTO.CLIENT_CAPS);
+      relay.greet(late.c);
+      const ms = msgs(late, 'visualReady') as Extract<Msg, { t: 'visualReady' }>[];
+      const none = mkFake('none', ['robotImport']);
+      relay.greet(none.c);
+      return ms.length === 2 && ms.map((m) => m.kind).sort().join() === 'mesh,top' && none.got.length === 0;
+    })());
+    relay.dispose();
+    check('visuals/relay: dispose gives every byte back', budget.used() === 0 && relay.stats().reserved === 0 && relay.stats().owners === 0);
+  }
+
+  // ---- half sent ----------------------------------------------------------------------------------
+  {
+    const { relay } = reset();
+    const o = mkFake('o', PROTO.CLIENT_CAPS, ID_A);
+    const v = mkFake('v', PROTO.CLIENT_CAPS);
+    put(relay, o, 'top', png, ID_A, 2);
+    check('visuals/relay: nothing is announced, to anybody, while an upload is half sent', v.got.length === 0 && o.got.length === 0 && relay.stats().ready === 0);
+    get(relay, v, 'o', ID_A, 'top');
+    check('visuals/relay: ...and nothing can be asked for until it completes', refusals(v).join() === 'get:none');
+    relay.dispose();
+    const { relay: r2 } = reset();
+    const o2 = mkFake('o', PROTO.CLIENT_CAPS, ID_A);
+    put(r2, o2, 'top', png, ID_A, 1);
+    check('visuals/relay: a frame that never came refuses the upload as soon as the next one does', refusals(o2).join() === 'put:seq' && r2.stats().reserved === 0);
+    r2.dispose();
+  }
+
+  // ---- a re-upload keeps the last good look until it validates ------------------------------------------
+  // A reconnect sends the look again. That upload used to replace the ready one at its FIRST frame, so a
+  // junk, oversized or interrupted second upload left every viewer with nothing where it had a good look.
+  {
+    let now = 1000;
+    fakes.clear();
+    allows = true;
+    liveMatch = false;
+    const budget = SV.localVisualBudget(IV.VISUAL_PROCESS_BYTES);
+    const relay = new SV.VisualRelay(host, budget, () => now);
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    put(relay, a, 'top', png);
+    const junk = new Uint8Array(png.length).fill(7);
+    put(relay, a, 'top', junk);
+    check('visuals/keep: a junk re-upload is refused, and the last good look stays ready and reserved (only its bytes)',
+      refusals(a).join() === 'put:format' && relay.stats().ready === 1 && relay.stats().reserved === png.length && budget.used() === png.length, refusals(a).join());
+    get(relay, b, 'a', ID_A, 'top');
+    drain(relay);
+    check('visuals/keep: ...and a viewer that asks after it still gets the good one, identical', same(received(b, 'a', 'top').bytes, png));
+    // half a re-upload, then silence: swept, and the good one stays
+    a.got.length = 0;
+    put(relay, a, 'top', png, ID_A, 2); // frames 0 and 1, never 2
+    check('visuals/keep: while a re-upload travels the old look is still served (both are reserved)',
+      relay.stats().ready === 1 && relay.stats().reserved === 2 * png.length);
+    now += IV.VISUAL_PUT_STALE_MS + 1;
+    relay.sweepStale(now);
+    check('visuals/keep: an interrupted re-upload is swept after the stale time and the good look stays',
+      relay.stats().ready === 1 && relay.stats().reserved === png.length && budget.used() === png.length);
+    // a GOOD re-upload (another picture) replaces it, announced again, and the old bytes are freed
+    const png2 = pngBytes(140, 120, { noise: true, seed: 77 });
+    a.got.length = 0;
+    const announced = msgs(b, 'visualReady').length;
+    put(relay, a, 'top', png2);
+    check('visuals/keep: a good re-upload replaces it once it validates: announced again, the old bytes freed',
+      relay.stats().ready === 1 && relay.stats().reserved === png2.length && budget.used() === png2.length && msgs(b, 'visualReady').length === announced + 1);
+    b.got.length = 0;
+    get(relay, b, 'a', ID_A, 'top');
+    drain(relay);
+    check('visuals/keep: ...and the new one is what a viewer gets now', same(received(b, 'a', 'top').bytes, png2));
+    // the room's cap counts the asset a re-upload replaces: a full room still takes the replacement
+    relay.dispose();
+    check('visuals/keep: dispose frees the ready look and any upload on its way', budget.used() === 0 && relay.stats().reserved === 0);
+  }
+
+  // ---- refusals ----------------------------------------------------------------------------------
+  {
+    const { relay, budget } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const rawPut = (f: FC, o: Record<string, unknown>): void => relay.onMessage(f.id, { t: 'visualPut', ...o } as unknown as PROTO.ClientMsg);
+    const base = { kind: 'top', id: ID_A, total: png.length, seq: 0, data: IV.bytesToBase64(png, 0, IV.VISUAL_CHUNK_BYTES) };
+    rawPut(a, { ...base, id: ID_B });
+    check('visuals/refuse: an id that is not the id of the robot this seat holds is refused', refusals(a).join() === 'put:id' && relay.stats().reserved === 0);
+    a.got.length = 0;
+    rawPut(a, { ...base, id: 'not-hex' });
+    check('visuals/refuse: ...and one that is not a robot id at all', refusals(a).join() === 'put:id');
+    a.got.length = 0;
+    const standard = mkFake('s', PROTO.CLIENT_CAPS, undefined);
+    rawPut(standard, base);
+    check('visuals/refuse: a seat that holds a STANDARD robot cannot upload (there is nothing to be the look of)', refusals(standard).join() === 'put:id');
+    rawPut(a, { ...base, total: IV.VISUAL_MAX_BYTES.top + 1 });
+    rawPut(a, { ...base, total: 0 });
+    rawPut(a, { ...base, total: 1.5 });
+    rawPut(a, { ...base, total: 'big' });
+    check('visuals/refuse: a total over the cap, zero, fractional or not a number is refused, and reserves nothing', refusals(a).join() === 'put:size,put:size,put:size,put:size' && relay.stats().reserved === 0, refusals(a).join());
+    a.got.length = 0;
+    rawPut(a, { ...base, kind: 'mesh', total: IV.VISUAL_MAX_BYTES.mesh + 1 });
+    check('visuals/refuse: a mesh over 1 MiB is refused', refusals(a).join() === 'put:size');
+    a.got.length = 0;
+    rawPut(a, { ...base, kind: 'thumb' });
+    rawPut(a, { ...base, kind: undefined });
+    check('visuals/refuse: a kind that is not top or mesh is ignored, with no reply and no state', a.got.length === 0 && relay.stats().reserved === 0);
+    rawPut(a, { ...base, seq: 3 });
+    check('visuals/refuse: a first frame that is not seq 0 is refused', refusals(a).join() === 'put:seq' && relay.stats().reserved === 0);
+    a.got.length = 0;
+    rawPut(a, { ...base, seq: -1 });
+    rawPut(a, { ...base, seq: 1.5 });
+    check('visuals/refuse: a negative or fractional seq is refused', refusals(a).join() === 'put:seq,put:seq');
+    a.got.length = 0;
+    rawPut(a, base);
+    rawPut(a, { ...base, seq: 2, data: IV.bytesToBase64(png, 2 * IV.VISUAL_CHUNK_BYTES, png.length) });
+    check('visuals/refuse: a skipped frame refuses the upload AND frees what it reserved', refusals(a).join() === 'put:seq' && relay.stats().reserved === 0 && budget.used() === 0, refusals(a).join());
+    a.got.length = 0;
+    rawPut(a, base);
+    rawPut(a, { ...base, seq: 1, data: '!!!!' });
+    check('visuals/refuse: a chunk that is not base64 refuses the upload and frees it', refusals(a).join() === 'put:size' && relay.stats().reserved === 0);
+    a.got.length = 0;
+    rawPut(a, base);
+    rawPut(a, { ...base, seq: 1, data: IV.bytesToBase64(png, IV.VISUAL_CHUNK_BYTES, IV.VISUAL_CHUNK_BYTES + 100) });
+    check('visuals/refuse: a chunk of the wrong length refuses the upload and frees it', refusals(a).join() === 'put:size' && relay.stats().reserved === 0);
+    a.got.length = 0;
+    rawPut(a, { ...base, data: 'A'.repeat(IV.VISUAL_CHUNK_CHARS + 4) });
+    check('visuals/refuse: a chunk over the frame limit is refused', refusals(a).join() === 'put:size' && relay.stats().reserved === 0);
+    a.got.length = 0;
+    // content: the right size, the wrong bytes
+    const junk = new Uint8Array(png.length).fill(7);
+    put(relay, a, 'top', junk);
+    check('visuals/refuse: ⚠️ bytes that are not a PNG are refused at the LAST frame, announced to nobody, and freed', refusals(a).join() === 'put:format' && msgs(a, 'visualReady').length === 0 && relay.stats().reserved === 0);
+    a.got.length = 0;
+    const ext = glbBytes({ tris: 2000, edit: (j) => { j.buffers[0].uri = 'https://example.invalid/x.bin'; } });
+    put(relay, a, 'mesh', ext);
+    check('visuals/refuse: ⚠️ a mesh GLB that names an external buffer is refused by the room', refusals(a).join() === 'put:format' && relay.stats().ready === 0 && budget.used() === 0, refusals(a).join());
+    a.got.length = 0;
+    const img = glbBytes({ tris: 2000, edit: (j) => { j.images = [{ bufferView: 0, mimeType: 'image/png' }]; } });
+    put(relay, a, 'mesh', img);
+    check('visuals/refuse: ⚠️ a mesh GLB with an image inside is refused by the room', refusals(a).join() === 'put:format' && relay.stats().ready === 0);
+    a.got.length = 0;
+    // a good one lands, and a stray late frame does not cost it
+    put(relay, a, 'top', png);
+    const keep = relay.stats().ready;
+    rawPut(a, { ...base, seq: 2, data: IV.bytesToBase64(png, 2 * IV.VISUAL_CHUNK_BYTES, png.length) });
+    check('visuals/refuse: a duplicate frame after the asset completed is ignored, and the asset stays', keep === 1 && relay.stats().ready === 1 && !refusals(a).includes('put:seq'));
+    allows = false;
+    a.got.length = 0;
+    rawPut(a, base);
+    check('visuals/refuse: in a room that does not allow imported robots (ranked, record) an upload is refused with the room reason', refusals(a).join() === 'put:room');
+    allows = true;
+    relay.dispose();
+  }
+
+  // ---- ignoring the cap-less ------------------------------------------------------------------------
+  {
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const old = mkFake('old', ['robotImport'], ID_B);
+    put(relay, old, 'top', png, ID_B);
+    check('visuals/cap: an upload from a client without the capability is ignored (no state, no reply)', old.got.length === 0 && relay.stats().reserved === 0);
+    put(relay, a, 'top', png);
+    get(relay, old, 'a', ID_A, 'top');
+    drain(relay);
+    check('visuals/cap: a download request from one is ignored too, and it is sent nothing', old.got.length === 0 && relay.stats().streams === 0);
+    const nocaps = mkFake('nocaps', undefined);
+    get(relay, nocaps, 'a', ID_A, 'top');
+    check('visuals/cap: ...and one that advertised nothing at all', nocaps.got.length === 0);
+    relay.dispose();
+  }
+
+  // ---- downloads: what may be asked for ------------------------------------------------------------------
+  {
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    put(relay, a, 'top', png);
+    get(relay, b, 'a', ID_A, 'mesh');
+    check('visuals/get: an asset nobody uploaded is refused `none` (the viewer keeps the footprint)', refusals(b).join() === 'get:none');
+    b.got.length = 0;
+    get(relay, b, 'a', ID_B, 'top');
+    check('visuals/get: ...and so is one under a robot id that is not the owner’s', refusals(b).join() === 'get:none');
+    b.got.length = 0;
+    get(relay, b, 'nobody', ID_A, 'top');
+    get(relay, b, 'x'.repeat(200), ID_A, 'top');
+    get(relay, b, 'a', 'bad', 'top');
+    check('visuals/get: an unknown owner, an over-long owner and a bad id are all `none`', refusals(b).join() === 'get:none,get:none,get:none');
+    b.got.length = 0;
+    get(relay, a, 'a', ID_A, 'top');
+    check('visuals/get: an owner asking for its own asset is refused (it has it)', refusals(a).includes('get:none'));
+    get(relay, b, 'a', ID_A, 'top');
+    get(relay, b, 'a', ID_A, 'top');
+    check('visuals/get: asking again while a stream is on its way does not start a second one', relay.stats().streams === 1);
+    drain(relay);
+    check('visuals/get: ...and the viewer got the asset once, not twice', received(b, 'a', 'top').seqs.join() === '0,1,2');
+    allows = false;
+    b.got.length = 0;
+    get(relay, b, 'a', ID_A, 'top');
+    check('visuals/get: in a room that does not allow imported robots a request is refused with the room reason', refusals(b).join() === 'get:room');
+    allows = true;
+    relay.dispose();
+  }
+
+  // ---- egress: a viewer cannot ask forever -------------------------------------------------------------
+  {
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    const big = pngBytes(250, 250, { noise: true });
+    put(relay, a, 'top', big);
+    let asks = 0;
+    let busy = false;
+    for (let i = 0; i < 100 && !busy; i++) {
+      b.got.length = 0;
+      get(relay, b, 'a', ID_A, 'top');
+      if (refusals(b).includes('get:busy')) busy = true;
+      else asks++;
+      drain(relay, 40);
+    }
+    check('visuals/egress: ⚠️ one viewer is stopped after about 8 MiB a minute however many times it asks', busy && asks * big.length <= IV.VISUAL_SERVE_CLIENT_BYTES && asks >= 25, `${asks} asks of ${big.length} B`);
+    check('visuals/egress: the room’s running total (this minute’s) reflects it', relay.stats().servedRoom === asks * big.length);
+    // a second viewer is still served (the per-client cap is per client)
+    const c = mkFake('c', PROTO.CLIENT_CAPS);
+    get(relay, c, 'a', ID_A, 'top');
+    drain(relay);
+    check('visuals/egress: ...while another viewer (another source) is still served', same(received(c, 'a', 'top').bytes, big));
+    // the room cap: many fresh viewers, each within its own quota
+    const { relay: r2 } = reset();
+    const o = mkFake('o', PROTO.CLIENT_CAPS, ID_A);
+    put(r2, o, 'top', big);
+    let served = 0;
+    let stopped = false;
+    for (let i = 0; i < 400 && !stopped; i++) {
+      const v = mkFake(`v${i}`, PROTO.CLIENT_CAPS);
+      get(r2, v, 'o', ID_A, 'top');
+      if (refusals(v).includes('get:busy')) stopped = true;
+      else served++;
+      drain(r2, 20);
+    }
+    check('visuals/egress: ⚠️ the ROOM stops serving after its own total too (24 MiB a minute), however many viewers come', stopped && served * big.length <= IV.VISUAL_SERVE_ROOM_BYTES, `${served} viewers`);
+    r2.dispose();
+    relay.dispose();
+  }
+
+  // ---- pacing in the pump ------------------------------------------------------------------------------------
+  {
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    put(relay, a, 'mesh', glbBytes({ tris: 5000 })); // 180 KB, 8 chunks
+    get(relay, b, 'a', ID_A, 'mesh');
+    b.backlogBytes = IV.VISUAL_STREAM_BACKLOG_BYTES;
+    pump(relay);
+    pump(relay);
+    check('visuals/pump: a socket whose backlog is at the limit is handed nothing, however often the pump runs', msgs(b, 'visualChunk').length === 0 && relay.stats().streams === 1);
+    b.backlogBytes = 0;
+    pump(relay);
+    check('visuals/pump: ...and one chunk the moment it drains', msgs(b, 'visualChunk').length === 1);
+    pump(relay);
+    pump(relay);
+    check('visuals/pump: one chunk per viewer per pump (never a burst)', msgs(b, 'visualChunk').length === 3);
+    b.backlogBytes = undefined;
+    drain(relay);
+    check('visuals/pump: a socket the room cannot read is paced by the pump alone, and finishes', received(b, 'a', 'mesh').seqs.join() === '0,1,2,3,4,5,6,7');
+    liveMatch = true;
+    get(relay, b, 'a', ID_A, 'mesh');
+    b.got.length = 0;
+    pump(relay);
+    pump(relay);
+    pump(relay);
+    check('visuals/pump: ⚠️ during a live match a viewer is held to one chunk per gap, so its snapshots are not crowded out', msgs(b, 'visualChunk').length === 1, String(msgs(b, 'visualChunk').length));
+    liveMatch = false;
+    relay.dispose();
+  }
+  {
+    // round-robin across one viewer's streams, and a held seat (socket dropped) waits
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    put(relay, a, 'top', png);
+    put(relay, a, 'mesh', glb);
+    get(relay, b, 'a', ID_A, 'top');
+    get(relay, b, 'a', ID_A, 'mesh');
+    pump(relay);
+    pump(relay);
+    const kinds = (msgs(b, 'visualChunk') as Extract<Msg, { t: 'visualChunk' }>[]).map((m) => m.kind).join();
+    check('visuals/pump: a viewer’s streams take turns', kinds === 'top,mesh', kinds);
+    b.c.connected = false;
+    const before = msgs(b, 'visualChunk').length;
+    pump(relay);
+    check('visuals/pump: a seat whose socket dropped (held for its reconnect) is not written to', msgs(b, 'visualChunk').length === before);
+    b.c.connected = true;
+    drain(relay);
+    check('visuals/pump: ...and finishes what it was sent when it is back', same(received(b, 'a', 'top').bytes, png) && same(received(b, 'a', 'mesh').bytes, glb));
+    relay.dispose();
+  }
+
+  // ---- budgets and freeing -------------------------------------------------------------------------------------
+  {
+    const { relay, budget } = reset();
+    const owners = ['o1', 'o2', 'o3', 'o4', 'o5'].map((id, i) => mkFake(id, PROTO.CLIENT_CAPS, `00000000000000${i}${i}`));
+    const mesh = glbBytes({ tris: 29_000 }); // 1.04 MB
+    const top = pngBytes(250, 250, { noise: true, seed: 5 }); // 250 KB
+    for (const o of owners.slice(0, 4)) {
+      put(relay, o, 'mesh', mesh, o.robot);
+      put(relay, o, 'top', top, o.robot);
+    }
+    check('visuals/budget: four seats’ full sets fit a room exactly (4 × (1 MiB + 256 KiB) is the cap)', relay.stats().ready === 8 && relay.stats().reserved === 4 * (mesh.length + top.length) && relay.stats().reserved <= IV.VISUAL_ROOM_BYTES,
+      `${relay.stats().reserved} of ${IV.VISUAL_ROOM_BYTES}`);
+    const o5 = owners[4];
+    put(relay, o5, 'mesh', mesh, o5.robot);
+    check('visuals/budget: ⚠️ the ROOM’s budget refuses more, politely (`budget`), and reserves nothing', refusals(o5).join() === 'put:budget' && relay.stats().ready === 8, refusals(o5).join());
+    check('visuals/budget: the process budget agrees with the room’s books to the byte', budget.used() === relay.stats().reserved);
+    relay.freeOwner('o1');
+    check('visuals/budget: a seat leaving frees its assets and the budget with them', relay.stats().ready === 6 && budget.used() === relay.stats().reserved && relay.stats().owners === 3);
+    o5.got.length = 0;
+    put(relay, o5, 'mesh', mesh, o5.robot);
+    check('visuals/budget: ...and the next seat then fits', relay.stats().ready === 7 && refusals(o5).length === 0);
+    // robot change frees
+    owners[1].robot = undefined;
+    relay.specChanged('o2');
+    check('visuals/budget: a seat that picks a standard robot loses its assets', relay.stats().ready === 5 && budget.used() === relay.stats().reserved);
+    owners[2].robot = ID_C;
+    relay.specChanged('o3');
+    check('visuals/budget: ...and one that picks ANOTHER imported robot loses them too (they were for the old one)', relay.stats().ready === 3 && budget.used() === relay.stats().reserved);
+    owners[3].robot = undefined;
+    owners[4].robot = undefined;
+    relay.reconcile();
+    check('visuals/budget: `reconcile` (after a start that stripped imports) frees every seat that no longer holds one', relay.stats().ready === 0 && budget.used() === 0 && relay.stats().owners === 0);
+    relay.dispose();
+  }
+  {
+    const { relay, budget } = reset(2.5 * 1024 * 1024); // a process with 2.5 MiB left
+    const o1 = mkFake('o1', PROTO.CLIENT_CAPS, ID_A);
+    const o2 = mkFake('o2', PROTO.CLIENT_CAPS, ID_B);
+    const mesh = glbBytes({ tris: 20_000 }); // 720 KB
+    put(relay, o1, 'mesh', mesh, ID_A);
+    put(relay, o1, 'top', pngBytes(250, 250, { noise: true }), ID_A);
+    put(relay, o2, 'mesh', mesh, ID_B);
+    put(relay, o2, 'top', pngBytes(250, 250, { noise: true, seed: 2 }), ID_B);
+    const third = mkFake('o3', PROTO.CLIENT_CAPS, ID_C);
+    put(relay, third, 'mesh', glbBytes({ tris: 29_000 }), ID_C);
+    check('visuals/budget: ⚠️ the PROCESS budget refuses when the machine is full, even with room left in the room', refusals(third).join() === 'put:budget' && budget.used() <= 2.5 * 1024 * 1024, `${budget.used()}`);
+    relay.dispose();
+    check('visuals/budget: ...and every byte is back when the room goes', budget.used() === 0);
+  }
+  {
+    // an upload that went quiet is not worth what it reserved
+    const { relay, budget } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS, ID_B);
+    put(relay, a, 'top', png, ID_A, 2); // never finishes (the last frame is never sent)
+    check('visuals/budget: a half-sent upload holds its reservation', budget.used() === png.length && relay.stats().ready === 0);
+    const realNow = Date.now;
+    Date.now = () => realNow() + IV.VISUAL_PUT_STALE_MS + 1000;
+    try {
+      put(relay, b, 'top', png, ID_B);
+    } finally {
+      Date.now = realNow;
+    }
+    check('visuals/budget: ⚠️ ...until a minute passes and the next upload sweeps it (a stalled client cannot pin the budget)', budget.used() === png.length && relay.stats().ready === 1 && relay.stats().owners === 1);
+    relay.dispose();
+  }
+  {
+    // a new upload replaces the old, and a stream of the old one is dropped
+    const { relay, budget } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS);
+    put(relay, a, 'top', png);
+    get(relay, b, 'a', ID_A, 'top');
+    pump(relay);
+    const png2 = pngBytes(64, 64, { noise: true, seed: 9 });
+    put(relay, a, 'top', png2);
+    check('visuals/replace: a new upload of a kind replaces the old one, and the books follow', relay.stats().ready === 1 && budget.used() === png2.length);
+    pump(relay);
+    pump(relay);
+    check('visuals/replace: ...and a stream of the OLD asset stops (a viewer is never handed half of each)', relay.stats().streams === 0 && msgs(b, 'visualChunk').length === 1);
+    relay.dispose();
+  }
+  {
+    // two seats cannot hold one robot id: the second is refused, the first keeps its look
+    const { relay } = reset();
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    const b = mkFake('b', PROTO.CLIENT_CAPS, ID_A);
+    put(relay, a, 'top', png);
+    put(relay, b, 'top', pngBytes(64, 64, { noise: true, seed: 4 }), ID_A);
+    check('visuals/dup: ⚠️ a second seat claiming the same robot id is refused (`dup`), so a viewer keying a picture by id cannot be handed the wrong one', refusals(b).join() === 'put:dup' && relay.stats().owners === 1);
+    relay.dispose();
+  }
+  // ---- per-source budgets, rolling serve windows, the sweep timer (review 2026-10-01) -----------------
+  {
+    // ONE SOURCE (an account, else an address) cannot hold the whole budget
+    const set = IV.VISUAL_MAX_BYTES.top + IV.VISUAL_MAX_BYTES.mesh;
+    fakes.clear();
+    allows = true;
+    const budget = SV.localVisualBudget(IV.VISUAL_PROCESS_BYTES, 2 * set);
+    const relay = new SV.VisualRelay(host, budget);
+    const mesh = glbBytes({ tris: 29_000 });
+    const top = pngBytes(250, 250, { noise: true, seed: 6 });
+    const owners = [1, 2, 3].map((i) => {
+      const f = mkFake(`s${i}`, PROTO.CLIENT_CAPS, `00000000000000${i}${i}`);
+      f.c.budgetKey = 7; // three seats from one address
+      return f;
+    });
+    for (const o of owners) {
+      put(relay, o, 'mesh', mesh, o.robot);
+      put(relay, o, 'top', top, o.robot);
+    }
+    const other = mkFake('t', PROTO.CLIENT_CAPS, '0000000000000044');
+    other.c.budgetKey = 8;
+    put(relay, other, 'top', top, other.robot);
+    check('visuals/source: ⚠️ one source holds at most its share — its third seat is refused `budget` while another source still fits',
+      refusals(owners[2]).includes('put:budget') && budget.usedBy(7) <= 2 * set && refusals(other).length === 0 && budget.usedBy(8) === top.length,
+      `${budget.usedBy(7)} / ${refusals(owners[2]).join()}`);
+    check('visuals/source: the default share is eight seats’ full sets, well under the process budget',
+      IV.VISUAL_SOURCE_BYTES === 8 * set && IV.VISUAL_SOURCE_BYTES * 6 <= IV.VISUAL_PROCESS_BYTES);
+    relay.dispose();
+    check('visuals/source: ...and each source gets every byte back', budget.used() === 0 && budget.usedBy(7) === 0 && budget.usedBy(8) === 0);
+    check('visuals/source: a key is a 32-bit hash of the account or address (the address itself never enters a room)',
+      SV.visualSourceKey('ip:203.0.113.9') === SV.visualSourceKey('ip:203.0.113.9') && SV.visualSourceKey('ip:203.0.113.9') !== SV.visualSourceKey('ip:203.0.113.10')
+        && Number.isInteger(SV.visualSourceKey('u:x')) && SV.visualSourceKey('u:x') >= 0 && SV.visualSourceKey('u:x') < 2 ** 32
+        && SV.budgetKeyOf({ id: 'a', budgetKey: 5 }) === 5 && SV.budgetKeyOf({ id: 'a' }) === SV.visualSourceKey('c:a'));
+  }
+  check('visuals/source: ⚠️ the per-source count is in the SHARED buffer too: summed across threads, zeroed with a dead thread',
+    (() => {
+      const sab = SV.makeSharedVisualBudget();
+      if (!sab) return false;
+      SV.configureVisualBudget(sab, 5); // "another thread" holds 3,500 bytes for source 9
+      const other = SV.processVisualBudget(10_000, 4_000);
+      const held = other.reserve(3_500, 9);
+      SV.configureVisualBudget(sab, 2);
+      const b = SV.processVisualBudget(10_000, 4_000);
+      const seen = SV.visualSourceBytesInUse(9) === 3_500 && !b.reserve(1_000, 9) && b.reserve(1_000, 10);
+      SV.resetVisualSlot(sab, 5);
+      const freed = SV.visualSourceBytesInUse(9) === 0 && b.reserve(3_000, 9) && SV.visualBytesInUse() === 4_000;
+      b.release(3_000, 9);
+      b.release(1_000, 10);
+      const zero = SV.visualBytesInUse() === 0 && SV.visualSourceBytesInUse(9) === 0 && SV.visualSourceBytesInUse(10) === 0;
+      SV.configureVisualBudget(new ArrayBuffer(4), 0); // back to a private counter
+      return held && seen && freed && zero;
+    })());
+  {
+    // THE SERVE CAPS ARE RATES: per viewer SOURCE and per room, over a rolling minute
+    let now = 1_000_000;
+    fakes.clear();
+    allows = true;
+    liveMatch = false;
+    const relay = new SV.VisualRelay(host, SV.localVisualBudget(IV.VISUAL_PROCESS_BYTES), () => now);
+    const o = mkFake('o', PROTO.CLIENT_CAPS, ID_A);
+    const big = pngBytes(250, 250, { noise: true });
+    put(relay, o, 'top', big);
+    const ask = (id: string, key: number): boolean => {
+      const f = fakes.get(id) ?? mkFake(id, PROTO.CLIENT_CAPS);
+      f.c.budgetKey = key;
+      f.got.length = 0;
+      get(relay, f, 'o', ID_A, 'top');
+      drain(relay, 20);
+      return !refusals(f).includes('get:busy');
+    };
+    let n = 0;
+    while (n < 100 && ask('w1', 50)) n++;
+    check('visuals/window: one viewer source is stopped at about 8 MiB a minute', n * big.length <= IV.VISUAL_SERVE_CLIENT_BYTES && n >= 25, String(n));
+    check('visuals/window: ⚠️ ...and coming back as a NEW client id from the same address does not reset it (the old per-client total did)', !ask('w2', 50));
+    check('visuals/window: another source is served meanwhile', ask('w3', 51));
+    now += IV.VISUAL_SERVE_WINDOW_MS + 1;
+    check('visuals/window: ⚠️ a minute later the same source is served again (a rate, not a lifetime total)', ask('w2', 50));
+    // the room's own window: many sources until it says busy, then a minute later it serves again
+    let served = 0;
+    let key = 1000;
+    while (served < 400 && ask(`r${key}`, key)) {
+      served++;
+      key++;
+    }
+    check('visuals/window: the ROOM stops after 24 MiB a minute, however many sources ask', served < 400 && served >= 50 && (served + 1) * big.length <= IV.VISUAL_SERVE_ROOM_BYTES, String(served));
+    check('visuals/window: ...and the room total is the window’s, not the room’s life', relay.stats().servedRoom <= IV.VISUAL_SERVE_ROOM_BYTES);
+    now += IV.VISUAL_SERVE_WINDOW_MS + 1;
+    check('visuals/window: ⚠️ ...and a busy room serves newcomers again a minute later (a lifetime total ran out after about nine viewer sessions)', ask('late', 9999) && relay.stats().servedRoom === big.length);
+    relay.dispose();
+  }
+  {
+    // A HALF-SENT UPLOAD IS SWEPT ON A TIMER, not only when somebody else uploads
+    let now = 5_000_000;
+    fakes.clear();
+    allows = true;
+    const budget = SV.localVisualBudget(IV.VISUAL_PROCESS_BYTES);
+    const relay = new SV.VisualRelay(host, budget, () => now);
+    const a = mkFake('a', PROTO.CLIENT_CAPS, ID_A);
+    put(relay, a, 'top', png, ID_A, 2); // the last frame never comes
+    check('visuals/sweep: an open upload starts the sweep timer, and holds its reservation', relay.stats().sweeping && budget.used() === png.length);
+    now += IV.VISUAL_SWEEP_EVERY_MS;
+    relay.sweepStale();
+    check('visuals/sweep: ...which keeps it while it is younger than a minute', budget.used() === png.length && relay.stats().sweeping);
+    now += IV.VISUAL_PUT_STALE_MS;
+    relay.sweepStale();
+    check('visuals/sweep: ⚠️ ...and frees it once it has been quiet a minute, with no other upload in the room, then stops', budget.used() === 0 && relay.stats().owners === 0 && !relay.stats().sweeping);
+    put(relay, a, 'top', png, ID_A);
+    relay.sweepStale();
+    check('visuals/sweep: a completed upload leaves no timer running', !relay.stats().sweeping && relay.stats().ready === 1);
+    put(relay, a, 'mesh', glb, ID_A, 1);
+    relay.dispose();
+    check('visuals/sweep: dispose stops it too', !relay.stats().sweeping && budget.used() === 0);
+    check('visuals/sweep: the timer runs often enough to keep the one-minute promise', IV.VISUAL_SWEEP_EVERY_MS <= IV.VISUAL_PUT_STALE_MS / 2);
+  }
+  check('visuals/budget: the process budget is one counter per thread in one shared buffer — the sum is the process’s, a dead thread’s slot can be zeroed', (() => {
+    const sab = SV.makeSharedVisualBudget();
+    if (!sab) return false;
+    SV.configureVisualBudget(sab, 2);
+    const budget = SV.processVisualBudget(1000);
+    const ok1 = budget.reserve(600, 1);
+    // "another thread" writes its own slot of the same buffer
+    new Int32Array(sab)[5] += 300;
+    const full = SV.visualBytesInUse() === 900 && !budget.reserve(200, 1) && budget.reserve(100, 1);
+    budget.release(700, 1);
+    const seen = SV.visualBytesInUse() === 300;
+    SV.resetVisualSlot(sab, 5);
+    const zero = SV.visualBytesInUse() === 0;
+    SV.configureVisualBudget(new ArrayBuffer(4), 0); // back to a private counter
+    return ok1 && full && seen && zero;
+  })());
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE RELAY IN A REAL `Room`: owner uploads, a viewer asks, a cap-less client is left alone
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const { glbBytes, pngBytes } = VF;
+  const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const ID = '0123456789abcdef';
+  const ID2 = 'fedcba9876543210';
+  const impOf = (id: string) => ({ v: 1, id, heightIn: 12, hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }] });
+  const impSpec = (id: string) => ({ ...DEFAULT_SPEC, imported: impOf(id) }) as typeof DEFAULT_SPEC;
+  type Sink = Record<string, PROTO.ServerMsg[]>;
+  const noVisuals = PROTO.CLIENT_CAPS.filter((c) => c !== IV.IMPORT_VISUALS_CAP);
+  const mk = (sink: Sink, id: string, caps: string[] | undefined, spec: typeof DEFAULT_SPEC, alliance: Alliance = 'red'): Client => {
+    sink[id] ??= [];
+    return {
+      id,
+      send: (m) => sink[id].push(m),
+      player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...spec }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+      caps,
+      userId: `u-${id}`,
+    };
+  };
+  const vis = (s: Sink, id: string): PROTO.ServerMsg[] => s[id].filter((m) => m.t.startsWith('visual'));
+  const putAll = (room: Room, id: string, kind: IV.VisualKind, bytes: Uint8Array, rid: string): void => {
+    for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+      const sp = IV.visualSpan(bytes.length, seq);
+      room.onMessage(id, { t: 'visualPut', kind, id: rid, total: bytes.length, seq, data: IV.bytesToBase64(bytes, sp.start, sp.end) });
+    }
+  };
+  const assemble = (s: Sink, id: string, owner: string, kind: IV.VisualKind): Uint8Array => {
+    const cs = s[id].filter((m) => m.t === 'visualChunk' && m.owner === owner && m.kind === kind) as Extract<PROTO.ServerMsg, { t: 'visualChunk' }>[];
+    const out = new Uint8Array(cs[0]?.total ?? 0);
+    for (const c of cs) out.set(IV.base64ToBytes(c.data) ?? new Uint8Array(0), IV.visualSpan(c.total, c.seq).start);
+    return out;
+  };
+  const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.length > 0 && a.every((x, i) => x === b[i]);
+  const png = pngBytes(128, 128, { noise: true, seed: 11 });
+  const glb = glbBytes({ tris: 6000 });
+  const baseline = SV.visualBytesInUse();
+
+  // ---- a custom room ------------------------------------------------------------------------------
+  {
+    const s: Sink = {};
+    let emptied = 0;
+    const room = new Room('smoke-vis-custom', () => emptied++, { kind: 'versus', imports: true });
+    room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
+    room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    room.add(mk(s, 'x', noVisuals, DEFAULT_SPEC, 'blue')); // an imports build without the relay
+    room.addSpectator(mk(s, 'w', PROTO.CLIENT_CAPS, DEFAULT_SPEC));
+    check('visuals/room: the seats are in (the cap-less one has the imports capability, so it is seated beside an imported robot)', ['a', 'b', 'x', 'w'].every((id) => s[id].some((m) => m.t === 'welcome')));
+    putAll(room, 'a', 'top', png, ID);
+    check('visuals/room: the owner’s upload is announced to the other seat, the watcher and the owner', ['a', 'b', 'w'].every((id) => vis(s, id).length === 1 && vis(s, id)[0].t === 'visualReady'));
+    check('visuals/room: ⚠️ a client without `importVisuals` is sent NOTHING and the room carries on (its roster and welcome are untouched)', vis(s, 'x').length === 0 && s.x.some((m) => m.t === 'roster'));
+    room.onMessage('x', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
+    putAll(room, 'x', 'top', png, ID);
+    check('visuals/room: ...and what it sends the relay is ignored without a reply', vis(s, 'x').length === 0);
+    room.onMessage('b', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
+    check('visuals/room: a request is answered by the room’s own timer, not in the call (nothing is sent per tick, nothing unasked)', s.b.filter((m) => m.t === 'visualChunk').length === 0);
+    // the room's own timer, waited for rather than slept on: which blocks share this process
+    // decides how soon it fires (a fixed 250 ms failed when the shards were packed differently)
+    for (let waited = 0; waited < 3000 && !same(assemble(s, 'b', 'a', 'top'), png); waited += 50) await sleepMs(50);
+    check('visuals/room: ⚠️ the viewer receives the owner’s picture byte for byte', same(assemble(s, 'b', 'a', 'top'), png));
+    check('visuals/room: ...and the watcher, who did not ask, received no chunk', s.w.filter((m) => m.t === 'visualChunk').length === 0);
+    room.onMessage('w', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
+    await sleepMs(250);
+    check('visuals/room: a watcher can ask, and gets it identical', same(assemble(s, 'w', 'a', 'top'), png));
+    // a client attaching later is greeted
+    room.addSpectator(mk(s, 'w2', PROTO.CLIENT_CAPS, DEFAULT_SPEC));
+    room.add(mk(s, 'c', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'red'));
+    check('visuals/room: a watcher and a seat that arrive later are told what is ready', vis(s, 'w2').length === 1 && vis(s, 'c').length === 1);
+    const resend: PROTO.ServerMsg[] = [];
+    room.reattach('b', (m) => { resend.push(m); s.b.push(m); }, undefined, undefined, undefined, true);
+    check('visuals/room: a reclaimed seat (a new socket) is told again, because the new socket was told nothing', resend.filter((m) => m.t === 'visualReady').length === 1);
+    check('visuals/room: the room reserved the picture’s bytes from the process budget', SV.visualBytesInUse() - baseline === png.length, String(SV.visualBytesInUse() - baseline));
+    // the robot changes: the assets go
+    room.onMessage('a', { t: 'update', patch: { spec: { ...DEFAULT_SPEC } } });
+    check('visuals/room: an owner who picks a STANDARD robot loses its assets, and the bytes go back', SV.visualBytesInUse() === baseline);
+    s.b.length = 0;
+    room.onMessage('b', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
+    check('visuals/room: ...so a request for them is `none` (the viewer keeps the footprint)', (s.b.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'none');
+    room.onMessage('a', { t: 'update', patch: { spec: impSpec(ID) } });
+    putAll(room, 'a', 'top', png, ID);
+    room.onMessage('a', { t: 'update', patch: { spec: impSpec(ID2) } });
+    check('visuals/room: ...and one that picks ANOTHER imported robot loses them too', SV.visualBytesInUse() === baseline);
+    s.a.length = 0;
+    putAll(room, 'a', 'top', png, ID);
+    check('visuals/room: an upload for the OLD robot’s id is refused now (`id`)', (s.a.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'id');
+    putAll(room, 'a', 'top', png, ID2);
+    check('visuals/room: ...and one for the robot it holds is taken', SV.visualBytesInUse() - baseline === png.length);
+    // the owner leaves: a lobby departure frees at once
+    room.detach('a');
+    check('visuals/room: an owner leaving the lobby frees its assets', SV.visualBytesInUse() === baseline);
+    // everyone leaves: the room is gone and nothing is held
+    putAll(room, 'c', 'top', png, ID2); // c holds a standard robot: refused, holds nothing
+    for (const id of ['b', 'x', 'c']) room.detach(id);
+    check('visuals/room: the last seat out empties the room', emptied === 1);
+    check('visuals/room: ⚠️ ...and the process budget is exactly where it started (nothing leaked)', SV.visualBytesInUse() === baseline);
+    room.stop();
+  }
+
+  // ---- the room empties with assets in it ------------------------------------------------------------
+  {
+    const s: Sink = {};
+    let emptied = 0;
+    const room = new Room('smoke-vis-empty', () => emptied++, { kind: 'versus', imports: true });
+    room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
+    putAll(room, 'a', 'mesh', glb, ID);
+    putAll(room, 'a', 'top', png, ID);
+    check('visuals/room: a mesh and a picture are held for one owner', SV.visualBytesInUse() - baseline === glb.length + png.length);
+    room.detach('a');
+    check('visuals/room: ⚠️ the owner leaving a room with nobody else in it frees both, and the room is gone', emptied === 1 && SV.visualBytesInUse() === baseline);
+    room.stop();
+  }
+
+  // ---- a seat that drops mid-match keeps its assets for its reconnect, and loses them at the reap -----------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-vis-match', () => {}, { kind: 'versus', imports: true });
+    room.add(mk(s, 'a', PROTO.CLIENT_CAPS, impSpec(ID), 'red'));
+    room.add(mk(s, 'b', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    putAll(room, 'a', 'top', png, ID);
+    room.onMessage('a', { t: 'start' });
+    check('visuals/room: the match starts with the imported robot and the relay holding its picture', !!room.worldForTest() && SV.visualBytesInUse() - baseline === png.length);
+    room.addSpectator(mk(s, 'late', PROTO.CLIENT_CAPS, DEFAULT_SPEC));
+    check('visuals/room: a spectator who arrives mid-match is told the picture is ready', vis(s, 'late').some((m) => m.t === 'visualReady'));
+    room.onMessage('late', { t: 'visualGet', owner: 'a', id: ID, kind: 'top' });
+    await sleepMs(500); // a live match holds a viewer to one chunk per 100 ms: three chunks
+    check('visuals/room: ...asks, and is streamed it DURING the match, identical', same(assemble(s, 'late', 'a', 'top'), png));
+    room.detach('a'); // a drop inside the reconnect grace holds the seat
+    check('visuals/room: a seat that drops mid-match keeps its assets (it is coming back)', SV.visualBytesInUse() - baseline === png.length);
+    // ...and its grace lapsing is the reap that frees them
+    (room as unknown as { clients: Map<string, Client> }).clients.get('a')!.disconnectAt = 1;
+    (room as unknown as { checkGrace(): void }).checkGrace();
+    check('visuals/room: ...and the reconnect grace lapsing frees them', SV.visualBytesInUse() === baseline);
+    room.stop();
+  }
+
+  // ---- record and ranked rooms ------------------------------------------------------------------------------
+  {
+    const s: Sink = {};
+    const room = new Room('smoke-vis-record', () => {}, { kind: 'record', record: 'solo', imports: true });
+    room.add(mk(s, 'r', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'blue'));
+    putAll(room, 'r', 'top', png, ID);
+    const first = s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined;
+    check('visuals/room: ⚠️ a record room refuses an upload, with the room reason, and holds nothing', first?.reason === 'room' && SV.visualBytesInUse() === baseline, String(first?.reason));
+    s.r.length = 0;
+    room.onMessage('r', { t: 'visualGet', owner: 'r', id: ID, kind: 'top' });
+    check('visuals/room: ...and refuses a request', (s.r.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'room');
+    room.stop();
+    const staged = new Room('smoke-vis-ranked', () => {}, { kind: 'versus', imports: true });
+    staged.applyPending({
+      code: 'iad-vis', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true,
+      roster: [{ userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 }],
+    });
+    const s2: Sink = {};
+    const c = mk(s2, 'a', PROTO.CLIENT_CAPS, DEFAULT_SPEC, 'red');
+    c.userId = 'u-a';
+    staged.add(c);
+    putAll(staged, 'a', 'top', png, ID);
+    check('visuals/room: ⚠️ a staged ranked room refuses it too, and holds nothing', (s2.a.find((m) => m.t === 'visualRefused') as Extract<PROTO.ServerMsg, { t: 'visualRefused' }> | undefined)?.reason === 'room' && SV.visualBytesInUse() === baseline);
+    staged.stop();
+  }
+  check('visuals/room: after every scenario the process budget is where it started', SV.visualBytesInUse() === baseline, String(SV.visualBytesInUse() - baseline));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE CLIENT: an owner and a viewer, each an `ImportVisualsClient`, through a real `Room`
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const { glbBytes, pngBytes } = VF;
+  const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const until = async (pred: () => boolean, ms = 4000): Promise<boolean> => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (pred()) return true;
+      await sleepMs(10);
+    }
+    return pred();
+  };
+  const ID = '0123456789abcdef';
+  const ID2 = 'fedcba9876543210';
+  const impSpec = (id: string) => ({ ...DEFAULT_SPEC, imported: { v: 1, id, heightIn: 12, hull: [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }] } }) as typeof DEFAULT_SPEC;
+  const png = pngBytes(100, 100, { noise: true, seed: 21 });
+  const glb = glbBytes({ tris: 29_000 });
+
+  class FakeTx implements Transport {
+    sent: PROTO.ClientMsg[] = [];
+    isOpen = true;
+    toRoom: ((m: PROTO.ClientMsg) => void) | null = null;
+    send(d: string): void {
+      const m = PROTO.decodeClientMsg(d);
+      this.sent.push(m);
+      this.toRoom?.(m);
+    }
+    onMessage(): void {}
+    onOpen(): void {}
+    onReopen(): void {}
+    onDown(): void {}
+    onFail(): void {}
+    close(): void {}
+    count(t: string): number {
+      return this.sent.filter((m) => m.t === t).length;
+    }
+  }
+  const delivered: { id: string; assets: { top?: Blob | null; mesh?: Blob | null } }[] = [];
+  const unregistered: string[] = [];
+  BR.setRelayedAssetSink({ register: (id, assets) => delivered.push({ id, assets }), unregister: (id) => unregistered.push(id) });
+  const reset = (): void => {
+    delivered.length = 0;
+    unregistered.length = 0;
+    BR.unregisterRelayedAssets(BR.relayedAssetIds());
+    unregistered.length = 0;
+  };
+  const bytesOf = async (b: Blob | null | undefined): Promise<Uint8Array> => (b ? new Uint8Array(await b.arrayBuffer()) : new Uint8Array(0));
+  const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.length > 0 && a.every((x, i) => x === b[i]);
+  const own = (top: Uint8Array | null, mesh: Uint8Array | null): IVC.OwnAssets => ({ top: async () => top, mesh: async () => mesh });
+
+  /** a client wired to a room the way `LobbyClient` wires it: its transport reaches the room, the room's frames reach it */
+  function join(room: Room, id: string, spec: typeof DEFAULT_SPEC, cli: IVC.ImportVisualsClient, alliance: Alliance = 'red'): FakeTx {
+    const tx = new FakeTx();
+    tx.toRoom = (m) => room.onMessage(id, m);
+    cli.bind(tx);
+    room.add({
+      id,
+      send: (m) => {
+        if (m.t === 'roster') cli.noteRoster(id, m.players);
+        else if (m.t === 'welcome') cli.onWelcome(m.clientId);
+        else cli.handle(m);
+      },
+      player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...spec }, assists: { ...DEFAULT_ASSISTS } },
+      connected: true,
+      disconnectAt: 0,
+      caps: PROTO.CLIENT_CAPS,
+      userId: `u-${id}`,
+    });
+    return tx;
+  }
+  const mkClient = (o: IVC.ImportVisualsOptions): IVC.ImportVisualsClient => new IVC.ImportVisualsClient({ settleMs: 5, showOthers: () => true, meshWanted: () => false, ...o });
+
+  // ---- the round trip -------------------------------------------------------------------------------
+  {
+    reset();
+    const room = new Room('smoke-visc-1', () => {}, { kind: 'versus', imports: true });
+    const ownerCli = mkClient({ own: own(png, glb) });
+    const viewCli = mkClient({});
+    const ownerTx = join(room, 'a', impSpec(ID), ownerCli);
+    ownerCli.setOffered(false);
+    await sleepMs(80);
+    check('visuals/client: ⚠️ an owner sends NOTHING to a server that did not say it holds the relay (an older one would drop 1.3 MB without a word)', ownerTx.count('visualPut') === 0);
+    ownerCli.setOffered(true);
+    const viewTx = join(room, 'b', DEFAULT_SPEC, viewCli, 'blue');
+    check('visuals/client: ...and uploads once it is told it may', await until(() => ownerCli.stateForTest().mine.includes(`${ID}|top`)), JSON.stringify(ownerCli.stateForTest()));
+    check('visuals/client: a DECODE owner uploads the picture and no mesh (it has no 3D view)', ownerTx.sent.filter((m) => m.t === 'visualPut' && m.kind === 'mesh').length === 0 && ownerTx.sent.filter((m) => m.t === 'visualPut' && m.kind === 'top').length === IV.visualFrames(png.length));
+    check('visuals/client: the upload is paced (frames are not sent in one burst)', ownerTx.count('visualPut') === IV.visualFrames(png.length));
+    check('visuals/client: ⚠️ the viewer asked for the picture only once it was told it was ready, and for nothing else', await until(() => delivered.length === 1), `${viewTx.count('visualGet')} gets`);
+    check('visuals/client: ...it asked exactly once', viewTx.count('visualGet') === 1);
+    check('visuals/client: ⚠️ the renderers were handed the owner’s picture, byte for byte, under the owner’s robot id',
+      delivered[0]?.id === ID && same(await bytesOf(delivered[0]?.assets.top), png) && delivered[0].assets.top?.type === 'image/png');
+    check('visuals/client: the owner asked for nothing (it has its own picture)', ownerTx.count('visualGet') === 0);
+    // leaving the room takes the blobs back
+    viewCli.reset();
+    check('visuals/client: leaving the room hands the picture back (`unregister`) and clears the state', unregistered.join() === ID && viewCli.stateForTest().delivered.length === 0);
+    ownerCli.reset();
+    room.stop();
+  }
+
+  // ---- the viewer's opt-out ----------------------------------------------------------------------------------
+  {
+    reset();
+    const room = new Room('smoke-visc-2', () => {}, { kind: 'versus', imports: true });
+    let show = false;
+    const ownerCli = mkClient({ own: own(png, null) });
+    const viewCli = mkClient({ showOthers: () => show });
+    join(room, 'a', impSpec(ID), ownerCli);
+    ownerCli.setOffered(true);
+    const viewTx = join(room, 'b', DEFAULT_SPEC, viewCli, 'blue');
+    await until(() => ownerCli.stateForTest().mine.length === 1);
+    await sleepMs(150);
+    check('visuals/client: ⚠️ with "Show other players’ imported robots" OFF the viewer sends no request and takes no bytes', viewTx.count('visualGet') === 0 && delivered.length === 0);
+    show = true;
+    viewCli.refresh();
+    check('visuals/client: ...turning it on asks for what is ready', await until(() => delivered.length === 1));
+    show = false;
+    viewCli.refresh();
+    check('visuals/client: ...and turning it off again takes the picture back (an outline once more)', unregistered.includes(ID) && viewCli.stateForTest().delivered.length === 0);
+    ownerCli.reset();
+    viewCli.reset();
+    room.stop();
+  }
+
+  // ---- BIOBUZZ: the mesh, only for a viewer who wants it --------------------------------------------------------
+  {
+    reset();
+    const room = new Room('smoke-visc-3', () => {}, { kind: 'versus', imports: true });
+    let mesh = false;
+    const ownerCli = mkClient({ own: own(png, glb) });
+    const viewCli = mkClient({ meshWanted: () => mesh });
+    ownerCli.setGame('biobuzz');
+    viewCli.setGame('biobuzz');
+    join(room, 'a', impSpec(ID), ownerCli);
+    ownerCli.setOffered(true);
+    const viewTx = join(room, 'b', DEFAULT_SPEC, viewCli, 'blue');
+    check('visuals/client: a BIOBUZZ owner uploads the picture and then the mesh', await until(() => ownerCli.stateForTest().mine.length === 2, 6000), JSON.stringify(ownerCli.stateForTest().mine));
+    await until(() => delivered.length === 1);
+    await sleepMs(100);
+    check('visuals/client: ⚠️ a viewer who is not in the 3D view asks for the picture and NOT the mesh (the mesh is only sent to a viewer who asks)',
+      viewTx.sent.filter((m) => m.t === 'visualGet').every((m) => m.kind === 'top') && delivered.every((d) => !d.assets.mesh));
+    mesh = true;
+    viewCli.refresh();
+    check('visuals/client: ...switching to the 3D view asks for it, and gets it identical', await until(() => delivered.some((d) => d.assets.mesh), 6000) && same(await bytesOf(delivered.find((d) => d.assets.mesh)?.assets.mesh), glb));
+    ownerCli.reset();
+    viewCli.reset();
+    room.stop();
+  }
+
+  // ---- an owner that has nothing to send, or whose robot changed ----------------------------------------------------
+  {
+    reset();
+    const room = new Room('smoke-visc-4', () => {}, { kind: 'versus', imports: true });
+    const gone = mkClient({ own: own(null, null) });
+    const goneTx = join(room, 'a', impSpec(ID), gone);
+    gone.setOffered(true);
+    await sleepMs(150);
+    check('visuals/client: a robot whose files are not on this device (opened on another) uploads nothing, and does not retry', goneTx.count('visualPut') === 0 && !gone.stateForTest().uploading);
+    gone.reset();
+    room.stop();
+
+    const room2 = new Room('smoke-visc-5', () => {}, { kind: 'versus', imports: true });
+    const junk = mkClient({ own: own(new Uint8Array(500).fill(9), null) });
+    const junkTx = join(room2, 'a', impSpec(ID), junk);
+    junk.setOffered(true);
+    await sleepMs(150);
+    check('visuals/client: bytes that are not a PNG are caught on the owner’s side and never sent', junkTx.count('visualPut') === 0);
+    junk.reset();
+    room2.stop();
+
+    // the robot changes mid-upload: the frames stop
+    const room3 = new Room('smoke-visc-6', () => {}, { kind: 'versus', imports: true });
+    const big = mkClient({ own: own(null, glb) });
+    big.setGame('biobuzz');
+    const bigTx = join(room3, 'a', impSpec(ID), big);
+    big.setOffered(true);
+    await until(() => bigTx.count('visualPut') >= 3);
+    big.noteRoster('a', [{ clientId: 'a', name: 'a', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(ID2), assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer]);
+    const n = bigTx.count('visualPut');
+    await sleepMs(150);
+    check('visuals/client: an owner who picks another robot mid-upload stops sending the old one’s frames', bigTx.count('visualPut') <= n + 1 && bigTx.count('visualPut') < IV.visualFrames(glb.length), `${n} → ${bigTx.count('visualPut')} of ${IV.visualFrames(glb.length)}`);
+    big.reset();
+    room3.stop();
+  }
+
+  // ---- a refused upload is not retried; a lost frame is, twice at most; a new seat uploads again ------------------------
+  {
+    const tx = new FakeTx();
+    const cli = mkClient({ own: own(png, null) });
+    cli.bind(tx);
+    cli.setOffered(true);
+    cli.onWelcome('me');
+    cli.noteRoster('me', [{ clientId: 'me', name: 'me', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(ID), assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer]);
+    await until(() => tx.count('visualPut') === IV.visualFrames(png.length));
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'budget', message: IV.VISUAL_REFUSAL_COPY.budget });
+    const n = tx.count('visualPut');
+    cli.poke();
+    await sleepMs(120);
+    check('visuals/client: ⚠️ an upload the room refused for budget is not sent again (viewers keep the footprint)', tx.count('visualPut') === n && !cli.stateForTest().uploading);
+    cli.onWelcome('me'); // a new seat on the room's side: it holds none of this
+    check('visuals/client: ...until the seat is a new one (a reconnect), which starts over', await until(() => tx.count('visualPut') === 2 * n));
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'seq', message: '' });
+    check('visuals/client: an interrupted upload (`seq`) is tried again', await until(() => tx.count('visualPut') === 3 * n));
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'seq', message: '' });
+    await until(() => tx.count('visualPut') === 4 * n);
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'seq', message: '' });
+    await sleepMs(120);
+    check('visuals/client: ...but only twice', tx.count('visualPut') === 4 * n);
+    cli.reset();
+  }
+
+  // ---- THE OWNER IS TOLD WHY ITS LOOK IS NOT IN THE ROOM (`ownLookTrouble`, the lobby's one line) ----------------
+  {
+    const roster = (spec: typeof DEFAULT_SPEC) => [{ clientId: 'me', name: 'me', alliance: 'red', startIndex: 0, ready: true, spec, assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer];
+    const tx = new FakeTx();
+    const cli = mkClient({ own: own(png, null) });
+    let told = 0;
+    const off = cli.subscribeOwnLook(() => told++);
+    cli.bind(tx);
+    cli.setOffered(true);
+    cli.onWelcome('me');
+    cli.noteRoster('me', roster(impSpec(ID)));
+    await until(() => tx.count('visualPut') === IV.visualFrames(png.length));
+    check('visuals/owner: nothing to say while the upload is on its way', cli.ownLookTrouble() === null);
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'budget', message: IV.VISUAL_REFUSAL_COPY.budget });
+    const t = cli.ownLookTrouble();
+    check('visuals/owner: ⚠️ a room that refuses the look for space is said, once, in one line',
+      t?.reason === 'budget' && t.kind === 'top' && told === 1 && IVC.ownLookLine(t) === 'Couldn’t share your robot’s look: this room is out of space.', JSON.stringify(t));
+    cli.handle({ t: 'visualRefused', op: 'put', owner: 'me', id: ID, kind: 'top', reason: 'dup', message: '' });
+    check('visuals/owner: an id taken and a file the room cannot use have their own lines; a mesh says 3D model',
+      IVC.ownLookLine({ kind: 'top', reason: 'dup' }) === 'Couldn’t share your robot’s look: another robot here has its id.' &&
+        IVC.ownLookLine({ kind: 'top', reason: 'format' }) === 'Couldn’t share your robot’s look: the room can’t use the file.' &&
+        IVC.ownLookLine({ kind: 'mesh', reason: 'budget' }) === 'Couldn’t share your 3D model: this room is out of space.');
+    check('visuals/owner: every line fits the robot line it stands in (64 characters, one line)',
+      (['room', 'id', 'size', 'format', 'budget', 'seq', 'dup', 'missing', 'stale'] as const).every((reason) =>
+        (['top', 'mesh'] as const).every((kind) => IVC.ownLookLine({ kind, reason }).length <= 64 && !/ - /.test(IVC.ownLookLine({ kind, reason })))));
+    cli.onWelcome('me'); // a reconnect: it starts over, and so does what was said
+    check('visuals/owner: a new seat (a reconnect) clears it, and the upload starts over', cli.ownLookTrouble() === null && (await until(() => tx.count('visualPut') === 2 * IV.visualFrames(png.length))));
+    cli.handle({ t: 'visualReady', owner: 'me', id: ID, kind: 'top', bytes: png.length });
+    check('visuals/owner: a confirmed upload says nothing', cli.ownLookTrouble() === null);
+    off();
+    cli.reset();
+
+    // a model that is not on this device, and one that is OUT OF DATE here (edited on another device)
+    const tx2 = new FakeTx();
+    const gone = mkClient({ own: own(null, null) });
+    gone.bind(tx2);
+    gone.setOffered(true);
+    gone.onWelcome('me');
+    gone.noteRoster('me', roster(impSpec(ID)));
+    check('visuals/owner: a robot whose model is not on this device says so', await until(() => gone.ownLookTrouble()?.reason === 'missing') && tx2.count('visualPut') === 0);
+    gone.reset();
+    const tx3 = new FakeTx();
+    const older = { ...impSpec(ID).imported!, heightIn: 11 };
+    let asked = 0;
+    const staleCli = mkClient({ own: { top: async () => (asked++, png), mesh: async () => null, describe: async () => older } });
+    staleCli.bind(tx3);
+    staleCli.setOffered(true);
+    staleCli.onWelcome('me');
+    staleCli.noteRoster('me', roster(impSpec(ID)));
+    check('visuals/owner: ⚠️ an OUT-OF-DATE model here is never sent (it would put the old model on the new hull on every screen), and it is said',
+      (await until(() => staleCli.ownLookTrouble()?.reason === 'stale')) && tx3.count('visualPut') === 0 && asked === 0);
+    staleCli.reset();
+    const tx4 = new FakeTx();
+    const fresh = mkClient({ own: { top: async () => png, mesh: async () => null, describe: async () => ({ ...impSpec(ID).imported! }) } });
+    fresh.bind(tx4);
+    fresh.setOffered(true);
+    fresh.onWelcome('me');
+    fresh.noteRoster('me', roster(impSpec(ID)));
+    check('visuals/owner: ...while a model made for the robot the seat holds is sent as before',
+      await until(() => tx4.count('visualPut') === IV.visualFrames(png.length)), String(tx4.count('visualPut')));
+    fresh.reset();
+    const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check('visuals/owner: the custom-room lobby shows it in the robot line\'s place (nothing moves)',
+      /\{sendImport && ownLook \? \(\s*<p className="ds-sub" role="status">\s*\{ownLookLine\(ownLook\)\}/.test(lobby));
+  }
+
+  // ---- a viewer does not believe what it is sent ----------------------------------------------------------------------------
+  {
+    reset();
+    const asks = async (cli: IVC.ImportVisualsClient, tx: FakeTx, kind: IV.VisualKind, id = ID): Promise<void> => {
+      cli.noteRoster('me', [{ clientId: 'o', name: 'o', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(id), assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer]);
+      cli.handle({ t: 'visualReady', owner: 'o', id, kind, bytes: 1 });
+      await until(() => tx.sent.some((m) => m.t === 'visualGet' && m.kind === kind));
+    };
+    const feed = (cli: IVC.ImportVisualsClient, kind: IV.VisualKind, bytes: Uint8Array, id = ID, skip = -1): void => {
+      for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+        if (seq === skip) continue;
+        const sp = IV.visualSpan(bytes.length, seq);
+        cli.handle({ t: 'visualChunk', owner: 'o', id, kind, total: bytes.length, seq, data: IV.bytesToBase64(bytes, sp.start, sp.end) });
+      }
+    };
+    // unsolicited: nothing was asked for
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      cli.noteRoster('me', [{ clientId: 'o', name: 'o', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(ID), assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer]);
+      feed(cli, 'top', png);
+      check('visuals/client: ⚠️ a chunk stream nobody asked for is ignored (a room, or a LAN host, cannot push a picture at a viewer)', delivered.length === 0 && tx.count('visualGet') === 0);
+      cli.reset();
+    }
+    // the roster does not name this robot for that owner
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      await asks(cli, tx, 'top');
+      feed(cli, 'top', png, ID2);
+      check('visuals/client: a stream for a robot id other than the one asked for is ignored', delivered.length === 0);
+      feed(cli, 'top', png);
+      check('visuals/client: ...and the right one is taken', await until(() => delivered.length === 1));
+      cli.reset();
+      reset();
+    }
+    // bytes that are not a picture
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      await asks(cli, tx, 'top');
+      feed(cli, 'top', new Uint8Array(png.length).fill(3));
+      await sleepMs(30);
+      check('visuals/client: ⚠️ bytes that are not a PNG are not handed to the renderers, and are not asked for again', delivered.length === 0 && tx.count('visualGet') === 1 && cli.stateForTest().incoming === 0);
+      cli.reset();
+    }
+    // a mesh with an external reference
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({ meshWanted: () => true });
+      cli.bind(tx);
+      await asks(cli, tx, 'mesh');
+      feed(cli, 'mesh', glbBytes({ tris: 2000, edit: (j) => { j.buffers[0].uri = 'https://example.invalid/x.bin'; } }));
+      await sleepMs(30);
+      check('visuals/client: ⚠️ a mesh that names an external file is not handed to the renderers either', delivered.length === 0 && !BR.hasRelayedAsset('o', ID, 'mesh'));
+      cli.reset();
+    }
+    // a gap in the stream
+    {
+      const png3 = pngBytes(128, 128, { noise: true, seed: 3 }); // three chunks
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      await asks(cli, tx, 'top');
+      feed(cli, 'top', png3, ID, 1);
+      check('visuals/client: a gap in the sequence drops the download and asks once more', await until(() => tx.count('visualGet') === 2) && delivered.length === 0);
+      feed(cli, 'top', png3, ID, 1);
+      await sleepMs(60);
+      check('visuals/client: ...and not a third time', tx.count('visualGet') === 2 && delivered.length === 0);
+      cli.reset();
+    }
+    // a refusal
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      await asks(cli, tx, 'top');
+      cli.handle({ t: 'visualRefused', op: 'get', owner: 'o', id: ID, kind: 'top', reason: 'busy', message: IV.VISUAL_REFUSAL_COPY.busy });
+      cli.poke();
+      await sleepMs(60);
+      check('visuals/client: a refused request is not repeated (the footprint stays)', tx.count('visualGet') === 1 && cli.stateForTest().incoming === 0);
+      cli.reset();
+    }
+    // the same robot id from a second owner is not requested twice
+    {
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      cli.noteRoster('me', [
+        { clientId: 'o', name: 'o', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(ID), assists: { ...DEFAULT_ASSISTS } },
+        { clientId: 'p', name: 'p', alliance: 'blue', startIndex: 0, ready: true, spec: impSpec(ID), assists: { ...DEFAULT_ASSISTS } },
+      ] as PROTO.LobbyPlayer[]);
+      cli.handle({ t: 'visualReady', owner: 'o', id: ID, kind: 'top', bytes: 1 });
+      cli.handle({ t: 'visualReady', owner: 'p', id: ID, kind: 'top', bytes: 1 });
+      await until(() => tx.count('visualGet') >= 1);
+      feed(cli, 'top', png);
+      await until(() => delivered.length === 1);
+      cli.poke();
+      await sleepMs(60);
+      check('visuals/client: two seats holding one robot id (only a broken or hostile room allows it): the id stays bound to the owner whose look arrived first, and the second is not fetched to overwrite it', delivered.length === 1 && tx.sent.filter((m) => m.t === 'visualGet' && m.owner === 'p').length <= 1);
+      cli.reset();
+    }
+  }
+
+  // ---- the connection ------------------------------------------------------------------------------------------------
+  {
+    reset();
+    const a = new FakeTx();
+    const b = new FakeTx();
+    const cli = mkClient({});
+    cli.bind(a);
+    cli.noteRoster('me', [{ clientId: 'o', name: 'o', alliance: 'red', startIndex: 0, ready: true, spec: impSpec(ID), assists: { ...DEFAULT_ASSISTS } } as PROTO.LobbyPlayer]);
+    cli.handle({ t: 'visualReady', owner: 'o', id: ID, kind: 'top', bytes: 1 });
+    await until(() => a.count('visualGet') === 1);
+    cli.bind(a); // the lobby hands its transport to the match: the same room
+    check('visuals/client: binding the SAME transport (a lobby → match hand-off) keeps what the session knows', cli.stateForTest().incoming === 1);
+    cli.bind(b); // another connection is another room
+    check('visuals/client: ...and a different transport starts clean', cli.stateForTest().incoming === 0);
+    cli.release(a);
+    check('visuals/client: releasing a transport that is not the bound one does nothing', true);
+    cli.reset();
+    // by default the adapter lends to the renderers' own registry (`src/render/importedAssets.ts`)
+    reset();
+    const IA = await import('../src/render/importedAssets');
+    BR.setRelayedAssetSink(null);
+    IA.resetImportedAssetsForTests();
+    BR.registerRelayedAsset('o', ID, 'top', png);
+    check('visuals/client: ⚠️ by default a relayed asset is lent to the renderers’ registry (`registerImportedAssets`), where it wins over the device library', IA.importedAssetCacheSizes().registered === 1 && BR.hasRelayedAsset('o', ID, 'top'));
+    BR.registerRelayedAsset('o', ID, 'mesh', glb);
+    const lent = await IA.importedMeshBlob(ID);
+    check('visuals/client: ...a relayed mesh is what the 3D scene is handed for that id, byte for byte', !!lent && lent.type === 'model/gltf-binary' && same(new Uint8Array(await lent.arrayBuffer()), glb));
+    BR.unregisterRelayedAssets([ID]);
+    check('visuals/client: ...and `unregisterImportedAssets` takes it back when the room is left', IA.importedAssetCacheSizes().registered === 0 && !BR.hasRelayedAsset('o', ID, 'top') && BR.relayedAssetIds().length === 0);
+    IA.resetImportedAssetsForTests();
+    BR.setRelayedAssetSink(null);
+  }
+  // ---- AN ASSET IS (OWNER, ROBOT ID), AND A VIEWER NEVER TAKES A LOOK FOR ITS OWN ROBOT (review 2026-10-01) ----
+  {
+    BR.setRelayedAssetSink({ register: (id, assets) => { delivered.push({ id, assets }); }, unregister: (id) => { unregistered.push(id); } });
+    reset();
+    const p = (clientId: string, id: string): PROTO.LobbyPlayer => ({ clientId, name: clientId, alliance: 'red', startIndex: 0, ready: true, spec: impSpec(id), assists: { ...DEFAULT_ASSISTS } }) as PROTO.LobbyPlayer;
+    const feedFrom = (cli: IVC.ImportVisualsClient, owner: string, bytes: Uint8Array, id: string): void => {
+      for (let seq = 0; seq < IV.visualFrames(bytes.length); seq++) {
+        const sp = IV.visualSpan(bytes.length, seq);
+        cli.handle({ t: 'visualChunk', owner, id, kind: 'top', total: bytes.length, seq, data: IV.bytesToBase64(bytes, sp.start, sp.end) });
+      }
+    };
+    {
+      // the viewer's own seat holds ID, and another seat claims it too
+      const tx = new FakeTx();
+      const cli = mkClient({});
+      cli.bind(tx);
+      cli.onWelcome('me');
+      cli.noteRoster('me', [p('me', ID), p('x', ID)]);
+      cli.handle({ t: 'visualReady', owner: 'x', id: ID, kind: 'top', bytes: 1 });
+      await sleepMs(60);
+      check('visuals/own: ⚠️ a viewer never asks for a look under its OWN robot’s id, whoever claims it', tx.count('visualGet') === 0 && delivered.length === 0);
+      cli.reset();
+    }
+    {
+      // this device's library already holds the robot (a shared copy, or one whose id another seat copied)
+      const tx = new FakeTx();
+      const cli = mkClient({ own: { top: async () => null, mesh: async () => null, has: async (id: string) => id === ID } });
+      cli.bind(tx);
+      cli.onWelcome('me');
+      cli.noteRoster('me', [p('me', ID2), p('o', ID)]);
+      cli.handle({ t: 'visualReady', owner: 'o', id: ID, kind: 'top', bytes: 1 });
+      await until(() => tx.count('visualGet') === 1);
+      feedFrom(cli, 'o', png, ID);
+      await sleepMs(60);
+      check('visuals/own: ⚠️ ...nor lends one for a robot id this device’s library holds (it draws its own copy)', delivered.length === 0 && cli.stateForTest().delivered.length === 0);
+      cli.reset();
+    }
+    // the renderers' registry: one lender per id
+    const IA = await import('../src/render/importedAssets');
+    BR.setRelayedAssetSink(null);
+    IA.resetImportedAssetsForTests();
+    const draft = new Blob([png as BlobPart], { type: 'image/png' });
+    IA.registerImportedAssets(ID, { top: draft }); // this device's own (the editor's draft)
+    check('visuals/own: ⚠️ a relayed look never replaces what this device lent for that id',
+      BR.registerRelayedAsset('o', ID, 'top', png) === false && BR.relayedAssetIds().length === 0 && IA.importedAssetCacheSizes().registered === 1);
+    IA.unregisterImportedAssets(ID);
+    check('visuals/own: ⚠️ the first owner’s look binds the id; a second owner’s for the same id is refused, by the bridge and by the registry',
+      BR.registerRelayedAsset('o', ID2, 'top', png) && !BR.registerRelayedAsset('p', ID2, 'top', png) && BR.hasRelayedAsset('o', ID2, 'top') && !BR.hasRelayedAsset('p', ID2, 'top')
+        && BR.relayedIdTakenByOther('p', ID2) && !BR.relayedIdTakenByOther('o', ID2) && !IA.registerImportedAssets(ID2, { top: draft }, 'relay:p'));
+    IA.unregisterImportedAssets(ID2, 'relay:p');
+    check('visuals/own: ...and only its own lender can take it back', IA.importedAssetCacheSizes().registered === 1);
+    BR.unregisterRelayedAssets([ID2]);
+    check('visuals/own: ...which leaving the room does', IA.importedAssetCacheSizes().registered === 0 && BR.relayedAssetIds().length === 0);
+    IA.registerImportedAssets(ID2, { top: draft }, 'relay:o');
+    check('visuals/own: this device may always replace a relayed look (the editor opening its own robot)', IA.registerImportedAssets(ID2, { top: draft }) === true);
+    IA.unregisterImportedAssets(ID2, 'relay:o');
+    check('visuals/own: ...after which the relay cannot take the device’s back', IA.importedAssetCacheSizes().registered === 1);
+    IA.unregisterImportedAssets(ID2);
+    IA.resetImportedAssetsForTests();
+    BR.setRelayedAssetSink(null);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SOURCE PINS for what a socket or a worker has to do, which no headless Room can show
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const room = rd(joinPath('server', 'room.ts'));
+  const idx = rd(joinPath('server', 'index.ts'));
+  const rw = rd(joinPath('server', 'roomWorker.ts'));
+  const rh = rd(joinPath('server', 'roomHost.ts'));
+  check('visuals/pins: the room answers the relay’s two messages BEFORE it looks the sender up, so a watcher (who is not a seat) can ask',
+    /onMessage\(id: string, msg: ClientMsg, conn\?: number\): void \{[\s\S]{0,400}msg\.t === 'visualPut' \|\| msg\.t === 'visualGet'[\s\S]{0,200}const c = this\.clients\.get\(id\);/.test(room));
+  check('visuals/pins: every place the room drops a seat frees its assets, and the room closing disposes the relay',
+    (room.match(/this\.visuals\.freeOwner\(/g) ?? []).length === 5 && /this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/.test(room) && !/[^.]this\.onEmpty\(\)/.test(room.replace(/this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/, '')));
+  check('visuals/pins: a joiner, a watcher and a reclaimed seat are greeted; a seat’s robot change re-checks its assets',
+    (room.match(/this\.visuals\.greet\(/g) ?? []).length === 3 && /this\.visuals\.specChanged\(c\.id\)/.test(room) && /this\.visuals\.reconcile\(\)/.test(room));
+  check('visuals/pins: ⚠️ the socket thread does not compress a `visualChunk` (base64 of a PNG or GLB: no gain, a zlib pass, and it would foul the snapshots’ shared deflate window)',
+    /compress: s\.length >= COMPRESS_THRESHOLD && !s\.startsWith\('\{"t":"visualChunk"'\)/.test(idx));
+  check('visuals/pins: a worker room does not hash or mirror a `visualChunk` (unique per viewer, no state change)', /s\.startsWith\('\{"t":"snapshot"'\) \|\| s\.startsWith\('\{"t":"visualChunk"'\)/.test(rw));
+  check('visuals/pins: the process budget is shared across threads — the pool makes the buffer, hands each worker a slot, zeroes a dead one’s',
+    /makeSharedVisualBudget\(\)/.test(rh) && /workerData: \{ visualBudget: this\.visualBudget, visualSlot: slot\.index \+ 1 \}/.test(rh) && /resetVisualSlot\(this\.visualBudget, slot\.index \+ 1\)/.test(rh) && /configureVisualBudget\(wd\?\.visualBudget/.test(rw));
+  const hw = rd(joinPath('src', 'lan', 'hostWorker.ts'));
+  check('visuals/pins: ⚠️ on a LAN tab host a `visualChunk` takes the RELIABLE lane (only snapshot and pong are the lossy hot path), so a chunk is never silently dropped by `maxRetransmits: 0`',
+    /const HOT = \/\^\\\{"t":"\(snapshot\|pong\)"\//.test(hw) && !/visual/.test(hw.slice(hw.indexOf('const HOT'), hw.indexOf('const isHot'))));
+  const bundled = [rd(joinPath('server', 'importVisuals.ts')), rd(joinPath('src', 'net', 'importVisuals.ts')), rd(joinPath('src', 'net', 'visualCheck.ts'))];
+  check('visuals/pins: the relay and its shared rules import nothing from `node:` (the LAN tab host bundles them for a browser)', bundled.every((s) => !/from 'node:/.test(s) && !/require\(/.test(s)));
+  const cl = rd(joinPath('src', 'net', 'importVisualsClient.ts'));
+  check('visuals/pins: the client reaches the importer engine only through its loader, and imports no three.js', /loadImporterEngine/.test(cl) && !/from 'three/.test(cl) && !/import\(['"]\.\.\/robotImport\/engine/.test(cl));
+  const lc = rd(joinPath('src', 'net', 'lobbyClient.ts'));
+  const ss = rd(joinPath('src', 'net', 'serverSession.ts'));
+  check('visuals/pins: the lobby and the match session both bind the transport and forward the relay’s three server frames',
+    /importVisuals\.bind\(transport\)/.test(lc) && /importVisuals\.bind\(transport\)/.test(ss)
+    && /m\.t === 'visualReady' \|\| m\.t === 'visualChunk' \|\| m\.t === 'visualRefused'/.test(lc) && /m\.t === 'visualReady' \|\| m\.t === 'visualChunk' \|\| m\.t === 'visualRefused'/.test(ss)
+    && /importVisuals\.noteRoster\(/.test(lc) && /importVisuals\.noteRoster\(/.test(ss) && /importVisuals\.release\(this\.transport\)/.test(lc) && /importVisuals\.release\(this\.transport\)/.test(ss));
+  check('visuals/pins: the lobby offers an upload only once the server says it relays (`roomTakesImportVisuals`), after the client exists',
+    /roomTakesImportVisuals\(\)\.then\(\(ok\) => importVisuals\.setOffered\(ok\)\)/.test(rd(joinPath('src', 'ui', 'Lobby.tsx'))));
+  const api = rd(joinPath('src', 'net', 'api.ts'));
+  check('visuals/pins: the capability check follows the server THIS room is on (a tab host: yes; a LAN address: its own presence; else the cloud)',
+    /export function roomTakesImportVisuals\(\)[\s\S]{0,200}tabHosting\(\)[\s\S]{0,200}IMPORT_VISUALS_CAP/.test(api));
+  const netSec = rd(joinPath('src', 'ui', 'NetworkSection.tsx'));
+  check('visuals/pins: the viewer opt-out is a row in Network (per device, and shown for EVERY game: Graphics is hidden for a game with no 3D view) with the agreed label',
+    /label="Show other players’ imported robots"/.test(netSec) && /setShowOthersImported/.test(netSec) && !/ShowOthersImported/.test(rd(joinPath('src', 'ui', 'GraphicsSection.tsx'))));
+  const keys = rd(joinPath('src', 'storageKeys.ts'));
+  check('visuals/pins: the preference’s storage key is registered with the privacy table, and the library entry says what a room receives',
+    /export const IMPORT_VISUALS_KEY = 'decodesim\.importVisuals'/.test(keys) && /key: IMPORT_VISUALS_KEY,/.test(keys) && /sent to the other people in that room, kept in memory only/.test(keys));
+  const lib = rd(joinPath('src', 'robotImport', 'library.ts'));
+  check('visuals/pins: the lighter mesh is cached on the library record, dropped when the robot is re-saved, and removed with it',
+    /files\.delete\(fileKey\(robot\.id, LITE\)\)/.test(lib) && /for \(const k of \[\.\.\.KINDS, LITE\]\) files\.delete/.test(lib) && /export function meshLiteFor/.test(lib) && /export function putMeshLite/.test(lib));
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE LIGHTER MESH (`liteMesh`, `src/robotImport/engine/lite.ts`) against REAL exporter output
+// ════════════════════════════════════════════════════════════════════════════
+{
+  // three.js and the engine are imported HERE, inside the block, so only this block's shard pays
+  // for them. three's exporter reads a Blob back through FileReader, which Node does not have.
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const { exportGlbStored } = await import('../src/robotImport/engine/bake');
+  const { liteMesh } = await import('../src/robotImport/engine/lite');
+  const { creaseParts } = await import('../src/robotImport/engine/meshGroup');
+  const { triangleCount } = await import('../src/robotImport/geometry');
+  const g = globalThis as unknown as { FileReader?: unknown };
+  const hadReader = !!g.FileReader;
+  if (!hadReader) {
+    g.FileReader = class {
+      result: unknown = null;
+      onloadend: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      readAsArrayBuffer(blob: Blob): void {
+        void blob.arrayBuffer().then((b) => {
+          this.result = b;
+          this.onloadend?.();
+          this.onload?.();
+        });
+      }
+      readAsDataURL(blob: Blob): void {
+        void blob.arrayBuffer().then((b) => {
+          this.result = `data:application/octet-stream;base64,${Buffer.from(b).toString('base64')}`;
+          this.onloadend?.();
+          this.onload?.();
+        });
+      }
+    };
+  }
+  try {
+    const partOf = (geo: import('three').BufferGeometry, color: [number, number, number], name: string) => {
+      const pos = geo.getAttribute('position');
+      return {
+        positions: new Float32Array(pos.array as Float32Array),
+        indices: geo.index ? Uint32Array.from(geo.index.array as ArrayLike<number>) : Uint32Array.from({ length: pos.count }, (_, i) => i),
+        color,
+        name,
+      };
+    };
+    const body = new THREE.SphereGeometry(0.19, 260, 200);
+    const box = new THREE.BoxGeometry(0.2, 0.1, 0.3, 55, 55, 55);
+    box.translate(0.05, 0.1, 0);
+    const parts = [partOf(body, [0.8, 0.1, 0.1], 'body'), partOf(box, [0.1, 0.2, 0.7], 'box')];
+    const glb = await exportGlbStored(creaseParts(parts));
+    check('visuals/lite: the stored mesh of a dense robot (140k triangles) is over the relay’s 1 MiB', triangleCount(parts) > 100_000 && glb.byteLength > IV.VISUAL_MAX_BYTES.mesh, `${glb.byteLength} B`);
+    check('visuals/lite: ⚠️ REAL GLTFExporter output passes the structural validator (size lifted), so the relay accepts what the importer writes', VC.validateMeshGlb(new Uint8Array(glb), 64 * 1024 * 1024) === null);
+    check('visuals/lite: ...and at the real cap the full mesh is refused, which is why a lighter one is made', VC.validateMeshGlb(new Uint8Array(glb)) === 'too large');
+    const lite = await liteMesh(glb, IV.VISUAL_MAX_BYTES.mesh);
+    check('visuals/lite: the lighter mesh fits the cap and passes the validator', !!lite && lite.byteLength <= IV.VISUAL_MAX_BYTES.mesh && VC.validateMeshGlb(new Uint8Array(lite)) === null, String(lite?.byteLength));
+    if (lite) {
+      const l = await new GLTFLoader().parseAsync(lite, '');
+      const o = await new GLTFLoader().parseAsync(glb, '');
+      const bl = new THREE.Box3().setFromObject(l.scene);
+      const bo = new THREE.Box3().setFromObject(o.scene);
+      check('visuals/lite: ⚠️ it stays in the stored mesh frame — the bounding box is the original’s to a tenth of a millimetre', bl.min.distanceTo(bo.min) < 1e-4 && bl.max.distanceTo(bo.max) < 1e-4, `${bl.min.distanceTo(bo.min)}`);
+      const colours = new Set<string>();
+      l.scene.traverse((n) => {
+        const m = (n as import('three').Mesh).material as import('three').MeshStandardMaterial | undefined;
+        if (m?.color) colours.add(m.color.getHexString());
+      });
+      check('visuals/lite: the colours are kept (one material per source colour)', colours.size === 2);
+      let tris = 0;
+      l.scene.traverse((n) => {
+        const m = n as import('three').Mesh;
+        if (m.isMesh) tris += (m.geometry.index?.count ?? m.geometry.getAttribute('position').count) / 3;
+      });
+      check('visuals/lite: it is a simplification, not a truncation (fewer triangles, still a shape)', tris > 2000 && tris < triangleCount(parts), String(tris));
+    }
+    check('visuals/lite: a target no mesh can meet answers null, and the relay then sends the picture alone', (await liteMesh(glb, 2000)) === null);
+  } finally {
+    if (!hadReader) delete g.FileReader;
+  }
+}
+
+/**
+ * MOVING PARTS (`docs/area/robot-import.md`, "Moving parts"). The synthetic robot with a body id per
+ * solid and a ramp the file shows deployed: the wheels are found from the floor contacts, a click on
+ * a roller takes its shaft, a ramp folds for the measurement (so the robot fits the 18-in start) and
+ * the folded model frame rebuilds bit for bit, a saved robot reopens with the same hinge, and the
+ * stored GLB keeps each moving part a node of its own through the lighter relay mesh.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const rtypes = await import('../src/robotImport/types');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const prisms = [
+    ...synth.synthRobot(),
+    synth.cylY('shaft', [0.7, 0.7, 0.7], 9, 1.5, 0.2, -6.5, 6.5, 12),
+    // the ramp, as the file shows it: deployed, flat out in front of the robot
+    synth.box('ramp', [0.9, 0.8, 0.2], 9.6, 20, -6, 6, 0.2, 0.45),
+    synth.box('ramp_bolt', [0.6, 0.6, 0.6], 15, 15.3, 2, 2.3, 0.45, 0.7),
+    // a roller at the ramp's far end, which folds with it
+    synth.cylY('ramp_roller', [0.2, 0.7, 0.3], 19, 0.9, 0.4, -5, 5, 12),
+  ];
+  const id = (name: string): number => prisms.findIndex((p) => p.name === name);
+  // the file as CAD writes it (Z up, front −Y, millimetres): the importer's default front
+  const parts: P[] = synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const prepared = { name: 'moving.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts, trisIn: geo.triangleCount(parts), notes: [], trisOut: geo.triangleCount(parts), simplifyError: 0 };
+  const base = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+  const codes = (m: { checks: { code: string }[] }): string[] => m.checks.map((c) => c.code);
+
+  const flat = geo.measureParts(parts, base, { format: 'stl' });
+  check('moving parts: the ramp the file shows deployed makes the robot oversize when nothing is marked', codes(flat.measurement).includes('oversize'), String(flat.measurement.size.length));
+  check('moving parts: the oversize sentence points at Moving parts', /Moving parts/.test(flat.measurement.checks.find((c) => c.code === 'oversize')?.message ?? ''));
+
+  // ---- the wheels, from the floor contacts --------------------------------------------------------
+  const wheelsAt = flat.measurement.wheelsUsed ?? flat.measurement.wheels.contacts;
+  const found = motion.findWheelGroups(flat.modelParts, wheelsAt, 'mecanum', (104 / 25.4));
+  const wheelIds = ['wheel_5.5_5.5', 'wheel_5.5_-5.5', 'wheel_-5.5_5.5', 'wheel_-5.5_-5.5'].map(id);
+  check(
+    'moving parts: findWheelGroups finds the four wheels from the floor contacts, one body each, FL FR BL BR, and nothing of the frame',
+    found.length === 4 && found.every((g, i) => g.role === 'wheel' && g.corner === i && g.bodies.length === 1 && g.bodies[0] === wheelIds[i]),
+    JSON.stringify(found),
+  );
+  const fl = motion.coaxialBodies(flat.modelParts, wheelIds[0], 'wheel');
+  check('moving parts: a click on a wheel takes that wheel, not the one across the robot on the same axle line', fl.length === 1 && fl[0] === wheelIds[0], JSON.stringify(fl));
+  const roller = motion.coaxialBodies(flat.modelParts, id('intake'), 'roller');
+  check('moving parts: a click on a roller takes its shaft too, and no rail it runs through', JSON.stringify(roller) === JSON.stringify([id('intake'), id('shaft')].sort((a, b) => a - b)), JSON.stringify(roller));
+  const rampBodies = motion.mountedBodies(flat.modelParts, id('ramp'));
+  check(
+    'moving parts: a click on a plate takes the smaller parts mounted inside its box (the ramp takes its bolt), never the roller beside it or the robot',
+    JSON.stringify(rampBodies) === JSON.stringify([id('ramp'), id('ramp_bolt')].sort((a, b) => a - b)),
+    JSON.stringify(rampBodies),
+  );
+
+  // ---- the ramp folds for the measurement ----------------------------------------------------------
+  const setup = {
+    ...base,
+    motion: [...found, { role: 'roller' as const, bodies: roller }, { role: 'ramp' as const, bodies: rampBodies }, { role: 'roller' as const, bodies: [id('ramp_roller')] }],
+  };
+  const folded = geo.measureParts(parts, setup, { format: 'stl' });
+  const fm = folded.measurement;
+  check('moving parts: marked as a ramp, it is measured folded, and the robot fits the 18-in start', !codes(fm).includes('oversize') && fm.size.length <= 18.05 && fm.size.height < 18, `${fm.size.length} × ${fm.size.height}`);
+  const ramp = fm.motion?.find((p) => p.role === 'ramp');
+  check('moving parts: the ramp folds a quarter turn (stands up over its hinge) and deploys back by it', !!ramp && Math.abs(ramp.deploy - Math.PI / 2) < (2 * Math.PI) / 180 && ramp.group === 5, JSON.stringify(ramp));
+  const w0 = fm.motion?.find((p) => p.role === 'wheel' && p.corner === 0);
+  check(
+    'moving parts: a wheel is measured round about its level axle at its own radius, the axle turned so a positive turn rolls the robot forward',
+    !!w0 && Math.abs(w0.radius - synth.WHEEL_R) < 0.08 && w0.axis[1] > 0.99 && w0.group === 0,
+    JSON.stringify(w0),
+  );
+  const rl = fm.motion?.find((p) => p.group === 4);
+  check('moving parts: the roller is measured at its own radius, on its own axle, riding on nothing', !!rl && Math.abs(rl.radius - 1) < 0.08 && Math.abs(rl.axis[1]) > 0.99 && rl.parent === -1, JSON.stringify(rl));
+  const rr = fm.motion?.find((p) => p.group === 6);
+  check(
+    'moving parts: a roller on the ramp rides it: folded up with it (its axle now high over the hinge) and the ramp its parent',
+    !!rr && !!ramp && rr.parent === fm.motion!.indexOf(ramp) && rr.pivot[2] > 8 && Math.abs(rr.radius - 0.4) < 0.05,
+    JSON.stringify(rr),
+  );
+  const rollers = motion.findRollerGroups(folded.modelParts, [{ edge: 'front', from: -6, to: 6 }], new Set(found.flatMap((g) => g.bodies)));
+  const sameSet = (a: number[], b: number[]): boolean => JSON.stringify([...a].sort((x, y) => x - y)) === JSON.stringify([...b].sort((x, y) => x - y));
+  check(
+    'moving parts: findRollerGroups finds the front intake roller with its shaft, and the roller on the folded ramp, and nothing of the frame, the tower or the wheels',
+    rollers.length === 2 && rollers.some((g) => sameSet(g.bodies, [id('intake'), id('shaft')])) && rollers.some((g) => sameSet(g.bodies, [id('ramp_roller')])),
+    JSON.stringify(rollers),
+  );
+  check('moving parts: no intake span, no rollers looked for; a span on another edge finds none here', motion.findRollerGroups(folded.modelParts, [], new Set()).length === 0 && motion.findRollerGroups(folded.modelParts, [{ edge: 'back', from: -6, to: 6 }], new Set(found.flatMap((g) => g.bodies))).length === 0);
+  const { oriented, modelParts } = geo.orientParts(parts, setup, { format: 'stl' });
+  const same = geo.toModelFrame(parts, oriented.sourceToModel, oriented.folds);
+  const bits = (a: Float32Array, b: Float32Array): boolean => a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  check('moving parts: toModelFrame(sourceToModel, folds) rebuilds the FOLDED model frame bit for bit (the main thread trusts the worker’s plan)', same.length === modelParts.length && same.every((p, i) => bits(p.positions, modelParts[i].positions)));
+  check('moving parts: an orientation with a fold survives a structured clone (the measure worker posts it)', JSON.stringify(structuredClone(oriented).folds) === JSON.stringify(oriented.folds));
+  check('moving parts: a fold re-measures the heavy half (orientKey), a spinning part alone does not', geo.orientKey(setup) !== geo.orientKey(base) && geo.orientKey({ ...base, motion: [{ role: 'roller', bodies: roller }] }) === geo.orientKey(base));
+  const meas = new Measurer(prepared);
+  const viaMeasurer = meas.normalise(setup);
+  check('moving parts: the engine’s cached measurer reports the same moving parts as measureParts, field for field', JSON.stringify(viaMeasurer.measurement.motion) === JSON.stringify(fm.motion));
+  // a wheel nudge keeps the moving parts ARRAY: the preview rebuilds its whole mesh on a new one
+  const wheelsNow = viaMeasurer.measurement.wheelsUsed ?? [{ x: 5, y: 5 }, { x: 5, y: -5 }, { x: -5, y: 5 }, { x: -5, y: -5 }];
+  const nudged = meas.normalise({ ...setup, wheels: wheelsNow.map((w, i) => (i ? { x: w.x, y: w.y } : { x: w.x + 0.25, y: w.y })) });
+  const remarked = meas.normalise({ ...setup, motion: (setup.motion ?? []).slice(0, 1) });
+  check(
+    'moving parts: a wheel nudge keeps the moving parts, the array itself (no re-measure, no preview rebuild); a change of the moving parts measures them again',
+    nudged.measurement !== viaMeasurer.measurement && nudged.measurement.motion === viaMeasurer.measurement.motion && JSON.stringify(nudged.measurement.motion) === JSON.stringify(fm.motion) && remarked.measurement.motion !== viaMeasurer.measurement.motion,
+  );
+
+  // ---- saved: the stored mesh is folded, and reopening does not fold it twice ----------------------
+  const stored = motion.motionAsStored(setup.motion, fm.motion);
+  const sr = stored?.find((g) => g.role === 'ramp');
+  check('moving parts: saving rewrites a deployed ramp as the stored mesh has it (folded, deploying by what was measured)', !!sr && sr.filePose === 'folded' && sr.deployDeg === Math.round(((ramp?.deploy ?? 0) * 180) / Math.PI) && sr.foldDeg === undefined && stored!.filter((g) => g.role === 'wheel').every((g, i) => g === setup.motion[i]));
+  // reopened as the editor reopens a saved robot: the stored mesh (robot frame → stored frame), read in metres, +Y up
+  const o1 = fm.origin;
+  const robotParts = folded.modelParts.map((p) => {
+    const a = new Float32Array(p.positions);
+    for (let i = 0; i < a.length; i += 3) {
+      a[i] -= o1.x;
+      a[i + 1] -= o1.y;
+    }
+    return { ...p, positions: a };
+  });
+  const storedParts = geo.transformParts(robotParts, rtypes.ROBOT_TO_STORED_MESH);
+  const again = geo.measureParts(storedParts, { ...base, units: 'm', up: '+y', motion: stored }, { format: 'glb' });
+  const ramp2 = again.measurement.motion?.find((p) => p.role === 'ramp');
+  const o2 = again.measurement.origin;
+  const dPivot = ramp && ramp2 ? Math.hypot(ramp.pivot[0] - o1.x - (ramp2.pivot[0] - o2.x), ramp.pivot[1] - o1.y - (ramp2.pivot[1] - o2.y), ramp.pivot[2] - ramp2.pivot[2]) : Infinity;
+  check(
+    'moving parts: the saved robot reopens fitting, its ramp hinged where it was (within 0.6 in) and deploying by the same angle',
+    !codes(again.measurement).includes('oversize') && !!ramp2 && dPivot < 0.6 && Math.abs(ramp2.deploy - ramp!.deploy) < 0.02 && Math.abs(again.measurement.size.length - fm.size.length) < 0.05,
+    `pivot off ${dPivot.toFixed(3)} in`,
+  );
+
+  // ---- what a stored mesh may carry -----------------------------------------------------------
+  const ok = rtypes.readStoredMotion({ v: 1, role: 'flywheel', axis: [0, 3, 4], radius: 99, deploy: 1 });
+  check(
+    'moving parts: readStoredMotion keeps a known role, makes the axis unit and clamps the radius, and refuses an unknown role, a zero axis or a NaN',
+    !!ok && Math.abs(ok.axis[1] - 0.6) < 1e-12 && ok.radius === 20 &&
+      rtypes.readStoredMotion({ v: 1, role: 'laser', axis: [0, 0, 1], radius: 1, deploy: 0 }) === null &&
+      rtypes.readStoredMotion({ v: 1, role: 'wheel', axis: [0, 0, 0], radius: 1, deploy: 0 }) === null &&
+      rtypes.readStoredMotion({ v: 1, role: 'wheel', axis: [0, NaN, 1], radius: 1, deploy: 0 }) === null,
+  );
+
+  // ---- the stored GLB: each moving part a node at its pivot, through the lighter relay mesh -----
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const { readStoredScene, sceneParts } = await import('../src/robotImport/engine/bakeMesh');
+  const { exportStoredScene } = await import('../src/robotImport/engine/floatGlb');
+  const { splitMoving } = await import('../src/robotImport/engine/bake');
+  const { liteMesh } = await import('../src/robotImport/engine/lite');
+  const { creaseParts } = await import('../src/robotImport/engine/meshGroup');
+  const g = globalThis as unknown as { FileReader?: unknown };
+  const hadReader = !!g.FileReader;
+  if (!hadReader) {
+    g.FileReader = class {
+      result: unknown = null;
+      onloadend: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      readAsArrayBuffer(blob: Blob): void {
+        void blob.arrayBuffer().then((b) => {
+          this.result = b;
+          this.onloadend?.();
+          this.onload?.();
+        });
+      }
+    };
+  }
+  try {
+    const mp = fm.motion ?? [];
+    const { rest, moving } = splitMoving(folded.modelParts, mp);
+    const movingTris = moving.reduce((s, ps) => s + geo.triangleCount(ps), 0);
+    check('moving parts: splitMoving keeps every triangle, each moving body’s in its own part', geo.triangleCount(rest) + movingTris === geo.triangleCount(folded.modelParts) && moving.every((ps) => ps.length > 0));
+    // the scene in the model frame (it is only a round trip here; the bake turns it into the stored frame)
+    const scene = {
+      rest: creaseParts(rest),
+      moving: mp.map((p, i) => ({ info: { v: 1 as const, role: p.role, axis: p.axis, radius: p.radius, deploy: p.deploy, ...(p.corner !== undefined ? { corner: p.corner } : {}) }, pivot: p.pivot, parent: p.parent, parts: creaseParts(moving[i]) })),
+    };
+    const glb = await exportStoredScene(scene);
+    check('moving parts: the stored GLB with body ids (`_BODY`) and moving-part nodes passes the relay’s validator', VC.validateMeshGlb(new Uint8Array(glb)) === null, String(VC.validateMeshGlb(new Uint8Array(glb))));
+    const back = readStoredScene((await new GLTFLoader().parseAsync(glb, '')).scene);
+    // a rider is its carrier's child, so the nodes come back in tree order: matched by role and pivot
+    const near = (m: (typeof back.moving)[number]) =>
+      Math.min(...mp.filter((p) => p.role === m.info.role && Math.abs(p.axis[0] - m.info.axis[0]) + Math.abs(p.axis[1] - m.info.axis[1]) + Math.abs(p.axis[2] - m.info.axis[2]) < 1e-6).map((p) => Math.hypot(m.pivot[0] - p.pivot[0], m.pivot[1] - p.pivot[1], m.pivot[2] - p.pivot[2])));
+    const pivotOff = Math.max(...back.moving.map(near));
+    const roles = (r: string[]): string => r.sort().join();
+    const rider = back.moving.find((m) => m.info.role === 'roller' && m.parent >= 0);
+    check(
+      'moving parts: read back, every moving part is a node at its pivot (to 1e-4 in) with its role and axis, the ramp’s roller nested in the ramp, and no triangle moved between the robot and its parts',
+      back.moving.length === mp.length && pivotOff < 1e-4 && roles(back.moving.map((m) => m.info.role)) === roles(mp.map((p) => p.role)) &&
+        (mp.some((p) => p.role === 'roller' && p.parent >= 0) ? !!rider && back.moving[rider.parent]?.info.role === 'ramp' : true) &&
+        geo.triangleCount(back.rest) === geo.triangleCount(scene.rest) && geo.triangleCount(sceneParts(back)) === geo.triangleCount(sceneParts(scene)),
+      `pivot off ${pivotOff}`,
+    );
+    const bodyKept = back.rest.some((p) => !!p.body) && back.moving.every((m) => m.parts.every((p) => !!p.body));
+    check('moving parts: the body ids come back from `_BODY` (an edit of a saved robot can pick parts again)', bodyKept);
+    const lite = await liteMesh(glb, 2_000_000);
+    const liteBack = lite ? readStoredScene((await new GLTFLoader().parseAsync(lite, '')).scene) : null;
+    const json = (b: ArrayBuffer): string => new TextDecoder().decode(new Uint8Array(b, 20, new DataView(b).getUint32(12, true)));
+    check(
+      'moving parts: the lighter relay mesh keeps every moving part a node of its own, and drops the body ids (`_BODY`)',
+      !!lite && !!liteBack && roles(liteBack.moving.map((m) => m.info.role)) === roles(mp.map((p) => p.role)) && json(glb).includes('_BODY') && !json(lite).includes('_BODY'),
+      `${lite?.byteLength} B, ${liteBack?.moving.map((m) => m.info.role).join()}, glb _BODY ${json(glb).includes('_BODY')}, lite _BODY ${lite ? json(lite).includes('_BODY') : '-'}`,
+    );
+    void THREE;
+  } finally {
+    if (!hadReader) delete g.FileReader;
+  }
+}
+
+/**
+ * DELETING PARTS (`docs/area/robot-import.md`, "Deleting parts"). The synthetic robot with a body per
+ * solid and a 1-in cube floating 4 in off its left side: a deleted body is measured as if the file
+ * never had it, each set of deleted bodies is an orientation of its own, the main thread rebuilds
+ * the worker's model frame without them bit for bit, the moving parts lose them, the floating-part
+ * finder flags the cube and nothing on a robot whose parts touch, and a saved setup names none.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const { findFloatingParts, FLOAT_GAP_IN } = await import('../src/robotImport/floating');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type G = import('../src/robotImport/types').MotionGroup;
+  const J = JSON.stringify;
+  const robot = synth.synthRobot();
+  // beside the flag (x 2..6, z 4.5..6, y to 7.5): 4 in off the robot's left side
+  const cube = synth.box('cube', [0.9, 0.9, 0.9], 2, 3, 11.5, 12.5, 5, 6);
+  const prisms = [...robot, cube];
+  const id = (name: string): number => prisms.findIndex((p) => p.name === name);
+  const cubeId = id('cube');
+  // the file as CAD writes it (Z up, front −Y, millimetres), one body per solid
+  const mk = (ps: typeof prisms): P[] => synth.synthParts(ps, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const withCube = mk(prisms);
+  const without = mk(robot);
+  const base = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+  const opts = { format: 'stl' as const };
+  const sameArrays = (a: P[], b: P[]): boolean =>
+    a.length === b.length &&
+    a.every((p, i) => {
+      const q = b[i];
+      const eq = (x: ArrayLike<number> | null | undefined, y: ArrayLike<number> | null | undefined): boolean =>
+        !x || !y ? !x === !y : x.length === y.length && Array.prototype.every.call(x, (v: number, k: number) => Object.is(v, y[k]));
+      return eq(p.positions, q.positions) && eq(p.indices, q.indices) && eq(p.body, q.body);
+    });
+
+  const full = geo.measureParts(withCube, base, opts);
+  const del = geo.measureParts(withCube, { ...base, removed: [cubeId] }, opts);
+  const ref = geo.measureParts(without, base, opts);
+  check(
+    'delete parts: the floating cube makes the robot oversize, and deleted it is measured exactly as the file without it (size, hull, wheels, bands, front, checks)',
+    full.measurement.checks.some((c) => c.code === 'oversize') && J(del.measurement) === J(ref.measurement) && sameArrays(del.modelParts, ref.modelParts),
+    `${full.measurement.size.width.toFixed(2)} wide with it, ${del.measurement.size.width.toFixed(2)} without`,
+  );
+
+  // two bodies in one part (a merge by colour): the deleted one's triangles and vertices go, the rest
+  // keep their order and values
+  {
+    const merged: P = { positions: new Float32Array([...withCube[id('flag')].positions, ...withCube[cubeId].positions]), indices: null, color: [1, 1, 1], name: 'm', body: null };
+    const nf = withCube[id('flag')].positions.length / 3;
+    merged.body = new Uint32Array(merged.positions.length / 3).map((_, v) => (v < nf ? id('flag') : cubeId));
+    const [kept] = geo.withoutBodies([merged], [cubeId]);
+    const tris = (p: P): string[] => {
+      const out: string[] = [];
+      const n = (p.indices ? p.indices.length : p.positions.length / 3) / 3;
+      for (let t = 0; t < n; t++) {
+        const c = [0, 1, 2].map((k) => (p.indices ? p.indices[3 * t + k] : 3 * t + k));
+        out.push(c.map((v) => `${p.positions[3 * v]},${p.positions[3 * v + 1]},${p.positions[3 * v + 2]}`).join(' '));
+      }
+      return out;
+    };
+    check(
+      'delete parts: a deleted body sharing a part with another leaves that body’s triangles, in order, with its id',
+      J(tris(kept)) === J(tris(withCube[id('flag')])) && kept.body!.every((b) => b === id('flag')) && geo.withoutBodies(withCube, []) === withCube,
+    );
+  }
+
+  check(
+    'delete parts: the orientation key names the deleted bodies (a deletion re-measures), and no deletion is the old key',
+    geo.orientKey({ ...base, removed: [cubeId] }) !== geo.orientKey(base) &&
+      geo.orientKey({ ...base, removed: [] }) === geo.orientKey(base) &&
+      geo.orientKey({ ...base, removed: [1, 2] }) !== geo.orientKey({ ...base, removed: [1, 3] }),
+  );
+  {
+    const o = geo.orientParts(withCube, { ...base, removed: [cubeId] }, opts);
+    const rebuilt = geo.toModelFrame(geo.withoutBodies(withCube, [cubeId]), o.oriented.sourceToModel, o.oriented.folds);
+    const prepared = { name: 'cube.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts: withCube, full: withCube, trisIn: geo.triangleCount(withCube), notes: [], trisOut: geo.triangleCount(withCube), simplifyError: 0, fullDetail: true };
+    const n = new Measurer(prepared).normalise({ ...base, removed: [cubeId] });
+    const hasCube = (ps: readonly P[]): boolean => ps.some((p) => p.body?.includes(cubeId));
+    check(
+      'delete parts: the main thread rebuilds the measured model frame without the deleted bodies bit for bit, and the engine’s measured and shown parts (what is previewed, picked and baked) lack them',
+      sameArrays(rebuilt, o.modelParts) && !hasCube(n.modelParts) && !!n.shownParts && !hasCube(n.shownParts) && J(n.measurement.size) === J(ref.measurement.size),
+    );
+  }
+
+  // ---- what floats apart from the robot ----
+  const fl = findFloatingParts(full.modelParts);
+  check(
+    'delete parts: the floating-part finder flags the cube, 4 in off the robot, and only the cube; the measurement carries it',
+    fl.length === 1 && J(fl[0].bodies) === J([cubeId]) && Math.abs(fl[0].gapIn - 4) < 1e-3 && fl[0].size.every((s) => Math.abs(s - 1) < 1e-3) && J(full.measurement.floating) === J(fl),
+    J(fl),
+  );
+  const near = mk([...robot, synth.box('near', [0.9, 0.9, 0.9], 2, 3, 7.5 + FLOAT_GAP_IN * 0.6, 8.5 + FLOAT_GAP_IN * 0.6, 5, 6)]);
+  check(
+    'delete parts: nothing floats on the robot itself (every part touches), nor a part nearer than the gap, nor once the cube is deleted',
+    findFloatingParts(ref.modelParts).length === 0 && geo.measureParts(near, base, opts).measurement.floating?.length === 0 && del.measurement.floating?.length === 0,
+  );
+  check(
+    'delete parts: the editor offers the floating parts until they are kept',
+    J(em.floatingOffer(full.measurement, {}).map((g) => g.bodies)) === J([[cubeId]]) && em.floatingOffer(full.measurement, { keepFloating: [cubeId] }).length === 0,
+  );
+
+  // ---- the frame, and the document ----
+  check(
+    'delete parts: deleting the cube moves the model frame (its box changes), deleting the belly inside the box does not',
+    geo.removalMovesFrame(withCube, [], [cubeId]) && !geo.removalMovesFrame(withCube, [], [id('belly')]) && geo.removalMovesFrame(withCube, [cubeId], []),
+  );
+  const w = id('wheel_5.5_5.5');
+  const groups: G[] = [
+    { role: 'roller', bodies: [id('intake'), cubeId] },
+    { role: 'spin', bodies: [cubeId] },
+    { role: 'spin', bodies: [id('flag')], follows: { group: 0, ratio: 2 }, rideOn: 1 },
+    { role: 'swing', bodies: [id('tower')], axis: 'part', axisBody: cubeId, follows: { group: 2, ratio: 1 } },
+    { role: 'slide', bodies: [] },
+  ];
+  const pruned = em.pruneMotion(groups, new Set([cubeId]));
+  check(
+    'delete parts: the moving parts lose the deleted bodies, a row left empty goes and the links after it move up, a joint about a deleted part turns about its own, a row still being picked stays',
+    J(pruned) ===
+      J([
+        { role: 'roller', bodies: [id('intake')] },
+        { role: 'spin', bodies: [id('flag')], follows: { group: 0, ratio: 2 } },
+        { role: 'swing', bodies: [id('tower')], follows: { group: 1, ratio: 1 } },
+        { role: 'slide', bodies: [] },
+      ]),
+    J(pruned),
+  );
+  const doc = {
+    setup: { ...base, wheels: [{ x: 1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: -1 }], motion: [{ role: 'wheel' as const, bodies: [w], corner: 0 }, ...groups], removed: [7] },
+    mech: { intakes: [{ edge: 'front' as const, from: -5, to: 5 }] },
+  } as unknown as import('../src/robotImport/ui/editorModel').EditorDoc;
+  const moved = em.deleteBodies(doc, [cubeId], true);
+  const inside = em.deleteBodies(doc, [id('belly')], false);
+  check(
+    'delete parts: a deletion is one document edit: the ids join the deleted list, the moving parts lose them, and a moved frame clears placed wheels and placements (a deletion inside the box keeps them)',
+    J(moved.setup.removed) === J([7, cubeId].sort((a, b) => a - b)) && moved.setup.wheels === null && moved.mech === null && moved.setup.motion!.length === 5 &&
+      J(inside.setup.wheels) === J(doc.setup.wheels) && inside.mech === doc.mech && J(inside.setup.removed) === J([7, id('belly')].sort((a, b) => a - b)),
+  );
+  const measuredMotion = geo.measureParts(withCube, { ...moved.setup, wheels: null }, opts).measurement.motion ?? [];
+  check(
+    'delete parts: the measured moving parts name no deleted body',
+    measuredMotion.length > 0 && measuredMotion.every((p) => !p.bodies.includes(cubeId)),
+    J(measuredMotion.map((p) => p.bodies)),
+  );
+  const back = em.restoreBodies(moved, true);
+  const saved = em.savedSetup({ ...moved.setup, keepFloating: [3] });
+  check(
+    'delete parts: Restore all brings every body back; a saved setup names no deleted body (its stored mesh is made without them) and keeps the kept floating parts',
+    back.setup.removed === undefined && !('removed' in saved) && J(saved.keepFloating) === J([3]) && em.savedSetup(base) === base,
+  );
+  {
+    const { restoreDoc, applyEdit, undoDoc } = await import('../src/robotImport/ui/editorHistory');
+    const at = (triBudget: number, removed?: number[]): typeof doc => ({ ...doc, setup: { ...doc.setup, triBudget, removed } }) as typeof doc;
+    // a deletion is one undo step, and its undo brings the bodies back
+    const r = applyEdit(at(0, undefined), undefined, (d) => em.deleteBodies(d, [cubeId], true), { label: 'delete 1 part' }, 1);
+    const u = r ? undoDoc(r.doc, r.history, 2) : null;
+    check(
+      'delete parts: a deletion is one undo step, and an undo across a Detail change never puts back ids from the other detail’s numbering',
+      !!r && J(r.doc.setup.removed) === J([cubeId]) && r.history?.past.length === 1 && !!u && u.doc.setup.removed === undefined &&
+        J(restoreDoc(at(0, [5]), at(0)).setup.removed) === J([5]) &&
+        restoreDoc(at(0, [5]), at(250_000)).setup.removed === undefined &&
+        J(restoreDoc(at(0), at(250_000, [9])).setup.removed) === J([9]),
+    );
+  }
+}
+
+/**
+ * SIM_PATCH 4 (fixed launchers: the aim controller, the lead, DECODE's release tolerance and tank
+ * forward, the feed clock's slack). A replay recorded before it must re-simulate exactly as it was
+ * recorded, so the five scenes stepped under patch 3 land on the pins the code BEFORE the change
+ * produced (c5e56b05, measured 2026-10-03), and live they do not (the new rules really run).
+ */
+{
+  const { pre4Pins } = await import('./fixed-pre4-scenes');
+  const PRE4: Record<string, string> = {
+    decodeKit: 'fired=19 2612680600:2960403223',
+    decodeKitPress: 'fired=13 3719071965:4122911612',
+    decodeMecanum: 'fired=18 2015847934:2997278344',
+    bb2d: 'fired=13 971486037:2405579923',
+    bb3d: 'fired=13 3312699138:1540063362',
+  };
+  const old = await pre4Pins(3);
+  const live = await pre4Pins(undefined);
+  const bad = Object.keys(PRE4).filter((k) => old[k] !== PRE4[k]);
+  check('SIM_PATCH 4: a replay recorded under patch 3 steps the fixed launchers exactly as the code before the aim fix did (DECODE kit, kit on the goal face, mecanum; BIOBUZZ kit 2D and 3D)', bad.length === 0, bad.map((k) => `${k}: ${old[k]}`).join(' | '));
+  check('SIM_PATCH 4: ...and live, every one of those scenes runs the new rules (none lands on its old pin)', Object.keys(PRE4).every((k) => live[k] !== PRE4[k]), JSON.stringify(live));
+}
+
+/**
+ * THE IMPORTER UI'S DOM-FREE HALF (lane 4: `src/robotImport/ui/`). The copy keeps the house rules,
+ * the review list blocks what `coerceImported` would refuse (and passes an ordinary robot), the
+ * wheel layouts hold (the block after this one), and the wiring the screens depend on is still there: the test drive's
+ * run settings, LB/RB scoped to the step rail, and no geometry or editor strings in the main chunk.
+ */
+{
+  const { COPY, upLabel, where } = await import('../src/robotImport/ui/copy');
+  const { PAGE_COPY } = await import('../src/robotImport/ui/pageCopy');
+  const strings: string[] = [];
+  const collect = (o: Record<string, unknown>): void => {
+    for (const v of Object.values(o)) {
+      if (typeof v === 'string') strings.push(v);
+      else if (typeof v === 'function') {
+        const f = v as (...a: unknown[]) => unknown;
+        // numbers first (a length is `.toFixed`), words for the rest
+        let out: unknown;
+        try {
+          out = f(1.5, 2.25, 3);
+        } catch {
+          out = f('X', 'Y', 'Z');
+        }
+        strings.push(String(out));
+      }
+      else if (Array.isArray(v)) v.flat(2).forEach((x) => typeof x === 'string' && strings.push(x));
+      else if (v && typeof v === 'object') collect(v as Record<string, unknown>);
+    }
+  };
+  collect(COPY as unknown as Record<string, unknown>);
+  collect(PAGE_COPY as unknown as Record<string, unknown>);
+  const bad = strings.filter((s) => /'|\.\.\.|\s-\s|"/.test(s));
+  check('import UI copy: typographic punctuation, no dash doing a full stop’s job', bad.length === 0, bad.slice(0, 3).join(' | '));
+  const failures2 = strings.filter((s) => /^Could not|Something went wrong|Oops|please/i.test(s));
+  check('import UI copy: failures say Couldn’t … and never pad', failures2.length === 0, failures2.join(' | '));
+  check('import UI copy: the up axis minus is U+2212, and a signed position reads as words', upLabel('-z') === '−Z' && where(-2, -3.25) === '2.0 in back, 3.3 in right' && where(1, 2, 3) === '1.0 in forward, 2.0 in left, 3.0 in high');
+}
+{
+  const { reviewItems, blocks, rectangleWheels, buildSpec, draftKey, baseName } = await import('../src/robotImport/ui/editorModel');
+  const { defaultImportSetup } = await import('../src/robotImport/geometry');
+  const { coerceSpec, DEFAULT_SPEC } = await import('../src/sim/spawn');
+  const box = (l: number, w: number) => [
+    { x: -l / 2, y: -w / 2 },
+    { x: l / 2, y: -w / 2 },
+    { x: l / 2, y: w / 2 },
+    { x: -l / 2, y: w / 2 },
+  ];
+  const meas = (l: number, w: number, h: number, checks: { code: string; level: 'block' | 'warn' | 'info'; message: string }[] = []) => ({
+    units: 'in', unitsDetected: true, up: '+z', upDetected: true, upMargin: 1, yaw: 0, sourceToModel: [],
+    size: { length: l, width: w, height: h }, hull: box(l, w), hullRawVerts: 4, hullDeviation: 0,
+    wheels: { wheels: rectangleWheels(box(l, w)), contacts: [], note: '' }, wheelsUsed: rectangleWheels(box(l, w)),
+    wheelSource: 'detected', origin: { x: 0, y: 0 }, heightIn: h, trisIn: 12, checks,
+  }) as never;
+  for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+    const doc = {
+      v: 1, key: draftKey(game, null), game, id: '0123456789abcdef', editId: null, step: 0,
+      setup: defaultImportSetup({ massLb: 30 }), detected: null, mech: null,
+      spec: coerceSpec(DEFAULT_SPEC, undefined, game), source: null, savedModel: false, created: null, sourceName: null, updated: 0,
+    } as never;
+    const ok = buildSpec(doc, meas(16, 14, 15));
+    check(`import UI review: an ordinary 16 × 14 in robot carries its import and blocks nothing — ${game}`, !!ok.spec.imported && blocks(reviewItems(meas(16, 14, 15), ok, game)) === 0, reviewItems(meas(16, 14, 15), ok, game).filter((i) => i.level === 'block').map((i) => i.text).join(' | '));
+    const tiny = meas(0.6, 0.5, 0.6);
+    check(`import UI review: ⚠️ a footprint under the sim’s 6-in floor BLOCKS (coerceImported would drop it) — ${game}`, reviewItems(tiny, buildSpec(doc, tiny), game).some((i) => i.id === 'tiny' && i.level === 'block'));
+  }
+  check('import UI: the draft key names the game and the robot, a new import is `new`', draftKey('chain', null) === 'chain:new' && draftKey('biobuzz', 'abc') === 'biobuzz:abc');
+  check('import UI: a robot is named after its file, cut to the name field’s 24', baseName('my_robot_v3.step') === 'my robot v3' && baseName('a'.repeat(40) + '.glb').length === 24);
+}
+
+/**
+ * UNDO AND REDO IN THE IMPORT EDITOR (`editorHistory.ts`). The player's edits are steps; quick repeats
+ * of one thing are one step; the oldest goes past the cap; a new edit clears the redo stack; what the
+ * editor does by itself (`'auto'`) is never a step and never clears the redo stack, so an effect that
+ * runs again after an undo leaves both stacks alone. An undo puts back the setup, the placements and
+ * the spec, and keeps the step and the Detail. The history is not written with the draft.
+ */
+{
+  const H = await import('../src/robotImport/ui/editorHistory');
+  const { COPY } = await import('../src/robotImport/ui/copy');
+  const { defaultImportSetup } = await import('../src/robotImport/geometry');
+  const { coerceSpec, DEFAULT_SPEC } = await import('../src/sim/spawn');
+  // the stacks, on plain numbers
+  let h = H.emptyHistory<number>();
+  h = H.record(h, 1, { label: 'a' }, 0);
+  h = H.record(h, 2, { label: 'b' }, 10);
+  h = H.record(h, 3, { label: 'c' }, 20);
+  check('import UI undo: each edit is a step, newest last, with its label', h.past.map((e) => `${e.doc}${e.label}`).join() === '1a,2b,3c' && h.future.length === 0 && H.nextUndo(h)?.label === 'c');
+  const u1 = H.undo(h, 4)!;
+  const u2 = H.undo(u1.history, u1.doc)!;
+  check('import UI undo: undo walks back (4 → 3 → 2), each taken step goes on the redo stack with its label', u1.doc === 3 && u2.doc === 2 && u2.history.past.length === 1 && u2.history.future.map((e) => `${e.doc}${e.label}`).join() === '4c,3b');
+  const r1 = H.redo(u2.history, u2.doc)!;
+  check('import UI undo: redo puts back the last undone (2 → 3), and its step returns to the undo stack', r1.doc === 3 && r1.history.past.map((e) => e.doc).join() === '1,2' && H.nextRedo(r1.history)?.doc === 4 && H.nextUndo(r1.history)?.label === 'b');
+  const fresh = H.record(r1.history, 3, { label: 'd' }, 30);
+  check('import UI undo: a new edit after an undo clears the redo stack', fresh.future.length === 0 && fresh.past.length === 3 && H.undo(H.emptyHistory<number>(), 0) === null && H.redo(fresh, 9) === null);
+  // coalescing: one key, each edit within COALESCE_MS of the last, is one step (a drag, a slider, typing)
+  let c = H.emptyHistory<number>();
+  [0, 400, 800, 1200].forEach((t, i) => (c = H.record(c, i, { label: 'drag', key: 'mech:shooter' }, t)));
+  check('import UI undo: a drag of one handle (edits 400 ms apart, 1.2 s in all) is ONE step, holding the state before it', c.past.length === 1 && c.past[0].doc === 0 && H.COALESCE_MS === 600);
+  c = H.record(c, 9, { label: 'drag', key: 'mech:shooter' }, 1200 + H.COALESCE_MS + 1);
+  const c2 = H.record(c, 10, { label: 'other', key: 'mech:place' }, 1200 + H.COALESCE_MS + 2);
+  const c3 = H.record(c2, 11, { label: 'unkeyed' }, 1200 + H.COALESCE_MS + 3);
+  const c4 = H.record(c3, 12, { label: 'unkeyed' }, 1200 + H.COALESCE_MS + 4);
+  check('import UI undo: a pause past the window, another key, or no key at all starts a new step', c.past.length === 2 && c2.past.length === 3 && c3.past.length === 4 && c4.past.length === 5);
+  const cu = H.undo(H.record(H.emptyHistory<number>(), 0, { key: 'k' }, 0), 1)!;
+  const cu2 = H.record(cu.history, 0, { key: 'k' }, 100);
+  check('import UI undo: an undo ends the run, so the next edit of the same thing is a step of its own', cu.history.open === null && cu2.past.length === 1 && cu2.future.length === 0);
+  // the cap
+  let big = H.emptyHistory<number>();
+  for (let i = 0; i < 150; i++) big = H.record(big, i, { label: String(i) }, i * 1000);
+  check('import UI undo: at most 100 steps; the oldest go first', H.HISTORY_CAP === 100 && big.past.length === 100 && big.past[0].doc === 50 && big.past[99].doc === 149);
+
+  // the editor's document: the player's edits recorded, 'auto' edits not
+  const doc0 = {
+    v: 1, key: 'decode:new', game: 'decode', id: '0123456789abcdef', editId: null, step: 2,
+    setup: defaultImportSetup({ massLb: 30 }), detected: null, mech: { shooter: { x: 1, y: 2, z: 10 } }, spec: coerceSpec(DEFAULT_SPEC, undefined, 'decode'),
+    source: null, savedModel: false, created: null, sourceName: null, updated: 0,
+  } as never as Parameters<typeof H.applyEdit>[0];
+  const turn = H.applyEdit(doc0, undefined, (d) => ({ ...d, setup: { ...d.setup, yaw: 1 }, mech: null }), H.setupEdit({ yaw: 1 }), 1000)!;
+  // the placements default in again, as the effect does after a units, up or turn change
+  const defaulted = H.applyEdit(turn.doc, turn.history, (d) => ({ ...d, mech: { shooter: { x: 3, y: 0, z: 10 } } }), 'auto', 1001)!;
+  const moved = H.applyEdit(defaulted.doc, defaulted.history, (d) => ({ ...d, mech: { shooter: { x: 4, y: 0, z: 10 } } }), { label: 'move the launcher', key: 'mech:shooter' }, 2000)!;
+  check('import UI undo: the player’s edits are steps, the editor’s own (`auto`) are not', turn.history!.past.length === 1 && defaulted.history === turn.history && moved.history!.past.length === 2 && H.nextUndo(moved.history)?.label === 'move the launcher' && H.nextUndo(turn.history)?.label === COPY.edits.turn);
+  check('import UI undo: an edit that changes nothing is no step', H.applyEdit(moved.doc, moved.history, (d) => ({ ...d, mech: { shooter: { x: 4, y: 0, z: 10 } } }), {}, 2100) === null);
+  const back1 = H.undoDoc(moved.doc, moved.history, 3000)!;
+  const back2 = H.undoDoc(back1.doc, back1.history, 3001)!;
+  check('import UI undo: two undos take back the move and then the turn, placements and all', JSON.stringify(back1.doc.mech) === JSON.stringify({ shooter: { x: 3, y: 0, z: 10 } }) && back2.doc.setup.yaw === 0 && JSON.stringify(back2.doc.mech) === JSON.stringify(doc0.mech) && H.undoDoc(back2.doc, back2.history, 3002) === null);
+  // after the undo an effect may run again: an auto edit, which must not eat the redo stack
+  const rerun = H.applyEdit(back2.doc, back2.history, (d) => ({ ...d, cadBuild: [] }), 'auto', 3003)!;
+  const fwd = H.redoDoc(rerun.doc, rerun.history, 3004)!;
+  check('import UI undo: ⚠️ an auto edit after an undo leaves the redo stack, and redo puts the turn back', rerun.history === back2.history && rerun.history!.future.length === 2 && fwd.doc.setup.yaw === 1 && JSON.stringify(fwd.doc.mech) === JSON.stringify({ shooter: { x: 3, y: 0, z: 10 } }) && fwd.history.future.length === 1);
+  const branch = H.applyEdit(fwd.doc, fwd.history, (d) => ({ ...d, spec: { ...d.spec, name: 'New name' } }), { label: COPY.edits.rename, key: 'id:name' }, 3100)!;
+  check('import UI undo: a new player edit after an undo clears the redo stack', branch.history!.future.length === 0 && H.redoDoc(branch.doc, branch.history, 3101) === null);
+  // a handle grabbed and put back (the pad's B): the run comes back to where it began, so no step
+  const g1 = H.applyEdit(doc0, undefined, (d) => ({ ...d, mech: { shooter: { x: 1.25, y: 2, z: 10 } } }), { key: 'mech:shooter' }, 0)!;
+  const g2 = H.applyEdit(g1.doc, g1.history, (d) => ({ ...d, mech: { shooter: { x: 1, y: 2, z: 10 } } }), { key: 'mech:shooter' }, 200)!;
+  check('import UI undo: a handle moved and put back inside one run leaves no step', g1.history!.past.length === 1 && g2.history!.past.length === 0 && g2.history!.open === null);
+  // what an undo restores: setup, placements, spec; never the step or the Detail
+  const target = { ...doc0, step: 0, setup: { ...doc0.setup, units: 'mm', triBudget: 1234 }, mech: null, spec: { ...doc0.spec, name: 'Old' } } as typeof doc0;
+  const cur = { ...doc0, step: 4, setup: { ...doc0.setup, units: 'in', triBudget: 0 }, notes: ['note'] } as typeof doc0;
+  const rs = H.restoreDoc(target, cur);
+  check('import UI undo: an undo restores the setup, placements and spec, and keeps the step, the Detail and the file’s notes', rs.setup.units === 'mm' && rs.mech === null && rs.spec.name === 'Old' && rs.step === 4 && rs.setup.triBudget === 0 && rs.notes?.[0] === 'note');
+  // the names on the buttons
+  const handles = [
+    { key: 'shooter', field: 'shooter', label: 'Fixed launcher' },
+    { key: 'intake:front', field: 'intake', edge: 'front', label: 'Front intake' },
+    { key: 'place', field: 'place', label: 'Box Tube' },
+  ] as const;
+  const mPrev = { shooter: { x: 0, y: 0, z: 9 }, shooterYawDeg: 0, intakes: [{ edge: 'front', from: -4, to: 4 }], place: { x: 1, y: 1, z: 2 } };
+  const e1 = H.mechEdit(mPrev as never, { ...mPrev, intakes: [{ edge: 'front', from: -3, to: 5 }] } as never, handles);
+  const e2 = H.mechEdit(mPrev as never, { ...mPrev, shooterYawDeg: 15 } as never, handles);
+  const e3 = H.mechEdit(mPrev as never, { ...mPrev, place: { x: 2, y: 1, z: 2 } } as never, handles);
+  check(
+    'import UI undo: a placement step is named by its handle (“move the front intake”, “turn the fixed launcher”, “move the Box Tube”)',
+    e1.label === 'move the front intake' && e1.key === 'mech:intake:front' && e2.label === 'turn the fixed launcher' && e2.key === 'mech:shooter:aim' && e3.label === 'move the Box Tube',
+    [e1.label, e2.label, e3.label].join(' | '),
+  );
+  const de = H.driveEdit({ massLb: 30 });
+  const me = H.motionEdit([{ role: 'roller', bodies: [1] }, { role: 'flywheel', bodies: [2] }], [{ role: 'roller', bodies: [1] }], ['Intake roller', 'Flywheel']);
+  check('import UI undo: drivetrain and moving parts steps name the field or the row', de.label === 'change the weight' && de.key === 'drive:massLb' && me.label === 'remove the flywheel' && H.motionEdit([], [{ role: 'fold', bodies: [] }], []).label === COPY.edits.addMoving);
+  // the keys
+  const k = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => H.historyShortcut({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods });
+  check(
+    'import UI undo: Ctrl or Cmd+Z undoes; Ctrl or Cmd+Shift+Z and Ctrl+Y redo; Z, Alt+Ctrl+Z and Cmd+Y do nothing',
+    k('z', { ctrlKey: true }) === 'undo' && k('z', { metaKey: true }) === 'undo' && k('Z', { ctrlKey: true, shiftKey: true }) === 'redo' && k('Z', { metaKey: true, shiftKey: true }) === 'redo' &&
+      k('y', { ctrlKey: true }) === 'redo' && k('z') === null && k('z', { ctrlKey: true, altKey: true }) === null && k('y', { metaKey: true }) === null,
+  );
+  check(
+    'import UI undo: the shortcut is left to a text or number field, a select, a textarea and an editable region; a slider, a checkbox and a button are the editor’s',
+    H.ownsUndo({ tagName: 'INPUT', type: 'text' }) && H.ownsUndo({ tagName: 'INPUT', type: 'number' }) && H.ownsUndo({ tagName: 'SELECT' }) && H.ownsUndo({ tagName: 'TEXTAREA' }) && H.ownsUndo({ tagName: 'DIV', isContentEditable: true }) &&
+      !H.ownsUndo({ tagName: 'INPUT', type: 'range' }) && !H.ownsUndo({ tagName: 'INPUT', type: 'checkbox' }) && !H.ownsUndo({ tagName: 'BUTTON' }) && !H.ownsUndo(null),
+  );
+  check('import UI undo: a label keeps a name with a capital inside it (“Box Tube”) and lowers the rest', H.lowerFirst('Box Tube') === 'Box Tube' && H.lowerFirst('Front left wheel') === 'front left wheel' && H.lowerFirst('') === '');
+  // the wiring: the editor's own edits are auto, a new file starts the history empty, and it is never written
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const autoSites = [
+    /update\(\(d\) => \(\{ \.\.\.d, mech: next \}\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
+    /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\) \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*'auto',/, // ...and read again after a turn
+    /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
+    /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
+  ];
+  const missing = autoSites.filter((re) => !re.test(ed)).map(String);
+  check('import UI undo: the editor’s own edits (placements defaulting in, the finders, a step change, a Detail change) go through update as auto', missing.length === 0, missing.join(' | '));
+  check('import UI undo: a new file starts the history empty; a Detail re-read keeps it', /history: opts\.keepHistory \? draftRef\.current\?\.history : undefined/.test(ed) && /readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)/.test(ed));
+  check('import UI undo: the shortcut leaves text fields alone', /if \(!dir \|\| ownsUndo\(e\.target/.test(ed));
+  const ds = readFileSync('src/robotImport/ui/draftStore.ts', 'utf8');
+  check('import UI undo: the draft written to disk is the document alone, so the history is never persisted', /const record = \{ \.\.\.d\.doc, updated: Date\.now\(\) \}/.test(ds) && /putDraft\(record, /.test(ds));
+}
+
+/**
+ * THE WHEEL LAYOUTS (`editorModel.ts`, `finishMeasure`). In a RECTANGLE the four wheels sit on four
+ * lines, a moved wheel moves the two through it, and the four never stop being an exact rectangle;
+ * the four number fields set exactly what was typed; a pointer drag snaps to a floor contact or a
+ * 1/16-in grid; detected wheels nearly a rectangle are lined up into one and the rest open in FREE,
+ * which still moves one wheel; and a setup from before the layout existed opens as a rectangle.
+ */
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const { COPY } = await import('../src/robotImport/ui/copy');
+  type V = { x: number; y: number };
+  const box = (l: number, w: number): V[] => [
+    { x: -l / 2, y: -w / 2 },
+    { x: l / 2, y: -w / 2 },
+    { x: l / 2, y: w / 2 },
+    { x: -l / 2, y: w / 2 },
+  ];
+  const hull = box(16, 14);
+  const w0 = em.rectangleWheels(hull);
+  const same = (a: readonly V[], b: readonly V[]): boolean => a.length === b.length && a.every((p, i) => p.x === b[i].x && p.y === b[i].y);
+  const onLines = (w: readonly V[]): boolean => geo.isRectangle(w) && w[0].x > w[2].x && w[0].y > w[1].y;
+
+  // ---- a drag in a rectangle: the axle and the side through the wheel move, the other two stay ----
+  const fl = em.moveWheel(w0, 0, { x: 6.3, y: 5.2 }, 'rect');
+  check(
+    'import UI wheels: dragging front-left in a rectangle moves the front axle and the left side; front-right and back-left follow, back-right stays',
+    onLines(fl) && fl[0].x === geo.q64(6.3) && fl[0].y === geo.q64(5.2) && fl[1].x === fl[0].x && fl[2].y === fl[0].y && same([fl[3]], [w0[3]]) && fl[1].y === w0[1].y && fl[2].x === w0[2].x,
+    JSON.stringify(fl),
+  );
+  {
+    // every wheel, dragged anywhere a pointer, a key or a stick puts it, many times over
+    let w: V[] = w0;
+    let ok = true;
+    let s = 7;
+    const rnd = (): number => ((s = (s * 16807) % 2147483647) / 2147483647) * 20 - 10;
+    for (let k = 0; k < 400; k++) {
+      w = em.moveWheel(w, k % 4, { x: rnd(), y: rnd() }, 'rect');
+      if (!onLines(w) || w[0].x - w[2].x < em.WHEEL_MIN_SPAN_IN - 1e-12 || w[0].y - w[1].y < em.WHEEL_MIN_SPAN_IN - 1e-12) ok = false;
+    }
+    check('import UI wheels: 400 drags of every wheel in a rectangle leave four wheels on four shared lines, never crossed', ok, JSON.stringify(w));
+  }
+  const lone = em.moveWheel(w0, 3, { x: -6, y: -4 }, 'free');
+  check('import UI wheels: in the free layout only the dragged wheel moves', lone[3].x === -6 && lone[3].y === -4 && same(lone.slice(0, 3), w0.slice(0, 3)));
+  check(
+    'import UI wheels: in the free layout the forward and left fields set exactly what was typed',
+    em.moveWheel(w0, 1, { x: 4.4375, y: w0[1].y }, 'free')[1].x === 4.4375 && em.moveWheel(w0, 1, { x: w0[1].x, y: -6.0625 }, 'free')[1].y === -6.0625,
+  );
+
+  // ---- the four numbers: each sets exactly what was typed, from a placed or a DETECTED rectangle ----
+  {
+    // a detected rectangle's lines are cluster centres, decimals no binary fraction holds
+    const detected = geo.squareWheels([{ x: 5.6125, y: 6.0375 }, { x: 5.6375, y: -5.9625 }, { x: -5.4875, y: 6.0125 }, { x: -5.4625, y: -5.9875 }]);
+    const typed: [import('../src/robotImport/ui/editorModel').RectNumber, number][] = [
+      ['wheelbase', 11.0625],
+      ['track', 13.1875],
+      ['forward', 0.4375],
+      ['left', -0.3125],
+      ['wheelbase', 9.5],
+      ['forward', -1.25],
+    ];
+    const bad: string[] = [];
+    for (const start of [w0, detected, em.moveWheel(w0, 0, { x: 6.3, y: 5.2 }, 'rect')]) {
+      let w = start;
+      const want: Partial<Record<string, number>> = {};
+      for (const [k, [key, v]] of typed.entries()) {
+        const before = em.rectNumbers(w);
+        w = em.setRectNumber(w, key, v);
+        const n = em.rectNumbers(w);
+        want[key] = v;
+        if (!onLines(w) || n[key] !== v) bad.push(`${key} ${v} → ${n[key]}`);
+        // the number's partner (the size for a centre, the centre for a size) is kept exactly once
+        // the lines are on the grid: after the first edit of a detected rectangle
+        const partner = { wheelbase: 'forward', forward: 'wheelbase', track: 'left', left: 'track' }[key] as keyof typeof n;
+        if (!(start === detected && k === 0) && n[partner] !== before[partner]) bad.push(`${key} moved ${partner}`);
+      }
+      const end = em.rectNumbers(w);
+      for (const [k, v] of Object.entries(want)) if (end[k as keyof typeof end] !== v) bad.push(`at the end ${k} ${end[k as keyof typeof end]} ≠ ${v}`);
+    }
+    check('import UI wheels: wheelbase, track width and the centre forward and left each set exactly what was typed, and keep what was typed before', bad.length === 0, bad.join(' | '));
+  }
+
+  // ---- snapping (pointer drags only) ----
+  {
+    const contacts = [{ x: 5.675, y: 6.025 }, { x: -5.5, y: -6 }];
+    const onContact = em.snapWheel({ x: 5.4, y: 6.2 }, contacts);
+    const offContact = em.snapWheel({ x: 5.2, y: 6.4 }, contacts);
+    const g = (v: number): boolean => Number.isInteger(v * 16);
+    check(
+      'import UI wheels: a pointer drag within 0.4 in of a floor contact lands on it; further out it lands on the 1/16-in grid',
+      onContact.x === 5.675 && onContact.y === 6.025 && g(offContact.x) && g(offContact.y) && offContact.x === 5.1875 && offContact.y === 6.375,
+      `${JSON.stringify(onContact)} ${JSON.stringify(offContact)}`,
+    );
+    const closest = em.snapWheel({ x: 0.05, y: 0 }, [{ x: 0.35, y: 0 }, { x: -0.15, y: 0 }]);
+    check('import UI wheels: between two contacts in reach, the nearer wins', closest.x === -0.15);
+    const map = readFileSync('src/robotImport/ui/TopDownMap.tsx', 'utf8');
+    check(
+      'import UI wheels: the map snaps the POINTER drag only (keys and the pad step by their own 1/4 and 1/16 in), and the Model step snaps to the floor contacts',
+      /d\.last = constrain\(h, snap \? snap\(h\.key, p\) : p\)/.test(map) && (map.match(/snap\(/g) ?? []).length === 1 && /snap=\{\(_, p\) => snapWheel\(p, m\.wheels\.contacts\)\}/.test(readFileSync('src/robotImport/ui/ModelStep.tsx', 'utf8')),
+    );
+  }
+
+  // ---- detection: lined up when nearly a rectangle, as found (and free) when not ----
+  {
+    // the synthetic robot with one wheel moved off the rectangle by `dx`, `dy` (source frame)
+    const robot = (dx: number, dy: number) =>
+      synth.synthParts(
+        synth.synthRobot().map((p) => (p.name === 'wheel_5.5_5.5' ? synth.cylY('wheel_fl', [0.06, 0.06, 0.07], 5.5 + dx, synth.WHEEL_R, synth.WHEEL_R, 5.5 + dy - 0.75, 5.5 + dy + 0.75, 16) : p)),
+      );
+    const base = geo.defaultImportSetup();
+    const opts = { format: 'stl' as const, fileUnit: 'in' as const };
+    const meas = (dx: number, dy: number, setup = base) => geo.measureParts(robot(dx, dy), setup, opts).measurement;
+    const near = meas(0.3, 0.25);
+    const det = near.wheels.wheels!;
+    const avg = geo.squareWheels(det);
+    check(
+      'import UI wheels: detected wheels each within 0.75 in of a rectangle are LINED UP into the averaged one, and the note says so',
+      !!near.wheelsUsed && same(near.wheelsUsed, avg) && geo.isRectangle(near.wheelsUsed) && !geo.isRectangle(det) && near.wheelsSquared === true &&
+        near.wheelSource === 'detected' && /Lined them up as a rectangle\./.test(near.wheels.note) && em.wheelLayoutOf(base, det) === 'rect',
+      `${JSON.stringify(near.wheelsUsed)} ${near.wheels.note}`,
+    );
+    const far = meas(1.2, 0);
+    check(
+      'import UI wheels: detected wheels further off stay AS FOUND, and the editor opens them in the free layout',
+      !!far.wheelsUsed && same(far.wheelsUsed, far.wheels.wheels!) && !geo.isRectangle(far.wheelsUsed) && far.wheelsSquared === undefined && em.wheelLayoutOf(base, far.wheels.wheels) === 'free',
+      JSON.stringify(far.wheelsUsed),
+    );
+    const farRect = meas(1.2, 0, { ...base, wheelLayout: 'rect' });
+    const nearFree = meas(0.3, 0.25, { ...base, wheelLayout: 'free' });
+    check(
+      'import UI wheels: a picked layout stands: a rectangle lines up any detected four, free leaves even nearly square ones as found',
+      geo.isRectangle(farRect.wheelsUsed!) && farRect.wheelsSquared === true && same(nearFree.wheelsUsed!, det) && nearFree.wheelsSquared === undefined,
+    );
+    // a robot detected exactly square measures bit for bit as it did before layouts existed
+    const sq = synth.synthParts(synth.synthRobot(), synth.FRAMES.cadMm);
+    const m0 = geo.measureParts(sq, base, { format: 'stl' }).measurement;
+    const mFree = geo.measureParts(sq, { ...base, wheelLayout: 'free' }, { format: 'stl' }).measurement;
+    const mRect = geo.measureParts(sq, { ...base, wheelLayout: 'rect' }, { format: 'stl' }).measurement;
+    check(
+      'import UI wheels: ⚠️ wheels detected exactly square measure BIT FOR BIT the same in every layout (lining up an exact rectangle is the identity)',
+      JSON.stringify(m0) === JSON.stringify(mFree) && JSON.stringify(m0) === JSON.stringify(mRect) && m0.wheelsSquared === undefined && same(m0.wheelsUsed!, m0.wheels.wheels!),
+    );
+    check('import UI wheels: the Model step says which: 4 found, lined up, or not a rectangle', COPY.wheelsSquared !== COPY.wheelsFound && COPY.wheelsUneven !== COPY.wheelsFound);
+    // Home in a rectangle puts a wheel on the lined-up detection, in free on the wheel as found
+    check('import UI wheels: Home goes to the lined-up detection in a rectangle, to the wheel as found in free', same(em.wheelHomes(near, 'rect')!, avg) && same(em.wheelHomes(near, 'free')!, det));
+    // the measurer caches the light half by the layout too, or a layout pick would show the last one
+    const { Measurer } = await import('../src/robotImport/engine/measureSession');
+    const parts = robot(0.3, 0.25);
+    const ms = new Measurer({ name: 'fl.stl', format: 'stl', bytes: 0, fileUnit: 'in', parts, trisIn: geo.triangleCount(parts), notes: [], trisOut: geo.triangleCount(parts), simplifyError: 0 } as never);
+    const cachedRect = ms.normalise(base).measurement;
+    const cachedFree = ms.normalise({ ...base, wheelLayout: 'free' }).measurement;
+    check('import UI wheels: the cached light half is keyed by the layout (rect, then free, are two measurements)', cachedRect.wheelsSquared === true && cachedFree.wheelsSquared === undefined && same(cachedFree.wheelsUsed!, det));
+  }
+
+  // ---- old setups, and the layout pick ----
+  {
+    const old = geo.defaultImportSetup();
+    delete (old as { wheelLayout?: unknown }).wheelLayout;
+    const nearDet = [{ x: 5.6, y: 5.4 }, { x: 5.5, y: -5.5 }, { x: -5.5, y: 5.6 }, { x: -5.4, y: -5.5 }];
+    check(
+      'import UI wheels: a setup from before the layout existed opens as a RECTANGLE (detected wheels, wheels placed square, or none found)',
+      !('wheelLayout' in old) && em.wheelLayoutOf(old, nearDet) === 'rect' && em.wheelLayoutOf({ ...old, wheels: w0 }, null) === 'rect' && em.wheelLayoutOf(old, null) === 'rect',
+    );
+    check(
+      'import UI wheels: …but one whose wheels were placed by hand off a rectangle opens FREE, so nothing placed moves',
+      em.wheelLayoutOf({ ...old, wheels: em.moveWheel(w0, 0, { x: 6, y: 5 }, 'free') }, null) === 'free',
+    );
+    check('import UI wheels: an unknown layout in a shared file reads as unset', em.wheelLayoutOf({ ...old, wheelLayout: 'oval' as never }, nearDet) === 'rect');
+    check(
+      'import UI wheels: a number field left untouched commits nothing (it showed the value rounded to its step and snapped that on blur, so a Tab through a wheel field moved the wheel)',
+      /if \(raw === fmt\(value\)\) return;/.test(readFileSync('src/robotImport/ui/NumberField.tsx', 'utf8')),
+    );
+    const offRect = em.moveWheel(w0, 0, { x: 6.3, y: 5.2 }, 'free');
+    const toRect = em.layoutPatch({ wheels: offRect }, 'rect');
+    const toFree = em.layoutPatch({ wheels: offRect }, 'free');
+    check(
+      'import UI wheels: picking the rectangle lines placed wheels up on their averaged lines; picking free moves nothing',
+      toRect.wheelLayout === 'rect' && !!toRect.wheels && geo.isRectangle(toRect.wheels) && toFree.wheelLayout === 'free' && !('wheels' in toFree) &&
+        em.layoutPatch({ wheels: null }, 'rect').wheels === undefined,
+    );
+  }
+}
+{
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'import UI test drive: free drive, the draft spec, its own assists, the named anchor, no other robots — frozen at mount',
+    /const \[driveSpec\] = useState\(\(\) => \(session \? undefined : testDrive\)\)/.test(gv) &&
+      /mode: 'free' as const,\s*spec: driveSpec,\s*assists: coerceAssists\(driveSpec\.assists, PLAYER_ASSISTS\),\s*startPose: null,\s*practiceSeats: \{\},/.test(gv),
+  );
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('import UI test drive: leaving it goes back to the importer, not home', /if \(drive\) \{\s*setTestDrive\(null\);\s*navigate\('robotimport', \{ sub: drive\.back \}\);/.test(app));
+  check('import UI route: /configure/robot/import is matched BEFORE the configure section match', app.indexOf("at('robotimport'") > 0 && app.indexOf("at('robotimport'") < app.indexOf("return at('configure'"));
+  const pad = readFileSync('src/ui/PadNavLayer.tsx', 'utf8');
+  check('import UI pad: LB/RB step through a [data-padnav-sections] container when a screen names one', /querySelectorAll<HTMLElement>\('\[data-padnav-sections\]'\)/.test(pad));
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8');
+  check('import UI pad: the step rail is that container', /data-padnav-sections/.test(ed));
+  // the main chunk must not pull the editor's half in: geometry.ts (shared with the lazy engine, so
+  // it lands whole wherever it is imported) and the editor's strings
+  const mainSide = ['src/ui/Menu.tsx', 'src/robotImport/ui/ImportedRobots.tsx', 'src/robotImport/ui/LibraryDialogs.tsx', 'src/robotImport/ui/useLibrary.ts', 'src/robotImport/ui/handoff.ts', 'src/robotImport/ui/exportRobot.ts', 'src/robotImport/ui/pageCopy.ts'];
+  const leaks = mainSide.filter((f) => /from '\.\.?\/(?:\.\.\/)*(?:robotImport\/)?(?:geometry|ui\/copy|copy|ImportEditor|editorModel)'|robotImport\/ui\/copy'/.test(readFileSync(f, 'utf8')));
+  check('import UI bundle: the robot page’s files import neither geometry.ts nor the editor’s copy or code', leaks.length === 0, leaks.join(', '));
+  const row = readFileSync('src/robotImport/ui/ImportedRobots.tsx', 'utf8');
+  check(
+    'import UI bundle: the robot page reaches the library dialogs and the export by import() on a click, never statically',
+    !/^import [^;]*from '\.\/(?:LibraryDialogs|exportRobot)'/m.test(row) && /import\('\.\/LibraryDialogs'\)/.test(row) && /import\('\.\/exportRobot'\)/.test(row),
+  );
+  // three more things the entry chunk used to carry (`npm run bundleaudit`: its `library` and `relay`
+  // routes, and the editor's share of `importerui`). A static import from a main-side file puts the
+  // whole module in `main`, so this reads the importers instead of the build.
+  {
+    const rdN = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+    const staticFrom = (f: string, mod: string): boolean => new RegExp(`^import (?!type )[^;]*from '[^']*${mod}';`, 'm').test(rdN(f));
+    const relayClient = rdN('src/net/importVisualsClient.ts');
+    check(
+      'import UI bundle: ⚠️ the device library is reached by import() from the relay client and the asset seam, never statically (a static import folds IndexedDB into main)',
+      !staticFrom('src/net/importVisualsClient.ts', 'robotImport/library') && !staticFrom('src/render/importedAssets.ts', 'robotImport/library') &&
+        /import\('\.\.\/robotImport\/library'\)/.test(relayClient) && /import\('\.\.\/robotImport\/library'\)/.test(rdN('src/render/importedAssets.ts')),
+    );
+    check(
+      'import UI bundle: ⚠️ the relay’s validators are imported by the server and by import() from the client, and by no file the entry chunk holds (api.ts and protocol.ts import importVisuals.ts for a capability string)',
+      /from '\.\.\/src\/net\/visualCheck'/.test(rdN('server/importVisuals.ts')) && /import\('\.\/visualCheck'\)/.test(relayClient) &&
+        !['src/net/importVisualsClient.ts', 'src/net/importVisuals.ts', 'src/net/api.ts', 'src/net/protocol.ts', 'src/net/lobbyClient.ts', 'src/net/serverSession.ts'].some((f) => staticFrom(f, 'visualCheck')),
+    );
+    check(
+      'import UI bundle: ⚠️ the per-game placement checks are on no sim module: only the editor’s placement.ts imports their registry, so they are in the editor’s chunk',
+      ['src/games/sim.ts', 'src/games/decode/sim.ts', 'src/games/chain/sim.ts', 'src/games/biobuzz/sim.ts'].every((f) => !/importChecks|importMechChecks/.test(rdN(f))) &&
+        staticFrom('src/robotImport/ui/placement.ts', 'games/importMechChecks') &&
+        !['src/games/index.ts', 'src/games/module.ts', 'src/ui/Menu.tsx', 'src/robotImport/ui/ImportedRobots.tsx', 'src/net/sanitize.ts'].some((f) => /importMechChecks/.test(rdN(f))),
+    );
+  }
+  // a room refuses two seats holding one import id, so a robot added from a share file never keeps
+  // the file's id: two teammates who load one file must be able to sit in one room
+  const edN = ed.replace(/\r\n/g, '\n');
+  check(
+    'import UI share file: an added robot gets a fresh id and remembers the file’s (sharedFrom), and a second add of that file offers Replace under the local id (unless it is the account’s active robot: `libraryIds.ts`)',
+    ['await finish(withId(newRobotId()));', 'sharedFrom: fileId,', 'planShareAdd(spec.imported, settings.spec.imported', 'replace: () => void finish(withId(have.id))'].every((t) => edN.includes(t)) &&
+      readFileSync('src/robotImport/libraryIds.ts', 'utf8').includes('entries.find((e) => e.sharedFrom === file.id || e.id === file.id)') &&
+      readFileSync('src/robotImport/library.ts', 'utf8').includes('...(r.sharedFrom ? { sharedFrom: r.sharedFrom } : {}),'),
+  );
+}
+
+// ====================================================================================================
+// FIXED SHOOTERS — DECODE (`RobotSpec.launcher` / `hoodDeg` / `flywheel`, `src/sim/fixedShot.ts`,
+// `src/sim/flywheel.ts`). The BIOBUZZ half is the FIXED lane (`scripts/smoke-biobuzz/fixed.ts`).
+// ====================================================================================================
+
+/**
+ * THE BYTE-IDENTITY PINS, recorded on feat/robot-import 3d9a4120 BEFORE any fixed-shooter code
+ * existed: four DECODE turret builds (TW, Dugtrio, Rohan, Ditto — no swerve, which another branch is
+ * re-gearing), ALL assists on, auto fire included, the fire button on a cadence. Every robot without
+ * a fixed launcher, a fixed hood or a setpoint wheel runs exactly the code it always did; these are
+ * the proof. Never re-record one to make a fixed-shooter change pass.
+ */
+const FX_PINS: Record<'teleop' | 'auto', string> = {
+  teleop: 'fired=10 1820613857:1520241632 1451436679:3703651367 1378729317:382838410',
+  auto: 'fired=8 431843382:2627330122 1945519580:4026393436 861924408:426344017',
+};
+function fxPinCmd(w: World, i: number, tick: number): RobotCommand {
+  const r = w.robots[i];
+  let best: { x: number; y: number } | null = null;
+  let bd = Infinity;
+  for (const b of w.balls) {
+    if (b.state.kind !== 'ground') continue;
+    const d = hyp(b.pos.x - r.pos.x, b.pos.y - r.pos.y);
+    if (d < bd) {
+      bd = d;
+      best = b.pos;
+    }
+  }
+  const full = r.hopper.length >= 3;
+  const target = !best || (full && tick % 240 < 120) ? { x: (i % 2 === 0 ? 1 : -1) * 36, y: (i < 2 ? 1 : -1) * 36 } : best;
+  const local = rot({ x: target.x - r.pos.x, y: target.y - r.pos.y }, -r.heading);
+  const ang = datan2(local.y, local.x);
+  const driveY = clamp(local.x / 10, -1, 1);
+  const rotate = clamp(-wrapAngle(ang) * 0.9, -1, 1);
+  return {
+    driveY,
+    driveX: clamp(-local.y / 14, -1, 1),
+    rotate,
+    leftDrive: clamp(driveY - rotate, -1, 1),
+    rightDrive: clamp(driveY + rotate, -1, 1),
+    intake: tick % 200 < 170,
+    fire: r.hopper.length > 0 && tick % 40 < 25,
+  };
+}
+function fxPinRun(phase: 'auto' | 'teleop'): string {
+  const specs = [ROBOT_PRESETS[0], ROBOT_PRESETS[1], ROBOT_PRESETS[3], ROBOT_PRESETS[4]];
+  const w = createWorld(
+    'match',
+    9191,
+    specs.map((s, i) => ({
+      id: i,
+      alliance: (i % 2 === 0 ? 'blue' : 'red') as Alliance,
+      spec: { ...DEFAULT_SPEC, ...s } as RobotSpec,
+      assists: { fieldCentric: false, aimAssist: true, autoIntake: true, autoFire: true },
+      startIndex: Math.floor(i / 2),
+    })),
+  );
+  w.match.phase = phase;
+  w.match.phaseTimeLeft = phase === 'auto' ? 30 : 90;
+  const out: string[] = [];
+  let fired = 0;
+  for (let t = 0; t < 900; t++) {
+    const cmds = new Map<number, RobotCommand>();
+    for (let i = 0; i < w.robots.length; i++) cmds.set(w.robots[i].id, fxPinCmd(w, i, t));
+    step(w, 1 / 60, cmds);
+    for (const r of w.robots) if (r.lastFireAt === w.time) fired++;
+    if ((t + 1) % 300 === 0) out.push(`${worldHash(w)}:${impFnv(JSON.stringify(w))}`);
+  }
+  return `fired=${fired} ${out.join(' ')}`;
+}
+{
+  const got = fxPinRun('teleop');
+  check('fixed shooter: DECODE turret builds step byte-identically through intake / auto fire / fire — teleop (worldHash + whole-world JSON, 900 ticks)', got === FX_PINS.teleop, got);
+}
+{
+  const got = fxPinRun('auto');
+  check('fixed shooter: …and through AUTO', got === FX_PINS.auto, got);
+}
+
+/** the DECODE kit card */
+function fxKit(): RobotSpec {
+  return ROBOT_PRESETS.find((p) => p.name === 'StarterBot')!;
+}
+/** a one-robot DECODE world, teleop, robot 0 placed so its MUZZLE is `d` in from the blue goal's
+ * centroid along the face normal, facing the goal `yawErr` off; fire held (or not) for `ticks`.
+ * Counts artifacts that ENTER the blue goal from flight. */
+function fxShoot(
+  spec: Partial<RobotSpec>,
+  d: number,
+  o: { assist?: boolean; autoFire?: boolean; fire?: boolean; yawErr?: number; ticks?: number; setup?: (w: World) => void; cmd?: Partial<RobotCommand> } = {},
+): { scored: number; fired: number; heading: number; w: World } {
+  const w = createWorld('match', 5, [
+    {
+      id: 0,
+      alliance: 'blue',
+      spec: { ...DEFAULT_SPEC, ...spec } as RobotSpec,
+      assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: o.autoFire ?? false },
+      startIndex: 0,
+    },
+  ]);
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 100;
+  const r = w.robots[0];
+  r.aimAssist = o.assist ?? false;
+  const g = goalCenter('blue');
+  const n = goalFaceNormal('blue');
+  const head = Math.atan2(-n.y, -n.x);
+  const back = r.spec.length * TURRET_OFFSET_FRAC; // the launcher's mount, behind the centre
+  r.pos = { x: g.x + n.x * d - Math.cos(head) * back, y: g.y + n.y * d - Math.sin(head) * back };
+  r.heading = head + (o.yawErr ?? 0);
+  r.turretHeading = r.heading;
+  o.setup?.(w);
+  const start = r.hopper.length;
+  let scored = 0;
+  const c: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: o.fire ?? true, ...o.cmd };
+  for (let k = 0; k < (o.ticks ?? 150); k++) {
+    const flying = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+    step(w, 1 / 60, new Map([[0, c]]));
+    for (const b of w.balls) {
+      if (flying.has(b.id) && (b.state.kind === 'basin' || b.state.kind === 'rail') && (b.state as { goal: Alliance }).goal === 'blue') scored++;
+    }
+  }
+  return { scored, fired: start - r.hopper.length, heading: r.heading, w };
+}
+
+// ---- the coercer ------------------------------------------------------------------------------
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  const kit = coerceSpec(fxKit());
+  check(
+    'fixed shooter: the kit card coerces to itself (launcher, hood and wheel kept, a fixed point)',
+    kit.launcher === 'fixed' && kit.hoodDeg === DECODE_KIT_HOOD_DEG && J(kit.flywheel) === J(fxKit().flywheel) && J(coerceSpec(kit)) === J(kit),
+    J({ l: kit.launcher, h: kit.hoodDeg, f: kit.flywheel }),
+  );
+  const fromBase = coerceSpec({ ...DEFAULT_SPEC }, kit);
+  check(
+    'fixed shooter: read off the RAW input only — a spec without them, coerced over a fixed-launcher base, is a turret again',
+    fromBase.launcher === undefined && fromBase.hoodDeg === undefined && fromBase.flywheel === undefined,
+    J({ l: fromBase.launcher, h: fromBase.hoodDeg, f: fromBase.flywheel }),
+  );
+  const t = (raw: Record<string, unknown>): RobotSpec => coerceSpec({ ...DEFAULT_SPEC, ...raw });
+  check(
+    'fixed shooter: only "fixed" is a launcher worth storing — a turret, a typo or a number is absent',
+    t({ launcher: 'turret' }).launcher === undefined && t({ launcher: 'gun' }).launcher === undefined && t({ launcher: 1 }).launcher === undefined && t({ launcher: 'fixed' }).launcher === 'fixed',
+  );
+  check(
+    'fixed shooter: a fixed hood is clamped to 20–80 in whole degrees, and a non-number is the adjustable hood',
+    t({ hoodDeg: 5 }).hoodDeg === 20 && t({ hoodDeg: 95.6 }).hoodDeg === 80 && t({ hoodDeg: 61.4 }).hoodDeg === 61 && t({ hoodDeg: NaN }).hoodDeg === undefined && t({ hoodDeg: '70' }).hoodDeg === undefined,
+    J([5, 95.6, 61.4].map((h) => t({ hoodDeg: h }).hoodDeg)),
+  );
+  check(
+    'fixed shooter: an unusable flywheel is no flywheel (unknown mode, no finite setpoint, not an object)',
+    coerceFlywheel({ mode: 'turbo', rpm: [2000] }) === undefined && coerceFlywheel({ mode: 'fixed', rpm: [] }) === undefined && coerceFlywheel({ mode: 'fixed', rpm: ['x', NaN] }) === undefined && coerceFlywheel('fixed') === undefined && coerceFlywheel(null) === undefined,
+  );
+  const one = coerceFlywheel({ mode: 'fixed', rpm: [3000.4, 4000, 5000], wheelMm: 2, feedS: 0.333 });
+  check(
+    'fixed shooter: a one-speed wheel keeps ONE setpoint, whole rpm, and its wheel and feed are clamped',
+    J(one) === J({ mode: 'fixed', rpm: [3000], wheelMm: 48, feedS: 0.33 }) && J(coerceFlywheel(one)) === J(one),
+    J(one),
+  );
+  const pre = coerceFlywheel({ mode: 'presets', rpm: [1300, 1900, 2200, 2500], wheelMm: 90 });
+  check(
+    'fixed shooter: presets keep up to three, and default the feed to the kit’s 0.20 s',
+    J(pre) === J({ mode: 'presets', rpm: [1300, 1900, 2200], wheelMm: 90, feedS: 0.2 }) && J(coerceFlywheel(pre)) === J(pre),
+    J(pre),
+  );
+  const cr = coerceSpec(fxKit(), undefined, 'chain');
+  check('fixed shooter: Chain Reaction carries none of the three', cr.launcher === undefined && cr.hoodDeg === undefined && cr.flywheel === undefined);
+  check(
+    'fixed shooter: every DECODE team card is still the turret it was (no field written)',
+    ROBOT_PRESETS.filter((p) => p.name !== 'StarterBot').every((p) => {
+      const c = coerceSpec(p);
+      return !('launcher' in c) && !('hoodDeg' in c) && !('flywheel' in c);
+    }),
+  );
+}
+
+// ---- the kit card is the kit ------------------------------------------------------------------
+{
+  const k = fxKit();
+  check(
+    'StarterBot (DECODE): the kit OpMode’s 1125 ticks/s on a 28-PPR 1:1 motor is 2411 rpm, on 96-mm wheels, a 0.20-s feed',
+    k.flywheel?.mode === 'fixed' && k.flywheel.rpm[0] === Math.round((1125 / 28) * 60) && k.flywheel.wheelMm === 96 && k.flywheel.feedS === 0.2,
+    JSON.stringify(k.flywheel),
+  );
+  check(
+    'StarterBot (DECODE): its feed minimum is the OpMode’s 1075 / 1125',
+    Math.abs(FLY_FEED_MIN_FRAC - 1075 / 1125) < 1e-12,
+  );
+  check(
+    'StarterBot (DECODE): tank at 286 (312 rpm on 96 mm), no turret, robot-centric — and ON the 22-lb tank floor (the kit is 13.5 lb)',
+    k.drivetrain === 'tank' && k.driveRpm === 286 && k.launcher === 'fixed' && k.assists?.fieldCentric === false && k.massLb === massLimits('tank', k.flywheelInertia).min,
+    JSON.stringify({ dt: k.drivetrain, rpm: k.driveRpm, m: k.massLb }),
+  );
+  check('StarterBot (DECODE): it is the LAST card, so the default build is still the first', ROBOT_PRESETS[ROBOT_PRESETS.length - 1].name === 'StarterBot' && ROBOT_PRESETS[0].name === 'TW');
+  check(
+    'StarterBot (DECODE): NO intake, as the kit has none (the human player loads it), on its 17-in frame, a fixed point of the coercer',
+    k.intake === 'none' && k.length === 17 && JSON.stringify(coerceSpec(k)) === JSON.stringify(coerceSpec(coerceSpec(k))) && coerceSpec(k).intake === 'none' && coerceSpec(k).length === 17,
+    JSON.stringify({ intake: k.intake, length: k.length }),
+  );
+}
+
+// ---- where it scores from ---------------------------------------------------------------------
+{
+  // the band, measured: every 2 in from the goal, muzzle on the face normal, facing it, aim assist
+  // off so nothing turns. Printed so a change to the efficiency or the hood shows its effect.
+  const hits: number[] = [];
+  for (let d = 10; d <= 64; d += 2) if (fxShoot(fxKit(), d).scored === 3) hits.push(d);
+  const near = hits.filter((d) => d < 30);
+  const far = hits.filter((d) => d >= 30);
+  check(
+    'fixed shooter: the kit robot scores from TWO bands — rising through the opening right at the goal, and falling into it a few feet out',
+    near.length >= 3 && far.length >= 5 && !hits.includes(30) && !hits.includes(64),
+    `muzzle-to-goal-centre, in: ${JSON.stringify(hits)}`,
+  );
+  const inNear = fxShoot(fxKit(), 18);
+  const inFar = fxShoot(fxKit(), 50);
+  check('fixed shooter: in the near band, all three score', inNear.scored === 3, JSON.stringify({ s: inNear.scored, f: inNear.fired }));
+  check('fixed shooter: in the far band, all three score', inFar.scored === 3, JSON.stringify({ s: inFar.scored, f: inFar.fired }));
+  const between = fxShoot(fxKit(), 30);
+  const long = fxShoot(fxKit(), 64);
+  check(
+    'fixed shooter: SHORT of the far band (30 in) and LONG of it (64 in), the shots leave and miss — nothing corrects them',
+    between.fired === 3 && between.scored === 0 && long.fired === 3 && long.scored === 0,
+    JSON.stringify({ between: [between.fired, between.scored], long: [long.fired, long.scored] }),
+  );
+  const off = fxShoot(fxKit(), 50, { yawErr: 0.35 });
+  check('fixed shooter: in band but facing 20° off, every shot misses — the launcher does not aim, the robot does', off.fired === 3 && off.scored === 0, JSON.stringify({ f: off.fired, s: off.scored }));
+}
+
+// ---- the robot aims: aim assist turns the chassis --------------------------------------------
+{
+  const turned = fxShoot(fxKit(), 50, { assist: true, yawErr: 0.5, ticks: 240 });
+  const g = goalCenter('blue');
+  const r = turned.w.robots[0];
+  const want = decodeFixedAim(r).heading;
+  check(
+    'fixed shooter: with aim assist, holding fire turns the CHASSIS (a tank, through its side drives) onto the goal, then it scores',
+    turned.scored === 3 && Math.abs(wrapAngle(want - turned.heading)) < 0.02,
+    JSON.stringify({ s: turned.scored, err: wrapAngle(want - turned.heading), g }),
+  );
+  const held = fxShoot(fxKit(), 50, { assist: true, yawErr: 0.5, ticks: 6 });
+  check('fixed shooter: …and it does not release before it is on target', held.fired === 0, JSON.stringify({ f: held.fired }));
+  const auto = fxShoot(fxKit(), 50, { assist: true, autoFire: true, fire: false });
+  const autoOut = fxShoot(fxKit(), 30, { assist: true, autoFire: true, fire: false });
+  check(
+    'fixed shooter: AUTO FIRE releases only a shot that would score — in band it empties the hopper into the goal, out of band it holds',
+    auto.scored === 3 && autoOut.fired === 0,
+    JSON.stringify({ in: [auto.fired, auto.scored], out: autoOut.fired }),
+  );
+}
+
+// ---- the aim settles and the feed runs at its own rate (2026-10-02, "the robot shakes constantly
+// while shooting and its cadence is really slow") -----------------------------------------------
+
+/** a held, aimed shot traced tick by tick: robot 0 placed as `fxShoot` places it (or, `press`, driven
+ * 1.5 s into the goal face from 30 in out, `along` inches along it, the forward then kept on), aim
+ * assist on, fire held, the hopper kept full. The heading error (`decodeFixedAimErr`), the spin and
+ * the tick of every feed. */
+function fxAimTrace(
+  spec: Partial<RobotSpec>,
+  o: { d?: number; yawErr?: number; ticks?: number; press?: { along: number } } = {},
+): { err: number[]; w: number[]; fires: number[] } {
+  const w = fxShoot(spec, o.d ?? 50, { assist: true, yawErr: o.yawErr ?? 0, ticks: 0 }).w;
+  const r = w.robots[0];
+  const fwd = o.press ? 0.4 : 0;
+  if (o.press) {
+    const g = goalCenter('blue');
+    const n = goalFaceNormal('blue');
+    r.pos = { x: g.x + n.x * 30 - n.y * o.press.along, y: g.y + n.y * 30 + n.x * o.press.along };
+    r.heading = Math.atan2(-n.y, -n.x);
+    r.turretHeading = r.heading;
+    for (let k = 0; k < 90; k++) step(w, 1 / 60, new Map([[0, { driveX: 0, driveY: fwd, rotate: 0, leftDrive: fwd, rightDrive: fwd, intake: false, fire: false }]]));
+  }
+  const c: RobotCommand = { driveX: 0, driveY: fwd, rotate: 0, leftDrive: fwd, rightDrive: fwd, intake: false, fire: true };
+  const out = { err: [] as number[], w: [] as number[], fires: [] as number[] };
+  for (let k = 0; k < (o.ticks ?? 150); k++) {
+    while (r.hopper.length < 3) r.hopper.push('green');
+    step(w, 1 / 60, new Map([[0, c]]));
+    out.err.push(decodeFixedAimErr(r, c));
+    out.w.push(r.angVel);
+    if (r.lastFireAt === w.time) out.fires.push(k);
+  }
+  return out;
+}
+/** how a heading-error trace settled: the overshoot past zero, how often the error changed side
+ * (ignoring a 0.003-rad noise floor), and the largest error and spin over the last half second */
+function fxSettle(t: { err: number[]; w: number[] }): { over: number; flips: number; endErr: number; endSpin: number } {
+  const s0 = Math.sign(t.err[0]);
+  let over = 0;
+  let flips = 0;
+  let side = 0;
+  for (const e of t.err) {
+    over = Math.max(over, -s0 * e);
+    if (Math.abs(e) <= 0.003) continue;
+    if (side !== 0 && Math.sign(e) !== side) flips++;
+    side = Math.sign(e);
+  }
+  const tail = (a: number[]): number => Math.max(...a.slice(-30).map(Math.abs));
+  return { over: Math.round(over * 1e4) / 1e4, flips, endErr: Math.round(tail(t.err) * 1e4) / 1e4, endSpin: Math.round(tail(t.w) * 1e3) / 1e3 };
+}
+/** the gaps between feeds, in ticks */
+function fxGaps(fires: number[]): number[] {
+  return fires.slice(1).map((t, i) => t - fires[i]);
+}
+/** the fixed launcher on other chassis: TW (mecanum), Cypher (swerve), and an IMPORTED mecanum */
+function fxFixedOn(base: Partial<RobotSpec>): RobotSpec {
+  return coerceSpec({ ...DEFAULT_SPEC, ...base, launcher: 'fixed', hoodDeg: fxKit().hoodDeg, flywheel: fxKit().flywheel } as RobotSpec);
+}
+function fxImportFixed(): RobotSpec {
+  const imp: ImportedRobot = {
+    v: 1,
+    id: '0123456789abcdef',
+    hull: [{ x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }, { x: -8, y: -8 }],
+    heightIn: 14,
+    mech: { shooter: { x: -2, y: 0, z: 12.5 }, intakes: [{ edge: 'front', from: -6, to: 6 }] },
+  };
+  return coerceSpec({ ...fxKit(), drivetrain: 'mecanum', driveRpm: 435, imported: imp } as RobotSpec);
+}
+{
+  // MEASURED BEFORE: a P-controller (4.5 × the error, a dead band at the 0.06-rad release
+  // tolerance). The kit tank parked 0.045 rad off — on the band's edge; TW turning 30° crossed to
+  // −0.074; Cypher (swerve) to −0.16, and 90° to −0.32, back and forth. Now: no crossing, and still.
+  const builds: [string, RobotSpec][] = [
+    ['kit tank', fxKit()],
+    ['TW mecanum', fxFixedOn(ROBOT_PRESETS[0])],
+    ['Cypher swerve', fxFixedOn(ROBOT_PRESETS[2])],
+    ['imported mecanum', fxImportFixed()],
+    ['heavy slow x-drive', fxFixedOn({ ...ROBOT_PRESETS[0], drivetrain: 'xdrive', driveRpm: 600, massLb: 42, length: 18, width: 18 })],
+  ];
+  const bad: string[] = [];
+  const seen: string[] = [];
+  for (const [name, spec] of builds) {
+    for (const deg of [10, 30, 90]) {
+      const s = fxSettle(fxAimTrace(spec, { yawErr: (deg * Math.PI) / 180, ticks: 180 }));
+      const ok = s.over <= 0.01 && s.flips === 0 && s.endErr < 0.02 && s.endSpin < 0.05;
+      (ok ? seen : bad).push(`${name} ${deg}°: ${JSON.stringify(s)}`);
+    }
+  }
+  check(
+    'fixed aim (DECODE): a held shot TURNS ONTO the goal and holds — no overshoot (≤ 0.01 rad), never crosses back, ends within 0.02 rad and still; tank, mecanum, swerve, x-drive, an import; 10°, 30°, 90° off',
+    bad.length === 0,
+    bad.length ? bad.join(' | ') : seen.slice(0, 3).join(' | '),
+  );
+}
+{
+  // the feed is the hardware's: 0.20 s = 12 ticks, from in band and on target. MEASURED BEFORE:
+  // mostly 13 (`world.time` a few ulps short of `fireReadyAt` on the twelfth tick), 4.68 a second.
+  const runs: [string, number[]][] = [
+    ['kit, on target', fxGaps(fxAimTrace(fxKit(), { ticks: 120 }).fires)],
+    ['kit, 30° off', fxGaps(fxAimTrace(fxKit(), { yawErr: 0.52, ticks: 120 }).fires)],
+    ['TW mecanum, 30° off', fxGaps(fxAimTrace(fxFixedOn(ROBOT_PRESETS[0]), { yawErr: 0.52, ticks: 120 }).fires)],
+    ['Cypher swerve, 30° off', fxGaps(fxAimTrace(fxFixedOn(ROBOT_PRESETS[2]), { yawErr: 0.52, ticks: 120 }).fires)],
+  ];
+  check(
+    'fixed aim (DECODE): from in band the feed runs at its own 0.20 s — every gap 12 ticks, 5 a second, once on target',
+    runs.every(([, g]) => g.length >= 7 && g.every((x) => x === 12)),
+    JSON.stringify(Object.fromEntries(runs)),
+  );
+}
+{
+  // PRESSED ON THE GOAL FACE off its centre, forward held — the kit's own way to shoot. MEASURED
+  // BEFORE: 6 in along, it chattered 0.05↔0.12 rad every three ticks and fed only on the ticks
+  // inside the tolerance (a gap of 15 ticks, 4.0 a second); −6 in, it crossed the aim 8 times and
+  // went 0.14 rad past it.
+  const a = fxAimTrace(fxKit(), { press: { along: 6 }, ticks: 150 });
+  const gaps = fxGaps(a.fires);
+  check(
+    'fixed aim (DECODE): a kit tank pushing on the goal face 6 in off centre turns off the face onto the goal and feeds every 12 ticks',
+    a.fires.length >= 8 && gaps.every((x) => x === 12),
+    JSON.stringify({ fires: a.fires, gaps }),
+  );
+  // (the face still nudges it now and then: the 2D square-up writes the heading, and a turning
+  // tank's corner on the face makes and breaks contact every ~20 ticks — a 0.01-rad kick it re-settles)
+  const b = fxSettle(fxAimTrace(fxKit(), { press: { along: -6 }, ticks: 150 }));
+  check('fixed aim (DECODE): …and 6 in the other way it settles against the face instead of shaking (≤ 2 crossings, < 0.06 rad past the aim)', b.flips <= 2 && b.over < 0.06, JSON.stringify(b));
+}
+{
+  // the release tolerance is the opening's angle at the muzzle's distance — and a shot released at
+  // its edge still goes in (assist off, so nothing turns it on)
+  const tolAt = (d: number): number => decodeFixedAimTol(fxShoot(fxKit(), d, { ticks: 0 }).w.robots[0]);
+  const far = tolAt(50);
+  const near = tolAt(18);
+  const farEdge = fxShoot(fxKit(), 50, { yawErr: far * 0.95 });
+  const nearEdge = fxShoot(fxKit(), 18, { yawErr: near * 0.95 });
+  check(
+    'fixed aim (DECODE): the release tolerance is half the opening’s angle at the muzzle (0.11 rad at 50 in, wider close in), and a shot released at its edge still scores',
+    Math.abs(far - Math.atan(5.5 / 50)) < 0.01 && near > far && farEdge.scored === 3 && nearEdge.scored === 3,
+    JSON.stringify({ far, near, farEdge: farEdge.scored, nearEdge: nearEdge.scored }),
+  );
+}
+
+// ---- the feeder waits for the wheel ------------------------------------------------------------
+{
+  let first = -1;
+  let rpmAtFeed = 0;
+  // the in-band scene with the wheel run down to 500 rpm, stepped by hand to find the feed
+  const w = fxShoot(fxKit(), 50, { ticks: 0, setup: (ww) => (ww.robots[0].flyRpm = 500) }).w;
+  const r = w.robots[0];
+  for (let k = 0; k < 90 && first < 0; k++) {
+    const before = r.flyRpm ?? 0;
+    const n = r.hopper.length;
+    step(w, 1 / 60, new Map([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: true }]]));
+    if (r.hopper.length < n) {
+      first = k;
+      rpmAtFeed = before;
+    }
+  }
+  const min = 2411 * FLY_FEED_MIN_FRAC;
+  check(
+    'fixed shooter: a wheel below its feed minimum holds the feeder until it is back up (the OpMode’s getVelocity() > MIN)',
+    first >= 15 && rpmAtFeed + 100 >= min && !flyReady({ ...r, flyRpm: Math.floor(min) - 1 } as RobotState),
+    JSON.stringify({ first, rpmAtFeed, min }),
+  );
+  // ...and the shot leaves at the speed the wheel has, not its setpoint
+  const r2 = fxShoot(fxKit(), 50, { ticks: 0 }).w.robots[0];
+  r2.flyRpm = 2300;
+  const slow = decodeFixedRelease(r2).speed;
+  r2.flyRpm = 2411;
+  const full = decodeFixedRelease(r2).speed;
+  check(
+    'fixed shooter: the exit speed is the wheel’s, now: η·π·96 mm·rpm/60 (2411 rpm ⇒ 191 in/s)',
+    Math.abs(full - flyExitSpeedAt(96, 2411)) < 1e-9 && Math.abs(full - FLY_EXIT_EFFICIENCY * Math.PI * (96 / 25.4) * (2411 / 60)) < 1e-9 && slow < full,
+    JSON.stringify({ slow, full }),
+  );
+}
+
+// ---- presets change the band -------------------------------------------------------------------
+{
+  const spec: Partial<RobotSpec> = { ...fxKit(), flywheel: { mode: 'presets', rpm: [2411, 2550], wheelMm: 96, feedS: 0.2 } };
+  const bandAt = (preset: number): number[] => {
+    const out: number[] = [];
+    for (let d = 30; d <= 66; d += 2) {
+      if (fxShoot(spec, d, { setup: (w) => { w.robots[0].flyPreset = preset; w.robots[0].flyRpm = spec.flywheel!.rpm[preset]; } }).scored === 3) out.push(d);
+    }
+    return out;
+  };
+  const b0 = bandAt(0);
+  const b1 = bandAt(1);
+  check(
+    'fixed shooter: a faster preset moves the far band OUT (and the slow preset misses where the fast one scores)',
+    b0.length > 0 && b1.length > 0 && Math.max(...b1) > Math.max(...b0) && b1.some((d) => !b0.includes(d)),
+    JSON.stringify({ b0, b1 }),
+  );
+  const w = fxShoot(spec, 50, { ticks: 0 }).w;
+  const r = w.robots[0];
+  const press = (on: boolean): void => step(w, 1 / 60, new Map([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false, flyPreset: on }]]));
+  const p0 = r.flyPreset;
+  press(true);
+  press(true);
+  press(true);
+  const p1 = r.flyPreset;
+  const sp = flySetpoint(r);
+  for (let k = 0; k < 6; k++) press(false);
+  press(true);
+  check(
+    'fixed shooter: the preset button steps once per press, wraps, and the setpoint follows',
+    p0 === 0 && p1 === 1 && sp === 2550 && r.flyPreset === 0,
+    JSON.stringify({ p0, p1, sp, wrapped: r.flyPreset }),
+  );
+  const q = dequantizeCommand(quantizeCommand({ driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false, flyPreset: true }));
+  check('fixed shooter: the preset press crosses the wire (command bit 1024)', q.flyPreset === true && quantizeCommand({ ...q }).buttons === 1024);
+}
+
+// ---- the kit's own autonomous: start against the goal, fire three --------------------------------
+{
+  // drive straight at the goal face until the chassis stops on it, then hold fire: the auto the kit
+  // ships ("starts up against the goal and launches all three"), which the hood and the efficiency
+  // were calibrated against
+  const w = createWorld('match', 5, [
+    { id: 0, alliance: 'blue', spec: { ...fxKit() }, assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false }, startIndex: 0 },
+  ]);
+  w.match.phase = 'auto';
+  w.match.phaseTimeLeft = 30;
+  const r = w.robots[0];
+  const g = goalCenter('blue');
+  const n = goalFaceNormal('blue');
+  const head = Math.atan2(-n.y, -n.x);
+  r.pos = { x: g.x + n.x * 36, y: g.y + n.y * 36 };
+  r.heading = head;
+  r.turretHeading = head;
+  let scored = 0;
+  for (let k = 0; k < 360; k++) {
+    const drive = k < 120;
+    const flying = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+    step(w, 1 / 60, new Map([[0, { driveX: 0, driveY: 0, rotate: 0, leftDrive: drive ? 0.5 : 0, rightDrive: drive ? 0.5 : 0, intake: false, fire: !drive }]]));
+    for (const b of w.balls) if (flying.has(b.id) && (b.state.kind === 'basin' || b.state.kind === 'rail') && (b.state as { goal: Alliance }).goal === 'blue') scored++;
+  }
+  const faceGap = -goalLineValue(r.pos, 'blue');
+  check('fixed shooter: the kit robot driven up against its goal scores all three of its preloads, as its own autonomous does', scored === 3, JSON.stringify({ scored, faceGap }));
+}
+
+// ---- a turret with a fixed hood and a fixed wheel still aims itself ------------------------------
+{
+  const turretFixed: Partial<RobotSpec> = { ...fxKit(), launcher: undefined };
+  const turnedAway = fxShoot(turretFixed, 50, { assist: true, yawErr: Math.PI / 2 });
+  const fixedAway = fxShoot(fxKit(), 50, { yawErr: Math.PI / 2 });
+  check(
+    'fixed shooter: a TURRET with a fixed hood and wheel yaws onto the goal from a chassis turned 90° away; the fixed launcher on the same chassis cannot',
+    turnedAway.scored === 3 && fixedAway.scored === 0,
+    JSON.stringify({ turret: turnedAway.scored, fixed: fixedAway.scored }),
+  );
+  const turretSolved: Partial<RobotSpec> = { ...fxKit(), launcher: undefined, flywheel: undefined };
+  const solvedNear = fxShoot(turretSolved, 34, { assist: true });
+  check('fixed shooter: a turret with a fixed hood and a SOLVED speed scores where the fixed wheel misses (34 in)', solvedNear.scored === 3, JSON.stringify({ s: solvedNear.scored }));
+}
+
+// ---- an imported fixed launcher -----------------------------------------------------------------
+{
+  const imp: ImportedRobot = {
+    v: 1,
+    id: '0123456789abcdef',
+    hull: [{ x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }, { x: -8, y: -8 }],
+    heightIn: 14,
+    mech: { shooter: { x: -2, y: 3, z: 12.5 }, shooterYawDeg: -90, intakes: [{ edge: 'front', from: -6, to: 6 }] },
+  };
+  const spec = coerceSpec({ ...fxKit(), imported: imp });
+  check('import (DECODE): the facing survives the coercer beside its point', spec.imported?.mech?.shooterYawDeg === -90, JSON.stringify(spec.imported?.mech));
+  const w = createWorld('match', 5, [{ id: 0, alliance: 'blue', spec, assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false }, startIndex: 0 }]);
+  const r = w.robots[0];
+  r.pos = { x: 5, y: -10 };
+  r.heading = 0.4;
+  r.turretHeading = wrapAngle(0.4 - Math.PI / 2);
+  const rel = decodeFixedRelease(r);
+  const lip = rot({ x: -2, y: 3 }, 0.4);
+  const dir = datan2(rel.vel.y, rel.vel.x);
+  check(
+    'import (DECODE): a fixed launcher releases from the placed lip, at its height, along heading + shooterYawDeg',
+    Math.abs(rel.origin.x - (5 + lip.x)) < 1e-9 && Math.abs(rel.origin.y - (-10 + lip.y)) < 1e-9 && rel.z === 12.5 && Math.abs(wrapAngle(dir - (0.4 - Math.PI / 2))) < 1e-9,
+    JSON.stringify({ rel, lip }),
+  );
+  const yaw = (y: unknown): number | undefined => coerceImported({ ...imp, mech: { ...imp.mech, shooterYawDeg: y } })?.mech?.shooterYawDeg;
+  check(
+    'import: shooterYawDeg is whole degrees wrapped to (−180, 180] — 450.4 → 90, −180 → 180, junk dropped',
+    yaw(450.4) === 90 && yaw(-180) === 180 && yaw(-190.6) === 169 && yaw('x') === undefined && yaw(NaN) === undefined,
+    JSON.stringify([yaw(450.4), yaw(-180), yaw(-190.6)]),
+  );
+  const noPoint = coerceImported({ ...imp, mech: { shooterYawDeg: 45, intakes: imp.mech!.intakes } });
+  const once = coerceImported({ ...imp, mech: { ...imp.mech, shooterYawDeg: 1e12 } });
+  check(
+    'import: …kept only beside a shooter, and the coercion is idempotent',
+    noPoint?.mech?.shooterYawDeg === undefined && JSON.stringify(coerceImported(once)) === JSON.stringify(once),
+    JSON.stringify({ noPoint: noPoint?.mech, once: once?.mech }),
+  );
+}
+
+// ---- the touch pad and the HUD's preset button --------------------------------------------------
+{
+  const build = (spec: RobotSpec): Parameters<typeof visibleTouchButtons>[1] => ({ spec, autoIntake: true, autoFire: true, fieldCentric: false, aimAssist: true });
+  const has = (game: GameId, spec: RobotSpec, a: string): boolean => visibleTouchButtons(game, build(spec)).some((b) => b.action === a);
+  const presets = coerceSpec({ ...fxKit(), flywheel: { mode: 'presets', rpm: [2000, 2600], wheelMm: 96, feedS: 0.2 } });
+  check(
+    'touch: SPEED is drawn only for a DECODE presets wheel with somewhere to go',
+    has('decode', presets, 'flyPreset') && !has('decode', fxKit(), 'flyPreset') && !has('decode', ROBOT_PRESETS[0], 'flyPreset') && !has('chain', presets, 'flyPreset') && !has('biobuzz', presets, 'flyPreset'),
+  );
+  check(
+    'touch: a fixed launcher keeps SHOOT under auto fire — holding it is the driver’s call, and it steers the chassis',
+    has('decode', fxKit(), 'fire') && !has('decode', ROBOT_PRESETS[0], 'fire'),
+  );
+}
+
+/**
+ * RATING RULE SETS (2026-10-03) — ranked rates under `team-2026-10-03`; the two older sets are
+ * kept so `server/ratingRecalc.ts` can replay a match exactly as it was rated.
+ */
+{
+  const fresh = (userId: string, alliance: 'red' | 'blue', rating = 1000): EloParticipant =>
+    ({ userId, alliance, rating: { rating, rd: 350, vol: 0.06 }, games: 0 });
+  const opp = (userId: string, alliance: 'red' | 'blue', rating: number): EloParticipant =>
+    ({ userId, alliance, rating: { rating, rd: 80, vol: 0.06 }, games: 30 });
+  check('rules: ranked rates under team-2026-10-03', RATING_RULES === RULES_TEAM_1003 && RATING_RULES.id === 'team-2026-10-03');
+  check('rules: every set has its own id', new Set(RULE_SETS.map((r) => r.id)).size === RULE_SETS.length);
+  check('rules: a stamped match replays under its stamp', ruleSetAt('team-2026-10-03', 0) === RULES_TEAM_1003);
+  check('rules: an unstamped match before the 09-27 deploy was plain Glicko-2',
+    ruleSetAt(null, TEAM_0927_FROM - 1) === RULES_PLAIN_0925);
+  check('rules: ...and one after it the 09-27 team rules', ruleSetAt(null, TEAM_0927_FROM) === RULES_TEAM_0927);
+  check('rules: an unknown stamp falls back to the date', ruleSetAt('nope', TEAM_0927_FROM + 1) === RULES_TEAM_0927);
+  // a brand-new player's decisive first win over an established 1226 (BIOBUZZ Act 2's #1, 09-29)
+  const first = (rules = RATING_RULES) =>
+    computeGlicko([fresh('n', 'red'), opp('o', 'blue', 1226)], { red: 583, blue: 383 }, { mode: '1v1', rules }).find((u) => u.userId === 'n')!;
+  const was = first(RULES_TEAM_0927).after - 1000;
+  const now = first().after - 1000;
+  check('rules: the 09-27 rules paid that first win about +412', Math.abs(was - 412) <= 2, `+${was}`);
+  check('rules: today it pays well under that', now > 150 && now < 300, `+${now}`);
+  // the plain set is exactly the pre-09-27 update: each player against the opposing mean, stored RD
+  const plain = computeGlicko([opp('a', 'red', 1200), opp('b', 'blue', 1100)], { red: 550, blue: 300 }, { mode: '1v1', rules: RULES_PLAIN_0925 });
+  const direct = glicko2Update({ rating: 1200, rd: 80, vol: 0.06 }, 1100, 80, 1);
+  check('rules: plain-2026-09-25 is Glicko-2 at the stored RD, no margin',
+    Math.abs(plain.find((u) => u.userId === 'a')!.state.rating - direct.rating) < 1e-9);
+}
+
+/**
+ * COMPETITION RANKING POINTS: what each game reports to a competition (`GameSimModule.rankFacts`)
+ * and what a competition room hands on. The keys are `src/competition/manual.ts`'s measures; the
+ * ranking built from them is `npm run test:comp`'s.
+ */
+// ---- DECODE: every measure at the end, off the breakdown LINES; G417.A through the engine ----
+{
+  const facts = simModuleFor('decode').rankFacts!;
+  // blue (robot 0) drives INTO red's gate arm: G417 fires through `step` and the penalty engine
+  const gz = gateZone('red');
+  const w = foulWorld();
+  w.robots[0].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 };
+  w.robots[0].heading = 0;
+  w.robots[0].fieldCentric = false;
+  w.robots[1].pos = { x: 0, y: 30 };
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), 2.5);
+  const f = facts(w, 'final');
+  check('rankFacts DECODE: the scene is real (blue was called for G417)', w.match.fouls.blue.major >= 1, `blueMajor=${w.match.fouls.blue.major}`);
+  check(
+    'rankFacts DECODE: G417.A awards the gate OWNER the PATTERN RP, and nobody else',
+    f.red.patternAward === 1 && f.blue.patternAward === 0,
+    JSON.stringify({ red: f.red.patternAward, blue: f.blue.patternAward }),
+  );
+  // the owner working its own gate is legal: no award either way
+  const w2 = foulWorld();
+  w2.robots[1].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 };
+  w2.robots[1].heading = 0;
+  w2.robots[1].fieldCentric = false;
+  w2.robots[0].pos = { x: 0, y: 30 };
+  runCmds(w2, new Map([[1, cmd({ driveY: 1 })]]), 2.5);
+  const f2 = facts(w2, 'final');
+  check(
+    'rankFacts DECODE: an owner opening its own gate awards nobody the PATTERN RP',
+    w2.goals.red.gateOpen && f2.red.patternAward === 0 && f2.blue.patternAward === 0,
+    `open=${w2.goals.red.gateOpen} ${JSON.stringify({ red: f2.red.patternAward, blue: f2.blue.patternAward })}`,
+  );
+
+  // the arithmetic, on a breakdown written by hand
+  const w3 = foulWorld();
+  w3.match.scores.red = {
+    leave: 6, autoClassified: 9, autoOverflow: 2, autoPattern: 4,
+    teleClassified: 30, teleOverflow: 3, telePattern: 10, depot: 2, base: 30, foulPoints: 15, total: 111,
+  };
+  w3.goals.red.classifiedCount = 13;
+  w3.goals.red.overflowCount = 5;
+  const json = JSON.stringify(w3);
+  const r = facts(w3, 'final').red;
+  check('rankFacts DECODE: AUTO = LEAVE + AUTO CLASSIFIED + AUTO OVERFLOW + AUTO PATTERN = 6 + 9 + 2 + 4', r.auto === 21, String(r.auto));
+  check('rankFacts DECODE: BASE = the BASE line, bonus included (30)', r.base === 30, String(r.base));
+  check('rankFacts DECODE: MOVEMENT = LEAVE + BASE = 6 + 30', r.movement === 36, String(r.movement));
+  check('rankFacts DECODE: PATTERN = AUTO + TELEOP PATTERN = 4 + 10', r.pattern === 14, String(r.pattern));
+  check('rankFacts DECODE: ARTIFACTS = every pass through the SQUARE, CLASSIFIED + OVERFLOW = 13 + 5', r.artifacts === 18, String(r.artifacts));
+  check('rankFacts DECODE: a pure read (the world is unchanged)', JSON.stringify(w3) === json);
+  // a red card voids the TOTAL; the lines, and so the measures, are what was played
+  awardCard(w3, w3.robots[1], 'smoke');
+  awardCard(w3, w3.robots[1], 'smoke');
+  const v = facts(w3, 'final').red;
+  check(
+    'rankFacts DECODE: a voided score keeps its lines',
+    w3.match.scores.red.voided === true && w3.match.scores.red.total === 0 &&
+      v.auto === 21 && v.base === 30 && v.movement === 36 && v.pattern === 14 && v.artifacts === 18,
+    `total=${w3.match.scores.red.total} ${JSON.stringify(v)}`,
+  );
+  const early = [facts(w3, 'autoEnd'), facts(w3, 'teleopStart')];
+  check(
+    'rankFacts DECODE: nothing before the end (its AUTO lines already hold the transition)',
+    early.every((e) => Object.keys(e.red).length === 0 && Object.keys(e.blue).length === 0),
+    JSON.stringify(early),
+  );
+}
+
+// ---- every game with a manual table reports exactly that table's measures, once each ---------
+{
+  for (const game of GAME_IDS) {
+    const mod = simModuleFor(game);
+    const table = cmTable(game);
+    check(`rankFacts ${game}: a game reports measures exactly when the manual module has its table`, !!mod.rankFacts === !!table);
+    if (!mod.rankFacts || !table) continue;
+    const setups = (['red', 'blue'] as const).map((alliance, id) =>
+      coerceSetup({ id, alliance, spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }, game),
+    );
+    const w = mod.createWorld('match', 11, setups);
+    // which instant reported each key, per alliance: the room merges them, so one key reported at
+    // two instants would be decided by the merge order rather than by the manual
+    const seen = new Map<string, Set<string>>();
+    let finite = true;
+    for (const at of ['autoEnd', 'teleopStart', 'final'] as const) {
+      const f = mod.rankFacts(w, at);
+      for (const a of ['red', 'blue'] as const) {
+        for (const [k, v] of Object.entries(f[a])) {
+          if (!seen.has(k)) seen.set(k, new Set());
+          seen.get(k)!.add(at);
+          if (typeof v !== 'number' || !Number.isFinite(v)) finite = false;
+        }
+      }
+    }
+    const got = [...seen.keys()].sort();
+    const want = table.measures.map((m) => m.id).sort();
+    check(
+      `rankFacts ${game}: the keys reported are exactly the manual table's measures (internal ones too)`,
+      JSON.stringify(got) === JSON.stringify(want),
+      `${got.join(',')} vs ${want.join(',')}`,
+    );
+    check(`rankFacts ${game}: each measure is read at one instant`, [...seen.values()].every((s) => s.size === 1));
+    check(`rankFacts ${game}: every value is a finite number`, finite);
+  }
+}
+
+// ---- Chain Reaction: AUTO as AUTO ends, nothing as TELEOP starts, ASCENT at the end -------------
+{
+  const facts = simModuleFor('chain').rankFacts!;
+  const w = createChainWorld('match', 7, [chainSetup(0, 'red'), chainSetup(1, 'blue')]);
+  const ch = w.chain!;
+  ch.particlePoints.red = 12;
+  ch.particlePoints.blue = 3;
+  ch.descended[0] = true;
+  ch.endgame[0] = 'ascended';
+  ch.endgame[1] = 'parked';
+  const a = facts(w, 'autoEnd');
+  const t = facts(w, 'teleopStart');
+  const f = facts(w, 'final');
+  check(
+    'rankFacts CR: AUTO = particle points + a descent per robot that came down, read as AUTO ends',
+    a.red.auto === 12 + CHAIN_PTS.ringStandDescend && a.blue.auto === 3 && !('ascent' in a.red),
+    JSON.stringify(a),
+  );
+  check('rankFacts CR: nothing at TELEOP start', Object.keys(t.red).length === 0 && Object.keys(t.blue).length === 0, JSON.stringify(t));
+  check(
+    'rankFacts CR: ASCENT = 100 per robot ascended (a Lab park is not an ascent)',
+    f.red.ascent === CHAIN_PTS.ringStandAscend && f.blue.ascent === 0 && !('auto' in f.red),
+    JSON.stringify(f),
+  );
+}
+
+/**
+ * ---- A COMPETITION ROOM HANDS ON ITS MEASURES AND ITS CARDS --------------------------------------
+ *
+ * The room asks at the first tick out of AUTO, the first TELEOP tick and at finalize, and
+ * `MatchOutcome` carries the merge and every carded driver — for a competition room only. Each
+ * phase is cut to a few ticks: the instants are what is under test, not the clock.
+ */
+{
+  interface Played { outcome: MatchOutcome | null; buzzerAuto?: number; buzzerPts?: number; finalPts?: number }
+  const play = (game: GameId, opts: { competition: boolean; card?: boolean; transitionShot?: boolean }): Played => {
+    const outcomes: MatchOutcome[] = [];
+    const mk = (id: 'red' | 'blue'): Client => ({
+      id,
+      send: () => {},
+      player: {
+        clientId: id, name: id, teamName: 'T', teamNumber: id === 'red' ? 1 : 2, alliance: id,
+        startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS },
+      },
+      connected: true,
+      disconnectAt: 0,
+      userId: `u-${id}`,
+    });
+    const room = new Room(`smoke-comp-rp-${game}`, () => {}, { kind: 'versus', game }, (o) => {
+      outcomes.push(o);
+    });
+    if (opts.competition) {
+      const entry = (alliance: Alliance): PendingRosterEntry => ({
+        userId: `u-${alliance}`, name: alliance, teamName: 'T', teamNumber: alliance === 'red' ? 1 : 2,
+        spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance, introElo: null,
+      });
+      room.applyPending({
+        code: `iad-cmrp${game}`, hostRegion: 'iad', mode: '1v1', seed: 5, ranked: false, game,
+        roster: [entry('red'), entry('blue')],
+        competition: { id: 'c1', slug: 'spring-open', name: 'Spring Open', game, matchId: 12, label: 'Q12', attempt: 1, graceMs: 60_000 },
+      });
+      // no `strategy` cap: the staged match starts at once (`startRankedImmediate`)
+      room.add(mk('red'));
+      room.add(mk('blue'));
+      room.maybeStartRanked();
+    } else {
+      room.add(mk('red'));
+      room.add(mk('blue'));
+      room.onMessage('red', { t: 'start' });
+    }
+    const w = room.worldForTest();
+    if (!w) return { outcome: null };
+    w.match.preCountdown = SIM_DT / 2;
+    const out: Played = { outcome: null };
+    let carded = false;
+    let shot = false;
+    let wasAuto = false;
+    for (let i = 0; i < 4000 && outcomes.length === 0; i++) {
+      const m = w.match;
+      if ((m.phase === 'auto' || m.phase === 'transition' || m.phase === 'teleop') && m.phaseTimeLeft > 4 * SIM_DT) {
+        m.phaseTimeLeft = 4 * SIM_DT;
+      }
+      if (opts.card && !carded && m.phase === 'teleop') {
+        awardCard(w, w.robots[0], 'smoke'); // robot 0 is red's, driven by u-red
+        carded = true;
+      }
+      // CR: a particle that is still in the air on the last AUTO tick and enters during the
+      // transition — TELEOP by ITD §10.5 B, so not in AUTO
+      if (opts.transitionShot && !shot && m.phase === 'auto') {
+        const side = accelSide('red');
+        m.phaseTimeLeft = SIM_DT / 2; // this tick is the last of AUTO
+        w.balls.push({
+          ...w.balls[0], id: 990001, state: { kind: 'flight', target: 'red' },
+          pos: { x: side * (CHAIN_HALF_X - 1.5), y: 0 }, vel: { x: side * 60, y: 0 }, z: 10, vz: 0,
+        });
+        shot = true;
+      }
+      room.advanceForTest(1);
+      if (m.phase === 'auto') wasAuto = true;
+      if (wasAuto && out.buzzerAuto === undefined && m.phase === 'transition' && w.chain) {
+        const descents = w.robots.filter((r) => r.alliance === 'red' && w.chain!.descended?.[r.id]).length;
+        out.buzzerPts = w.chain.particlePoints.red;
+        out.buzzerAuto = w.chain.particlePoints.red + descents * CHAIN_PTS.ringStandDescend;
+      }
+    }
+    out.outcome = outcomes[0] ?? null;
+    if (w.chain) out.finalPts = w.chain.particlePoints.red;
+    return out;
+  };
+  const keysOf = (game: GameId): string => JSON.stringify(cmTable(game)!.measures.map((m) => m.id).sort());
+  const keys = (o: Record<string, number> | undefined): string => JSON.stringify(Object.keys(o ?? {}).sort());
+
+  const dec = play('decode', { competition: true, card: true });
+  const o = dec.outcome;
+  check('competition room: a played match reaches the result callback, tagged', o?.competition?.label === 'Q12', String(o?.competition?.label));
+  check(
+    'competition room (DECODE): MatchOutcome.rankFacts carries every measure for both alliances',
+    keys(o?.rankFacts?.red) === keysOf('decode') && keys(o?.rankFacts?.blue) === keysOf('decode'),
+    `${keys(o?.rankFacts?.red)} / ${keys(o?.rankFacts?.blue)}`,
+  );
+  check(
+    'competition room: MatchOutcome.cards names the carded driver by account, at the colour they ended on',
+    JSON.stringify(o?.cards) === JSON.stringify([{ userId: 'u-red', colour: 'yellow' }]),
+    JSON.stringify(o?.cards),
+  );
+
+  const cr = play('chain', { competition: true, transitionShot: true });
+  check(
+    'competition room (CR): MatchOutcome.rankFacts carries AUTO and ASCENT for both alliances',
+    keys(cr.outcome?.rankFacts?.red) === keysOf('chain') && keys(cr.outcome?.rankFacts?.blue) === keysOf('chain'),
+    `${keys(cr.outcome?.rankFacts?.red)} / ${keys(cr.outcome?.rankFacts?.blue)}`,
+  );
+  check(
+    'competition room (CR): the particle in the air at the AUTO buzzer scored in the transition (the scene is real)',
+    cr.buzzerPts !== undefined && cr.finalPts !== undefined && cr.finalPts > cr.buzzerPts,
+    `at the buzzer ${cr.buzzerPts}, at the end ${cr.finalPts}`,
+  );
+  check(
+    'competition room (CR): ...and AUTO is what was scored before AUTO ended, without it',
+    cr.buzzerAuto !== undefined && cr.outcome?.rankFacts?.red.auto === cr.buzzerAuto,
+    `auto ${cr.outcome?.rankFacts?.red.auto} vs ${cr.buzzerAuto} at the buzzer`,
+  );
+  check('competition room (CR): no cards, an empty list rather than none', JSON.stringify(cr.outcome?.cards) === '[]', JSON.stringify(cr.outcome?.cards));
+
+  const custom = play('decode', { competition: false, card: true });
+  check(
+    'a custom room reports neither measures nor cards (competition rooms only)',
+    !!custom.outcome && custom.outcome.rankFacts === undefined && custom.outcome.cards === undefined && custom.outcome.competition === undefined,
+    JSON.stringify({ rankFacts: custom.outcome?.rankFacts, cards: custom.outcome?.cards }),
+  );
+
+  // a game's read that THROWS leaves the measures unknown and costs the match nothing
+  const mod = simModuleFor('decode');
+  const hook = mod.rankFacts;
+  const logError = console.error;
+  let threw: Played = { outcome: null };
+  try {
+    mod.rankFacts = () => {
+      throw new Error('smoke: rankFacts throws');
+    };
+    console.error = () => {};
+    threw = play('decode', { competition: true, card: true });
+  } finally {
+    mod.rankFacts = hook;
+    console.error = logError;
+  }
+  check(
+    'competition room: a rankFacts that throws leaves the measures unknown (absent, never zero)',
+    !!threw.outcome && threw.outcome.rankFacts === undefined && threw.outcome.cards?.length === 1,
+    JSON.stringify({ rankFacts: threw.outcome?.rankFacts, cards: threw.outcome?.cards }),
+  );
+  check(
+    'competition room: ...and the match it was read on is the same match, tick for tick',
+    !!o && !!threw.outcome && threw.outcome.result.ticks === o.result.ticks && threw.outcome.result.hash === o.result.hash &&
+      threw.outcome.replay.ticks === o.replay.ticks,
+    `${threw.outcome?.result.ticks}/${o?.result.ticks}`,
+  );
+}
+
+/**
+ * MODERATOR NOTICES (0057) — the words a player reads after a moderation outcome, and the one
+ * rule that moves a rating: the refund after a corrected result.
+ */
+{
+  const day = (): string => 'Sep 30';
+  const view = (kind: string, data: Record<string, unknown>, game: string | null = 'decode') =>
+    noticeView({ kind, game, data }, day);
+
+  // ---- the refund: only a LOSS, only to a player whose result got better, judged against the
+  // result the rating was computed from
+  const red = { alliance: 'red' as const, ratingBefore: 1000, ratingAfter: 980 };
+  const blue = { alliance: 'blue' as const, ratingBefore: 1000, ratingAfter: 1020 };
+  const orig = { red: 40, blue: 55 };
+  check('notices: a loss corrected into a win gives the loss back', ratingRefund(red, orig, { red: 62, blue: 55 }) === 20);
+  check('notices: ...a loss corrected into a tie does too', ratingRefund(red, orig, { red: 55, blue: 55 }) === 20);
+  check(
+    'notices: the wrongly-awarded winner is never charged (a refund only gives)',
+    ratingRefund(blue, orig, { red: 62, blue: 55 }) === 0,
+  );
+  check('notices: a correction that leaves the loser losing gives nothing', ratingRefund(red, orig, { red: 50, blue: 55 }) === 0);
+  check(
+    'notices: a custom match (no rating) gives nothing',
+    ratingRefund({ alliance: 'red', ratingBefore: null, ratingAfter: null }, orig, { red: 62, blue: 55 }) === 0,
+  );
+  check(
+    'notices: a player who GAINED rating in a loss (a strong underdog result) is owed nothing',
+    ratingRefund({ alliance: 'red', ratingBefore: 900, ratingAfter: 905 }, orig, { red: 62, blue: 55 }) === 0,
+  );
+  check('notices: a tie is nobody’s win', resultOf('red', { red: 3, blue: 3 }) === 'tie' && resultOf('blue', { red: 3, blue: 3 }) === 'tie');
+
+  // ---- every kind words itself, and an unknown one is skipped rather than drawn blank
+  const samples: Record<string, Record<string, unknown>> = {
+    'match.corrected': { at: '2026-09-30T12:00:00Z', mode: '1v1', ranked: true, alliance: 'red', before: orig, after: { red: 62, blue: 55 }, refund: 20 },
+    'misscore.upheld': { at: '2026-09-30T12:00:00Z', mode: '1v1', ranked: true, corrected: { before: orig, after: { red: 62, blue: 55 } } },
+    'misscore.rejected': { cost: { points: 40, scoreAfter: 60, cooldownMin: 120, ratingCharge: 0 } },
+    'report.actioned': { subject: '@ada', reasons: ['throwing'] },
+    'report.closed': { subject: '@ada', reasons: ['afk'] },
+    penalty: { points: 25, scoreAfter: 50, cooldownMin: 1440, ratingCharge: 20, reasons: ['throwing', 'afk'], reporters: 3 },
+    'standing.edited': { scoreBefore: 60, scoreAfter: 100, pardoned: 2, lock: 'cleared' },
+    'rating.recalculated': { mode: '1v1', before: 1685, after: 1491 },
+    'competition.message': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.invite': { slug: 'spring-open', name: 'Spring Open', from: '@ada' },
+    'competition.promoted': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.removed': { slug: 'spring-open', name: 'Spring Open', how: 'disqualified' },
+    'competition.result': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', what: 'corrected', outcome: 'win', score: { red: 88, blue: 54 } },
+    'competition.finished': { slug: 'spring-open', name: 'Spring Open', place: 2, of: 24 },
+    'competition.cancelled': { slug: 'spring-open', name: 'Spring Open' },
+    'competition.card': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', colour: 'yellow' },
+    'competition.rp': { slug: 'spring-open', name: 'Spring Open', label: 'Q12', before: 4, after: 5 },
+  };
+  for (const k of NOTICE_KINDS) {
+    const v = view(k, samples[k] ?? {});
+    check(`notices: ${k} has words`, !!v && v.title.length > 0 && v.lines.length > 0, JSON.stringify(v));
+    // the house copy rules: typographic apostrophes, "rating" never "ELO", no exclamation marks
+    const text = v ? [v.title, ...v.lines].join(' ') : '';
+    check(`notices: ${k} follows the copy rules`, !/'/.test(text) && !/\bELO\b/i.test(text) && !/!/.test(text), text);
+  }
+  check('notices: an unknown kind (a newer server) is skipped, not drawn blank', view('something.new', {}) === null);
+  const recalc = view('rating.recalculated', samples['rating.recalculated'], 'biobuzz')!;
+  check('notices: a recalculation says the board, old → new, and the new placement',
+    recalc.lines[0] === 'Your 1v1 rating: 1685 → 1491.' && recalc.meta === 'Ranked 1v1 · BIOBUZZ' &&
+      recalc.lines.some((l) => l.includes('10 1v1 matches')), JSON.stringify(recalc));
+  check('notices: a malformed correction is skipped rather than printing undefined', view('match.corrected', { alliance: 'red' }) === null);
+  // competitions (0059): a referee's ruling says the match, the score and what it means for YOU
+  const comp = view('competition.result', samples['competition.result'])!;
+  check(
+    'notices: a corrected competition result names the match, the score and the recipient’s outcome',
+    comp.title === 'Q12’s result was corrected' && comp.lines.includes('Red 88, Blue 54.') && comp.lines.includes('It counts as a win for you.') && comp.tone === 'good',
+    JSON.stringify(comp),
+  );
+  const voided = view('competition.result', { ...samples['competition.result'], what: 'void' })!;
+  check('notices: a voided competition match prints no score and no outcome', voided.lines.join(' ') === 'It no longer counts for anyone.', JSON.stringify(voided.lines));
+  const placed = view('competition.finished', samples['competition.finished'])!;
+  const won = view('competition.finished', { slug: 's', name: 'Spring Open', place: 1, of: 24 })!;
+  check('notices: a finished competition says the place, and a win says so in the title', placed.lines[0] === 'You placed 2nd of 24.' && won.title === 'You won Spring Open', JSON.stringify([placed, won]));
+  // cards and ranking points: the match, the card, and what it costs
+  const cardView = (extra: Record<string, unknown>) => view('competition.card', { ...samples['competition.card'], ...extra })!;
+  const cRed = cardView({ colour: 'red', why: 'red' });
+  check(
+    'notices: a red card names the match and costs its ranking points',
+    cRed.title === 'You were shown a red card in Q12' && cRed.lines.join(' ') === 'You take no ranking points from it.' && cRed.tone === 'bad',
+    JSON.stringify(cRed),
+  );
+  const cYellow = cardView({});
+  check(
+    'notices: a first yellow card says what a second one does',
+    cYellow.title === 'You were shown a yellow card in Q12' && cYellow.lines.join(' ') === 'A second yellow card in qualifications is a red card.',
+    JSON.stringify(cYellow),
+  );
+  const cSecond = cardView({ why: 'yellow2' });
+  check(
+    'notices: a second yellow card is a red card, and costs the match',
+    cSecond.title === 'Your second yellow card, in Q12, is a red card' && cSecond.lines.join(' ') === 'You take no ranking points from it.',
+    JSON.stringify(cSecond),
+  );
+  const cSurrogate = cardView({ colour: 'red', why: 'surrogate', dqLabel: 'Q9' });
+  check(
+    'notices: a card from a surrogate match says which match it counts against',
+    cSurrogate.lines.includes('It was a surrogate match, so the card counts against Q9.') &&
+      cSurrogate.lines.includes('You take no ranking points from Q9.'),
+    JSON.stringify(cSurrogate.lines),
+  );
+  const rpUp = view('competition.rp', samples['competition.rp'])!;
+  const rpDown = view('competition.rp', { ...samples['competition.rp'], before: 5, after: 3 })!;
+  check(
+    'notices: changed ranking points name the match, old and new, good up and bad down',
+    rpUp.title === 'Your ranking points for Q12 changed' && rpUp.lines.join(' ') === 'From 4 to 5.' && rpUp.tone === 'good' && rpDown.tone === 'bad',
+    JSON.stringify([rpUp, rpDown.tone]),
+  );
+
+  // ---- what each one actually says
+  const fixed = view('match.corrected', samples['match.corrected'])!;
+  check(
+    'notices: a corrected score says old → new, the flipped result, and the exact refund',
+    fixed.lines[0] === 'Red 40, Blue 55 → Red 62, Blue 55.' &&
+      fixed.lines.includes('You’re now recorded as the winner.') &&
+      fixed.lines.includes('+20 rating given back for the loss.') &&
+      fixed.tone === 'good',
+    JSON.stringify(fixed.lines),
+  );
+  check('notices: ...and names the match it is about', fixed.meta === 'Ranked 1v1 · DECODE · Sep 30', String(fixed.meta));
+  const loser = view('match.corrected', { ...samples['match.corrected'], alliance: 'blue', refund: 0 })!;
+  check(
+    'notices: the other side is told it lost, and that its rating stays where it was',
+    loser.lines.includes('You’re now recorded as losing it.') && loser.lines.includes('Your rating stays where it was.'),
+    JSON.stringify(loser.lines),
+  );
+  const unranked = view('match.corrected', { ...samples['match.corrected'], ranked: false, refund: 0, alliance: 'blue' })!;
+  check('notices: a custom match says nothing about rating', !unranked.lines.some((l) => /rating/.test(l)), JSON.stringify(unranked.lines));
+  const upheld = view('misscore.upheld', samples['misscore.upheld'])!;
+  check(
+    'notices: an upheld misscore tells the filer the corrected numbers',
+    upheld.lines[0] === 'The score was corrected: Red 40, Blue 55 → Red 62, Blue 55.',
+    upheld.lines[0],
+  );
+  check(
+    'notices: ...and one upheld before the correction still says the moderator agreed',
+    view('misscore.upheld', {})!.lines[0] === 'A moderator agreed the score was wrong.',
+  );
+  const smitten = view('misscore.rejected', samples['misscore.rejected'])!;
+  check(
+    'notices: a smitten claim says what it cost, the tier it left, and the lock in words',
+    smitten.lines.includes('Standing −40, now 60 (Warning).') && smitten.lines.includes('Ranked is locked for 2 hours.') && smitten.tone === 'bad',
+    JSON.stringify(smitten.lines),
+  );
+  check(
+    'notices: a plain rejection costs nothing and says so by not saying it',
+    view('misscore.rejected', { cost: null })!.lines.length === 1 && view('misscore.rejected', {})!.tone === 'info',
+  );
+  const actioned = view('report.actioned', samples['report.actioned'])!;
+  check(
+    'notices: a reporter is told action was taken, named, and NOT told the penalty',
+    /@ada/.test(actioned.lines[0]) && /Throwing the match on purpose/.test(actioned.lines[0]) &&
+      !actioned.lines.some((l) => /standing|rating|locked/i.test(l)),
+    JSON.stringify(actioned.lines),
+  );
+  check('notices: a dismissed report says no action was taken', /took no action/.test(view('report.closed', samples['report.closed'])!.lines[0]));
+  const pen = view('penalty', samples.penalty)!;
+  check(
+    'notices: the penalized player is told how many reported them, for what, and what it cost',
+    /from 3 players/.test(pen.lines[0]) && /Not playing \/ AFK/.test(pen.lines[0]) &&
+      pen.lines.includes('Standing −25, now 50 (Restricted).') &&
+      pen.lines.includes('Ranked is locked for 1 day.') &&
+      pen.lines.includes('−20 rating on your most recent ranked ladder.') &&
+      pen.tone === 'bad',
+    JSON.stringify(pen.lines),
+  );
+  const edit = view('standing.edited', samples['standing.edited'])!;
+  check(
+    'notices: a moderator restoring standing reads as good news, with the pardons and the lifted lock',
+    edit.title === 'A moderator restored your standing' && edit.tone === 'good' &&
+      edit.lines.includes('Standing 60 → 100 (Good standing).') &&
+      edit.lines.includes('2 penalties no longer count against you.') &&
+      edit.lines.includes('Your ranked lock was lifted.'),
+    JSON.stringify(edit),
+  );
+  const lowered = view('standing.edited', { scoreBefore: 100, scoreAfter: 70, pardoned: 0, lock: 60 })!;
+  check(
+    'notices: ...and lowering it reads as a penalty, with the new lock',
+    lowered.title === 'A moderator lowered your standing' && lowered.tone === 'bad' && lowered.lines.includes('Ranked is locked for 1 hour.'),
+    JSON.stringify(lowered),
+  );
+
+  // ---- a moderator's message, and the durations
+  check('notices: an empty message is no message', cleanMessage('   ') === null && cleanMessage(undefined) === null && cleanMessage(42) === null);
+  check(
+    'notices: a message keeps its line breaks, loses control characters, and is capped',
+    cleanMessage('line one\nline\u0007 two') === 'line one\nline two' && cleanMessage('x'.repeat(900))!.length === NOTICE_MESSAGE_MAX,
+  );
+  check(
+    'notices: a week is a week, not 168 hours',
+    durationWords(1440 * 7) === '7 days' && durationWords(30) === '30 minutes' && durationWords(120) === '2 hours' && durationWords(1) === '1 minute',
+  );
+
+  // ---- "Your reports" (Epic's My reports)
+  check('notices: an open report reads as waiting, not ignored', filedStatus({ kind: 'player', status: 'open' }).label === 'Waiting for review');
+  check(
+    'notices: a player report reads as action taken / no action',
+    filedStatus({ kind: 'player', status: 'reviewed' }).label === 'Action taken' && filedStatus({ kind: 'player', status: 'dismissed' }).label === 'No action',
+  );
+  check(
+    'notices: a smitten claim says the standing was charged',
+    filedStatus({ kind: 'score', status: 'rejected', smite: 25 }).tone === 'bad' && filedStatus({ kind: 'score', status: 'rejected', smite: 0 }).label === 'Rejected',
+  );
+  check(
+    'notices: a filed report names who and why; a misscore is a misscore',
+    filedWhat({ kind: 'player', subject: '@ada', reason: 'afk' }) === '@ada: Not playing / AFK' && filedWhat({ kind: 'score', subject: null, reason: null }) === 'Misscore',
+  );
+
+  // ---- the wiring that has no other test: every admin outcome sends its notice
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check('notices: triaging reports tells the reporters and the reported', /noticeReportTriage\(\{/.test(idx));
+  check('notices: resolving a misscore tells the filer', /noticeMisscore\(\{/.test(idx));
+  check('notices: correcting a score tells every player in it', /noticeCorrection\(\{/.test(idx));
+  check('notices: editing standing tells the player', /noticeStandingEdit\(\{/.test(idx));
+  check(
+    'notices: the refund is opt-in per correction and gated on the live ladder',
+    /searchParams\.get\('refund'\) === '1' && match\.liveBoard/.test(idx),
+  );
+}
+
+// ---- NO INTAKE: the human player loads the robot in its LOADING ZONE (G432) ----------------------
+/**
+ * `intake: 'none'` (DECODE): the footprint is the chassis, nothing on the front takes an artifact,
+ * and `handLoad` (`humanPlayer.ts`) drops one in per `HP_HAND_LOAD_S` while any part of the robot is
+ * in its own LOADING ZONE and it is nearly still — from the box first, else off the zone's floor.
+ * Robots with an intake are untouched (the shared pins above hold that).
+ */
+{
+  const NONE = { ...DEFAULT_SPEC, intake: 'none' as const, length: 16, width: 16 };
+  const d = coerceSpec(NONE);
+  check(
+    'no intake: the coercer keeps `none` for DECODE, idempotently, on its own size range (15–18 in, no reach)',
+    d.intake === 'none' && d.length === 16 && lengthLimits('none').min === 15 && lengthLimits('none').max === 18 &&
+      JSON.stringify(coerceSpec(d)) === JSON.stringify(d),
+    JSON.stringify({ intake: d.intake, length: d.length, lim: lengthLimits('none') }),
+  );
+  check(
+    'no intake: Chain Reaction and BIOBUZZ have no hand loading, so `none` becomes the sloped preset there',
+    coerceSpec(NONE, DEFAULT_SPEC, 'chain').intake === 'sloped' && coerceSpec(NONE, DEFAULT_SPEC, 'biobuzz').intake === 'sloped' &&
+      coerceSpec(DEFAULT_SPEC, { ...DEFAULT_SPEC, intake: 'none' }, 'chain').intake === 'sloped',
+  );
+  const fx = footprintExtents(d);
+  check('no intake: the footprint is the chassis — no reach on the front', fx.front === 8 && fx.rear === 8 && fx.half === 8, JSON.stringify(fx));
+
+  // the solids: the chassis box and nothing else; the three held slots inside it at the 15-in floor
+  const w0 = mkWorld('free', 'blue', 41, NONE);
+  const r0 = w0.robots[0];
+  const sol = robotSolids(r0, []);
+  check(
+    'no intake: the artifact solids are the chassis box alone (no wedges, no rails)',
+    sol.structure.length === 0 && sol.chassis.kind === 'box' && sol.chassis.hx === 8 && sol.chassis.hy === 8,
+    JSON.stringify(sol.structure),
+  );
+  const s15 = coerceSpec({ ...NONE, length: 15 });
+  const slots = [0, 1, 2].map((i) => heldSlotPos(s15, i, 0));
+  check(
+    'no intake: three held artifacts fit inside a 15-in chassis, in a line, front skin at the face',
+    slots.every((p) => p.x - BALL_RADIUS >= -7.5 - 1e-9 && p.x + BALL_RADIUS <= 7.5 + 1e-9 && p.y === 0) &&
+      Math.abs(slots[2].x + BALL_RADIUS - 7.5) < 1e-9 && slots[1].x - slots[0].x === 2 * BALL_RADIUS,
+    JSON.stringify(slots),
+  );
+
+  // the intake button does nothing: driving at an artifact with it held shoves the artifact
+  {
+    const w = mkWorld('match', 'blue', 43, NONE);
+    startMatch(w);
+    w.match.phase = 'teleop';
+    for (const a of ['red', 'blue'] as const) {
+      w.humanPlayers[a].box = [];
+      w.humanPlayers[a].nextPlaceAt = 1e9;
+    }
+    const r = w.robots[0];
+    w.balls = w.balls.filter((b) => !(b.state.kind === 'held' && b.state.robot === r.id));
+    r.hopper.length = 0;
+    r.pos = { x: 0, y: -20 };
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    r.fieldCentric = false;
+    r.autoIntake = true;
+    const target = w.balls.find((b) => b.state.kind === 'ground')!;
+    target.pos = { x: 14, y: -20 };
+    target.vel = { x: 0, y: 0 };
+    const start = target.pos.x;
+    run(w, cmd({ driveY: 1, intake: true }), 0.8);
+    check(
+      'no intake: driving onto an artifact with the intake held (and auto intake on) takes nothing — the front pushes it',
+      r.hopper.length === 0 && target.state.kind === 'ground' && target.pos.x > start + 4,
+      `hopper ${r.hopper.length}, artifact ${target.state.kind} moved ${(target.pos.x - start).toFixed(1)} in`,
+    );
+  }
+
+  // hand loading
+  const zone = loadZone('blue');
+  const scene = (spec: RobotSpec, phase: MatchPhase = 'teleop'): World => {
+    const w = mkWorld('match', 'blue', 47, spec);
+    startMatch(w);
+    w.match.phase = phase;
+    const r = w.robots[0];
+    w.balls = w.balls.filter((b) => !(b.state.kind === 'held' && b.state.robot === r.id));
+    r.hopper.length = 0;
+    w.humanPlayers.blue.box = ['purple', 'green', 'purple'];
+    w.humanPlayers.blue.nextPlaceAt = 0;
+    // partly in: the chassis reaches 4 in over the zone's inner edge, facing away from the wall
+    r.pos = { x: (zone.x0 + zone.x1) / 2, y: zone.y1 + 4 };
+    r.heading = Math.PI / 2;
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    return w;
+  };
+  {
+    const w = scene(d);
+    const r = w.robots[0];
+    const count0 = w.balls.length;
+    run(w, cmd({}), 0.2);
+    const after1 = r.hopper.length;
+    run(w, cmd({}), 0.9);
+    const held = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id);
+    check(
+      'hand loading: a robot with no intake, partly in its loading zone and still, is loaded one artifact per HP_HAND_LOAD_S',
+      robotIntersectsRect(r, zone) && after1 === 1 && r.hopper.length === HOPPER_CAPACITY,
+      `after 0.2 s ${after1}, after 1.1 s ${r.hopper.length} (HP_HAND_LOAD_S ${IMPC.HP_HAND_LOAD_S})`,
+    );
+    check(
+      'hand loading: from the box first, into real held artifacts in hopper order (the box gives up three)',
+      w.humanPlayers.blue.box.length === 0 && held.length === HOPPER_CAPACITY && w.balls.length === count0 + 3 &&
+        held.map((b) => b.color).join() === r.hopper.join() && r.hopper.join() === 'purple,green,purple',
+      JSON.stringify({ box: w.humanPlayers.blue.box, hopper: r.hopper, held: held.length, balls: [count0, w.balls.length] }),
+    );
+  }
+  {
+    // an empty box: the human player picks them off the zone's floor (the pre-staged three)
+    const w = scene(d);
+    w.humanPlayers.blue.box = [];
+    const r = w.robots[0];
+    const inZone0 = w.balls.filter((b) => b.state.kind === 'ground' && inRect(b.pos, zone)).length;
+    const count0 = w.balls.length;
+    run(w, cmd({}), 1.1);
+    const inZone1 = w.balls.filter((b) => b.state.kind === 'ground' && inRect(b.pos, zone)).length;
+    check(
+      'hand loading: with nothing in hand the human player takes artifacts off the loading zone floor, and none appears or vanishes',
+      inZone0 >= 3 && r.hopper.length === HOPPER_CAPACITY && inZone1 === inZone0 - 3 && w.balls.length === count0,
+      JSON.stringify({ inZone0, inZone1, hopper: r.hopper.length, balls: [count0, w.balls.length] }),
+    );
+  }
+  {
+    // what does NOT get loaded: moving, turning, outside the zone, during AUTO, or a robot with an intake
+    const probe = (mod: (w: World, r: RobotState) => void, spec: RobotSpec = d, phase: MatchPhase = 'teleop'): number => {
+      const w = scene(spec, phase);
+      const r = w.robots[0];
+      mod(w, r);
+      updateHumanPlayers(w);
+      return r.hopper.length;
+    };
+    const still = probe(() => {});
+    const moving = probe((_w, r) => { r.vel = { x: 0, y: IMPC.HP_HAND_LOAD_MAX_SPEED + 1 }; });
+    const turning = probe((_w, r) => { r.angVel = IMPC.HP_HAND_LOAD_MAX_TURN + 0.1; });
+    const outside = probe((_w, r) => { r.pos = { x: zone.x0 + 2, y: zone.y1 + 12 }; });
+    const auto = probe(() => {}, d, 'auto');
+    const full = probe((_w, r) => { r.hopper.push('green', 'green', 'green'); });
+    const sloped = probe(() => {}, coerceSpec({ ...DEFAULT_SPEC, intake: 'sloped' }));
+    check(
+      'hand loading: only a still robot with room, partly in the zone, in TELEOP, with no intake of its own',
+      still === 1 && moving === 0 && turning === 0 && outside === 0 && auto === 0 && full === 3 && sloped === 0,
+      JSON.stringify({ still, moving, turning, outside, auto, full, sloped }),
+    );
+  }
+
+  // an IMPORTED robot with no intake: the whole hull is solid, its slots are inside it, and it is loaded too
+  {
+    const imp = coerceImported({
+      v: 1, id: '00000000000000aa', heightIn: 14,
+      hull: [{ x: -8, y: -7 }, { x: 9, y: -7 }, { x: 9, y: 7 }, { x: -8, y: 7 }],
+      mech: { shooter: { x: -3, y: 0, z: 12 } },
+    })!;
+    const spec = coerceSpec({ ...DEFAULT_SPEC, intake: 'none', imported: imp });
+    const w = scene(spec);
+    const r = w.robots[0];
+    const sol = robotSolids(r, []);
+    const iSlots = [0, 1, 2].map((i) => heldSlotPos(spec, i, 0));
+    check(
+      'no intake (import): the artifact solids are the whole hull, and the held slots sit inside it on the centreline',
+      sol.structure.length === 0 && sol.chassis.kind === 'poly' && sol.chassis.pts.length === imp.hull.length &&
+        iSlots.every((p) => p.y === 0 && p.x - BALL_RADIUS >= -8 - 1e-9 && p.x + BALL_RADIUS <= 9 + 1e-9),
+      JSON.stringify({ structure: sol.structure.length, iSlots }),
+    );
+    run(w, cmd({}), 1.1);
+    check('hand loading (import): an imported robot with no intake is loaded in its zone the same way', r.hopper.length === HOPPER_CAPACITY, `hopper ${r.hopper.length}`);
+  }
+
+  // the controls and the tutorial follow
+  {
+    const build = { spec: d, autoIntake: false, autoFire: false, fieldCentric: false, aimAssist: true };
+    const hasIntake = (game: GameId, spec: RobotSpec): boolean =>
+      visibleTouchButtons(game, { ...build, spec }).some((b) => b.action === 'intake');
+    check(
+      'no intake: the touch pad drops INTAKE for a DECODE robot with no intake, and keeps it for every other build',
+      !hasIntake('decode', d) && hasIntake('decode', DEFAULT_SPEC) && hasIntake('chain', coerceSpec(NONE, DEFAULT_SPEC, 'chain')),
+    );
+    const ids = (spec: RobotSpec): string => DECODE_TUTORIAL.steps.filter((s) => s.applies?.(spec) ?? true).map((s) => s.id).join();
+    check(
+      'no intake: the DECODE tutorial teaches loading at the loading zone in the intake step’s place',
+      ids(d) === 'drive,load,score,return' && ids(DEFAULT_SPEC) === 'drive,intake,score,return',
+      `${ids(d)} / ${ids(DEFAULT_SPEC)}`,
+    );
+    const load = DECODE_TUTORIAL.steps.find((s) => s.id === 'load')!;
+    const w = mkWorld('free', 'blue', 53, NONE);
+    const r = w.robots[0];
+    r.fieldCentric = false;
+    load.stage?.(w, r.id);
+    const staged = r.hopper.length;
+    const doneAtStage = load.done(w, r.id);
+    run(w, cmd({ driveY: 0.6 }), 0.6);
+    run(w, cmd({}), 2);
+    check(
+      'no intake: the tutorial’s load step starts one short, and driving into the zone and waiting completes it',
+      staged === HOPPER_CAPACITY - 1 && !doneAtStage && load.done(w, r.id),
+      JSON.stringify({ staged, doneAtStage, hopper: r.hopper.length, pos: r.pos, inZone: robotIntersectsRect(r, zone) }),
+    );
+  }
+}
+
+/**
+ * PRACTICE TUNING (`ImportedRobot.tune`, `docs/area/robot-import.md` "Practice tuning"). Coerced to
+ * its ranges and steps, idempotent; each number reaches the sim where the derived one is read; an
+ * untuned robot is untouched (the import pins above hold without a re-pin); a room never plays it;
+ * a replay that carries it is stamped so an older build refuses it; a retune is the same robot to
+ * the library; an older build's settings save keeps it.
+ */
+{
+  const { coerceImported, coerceTune, IMPORT_TUNE } = await import('../src/sim/imported');
+  const { driveParams } = await import('../src/sim/drivetrain');
+  const { fixedAimTurn } = await import('../src/sim/aimTurn');
+  const { stripTune, setupsHaveTune, REPLAY_FORMAT_TUNED, REPLAY_FORMAT_IMPORTED } = await import('../src/net/imported');
+  const { sameImportedRobot } = await import('../src/robotImport/libraryIds');
+  const { keepTuneFromOlderClient, keepsTune, SETTINGS_KEEPS_TUNE } = await import('../src/net/settingsKeep');
+  const { bbRampDeployS, BB_RAMP_DEPLOY_S } = await import('../src/games/biobuzz/config');
+  type ImportTuning = import('../src/types').ImportTuning;
+  const { mechTuneFields, driveTuneFields } = await import('../src/robotImport/ui/tuneFields');
+  const J = (v: unknown): string => JSON.stringify(v);
+  const base: ImportedRobot = {
+    v: 1,
+    id: '00112233445566aa',
+    hull: [{ x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }, { x: -8, y: -8 }],
+    heightIn: 14,
+    mech: { shooter: { x: -2, y: 0, z: 12.5 }, intakes: [{ edge: 'front', from: -6, to: 6 }] },
+  };
+
+  // ---- the coercer ----
+  const t = coerceTune({ topSpeed: 61.3, accel: 9999, turnRate: -5, shotInterval: 0.237, intakeTime: 'x', bogus: 3, reload: NaN });
+  check(
+    'tune: coerced onto each range and step (61.3 → 61.5 in/s, accel to its 1500 top, a negative turn rate to its 60 floor, 0.237 → 0.24 s), unknown, non-numeric and NaN fields dropped',
+    J(t) === J({ topSpeed: 61.5, accel: 1500, turnRate: 60, shotInterval: 0.24 }),
+    J(t),
+  );
+  check('tune: coercing twice is coercing once; nothing left is no tuning at all', J(coerceTune(t)) === J(t) && coerceTune({}) === undefined && coerceTune({ bogus: 1 }) === undefined && coerceTune(null) === undefined && coerceTune([1]) === undefined);
+  const every = Object.fromEntries((Object.keys(IMPORT_TUNE) as (keyof typeof IMPORT_TUNE)[]).map((k) => [k, (IMPORT_TUNE[k].min + IMPORT_TUNE[k].max) / 2 + IMPORT_TUNE[k].step / 3]));
+  const all = coerceTune(every)!;
+  check('tune: every field of IMPORT_TUNE survives the coercer on its step and inside its range', (Object.keys(IMPORT_TUNE) as (keyof typeof IMPORT_TUNE)[]).every((k) => { const v = all[k]!; const L = IMPORT_TUNE[k]; return v >= L.min && v <= L.max && Math.abs(Math.round(v / L.step) * L.step - v) < 1e-9; }), J(all));
+  const ci = coerceImported({ ...base, tune: { topSpeed: 70, shotInterval: 0.5 } })!;
+  check('tune: coerceImported keeps it, and is still a fixed point with it', J(ci.tune) === J({ topSpeed: 70, shotInterval: 0.5 }) && J(coerceImported(ci)) === J(ci) && coerceImported(base)!.tune === undefined);
+
+  // ---- the sim reads it ----
+  const spec = (tune?: ImportTuning): RobotSpec => coerceSpec({ ...DEFAULT_SPEC, drivetrain: 'mecanum', driveRpm: 435, imported: { ...base, ...(tune ? { tune } : {}) } } as RobotSpec);
+  const plain = driveParams(spec());
+  const fast = driveParams(spec({ topSpeed: 120, accel: 300, turnRate: 400 }));
+  const slowOnly = driveParams(spec({ topSpeed: plain.maxSpeed / 2 }));
+  check(
+    'tune: driveParams takes the tuned top speed, acceleration (the turn acceleration with it) and turn rate (°/s); a tuned speed alone scales the derived turn rate with it',
+    Math.abs(fast.maxSpeed - 120) < 1e-9 && Math.abs(fast.accel - 300) < 1e-9 && Math.abs(fast.turnAccel / fast.accel - plain.turnAccel / plain.accel) < 1e-12 &&
+      Math.abs(fast.maxTurn - (400 * Math.PI) / 180) < 1e-9 && Math.abs(slowOnly.maxTurn - plain.maxTurn / 2) < 0.05,
+    J({ fast, slowOnly: slowOnly.maxTurn, plain: plain.maxTurn }),
+  );
+  {
+    const { w, step: stepW } = impWorld('decode', [{ drivetrain: 'mecanum', driveRpm: 435, imported: { ...base, tune: { topSpeed: 40 } } }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 100;
+    const r = w.robots[0];
+    r.pos = { x: -40, y: 0 };
+    r.heading = 0;
+    let top = 0;
+    for (let k = 0; k < 120; k++) {
+      stepW(w, 1 / 60, new Map([[0, { driveX: 0, driveY: 1, rotate: 0, leftDrive: 1, rightDrive: 1, intake: false, fire: false }]]));
+      top = Math.max(top, Math.hypot(r.vel.x, r.vel.y));
+    }
+    check('tune: a robot tuned to 40 in/s drives at 40 in/s (two seconds of full forward in DECODE)', Math.abs(top - 40) < 1.5, top.toFixed(2));
+  }
+  {
+    const r0 = { spec: spec(), butterflyTank: false, powerDraw: 0 } as unknown as RobotState;
+    const r1 = { spec: spec({ aimTurn: 60 }), butterflyTank: false, powerDraw: 0 } as unknown as RobotState;
+    const free = fixedAimTurn(r0, 1.2);
+    const capped = fixedAimTurn(r1, 1.2);
+    check('tune: the fixed aim turns no faster than its tuned aim rate (60 °/s), and untuned it is the chassis’s', Math.abs(capped * driveParams(r1.spec).maxTurn - Math.PI / 3) < 1e-9 && free > capped && fixedAimTurn(r0, 0.001) === fixedAimTurn(r1, 0.001));
+  }
+  {
+    // the import's fixed launcher (fxImportFixed): fed every 0.20 s by its wheel, every 0.40 s tuned
+    const tuned = { ...fxImportFixed(), imported: { ...fxImportFixed().imported!, tune: { shotInterval: 0.4 } } } as RobotSpec;
+    const gaps = fxGaps(fxAimTrace(tuned, { ticks: 240 }).fires);
+    check('tune: a tuned time between shots (0.40 s) is what the feed runs at, 24 ticks every gap', gaps.length >= 4 && gaps.every((g) => g === 24), J(gaps));
+  }
+  check('tune: BIOBUZZ’s ramp swing reads the tuning, and the constant without it', bbRampDeployS({ ...DEFAULT_SPEC, imported: { ...base, tune: { rampDeployS: 0.8 } } } as RobotSpec) === 0.8 && bbRampDeployS(DEFAULT_SPEC) === BB_RAMP_DEPLOY_S);
+
+  // ---- the editor's fields ----
+  const fieldsBb = mechTuneFields('biobuzz', { ...DEFAULT_SPEC, scoreMode: 'turret', bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null, intake: { kind: 'ramp' } }, imported: base } as RobotSpec).map((f) => f.key);
+  const fieldsCr = mechTuneFields('chain', { ...DEFAULT_SPEC, scoreMode: 'dumper', imported: base } as RobotSpec).map((f) => f.key);
+  const drive = driveTuneFields(spec({ topSpeed: 30 }));
+  check(
+    'tune: the editor offers each build its own numbers (a BIOBUZZ turret on a ramp: shots, turret speed, intake, ramp swing; a Chain dumper: its reload) and shows the CALCULATED drive, not the tuned one',
+    J(fieldsBb) === J(['shotInterval', 'turretSlew', 'intakeTime', 'rampDeployS']) && J(fieldsCr) === J(['reload']) && Math.abs(drive[0].calculated - plain.maxSpeed) < 1e-9,
+    J({ fieldsBb, fieldsCr, drive: drive[0].calculated }),
+  );
+
+  // ---- rooms, replays, the library, settings ----
+  const tunedSpec = spec({ topSpeed: 70 });
+  const stripped = stripTune(tunedSpec);
+  const untunedSpec = spec();
+  check(
+    'tune: a room strips it (`stripTune`), keeping the import; a spec without it is returned as is',
+    stripped.imported?.tune === undefined && J(stripped.imported?.hull) === J(tunedSpec.imported?.hull) && stripTune(untunedSpec) === untunedSpec && stripTune(DEFAULT_SPEC) === DEFAULT_SPEC,
+  );
+  const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const roomSrc = rd('server/room.ts');
+  check('tune: Room.beginMatch strips it for every room, beside the import strip (source pin)', /setups = setups\.map\(\(s\) => \{\s*const spec = s\.spec \? stripTune\(s\.spec\)/.test(roomSrc));
+  const setupOf = (sp: RobotSpec) => ({ id: 0, alliance: 'blue' as const, spec: sp, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 });
+  const fmtTuned = new ReplayRecorder(1, [setupOf(tunedSpec)], 'match', 'decode').finish().format;
+  const fmtPlain = new ReplayRecorder(1, [setupOf(spec())], 'match', 'decode').finish().format;
+  check('tune: a replay with a tuned import is stamped format 4 (an older build refuses it); an untuned import is still format 3', fmtTuned === REPLAY_FORMAT_TUNED && fmtPlain === REPLAY_FORMAT_IMPORTED && setupsHaveTune([setupOf(tunedSpec)]) && !setupsHaveTune([setupOf(spec())]));
+  check('tune: a retune is the same robot to the library (`sameImportedRobot`), so the other device’s model is not called out of date', sameImportedRobot(tunedSpec.imported, spec().imported) && !sameImportedRobot(tunedSpec.imported, { ...spec().imported!, heightIn: 13 }));
+  const stored = { game: 'decode', spec: tunedSpec };
+  const olderSave = { game: 'decode', spec: stripTune(tunedSpec) };
+  const changed = { game: 'decode', spec: { ...stripTune(tunedSpec), name: 'Renamed' } };
+  check(
+    'tune: an older build’s save (imports, no tuning cap) keeps the stored tuning when the robot is otherwise the same, and a real change stands',
+    J((keepTuneFromOlderClient(stored, olderSave).spec as RobotSpec).imported?.tune) === J({ topSpeed: 70 }) &&
+      (keepTuneFromOlderClient(stored, changed).spec as RobotSpec).imported?.tune === undefined &&
+      keepsTune([SETTINGS_KEEPS_TUNE]) && !keepsTune(['robotImport']),
+  );
+  check('tune: this build’s settings save says it keeps tuning (source pin)', /caps: \[SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE\]/.test(rd('src/net/api.ts')) && /keepsTune\(caps\) \? withImports : keepTuneFromOlderClient/.test(rd('server/db/repo.ts')));
+}
+
+/**
+ * MESH QUALITY (`engine/simplify.ts`, one error bound, no sloppy pass; the measurements on the real
+ * kits are in `docs/area/robot-import.md` "Mesh quality"). A guard on the properties that matter:
+ * one colour group holding a smooth part AND hundreds of tiny fasteners comes out under budget with
+ * the fasteners pruned and the smooth part's surface whole, every vertex still on it.
+ */
+{
+  const THREE = await import('three');
+  const { simplifyParts, simplifyLists } = await import('../src/robotImport/engine/simplify');
+  const { triangleCount } = await import('../src/robotImport/geometry');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const R = 2;
+  const sphere = new THREE.SphereGeometry(R, 120, 80);
+  const pos: number[] = Array.from(sphere.getAttribute('position').array as Float32Array);
+  const idx: number[] = Array.from(sphere.index!.array as ArrayLike<number>);
+  // 600 fasteners, 0.08 in cubes, in a row well away from the sphere
+  for (let i = 0; i < 600; i++) {
+    const box = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+    box.translate(6 + (i % 30) * 0.3, Math.floor(i / 30) * 0.3, 0);
+    const base = pos.length / 3;
+    pos.push(...(box.getAttribute('position').array as Float32Array));
+    for (const k of box.index!.array as ArrayLike<number>) idx.push(base + k);
+  }
+  const area = (p: P, keep: (x: number, y: number, z: number) => boolean): number => {
+    let a = 0;
+    const v = p.positions;
+    const ix = p.indices!;
+    for (let t = 0; t < ix.length; t += 3) {
+      const [i0, i1, i2] = [ix[t] * 3, ix[t + 1] * 3, ix[t + 2] * 3];
+      if (!keep((v[i0] + v[i1] + v[i2]) / 3, (v[i0 + 1] + v[i1 + 1] + v[i2 + 1]) / 3, (v[i0 + 2] + v[i1 + 2] + v[i2 + 2]) / 3)) continue;
+      const ux = v[i1] - v[i0], uy = v[i1 + 1] - v[i0 + 1], uz = v[i1 + 2] - v[i0 + 2];
+      const wx = v[i2] - v[i0], wy = v[i2 + 1] - v[i0 + 1], wz = v[i2 + 2] - v[i0 + 2];
+      a += Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+    }
+    return a;
+  };
+  const near = (x: number, y: number, z: number): boolean => Math.hypot(x, y, z) < 4;
+  const part: P = { positions: new Float32Array(pos), indices: new Uint32Array(idx), color: [0.8, 0.8, 0.8], name: 'kit' };
+  const before = area(part, near);
+  const r = await simplifyParts([{ ...part, positions: part.positions.slice(), indices: part.indices!.slice() }], 3000);
+  const out = r.parts[0];
+  let worst = 0;
+  for (let i = 0; i < out.positions.length; i += 3) {
+    const d = Math.hypot(out.positions[i], out.positions[i + 1], out.positions[i + 2]);
+    if (d < 4) worst = Math.max(worst, Math.abs(d - R));
+  }
+  const kept = area(out, near) / before;
+  check(
+    'mesh quality: a smooth part sharing its colour with 600 fasteners comes out under budget, its surface whole (≥ 97 % of its area) and on the CAD surface (vertices within 1 % of the radius), the fasteners pruned first',
+    r.trisOut <= 3000 && kept >= 0.97 && worst < 0.02 * R * 0.5 && triangleCount(r.parts) === r.trisOut,
+    JSON.stringify({ tris: r.trisOut, kept: kept.toFixed(4), worst: worst.toFixed(4) }),
+  );
+  // ONE CALL PER BODY: a dense plate (body 0) with 300 tiny blocks standing on its grid points
+  // (bodies 1..300, one colour). Their corners share the plate's positions but not its vertices; in
+  // one call the blocks read as joined to the plate, `Prune` could not take them, and the bound
+  // climbed until EVERYTHING went (measured: 0 triangles at 80 % of the plate's size). Each body
+  // alone, the plate collapses and the smallest blocks are dropped first at the shape cap.
+  {
+    const N = 40;
+    const pos: number[] = [];
+    const idx: number[] = [];
+    const body: number[] = [];
+    for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+      pos.push(i / N, j / N, 0);
+      body.push(0);
+    }
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const a = j * (N + 1) + i;
+      idx.push(a, a + 1, a + N + 2, a, a + N + 2, a + N + 1);
+    }
+    let b = 1;
+    for (let j = 1; j < N - 1 && b <= 300; j += 2) for (let i = 1; i < N - 1 && b <= 300; i += 2) {
+      const [x0, y0, x1, y1, z] = [i / N, j / N, (i + 1) / N, (j + 1) / N, 0.5 / N];
+      const base = pos.length / 3;
+      for (const v of [[x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0], [x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]]) {
+        pos.push(v[0], v[1], v[2]);
+        body.push(b);
+      }
+      for (const t of [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]]) idx.push(base + t[0], base + t[1], base + t[2]);
+      b++;
+    }
+    const plate: P = { positions: new Float32Array(pos), indices: new Uint32Array(idx), color: [0.7, 0.7, 0.7], name: 'plate', body: new Uint32Array(body) };
+    const r2 = await simplifyParts([plate], 300);
+    const kept = new Set(Array.from(r2.parts[0]?.body ?? []));
+    check(
+      'mesh quality: blocks standing on a plate (one colour, separate bodies sharing positions) do not take the plate with them: one call per body keeps the plate, drops blocks smallest first, and stops at the shape cap',
+      r2.trisOut <= 300 && r2.trisOut > 200 && kept.has(0) && kept.size > 10 && r2.error <= 0.0021,
+      JSON.stringify({ tris: r2.trisOut, bodies: kept.size, bound: r2.error }),
+    );
+  }
+  check('mesh quality: no sloppy pass is left in the simplifier (source pin)', !/simplifySloppy\(/.test(readFileSync('src/robotImport/engine/simplify.ts', 'utf8')));
+  // the lists stay apart and share one bound
+  const ring = new THREE.TorusGeometry(1, 0.3, 40, 120);
+  const ringPart: P = { positions: new Float32Array(ring.getAttribute('position').array as Float32Array), indices: new Uint32Array(ring.index!.array as ArrayLike<number>), color: [0.1, 0.1, 0.1], name: 'wheel' };
+  const both = await simplifyLists([[{ ...part, positions: part.positions.slice(), indices: part.indices!.slice() }], [ringPart]], 4000);
+  check('mesh quality: simplifyLists keeps each list apart and brings the whole under its budget', both.lists.length === 2 && both.lists[1].length === 1 && both.trisOut <= 4000 && triangleCount(both.lists[0]) + triangleCount(both.lists[1]) === both.trisOut, String(both.trisOut));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE COMPRESSED STORED MESH (`writeStoredGlb`, `src/robotImport/engine/storedGlb.ts`)
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const { MeshoptDecoder } = await import('three/examples/jsm/libs/meshopt_decoder.module.js');
+  const { readStoredScene, sceneParts, bakeSceneHere } = await import('../src/robotImport/engine/bakeMesh');
+  const { exportStoredScene } = await import('../src/robotImport/engine/floatGlb');
+  const { writeStoredGlb, glbUsesExtensions, STORED_POSITION_BITS } = await import('../src/robotImport/engine/storedGlb');
+  const { liteMesh } = await import('../src/robotImport/engine/lite');
+  const { creaseParts } = await import('../src/robotImport/engine/meshOps');
+  const { loadModel } = await import('../src/robotImport/engine/load');
+  const { triangleCount } = await import('../src/robotImport/geometry');
+  const { finishOf } = await import('../src/robotImport/finish');
+  const rtypes = await import('../src/robotImport/types');
+  const share = await import('../src/robotImport/shareFile');
+  const { prepareImportedMesh, importedMotionNodes } = await import('../src/games/biobuzz/scene/renderImported');
+  type Part = import('../src/robotImport/geometry').MeshPart;
+  // three's exporter (the float writer) reads a Blob back through FileReader, which Node does not have
+  const g = globalThis as unknown as { FileReader?: unknown };
+  const hadReader = !!g.FileReader;
+  if (!hadReader) {
+    g.FileReader = class {
+      result: unknown = null;
+      onloadend: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      readAsArrayBuffer(blob: Blob): void {
+        void blob.arrayBuffer().then((b) => {
+          this.result = b;
+          this.onloadend?.();
+          this.onload?.();
+        });
+      }
+    };
+  }
+  const loader = new GLTFLoader();
+  loader.setMeshoptDecoder(MeshoptDecoder as Parameters<typeof loader.setMeshoptDecoder>[0]);
+  const parse = async (b: ArrayBuffer) => (await loader.parseAsync(b.slice(0), '')).scene;
+  // a part from a three geometry, moved by `at`, with a body id per `bodySize` vertices, its
+  // vertices jittered ±`jitter` (metres) so the codec meets CAD-like coordinates, not a perfect grid
+  let seed = 7;
+  const rnd = (): number => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const partOf = (geo: import('three').BufferGeometry, at: [number, number, number], color: [number, number, number], name: string, body0: number, bodySize = 1e9, jitter = 0): Part => {
+    const pos = geo.getAttribute('position');
+    const positions = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      positions[3 * i] = pos.getX(i) + at[0] + (rnd() - 0.5) * 2 * jitter;
+      positions[3 * i + 1] = pos.getY(i) + at[1] + (rnd() - 0.5) * 2 * jitter;
+      positions[3 * i + 2] = pos.getZ(i) + at[2] + (rnd() - 0.5) * 2 * jitter;
+    }
+    const indices = geo.index ? Uint32Array.from(geo.index.array as ArrayLike<number>) : Uint32Array.from({ length: pos.count }, (_, i) => i);
+    const body = Uint32Array.from({ length: pos.count }, (_, i) => body0 + Math.floor(i / bodySize));
+    return { positions, indices, color, name, body };
+  };
+  try {
+    // ---- a robot with moving parts: two static colours, a wheel, and a roller riding on it ----
+    const frame = partOf(new THREE.BoxGeometry(0.4, 0.05, 0.4, 20, 4, 20), [0, 0.08, 0], [0.8, 0.8, 0.82], 'frame', 1, 400);
+    const tower = partOf(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 24, 6), [0.1, 0.25, -0.1], [0.05, 0.05, 0.05], 'tower', 20);
+    const wheel = partOf(new THREE.TorusGeometry(0.045, 0.012, 16, 48).rotateY(Math.PI / 2), [0.21, 0.05, 0.15], [0.02, 0.02, 0.02], 'wheel', 30);
+    const roller = partOf(new THREE.CylinderGeometry(0.015, 0.015, 0.3, 16, 2).rotateZ(Math.PI / 2), [0.21, 0.12, 0.15], [0.9, 0.3, 0.05], 'roller', 31);
+    const scene = {
+      rest: creaseParts([frame, tower]),
+      moving: [
+        { info: { v: 1 as const, role: 'wheel' as const, axis: [1, 0, 0] as [number, number, number], radius: 0.057, deploy: 0, corner: 0 }, pivot: [0.21, 0.05, 0.15] as [number, number, number], parent: -1, parts: creaseParts([wheel]) },
+        { info: { v: 1 as const, role: 'roller' as const, axis: [1, 0, 0] as [number, number, number], radius: 0.015, deploy: 0 }, pivot: [0.21, 0.12, 0.15] as [number, number, number], parent: 0, parts: creaseParts([roller]) },
+      ],
+    };
+    const glb = await writeStoredGlb(scene);
+    const json = JSON.parse(new TextDecoder().decode(new Uint8Array(glb, 20, new DataView(glb).getUint32(12, true)))) as {
+      extensionsRequired?: string[];
+      materials: { pbrMetallicRoughness: { baseColorFactor: number[]; metallicFactor: number; roughnessFactor: number } }[];
+      meshes: { primitives: { attributes: Record<string, number> }[] }[];
+      accessors: { componentType: number; normalized?: boolean; type: string }[];
+    };
+    check(
+      'stored mesh: the bake writes KHR_mesh_quantization and EXT_meshopt_compression, both required (no float fallback in the file)',
+      glbUsesExtensions(glb) && JSON.stringify(json.extensionsRequired?.slice().sort()) === JSON.stringify(['EXT_meshopt_compression', 'KHR_mesh_quantization']),
+      JSON.stringify(json.extensionsRequired),
+    );
+    const colours = [frame, tower, wheel, roller].map((p) => p.color);
+    check(
+      'stored mesh: one material per colour, each with its colour’s finish (finishOf)',
+      json.materials.length === colours.length &&
+        colours.every((c) => json.materials.some((m) => m.pbrMetallicRoughness.baseColorFactor.slice(0, 3).join() === c.join() && m.pbrMetallicRoughness.metallicFactor === finishOf(c).metalness && m.pbrMetallicRoughness.roughnessFactor === finishOf(c).roughness)),
+    );
+    const bodyAcc = json.meshes.map((m) => json.accessors[m.primitives[0].attributes._BODY]);
+    check(
+      'stored mesh: every mesh carries `_BODY`, one unsigned 32-bit integer per vertex, unnormalised (what the relay validator and `bodyIdsOf` read)',
+      bodyAcc.length === 4 && bodyAcc.every((a) => !!a && a.componentType === 5125 && a.type === 'SCALAR' && !a.normalized),
+    );
+    const sc = await parse(glb);
+    const back = readStoredScene(sc);
+    // every vertex read back sits within half a quantisation step (per axis) of a source vertex of
+    // the same part with the same body, and every source vertex has one read back near it
+    const near = (a: readonly Part[], b: readonly Part[], tol: number, bodies: boolean): number => {
+      let worst = 0;
+      a.forEach((pa) => {
+        const pb = b.find((q) => q.color.join() === pa.color.join());
+        if (!pb) {
+          worst = Infinity;
+          return;
+        }
+        const cell = tol * 4;
+        const grid = new Map<string, number[]>();
+        for (let i = 0; i < pb.positions.length; i += 3) {
+          const k = `${Math.floor(pb.positions[i] / cell)},${Math.floor(pb.positions[i + 1] / cell)},${Math.floor(pb.positions[i + 2] / cell)}`;
+          (grid.get(k) ?? grid.set(k, []).get(k)!).push(i / 3);
+        }
+        for (let i = 0; i < pa.positions.length; i += 3) {
+          const [x, y, z] = [pa.positions[i], pa.positions[i + 1], pa.positions[i + 2]];
+          let best = Infinity;
+          for (let dx = -1; dx <= 1; dx++)
+            for (let dy = -1; dy <= 1; dy++)
+              for (let dz = -1; dz <= 1; dz++)
+                for (const j of grid.get(`${Math.floor(x / cell) + dx},${Math.floor(y / cell) + dy},${Math.floor(z / cell) + dz}`) ?? []) {
+                  if (bodies && pa.body && pb.body && pa.body[i / 3] !== pb.body[j]) continue;
+                  best = Math.min(best, Math.hypot(pb.positions[3 * j] - x, pb.positions[3 * j + 1] - y, pb.positions[3 * j + 2] - z));
+                }
+          worst = Math.max(worst, best);
+        }
+      });
+      return worst;
+    };
+    const srcParts = sceneParts(scene);
+    const backParts = sceneParts(back);
+    // a part's step is its largest side over 2^bits − 1; the frame (0.4 m) is the largest
+    const step = 0.4 / (2 ** STORED_POSITION_BITS - 1);
+    const tol = (step * Math.sqrt(3)) / 2 + 1e-7;
+    const off = Math.max(near(backParts, srcParts, tol, true), near(srcParts, backParts, tol, true));
+    check(
+      'stored mesh: read back, every vertex is its source’s to half a quantisation step (and the same body), the triangle count unchanged',
+      off <= tol && triangleCount(backParts) === triangleCount(srcParts),
+      `${(off * 1e6).toFixed(1)} µm ≤ ${(tol * 1e6).toFixed(1)} µm, ${triangleCount(backParts)} triangles`,
+    );
+    const rider = back.moving.find((m) => m.info.role === 'roller');
+    const wheelBack = back.moving.find((m) => m.info.role === 'wheel');
+    check(
+      'stored mesh: each moving part is a node at its pivot with its `extras.dsim`, the roller nested in the wheel, and readStoredScene finds them as it did in the float GLB',
+      back.moving.length === 2 && !!rider && !!wheelBack && back.moving[rider.parent] === wheelBack &&
+        [rider, wheelBack].every((m) => {
+          const src = scene.moving.find((s) => s.info.role === m.info.role)!;
+          return Math.hypot(m.pivot[0] - src.pivot[0], m.pivot[1] - src.pivot[1], m.pivot[2] - src.pivot[2]) < 1e-7 && JSON.stringify(m.info) === JSON.stringify(src.info);
+        }) &&
+        triangleCount(back.rest) === triangleCount(scene.rest),
+    );
+    // the normals: the octahedral 8-bit ones within 2° of the creased float normals
+    let worstDeg = 0;
+    sc.updateMatrixWorld(true);
+    sc.traverse((o) => {
+      const m = o as import('three').Mesh;
+      if (!m.isMesh) return;
+      const c = (m.material as import('three').MeshStandardMaterial).color;
+      const src = srcParts.find((p) => Math.abs(p.color[0] - c.r) < 1e-6 && Math.abs(p.color[1] - c.g) < 1e-6 && Math.abs(p.color[2] - c.b) < 1e-6)!;
+      const pos = m.geometry.getAttribute('position');
+      const nrm = m.geometry.getAttribute('normal');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m.matrixWorld);
+        const n = new THREE.Vector3(nrm.getX(i), nrm.getY(i), nrm.getZ(i)).normalize();
+        let best = Infinity;
+        for (let j = 0; j < src.positions.length; j += 3) {
+          if (Math.hypot(src.positions[j] - v.x, src.positions[j + 1] - v.y, src.positions[j + 2] - v.z) > tol) continue;
+          best = Math.min(best, Math.acos(Math.min(1, n.dot(new THREE.Vector3(src.normals![j], src.normals![j + 1], src.normals![j + 2])))));
+        }
+        worstDeg = Math.max(worstDeg, (best * 180) / Math.PI);
+      }
+    });
+    check('stored mesh: the normals are the creased ones to 2° (8-bit octahedral)', worstDeg < 2, `${worstDeg.toFixed(2)}°`);
+
+    // ---- the scene: quantised attributes become Float32, the picture does not move ----
+    const float = await exportStoredScene(scene);
+    // every vertex in the glTF scene's own frame (the template wraps it in the robot frame)
+    const sceneFrame = (gl: import('three').Object3D): number[] => {
+      gl.updateWorldMatrix(true, true);
+      const inv = new THREE.Matrix4().copy(gl.matrixWorld).invert();
+      const out: number[] = [];
+      const v = new THREE.Vector3();
+      gl.traverse((o) => {
+        const m = o as import('three').Mesh;
+        if (!m.isMesh) return;
+        const to = new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld);
+        const p = m.geometry.getAttribute('position');
+        for (let i = 0; i < p.count; i++) out.push(...v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(to).toArray());
+      });
+      return out;
+    };
+    const qScene = await parse(glb);
+    const before = sceneFrame(qScene);
+    const prepped = prepareImportedMesh(qScene);
+    const after = sceneFrame(qScene);
+    let attrsFloat = true;
+    let moved = 0;
+    for (let i = 0; i < before.length; i++) moved = Math.max(moved, Math.abs(after[i] - before[i]));
+    prepped.traverse((o) => {
+      const m = o as import('three').Mesh;
+      if (!m.isMesh) return;
+      for (const name of ['position', 'normal']) {
+        const a = m.geometry.getAttribute(name) as import('three').BufferAttribute;
+        if (!a || (a as unknown as { isInterleavedBufferAttribute?: boolean }).isInterleavedBufferAttribute || !(a.array instanceof Float32Array) || a.normalized) attrsFloat = false;
+      }
+      if (m.geometry.getAttribute('_body')) attrsFloat = false;
+    });
+    check('stored mesh: the 3D scene draws it from plain Float32 positions and normals (quantised attributes are slower on ANGLE/D3D11), every vertex where it was, no `_body` uploaded', attrsFloat && moved < 1e-9 && before.length === after.length, `${moved}`);
+    const fScene = await parse(float);
+    const fAttrs: unknown[] = [];
+    fScene.traverse((o) => {
+      const m = o as import('three').Mesh;
+      if (m.isMesh) fAttrs.push(m.geometry.getAttribute('position'), m.geometry.getAttribute('normal'));
+    });
+    const fPrepped = prepareImportedMesh(fScene);
+    const fAfter: unknown[] = [];
+    fPrepped.traverse((o) => {
+      const m = o as import('three').Mesh;
+      if (m.isMesh) fAfter.push(m.geometry.getAttribute('position'), m.geometry.getAttribute('normal'));
+    });
+    check('stored mesh: a float stored mesh saved before loads as it always did (its attributes are left as they are)', fAttrs.length > 0 && fAttrs.every((a, i) => a === fAfter[i]));
+    const motion = (root: import('three').Object3D) => importedMotionNodes(root).map((n) => ({ role: n.info.role, at: [n.at.x, n.at.y], axis: [n.axisRobot.x, n.axisRobot.y, n.axisRobot.z] }));
+    const qm = motion(prepped);
+    const fm = motion(fPrepped);
+    check(
+      'stored mesh: importedMotionNodes finds the same moving parts, pivots and axes in the compressed mesh as in the float one',
+      qm.length === 2 && qm.length === fm.length && qm.every((m, i) => m.role === fm[i].role && Math.hypot(m.at[0] - fm[i].at[0], m.at[1] - fm[i].at[1]) < 1e-5 && m.axis.every((x, k) => Math.abs(x - fm[i].axis[k]) < 1e-9)),
+      JSON.stringify(qm),
+    );
+
+    // ---- the editor re-opens it, and a share file of it opens ----
+    const reopened = await loadModel([new File([glb], 'robot.glb')]);
+    check(
+      'stored mesh: the editor’s reader (loadModel, meshopt decoder) re-opens it with every triangle and its body ids (an edit can pick parts again)',
+      triangleCount(reopened.parts) === triangleCount(srcParts) && reopened.parts.every((p) => !!p.body) && new Set(reopened.parts.flatMap((p) => [...p.body!])).size === new Set(srcParts.flatMap((p) => [...p.body!])).size,
+    );
+    const spec = { name: 'Quantised' } as unknown as import('../src/types').RobotSpec;
+    const shared = share.writeShareFile(glb, { game: 'biobuzz', spec, setup: {} as never, name: 'Quantised' });
+    const readBack = share.readShareFile(shared);
+    const sharedModel = await loadModel([new File([shared], 'quantised.dsim.glb')]);
+    check(
+      'stored mesh: a share file of it reads (payload) and opens (every triangle), as the robot page and the editor read it',
+      readBack.ok && readBack.payload.name === 'Quantised' && triangleCount(sharedModel.parts) === triangleCount(srcParts),
+    );
+    const oldModel = await loadModel([new File([float], 'old.glb')]);
+    check('stored mesh: an old float stored mesh still opens in the editor, every triangle and body', triangleCount(oldModel.parts) === triangleCount(srcParts) && oldModel.parts.every((p) => !!p.body));
+
+    // ---- the relay: never the compressed mesh, always a float GLB today's validator takes ----
+    const refused = VC.validateMeshGlb(new Uint8Array(glb));
+    check('stored mesh: ⚠️ the relay’s validator (this build, older servers and clients) refuses the compressed mesh, small as it is', glb.byteLength < IV.VISUAL_MAX_BYTES.mesh && refused !== null, String(refused));
+    const small = await liteMesh(glb, IV.VISUAL_MAX_BYTES.mesh);
+    const smallParts = small ? sceneParts(readStoredScene(await parse(small))) : [];
+    check(
+      'stored mesh: liteMesh re-writes a small compressed mesh as a FLOAT GLB the validator takes, whole (every triangle) and without extensions',
+      !!small && VC.validateMeshGlb(new Uint8Array(small)) === null && !glbUsesExtensions(small) && triangleCount(smallParts) === triangleCount(srcParts),
+      String(small && VC.validateMeshGlb(new Uint8Array(small))),
+    );
+    const { liteMeshOff } = await import('../src/robotImport/engine/importSession');
+    const offThread = await liteMeshOff(glb, IV.VISUAL_MAX_BYTES.mesh);
+    const engineSrc = readFileSync('src/robotImport/engine/importerEngine.ts', 'utf8');
+    const workerSrc = readFileSync('src/robotImport/engine/importWorker.ts', 'utf8');
+    check(
+      'stored mesh: the relay copy is made in the import worker (the engine’s liteMesh is liteMeshOff, the worker answers `lite` from a lazy lite.ts), and with no Worker the same file on this thread',
+      /export \{ liteMeshOff as liteMesh \} from '\.\/importSession';/.test(engineSrc) && /req\.kind === 'lite'/.test(workerSrc) && /await import\('\.\/lite'\)/.test(workerSrc) && !!offThread && !!small && offThread.byteLength === small.byteLength,
+    );
+    const ivc = readFileSync('src/net/importVisualsClient.ts', 'utf8');
+    check(
+      'stored mesh: the owner sends the library mesh as it is only when the relay’s validator takes it, else the float lighter copy (source pin)',
+      /if \(\(await loadCheck\(\)\)\?\.validateMeshGlb\(bytes\) === null\) return bytes;/.test(ivc) && /engine\.liteMesh\(/.test(ivc),
+    );
+
+    // ---- 250k triangles fit, and the relay copy of them passes ----
+    const dense: Part[] = [];
+    const palette: [number, number, number][] = [[0.8, 0.8, 0.82], [0.05, 0.05, 0.05], [0.9, 0.3, 0.05], [0.35, 0.35, 0.35], [0.1, 0.2, 0.7], [0.92, 0.92, 0.9]];
+    let b0 = 100;
+    for (let k = 0; k < 6; k++) {
+      // ~42k triangles a colour: a torus knot (a gear's worth of facets) and a perforated-looking slab
+      const knot = new THREE.TorusKnotGeometry(0.06, 0.012, 480, 40, 2 + (k % 3), 3);
+      dense.push(partOf(knot, [((k % 3) - 1) * 0.15, 0.1 + 0.08 * Math.floor(k / 3), 0], palette[k], `knot${k}`, b0, 2000, 2e-5));
+      b0 += 20;
+      const slab = new THREE.BoxGeometry(0.3, 0.004, 0.3, 30, 1, 30);
+      dense.push(partOf(slab, [0, 0.02 + 0.06 * k, 0], palette[k], `slab${k}`, b0, 500, 2e-5));
+      b0 += 20;
+    }
+    const denseTris = triangleCount(dense);
+    const baked = await bakeSceneHere({ rest: creaseParts(dense), moving: [] });
+    check(
+      `stored mesh: a ${Math.round(denseTris / 1000)}k-triangle robot bakes under MAX_MESH_BYTES with no refit`,
+      denseTris >= 250_000 && baked.refits === 0 && baked.glb.byteLength <= rtypes.MAX_MESH_BYTES && triangleCount(sceneParts(baked.scene)) === denseTris,
+      `${(baked.glb.byteLength / 1048576).toFixed(2)} MiB, ${(baked.glb.byteLength / denseTris).toFixed(2)} B a triangle, ${baked.refits} refits`,
+    );
+    const lite = await liteMesh(baked.glb, IV.VISUAL_MAX_BYTES.mesh);
+    const liteTris = lite ? triangleCount(sceneParts(readStoredScene(await parse(lite)))) : 0;
+    check(
+      'stored mesh: its relay copy (liteMesh) fits 1 MiB, is a float GLB, and passes today’s validator',
+      !!lite && lite.byteLength <= IV.VISUAL_MAX_BYTES.mesh && !glbUsesExtensions(lite) && VC.validateMeshGlb(new Uint8Array(lite)) === null && liteTris > 2000 && liteTris <= VC.VISUAL_MAX_TRIANGLES,
+      `${lite?.byteLength} B, ${liteTris} triangles`,
+    );
+  } finally {
+    if (!hadReader) delete g.FileReader;
+  }
+}
+
+/**
+ * THE DETAIL CHOICE (Model step): Full keeps every triangle the reader makes and is the default; Light
+ * reads at `LIGHT_TRI_BUDGET` for a slower computer. A new choice re-reads the files still in memory
+ * with the setup as it is (bodies, moving parts, tuning) and the placements put back. A saved robot
+ * (no CAD file) cannot.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const rtypes = await import('../src/robotImport/types');
+  const { clampBudget } = await import('../src/robotImport/engine/prepare');
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const ms = readFileSync('src/robotImport/ui/ModelStep.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'detail: Full is the default and keeps every triangle (any budget that is not a positive number), Light is 250k, and a setup from before reads at the budget it names (250k, 400k)',
+    geo.DEFAULT_TRI_BUDGET === geo.FULL_DETAIL &&
+      geo.defaultImportSetup().triBudget === geo.FULL_DETAIL &&
+      geo.isFullDetail(0) &&
+      geo.isFullDetail(Number.NaN) &&
+      !geo.isFullDetail(250_000) &&
+      clampBudget(geo.FULL_DETAIL) === Infinity &&
+      geo.LIGHT_TRI_BUDGET === 250_000 &&
+      clampBudget(geo.LIGHT_TRI_BUDGET) === 250_000 &&
+      clampBudget(400_000) === 400_000 &&
+      clampBudget(10) === 1000,
+  );
+  check(
+    'detail: no 400k cap is left, and the stored mesh may be 128 MiB (a 14M-triangle robot at ~9 bytes a triangle)',
+    !('MAX_TRIANGLES' in rtypes) && rtypes.MAX_MESH_BYTES === 128 * 1024 * 1024,
+  );
+  check(
+    'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
+    /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
+      /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
+      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
+      /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
+      /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
+      /disabled=\{doc\.savedModel\}/.test(ms) &&
+      /onPick=\{onDetail\}/.test(ms),
+  );
+}
+
+/**
+ * FULL DETAIL END TO END (`docs/area/robot-import.md` "Mesh quality"): the reader's every triangle is
+ * kept (`PreparedModel.full`), the editor measures a simplification that keeps every BODY (a body the
+ * simplifier collapses comes back whole), the measurer hands the preview and the bake every triangle
+ * in the model frame (one orientation at a time), and the bake stores every one of them.
+ */
+{
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const { MeshoptDecoder } = await import('three/examples/jsm/libs/meshopt_decoder.module.js');
+  const geo = await import('../src/robotImport/geometry');
+  const { simplifyModel, shownParts } = await import('../src/robotImport/engine/prepare');
+  const { bakeModelHere, readStoredScene, sceneParts } = await import('../src/robotImport/engine/bakeMesh');
+  const { splitMoving } = await import('../src/robotImport/engine/bakeScene');
+  const { Measurer } = await import('../src/robotImport/engine/measureSession');
+  const { floatAttribute } = await import('../src/games/biobuzz/scene/renderImported');
+  type Part = import('../src/robotImport/geometry').MeshPart;
+  // a robot over MEASURE_TRI_BUDGET: seven knots (a body each) on a plate, and a hundred specks (a
+  // body each, 0.4 mm across) the simplifier would collapse
+  const parts: Part[] = [];
+  const palette: [number, number, number][] = [[0.8, 0.8, 0.82], [0.05, 0.05, 0.05], [0.9, 0.3, 0.05], [0.35, 0.35, 0.35], [0.1, 0.2, 0.7]];
+  const add = (g: import('three').BufferGeometry, at: [number, number, number], color: [number, number, number], name: string, body: number): void => {
+    const pos = g.getAttribute('position');
+    const positions = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      positions[3 * i] = pos.getX(i) + at[0];
+      positions[3 * i + 1] = pos.getY(i) + at[1];
+      positions[3 * i + 2] = pos.getZ(i) + at[2];
+    }
+    parts.push({ positions, indices: Uint32Array.from(g.index!.array as ArrayLike<number>), color, name, body: new Uint32Array(pos.count).fill(body) });
+  };
+  for (let k = 0; k < 7; k++) add(new THREE.TorusKnotGeometry(0.05, 0.012, 480, 40, 2 + (k % 3), 3), [((k % 4) - 1.5) * 0.12, 0.08, Math.floor(k / 4) * 0.14 - 0.07], palette[k % 5], `knot${k}`, 10 + k);
+  add(new THREE.BoxGeometry(0.46, 0.01, 0.4, 8, 1, 8), [0, 0.005, 0], palette[0], 'plate', 1);
+  for (let k = 0; k < 100; k++) add(new THREE.BoxGeometry(0.0004, 0.0004, 0.0004), [((k % 10) - 4.5) * 0.04, 0.0102, (Math.floor(k / 10) - 4.5) * 0.035], palette[1], `speck${k}`, 100 + k);
+  const copy = (): Part[] => parts.map((p) => ({ ...p, positions: p.positions.slice(), indices: p.indices!.slice(), body: p.body!.slice() }));
+  const loaded = (): import('../src/robotImport/engine/parse').LoadedModel => ({ name: 'dense.glb', format: 'glb', bytes: 0, fileUnit: null, notes: [], parts: copy(), trisIn: geo.triangleCount(parts) });
+  const bodiesOf = (ps: readonly Part[]): Set<number> => {
+    const s = new Set<number>();
+    for (const p of ps) for (let i = 0; i < p.body!.length; i++) s.add(p.body![i]);
+    return s;
+  };
+  // every welded triangle: what a budget no model reaches keeps (nothing simplified, nothing measured apart)
+  const whole = await simplifyModel(loaded(), Number.MAX_SAFE_INTEGER);
+  const wholeTris = geo.triangleCount(whole.parts);
+  const full = await simplifyModel(loaded(), geo.FULL_DETAIL);
+  const light = await simplifyModel(loaded(), geo.LIGHT_TRI_BUDGET);
+  const fullTris = full.full ? geo.triangleCount(full.full) : 0;
+  check(
+    `full detail: every welded triangle is kept and stored (${Math.round(fullTris / 1000)}k), and the editor measures a simplification of it`,
+    wholeTris > geo.MEASURE_TRI_BUDGET && !whole.full && !!full.full && fullTris === wholeTris && full.trisOut === wholeTris && !!full.fullDetail && geo.triangleCount(full.parts) < fullTris && shownParts(full) === full.full,
+    `${wholeTris} welded, measured ${geo.triangleCount(full.parts)}`,
+  );
+  const fullBodies = bodiesOf(full.full ?? []);
+  const measured = bodiesOf(full.parts);
+  check(
+    'full detail: the measured copy keeps EVERY body, the specks the simplifier collapses included, and names them with the full mesh’s ids',
+    fullBodies.size === 108 && [...fullBodies].every((b) => measured.has(b)) && measured.size === fullBodies.size,
+    `${measured.size} of ${fullBodies.size}`,
+  );
+  check(
+    'full detail: Light simplifies to its budget and keeps no full copy',
+    !light.full && !light.fullDetail && light.trisOut <= geo.LIGHT_TRI_BUDGET && shownParts(light) === light.parts,
+  );
+  const small = await simplifyModel({ ...loaded(), parts: copy().slice(0, 2) }, geo.FULL_DETAIL);
+  check('full detail: a model under MEASURE_TRI_BUDGET read at Full has no separate copy (all of it is measured)', !small.full && !!small.fullDetail && small.trisOut === geo.triangleCount(small.parts));
+
+  // the measurer: every triangle in the model frame, kept while the orientation is, one orientation at a time
+  const m = new Measurer(full);
+  const setup = geo.defaultImportSetup();
+  const n1 = m.normalise(setup);
+  const n2 = m.normalise({ ...setup, hullMaxVerts: 12 });
+  const n3 = m.normalise({ ...setup, yaw: 1 });
+  const n4 = m.normalise(setup);
+  check(
+    'full detail: normalise hands every triangle in the model frame (shownParts), the same arrays on a finish-only edit, and builds them again after another orientation let them go',
+    !!n1.shownParts && geo.triangleCount(n1.shownParts) === fullTris && n2.shownParts === n1.shownParts && !!n3.shownParts && n3.shownParts !== n1.shownParts && !!n4.shownParts && n4.shownParts !== n1.shownParts && n4.modelParts === n1.modelParts,
+  );
+  m.dispose();
+  const lm = new Measurer(light);
+  check('full detail: a model measured whole has no shownParts', !lm.normalise(setup).shownParts);
+  lm.dispose();
+
+  // the bake stores every triangle (no refit), and the pictures are drawn from all of them
+  const descriptor = { id: 'x', hull: n4.measurement.hull, heightIn: 5, mech: null } as unknown as import('../src/types').ImportedRobot;
+  const baked = await bakeModelHere({ modelParts: n4.shownParts ?? [], origin: n4.measurement.origin, descriptor, motion: [] });
+  const loader = new GLTFLoader();
+  loader.setMeshoptDecoder(MeshoptDecoder as Parameters<typeof loader.setMeshoptDecoder>[0]);
+  const back = sceneParts(readStoredScene((await loader.parseAsync(baked.glb.slice(0), '')).scene));
+  check(
+    'full detail: the bake stores every triangle under MAX_MESH_BYTES with no refit, and draws its pictures from all of them',
+    baked.refits === 0 && geo.triangleCount(back) === fullTris && geo.triangleCount(baked.pictures) === fullTris,
+    `${(baked.glb.byteLength / 1048576).toFixed(2)} MiB, ${(baked.glb.byteLength / fullTris).toFixed(2)} B a triangle`,
+  );
+  // the relay copy of a mesh eight times over its cap is aimed from the float writer's usual size
+  // (here a 256 KiB cap stands in for 1 MiB against a Full robot of millions)
+  {
+    const { liteMesh } = await import('../src/robotImport/engine/lite');
+    const { glbUsesExtensions } = await import('../src/robotImport/engine/storedGlb');
+    const g = globalThis as unknown as { FileReader?: unknown };
+    const hadReader = !!g.FileReader;
+    if (!hadReader) {
+      g.FileReader = class {
+        result: unknown = null;
+        onloadend: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        readAsArrayBuffer(blob: Blob): void {
+          void blob.arrayBuffer().then((b) => {
+            this.result = b;
+            this.onloadend?.();
+            this.onload?.();
+          });
+        }
+      };
+    }
+    try {
+      const cap = 256 * 1024;
+      const lite = await liteMesh(baked.glb, cap);
+      const liteTris = lite ? geo.triangleCount(sceneParts(readStoredScene((await loader.parseAsync(lite.slice(0), '')).scene))) : 0;
+      const src = readFileSync('src/robotImport/engine/lite.ts', 'utf8');
+      check(
+        'full detail: the relay copy of a mesh eight times over its cap is aimed from the float size (not written whole to find out), and fits as a float GLB',
+        fullTris * 20 > cap * 8 && !!lite && lite.byteLength <= cap && !glbUsesExtensions(lite) && liteTris > 400 && /if \(total \* FLOAT_FLOOR_BYTES > maxBytes \* 8\) bytes = total \* FLOAT_BYTES;/.test(src),
+        `${lite?.byteLength} B, ${liteTris} triangles`,
+      );
+    } finally {
+      if (!hadReader) delete g.FileReader;
+    }
+  }
+
+  // splitMoving's typed arrays give what the Map-and-array version gave, part for part
+  const oldSplit = (robotParts: readonly Part[], motion: readonly { bodies: readonly number[] }[]): { rest: Part[]; moving: Part[][] } => {
+    const owner = new Map<number, number>();
+    motion.forEach((mm, i) => {
+      for (const b of mm.bodies) if (!owner.has(b)) owner.set(b, i);
+    });
+    const rest: Part[] = [];
+    const moving: Part[][] = motion.map(() => []);
+    for (const p of robotParts) {
+      const nT = p.indices!.length / 3;
+      const buckets = new Map<number, number[]>();
+      for (let t = 0; t < nT; t++) {
+        const o = owner.get(p.body![p.indices![3 * t]]) ?? -1;
+        let l = buckets.get(o);
+        if (!l) buckets.set(o, (l = []));
+        l.push(t);
+      }
+      if (buckets.size === 1 && buckets.has(-1)) {
+        rest.push(p);
+        continue;
+      }
+      for (const [o, tris] of buckets) {
+        const map = new Map<number, number>();
+        const idx = new Uint32Array(tris.length * 3);
+        const pos: number[] = [];
+        const nrm: number[] = [];
+        const body: number[] = [];
+        let k = 0;
+        for (const t of tris) {
+          for (let c = 0; c < 3; c++) {
+            const v = p.indices![3 * t + c];
+            let mm = map.get(v);
+            if (mm === undefined) {
+              mm = pos.length / 3;
+              map.set(v, mm);
+              pos.push(p.positions[3 * v], p.positions[3 * v + 1], p.positions[3 * v + 2]);
+              if (p.normals) nrm.push(p.normals[3 * v], p.normals[3 * v + 1], p.normals[3 * v + 2]);
+              body.push(p.body![v]);
+            }
+            idx[k++] = mm;
+          }
+        }
+        (o < 0 ? rest : moving[o]).push({ positions: new Float32Array(pos), indices: idx, normals: p.normals ? new Float32Array(nrm) : null, color: p.color, name: p.name, body: Uint32Array.from(body) });
+      }
+    }
+    return { rest, moving };
+  };
+  const motion = [{ bodies: [10, 12] }, { bodies: [13, 105] }];
+  const a = splitMoving(full.full ?? [], motion);
+  const b = oldSplit(full.full ?? [], motion);
+  const bytes = (x: Float32Array | Uint32Array | null | undefined): string => (x ? Buffer.from(x.buffer, x.byteOffset, x.byteLength).toString('base64') : '');
+  const same = (x: Part[], y: Part[]): boolean =>
+    x.length === y.length && x.every((p, i) => bytes(p.positions) === bytes(y[i].positions) && bytes(p.indices) === bytes(y[i].indices) && bytes(p.body) === bytes(y[i].body) && bytes(p.normals) === bytes(y[i].normals));
+  check('full detail: splitMoving (typed arrays) splits every part exactly as the Map-and-array version did', same(a.rest, b.rest) && a.moving.every((ps, i) => same(ps, b.moving[i])) && a.moving[1].length > 0);
+
+  // floatAttribute reads a quantised attribute off the typed array as getComponent does, value for value
+  const qp = new Int16Array([1, -2, 3, 0, 32767, -32768, 7, 8, -9, 0, 5, 6]);
+  const qn = new Int8Array([127, -128, 0, 0, 64, -64, 1, 2, 3, 0, -127, 5]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(qp, 4), 3, 0, false));
+  g.setAttribute('normal', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(qn, 4), 3, 0, true));
+  const plainN = new THREE.BufferAttribute(new Int8Array([127, -128, 1, -64]), 2, true);
+  const want = (attr: import('three').BufferAttribute | import('three').InterleavedBufferAttribute): number[] => {
+    const o: number[] = [];
+    for (let i = 0; i < attr.count; i++) for (let c = 0; c < attr.itemSize; c++) o.push(attr.getComponent(i, c));
+    return o;
+  };
+  const wantP = want(g.getAttribute('position'));
+  const wantN = want(g.getAttribute('normal'));
+  const g2 = new THREE.BufferGeometry();
+  g2.setAttribute('normal', plainN);
+  const wantPlain = want(plainN);
+  floatAttribute(g, 'position');
+  floatAttribute(g, 'normal');
+  floatAttribute(g2, 'normal');
+  check(
+    'full detail: floatAttribute reads interleaved and plain quantised attributes straight off the array, equal to getComponent (stored as float32, as before)',
+    Array.from(g.getAttribute('position').array).join() === Float32Array.from(wantP).join() &&
+      Array.from(g.getAttribute('normal').array).join() === Float32Array.from(wantN).join() &&
+      Array.from(g2.getAttribute('normal').array).join() === Float32Array.from(wantPlain).join() &&
+      g.getAttribute('normal').array instanceof Float32Array,
+    `${Array.from(g.getAttribute('normal').array).join()} | ${Float32Array.from(wantN).join()}`,
+  );
+
+  // the editor draws every triangle and picks on the measured copy; the bake gets every triangle
+  const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8');
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8');
+  check(
+    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
+    /creaseParts\(state\.shown \?\? state\.parts\)/.test(pv) &&
+      /e\.importModel\(\[file\], \{ budget: Number\.MAX_SAFE_INTEGER \}\)/.test(ed) &&
+      /pickModel = buildMeshGroup\(state\.parts, 'pick'\)/.test(pv) &&
+      /const target = pickModel \?\? model;/.test(pv) &&
+      /shown: normalised\.shownParts \?\? null,/.test(ed) &&
+      /modelParts: normalised\.shownParts \?\? normalised\.modelParts,/.test(ed),
+  );
+}
+
+/**
+ * THE STEP READER'S POOL (`poolSize`, `docs/area/robot-import.md` "Real CAD"): the read is CPU-bound
+ * and splits evenly, so it takes every core but two, as memory allows (`deviceMemory` stops at 8).
+ */
+{
+  const { poolSize } = await import('../src/robotImport/engine/stepSplit');
+  const { STEP_PIECE_BYTES } = await import('../src/robotImport/engine/stepSplit');
+  const cases: [number, number, number, number][] = [
+    // pieces, cores, GB → readers
+    [100, 32, 8, 8],
+    [100, 12, 8, 6],
+    [100, 8, 8, 6],
+    [100, 4, 8, 2],
+    [100, 8, 4, 3],
+    [100, 8, 2, 2],
+    [100, 2, 8, 1],
+    [3, 32, 8, 3],
+    [0, 32, 8, 1],
+  ];
+  const bad = cases.filter(([p, c, m, want]) => poolSize(p, c, m) !== want).map(([p, c, m, want]) => `${p}/${c}/${m}: ${poolSize(p, c, m)} not ${want}`);
+  check('step pool: every core but two, six readers on an 8 GB device (eight with 16 cores), three on 4 GB, never more than the pieces', bad.length === 0, bad.join(' | '));
+  check('step pool: pieces are 6 MB of geometry at most (a reader peaks at ~370 MB, not ~630)', STEP_PIECE_BYTES === 6 * 1024 * 1024);
+  const { pieceBytesFor, STEP_PIECE_MIN_BYTES } = await import('../src/robotImport/engine/stepSplit');
+  const MB = 1024 * 1024;
+  check(
+    'step pool: a piece is about half a reader’s share of the file, between 3 and 6 MB (a mid-size file keeps every reader busy; a huge one stays at 6 MB)',
+    pieceBytesFor(420 * MB, 8) === STEP_PIECE_BYTES && pieceBytesFor(12.6 * MB, 8) === STEP_PIECE_MIN_BYTES && pieceBytesFor(60 * MB, 6) === 5 * MB && pieceBytesFor(60 * MB, 0) === STEP_PIECE_BYTES,
+  );
+}
+
+/**
+ * A LAUNCHER ON A TURRET, AND A RAMP THE FILE SHOWS DOWN (2026-10-04). The editor looked for the
+ * turret before the flywheel, so the turret took the flywheel and a transfer roller under its ring was
+ * offered as it (Offset's concept robot); a turret's diagonal plates were left out by their boxes; a
+ * turret turned about the middle of its box, not its ring; and a ramp out front moved its edge past the
+ * roller behind it, so the intake read at the other end and that end's half of the chassis was offered
+ * to fold. Synthetic scenes, inches, MODEL frame, one body per solid.
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  const { DEFAULT_SPEC } = await import('../src/sim/spawn');
+  const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+  const { bbIntakeKindOf } = await import('../src/games/biobuzz/mechs');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type Prism = ReturnType<typeof synth.box>;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: Prism[], k = 1): P[] =>
+    synth.synthParts(prisms, (v) => [v[0] * k, v[1] * k, v[2] * k]).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  // a plate along a diagonal, standing up: `len` along (1, 1), `w` across, centred at (cx, cy)
+  const diag = (name: string, cx: number, cy: number, len: number, w: number, z0: number, z1: number): Prism => {
+    const u = [Math.SQRT1_2, Math.SQRT1_2];
+    const v = [-Math.SQRT1_2, Math.SQRT1_2];
+    const at = (a: number, b: number): [number, number, number] => [cx + a * u[0] + b * v[0], cy + a * u[1] + b * v[1], z0];
+    return { name, color: G, base: [at(-len / 2, -w / 2), at(len / 2, -w / 2), at(len / 2, w / 2), at(-len / 2, w / 2)], extrude: [0, 0, z1 - z0] };
+  };
+
+  // ---- the turret: a ring at the origin, a flywheel off its axis, a transfer roller under the ring ----
+  const tp: Prism[] = [
+    synth.box('chassis', G, -8, 8, -7, 7, 1, 2),
+    synth.cylZ('ring', G, 0, 0, 4, 8, 8.4, 48),
+    synth.cylY('flywheel', G, -2.5, 10.5, 1.4, -0.35, 0.35, 32),
+    synth.cylY('transfer', G, -2.5, 7, 0.9, -0.3, 0.3, 24),
+    // a truss plate across the ring on the diagonal: its box's corners 7.3 in out, its own 6.73 (the
+    // turret takes what lies within the ring's radius plus 3 in)
+    diag('truss', 0, 0, 13.4, 1.2, 8.4, 9),
+    // the launcher's side frame, off to one side: the turret's box is not centred on the ring
+    synth.box('frame', G, -6.8, -5.8, -1, 1, 8.4, 12),
+  ];
+  const tparts = mk(tp);
+  const tid = (n: string): number => tp.findIndex((p) => p.name === n);
+  const at: [number, number, number] = [-2.5, 0, 10.5];
+  const ring = motion.findTurretRing(tparts, at, new Set());
+  const fw = motion.findFlywheelGroups(tparts, at, new Set(), ring ? ring.z0 : -Infinity);
+  const fwAny = motion.findFlywheelGroups(tparts, at, new Set());
+  check(
+    'launcher on a turret: the flywheel is found standing on the ring, and the transfer roller under the ring is not (it is, with no floor)',
+    !!ring && Math.abs(ring.z0 - 8) < 0.01 && fw.length === 1 && fw[0].bodies.includes(tid('flywheel')) && !fw.some((g) => g.bodies.includes(tid('transfer'))) && fwAny.some((g) => g.bodies.includes(tid('transfer'))),
+    J({ ring, fw, fwAny }),
+  );
+  const tur = motion.findTurretGroup(tparts, at, new Set(fw.flatMap((g) => g.bodies)));
+  const tn = (tur?.bodies ?? []).map((b) => tp[b].name);
+  check(
+    'launcher on a turret: the turret takes the ring, the frame and the diagonal truss plate (by its own reach, not its box), and not the flywheel, the transfer roller or the chassis',
+    ['ring', 'frame', 'truss'].every((n) => tn.includes(n)) && !['flywheel', 'transfer', 'chassis'].some((n) => tn.includes(n)),
+    J(tn),
+  );
+  const parts3 = motion.deriveMotion(tparts, [tur!, ...fw], [], [0, 0, 0]);
+  const tp3 = parts3.find((p) => p.role === 'turret');
+  const fw3 = parts3.find((p) => p.role === 'flywheel');
+  check(
+    'launcher on a turret: the turret turns about its ring (0, 0), not the middle of its box, and the flywheel rides it',
+    !!tp3 && Math.hypot(tp3.pivot[0], tp3.pivot[1]) < 0.02 && !!fw3 && fw3.parent === parts3.indexOf(tp3),
+    J({ turret: tp3?.pivot, flywheelParent: fw3?.parent }),
+  );
+
+  // ---- a ramp down in front of a robot with a roller at each end ----
+  const rp: Prism[] = [
+    synth.box('deck', G, -8, 8, -7, 7, 0.5, 2),
+    synth.box('rail_l', G, -8, 8, 6.8, 7, 2, 5),
+    synth.box('rail_r', G, -8, 8, -7, -6.8, 2, 5),
+    synth.box('back_plate', G, -8, -7.8, -6.8, 6.8, 2, 6),
+    ...[-6, -3, 0, 3].flatMap((y, i) => [synth.box(`post${i}`, G, -7.6, -7.3, y, y + 0.3, 2, 6), synth.box(`mid${i}`, G, -1, -0.7, y, y + 0.3, 2, 6)]),
+    synth.cylY('front_roller', G, 6.5, 3, 1, -6, 6, 24),
+    synth.cylY('front_shaft', G, 6.5, 3, 0.2, -6.5, 6.5, 12),
+    synth.cylY('back_roller', G, -6.5, 3, 1, -6, 6, 24),
+    synth.cylY('back_shaft', G, -6.5, 3, 0.2, -6.5, 6.5, 12),
+    // the ramp, down: two side plates out to x 16 and the scoop plate on the floor
+    synth.box('ramp_l', G, 5, 16, 6.2, 6.6, 0.2, 4),
+    synth.box('ramp_r', G, 5, 16, -6.6, -6.2, 0.2, 4),
+    synth.box('scoop', G, 12, 16, -6, 6, 0.1, 0.4),
+  ];
+  const rparts = mk(rp);
+  const rn = (bodies: readonly number[]): string[] => bodies.map((b) => rp[b].name).sort();
+  const over = motion.findOverhang(rparts, new Set());
+  check(
+    'a ramp down in front: the end that sticks out is the front, and it is the ramp (its plates and scoop), not the chassis behind it',
+    over?.edge === 'front' && J(rn(over.bodies)) === J(['ramp_l', 'ramp_r', 'scoop']),
+    J(over && { edge: over.edge, bodies: rn(over.bodies) }),
+  );
+  const depFront = motion.findDeployedGroup(rparts, [{ edge: 'front' }], 'ramp', new Set());
+  const depBack = motion.findDeployedGroup(rparts, [{ edge: 'back' }], 'ramp', new Set());
+  check(
+    'a ramp down in front: offered as the ramp at a front intake, and as a fold (still the front part) when the intake is at the back',
+    depFront?.role === 'ramp' && J(rn(depFront.bodies)) === J(['ramp_l', 'ramp_r', 'scoop']) && depBack?.role === 'fold' && J(rn(depBack.bodies)) === J(rn(depFront.bodies)),
+    J({ depFront, depBack }),
+  );
+  const cad = motion.readBuild(rparts, new Set());
+  check('a ramp down in front: the build reads a ramp intake at the front (the roller behind the ramp), not a sweeper at the back', cad.intake?.edge === 'front' && cad.intake.ramp === true && !cad.intake.upright, J(cad.intake));
+  const fr = motion.findRollerGroups(rparts, [{ edge: 'front', from: -6.5, to: 6.5 }], new Set(), new Set(over?.bodies ?? []));
+  const frNo = motion.findRollerGroups(rparts, [{ edge: 'front', from: -6.5, to: 6.5 }], new Set());
+  check(
+    'a ramp down in front: the front roller is found with the ramp left out of the edge, and not with the ramp’s tip as the edge',
+    fr.some((g) => g.bodies.includes(rp.findIndex((p) => p.name === 'front_roller'))) && !frNo.some((g) => g.bodies.includes(rp.findIndex((p) => p.name === 'front_roller'))),
+    J({ fr: fr.map((g) => rn(g.bodies)), frNo: frNo.map((g) => rn(g.bodies)) }),
+  );
+  const built = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0], name: 'bot' }, cad);
+  check(
+    'a ramp down in front: BIOBUZZ builds the ramp intake on the front edge, and says so',
+    !!built && bbIntakeKindOf(built.spec) === 'ramp' && built.spec.intakeMount === 'front' && built.set.includes('a ramp at the front'),
+    J(built && { kind: bbIntakeKindOf(built.spec), mount: built.spec.intakeMount, set: built.set }),
+  );
+  check('a model in the wrong units runs past 18 in at both ends: nothing is offered as deployed', motion.findOverhang(mk(rp, 3), new Set()) === null && motion.findDeployedGroup(mk(rp, 3), [{ edge: 'front' }], 'ramp', new Set()) === null);
+
+  // ---- a model with no wheels shown: the editor guesses the spots, and a roller there is no wheel ----
+  const wp: Prism[] = [
+    synth.box('deck', G, -8, 8, -7, 7, 0.5, 2),
+    synth.cylY('corner_roller', G, -6.5, 3, 1, 4.4, 5.6, 24),
+    synth.cylY('corner_shaft', G, -6.5, 3, 0.2, 4, 6, 12),
+    synth.cylY('tyre', G, 6.5, 2, 2, 4.4, 5.6, 24),
+  ];
+  const wg = motion.findWheelGroups(mk(wp), [{ x: 6.5, y: 5 }, { x: -6.5, y: 5 }], 'tank', 4);
+  check(
+    'a wheel stands on the floor: at a guessed spot, a roller 2 in up is not taken as the wheel (it was, by the catalogue wheel’s outline); the tyre beside it still is',
+    wg.length === 1 && wg[0].corner === 0 && J(wg[0].bodies.map((b) => wp[b].name)) === J(['tyre']),
+    J(wg.map((g) => ({ corner: g.corner, bodies: g.bodies.map((b) => wp[b].name) }))),
+  );
+
+  // ---- a second flywheel turns the same way round; a round side plate across it is not one ----
+  const cylX = (name: string, cy: number, cz: number, r: number, x0: number, x1: number, n = 24): Prism => ({
+    name,
+    color: G,
+    base: Array.from({ length: n }, (_, k) => [x0, cy + r * Math.cos((2 * Math.PI * k) / n), cz + r * Math.sin((2 * Math.PI * k) / n)] as [number, number, number]),
+    extrude: [x1 - x0, 0, 0],
+  });
+  const tp2: Prism[] = [...tp, cylX('side_plate', 0, 10.5, 1.2, -0.6, -0.4), synth.cylY('flywheel_b', G, -2.5, 13.4, 1.4, -0.35, 0.35, 32)];
+  const fw2 = motion.findFlywheelGroups(mk(tp2), at, new Set(), 8);
+  const fw2n = fw2.map((g) => g.bodies.map((b) => tp2[b].name).sort().join('+'));
+  const single: Prism[] = [...tp, cylX('side_plate', 0, 10.5, 1.2, -0.6, -0.4)];
+  const fw3n = motion.findFlywheelGroups(mk(single), at, new Set(), 8).map((g) => g.bodies.map((b) => single[b].name).sort().join('+'));
+  check(
+    'a double shooter: the second wheel on a parallel axle is a flywheel; a round side plate standing across a single wheel is not (it was the second)',
+    fw2n.includes('flywheel') && fw2n.includes('flywheel_b') && !fw2n.some((n) => n.includes('side_plate')) && J(fw3n) === J(['flywheel']),
+    J({ fw2n, fw3n }),
+  );
+
+  // ---- a part that touches nothing is floating, not deployed ----
+  // a chassis of a deck and eight posts (a deployed part is a small share of the bodies)
+  const posts: Prism[] = [-6, -2, 2, 6].flatMap((x) => [synth.box(`post_${x}_a`, G, x, x + 0.3, -5, -4.7, 2, 5), synth.box(`post_${x}_b`, G, x, x + 0.3, 4.7, 5, 2, 5)]);
+  const fp: Prism[] = [synth.box('deck', G, -8, 8, -7, 7, 0.5, 2), ...posts, synth.box('stray', G, -1, -0.4, 12, 12.6, 3, 3.6)];
+  const ap: Prism[] = [synth.box('deck', G, -8, 8, -7, 7, 0.5, 2), ...posts, synth.box('arm', G, -1, 0, 6.9, 12.6, 1, 1.5)];
+  const fo = motion.findOverhang(mk(fp), new Set());
+  const ao = motion.findOverhang(mk(ap), new Set());
+  check(
+    'a part 5 in off the robot that runs it past 18 in is floating (offered for deleting), not deployed; one that touches the robot is deployed',
+    fo === null && ao?.edge === 'left' && J(ao.bodies.map((b) => ap[b].name)) === J(['arm']),
+    J({ fo, ao }),
+  );
+
+  // ---- the editor: the same order, and the moving parts wait for the placements ----
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').split('\r\n').join('\n');
+  const flyAt = ed.indexOf('findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity)');
+  const waitAt = ed.indexOf('JSON.stringify(defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null)) !== JSON.stringify(doc.mech)) return;');
+  check(
+    'the editor looks for the flywheels before the turret (none under its ring), hands the turret the rest, reads the rollers with the overhang left out of the edges, and finds the moving parts only once the placements have defaulted in (source pins)',
+    flyAt > 0 &&
+      flyAt < ed.indexOf('findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]))') &&
+      ed.includes('findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? []))') &&
+      waitAt > 0 &&
+      waitAt < ed.indexOf('const found = findAll([]);') &&
+      ed.includes('[doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]'),
+  );
+}
+
+/**
+ * MOVING PARTS, ROUND TWO (2026-10-03, owner: "the auto-detector combines a static channel and a gear
+ * into one component that cannot be separated. Also, the motor or the motor cover/shield spins with
+ * the wheel sometimes … try auto-detecting intake side rollers, ramps, flywheels, turrets … proper
+ * revolute, gear relations, or linear extensions as a back-up"). A synthetic scene (inches, MODEL
+ * frame) with each case in it, one body per solid; then the generic joints measured and stored.
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const rtypes = await import('../src/robotImport/types');
+  const { splitLumps } = await import('../src/robotImport/engine/meshOps');
+  const { storedSceneOf } = await import('../src/robotImport/engine/bake');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const R = synth.WHEEL_R;
+  const prisms = [
+    synth.box('plate', [0.7, 0.7, 0.7], -8, 8, -6, 6, 1.2, 1.6),
+    // the front-left wheel at (5.5, 7): tyre, a hub through the bore, a screw through the hub along
+    // the axle, a clamp screw across the axle at its centre
+    synth.cylY('tyre', [0.1, 0.1, 0.1], 5.5, R, R, 6.25, 7.75, 24),
+    synth.cylY('hub', [0.6, 0.6, 0.6], 5.5, R, 0.45, 5.9, 7.6, 12),
+    synth.box('hub_screw', [0.5, 0.5, 0.5], 5.95, 6.15, 6.5, 7.5, R - 0.1, R + 0.1),
+    synth.box('clamp_screw', [0.5, 0.5, 0.5], 5.4, 5.6, 6.9, 7.1, R - 0.35, R + 0.35),
+    // beside it: a motor shield disc (not overlapping the tyre), a vertical frame screw off the axle
+    // in the wheel's dish (inside its cylinder, beside the tyre: a screw cannot be inside the tyre)
+    synth.cylY('shield', [0.3, 0.3, 0.3], 5.5, R, 1.6, 5.6, 5.75, 24),
+    synth.box('frame_screw', [0.5, 0.5, 0.5], 6.6, 6.85, 5.8, 6.05, R + 0.5, R + 1.1),
+    // the intake: a roller on a shaft at x = 9, a square tube the shaft runs through, a motor on its end
+    synth.cylY('roller', [0.2, 0.7, 0.3], 9, 1.5, 1, -5, 5, 24),
+    synth.cylY('shaft', [0.7, 0.7, 0.7], 9, 1.5, 0.2, -5.5, 6.4, 12),
+    synth.box('tube', [0.7, 0.7, 0.7], 8.4, 9.6, 5.2, 6.2, 0.9, 2.1),
+    synth.cylY('motor', [0.1, 0.1, 0.1], 9, 1.5, 0.75, 6.4, 9.4, 16),
+  ];
+  // an upright cylinder as a prism along +z (cylY's base turned on end)
+  const cylZ = (name: string, cx: number, cy: number, r: number, z0: number, z1: number, n = 16): (typeof prisms)[number] => ({
+    name,
+    color: [0.2, 0.7, 0.3],
+    base: Array.from({ length: n }, (_, k) => [cx + r * Math.cos((2 * Math.PI * k) / n), cy + r * Math.sin((2 * Math.PI * k) / n), z0] as [number, number, number]),
+    extrude: [0, 0, z1 - z0],
+  });
+  // side rollers: upright, at the mouth's two ends
+  prisms.push(cylZ('side_l', 8.4, 5.8, 0.8, 0.5, 3), cylZ('side_r', 8.4, -5.8, 0.8, 0.5, 3));
+  // the launcher at (-4, 0, 10): a flywheel disc on its axle, a turret ring below it with a hood on it
+  prisms.push(synth.cylY('flywheel', [0.8, 0.2, 0.2], -4, 10, 1.5, -0.4, 0.4, 24));
+  prisms.push(cylZ('ring', -4, 0, 2.5, 6, 6.4, 32), synth.box('hood', [0.9, 0.5, 0.1], -5, -3, -1.5, 1.5, 6.4, 9));
+  const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+  const parts: P[] = synth.synthParts(prisms).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+
+  // ---- the wheel: what turns with it ----
+  const fl = motion.findWheelGroups(parts, [{ x: 5.5, y: 7 }], 'tank', 2 * R)[0];
+  const has = (g: { bodies: number[] } | undefined, n: string): boolean => !!g && g.bodies.includes(id(n));
+  check(
+    'moving parts 2: a wheel keeps its tyre, its hub and the screws through it, and NOT a motor shield beside it or a frame screw off its axle',
+    has(fl, 'tyre') && has(fl, 'hub') && has(fl, 'hub_screw') && has(fl, 'clamp_screw') && !has(fl, 'shield') && !has(fl, 'frame_screw'),
+    J(fl?.bodies.map((b) => prisms[b].name)),
+  );
+  const flPick = motion.coaxialBodies(parts, id('tyre'), 'wheel').map((b) => prisms[b].name);
+  check('moving parts 2: a click on the tyre takes the same wheel (no shield, no frame screw)', flPick.includes('hub') && !flPick.includes('shield') && !flPick.includes('frame_screw'), J(flPick));
+
+  // ---- the roller's axle: no channel, no motor ----
+  const roll = motion.coaxialBodies(parts, id('roller'), 'roller').map((b) => prisms[b].name);
+  check(
+    'moving parts 2: a click on a roller takes its shaft, and NOT the square tube the shaft runs through or the motor on its end',
+    roll.includes('roller') && roll.includes('shaft') && !roll.includes('tube') && !roll.includes('motor'),
+    J(roll),
+  );
+
+  // ---- the finders ----
+  const rollers = motion.findRollerGroups(parts, [{ edge: 'front', from: -6.5, to: 6.5 }], new Set(fl?.bodies ?? []));
+  const named = rollers.map((g) => g.bodies.map((b) => prisms[b].name).sort().join('+'));
+  check(
+    'moving parts 2: the roller finder finds the roller bar along the mouth AND the two upright side rollers, each marked found',
+    named.includes('roller+shaft') && named.includes('side_l') && named.includes('side_r') && rollers.every((g) => g.found),
+    J(named),
+  );
+  const fw = motion.findFlywheelGroups(parts, [-4, 0, 10], new Set());
+  check('moving parts 2: a flywheel disc by the launcher is found, and nothing else is', fw.length === 1 && fw[0].bodies.includes(id('flywheel')) && fw[0].role === 'flywheel', J(fw));
+  const tur = motion.findTurretGroup(parts, [-4, 0, 10], new Set(fw.flatMap((g) => g.bodies)));
+  check('moving parts 2: the turret is the round ring under the launcher with what stands on it (the hood), not the chassis', !!tur && tur.bodies.includes(id('ring')) && tur.bodies.includes(id('hood')) && !tur.bodies.includes(id('plate')), J(tur?.bodies.map((b) => prisms[b].name)));
+  // a ramp the file shows down: a plate from x 8 to 20 in front, the chassis from −8
+  const rampParts: P[] = [...parts, ...synth.synthParts([synth.box('ramp', [0.9, 0.8, 0.2], 9.8, 20, -5, 5, 0.2, 0.45)]).map((p) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(prisms.length) }))];
+  const dep = motion.findDeployedGroup(rampParts, [{ edge: 'front' }], 'ramp', new Set());
+  check('moving parts 2: a part the file shows past 18 in at the intake edge is offered as the ramp; a model that fits offers nothing', !!dep && dep.role === 'ramp' && dep.bodies.includes(prisms.length) && !dep.bodies.includes(id('plate')) && motion.findDeployedGroup(parts, [{ edge: 'front' }], 'fold', new Set()) === null, J(dep));
+
+  // ---- a body that is two lumps becomes two; a two-colour body stays one ----
+  {
+    const a = synth.synthParts([synth.box('gear', [0.5, 0.5, 0.5], 0, 1, 0, 1, 0, 1), synth.box('channel', [0.5, 0.5, 0.5], 3, 6, 0, 1, 0, 1)]);
+    const mk = (p: (typeof a)[number], b: number): P => {
+      const n = p.positions.length / 3;
+      return { positions: p.positions, indices: Uint32Array.from({ length: n }, (_, i) => i), color: p.color, name: p.name, body: new Uint32Array(n).fill(b) };
+    };
+    // one part, one body id for both lumps (a merged sub-assembly)
+    const merged: P = { positions: new Float32Array([...a[0].positions, ...a[1].positions]), indices: null, color: [0.5, 0.5, 0.5], name: 'm', body: new Uint32Array((a[0].positions.length + a[1].positions.length) / 3).fill(7) };
+    const w = { positions: merged.positions, indices: Uint32Array.from({ length: merged.positions.length / 3 }, (_, i) => i), body: merged.body };
+    const { weld } = await import('../src/robotImport/engine/meshOps');
+    const ww = weld(merged, 1e-6);
+    const made = splitLumps([ww as { positions: Float32Array; indices: Uint32Array; body: Uint32Array | null }], 1e-5);
+    const ids = new Set(Array.from(ww.body ?? []));
+    // a cube in two colours: its faces in two parts, one body
+    const cube = synth.prismTriangles(synth.box('c', [1, 1, 1], 0, 1, 0, 1, 0, 1));
+    const half = (k: number): P => {
+      const tris = cube.filter((_, t) => (t < 6 ? k === 0 : k === 1));
+      const pos = new Float32Array(tris.flat(2));
+      return mk({ positions: pos, indices: null, color: [k, 0, 0], name: 'c' } as never, 3);
+    };
+    const two = [weld(half(0), 1e-6), weld(half(1), 1e-6)];
+    splitLumps(two as never, 1e-5);
+    const twoIds = new Set([...Array.from(two[0].body ?? []), ...Array.from(two[1].body ?? [])]);
+    void w;
+    check(
+      'moving parts 2: a body that is two separate lumps (a gear and a channel exported as one) becomes two, the first keeping its id; a cube in two colours stays one body',
+      made === 1 && ids.size === 2 && ids.has(7) && twoIds.size === 1 && twoIds.has(3),
+      J({ made, ids: [...ids], twoIds: [...twoIds] }),
+    );
+  }
+
+  // ---- generic joints: measured ----
+  const setupMotion: import('../src/robotImport/types').MotionGroup[] = [
+    { role: 'spin', bodies: [id('flywheel')], drive: 'shooter', amount: 5 },
+    { role: 'swing', bodies: [id('hood')], axis: 'left', amount: 45, drive: 'fire' },
+    { role: 'slide', bodies: [id('side_l')], axis: 'up', amount: 6, drive: 'intake' },
+    { role: 'spin', bodies: [id('roller')], follows: { group: 0, ratio: -2 }, rideOn: 2 },
+    { role: 'slide', bodies: [id('side_r')], axis: 'part', axisBody: id('shaft'), amount: 3 },
+    { role: 'swing', bodies: [id('tube')], rideOn: 6 },
+    { role: 'swing', bodies: [id('motor')], rideOn: 5 },
+  ];
+  const mp = motion.deriveMotion(parts, setupMotion, [], [0, 0, 0]);
+  const by = (g: number) => mp.find((p) => p.group === g);
+  const near = (a: readonly number[], b: readonly number[], tol = 1e-6): boolean => a.every((v, i) => Math.abs(v - b[i]) < tol);
+  check(
+    'moving parts 2: a spinning part turns about its own round axle, at its turns a second, moved by its drive',
+    !!by(0) && Math.abs(Math.abs(by(0)!.axis[1]) - 1) < 1e-6 && by(0)!.amount === 5 && by(0)!.drive === 'shooter' && Math.abs(by(0)!.radius - 1.5) < 0.05,
+    J(by(0)),
+  );
+  check(
+    'moving parts 2: a swinging part turns about the chosen robot axis at its root end, by its angle in radians',
+    !!by(1) && near(by(1)!.axis, [0, 1, 0]) && Math.abs(by(1)!.amount! - Math.PI / 4) < 1e-9 && by(1)!.drive === 'fire',
+    J(by(1)),
+  );
+  check('moving parts 2: a sliding part slides along the chosen axis by its inches; one on a picked rail slides along the rail’s long side', near(by(2)!.axis, [0, 0, 1]) && by(2)!.amount === 6 && near(by(4)!.axis, [0, 1, 0]) && by(4)!.amount === 3, J([by(2), by(4)]));
+  check(
+    'moving parts 2: a part geared to another follows it at the ratio, and rides on the part it was put on',
+    !!by(3) && by(3)!.follows?.ratio === -2 && mp[by(3)!.follows!.index].group === 0 && mp[by(3)!.parent].group === 2,
+    J(by(3)),
+  );
+  check('moving parts 2: two parts each riding on the other are cut where the chain closes (no loop)', mp.filter((p) => p.group === 5 || p.group === 6).some((p) => p.parent === -1), J(mp.filter((p) => p.group >= 5).map((p) => p.parent)));
+
+  // ---- stored, and read back ----
+  const scene = storedSceneOf(parts, mp, { x: 0, y: 0 }, { v: 1, id: '0123456789abcdef', hull: [{ x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }, { x: -8, y: -8 }], heightIn: 12 });
+  const infos = scene.moving.map((m) => rtypes.readStoredMotion(JSON.parse(J(m.info))));
+  const f = infos.find((i) => i?.follow);
+  check(
+    'moving parts 2: the stored joints keep their drive, amount, id and the follow by id, and every one reads back',
+    infos.every((i) => i !== null) && infos.every((i, k) => i!.id === k) && !!f && f.follow!.ratio === -2 && infos[f.follow!.id]?.role === 'spin' && infos.some((i) => i?.role === 'slide' && i.amount === 6 && i.drive === 'intake'),
+    J(infos),
+  );
+  check(
+    'moving parts 2: a stored joint is checked like the rest: an unknown drive dropped, an amount clamped, a bad follow dropped',
+    (() => {
+      const r = rtypes.readStoredMotion({ v: 1, role: 'slide', axis: [0, 0, 1], radius: 0, deploy: 0, drive: 'laser', amount: 1e9, follow: { id: -1, ratio: 2 } });
+      return !!r && r.drive === undefined && r.amount === 60 && r.follow === undefined;
+    })(),
+  );
+}
+
+/**
+ * MOVING PARTS, ROUND THREE (2026-10-04, owner: "You are still combining the motor into the wheel").
+ * Measured on seven starter bots (goBILDA BIOBUZZ 6WD and mecanum, goBILDA DECODE mecanum, REV DUO
+ * DECODE, AndyMark Robits BIOBUZZ base, mecanum and alt flower): a STEP read lost its body ids on the
+ * way to the simplifier, and with them, the intake motor came with the intake gear, the launcher motor
+ * with the flywheel, motor end caps and nuts were offered as rollers, a 6WD's middle pair was never
+ * found. Each case as a synthetic scene (inches, MODEL frame, one body per solid).
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const geo = await import('../src/robotImport/geometry');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: [number, number, number] = [0.6, 0.6, 0.6];
+  const mk = (prisms: import('./robot-import/synthRobot').Prism[]): P[] =>
+    synth.synthParts(prisms).map((p, i) => ({ ...p, indices: null, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+
+  // ---- the STEP reader keeps its bodies (`stepParsed`); without them two touching solids of one
+  // colour are one connected piece, so a gear and the channel it touches could only move together ----
+  {
+    const { stepParsed } = await import('../src/robotImport/engine/load');
+    const { simplifyParts } = await import('../src/robotImport/engine/simplify');
+    const two = synth.synthParts([synth.box('gear', G, 0, 1, 0, 1, 0, 1), synth.box('channel', G, 1, 3, 0, 1, 0, 1)]);
+    const positions = new Float32Array([...two[0].positions, ...two[1].positions]);
+    const n0 = two[0].positions.length / 3;
+    const body = new Uint32Array(positions.length / 3).map((_, v) => (v < n0 ? 0 : 1));
+    const parsed = stepParsed({ parts: [{ positions, indices: Uint32Array.from({ length: positions.length / 3 }, (_, i) => i), color: G, name: 'step', body }], trisIn: positions.length / 9, notes: [] }, 1);
+    const kept = (await simplifyParts(parsed.parts, 1e9)).parts;
+    const lost = (await simplifyParts(parsed.parts.map((p) => ({ ...p, body: null })), 1e9)).parts;
+    const ids = (ps: P[]): number => new Set(ps.flatMap((p) => Array.from(p.body ?? []))).size;
+    check(
+      'moving parts 3: a STEP read keeps its solids as bodies through the simplifier (a gear and the channel it touches stay two parts; dropped, they were one)',
+      parsed.parts[0].body === body && ids(kept) === 2 && ids(lost) === 1,
+      J({ kept: ids(kept), lost: ids(lost) }),
+    );
+  }
+
+  // ---- a goBILDA-style motor on a gear's axle: can, gearbox, face, bearing, shield, end cap, the
+  // channel it sits in; the gear on its output shaft with a square hub and a screw through both ----
+  {
+    const prisms = [
+      synth.box('floor', G, -6, 5, -8, 8, 0, 1),
+      synth.cylY('gear', G, 6, 5, 1.6, -0.12, 0.12, 48),
+      synth.box('hub', G, 5.52, 6.48, -0.31, 0.08, 4.52, 5.48),
+      synth.box('hub_screw', G, 6.22, 6.38, -0.29, 0.11, 4.92, 5.08),
+      synth.cylY('shaft', G, 6, 5, 0.18, -1.52, 0.08, 8),
+      synth.cylY('face', G, 6, 5, 0.71, -1.52, -0.86, 24),
+      synth.box('face_screw', G, 6.4, 6.55, -1.14, -0.59, 5.38, 5.53),
+      synth.cylY('bearing', G, 6, 5, 0.33, -1.2, -1.0, 16),
+      synth.cylY('barrel', G, 6, 5, 0.71, -2.83, -1.3, 24),
+      synth.cylY('gearbox_base', G, 6, 5, 0.63, -2.83, -2.61, 24),
+      synth.cylY('can', G, 6, 5, 0.7, -5.07, -2.64, 24),
+      synth.cylY('shield', G, 6, 5, 0.74, -4.33, -2.98, 24),
+      synth.cylY('back_plate', G, 6, 5, 0.7, -5.0, -4.96, 24),
+      synth.cylY('endcap', G, 6, 5, 0.73, -5.85, -5.0, 24),
+      synth.box('channel', G, 5.06, 6.94, -9.35, -0.85, 4.06, 5.94),
+    ];
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const parts = mk(prisms);
+    const names = (b: readonly number[]): string => b.map((x) => prisms[x].name).sort().join('+');
+    const turning = 'gear+hub+hub_screw+shaft';
+    const gear = names(motion.coaxialBodies(parts, id('gear'), 'roller'));
+    check('moving parts 3: a click on a gear takes its hub, the screw through them and the output shaft, never the motor, its gearbox, bearing, face screws or the channel', gear === turning, gear);
+    const viaShaft = names(motion.coaxialBodies(parts, id('shaft'), 'roller'));
+    const viaScrew = names(motion.coaxialBodies(parts, id('hub_screw'), 'roller'));
+    check('moving parts 3: a click on the output shaft or the hub screw takes the same (read off the gear, not the gearbox the shaft runs into)', viaShaft === turning && viaScrew === turning, J({ viaShaft, viaScrew }));
+    check(
+      'moving parts 3: a click on a motor part (the can, the gearbox face) takes that one part, not the gear it drives',
+      J(motion.coaxialBodies(parts, id('can'), 'roller')) === J([id('can')]) && J(motion.coaxialBodies(parts, id('face'), 'roller')) === J([id('face')]),
+    );
+    const rollers = motion.findRollerGroups(parts, [{ edge: 'front', from: -6, to: 6 }], new Set()).map((g) => names(g.bodies));
+    check('moving parts 3: the roller finder at the mouth finds the gear’s axle and seeds nothing on the motor (its can, face and end cap are round discs too)', J(rollers) === J([turning]), J(rollers));
+    const fly = motion.findFlywheelGroups(parts, [6, 0, 5], new Set()).map((g) => names(g.bodies));
+    check('moving parts 3: the flywheel finder takes the disc on the motor’s shaft without the motor', J(fly) === J([turning]), J(fly));
+  }
+
+  // ---- a direct-drive wheel: its gearbox face against the hub, the shaft through the side plate, a
+  // bracket over a 3-in wheel the drivetrain still calls 104 mm ----
+  {
+    const prisms = [
+      synth.box('plate', G, -8, 8, -6, 6, 1.2, 1.6),
+      synth.box('side_plate', G, -8, 8, 5.3, 5.5, 0.5, 4),
+      synth.cylY('tyre', G, 4, 1.5, 1.5, 6.4, 7.6, 32),
+      synth.cylY('hub', G, 4, 1.5, 0.45, 6.4, 7.0, 12),
+      synth.box('hub_screw', G, 4.25, 4.4, 6.4, 7.0, 1.42, 1.58),
+      synth.cylY('shaft', G, 4, 1.5, 0.2, 3.0, 7.7, 8),
+      synth.cylY('face', G, 4, 1.5, 0.71, 5.85, 6.4, 24),
+      synth.cylY('barrel', G, 4, 1.5, 0.71, 4.85, 5.9, 24),
+      synth.cylY('can', G, 4, 1.5, 0.7, 2.5, 4.9, 24),
+      synth.cylY('endcap', G, 4, 1.5, 0.73, 2.0, 2.5, 24),
+      synth.box('bracket', G, 3.9, 4.1, 6.8, 7.2, 3.3, 3.45),
+    ];
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const parts = mk(prisms);
+    const names = (b: readonly number[]): string => b.map((x) => prisms[x].name).sort().join('+');
+    const w = motion.findWheelGroups(parts, [{ x: 4, y: 7 }], 'tank', 104 / 25.4).map((g) => names(g.bodies));
+    check(
+      'moving parts 3: a wheel takes its tyre, hub, hub screw and the shaft it turns on, not the gearbox face touching the hub, the motor behind it, or a bracket over it (its radius from the geometry, not the 104 mm default)',
+      J(w) === J(['hub+hub_screw+shaft+tyre']),
+      J(w),
+    );
+    check('moving parts 3: a click on the tyre takes the same, without the motor', names(motion.coaxialBodies(parts, id('tyre'), 'wheel')) === 'hub+hub_screw+shaft+tyre', names(motion.coaxialBodies(parts, id('tyre'), 'wheel')));
+  }
+
+  // ---- a 6WD: the middle pair is found too, with no corner (it turns at its own place's speed) ----
+  {
+    const prisms = synth.synthRobot({ sixWheel: true });
+    const parts = synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+    const m = geo.measureParts(parts, { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' });
+    const w = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'tank', 104 / 25.4).map((g) => `${g.corner ?? '-'}:${g.bodies.map((b) => prisms[b].name).join('+')}`);
+    check(
+      'moving parts 3: a six-wheel drive gives its four corners and the middle pair, each one wheel',
+      J(w) === J(['0:wheel_5.5_5.5', '1:wheel_5.5_-5.5', '2:wheel_-5.5_5.5', '3:wheel_-5.5_-5.5', '-:wheel_0_5.5', '-:wheel_0_-5.5']),
+      J(w),
+    );
+  }
+
+  // ---- a round part's axle from how round it is about it, not its moments alone: a disc with a dense
+  // patch of mesh on its rim (a Gecko wheel's fins at full resolution) ----
+  {
+    const disc = synth.synthParts([synth.cylY('disc', G, 0, 3, 0.94, -0.3, 0.3, 64)])[0];
+    const extra: number[] = [];
+    for (let k = 0; k < 4000; k++) {
+      const y = -0.3 + (0.6 * (k % 40)) / 40;
+      const x = -0.3 + (0.6 * Math.floor(k / 40)) / 100;
+      extra.push(x, y, 3.9, x + 0.01, y, 3.9, x, y + 0.01, 3.88);
+    }
+    const positions = new Float32Array([...disc.positions, ...extra]);
+    const parts: P[] = [{ positions, indices: null, color: G, name: 'd', body: new Uint32Array(positions.length / 3) }];
+    const st = motion.bodyStats(parts);
+    const n = st.n[0];
+    const cov = [st.q[0] / n - (st.s[0] / n) ** 2, st.q[1] / n - (st.s[0] / n) * (st.s[1] / n), st.q[2] / n - (st.s[0] / n) * (st.s[2] / n), st.q[3] / n - (st.s[1] / n) ** 2, st.q[4] / n - (st.s[1] / n) * (st.s[2] / n), st.q[5] / n - (st.s[2] / n) ** 2];
+    const fit = motion.fitRound(parts, [0]);
+    check(
+      'moving parts 3: a disc whose moments point the wrong way (a dense patch on its rim) is still fitted about its own axle',
+      Math.abs(motion.roundAxis(cov)[1]) < 0.9 && !!fit && Math.abs(fit.axis[1]) > 0.99,
+      J({ moments: motion.roundAxis(cov), fit: fit?.axis }),
+    );
+  }
+
+  // ---- the same groups from a coarse mesh and a fine one (the importer keeps every triangle now) ----
+  {
+    const run = (segments: number): string => {
+      const prisms = [...synth.synthRobot({ segments }), synth.cylY('shaft', G, 9, 1.5, 0.2, -6.5, 6.5, segments)];
+      const parts = synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+      const m = geo.measureParts(parts, { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' });
+      const w = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+      const r = motion.findRollerGroups(m.modelParts, [{ edge: 'front', from: -6, to: 6 }], new Set(w.flatMap((g) => g.bodies)));
+      return J([...w, ...r].map((g) => [g.role, g.corner, g.bodies]));
+    };
+    const coarse = run(12);
+    check('moving parts 3: the wheels and the roller come out the same from 12-sided and 96-sided cylinders', coarse === run(96) && coarse.includes('roller'), coarse);
+  }
+
+  // ---- the per-body vertex index the finders read instead of the whole model ----
+  {
+    const prisms = synth.synthRobot();
+    const raw = mk(prisms);
+    // two bodies interleaved in one part, as a merge by colour leaves them
+    const merged: P = { positions: new Float32Array([...raw[0].positions, ...raw[1].positions, ...raw[0].positions]), indices: null, color: G, name: 'm', body: null };
+    const n0 = raw[0].positions.length / 3;
+    const n1 = raw[1].positions.length / 3;
+    merged.body = new Uint32Array(2 * n0 + n1).map((_, v) => (v < n0 || v >= n0 + n1 ? 0 : 1));
+    const parts = [merged, ...raw.slice(2)];
+    const st = motion.bodyStats(parts);
+    let covered = 0;
+    let right = true;
+    for (const b of st.ids) {
+      for (let k = st.runStart[b]; k < st.runStart[b + 1]; k++) {
+        const r = st.runIdx[k];
+        covered += st.runTo[r] - st.runFrom[r];
+        for (let v = st.runFrom[r]; v < st.runTo[r]; v++) if (parts[st.runPart[r]].body![v] !== b) right = false;
+      }
+    }
+    const total = parts.reduce((s, p) => s + p.positions.length / 3, 0);
+    check('moving parts 3: the body index covers every vertex once, each run inside one body (a body split across a part is two runs)', right && covered === total && st.runStart[1] - st.runStart[0] === 2, J({ covered, total }));
+  }
+}
+
+/**
+ * MOVING PARTS, ROUND FOUR (2026-10-04, owner on Offset Robotics' concept robot: "A lot of things are
+ * not being detected accurately, especially surgical tubing and gears for drivetrain"). Measured there
+ * and on the seven starter bots; each case as a synthetic scene (inches, MODEL frame, one body per
+ * solid; a part with a bore is two cylinders as one body, so its nearest vertex is the bore's).
+ */
+{
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const geo = await import('../src/robotImport/geometry');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type Prism = import('./robot-import/synthRobot').Prism;
+  type V3 = [number, number, number];
+  const J = (v: unknown): string => JSON.stringify(v);
+  const G: V3 = [0.6, 0.6, 0.6];
+  /** one body per entry, each the prisms listed (a ring: its outside and its bore) */
+  const mkBodies = (bodies: { name: string; prisms: Prism[] }[]): P[] =>
+    bodies.map((b, i) => {
+      const ps = synth.synthParts(b.prisms);
+      const positions = new Float32Array(ps.reduce((s, p) => s + p.positions.length, 0));
+      let o = 0;
+      for (const p of ps) {
+        positions.set(p.positions, o);
+        o += p.positions.length;
+      }
+      return { positions, indices: null, color: G, name: b.name, body: new Uint32Array(positions.length / 3).fill(i) };
+    });
+  const one = (p: Prism): { name: string; prisms: Prism[] } => ({ name: p.name, prisms: [p] });
+  /** a rod from `a` to `b`, `r` thick: an n-gon prism along it */
+  const rod = (name: string, a: V3, b: V3, r: number, n = 12): Prism => {
+    const d: V3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const l = Math.hypot(d[0], d[1], d[2]);
+    const u = d.map((x) => x / l) as V3;
+    const t: V3 = Math.abs(u[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const c1: V3 = [u[1] * t[2] - u[2] * t[1], u[2] * t[0] - u[0] * t[2], u[0] * t[1] - u[1] * t[0]];
+    const l1 = Math.hypot(c1[0], c1[1], c1[2]);
+    const e1 = c1.map((x) => x / l1) as V3;
+    const e2: V3 = [u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2], u[0] * e1[1] - u[1] * e1[0]];
+    const base: V3[] = [];
+    for (let k = 0; k < n; k++) {
+      const p = (2 * Math.PI * k) / n;
+      base.push([a[0] + r * (Math.cos(p) * e1[0] + Math.sin(p) * e2[0]), a[1] + r * (Math.cos(p) * e1[1] + Math.sin(p) * e2[1]), a[2] + r * (Math.cos(p) * e1[2] + Math.sin(p) * e2[2])]);
+    }
+    return { name, color: G, base, extrude: d };
+  };
+  /** a part with a bore on an axle along y at (cx, cz): its outside and its bore, one body */
+  const ringY = (name: string, cx: number, cz: number, rOut: number, rIn: number, y0: number, y1: number): { name: string; prisms: Prism[] } => ({
+    name,
+    prisms: [synth.cylY(name, G, cx, cz, rOut, y0, y1, 48), synth.cylY(`${name}_bore`, G, cx, cz, rIn, y0, y1, 16)],
+  });
+  /** a STAR of six surgical-tubing spokes at 60° in the plane y = sy about an axle along y at (cx, cz):
+   *  0.37 in tube from 0.3 in out (inside its 0.34 in hub) for `len` (Offset's 60 mm: 0.89, 90 mm: 1.48) */
+  const starY = (tag: string, cx: number, cz: number, sy: number, len: number): { name: string; prisms: Prism[] }[] =>
+    [0, 1, 2, 3, 4, 5].map((k) => {
+      const a = (k * Math.PI) / 3;
+      const dx = Math.cos(a);
+      const dz = Math.sin(a);
+      return one(rod(`${tag}_spoke${k}`, [cx + 0.3 * dx, sy, cz + 0.3 * dz], [cx + (0.3 + len) * dx, sy, cz + (0.3 + len) * dz], 0.185));
+    });
+
+  // ---- SURGICAL TUBING ROLLERS: a front roller of six stars on 0.34 in hex hubs (no part of it is a
+  // round 3/4 in seed), a second stage 3.2 in further in (past `ROLLER_DEPTH_IN` from the edge) on the
+  // shaft a motor drives, a transfer roller square to the edge up high, and two radial screws on a
+  // hub, which are no star ----
+  {
+    const bodies: { name: string; prisms: Prism[] }[] = [
+      one(synth.box('frame', G, -8, 6, -7, 7, 1, 2)),
+      one(synth.cylY('a_shaft', G, 7, 4, 0.16, -5.6, 5.6, 8)),
+      ...[-5, -3, -1, 1, 3, 5].flatMap((y, i) => [one(synth.cylY(`a_hub${i}`, G, 7, 4, 0.34, y - 0.2, y + 0.2, 6)), ...starY(`a${i}`, 7, 4, y, 0.89)]),
+      one(synth.cylY('b_shaft', G, 3.8, 4.1, 0.16, -4, 4.6, 8)),
+      ...[-3, -1, 1, 3].flatMap((y, i) => [one(synth.cylY(`b_hub${i}`, G, 3.8, 4.1, 0.34, y - 0.2, y + 0.2, 6)), ...starY(`b${i}`, 3.8, 4.1, y, 1.48)]),
+      // the motor on b's shaft: its face against the shaft's end, gearbox, can, end cap
+      one(synth.cylY('m_face', G, 3.8, 4.1, 0.71, 4.5, 5.0, 24)),
+      one(synth.cylY('m_barrel', G, 3.8, 4.1, 0.71, 5.0, 6.4, 24)),
+      one(synth.cylY('m_can', G, 3.8, 4.1, 0.7, 6.4, 8.6, 24)),
+      one(synth.cylY('m_endcap', G, 3.8, 4.1, 0.73, 8.6, 9.3, 24)),
+      // the transfer: an axle along x, one star, up the back
+      one(rod('t_shaft', [-6.5, -5.5, 9], [-4.5, -5.5, 9], 0.16, 8)),
+      one(rod('t_hub', [-5.7, -5.5, 9], [-5.3, -5.5, 9], 0.34, 6)),
+      ...[0, 1, 2, 3, 4, 5].map((k) => {
+        const a = (k * Math.PI) / 3;
+        return one(rod(`t_spoke${k}`, [-5.5, -5.5 + 0.3 * Math.cos(a), 9 + 0.3 * Math.sin(a)], [-5.5, -5.5 + 1.78 * Math.cos(a), 9 + 1.78 * Math.sin(a)], 0.185));
+      }),
+      // two radial screws at 90° on a hub: they cross at its axle, and are two
+      one(synth.cylY('s_shaft', G, -2, 6, 0.16, -1, 1, 8)),
+      one(synth.cylY('s_hub', G, -2, 6, 0.34, -0.2, 0.2, 6)),
+      one(rod('s_screw0', [-2 + 0.3, 0, 6], [-2 + 1.2, 0, 6], 0.1)),
+      one(rod('s_screw1', [-2, 0, 6 + 0.3], [-2, 0, 6 + 1.2], 0.1)),
+    ];
+    const parts = mkBodies(bodies);
+    const id = (n: string): number => bodies.findIndex((b) => b.name === n);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const want = (re: RegExp): string => names(bodies.map((_, i) => i).filter((i) => re.test(bodies[i].name)));
+    const rollers = motion.findRollerGroups(parts, [{ edge: 'front', from: -7, to: 7 }], new Set());
+    const got = rollers.map((g) => names(g.bodies));
+    check(
+      'moving parts 4: tubing rollers: the front one is ONE group with its shaft, its six hubs and all 36 spokes, found though no part of it is a 3/4 in round seed',
+      got[0] === want(/^a([0-9]|_)/),
+      J(got[0]),
+    );
+    check(
+      'moving parts 4: tubing rollers: the next stage in (4.4 in from the edge, 3.2 in behind the first) is found too, with its 24 spokes, and NOT the motor on its shaft (face, gearbox, can, end cap)',
+      rollers.length === 2 && got[1] === want(/^b([0-9]|_)/),
+      J(got),
+    );
+    const transfer = motion.findSpokedRollers(parts, new Set(rollers.flatMap((g) => g.bodies)));
+    check(
+      'moving parts 4: tubing rollers: a spoked axle away from the intake (a transfer, square to the edge) is a roller of its own; two radial screws on a hub are not a star',
+      transfer.length === 1 && names(transfer[0].bodies) === want(/^t_/) && transfer[0].role === 'roller',
+      J(transfer.map((g) => names(g.bodies))),
+    );
+    check('moving parts 4: tubing rollers: a click on one spoke takes the whole roller, read off its star’s axle', names(motion.coaxialBodies(parts, id('a3_spoke4'), 'roller')) === want(/^a([0-9]|_)/), names(motion.coaxialBodies(parts, id('a3_spoke4'), 'roller')));
+    const cad = motion.readBuild(parts, new Set());
+    check('moving parts 4: tubing rollers: the build read off the model puts its intake on that edge', cad.intake?.edge === 'front' && !cad.intake.upright, J(cad.intake));
+  }
+
+  // ---- DRIVETRAIN GEARS: a wheel whose shaft runs through a bearing in the side plate to a gear
+  // 1.1 in inboard, which a motor's pinion 0.94 in away drives (their 0.51 and 0.52 in circles cross by
+  // 0.09: the teeth), the pinion 0.16 in off the gearbox face ----
+  {
+    const bodies: { name: string; prisms: Prism[] }[] = [
+      one(synth.box('side_plate', G, -8, 8, 5.0, 5.3, 0.5, 4)),
+      one(synth.cylY('tyre', G, 4, 1.9, 1.9, 5.6, 6.6, 48)),
+      ringY('hub', 4, 1.9, 0.6, 0.14, 5.45, 6.6),
+      one(synth.cylY('shaft', G, 4, 1.9, 0.16, 3.6, 6.8, 8)),
+      ringY('bearing', 4, 1.9, 0.3, 0.19, 5.0, 5.3),
+      ringY('gear', 4, 1.9, 0.51, 0.14, 3.9, 4.4),
+      one(synth.box('gear_screw', G, 3.9, 4.0, 4.0, 4.3, 2.3, 2.4)),
+      one(synth.cylY('m_shaft', G, 3.06, 1.9, 0.18, 3.4, 4.6, 8)),
+      ringY('pinion', 3.06, 1.9, 0.52, 0.14, 3.9, 4.4),
+      one(synth.cylY('m_face', G, 3.06, 1.9, 0.71, 3.2, 3.74, 24)),
+      one(synth.cylY('m_barrel', G, 3.06, 1.9, 0.71, 1.8, 3.2, 24)),
+      one(synth.cylY('m_can', G, 3.06, 1.9, 0.7, -0.6, 1.8, 24)),
+      one(synth.cylY('m_endcap', G, 3.06, 1.9, 0.73, -1.4, -0.6, 24)),
+    ];
+    const parts = mkBodies(bodies);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const wheels = motion.findWheelGroups(parts, [{ x: 4, y: 6.1 }], 'tank', 104 / 25.4);
+    check(
+      'moving parts 4: drive gears: the wheel takes the gear its shaft carries across the side plate (and the screw in it), not the bearing’s outer race (its bore clears the shaft), the plate or the motor',
+      wheels.length === 1 && names(wheels[0].bodies) === 'gear+gear_screw+hub+shaft+tyre',
+      J(wheels.map((g) => names(g.bodies))),
+    );
+    const geared = motion.findDriveGears(parts, wheels, new Set(wheels.flatMap((g) => g.bodies)));
+    check(
+      'moving parts 4: drive gears: the pinion meshed with it is found with its output shaft, geared to the wheel at minus the pitch radii’s ratio (−0.98), and the motor driving it is not in it',
+      geared.length === 1 && geared[0].role === 'spin' && names(geared[0].bodies) === 'm_shaft+pinion' && geared[0].follows?.group === 0 && geared[0].follows.ratio === -0.98,
+      J(geared.map((g) => ({ ...g, bodies: names(g.bodies) }))),
+    );
+    const derived = motion.deriveMotion(parts, [...wheels, ...geared], [], [0, 0, 0]);
+    const w = derived.find((p) => p.role === 'wheel')!;
+    const s = derived.find((p) => p.role === 'spin')!;
+    check(
+      'moving parts 4: drive gears: measured, the pinion turns about its own axle in its wheel’s sense, so −0.98 turns it the other way',
+      !!w && !!s && s.axis[0] * w.axis[0] + s.axis[1] * w.axis[1] + s.axis[2] * w.axis[2] > 0.999 && Math.abs(s.pivot[0] - 3.06) < 0.02 && Math.abs(s.pivot[2] - 1.9) < 0.02 && s.follows?.ratio === -0.98,
+      J({ w: w?.axis, s: s && { axis: s.axis, pivot: s.pivot, follows: s.follows } }),
+    );
+    const flipped = motion.deriveMotion(parts, [...wheels, { ...geared[0], flip: true }], [], [0, 0, 0]).find((p) => p.role === 'spin');
+    check('moving parts 4: drive gears: a geared part flipped by the player turns against its leader’s sense', !!flipped && flipped.axis[0] * w.axis[0] + flipped.axis[1] * w.axis[1] + flipped.axis[2] * w.axis[2] < -0.999, J(flipped?.axis));
+  }
+
+  // ---- a wheel whose axle runs along x (a model whose CAD front is not the robot's, its front not
+  // yet turned): read off the round plates standing at the contact, not assumed along y ----
+  {
+    const bodies = [
+      one(rod('tyre', [3.4, 6, 1.6], [4.6, 6, 1.6], 1.6, 48)),
+      one(rod('plate', [3.3, 6, 1.6], [3.4, 6, 1.6], 1.5, 48)),
+      one(rod('hub', [3.3, 6, 1.6], [4.9, 6, 1.6], 0.4, 12)),
+      one(synth.cylY('gearbox', G, 4, 1.6, 0.71, 3.0, 4.2, 24)),
+    ];
+    const parts = mkBodies(bodies);
+    const w = motion.findWheelGroups(parts, [{ x: 4, y: 6 }], 'mecanum', 104 / 25.4);
+    const names = (b: readonly number[]): string => b.map((x) => bodies[x].name).sort().join('+');
+    const d = motion.deriveMotion(parts, w, [], [0, 0, 0])[0];
+    check(
+      'moving parts 4: a wheel on an axle along x is taken about x (tyre, plate, hub), not about y (which took the gearbox beside it)',
+      w.length === 1 && names(w[0].bodies) === 'hub+plate+tyre' && !!d && Math.abs(d.axis[0]) > 0.999,
+      J({ bodies: w.map((g) => names(g.bodies)), axis: d?.axis }),
+    );
+  }
+
+  // ---- wheels on the floor when blocks hang 0.1 in above it at the corners (Offset's frame plates
+  // stop 0.10 in up): at 0.15 in the four corners were the blocks, no rectangle; looked for again at
+  // 0.08 in they are the wheels ----
+  {
+    const stubs = [
+      [9, 6.5],
+      [9, -5],
+      [-8.5, 6],
+      [-9, -6.5],
+    ].map(([x, y], k) => synth.box(`stub${k}`, G, x - 0.3, x + 0.3, y - 0.3, y + 0.3, 0.1, 1));
+    const measure = (prisms: Prism[]) => geo.measureParts(synth.synthParts(prisms, synth.FRAMES.cadMm), { ...geo.defaultImportSetup(), units: 'mm', up: '+z', yaw: 0 }, { format: 'stl' }).measurement;
+    const w = measure([...synth.synthRobot(), ...stubs]).wheelsUsed ?? [];
+    const spread = (a: number, b: number, k: 'x' | 'y'): number => Math.abs(w[a][k] - w[b][k]);
+    check(
+      'moving parts 4: wheels: with blocks hanging 0.1 in off the floor at the corners, the four wheels found are the wheels (11 in apart both ways), not the blocks',
+      w.length === 4 && Math.abs(spread(0, 2, 'x') - 11) < 0.05 && Math.abs(spread(0, 1, 'y') - 11) < 0.05 && geo.isRectangle(w, 0.01),
+      J(w),
+    );
+    const plain = measure(synth.synthRobot()).wheelsUsed ?? [];
+    const rel = plain.map((p) => [p.x - plain[3].x, p.y - plain[3].y]);
+    check(
+      'moving parts 4: wheels: a robot found at 0.15 in is measured as before (no second look)',
+      rel.length === 4 && [[11, 11], [11, 0], [0, 11], [0, 0]].every((q, k) => Math.abs(rel[k][0] - q[0]) < 1e-4 && Math.abs(rel[k][1] - q[1]) < 1e-4),
+      J(plain),
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

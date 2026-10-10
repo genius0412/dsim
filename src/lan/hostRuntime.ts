@@ -20,6 +20,7 @@
 import type { Transport } from '../net/transport';
 import type { LobbyPlayer, RoomConfig } from '../net/protocol';
 import { DEFAULT_ROOM_CONFIG, encodeMsg } from '../net/protocol';
+import { importerEnabled } from '../seasonVisibility';
 import { coerceGameId, type GameId } from '../games/types';
 import { LanSignalClient } from '../net/lanSignalClient';
 import { acceptLanGuest, type LanLink } from '../net/lanPeer';
@@ -226,7 +227,16 @@ export class LanHost {
     );
   }
 
-  async start(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG): Promise<string> {
+  /**
+   * `imports`: may an imported robot play in this room? The client's own gate by default
+   * (`importerEnabled`, the same one that offers the import to this room, `roomTakesImportedRobots`);
+   * the Worker's room has no server gate to read.
+   */
+  async start(
+    code: string,
+    config: RoomConfig = DEFAULT_ROOM_CONFIG,
+    imports: boolean = importerEnabled(),
+  ): Promise<string> {
     this.stopped = false;
     this.booted = false;
     this.roomConfig = config;
@@ -340,7 +350,7 @@ export class LanHost {
       }
     });
 
-    toWorker({ k: 'open', code: claimed.code, config });
+    toWorker({ k: 'open', code: claimed.code, config, imports });
 
     // a guest asked to be introduced
     signals.onPeer((peer) => {

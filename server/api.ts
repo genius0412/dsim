@@ -7,11 +7,15 @@ import { authorizeUrl, exchangeForId, linkConfigured, readState } from './oauthL
 import { runStarSweep } from './stargazers';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
-import { CHALLENGE_FORMATS } from '../src/net/protocol';
+import { coerceWindow, windowBounds } from './boardWindow';
+import { CHALLENGE_FORMATS, RETIRED_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
+import { replayHasImported } from '../src/net/imported';
 import { moderateName, scrubName } from './moderation';
 import { LAN_UPLOADS } from './lanUploads';
+import { handleCompetitionApi, placementsOf } from './competitions';
 import { dbEnabled } from './db/pool';
+import { RATE_SWEEP_EVERY_MS, sweepGate } from './sweepGate';
 import {
   acceptFriendRequest,
   actForSeason,
@@ -44,6 +48,7 @@ import {
   unblockUser,
   type Activity,
   type PresenceStatus,
+  boardMinGames,
   eloLeaderboard,
   eloHistoryLeaderboard,
   eloHistoryUserStanding,
@@ -63,6 +68,9 @@ import {
   revokeStargazer,
   rewardState,
   setEquippedBadges,
+  listNotices,
+  markNoticesRead,
+  reportsFiledBy,
   unlinkProvider,
   type LinkProvider,
   getUserSettings,
@@ -75,9 +83,10 @@ import {
   recordKofiPayment,
   deleteAccount,
   exportAccount,
-  listSeasons,
+  listSeasonsCached,
   recordLeaderboard,
-  saveUserSettings,
+  coerceCategory,
+  saveSettingsFromClient,
   setHandle,
   setUsername,
   userMatchHistory,
@@ -88,6 +97,7 @@ import {
   analyticsReport,
   classify,
   clientIp,
+  siteHost,
   countryForTimezone,
   currentSalt,
   dimColumn,
@@ -133,7 +143,10 @@ const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
  *   GET  /api/profile/<username>             — public profile by username (handle+id)
  *   GET  /api/profile/<username>/stats?season=<n> — one user's stats, by username
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
- *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
+ *   POST /api/user/settings {settings, caps?} — save your settings (Bearer JWT); without
+ *                                              `caps: ['robotImport']` an older build's save is
+ *                                              merged so it keeps the imported robot
+ *                                              (`src/net/settingsKeep.ts`)
  *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
  *   GET  /api/user/title                     — RETIRED (0049): always no title, nothing earned
@@ -141,6 +154,9 @@ const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
  *   GET  /api/user/rewards                   — pending rewards + badges + trophy case (JWT)
  *   POST /api/user/rewards/claim {id,equip}  — claim one, and with equip wear it (Bearer JWT)
  *   POST /api/user/badges {badges}           — wear these badges, in order (Bearer JWT)
+ *   GET  /api/user/notices                   — what moderators told you, newest first (JWT)
+ *   POST /api/user/notices/read {ids|all}    — mark them read (Bearer JWT)
+ *   GET  /api/user/reports                   — the reports you filed and their status (JWT)
  *   GET  /api/link/<p>/start                 — the authorize URL for github|discord (JWT)
  *   GET  /api/link/<p>/callback              — the provider's redirect; 302s into /account
  *   POST /api/link/<p>/unlink                — drop the link and its reward (Bearer JWT)
@@ -227,7 +243,7 @@ const CORS = {
  * the promise settles EXACTLY once either way (`settled`), because a destroy raises `error`
  * and a double-settle would otherwise be the norm rather than the exception.
  */
-function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
+export function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     let settled = false;
@@ -285,6 +301,7 @@ const LAN_MAX_PER_WINDOW = 30;
 const LAN_MAX_IN_FLIGHT = 4;
 let lanInFlight = 0;
 const lanRate = new Map<string, { n: number; until: number }>();
+const lanSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function uploadRateOk(bucket: string, userId: string): boolean {
   const key = `${bucket}:${userId}`;
@@ -295,7 +312,9 @@ function uploadRateOk(bucket: string, userId: string): boolean {
   // exactly the case where no entry is expired yet and the sweep frees nothing anyway. Sweeping
   // every call keeps the map to "accounts seen in the last minute", which is small enough that
   // the O(n) walk is cheaper than the branch was worth.
-  for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  // TIME-GATED (`sweepGate`): an unconditional walk made every request O(rows); a stale row is
+  // harmless because the read below treats an expired one as absent
+  if (lanSweepDue(now)) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
   const hit = lanRate.get(key);
   if (!hit || hit.until <= now) {
     lanRate.set(key, { n: 1, until: now + LAN_WINDOW_MS });
@@ -319,13 +338,14 @@ function uploadRateOk(bucket: string, userId: string): boolean {
  */
 const EXPORT_WINDOW_MS = 60_000;
 const exportRate = new Map<string, number>();
+const exportSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function exportRateOk(userId: string): boolean {
   const now = Date.now();
   // unconditional, for the reason spelled out in `lanRateOk`: a size-gated sweep never runs
   // until 1000 rows have accumulated, and the one burst that would justify it — 1001 distinct
   // accounts inside a single window — is the burst in which nothing has expired to sweep.
-  for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  if (exportSweepDue(now)) for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
   const until = exportRate.get(userId);
   if (until && until > now) return false;
   exportRate.set(userId, now + EXPORT_WINDOW_MS);
@@ -341,14 +361,16 @@ function exportRateOk(userId: string): boolean {
 const PLAYED_WINDOW_MS = 10 * 60_000;
 const PLAYED_MAX_PER_WINDOW = 30;
 const playedRate = new Map<string, { n: number; until: number }>();
+const playedSweepDue = sweepGate(RATE_SWEEP_EVERY_MS);
 
 function playedRateOk(ip: string): boolean {
   const key = createHash('sha256').update(ip).digest('hex').slice(0, 16);
   const now = Date.now();
-  // swept on the way past, unconditionally — see `uploadRateOk`
-  for (const [k, v] of playedRate) if (v.until <= now) playedRate.delete(k);
+  // swept at most once per interval — see `uploadRateOk`; the read below treats an expired row
+  // as absent (it used to rely on the per-request sweep having removed it)
+  if (playedSweepDue(now)) for (const [k, v] of playedRate) if (v.until <= now) playedRate.delete(k);
   const hit = playedRate.get(key);
-  if (!hit) {
+  if (!hit || hit.until <= now) {
     playedRate.set(key, { n: 1, until: now + PLAYED_WINDOW_MS });
     return true;
   }
@@ -406,6 +428,13 @@ async function saveLanUpload(
     return json(400, { error: 'missing or malformed matchId' }), true;
   }
 
+  /* AN IMPORTED ROBOT'S MATCH STAYS ON THE DEVICE. `sanitizeReplay` carries what the sim reads
+     and nothing else, so an upload that holds one is refused outright (400 is a verdict, which
+     `uploadLanRun` retires locally) rather than stored as a match nobody can re-simulate. The
+     client never sends one (`pendingLanUploads`); this is the door behind it. */
+  if (replayHasImported(body.replay)) {
+    return json(400, { error: 'a match with an imported robot stays on the device', code: 'imported' }), true;
+  }
   const replay = sanitizeReplay(body.replay, game);
   if (!replay) return json(400, { error: 'not a playable replay' }), true;
 
@@ -530,7 +559,7 @@ async function handleAnalytics(
     // The HOST HEADER, not `url.host` — `handleApi` parses the request against a fixed
     // `http://localhost` base, so that would be the same constant for every deployment and the
     // `site` term in the hash would do nothing at all.
-    const site = (req.headers.host ?? '').slice(0, 64);
+    const site = siteHost(req).slice(0, 64);
     const visitor = visitorHash(salt, ip, ua, site);
     // The per-ADDRESS key is a hash under the same rotating salt, so the limiter never becomes
     // the one place raw addresses are kept. `ip:` keeps the two key spaces apart.
@@ -637,6 +666,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         const refusal = await lockdownRefusal(user?.userId, 'site');
         if (refusal) return json(503, { error: refusal, code: 'site_closed' }), true;
       }
+    }
+
+    // ---- competitions (0059): their own module, behind the closed-site door above ----------
+    if (url.pathname === '/api/competitions' || url.pathname.startsWith('/api/competitions/')) {
+      return await handleCompetitionApi(req, url, { json, readBody, bearer });
     }
 
     // ---- authenticated write: set your own display name --------------------
@@ -828,6 +862,46 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { equippedBadges: worn }), true;
     }
 
+    /**
+     * THE NOTICE INBOX (0057) — what a moderator did about your report, your match, or you.
+     *
+     * NEW ROUTES, like the reward ledger's: an older client never asks, and an older server
+     * answers 404, which the client reads as an empty inbox. GET is self-only by construction
+     * (no user parameter); read marks are only ever applied to the caller's own rows.
+     */
+    if (url.pathname === '/api/user/notices' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { notices: [] }), true;
+      return json(200, { notices: await listNotices(user.userId) }), true;
+    }
+    if (url.pathname === '/api/user/notices/read' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { marked: 0 }), true;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      const ids =
+        body.all === true
+          ? ('all' as const)
+          : Array.isArray(body.ids)
+            ? body.ids.filter((x): x is string => typeof x === 'string').slice(0, 100)
+            : null;
+      if (!ids) return json(400, { error: 'ids must be a list of notice ids, or all: true' }), true;
+      return json(200, { marked: await markNoticesRead(user.userId, ids) }), true;
+    }
+    /** the reports you FILED and where each one is (Epic's "My reports") */
+    if (url.pathname === '/api/user/reports' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { reports: [] }), true;
+      return json(200, { reports: await reportsFiledBy(user.userId) }), true;
+    }
+
     /** what this account has linked, and which providers the server can actually offer. */
     if (url.pathname === '/api/user/links' && req.method === 'GET') {
       const user = await verifyAuthToken(bearer(req));
@@ -861,7 +935,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (env) return env.replace(/\/$/, '');
       const xf = r.headers['x-forwarded-proto'];
       const proto = (Array.isArray(xf) ? xf[0] : xf)?.split(',')[0] ?? 'https';
-      const host = r.headers.host ?? 'localhost';
+      // `siteHost`, so a start that came through the primary router still names this app
+      const host = siteHost(r) || 'localhost';
       return `${proto}://${host}`;
     };
     const linkMatch = url.pathname.match(/^\/api\/link\/(github|discord)\/(start|callback|unlink)$/);
@@ -972,21 +1047,26 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       }
       // POST: save the whole settings blob
       let settings: unknown;
+      let caps: unknown;
       try {
         // 64 KB, not `readBody`'s 512 KB default. This blob is keybinds, toggles and a colour
         // or two — a few KB at the outside — and it is stored per account, so the default cap
         // let a signed-in client park half a megabyte of anything in Postgres under the name
         // "settings". The limit is the shape of the data, not the shape of the transport.
-        settings = JSON.parse(await readBody(req, 64 * 1024)).settings;
+        const body = JSON.parse(await readBody(req, 64 * 1024));
+        settings = body.settings;
+        caps = body.caps;
       } catch {
         return json(400, { error: 'bad request' }), true;
       }
-      if (typeof settings !== 'object' || settings === null) {
+      if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
         return json(400, { error: 'settings must be an object' }), true;
       }
       if (dbEnabled) {
         await ensureProfile(user.userId, user.handle);
-        await saveUserSettings(user.userId, settings);
+        // ⚠️ AN OLDER BUILD'S SAVE (no `caps`) DROPS THE IMPORTED ROBOT it cannot read; the stored
+        // one is carried over when the robot is otherwise the same (`src/net/settingsKeep.ts`)
+        await saveSettingsFromClient(user.userId, settings as Record<string, unknown>, caps);
       }
       return json(200, { ok: true }), true;
     }
@@ -1149,6 +1229,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       } catch {
         return json(400, { error: 'bad request' }), true;
       }
+      // A RUN WITH AN IMPORTED ROBOT STAYS ON THE DEVICE (docs/area/netcode.md, IMPORTED ROBOTS).
+      // The client keeps it out of its backlog; this is the door behind that one.
+      if (replayHasImported(body.replay)) {
+        return json(400, { error: 'a run with an imported robot stays on the device', code: 'imported' }), true;
+      }
       const replay = sanitizeReplay(body.replay, game);
       if (!replay) return json(400, { error: 'not a playable replay' }), true;
       // clamped, not trusted — a number this server did not compute should not be able to
@@ -1282,7 +1367,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (typeof txn !== 'string' || !txn.trim()) {
         return json(400, { error: 'transaction id required' }), true;
       }
-      await ensureProfile(user.userId, user.handle);
+      // `fresh`: the claim writes `claimed_by`, an FK — a stale memo must not fail a payment
+      await ensureProfile(user.userId, user.handle, true);
       const r = await claimKofiPayment(user.userId, txn.trim());
       if (r.outcome === 'not-found') {
         return (
@@ -1636,6 +1722,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           // party token that a challenge of the matching format actually created
           // (`challengeParty`). Validated against the allowlist here so a client
           // can't invent one.
+          // a retired format must not coerce to null below, which would turn an old client's
+          // rated challenge into a bogus casual invite carrying a party token as its "room"
+          if (RETIRED_FORMATS.includes(body.format as string)) {
+            return json(410, { error: 'Rated 1v1 challenges are gone. Invite your friend to a room, or queue Ranked 2v2 together.' }), true;
+          }
           const format = (CHALLENGE_FORMATS as readonly string[]).includes(body.format as string)
             ? (body.format as string)
             : null;
@@ -1675,13 +1766,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     // default board view = the live season FOR THIS GAME (which may be admin-advanced past
     // the code's BALANCE_VERSION); an explicit ?season= picks an archived one.
     const seasonParam = url.searchParams.get('season');
+    // A season is an INTEGER key. `Number('abc')` is NaN and `Number('1.5')` is not a key, and
+    // both went straight into a bound parameter, where Postgres refused them as a 500. Refused
+    // here instead, as what they are.
+    if (seasonParam !== null && !Number.isSafeInteger(Number(seasonParam))) {
+      return json(400, { error: 'bad season' }), true;
+    }
     const season =
       seasonParam !== null
         ? Number(seasonParam)
         : dbEnabled
           ? await currentSeasonNumber(BALANCE_VERSION, game)
           : BALANCE_VERSION;
-    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
+    // `|| 100` catches NaN, which `Math.max` passes straight through
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(url.searchParams.get('limit') ?? 100) || 100)));
     // paginated match-history opts (repo clamps limit to [1,100], default 25)
     const historyOpts = {
       balanceVersion: season,
@@ -1771,7 +1869,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // module owns that number, so a third game does not land in DECODE's bucket
       const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : BALANCE_VERSION;
       if (dbEnabled) await ensureSeason(current, game, simModuleFor(game).initialAct);
-      const seasons = dbEnabled ? await listSeasons(game) : [];
+      const seasons = dbEnabled ? await listSeasonsCached(game) : [];
       return json(200, { current, seasons, game }), true;
     }
 
@@ -1797,12 +1895,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        * an archived one is the solve it was played on — BIOBUZZ Act 1 is a 2D board. The client
        * keeps the rows of the era echoed here.
        */
+      // CATEGORY (Total / Auto / TeleOp) and WINDOW (season / day / week / month / all time), rooms
+      // plan §5. Both default to what the board always was, so an older client is unaffected.
+      const category = coerceCategory(url.searchParams.get('category'));
+      const window = coerceWindow(url.searchParams.get('window'));
+      const { start, resetsAt } = windowBounds(window, new Date());
+      // all time spans seasons but never mixes eras: `physics=2d|3d` picks one (a game with two
+      // solves has both), default the live era. Day/week/month sit inside one season, hence one era.
+      const wantEra = url.searchParams.get('era');
+      // a one-solve game has no era to pick (DECODE and Chain Reaction are all '2d')
+      const era = (wantEra === '2d' || wantEra === '3d') && serverPhysics(simModuleFor(game)) === '3d' ? wantEra : undefined;
+      const lifetime = window === 'all';
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
+        ? await recordLeaderboard({
+            mode, drivetrain, balanceVersion: season, limit, game, category,
+            ...(start ? { since: start } : {}),
+            ...(lifetime ? { lifetime: true, physics: era } : {}),
+          })
         : [];
-      const physics =
-        (dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game));
-      return json(200, { season, mode, drivetrain, physics, rows, game }), true;
+      const physics = lifetime
+        ? (era ?? (serverPhysics(simModuleFor(game)) === '3d' ? '3d' : '2d'))
+        : ((dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game)));
+      return json(200, { season, mode, drivetrain, physics, rows, game, category, window, windowStart: start, resetsAt }), true;
     }
 
     if (url.pathname === '/api/elo') {
@@ -1823,7 +1937,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         rows = await eloHistoryLeaderboard({ mode, balanceVersion: season, limit, game });
         me = meId ? await eloHistoryUserStanding({ userId: meId, mode, balanceVersion: season, game }) : null;
       }
-      return json(200, { season, mode, rows, me, game, historical: !isLive }), true;
+      // the games this board needs (`boardMinGames`), so the page says "after 10 ranked matches"
+      // for the board it is showing; an older client ignores the field
+      const minGames = boardMinGames(mode, game, isLive ? undefined : season);
+      return json(200, { season, mode, rows, me, game, historical: !isLive, minGames }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)
@@ -1834,6 +1951,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!profile) return json(404, { error: 'no such user' }), true;
       const page = await userMatchHistory(profile.userId, await historyOptsFor(req));
       return json(200, page), true;
+    }
+
+    // the competitions a player finished and where they placed (0059), for their profile
+    const profCompMatch = url.pathname.match(/^\/api\/profile\/([^/]+)\/competitions$/);
+    if (profCompMatch) {
+      const username = decodeURIComponent(profCompMatch[1]).toLowerCase();
+      const profile = dbEnabled ? await getProfileByUsername(username) : null;
+      if (!profile) return json(404, { error: 'no such user' }), true;
+      return json(200, { competitions: await placementsOf(profile.userId) }), true;
     }
 
     // public profile + stats keyed by USERNAME (the /profile/<username> page)

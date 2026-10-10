@@ -13,10 +13,14 @@ import {
   BB_SIDE_ROLLER_R,
   bbSideRollerY,
 } from './config';
-import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { FootprintSvg, importedFootprintLabel } from '../../ui/FootprintSvg';
+import { useImportedTopUrl } from '../../ui/useImportedAssets';
 import { BB_MODE_LABELS } from './labels';
 import { BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
-import { EDGE_ANGLE, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
+import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
+import { dumperFrame } from './drawRobot';
+import { bbFixedFacing, bbFixedLocal } from './robot';
 import { bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
 
 /** dimension-label type size, in the viewBox's inch units */
@@ -61,6 +65,9 @@ export function BiobuzzRobotPreview({
   /** print the dimension line under the robot (see the DECODE `RobotPreview`'s prop) */
   caption?: boolean;
 }) {
+  // AN IMPORTED ROBOT is its hull, not this schematic's box: the footprint, with the marks where
+  // this game's accessors put its mechanisms (the same ones the sprite and the sim read)
+  if (spec.imported) return <ImportedBiobuzzPreview spec={spec} size={size} fluid={fluid} caption={caption} />;
   const w = spec.width;
   const len = spec.length;
 
@@ -256,7 +263,7 @@ export function BiobuzzRobotPreview({
    * inner rim, the same SHAPE cue the in-match sprite gives it (the preview has no alliance, so the
    * accent token stands in for the alliance colour there).
    */
-  const turretEl = (pos: BbMountPos, nectar: boolean) => {
+  const turretEl = (pos: BbMountPos, nectar: boolean, fixedFaceDeg?: number) => {
     const t = turretLocal(spec, pos); // the SAME point the sim launches from
     const gap = BB_LAUNCH_PLATE_GAP;
     const plate = 0.42;
@@ -264,8 +271,16 @@ export function BiobuzzRobotPreview({
     const y0 = tR + BB_LAUNCH_PLATE_OVERHANG; // plate rear
     const y1 = -y0; // ...and the muzzle end
     const wheelY = -tR * 0.6; // the flywheel: past the feed hole, before the muzzle
+    // A FIXED shooter: the same head on a square riser, turned to face out of its edge. A robot-
+    // frame CCW angle is a NEGATIVE svg rotation once ROBOT_FRAME has put the front up.
+    const fixed = fixedFaceDeg !== undefined;
+    const side = Math.max(1.2, tR * 1.3);
     return (
-      <g key={`t-${pos}`} transform={`translate(${-t.y},${-t.x})`}>
+      <g key={`t-${pos}`} transform={`translate(${-t.y},${-t.x})${fixed ? ` rotate(${-fixedFaceDeg})` : ''}`}>
+        {fixed ? (
+          <rect x={-side / 2} y={-side / 2} width={side} height={side} fill={COLORS.mat} stroke={stroke} strokeWidth={0.35} />
+        ) : (
+        <>
         {/* the SLEW RING it turns on, toothed like the sprite's */}
         <circle
           cx={0}
@@ -293,6 +308,8 @@ export function BiobuzzRobotPreview({
         {nectar ? <circle cx={0} cy={0} r={tR - 0.75} fill="none" stroke={accent} strokeWidth={0.32} /> : null}
         {/* the FEED HOLE an element rises through, dead centre on the turret axis */}
         <circle cx={0} cy={0} r={BB_POLLEN_R + 0.15} fill={COLORS.mat} stroke={stroke} strokeWidth={0.2} />
+        </>
+        )}
         {/* THE SHOOTER HEAD: two parallel PLATES with a flywheel between them, no barrel */}
         {[1, -1].map((sg) => (
           <rect
@@ -357,6 +374,8 @@ export function BiobuzzRobotPreview({
         {turretEl(launcher.mount, false)}
         {turretEl(launcher.mount2 ?? launcher.mount, true)}
       </g>
+    ) : launcher.kind === 'fixed' ? (
+      turretEl(launcher.mount, false, (bbFixedFacing(spec) * 180) / Math.PI)
     ) : (
       turretEl(launcher.mount, false)
     );
@@ -554,5 +573,43 @@ export function BiobuzzRobotPreview({
         </text>
       )}
     </svg>
+  );
+}
+
+/** the builder preview of an IMPORTED BIOBUZZ robot — see `ui/FootprintSvg.tsx` */
+function ImportedBiobuzzPreview({ spec, size, fluid, caption }: { spec: RobotSpec; size: number; fluid: boolean; caption: boolean }) {
+  const imp = spec.imported;
+  const image = useImportedTopUrl(imp?.id, imp);
+  if (!imp) return null;
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const r = turretRadius(spec);
+  const turrets = bbIsTurreted(launcher)
+    ? [launcher.mount, ...(launcher.kind === 'twinturret' && launcher.mount2 ? [launcher.mount2] : [])].map((m) => ({ ...turretLocal(spec, m), r }))
+    : launcher.kind === 'fixed'
+      ? [(({ x, y }) => ({ x, y, r }))(bbFixedLocal(spec))] // the FIXED shooter's release
+      : [];
+  // a dumper releases along a LINE (`dumperFrame`, the sim's `bbImportLaunchLine`)
+  const lines = [];
+  if (launcher.kind === 'dumper') {
+    const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
+    const f = dumperFrame(spec, edge);
+    const n = EDGE_DIR[edge];
+    const p = EDGE_PERP[edge];
+    const h = f.span * BB_LAUNCH_LINE_FRAC;
+    const cx = n.x * f.dist + p.x * f.lateral;
+    const cy = n.y * f.dist + p.y * f.lateral;
+    lines.push({ x0: cx - p.x * h, y0: cy - p.y * h, x1: cx + p.x * h, y1: cy + p.y * h });
+  }
+  return (
+    <FootprintSvg
+      imported={imp}
+      drivetrain={spec.drivetrain}
+      marks={{ mouths: bbMouths(spec), turrets, place: bbPlacePointLocal(spec), lines }}
+      image={image}
+      size={size}
+      fluid={fluid}
+      caption={caption}
+      label={importedFootprintLabel(imp)}
+    />
   );
 }

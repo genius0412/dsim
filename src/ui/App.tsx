@@ -2,7 +2,7 @@ import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from '
 import type { ComponentType, ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
-import { hasStoredSettings, loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
+import { hasStoredSettings, keepImportActive, loadSettings, rememberStandardRobot, saveSettings, switchGame, syncAudioMirrors, withoutImport } from '../settings';
 import {
   saveAccountSettings,
   fetchAdminStatus,
@@ -15,9 +15,10 @@ import {
 import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
 import { tabHosting } from '../lan/hosting';
 import { GAME_IDS } from '../games/types';
-import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
+import { devRoutesEnabled, gameVisible, importerEnabled } from '../seasonVisibility';
 import { moduleFor } from '../games';
 import { preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -36,6 +37,21 @@ import { setShellState } from './shellState';
  * it takes `AdminAnalytics`'s own `lazy()` with it as a nested chunk.
  */
 const Admin = lazy(() => import('./Admin').then((m) => ({ default: m.Admin })));
+/**
+ * THE ROBOT IMPORT EDITOR (`/configure/robot/import[/<id>]`), lazy for the reason `Admin` is: it
+ * is a screen most players never open, and the engine behind it (three.js, the loaders) is lazier
+ * still — the editor fetches it only on the first file. `bundleaudit` routes the chunk to `importer`.
+ */
+const ImportEditor = lazy(() => import('../robotImport/ui/ImportEditor'));
+/**
+ * COMPETITIONS (0059), lazy for the reason `Admin` is: most players never open them, and the
+ * pages, their sheet and their client stay out of the bundle that drives a robot. The play screen
+ * is the same chunk (one module, two exports). `bundleaudit` routes it to `competitions`.
+ */
+const Competitions = lazy(() => import('./Competitions'));
+const CompMatchPlay = lazy(() => import('./Competitions').then((m) => ({ default: m.CompMatchPlay })));
+import { coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
+import type { RobotSpec } from '../types';
 import { Announcements } from './Announcements';
 import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
@@ -63,6 +79,7 @@ import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
+import { CompCallBar } from './CompCallBar';
 import { usePresence } from './usePresence';
 import { maintenanceLine } from './MaintenanceBanner';
 import { dropQueue, peekQueue } from './queueKeeper';
@@ -79,6 +96,7 @@ import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { Appearance } from './Appearance';
 import { RewardDialog } from './RewardDialog';
+import { NoticeDialog } from './NoticeDialog';
 import type { ProfileTab } from './ProfileTabs';
 import { authEnabled } from '../lib/authClient';
 import { useLanEnabled } from './useLanEnabled';
@@ -93,6 +111,7 @@ import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } f
 import { loadStagedMatch } from '../net/stagedMatch';
 import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
+import type { PaceCurve } from './pace/curve';
 import {
   savePracticeRun,
   markPracticeUploaded,
@@ -119,6 +138,9 @@ type Screen =
   | 'home'
   | 'modes'
   | 'configure'
+  /** `/configure/robot/import` and `/configure/robot/import/<id>`: the robot import editor. A screen
+   *  of its own, not a Configure section, so its preview has the page's whole width. */
+  | 'robotimport'
   | 'records'
   | 'lobby'
   | 'discordlobbies'
@@ -144,6 +166,11 @@ type Screen =
   | 'accountreset'
   | 'accountverify'
   | 'admin'
+  /** `/competitions`, `/competitions/<slug>[/<tab>]`, `/competitions/new` — the competitions
+   *  pages (a lazy chunk). `sub` is everything after `/competitions/`. */
+  | 'competitions'
+  /** `/competitions/<slug>/play`: joining a called competition match. Full screen, like ranked. */
+  | 'compmatch'
   /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
   | 'dev';
 
@@ -210,6 +237,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/modes';
     case 'configure':
       return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
+    case 'robotimport':
+      return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
       return a.sub === 'career' ? '/records/career' : '/records';
     case 'profile':
@@ -254,6 +283,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/account/verify';
     case 'admin':
       return '/admin';
+    case 'competitions':
+      return a.sub ? `/competitions/${a.sub}` : '/competitions';
+    case 'compmatch':
+      return a.sub ? `/competitions/${a.sub}/play` : '/competitions';
     case 'dev':
       return a.dev ?? '';
   }
@@ -276,7 +309,17 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (replay) return at('replay', { replayId: decodeURIComponent(replay[1]) });
   const profile = rest.match(/^\/profile\/(.+)$/);
   if (profile) return at('profile', { username: decodeURIComponent(profile[1]) });
+  // competitions: the play screen first, it is the more specific of the two
+  const compPlay = rest.match(/^\/competitions\/([a-z0-9-]{3,48})\/play\/?$/);
+  if (compPlay) return at('compmatch', { sub: compPlay[1] });
+  const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
+  if (comps) return at('competitions', { sub: comps[1] ?? null });
 
+  // BEFORE the configure match, which would read `/configure/robot/import` as the robot section.
+  // Where the importer is closed (`importerEnabled`) it is not matched at all and the path falls
+  // through to that robot section, the page the importer would return to.
+  const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
+  if (robotImport && importerEnabled()) return at('robotimport', { sub: robotImport[1] ?? null });
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
@@ -386,8 +429,11 @@ function navFor(screen: Screen): ShellNav {
     case 'matchmaking':
     case 'watch':
     case 'lan':
+    case 'competitions':
+    case 'compmatch':
       return 'play';
     case 'configure':
+    case 'robotimport':
       return 'configure';
     case 'records':
       return 'records';
@@ -571,6 +617,20 @@ export function App() {
   // kept current every render so the []-deps effects (popstate) read live settings
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  /**
+   * WHAT EVERY SCREEN IS SHOWN. `settings` is the STORED copy (localStorage, the account, the
+   * archived loadouts, `switchGame`); `shown` is it as this build may show it. Identical where the
+   * importer is open. Where it is closed (`importerEnabled`) an imported active robot is shown as
+   * the player's standard one (`withoutImport`), so practice, the tutorial, autos, the robot page,
+   * the lobby and the match all get a standard robot with no check of their own, and `update` runs
+   * every write back through `keepImportActive`, so the import is kept, never deleted.
+   */
+  const importerOn = importerEnabled();
+  const shown = useMemo(() => (importerOn ? settings : withoutImport(settings)), [importerOn, settings]);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  /** the settings a start or an edit reads through `settingsRef`, as this build shows them */
+  const shownOf = (s: GameSettings): GameSettings => (importerOn ? s : withoutImport(s));
   // the 3D view keys listen outside React (`graphics/viewKey.ts`), so they are handed the binds
   useEffect(() => setViewBindings(settings.bindings.keys), [settings.bindings]);
 
@@ -775,6 +835,22 @@ export function App() {
       .scene?.()
       .catch(() => {});
   }, [inActivity, settings.game]);
+  /**
+   * WARM THE 3D CHUNK WHILE THE PLAYER IS ON SOME OTHER SCREEN. The builder's turntable and a 3D
+   * practice both open on the lazy Three.js chunk (~200 KB gz), which otherwise starts downloading
+   * the moment that screen mounts. `preloadRoomView` gates on a game with a scene and on the 3D
+   * view, so DECODE, Chain Reaction and 2D players fetch nothing. It measured as no gain against
+   * localhost (2026-09-23), where there is no network to hide; the live site has one.
+   */
+  useEffect(() => {
+    const warm = (): void => preloadRoomView(settings.game);
+    if (typeof requestIdleCallback !== 'function') {
+      const t = setTimeout(warm, 2000);
+      return () => clearTimeout(t);
+    }
+    const h = requestIdleCallback(warm, { timeout: 5000 });
+    return () => cancelIdleCallback(h);
+  }, [settings.game]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the
@@ -922,6 +998,8 @@ export function App() {
   const signedInRef = useRef(false);
   /** one flush at a time — a sign-in and a finished run can land together */
   const flushingPractice = useRef(false);
+  /** a flush was asked for while one was running — the running one takes another pass */
+  const flushPracticeAgain = useRef(false);
   /** the same guard for the LAN backlog, which drains on exactly the same two triggers */
   const flushingLan = useRef(false);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
@@ -986,10 +1064,14 @@ export function App() {
     if (settings.preferredServerId) setSelectedServer(settings.preferredServerId);
   }, [settings.preferredServerId]);
 
-  const update = (next: GameSettings): void => {
+  /** store `next` as it is: `update` without the importer gate's write-back, for a reset */
+  const commit = (next: GameSettings): void => {
     // keep the legacy audio booleans in step with the volume sliders before this
     // blob reaches localStorage or the account (old clients read only those two)
-    const s = syncAudioMirrors(next);
+    // ...and keep `lastStandardSpec` in step, the standard robot ranked and record runs fall back
+    // to while the active one is an import (this is the one choke point every settings write
+    // passes through, so it is the one place that can see a standard robot go by)
+    const s = rememberStandardRobot(settingsRef.current, syncAudioMirrors(next));
     setSettings(s);
     saveSettings(s);
     if (accountUserId) {
@@ -997,6 +1079,11 @@ export function App() {
       saveTimer.current = setTimeout(() => void saveAccountSettings(s), 700);
     }
   };
+  /** every settings write from a screen: screens are shown `shown`, so where the importer is closed a
+   *  write made against the standard robot standing in for a stored import keeps that import active
+   *  (`keepImportActive`) and moves an edited standard robot into `lastStandardSpec` */
+  const update = (next: GameSettings): void =>
+    commit(importerOn ? next : keepImportActive(settingsRef.current, shownRef.current, next));
 
   /**
    * "EQUIP NOW" ON A COSMETIC — put a claimed decal (or any axis key) on the ACTIVE robot, the
@@ -1010,7 +1097,8 @@ export function App() {
     const axis = id.slice(0, i);
     const key = id.slice(i + 1);
     if (axis !== 'decal' && axis !== 'chassisColor' && axis !== 'accent' && axis !== 'plate') return;
-    const cur = settingsRef.current;
+    // the robot on screen: where the importer is closed, the standard one standing in for an import
+    const cur = shownOf(settingsRef.current);
     update({ ...cur, spec: { ...cur.spec, [axis]: key } });
   };
 
@@ -1344,10 +1432,19 @@ export function App() {
    * practice figure that flattered you relative to a record run would be worse than useless
    * for the one thing practice is for.
    */
-  const keepPracticeRun = (replay: Replay, result: ReplayResult): void => {
+  const keepPracticeRun = (replay: Replay, result: ReplayResult, pace?: PaceCurve): void => {
     const alliance = replay.setups[0]?.alliance ?? 'blue';
     const score = recordScore(result, alliance);
-    savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    const kept = savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // the run's pace curve, made while it was played, under the key the pace looks it up by: a
+    // new best is raced from the very next match instead of after a re-simulation. A dynamic
+    // import because the store reaches the replay simulator (`replayFidelity`), which is not in
+    // the first download; the game screen that hands this over has already loaded it.
+    if (kept && pace) {
+      void import('./pace/store').then(({ curveKey, storeCurve }) =>
+        storeCurve(curveKey(`l:${kept.id}`), kept.game, pace),
+      );
+    }
     // the homepage's games-played counter, signed in or not (the upload below is account-only)
     reportPlayed(replay.game ?? 'decode', 'practice');
     // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
@@ -1370,16 +1467,31 @@ export function App() {
    * the backlog for next time.
    */
   const flushPracticeRuns = async (): Promise<void> => {
-    if (!signedInRef.current || flushingPractice.current) return;
+    if (!signedInRef.current) return;
+    /* A TRIGGER THAT ARRIVES MID-FLUSH IS NOT DROPPED. The running pass iterates the backlog it
+       read when it STARTED, so a run finished while it was uploading (or a second trigger,
+       e.g. `online` right after sign-in) used to wait for the NEXT trigger — which, for a run
+       played offline, might be the next match. It asks for one more pass instead. */
+    if (flushingPractice.current) {
+      flushPracticeAgain.current = true;
+      return;
+    }
     flushingPractice.current = true;
     try {
-      for (const meta of pendingPracticeUploads()) {
-        const replay = loadPracticeReplay(meta.id);
-        if (!replay) continue; // body evicted by the local cap — nothing left to send
-        const run = await uploadPracticeRun(replay, meta.score, meta.game);
-        if (!run) break;
-        markPracticeUploaded(meta.id, run.id);
-      }
+      do {
+        flushPracticeAgain.current = false;
+        for (const meta of pendingPracticeUploads()) {
+          const replay = loadPracticeReplay(meta.id);
+          if (!replay) continue; // body evicted by the local cap — nothing left to send
+          const run = await uploadPracticeRun(replay, meta.score, meta.game);
+          // stop on the first failure, and do not spin: a rerun asked for now would fail too
+          if (!run) {
+            flushPracticeAgain.current = false;
+            break;
+          }
+          markPracticeUploaded(meta.id, run.id);
+        }
+      } while (flushPracticeAgain.current && signedInRef.current);
     } finally {
       flushingPractice.current = false;
     }
@@ -1656,6 +1768,19 @@ export function App() {
   const exitGame = (): void => {
     leaveSession();
     setTutorialRun(false);
+    // A TEST DRIVE goes back to the importer it came from, which finds its draft intact
+    const drive = testDriveRef.current;
+    if (drive) {
+      setTestDrive(null);
+      navigate('robotimport', { sub: drive.back });
+      return;
+    }
+    const comp = compReturnRef.current;
+    if (comp) {
+      compReturnRef.current = null;
+      navigate('competitions', { sub: `${comp}/matches` });
+      return;
+    }
     navigate('home');
   };
 
@@ -1683,6 +1808,17 @@ export function App() {
   const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
   /** the next `/game` mount runs the TUTORIAL (see `startTutorial`), cleared on the way out. */
   const [tutorialRun, setTutorialRun] = useState(false);
+  /**
+   * THE IMPORTER'S TEST DRIVE: free drive with the robot being imported, which is NOT the active
+   * robot (it may never be saved). React state for the tutorial's reason: not a preference, not
+   * synced, gone on a reload. `back` is the editor route to return to (a library id, or null).
+   */
+  const [testDrive, setTestDrive] = useState<{ spec: RobotSpec; back: string | null } | null>(null);
+  const testDriveRef = useRef(testDrive);
+  /** A COMPETITION MATCH returns to its competition's page, not home (see `exitGame`). Set when
+   *  the match starts from the play screen, cleared on the way out. */
+  const compReturnRef = useRef<string | null>(null);
+  testDriveRef.current = testDrive;
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
   // are untouched (this only guards the start actions). Info notices don't block.
@@ -1720,12 +1856,31 @@ export function App() {
      * the season the player is LEAVING against that season's rules, and refuse entry to a
      * BIOBUZZ room over a DECODE pose the player is not about to use.
      */
-    const cur = settingsRef.current;
+    // (`shownOf`: the robot the run will field, which is what the pose must be legal for)
+    const cur = shownOf(settingsRef.current);
     const startOk = startSelectionLegal(cur.game, cur.spec, cur.alliance, cur.startPose);
     if (loadActiveGame()) setBlockedByActive(true);
     else if (lockedOut) setStartBlocked(true);
     else if (restartPending) setStartBlocked(true);
     else if (!startOk) setBadStart(true);
+    else if (newVersion) setPendingStart(() => go);
+    else go();
+  };
+
+  /**
+   * THE IMPORTER'S TEST DRIVE (`ImportEditor`): free drive with the robot being imported.
+   *
+   * Every `guardStart` guard but ONE: start-pose legality. The run spawns on the named anchor
+   * (`GameView` clears `startPose` for it), so a custom pose tuned for another chassis is not in
+   * play and must not block it.
+   */
+  const startTestDrive = (spec: RobotSpec, back: string | null): void => {
+    const go = (): void => {
+      setTestDrive({ spec, back });
+      navigate('game');
+    };
+    if (loadActiveGame()) setBlockedByActive(true);
+    else if (lockedOut || restartPending) setStartBlocked(true);
     else if (newVersion) setPendingStart(() => go);
     else go();
   };
@@ -1798,9 +1953,10 @@ export function App() {
       // under an account that is gone and takes the screen back on a match nobody can play.
       //
       // ⚠️ THE EDGE IS LOAD-BEARING — a bare `if (!signedIn)` would be wrong. `AccountSync`
-      // unmounts on every trip out to a match, which is exactly the trip that parks a queue,
-      // and this effect re-runs on the way back; only a real signed-in → signed-out
-      // TRANSITION means the account went away.
+      // unmounts on every trip out to a match (and remounts between the shell and the ranked
+      // screen), which is exactly the trip that parks a queue, and this effect re-runs on the
+      // way back; only a real signed-in → signed-out TRANSITION means the account went away.
+      // `Matchmaking` keys its staged-match record on the same edge.
       dropQueue();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1893,14 +2049,17 @@ export function App() {
   if (screen === 'game') {
     return fullScreen(
       <GameView
-        settings={settings}
+        settings={shown}
         session={session}
         signedIn={signedIn}
         onExit={exitGame}
         onSettingsChange={update}
         editLayout={editMobileLayout}
         tutorial={tutorialRun}
+        testDrive={testDrive?.spec}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
+        recordMode={session && sessionKind === 'record' ? (sessionCoop ? 'duo' : 'solo') : undefined}
+        userId={accountUserId}
         onWatchReplay={(r) => {
           setReplayObj(r);
           // capture the seat NOW: `session` is torn down on the way out of the game
@@ -1937,7 +2096,7 @@ export function App() {
     const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
     return roomScreen(
       <Lobby
-        settings={settings}
+        settings={shown}
         onSettingsChange={update}
         /* Both exits from the lobby drop the handed-over socket reference, so a later,
            ordinary visit to this screen cannot re-adopt a room the player has left. */
@@ -2016,7 +2175,7 @@ export function App() {
   if (screen === 'record') {
     return fullScreen(
       <RecordRun
-        settings={settings}
+        settings={shown}
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
@@ -2034,7 +2193,7 @@ export function App() {
     const auto = pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin : undefined;
     return roomScreen(
       <Lobby
-        settings={settings}
+        settings={shown}
         onSettingsChange={update}
         config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record', true)}
@@ -2055,16 +2214,50 @@ export function App() {
   }
   if (screen === 'matchmaking') {
     return (
-      <Matchmaking
-        settings={settings}
-        signedIn={signedIn}
-        onStart={(s) => beginSession(s, 'ranked')}
-        onCancel={() => navigate('modes')}
-        onSignIn={() => navigate('account')}
-        onSettingsChange={update}
-        challenge={pendingChallenge ?? undefined}
-        onChallengeConsumed={() => setPendingChallenge(null)}
-      />
+      <>
+        {/* THE RANKED SCREEN NEEDS THE ACCOUNT ON A DIRECT LOAD. `signedIn` is set by
+            AccountSync alone, which the shell renders and this early return used to skip, so a
+            page load on /ranked (a reload, or the staged-match redirect above) never learned
+            who was signed in: a signed-in player was told "Ranked needs an account", and the
+            reload path for a found match had no account to rejoin with. Mounting it here too
+            is a remount on the way in and out, not an identity change: the session store hands
+            the same user straight back, and the settings load stays guarded by `syncedUser`. */}
+        {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
+        <Matchmaking
+          settings={shown}
+          signedIn={signedIn}
+          onStart={(s) => beginSession(s, 'ranked')}
+          onCancel={() => navigate('modes')}
+          onSignIn={() => navigate('account')}
+          onSettingsChange={update}
+          challenge={pendingChallenge ?? undefined}
+          onChallengeConsumed={() => setPendingChallenge(null)}
+        />
+      </>
+    );
+  }
+  if (screen === 'compmatch' && route.sub) {
+    const slug = route.sub;
+    return (
+      <>
+        {/* the account, for the reason the ranked screen mounts it: this is an early return */}
+        {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
+        <LoadBoundary what="the match" fallback={<p className="ds-loading">Loading…</p>}>
+          <CompMatchPlay
+            slug={slug}
+            settings={shown}
+            signedIn={signedIn}
+            onSettingsChange={update}
+            onSelectGame={selectGame}
+            onStart={(s) => {
+              compReturnRef.current = slug;
+              beginSession(s, 'custom');
+            }}
+            onBack={() => navigate('competitions', { sub: slug })}
+            onSignIn={() => navigate('account')}
+          />
+        </LoadBoundary>
+      </>
     );
   }
   if (screen === 'replay' && (route.replayId || replayObj)) {
@@ -2075,6 +2268,16 @@ export function App() {
         viewerRobotId={replayObj ? replayRobot : null}
         adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
+        paceKeys={
+          settings.pace === 'replay'
+            ? Object.values(settings.paceReplays ?? {}).map((r) => r.key)
+            : undefined
+        }
+        onUsePace={(game, ref) => {
+          // the curve can take seconds to make, so read the settings as they are when it lands
+          const cur = settingsRef.current;
+          update({ ...cur, pace: 'replay', paceReplays: { ...cur.paceReplays, [game]: ref } });
+        }}
       />
     );
   }
@@ -2117,6 +2320,17 @@ export function App() {
       {/* the standing "still queued" bar — only appears when a search is PARKED,
           i.e. the player queued and then went somewhere else */}
       <QueueBar onOpen={openParkedQueue} />
+      {/* a competition match of this player's that is called (0059): the queue bar's twin */}
+      {multiplayer && (
+        <CompCallBar
+          signedIn={signedIn}
+          muted={settings.audio.volume.master <= 0}
+          onJoin={(slug, g) => {
+            selectGame(g);
+            navigate('compmatch', { sub: slug });
+          }}
+        />
+      )}
       <AppShell
         active={navFor(screen)}
         onNav={goNav}
@@ -2160,13 +2374,19 @@ export function App() {
               blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
               onEquipCosmetic={equipCosmetic}
             />
+            {/* THE NOTICE POP-UP (0057): what a moderator did about this player's report, match
+                or standing. Same place and the same waits as the claim dialog, and it yields to
+                that dialog too, so the two backdrops never stack. */}
+            <NoticeDialog
+              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+            />
           </UsernameGate>
         </TermsGate>
       )}
 
       {screen === 'home' && (
         <HomeMenu
-          settings={settings}
+          settings={shown}
           multiplayer={multiplayer}
           discord={inActivity ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={goNav}
@@ -2183,6 +2403,7 @@ export function App() {
       {screen === 'modes' && (
         <ModeSelect
           game={settings.game}
+          importedActive={!!shown.spec.imported}
           multiplayer={multiplayer}
           signedIn={signedIn}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
@@ -2209,6 +2430,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          onCompetitions={() => navigate('competitions')}
           compete={!inActivity}
           /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
              no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
@@ -2338,13 +2560,32 @@ export function App() {
 
       {screen === 'configure' && (
         <Configure
-          settings={settings}
+          settings={shown}
           onChange={update}
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
+          onImport={importerOn ? (id) => navigate('robotimport', { sub: id ?? null }) : undefined}
           onEditTouchControls={editTouchControls}
           onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
+      )}
+
+      {screen === 'robotimport' && importerOn && (
+        <LoadBoundary what="the robot importer" fallback={<p className="ds-loading">Loading the importer…</p>}>
+          <ImportEditor
+            key={`${settings.game}:${route.sub ?? 'new'}`}
+            settings={settings}
+            editId={route.sub}
+            onBack={() => navigate('configure', { sub: 'robot' })}
+            onSaved={(spec) => {
+              // a saved (or added) import becomes the active robot, as a picked card does
+              const cur = settingsRef.current;
+              update({ ...cur, spec, assists: coerceAssists(spec.assists, PLAYER_ASSISTS) });
+              navigate('configure', { sub: 'robot' });
+            }}
+            onTestDrive={(spec) => startTestDrive(spec, route.sub)}
+          />
+        </LoadBoundary>
       )}
 
       {screen === 'records' && (
@@ -2371,7 +2612,7 @@ export function App() {
           username={route.username}
           signedIn={signedIn}
           viewerUsername={viewerUsername}
-          nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile }}
+          nav={{ game: settings.game, onWatch: watchReplay, onOpenProfile: openProfile, onOpenCompetition: (slug) => navigate('competitions', { sub: slug }) }}
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
@@ -2392,13 +2633,29 @@ export function App() {
         />
       )}
       {screen === 'account' && route.sub !== 'appearance' && (
-        <Account settings={settings} onChange={update} onDonate={() => navigate('donate')} onTab={profileTab} />
+        // a reset is stored as given (`commit`): through `update` the gate would keep a hidden import
+        <Account settings={shown} onChange={update} onReset={commit} onDonate={() => navigate('donate')} onTab={profileTab} />
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
+      {screen === 'competitions' && (
+        <LoadBoundary what="competitions" fallback={<p className="ds-loading">Loading competitions…</p>}>
+          <Competitions
+            sub={route.sub}
+            game={settings.game}
+            signedIn={signedIn}
+            onRoute={(sub) => navigate('competitions', { sub })}
+            onPlay={(slug) => navigate('compmatch', { sub: slug })}
+            onWatch={spectateRoom}
+            onWatchReplay={(id) => watchReplay(id)}
+            onProfile={openProfile}
+            onSignIn={() => navigate('account')}
+          />
+        </LoadBoundary>
+      )}
       {screen === 'admin' && isAdmin && (
         <LoadBoundary what="the console" fallback={<p className="ds-loading">Loading the console…</p>}>
-          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />
+          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} onCompetition={(sub) => navigate('competitions', { sub })} />
         </LoadBoundary>
       )}
       {screen === 'dev' &&

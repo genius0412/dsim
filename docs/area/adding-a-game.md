@@ -1,4 +1,4 @@
-<!-- governs: src/games/types.ts, src/games/index.ts, src/games/sim.ts, src/games/module.ts, src/seasons.ts, src/seasonVisibility.ts -->
+<!-- governs: src/games/types.ts, src/games/index.ts, src/games/sim.ts, src/games/module.ts, src/games/importChecks.ts, src/games/importMechChecks.ts, src/seasons.ts, src/seasonVisibility.ts -->
 # Adding a game
 
 FOUR registrations, and all four are silent when missed.
@@ -59,6 +59,24 @@ the game's own HUD slice, opaque (`unknown`) because only its own components rea
 is SOLID to a ground element". Absent ⇒ the shared `robotSolids`, i.e. DECODE's front funnel;
 BIOBUZZ fills it because its sweeper is a roller bar on whichever edge `intakeMount` names, and
 DECODE/CR leave it empty so `src/sim/world.ts` is untouched.
+
+**Competition ranking points** are optional too: a `CmTable` in `src/competition/manual.ts` (the
+game's Table 10-2/10-3/13-1) and `GameSimModule.rankFacts(world, at)` reporting the same measure
+ids, each at the instant the manual assesses it (`'autoEnd'`, `'teleopStart'` or `'final'`; the
+room merges them). The keys are string literals on purpose: game code never imports `manual.ts`,
+which belongs to the competitions chunk. `scripts/smoke.ts` checks the two key sets agree.
+Without both, a competition of the game ranks on win, tie and loss alone.
+
+An `ImportMechSlot` (`<game>/importChecks.ts`) is what the imported-robot placement editor asks a
+game: `handles` (the spans and points the player may drag), `defaults` (the pre-fill, coerced) and
+`issues` (plain-language checks, `block` stops Save). **It is NOT a `GameSimModule` slot**: a new game
+registers its slot in `src/games/importMechChecks.ts`, whose `validateImportedMech` /
+`defaultImportedMech` / `mechHandles` the editor (`robotImport/ui/placement.ts`) and the smoke suite
+call; the game-neutral mouth/height checks and pre-fill helpers are `src/games/importChecks.ts`.
+It was a slot on the sim module until the bundle audit found the three games' check code in the
+entry chunk of every page (~3 KB gzipped) for a screen one player in a hundred opens, so **do not
+import `importMechChecks.ts` from the sim registry, the server, a renderer or the robot page**.
+Not registered ⇒ DECODE's checks, the same fallback as `simModuleFor`.
 
 `GameUiSpec` (`ui`) is an earlier attempt at the same idea and has never had a reader.
 It is left alone deliberately; do not build on it.

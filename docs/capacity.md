@@ -5,17 +5,29 @@ Measured 2026-09-10 on branch `perf-load`, against the real server (`npm run ser
 exactly as `game.ts` does. Raw JSON in `.loadtest-out/`, reproduced by `scripts/loadsweep.sh` and
 tabulated by `scripts/loadsummary.ts`.
 
-## ⚠️ MULTI-CORE — URGENT, NOT STARTED (owner, 2026-09-24)
+## MULTI-CORE — BUILT 2026-09-27 (`SIM_WORKERS`)
 
-The game server is ONE Node process on ONE core: nothing in `server/` uses `worker_threads` or
-`cluster`. Every room on a machine shares that core, so a bigger VM (`shared-cpu-4x`, a
-`performance-2x`) buys headroom for the OS and nothing for rooms. This matters more now that
-every online BIOBUZZ room is a 3D solve (Act 2, 2026-09-24). Until it is built, satellites that
-carry real load stay on `performance-1x` (one dedicated core), and `SATELLITE_SIZES` in
-`scripts/fly-deploy.sh` says so. The owner wants this done as soon as possible after the Act 2
-release. The obvious shape is rooms spread over worker threads, each worker stepping its own
-rooms, with the socket layer and the room-code routing kept on the main thread. Rooms already
-live in process memory and nothing crosses between rooms, so that seam exists.
+Asked for by the owner on 2026-09-24. Rooms can run on `worker_threads`, each worker stepping its
+own rooms, with sockets, matchmaker, database and room-code registry on the main thread
+(`server/roomHost.ts`; rules in `docs/area/netcode.md`). `fly.toml` sets `SIM_WORKERS=auto`: one
+worker per vCPU beyond the first, so a `performance-1x` runs in-process as before and a bigger
+VM now DOES add rooms. Measured on the Windows dev box with `scripts/loadtest.ts`:
+
+| driven DECODE rooms | server | snapshot gap p50 / p99 | jitter | notes |
+|---|---|---|---|---|
+| 20 × 1v1 | in-process | 33.8 / 48 ms | 3.9 ms | socket thread 78% busy, RTT p99 10 ms |
+| 20 × 1v1 | 1 worker | 34.2 / 46 ms | 3.6 ms | socket thread 14%, worker 71%, RTT p99 3 ms |
+| 30 × 1v1 | in-process | **79 / 280 ms** | 36 ms | saturated, shedding |
+| 30 × 1v1 | 4 workers | 32.9 / 49 ms | 2.0 ms | workers 31–36% busy |
+| 60 × 1v1 | 8 workers | 33.0 / 51 ms | 3.2 ms | workers ~40% busy, 4.8 cores |
+| 30 × 2v2 | 8 workers | 32.8 / 50 ms | 2.5 ms | socket thread 38% busy (120 clients) |
+
+The ceiling moves to the SOCKET thread: about 0.3% of it per connected client, mostly `writev`
+and zlib, so one machine tops out near ~250 clients whatever its core count (240 clients on 8
+workers saturated it here). These are ratios from a Windows box, like the rest of this file;
+re-measure on Linux before sizing a fleet on them. Satellites that carry load are still
+`performance-1x` (`SATELLITE_SIZES` in `scripts/fly-deploy.sh`): upsizing one now adds rooms,
+and its `MAX_ROOMS` has to rise with it.
 
 **Read the next section before quoting any number from this file.** Half of what a capacity model
 normally reports is not measurable on the machine these runs came from, and the half that is
@@ -160,6 +172,10 @@ Snapshot anatomy (`slimWorld`, solo DECODE, ~2.3 KB, resent 30×/s):
 ---
 
 ## 3. The architectural ceiling: one process ≈ one core
+
+> Superseded 2026-09-27 by room workers (`SIM_WORKERS`, see "MULTI-CORE" at the top): rooms now
+> step on as many cores as the machine has, and the ceiling is the socket thread. Kept as the
+> reasoning that led there.
 
 Node is single-threaded. The room loop, the snapshot broadcast, the JSON encoding and the socket
 writes all run on one event loop. **A bigger Fly VM does not multiply room capacity**, because
@@ -349,6 +365,97 @@ machine's memory at full population.
 | 11 | **Spectators bypassed admission entirely.** `spectate` attaches to an existing room, so the `MAX_ROOMS` check never runs — no room slot, no sign-in, no cap. Each watcher takes the same 30 Hz snapshot stream a driver does, so one shared match link was an unbounded fan-out on a machine whose whole capacity model is per-room, and egress is the cliff reached first (§5). | **FIXED** — `MAX_SPECTATORS_PER_ROOM` (24) + `MAX_SPECTATORS` (192), both env-overridable. Same class of number as `MAX_ROOMS`: runaway guards set from what a crowd plausibly looks like, **not** from a measured spectator cost, because there is none yet. |
 | 12 | **An unbounded outbound queue per socket.** Nothing read `ws.bufferedAmount`, so a socket that stopped draining accumulated snapshots that were historical by the time they arrived — invisible to the room, which only ever knew it had *called* `send`. | **FIXED** — `SNAP_BACKLOG_BYTES` (256 KB): a backed-up client is skipped and unprimed, so the next snapshot it receives is a full keyframe of the world as it is then. Coalescing, not dropping; a delta keyed to a frame it never read would be worse than nothing. |
 | 13 | **No inbound `maxPayload` and no per-socket message rate limit.** ws's default cap is 100 MiB per socket, and nothing bounded how fast one socket could make the event loop — which runs every room in the region — run `JSON.parse`. | **FIXED** — `maxPayload` 64 KiB (three orders above the ~100 B hot path, an order above the largest legitimate `join`) and 240 msg/s per socket, 4× what a 60 Hz client produces; a sustained flood past 2,000/s is closed. |
+
+### 7b. Per-room CPU and snapshot spacing — the 2026-09-27 pass
+
+Asked by a lag report on the SOLO RECORD screen with ~30 players online and 50 ms ping — i.e. not
+a saturated fleet. Measured headlessly through the real `Room` (a scripted busy driver sending real
+`input` frames), on a Linux 4-vCPU box. The box is shared, so the ABSOLUTE times carry the §0
+caveat; every before/after below is an interleaved A/B on the same box in the same hour. The
+harness lives outside the repo; `npm run costprobe` is the in-repo instrument and was re-run
+before and after.
+
+**Where a warm solo room's tick goes** (full match): DECODE 0.86 ms (sim 87%, broadcast ~10%),
+Chain Reaction 1.12 ms (sim 54%, **broadcast 43%**), BIOBUZZ 3D 0.93 ms (sim 83%, broadcast 15%).
+Input handling, `frameCommands`, the recorder, participation and settle are under 3% together.
+GC is 4–9% of wall. No synchronous event-loop blocker was found (a match-end `matchResult` with
+its 209 KiB replay encodes in 0.9 ms; a practice upload parses and sanitizes in 1.7 ms; the
+presence beat and `siteStatus` are O(rooms) every 5 s).
+
+#### Snapshot encode (`server/snapshotWire.ts`)
+
+The per-ball diff key was `JSON.stringify(ball, round3)` for every ball on every broadcast; a
+replacer turns V8's fast serializer off. A rounded shadow walk now decides "changed", only moved
+balls are stringified, and the body splices those strings. **Wire bytes unchanged** — costprobe's
+bytes/snapshot column is identical to the byte before and after, and `npm test` "snapshot wire:"
+asserts byte identity against the old encoder on every frame.
+
+| per snapshot, real mid-match frames | before | after |
+|---|---|---|
+| CR diff (300 balls, ~37 changed) | 534 µs | 325 µs |
+| CR body | 126 µs | 81 µs |
+| DECODE diff | 72 µs | 29 µs |
+| BIOBUZZ 3D diff | 129 µs | 80 µs |
+
+`npm run costprobe`, cores/room (two interleaved runs each, before → after):
+
+| scenario | before | after |
+|---|---|---|
+| DECODE solo | 0.068 / 0.069 | 0.064 / 0.064 |
+| Chain Reaction solo | 0.065 / 0.067 | **0.056 / 0.052** |
+| Chain Reaction 2v2 | 0.087 / 0.087 | 0.078 / 0.079 |
+| BIOBUZZ 3D solo | 0.059 / 0.059 | 0.055 / 0.055 |
+| BIOBUZZ 3D 2v2 | 0.081 / 0.080 | 0.081 / 0.077 |
+
+#### Loop timing (`server/tickScheduler.ts`)
+
+On Linux, idle, `setInterval(1000/60)` fires every **16.32 ms (61.3 Hz)**. With the per-room
+`Date.now()` accumulator some fires ran 0 steps and some 2, so even ONE room sent snapshots 16 or
+48 ms apart. Every room now steps off one self-correcting `performance.now()` deadline, with the
+old catch-up rules applied once per process, and rooms alternate snapshot parity. Real `Room`s,
+N solo record rooms in one process, A/B interleaved (share of snapshot gaps more than 8 ms off
+33.3 ms; sd of the gap):
+
+| rooms | before | after |
+|---|---|---|
+| 1 DECODE (two runs) | 8.1% / 7.0%, sd 4.5 / 4.2, p99 49 ms | **0.1% / 0.0%, sd 1.3 / 0.9, p99 37 ms** |
+| 10 DECODE | 9.7%, sd 5.2, p99 50 ms | **1.7%, sd 3.7, p99 41 ms** |
+| 10 Chain Reaction | 19.9%, sd 7.1, p99 52 ms | **3.5%, sd 3.6, p99 44 ms** |
+
+CPU was within noise (±5%). ⚠️ One trade-off to watch: the rooms now step back to back inside
+one timer turn, so event-loop lag p99 (the time an INPUT frame can wait) rose from ~5 to ~13 ms
+at 10 rooms — every room's work used to be interleaved with I/O and is now one block. Still
+under a tick, and the snapshot spacing it buys is the thing players see; if a busy machine's
+input latency ever matters more, yield between rooms inside a turn.
+
+At 20 rooms per core both loops shed (DECODE 26–27 snapshots/s, CR 8): no scheduler fixes
+saturation. That remains multi-core (top of this file).
+
+#### Cold first match (`server/warmup.ts`)
+
+A fresh process's first match paid for V8 compiling the sim. First real match after boot, 1200
+ticks, CPU per tick, without → with the warm-up (900 ticks per game, ~7 s of CPU spread over
+~9 s after listen, sliced so `/health` and joins are served throughout):
+
+| game | cold | warmed |
+|---|---|---|
+| DECODE | 2.51 / 2.57 ms | 1.54 / 1.65 ms |
+| Chain Reaction | 1.56 / 1.43 ms | 0.94 / 1.03 ms |
+| BIOBUZZ 3D | 2.64 / 2.51 ms | 1.36 / 1.27 ms |
+
+Ticks over 8 ms roughly halve; 1800 warm ticks per game halves them again at twice the boot CPU.
+Satellites auto-stop, so this is the match the first player on a woken machine used to get.
+`WARMUP=0` disables it.
+
+#### Not done, to try on Fly
+
+- **GC flag A/B.** `--max-semi-space-size=64` in the Dockerfile CMD cut Chain Reaction minor GCs
+  267 → 102 and GC time by 35% on this box, but lengthened each pause (4.0 → 6.4 ms mean).
+  Marginal both ways; compare `/api/perf` loop lag and `snapSendGapMs` on one satellite with and
+  without it before adopting.
+- Output-changing work (needs a `SIM_VERSION` bump or a full-match `worldHash` A/B): reusing a
+  statics-only Rapier world instead of rebuilding it every tick (~25–30% of a DECODE room),
+  Chain Reaction's `separateParticles` (21.5%), BIOBUZZ 3D's JS↔wasm crossings (8.4%).
 
 ---
 

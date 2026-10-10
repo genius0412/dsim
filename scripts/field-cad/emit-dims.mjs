@@ -116,14 +116,28 @@ export function buildDims(m) {
   const pitch = r3(m.tiles.pitch);
   const tileSpan = agree([...m.tiles.extent.x.map(Math.abs), ...m.tiles.extent.y.map(Math.abs)]);
   must(tileSpan.residual <= 0.01, `the tile field is not square: residual ${tileSpan.residual}in`);
-  const seams = [...m.tiles.x0Seams, m.tiles.extent.x[1]].map(r3);
-  must(seams.length === 7, `expected 6 tile seams + the closing edge, got ${seams.length}`);
+  // THE JOINTS, NOT THE BOUNDING BOXES. `x0Seams` is each tile column's bbox MINIMUM, and an interior
+  // tile's bbox runs out to the tips of its interlock tabs, so it sits half an interlock off the
+  // joint. A joint is the middle of the band two neighbours' tabs share, [x0[i], max of tile i−1];
+  // tile i−1's max is not in the measurements, but the tiles are laid 180°-point-symmetric (the
+  // extent is, residual below), so it is −x0[6−i].
+  const x0 = m.tiles.x0Seams;
+  must(x0.length === 6, `expected 6 tile columns, got ${x0.length}`);
+  const joints = [1, 2, 3, 4, 5].map((i) => {
+    const band = -x0[6 - i] - x0[i];
+    must(band > 0.5 && band < 1.2, `tile columns ${i - 1}/${i} do not interlock: a ${band}in band`);
+    return r3((x0[i] - x0[6 - i]) / 2);
+  });
+  const jointPitch = agree(joints.slice(1).map((j, i) => j - joints[i]));
+  must(jointPitch.residual <= 0.01, `the tile joints are not evenly spaced: residual ${jointPitch.residual}in`);
+  const seams = [r3(x0[0]), ...joints, r3(m.tiles.extent.x[1])];
   notes.push(
     `TILE_PITCH   ${pitch}  = tiles.pitch (a real FTC soft tile is 23.53 in on centre, not 24 — this is the whole field-size finding).`,
   );
   notes.push(
-    `TILE_SEAMS   ${seams.length} lines = tiles.x0Seams + tiles.extent.x[1]. The seams are NOT evenly spaced (23.176 … 23.986): the tile bodies` +
-      `\n//                are 24.312 with interlock tabs, so the grid is emitted as MEASURED POSITIONS and TILE_PITCH is their mean.`,
+    `TILE_SEAMS   ${seams.length} lines = the two perimeter edges and the five tile JOINTS, each the middle of the band where two columns'` +
+      `\n//                tabs overlap (tiles.x0Seams[i] .. −x0Seams[6−i], by the layout's point symmetry). The joints are evenly spaced at` +
+      `\n//                ${jointPitch.value}in (residual ${jointPitch.residual}); the outer tiles are cut straight and run ${r3(joints[0] - seams[0])}in. TILE_PITCH is the mean.`,
   );
   notes.push(`TILE_SPAN_HALF ${tileSpan.value}  = mean |tiles.extent.{x,y}|, residual ${tileSpan.residual}in — the tiles stop ${r3(half.value - tileSpan.value)}in short of the wall.`);
 
@@ -449,7 +463,7 @@ export function renderDims(measurementsJson) {
   L.push(`export const TILE_PITCH = ${num(d.TILE_PITCH)};`);
   L.push(`/** half the tiled floor's own span (in) — the tiles stop short of the wall. */`);
   L.push(`export const TILE_SPAN_HALF = ${num(d.TILE_SPAN_HALF)};`);
-  L.push(`/** the seven measured seam lines, on both axes (in). Unevenly spaced — see the header. */`);
+  L.push(`/** the seven seam lines, on both axes (in): the two perimeter edges and the five tile joints — see the header. */`);
   L.push(`export const TILE_SEAMS: readonly number[] = [${d.TILE_SEAMS.map(num).join(', ')}];`);
   L.push(``);
   L.push(`/** a FLOWER's ring-bore centre, off its own wall's inner face (in). */`);
