@@ -587,7 +587,14 @@ const BASELINE = {
   // 2026-10-01, THE IMPORTED ROBOT: 226.59 -> 231.54 (+4.95), MEASURED. `renderImported.ts` (+2.86) and
   // three.js moving into a chunk the importer shares (+1.98): see the RE-MEASURED entry above. 18 KB of
   // ceiling left.
-  scene: { gzip: 231.54 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-10-10, THE PHOTOGRAPHED VENUES: 231.54 -> 237.12, MEASURED, which crossed the tolerance, so
+  // the baseline moves to it. The base it branched from (be3dc944) builds 234.35, so +2.81 is drift
+  // that had crept in under the tolerance and +2.77 is this pass: `renderPhotoVenue.ts` (the
+  // projection's two shaders, the backdrop loader and its failure memory, the contact band) and
+  // `renderScene.ts`'s venue swap and photo wiring. The photographs themselves are static files
+  // under `public/venues/`, not chunks. 12.9 KB of ceiling left.
+  scene: { gzip: 237.12 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:
