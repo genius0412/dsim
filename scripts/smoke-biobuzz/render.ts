@@ -249,6 +249,18 @@ import {
   poseBoxTubeRig,
   wheelKindOf,
 } from '../../src/games/biobuzz/scene/renderRobots';
+// ── the High chassis (gfx/robot-detail, 2026-10-10): its own exports, in a block of their own ──
+import {
+  BB_CAP_SCREW_H,
+  BB_PLATE_BAND,
+  BB_PLATE_MIN_CUT,
+  BB_PLATE_WEB,
+  BB_SIDE_PLATE_CUT_H,
+  BB_SIGN_LAND_HALF,
+  bbCapFasteners,
+  bbFrameCacheStats,
+  bbSidePlateCut,
+} from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
 import { BB_MOUNT_POSITIONS, bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
 import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbMuzzleLocal } from '../../src/games/biobuzz/robot';
@@ -1797,6 +1809,7 @@ export function renderChecks(check: Check): void {
   drawnHeightChecks(check);
   endPlateChecks(check);
   robotOverlapChecks(check);
+  robotDetailChecks(check);
   frontBackChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
@@ -2893,6 +2906,12 @@ function robotOverlapChecks(check: Check): void {
       ['siderollers+twin', mk({ intakeMount: 'frontback', bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } })],
       ['swerve+side+tube', mk({ drivetrain: 'swerve', intakeMount: 'side', bbMech: { launcher: { kind: 'turret', mount: 'front', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'backright' }, intake: { kind: 'siderollers' } } })],
       ['ramp+dumper', mk({ bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'ramp' } } })],
+      // the High chassis' cut side plates at the size extremes, on the drivetrains the presets
+      // above do not already cover at that size (2026-10-10)
+      ['tank 13.5x14.5', mk({ drivetrain: 'tank', length: 13.5, width: 14.5 })],
+      ['butterfly 13.5x14.5', mk({ drivetrain: 'butterfly', length: 13.5, width: 14.5 })],
+      ['xdrive 18x18', mk({ drivetrain: 'xdrive', length: 18, width: 18 })],
+      ['swerve 18x18 dumper', mk({ drivetrain: 'swerve', length: 18, width: 18, bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } } })],
     ];
     type Tri = { p: THREE.Vector3[]; n: THREE.Vector3; d: number; key: string; sn: THREE.Vector3; name: string };
     const fights: string[] = [];
@@ -3020,6 +3039,318 @@ function robotOverlapChecks(check: Check): void {
     check('overlap/turret rest: the default build still rests facing forward',
       (def.userData.turretHeads as THREE.Group[]).every((h) => h.rotation.z === 0), String((def.userData.turretHeads as THREE.Group[]).map((h) => h.rotation.z)));
     disposeRobotGroup(def);
+  } finally {
+    if (!hadDoc) delete (globalThis as { document?: unknown }).document;
+  }
+}
+
+/**
+ * ⚠️ **THE HIGH CHASSIS: FORM AND FINISH, AND LOW IS TODAY'S ROBOT** (owner, 2026-10-10: "Make the
+ * robots more high quality"). `renderRobots.ts`'s `ROBOT_LOD` lets the detail level (`low` on Low
+ * and Medium, `high` on High, Ultra, Extreme and the fixed-High exports) break every chassis edge,
+ * cut the outer side plates round the wheels and screw the top caps down. Pinned here:
+ *  (1) LOW IS NOT HEAVIER — per build, Low's triangles, meshes and shadow casters are exactly the
+ *      2026-10-09 counts (be3dc944), and no Low chassis part has a chamfer's corner facet;
+ *  (2) THE BUDGET — High stays within +7,000 triangles, +2 meshes and +1 caster of its own
+ *      2026-10-09 count, and the screws cast nothing;
+ *  (3) THE OUTLINE — every chassis part's bounding box is the same on both levels, inside the
+ *      frame and under the low body;
+ *  (4) THE SIDE PLATE — every window is centred on a wheel `buildWheels` puts there, nothing cuts
+ *      the sign land, webs ≥ 0.4, no cut under 0.45, over every drivetrain and size;
+ *  (5) THE SCREWS — on a top-cap piece, clear of every mechanism at their own height;
+ *  (6) THE CACHE — bounded over builder-style rebuilds, and a live group's buffers are never freed.
+ */
+function robotDetailChecks(check: Check): void {
+  const hadDoc = 'document' in globalThis;
+  const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {}, width: 10 }) });
+  if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
+  try {
+    const mk = (extra: Record<string, unknown>): RobotSpec => coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, ...extra } as RobotSpec);
+    const count = (g: THREE.Object3D): { tris: number; meshes: number; casters: number } => {
+      let tris = 0;
+      let meshes = 0;
+      let casters = 0;
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        meshes++;
+        if (m.castShadow) casters++;
+        tris += (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count) / 3;
+      });
+      return { tris: Math.round(tris), meshes, casters };
+    };
+    // ── (1) + (2): the counts measured at be3dc944, before any of this existed — [low, high], each
+    // [triangles, meshes, casters]
+    type Row = [string, RobotSpec, [number, number, number], [number, number, number]];
+    const AT: Record<string, [[number, number, number], [number, number, number]]> = {
+      Pollinator: [[10728, 39, 37], [22416, 39, 37]],
+      Forager: [[5312, 39, 37], [20216, 39, 37]],
+      Skimmer: [[17536, 53, 51], [28080, 53, 51]],
+      Sniper: [[10852, 63, 61], [17284, 63, 61]],
+      StarterBot: [[8816, 43, 41], [18464, 43, 41]],
+    };
+    const PINNED: Row[] = [
+      ...[...BB_PRESETS, ...BB_STARTER_BOTS].map((s): Row => [s.name, coerceBiobuzzSpec(s as RobotSpec), ...(AT[s.name] ?? [[0, 0, 0], [0, 0, 0]])]),
+      ['tank+fixed+siderollers', mk({ drivetrain: 'tank', bbMech: { launcher: { kind: 'fixed', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } }), [9528, 55, 53], [19176, 55, 53]],
+      ['mec+turret+tube', mk({ bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } }), [11548, 51, 49], [23236, 51, 49]],
+      ['ramp+dumper+tube', mk({ bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'ramp' } } }), [5496, 44, 42], [17184, 44, 42]],
+      ['13.5x14.5 tank', mk({ length: 13.5, width: 14.5, drivetrain: 'tank' }), [9152, 43, 41], [18800, 43, 41]],
+      ['18x18 xdrive', mk({ length: 18, width: 18, drivetrain: 'xdrive' }), [11384, 39, 37], [21928, 39, 37]],
+      ['18x18 butterfly', mk({ length: 18, width: 18, drivetrain: 'butterfly' }), [11672, 47, 45], [29792, 47, 45]],
+    ];
+    check('robot/lod: the pinned table covers every preset and starter bot (else a new one went unmeasured)', PINNED.every((p) => p[2][0] > 0), PINNED.filter((p) => !p[2][0]).map((p) => p[0]).join(', '));
+    // the chassis meshes, by name: what the High chassis changes
+    const CHASSIS = /^robot:(frame:(skin|rails)|\d+:(endplate|front:bar|front:arrow|rear:bar))/;
+    const corners = (g: THREE.Object3D): number => {
+      let n = 0;
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      const c = new THREE.Vector3();
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || !CHASSIS.test(m.name)) return;
+        const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const idx = m.geometry.index;
+        const cnt = idx ? idx.count : pos.count;
+        for (let t = 0; t < cnt; t += 3) {
+          a.fromBufferAttribute(pos, idx ? idx.getX(t) : t);
+          b.fromBufferAttribute(pos, idx ? idx.getX(t + 1) : t + 1);
+          c.fromBufferAttribute(pos, idx ? idx.getX(t + 2) : t + 2);
+          const nn = b.clone().sub(a).cross(c.clone().sub(a));
+          if (nn.lengthSq() < 1e-12) continue;
+          nn.normalize();
+          // a chamfered box's corner facet (or a bevelled extrusion's) leans on all three axes
+          if (Math.abs(nn.x) > 0.3 && Math.abs(nn.y) > 0.3 && Math.abs(nn.z) > 0.3) n++;
+        }
+      });
+      return n;
+    };
+    const boxes = (g: THREE.Object3D): Map<string, THREE.Box3> => {
+      g.updateMatrixWorld(true);
+      const out = new Map<string, THREE.Box3>();
+      g.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh && CHASSIS.test(o.name)) out.set(o.name, new THREE.Box3().setFromObject(o));
+      });
+      return out;
+    };
+    const lowBad: string[] = [];
+    const highBad: string[] = [];
+    const outline: string[] = [];
+    const outside: string[] = [];
+    const lines: string[] = [];
+    let lowCorners = 0;
+    let highCorners = 0;
+    let worst = 0;
+    let screwsCast = 0;
+    let screwMeshes = 0;
+    for (const [name, spec, lo, hi] of PINNED) {
+      const gl = buildRobotGroup(spec, 1, 'red', 'low');
+      const gh = buildRobotGroup(spec, 1, 'red', 'high');
+      const cl = count(gl);
+      const ch = count(gh);
+      if (cl.tris !== lo[0] || cl.meshes !== lo[1] || cl.casters !== lo[2]) lowBad.push(`${name} ${cl.tris}/${cl.meshes}/${cl.casters} vs ${lo.join('/')}`);
+      if (ch.tris > hi[0] + 7000 || ch.meshes > hi[1] + 2 || ch.casters > hi[2] + 1) highBad.push(`${name} ${ch.tris}/${ch.meshes}/${ch.casters} vs ${hi.join('/')}`);
+      worst = Math.max(worst, ch.tris - hi[0]);
+      lines.push(`${name} +${ch.tris - hi[0]} tris +${ch.meshes - hi[1]} meshes`);
+      lowCorners += corners(gl);
+      highCorners += corners(gh);
+      const bl = boxes(gl);
+      const bh = boxes(gh);
+      for (const [n, b] of bh) {
+        const l = bl.get(n);
+        // the same box — except the structure, whose inner plates stop under the deck on High
+        // (`buildFrame`): there the High box sits inside the Low one
+        const same = !!l && l.min.distanceTo(b.min) <= 1e-4 && l.max.distanceTo(b.max) <= 1e-4;
+        const inside = !!l && l.clone().expandByScalar(1e-4).containsBox(b);
+        if (n === 'robot:frame:rails' ? !inside : !same) outline.push(`${name}: ${n}`);
+        // the end bars stand above the low body by design (the 2026-09-22 ruling); nothing else does
+        const top = /bar|arrow/.test(n) ? BB_DECK_Z + BB_END_BAR_H : BB3_CHASSIS_TOP_Z;
+        const hl = spec.length / 2;
+        const hw = spec.width / 2;
+        if (b.min.x < -hl - 1e-6 || b.max.x > hl + 1e-6 || b.min.y < -hw - 1e-6 || b.max.y > hw + 1e-6 || b.min.z < -1e-6 || b.max.z > top + 1e-6) outside.push(`${name}: ${n}`);
+      }
+      if (bl.size !== bh.size) outline.push(`${name}: ${bl.size} chassis meshes on Low, ${bh.size} on High`);
+      gh.traverse((o) => {
+        if (o.name !== 'robot:1:fasteners') return;
+        screwMeshes++;
+        if ((o as THREE.Mesh).castShadow) screwsCast++;
+        const b = new THREE.Box3().setFromObject(o);
+        if (b.min.x < -spec.length / 2 || b.max.x > spec.length / 2 || b.min.y < -spec.width / 2 || b.max.y > spec.width / 2 || b.max.z > BB3_CHASSIS_TOP_Z) outside.push(`${name}: screws`);
+      });
+      if (gl.getObjectByName('robot:1:fasteners')) outline.push(`${name}: screws on Low`);
+      disposeRobotGroup(gl);
+      disposeRobotGroup(gh);
+    }
+    check(`robot/lod: Low is today's robot — triangles, meshes and casters are the 2026-10-09 counts on all ${PINNED.length} builds`, lowBad.length === 0, lowBad.join('; '));
+    check('robot/lod: ...and no Low chassis part has a broken edge (no facet leaning on all three axes)', lowCorners === 0, `${lowCorners} on Low, ${highCorners} on High`);
+    check('robot/lod: ...while the High chassis does (else the checks around this one test nothing)', highCorners > 100, String(highCorners));
+    check(`robot/budget: High stays within +7,000 triangles, +2 meshes, +1 caster per robot (worst +${worst})`, highBad.length === 0, highBad.join('; ') || lines.join(', '));
+    check('robot/budget: the cap screws are one mesh per robot and cast no shadow (a 0.3-in head is under a texel)', screwMeshes === PINNED.length && screwsCast === 0, `${screwMeshes} meshes, ${screwsCast} casting`);
+    check('robot/footprint: every chassis part has the same bounding box on both levels (the structure inside it), and Low has no screws — a break only removes material', outline.length === 0, outline.slice(0, 6).join('; '));
+    check('robot/footprint: ...inside the frame and under the low body (the end bars to their own ruled height)', outside.length === 0, outside.slice(0, 6).join('; '));
+
+    // ── (4) THE SIDE PLATE ──────────────────────────────────────────────────────────────────
+    {
+      const bad: string[] = [];
+      let windows = 0;
+      let pockets = 0;
+      let builds = 0;
+      let defaultWindows = 0;
+      const EPS = 1e-6;
+      type Rect = { u0: number; u1: number; v0: number; v1: number };
+      const boxGap = (a: Rect, b: Rect): number => Math.hypot(Math.max(0, a.u0 - b.u1, b.u0 - a.u1), Math.max(0, a.v0 - b.v1, b.v0 - a.v1));
+      const circBox = (w: { u: number; v: number; r: number }, b: Rect): number => Math.hypot(Math.max(0, b.u0 - w.u, w.u - b.u1), Math.max(0, b.v0 - w.v, w.v - b.v1)) - w.r;
+      for (const dt of ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const) {
+        for (const L of [13.5, 15, 16.5, 18]) {
+          for (const W of [14.5, 16, 18]) {
+            const spec = mk({ drivetrain: dt, length: L, width: W });
+            const tag = `${dt} ${spec.length}x${spec.width}`;
+            builds++;
+            const hl = spec.length / 2;
+            const cut = bbSidePlateCut(spec);
+            if (dt === 'mecanum' && spec.length === 15) defaultWindows = cut.windows.length;
+            windows += cut.windows.length;
+            pockets += cut.pockets.length;
+            if (Math.abs(cut.h - BB_SIDE_PLATE_CUT_H) > EPS) bad.push(`${tag}: plate height ${cut.h}`);
+            // centred on a real wheel: the built drivetrain's own nodes, at its own radius
+            const wh = buildWheels(spec);
+            const axles: { x: number; r: number }[] =
+              dt === 'swerve' ? wh.pods.map((p, i) => ({ x: p.position.x, r: wh.spin[i].r })) : wh.spin.map((w) => ({ x: w.node.position.x, r: w.r }));
+            for (const w of cut.windows) {
+              if (!axles.some((a) => Math.abs(a.x - w.u) < EPS && Math.abs(a.r - w.v) < EPS)) bad.push(`${tag}: window at u ${w.u.toFixed(3)} v ${w.v.toFixed(3)} is on no wheel`);
+              if (w.r < BB_PLATE_MIN_CUT - EPS) bad.push(`${tag}: window r ${w.r}`);
+              if (Math.abs(w.u) - w.r < BB_SIGN_LAND_HALF - EPS) bad.push(`${tag}: a window cuts the sign land`);
+              if (Math.abs(w.u) + w.r > hl - BB_PLATE_WEB + EPS || w.v - w.r < 0.35 - EPS || w.v + w.r > cut.h - BB_PLATE_BAND + EPS) bad.push(`${tag}: a window past an edge band`);
+            }
+            for (const p of cut.pockets) {
+              if (p.u1 - p.u0 < 0.8 - EPS || p.v1 - p.v0 < 0.8 - EPS) bad.push(`${tag}: pocket ${(p.u1 - p.u0).toFixed(2)} x ${(p.v1 - p.v0).toFixed(2)}`);
+              if (Math.min(Math.abs(p.u0), Math.abs(p.u1)) < BB_SIGN_LAND_HALF - EPS || Math.sign(p.u0) !== Math.sign(p.u1)) bad.push(`${tag}: a pocket cuts the sign land`);
+              if (p.u0 < -hl + BB_PLATE_BAND - EPS || p.u1 > hl - BB_PLATE_BAND + EPS || p.v0 < BB_PLATE_BAND - EPS || p.v1 > cut.h - BB_PLATE_BAND + EPS) bad.push(`${tag}: a pocket in a solid band`);
+            }
+            cut.windows.forEach((a, i) =>
+              cut.windows.slice(i + 1).forEach((b) => {
+                if (Math.hypot(a.u - b.u, a.v - b.v) - a.r - b.r < BB_PLATE_WEB - EPS) bad.push(`${tag}: two windows closer than a web`);
+              }),
+            );
+            for (const w of cut.windows) for (const p of cut.pockets) if (circBox(w, p) < BB_PLATE_WEB - EPS) bad.push(`${tag}: a window and a pocket closer than a web`);
+            cut.pockets.forEach((a, i) =>
+              cut.pockets.slice(i + 1).forEach((b) => {
+                if (boxGap(a, b) < BB_PLATE_WEB - EPS) bad.push(`${tag}: two pockets closer than a web`);
+              }),
+            );
+            if (cut.pockets.filter((p) => p.u0 > 0).length > 4) bad.push(`${tag}: ${cut.pockets.length} pockets`);
+            // mirror-symmetric, like every drivetrain's wheels
+            const key = (q: number[]): string => q.map((v) => v.toFixed(6)).join(',');
+            const pk = new Set(cut.pockets.map((p) => key([p.u0, p.u1, p.v0, p.v1])));
+            if (!cut.pockets.every((p) => pk.has(key([-p.u1, -p.u0, p.v0, p.v1])))) bad.push(`${tag}: the pockets are not mirrored`);
+          }
+        }
+      }
+      check(
+        `robot/sideplate: every window on a wheel, the sign land solid, webs ≥ ${BB_PLATE_WEB}, no cut under ${BB_PLATE_MIN_CUT} (${builds} builds, ${windows} windows, ${pockets} pockets)`,
+        bad.length === 0,
+        [...new Set(bad)].slice(0, 6).join('; '),
+      );
+      check('robot/sideplate: ...and the default 15-in mecanum has its two bearing windows', defaultWindows === 2 && windows > 60 && pockets > 60, `${defaultWindows} on the default; ${windows} windows, ${pockets} pockets`);
+      // the High plate stops at the deck's underside, so no square plate corner stands through a
+      // broken deck edge (the Low one runs up through the deck, as it always did)
+      check(
+        "robot/sideplate: the High plate's top is the deck's underside",
+        Math.abs(BB_SIDE_PLATE_CUT_H - (BB_DECK_Z - 0.26)) < 1e-9 && bbSidePlateCut(mk({})).h === BB_SIDE_PLATE_CUT_H,
+        String(BB_SIDE_PLATE_CUT_H),
+      );
+    }
+
+    // ── (5) THE SCREWS ──────────────────────────────────────────────────────────────────────
+    {
+      const specs: RobotSpec[] = [];
+      for (const kind of BB_SCORE_MODES)
+        for (const mount of BB_MOUNT_POSITIONS)
+          for (const lift of [null, ...BB_MOUNT_POSITIONS.filter((m) => m !== 'center')])
+            specs.push(mk({ bbMech: { launcher: { kind, mount, hoodDeg: 45 }, lift: lift ? { kind: 'vslide', mount: lift } : null, intake: { kind: 'sweeper' } } }));
+      for (const w of [11, 18]) specs.push(mk({ length: w, width: w }));
+      let screws = 0;
+      let off = 0;
+      let hit = 0;
+      const top = BB_TOP_CAP_Z[1] + BB_CAP_SCREW_H;
+      for (const spec of specs) {
+        const segs = bbTopCapSegments(spec);
+        const keep = bbChassisKeepOuts(spec);
+        for (const p of bbCapFasteners(spec)) {
+          screws++;
+          const sy = p.y > 0 ? 1 : -1;
+          const [y0, y1] = bbTopCapBand(spec, sy);
+          if (p.y < y0 || p.y > y1 || !segs[sy > 0 ? 0 : 1].some((g) => p.x >= g.a0 + 0.4 - 1e-6 && p.x <= g.a1 - 0.4 + 1e-6)) off++;
+          for (const k of keep) {
+            if (k.z0 >= top || k.z1 <= BB_TOP_CAP_Z[1]) continue;
+            const d = k.r !== undefined ? Math.hypot(p.x - k.cx, p.y - k.cy) - k.r : Math.max(Math.abs(p.x - k.cx) - k.hx!, Math.abs(p.y - k.cy) - k.hy!);
+            if (d < 0.15) hit++;
+          }
+        }
+      }
+      check(`robot/fasteners: every cap screw sits on a top-cap piece, 0.4 in from its ends (${specs.length} builds, ${screws} screws)`, off === 0 && screws > specs.length * 4, `${off} off a cap`);
+      check('robot/fasteners: ...and no screw head stands in a mechanism at its own height', hit === 0, `${hit} hits`);
+    }
+
+    // ── (6) THE CACHE ───────────────────────────────────────────────────────────────────────
+    {
+      const live = buildRobotGroup(mk({}), 1, 'red', 'high');
+      let freed = 0;
+      const seen = new Set<THREE.BufferGeometry>();
+      live.traverse((o) => {
+        const g = (o as THREE.Mesh).geometry;
+        if (g && !seen.has(g)) {
+          seen.add(g);
+          g.addEventListener('dispose', () => freed++);
+        }
+      });
+      const before = bbFrameCacheStats();
+      const dts = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+      const launchers = [
+        { kind: 'turret', mount: 'center' },
+        { kind: 'turret', mount: 'front' },
+        { kind: 'dumper', mount: 'back' },
+        { kind: 'fixed', mount: 'back' },
+      ] as const;
+      for (let i = 0; i < 60; i++) {
+        // a builder session: length and width drags, mechanism and drivetrain picks
+        const spec = mk({
+          length: 13.5 + ((i * 7) % 46) / 10,
+          width: 14.5 + ((i * 3) % 36) / 10,
+          drivetrain: dts[i % 5],
+          bbMech: { launcher: { ...launchers[i % 4], hoodDeg: 45 }, lift: i % 3 ? null : { kind: 'vslide', mount: 'back' }, intake: { kind: i % 2 ? 'sweeper' : 'siderollers' } },
+        });
+        disposeRobotGroup(buildRobotGroup(spec, 1, 'red', i % 4 ? 'high' : 'low'));
+      }
+      const after = bbFrameCacheStats();
+      check(
+        'robot/cache: 60 builder-style rebuilds leave at most 96 unheld entries in the merge cache (it was unbounded: 200 rebuilds added 789 entries, 10.1 MB of positions at High, 25.5 MB with the High chassis)',
+        after.entries - after.held <= 96,
+        `${before.entries} → ${after.entries} entries (${after.held} held), ${(before.bytes / 1e6).toFixed(2)} → ${(after.bytes / 1e6).toFixed(2)} MB`,
+      );
+      check('robot/cache: ...and not one buffer a live group still uses was freed', freed === 0, `${freed} freed`);
+      // the same layout shares one buffer; a different layout never does
+      const a = buildRobotGroup(mk({}), 2, 'red', 'high');
+      const b = buildRobotGroup(mk({}), 3, 'blue', 'high');
+      const c = buildRobotGroup(mk({ length: 16 }), 4, 'red', 'high');
+      const d = buildRobotGroup(mk({ drivetrain: 'tank' }), 5, 'red', 'high');
+      const e = buildRobotGroup(mk({}), 6, 'red', 'low');
+      const skin = (g: THREE.Group): THREE.BufferGeometry => (g.getObjectByName('robot:frame:skin') as THREE.Mesh).geometry;
+      check(
+        'robot/cache: two robots on one build share the High chassis buffer; a longer one, another drivetrain or the Low level does not',
+        skin(a) === skin(b) && skin(a) === skin(live) && skin(a) !== skin(c) && skin(a) !== skin(d) && skin(a) !== skin(e),
+      );
+      for (const g of [a, b, c, d, e, live]) disposeRobotGroup(g);
+    }
+
+    // ── SOURCE: the preview is still the one generator, at the device's own level ─────────────
+    {
+      const pv = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderPreview.ts'), 'utf8');
+      check(
+        "robot/preview: the builder preview builds with `buildRobotGroup` at the device's own level, so it shows the High chassis on High",
+        pv.includes('group = buildRobotGroup(spec, 1, alliance, builtWheelDetail);'),
+      );
+    }
   } finally {
     if (!hadDoc) delete (globalThis as { document?: unknown }).document;
   }

@@ -39,13 +39,14 @@ import {
  * anything else that is not a robot part out of it.
  *
  * ── THE FINISHES THE FAMILIES MAP TO (the numbers are the table's) ─────────────────────────
- *   aluminiumClearAnodised  metal, #c4c7ca, r 0.40, bead-blast grain — goBILDA channel/plates,
- *                           intake arms, braces, the shooter's side plates, the dumper
+ *   aluminiumClearAnodised  metal, #c4c7ca, r 0.50, bead-blast grain — goBILDA channel/plates,
+ *                           the chassis' inner plates and cross members, intake arms, braces, the
+ *                           shooter's side plates, the dumper
  *   aluminiumExtrusion      metal, #c4c7ca, r 0.35, anisotropy 0.5 + die lines along the part —
  *                           the Box Tube's three square tubes, the one extruded part with a known axis
  *   steel                   metal, #c4c5c7, r 0.40 — the mecanum/omni side plates, the flywheel shaft
  *   darkCoat                dielectric, KEEPS the scene's dark tone, r 0.45, clearcoat 0.2 — ALU_DK
- *                           rails and plates, the turret ring, the hood, the motor can, dark axles
+ *                           plates, the rear bar, the turret ring, the hood, the motor can, dark axles
  *   powderCoatFill          dielectric, KEEPS `chassisFill` (the cosmetic), r 0.5, clearcoat 0.3
  *   siliconeRubber          dielectric, KEEPS the tread/accent colour, r 0.7, IOR 1.41 — wheel
  *                           rollers and tyres, intake rollers and flaps, the flywheel tyre

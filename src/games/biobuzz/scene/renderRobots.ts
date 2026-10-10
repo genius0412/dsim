@@ -321,8 +321,10 @@ function innerHalfWidth(spec: Pick<RobotSpec, 'width'>): number {
  * extrusion and no dependency. Built in shape space `(u = along, v = up)` and rotated once:
  * `rotateX(+π/2)` maps shape `v → world z` and the extrusion depth `→ world −y`, which is the
  * orientation every caller wants (a side plate standing up along the chassis).
+ *
+ * `c` breaks every edge (`plateExtrude`); `0`, the default, is the plain extrusion.
  */
-function platePlane(along: number, up: number, t: number, holes: number): THREE.ExtrudeGeometry {
+function platePlane(along: number, up: number, t: number, holes: number, c = 0): THREE.ExtrudeGeometry {
   const hu = along / 2;
   const hv = up / 2;
   const r = Math.min(0.6, up * 0.18);
@@ -345,7 +347,7 @@ function platePlane(along: number, up: number, t: number, holes: number): THREE.
       shape.holes.push(path);
     }
   }
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 8 });
+  const geo = plateExtrude(shape, t, c, 8);
   geo.rotateX(Math.PI / 2);
   geo.translate(0, t / 2, 0); // extrusion runs into −y; centre it on the plate's own plane
   return geo;
@@ -369,6 +371,122 @@ function boxAt(sx: number, sy: number, sz: number, x: number, y: number, z: numb
 }
 
 /**
+ * A BOX WITH EVERY EDGE BROKEN BY A 45° FLAT, exactly `sx × sy × sz` (2026-10-10, owner: "Make the
+ * robots more high quality").
+ *
+ * A machined or laser-cut part has no knife edge: the edge break is a narrow flat at 45°, and it is
+ * what catches the light along every edge of a real robot. At the chase camera's ~13 px/in a
+ * 0.04-in flat is under a pixel wide and still reads, as a bright line, which is the point. 26 flat
+ * faces, 44 triangles, flat normals — deliberately not a rounded box (`RoundedBoxGeometry` is 108+
+ * triangles and its smooth normals look soft on a 0.2-in plate). A chamfer only REMOVES material,
+ * so the bounding box is the plain box's and no collider is claimed.
+ *
+ * `c <= 0` returns the plain `BoxGeometry`, so a caller that passes `0` (the Low tier) builds
+ * exactly what it built before. Non-indexed, with `position`, `normal` and `uv`, like every other
+ * part `framePart` merges.
+ */
+function chamferBox(sx: number, sy: number, sz: number, c: number): THREE.BufferGeometry {
+  if (!(c > 0)) return new THREE.BoxGeometry(sx, sy, sz);
+  const h = [sx / 2, sy / 2, sz / 2];
+  // never more than most of a half-extent: a thin part keeps a flat face on each side
+  const k = Math.min(c, ...h.map((v) => v * 0.45));
+  // the corner `s` (±1 per axis) pulled in by `k` along the two axes other than `a`: the vertex of
+  // the corner that lies on the face whose normal is axis `a`
+  const P = (s: readonly number[], a: number): number[] => h.map((v, i) => s[i] * (i === a ? v : v - k));
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const uv: number[] = [];
+  const tri = (A: number[], B: number[], C: number[]): void => {
+    const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+    const w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+    // the solid is convex and centred on the origin, so a face's outward normal points away from it
+    const cen = [A[0] + B[0] + C[0], A[1] + B[1] + C[1], A[2] + B[2] + C[2]];
+    if (n[0] * cen[0] + n[1] * cen[1] + n[2] * cen[2] < 0) {
+      [B, C] = [C, B];
+      n = n.map((q) => -q);
+    }
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    n = n.map((q) => q / len);
+    // box-style UVs in inches: the two axes the face is most nearly flat in
+    const ax = Math.abs(n[0]) >= Math.abs(n[1]) && Math.abs(n[0]) >= Math.abs(n[2]) ? 0 : Math.abs(n[1]) >= Math.abs(n[2]) ? 1 : 2;
+    const [ua, va] = ax === 0 ? [1, 2] : ax === 1 ? [0, 2] : [0, 1];
+    for (const p of [A, B, C]) {
+      pos.push(p[0], p[1], p[2]);
+      nrm.push(n[0], n[1], n[2]);
+      uv.push(p[ua], p[va]);
+    }
+  };
+  const quad = (A: number[], B: number[], C: number[], D: number[]): void => {
+    tri(A, B, C);
+    tri(A, C, D);
+  };
+  const corner = (a: number, sa: number, b: number, sb: number, t: number, st: number): number[] => {
+    const s = [0, 0, 0];
+    s[a] = sa;
+    s[b] = sb;
+    s[t] = st;
+    return s;
+  };
+  for (let a = 0; a < 3; a++) {
+    const b = (a + 1) % 3;
+    const t = (a + 2) % 3;
+    for (const sa of [1, -1]) {
+      // the face whose normal is axis `a`: its four corners in order round it
+      quad(
+        P(corner(a, sa, b, 1, t, 1), a),
+        P(corner(a, sa, b, -1, t, 1), a),
+        P(corner(a, sa, b, -1, t, -1), a),
+        P(corner(a, sa, b, 1, t, -1), a),
+      );
+      for (const sb of [1, -1]) {
+        // the edge flat between face `a` and face `b`, running along axis `t`
+        const hi = corner(a, sa, b, sb, t, 1);
+        const lo = corner(a, sa, b, sb, t, -1);
+        quad(P(hi, a), P(hi, b), P(lo, b), P(lo, a));
+      }
+    }
+  }
+  // the eight corner triangles
+  for (const s0 of [1, -1]) for (const s1 of [1, -1]) for (const s2 of [1, -1]) tri(P([s0, s1, s2], 0), P([s0, s1, s2], 1), P([s0, s1, s2], 2));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return g;
+}
+/** `chamferBox`, pre-placed — `boxAt`'s twin */
+function chamferBoxAt(sx: number, sy: number, sz: number, x: number, y: number, z: number, c: number): THREE.BufferGeometry {
+  const g = chamferBox(sx, sy, sz, c);
+  g.translate(x, y, z);
+  return g;
+}
+
+/**
+ * A FLAT SLAB OF `shape`, EXACTLY `[0, t]` THICK, ITS EDGES (HOLES INCLUDED) BROKEN BY A 45° FLAT OF
+ * `c`. Three's bevel puts the cap at `−bevelThickness` and the side wall at `bevelSize +
+ * bevelOffset` out from the outline, so a negative offset of `c` with size and thickness `c` gives
+ * a cap inset by `c`, a wall exactly on the outline, and a slab `[−c, t − c]`, moved up by `c`.
+ * `c <= 0` is the plain unbevelled extrusion every caller made before. Outlines CCW, holes CW (a
+ * reversed outline extrudes with its caps facing inward), and no web under ~`4c`, or the two insets
+ * meet.
+ */
+function plateExtrude(shape: THREE.Shape, t: number, c: number, curveSegments = 8): THREE.ExtrudeGeometry {
+  if (!(c > 0)) return new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments });
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: t - 2 * c,
+    bevelEnabled: true,
+    bevelThickness: c,
+    bevelSize: c,
+    bevelOffset: -c,
+    bevelSegments: 1,
+    curveSegments,
+  });
+  g.translate(0, 0, c);
+  return g;
+}
+
+/**
  * ONE MERGED, CACHED MESH per (key, material) — the draw-call budget, and the reason the new
  * drivetrain does not cost four times what the box did.
  *
@@ -379,9 +497,57 @@ function boxAt(sx: number, sy: number, sz: number, x: number, y: number, z: numb
  * has copied them; only the merged result is registered as SHARED.
  */
 const FRAME_CACHE = new Map<string, THREE.BufferGeometry>();
+/**
+ * ⚠️ **THE CACHE IS BOUNDED BY REFERENCE COUNT, AND THE GROUPS ARE WHAT HOLD THE REFERENCES**
+ * (2026-10-10). Every key a group used while `buildRobotGroup` built it is counted against that
+ * group (`userData.frameKeys`) and handed back by `disposeRobotGroup`. An entry no live group
+ * holds is kept while it is among the `FRAME_KEEP_UNUSED` most recently used of those, and
+ * disposed after that. It used to grow without a bound — every drag of a builder slider is a new
+ * layout — and the High chassis (cut side plates, broken edges) made each layout about 2.5× the
+ * bytes: measured over a 200-build builder sweep, 10.1 MB of positions before against 25.5 MB
+ * after, unbounded either way. A geometry a live group still uses is never disposed; one built
+ * outside a group (the RENDER lane's part builders, the scene-preview's wheel rig) is merely
+ * re-uploaded if it is drawn after being let go, which is what three does with a disposed
+ * geometry.
+ */
+const FRAME_REFS = new Map<string, number>();
+const FRAME_KEEP_UNUSED = 96;
+/** the keys the group being built has used — set by `buildRobotGroup` for the length of one build */
+let frameClaims: Set<string> | null = null;
+/** how much the merge cache holds: entries and position bytes. EXPORTED for the RENDER lane, which
+ *  sweeps builder-style rebuilds and bounds the growth (`robot/cache`). */
+export function bbFrameCacheStats(): { entries: number; bytes: number; held: number } {
+  let bytes = 0;
+  for (const g of FRAME_CACHE.values()) bytes += (g.getAttribute('position')?.array as Float32Array | undefined)?.byteLength ?? 0;
+  let held = 0;
+  for (const n of FRAME_REFS.values()) if (n > 0) held++;
+  return { entries: FRAME_CACHE.size, bytes, held };
+}
+/** dispose the least recently used entries no live group holds, past `FRAME_KEEP_UNUSED` */
+function evictFrameParts(): void {
+  let unused = 0;
+  for (const k of FRAME_CACHE.keys()) if (!(FRAME_REFS.get(k)! > 0)) unused++;
+  if (unused <= FRAME_KEEP_UNUSED) return;
+  // the map is in least-recently-used order: `framePart` moves a hit to the end
+  for (const [k, g] of FRAME_CACHE) {
+    if (unused <= FRAME_KEEP_UNUSED) break;
+    if (FRAME_REFS.get(k)! > 0) continue;
+    FRAME_CACHE.delete(k);
+    FRAME_REFS.delete(k);
+    SHARED_GEO.delete(g);
+    g.dispose();
+    unused--;
+  }
+}
 function framePart(key: string, build: () => THREE.BufferGeometry[]): THREE.BufferGeometry {
+  frameClaims?.add(key);
   const hit = FRAME_CACHE.get(key);
-  if (hit) return hit;
+  if (hit) {
+    // most recently used last, which is the order `evictFrameParts` reads
+    FRAME_CACHE.delete(key);
+    FRAME_CACHE.set(key, hit);
+    return hit;
+  }
   const built = build();
   // ⚠️ **EVERY PART IS FLATTENED TO NON-INDEXED FIRST, AND THAT IS NOT TIDINESS.**
   // `mergeGeometries` refuses a list that mixes indexed and non-indexed buffers — it logs and
@@ -637,6 +803,30 @@ const WHEEL_LOD: Record<BbWheelDetail, {
   low: { rollerSeg: 5, rollerPts: 3, plateSeg: 12, tyrePts: 2, holes: 0, ribs: 0 },
   high: { rollerSeg: 8, rollerPts: 7, plateSeg: 34, tyrePts: 5, holes: 8, ribs: 20 },
 };
+
+/**
+ * ⚠️ **THE SAME LEVEL, READ BY THE CHASSIS** (2026-10-10, owner: "Make the robots more high
+ * quality"). One switch, no new dial: `detail` is already in `sync`'s rebuild key and in the
+ * preview's, so nothing new has to be keyed.
+ *
+ * What it may change is what `WHEEL_LOD.low` already drops from a wheel — detail the outline does
+ * not depend on: edge breaks (`chamferBox`, `plateExtrude`), where the outer side plate's
+ * lightening cuts go (`bbSidePlateCut`) and the cap screws (`bbCapFasteners`). The machine's
+ * outline, its footprint and every part's bounding box are the same on both levels, and so is
+ * every colour.
+ *
+ * ⚠️ **`low` CALLS TODAY'S CODE, AND THE RENDER LANE PINS THAT IT IS NOT HEAVIER.** Every Low path
+ * below is the pre-2026-10-10 builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the
+ * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. Low and Medium pay nothing for this.
+ */
+const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean }> = {
+  low: { chamfer: false, cut: false, fasteners: false },
+  high: { chamfer: true, cut: true, fasteners: true },
+};
+/** an edge break of `c` on High, none on Low */
+function edgeFor(detail: BbWheelDetail, c: number): number {
+  return ROBOT_LOD[detail].chamfer ? c : 0;
+}
 
 /**
  * THE BARREL PROFILE OF ONE ROLLER — DERIVED, NOT STYLED.
@@ -1334,9 +1524,264 @@ export function bbTopCapBand(spec: Pick<RobotSpec, 'width'>, sy: 1 | -1): [numbe
 /** the top caps' height band */
 export const BB_TOP_CAP_Z: readonly [number, number] = [BB_PLATE_H, BB_PLATE_H + BB_TOP_CAP_T];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE OUTER SIDE PLATE AS A CUT PLATE (High) — 2026-10-10
+// ─────────────────────────────────────────────────────────────────────────────
+/** a round window in a side plate, in PLATE coordinates: `u` along the chassis x, `v` up from the
+ *  floor (in) */
+export interface BbPlateWindow {
+  u: number;
+  v: number;
+  r: number;
+}
+/** a rounded-rectangle lightening pocket in a side plate, plate coordinates as above */
+export interface BbPlatePocket {
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  r: number;
+}
+/** the plate's own height on High: it stops under the deck (`buildFrame`) */
+export const BB_SIDE_PLATE_CUT_H = BB_PLATE_H - BB_DECK_T;
+/** the least web between a cut and another cut or a plate edge, and the solid bands kept along the
+ *  plate's bottom and top edges and at its ends (in) */
+export const BB_PLATE_WEB = 0.4;
+export const BB_PLATE_BAND = 0.5;
+/** ⚠️ NO CUT UNDER 0.45 in ACROSS — at the chase camera's ~13 px/in a goBILDA 4 mm hole is 2 px
+ *  and its 8 mm grid a moiré (owner, 2026-09-28: "there should be nothing in graphics that mesh
+ *  and create weird visual effects"). Windows are at least 0.9 across, pockets 0.8. */
+export const BB_PLATE_MIN_CUT = 0.45;
+const WINDOW_MAX_R = 1.0;
+const POCKET_MIN = 0.8;
+const POCKET_R = 0.2;
+const POCKET_MAX_W = 3.0;
+/** stack two pockets rather than cut one slot taller than this */
+const POCKET_STACK_H = 2.4;
+const POCKETS_PER_HALF = 4;
+
+/**
+ * THE WHEELS AND PODS BEHIND AN OUTER SIDE PLATE, as `buildWheels` places them: the axle's x and the
+ * part's radius (its centre height when it is down). The same expressions `buildWheels` places by,
+ * so a window cannot be cut somewhere the wheel is not; the RENDER lane compares the two.
+ */
+export function bbSidePlateWheels(spec: RobotSpec): { x: number; r: number }[] {
+  const hl = spec.length / 2;
+  const dt = spec.drivetrain;
+  if (dt === 'swerve') return [1, -1].map((sx) => ({ x: sx * (hl - BB_POD_INSET), r: BB_POD_WHEEL_R }));
+  const part = BB_WHEEL_PARTS[wheelKindOf(dt)];
+  const out: { x: number; r: number }[] = [];
+  for (const x of axleXs(spec)) {
+    out.push({ x: dt === 'xdrive' ? (Math.sign(x) || 1) * Math.max(0.5, hl - BB_XDRIVE_INSET_X) : x, r: part.r });
+    if (dt === 'butterfly') {
+      const t = butterflyTraction(spec, x);
+      if (t) out.push({ x: t.x, r: BB_WHEEL_PARTS[t.kind].r });
+    }
+  }
+  return out;
+}
+
+/**
+ * ⚠️ **WHERE THE OUTER SIDE PLATE IS CUT, AND WHY THE OLD HOLES WERE WRONG** (2026-10-10). The plate
+ * used to carry `round(length / 4.5)` holes spaced evenly along it, which missed the axles: on a
+ * 15-in chassis they sat at x = −5, 0, 5 against axles at ±4.75, and the middle one was behind the
+ * sign. A real drive plate is cut round its bearings, so on High:
+ *  · a round WINDOW centred on each wheel or pod's axle, at its own centre height — radius ≤ 1.0,
+ *    kept `0.35` off the floor edge, `BB_PLATE_WEB` off the plate end, and clear of the sign land;
+ *    left out under `BB_PLATE_MIN_CUT`;
+ *  · LIGHTENING POCKETS (rounded rectangles) in what is left: between the sign land and a window,
+ *    outboard of a window, and above one where the plate is tall enough. Webs ≥ `BB_PLATE_WEB`,
+ *    solid bands `BB_PLATE_BAND` along the bottom, the top and the ends, at most
+ *    `POCKETS_PER_HALF` each side of the sign;
+ *  · the SIGN LAND solid, full height.
+ * Mirror-symmetric in u, because every drivetrain's wheels are. Pure numbers, cached per build;
+ * the RENDER lane sweeps it over every drivetrain and size.
+ */
+const PLATE_CUT_CACHE = new Map<string, { h: number; windows: BbPlateWindow[]; pockets: BbPlatePocket[] }>();
+export function bbSidePlateCut(spec: RobotSpec): { h: number; windows: BbPlateWindow[]; pockets: BbPlatePocket[] } {
+  const key = `${spec.length}|${spec.drivetrain}`;
+  const hit = PLATE_CUT_CACHE.get(key);
+  if (hit) return hit;
+  const hl = spec.length / 2;
+  const H = BB_SIDE_PLATE_CUT_H;
+  const land = BB_SIGN_LAND_HALF;
+  const windows: BbPlateWindow[] = [];
+  // the +u half; mirrored below
+  for (const w of bbSidePlateWheels(spec)
+    .filter((q) => q.x > 0)
+    .sort((p, q) => p.x - q.x)) {
+    const r = Math.min(WINDOW_MAX_R, w.r - 0.35, H - BB_PLATE_BAND - w.r, w.x - land, hl - BB_PLATE_WEB - w.x);
+    if (r < BB_PLATE_MIN_CUT) continue;
+    if (windows.some((o) => Math.hypot(o.u - w.x, o.v - w.r) < o.r + r + BB_PLATE_WEB)) continue;
+    windows.push({ u: w.x, v: w.r, r });
+  }
+  const pockets: BbPlatePocket[] = [];
+  const v0 = BB_PLATE_BAND;
+  const v1 = H - BB_PLATE_BAND;
+  const column = (u0: number, u1: number, lo: number, hi: number): void => {
+    // one pocket, or two stacked with a web between, so no slot runs the plate's full height
+    if (hi - lo > POCKET_STACK_H) {
+      const mid = (lo + hi) / 2;
+      pockets.push({ u0, u1, v0: lo, v1: mid - BB_PLATE_WEB / 2, r: POCKET_R });
+      pockets.push({ u0, u1, v0: mid + BB_PLATE_WEB / 2, v1: hi, r: POCKET_R });
+    } else pockets.push({ u0, u1, v0: lo, v1: hi, r: POCKET_R });
+  };
+  // what is blocked along u at full height: the land, each window (plus its web), the plate end
+  const blocked = windows.map((w) => [w.u - w.r - BB_PLATE_WEB, w.u + w.r + BB_PLATE_WEB] as const);
+  const stops = [...blocked.map((b) => b[0]), hl - BB_PLATE_BAND].sort((p, q) => p - q);
+  let at = land;
+  for (const stop of stops) {
+    const end = Math.min(stop, hl - BB_PLATE_BAND);
+    const width = end - at;
+    if (width >= POCKET_MIN) {
+      // a wide gap is split into equal pockets with a web between, none wider than POCKET_MAX_W
+      const n = Math.ceil((width + BB_PLATE_WEB) / (POCKET_MAX_W + BB_PLATE_WEB));
+      const pw = (width - (n - 1) * BB_PLATE_WEB) / n;
+      for (let i = 0; i < n; i++) column(at + i * (pw + BB_PLATE_WEB), at + i * (pw + BB_PLATE_WEB) + pw, v0, v1);
+    }
+    const b = blocked.find((q) => Math.abs(q[0] - stop) < 1e-9);
+    at = Math.max(at, b ? b[1] : end);
+  }
+  // above a window, where the plate is tall enough (a small pod wheel leaves room)
+  for (const w of windows) {
+    const lo = w.v + w.r + BB_PLATE_WEB;
+    if (v1 - lo >= POCKET_MIN) pockets.push({ u0: w.u - w.r, u1: w.u + w.r, v0: lo, v1, r: POCKET_R });
+  }
+  // the biggest few, if there are more than a half takes
+  pockets.sort((p, q) => (q.u1 - q.u0) * (q.v1 - q.v0) - (p.u1 - p.u0) * (p.v1 - p.v0));
+  pockets.length = Math.min(pockets.length, POCKETS_PER_HALF);
+  pockets.sort((p, q) => p.u0 - q.u0 || p.v0 - q.v0);
+  const out = {
+    h: H,
+    windows: [...windows, ...windows.map((w) => ({ ...w, u: -w.u }))],
+    pockets: [...pockets, ...pockets.map((p) => ({ ...p, u0: -p.u1, u1: -p.u0 }))],
+  };
+  if (PLATE_CUT_CACHE.size > 64) PLATE_CUT_CACHE.clear();
+  PLATE_CUT_CACHE.set(key, out);
+  return out;
+}
+
+/** a closed polygon path, `cw` for a hole — written as straight segments so the point count is
+ *  exactly what is asked for, independent of the extrusion's `curveSegments` */
+function polyPath<T extends THREE.Path>(p: T, pts: readonly [number, number][], cw: boolean): T {
+  const list = cw ? [...pts].reverse() : pts;
+  p.moveTo(list[0][0], list[0][1]);
+  for (let i = 1; i < list.length; i++) p.lineTo(list[i][0], list[i][1]);
+  p.closePath();
+  return p;
+}
+/** a rounded rectangle's outline, CCW, `seg` points per quarter round */
+function roundedRectPts(u0: number, u1: number, v0: number, v1: number, r: number, seg: number, rTop = r): [number, number][] {
+  const pts: [number, number][] = [];
+  const arc = (cu: number, cv: number, rr: number, a0: number): void => {
+    for (let i = 0; i <= seg; i++) {
+      const a = a0 + (i / seg) * (Math.PI / 2);
+      pts.push([cu + rr * Math.cos(a), cv + rr * Math.sin(a)]);
+    }
+  };
+  arc(u1 - r, v0 + r, r, -Math.PI / 2);
+  arc(u1 - rTop, v1 - rTop, rTop, 0);
+  arc(u0 + rTop, v1 - rTop, rTop, Math.PI / 2);
+  arc(u0 + r, v0 + r, r, Math.PI);
+  return pts;
+}
+/** the outer side plate's cut slab on High: `length × BB_SIDE_PLATE_CUT_H`, `t` thick, centred on
+ *  y = 0 with z up from the floor, the same frame `platePlane`'s output is placed in */
+const CUT_PLATE_CACHE = new Map<string, THREE.BufferGeometry>();
+function cutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeometry {
+  // a source geometry per (length, drivetrain): the triangulation of a plate with its holes is the
+  // costly step, and a frame merge (keyed on everything else that moves the chassis) takes a clone
+  const key = `${spec.length}|${spec.drivetrain}|${t}|${c}`;
+  let src = CUT_PLATE_CACHE.get(key);
+  if (!src) {
+    src = buildCutSidePlate(spec, t, c);
+    if (CUT_PLATE_CACHE.size > 64) CUT_PLATE_CACHE.clear();
+    CUT_PLATE_CACHE.set(key, src);
+  }
+  return src.clone();
+}
+function buildCutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeometry {
+  const hl = spec.length / 2;
+  const cut = bbSidePlateCut(spec);
+  // the bottom corners keep the Low plate's 0.6 round; the top ones run up under the deck square
+  const shape = polyPath(new THREE.Shape(), roundedRectPts(-hl, hl, 0, cut.h, Math.min(0.6, BB_PLATE_H * 0.18), 4, 0.15), false);
+  for (const w of cut.windows) {
+    const n = 24;
+    const pts: [number, number][] = [];
+    for (let i = 0; i < n; i++) pts.push([w.u + w.r * Math.cos((i / n) * Math.PI * 2), w.v + w.r * Math.sin((i / n) * Math.PI * 2)]);
+    shape.holes.push(polyPath(new THREE.Path(), pts, true));
+  }
+  for (const p of cut.pockets) shape.holes.push(polyPath(new THREE.Path(), roundedRectPts(p.u0, p.u1, p.v0, p.v1, p.r, 3), true));
+  const geo = plateExtrude(shape, t, c, 4);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, t / 2, 0);
+  return geo;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAP SCREWS (High) — 2026-10-10
+// ─────────────────────────────────────────────────────────────────────────────
+/** goBILDA 2802-series M4 button head (zinc-plated steel): head Ø7.6 × 2.2 mm (ISO 7380 — APPROX,
+ *  the series page gives the thread, not the head) */
+export const BB_CAP_SCREW_R = (7.6 * MM) / 2;
+export const BB_CAP_SCREW_H = 2.2 * MM;
+/** 72 mm — three of goBILDA's 24 mm hole pitches — between screws on one cap */
+export const BB_CAP_SCREW_PITCH = 72 * MM;
+/** how far a screw stays in from the end of a cap piece (in) */
+const CAP_SCREW_END = 0.4;
+const SCREW = '#9ba2ab';
+
+/**
+ * WHERE THE TOP CAPS ARE SCREWED DOWN: on each cap piece's centreline, `BB_CAP_SCREW_PITCH` apart,
+ * centred on the piece and `CAP_SCREW_END` in from its ends. A piece is re-cut against the
+ * mechanisms with the height band raised by a head plus `BB_PROUD` (`bbRailGaps`), so a head never
+ * stands in a part that only clears the cap itself. Only the caps: a head on a vertical outer face
+ * would stand proud of the frame line, outside the footprint.
+ */
+export function bbCapFasteners(spec: RobotSpec): { x: number; y: number }[] {
+  const hl = spec.length / 2;
+  const keep = [...bbChassisKeepOuts(spec), ...intakeArmKeepOuts(spec)];
+  const zBand: [number, number] = [BB_TOP_CAP_Z[0], BB_TOP_CAP_Z[1] + BB_CAP_SCREW_H + BB_PROUD];
+  const out: { x: number; y: number }[] = [];
+  for (const sy of [1, -1] as const) {
+    const band = bbTopCapBand(spec, sy);
+    const y = (band[0] + band[1]) / 2;
+    for (const sg of bbRailSegments(-hl, hl, bbRailGaps(keep, 'x', band, zBand))) {
+      const span = sg.a1 - sg.a0 - 2 * CAP_SCREW_END;
+      if (span < 0) continue;
+      const n = Math.floor(span / BB_CAP_SCREW_PITCH + 1e-9) + 1;
+      const mid = (sg.a0 + sg.a1) / 2;
+      for (let i = 0; i < n; i++) out.push({ x: mid + (i - (n - 1) / 2) * BB_CAP_SCREW_PITCH, y });
+    }
+  }
+  return out;
+}
+
+/** the cap screws as one merged mesh, or `null` on Low (and when a build has none). Casts no
+ *  shadow: a 0.3-in head is under a texel of the sun's map. */
+function buildCapFasteners(spec: RobotSpec, id: number, detail: BbWheelDetail): THREE.Mesh | null {
+  if (!ROBOT_LOD[detail].fasteners) return null;
+  const at = bbCapFasteners(spec);
+  if (!at.length) return null;
+  const key = `capScrews|${at.map((p) => `${p.x.toFixed(3)}:${p.y.toFixed(3)}`).join(',')}`;
+  const geo = framePart(key, () =>
+    at.map((p) => {
+      // a low frustum: the button head's dome, read at a few pixels, with its flat top
+      const g = new THREE.CylinderGeometry(BB_CAP_SCREW_R * 0.62, BB_CAP_SCREW_R, BB_CAP_SCREW_H, 8);
+      g.rotateX(Math.PI / 2);
+      g.translate(p.x, p.y, BB_TOP_CAP_Z[1] + BB_CAP_SCREW_H / 2);
+      return g;
+    }),
+  );
+  const mesh = tag(new THREE.Mesh(geo, solidMat(SCREW, 0.45, 0.5)), 'steel');
+  mesh.name = `robot:${id}:fasteners`;
+  return mesh;
+}
+
 /**
  * THE FRAME — side plates, cross members, belly pan, deck, tower. Two merged meshes: the
- * cosmetic one (`chassisFill`) and the structural one (the darker extrusion). Open TOP by
+ * cosmetic one (`chassisFill`) and the structural one (clear aluminium since 2026-10-10; it was the
+ * darker `ALU_DK` — see TWO TONES below). Open TOP by
  * construction: the deck is inset from the frame on every side, so the mechanisms above it are
  * seen against daylight rather than against a lid.
  *
@@ -1363,7 +1808,7 @@ export const BB_TOP_CAP_Z: readonly [number, number] = [BB_PLATE_H, BB_PLATE_H +
  * bumper band and the two ROBOT SIGNS, which is a RULES matter (G414, R401–R403), not a style
  * one. `chassisFill`'s 7-key allowlist is what keeps a cosmetic from ever reading as an alliance.
  */
-export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
+export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THREE.Object3D[] {
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const innerHW = innerHalfWidth(spec);
@@ -1371,9 +1816,10 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   const innerY = hw - BB_PLATE_T * 1.5 - BB_PLATE_GAP;
   const holes = Math.max(2, Math.round(spec.length / 4.5));
   const capSegs = bbTopCapSegments(spec);
+  const lod = ROBOT_LOD[detail];
   // NOT KEYED ON `heightIn`: nothing in the frame depends on it any more, so two builds that
-  // differ only in declared height share this buffer.
-  const key = `${spec.length}|${spec.width}|${spec.drivetrain}|${capSegs.map((s) => s.map((g) => `${g.a0.toFixed(3)}:${g.a1.toFixed(3)}`).join(',')).join('/')}`;
+  // differ only in declared height share this buffer. High adds its own suffix; Low keeps today's.
+  const key = `${spec.length}|${spec.width}|${spec.drivetrain}|${capSegs.map((s) => s.map((g) => `${g.a0.toFixed(3)}:${g.a1.toFixed(3)}`).join(',')).join('/')}${lod.chamfer ? '|hi' : ''}`;
 
   // ⚠️ A SWERVE CHASSIS HAS NO WHEEL CHANNEL. The pods bolt UNDER a box frame at `BB_POD_INSET`
   // from each face, and a 1.5-in-wide pod wheel there runs straight through an inner side plate
@@ -1384,24 +1830,43 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   const dropInner = spec.drivetrain === 'swerve' || spec.drivetrain === 'xdrive';
   const plateYs = dropInner ? [outerY] : [outerY, innerY];
 
+  // ⚠️ ON HIGH THE SIDE PLATES STOP UNDER THE DECK (`BB_DECK_Z − BB_DECK_T`), as the end plates
+  // always have. On Low they run up through it, sharing its top and edge faces in the same
+  // material, which is allowed; on High the deck's edges are broken, and a square plate corner
+  // standing through a chamfered deck edge would poke out of it.
+  const plateH = lod.chamfer ? BB_SIDE_PLATE_CUT_H : BB_PLATE_H;
+  const sidePlate = (sy: 1 | -1, y: number): THREE.BufferGeometry => {
+    // the INNER plate stops a plate's thickness short of each end: run to ±hl, its end face was in
+    // the plane of a full END PLATE's outer face (`buildEndPlate`), which z-fights once the two
+    // carry different surface detail (the physical-materials tier)
+    const inner = y !== outerY;
+    const p =
+      lod.cut && !inner
+        ? cutSidePlate(spec, BB_PLATE_T, edgeFor(detail, 0.03))
+        : platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, plateH, BB_PLATE_T, holes, edgeFor(detail, 0.03));
+    p.translate(0, sy * y, lod.cut && !inner ? 0 : plateH / 2);
+    return p;
+  };
+
+  // ── ⚠️ TWO TONES (2026-10-10): THE SHEET PARTS CARRY THE COLOUR, THE STRUCTURE IS ALUMINIUM ──
+  // `skin` is what a team would paint or powder-coat — the deck, the OUTER side plates, the top
+  // caps, the end plates (`buildEndPlates`) and the belly pan — and it keeps every upward-facing
+  // surface it had, so the 2026-09-19 ruling ("the top needs to change") still holds. The INNER
+  // side plates and the cross members are the channel the robot is built from, drawn clear
+  // anodised (`ALU`, the intake arms' material) where they used to be the fill and the dark
+  // `ALU_DK`: dark on dark was most of why a chassis read as one black block. The pan stays in the
+  // fill rather than the aluminium because it is the floor of a bay a closed deck keeps in shade,
+  // and robots receive no shadow in standard mode; the default fill is dark.
   const skin = framePart(`skin:${key}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     for (const sy of [1, -1] as const) {
-      for (const y of plateYs) {
-        // the INNER plate stops a plate's thickness short of each end: run to ±hl, its end face
-        // was in the plane of a full END PLATE's outer face (`buildEndPlate`), which z-fights once
-        // the two carry different surface detail (the physical-materials tier)
-        const inner = y !== outerY;
-        const p = platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, BB_PLATE_H, BB_PLATE_T, holes);
-        p.translate(0, sy * y, BB_PLATE_H / 2);
-        parts.push(p);
-      }
+      parts.push(sidePlate(sy, outerY));
       // THE TOP CAP — lying ON that side's plate, the one perimeter surface a mechanism never
       // stands on, so a top-down view always has the colour somewhere even on a robot whose deck
       // is covered end to end.
       for (const sg of capSegs[sy > 0 ? 0 : 1]) {
         parts.push(
-          boxAt(sg.a1 - sg.a0, BB_TOP_CAP_W, BB_TOP_CAP_T, (sg.a0 + sg.a1) / 2, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2),
+          chamferBoxAt(sg.a1 - sg.a0, BB_TOP_CAP_W, BB_TOP_CAP_T, (sg.a0 + sg.a1) / 2, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2, edgeFor(detail, 0.04)),
         );
       }
     }
@@ -1411,11 +1876,19 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     // INSET — `length − 2.47` by the inner channel — to avoid "one flat slab", which left the wheel
     // pockets open from above; that ruling is reversed. Every wheel and pod already lives under
     // `BB_DECK_Z − 0.26` (the pod stack is derived from it), so nothing pokes through the lid.
-    parts.push(boxAt(spec.length, spec.width, BB_DECK_T, 0, 0, BB_DECK_Z - BB_DECK_T / 2));
+    parts.push(chamferBoxAt(spec.length, spec.width, BB_DECK_T, 0, 0, BB_DECK_Z - BB_DECK_T / 2, edgeFor(detail, 0.05)));
+    // BELLY PAN — thin, low, spanning the inner channel
+    parts.push(chamferBoxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.22, 0, 0, 0.85, edgeFor(detail, 0.03)));
     return parts;
   });
   const frame = framePart(`frame:${key}`, () => {
     const parts: THREE.BufferGeometry[] = [];
+    // THE INNER SIDE PLATES, the wheel channel's inboard wall
+    for (const sy of [1, -1] as const) {
+      for (const y of plateYs) {
+        if (y !== outerY) parts.push(sidePlate(sy, y));
+      }
+    }
     // CROSS MEMBERS, front and rear, tying the two side assemblies together under the deck.
     // ⚠️ SET BACK BEHIND THE END PLATES AND BELOW THE DECK'S UNDERSIDE (owner, 2026-09-21: "something
     // with the back plate must be meshing because it is glitching"). They used to end flush on the
@@ -1425,19 +1898,17 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     for (const sx of [1, -1] as const) {
       parts.push(
         // (and `BB_PROUD` under the deck's underside: a swerve pod's slew plate tops out there too)
-        boxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_PLATE_T - BB_RAIL_T / 2), 0, BB_DECK_Z - BB_DECK_T - BB_PROUD - BB_RAIL_T / 2),
+        chamferBoxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_PLATE_T - BB_RAIL_T / 2), 0, BB_DECK_Z - BB_DECK_T - BB_PROUD - BB_RAIL_T / 2, edgeFor(detail, 0.04)),
       );
     }
-    // BELLY PAN — thin, low, spanning the inner channel
-    parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.22, 0, 0, 0.85));
     return parts;
   });
 
   const skinMesh = new THREE.Mesh(skin, solidMat(chassisFill(spec.chassisColor), 0.55, 0.15));
   skinMesh.name = 'robot:frame:skin';
-  const frameMesh = new THREE.Mesh(frame, solidMat(ALU_DK, 0.45, 0.4));
+  const frameMesh = new THREE.Mesh(frame, solidMat(ALU, 0.45, 0.35));
   frameMesh.name = 'robot:frame:rails';
-  return [cast(skinMesh, 'fill'), cast(frameMesh, 'dark')];
+  return [cast(skinMesh, 'fill'), cast(frameMesh, 'alu')];
 }
 
 /**
@@ -1488,12 +1959,12 @@ export function endWheelSpanY(spec: RobotSpec, s: 1 | -1): { center: number; hal
   return { center: s * (hw - BB_PLATE_T - BB_PLATE_GAP / 2), half: BB_WHEEL_W / 2 };
 }
 
-const ENDPLATE_GEO_CACHE = new Map<string, THREE.BoxGeometry>();
-function endPlateGeo(sx: number, sy: number, sz: number): THREE.BoxGeometry {
-  const key = `${sx}|${sy}|${sz}`;
+const ENDPLATE_GEO_CACHE = new Map<string, THREE.BufferGeometry>();
+function endPlateGeo(sx: number, sy: number, sz: number, c = 0): THREE.BufferGeometry {
+  const key = `${sx}|${sy}|${sz}${c > 0 ? `|c${c}` : ''}`;
   let g = ENDPLATE_GEO_CACHE.get(key);
   if (!g) {
-    g = new THREE.BoxGeometry(sx, sy, sz);
+    g = chamferBox(sx, sy, sz, c);
     ENDPLATE_GEO_CACHE.set(key, g);
     SHARED_GEO.add(g);
   }
@@ -1502,7 +1973,7 @@ function endPlateGeo(sx: number, sy: number, sz: number): THREE.BoxGeometry {
 
 /** ONE end's plate(s) — see the header above. `mouthHalf` is `bbMouths(spec)`'s own half-width
  * on this edge (`undefined` when the edge carries no mouth at all). */
-function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number | undefined): THREE.Mesh[] {
+function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number | undefined, detail: BbWheelDetail): THREE.Mesh[] {
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const sign = end === 'front' ? 1 : -1;
@@ -1515,7 +1986,7 @@ function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number
   // different surface detail (the physical-materials tier).
   const top = BB_PLATE_H - BB_DECK_T;
   if (mouthHalf === undefined) {
-    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, (hw - BB_PLATE_T) * 2, top), mat), 'fill');
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, (hw - BB_PLATE_T) * 2, top, edgeFor(detail, 0.04)), mat), 'fill');
     mesh.position.set(cx, 0, top / 2);
     return [mesh];
   }
@@ -1529,7 +2000,7 @@ function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number
     const cy = (s * (Math.abs(outerFace) + innerMag)) / 2;
     const z0 = 0; // floor to plate height — see the header: the frame face is solid already
     const h = top - z0;
-    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, width, h), mat), 'fill');
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, width, h, edgeFor(detail, 0.04)), mat), 'fill');
     mesh.position.set(cx, cy, z0 + h / 2);
     out.push(mesh);
   }
@@ -1539,13 +2010,13 @@ function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number
 /** ALL of a robot's end plates, named for `id` so `endPlateChecks` (RENDER lane) and the live
  * per-robot group agree on what to look for: `robot:<id>:endplate:back` for a full plate,
  * `robot:<id>:endplate:front:l` / `:r` for a corner pair. */
-export function buildEndPlates(spec: RobotSpec, id: number): THREE.Object3D[] {
+export function buildEndPlates(spec: RobotSpec, id: number, detail: BbWheelDetail = 'high'): THREE.Object3D[] {
   const mouths = bbMouths(spec);
   const frontHalf = mouths.find((m) => m.edge === 'front')?.y1;
   const backHalf = mouths.find((m) => m.edge === 'back')?.y1;
   const out: THREE.Object3D[] = [];
   for (const [end, half] of [['front', frontHalf], ['back', backHalf]] as const) {
-    const parts = buildEndPlate(spec, end, half);
+    const parts = buildEndPlate(spec, end, half, detail);
     if (parts.length === 1) {
       parts[0].name = `robot:${id}:endplate:${end}`;
     } else {
@@ -1590,6 +2061,10 @@ export function buildEndPlates(spec: RobotSpec, id: number): THREE.Object3D[] {
  * `widthLimits`), so a 6.5-in sign fits on any side plate this builder can make.
  */
 export const BB_SIGN_W = 6.5;
+/** the SIGN LAND — solid plate behind the robot sign (R401.D: supported by the structure), out to
+ *  the widest sign frame a cosmetic can add (`'bold'`, 0.35 a side), so no frame ever overhangs a
+ *  cut (`bbSidePlateCut`). Full height, |u| ≤ this. */
+export const BB_SIGN_LAND_HALF = BB_SIGN_W / 2 + 0.35;
 /** R403.A — cap height of the numerals. */
 export const BB_SIGN_DIGIT_H = 2.25;
 /** R403.B — background clear of the numerals, on every side. */
@@ -2073,6 +2548,8 @@ export function buildIntake(
   /** the cosmetic accent (`accentFill`). Defaults to `SWEEPER` — a no-op tint — so every
    * existing caller, this lane's own included, is unchanged. */
   accent: string = SWEEPER,
+  /** the robot's detail level (`ROBOT_LOD`): High breaks the arms' and the brace's edges */
+  detail: BbWheelDetail = 'high',
 ): { nodes: THREE.Object3D[]; rollers: BbRoller[]; sideRollers: BbSideRoller[]; rampPivots: THREE.Group[] } {
   const rollerMat = solidMat(tint3d(SWEEPER, accent, 0.5), 0.5, 0.25);
   const nodes: THREE.Object3D[] = [];
@@ -2111,10 +2588,11 @@ export function buildIntake(
     const armT = INTAKE_RAIL_T;
     const railZ = BB3_MOUTH_SLOT_Z + 0.25; // the rail's own centre — its underside IS the pocket
     const bossTop = BB_ROLLER_Z + 0.6;
-    const armGeo = framePart(`arm:${armLen.toFixed(2)}|${(outer - armX0).toFixed(2)}`, () => {
+    const armC = edgeFor(detail, 0.04);
+    const armGeo = framePart(`arm:${armLen.toFixed(2)}|${(outer - armX0).toFixed(2)}${armC > 0 ? `|c${armC}` : ''}`, () => {
       const parts: THREE.BufferGeometry[] = [];
       // (1) THE BOTTOM RAIL, its underside flush with the collider's open pocket
-      parts.push(boxAt(armLen, armT, 0.5, armX0 + armLen / 2, 0, railZ));
+      parts.push(chamferBoxAt(armLen, armT, 0.5, armX0 + armLen / 2, 0, railZ, armC));
       /**
        * (1b) THE ROUNDED NOSE. ⚠️ The rail used to end on a SQUARE corner at the tip line, 1.25
        * in forward of the roller hub's own front face — which is the thing the owner was
@@ -2132,11 +2610,11 @@ export function buildIntake(
       const boss = new THREE.CylinderGeometry(0.55, 0.55, armT, 12);
       boss.translate(outer, 0, BB_ROLLER_Z);
       parts.push(boss);
-      parts.push(boxAt(0.45, armT, bossTop - railZ, outer, 0, (bossTop + railZ) / 2));
+      parts.push(chamferBoxAt(0.45, armT, bossTop - railZ, outer, 0, (bossTop + railZ) / 2, armC));
       // (3) THE DIAGONAL, from the rail's outer end back up to where the arm is bolted on
       const dx = armX0 - (armX0 + armLen);
       const dz = bossTop - railZ;
-      const diag = new THREE.BoxGeometry(Math.hypot(dx, dz), armT, 0.34);
+      const diag = chamferBox(Math.hypot(dx, dz), armT, 0.34, armC);
       diag.rotateY(-Math.atan2(dz, dx));
       diag.translate(armX0 + armLen / 2, 0, (railZ + bossTop) / 2);
       parts.push(diag);
@@ -2182,8 +2660,8 @@ export function buildIntake(
      * physics says is open, which is the bug the compliant flaps were written to fix.
      */
     const braceT = 0.55;
-    const braceGeo = framePart(`intakeBrace:${f.half.toFixed(2)}|${braceT.toFixed(2)}`, () => [
-      boxAt(braceT, f.half * 2 - 2 * BB_INTAKE_ARM_INSET, braceT, tip - braceT / 2, 0, BB3_MOUTH_SLOT_Z + braceT / 2),
+    const braceGeo = framePart(`intakeBrace:${f.half.toFixed(2)}|${braceT.toFixed(2)}${armC > 0 ? `|c${armC}` : ''}`, () => [
+      chamferBoxAt(braceT, f.half * 2 - 2 * BB_INTAKE_ARM_INSET, braceT, tip - braceT / 2, 0, BB3_MOUTH_SLOT_Z + braceT / 2, armC),
     ]);
     const brace = new THREE.Mesh(braceGeo, solidMat(ALU, 0.45, 0.35));
     brace.name = `robot:intake:brace:${m.edge}`;
@@ -3176,6 +3654,8 @@ function buildDumper(
   /** an IMPORT's release line in the firing edge's frame (`dumperFrame`, the sim's
    *  `bbImportLaunchLine`) and its lip height (`bbDumpZ`); absent is the standard edge and tray */
   at?: { dist: number; span: number; lateral: number; z: number; room?: number },
+  /** the robot's detail level (`ROBOT_LOD`): High breaks the bucket's and the posts' edges */
+  detail: BbWheelDetail = 'high',
 ): THREE.Group {
   const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
   const { dist, span } = at ?? edgeGeom(spec, edge);
@@ -3192,15 +3672,17 @@ function buildDumper(
   const len = lip - pivot;
   const shaftZ = lipZ - 2.3;
   const mat = solidMat(DUMPER_BUCKET, 0.5, 0.3);
+  const dc = edgeFor(detail, 0.03);
+  const dk = dc > 0 ? `|c${dc}` : '';
 
   // the FIXED half: the shaft and the posts that stand it off the deck.
-  const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}${at ? `|${shaftZ.toFixed(3)}` : ''}`, () => {
+  const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}${at ? `|${shaftZ.toFixed(3)}` : ''}${dk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     const shaft = new THREE.CylinderGeometry(0.34, 0.34, half * 2, 8);
     shaft.translate(pivot, 0, shaftZ);
     parts.push(shaft);
     for (const s of [1, -1] as const) {
-      parts.push(boxAt(0.6, 0.6, shaftZ - BB_DECK_Z, pivot, s * (half - 0.3), (shaftZ + BB_DECK_Z) / 2));
+      parts.push(chamferBoxAt(0.6, 0.6, shaftZ - BB_DECK_Z, pivot, s * (half - 0.3), (shaftZ + BB_DECK_Z) / 2, dc));
     }
     return parts;
   });
@@ -3210,28 +3692,28 @@ function buildDumper(
   const arm = new THREE.Group();
   arm.name = 'bb-dump-arm';
   arm.position.set(pivot, 0, shaftZ);
-  const tray = framePart(`dumper:${len.toFixed(2)}|${half.toFixed(2)}`, () => {
+  const tray = framePart(`dumper:${len.toFixed(2)}|${half.toFixed(2)}${dk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     const dz = lipZ - shaftZ;
     // floor, tilted up toward the lip
-    const floor = new THREE.BoxGeometry(len, half * 2, 0.22);
+    const floor = chamferBox(len, half * 2, 0.22, dc);
     floor.rotateY(-0.22);
     floor.translate(len / 2, 0, dz - 1.5);
     parts.push(floor);
     // the two throwing arms, and the lip they end in
     for (const s of [1, -1] as const) {
-      const a = new THREE.BoxGeometry(len, 0.3, 1.9);
+      const a = chamferBox(len, 0.3, 1.9, dc);
       a.rotateY(-0.22);
       a.translate(len / 2, s * (half - 0.15), dz - 1.1);
       parts.push(a);
     }
-    parts.push(boxAt(0.6, half * 2, 0.5, len, 0, dz - 0.25));
+    parts.push(chamferBoxAt(0.6, half * 2, 0.5, len, 0, dz - 0.25, dc));
     // the BACK WALL over the pivot — without it the tray reads as a plank rather than a bucket
-    parts.push(boxAt(0.3, half * 2, 2.6, 0.4, 0, dz - 2.4));
+    parts.push(chamferBoxAt(0.3, half * 2, 2.6, 0.4, 0, dz - 2.4, dc));
     // ...and the two SIDE WALLS that make it a bucket rather than a trough. The bucket holds four
     // (`BB_DUMP_BUCKET`, two across by two high), so it has to look deep enough to.
     for (const s of [1, -1] as const) {
-      parts.push(boxAt(len * 0.8, 0.28, BB_DUMP_SEAT_PITCH, len * 0.45, s * half, dz - 1.2 + BB_DUMP_SEAT_PITCH / 2));
+      parts.push(chamferBoxAt(len * 0.8, 0.28, BB_DUMP_SEAT_PITCH, len * 0.45, s * half, dz - 1.2 + BB_DUMP_SEAT_PITCH / 2, dc));
     }
     return parts;
   });
@@ -3253,7 +3735,8 @@ function buildDumper(
  *
  * ── THE ALLIANCE AND THE COSMETIC COLOUR (roadmap item 1) ──────────────────────────────────
  * The chassis FILL is the supporter cosmetic (`chassisFill`, the 7-key allowlist in
- * `src/config.ts`) — it goes on the drivetrain side plates and the deck — and the ALLIANCE is
+ * `src/config.ts`) — it goes on the sheet parts: the outer side plates, the deck, the top caps, the
+ * end plates and the belly pan (`buildFrame`'s TWO TONES) — and the ALLIANCE is
  * the sign panel (the red/blue silhouette line was removed 2026-09-21; the name label over the
  * robot carries the alliance now). Scoping the cosmetic to the FILL is what keeps it from ever making a red
  * robot read as blue, which is the one thing a cosmetic may not do here.
@@ -3262,12 +3745,28 @@ export function buildRobotGroup(
   spec: RobotSpec,
   id: number,
   alliance: Alliance,
-  /** ⚠️ THE TIER'S WHEEL TESSELLATION, AND THE ONLY THING A TIER MAY CHANGE ABOUT THIS ROBOT.
-   *  It defaults to `high` so every existing caller — the RENDER lane included — builds exactly
-   *  what it built before; the live scene and the builder preview pass their own
-   *  (`bbWheelDetail`), and the match's `sync` rebuilds a group when it changes. */
+  /** ⚠️ THE TIER'S DETAIL LEVEL, AND THE ONLY THING A TIER MAY CHANGE ABOUT THIS ROBOT: the
+   *  wheels' tessellation (`WHEEL_LOD`) and the chassis' edge breaks, plate cuts and cap screws
+   *  (`ROBOT_LOD`). It defaults to `high`, which the RENDER lane builds; the live scene and the
+   *  builder preview pass their own (`bbWheelDetail`), and the match's `sync` rebuilds a group
+   *  when it changes. */
   detail: BbWheelDetail = 'high',
 ): THREE.Group {
+  // every cached part this build uses is counted against the group — see `FRAME_REFS`
+  const outer = frameClaims;
+  const claims = new Set<string>();
+  frameClaims = claims;
+  try {
+    const group = buildRobotGroupParts(spec, id, alliance, detail);
+    group.userData.frameKeys = [...claims];
+    for (const k of claims) FRAME_REFS.set(k, (FRAME_REFS.get(k) ?? 0) + 1);
+    return group;
+  } finally {
+    frameClaims = outer;
+    evictFrameParts();
+  }
+}
+function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, detail: BbWheelDetail): THREE.Group {
   // AN IMPORTED ROBOT is built by the same generator, from its own parts (`buildImportedRobot`
   // below), so the match and the builder preview still share one function and one key
   if (spec.imported) return buildImportedRobot(spec, spec.imported, id, alliance, detail);
@@ -3281,8 +3780,10 @@ export function buildRobotGroup(
   const cosm = clampCosmetics(spec);
   const accent = accentFill(cosm.accent, spec.chassisColor);
 
-  for (const part of buildFrame(spec)) group.add(part);
-  for (const part of buildEndPlates(spec, id)) group.add(part);
+  for (const part of buildFrame(spec, detail)) group.add(part);
+  for (const part of buildEndPlates(spec, id, detail)) group.add(part);
+  const screws = buildCapFasteners(spec, id, detail);
+  if (screws) group.add(screws);
   const wheels = buildWheels(spec, accent, detail);
   for (const w of wheels.nodes) group.add(w);
   // the handles the per-frame sync poses a MOVING drivetrain with. Absent for the three that do
@@ -3299,7 +3800,7 @@ export function buildRobotGroup(
   // WHICH END IS THE FRONT. `bbFrontMarks` (`parts.ts`) is the geometry AND the design note —
   // read that header before changing anything here, including why it does not follow the
   // driver's REVERSED. The 2D sprite fills the identical three rectangles.
-  for (const part of buildFrontMarks(spec, id)) group.add(part);
+  for (const part of buildFrontMarks(spec, id, detail)) group.add(part);
 
   // THE DECAL — a baked CanvasTexture on the deck (the `getSignTexture` technique), cached per
   // decal key × accent colour. `'none'` adds no node, matching a default-cosmetic build's node
@@ -3345,7 +3846,7 @@ export function buildRobotGroup(
     }
   }
 
-  const intake = buildIntake(spec, accent);
+  const intake = buildIntake(spec, accent, detail);
   for (const n of intake.nodes) group.add(n);
   group.userData.intakeRollers = intake.rollers;
   group.userData.sideRollers = intake.sideRollers;
@@ -3368,7 +3869,7 @@ export function buildRobotGroup(
       pitches.push(t1.userData.pitch as THREE.Group);
     }
   } else if (launcher.kind === 'dumper') {
-    const d = buildDumper(spec, launcher);
+    const d = buildDumper(spec, launcher, undefined, detail);
     group.add(d);
     group.userData.dumpArm = d.userData.dumpArm;
   } else if (launcher.kind === 'fixed') {
@@ -3502,7 +4003,7 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
     group.add(arrow);
 
     // THE MECHANISMS, where the accessors put them — the standard builders, unchanged
-    const intake = buildIntake(spec, accent);
+    const intake = buildIntake(spec, accent, detail);
     for (const n of intake.nodes) group.add(n);
     group.userData.intakeRollers = intake.rollers;
     group.userData.sideRollers = intake.sideRollers;
@@ -3525,7 +4026,7 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
       }
     } else if (launcher.kind === 'dumper') {
       const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
-      const d = buildDumper(spec, launcher, { ...bbDumperFrame(spec, edge), z: bbDumpZ(spec) });
+      const d = buildDumper(spec, launcher, { ...bbDumperFrame(spec, edge), z: bbDumpZ(spec) }, detail);
       group.add(d);
       group.userData.dumpArm = d.userData.dumpArm;
     } else if (launcher.kind === 'fixed') {
@@ -3700,7 +4201,7 @@ function restTurretHeads(group: THREE.Group, heads: readonly THREE.Group[], obst
  * chassis box in x (`bbFrontMarks` puts them within the rail) and only stand above the deck,
  * which is the same bargain `buildEndPlates` made — the RENDER lane asserts it for both.
  */
-export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
+export function buildFrontMarks(spec: RobotSpec, id: number, detail: BbWheelDetail = 'high'): THREE.Object3D[] {
   const shared = bbFrontMarks(spec);
   // the 3D bars also give way to the intake arms, which the 2D sprite draws flat beside them
   const keep = [...bbChassisKeepOuts(spec), ...intakeArmKeepOuts(spec)];
@@ -3714,10 +4215,11 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
 
   // an end bar stops where a mechanism stands on the same rail and runs lower where one passes over
   // it (`bbFrontMarks`); each piece stands on the deck at its own height
+  const barC = edgeFor(detail, 0.06);
   const barKey = (b: typeof m.front): string =>
-    b.pieces.map((g) => `|${g.y0.toFixed(3)}:${g.y1.toFixed(3)}:${g.h.toFixed(3)}`).join('');
+    b.pieces.map((g) => `|${g.y0.toFixed(3)}:${g.y1.toFixed(3)}:${g.h.toFixed(3)}`).join('') + (barC > 0 ? `|c${barC}` : '');
   const barParts = (b: typeof m.front): THREE.BufferGeometry[] =>
-    bbEndBarSegments(b).map((sg) => boxAt(b.x1 - b.x0, sg.y1 - sg.y0, sg.h, (b.x0 + b.x1) / 2, (sg.y0 + sg.y1) / 2, sg.h / 2 - BB_END_BAR_H / 2));
+    bbEndBarSegments(b).map((sg) => chamferBoxAt(b.x1 - b.x0, sg.y1 - sg.y0, sg.h, (b.x0 + b.x1) / 2, (sg.y0 + sg.y1) / 2, sg.h / 2 - BB_END_BAR_H / 2, barC));
   if (m.front.pieces.length) {
     const front = cast(
       new THREE.Mesh(
@@ -3733,16 +4235,17 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
 
   // the deck arrow, where the deck is clear of every mechanism — or not at all (`bbFrontMarks`)
   const a = m.arrow;
+  const arrowC = edgeFor(detail, 0.02);
   if (a) {
     const arrow = cast(
       new THREE.Mesh(
-        framePart(`front:arrow|${a.apex.toFixed(3)}|${a.base.toFixed(3)}|${a.half.toFixed(3)}|${a.cy.toFixed(3)}`, () => {
+        framePart(`front:arrow|${a.apex.toFixed(3)}|${a.base.toFixed(3)}|${a.half.toFixed(3)}|${a.cy.toFixed(3)}${arrowC > 0 ? `|c${arrowC}` : ''}`, () => {
           const shape = new THREE.Shape();
           shape.moveTo(a.apex, a.cy);
           shape.lineTo(a.base, a.cy + a.half);
           shape.lineTo(a.base, a.cy - a.half);
           shape.closePath();
-          return [new THREE.ExtrudeGeometry(shape, { depth: BB_FRONT_ARROW_T, bevelEnabled: false })];
+          return [plateExtrude(shape, BB_FRONT_ARROW_T, arrowC, 12)];
         }),
         solidMat(BB_FRONT_INK, 0.45, 0.05),
       ),
@@ -4560,6 +5063,12 @@ export function buildBiobuzzRobots(): BbRobots {
  * drivetrain picker back and forth frees the group and re-uses every buffer in it.
  */
 export function disposeRobotGroup(group: THREE.Group): void {
+  // hand back the group's references to the shared merge cache, once
+  const keys = group.userData.frameKeys as string[] | undefined;
+  if (keys) {
+    delete group.userData.frameKeys;
+    for (const k of keys) FRAME_REFS.set(k, Math.max(0, (FRAME_REFS.get(k) ?? 0) - 1));
+  }
   // an IMPORTED robot's mesh is a clone of a template its slot owns (`renderImported.ts`): its
   // geometry, materials and textures are skipped here and its reference handed back instead
   group.traverse((child) => {
@@ -4570,6 +5079,7 @@ export function disposeRobotGroup(group: THREE.Group): void {
     for (const m of mats) if (!SHARED_MAT.has(m) && !isImportShared(m)) m.dispose();
   });
   releaseImportedMesh(group);
+  evictFrameParts();
 }
 
 export function updateBiobuzzRobots(robots: BbRobots, world: World): void {

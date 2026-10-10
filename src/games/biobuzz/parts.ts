@@ -645,8 +645,10 @@ function placeArrow(
  * variant of a mesh. REVERSED is a property of a driver's stick, not of the machine.
  */
 export const BB_FRONT_INK = '#f8fafc';
-/** the rear rail's own tone — `renderRobots.ts`'s `ALU_DK`, i.e. the colour the rest of the
- *  chassis structure is already drawn in. NOT a marking colour, on purpose. */
+/** the rear rail's own tone — `renderRobots.ts`'s `ALU_DK`, the dark structural tone the chassis
+ *  frame was drawn in until 2026-10-10 (its inner plates and cross members are clear aluminium
+ *  now). The bar stays dark: a silver one would compete with the white front bar. NOT a marking
+ *  colour, on purpose. */
 export const BB_REAR_INK = '#39414f';
 /** bar thickness along the robot's own x (in), and how far in from each rail the bars stop so
  *  they never fight `C.CHASSIS_CORNER`'s rounding. DRAWING sizes. */

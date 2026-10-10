@@ -273,11 +273,15 @@ export const FINISHES = {
   /** goBILDA 1120 U-channel and plates, REV 15 mm extrusion — the robot proof class. */
   aluminiumClearAnodised: {
     color: 0xc4c7ca,
-    roughness: 0.4,
+    // ⚠️ 0.5, NOT THE SURVEY'S 0.35–0.45 (2026-10-10). goBILDA's channel and plate are bead-blasted
+    // before they are anodised, a satin finish, and at 0.4 the turret's side plate mirrored the
+    // warm room probe as bronze: mean sRGB (176,162,145), HSV saturation 0.18, on the Extreme
+    // front 3/4 close-up in the school hall. At 0.5 the same crop is (204,192,178), 0.13.
+    roughness: 0.5,
     metalness: 1,
     detail: { kind: 'bead', scaleIn: 0.25, normal: 0.05, rough: 0.12 },
     source:
-      'goBILDA 1120 series "Clear Anodized" aluminium (photo median #bdbebf, highlight #dcdcdc → suggested #c4c7ca), roughness 0.35–0.45. REV 15 mm 6063-T5 clear anodised. Anisotropy ~0.2 (goBILDA) / 0.4–0.6 (REV) left to the robot applier: robot UVs are per-face box UVs',
+      'goBILDA 1120 series "Clear Anodized" aluminium (photo median #bdbebf, highlight #dcdcdc → suggested #c4c7ca), roughness 0.35–0.45 (survey). APPROX: 0.5 for the bead-blasted satin goBILDA ships, measured against the room probe 2026-10-10. REV 15 mm 6063-T5 clear anodised. Anisotropy ~0.2 (goBILDA) / 0.4–0.6 (REV) left to the robot applier: robot UVs are per-face box UVs',
   },
   /** an EXTRUDED aluminium part whose axis is known — REV 15 mm extrusion, and the Box Tube's three
    * square tubes. The robot applier reads the axis off the part's geometry (its longest dimension)
@@ -476,11 +480,12 @@ export type FinishId = keyof typeof FINISHES;
  * standard materials never read it.
  */
 export const ROBOT_FAMILY_FINISH = {
-  /** clear-anodised goBILDA channel and plates, brackets, arms, braces, the dumper */
+  /** clear-anodised goBILDA channel and plates — the chassis' inner plates and cross members —
+   *  brackets, arms, braces, the dumper */
   alu: 'aluminiumClearAnodised',
   /** an extruded aluminium part with a known axis — the Box Tube's tubes */
   extr: 'aluminiumExtrusion',
-  /** bare steel — the mecanum's side plates, the flywheel shaft */
+  /** bare steel — the mecanum's side plates, the flywheel shaft, the top caps' button-head screws */
   steel: 'steel',
   /** the coated dark/grey structural tones (`ALU_DK`, `TURRET_RING`, `TURRET_BARREL`, `MOTOR`) */
   dark: 'darkCoat',
