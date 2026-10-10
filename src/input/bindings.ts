@@ -124,6 +124,49 @@ export interface PadBindings {
    * Validated like every other field, so an older blob without it reads as on.
    */
   navEnabled: boolean;
+  /**
+   * WHAT TURNS THE ROBOT: the stick `driveStick` does not take, or the two TRIGGERS (LT turns
+   * left, RT right, analog, through the same deadzone and curve as the sticks). With
+   * `'triggers'` every bind on LT or RT is PAUSED, not removed (`padBindPaused`): it stays on
+   * its row, struck through, and plays again the moment the player switches back. Removing it
+   * would be the silent unbind the conflict policy forbids, and Shoot and Intake sit on the
+   * triggers by default. A NEW SIBLING FIELD, like `navEnabled`: an older client ignores it
+   * and turns with the stick.
+   */
+  turnWith: 'stick' | 'triggers';
+}
+
+/** the standard mapping's two analog triggers, LT then RT */
+export const PAD_TRIGGERS: readonly number[] = [6, 7];
+
+/**
+ * IS THIS BIND OUT OF PLAY because the triggers are turning the robot (`turnWith`)? A combo
+ * with a trigger in it is paused too: it could only fire while the robot turns.
+ */
+export function padBindPaused(pad: PadBindings, chord: PadChord): boolean {
+  return pad.turnWith === 'triggers' && chord.some((i) => PAD_TRIGGERS.includes(i));
+}
+
+/** the binds of `action` that can fire: `padBinds` minus any paused one. What a hint or a
+ *  prompt names, so it never tells a player to press a trigger that is turning the robot. */
+export function livePadBinds(pad: PadBindings, action: PadAction): PadChord[] {
+  return padBinds(pad, action).filter((c) => !padBindPaused(pad, c));
+}
+
+/**
+ * THE MAP THE CHORD RESOLVER PLAYS: `pad` itself, or with `turnWith` on the triggers a copy
+ * with every paused bind dropped. Dropped rather than masked at the buttons, so a paused combo
+ * also stops holding back the single it is made of (`padChords.ts` rule 2).
+ */
+export function livePad(pad: PadBindings): PadBindings {
+  if (pad.turnWith !== 'triggers') return pad;
+  const buttons = {} as Record<PadAction, number[]>;
+  const combos = {} as Record<PadAction, PadChord[]>;
+  for (const a of PAD_ACTIONS) {
+    buttons[a] = pad.buttons[a].filter((i) => !PAD_TRIGGERS.includes(i));
+    combos[a] = pad.combos[a].filter((c) => !padBindPaused(pad, c));
+  }
+  return { ...pad, buttons, combos };
 }
 
 /**
@@ -523,6 +566,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     chordGraceMs: PAD_CHORD_GRACE_MS,
     menuButton: PAD_MENU_BUTTON,
     navEnabled: true,
+    turnWith: 'stick',
   },
 };
 
@@ -560,6 +604,7 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
       chordGraceMs: b.pad.chordGraceMs,
       menuButton: b.pad.menuButton,
       navEnabled: b.pad.navEnabled,
+      turnWith: b.pad.turnWith,
     },
   };
   const pg = clonePerGame(b.perGame);
@@ -695,9 +740,11 @@ export function mergeBindings(saved: unknown): ControlBindings {
       chordGraceMs?: unknown;
       menuButton?: unknown;
       navEnabled?: unknown;
+      turnWith?: unknown;
     };
     if (isButtonIndex(pad.menuButton)) out.pad.menuButton = pad.menuButton;
     if (typeof pad.navEnabled === 'boolean') out.pad.navEnabled = pad.navEnabled;
+    if (pad.turnWith === 'stick' || pad.turnWith === 'triggers') out.pad.turnWith = pad.turnWith;
     if (pad.driveStick === 'left' || pad.driveStick === 'right') {
       out.pad.driveStick = pad.driveStick;
     }
@@ -1189,13 +1236,18 @@ export function keyConflict(
 }
 
 /** the pad twin of `keyConflict`, EXACT like every pad rule: a single is held by that single, a
- *  combo by the identical combo, and RT on Shoot does not conflict with an RT + D-UP combo. */
+ *  combo by the identical combo, and RT on Shoot does not conflict with an RT + D-UP combo.
+ *  While the triggers turn the robot (`turnWith`), a bind on either is held by Turn left / Turn
+ *  right, in every scope: it could only ever be paused. */
 export function padConflict(
   b: ControlBindings,
   game: GameId | null,
   action: PadAction,
   chord: PadChord,
 ): BindConflict | null {
+  if (padBindPaused(b.pad, chord)) {
+    return { action: chord.includes(PAD_TRIGGERS[0]) ? 'rotateCCW' : 'rotateCW', game: null };
+  }
   const combo = chord.length > 1 ? normalizeChord(chord) : null;
   const holds = (pad: PadBindings, a: PadAction): boolean =>
     combo ? pad.combos[a].some((c) => chordKey(c) === chordKey(combo)) : pad.buttons[a].includes(chord[0]);
@@ -1399,13 +1451,14 @@ export function resetGame(b: ControlBindings, game: GameId): ControlBindings {
  * The season's own actions that have NO bind on one device or the other in that game. A main
  * edit can take a key from an action the All games scope does not list (put Shoot on C and
  * Catalyst and Place POLLEN both lose it), so the screen marks the season that needs a look
- * rather than leaving the player to find out in a match.
+ * rather than leaving the player to find out in a match. A pad bind paused by the triggers
+ * turning (`turnWith`) does not count: it cannot fire.
  */
 export function seasonUnbound(b: ControlBindings, game: GameId): KeyAction[] {
   const eff = effectiveBindings(b, game);
   const pad = new Set<KeyAction>(seasonPadActions(game));
   return seasonKeyActions(game).filter(
-    (a) => eff.keys[a].length === 0 || (pad.has(a) && padBinds(eff.pad, a as PadAction).length === 0),
+    (a) => eff.keys[a].length === 0 || (pad.has(a) && livePadBinds(eff.pad, a as PadAction).length === 0),
   );
 }
 

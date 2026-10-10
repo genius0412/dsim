@@ -2,23 +2,35 @@
  * WHAT THE CONTROLS SCREEN LISTS, AND WHERE — DOM-free, so `npm test` can hold the layout to the
  * binding model instead of trusting a component to keep up with it.
  *
- * The screen has two kinds of scope (`ControlsSection`), and every action appears in exactly
- * ONE of them, decided by its kind in `src/input/bindings.ts`:
+ * The screen has two kinds of scope (`ControlsSection`), decided by each action's kind in
+ * `src/input/bindings.ts`:
  *
  *   All games   the SHARED controls (Driving, Match) and the OVERRIDABLE mechanisms every season
- *               starts from (Intake, Shoot), in three panels.
+ *               starts from (Intake, Shoot), in three panels — plus the ACTIVE season's own
+ *               mechanisms, on cards named for it (`allGamesPanels`).
  *   a season    that season's own actions: Intake and Shoot again, which the season may
- *               override, and its SEASON-ONLY mechanisms, which live nowhere else.
+ *               override, and its SEASON-ONLY mechanisms.
  *
- * So a key is never shown twice for one meaning, and nothing that is the same in every season
- * is repeated under each of them — which was the whole complaint about the old screen, where a
- * season scope listed all eight drive keys and the stick sliders again with SYNCED beside each.
+ * Nothing that is the same in every season is repeated under each of them — which was the whole
+ * complaint about the old screen, where a season scope listed all eight drive keys and the stick
+ * sliders again with SYNCED beside each.
+ *
+ * ⚠️ THE ACTIVE SEASON'S OWN CARDS ARE IN ALL GAMES TOO (owner, 2026-10-10: "People keep missing
+ * the fact that there is a separate panel for biobuzz controls"). Place POLLEN, the ramp and the
+ * camera keys were listed in the BIOBUZZ scope alone, one tab over from the page everybody opens,
+ * so players read Driving / Mechanisms / Match, found no Place POLLEN and concluded it was not
+ * rebindable. A season-only action has ONE store, main (`actionIsSeasonOnly`), so the same row
+ * in two scopes edits the same bind — a second place to find it, never a second value. Only the
+ * active season's are shown: three seasons' worth would bury the shared rows under controls for
+ * games the player is not playing.
  */
 import type { GameId } from '../games/types';
+import { seasonFor } from '../seasons';
 import {
   KEY_ACTIONS,
   PAD_ACTIONS,
   VIEW_ACTIONS,
+  actionIsSeasonOnly,
   actionOverridable,
   seasonKeyActions,
   seasonPadActions,
@@ -62,7 +74,9 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
 };
 
 export interface BindPanel {
-  id: 'driving' | 'mechanisms' | 'match' | 'view';
+  /** unique within one scope. `season` is the active season's own mechanisms in All games, which
+   *  already has a `mechanisms` card. */
+  id: 'driving' | 'mechanisms' | 'season' | 'match' | 'view';
   title: string;
   /** the keyboard column, in reading order */
   keys: readonly KeyAction[];
@@ -129,4 +143,28 @@ export function seasonPanels(game: GameId): BindPanel[] {
   };
   const view = seasonKeyActions(game).filter(isView);
   return view.length ? [mech, { id: 'view', title: '3D view', keys: view, pads: [] }] : [mech];
+}
+
+/**
+ * THE ALL GAMES SCOPE AS SHOWN: the three shared panels, with `active`'s season-only actions on
+ * cards named for it after Mechanisms — where somebody looking for a mechanism bind is already
+ * reading. Intake and Shoot stay on Mechanisms, the bind every season starts from; a season's
+ * override of them is still edited in its own scope. A season with no action of its own (DECODE)
+ * adds nothing.
+ */
+export function allGamesPanels(active: GameId | null): BindPanel[] {
+  if (!active) return [...ALL_GAMES_PANELS];
+  const name = seasonFor(active).name;
+  const own = seasonPanels(active)
+    .map(
+      (p): BindPanel => ({
+        id: p.id === 'mechanisms' ? 'season' : p.id,
+        title: `${name} ${p.title === 'Mechanisms' ? 'mechanisms' : p.title}`,
+        keys: p.keys.filter(actionIsSeasonOnly),
+        pads: p.pads.filter(actionIsSeasonOnly),
+      }),
+    )
+    .filter((p) => p.keys.length > 0);
+  const at = ALL_GAMES_PANELS.findIndex((p) => p.id === 'mechanisms') + 1;
+  return [...ALL_GAMES_PANELS.slice(0, at), ...own, ...ALL_GAMES_PANELS.slice(at)];
 }

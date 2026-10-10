@@ -6217,6 +6217,14 @@ a.ds-cta {
 .ds-key.remove {
   color: var(--ds-danger);
 }
+/* PAUSED: a bind on LT or RT while the triggers turn the robot (`PadBindings.turnWith`). Kept on
+   its row, struck through in the muted ink, so it reads as off and still says where it will be
+   when the triggers go back to binds. Dashed is a style, not a width, so the box holds still. */
+.ds-key.paused {
+  color: var(--ds-mut);
+  border-style: dashed;
+  text-decoration: line-through;
+}
 /* A CONFLICT: the keycap already holding the bind the armed slot was refused. A ring, not a
    border change, so nothing moves; two shakes, then it holds still (docs/area/ui.md). */
 .ds-key.conflict {

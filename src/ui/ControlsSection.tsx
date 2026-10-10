@@ -4,6 +4,7 @@ import {
   BIND_SLOTS_MAX,
   DEFAULT_BINDINGS,
   PAD_ACTIONS,
+  PAD_TRIGGERS,
   PAD_CHORD_GRACE_MAX_MS,
   PAD_CHORD_GRACE_MIN_MS,
   actionIsSeasonOnly,
@@ -20,6 +21,7 @@ import {
   keyLabel,
   keyName,
   padBindLabel,
+  padBindPaused,
   padBinds,
   padButtonLabel,
   padConflict,
@@ -48,13 +50,15 @@ import { visibleSeasons } from '../seasonVisibility';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
-import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanels, type BindPanel } from './controlsLayout';
+import { ACTION_LABELS, allGamesPanels, seasonPanels, type BindPanel } from './controlsLayout';
 
 /**
  * WHICH MAP IS BEING EDITED. `all` is the MAIN setting — the shared controls, and the Intake and
  * Shoot every season starts from — and it is the default, with nothing remembered: a player who
  * comes back to rebind Shoot should land on the row that changes Shoot everywhere (owner,
- * 2026-09-19: "keybinds should stay the same across seasons for sure").
+ * 2026-09-19: "keybinds should stay the same across seasons for sure"). It also carries the
+ * ACTIVE season's own mechanisms (`allGamesPanels`), because players never found them in the
+ * season scope (owner, 2026-10-10).
  *
  * A season scope lists THAT SEASON'S OWN ACTIONS and nothing else (`controlsLayout.ts` holds the
  * split, `npm test` holds it to the model). Its Intake and Shoot are overrides of main, with a
@@ -82,9 +86,9 @@ interface Props {
   /** run the tutorial (roadmap item 6) — absent when the active game has no tutorial, and the
    *  panel is then not rendered at all rather than shown disabled. */
   onTutorial?: () => void;
-  /** the game `onTutorial` runs. The row sits in the All games scope but runs the ACTIVE
-   *  season's tutorial, so its title names that season (design review 12-20). */
-  tutorialGame?: GameId;
+  /** the season the player has picked. All games lists its own mechanisms, and the tutorial row
+   *  runs its tutorial and names it (design review 12-20). */
+  activeGame: GameId;
 }
 
 /**
@@ -110,10 +114,15 @@ const holderScope = (c: BindConflict): Scope =>
 
 const scopeName = (s: Scope): string => (s === 'all' ? 'All games' : seasonFor(s).name);
 
+/** does the screen for `here` list the holder of `c`? Its own scope always does, and All games
+ *  also lists the active season's own actions (`allGamesPanels`). */
+const holderListed = (c: Conflict, here: Scope, active: GameId): boolean =>
+  c.scope === here || (here === 'all' && c.scope === active && actionIsSeasonOnly(c.action));
+
 /** "C is taken by Place POLLEN (BIOBUZZ). Press another key, or Esc." — the scope is named only
  *  when the holder is not on the screen being edited */
-const conflictText = (c: Conflict, here: Scope): string =>
-  `${c.label} is taken by ${ACTION_LABELS[c.action]}${c.scope === here ? '' : ` (${scopeName(c.scope)})`}. ` +
+const conflictText = (c: Conflict, here: Scope, active: GameId): string =>
+  `${c.label} is taken by ${ACTION_LABELS[c.action]}${holderListed(c, here, active) ? '' : ` (${scopeName(c.scope)})`}. ` +
   `Press another ${c.device === 'key' ? 'key' : 'button'}, or Esc.`;
 
 /** a message and the card whose TITLE it stands in for — the card holding the row it is about */
@@ -128,12 +137,19 @@ interface Notice {
  *  armed) is not a notice and holds for as long as the slot does. */
 const NOTICE_MS = 4000;
 
-/** the card that lists `action` in this scope. A season scope is one card; in All games each
- *  action is in exactly one (`controlsLayout.ts`). */
-const panelFor = (action: KeyAction, game: GameId | null): BindPanel['id'] =>
-  (game ? seasonPanels(game) : ALL_GAMES_PANELS).find(
+/** the cards of a scope: a season's own, or All games with `active`'s mechanisms in it */
+const panelsOf = (game: GameId | null, active: GameId): BindPanel[] =>
+  game ? seasonPanels(game) : allGamesPanels(active);
+
+/** the card that lists `action` in this scope — each action is on one card per scope
+ *  (`controlsLayout.ts`) */
+const panelFor = (action: KeyAction, game: GameId | null, active: GameId): BindPanel['id'] =>
+  panelsOf(game, active).find(
     (p) => p.keys.includes(action) || (p.pads as readonly KeyAction[]).includes(action),
   )?.id ?? 'mechanisms';
+
+/** how a paused trigger bind explains itself (`PadBindings.turnWith`) */
+const PAUSED_TITLE = 'Paused while the triggers turn';
 
 /** one pad slider row, the `.ds-field` shape Audio and Graphics use */
 function PadSlider({
@@ -177,7 +193,7 @@ function PadSlider({
   );
 }
 
-export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial, tutorialGame }: Props) {
+export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial, activeGame }: Props) {
   const [scope, setScope] = useState<Scope>('all');
   const coarse = useCoarsePointer();
   const [capture, setCapture] = useState<Capture | null>(null);
@@ -224,6 +240,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const seasons = useMemo(() => visibleSeasons(), []);
   const seasonsRef = useRef(seasons);
   seasonsRef.current = seasons;
+  /** for the capture effects, which depend on `capture` alone (see above) */
+  const activeRef = useRef(activeGame);
+  activeRef.current = activeGame;
 
   /**
    * ⚠️ PAD NAVIGATION STANDS DOWN WHILE A CAPTURE IS ARMED.
@@ -304,7 +323,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           ? removePadBindInGame(b, g, c.action, c.slot)
           : removePadBind(b, c.action, c.slot),
     );
-    setNotice({ text: `${ACTION_LABELS[c.action]}: bind removed`, panel: panelFor(c.action, g) });
+    setNotice({ text: `${ACTION_LABELS[c.action]}: bind removed`, panel: panelFor(c.action, g, activeRef.current) });
     setCapture(null);
   };
 
@@ -337,7 +356,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       onChangeRef.current(
         g ? assignKeyInGame(b, g, capture.action, capture.slot, k) : assignKey(b, capture.action, capture.slot, k),
       );
-      setNotice({ text: `${ACTION_LABELS[capture.action]}: ${keyName(k)}`, panel: panelFor(capture.action, g) });
+      setNotice({ text: `${ACTION_LABELS[capture.action]}: ${keyName(k)}`, panel: panelFor(capture.action, g, activeRef.current) });
       setConflict(null);
       setCapture(null);
     };
@@ -356,7 +375,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     const { action, slot, game } = capture;
     const cap = new PadCapture();
     let raf = 0;
-    const panel = panelFor(action, game);
+    const panel = panelFor(action, game, activeRef.current);
     /** true when the capture is over; false when it was refused and stays armed */
     const commit = (chord: number[]): boolean => {
       if (capture.kind !== 'pad') {
@@ -441,12 +460,20 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     key?: number,
     spoken = label,
     clash = false,
+    paused = false,
   ) => (
     <button
       key={key}
-      className={`ds-key ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''} ${clash ? 'conflict' : ''}`}
+      className={`ds-key ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''} ${clash ? 'conflict' : ''} ${paused ? 'paused' : ''}`}
       // the glyph alone is a poor name ("leftwards arrow"); while armed the status line speaks
-      aria-label={active ? undefined : unbound ? 'Unbound, press to bind' : `${spoken}, press to rebind`}
+      aria-label={
+        active
+          ? undefined
+          : unbound
+            ? 'Unbound, press to bind'
+            : `${spoken}${paused ? `, ${PAUSED_TITLE.toLowerCase()}` : ''}, press to rebind`
+      }
+      title={paused ? PAUSED_TITLE : undefined}
       onClick={onClick}
     >
       {label}
@@ -506,6 +533,17 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         Object.values(ov?.padCombos ?? {}).some((list) => (list as PadChord[]).length > 0),
       ));
 
+  /** does any map — main or a season's override — put a bind on LT or RT? Switching "Turn with"
+   *  then says what it paused or brought back, since those keycaps may be on another scope. */
+  const onTrigger = (c: PadChord): boolean => c.some((i) => PAD_TRIGGERS.includes(i));
+  const triggerBound =
+    PAD_ACTIONS.some((a) => padBinds(bindings.pad, a).some(onTrigger)) ||
+    Object.values(bindings.perGame ?? {}).some(
+      (ov) =>
+        Object.values(ov?.padButtons ?? {}).some((list) => (list as number[]).some((i) => PAD_TRIGGERS.includes(i))) ||
+        Object.values(ov?.padCombos ?? {}).some((list) => (list as PadChord[]).some(onTrigger)),
+    );
+
   const game: GameId | null = scope === 'all' ? null : scope;
   /** THE MAP ON SCREEN: main itself, or the season's effective map (its overrides applied and
    *  the actions it does not use already gone). Editing routes by `game`, not by this. */
@@ -528,14 +566,14 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const armedFilled = armedBind !== null;
   const live: Notice | null = capture && holding
     ? {
-        panel: panelFor(capture.action, game),
+        panel: panelFor(capture.action, game, activeGame),
         text: armedBind ? `Release to remove ${armedBind} from ${ACTION_LABELS[capture.action]}.` : 'Release to cancel.',
       }
     : capture && conflict
-    ? { panel: panelFor(capture.action, game), text: conflictText(conflict, scope), error: true }
+    ? { panel: panelFor(capture.action, game, activeGame), text: conflictText(conflict, scope, activeGame), error: true }
     : capture
     ? {
-        panel: panelFor(capture.action, game),
+        panel: panelFor(capture.action, game, activeGame),
         text:
           capture.kind === 'pad' && chordSoFar.length > 0
             ? `${ACTION_LABELS[capture.action]}: ${padBindLabel([...chordSoFar].sort((x, y) => x - y))} + …`
@@ -560,9 +598,11 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     setCapture(null);
   };
 
+  const listsHolder = (c: Conflict, here: Scope): boolean => holderListed(c, here, activeGame);
+
   /** is this keycap the bind the armed slot was just refused? Only on the scope that lists it. */
   const clashes = (device: Conflict['device'], a: KeyAction, bind: string): boolean =>
-    !!conflict && conflict.scope === scope && conflict.device === device && conflict.action === a && conflict.bind === bind;
+    !!conflict && listsHolder(conflict, scope) && conflict.device === device && conflict.action === a && conflict.bind === bind;
 
   const keyRow = (a: KeyAction) => {
     const list = view.keys[a];
@@ -616,6 +656,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               i,
               padBindLabel(c),
               clashes('pad', a, chordKey(c)),
+              padBindPaused(view.pad, c),
             ),
           )}
           {binds.length === 0
@@ -673,7 +714,6 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                 <>
                   <OptRow<PadBindings['driveStick']>
                     label="Drive stick"
-                    hint={`${pad.driveStick === 'left' ? 'right' : 'left'} stick turns`}
                     value={pad.driveStick}
                     cols="two"
                     mini
@@ -681,6 +721,29 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                     options={[
                       { v: 'left', t: 'Left' },
                       { v: 'right', t: 'Right' },
+                    ]}
+                  />
+                  {/* TURN WITH TRIGGERS. A bind on LT or RT is PAUSED while it is on, not removed
+                      (`PadBindings.turnWith`), and the title says so on the switch, because the
+                      default map has Shoot and Intake there. */}
+                  <OptRow<PadBindings['turnWith']>
+                    label="Turn with"
+                    hint={pad.turnWith === 'triggers' ? 'LT left, RT right' : undefined}
+                    value={pad.turnWith}
+                    cols="two"
+                    mini
+                    onPick={(turnWith) => {
+                      if (turnWith === pad.turnWith) return;
+                      setPad({ turnWith });
+                      if (turnWith === 'triggers' && triggerBound) {
+                        setNotice({ text: 'LT and RT turn now. Their other binds are paused.', panel: 'driving' });
+                      } else if (turnWith === 'stick' && triggerBound) {
+                        setNotice({ text: 'Binds on LT and RT are back on.', panel: 'driving' });
+                      }
+                    }}
+                    options={[
+                      { v: 'stick', t: `${pad.driveStick === 'left' ? 'Right' : 'Left'} stick` },
+                      { v: 'triggers', t: 'Triggers' },
                     ]}
                   />
                   <PadSlider
@@ -746,7 +809,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         </div>
         {onTutorial && (
           <div className="ds-ctl-row">
-            <h2 className="ds-panel-title">{tutorialGame ? `${seasonFor(tutorialGame).name} tutorial` : 'Tutorial'}</h2>
+            <h2 className="ds-panel-title">{`${seasonFor(activeGame).name} tutorial`}</h2>
             <button className="ds-btn small" onClick={onTutorial}>
               Start
             </button>
@@ -764,7 +827,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           was refused (`conflict`). */}
       <div className="ds-bind-scope ds-segs" role="group" aria-label="Which games these binds are for">
         <button
-          className={`ds-seg ${scope === 'all' ? 'on' : ''} ${conflict?.scope === 'all' && scope !== 'all' ? 'conflict' : ''}`}
+          className={`ds-seg ${scope === 'all' ? 'on' : ''} ${conflict?.scope === 'all' && !listsHolder(conflict, scope) ? 'conflict' : ''}`}
           aria-pressed={scope === 'all'}
           onClick={() => switchScope('all')}
         >
@@ -775,7 +838,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           return (
             <button
               key={s.key}
-              className={`ds-seg ${scope === s.key ? 'on' : ''} ${conflict?.scope === s.key && scope !== s.key ? 'conflict' : ''}`}
+              className={`ds-seg ${scope === s.key ? 'on' : ''} ${conflict?.scope === s.key && !listsHolder(conflict, scope) ? 'conflict' : ''}`}
               aria-pressed={scope === s.key}
               aria-label={unbound ? `${s.name}, ${unbound} without a bind` : undefined}
               onClick={() => switchScope(s.key)}
@@ -792,7 +855,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const panels =
     game === null ? (
       <>
-        {ALL_GAMES_PANELS.map(bindPanel)}
+        {allGamesPanels(activeGame).map(bindPanel)}
 
         {/* THE PAD'S BUTTONS — when a trigger counts as pressed, how long a combo's buttons wait,
             and whether the pad drives the menus. How a hand works, not what a button means, so

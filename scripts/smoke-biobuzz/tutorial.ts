@@ -363,7 +363,18 @@ export function tutorialChecks(check: Check): void {
     // card across the joysticks on a phone (12-05 — BIOBUZZ's retrieve hint was 55 words).
     const rightStick = cloneBindings(DEFAULT_BINDINGS);
     rightStick.pad.driveStick = 'right';
-    const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }];
+    // TURN WITH TRIGGERS: the drive line says so, and Shoot (RT and A by default) names A,
+    // because RT is turning the robot
+    const triggers = cloneBindings(DEFAULT_BINDINGS);
+    triggers.pad.turnWith = 'triggers';
+    const trig: TutorialHintCtx = { bindings: triggers, gamepad: true, touch: false };
+    check(
+      'hint: with the triggers turning, the drive line names LT and RT and Shoot names its other button',
+      hintText(driveHint(trig)) === 'Left stick to drive, LT and RT to turn' &&
+        hintText(shoot.hint(trig)).includes('A') && !hintText(shoot.hint(trig)).includes('RT'),
+      `${hintText(driveHint(trig))} | ${hintText(shoot.hint(trig))}`,
+    );
+    const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }, trig];
     const lower: string[] = [];
     const long: string[] = [];
     const caps: string[] = [];

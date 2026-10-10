@@ -117,7 +117,7 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
     game: main only, listed under All games only, never overridden.
   - **SEASON-ONLY** — an action one game uses (Catalyst, Catapult, the five BIOBUZZ ones). Main
     only as well, because main's bind for it already reaches that one game and no other; listed
-    in its season's scope alone.
+    in its season's scope, and in All games while that season is the active one.
   - **OVERRIDABLE** — a mechanism more than one game has: Intake and Shoot. Main is what every
     season starts from (All games), and a season may override it.
   `perGame?: Partial<Record<GameId, {keys?, padButtons?, padCombos?}>>` is a NEW SIBLING FIELD —
@@ -169,12 +169,19 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   **UI** (`ControlsSection.tsx`, with the row lists in the DOM-free `controlsLayout.ts` so the
   smoke run can hold them to the kinds): the scope switch comes first — `All games` plus one
   entry per **visible** season. All games opens with ONE panel of two rows — Touch controls, then
-the ACTIVE season's tutorial, titled "{Season} tutorial" (`tutorialGame`; the row is absent when
-that season has none) — then three bind panels —
-  Driving, Mechanisms (Intake and Shoot), Match — each a keyboard column and a gamepad column,
-  and a Gamepad panel for the trigger threshold, combo wait and menu navigation (the stick role,
-  deadzone and curve head the Driving panel's gamepad column). A season scope is ONE panel: that
-  season's own actions. A row carries **Sync only while it differs** from All games, and nothing
+the ACTIVE season's tutorial, titled "{Season} tutorial" (`activeGame`; the row is absent when
+that season has none) — then the bind panels —
+  Driving, Mechanisms (Intake and Shoot), the active season's own cards, Match — each a keyboard
+  column and a gamepad column, and a Gamepad panel for the trigger threshold, combo wait and menu
+  navigation (the stick role, Turn with, deadzone and curve head the Driving panel's gamepad
+  column). A season scope is ONE panel: that season's own actions.
+  ⚠️ **THE ACTIVE SEASON'S OWN MECHANISMS ARE IN ALL GAMES TOO** (owner, 2026-10-10: "People keep
+  missing the fact that there is a separate panel for biobuzz controls"). `allGamesPanels(active)`
+  puts "{Season} mechanisms" and, for BIOBUZZ, "{Season} 3D view" after Mechanisms, holding only
+  SEASON-ONLY actions. Those have one store (main), so the row in All games and the row in the
+  season scope edit the same bind; Intake and Shoot overrides are still the season scope's alone.
+  Only the active season's: all three would bury the shared rows. A conflict whose holder is on
+  one of those cards is ringed in place and names no scope (`holderListed`). A row carries **Sync only while it differs** from All games, and nothing
   while it matches — the SYNCED/CUSTOM marker on every row is gone, and so is a reserved
   invisible slot for the button, which wrapped Intake's keycaps on a phone in every season. **The
   status message takes the place of the TITLE of the card holding the row it is about**
@@ -190,6 +197,18 @@ that season has none) — then three bind panels —
   on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
   and swept the buttons still held into `alreadyDown` — the release then bound nothing. A
   single-press capture never showed it; commit-on-release made it a real window.
+- **TURN WITH TRIGGERS** (`PadBindings.turnWith`, owner 2026-10-10; Controls ▸ Driving ▸ gamepad
+  "Turn with": the other stick, or Triggers). LT turns left and RT right, analog, through the
+  stick deadzone and curve (`GamepadInput.sample`); the other stick then turns nothing. A new
+  sibling field, so an older client ignores it and turns with the stick.
+  ⚠️ **A BIND ON A TRIGGER IS PAUSED, NEVER REMOVED.** Shoot and Intake default to RT and LT, so
+  removing them on the switch is the silent unbind the conflict policy forbids. `livePad` drops
+  every bind with a trigger in it (combos too) from the map the chord resolver plays, the keycap
+  stays on its row struck through (`.ds-key.paused`), and switching back restores it. Every
+  reader that NAMES a pad control reads `livePadBinds` (tutorial `padFor`, the start prompt), so
+  a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
+  Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
+  Switching says what happened in the Driving title when any map has a trigger bind.
 - **Configure ▸ Match is two cards: Match setup, then Practice.** Practice holds Practice
   physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
   Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
@@ -683,7 +702,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   needs. Its CSS is `src/ui/tutorial.css`, imported last from `main.tsx`
   as its own file so its additive rules merge without conflicts.
 - **Surfaces**: the first-run card on the Modes page (hidden once THIS game's flag is set), and a
-  permanent "{Season} tutorial" row with a Start button in Controls ▸ All games, running the
+  permanent "{Season} tutorial" row with a Start button in Controls ▸ All games (`activeGame`), running the
   ACTIVE season's tutorial — which is where somebody who skipped it, or who has just rebound half
   their keys, gets it back. A game with no `tutorial` (Chain Reaction) shows neither.
 - **Verification**: the `TUTORIAL` lane in `scripts/smoke-biobuzz/` (`npm run test:bb`, also

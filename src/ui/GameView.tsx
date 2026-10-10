@@ -12,7 +12,7 @@ import {
 import { PerfHud } from './PerfHud';
 import { PERF_DISPLAY_LEVELS } from '../settings';
 import type { PerfDisplay } from '../types';
-import { effectiveBindings, keyLabel, padBindLabel, padBinds } from '../input/bindings';
+import { effectiveBindings, keyLabel, livePadBinds, padBindLabel } from '../input/bindings';
 import { POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { timerPanel } from './timerPanel';
@@ -961,7 +961,7 @@ export function GameView({
           {!coarsePointer && (
             <p className="big">
               Press {keyLabel(effBindings.keys.start[0] ?? 'enter')} or{' '}
-              {padBindLabel(padBinds(effBindings.pad, 'start')[0] ?? [9])} to start
+              {padBindLabel(livePadBinds(effBindings.pad, 'start')[0] ?? [9])} to start
             </p>
           )}
           {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
