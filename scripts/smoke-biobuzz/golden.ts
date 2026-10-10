@@ -31,6 +31,10 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
     'biobuzz solo (3d)': ['d519c92daeaeff1e', '12ef7941c78c6823', 'd46fe240f75c7ca5'],
   },
+  7: {
+    'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
+    'biobuzz solo (3d)': ['d519c92daeaeff1e', '12ef7941c78c6823', 'd46fe240f75c7ca5'],
+  },
 };
 
 /** the shared driver plus BIOBUZZ's own buttons, pulsed on their own rhythms */
