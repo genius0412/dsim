@@ -37,7 +37,14 @@ import { join } from 'node:path';
 
 const UI = 'src/ui';
 const css = readdirSync(UI).filter((f) => f.endsWith('.css')).map((f) => join(UI, f));
-const tsx = readdirSync(UI).filter((f) => f.endsWith('.tsx')).map((f) => join(UI, f));
+// THE ROBOT IMPORTER'S UI lives beside its engine in `src/robotImport/ui/` (lane 4, 2026-10-01). It
+// is UI like any other, so its JSX answers to the same rules: scanned here rather than exempt by
+// directory. Its stylesheet is `src/ui/importer.css`, which the css list above already reads.
+const IMPORT_UI = 'src/robotImport/ui';
+const tsx = [
+  ...readdirSync(UI).filter((f) => f.endsWith('.tsx')).map((f) => join(UI, f)),
+  ...(existsSync(IMPORT_UI) ? readdirSync(IMPORT_UI).filter((f) => f.endsWith('.tsx')).map((f) => join(IMPORT_UI, f)) : []),
+];
 // helpers like rangeFill.ts also hand custom properties to a style object
 const ts = readdirSync(UI).filter((f) => f.endsWith('.ts')).map((f) => join(UI, f));
 const read = (f) => readFileSync(f, 'utf8').split('\n');
@@ -389,7 +396,9 @@ for (const f of css) {
 // anywhere else is a shell rule in the wrong file, where a grep of shell.css never finds it.
 for (const f of css.filter((x) => !/shell\.css$/.test(x))) {
   read(f).forEach((l, i) => {
-    if (/^\s*\.ds-(?!tut)/.test(l)) hit('ds-outside-shell', f, i + 1, l);
+    // `.ds-import*` is the robot importer's own sheet (importer.css), lazy with its editor, the way
+    // tutorial.css owns `.ds-tut*` and competitions.css owns `.ds-comp*` (lazy with its pages)
+    if (/^\s*\.ds-(?!tut|import|comp)/.test(l)) hit('ds-outside-shell', f, i + 1, l);
   });
 }
 

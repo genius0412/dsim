@@ -6,6 +6,7 @@ import { PERF_DISPLAY_LEVELS } from '../settings';
 import type { PerfDisplay } from '../types';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
+import { PaceSetting } from './pace/PaceSetting';
 
 /**
  * One volume category. Auditions on RELEASE (pointer-up / key-up), never on
@@ -251,6 +252,8 @@ export function AudioSection({
               d: PERF_DISPLAY_BLURB[lv],
             }))}
           />
+          {/* the third in-match read-out: the +/- under your score (`src/ui/pace`) */}
+          <PaceSetting settings={settings} onChange={onChange} />
         </div>
       </section>
     </>

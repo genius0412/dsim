@@ -24,6 +24,10 @@ interface ImportMetaEnv {
    *  the signed-in account is an admin or in an access group. Set on the alpha site only.
    *  See `src/net/siteStatus.ts` and docs/deploy.md. */
   readonly VITE_SITE_LOCKDOWN?: string;
+  /** `1` opens the robot importer in a build whose channel does not (`importerEnabled`,
+   *  `src/seasonVisibility.ts`): a local `vite build` for the importer probes. Never set on a
+   *  deployment; the alpha site has the importer by its channel. */
+  readonly VITE_ROBOT_IMPORT?: string;
 }
 
 interface ImportMeta {

@@ -10,8 +10,9 @@ import {
   chainAnchorCat,
   chainRoleLabel,
 } from '../games/chain/config';
-import { chainEvalStart, chainMirrorStart, chainSnapStartPose } from '../games/chain/state';
-import { samePose, savedStartCap } from './startPositions';
+import { chainEvalStart, chainFitAnchor, chainMirrorStart, chainSnapStartPose } from '../games/chain/state';
+import { samePose, savedStartCap, startHandleReach } from './startPositions';
+import { footprintCorners } from '../sim/field';
 import { useAds } from '../ads/AdsProvider';
 import { drawChainField } from '../games/chain/drawField';
 import { drawChainRobot } from '../games/chain/drawRobot';
@@ -51,8 +52,10 @@ import { drawChainRobot } from '../games/chain/drawRobot';
 const MARGIN = 4; // inches of padding around the field perimeter
 const SPAN = (Math.max(CHAIN_HALF_X, CHAIN_HALF_Y) + MARGIN) * 2;
 
+// an IMPORT is its descriptor (hull, mechanisms): a re-import that keeps every field above still
+// changes the robot, so the preview world is rebuilt on it too
 const specKey = (s: RobotSpec) =>
-  `${s.length}|${s.width}|${s.intake}|${s.drivetrain}|${s.intakeMount}|${s.scoreMode}|${s.catalystType}|${s.catalystMount}`;
+  `${s.length}|${s.width}|${s.intake}|${s.drivetrain}|${s.intakeMount}|${s.scoreMode}|${s.catalystType}|${s.catalystMount}|${s.imported ? JSON.stringify(s.imported) : ''}`;
 
 export function ChainStartEditor({
   spec,
@@ -119,10 +122,15 @@ export function ChainStartEditor({
   // the SAVED pose in the ACTUAL frame: a custom value mirrored out of canonical, else the
   // selected anchor (which is authored canonical too).
   const anchor = CHAIN_START_POSES[startIndex] ?? CHAIN_START_POSES[0];
+  const anchorPose: StartPose = { x: anchor.pos.x, y: anchor.pos.y, headingDeg: (anchor.heading * 180) / Math.PI };
+  // an IMPORT starts at its anchor FITTED to its hull (the spawn's own repair, `spawn.ts`), so
+  // that is what is drawn; a standard chassis is legal at the anchor itself
   const base: StartPose = chainMirrorStart(
     value
       ? { x: value.x, y: value.y, headingDeg: value.headingDeg }
-      : { x: anchor.pos.x, y: anchor.pos.y, headingDeg: (anchor.heading * 180) / Math.PI },
+      : spec.imported
+        ? chainFitAnchor(spec, anchorPose, alliance)
+        : anchorPose,
     alliance,
   );
   const pose = draft ?? base; // show the working draft if any, else the saved pose
@@ -134,7 +142,7 @@ export function ChainStartEditor({
 
   // legality is judged in the CANONICAL frame (mirror is self-inverse)
   const canon = chainMirrorStart(pose, alliance);
-  const legality = chainEvalStart(spec, { x: canon.x, y: canon.y }, canon.headingDeg);
+  const legality = chainEvalStart(spec, { x: canon.x, y: canon.y }, canon.headingDeg, alliance);
 
   // a world + robot TEMPLATE for the real renderers, rebuilt only when the field/robot
   // identity changes (NOT on every drag). The spawn snaps its own pose legal, so pos/heading
@@ -189,24 +197,50 @@ export function ChainStartEditor({
     // drawn ON the field, so the canvas palette (COLORS), not a themed token
     const col = legality.legal ? COLORS.green : COLORS.red;
     const hRad = robot.heading;
-    const mx = spec.length / 2 + 0.5;
-    const my = spec.width / 2 + 0.5;
-    ctx.save();
-    ctx.translate(pose.x, pose.y);
-    ctx.rotate(hRad);
-    ctx.beginPath();
-    ctx.rect(-mx, -my, mx * 2, my * 2);
-    ctx.fillStyle = col;
-    ctx.globalAlpha = legality.legal ? 0.16 : 0.22;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    ctx.restore();
+    if (spec.imported) {
+      /**
+       * AN IMPORT: the TESTED box is the hull's axis-aligned bound plus the margin, and it is
+       * off-centre (the origin is the wheelbase centre), so it is drawn where the rule puts it —
+       * `chainEvalStart`'s `o` is canonical, and red's actual frame is its x-reflection — with the
+       * hull itself inside it. A centred `length × width` rectangle here was neither of the two.
+       */
+      const bx = alliance === 'red' ? pose.x - legality.ox : pose.x + legality.ox;
+      const by = pose.y + legality.oy;
+      ctx.beginPath();
+      ctx.rect(bx - legality.ex, by - legality.ey, legality.ex * 2, legality.ey * 2);
+      ctx.fillStyle = col;
+      ctx.globalAlpha = legality.legal ? 0.16 : 0.22;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      const hull = footprintCorners(spec, { x: pose.x, y: pose.y }, hRad);
+      ctx.beginPath();
+      hull.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+      ctx.closePath();
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    } else {
+      const mx = spec.length / 2 + 0.5;
+      const my = spec.width / 2 + 0.5;
+      ctx.save();
+      ctx.translate(pose.x, pose.y);
+      ctx.rotate(hRad);
+      ctx.beginPath();
+      ctx.rect(-mx, -my, mx * 2, my * 2);
+      ctx.fillStyle = col;
+      ctx.globalAlpha = legality.legal ? 0.16 : 0.22;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
 
-    // heading handle
-    const front = spec.length / 2 + 8;
+    // heading handle, past the robot's front (an import's is its hull's)
+    const front = startHandleReach(spec);
     const hx = pose.x + Math.cos(hRad) * front;
     const hy = pose.y + Math.sin(hRad) * front;
     ctx.strokeStyle = col;
@@ -224,7 +258,7 @@ export function ChainStartEditor({
     ctx.stroke();
 
     ctx.restore();
-  }, [world, pose.x, pose.y, pose.headingDeg, spec, alliance, legality.legal, size]);
+  }, [world, pose.x, pose.y, pose.headingDeg, spec, alliance, legality.legal, legality.ex, legality.ey, legality.ox, legality.oy, size]);
 
   /** commit an ACTUAL-frame pose back to the parent as canonical */
   const commit = (p: StartPose) => onChange(chainMirrorStart(p, alliance));
@@ -234,7 +268,7 @@ export function ChainStartEditor({
   const edit = (p: StartPose) => {
     setDraft(p);
     const c = chainMirrorStart(p, alliance);
-    if (chainEvalStart(spec, { x: c.x, y: c.y }, c.headingDeg).legal) commit(p);
+    if (chainEvalStart(spec, { x: c.x, y: c.y }, c.headingDeg, alliance).legal) commit(p);
   };
 
   const pointerWorld = (e: React.PointerEvent): { x: number; y: number } | null => {
@@ -249,7 +283,7 @@ export function ChainStartEditor({
 
   const handleWorld = () => {
     const hRad = (pose.headingDeg * Math.PI) / 180;
-    const front = spec.length / 2 + 8;
+    const front = startHandleReach(spec);
     return { x: pose.x + Math.cos(hRad) * front, y: pose.y + Math.sin(hRad) * front };
   };
 
@@ -283,7 +317,7 @@ export function ChainStartEditor({
     // robot would start. It turns before it moves: a heading no corner accepts has no
     // legal position, so snapping position alone would leave the robot red however far
     // it slid, and the button would look broken.
-    const s = chainSnapStartPose(spec, chainMirrorStart(p, alliance));
+    const s = chainSnapStartPose(spec, chainMirrorStart(p, alliance), alliance);
     onChange(s); // already canonical
     setDraft(null);
   };
@@ -293,7 +327,7 @@ export function ChainStartEditor({
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     const cur = draft ?? base;
     const c = chainMirrorStart(cur, alliance);
-    if (chainEvalStart(spec, { x: c.x, y: c.y }, c.headingDeg).legal) {
+    if (chainEvalStart(spec, { x: c.x, y: c.y }, c.headingDeg, alliance).legal) {
       setDraft(null); // legal end: the saved pose already matches
     } else if (snapOn) {
       snapTo(cur); // opt-in: snap to the nearest legal spot

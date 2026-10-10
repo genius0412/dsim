@@ -1,6 +1,7 @@
 import type { Artifact, RobotState, Vec2 } from '../types';
 import * as C from '../config';
 import { hyp, rot } from '../math';
+import { decodeImportSolids } from './importedMech';
 
 /**
  * WHAT ON A ROBOT IS SOLID TO A GROUND ARTIFACT — the one geometry authority.
@@ -28,6 +29,7 @@ import { hyp, rot } from '../math';
  *    forward of the face but two thin RAILS along the flanks, so a wide frame cannot be
  *    entered from the side. The rail sits just inside the notch with its outer face flush
  *    with the chassis side.
+ *  · NO INTAKE (`intake: 'none'`): nothing but the chassis box; the front is a wall like the rest.
  *  · The artifacts the robot is HOLDING are circles at their storage slots — a full hopper is
  *    a physical plug in the mouth, so incoming artifacts pile up on it.
  *
@@ -95,6 +97,7 @@ export function robotSolids(
   heldBalls: readonly Artifact[],
   radius: number = C.BALL_RADIUS,
 ): RobotSolids {
+  if (r.spec.imported) return importedSolids(r, heldBalls, radius, decodeImportSolids(r.spec));
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const preset = C.INTAKE_PRESETS[r.spec.intake];
@@ -134,8 +137,9 @@ export function robotSolids(
       ];
       structure.push({ kind: 'poly', pts: s > 0 ? pts : pts.reverse() });
     }
-  } else {
+  } else if (!C.noIntake(r.spec)) {
     // the rails: thin, inside the notch, outer face flush with the chassis side
+    // (NO INTAKE has neither wedges nor rails: the chassis box is the whole robot)
     const t = Math.min(C.INTAKE_RAIL_T, hw);
     for (const s of [1, -1]) {
       structure.push({
@@ -155,6 +159,35 @@ export function robotSolids(
   const out: RobotSolids = { chassis: { kind: 'box', cx: 0, cy: 0, hx: hl, hy: hw }, structure, held };
   out.bound = solidsBound(out);
   return out;
+}
+
+/**
+ * AN IMPORTED ROBOT'S ARTIFACT SOLIDS: the hull CARVED by the game's intake — `carve.chassis` (the
+ * hull behind every mouth face) and `carve.structure` (side plates / funnel wedges, each a convex
+ * polygon), plus the artifacts it holds. DECODE carves with `decodeImportSolids`
+ * (`importedMech.ts`), BIOBUZZ with `bbImportSolids`; with no carve (a game that has not got one)
+ * the hull is ONE CLOSED polygon, so an artifact can never end up inside it.
+ */
+export function importedSolids(
+  r: RobotState,
+  heldBalls: readonly Artifact[],
+  radius: number = C.BALL_RADIUS,
+  carve?: { chassis: Vec2[]; structure: Vec2[][] },
+): RobotSolids {
+  const held: SolidShape[] = [];
+  for (const b of heldBalls) {
+    if (b.state.kind !== 'held' || b.state.robot !== r.id) continue;
+    held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: b.r ?? radius });
+  }
+  if (carve) {
+    return {
+      chassis: { kind: 'poly', pts: carve.chassis },
+      structure: carve.structure.map((pts): SolidShape => ({ kind: 'poly', pts })),
+      held,
+    };
+  }
+  const pts = r.spec.imported!.hull.map((p) => ({ x: p.x, y: p.y }));
+  return { chassis: { kind: 'poly', pts }, structure: [], held };
 }
 
 export interface Penetration {

@@ -10,7 +10,7 @@ import {
 } from '../net/api';
 import type { FriendsApi } from './useFriends';
 import { confirmBlock, confirmUnfriend, useFriendsCtx } from './friendsContext';
-import { challengeLine, formatLabel } from './challenge';
+import { challengeLine, formatLabel, isRetired } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
@@ -236,15 +236,23 @@ export function FriendsPanel({
             <Section title="Challenges" count={invites.length}>
               {invites.map((inv) => (
                 <PersonRow key={inv.id} p={inv.from} sub={challengeLine(inv.format)}>
-                  <button className="ds-btn small primary" onClick={() => onJoinInvite(inv)}>
-                    Accept
-                  </button>
-                  {/* Decline TELLS them; the row is only marked so their client
-                      can say so once. Dismissing silently would leave them
-                      watching a challenge that is never going to be answered. */}
-                  <button className="ds-btn small ghost" onClick={() => void friends.declineInvite(inv.id)}>
-                    Decline
-                  </button>
+                  {isRetired(inv.format) ? (
+                    <button className="ds-btn small ghost" onClick={() => void friends.dismissInvite(inv.id)}>
+                      Dismiss
+                    </button>
+                  ) : (
+                    <>
+                      <button className="ds-btn small primary" onClick={() => onJoinInvite(inv)}>
+                        Accept
+                      </button>
+                      {/* Decline TELLS them; the row is only marked so their client
+                          can say so once. Dismissing silently would leave them
+                          watching a challenge that is never going to be answered. */}
+                      <button className="ds-btn small ghost" onClick={() => void friends.declineInvite(inv.id)}>
+                        Decline
+                      </button>
+                    </>
+                  )}
                 </PersonRow>
               ))}
             </Section>
@@ -654,7 +662,7 @@ function ChallengeButton({
 }) {
   return (
     <button className="ds-btn small primary fr-challenge" onClick={() => onChallenge(username)}>
-      Challenge
+      Invite
     </button>
   );
 }

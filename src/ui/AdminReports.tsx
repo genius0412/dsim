@@ -8,10 +8,12 @@ import {
   type ScoreReport,
 } from '../net/api';
 import { REPORT_LABELS, type ReportedUser, type ReportReason } from '../report';
+import { NOTICE_MESSAGE_MAX } from '../notices';
 import { STANDING_COST, STANDING_MAX, tierOf } from '../standing';
 import { StandingEditor } from './AdminStanding';
 import { SEASONS } from '../seasons';
 import { AccountName, ListState, When, ago, confirmed, downloadCsv } from './adminBits';
+import { adminFail } from './adminCopy';
 
 /**
  * The REPORT QUEUE — who has been reported, how often, for what, by how many people, and
@@ -76,6 +78,9 @@ export function AdminReports({
    */
   const applyTriage = (userId: string): void =>
     setUsers((cur) => (cur ? cur.map((x) => (x.userId === userId ? { ...x, open: 0 } : x)) : cur));
+  /** what the last verdict did, said ABOVE the list: under "Open only" the row it came from
+   *  leaves the list the moment it is judged, and took its result line with it */
+  const [lastVerdict, setLastVerdict] = useState<{ ok: boolean; text: string } | null>(null);
 
   const shown = (users ?? []).filter((u) => !onlyOpen || u.open > 0);
 
@@ -129,6 +134,12 @@ export function AdminReports({
         </button>
       </div>
 
+      {lastVerdict && (
+        <p className={`ds-hint ${lastVerdict.ok ? 'ok' : 'err'}`} role="status">
+          {lastVerdict.text}
+        </p>
+      )}
+
       {err && !users ? (
         <ListState error="load reports" />
       ) : !users ? (
@@ -149,7 +160,11 @@ export function AdminReports({
               onToggle={() => setOpen(open === u.userId ? null : u.userId)}
               onWatchReplay={onWatchReplay}
               onOpenUser={onOpenUser}
-              onTriaged={() => applyTriage(u.userId)}
+              onTriaged={(text) => {
+                applyTriage(u.userId);
+                setLastVerdict({ ok: true, text });
+              }}
+              onFailed={(text) => setLastVerdict({ ok: false, text })}
             />
           ))}
         </div>
@@ -165,16 +180,22 @@ function ReportedRow({
   onWatchReplay,
   onOpenUser,
   onTriaged,
+  onFailed,
 }: {
   u: ReportedUser;
   expanded: boolean;
   onToggle: () => void;
   onWatchReplay?: WatchReplay;
   onOpenUser?: (userId: string) => void;
-  onTriaged: () => void;
+  /** the verdict landed; `text` says what it did and how many people were told */
+  onTriaged: (text: string) => void;
+  onFailed: (text: string) => void;
 }) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof adminFetchReportedUser>>>(null);
   const [busy, setBusy] = useState(false);
+  /** the moderator's own words (0057): to the players who reported, and to the reported */
+  const [toReporters, setToReporters] = useState('');
+  const [toPlayer, setToPlayer] = useState('');
 
   useEffect(() => {
     if (!expanded || detail) return;
@@ -193,11 +214,24 @@ function ReportedRow({
     )
       return;
     setBusy(true);
-    await adminSetReportStatus(u.userId, status);
+    const out = await adminSetReportStatus(u.userId, status, { reporters: toReporters, player: toPlayer });
     setBusy(false);
+    if (!out) {
+      onFailed(adminFail(status === 'reviewed' ? 'uphold the reports' : 'dismiss the reports'));
+      return;
+    }
+    setToReporters('');
+    setToPlayer('');
     setDetail(null);
-    onTriaged();
+    onTriaged(
+      `${status === 'reviewed' ? 'Upheld' : 'Dismissed'} the reports against ${u.handle}.` +
+        (out.notified !== null ? ` ${out.notified} ${out.notified === 1 ? 'person' : 'people'} told.` : ''),
+    );
   };
+  // how many distinct people filed the OPEN reports — the ones the verdict below is sent to
+  const openReporters = new Set(
+    (detail?.reports ?? []).filter((r) => r.status === 'open').map((r) => r.reporterUsername ?? r.reporterHandle),
+  ).size;
 
   return (
     <div className={`adm-report ${expanded ? 'open' : ''}`}>
@@ -297,6 +331,43 @@ function ReportedRow({
                 </div>
               )}
 
+              {/* WHO IS TOLD WHAT (0057). Each reporter learns the outcome of their own report and
+                  never the size of the penalty; the reported player, on an upheld verdict,
+                  learns what it cost and why. Both messages are optional and quoted as the
+                  moderator's note. */}
+              {u.open > 0 && (
+                <>
+                  <h3 className="adm-h3">Tell them</h3>
+                  <div className="adm-tell">
+                    <p className="ds-hint">
+                      Uphold tells {openReporters === 1 ? 'the reporter' : `the ${openReporters || u.reporters} reporters`}{' '}
+                      action was taken and tells {u.handle} what it cost. Dismiss tells the reporters no
+                      action was taken.
+                    </p>
+                    <label className="as-field">
+                      <span className="as-cap">Message to the reporters (optional)</span>
+                      <textarea
+                        className="ds-input"
+                        rows={2}
+                        maxLength={NOTICE_MESSAGE_MAX}
+                        value={toReporters}
+                        onChange={(e) => setToReporters(e.target.value)}
+                      />
+                    </label>
+                    <label className="as-field">
+                      <span className="as-cap">Message to {u.handle} (optional, sent if upheld)</span>
+                      <textarea
+                        className="ds-input"
+                        rows={2}
+                        maxLength={NOTICE_MESSAGE_MAX}
+                        value={toPlayer}
+                        onChange={(e) => setToPlayer(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+
               <div className="sr-actions">
                 {/* Triage marks the PLAYER, not each complaint — that is how the queue is
                     actually worked: you watch their matches and then make one call. */}
@@ -324,11 +395,14 @@ function ReportedRow({
  * the claim turns out to be empty — which is what SMITE is for, and why every row shows how
  * many claims that person has filed and how many were rejected before offering it.
  *
- * UPHOLD costs nobody anything. There is no automatic re-score behind it: a result that has
- * been written, rated and published cannot be quietly rewritten from a moderation panel, and
- * pretending otherwise would be worse than leaving it. What upholding does is mark the claim
- * as real, which is what stops the filer's rejected-count from growing and is the record that
- * the sim got something wrong.
+ * UPHOLD costs nobody anything. There is no automatic re-score behind it: the score is
+ * corrected from the replay (WATCH, then the score editor beside the field), where the evidence
+ * is. What upholding does is mark the claim as real, which is what stops the filer's
+ * rejected-count from growing and is the record that the sim got something wrong.
+ *
+ * EITHER VERDICT IS SENT TO THE FILER (0057), with the message typed on the row: upheld with the
+ * corrected numbers when the match has been corrected (hence the "Score corrected" chip, so a
+ * moderator can see they have not done that half yet), rejected with what a smite cost.
  */
 function ScoreReportQueue({
   onWatchReplay,
@@ -339,6 +413,8 @@ function ScoreReportQueue({
 }) {
   const [rows, setRows] = useState<ScoreReport[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** each row's message to its filer, by claim id */
+  const [msgs, setMsgs] = useState<Record<string, string>>({});
   const load = (): void => {
     void adminFetchScoreReports('open').then((r) => setRows(r ?? []));
   };
@@ -356,8 +432,9 @@ function ScoreReportQueue({
     )
       return;
     setBusy(id);
-    void adminResolveScoreReport(id, verdict, smite).then(() => {
+    void adminResolveScoreReport(id, verdict, smite, msgs[id]).then(() => {
       setBusy(null);
+      setMsgs(({ [id]: _sent, ...rest }) => rest);
       load();
     });
   };
@@ -366,9 +443,10 @@ function ScoreReportQueue({
     <>
       <h2 className="ds-h2">Moderation · misscores</h2>
       <p className="ds-sub adm-sub">
-        Claims that a match scored wrong. Open the replay and check it: UPHELD records that the
-        sim got it wrong, REJECTED closes it. Smite only a claim that was made in bad faith.
-        The count beside each filer is how many of theirs have been rejected before.
+        Claims that a match scored wrong. Open the replay and check it, and correct the score
+        there if it should change: UPHELD records that the sim got it wrong, REJECTED closes it.
+        Smite only a claim that was made in bad faith. The filer is told either way. The count
+        beside each filer is how many of theirs have been rejected before.
       </p>
       <div className="sr-list">
         {rows.map((r) => (
@@ -387,9 +465,21 @@ function ScoreReportQueue({
                   {r.reporterRejected} of {r.reporterFiled} rejected
                 </span>
               )}
+              {r.corrected === true && <span className="ds-badge ok">Score corrected</span>}
+              {r.corrected === false && r.matchId && <span className="ds-badge">Score not corrected</span>}
               <span className="ds-muted">{new Date(r.createdAt).toLocaleString()}</span>
             </div>
             <p className="adm-report-detail">{r.detail}</p>
+            <label className="as-field sr-msg">
+              <span className="as-cap">Message to {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} (optional)</span>
+              <textarea
+                className="ds-input"
+                rows={2}
+                maxLength={NOTICE_MESSAGE_MAX}
+                value={msgs[r.id] ?? ''}
+                onChange={(e) => setMsgs((cur) => ({ ...cur, [r.id]: e.target.value }))}
+              />
+            </label>
             <div className="adm-report-actions">
               {/* THE REPLAY, not the match. This button passed `matchId` to a route that
                   serves replays by `replays.id`, so it 404'd on every single claim — the one

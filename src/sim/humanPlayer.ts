@@ -1,13 +1,15 @@
-import type { Alliance, World } from '../types';
+import type { Alliance, ArtifactColor, World } from '../types';
 import * as C from '../config';
-import { loadSlots, loadZone, inRect } from './field';
-import { hyp } from '../math';
+import { loadSlots, loadZone, inRect, type Rect } from './field';
+import { heldSlotPos, robotIntersectsRect } from './physics';
+import { hyp, rot } from '../math';
 import { allocBallId } from './ballIds';
 
 /** The human player works the loading zone. They CONTINUOUSLY grab loose/returned
  * artifacts out of the zone into the off-field box (up to the 6-out-of-play cap),
  * and feed the grab row from the box one artifact at a time — one-at-a-time keeps
- * box + in-transit within the 6-out-of-play cap. */
+ * box + in-transit within the 6-out-of-play cap. A robot with NO intake gets its
+ * artifacts by hand instead (`handLoad`). */
 export function updateHumanPlayers(world: World): void {
   // the human player does nothing until teleop (idle through pre / auto /
   // transition); free-drive practice counts as always-teleop.
@@ -17,6 +19,8 @@ export function updateHumanPlayers(world: World): void {
     const hp = world.humanPlayers[a];
     const slots = loadSlots(a);
     const zone = loadZone(a);
+    // one action a tick: a hand-off is that tick's action
+    if (handLoad(world, a, zone)) continue;
     // a robot's intake mouth can reach several inches ahead of its center, so an
     // approaching robot is already contesting balls near the zone before its own
     // position crosses the boundary — pad the zone by a generous reach margin
@@ -72,4 +76,56 @@ export function updateHumanPlayers(world: World): void {
       }
     }
   }
+}
+
+/**
+ * HAND LOADING (manual G432: "DRIVE TEAM members may load SCORING ELEMENTS into a ROBOT that is
+ * partially or fully in the LOADING ZONE"). A robot of this alliance with NO intake (`noIntake`),
+ * any part of it in the zone, nearly still, with hopper room, is handed one artifact per
+ * `HP_HAND_LOAD_S`: from the box first, else off the zone's own floor. It goes straight into the
+ * next storage slot (`heldSlotPos`) — a person reaching over and dropping it in, not a roll across
+ * the field. Every other robot is untouched, so a world without a no-intake robot steps exactly as
+ * before. Returns whether it loaded one (the human player's one action this tick).
+ */
+function handLoad(world: World, a: Alliance, zone: Rect): boolean {
+  const hp = world.humanPlayers[a];
+  if (world.time < hp.nextPlaceAt) return false;
+  for (const r of world.robots) {
+    if (r.alliance !== a || r.passive || !C.noIntake(r.spec)) continue;
+    if (r.hopper.length >= C.HOPPER_CAPACITY) continue;
+    if (hyp(r.vel.x, r.vel.y) > C.HP_HAND_LOAD_MAX_SPEED || Math.abs(r.angVel) > C.HP_HAND_LOAD_MAX_TURN) continue;
+    if (!robotIntersectsRect(r, zone)) continue;
+    let color: ArtifactColor;
+    const floor = hp.box.length > 0 ? -1 : world.balls.findIndex((b) => b.state.kind === 'ground' && inRect(b.pos, zone));
+    if (hp.box.length > 0) color = hp.box.shift()!;
+    else if (floor >= 0) color = world.balls[floor].color;
+    else return false; // nothing in hand and nothing on the zone's floor
+    const slot = r.hopper.length;
+    const at = heldSlotPos(r.spec, slot, 0);
+    const w = rot(at, r.heading);
+    const state = { kind: 'held' as const, robot: r.id, slot, lx: at.x, ly: at.y, side: 0 };
+    const pos = { x: r.pos.x + w.x, y: r.pos.y + w.y };
+    if (floor >= 0) {
+      const b = world.balls[floor];
+      b.state = state;
+      b.pos = pos;
+      b.vel = { x: 0, y: 0 };
+      b.z = 0;
+      b.vz = 0;
+    } else {
+      world.balls.push({
+        id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+        color,
+        state,
+        pos,
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      });
+    }
+    r.hopper.push(color);
+    hp.nextPlaceAt = world.time + C.HP_HAND_LOAD_S;
+    return true;
+  }
+  return false;
 }

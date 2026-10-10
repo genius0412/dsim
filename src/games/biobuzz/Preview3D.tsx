@@ -92,6 +92,17 @@ let queue: ThumbRequest[] = [];
 let draining = false;
 
 /**
+ * THE BUILDER'S LIVE TURNTABLE, while one is mounted — and the thumbnails draw through it.
+ *
+ * On the 3D view the hero's turntable is always up when the cards want pictures, so a scene of the
+ * batch's own was a SECOND context, a second environment and a second shader compile for three
+ * 96px images (2026-09-26). `capture(size, spec)` shoots a card's build and puts the hero's back
+ * inside one task, so the turntable never shows the wrong robot. The offscreen scene below stays
+ * as the fallback for a batch with no turntable to borrow.
+ */
+let liveTurntable: RobotPreviewScene | null = null;
+
+/**
  * WHEN THE BROWSER HAS NOTHING BETTER TO DO — the batch waits for it, and so does each capture.
  *
  * The batch used to start on a microtask, in the same moment the builder's live turntable was
@@ -99,8 +110,6 @@ let draining = false;
  * maps and three synchronous captures into one burst: ~130 ms of the ~210 ms of long tasks
  * measured on entry (2026-09-23). The cards show the 2D schematic meanwhile, so waiting costs
  * nothing a player can see except the swap. The timeout is the upper bound on a busy page.
- * ponytail: still a second context per batch; drawing thumbnails through the turntable's own
- * scene would remove it, if a trace ever shows the idle-time batch mattering.
  */
 function idle(): Promise<void> {
   return new Promise((resolve) => {
@@ -112,11 +121,13 @@ function idle(): Promise<void> {
 async function drain(): Promise<void> {
   const batch = queue;
   queue = [];
-  let scene: RobotPreviewScene | null = null;
+  let own: RobotPreviewScene | null = null;
   const host = document.createElement('div');
   try {
     const factory = await previewFactory();
-    if (factory) {
+    // read AFTER the chunk resolves: the turntable's own `.then` on the same import runs first
+    const shared = liveTurntable;
+    if (!shared && factory) {
       // off screen rather than `display: none`: a hidden element has no size, and the scene sizes
       // itself from what `capture` asks for anyway — but a laid-out host keeps the canvas real.
       host.setAttribute('aria-hidden', 'true');
@@ -131,26 +142,29 @@ async function drain(): Promise<void> {
       // fetch 1.7 MB to draw three 96px cards, on a menu screen, for somebody whose own setting
       // asked for the procedural room. The cache is per DOCUMENT and regenerated on demand, so a
       // settings change catching up on the next load is the whole of the cost.
-      scene = factory(host, { interactive: false, animate: false });
-      // ONE CAPTURE PER IDLE SLICE, after the shaders are compiled off the main thread (`ready`):
-      // a capture is a synchronous render + PNG encode, and three of them in a row were one task.
-      while (batch.length > 0) {
-        const req = batch[0];
-        scene.setSpec(req.spec, req.alliance);
-        await scene.ready();
-        await idle();
-        const url = scene.capture(THUMB_CAPTURE_PX);
-        if (url) thumbs.set(req.key, url);
-        req.resolve(url);
-        batch.shift();
-      }
+      own = factory(host, { interactive: false, animate: false });
+    }
+    const scene = shared ?? own;
+    // ONE CAPTURE PER IDLE SLICE, after the shaders are compiled off the main thread (`ready`):
+    // a capture is a synchronous render + PNG encode, and three of them in a row were one task.
+    while (scene && batch.length > 0) {
+      const req = batch[0];
+      // a scene of our own takes the build early so `ready` compiles ITS shaders; the turntable is
+      // on screen, so it is handed the build only inside `capture`'s one task
+      own?.setSpec(req.spec, req.alliance);
+      await scene.ready();
+      await idle();
+      const url = scene.capture(THUMB_CAPTURE_PX, req.spec, req.alliance);
+      if (url) thumbs.set(req.key, url);
+      req.resolve(url);
+      batch.shift();
     }
   } catch (err) {
     // no WebGL2, a software renderer, a failed chunk — the cards drop their thumbnail
     // eslint-disable-next-line no-console
     console.warn('BIOBUZZ: no 3D thumbnails on this machine.', err);
   } finally {
-    scene?.dispose();
+    own?.dispose();
     host.remove();
     for (const req of batch) req.resolve('');
     draining = false;
@@ -225,6 +239,7 @@ function LiveTurntable({
         });
         live = sc;
         sceneRef.current = sc;
+        liveTurntable = sc;
         sc.setSpec(specRef.current, allianceRef.current);
         const fit = (): void => {
           const r = host.getBoundingClientRect();
@@ -246,6 +261,7 @@ function LiveTurntable({
       dead = true;
       ro?.disconnect();
       sceneRef.current = null;
+      if (liveTurntable === live) liveTurntable = null;
       live?.dispose();
     };
   }, [onUnsupported]);

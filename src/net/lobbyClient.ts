@@ -7,17 +7,21 @@ import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
 import { applyPushedStatus } from './siteStatus';
 import { appChannel, appBuild } from './env';
+import { importVisuals } from './importVisualsClient';
+import { STAGED_TIMEOUT_MESSAGE, stagedStartOverdue } from './stagedStart';
 import {
   encodeMsg,
   decodeServerMsg,
   type ServerMsg,
   CLIENT_CAPS,
+  type CompetitionRef,
   type LobbyPlayer,
   type MatchDriver,
   type PlayerIntro,
   type PlayerPatch,
   type QueueMode,
   type RoomConfig,
+  type RoomSettings,
   type ErrorCode,
 } from './protocol';
 
@@ -77,7 +81,7 @@ export interface MatchStart {
  * caller mints a ServerSession that TAKES OVER this same transport.
  */
 type Handlers = {
-  roster: (players: LobbyPlayer[], hostId: string) => void;
+  roster: (players: LobbyPlayer[], hostId: string, settings?: RoomSettings) => void;
   matchStart: (m: MatchStart) => void;
   queued: (mode: QueueMode, size: number, need: number) => void;
   /** ranked match found on a `?mm=1` connection: reconnect to `?room=<room>` (the
@@ -93,13 +97,16 @@ type Handlers = {
     /** false ⇒ a CUSTOM room's 3D-readiness window: no ratings, nothing to ready up. Absent
      *  from an older server ⇒ true, which is what every `strategyStart` used to be. */
     ranked: boolean,
+    /** a competition match's window: which event and match (and no ratings) */
+    competition?: CompetitionRef,
   ) => void;
   /** `code` is present only for the reasons a client can ACT on (today: `region_full`).
    *  Absent for everything else, and absent entirely from older servers, so a handler
    *  must stay correct reading `message` alone. */
   error: (message: string, code?: ErrorCode) => void;
-  /** a staged RANKED pairing was cancelled and this is what it cost. Arrives just BEFORE
-   *  the `error` that tears the screen down, so the UI can show the reason alongside it. */
+  /** a staged RANKED pairing was cancelled and this is what it cost. Arrives AFTER the `error`
+   *  that tears the screen down (the room sends it once the charge is written), which is why a
+   *  cancelled socket is `retire`d rather than closed on the error. */
   dodgeVerdict: (yours: DodgeVerdict | null, others: DodgeVerdict[]) => void;
   /** the ranked queue refused this account: its standing carries a cooldown. `until` is an
    *  epoch ms deadline, so the screen counts it down instead of showing a stale sentence. */
@@ -121,6 +128,9 @@ export class LobbyClient {
     transport.onMessage((d) => this.onMessage(d));
     // a transient drop auto-reconnects (see below); only a give-up is terminal
     transport.onFail(() => this.handlers.closed?.());
+    // the imported-robot visuals relay rides this connection (docs/area/netcode.md, VISUALS RELAY);
+    // binding the transport a `ServerSession` already holds keeps what it has
+    importVisuals.bind(transport);
   }
 
   on<K extends keyof Handlers>(event: K, cb: Handlers[K]): void {
@@ -145,9 +155,52 @@ export class LobbyClient {
       this.transport.send(
         encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
       );
+      // `send` drops a frame on a socket that closed during the token read
+      if (this.joinSentAt === null && this.transport.isOpen) this.joinSentAt = Date.now();
     };
     this.transport.onOpen(() => void doJoin());
     this.transport.onReopen(() => void doJoin());
+  }
+
+  /** when the first `join` went out on an open socket (see `watchStagedStart`) */
+  private joinSentAt: number | null = null;
+  private stagedWatch: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * THIS SOCKET IS A SEAT IN A MATCHMADE ROOM: give up on it if the room never answers.
+   *
+   * The ranked screen waits for `strategyStart`, `matchStart` or `error` and nothing else, so a
+   * room that sends none of them used to hold "Match found" forever. Past the limits in
+   * `stagedStart.ts` the socket is dropped and the CURRENT `error` handler is called, which is the
+   * screen's when it is up and the queue keeper's when it is parked, so both handle it as the
+   * cancellation it is. Stopped by the first of the three frames, and by `dispose`.
+   */
+  watchStagedStart(): void {
+    if (this.stagedWatch) return;
+    const assignedAt = Date.now();
+    this.stagedWatch = setInterval(() => {
+      if (!stagedStartOverdue(assignedAt, this.joinSentAt, Date.now())) return;
+      console.warn('[ranked] the match room never answered; giving up on it');
+      this.dispose();
+      this.handlers.error?.(STAGED_TIMEOUT_MESSAGE, 'match_gone');
+    }, 1000);
+  }
+
+  private stopStagedWatch(): void {
+    if (this.stagedWatch) clearInterval(this.stagedWatch);
+    this.stagedWatch = null;
+  }
+
+  /**
+   * THE ROOM IS OVER, BUT ITS LAST WORD MAY STILL BE ON THE WAY. A cancelled room sends `error`
+   * first and the `dodgeVerdict` after its database write, so the socket is kept for `ms` to hear
+   * it rather than closed on the error. A reconnect in the meantime closes it instead of
+   * re-sending `join` (or `queue`): the room is gone, and an older server opens a dead code empty.
+   */
+  retire(ms: number): void {
+    this.stopStagedWatch();
+    this.transport.onReopen(() => this.dispose());
+    setTimeout(() => this.dispose(), ms);
   }
 
   /**
@@ -314,6 +367,21 @@ export class LobbyClient {
     this.transport.send(encodeMsg({ t: 'removeBot', seat }));
   }
 
+  /** HOST ONLY. The CALLER gates on `serverCaps()` containing `'rooms2'` — an older server ignores it. */
+  roomSettings(patch: Partial<RoomSettings>): void {
+    this.transport.send(encodeMsg({ t: 'roomSettings', patch }));
+  }
+
+  /** HOST ONLY: turn a duo-record room into an ordinary one (one-way). Same `'rooms2'` gate. */
+  unlockRoom(): void {
+    this.transport.send(encodeMsg({ t: 'unlockRoom' }));
+  }
+
+  /** HOST ONLY: put a member (roster `clientId`) on an alliance. Same `'rooms2'` gate. */
+  moveMember(id: string, alliance: 'red' | 'blue'): void {
+    this.transport.send(encodeMsg({ t: 'moveMember', id, alliance }));
+  }
+
   /** enter the ranked queue on this `?mm=1` connection. On a match the server sends
    * `matchAssigned` (reconnect to the host region). (Re)sends on open + reconnect,
    * with the auth JWT. `homeRegion`/`accessMs` are the client's network position (so
@@ -327,7 +395,7 @@ export class LobbyClient {
     game?: GameId,
     /** "play a friend": queue under a challenge token so the server pairs us with
      * the person we challenged instead of the open pool (see ui/challenge.ts) */
-    party?: { token: string; format: string; partyOnly: boolean },
+    party?: { token: string; format: string },
   ): void {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
@@ -335,7 +403,7 @@ export class LobbyClient {
         encodeMsg({
           t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden, game,
           caps: CLIENT_CAPS, channel: appChannel(), build: appBuild(),
-          party: party?.token, partyFormat: party?.format, partyOnly: party?.partyOnly,
+          party: party?.token, partyFormat: party?.format,
         }),
       );
     };
@@ -357,6 +425,8 @@ export class LobbyClient {
   }
 
   dispose(): void {
+    this.stopStagedWatch();
+    importVisuals.release(this.transport);
     this.transport.close();
   }
 
@@ -384,6 +454,9 @@ export class LobbyClient {
          taken, and it is re-sent on every reattach, which is exactly the two moments this has
          to fire. */
       this.sendPhysicsReady();
+      importVisuals.onWelcome(m.clientId); // a new seat on the room's side holds none of our uploads
+    } else if (m.t === 'visualReady' || m.t === 'visualChunk' || m.t === 'visualRefused') {
+      importVisuals.handle(m);
     } else if (m.t === 'lobby') {
       // a recycle that landed on a lobby rather than a session (the host recycled while
       // we were still coming back). The id is ours either way — take it, and the seat's
@@ -393,16 +466,20 @@ export class LobbyClient {
     } else if (m.t === 'roster') {
       this.players = m.players;
       this.hostId = m.hostId;
-      this.handlers.roster?.(m.players, m.hostId);
+      importVisuals.noteRoster(this.clientId, m.players);
+      this.handlers.roster?.(m.players, m.hostId, m.settings);
     } else if (m.t === 'matchStart') {
+      this.stopStagedWatch(); // the three answers `watchStagedStart` waits for
       this.handlers.matchStart?.(m);
     } else if (m.t === 'queued') {
       this.handlers.queued?.(m.mode, m.size, m.need);
     } else if (m.t === 'matchAssigned') {
       this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
     } else if (m.t === 'strategyStart') {
-      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false);
+      this.stopStagedWatch();
+      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false, m.competition);
     } else if (m.t === 'error') {
+      this.stopStagedWatch();
       this.handlers.error?.(m.message, m.code);
     } else if (m.t === 'dodgeVerdict') {
       this.handlers.dodgeVerdict?.(m.yours, m.others);

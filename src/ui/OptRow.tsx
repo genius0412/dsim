@@ -40,6 +40,7 @@ export function OptRow<T extends string | number | boolean>({
   hint,
   mini,
   disabled,
+  lead,
 }: {
   label?: string;
   value: T;
@@ -60,9 +61,12 @@ export function OptRow<T extends string | number | boolean>({
    *  Greyed rather than removed, so the rows under it never move (§1.4). The picked tile
    *  stays lit, so the row still says what it will be when it comes back. */
   disabled?: boolean;
+  /** the FIRST tile spans the whole row: a recommended default above the choices it picks
+   *  between (Prediction's Auto), so an odd count never strands the last choice alone */
+  lead?: boolean;
 }) {
   const grid = (
-    <div className={`ds-opts${cols ? ` ${cols}` : ''}`}>
+    <div className={`ds-opts${cols ? ` ${cols}` : ''}${lead ? ' lead' : ''}`}>
       {options.map((o) => (
         <button
           key={String(o.v)}

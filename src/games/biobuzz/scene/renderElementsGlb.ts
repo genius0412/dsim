@@ -61,7 +61,9 @@ export interface BbElementGeometries {
 export const ELEMENT_RADIUS_TOL_IN = 0.02;
 
 let sharedLoader: GLTFLoader | null = null;
-function loader(): GLTFLoader {
+/** the scene chunk's ONE GLTFLoader (meshopt decoder attached) — the elements here, an imported
+ * robot's mesh in `renderImported.ts` */
+export function loader(): GLTFLoader {
   if (!sharedLoader) {
     sharedLoader = new GLTFLoader();
     sharedLoader.setMeshoptDecoder(MeshoptDecoder);

@@ -12,8 +12,6 @@ import {
   BB_AI_GRAB_TOL,
   BB_AI_LZ_GUARD,
   BB_AI_PIN_DECISIONS,
-  BB_AI_ROBOT_CLEAR,
-  BB_AI_SWITCH_FRAC,
   BB_AI_TARGET_COOLDOWN,
   BB_AI_TURN_GAIN,
   BB_AI_WALL_NEAR,
@@ -33,7 +31,7 @@ import { bbElementRadius, flowerFits, flowerScore, type BbElementKind } from '..
 import { hiveLoad, hiveTakingSide, otherSide } from '../hive';
 import { bbCarriesNectar, bbIntakeAccepts, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
 import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, MOUNT_DIR, bbIntakeEdges, bbIntakeMountOf } from '../mounts';
-import { bbAimTarget, bbCellSideOf, bbFlightEnters } from '../play';
+import { bbAimTarget, bbCellSideOf, bbFixedBand, bbFlightEnters } from '../play';
 import {
   bbAimHeading,
   bbFlowerInReach,
@@ -45,23 +43,28 @@ import {
 } from '../robot';
 import { bbKindIndex, bbParkedNow } from '../score';
 import { bbOwnSide } from '../start';
-import type { BbCellSide, BiobuzzState, ScoreTarget } from '../state';
+import { biobuzzPhysics, type BbCellSide, type BiobuzzState, type ScoreTarget } from '../state';
 import { OBSTACLES, envelopeStand, footprintOf, insideFor, nextWaypoint, poseClear, polarOf, routeLength, type Footprint } from './geom';
 import { bbTierSpec, type BbAiTierSpec } from './tiers';
 import {
   BB_AI_AUTO_MARGIN,
   BB_AI_CLUSTER_R,
   BB_AI_CONTACT,
-  BB_AI_DUMP_D,
+  BB_AI_DUMP_FLOOR,
   BB_AI_ESCAPE_LEN,
   BB_AI_LAST_CALL_S,
-  BB_AI_MAX_CLOSING,
-  BB_AI_PARK_MARGIN,
+  BB_AI_NECTAR_FETCH_S,
+  BB_AI_PLACE_S,
+  BB_AI_TIP_PRIOR_S,
+  BB_AI_ROLL_LEAD,
+  BB_AI_ROLL_V,
+  BB_AI_ROLL_VZ,
   BB_AI_STAND_COOLDOWN,
   BB_AI_STUCK_MOVE,
   BB_AI_STUCK_STICK,
   BB_AI_STUCK_WINDOW,
-  BB_AI_TURRET_D,
+  BB_AI_WEIGHTS,
+  type BbAiWeights,
 } from './tuning';
 
 /**
@@ -98,7 +101,8 @@ import {
  * Positions and the DERIVED lists, and nothing else:
  *   `world.match.phase` / `.phaseTimeLeft`      the clock every driver can see
  *   `world.robots[*]`  pos, heading, vel, alliance, spec, hopper, turret yaw/pitch
- *   `world.balls[*]`   pos, z, state.kind (+ `by` on a flight), color
+ *   `world.balls[*]`   pos, vel, z, vz, state.kind (+ `by` on a flight), color
+ *   `world.biobuzz.spill`  whether a spilled element has touched anything yet (G409)
  *   `world.biobuzz`    `hives[a].up/tipping/released/contents`, `flowers[i].stack`,
  *                      `nectarDue`, `nectarStock`
  * That list is what lets ONE policy drive under BOTH physics — `derive.ts` fills the same fields
@@ -121,6 +125,8 @@ type Mode = 'collect' | 'score' | 'park' | 'place' | 'defend' | 'wait';
 
 /** one bot's private memory — the thing that must never be on the `World`. */
 interface BbBotMemory {
+  /** this seat's weights (`BB_AI_WEIGHTS` unless a harness passed its own) */
+  w: BbAiWeights;
   rngState: number;
   /** a per-seat salt for the stable choice noise (`noiseOf`) */
   salt: number;
@@ -169,6 +175,11 @@ interface BbBotMemory {
   apId: number | null;
   apPhi: number;
   pressP: boolean;
+  /** the alliance TIPs this bot has watched start (`tipRate`), the swing it saw last decision, and
+   * the tick of its first live decision */
+  tipsSeen: number;
+  wasTipping: boolean;
+  startTick: number;
   /** the last decision's summary, for `peek` (bench/trace only) */
   note: string;
 }
@@ -200,10 +211,12 @@ export function createBiobuzzBot(
   robotId: number,
   tier: string,
   seed: number,
+  weights?: Partial<BbAiWeights>,
 ): BotSeat & { peek(): string } {
   void world;
   const t = bbTierSpec(tier);
   const mem: BbBotMemory = {
+    w: weights ? { ...BB_AI_WEIGHTS, ...weights } : BB_AI_WEIGHTS,
     // MIX THE SEAT INTO THE SEED, so two seats handed one match seed do not dither in lockstep.
     rngState: (Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(robotId + 1, 0x85ebca6b)) | 0,
     salt: (Math.imul(seed | 0, 0x27d4eb2f) ^ Math.imul(robotId + 7, 0x165667b1)) >>> 0,
@@ -237,6 +250,9 @@ export function createBiobuzzBot(
     apId: null,
     apPhi: 0,
     pressP: false,
+    tipsSeen: 0,
+    wasTipping: false,
+    startTick: -1,
     note: '',
   };
   return {
@@ -279,6 +295,7 @@ function noiseOf(mem: BbBotMemory, id: number): number {
 
 interface Ctx {
   world: World;
+  w: BbAiWeights;
   r: RobotState;
   t: BbAiTierSpec;
   bb: BiobuzzState;
@@ -318,7 +335,7 @@ interface Ctx {
   hoard: boolean;
 }
 
-function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState): Ctx {
+function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState, mem: BbBotMemory): Ctx {
   const a = r.alliance;
   const phase = world.match.phase;
   const auto = phase === 'auto';
@@ -367,11 +384,19 @@ function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState
   }
   const aimCell = hiveCellTarget(a, aimSide);
   const needFromHopper = aimSide === taking && !tipping ? hopperTipCount(r.hopper, load.pollen + inFlight, load.nectar) : Infinity;
-  const dBase = turreted ? BB_AI_TURRET_D : BB_AI_DUMP_D;
+  // a FIXED launcher's band is its arc's, not a habit: it is measured off the fire gate itself
+  // (`bbFixedBand`) and held an inch inside at each end, because the robot only stands NEAR a point
+  const band = launcher.kind === 'fixed' ? bbFixedBand(r.spec) : null;
+  const dBase = turreted
+    ? [mem.w.turretD0, mem.w.turretD1]
+    : band
+      ? [band[0] + 1, Math.max(band[0] + 1, band[1] - 1)]
+      : [mem.w.dumpD0, mem.w.dumpD1];
   const carriesNectar = bbCarriesNectar(launcher);
   const lift = bbLiftOf(r.spec) !== null;
   const ctx: Ctx = {
     world,
+    w: mem.w,
     r,
     t,
     bb,
@@ -399,14 +424,20 @@ function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState
     tipLoaded,
     partners,
     opponents,
-    // a DUMPER's far edge is its throw, not a habit: past ~42 in there is no dump solution at all, so a
-    // sloppy tier widens the band inward and hardly outward
-    dRange: turreted ? [dBase[0] - t.envPad * 0.5, dBase[1] + t.envPad] : [dBase[0] - t.envPad * 0.6, dBase[1] + Math.min(2, t.envPad)],
-    envAng: t.envAng + (launcher.kind === 'dumper' ? 0.2 : 0),
+    // a DUMPER's far edge is its throw, not a habit: past ~44 in there is no dump solution at all, and
+    // the tuned band already reaches 45.5, so a sloppy tier widens it inward only — and not past
+    // `BB_AI_DUMP_FLOOR`: from 25 in a dump lands 25–75 % (medium forager −15 a solo match at 25.5)
+    dRange: turreted
+      ? [dBase[0] - t.envPad * 0.5, dBase[1] + t.envPad]
+      : band
+        ? [dBase[0], dBase[1]] // a FIXED arc has no sloppy edge to widen: out of band, it misses
+        : [Math.min(dBase[0], Math.max(BB_AI_DUMP_FLOOR, dBase[0] - t.envPad * 0.6)), dBase[1]],
+    // a FIXED arc is measured on the mouth axis; well off it the cell is crossed at an angle
+    envAng: launcher.kind === 'fixed' ? Math.min(t.envAng, 0.35) : t.envAng + (launcher.kind === 'dumper' ? 0.2 : 0),
     placeWindow: teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S,
     hoard: false,
   };
-  ctx.hoard = hoardingNow(ctx, world);
+  ctx.hoard = hoardingNow(ctx, world, mem);
   return ctx;
 }
 
@@ -450,6 +481,7 @@ function decideCommand(world: World, r: RobotState, t: BbAiTierSpec, mem: BbBotM
     return ZERO;
   }
   mem.decisions++;
+  if (mem.startTick < 0) mem.startTick = world.tick;
 
   // ---- SAFETY FIRST: an escape in progress is never hesitated over -------------------------
   if (mem.escape > 0) {
@@ -465,7 +497,10 @@ function decideCommand(world: World, r: RobotState, t: BbAiTierSpec, mem: BbBotM
     return mem.last;
   }
 
-  const c = perceive(world, r, t, bb);
+  const c = perceive(world, r, t, bb, mem);
+  const swinging = c.hive.tipping > 0;
+  if (swinging && !mem.wasTipping) mem.tipsSeen++;
+  mem.wasTipping = swinging;
   recordHist(r, mem, asksMotion(mem.last), asksTurn(mem.last));
 
   // ---- STUCK: measured at any speed --------------------------------------------------------
@@ -498,7 +533,7 @@ function decideCommand(world: World, r: RobotState, t: BbAiTierSpec, mem: BbBotM
       !mem.last.fire;
     mem.stall = still ? mem.stall + 1 : 0;
     mem.stallHopper = r.hopper.length;
-    if (mem.stall >= 20) {
+    if (mem.stall >= mem.w.stall) {
       mem.stall = 0;
       if (mem.mode === 'collect' && mem.target !== null) giveUpOn(world, mem, mem.target);
       else mem.badStands.push({ x: r.pos.x, y: r.pos.y, until: mem.decisions + BB_AI_STAND_COOLDOWN });
@@ -517,7 +552,7 @@ function decideCommand(world: World, r: RobotState, t: BbAiTierSpec, mem: BbBotM
    */
   const herded = r.hopper.length >= c.cap ? herdedBy(c) : null;
   mem.herd = herded ? mem.herd + 1 : 0;
-  if (herded && mem.herd >= 12) {
+  if (herded && mem.herd >= mem.w.herd) {
     mem.herd = 0;
     const dx = r.pos.x - herded.x;
     const dy = r.pos.y - herded.y;
@@ -590,8 +625,8 @@ function chooseMode(c: Ctx, mem: BbBotMemory, cands: Cand[]): Mode {
   const { r, t } = c;
   const hop = r.hopper.length;
   // THE PARKS — the clock every driver can see, and the drive the bot would need
-  if (c.auto && t.autoPark && c.phaseLeft <= parkEta(c) + BB_AI_PARK_MARGIN) return 'park';
-  if (c.teleop && t.parks && c.phaseLeft <= parkEta(c) + BB_AI_PARK_MARGIN) {
+  if (c.auto && t.autoPark && c.phaseLeft <= parkEta(c) + c.w.parkMargin) return 'park';
+  if (c.teleop && t.parks && c.phaseLeft <= parkEta(c) + c.w.parkMargin) {
     /**
      * …UNLESS THE HOPPER HOLDS A TIP. A TIP is 20 and PARK is 5, and a swing still moving at the
      * buzzer is scored as the TIP it must become (§10.5 A; `score.ts`), so a bot that can reach
@@ -636,36 +671,76 @@ function chooseMode(c: Ctx, mem: BbBotMemory, cands: Cand[]): Mode {
 }
 
 /**
- * IS THE FLOWER PLAN LIVE — a Box Tube build that carries NECTAR, a tier that places, the 1:00
- * window open or twelve seconds off, a FLOWER still worth a NECTAR, and a NECTAR to be had (in
- * the hopper, on the tiles, or still in the human player's hand). Without the last clause a
- * build whose NECTAR is all gone would stand at the zone for the rest of the match.
+ * IS THE FLOWER PLAN LIVE — a RATE decision, not a clock.
+ *
+ * FLOWER points are PERMANENT and CONTESTABLE: a NECTAR placed early leaves the TIP cycle for the
+ * rest of the match (fewer NECTAR in the cells, more POLLEN per TIP) and an opponent's NECTAR
+ * placed on top takes the FLOWER over. So the plan is the LAST thing a bot does, started when the
+ * time left is about what the tour itself needs, and only when the tour pays more per second than
+ * the bot's own TIP rate (`tipRate`). The first version hoarded from 1:12 and measured 26–29
+ * points a solo match BELOW never placing at all: 52 FLOWER points for 30 s without a TIP.
+ *
+ * It still needs a Box Tube build that carries NECTAR, a tier that places, a FLOWER worth a
+ * NECTAR, and a NECTAR to be had (in the hopper, on the tiles, or in the human player's hand).
  */
-function hoardingNow(c: Omit<Ctx, 'hoard'>, world: World): boolean {
+function hoardingNow(c: Omit<Ctx, 'hoard'>, world: World, mem: BbBotMemory): boolean {
   if (!(c.t.places && c.lift && c.carriesNectar && c.teleop)) return false;
   const left = world.match.phaseTimeLeft;
   if (left > BB_FLOWER_UNLOCK_S + 12) return false;
-  let onField = c.r.hopper.some((x) => x === c.a);
-  if (!onField) {
-    for (const b of world.balls) {
-      if (b.state.kind === 'ground' && b.color === c.a && b.z <= BB3_INTAKE_Z) {
-        onField = true;
-        break;
-      }
-    }
-  }
-  /**
-   * NECTAR STILL IN THE HUMAN PLAYER'S HAND is only worth walking to the zone for once the drive
-   * there ends at the cue — before it an entry needs a TIP's entitlement the bot cannot count on,
-   * and a bot parked at the zone twelve seconds early is a TIP's worth of cycles spent standing
-   * still.
-   */
+  let held = 0;
+  for (const x of c.r.hopper) if (x === c.a) held++;
+  let floor = 0;
+  for (const b of world.balls) if (b.state.kind === 'ground' && b.color === c.a && b.z <= BB3_INTAKE_Z) floor++;
   const lz = BB_LZ[c.a];
   const lzEta = hyp((lz.x0 + lz.x1) / 2 - c.r.pos.x, (lz.y0 + lz.y1) / 2 - c.r.pos.y) / (c.vmax * 0.8) + 1;
-  const inHand = c.bb.nectarStock[c.a] > 0 && (c.placeWindow || left <= BB_FLOWER_UNLOCK_S + lzEta);
-  if (!onField && !inHand) return false;
-  for (let i = 0; i < BB_FLOWERS.length; i++) if (flowerValue(c, i) >= 4) return true;
-  return false;
+  const inHand = c.placeWindow || left <= BB_FLOWER_UNLOCK_S + lzEta ? c.bb.nectarStock[c.a] : 0;
+  const nectar = held + floor + inHand;
+  if (nectar === 0) return false;
+  const plan = flowerTour(c, Math.min(nectar, BB_FLOWERS.length), held);
+  if (plan.value <= 0) return false;
+  // once started it runs: the tour was worth it when it began and the NECTAR is already aboard
+  if (mem.mode === 'place' || (mem.mode === 'wait' && held > 0)) return true;
+  if (left > plan.time + mem.w.tourMargin) return false;
+  return plan.value / Math.max(1, plan.time) > tipRate(c, mem);
+}
+
+/**
+ * THE FLOWER TOUR a bot could still make: nearest-neighbour from where it stands through every
+ * FLOWER worth a NECTAR (`flowerValue` ≥ 4), at most `n` of them, with a NECTAR fetch priced in
+ * for each one beyond the `held` it already carries. Points, and seconds.
+ */
+function flowerTour(c: Omit<Ctx, 'hoard'>, n: number, held: number): { value: number; time: number } {
+  const left: number[] = [];
+  for (let i = 0; i < BB_FLOWERS.length; i++) if (flowerValue(c, i) >= 4) left.push(i);
+  let at: Vec2 = c.r.pos;
+  let value = 0;
+  let time = 0;
+  for (let k = 0; k < n && left.length > 0; k++) {
+    let bi = 0;
+    for (let j = 1; j < left.length; j++) {
+      const f = BB_FLOWERS[left[j]];
+      const g = BB_FLOWERS[left[bi]];
+      if (hyp(f.x - at.x, f.y - at.y) < hyp(g.x - at.x, g.y - at.y)) bi = j;
+    }
+    const i = left.splice(bi, 1)[0];
+    const f = BB_FLOWERS[i];
+    time += hyp(f.x - at.x, f.y - at.y) / (c.vmax * 0.7) + BB_AI_PLACE_S + (k >= held ? BB_AI_NECTAR_FETCH_S : 0);
+    value += flowerValue(c, i);
+    at = f;
+  }
+  return { value, time };
+}
+
+/**
+ * THIS BOT'S OWN TIP RATE, points per second, from what it has watched its alliance's HIVE do:
+ * a swing starting is a TIP. Shrunk toward a prior of one TIP per `BB_AI_TIP_PRIOR_S` so the
+ * first tip of a match does not swing it, and split across the alliance's working robots — a
+ * robot that stops tipping costs the alliance its own share, not the partner's.
+ */
+function tipRate(c: Omit<Ctx, 'hoard'>, mem: BbBotMemory): number {
+  const elapsed = Math.max(0, (c.world.tick - mem.startTick) * SIM_DT);
+  const share = 1 + c.partners.length;
+  return (20 * (mem.tipsSeen + 1)) / (elapsed + BB_AI_TIP_PRIOR_S) / share;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -695,10 +770,26 @@ function candidates(c: Ctx, mem: BbBotMemory): Cand[] {
   const wantPollen = !c.hoard;
   const wantNectar = c.carriesNectar;
   const auto = c.auto || t.homeOnly;
-  const pre: { b: Artifact; d: number }[] = [];
+  const pre: { b: Artifact; d: number; p: Vec2 }[] = [];
+  const rolling = biobuzzPhysics(world) === '3d';
   for (const b of world.balls) {
-    if (b.state.kind !== 'ground') continue;
     if (b.z > BB3_INTAKE_Z) continue;
+    let p = b.pos;
+    if (b.state.kind !== 'ground') {
+      /**
+       * A ROLLING ELEMENT IS AN ELEMENT. Under the 3D solve a TIP's spill stays `flight` for ~2.8 s
+       * after the release (measured over 548 spilled elements: bouncing and rolling on the tiles,
+       * mean 50–58 in out from the HIVE, sd ~20), and the intake takes a low flight element in 3D
+       * (`bbIntakeAct`'s `lowFlight`). A policy that only read `ground` was blind to the most
+       * contested pile on the field for three seconds after every TIP. Low, slow, and already
+       * off the tray — one still carrying its spill tag has touched nothing yet, and touching it
+       * first is G409 — and aimed where it will be a moment from now.
+       */
+      if (!rolling || b.state.kind !== 'flight') continue;
+      if (Math.abs(b.vz) > BB_AI_ROLL_VZ || hyp(b.vel.x, b.vel.y) > BB_AI_ROLL_V) continue;
+      if (c.bb.spill && c.bb.spill[b.id] !== undefined) continue;
+      p = insideFor({ x: b.pos.x + b.vel.x * BB_AI_ROLL_LEAD, y: b.pos.y + b.vel.y * BB_AI_ROLL_LEAD }, BB_POLLEN_R);
+    }
     const nectar = b.color === 'red' || b.color === 'blue';
     if (nectar ? !wantNectar : !wantPollen) continue;
     if (!bbIntakeAccepts(r.spec, r.alliance, b.color)) continue;
@@ -710,7 +801,7 @@ function candidates(c: Ctx, mem: BbBotMemory): Cand[] {
     if (until !== undefined && mem.decisions < until) continue;
     // an element sitting in THIS alliance's GARDEN scores 1 at the end; leave it there late
     if (c.matchLeft < 12 && inOwnGarden(b, c.a)) continue;
-    pre.push({ b, d: hyp(b.pos.x - r.pos.x, b.pos.y - r.pos.y) });
+    pre.push({ b, d: hyp(p.x - r.pos.x, p.y - r.pos.y), p });
   }
   if (pre.length === 0) return [];
   pre.sort((x, y) => x.d - y.d || x.b.id - y.b.id);
@@ -719,45 +810,46 @@ function candidates(c: Ctx, mem: BbBotMemory): Cand[] {
   const stand = t.lookahead ? standFor(c, mem, c.aimCell) : null;
   for (let i = 0; i < pre.length && out.length < 10; i++) {
     const b = pre[i].b;
-    const ap = approach(c, b.pos, b.id === mem.apId ? mem.apPhi : undefined);
+    const bp = pre[i].p;
+    const ap = approach(c, bp, b.id === mem.apId ? mem.apPhi : undefined);
     if (!ap) continue;
     if (auto && c.side * ap.goal.x < c.fp.circ * 0.75 + BB_AI_AUTO_MARGIN) continue;
     const dist = routeLength(r.pos, ap.goal, c.fp.narrow + 1);
-    let cost = dist / c.vmax + Math.abs(wrapAngle(ap.heading - r.heading)) / c.turnRate * 0.6;
+    let cost = dist / c.vmax + Math.abs(wrapAngle(ap.heading - r.heading)) / c.turnRate * c.w.turnW;
     // PLAN THE NEXT LEG: the element picked last before a volley is the one the robot drives to
     // the envelope FROM
-    if (stand) cost += (lastPick ? 0.9 : 0.25) * (hyp(stand.x - b.pos.x, stand.y - b.pos.y) / c.vmax);
+    if (stand) cost += (lastPick ? c.w.legLast : c.w.legOther) * (hyp(stand.x - bp.x, stand.y - bp.y) / c.vmax);
     // CLUSTERS: a pile is cheaper per element than a scatter
     let near = 0;
     let tight = 0;
     for (const q of pre) {
       if (q.b.id === b.id) continue;
-      const dq = hyp(q.b.pos.x - b.pos.x, q.b.pos.y - b.pos.y);
+      const dq = hyp(q.p.x - bp.x, q.p.y - bp.y);
       if (dq < BB_AI_CLUSTER_R) near++;
       if (dq < 8) tight++;
     }
     const room = c.cap - r.hopper.length;
-    cost -= Math.min(4, near) * 0.12 * Math.min(1, room - 1);
+    cost -= Math.min(4, near) * c.w.cluster * Math.min(1, room - 1);
     /**
      * …but NOT a pile the hopper cannot take. Driving into five elements with room for one is
      * CONTROL of six: G407's hold clock LEAKS rather than clearing, so the ones the roller shoved
      * aside stay counted for seconds after they stop touching, and a sweep through a pile measured
      * at six-plus for three seconds with nothing within 25 in of the chassis — a MAJOR.
      */
-    if (tight + 1 > room) cost += (tight + 1 - room) * 0.6;
+    if (tight + 1 > room) cost += (tight + 1 - room) * c.w.overRoom;
     // NECTAR is worth more to a build that carries it: three in a cell make a TIP cost three POLLEN
-    if (b.color === c.a) cost -= c.hoard ? 2 : 0.4;
+    if (b.color === c.a) cost -= c.hoard ? 2 : c.w.nectar;
     // 2v2: an element the PARTNER is clearly closer to is the partner's
     if (t.coordinates) {
       for (const p of c.partners) {
         if (p.hopper.length >= bbHopperCap(p.spec)) continue;
-        const pd = hyp(b.pos.x - p.pos.x, b.pos.y - p.pos.y);
-        if (pd + 6 < pre[i].d * 0.8) cost += 2.5;
+        const pd = hyp(bp.x - p.pos.x, bp.y - p.pos.y);
+        if (pd + 6 < pre[i].d * 0.8) cost += c.w.partner;
       }
     }
     // an opponent sitting on it will get there first, or shove us off it
     for (const o of c.opponents) {
-      if (hyp(b.pos.x - o.pos.x, b.pos.y - o.pos.y) < 16) cost += 1.2;
+      if (hyp(bp.x - o.pos.x, bp.y - o.pos.y) < 16) cost += c.w.opponent;
     }
     // the misjudgement is of the elements it is NOT already going for: once picked, an element is
     // judged honestly, or a re-rolled estimate turns a worse choice into no choice at all (a tank
@@ -817,8 +909,9 @@ function approach(c: Ctx, at: Vec2, prefer?: number): { goal: Vec2; heading: num
       for (const u of [deep, lip]) {
         for (const v of [0, side, -side]) {
           // robot-frame offset of the element from the robot centre
-          const lx = EDGE_DIR[edge].x * u + EDGE_PERP[edge].x * v;
-          const ly = EDGE_DIR[edge].y * u + EDGE_PERP[edge].y * v;
+          // `+ ax.vc`: an imported robot's mouth need not be centred on its edge (0 otherwise)
+          const lx = EDGE_DIR[edge].x * u + EDGE_PERP[edge].x * (v + ax.vc);
+          const ly = EDGE_DIR[edge].y * u + EDGE_PERP[edge].y * (v + ax.vc);
           const off2 = rot({ x: lx, y: ly }, heading);
           const gx = at.x - off2.x;
           const gy = at.y - off2.y;
@@ -843,7 +936,7 @@ function collectRoute(c: Ctx, mem: BbBotMemory, buttons: BbAiButtons, cands: Can
   // cheaper — a greedy rule re-evaluated every decision does not converge
   const held = mem.target !== null ? cands.find((x) => x.ball.id === mem.target) : undefined;
   if (held && pick && held.ball.id !== pick.ball.id) {
-    if (pick.cost > held.cost * BB_AI_SWITCH_FRAC - 0.2 || pick.cost > held.cost - 0.6) pick = held;
+    if (pick.cost > held.cost * c.w.switchFrac - 0.2 || pick.cost > held.cost - c.w.switchAbs) pick = held;
   }
   // REACTION DELAY on a target change
   if (pick && held && pick.ball.id !== held.ball.id && t.react > 0) {
@@ -939,9 +1032,17 @@ function parkEta(c: Ctx): number {
   return d / (c.vmax * 0.8) + 0.4;
 }
 
+/**
+ * seconds to the nearest point of the aim cell's envelope, BY ROAD. It used to be the straight line
+ * to the cell less the band's far edge, which is right only on the cell's own side: from the far
+ * end of the field the envelope is ~100 in round the HIVE, not ~40, and a bot 2.8 s from the buzzer
+ * walked off to score one element instead of parking (5 points lost, seed 7000).
+ */
 function standEta(c: Ctx): number {
-  const d = hyp(c.aimCell.pos.x - c.r.pos.x, c.aimCell.pos.y - c.r.pos.y);
-  return Math.max(0, d - c.dRange[1]) / (c.vmax * 0.8);
+  if (inEnvelope(c, c.r.pos)) return 0;
+  const cell = c.aimCell;
+  const s = insideFor(envelopeStand(c.r.pos, cell.pos, cell.mouth ?? { x: 0, y: 1 }, c.dRange[0], c.dRange[1], c.envAng), c.fp.circ + 1);
+  return routeLength(c.r.pos, s, c.fp.narrow + 1) / (c.vmax * 0.8);
 }
 
 /**
@@ -1066,16 +1167,22 @@ function waitRoute(c: Ctx, mem: BbBotMemory, buttons: BbAiButtons): RobotCommand
 // THE ENVELOPE AND THE TRIGGER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** is `p` inside this tier's firing envelope of the cell to line up on? */
-function inEnvelope(c: Ctx, p: Vec2): boolean {
-  const pol = polarOf(p, c.aimCell.pos, c.aimCell.mouth ?? { x: 0, y: 1 });
+/** is `p` inside this tier's firing envelope of the cell to line up on (or of `cell`)? */
+function inEnvelope(c: Ctx, p: Vec2, cell: ScoreTarget = c.aimCell): boolean {
+  const pol = polarOf(p, cell.pos, cell.mouth ?? { x: 0, y: 1 });
   return pol.d >= c.dRange[0] && pol.d <= c.dRange[1] && Math.abs(pol.th) <= c.envAng;
 }
 
 /**
- * THE STAND — the nearest point of the envelope, clear of the field, of every robot and of any
- * stand the bot recently got stuck at. In a 2v2 the lower id leans to one side of the mouth and
- * its partner to the other, so two partners do not queue for one spot.
+ * THE STAND — the cheapest point of the envelope to reach, clear of the field, of every robot and
+ * of any stand the bot recently got stuck at.
+ *
+ * Candidates are the nearest point of the envelope (leaning to one side of the mouth in a 2v2,
+ * the lower id to one side and its partner to the other) and a grid across the whole envelope,
+ * and the cheapest clear one wins on travel time. The first version tried four nearest-point
+ * variants and, when a partner stood on all of them, went to the blocked one anyway: the measured
+ * 2v2 case was a bot dithering beside its own partner, who was parked on the stand waiting for
+ * the tray, until the stuck test threw it off.
  */
 function standFor(c: Ctx, mem: BbBotMemory, cell: ScoreTarget): Vec2 {
   const { r } = c;
@@ -1088,12 +1195,23 @@ function standFor(c: Ctx, mem: BbBotMemory, cell: ScoreTarget): Vec2 {
   const d0 = c.dRange[0];
   const d1 = c.dRange[1];
   const ang = c.envAng;
-  const tries = [bias, bias + 0.9, bias - 0.9, 0];
+  const base = datan2(n.y, n.x);
+  const inner = Math.max(0.05, ang - 0.2);
+  const cands: { s: Vec2; pref: number }[] = [];
+  for (const b of [bias, bias + 0.9, bias - 0.9, 0]) cands.push({ s: envelopeStand(r.pos, cell.pos, n, d0, d1, ang, clamp(b, -1, 1)), pref: b === bias ? 0 : 0.15 });
+  for (const f of [-1, -0.5, 0, 0.5, 1]) {
+    for (const dd of [d0 + 4, (d0 + d1) / 2, d1 - 4]) {
+      const th = base + f * inner;
+      // the lean still applies across the grid: the partner's side of the mouth costs a little
+      cands.push({ s: { x: cell.pos.x + dcos(th) * dd, y: cell.pos.y + dsin(th) * dd }, pref: 0.2 + (bias !== 0 && f * bias < 0 ? 0.3 : 0) });
+    }
+  }
   let best: Vec2 | null = null;
-  for (const b of tries) {
-    let s = envelopeStand(r.pos, cell.pos, n, d0, d1, ang, clamp(b, -1, 1));
-    s = insideFor(s, c.fp.circ + 1);
+  let bestCost = Infinity;
+  for (const cand of cands) {
+    let s = insideFor(cand.s, c.fp.circ + 1);
     if (c.auto && c.side * s.x < c.fp.circ + BB_AI_AUTO_MARGIN) s = { x: c.side * (c.fp.circ + BB_AI_AUTO_MARGIN), y: s.y };
+    if (!inEnvelope(c, s, cell)) continue;
     if (mem.badStands.some((q) => q.until > mem.decisions && hyp(q.x - s.x, q.y - s.y) < 10)) continue;
     if (!poseClear(c.fp, s.x, s.y, r.heading, 0.3)) continue;
     let crowded = false;
@@ -1103,8 +1221,11 @@ function standFor(c: Ctx, mem: BbBotMemory, cell: ScoreTarget): Vec2 {
       if (hyp(o.pos.x - s.x, o.pos.y - s.y) < clear && hyp(o.vel.x, o.vel.y) < 20) crowded = true;
     }
     if (crowded) continue;
-    best = s;
-    break;
+    const cost = hyp(s.x - r.pos.x, s.y - r.pos.y) / c.vmax + cand.pref;
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = s;
+    }
   }
   mem.badStands = mem.badStands.filter((q) => q.until > mem.decisions);
   return best ?? insideFor(envelopeStand(r.pos, cell.pos, n, d0, d1, ang, bias), c.fp.circ + 1);
@@ -1127,7 +1248,7 @@ function turretFire(c: Ctx): boolean {
   const toCell = { x: cell.pos.x - r.pos.x, y: cell.pos.y - r.pos.y };
   const d = hyp(toCell.x, toCell.y);
   const closing = d > 1e-6 ? (r.vel.x * toCell.x + r.vel.y * toCell.y) / d : 0;
-  if (closing > BB_AI_MAX_CLOSING) return false;
+  if (closing > c.w.maxClosing) return false;
   if (!t.moveFire && hyp(r.vel.x, r.vel.y) > 12) return false;
   // the flower hoard: a double turret fires NECTAR out of its second turret on the same beat,
   // so a bot keeping its NECTAR for the flowers does not hold the trigger with any aboard
@@ -1303,7 +1424,7 @@ function route(
   // OTHER ROBOTS — radial-heavy, tangent-light, scaled to both chassis
   for (const o of c.world.robots) {
     if (o.id === r.id) continue;
-    const clear = c.fp.circ * 0.8 + footprintOf(o.spec).circ * 0.8 + BB_AI_ROBOT_CLEAR;
+    const clear = c.fp.circ * 0.8 + footprintOf(o.spec).circ * 0.8 + c.w.robotClear;
     const ox = r.pos.x - o.pos.x;
     const oy = r.pos.y - o.pos.y;
     const d = hyp(ox, oy);
@@ -1315,11 +1436,11 @@ function route(
     const ny = oy / d;
     const toward = -(nx * dirX + ny * dirY);
     if (toward < -0.2 && d > clear * 0.6) continue; // it is behind us: ignore
-    dirX += nx * w * 1.2;
-    dirY += ny * w * 1.2;
+    dirX += nx * w * c.w.robotPush;
+    dirY += ny * w * c.w.robotPush;
     const sign = -ny * dirX + nx * dirY >= 0 ? 1 : -1;
-    dirX += -ny * sign * w * 0.6;
-    dirY += nx * sign * w * 0.6;
+    dirX += -ny * sign * w * c.w.robotTan;
+    dirY += nx * sign * w * c.w.robotTan;
   }
   // IN AUTO nothing — not a robot push, not a tangent — steers toward the centre line near it,
   // and a chassis that has DRIFTED toward it (an x-drive sliding, a shove) is steered back out:
@@ -1340,7 +1461,7 @@ function route(
   // SPEED: a braking profile the drivetrain can stop on, with one decision of look-ahead
   const v = hyp(r.vel.x, r.vel.y);
   const stopDist = Math.max(0, dist - arriveTol * 0.5 - v * SIM_DT * BB_AI_DECIDE_TICKS);
-  const vWant = Math.min(c.vmax, Math.sqrt(2 * c.accel * 0.55 * stopDist) + 6);
+  const vWant = Math.min(c.vmax, Math.sqrt(2 * c.accel * c.w.brake * stopDist) + 6);
   let speed = clamp(vWant / Math.max(1, c.vmax / t.speedCap), 0.12, t.speedCap);
 
   let heading = wantHeading;

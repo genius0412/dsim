@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Imported robot renders</title>
+    <style>
+      body { margin: 0; padding: 16px; background: var(--ds-bg); color: var(--ds-ink); font: 13px system-ui, sans-serif; }
+      h2 { font-size: 14px; margin: 16px 0 8px; }
+      .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+      .cell { margin: 0; padding: 8px; background: var(--ds-panel); border: 1px solid var(--ds-line); border-radius: 8px; }
+      .cell figcaption { margin-top: 6px; color: var(--ds-mut); font-size: 12px; }
+      .cell canvas, .cell img { display: block; }
+      #status { font: 12px ui-monospace, monospace; color: var(--ds-mut); }
+    </style>
+  </head>
+  <body>
+    <div id="status">loading…</div>
+    <div id="rows"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

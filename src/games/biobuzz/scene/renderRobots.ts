@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
-import { chassisFill, COLORS, INTAKE_RAIL_T } from '../../../config';
+import type { Alliance, ImportedRobot, RobotSpec, RobotState, World } from '../../../types';
+import { chassisFill, COLORS, INTAKE_RAIL_T, WHEEL_CORNERS } from '../../../config';
 import { accentFill, clampCosmetics } from '../../../cosmetics';
 import { starPoints } from '../../../render/drawRobot';
 import { robotsEnabled } from '../../../sim/match';
+import { importedWheels } from '../../../sim/imported';
 // TYPES ONLY, and the direction matters: `graphics/` may not import `scene/` or `three` (the
 // RENDER lane asserts it), but the scene reading the settings MODEL is how every other quality
 // dial already works — see `renderPreview.ts`, which imports the store itself.
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
+import type { RobotFamily } from '../graphics/finishes';
 import {
   BB3_MOUTH_SLOT_Z,
   BB_BOX_TUBE_ARM_T,
@@ -58,7 +60,7 @@ import {
   BB_LAUNCH_Z0,
   BB_MOTOR_MOUNT_RIM,
   BB_RAMP_ANGLE,
-  BB_RAMP_DEPLOY_S,
+  bbRampDeployS,
   BB_RAMP_DECK_Z,
   BB_RAMP_IN,
   BB_RAMP_L,
@@ -77,7 +79,6 @@ import {
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_YOKE_BACK,
   BB_SIDE_ROLLER_YOKE_W,
-  bbSideRollerY,
   bbSideRollerYokeY,
   BB_SIDE_ROLLER_Z,
   BB_TURRET_AXLE_Z,
@@ -93,21 +94,42 @@ import {
   bbHopperCap,
   type BbHeadDims,
 } from '../config';
-import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
+import { bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
 import {
   BB_END_BAR_H,
   BB_FRONT_ARROW_T,
   BB_FRONT_INK,
   BB_REAR_INK,
+  bbChassisKeepOuts,
+  bbEndBarPieces,
   bbEndBarSegments,
   bbFrontMarks,
+  bbRailGaps,
+  bbRailSegments,
+  type BbKeepOut,
 } from '../parts';
-import { bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
+import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal, mouthAxes } from '../robot';
+import { bbDumpZ, bbDumperFrame, bbImportTurretAxleZ, bbSideRollerOffsets } from '../importMech';
 import { bbSpecKey } from '../specKey';
+import { driveParams } from '../../../sim/drivetrain';
+import type { MotionDrive } from '../../../robotImport/types';
+import {
+  buildAimSight,
+  cloneImportedMesh,
+  importedBodyGeometries,
+  importedDeckZ,
+  importedFrontMarkGeometries,
+  importedMeshKey,
+  importedMotionNodes,
+  isImportShared,
+  releaseImportedMesh,
+  type ImportedMotionNode,
+} from './renderImported';
 import {
   bbMouthFrame,
   bbShooterEdgeOf,
   EDGE_ANGLE,
+  EDGE_PERP,
   edgeGeom,
   turretLocal,
   turretRadius,
@@ -174,33 +196,38 @@ function solidMat(color: string, roughness = 0.6, metalness = 0.1): THREE.MeshSt
 }
 
 /**
- * THE FRONT LIGHT BAR'S MATERIAL — the ONE emissive on a robot, and the only reason it is not
- * `solidMat`. A matte white bar is the same grey as the deck under the hive's shadow, which is
- * where a driver most needs to know which end is the front; `emissive` at full strength makes it
- * a light rather than a painted stripe, and it needs no light of its own to do it. Cached and
- * SHARED like every other material here, so `disposeRobotGroup` leaves it alone.
+ * THE FRONT BAR'S MATERIAL: matte white, the deck arrow's own `solidMat`, and NOT emissive.
+ *
+ * It was a light (`emissive` at 0.85) on the reasoning that a matte white bar goes grey in the
+ * hive's shadow. No robot mesh receives a shadow (`cast` sets `castShadow` only), so it never
+ * did, and a robot part that glows is not a part a real FTC robot has (owner, 2026-09-27:
+ * "Robot front bars shouldn't glow. There's no need for it to."). It is a white bar that reads
+ * against the chassis by colour and height, like the chevron beside it.
  */
-let FRONT_BAR_MAT: THREE.MeshStandardMaterial | null = null;
 function frontBarMat(): THREE.MeshStandardMaterial {
-  if (!FRONT_BAR_MAT) {
-    FRONT_BAR_MAT = new THREE.MeshStandardMaterial({
-      color: BB_FRONT_INK,
-      emissive: BB_FRONT_INK,
-      emissiveIntensity: 0.85,
-      roughness: 0.35,
-      metalness: 0,
-    });
-    SHARED_MAT.add(FRONT_BAR_MAT);
-  }
-  return FRONT_BAR_MAT;
+  return solidMat(BB_FRONT_INK, 0.45, 0.05);
 }
 
 /** every mesh this module builds casts a shadow; nothing here receives one back onto itself
  * (the field floor/hive/flowers do that — see `renderScene.ts`'s `applyShadowFlags`). One call
  * per part rather than a post-hoc traversal, so a group rebuilt mid-match (`specKey` changing)
- * never has to be re-walked to pick the flag back up. */
-function cast<T extends THREE.Object3D>(o: T): T {
+ * never has to be re-walked to pick the flag back up.
+ *
+ * `family` is WHAT THE PART IS MADE OF (`graphics/finishes.ts`'s `ROBOT_FAMILY_FINISH`), and it
+ * is REQUIRED so a new part cannot be added without saying. It is an INERT tag on the MESH:
+ * nothing in this chunk reads it, and the standard materials never see it. Only the lazy
+ * physical-materials applier (`renderSurfaceRobots.ts`, the `materials: 'physical'` row) does, to
+ * pick the part's twin — which is why the part is named here, where it is built, rather than
+ * guessed there from a colour that a steel plate, a plastic wheel core and an aluminium bracket
+ * all share. */
+function cast<T extends THREE.Object3D>(o: T, family: RobotFamily): T {
   o.castShadow = true;
+  return tag(o, family);
+}
+/** the same inert tag, for the few parts that cast no shadow (the signs, their frames, the decal,
+ * the intake belts) */
+function tag<T extends THREE.Object3D>(o: T, family: RobotFamily): T {
+  o.userData.bbFamily = family;
   return o;
 }
 
@@ -323,6 +350,16 @@ function platePlane(along: number, up: number, t: number, holes: number): THREE.
   geo.translate(0, t / 2, 0); // extrusion runs into −y; centre it on the plate's own plane
   return geo;
 }
+
+/**
+ * ⚠️ HOW FAR ONE PART STANDS PROUD OF ANOTHER WHERE THEIR FACES WOULD OTHERWISE SHARE A PLANE (in).
+ * Two faces in one plane, facing the same way, in different materials z-fight: the depth test
+ * picks a winner per pixel and the winner changes as the camera moves, which reads as the part
+ * "meshing". The cameras' near plane is 1 in, so at the orbit camera's 620-in reach the depth
+ * buffer resolves about 0.023 in; 0.04 clears it everywhere with margin. The RENDER lane's "no
+ * co-planar faces" check holds built robots to 0.025.
+ */
+const BB_PROUD = 0.04;
 
 /** a box, pre-placed — the merge below wants world-space geometry, not meshes. */
 function boxAt(sx: number, sy: number, sz: number, x: number, y: number, z: number): THREE.BoxGeometry {
@@ -800,10 +837,11 @@ export function buildDriveWheel(
   if (part.rollers > 0) {
     const rollers = framePart(`wheel:${kind}:rollers:${detail}:${hand}`, () => rollerGeometries(part, detail, hand));
     const plates = framePart(`wheel:${kind}:plates:${detail}`, () => plateGeometries(part, detail));
-    const rm = cast(new THREE.Mesh(rollers, rubber));
+    const rm = cast(new THREE.Mesh(rollers, rubber), 'rubber');
     rm.name = 'bb-wheel-rollers';
     g.add(rm);
-    const pm = cast(new THREE.Mesh(plates, steel));
+    // the mecanum's plates are steel; an omni's are its plastic HUB (goBILDA: "plastic hub")
+    const pm = cast(new THREE.Mesh(plates, steel), kind === 'mecanum' ? 'steel' : 'nylon');
     // ⚠️ NAMED, AND NOT FOR THIS FILE'S BENEFIT. `podChecks` (RENDER lane) picks the swerve fork
     // out of a pod by "the first mesh with no name", which was true while the pod's only other
     // meshes were the named tyre and hub. A wheel that adds an anonymous mesh of its own would
@@ -813,10 +851,12 @@ export function buildDriveWheel(
   } else {
     const tyre = framePart(`wheel:${kind}:tyre:${detail}`, () => tyreGeometries(part, detail));
     const core = framePart(`wheel:${kind}:core:${detail}`, () => plateGeometries(part, detail));
-    const tm = cast(new THREE.Mesh(tyre, rubber));
+    const tm = cast(new THREE.Mesh(tyre, rubber), 'rubber');
     tm.name = 'bb-wheel-tread';
     g.add(tm);
-    const cm = cast(new THREE.Mesh(core, steel));
+    // the Hogback's core is goBILDA's "Plastic Core", not steel: it shares the plates' standard
+    // material (a colour, which is all standard mode draws), and its FINISH says what it is
+    const cm = cast(new THREE.Mesh(core, steel), 'nylon');
     cm.name = 'bb-wheel-core';
     g.add(cm);
   }
@@ -840,6 +880,31 @@ function wheelGeometry(r: number, w: number): THREE.CylinderGeometry {
  * shape every kit builds and the one `presets.ts` describes in words — so it gets three axles a
  * side; everything else gets the four corners.
  */
+/**
+ * ⚠️ THE BUTTERFLY'S TRACTION SET, AND WHY IT IS USUALLY ONE WHEEL A SIDE. Each 96 mm Hogback used
+ * to sit a fixed 0.5 in inboard of its own corner mecanum, which on a 15-in chassis put the front
+ * and back ones at x = ±0.31 — two wheels 0.62 in apart, 3.78 in across, overlapping almost
+ * completely inside the channel (every legal length under ~18.4 in does it). So: TWO a side only
+ * when both fit clear of each other and of the mecanums; otherwise ONE, centred between the
+ * mecanums, in the largest catalogue Hogback that clears them (96 mm, else 72 mm). Called once per
+ * axle; `null` for the axle that does not carry one.
+ */
+const BUTTERFLY_CLEAR = 0.15;
+function butterflyTraction(spec: RobotSpec, axleX: number): { kind: 'traction' | 'podTraction'; x: number } | null {
+  const mec = BB_WHEEL_PARTS.mecanum.r;
+  const xs = axleXs(spec);
+  const inner = Math.min(...xs.map((v) => Math.abs(v))) - mec; // the mecanums' inboard edges, |x|
+  for (const kind of ['traction', 'podTraction'] as const) {
+    const r = BB_WHEEL_PARTS[kind].r;
+    const tx = inner - BUTTERFLY_CLEAR - r; // one a side, tucked against its own mecanum
+    if (tx - r >= BUTTERFLY_CLEAR / 2) return { kind, x: Math.sign(axleX) * tx };
+  }
+  // one, centred: the front axle carries it
+  if (axleX < 0) return null;
+  const fits = (['traction', 'podTraction'] as const).find((k) => BB_WHEEL_PARTS[k].r + BUTTERFLY_CLEAR <= inner);
+  return { kind: fits ?? 'podTraction', x: 0 };
+}
+
 function axleXs(spec: RobotSpec): number[] {
   // the END axle is set in by the wheel THIS drivetrain carries, not by the channel's own
   // mecanum: a tank's 96 mm Hogback is 0.157 in smaller in the radius and sits that much further
@@ -1060,9 +1125,9 @@ function podParts(): THREE.Object3D[] {
     return parts;
   });
   return [
-    cast(new THREE.Mesh(struct, solidMat(ALU, 0.45, 0.35))),
-    cast(new THREE.Mesh(ring, solidMat(TURRET_RING, 0.4, 0.5))),
-    cast(new THREE.Mesh(drive, solidMat(SWEEPER, 0.6, 0.2))),
+    cast(new THREE.Mesh(struct, solidMat(ALU, 0.45, 0.35)), 'alu'),
+    cast(new THREE.Mesh(ring, solidMat(TURRET_RING, 0.4, 0.5)), 'dark'),
+    cast(new THREE.Mesh(drive, solidMat(SWEEPER, 0.6, 0.2)), 'belt'),
   ];
 }
 
@@ -1096,7 +1161,7 @@ export function buildSwervePod(accent: string = TREAD, detail: BbWheelDetail = '
   const hub = new THREE.Mesh(wheelGeometry(BB_POD_HUB_R, BB_POD_WHEEL_W + 0.14), solidMat(ALU, 0.4, 0.5));
   hub.name = 'bb-pod-hub';
   hub.position.set(0, 0, BB_POD_WHEEL_R);
-  pod.add(cast(hub));
+  pod.add(cast(hub, 'alu'));
   for (const p of podParts()) pod.add(p);
   return pod;
 }
@@ -1167,28 +1232,30 @@ export function buildWheels(spec: RobotSpec, accent: string = TREAD, detail: BbW
   const dt = spec.drivetrain;
   const kind = wheelKindOf(dt);
   const part = BB_WHEEL_PARTS[kind];
+  if (dt === 'swerve') {
+    // ── ORDER MATTERS. The pods are built in `WHEEL_CORNERS` order (FL, FR, BL, BR) — the order
+    // `RobotState.moduleAngles` is in and every other renderer and the sim read it in. Two orders
+    // would put a pod's steer on the wrong corner, which is invisible driving straight and
+    // obvious in a spin.
+    //
+    // ⚠️ A POD DOES NOT LIVE IN THE WHEEL CHANNEL. It is inset `BB_POD_INSET` from BOTH
+    // frame faces, which is the only placement that keeps every corner of a SLEWING box
+    // inside the frame; `wheelY` (the channel between the two side plates) measured +0.88 in
+    // outside it at 45° of steer. `buildFrame` drops the inner side plate for swerve to make
+    // room, because a chassis on pods has no wheel channel to draw.
+    for (const [sx, sy] of WHEEL_CORNERS) {
+      const pod = buildSwervePod(accent, detail);
+      pod.name = `robot:pod:${out.pods.length}`;
+      pod.position.set(sx * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);
+      out.nodes.push(pod);
+      out.pods.push(pod);
+      const podWheel = pod.getObjectByName('bb-pod-wheel');
+      if (podWheel) out.spin.push({ node: podWheel, r: BB_POD_WHEEL_R });
+    }
+    return out;
+  }
   for (const x of axleXs(spec)) {
     for (const sy of [1, -1] as const) {
-      if (dt === 'swerve') {
-        // ── ORDER MATTERS. `axleXs` yields [+x, −x] and the inner loop [+y, −y], so the pods
-        // come out FL, FR, BL, BR — the corner order `RobotState.moduleAngles` is documented in
-        // and the order `drawWheels` reads it in. Two orders would put a pod's steer on the
-        // diagonally opposite corner, which is invisible driving straight and obvious in a spin.
-        //
-        // ⚠️ A POD DOES NOT LIVE IN THE WHEEL CHANNEL. It is inset `BB_POD_INSET` from BOTH
-        // frame faces, which is the only placement that keeps every corner of a SLEWING box
-        // inside the frame; `wheelY` (the channel between the two side plates) measured +0.88 in
-        // outside it at 45° of steer. `buildFrame` drops the inner side plate for swerve to make
-        // room, because a chassis on pods has no wheel channel to draw.
-        const pod = buildSwervePod(accent, detail);
-        pod.name = `robot:pod:${out.pods.length}`;
-        pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);
-        out.nodes.push(pod);
-        out.pods.push(pod);
-        const podWheel = pod.getObjectByName('bb-pod-wheel');
-        if (podWheel) out.spin.push({ node: podWheel, r: BB_POD_WHEEL_R });
-        continue;
-      }
       /**
        * ⚠️ HANDEDNESS. `x * sy >= 0` is the MAIN diagonal — front-left and rear-right — and it is
        * the same expression the 2D sprite hatches its mecanum rollers by and the same one the
@@ -1217,19 +1284,21 @@ export function buildWheels(spec: RobotSpec, accent: string = TREAD, detail: BbW
       }
       out.nodes.push(wheel);
       if (dt === 'butterfly') {
-        // the MECANUM set is the corner set; the TRACTION set is a real 96 mm Hogback inboard on
-        // its own axle — narrower AND smaller in the radius, so the two read as two different
-        // parts rather than as one fat wheel. `butterflyTank` decides which one is down — the
-        // sync does that, so a preview shows the spawn default (mecanum down).
+        // the MECANUM set is the corner set; the TRACTION set is a real Hogback inboard on its own
+        // axle — narrower AND smaller in the radius, so the two read as two different parts rather
+        // than as one fat wheel. `butterflyTank` decides which one is down — the sync does that, so
+        // a preview shows the spawn default (mecanum down).
         out.roller.push({ node: wheel, z: part.r });
-        const tPart = BB_WHEEL_PARTS.traction;
-        const tx = x - Math.sign(x) * (part.r + tPart.r + 0.5);
-        const tw = buildDriveWheel('traction', detail, accent);
-        tw.name = `robot:wheel:tank:${out.traction.length}`;
-        tw.position.set(tx, sy * wheelY, tPart.r + BB_BUTTERFLY_LIFT);
-        out.nodes.push(tw);
-        out.traction.push({ node: tw, z: tPart.r });
-        out.spin.push({ node: tw, r: tPart.r });
+        const t = butterflyTraction(spec, x);
+        if (t) {
+          const tPart = BB_WHEEL_PARTS[t.kind];
+          const tw = buildDriveWheel(t.kind, detail, accent);
+          tw.name = `robot:wheel:tank:${out.traction.length}`;
+          tw.position.set(t.x, sy * wheelY, tPart.r + BB_BUTTERFLY_LIFT);
+          out.nodes.push(tw);
+          out.traction.push({ node: tw, z: tPart.r });
+          out.spin.push({ node: tw, r: tPart.r });
+        }
       }
     }
   }
@@ -1241,6 +1310,29 @@ export function buildWheels(spec: RobotSpec, accent: string = TREAD, detail: BbW
  *  still visible from straight above through the pocket it does not cover. See `buildFrame`. */
 const BB_TOP_CAP_T = 0.2;
 const BB_TOP_CAP_W = BB_PLATE_T + 0.5;
+/** the full-footprint deck's thickness (in); its top is `BB_DECK_Z` */
+const BB_DECK_T = 0.26;
+
+/**
+ * THE TOP CAPS' PIECES along x, left side then right, with their y-band: each cap GIVES WAY to
+ * whatever stands on it (`bbChassisKeepOuts`). An edge or corner turret's ring reaches the frame
+ * line, so a cap run the full length cut through the ring on 1,297 of the 2,381 builds swept; a
+ * Box Tube pivot on that side does the same.
+ */
+export function bbTopCapSegments(spec: RobotSpec): { a0: number; a1: number }[][] {
+  const hl = spec.length / 2;
+  const keep = [...bbChassisKeepOuts(spec), ...intakeArmKeepOuts(spec)];
+  return ([1, -1] as const).map((sy) => {
+    return bbRailSegments(-hl, hl, bbRailGaps(keep, 'x', bbTopCapBand(spec, sy), BB_TOP_CAP_Z));
+  });
+}
+/** a top cap's y-band on side `sy` (`+1` left) */
+export function bbTopCapBand(spec: Pick<RobotSpec, 'width'>, sy: 1 | -1): [number, number] {
+  const hw = spec.width / 2;
+  return sy > 0 ? [hw - BB_TOP_CAP_W, hw] : [-hw, -hw + BB_TOP_CAP_W];
+}
+/** the top caps' height band */
+export const BB_TOP_CAP_Z: readonly [number, number] = [BB_PLATE_H, BB_PLATE_H + BB_TOP_CAP_T];
 
 /**
  * THE FRAME — side plates, cross members, belly pan, deck, tower. Two merged meshes: the
@@ -1278,9 +1370,10 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   const outerY = hw - BB_PLATE_T / 2;
   const innerY = hw - BB_PLATE_T * 1.5 - BB_PLATE_GAP;
   const holes = Math.max(2, Math.round(spec.length / 4.5));
+  const capSegs = bbTopCapSegments(spec);
   // NOT KEYED ON `heightIn`: nothing in the frame depends on it any more, so two builds that
   // differ only in declared height share this buffer.
-  const key = `${spec.length}|${spec.width}|${spec.drivetrain}`;
+  const key = `${spec.length}|${spec.width}|${spec.drivetrain}|${capSegs.map((s) => s.map((g) => `${g.a0.toFixed(3)}:${g.a1.toFixed(3)}`).join(',')).join('/')}`;
 
   // ⚠️ A SWERVE CHASSIS HAS NO WHEEL CHANNEL. The pods bolt UNDER a box frame at `BB_POD_INSET`
   // from each face, and a 1.5-in-wide pod wheel there runs straight through an inner side plate
@@ -1295,16 +1388,22 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     const parts: THREE.BufferGeometry[] = [];
     for (const sy of [1, -1] as const) {
       for (const y of plateYs) {
-        const p = platePlane(spec.length, BB_PLATE_H, BB_PLATE_T, holes);
+        // the INNER plate stops a plate's thickness short of each end: run to ±hl, its end face
+        // was in the plane of a full END PLATE's outer face (`buildEndPlate`), which z-fights once
+        // the two carry different surface detail (the physical-materials tier)
+        const inner = y !== outerY;
+        const p = platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, BB_PLATE_H, BB_PLATE_T, holes);
         p.translate(0, sy * y, BB_PLATE_H / 2);
         parts.push(p);
       }
       // THE TOP CAP — lying ON that side's plate, the one perimeter surface a mechanism never
       // stands on, so a top-down view always has the colour somewhere even on a robot whose deck
       // is covered end to end.
-      parts.push(
-        boxAt(spec.length, BB_TOP_CAP_W, BB_TOP_CAP_T, 0, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2),
-      );
+      for (const sg of capSegs[sy > 0 ? 0 : 1]) {
+        parts.push(
+          boxAt(sg.a1 - sg.a0, BB_TOP_CAP_W, BB_TOP_CAP_T, (sg.a0 + sg.a1) / 2, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2),
+        );
+      }
     }
     // THE DECK — the top plate mechanisms bolt to, and the biggest surface a top-down camera sees.
     // ⚠️ IT COVERS THE WHOLE CHASSIS, WHEELS INCLUDED (owner, 2026-09-21: "make the robot's chassis
@@ -1312,7 +1411,7 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     // INSET — `length − 2.47` by the inner channel — to avoid "one flat slab", which left the wheel
     // pockets open from above; that ruling is reversed. Every wheel and pod already lives under
     // `BB_DECK_Z − 0.26` (the pod stack is derived from it), so nothing pokes through the lid.
-    parts.push(boxAt(spec.length, spec.width, 0.26, 0, 0, BB_DECK_Z - 0.13));
+    parts.push(boxAt(spec.length, spec.width, BB_DECK_T, 0, 0, BB_DECK_Z - BB_DECK_T / 2));
     return parts;
   });
   const frame = framePart(`frame:${key}`, () => {
@@ -1325,7 +1424,8 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     // z-fighting on both planes. One plate thickness in and one deck thickness down shares no face.
     for (const sx of [1, -1] as const) {
       parts.push(
-        boxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_PLATE_T - BB_RAIL_T / 2), 0, BB_DECK_Z - 0.26 - BB_RAIL_T / 2),
+        // (and `BB_PROUD` under the deck's underside: a swerve pod's slew plate tops out there too)
+        boxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_PLATE_T - BB_RAIL_T / 2), 0, BB_DECK_Z - BB_DECK_T - BB_PROUD - BB_RAIL_T / 2),
       );
     }
     // BELLY PAN — thin, low, spanning the inner channel
@@ -1337,7 +1437,7 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   skinMesh.name = 'robot:frame:skin';
   const frameMesh = new THREE.Mesh(frame, solidMat(ALU_DK, 0.45, 0.4));
   frameMesh.name = 'robot:frame:rails';
-  return [cast(skinMesh), cast(frameMesh)];
+  return [cast(skinMesh, 'fill'), cast(frameMesh, 'dark')];
 }
 
 /**
@@ -1409,9 +1509,14 @@ function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number
   const mat = solidMat(chassisFill(spec.chassisColor), 0.55, 0.15);
   const cx = sign * (hl - BB_PLATE_T / 2); // outer face flush with ±hl — never past it
 
+  // ⚠️ UP TO THE DECK'S UNDERSIDE, NOT TO `BB_PLATE_H`. The full-footprint deck already closes the
+  // top `BB_DECK_T` of the end, and a plate run up through it put its outer face and its top face
+  // in the planes of the deck's own end and top faces: z-fighting, visible once the two carry
+  // different surface detail (the physical-materials tier).
+  const top = BB_PLATE_H - BB_DECK_T;
   if (mouthHalf === undefined) {
-    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, (hw - BB_PLATE_T) * 2, BB_PLATE_H), mat));
-    mesh.position.set(cx, 0, BB_PLATE_H / 2);
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, (hw - BB_PLATE_T) * 2, top), mat), 'fill');
+    mesh.position.set(cx, 0, top / 2);
     return [mesh];
   }
 
@@ -1423,8 +1528,8 @@ function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number
     const width = Math.max(0.1, Math.abs(outerFace) - innerMag);
     const cy = (s * (Math.abs(outerFace) + innerMag)) / 2;
     const z0 = 0; // floor to plate height — see the header: the frame face is solid already
-    const h = BB_PLATE_H - z0;
-    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, width, h), mat));
+    const h = top - z0;
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, width, h), mat), 'fill');
     mesh.position.set(cx, cy, z0 + h / 2);
     out.push(mesh);
   }
@@ -1764,6 +1869,56 @@ const BB_ROLLER_HUB_R = 0.75;
 const BB_ROLLER_FLAP_R = 2.0;
 /** hub bottom `BB3_MOUTH_SLOT_Z + 0.15`, i.e. a bolt's clearance above the open pocket. */
 const BB_ROLLER_Z = BB3_MOUTH_SLOT_Z + BB_ROLLER_HUB_R + 0.15;
+
+/**
+ * THE INTAKE ARMS AS KEEP-OUTS, for the 3D chassis dressing (the top caps and the end bars) —
+ * `buildIntake`'s own arm geometry: the bottom rail, the diagonal rising from it to the axle boss,
+ * and the boss post, cut into 0.25-in slices along the arm so each slice carries the arm's real
+ * height there (the diagonal is under the deck inside the frame and above it outside). A side
+ * mouth's arms cross the end bars' ends and the side caps near the corners (381–462 and 594 of
+ * 2,381 builds swept); a front or back mouth's pass under the caps and give nothing.
+ */
+function intakeArmKeepOuts(spec: RobotSpec): BbKeepOut[] {
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const out: BbKeepOut[] = [];
+  const armT = INTAKE_RAIL_T;
+  const railZ = BB3_MOUTH_SLOT_Z + 0.25;
+  const bossTop = BB_ROLLER_Z + 0.6;
+  for (const m of bbMouths(spec)) {
+    const f = bbMouthFrame(m, hl, hw);
+    const tip = f.depth;
+    const armX0 = f.rail - 1.1;
+    const armLen = tip - armX0;
+    const outer = tip - BB_ROLLER_FLAP_R;
+    // the frame's own orientation, exact for the four edges
+    const c = Math.round(Math.cos(f.rot));
+    const s = Math.round(Math.sin(f.rot));
+    const toRobot = (x: number, y: number): [number, number] => [f.ox + x * c - y * s, f.oy + x * s + y * c];
+    for (const sg of [1, -1] as const) {
+      const y = sg * (f.half - BB_INTAKE_ARM_INSET - armT / 2);
+      const step = 0.25;
+      for (let x = armX0; x < tip - 1e-9; x += step) {
+        const x1 = Math.min(tip, x + step);
+        // the diagonal's top over this slice (its far end), plus half its 0.34 thickness
+        let top = railZ + ((x1 - armX0) / armLen) * (bossTop - railZ) + 0.2;
+        if (x1 > outer - 0.55 && x < outer + 0.55) top = Math.max(top, bossTop);
+        const [ax, ay] = toRobot(x, y - armT / 2);
+        const [bx, by] = toRobot(x1, y + armT / 2);
+        out.push({
+          what: 'intakeArm',
+          cx: (ax + bx) / 2,
+          cy: (ay + by) / 2,
+          hx: Math.abs(bx - ax) / 2,
+          hy: Math.abs(by - ay) / 2,
+          z0: BB3_MOUTH_SLOT_Z,
+          z1: top,
+        });
+      }
+    }
+  }
+  return out;
+}
 /** how many compliant flaps go round the hub. */
 const BB_ROLLER_FLAPS = 3;
 /** the flaps' thickness (in) — half of it is what the deflection law has to clear the slot by. */
@@ -2004,7 +2159,7 @@ export function buildIntake(
     for (const s of [1, -1] as const) {
       const arm = new THREE.Mesh(armGeo, solidMat(ALU, 0.45, 0.35));
       arm.position.set(0, s * (f.half - BB_INTAKE_ARM_INSET - armT / 2), 0);
-      g.add(cast(arm));
+      g.add(cast(arm, 'alu'));
     }
 
     /**
@@ -2032,7 +2187,7 @@ export function buildIntake(
     ]);
     const brace = new THREE.Mesh(braceGeo, solidMat(ALU, 0.45, 0.35));
     brace.name = `robot:intake:brace:${m.edge}`;
-    g.add(cast(brace));
+    g.add(cast(brace, 'alu'));
 
     // the `ramp`'s own rails sit inboard of the arms (`railY` below); its barrel is shortened to
     // pass between them with the stated clearance. Every other kind keeps the full-width barrel
@@ -2061,12 +2216,12 @@ export function buildIntake(
     const roll = new THREE.Group();
     roll.name = `robot:sweeper:${m.edge}`;
     roll.position.set(outer, 0, BB_ROLLER_Z);
-    const hubMesh = cast(new THREE.Mesh(hubGeo, rollerMat));
+    const hubMesh = cast(new THREE.Mesh(hubGeo, rollerMat), 'rubber');
     roll.add(hubMesh);
     const flaps: THREE.Object3D[] = [];
     for (let i = 0; i < BB_ROLLER_FLAPS; i++) {
       const flap = new THREE.Group();
-      flap.add(cast(new THREE.Mesh(flapGeo, rollerMat)));
+      flap.add(cast(new THREE.Mesh(flapGeo, rollerMat), 'rubber'));
       roll.add(flap);
       flaps.push(flap);
     }
@@ -2080,7 +2235,7 @@ export function buildIntake(
       t.name = `robot:transfer:${m.edge}`;
       t.scale.set(0.62, 1, 0.62);
       t.position.set(inner, 0, BB_ROLLER_Z + 0.9);
-      g.add(cast(t));
+      g.add(cast(t, 'rubber'));
       rollers.push({ hub: t, flaps: [], phase: 0 });
       // the BELTS down the inside of each arm, linking the two shafts
       for (const s of [1, -1] as const) {
@@ -2089,7 +2244,7 @@ export function buildIntake(
           solidMat(tint3d(SWEEPER, accent, 0.35), 0.8, 0),
         );
         belt.position.set((outer + inner) / 2, s * (f.half - 0.45), BB_ROLLER_Z + 0.45);
-        g.add(belt);
+        g.add(tag(belt, 'belt'));
       }
     }
 
@@ -2117,11 +2272,12 @@ export function buildIntake(
       // RENDER lane asserts the two agree rather than trusting the copy.
       const armY = bbSideRollerYokeY(f.half);
       const wheelX = tip + BB_SIDE_ROLLER_OUT;
+      const wheelV = bbSideRollerOffsets(spec, mouthAxes(m, hl, hw));
       const wheelZ0 = BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2;
       const wheelZ1 = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
       const backX = wheelX - BB_SIDE_ROLLER_YOKE_BACK;
       for (const s of [1, -1] as const) {
-        const rollerY = s * bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the arm plane
+        const rollerY = s * wheelV[s === 1 ? 0 : 1]; // ±: as wide as the chassis, inboard of the arm plane (an IMPORT's inside its hull)
         const armOuter = s * (armY + armT / 2); // the arm rail's own outboard face
         // ONE yoke strap: a narrow bar from the arm rail to the axle, ending in the bearing BOSS.
         // Built per (z, side) rather than cached across them: `rollerY` and `armY` differ by side
@@ -2152,16 +2308,17 @@ export function buildIntake(
           ['top', wheelZ1],
           ['bot', wheelZ0 - BB_SIDE_ROLLER_PLATE_T],
         ] as const) {
-          const yoke = cast(new THREE.Mesh(plate(z0), solidMat(ALU, 0.45, 0.35)));
+          const yoke = cast(new THREE.Mesh(plate(z0), solidMat(ALU, 0.45, 0.35)), 'alu');
           yoke.name = `robot:sideroller:yoke:${tag}:${m.edge}`;
           g.add(yoke);
         }
         // the DEAD AXLE the wheel turns on, strap to strap — what makes the pair read as a
-        // bearing block rather than two loose shelves.
-        const axle = new THREE.CylinderGeometry(0.17, 0.17, wheelZ1 - wheelZ0 + 2 * BB_SIDE_ROLLER_PLATE_T, 8);
+        // bearing block rather than two loose shelves. Proud of both straps, so its ends are not in
+        // the plane of the bosses' outer faces (z-fighting, dark on aluminium).
+        const axle = new THREE.CylinderGeometry(0.17, 0.17, wheelZ1 - wheelZ0 + 2 * BB_SIDE_ROLLER_PLATE_T + 2 * BB_PROUD, 8);
         axle.rotateX(Math.PI / 2);
         axle.translate(wheelX, rollerY, BB_SIDE_ROLLER_Z);
-        const axleMesh = cast(new THREE.Mesh(axle, solidMat(ALU_DK, 0.5, 0.5)));
+        const axleMesh = cast(new THREE.Mesh(axle, solidMat(ALU_DK, 0.5, 0.5)), 'dark');
         axleMesh.name = `robot:sideroller:axle:${m.edge}`;
         g.add(axleMesh);
         // the WEB tying the two straps together where they leave the arm — entirely BEHIND the
@@ -2169,15 +2326,15 @@ export function buildIntake(
         const webT = INTAKE_RAIL_T * 0.6;
         const webLen = Math.max(0.2, BB_SIDE_ROLLER_YOKE_BACK - BB_SIDE_ROLLER_R);
         const web = boxAt(webLen, webT, wheelZ1 - wheelZ0, backX + webLen / 2, armOuter - (s * webT) / 2, BB_SIDE_ROLLER_Z);
-        const webMesh = cast(new THREE.Mesh(web, solidMat(ALU, 0.45, 0.35)));
+        const webMesh = cast(new THREE.Mesh(web, solidMat(ALU, 0.45, 0.35)), 'alu');
         webMesh.name = `robot:sideroller:web:${m.edge}`;
         g.add(webMesh);
 
         // the WHEEL: hub + lugged tread, one group so the whole thing takes `rotation.z`
         const wheel = new THREE.Group();
         wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;
-        wheel.add(cast(new THREE.Mesh(sideRollerTreadGeometry(), rollerMat)));
-        wheel.add(cast(new THREE.Mesh(sideRollerHubGeometry(), solidMat(ALU, 0.5, 0.4))));
+        wheel.add(cast(new THREE.Mesh(sideRollerTreadGeometry(), rollerMat), 'rubber'));
+        wheel.add(cast(new THREE.Mesh(sideRollerHubGeometry(), solidMat(ALU, 0.5, 0.4)), 'alu'));
         wheel.position.set(wheelX, rollerY, BB_SIDE_ROLLER_Z);
         g.add(wheel);
         // FUNNEL INWARD: the wheel's leading face (local +x, where an oncoming POLLEN first
@@ -2210,7 +2367,7 @@ export function buildIntake(
         boxAt(BB_RAMP_RAIL_X, BB_RAMP_RAIL_Y, BB_RAMP_L, 0, 0, BB_RAMP_L / 2),
       ]);
       for (const s of [1, -1] as const) {
-        const rail = cast(new THREE.Mesh(railGeo, solidMat(ALU, 0.5, 0.3)));
+        const rail = cast(new THREE.Mesh(railGeo, solidMat(ALU, 0.5, 0.3)), 'alu');
         rail.name = `robot:ramp:rail:${m.edge}:${s === 1 ? 'l' : 'r'}`;
         rail.position.set(0, s * railY, 0);
         pivot.add(rail);
@@ -2251,7 +2408,7 @@ export function buildIntake(
         const geo = framePart(`ramp:wedge:${tag}|${length.toFixed(2)}|${railY.toFixed(2)}`, () => [
           boxAt(length, railY * 2, BB_RAMP_WEDGE_THICK * 2, 0, 0, 0),
         ]);
-        const mesh = cast(new THREE.Mesh(geo, solidMat(ALU, 0.5, 0.3)));
+        const mesh = cast(new THREE.Mesh(geo, solidMat(ALU, 0.5, 0.3)), 'alu');
         mesh.name = `robot:ramp:bar:${m.edge}:${tag}`;
         mesh.position.set(lx, 0, lz);
         mesh.rotation.y = worldAngle - thetaFull;
@@ -2273,7 +2430,7 @@ export function buildIntake(
         ),
       ]);
       for (const s of [1, -1] as const) {
-        const pb = cast(new THREE.Mesh(pivotBracketGeo, solidMat(ALU, 0.45, 0.35)));
+        const pb = cast(new THREE.Mesh(pivotBracketGeo, solidMat(ALU, 0.45, 0.35)), 'alu');
         pb.name = `robot:ramp:pivotbracket:${m.edge}`;
         pb.position.set(0, s * pivotArmY, 0);
         g.add(pb);
@@ -2579,7 +2736,7 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
   ]);
   const hood = new THREE.Mesh(hoodGeo, solidMat(TURRET_BARREL, 0.35, 0.55));
   hood.name = 'bb-turret-hood';
-  pitch.add(cast(hood));
+  pitch.add(cast(hood, 'dark'));
 
   // THE TWO CHEEKS — see the header. One merged part per side; the key carries the side, because
   // the two are mirror images and a shared buffer would put both on one.
@@ -2608,7 +2765,7 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
     // of with the arc it carries — which is the whole claim this bracket exists to make.
     const cheek = new THREE.Mesh(cheekGeo, solidMat(TURRET_BARREL, 0.4, 0.45));
     cheek.name = 'bb-turret-hood-cheek';
-    pitch.add(cast(cheek));
+    pitch.add(cast(cheek, 'dark'));
   }
 
   // THE MUZZLE, as a named empty at the hood's LIP — `pathR` straight up from the axle in this
@@ -2655,7 +2812,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   });
   const turretPlate = new THREE.Mesh(plateGeo, solidMat(ALU_DK, 0.45, 0.4));
   turretPlate.name = 'bb-turret-plate';
-  head.add(cast(turretPlate));
+  head.add(cast(turretPlate, 'dark'));
 
   // ── THE TWO SIDE PLATES — `sidePlateR`, sampled, with its four corners exact ───────────────
   // SOLID, not a band with a bore: a side plate is what the flywheel is JOURNALLED in, and the
@@ -2698,7 +2855,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
     plate.name = 'bb-turret-side-plate';
     // the geometry runs y ∈ [−t, 0], so this puts each plate's INNER face on the channel wall
     plate.position.y = s > 0 ? H.plateGap / 2 + BB_SHOOTER_PLATE_T : -H.plateGap / 2;
-    axle.add(cast(plate));
+    axle.add(cast(plate, 'alu'));
   }
 
   // ── THE FLYWHEEL — ONE WHEEL, CENTRED, ONE BEARING BLOCK ABOVE THE TURRET PLATE ───────────
@@ -2715,7 +2872,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   const fwW = H.elemR * 2 * BB_FLYWHEEL_W_FRAC;
   const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2));
   wheel.name = 'bb-turret-flywheel';
-  axle.add(cast(wheel));
+  axle.add(cast(wheel, 'rubber'));
   // the HUB inside it, and a spacer collar each side — a wheel on a shaft rather than a puck
   const hubGeo = framePart(`flywheelHub:${which}`, () => {
     const parts: THREE.BufferGeometry[] = [
@@ -2728,7 +2885,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   });
   const hub = new THREE.Mesh(hubGeo, solidMat(ALU_DK, 0.35, 0.6));
   hub.name = 'bb-turret-flywheel-hub';
-  axle.add(cast(hub));
+  axle.add(cast(hub, 'dark'));
   const beltY = H.plateGap / 2 + BB_SHOOTER_PLATE_T + BB_BELT_CLEAR + BB_BELT_W / 2;
   const shaftIn = -(H.plateGap / 2 + BB_SHOOTER_PLATE_T + 0.15);
   const shaftOut = beltY + BB_BELT_W / 2 + 0.1;
@@ -2746,7 +2903,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   );
   const braces = new THREE.Mesh(braceGeo, solidMat(ALU, 0.35, 0.55));
   braces.name = 'bb-turret-brace';
-  axle.add(cast(braces));
+  axle.add(cast(braces, 'alu'));
 
   // ── THE FEED THROAT — THE BACK OF THE CHANNEL THE ELEMENT COMES UP, AND THE REAR TIE ──────
   // ⚠️ **THIS IS WHAT REPLACES THE "WEIRD FLAP IN THE BACK", REPORTED TWICE.** The first answer
@@ -2777,7 +2934,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   ]);
   const throat = new THREE.Mesh(throatGeo, solidMat(ALU, 0.4, 0.45));
   throat.name = 'bb-turret-throat';
-  axle.add(cast(throat));
+  axle.add(cast(throat, 'alu'));
 
   // ── THE MOTOR, BEHIND THE HOOD, FACE-BOLTED TO THE DRIVE-SIDE PLATE ───────────────────────
   // ⚠️ OWNER ITEM (a): "the motor should be on the other side of the flywheel, behind the hood."
@@ -2804,7 +2961,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   ]);
   const motor = new THREE.Mesh(motorGeo, solidMat(MOTOR, 0.5, 0.4));
   motor.name = 'bb-turret-motor';
-  axle.add(cast(motor));
+  axle.add(cast(motor, 'dark'));
 
   // ── THE TWO SHAFTS — the flywheel's, which runs right through and out the belt side to carry
   // its pulley, and the motor's output, which reaches out to meet it. Both cross a side plate
@@ -2818,7 +2975,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   ]);
   const shaft = new THREE.Mesh(shaftGeo, solidMat(ALU, 0.3, 0.7));
   shaft.name = 'bb-turret-shaft';
-  axle.add(cast(shaft));
+  axle.add(cast(shaft, 'steel'));
 
   // THE BELT — two pulleys and the two straight tangent runs between them, merged into one part,
   // in a plane `BB_BELT_CLEAR` outboard of the side plate's outer face. A `TubeGeometry` over a
@@ -2853,7 +3010,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   });
   const belt = new THREE.Mesh(beltGeo, solidMat(ALU_DK, 0.55, 0.3));
   belt.name = 'bb-turret-belt';
-  axle.add(cast(belt));
+  axle.add(cast(belt, 'belt'));
 }
 
 /**
@@ -2903,7 +3060,7 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
   });
   const ringMesh = new THREE.Mesh(ringGeo, solidMat(TURRET_RING, 0.4, 0.5));
   ringMesh.name = 'bb-turret-ring';
-  group.add(cast(ringMesh));
+  group.add(cast(ringMesh, 'dark'));
 
   // ⚠️ THE YAW NODE'S ORIGIN IS THE ROTATION AXIS, AT DECK HEIGHT, AND IT USED TO BE THE AXLE.
   // It has to be the axis: `rotation.z` turns this node's children about its own origin, so with
@@ -2928,6 +3085,52 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
   group.userData.head = head;
   group.userData.axle = axle;
   group.userData.pitch = pitch;
+  return group;
+}
+
+/**
+ * A FIXED SHOOTER — the turret's own head with no slew ring under it, bolted at its edge cell
+ * (`turretLocal`, pulled inboard exactly as a turret there is), facing straight out of that edge
+ * (`bbFixedFacing`) at the build's hood angle (`bbFixedHood`). The SAME head on the same axle, so
+ * its drawn lip is the sim's release (`bbFixedLocal` reads `bbMuzzleLocal` at that pitch): one
+ * muzzle, two drawings, the turret's rule. Where the ring was, a square riser of the ring's height
+ * carries it, so the head stands where a turret's does. Nothing on it moves, so `sync` never
+ * poses it — it is not in `turretHeads` / `turretPitches`.
+ *
+ * `lip` (an IMPORT) puts the head so its muzzle lands on the placed lip at the placed height.
+ */
+export function buildFixedShooter(spec: RobotSpec, lip?: { x: number; y: number; z: number }): THREE.Group {
+  const group = new THREE.Group();
+  const H = bbHead(0);
+  const face = bbFixedFacing(spec);
+  const hood = bbFixedHood(spec);
+  const muzzle = bbMuzzleLocal(hood, 0);
+  group.name = 'bb-fixed-shooter';
+  // the axis (`bbFixedAxisLocal`, the 2D sprite's too): an import's sits `back` in front of the
+  // placed lip along the facing, and the whole head rides up or down so its lip is at the placed
+  // height, the placeholder turret's own bargain
+  const axis = bbFixedAxisLocal(spec);
+  group.position.set(axis.x, axis.y, lip ? BB_DECK_Z + (lip.z - muzzle.z) : BB_DECK_Z);
+  const ring = turretRadius(spec);
+  const side = Math.max(1.2, ring * 1.3);
+  const riserGeo = framePart(`fixedRiser:${side.toFixed(4)}`, () => [boxAt(side, side, BB_TURRET_RING_H, 0, 0, BB_TURRET_RING_H / 2)]);
+  const riser = new THREE.Mesh(riserGeo, solidMat(TURRET_RING, 0.4, 0.5));
+  riser.name = 'bb-fixed-riser';
+  riser.rotation.z = face;
+  group.add(cast(riser, 'dark'));
+  const head = new THREE.Group();
+  head.name = 'bb-fixed-head';
+  head.rotation.z = face;
+  const axle = new THREE.Group();
+  axle.name = 'bb-fixed-axle';
+  axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);
+  addFixedShooter(head, axle, H, 0);
+  const pitch = buildHoodNode(H, 0);
+  pitch.name = 'bb-fixed-pitch';
+  pitch.rotation.y = -hood;
+  axle.add(pitch);
+  head.add(axle);
+  group.add(head);
   return group;
 }
 
@@ -2967,21 +3170,31 @@ const DUMP_THROW_ANGLE = 1.05;
  * posts that carry it stay on the chassis. The per-frame sync rotates that one node by
  * `dumpThrowPhase`, and nothing else about the dumper moves.
  */
-function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
+function buildDumper(
+  spec: RobotSpec,
+  launcher: BbLauncherSpec,
+  /** an IMPORT's release line in the firing edge's frame (`dumperFrame`, the sim's
+   *  `bbImportLaunchLine`) and its lip height (`bbDumpZ`); absent is the standard edge and tray */
+  at?: { dist: number; span: number; lateral: number; z: number; room?: number },
+): THREE.Group {
   const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
-  const { dist, span } = edgeGeom(spec, edge);
+  const { dist, span } = at ?? edgeGeom(spec, edge);
+  const lipZ = at ? at.z : BB_LAUNCH_Z0;
   const group = new THREE.Group();
   group.name = 'robot:dumper';
   group.rotation.z = EDGE_ANGLE[edge];
+  // the line's centre across the edge, in the robot frame (0 on a standard robot)
+  if (at) group.position.set(EDGE_PERP[edge].x * at.lateral, EDGE_PERP[edge].y * at.lateral, 0);
   const half = span * 0.86;
-  const pivot = dist - Math.min(8, dist * 0.8);
+  // an IMPORT's tray reaches back no further than its hull does behind the placed lip
+  const pivot = dist - (at?.room !== undefined ? Math.max(2, Math.min(8, at.room * 0.8)) : Math.min(8, dist * 0.8));
   const lip = dist - 0.7;
   const len = lip - pivot;
-  const shaftZ = BB_LAUNCH_Z0 - 2.3;
+  const shaftZ = lipZ - 2.3;
   const mat = solidMat(DUMPER_BUCKET, 0.5, 0.3);
 
   // the FIXED half: the shaft and the posts that stand it off the deck.
-  const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}`, () => {
+  const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}${at ? `|${shaftZ.toFixed(3)}` : ''}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     const shaft = new THREE.CylinderGeometry(0.34, 0.34, half * 2, 8);
     shaft.translate(pivot, 0, shaftZ);
@@ -2991,7 +3204,7 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
     }
     return parts;
   });
-  group.add(cast(new THREE.Mesh(mount, mat)));
+  group.add(cast(new THREE.Mesh(mount, mat), 'alu'));
 
   // the SWINGING half, built about the shaft so the node's own rotation IS the throw.
   const arm = new THREE.Group();
@@ -2999,7 +3212,7 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
   arm.position.set(pivot, 0, shaftZ);
   const tray = framePart(`dumper:${len.toFixed(2)}|${half.toFixed(2)}`, () => {
     const parts: THREE.BufferGeometry[] = [];
-    const dz = BB_LAUNCH_Z0 - shaftZ;
+    const dz = lipZ - shaftZ;
     // floor, tilted up toward the lip
     const floor = new THREE.BoxGeometry(len, half * 2, 0.22);
     floor.rotateY(-0.22);
@@ -3022,7 +3235,7 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
     }
     return parts;
   });
-  arm.add(cast(new THREE.Mesh(tray, mat)));
+  arm.add(cast(new THREE.Mesh(tray, mat), 'alu'));
   group.add(arm);
   group.userData.dumpArm = arm;
   return group;
@@ -3055,6 +3268,9 @@ export function buildRobotGroup(
    *  (`bbWheelDetail`), and the match's `sync` rebuilds a group when it changes. */
   detail: BbWheelDetail = 'high',
 ): THREE.Group {
+  // AN IMPORTED ROBOT is built by the same generator, from its own parts (`buildImportedRobot`
+  // below), so the match and the builder preview still share one function and one key
+  if (spec.imported) return buildImportedRobot(spec, spec.imported, id, alliance, detail);
   const group = new THREE.Group();
   group.name = `robot:${id}`;
   const launcher = bbLauncherOf(spec, 0);
@@ -3096,7 +3312,7 @@ export function buildRobotGroup(
     const decal = new THREE.Mesh(new THREE.BoxGeometry(deckL, deckW, 0.02), decalMat);
     decal.name = `robot:${id}:decal`;
     decal.position.set(0, 0, BB_DECK_Z + 0.02);
-    group.add(decal);
+    group.add(tag(decal, 'vinyl'));
   }
 
   // THE TWO ROBOT SIGNS (R401: "Minimum of two ROBOT SIGNS per ROBOT … on opposite or adjacent
@@ -3119,13 +3335,13 @@ export function buildRobotGroup(
     // clearance top and bottom on every chassis this builder can make.
     sign.position.set(0, side * (spec.width / 2 + 0.05), BB_PLATE_H * 0.5);
     sign.quaternion.copy(bbRobotSignOrientation(side));
-    group.add(sign);
+    group.add(tag(sign, 'vinyl'));
     if (plateGeo && plateMat) {
       const plate = new THREE.Mesh(plateGeo, plateMat);
       plate.name = `robot:${id}:plate:${where}`;
       plate.position.set(0, side * (spec.width / 2 + 0.05 + 0.02), BB_PLATE_H * 0.5);
       plate.quaternion.copy(bbRobotSignOrientation(side));
-      group.add(plate);
+      group.add(tag(plate, cosm.plate === 'bold' ? 'fill' : 'alu'));
     }
   }
 
@@ -3155,6 +3371,8 @@ export function buildRobotGroup(
     const d = buildDumper(spec, launcher);
     group.add(d);
     group.userData.dumpArm = d.userData.dumpArm;
+  } else if (launcher.kind === 'fixed') {
+    group.add(buildFixedShooter(spec));
   }
   // A BUILT ROBOT'S HOOD STARTS WHERE A SPAWNED ONE DOES — `BB_TURRET_PITCH_REST`, an elevation the
   // aim solve actually produces. The match's `sync` overwrites it on its first frame; the builder
@@ -3171,7 +3389,290 @@ export function buildRobotGroup(
     group.userData.tube = tube.rig;
   }
 
+  if (heads.length) restTurretHeads(group, heads, [...intake.nodes, ...group.children.filter((c) => c.name === 'bb-turret' || c.name.endsWith(':tube'))]);
   return group;
+}
+
+/**
+ * AN IMPORTED ROBOT, built by the ONE generator (`docs/robot-import-plan.md` §1; the parts specific
+ * to an import are in `renderImported.ts`, which this file imports and which imports nothing back).
+ *
+ * WITH ITS MESH on this device (the owner's own robot, or one whose GLB was lent to
+ * `importedAssets`): the mesh, in the robot frame, plus only what the mesh cannot show — the two
+ * ROBOT SIGNS (the alliance, R401) on its flanks, and for a turreted launcher an AIM SIGHT on the
+ * nodes `sync` already poses. Nothing of the generator's own hardware: that would be a second robot
+ * drawn through the first.
+ *
+ * WITHOUT IT (another player's robot, or the parse still running): a PLACEHOLDER — the hull (or
+ * each `bands` prism) extruded solid to the deck in the chassis fill, the envelope above the deck
+ * as an open tower, the wheels at `importedWheels`, the front marks, the signs, and this file's
+ * own intake / launcher / Box Tube where the accessors put them, so the build reads the way a
+ * standard one does and a remote player still sees where it intakes and aims from. The `userData`
+ * handles are the standard ones, so `sync` animates the placeholder's rollers, pods and turrets
+ * with no import branch of its own.
+ */
+function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, alliance: Alliance, detail: BbWheelDetail): THREE.Group {
+  const group = new THREE.Group();
+  group.name = `robot:${id}`;
+  const launcher = bbLauncherOf(spec, 0);
+  const lift = bbLiftOf(spec);
+  const cosm = clampCosmetics(spec);
+  const accent = accentFill(cosm.accent, spec.chassisColor);
+  const fill = solidMat(chassisFill(spec.chassisColor), 0.55, 0.15);
+  const dark = solidMat(ALU_DK, 0.5, 0.3);
+  const deckZ = importedDeckZ(imp);
+  group.userData.launcher = launcher;
+  group.userData.importedId = imp.id;
+
+  const mesh = cloneImportedMesh(spec);
+  const heads: THREE.Group[] = [];
+  const pitches: THREE.Group[] = [];
+  if (mesh) {
+    mesh.name = `robot:${id}:mesh`;
+    group.add(mesh);
+    group.userData.importedMesh = true;
+    // ITS OWN MOVING PARTS (wheels, rollers, flywheels, turret, ramp), posed by `sync` from the same
+    // state the standard parts read
+    group.userData.importMotion = importedMotionNodes(mesh);
+    if (bbIsTurreted(launcher)) {
+      const mounts = launcher.kind === 'twinturret' && launcher.mount2 ? [launcher.mount, launcher.mount2] : [launcher.mount];
+      mounts.forEach((m, i) => {
+        // on the SIM's muzzle: the placed axle height and this head's own dimensions
+        const which: 0 | 1 = i === 0 ? 0 : 1;
+        const sight = buildAimSight(dark, turretLocal(spec, m), bbImportTurretAxleZ(spec, which), bbHead(which));
+        sight.pitch.rotation.y = -BB_TURRET_PITCH_REST; // a spawned head's pitch, until `sync` poses it
+        sight.node.name = `robot:${id}:aim:${i}`;
+        for (const m2 of sight.meshes) cast(m2, 'dark');
+        group.add(sight.node);
+        heads.push(sight.head);
+        pitches.push(sight.pitch);
+      });
+    }
+  } else {
+    // ── the PLACEHOLDER BODY: solid to the deck, an open tower above it (`renderImported.ts`) ──
+    for (const part of importedBodyGeometries(imp)) {
+      const m = part.kind === 'hull' ? cast(new THREE.Mesh(part.geometry, fill), 'fill') : cast(new THREE.Mesh(part.geometry, dark), 'dark');
+      m.name = `robot:${id}:${part.kind}:${part.index}`;
+      group.add(m);
+    }
+
+    // the WHEELS at the import's own contact points (FL, FR, BL, BR — `moduleAngles`' order)
+    const pts = importedWheels(imp);
+    const mx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const my = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    const kind = wheelKindOf(spec.drivetrain);
+    const part = BB_WHEEL_PARTS[kind];
+    const pods: THREE.Group[] = [];
+    const spin: BbSpinWheel[] = [];
+    pts.forEach((p, i) => {
+      if (spec.drivetrain === 'swerve') {
+        const pod = buildSwervePod(accent, detail);
+        pod.name = `robot:pod:${i}`;
+        pod.position.set(p.x, p.y, 0);
+        group.add(pod);
+        pods.push(pod);
+        const w = pod.getObjectByName('bb-pod-wheel');
+        if (w) spin.push({ node: w, r: BB_POD_WHEEL_R });
+        return;
+      }
+      const diag: 1 | -1 = (p.x - mx) * (p.y - my) >= 0 ? 1 : -1;
+      const wheel = buildDriveWheel(kind, detail, accent, diag);
+      wheel.name = `robot:wheel:${i}`;
+      wheel.position.set(p.x, p.y, part.r);
+      if (spec.drivetrain === 'xdrive') wheel.rotation.z = diag > 0 ? -Math.PI / 4 : Math.PI / 4;
+      group.add(wheel);
+      spin.push({ node: wheel, r: part.r });
+    });
+    group.userData.swervePods = pods;
+    group.userData.butterflySets = { traction: [], roller: [] };
+    group.userData.spinWheels = spin;
+
+    // WHICH END IS THE FRONT — `bbFrontMarks`' language, on the hull
+    const rings = bbHasHead(launcher)
+      ? [launcher.mount, ...(launcher.kind === 'twinturret' && launcher.mount2 ? [launcher.mount2] : [])].map((m) => ({ ...turretLocal(spec, m), r: turretRadius(spec) }))
+      : [];
+    const marks = importedFrontMarkGeometries(imp.hull, deckZ, Math.min(BB_END_BAR_H, 0.9), BB_FRONT_ARROW_T, rings);
+    if (marks.bar) {
+      const bar = cast(new THREE.Mesh(marks.bar, frontBarMat()), 'paint');
+      bar.name = `robot:${id}:frontbar`;
+      group.add(bar);
+    }
+    const arrow = cast(new THREE.Mesh(marks.arrow, frontBarMat()), 'paint');
+    arrow.name = `robot:${id}:arrow`;
+    group.add(arrow);
+
+    // THE MECHANISMS, where the accessors put them — the standard builders, unchanged
+    const intake = buildIntake(spec, accent);
+    for (const n of intake.nodes) group.add(n);
+    group.userData.intakeRollers = intake.rollers;
+    group.userData.sideRollers = intake.sideRollers;
+    group.userData.rampPivots = intake.rampPivots;
+    // ...each turret at its placed axle height (`bbImportTurretAxleZ`), so its drawn lip is the
+    // sim's muzzle; the dumper on the sim's release line and lip (`bbDumperFrame`, `bbDumpZ`)
+    // (the standard head, ridden up or down whole so its own proportions hold)
+    if (bbIsTurreted(launcher)) {
+      const t0 = buildTurret(spec, launcher.mount, 0);
+      t0.position.z += bbImportTurretAxleZ(spec, 0) - BB_TURRET_AXLE_Z;
+      group.add(t0);
+      heads.push(t0.userData.head as THREE.Group);
+      pitches.push(t0.userData.pitch as THREE.Group);
+      if (launcher.kind === 'twinturret' && launcher.mount2) {
+        const t1 = buildTurret(spec, launcher.mount2, 1);
+        t1.position.z += bbImportTurretAxleZ(spec, 1) - BB_TURRET_AXLE_Z;
+        group.add(t1);
+        heads.push(t1.userData.head as THREE.Group);
+        pitches.push(t1.userData.pitch as THREE.Group);
+      }
+    } else if (launcher.kind === 'dumper') {
+      const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
+      const d = buildDumper(spec, launcher, { ...bbDumperFrame(spec, edge), z: bbDumpZ(spec) });
+      group.add(d);
+      group.userData.dumpArm = d.userData.dumpArm;
+    } else if (launcher.kind === 'fixed') {
+      // the FIXED shooter with its muzzle on the sim's release (`bbFixedLocal`: the placed lip)
+      group.add(buildFixedShooter(spec, bbFixedLocal(spec)));
+    }
+    for (const p of pitches) p.rotation.y = -BB_TURRET_PITCH_REST;
+    if (lift) {
+      const tube = buildBoxTube(spec, lift.mount, id);
+      group.add(tube.node);
+      group.userData.tubeStages = tube.stages;
+      group.userData.tube = tube.rig;
+    }
+  }
+  group.userData.turretHeads = heads;
+  group.userData.turretPitches = pitches;
+
+  // THE TWO ROBOT SIGNS (R401) — the alliance, on the hull's two flank-most edges, facing out
+  const signTex = getSignTexture(bbRobotSignText(spec), alliance);
+  const signGeo = new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H);
+  const signMat = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.6 });
+  for (const [side, where] of [[1, 'left'], [-1, 'right']] as const) {
+    const e = flankEdge(imp.hull, side);
+    if (!e) continue;
+    const sign = new THREE.Mesh(signGeo, signMat);
+    sign.name = `robot:${id}:sign:${where}`;
+    sign.position.set(e.mx + e.nx * 0.05, e.my + e.ny * 0.05, Math.min(BB_PLATE_H * 0.5, deckZ * 0.5));
+    // the axis-aligned sign, turned with the edge it stands on
+    const turn = Math.atan2(e.ny, e.nx) - (side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    sign.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), turn).multiply(bbRobotSignOrientation(side)));
+    group.add(tag(sign, 'vinyl'));
+  }
+  return group;
+}
+
+/** the hull edge whose outward normal points most toward `side` (+1 left, −1 right): its midpoint
+ * and normal — where a robot sign stands */
+function flankEdge(hull: readonly { x: number; y: number }[], side: 1 | -1): { mx: number; my: number; nx: number; ny: number } | null {
+  let best: { mx: number; my: number; nx: number; ny: number; s: number } | null = null;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i];
+    const b = hull[(i + 1) % hull.length];
+    const el = Math.hypot(b.x - a.x, b.y - a.y);
+    if (el < 1e-6) continue;
+    const nx = (b.y - a.y) / el;
+    const ny = -(b.x - a.x) / el;
+    // a long edge is preferred among the near-equally facing ones: a sign needs room
+    const s = ny * side + Math.min(el, BB_SIGN_W) * 0.01;
+    if (!best || s > best.s) best = { mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, nx, ny, s };
+  }
+  return best;
+}
+
+/** the rest yaws `restTurretHeads` tries, in order of preference: forward, square, back, diagonal */
+const TURRET_REST_YAWS = [0, Math.PI / 2, -Math.PI / 2, Math.PI, Math.PI / 4, -Math.PI / 4, (3 * Math.PI) / 4, (-3 * Math.PI) / 4];
+/** a head sample closer than this to another part counts as touching it (in) */
+const TURRET_REST_PAD = 0.1;
+/** the sample spacing over each head part (in), and the most samples along one of its edges. At
+ *  3 per edge, a head plate crossed an intake by 1–1.8 in between samples on ~300 double turrets. */
+const TURRET_REST_STEP = 0.75;
+const TURRET_REST_MAX_N = 10;
+
+/**
+ * ⚠️ **THE TURRETS' REST YAW, MEASURED OFF THE BUILT PARTS** (owner, 2026-09-28: "The robot itself
+ * has a lot of overlapping parts"). The match's `sync` aims every head from the sim on its first
+ * frame; the builder preview and the saved-robot thumbnails never sync, so this is the pose they
+ * show. Built facing +x, a head ran its plate and flywheel through the other turret on every
+ * front/back or corner pair of a DOUBLE turret, and through a Box Tube stage beside it; a fixed
+ * "side by side" rule traded those for heads over an intake or into a tube cell on the other side.
+ *
+ * So each candidate in `TURRET_REST_YAWS` is TRIED: both heads (a double turret's stay parallel)
+ * are set to it, and a grid (`TURRET_REST_STEP`) over every head mesh's own box is counted against the boxes of
+ * the parts it could hit — the intakes, the Box Tube and the other turret. The first yaw with the
+ * fewest samples inside one wins, so a build with nothing in the way keeps its heads forward.
+ */
+function restTurretHeads(group: THREE.Group, heads: readonly THREE.Group[], obstacles: readonly THREE.Object3D[]): void {
+  group.updateMatrixWorld(true);
+  const toGroup = group.matrixWorld.clone().invert();
+  const within = (o: THREE.Object3D, roots: readonly THREE.Object3D[]): boolean => {
+    for (let n: THREE.Object3D | null = o; n; n = n.parent) if (roots.includes(n)) return true;
+    return false;
+  };
+  const meshesOf = (roots: readonly THREE.Object3D[]): THREE.Mesh[] => {
+    const out: THREE.Mesh[] = [];
+    for (const r of roots) r.traverse((o) => (o as THREE.Mesh).isMesh && out.push(o as THREE.Mesh));
+    return out;
+  };
+  const boxOf = (m: THREE.Mesh): THREE.Box3 => {
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    return m.geometry.boundingBox!;
+  };
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const score = (): number => {
+    group.updateMatrixWorld(true);
+    let hits = 0;
+    for (const h of heads) {
+      // everything but THIS head's own turret — the other turret's head moves with the candidate
+      const own = h.parent!;
+      const boxes = meshesOf(obstacles)
+        .filter((o) => !within(o, [own]))
+        .map((o) => boxOf(o).clone().applyMatrix4(m.multiplyMatrices(toGroup, o.matrixWorld)).expandByScalar(TURRET_REST_PAD));
+      for (const mesh of meshesOf([h])) {
+        const b = boxOf(mesh);
+        m.multiplyMatrices(toGroup, mesh.matrixWorld);
+        const n = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z].map((s) => Math.min(TURRET_REST_MAX_N, Math.max(2, Math.ceil(s / TURRET_REST_STEP) + 1)));
+        for (let i = 0; i < n[0]; i++)
+          for (let j = 0; j < n[1]; j++)
+            for (let k = 0; k < n[2]; k++) {
+              p.set(
+                b.min.x + ((b.max.x - b.min.x) * i) / (n[0] - 1),
+                b.min.y + ((b.max.y - b.min.y) * j) / (n[1] - 1),
+                b.min.z + ((b.max.z - b.min.z) * k) / (n[2] - 1),
+              ).applyMatrix4(m);
+              if (boxes.some((q) => q.containsPoint(p))) hits++;
+            }
+      }
+    }
+    return hits;
+  };
+  // together first, so a double turret's heads stand parallel whenever that is clear…
+  let best = TURRET_REST_YAWS[0];
+  let hits = Infinity;
+  for (const yaw of TURRET_REST_YAWS) {
+    for (const h of heads) h.rotation.z = yaw;
+    const s = score();
+    if (s < hits) [best, hits] = [yaw, s];
+    if (s === 0) break;
+  }
+  for (const h of heads) h.rotation.z = best;
+  // …and each on its own, the other held, when it is not. Swept over 1,947 turreted builds, a
+  // head stood in another assembly on 876 facing forward, 60 with the heads together, 48 apart —
+  // a double turret at a corner with a Box Tube in the next cell, where no pose is clear.
+  if (heads.length > 1) {
+    for (let pass = 0; pass < 2 && hits > 0; pass++) {
+      for (const h of heads) {
+        let keep = h.rotation.z;
+        for (const yaw of TURRET_REST_YAWS) {
+          h.rotation.z = yaw;
+          const s = score();
+          if (s < hits) [keep, hits] = [yaw, s];
+        }
+        h.rotation.z = keep;
+      }
+    }
+  }
+  group.updateMatrixWorld(true);
 }
 
 /**
@@ -3185,9 +3686,9 @@ export function buildRobotGroup(
  *
  *  • `front:bar` — the full-width light bar, its outer face FLUSH with the front rail and
  *    standing `BB_END_BAR_H` above the deck, so it breaks the chassis silhouette from a chase
- *    camera and is still a bright full-width line from directly overhead. It is `emissive` at full strength: the field is lit for aluminium
- *    and a matte white bar goes grey in the hive's shadow, which is exactly where a driver is
- *    when they most need to know which way they are pointing.
+ *    camera and is still a bright full-width line from directly overhead. It is matte white and
+ *    lit like any other part: it was emissive once, and a robot part never glows (see
+ *    `frontBarMat`).
  *  • `front:arrow` — the deck chevron, extruded a hair so it takes an edge highlight rather than
  *    reading as a decal sticker.
  *  • `rear:bar` — a plain rail in the chassis' own structural dark. It carries NO stripes: the
@@ -3200,51 +3701,70 @@ export function buildRobotGroup(
  * which is the same bargain `buildEndPlates` made — the RENDER lane asserts it for both.
  */
 export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
-  const m = bbFrontMarks(spec);
+  const shared = bbFrontMarks(spec);
+  // the 3D bars also give way to the intake arms, which the 2D sprite draws flat beside them
+  const keep = [...bbChassisKeepOuts(spec), ...intakeArmKeepOuts(spec)];
+  const m = {
+    ...shared,
+    front: { ...shared.front, pieces: bbEndBarPieces(keep, shared.front.x0, shared.front.x1, shared.front.halfY) },
+    rear: { ...shared.rear, pieces: bbEndBarPieces(keep, shared.rear.x0, shared.rear.x1, shared.rear.halfY) },
+  };
   const out: THREE.Object3D[] = [];
   const barZ = BB_DECK_Z + BB_END_BAR_H / 2;
 
-  // an end bar gives way where a Box Tube's pivot stands on the same rail (`bbFrontMarks`)
-  const barKey = (b: { gap: { y0: number; y1: number } | null }): string =>
-    b.gap ? `|gap${b.gap.y0.toFixed(3)}:${b.gap.y1.toFixed(3)}` : '';
+  // an end bar stops where a mechanism stands on the same rail and runs lower where one passes over
+  // it (`bbFrontMarks`); each piece stands on the deck at its own height
+  const barKey = (b: typeof m.front): string =>
+    b.pieces.map((g) => `|${g.y0.toFixed(3)}:${g.y1.toFixed(3)}:${g.h.toFixed(3)}`).join('');
   const barParts = (b: typeof m.front): THREE.BufferGeometry[] =>
-    bbEndBarSegments(b).map((sg) => boxAt(b.x1 - b.x0, sg.y1 - sg.y0, BB_END_BAR_H, (b.x0 + b.x1) / 2, (sg.y0 + sg.y1) / 2, 0));
-  const front = cast(
-    new THREE.Mesh(
-      framePart(`front:bar|${m.front.x0.toFixed(3)}|${m.front.halfY.toFixed(3)}${barKey(m.front)}`, () => barParts(m.front)),
-      frontBarMat(),
-    ),
-  );
-  front.name = `robot:${id}:front:bar`;
-  front.position.set(0, 0, barZ);
-  out.push(front);
+    bbEndBarSegments(b).map((sg) => boxAt(b.x1 - b.x0, sg.y1 - sg.y0, sg.h, (b.x0 + b.x1) / 2, (sg.y0 + sg.y1) / 2, sg.h / 2 - BB_END_BAR_H / 2));
+  if (m.front.pieces.length) {
+    const front = cast(
+      new THREE.Mesh(
+        framePart(`front:bar|${m.front.x0.toFixed(3)}|${m.front.halfY.toFixed(3)}${barKey(m.front)}`, () => barParts(m.front)),
+        frontBarMat(),
+      ),
+      'paint',
+    );
+    front.name = `robot:${id}:front:bar`;
+    front.position.set(0, 0, barZ);
+    out.push(front);
+  }
 
-  const arrow = cast(
-    new THREE.Mesh(
-      framePart(`front:arrow|${m.arrow.apex.toFixed(3)}|${m.arrow.base.toFixed(3)}|${m.arrow.half.toFixed(3)}`, () => {
-        const shape = new THREE.Shape();
-        shape.moveTo(m.arrow.apex, 0);
-        shape.lineTo(m.arrow.base, m.arrow.half);
-        shape.lineTo(m.arrow.base, -m.arrow.half);
-        shape.closePath();
-        return [new THREE.ExtrudeGeometry(shape, { depth: BB_FRONT_ARROW_T, bevelEnabled: false })];
-      }),
-      solidMat(BB_FRONT_INK, 0.45, 0.05),
-    ),
-  );
-  arrow.name = `robot:${id}:front:arrow`;
-  arrow.position.set(0, 0, BB_DECK_Z + 0.02);
-  out.push(arrow);
+  // the deck arrow, where the deck is clear of every mechanism — or not at all (`bbFrontMarks`)
+  const a = m.arrow;
+  if (a) {
+    const arrow = cast(
+      new THREE.Mesh(
+        framePart(`front:arrow|${a.apex.toFixed(3)}|${a.base.toFixed(3)}|${a.half.toFixed(3)}|${a.cy.toFixed(3)}`, () => {
+          const shape = new THREE.Shape();
+          shape.moveTo(a.apex, a.cy);
+          shape.lineTo(a.base, a.cy + a.half);
+          shape.lineTo(a.base, a.cy - a.half);
+          shape.closePath();
+          return [new THREE.ExtrudeGeometry(shape, { depth: BB_FRONT_ARROW_T, bevelEnabled: false })];
+        }),
+        solidMat(BB_FRONT_INK, 0.45, 0.05),
+      ),
+      'paint',
+    );
+    arrow.name = `robot:${id}:front:arrow`;
+    arrow.position.set(0, 0, BB_DECK_Z + 0.02);
+    out.push(arrow);
+  }
 
-  const rear = cast(
-    new THREE.Mesh(
-      framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}${barKey(m.rear)}`, () => barParts(m.rear)),
-      solidMat(BB_REAR_INK, 0.75, 0.05),
-    ),
-  );
-  rear.name = `robot:${id}:rear:bar`;
-  rear.position.set(0, 0, barZ);
-  out.push(rear);
+  if (m.rear.pieces.length) {
+    const rear = cast(
+      new THREE.Mesh(
+        framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}${barKey(m.rear)}`, () => barParts(m.rear)),
+        solidMat(BB_REAR_INK, 0.75, 0.05),
+      ),
+      'dark',
+    );
+    rear.name = `robot:${id}:rear:bar`;
+    rear.position.set(0, 0, barZ);
+    out.push(rear);
+  }
 
   return out;
 }
@@ -3292,14 +3812,18 @@ export function buildBoxTube(
           if (b.what !== 'plate') continue;
           parts.push(boxAt(b.u1 - b.u0, b.v1 - b.v0, b.z1 - b.z0, (b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2, (b.z0 + b.z1) / 2));
         }
-        // the axle, through both plates and the base tube's foot
-        const vOut = BB_BOX_TUBE_SECTIONS[0] / 2 + BB_BOX_TUBE_PLATE_GAP + BB_BOX_TUBE_PLATE_T + BB_BOX_TUBE_DRUM_T;
+        // the axle, through both plates and the base tube's foot. It stops `BB_PROUD` INSIDE the
+        // pulley and the spool flange: ending exactly in their outer faces put its end caps in the
+        // same plane as a different material, which z-fights, and standing proud of them would put
+        // it outside the tower's collider boxes.
+        const vOut = BB_BOX_TUBE_SECTIONS[0] / 2 + BB_BOX_TUBE_PLATE_GAP + BB_BOX_TUBE_PLATE_T + BB_BOX_TUBE_DRUM_T - BB_PROUD;
         const axle = new THREE.CylinderGeometry(0.16, 0.16, vOut * 2, 12);
         parts.push(axle);
         return parts;
       }),
       plateMat,
     ),
+    'dark',
   );
   base.name = `robot:${id}:tube:pivot`;
   node.add(base);
@@ -3332,6 +3856,7 @@ export function buildBoxTube(
       }),
       darkMat,
     ),
+    'nylon',
   );
   drums.name = `robot:${id}:tube:drive`;
   node.add(drums);
@@ -3359,22 +3884,29 @@ export function buildBoxTube(
       }
       return parts;
     });
-    const mesh = cast(new THREE.Mesh(geo, tubeMat));
+    const mesh = cast(new THREE.Mesh(geo, tubeMat), 'extr');
     mesh.name = `robot:${id}:tube:s${i}`;
     // NESTED: each stage hangs off the one it slides in, so a stage's own `position.z` is its
     // extension out of its parent and the tip rides on the last one
     (i === 0 ? pitch : stages[i - 1]).add(mesh);
     stages.push(mesh);
-    // the BEARING BLOCK at the mouth of every tube that another slides in (not the last)
+    // the BEARING BLOCK at the mouth of every tube that another slides in (not the last).
+    // ⚠️ IT STANDS PROUD OF ITS TUBE'S TOP, AND EACH ONE HIGHER THAN THE LAST. Flush, its top face
+    // shared a plane with the tube's wall tops (dark on aluminium: z-fighting), and stowed, every
+    // stage's top is at the same height, so the next block down covers the same ring as this one.
     if (i < BB_BOX_TUBE_SECTIONS.length - 1) {
       const collar = cast(
         new THREE.Mesh(
-          framePart(`tube:collar:${w}`, () => {
+          // keyed on the section length too: the block sits at the tube's TOP, and `L` varies with
+          // where the tube stands (a key without it handed a second robot the first one's blocks)
+          framePart(`tube:collar:${w}:${i}|${L.toFixed(3)}`, () => {
             const h = 0.35;
             const parts: THREE.BufferGeometry[] = [];
             const o = w + 2 * BB_BOX_TUBE_COLLAR;
-            const inner = BB_BOX_TUBE_SECTIONS[i + 1];
-            const zc = L - BB_BOX_TUBE_BASE_BELOW - h / 2;
+            // the bore clears the next stage by `BB_PROUD` a side: cut to its exact width, the
+            // block's inner faces lay in the planes of this tube's own inner wall faces
+            const inner = BB_BOX_TUBE_SECTIONS[i + 1] + 2 * BB_PROUD;
+            const zc = L - BB_BOX_TUBE_BASE_BELOW - h / 2 + BB_PROUD * (i + 1);
             for (const s of [1, -1] as const) {
               parts.push(boxAt(o, (o - inner) / 2, h, 0, (s * (o + inner)) / 4, zc));
               parts.push(boxAt((o - inner) / 2, inner, h, (s * (o + inner)) / 4, 0, zc));
@@ -3383,6 +3915,7 @@ export function buildBoxTube(
           }),
           collarMat,
         ),
+        'nylon',
       );
       collar.name = `robot:${id}:tube:s${i}:block`;
       mesh.add(collar);
@@ -3401,11 +3934,15 @@ export function buildBoxTube(
   const wrist = cast(
     new THREE.Mesh(
       framePart('tube:wrist', () => {
+        // a hair under `BB_BOX_TUBE_WRIST_TOP`, so the yoke's top bar lying across it is the top face
+        // there rather than a second one in the same plane
         const w = BB_BOX_TUBE_WRIST_HALF * 2;
-        return [boxAt(w, w * 0.8, BB_BOX_TUBE_WRIST_TOP, 0, 0, BB_BOX_TUBE_WRIST_TOP / 2)];
+        const h = BB_BOX_TUBE_WRIST_TOP - BB_PROUD;
+        return [boxAt(w, w * 0.8, h, 0, 0, h / 2)];
       }),
       darkMat,
     ),
+    'nylon',
   );
   wrist.name = `robot:${id}:tube:wrist`;
   level.add(wrist);
@@ -3428,6 +3965,7 @@ export function buildBoxTube(
       }),
       plateMat,
     ),
+    'dark',
   );
   yoke.name = `robot:${id}:tube:yoke`;
   yaw.add(yoke);
@@ -3445,13 +3983,15 @@ export function buildBoxTube(
         const parts: THREE.BufferGeometry[] = [];
         // the arm, hanging along −z from the hinge; the hinge boss; the palm across its end
         parts.push(boxAt(t, w, palmAt + t / 2, 0, 0, -(palmAt - t / 2) / 2));
-        const boss = new THREE.CylinderGeometry(0.1, 0.1, w + 0.24, 12);
+        // proud of the yoke cheeks it turns in (their outer faces are at ±(w/2 + 0.12))
+        const boss = new THREE.CylinderGeometry(0.1, 0.1, w + 0.24 + 2 * BB_PROUD, 12);
         parts.push(boss);
         parts.push(boxAt(t, (BB_BOX_TUBE_JAW_ROOT + BB_BOX_TUBE_JAW_T) * 2, BB_BOX_TUBE_JAW_T * 1.5, 0, 0, -palmAt));
         return parts;
       }),
       plateMat,
     ),
+    'dark',
   );
   arm.name = `robot:${id}:tube:arm`;
   swing.add(arm);
@@ -3473,6 +4013,7 @@ export function buildBoxTube(
         }),
         darkMat,
       ),
+      'nylon',
     );
     g.add(jaw);
     swing.add(g);
@@ -3596,6 +4137,144 @@ export interface BbRobots {
  *  `BB_INTAKE_DRAW_IN`. Derived, so it cannot fall out of step again. */
 const BB_ROLLER_SPIN = BB_INTAKE_DRAW_IN / BB_ROLLER_FLAP_R;
 
+/** an imported flywheel that has an element to throw (and no setpoint the sim tracks) is drawn turning
+ *  at this, rad/s; a setpoint wheel turns at `flyRpm`, capped at `IMPORT_SPIN_MAX` */
+const IMPORT_FLYWHEEL_IDLE = 18;
+/** no imported part is DRAWN turning faster than this, rad/s: past ~4 turns a second a spoked wheel
+ *  sampled at 60 fps strobes into a random dance, which reads as a glitch, not as speed */
+const IMPORT_SPIN_MAX = 26;
+
+const qTmp = new THREE.Quaternion();
+/** a generic joint's full swing takes this long, s; a full slide, `IMPORT_SLIDE_S` */
+const IMPORT_SWING_S = 0.3;
+const IMPORT_SLIDE_S = 0.5;
+
+/**
+ * POSE AN IMPORT'S OWN MOVING PARTS (`ImportedMotionNode`) for this frame. Every rule reads the
+ * world, never a command, like the standard hardware in `sync`:
+ *  · WHEEL — turns at the speed its contact patch moves along its tread, the robot's own rigid motion
+ *    at that point (`r.vel`, `r.angVel`), so it rolls driving, turns opposite on a spin turn and (on a
+ *    mecanum, through its rollers' 45°) turns when strafing; a swerve wheel along its pod's angle.
+ *  · ROLLER — `BB_ROLLER_SPIN` while the intake runs (the standard roller's gate).
+ *  · FLYWHEEL — at the setpoint wheel's `flyRpm`, else idling while there is something to throw.
+ *  · TURRET — the turret's yaw against the chassis (`turretHeading`; a second turret part, the second).
+ *  · RAMP — deployed off `bbRampOut` with the standard ramp's ease (`BB_RAMP_DEPLOY_S`).
+ *  · FOLD — stays as it starts.
+ */
+function poseImportMotion(motion: readonly ImportedMotionNode[], world: World, r: RobotState, dt: number, wheelSpin: boolean): void {
+  const enabled = robotsEnabled(world);
+  const intaking = enabled && (r.autoIntake || world.time - r.lastIntakeAt < 0.4) && r.hopper.length < bbHopperCap(r.spec);
+  const c = Math.cos(-r.heading);
+  const s = Math.sin(-r.heading);
+  const vx = r.vel.x * c - r.vel.y * s;
+  const vy = r.vel.x * s + r.vel.y * c;
+  const w = r.angVel ?? 0;
+  const rampT = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / bbRampDeployS(r.spec)));
+  const rampE = smoothstep01(rampT);
+  const rampOut = r.bbRampOut ? rampE : 1 - rampE;
+  const mecanum = r.spec.drivetrain === 'mecanum' || (r.spec.drivetrain === 'butterfly' && !r.butterflyTank);
+  let turret = 0;
+  for (const m of motion) {
+    const role = m.info.role;
+    if (role === 'wheel') {
+      if (!wheelSpin || m.info.radius < 0.3) continue;
+      // the tread direction: a positive turn rolls the robot along it (`MotionPart`)
+      let tx = m.axisRobot.y;
+      let ty = -m.axisRobot.x;
+      const tl = Math.hypot(tx, ty);
+      if (tl < 1e-6) continue;
+      tx /= tl;
+      ty /= tl;
+      const px = vx - w * m.at.y;
+      const py = vy + w * m.at.x;
+      let speed: number;
+      if (r.spec.drivetrain === 'swerve' && m.info.corner !== undefined) {
+        const a = r.moduleAngles?.[m.info.corner] ?? 0;
+        speed = px * (tx * Math.cos(a) - ty * Math.sin(a)) + py * (tx * Math.sin(a) + ty * Math.cos(a));
+      } else if (mecanum) {
+        // the rollers take the slip along ρ, the tread turned 45° one way or the other by its corner
+        const diag = m.at.x * m.at.y >= 0 ? 1 : -1;
+        const rx = (tx - diag * ty) * Math.SQRT1_2;
+        const ry = (ty + diag * tx) * Math.SQRT1_2;
+        const den = tx * ry - ty * rx;
+        speed = Math.abs(den) < 1e-6 ? px * tx + py * ty : (px * ry - py * rx) / den;
+      } else {
+        speed = px * tx + py * ty;
+      }
+      m.angle += Math.max(-IMPORT_SPIN_MAX, Math.min(IMPORT_SPIN_MAX, speed / m.info.radius)) * dt;
+    } else if (role === 'roller') {
+      if (intaking) m.angle += Math.min(IMPORT_SPIN_MAX, BB_ROLLER_SPIN) * dt;
+    } else if (role === 'flywheel') {
+      const rate = r.flyRpm ? (r.flyRpm * Math.PI) / 30 : enabled && r.hopper.length > 0 ? IMPORT_FLYWHEEL_IDLE : 0;
+      m.angle += Math.min(IMPORT_SPIN_MAX, rate) * dt;
+    } else if (role === 'turret') {
+      m.angle = (turret++ === 0 ? r.turretHeading : (r.bbTurret2Heading ?? r.turretHeading)) - r.heading;
+    } else if (role === 'ramp') {
+      m.angle = m.info.deploy * rampOut;
+    } else if (role === 'spin' || role === 'swing' || role === 'slide') {
+      if (m.info.follow) continue; // after its leader, below
+      const level = jointLevel(m.info.drive ?? (role === 'spin' ? 'always' : 'intake'), world, r, enabled, intaking, rampOut, Math.hypot(vx, vy));
+      const amount = m.info.amount ?? 0;
+      if (role === 'spin') m.angle += Math.min(IMPORT_SPIN_MAX, amount * 2 * Math.PI * level) * dt;
+      else {
+        const target = amount * level;
+        const rate = (amount / (role === 'swing' ? IMPORT_SWING_S : IMPORT_SLIDE_S)) * dt;
+        m.angle += Math.max(-rate, Math.min(rate, target - m.angle));
+      }
+    } else {
+      m.angle = 0;
+    }
+    placeJoint(m);
+  }
+  // A GEARED PART moves as its leader does, times the ratio (a gear train, a belt, a cascade stage);
+  // a chain of them settles in as many passes as it is long
+  const byId = new Map<number, ImportedMotionNode>();
+  for (const m of motion) if (m.info.id !== undefined) byId.set(m.info.id, m);
+  for (let pass = 0; pass < 4; pass++) {
+    for (const m of motion) {
+      const f = m.info.follow;
+      const lead = f ? byId.get(f.id) : undefined;
+      if (!f || !lead || lead === m) continue;
+      m.angle = lead.angle * f.ratio;
+      placeJoint(m);
+    }
+  }
+}
+
+/** a moving part's node at its value: a slide moved along its axis, anything else turned about it */
+function placeJoint(m: ImportedMotionNode): void {
+  if (m.info.role === 'slide') m.node.position.copy(m.rest).addScaledVector(m.axis, m.angle * m.perInch);
+  else m.node.quaternion.copy(qTmp.setFromAxisAngle(m.axis, m.angle));
+}
+
+/**
+ * HOW MUCH A GENERIC JOINT'S DRIVE IS ON, 0..1, off the robot's state as the standard parts read it:
+ * the intake running, the launcher spun up or just fired, a fire PULSE (up for 0.15 s, back by 0.4 s:
+ * a kicker, a catapult arm), the ramp's own ease, the chassis's speed as a share of its top speed,
+ * a FLOWER in the Box Tube's reach (a box tube's stages).
+ */
+function jointLevel(drive: MotionDrive, world: World, r: RobotState, enabled: boolean, intaking: boolean, rampOut: number, speed: number): number {
+  switch (drive) {
+    case 'intake':
+      return intaking ? 1 : 0;
+    case 'shooter':
+      return enabled && ((r.flyRpm ?? 0) > 0 || world.time - r.lastFireAt < 0.6) ? 1 : 0;
+    case 'fire': {
+      const t = world.time - r.lastFireAt;
+      return t < 0 ? 0 : t < 0.15 ? t / 0.15 : t < 0.4 ? 1 - (t - 0.15) / 0.25 : 0;
+    }
+    case 'ramp':
+      return rampOut;
+    case 'drive':
+      return Math.min(1, speed / Math.max(1, driveParams(r.spec).maxSpeed));
+    case 'place':
+      // the Box Tube's own cue: the sim's `bbFlowerInReach`, as the standard tube's deploy reads it
+      return bbFlowerInReach(world, r) !== null ? 1 : 0;
+    default:
+      return enabled ? 1 : 0;
+  }
+}
+
 export function buildBiobuzzRobots(): BbRobots {
   const group = new THREE.Group();
   group.name = 'bb-robots';
@@ -3619,7 +4298,10 @@ export function buildBiobuzzRobots(): BbRobots {
       // thumbnail cache (`specKey.ts`'s own header) — folding a per-device graphics setting into
       // it would make two machines disagree about whether two saved robots are the same robot.
       // This is a local rebuild key: the same spec at a different tessellation is the same build.
-      const key = `${bbSpecKey(r.spec)}|${wheelDetail}`;
+      //
+      // An IMPORT adds its mesh state (`importedMeshKey`: placeholder → mesh when the parse lands),
+      // per device for the same reason the tier is, so the group swaps on the first frame after.
+      const key = `${bbSpecKey(r.spec)}|${wheelDetail}|${importedMeshKey(r.spec)}`;
       let entry = entries.get(r.id);
       if (!entry || entry.key !== key) {
         if (entry) {
@@ -3682,7 +4364,7 @@ export function buildBiobuzzRobots(): BbRobots {
       // rather than mid-swing from a toggle that never happened this match.
       const rampPivots = entry.group.userData.rampPivots as THREE.Group[] | undefined;
       if (rampPivots && rampPivots.length > 0) {
-        const t = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / BB_RAMP_DEPLOY_S));
+        const t = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / bbRampDeployS(r.spec)));
         const e = smoothstep01(t);
         const angle = r.bbRampOut ? BB_RAMP_DEPLOYED_ROT * e : BB_RAMP_DEPLOYED_ROT * (1 - e);
         for (const pivot of rampPivots) pivot.rotation.y = angle;
@@ -3810,6 +4492,11 @@ export function buildBiobuzzRobots(): BbRobots {
       // THE CATAPULT'S ARM — one node, one rotation, off sim state alone (`dumpThrowPhase`).
       const dumpArm = entry.group.userData.dumpArm as THREE.Group | undefined;
       if (dumpArm) dumpArm.rotation.y = -DUMP_THROW_ANGLE * dumpThrowPhase(world, r);
+
+      // AN IMPORT'S OWN MOVING PARTS (`importedMotionNodes`): the same clocks and gates as the
+      // standard hardware above, so an imported roller runs exactly when a standard one would
+      const motion = entry.group.userData.importMotion as ImportedMotionNode[] | undefined;
+      if (motion && motion.length > 0) poseImportMotion(motion, world, r, dt, wheelSpin);
     }
     for (const [id, entry] of entries) {
       if (!seen.has(id)) {
@@ -3873,13 +4560,16 @@ export function buildBiobuzzRobots(): BbRobots {
  * drivetrain picker back and forth frees the group and re-uses every buffer in it.
  */
 export function disposeRobotGroup(group: THREE.Group): void {
+  // an IMPORTED robot's mesh is a clone of a template its slot owns (`renderImported.ts`): its
+  // geometry, materials and textures are skipped here and its reference handed back instead
   group.traverse((child) => {
     const mesh = child as Partial<THREE.Mesh>;
     const geo = mesh.geometry;
-    if (geo && !SHARED_GEO.has(geo)) geo.dispose();
+    if (geo && !SHARED_GEO.has(geo) && !isImportShared(geo)) geo.dispose();
     const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-    for (const m of mats) if (!SHARED_MAT.has(m)) m.dispose();
+    for (const m of mats) if (!SHARED_MAT.has(m) && !isImportShared(m)) m.dispose();
   });
+  releaseImportedMesh(group);
 }
 
 export function updateBiobuzzRobots(robots: BbRobots, world: World): void {

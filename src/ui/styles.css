@@ -456,11 +456,19 @@ button {
   min-height: 24px;
   min-width: 24px;
   gap: var(--ds-s-2);
+  /* THE ROW WRAPS AS WHOLE CHIPS, at every size (it was the compact block's rule alone). Anchored
+     `left: 50%`, the row's shrink-to-fit width is capped at HALF the viewport, so at 627px wide
+     BIOBUZZ's pace + NECTAR LOCKED 0:52 + PENDING broke each chip's words onto two lines. */
+  width: max-content;
+  max-width: calc(100vw - 2 * var(--ds-s-3));
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 /* `>`: a chip may carry inner spans (`FoulChip`'s visible shorthand and its `.ds-sr` words),
    and a descendant selector drew a pill inside the pill. */
 .breakdown-row > span {
+  white-space: nowrap;
   background: var(--ds-hud-soft);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
@@ -481,6 +489,24 @@ button {
   border-color: var(--ds-warn);
 }
 
+/* THE PACE CHIP (`src/ui/pace/PaceTag.tsx`): `+12 PB`, first in this row (owner, 2026-10-08: "another
+   chip like how NECTAR LOCKED is, in that row, of the same style"). Two departures from its
+   neighbours, both for a reason. GREEN ahead / RED behind / plain ink level, edge and ink like
+   `.warn`; and the opaque card fill instead of the soft one, because light theme's green ink is
+   4.08:1 on `--ds-hud-soft` and 4.5+ on `--ds-hud` (`npm run contrast`: `.pace.*`). */
+.breakdown-row > span.pace {
+  background: var(--ds-hud);
+  color: var(--ds-ink);
+  font-variant-numeric: tabular-nums;
+}
+.breakdown-row > span.pace.ahead {
+  color: var(--ds-ok-ink);
+  border-color: var(--ds-ok-ink);
+}
+.breakdown-row > span.pace.behind {
+  color: var(--ds-red-ink);
+  border-color: var(--ds-red-ink);
+}
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1774,6 +1800,15 @@ button {
   font-weight: 600;
 }
 
+/* THE PRE-MATCH PANEL'S AUTO LINE (GameView, `autoHud.ts`) when the auto is off or Zenith flags
+   it. A Zenith finding is a whole sentence, and unwrapped it stretched the panel across the
+   field; it wraps at `.overlay-sub`'s reading width and stays centred like the rest of the panel. */
+.overlay-panel > .ds-hint.warn,
+.overlay-panel > .ds-hint.err {
+  max-width: 42ch;
+  margin-inline: auto;
+}
+
 /* SHELL dialogs are sentence case, matching `.ann-actions`' own "Got it". The 1.5px
    tracking that suits GameView's all-caps match overlays reads as gaps between letters
    in sentence case, so it is relaxed here only. */
@@ -3038,6 +3073,7 @@ button {
    utilities every season carries. Dimmer than the scoring buttons beside them, because a
    thumb that is hunting mid-match is hunting for SHOOT, not for PARK. */
 .mobile-btn.fling,
+.mobile-btn.flypreset,
 .mobile-btn.flip,
 .mobile-btn.drivemode,
 .mobile-btn.park {
@@ -3134,24 +3170,15 @@ button {
   .timer-panel .timer-phase {
     letter-spacing: 0;
   }
-  /* THE ROW WRAPS AS WHOLE CHIPS. Anchored `left: 50%`, its shrink-to-fit width is capped at
-     HALF the viewport, and once 05-10 kept the labels at --ds-t-xs DECODE's four chips
-     ("CLASSIFIED 12 … RAMP 9/9", ~400px) could not fit a 375px phone: each chip broke its own
-     words onto two lines instead. Now the row takes its real width up to the viewport, and a
-     chip that does not fit drops to a second line, centred like the first.
+  /* The row wraps as whole chips at every size now (base `.breakdown-row`): once 05-10 kept the
+     labels at --ds-t-xs, DECODE's four chips ("CLASSIFIED 12 … RAMP 9/9", ~400px) could not fit a
+     375px phone, and each chip broke its own words onto two lines.
      NO `bottom` HERE. It was a literal 50px, 6px BELOW the 56px `--hud-bottom` this same query
      sets, so BIOBUZZ's NECTAR LOCKED / PENDING chips sat under the compact bar (tester report,
      2026-09-23). The base rule's `var(--hud-bottom) + --ds-s-2` is right at every size. */
-  .breakdown-row {
-    width: max-content;
-    max-width: calc(100vw - 2 * var(--ds-s-3));
-    flex-wrap: wrap;
-    justify-content: center;
-  }
   .breakdown-row > span {
     letter-spacing: 0;
     padding: var(--ds-s-0) var(--ds-s-2);
-    white-space: nowrap;
   }
   /* THE PHONE'S STATUS CARD (design review 05-05): the same card as the desktop's, smaller.
      The 92px power/storage bar and the 14-18px dots set every game's card height, and a phone
@@ -3223,6 +3250,26 @@ button {
     min-width: 44px;
   }
 }
+/* PORTRAIT PHONES: the status cluster, captured at 390 × 844 with a coarse pointer (2026-10-02).
+   (1) BELOW THE TOP ROW AS IT REALLY IS. MENU / RESET and the sponsor chip share one row that a
+       390-px screen squeezes: each label breaks onto two lines and the row is ~48px tall, not the
+       36 the `+ 38px` above assumes, so the card's top ran under the sponsor chip.
+   (2) A ROW, like the landscape gutter's: the `.sub-hud` (a fixed shooter's flywheel line, a
+       butterfly's wheel set) and the performance read-out sit BESIDE the card instead of under
+       it, where the three of them stacked onto the field's top edge. */
+@media (orientation: portrait) and (pointer: coarse) {
+  .status-wrap {
+    top: calc(max(6px, env(safe-area-inset-top)) + 56px);
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  /* BIOBUZZ's 2D/3D cap holds the corner: the row stops short of it on the left too */
+  .game-root:has(.mobile-view-btn) .status-wrap {
+    max-width: calc(100vw - 24px - 44px - var(--ds-s-2));
+  }
+}
+
 /* LANDSCAPE is height-starved — squeeze the score menu harder + drop the breakdown row
    nearly onto the scorebar so the map claims the vertical space. */
 @media (orientation: landscape) and (pointer: coarse), (orientation: landscape) and (max-height: 460px) {
@@ -3251,16 +3298,25 @@ button {
   /* the scorebar becomes a vertical stack in the LEFT gutter. Vertical because a
      ~230px horizontal bar does not fit the gutter of a narrow landscape phone
      (667x375 leaves ~145px a side) while a stacked one is ~72px at any size. */
+  /* UNDER THE TOP-LEFT COLUMN, NOT CENTRED ON THE HEIGHT. Centred, its top depended on its own
+     height, and MENU / RESET / the PRESENTED BY chip above it (`.game-buttons`, a column here)
+     do not move: at 812×375 the chip ends at 135 and BIOBUZZ's two-line stack (132px) started at
+     122, so the chip hid most of red's total; DECODE's grazed it by 6. Anchored a grid step under
+     that column it clears it at any stack height. The column is MENU 36 + 12 + RESET 36 (84px),
+     plus 12 + the chip's 33 when a sponsor is shown (129px). */
   .scorebar {
     left: max(6px, env(safe-area-inset-left));
     right: auto;
     bottom: auto;
-    top: 50%;
-    transform: translateY(-50%);
+    top: calc(max(6px, env(safe-area-inset-top)) + 84px + var(--ds-s-2));
+    transform: none;
     flex-direction: column;
     border-radius: var(--ds-round-md);
     border-bottom: 1px solid var(--ds-hud-line);
     overflow: hidden;
+  }
+  .game-root:has(.sponsor-chip) .scorebar {
+    top: calc(max(6px, env(safe-area-inset-top)) + 129px + var(--ds-s-2));
   }
   /* A COLUMN, so the outer corners are the TOP pair and the BOTTOM pair, not the two top
      ones. The first child is at the top and the last at the bottom, and the last one has to
@@ -3352,6 +3408,15 @@ button {
   /* the words go; the glyph and its `aria-label` stay. "REVERSED" beside the card is wider
      than the gutter, and a second line of it is height this gutter does not have. */
   .sub-hud-lbl {
+    display: none;
+  }
+  /* ...except an item that IS its words (a fixed shooter's flywheel: no glyph). It was an EMPTY
+     pill here (captured 2026-10-02, 844 × 390). Its state stays, READY / SPIN UP and a presets
+     wheel's SPEED n; the rpm goes. */
+  .sub-hud-lbl.keep {
+    display: inline;
+  }
+  .sub-hud-rpm {
     display: none;
   }
   /* one line only: a wrapped second row is height the chips below it do not leave */

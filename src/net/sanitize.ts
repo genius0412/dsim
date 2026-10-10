@@ -184,6 +184,14 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
         ? Math.round(r.balanceVersion)
         : 0,
     sim: typeof r.sim === 'number' && Number.isFinite(r.sim) ? Math.round(r.sim) : undefined,
+    /**
+     * An upload is a FRESH recording (a practice save, a LAN host's archive), and an UNSTAMPED
+     * one comes from a site build that ran `SIM_PATCH` 1 before the recorder stamped it: the
+     * rule was live on the site from 2026-09-27 08:34:35Z, the stamp one deploy later. A
+     * pre-patch build would be a tab left open since before then. So absent reads 1 here, and
+     * only here — a stored replay read back through `getReplay` keeps its own column.
+     */
+    patch: typeof r.patch === 'number' && Number.isFinite(r.patch) ? Math.max(0, Math.round(r.patch)) : 1,
     game: replayGame,
     // AN ENUM, not a passthrough: `physics` reaches `createWorld` the moment anyone watches
     // this back, and anything that is not the one known non-default value must come out

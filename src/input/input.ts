@@ -21,6 +21,7 @@ export interface VirtualInput {
   bbRamp: boolean;
   bbPass: boolean;
   driveMode: boolean;
+  flyPreset: boolean;
 }
 
 /** merges keyboard + gamepad into one driver command per frame, resolving
@@ -54,6 +55,7 @@ export class InputManager {
     bbRamp: false,
     bbPass: false,
     driveMode: false,
+    flyPreset: false,
   };
 
   constructor(private bindings: ControlBindings) {
@@ -209,6 +211,9 @@ export class InputManager {
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.
       driveMode: heldAny(keys.driveMode) || g.driveMode || this.virtualState.driveMode,
+      // a SETPOINT FLYWHEEL's preset step — held here, edge-triggered (debounced) in the sim, the
+      // `driveMode` contract
+      flyPreset: heldAny(keys.flyPreset) || g.flyPreset || this.virtualState.flyPreset,
     };
     k.endFrame();
     return cmd;

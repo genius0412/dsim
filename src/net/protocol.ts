@@ -18,6 +18,8 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
 import { flywheelSpinTarget } from '../sim/field';
+import { ROBOT_IMPORT_CAP } from './imported';
+import { IMPORT_VISUALS_CAP, type VisualKind, type VisualRefusal } from './importVisuals';
 
 /**
  * Wire protocol for the SERVER-AUTHORITATIVE netcode (Phase 0). All messages are
@@ -79,6 +81,10 @@ const BTN_BBRAMP = 256;
 // new client NOTHING against an old server: the packet is accepted, the bit is simply
 // ignored by a step that has no pass in it.
 const BTN_BBPASS = 512;
+// A SETPOINT FLYWHEEL'S PRESET STEP (DECODE + BIOBUZZ, `RobotCommand.flyPreset`), an EDGE like
+// `driveMode`. Bit 1024, inside the 16 bits every sanitizer since 2026-09-20 admits, so an older
+// server accepts the packet and ignores the bit — on a build that has no presets to step.
+const BTN_FLYPRESET = 1024;
 /** the widest `buttons` an honest sender can produce — every bit above is refused. */
 const BUTTONS_MAX = 0xffff;
 
@@ -97,7 +103,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbPlace ? BTN_BBPLACE : 0) |
       (c.bbNectar ? BTN_BBNECTAR : 0) |
       (c.bbRamp ? BTN_BBRAMP : 0) |
-      (c.bbPass ? BTN_BBPASS : 0),
+      (c.bbPass ? BTN_BBPASS : 0) |
+      (c.flyPreset ? BTN_FLYPRESET : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -162,6 +169,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
     bbRamp: (q.buttons & BTN_BBRAMP) !== 0,
     bbPass: (q.buttons & BTN_BBPASS) !== 0,
+    flyPreset: (q.buttons & BTN_FLYPRESET) !== 0,
   };
 }
 
@@ -203,8 +211,93 @@ export type RecordKind = 'solo' | 'duo';
 export type QueueMode = '1v1' | '2v2';
 export const QUEUE_NEED: Record<QueueMode, number> = { '1v1': 2, '2v2': 4 };
 
+/** what a room is a starting point for. `custom` starts from scratch; the rest fill in the settings. */
+export type RoomPreset = 'custom' | 'solo-record' | 'duo-record' | 'casual-1v1' | 'casual-2v2';
+const ROOM_PRESETS: readonly RoomPreset[] = ['custom', 'solo-record', 'duo-record', 'casual-1v1', 'casual-2v2'];
+
+/**
+ * A room's host-controlled shape. Absent on `RoomConfig` ⇒ the legacy room (any split up to
+ * `ROOM_CAPACITY` seats, everyone picks their own side), which is what every old client creates
+ * and what staged ranked / competition codes always are.
+ */
+export interface RoomSettings {
+  preset: RoomPreset;
+  /** seats per alliance; the room's capacity is their sum (≤ ROOM_CAPACITY until 3–4 a side lands) */
+  perAlliance: { red: number; blue: number };
+  /** may a driver pick their own side? Off ⇒ only the host moves people */
+  teamSwitch: boolean;
+  /** Public (true) shows in Browse rooms; Private (false) is code/invite only */
+  listed: boolean;
+}
+
+const PRESET_SHAPE: Record<Exclude<RoomPreset, 'custom'>, { red: number; blue: number; record?: RecordKind }> = {
+  'solo-record': { red: 1, blue: 0, record: 'solo' },
+  'duo-record': { red: 2, blue: 0, record: 'duo' },
+  'casual-1v1': { red: 1, blue: 1 },
+  'casual-2v2': { red: 2, blue: 2 },
+};
+
+/**
+ * Build a room's settings from an UNTRUSTED request (the first joiner's `config.settings`), or
+ * undefined when none was asked for. Never trust the label: a record room is whatever `kind`
+ * says, so its shape comes from `record` and is locked (`teamSwitch` off, always Private).
+ * Only `preset` and `listed` are read from the request; the sides come from the preset.
+ */
+export function coerceRoomSettings(
+  kind: RoomKind,
+  record: RecordKind | undefined,
+  raw: unknown,
+): RoomSettings | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (kind === 'record') {
+    const duo = record === 'duo';
+    return {
+      preset: duo ? 'duo-record' : 'solo-record',
+      // record runs are forced onto ONE alliance, blue, server-side (`startMatch`)
+      perAlliance: { red: 0, blue: duo ? 2 : 1 },
+      teamSwitch: false,
+      listed: false,
+    };
+  }
+  const asked = ROOM_PRESETS.includes(r.preset as RoomPreset) ? (r.preset as RoomPreset) : 'custom';
+  // a record preset on a versus room is just a custom room
+  const preset = asked === 'solo-record' || asked === 'duo-record' ? 'custom' : asked;
+  const shape = preset === 'custom' ? { red: 2, blue: 2 } : PRESET_SHAPE[preset];
+  // creation takes the preset and Public/Private only; everything else is the host's, in the room
+  return {
+    preset,
+    perAlliance: { red: shape.red, blue: shape.blue },
+    teamSwitch: true,
+    listed: r.listed === true,
+  };
+}
+
+/** apply a (possibly hostile) partial over settings, clamping every field */
+export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unknown>): RoomSettings {
+  const side = (v: unknown, was: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(ROOM_CAPACITY, Math.floor(v))) : was;
+  const pa = patch.perAlliance && typeof patch.perAlliance === 'object' ? (patch.perAlliance as Record<string, unknown>) : {};
+  let red = side(pa.red, base.perAlliance.red);
+  let blue = side(pa.blue, base.perAlliance.blue);
+  // over the ceiling: shave the side that changed last, i.e. the one the patch named
+  while (red + blue > ROOM_CAPACITY) {
+    if (pa.blue !== undefined && blue > 0) blue--;
+    else red--;
+  }
+  if (red + blue < 1) red = 1;
+  return {
+    preset: base.preset,
+    perAlliance: { red, blue },
+    teamSwitch: typeof patch.teamSwitch === 'boolean' ? patch.teamSwitch : base.teamSwitch,
+    listed: typeof patch.listed === 'boolean' ? patch.listed : base.listed,
+  };
+}
+
 export interface RoomConfig {
   kind: RoomKind;
+  /** the host-controlled shape (see `RoomSettings`); absent ⇒ legacy room */
+  settings?: RoomSettings;
   /** set when kind === 'record' */
   record?: RecordKind;
   /** which game the room plays. Absent ⇒ 'decode' (old clients / back-compat).
@@ -236,12 +329,20 @@ export interface RoomConfig {
    * than a 2D one, that gate is where an old client is turned away instead of downgraded.
    */
   physics?: Physics;
+  /**
+   * May an imported robot play in this room on this deployment? SERVER-AUTHORED, never read off a
+   * client's `join` (`joinRoom` builds the config field by field). Absent: the server's own gate,
+   * `IMPORTS_OPEN_HERE` (server/channel.ts). A worker room is sent it resolved by the socket thread;
+   * the LAN tab host takes the page's answer (`HostIn` `open`), and a tab has no server gate.
+   */
+  imports?: boolean;
 }
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
 
 /** roster cap for a room kind (record rooms are opponent-free + small) */
 export function roomCapacity(config: RoomConfig): number {
+  if (config.settings) return config.settings.perAlliance.red + config.settings.perAlliance.blue;
   if (config.kind === 'record') return config.record === 'duo' ? 2 : 1;
   return ROOM_CAPACITY;
 }
@@ -423,7 +524,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -561,6 +662,8 @@ export function coerceCaps(x: unknown): string[] {
  */
 export const SERVER_CAPS: string[] = [
   'party',
+  /** `'rooms2'` — host-controlled room settings (`roomSettings`, `moveMember`, `roster.settings`) */
+  'rooms2',
   /**
    * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
    *
@@ -605,14 +708,32 @@ export const SERVER_CAPS: string[] = [
    * would silently drop the file and the driver would stand still through AUTO wondering why.
    */
   'zenithAuto',
+  /**
+   * `'robotImport'` — THIS DEPLOY ADMITS AN IMPORTED ROBOT TO A CUSTOM ROOM, and refuses it
+   * everywhere else (`src/net/imported.ts`).
+   *
+   * An older server's `coerceSpec` drops `spec.imported` without a word, so the client would
+   * predict one robot while the room stepped another. The client sends an imported spec to a
+   * room only when the server says this, and plays a standard robot otherwise. The mirror of the
+   * client capability of the same name, which is the one that is a HARD gate.
+   */
+  ROBOT_IMPORT_CAP,
+  /**
+   * `'importVisuals'` — THIS DEPLOY RELAYS AN IMPORTED ROBOT'S LOOK (its top picture, and its mesh
+   * for BIOBUZZ's 3D view) between the players of a custom or LAN room (`src/net/importVisuals.ts`).
+   *
+   * An older server ignores `visualPut`/`visualGet` without a word, so an owner would upload 1.3 MB
+   * into the void; the client sends them only to a server that says this. Everything it does is
+   * additive: a viewer on a build without the cap is sent none of it and sees the footprint.
+   */
+  IMPORT_VISUALS_CAP,
 ];
 
-/** the formats a "play a friend" challenge can be issued in. Shared so the API's
+/** the formats a "play a friend" challenge can be issued in.Shared so the API's
  * allowlist, the matchmaker's gate, and the picker's tiles can't drift apart. */
 export const CHALLENGE_FORMATS = [
   'casual1v1',
   'casual2v2',
-  'rated1v1',
   'ranked2v2',
   'duorecord',
 ] as const;
@@ -623,17 +744,17 @@ export type ChallengeFormat = (typeof CHALLENGE_FORMATS)[number];
  * room code — which is exactly what makes them rated, since `Room.ranked` is only
  * ever set from a staged `pending_matches` row (see server/room.ts).
  *
- * `partyOnly` is the difference between the two:
- *  - `rated1v1` is a CLOSED pair. The token is the whole match; it never admits a
- *    stranger and never waits on the search radius, because the two of them
- *    already chose each other.
- *  - `ranked2v2` is a PREMADE that queues into the OPEN 2v2 pool. It waits for two
- *    more like anyone else; the only privilege is landing on one alliance.
+ * `ranked2v2` is a PREMADE that queues into the OPEN 2v2 pool: it waits for two more
+ * like anyone else, and the only privilege is landing on one alliance. (`rated1v1`, the
+ * closed pair that staged two friends against each other, is retired: friends are
+ * teammates, never ranked opponents.)
  */
-export const RATED_FORMATS: Record<string, { mode: QueueMode; partyOnly: boolean }> = {
-  rated1v1: { mode: '1v1', partyOnly: true },
-  ranked2v2: { mode: '2v2', partyOnly: false },
+export const RATED_FORMATS: Record<string, { mode: QueueMode }> = {
+  ranked2v2: { mode: '2v2' },
 };
+
+/** formats an old client may still send; `/api/friends/invite` answers them 410 */
+export const RETIRED_FORMATS: readonly string[] = ['rated1v1'];
 
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
@@ -718,6 +839,14 @@ export type ClientMsg =
   /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
    *  minted for it and put in the roster). */
   | { t: 'removeBot'; seat: string }
+  /** HOST ONLY: change the room's settings (a partial; the server clamps it, and refuses one that
+   *  would seat fewer than are already there). Gated on `SERVER_CAPS` `'rooms2'`. */
+  | { t: 'roomSettings'; patch: Partial<RoomSettings> }
+  /** HOST ONLY: put the member (a roster `clientId`, bots included) on this alliance. */
+  | { t: 'moveMember'; id: string; alliance: 'red' | 'blue' }
+  /** HOST ONLY: turn a duo-record room into an ordinary room (one-way; it stops posting records).
+   *  Only before the first run. Gated on `'rooms2'`. */
+  | { t: 'unlockRoom' }
   /**
    * MY 3D PHYSICS CHUNK HAS LOADED — sent once `initPhysics3d()` resolves, by any client
    * that advertised `READY3D_CAP`, and re-sent on a reconnect because a new socket is a new
@@ -741,6 +870,18 @@ export type ClientMsg =
    * advertises `'zenithAuto'` (`SERVER_CAPS`).
    */
   | { t: 'zenithAuto'; auto: import('../auto/types').ZenithAutoSetup | null }
+  /**
+   * ONE CHUNK OF THE OWNER'S IMPORTED ROBOT'S LOOK (`IMPORT_VISUALS_CAP`, `src/net/importVisuals.ts`):
+   * a PNG top picture (`kind: 'top'`) or a GLB mesh (`'mesh'`) for the robot whose `spec.imported.id`
+   * is `id`. `total` is the whole asset's byte length and `seq` counts chunks from 0; `data` is
+   * base64 of the next `VISUAL_CHUNK_BYTES` bytes. Held in the room's memory for the room's life,
+   * never persisted, never in a replay. Ignored by an older server, so the client sends it only to
+   * one that advertises `'importVisuals'`.
+   */
+  | { t: 'visualPut'; kind: VisualKind; id: string; total: number; seq: number; data: string }
+  /** ASK FOR another seat's asset: `owner` is its roster `clientId`, `id` the robot id the roster
+   *  names. The room answers with a `visualChunk` stream, or a `visualRefused`. */
+  | { t: 'visualGet'; owner: string; id: string; kind: VisualKind }
   /**
    * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`): physics and view are both up.
    * `gen` is the match generation it is ready for, so a report for a match that has since been
@@ -882,6 +1023,16 @@ export interface LiveRoom {
   /** which Fly region is hosting, for the admin's cross-region list. Absent on a
    *  single-region/dev deploy. */
   region?: string;
+  /** a competition match (0059): always public, and labelled with its event and match */
+  competition?: CompetitionRef;
+}
+
+/** a competition match, as a room describes itself to a client */
+export interface CompetitionRef {
+  slug: string;
+  name: string;
+  /** "Q12", "SF1-2" */
+  label: string;
 }
 
 // ---- server → client --------------------------------------------------------
@@ -923,7 +1074,14 @@ export type ErrorCode =
    * save. Actionable in place — the screen shows the code form rather than TRY AGAIN, which
    * would only be refused the same way. Older servers send the sentence alone.
    */
-  | 'email_unverified';
+  | 'email_unverified'
+  /**
+   * A join named a matchmaker room code (`isStagedRoomCode`) whose match is already over: no
+   * live room and no staged row. An older server created an empty custom room instead and the
+   * ranked client waited in it forever. The client raises it itself when a staged room never
+   * answers (`LobbyClient.watchStagedStart`).
+   */
+  | 'match_gone';
 
 export type ServerMsg =
   /**
@@ -947,7 +1105,19 @@ export type ServerMsg =
    * not have to agree. A client that is held does not predict.
    */
   | { t: 'loadHold'; gen: number; waitMs: number; loading: number[] }
-  | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
+  /**
+   * `owner`'s ASSET IS IN THE ROOM and may be asked for (`visualGet`). Sent, to clients that
+   * advertise `IMPORT_VISUALS_CAP` and only to them, when an upload completes, and again for each
+   * stored asset to a client that attaches later (a joiner, a spectator, a reclaimed seat). `owner`
+   * may be the recipient itself: that is the room confirming it holds their upload.
+   */
+  | { t: 'visualReady'; owner: string; id: string; kind: VisualKind; bytes: number }
+  /** ONE CHUNK of an asset a client asked for, in order from `seq` 0. Never sent unasked. */
+  | { t: 'visualChunk'; owner: string; id: string; kind: VisualKind; total: number; seq: number; data: string }
+  /** A `visualPut` or `visualGet` was refused (`reason`), with a plain sentence. The viewer keeps
+   *  the footprint; the owner is told so it stops sending. */
+  | { t: 'visualRefused'; op: 'put' | 'get'; owner: string; id: string; kind: VisualKind; reason: VisualRefusal; message: string }
+  | { t: 'roster'; players: LobbyPlayer[]; hostId: string; settings?: RoomSettings }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
    *
@@ -1105,6 +1275,9 @@ export type ServerMsg =
       intros: PlayerIntro[];
       game?: GameId;
       ranked?: boolean;
+      /** a COMPETITION match's window (0059): which competition and which match. The ready gate is
+       *  the ranked one, the rating column is not (nobody is rated). Absent from an older server. */
+      competition?: CompetitionRef;
     }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)

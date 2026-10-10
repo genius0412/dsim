@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { gameServers, gameServerHttpUrl, multiServer, setSelectedServer } from '../net/env';
+import { gameServers, multiServer, nearestHttpUrl, setSelectedServer } from '../net/env';
 import { estimateAll } from '../net/ping';
 import { Select } from './Select';
 
@@ -28,7 +28,7 @@ export function ServerMenu({
 
   const measure = (): void => {
     setBusy(true);
-    estimateAll(servers, gameServerHttpUrl()).then((r) => {
+    estimateAll(servers, nearestHttpUrl()).then((r) => {
       setPings(r.pings);
       setHome(r.homeRegion);
       setBusy(false);

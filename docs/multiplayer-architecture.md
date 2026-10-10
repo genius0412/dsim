@@ -291,7 +291,7 @@ ONE coalesced broadcast per fire                 room.ts:1423
 ```
 
 `frameCommands` (`:1768`) resolves each robot: exact-tick buffered input → else the last
-`latest` while within `HOLD_TICKS` (15) → else `ZERO_CMD`. So a brief input gap coasts on the
+`latest` while within `HOLD_TICKS` (36) → else `ZERO_CMD`. So a brief input gap coasts on the
 last command rather than snapping to neutral. **[C]**
 
 ### 3.7 Settle → finalize → persist
@@ -694,7 +694,7 @@ so without it the retry loop stalls on attempt one. **[C]**
 ### 9.4 Does the reconnecting player's robot survive?
 
 **Yes, untouched.** The robot stays in `world.robots` for the whole grace window; it simply
-receives `ZERO_CMD` once `HOLD_TICKS` (15) elapses past its last input (`frameCommands`
+receives `ZERO_CMD` once `HOLD_TICKS` (36) elapses past its last input (`frameCommands`
 `room.ts:1768-1793`). It coasts and is shoved like any other body. Nothing resets its pose,
 score contribution, or hopper. On reattach it resumes from exactly where the sim has it. **[C]**
 

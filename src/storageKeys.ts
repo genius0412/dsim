@@ -30,8 +30,9 @@
  * so sim-adjacent code (`net/practiceRuns.ts`) and the UI can both take it.
  */
 
-/** which store: `localStorage` outlives the browser closing, `sessionStorage` dies with the tab */
-export type StorageKind = 'local' | 'session';
+/** which store: `localStorage` outlives the browser closing, `sessionStorage` dies with the tab,
+ *  `indexeddb` is a database on this device for things too big for either (the key is its name) */
+export type StorageKind = 'local' | 'session' | 'indexeddb';
 
 /**
  * WHAT THE KEY IS FOR, in the three buckets a consent standard recognises.
@@ -104,6 +105,8 @@ export const ACTIVE_GAME_KEY = 'decodesim.activeGame.v1';
 export const STAGED_MATCH_KEY = 'decodesim.stagedMatch.v1';
 /** index of your solo practice runs. Each run's log sits at `PRACTICE_RUNS_KEY.<id>` */
 export const PRACTICE_RUNS_KEY = 'decodesim.practice.v1';
+/** pace curves: what a reference run had scored at each point on the clock (`src/ui/pace`) */
+export const PACE_CURVES_KEY = 'decodesim.paceCurves.v1';
 /** index of self-hosted matches awaiting upload. Bodies at `LAN_RUNS_KEY.<id>` */
 export const LAN_RUNS_KEY = 'decodesim.lanruns.v1';
 /** which site banners you closed, as banner id → the revision you closed (`BannerStack.tsx`) */
@@ -118,6 +121,10 @@ export const VERIFY_BANNER_KEY = 'decodesim.verifyBanner.v1';
 export const DISCORD_INSTANCE_KEY = 'decodesim.discordInstance.v1';
 /** the Zenith auto library (`src/auto/library.ts`): auto files for AUTO, per game, this device only */
 export const ZENITH_AUTOS_KEY = 'decodesim.zenithAutos.v1';
+/** the IndexedDB database holding imported robots (`src/robotImport/library.ts`): mesh, pictures, setup */
+export const ROBOT_LIBRARY_DB = 'decodesim.robots';
+/** show other players’ imported robots as their real picture/model (default on), or as an outline — per device */
+export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -162,6 +169,15 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
       'The last 10 are kept; the oldest goes first past that. Deleting a run removes it at once.',
   },
   {
+    key: ROBOT_LIBRARY_DB,
+    storage: 'indexeddb',
+    category: 'necessary',
+    purpose:
+      'Robots you imported from CAD: a simplified 3D model of each, its pictures, and the setup that makes it drive like the real one. An import you have not saved yet is kept here too, so a reload does not lose it. The models stay on this device; only a robot’s measurements travel with your settings. When you play an imported robot in a custom or LAN room, its top picture (and, in BIOBUZZ, a lighter copy of its model) is also sent to the other people in that room, kept in memory only for as long as the room lasts.',
+    retention:
+      'Until you delete a robot from your imported robots or clear your browser data. An unsaved import goes when you save or discard it, or after 30 days.',
+  },
+  {
     key: ZENITH_AUTOS_KEY,
     storage: 'local',
     category: 'necessary',
@@ -198,7 +214,7 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'session',
     category: 'necessary',
     purpose:
-      'That this tab has already reloaded once to pick up a new version of the site, so a missing file cannot make it reload forever.',
+      'Which version of the site this tab last reloaded from to pick up a new one, so a missing file cannot make it reload forever.',
     retention: 'Ends with this browser tab.',
   },
   {
@@ -262,11 +278,28 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     retention: 'Until you clear your browser data.',
   },
   {
+    key: IMPORT_VISUALS_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Whether you see other players’ imported robots as the real thing (their picture, and their 3D model in BIOBUZZ) or as an outline. Off means nothing is downloaded for them.',
+    retention: 'Until you clear your browser data.',
+  },
+  {
     key: LAN_SERVER_KEY,
     storage: 'local',
     category: 'preference',
     purpose: 'The address of the self-hosted server you last joined, so you can rejoin it.',
     retention: 'Until you clear your browser data, or leave the self-hosted server.',
+  },
+  {
+    key: PACE_CURVES_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'For the pace read-out: the score another run (your best, the record, or a replay you picked) had at each point of its match, worked out once from its replay so it is not worked out again every match.',
+    retention:
+      'The last 24 are kept, plus the replay you picked for each game; the oldest goes first past that.',
   },
   {
     key: PREDICTION_KEY,

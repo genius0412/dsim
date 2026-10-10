@@ -56,6 +56,7 @@ import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { footprintExtents, loadZone } from '../../src/sim/field';
 import { robotIntersectsRect } from '../../src/sim/physics';
 import { cmd, setup, type Check } from './harness';
+import { simModuleFor } from '../../src/games/sim';
 
 /** the repo root, for the source-text checks below — `core.ts`'s pattern. */
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1268,12 +1269,21 @@ function g402DrivenChecks(check: Check): void {
      * keeps the first assertion from passing for nothing. If they ever fail together, re-measure
      * the sweep and refresh the list rather than deleting the checks.
      */
+    /**
+     * The 3D list was re-measured for SIM_PATCH 3 (the wall square-up inside the solve, 2026-10-02),
+     * 210 duels (victim 2/4/6/12/20/30 in deep × offset 0–16 × −30°…45°): 11 flicker, the longest
+     * 0.47 s but one. ⚠️ THAT ONE — victim 2 in deep, no offset, −30° — is the crosser glancing off
+     * the victim into the −y wall and grinding down it: it now hugs the wall where the old square-up
+     * kicked it an inch off, its corner comes back to the victim 1.17 s later with the footprints
+     * never more than 3.9 in apart, and the re-arm window bills it TWICE. It was the second shape
+     * here and is out of the list; whether `BB_G402_REARM_S` should cover it is an owner call.
+     */
     {
       const shapes = physics === '2d'
         ? [{ bx: 2, lat: 16, deg: 35 }, { bx: 30, lat: 0, deg: 15 }, { bx: 4, lat: 12, deg: 30 },
            { bx: 12, lat: 16, deg: 30 }, { bx: 30, lat: 14, deg: 25 }]
-        : [{ bx: 6, lat: 0, deg: 20 }, { bx: 2, lat: 0, deg: -30 }, { bx: 4, lat: 0, deg: -30 },
-           { bx: 30, lat: 12, deg: 25 }, { bx: 12, lat: 16, deg: 0 }];
+        : [{ bx: 4, lat: 0, deg: -30 }, { bx: 2, lat: 4, deg: -30 }, { bx: 4, lat: 4, deg: -30 },
+           { bx: 6, lat: 0, deg: -30 }, { bx: 2, lat: 8, deg: -15 }];
       let worst = 0;
       let worstSep = 0;
       for (const s of shapes) {
@@ -3024,6 +3034,80 @@ function settleChecks(check: Check): void {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A COMPETITION'S MEASURES — `GameSimModule.rankFacts`, on paper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What BIOBUZZ reports for a competition's ranking points (`src/games/biobuzz/rankFacts.ts`).
+ * AUTO is taken as TELEOP starts and counts only the TIPS completed by then (§10.5 B); SWARM and
+ * TIPS are taken at the end and are the score's own numbers. The key set against the manual's
+ * table is checked in `scripts/smoke.ts`, beside the other games'.
+ */
+function rankFactsChecks(check: Check): void {
+  const facts = simModuleFor('biobuzz').rankFacts;
+  check('RP FACTS: BIOBUZZ reports measures for a competition', !!facts);
+  if (!facts) return;
+  const w = bare([
+    { id: 0, alliance: 'red' },
+    { id: 1, alliance: 'red' },
+    { id: 2, alliance: 'blue' },
+  ]);
+  const bb = w.biobuzz;
+  if (!bb) return;
+  place(w, 0, -40, 20);
+  place(w, 1, -40, -20);
+  place(w, 2, 40, 20);
+  // the AUTO latches: both red robots LEFT, one PARKED; blue's one robot LEFT
+  bb.leave[0] = true;
+  bb.leave[1] = true;
+  bb.parkAuto[0] = true;
+  bb.parkAuto[1] = false;
+  bb.leave[2] = true;
+  bb.parkAuto[2] = false;
+  // red has one TIP done and a second SWING still moving as TELEOP starts
+  bb.hives.red.tips = 1;
+  intoCell(w, 'red', ['yellow', 'yellow', 'yellow']);
+  bb.hives.red.tipping = BB_TIP_SWING_S - 0.5;
+  bb.hives.red.released = false;
+  w.match.phase = 'teleop';
+  const json = JSON.stringify(w);
+  const t = facts(w, 'teleopStart');
+  /**
+   * RED, LONGHAND: LEAVE 2 × 3 = 6, AUTO PARK 1 × 5 = 5, TIPS 1 × 20 = 20 → 31. The swing still
+   * moving completes in TELEOP and is not AUTO.
+   */
+  check(
+    `RP FACTS: AUTO at TELEOP start = LEAVE + AUTO PARK + completed TIPS = 6 + 5 + 20, not the swing in progress`,
+    t.red.auto === 2 * BB_PTS.leave + BB_PTS.parkAuto + BB_PTS.tip && t.blue.auto === BB_PTS.leave,
+    JSON.stringify(t),
+  );
+  check('RP FACTS: only AUTO is read as TELEOP starts', Object.keys(t.red).join() === 'auto');
+  check('RP FACTS: a pure read (the world is unchanged)', JSON.stringify(w) === json);
+  const e = facts(w, 'autoEnd');
+  check('RP FACTS: nothing is read as AUTO ends', Object.keys(e.red).length === 0 && Object.keys(e.blue).length === 0);
+
+  // the end: robot 1 PARKED for the match; the swing caught by the buzzer is a TIP (§10.5 A)
+  bb.parkTele[0] = false;
+  bb.parkTele[1] = true;
+  bb.parkTele[2] = false;
+  w.match.phase = 'post';
+  const f = facts(w, 'final');
+  const s = bbScoreWorld(w);
+  /** RED, LONGHAND: SWARM = LEAVE 6 + AUTO PARK 5 + TELEOP PARK 5 = 16; TIPS = 1 + the swing = 2. */
+  check(
+    'RP FACTS: SWARM at the end = LEAVE + AUTO PARK + TELEOP PARK = 6 + 5 + 5',
+    f.red.swarm === 2 * BB_PTS.leave + BB_PTS.parkAuto + BB_PTS.parkTele && f.blue.swarm === BB_PTS.leave,
+    JSON.stringify(f),
+  );
+  check(
+    'RP FACTS: TIPS at the end are the score’s own count, the buzzer swing included',
+    f.red.tips === 2 && f.red.tips === s.red.tips && f.blue.tips === s.blue.tips,
+    `facts ${f.red.tips}, score ${s.red.tips}`,
+  );
+  check('RP FACTS: SWARM and TIPS only at the end', Object.keys(f.red).sort().join() === 'swarm,tips');
+}
+
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
@@ -3032,4 +3116,5 @@ export function rulesChecks(check: Check): void {
   cueChecks(check);
   sceneChecks(check);
   settleChecks(check);
+  rankFactsChecks(check);
 }

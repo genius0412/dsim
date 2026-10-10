@@ -27,6 +27,8 @@ import type { Physics } from '../../src/games/types';
 import { BIOBUZZ_SIM } from '../../src/games/biobuzz/sim';
 import { BIOBUZZ_BOT, BB_AI_DEFAULT_TIER, BB_AI_TIERS, bbCoerceTier } from '../../src/games/biobuzz/ai';
 import { BB_AI_TIER_SPECS } from '../../src/games/biobuzz/ai/tiers';
+import { createBiobuzzBot } from '../../src/games/biobuzz/ai/policy';
+import type { BiobuzzState } from '../../src/games/biobuzz/state';
 import {
   BB3_HEIGHT_MAX,
   BB3_STOW_MAX,
@@ -121,6 +123,100 @@ function firstDiff<T>(a: readonly T[], b: readonly T[]): number {
 }
 
 export function aiChecks(check: Check): void {
+  // ---- ROLLING ELEMENTS (3D) ---------------------------------------------------------------
+  /**
+   * A TIP's spill stays `flight` for ~2.8 s after the release under the 3D solve, and the intake
+   * takes a low flight element there, so a bot that read only `ground` elements was blind to the
+   * spill until it settled. A low, slow flight element that has touched something is a target;
+   * the same element still carrying its G409 spill tag (it has touched nothing yet) is not.
+   */
+  {
+    const scene = (tagged: boolean): string => {
+      const w = createBiobuzzWorld('match', 71, [seat(0, 'blue', 0, false), seat(1, 'red', 1, false)], undefined, '3d');
+      startMatch(w);
+      w.robots[0].hopper.length = 0;
+      const ball = w.balls.find((b) => b.color === 'yellow')!;
+      w.balls.length = 0;
+      w.balls.push(ball);
+      ball.state = { kind: 'flight', target: 'blue' };
+      ball.pos = { x: 40, y: 0 };
+      ball.z = 1.4;
+      ball.vz = 0;
+      ball.vel = { x: 4, y: 0 };
+      if (tagged) (w.biobuzz as BiobuzzState).spill = { [ball.id]: 'blue' };
+      const bot = createBiobuzzBot(w, 0, 'hard', 5);
+      bot.step(w);
+      return `${ball.id}|${bot.peek()}`;
+    };
+    const [id, note] = scene(false).split('|');
+    check('a HARD bot goes for a low, slow element still rolling after a spill (3D)', note.startsWith(`collect #${id}`), note);
+    const [id2, note2] = scene(true).split('|');
+    check('…but not one that has touched nothing yet since leaving the tray (G409)', !note2.startsWith(`collect #${id2}`), note2);
+  }
+
+  // ---- THE STAND IS NOT WHERE THE PARTNER IS -----------------------------------------------
+  /**
+   * `standFor` used to try four nearest-point stands and, with the partner parked on all of them,
+   * drive to the blocked one anyway — a bot dithering beside its own partner until the stuck test
+   * threw it off. With the partner standing on the stand the bot would otherwise pick, it picks a
+   * clear one.
+   */
+  {
+    const standOf = (partnerAt: { x: number; y: number } | null): { x: number; y: number } | null => {
+      const w = createBiobuzzWorld(
+        'match',
+        72,
+        [seat(0, 'blue', 0, false), seat(1, 'blue', 1, false), seat(2, 'red', 0, false)],
+        undefined,
+        '3d',
+      );
+      startMatch(w);
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 100;
+      const r = w.robots[0];
+      r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
+      r.pos = { x: 40, y: 0 };
+      const p = w.robots[1];
+      p.hopper.length = 0;
+      p.pos = partnerAt ?? { x: 60, y: -60 };
+      p.vel = { x: 0, y: 0 };
+      w.robots[2].pos = { x: -60, y: 60 };
+      const bot = createBiobuzzBot(w, 0, 'hard', 5);
+      bot.step(w);
+      const m = /→\((-?\d+),(-?\d+)\)/.exec(bot.peek());
+      return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
+    };
+    const alone = standOf(null);
+    const crowded = alone ? standOf(alone) : null;
+    check('a scoring bot heads for a firing stand (the scene is not vacuous)', alone !== null, JSON.stringify(alone));
+    check(
+      '…and with its partner parked on that stand, picks another one clear of it',
+      alone !== null && crowded !== null && Math.hypot(crowded.x - alone.x, crowded.y - alone.y) > 14,
+      `${JSON.stringify(alone)} -> ${JSON.stringify(crowded)}`,
+    );
+  }
+
+  // ---- WEIGHTS ARE PER SEAT, AND THE DEFAULT IS WHAT SHIPS --------------------------------
+  {
+    const idx = readFileSync(join(AI_DIR, 'index.ts'), 'utf8');
+    check('BotDriver.create passes no weights (what ships is BB_AI_WEIGHTS)', /createBiobuzzBot\(world, robotId, tier, seed\)/.test(idx));
+    const runWith = (weights?: Record<string, number>): string => {
+      const w = createBiobuzzWorld('match', 73, [seat(0, 'blue', 0, false), seat(1, 'red', 1, false)], undefined, '3d');
+      startMatch(w);
+      const bot = createBiobuzzBot(w, 0, 'hard', 9, weights);
+      const cmds = new Map<number, RobotCommand>();
+      const out: string[] = [];
+      for (let t = 0; t < 600; t++) {
+        const c = bot.step(w);
+        cmds.set(0, c);
+        out.push(JSON.stringify(c));
+        biobuzzStep(w, SIM_DT, cmds);
+      }
+      return out.join('');
+    };
+    check('a seat handed its own weights drives differently (the plumbing is live)', runWith() !== runWith({ brake: 0.95, turnW: 0.1 }));
+  }
+
   // ---- THE SEAM ----------------------------------------------------------------------------
   {
     check('BIOBUZZ registers a bot driver on the sim module', simModuleFor('biobuzz').bot !== undefined);

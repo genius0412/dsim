@@ -8,7 +8,7 @@
  *
  * ## Why a Worker and not the page
  *
- * `Room` drives itself with `setInterval` at 60 Hz, and a hidden page cannot hold that. MEASURED
+ * `Room` drives itself off a 60 Hz timer (`server/tickScheduler.ts`), and a hidden page cannot hold that. MEASURED
  * side by side in one hidden tab for 7 minutes (`docs/lan-webrtc.md` §6): the PAGE thread ran at
  * 59 Hz for the first half-minute, fell to **1–2 Hz**, and past the five-minute mark dropped to
  * **one tick per minute** under Chrome's intensive throttling. The WORKER held **60.08 Hz for
@@ -35,12 +35,14 @@
  * host's own account, exactly as the desktop-app LAN path already does.
  */
 import { Room, type Client } from '../../server/room';
-import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
+import { coerceCaps, decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
+import { importAdmission, importIdOf, isImportedSpec } from '../net/imported';
+import { sanitizePlayer } from '../net/sanitize';
 import { initPhysics } from '../sim/physicsEngine';
 import { initPhysics3d } from '../games/biobuzz/sim3d/engine';
-import { coerceGameId, serverPhysics } from '../games/types';
+import { coerceGameId, serverPhysics, type GameId } from '../games/types';
 import { simModuleFor } from '../games/sim';
-import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
+import { HEALTH_INTERVAL_MS, HOST_SEAT, hostRoomConfig, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
   (self as unknown as { postMessage: (m: HostOut) => void }).postMessage(m);
@@ -65,8 +67,9 @@ let room: Room | null = null;
 /** everyone currently attached, so a `close` can detach them deterministically */
 const members = new Set<string>();
 
-/** one guest's seat at the room, addressed by its signalling peer id */
-function seat(id: string, player: HostIn & { k: 'add' }): Client {
+/** one guest's seat at the room, addressed by its signalling peer id. `game` is the ROOM's, so the
+ *  spec is clamped against the same envelope the room builds the robot under. */
+function seat(id: string, player: HostIn & { k: 'add' }, game: GameId): Client {
   const sendRaw = (raw: string): void => post({ k: 'send', id, raw, reliable: !isHot(raw) });
   return {
     id,
@@ -78,7 +81,13 @@ function seat(id: string, player: HostIn & { k: 'add' }): Client {
        socket-less caller (tests, the headless smoke) and is defensible on a LAN, where the link
        is not the bottleneck. If a real backlog ever shows up on venue Wi-Fi, the fix is for the
        page to push `bufferedAmount` across on the health tick, not to block this thread. */
-    player: { ...player.player, clientId: id },
+    /* ⚠️ SANITISED, LIKE THE CLOUD'S `joinRoom` (`server/index.ts`). This used to spread the guest's
+       `join` player straight onto the roster: the comment in `hostRuntime.fromSeat` says "the room
+       sanitizes whatever it is given", and `Room.add` does not. Only an `update` patch and the
+       spawn (`coerceSetup`) ever clamped it, so until the match started every peer in a tab-hosted
+       room saw a guest's raw wire spec, of any size a DataChannel will carry — and an imported
+       robot is exactly the field that must not be taken on a guest's say-so. */
+    player: { ...sanitizePlayer(player.player, game), clientId: id },
     /* ⚠️ THE LANE THIS SEAT'S SNAPSHOTS TAKE CAN DROP THEM. `isHot` above puts every snapshot
        on the guest's unordered `maxRetransmits: 0` channel, which is the right trade for a
        frame the next one supersedes — but it means the room may NOT assume a snapshot it sent
@@ -90,7 +99,7 @@ function seat(id: string, player: HostIn & { k: 'add' }): Client {
     lossy: true,
     connected: true,
     disconnectAt: 0,
-    caps: player.caps ?? [],
+    caps: coerceCaps(player.caps),
     channel: player.channel,
     userId: player.userId,
   };
@@ -141,8 +150,9 @@ self.addEventListener('message', (e: MessageEvent) => {
     void Promise.all([initPhysics(), needs3d ? initPhysics3d() : null]).then(
       () => {
         /* No persistence callbacks — see the header. The room empties itself when the last
-           member leaves, and the page decides whether that ends the session. */
-        room = new Room(m.code, () => post({ k: 'empty' }), m.config);
+           member leaves, and the page decides whether that ends the session. Imported robots
+           only on the page's say-so (`hostRoomConfig`): an `open` without it is closed. */
+        room = new Room(m.code, () => post({ k: 'empty' }), hostRoomConfig(m));
         /* The host joins LAST — they are still on the LAN screen reading the code out while
            guests arrive — so the seat is claimed now or a guest gets it. See `reserveHost`. */
         room.reserveHost(HOST_SEAT);
@@ -176,7 +186,20 @@ self.addEventListener('message', (e: MessageEvent) => {
       post({ k: 'refused', id: m.id, message: 'That code is for a different game mode.' });
       return;
     }
-    room.add(seat(m.id, m));
+    /* IMPORTED ROBOTS: the same admission rule the cloud's join door asks (`importAdmission`). A LAN
+       room is a custom room, so it allows them where the importer ships (`open.imports`); what
+       else can refuse is a build without the capability on either side of one. `Room.add` asks
+       again, but a refusal HERE is the one that tells the link to close, as the two above do. */
+    const refusal = importAdmission(room.importState(), {
+      imported: isImportedSpec(m.player?.spec),
+      caps: coerceCaps(m.caps),
+      id: importIdOf(m.player?.spec),
+    });
+    if (refusal) {
+      post({ k: 'refused', id: m.id, message: refusal });
+      return;
+    }
+    room.add(seat(m.id, m, room.gameId));
     members.add(m.id);
     return;
   }

@@ -222,7 +222,13 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      trimesh (`buildFlowerSolids3d`, `GROUP_CHASSIS`), so a chassis is no longer lifted onto the
  *      0.35-in lower lip or pushed into the tiles; the three plate trimeshes are one collider now,
  *      which moves Rapier's pair order. Elements meet the same surfaces as before.
- * 5: TWO OFF-BY-ONES IN THE SHARED STEP, both found by review and both pinned by the golden
+ * 5: SWERVE POD ORDER (2026-10-02, owner-approved). The traction loop in `updateRobot` read
+ *    `moduleAngles` (FL, FR, BL, BR) against `wheelLocals` (then FL, FR, BR, BL), so a swerve's two
+ *    rear wheels resisted contact slip along each other's pod axes. Both now come from
+ *    `WHEEL_CORNERS`. Only swerve robots in 2D contact move (DECODE, Chain Reaction, BIOBUZZ 2D);
+ *    every other drivetrain, and all of BIOBUZZ 3D, steps bit-identically. Everything stamped 4
+ *    plays as DRIFT.
+ * 6: TWO OFF-BY-ONES IN THE SHARED STEP, both found by review and both pinned by the golden
  *    scenes (`scripts/simGolden.ts`), which is how a bump is now proven necessary rather than
  *    remembered:
  *    · EVERY PHASE ENDS ON ITS TICK (`clockExpired`, sim/match.ts). The clocks count down by
@@ -235,23 +241,79 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      from tick 0, and ids differ wherever one would have been reused.
  *    BALANCE_VERSION is NOT bumped with it: the owner declined a balance bump on 2026-09-17 (see
  *    the note under BALANCE_VERSION), and neither change is a balance decision. Every replay
- *    stamped 4 plays as `behaviour` DRIFT on a 5 build.
+ *    stamped 5 plays as `behaviour` DRIFT on a 5 build.
  */
-export const SIM_VERSION = 5;
+export const SIM_VERSION = 6;
+
+/**
+ * A BEHAVIOUR FIX SMALL ENOUGH NOT TO RETIRE EVERY REPLAY. `SIM_VERSION` refuses every older
+ * replay in every game; a patch keeps them playing by re-running the OLD rule for them. A
+ * replay carries the patch it was recorded under (`Replay.patch`, absent ⇒ 0), `ReplayPlayer`
+ * copies it onto its world (`World.simPatch`), and each gated rule asks
+ * `world.simPatch === undefined || world.simPatch >= n`. A LIVE world never carries the field,
+ * so it always runs the current rules and nothing new rides the wire.
+ *
+ * ⚠️ MONOTONIC: never reset it, including at a `SIM_VERSION` bump — a gate reads `>= n`, and a
+ * reset would send new replays down an old branch. After a bump the old branches are dead code
+ * (their replays are refused) and may be deleted.
+ *
+ *   1  BIOBUZZ 3D: an element joins a FLOWER through the top only (`sim3d/derive.ts`).
+ *      Live on the site 2026-09-27 08:34:35Z, on the game server 17:14–17:16Z.
+ *   2  BIOBUZZ 3D: a hive cell's floor and back colliders stand `BB3_TRAY_OUTER_SKIN` (0.5 in)
+ *      out past the CAD surface instead of 1.5, so a NECTAR no longer wedges between the down
+ *      cell and the ACM panel (`sim3d/bodies.ts`, `trayOuterSkin`).
+ *   3  BIOBUZZ 3D: the wall square-up is a turn the SOLVE makes (one tick of extra yaw rate),
+ *      not a heading written after it (`sim3d/step3dImpl.ts` stage 6b) — the online wall bump.
+ *   4  FIXED LAUNCHERS, both games: the aim assist turns with `fixedAimTurn` (`sim/aimTurn.ts`)
+ *      and leads only translation; DECODE releases inside `decodeFixedAimTol` and a tank's forward
+ *      yields to the turn; the feed clock reads through `flyFeedDue` with `FLY_FEED_TIME_EPS`. Before
+ *      it: the `*_PRE4` constants (`fixedShot.ts`, `biobuzz/play.ts`, `biobuzz/robot.ts`).
+ *   5  BIOBUZZ 3D: a loose element the narrow-hull vibration cannot free from HIVE structure is
+ *      SHED off it (a hashed hop, `BB3_HIVE_SHED_*`) instead of frozen on top of the HIVE for the
+ *      rest of the match (`sim3d/engineImpl.ts`, `groundRoll3d`). On `main` from 2026-10-03
+ *      without 3 and 4, so a `main` replay stamped 5 did not run them.
+ *   6  BIOBUZZ, IMPORTED `siderollers` robots only: the two wheels sit inside the hull's own
+ *      front corners (`bbImportSideRollerV`), the 3D compound stops at the roller line inside the
+ *      mouth span (`bbImportClipReach`), and the 2D FLOWER gate measures the wheel from the hull's
+ *      front (`biobuzz/play.ts`). Before it a side-roller import could not reach a FLOWER's
+ *      bottom POLLEN in 3D at all. Standard robots step bit-identically.
+ *   7  BIOBUZZ 3D, a robot at a FLOWER: it meets the middle and top plates over their measured
+ *      outline (`BB_FLOWER_PLATE_OUTLINE`, `sim3d/flowerTube.ts`), not a box whose corners stood
+ *      0.7 in past the real plate's; a side-roller import's bands are cut back to the CAD's own
+ *      front inside the mouth (`ImportedBand.cuts`, `bbImportClipReach`); and an import's band
+ *      wholly under the mouth slot is carved top to bottom, not left whole along its top 0.1 in
+ *      (`import3dShapes`). goBILDA's BIOBUZZ bot stopped 0.77 in short of the ring axis driven
+ *      straight in, its CAD 0.38; now 0.38.
+ */
+export const SIM_PATCH = 7;
+
+/** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
+ *  replay runs the ones it was recorded under. */
+export function simPatchAtLeast(world: { simPatch?: number }, n: number): boolean {
+  return world.simPatch === undefined || world.simPatch >= n;
+}
 
 /** a toggle-button release shorter than this is a dropout, not a release (`debouncedPress`,
  * `src/sim/robot.ts`). 2.5 ticks: a 3-tick gap, the fastest real re-press in replay 1dc6eb8f,
  * counts; a 1–2-tick dropout does not. */
 export const TOGGLE_DEBOUNCE_S = 2.5 / 60;
 
-/** Ranked PLACEMENT: a player is "in placements" until they've completed this
- * many ranked games on a board (counted per mode).
- * Until placed they are HIDDEN from the leaderboard and shown a "?" plus an
- * "N matches until placement" line. This REPLACES the old RD-based provisional
- * flag (`rd > 110`), which stayed set far too long in a young pool: Glicko RD
- * shrinks only slowly when opponents are themselves uncertain, so players kept
- * the "?" for dozens of games. RD is still used INTERNALLY by Glicko-2 to size
- * how hard each result swings the rating — it just no longer drives the UI. */
+/** Ranked PLACEMENT, per mode: a player is "in placements" until they've completed this many
+ * ranked games on a board. Until placed they are HIDDEN from the leaderboard (and from the
+ * act's podium awards, which read it), and shown a "?" plus an "N matches until placement"
+ * line. Games-based, not RD-based: Glicko RD shrinks only slowly when opponents are themselves
+ * uncertain, so an RD test kept the "?" for dozens of games.
+ *
+ * 10 and 7 since 2026-10-03 (owner), up from 5 for both: a player 5-0 at RD ~200 topped the
+ * BIOBUZZ board over people with 30 games. Archived seasons keep 5 (`boardMinGames` in
+ * server/db/repo.ts), so a past board still names the players its awards did. */
+export const RANKED_PLACEMENT: Readonly<Record<'1v1' | '2v2', number>> = { '1v1': 10, '2v2': 7 };
+export const placementGamesFor = (mode: '1v1' | '2v2'): number => RANKED_PLACEMENT[mode];
+
+/** The games a rating needs before the MATCHMAKER trusts it: the 1v1 skill gate and the 2v2
+ * seed's weights (`server/matchmaking.ts`). Was also the player-facing placement until
+ * 2026-10-03 (see `RANKED_PLACEMENT`); the matchmaker kept 5 because it is a statistical
+ * threshold, not a public one. */
 export const PLACEMENT_GAMES = 5;
 
 /** Ratings never print below this. Glicko has no floor of its own, so a long enough losing
@@ -1149,6 +1211,30 @@ export const SWERVE_MIN_WIDTH = 13.5;
 /** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
  * the four wheel ground-contact points are what counts for base parking */
 export const WHEEL_INSET = 2.6;
+/**
+ * THE WHEEL ORDER: FL, FR, BL, BR, as corner signs in the robot frame (+x forward, +y left).
+ * Wheel i is `WHEEL_CORNERS[i]` everywhere a robot has a per-wheel array — in particular
+ * `RobotState.moduleAngles[i]` / `moduleTargets[i]` are the swerve pod at that corner. Every site
+ * that pairs a pod with a wheel position derives the position from this list: `wheelLocals`
+ * (the swerve IK/FK and the traction loop in `src/sim/robot.ts`), the three canvas `drawWheels`
+ * and BIOBUZZ 3D's `buildWheels`.
+ *
+ * ⚠️ Those sites used to write their corners out by hand, and `wheelLocals` walked the perimeter
+ * (FL, FR, BR, BL) while the IK and the sprites used this order — so the traction model resisted
+ * a swerve's two rear wheels along each other's pod axes (fixed in `SIM_VERSION` 5). Never index a
+ * pod against a hand-written corner list.
+ */
+export const WHEEL_CORNERS: readonly (readonly [1 | -1, 1 | -1])[] = [
+  [1, 1], // FL
+  [1, -1], // FR
+  [-1, 1], // BL
+  [-1, -1], // BR
+];
+/** `WHEEL_CORNERS` indices walked round the chassis (FL, FR, BR, BL). `wheelContacts` is a
+ * polygon and reads its points in this order; the traction loop sums its four forces in it, which
+ * is the order it always summed them in, so a robot without pods steps bit-identically across the
+ * `SIM_VERSION` 5 fix. Neither reorders which pod a wheel reads. */
+export const WHEEL_PERIMETER: readonly number[] = [0, 1, 3, 2];
 // ============================================================================
 // DRIVETRAIN & MOTOR BALANCE — TUNE HERE
 // ----------------------------------------------------------------------------
@@ -1595,7 +1681,7 @@ export const HELD_SLIDE_SPEED = 150;
  * the mouth and changes no physics at all. The wedges meet it at its axle, so the funnel
  * keeps a visible mouth in front of them.
  */
-export const INTAKE_ROLLER_MM = { sloped: 72, vector: 48, triangle: 72 } as const;
+export const INTAKE_ROLLER_MM = { sloped: 72, vector: 48, triangle: 72, none: 0 } as const;
 /** fore-aft thickness of the gate-opener tab on each shaft end. A tab on a beam end, not a
  * slab: drawing it the full roller diameter made the front read as one solid block. */
 export const INTAKE_OPENER_THICK = 0.9; // in
@@ -1808,7 +1894,25 @@ export const INTAKE_PRESETS = {
       capMin: 0.00833, capMax: 0.04167, clumpInterval: 0.00833, dual: true,
     },
   },
+  /** NONE (DECODE only): no intake at all. The footprint is the chassis (reach 0), nothing on the
+   * front is open to an artifact, and the robot is loaded by the HUMAN PLAYER while it sits in its
+   * own LOADING ZONE (`updateHumanPlayers`, manual G432: "DRIVE TEAM members may load SCORING
+   * ELEMENTS into a ROBOT that is partially or fully in the LOADING ZONE"). The kit robot is built
+   * this way. Every capture path is gated on `noIntake`, not on these numbers; the mouth is all
+   * zeros so nothing that forgets the gate can grab. `minLength` 15 keeps the three held artifacts
+   * (a line of 5-in balls, front skin at the face) inside the chassis; `fireInterval` is the
+   * vector's, for a turret robot loaded by hand. */
+  none: {
+    reach: 0, overhang: false, minLength: 15, maxLength: 18, minWidth: ROBOT_MIN_WIDTH, fireInterval: 0.1, fireCap: 0,
+    mouth: {
+      wedge: false, mouthHalf: 0, throatHalf: 0, drawIn: 0,
+      capMin: 0, capMax: 0, clumpInterval: 0, dual: false,
+    },
+  },
 } as const;
+
+/** a robot with NO intake (`intake: 'none'`, DECODE): the human player loads it by hand */
+export const noIntake = (spec: { intake: string }): boolean => spec.intake === 'none';
 
 /** the intake mouth geometry as it applies to a SPECIFIC robot. The VECTOR wheel
  * row spans the FULL chassis width (mouthHalf = width/2 — the intake is exactly as
@@ -1854,6 +1958,107 @@ export const LAUNCH_MAX_SPEED = 320; // in/s
 /** fraction of chassis velocity inherited by the launched ball. The turret's
  * aim solver lead-compensates for it, so shooting on the move is accurate. */
 export const SHOT_ROBOT_VEL_INHERIT = 0.5;
+
+// --------------------------------------- fixed shooter / setpoint flywheel ----
+/**
+ * A LAUNCHER THAT DOES NOT SOLVE ITS OWN SHOT (`src/sim/flywheel.ts`, `RobotSpec.launcher` /
+ * `hoodDeg` / `flywheel`). Shared by DECODE and BIOBUZZ: the hardware is the same in both games,
+ * a wheel on one shaft pinching the artifact against a fixed hood.
+ *
+ * EXIT SPEED = `FLY_EXIT_EFFICIENCY · π · wheelMm/25.4 · rpm/60` in/s. A wheel rolling an artifact
+ * along a hood that does not move gives the artifact's centre HALF the surface speed (0.5); the
+ * squeeze and the slip take some of that back. The value is CALIBRATED, not measured: it is the
+ * efficiency at which the DECODE kit robot (1125 ticks/s on a 28-PPR 1:1 motor = 2411 rpm, 96 mm
+ * wheels, the hood at `DECODE_KIT_HOOD_DEG`) scores the shot its own autonomous makes — three
+ * artifacts from a start against the goal. Smoke measures the band it gives (see
+ * `docs/area/decode.md`, "Fixed shooters"), and BIOBUZZ uses the same number unchanged.
+ */
+export const FLY_EXIT_EFFICIENCY = 0.4;
+/** the feeder waits until the wheel is back to this fraction of its setpoint. 1075 / 1125, the
+ * kit OpMode's `LAUNCHER_MIN_VELOCITY` over its `LAUNCHER_TARGET_VELOCITY`. */
+export const FLY_FEED_MIN_FRAC = 1075 / 1125;
+/** how fast the wheel spins up toward its setpoint, rpm per second, at `flywheelInertia` 0. APPROX
+ * — a 6000-rpm motor 1:1 on a light wheel reaches the kit's 2411 rpm in about 0.4 s. */
+export const FLY_RAMP_RPM_S = 6000;
+/** at `flywheelInertia` 1 the ramp is this much slower (a heavier wheel takes longer to spin up). */
+export const FLY_RAMP_INERTIA_SLOW = 0.5;
+/** the fraction of its speed the wheel loses to one artifact, at `flywheelInertia` 0. APPROX. */
+export const FLY_SHOT_DROP = 0.1;
+/** at `flywheelInertia` 1 the per-shot drop is cut by this much (a heavier wheel stores more). */
+export const FLY_SHOT_DROP_INERTIA_CUT = 0.75;
+/**
+ * slack (s) on a fixed shooter's feed clock (`flyFeedDue`): `world.time` is a running sum of 1/60,
+ * so twelve ticks after a feed it can sit a few ulps short of `fireReadyAt = t + 0.2`, and the
+ * next feed slipped a whole tick — measured, most 0.20-s feeds took 13 ticks (4.68/s, not 5) and
+ * 0.30-s ones 18 or 19. A microsecond is far under a tick and far over the rounding.
+ */
+export const FLY_FEED_TIME_EPS = 1e-6;
+/** setpoint, wheel and feeder bounds the coercer clamps to. 6000 rpm is a 1:1 FTC motor's free
+ * speed; 48–140 mm spans the kit wheels; three presets is what a bumper-and-trigger driver uses. */
+export const FLY_RPM_MIN = 500;
+export const FLY_RPM_MAX = 6000;
+export const FLY_WHEEL_MM_MIN = 48;
+export const FLY_WHEEL_MM_MAX = 140;
+export const FLY_FEED_S_MIN = 0.05;
+export const FLY_FEED_S_MAX = 1;
+export const FLY_PRESETS_MAX = 3;
+/** a setpoint flywheel's defaults: the DECODE kit's launcher (2411 rpm, 96 mm, 0.20-s feed). */
+export const FLY_DEFAULT_RPM = 2411;
+export const FLY_DEFAULT_WHEEL_MM = 96;
+export const FLY_DEFAULT_FEED_S = 0.2;
+/** no setpoint flywheel throws faster than this (in/s) — past any FTC launcher, a guard on the
+ * clamps rather than a tuning value. */
+export const FLY_EXIT_MAX = 450;
+/** DECODE's FIXED HOOD range, degrees above level. 80 is the adjustable hood's own ceiling
+ * (`LAUNCH_ANGLE_MAX`); below 20 nothing rises 27 in to the opening. */
+export const DECODE_HOOD_MIN_DEG = 20;
+export const DECODE_HOOD_MAX_DEG = 80;
+/** the hood an adjustable-speed-only solve falls back to when no angle reaches the goal: the
+ * maximum-range throw, so the shot falls honestly short. */
+export const DECODE_HOOD_FALLBACK_DEG = 45;
+/**
+ * the DECODE kit robot's hood, as the sim flies it: an EFFECTIVE angle, chosen with
+ * `FLY_EXIT_EFFICIENCY` so its against-the-goal autonomous shot scores (the kit's own documented
+ * auto).
+ *
+ * MEASURED ON THE KIT'S CAD (2026-10-02, the mecanum variant's STEP, whose launcher the skid-steer
+ * kit shares part for part): the two polycarbonate ramps end in a straight vertical run bolted flat
+ * to a U-channel, so the artifact leaves the guide at **90° ±2°**, 13.0 in up, near the robot's
+ * launcher end. A 90° arc has no horizontal travel; what carries the real artifact over the goal
+ * face is the spin of the one-sided pinch (the wheel on one side, the ramp on the other), which
+ * curves it toward the launcher end. The flight stage has no spin, so the kit flies the no-spin
+ * arc that lands where the real one does instead of the guide's angle.
+ */
+export const DECODE_KIT_HOOD_DEG = 70;
+/**
+ * a FIXED launcher with aim assist releases a held fire once the shot along the chassis would land
+ * within this fraction of `GOAL_OPENING_RADIUS` of the goal centre sideways: the release tolerance
+ * is that offset's ANGLE at the muzzle's distance (`decodeFixedAimTol`): 0.11 rad at 50 in, 0.055
+ * at 100. It replaced a flat 0.06 rad, the opening's half-width seen from about 8 ft, so twice as
+ * tight as the goal at the kit's own 40–60 in band.
+ */
+export const DECODE_FIXED_AIM_OPENING_FRAC = 0.5;
+/** BEFORE `SIM_PATCH` 4 (a replay recorded then): the flat release tolerance (rad) and the
+ *  chassis-turn P gain a DECODE fixed launcher's aim assist used, dead-banded at that tolerance */
+export const DECODE_FIXED_AIM_TOL_PRE4 = 0.06;
+export const DECODE_FIXED_AIM_GAIN_PRE4 = 4.5;
+/** ...and never wider than this (rad), however close: the arc is not a straight line at point blank */
+export const DECODE_FIXED_AIM_TOL_MAX = 0.25;
+
+/**
+ * THE CHASSIS-AIM CONTROLLER (`src/sim/aimTurn.ts`) a FIXED launcher's aim assist turns with, in
+ * both games. The commanded spin is the least of the chassis's top turn rate, the rate it can still
+ * stop from inside the remaining error (`√(2·a·|err|)`, `a` this fraction of its braking authority
+ * `MOTOR_BRAKE_MULT · turnAccel`), and `FIXED_AIM_SETTLE_RATE · |err|`.
+ */
+export const FIXED_AIM_DECEL_FRAC = 0.5;
+/**
+ * the last stage's rate (1/s): within ~0.25 rad the heading error closes as e^(−15 t), a quarter of
+ * it per 60-Hz tick, so it settles without crossing zero. Matched to the deceleration term above —
+ * at the hand-over `2a/K²` both ask the motors for exactly their braking authority — so the slowest
+ * chassis can follow it too.
+ */
+export const FIXED_AIM_SETTLE_RATE = 15;
 
 // ----------------------------------------------------------------- goal ----
 /** GOAL footprint: a right triangle tucked into the far corner with its legs
@@ -2892,6 +3097,19 @@ export const START_PEN_SLOP = 0.75;
 
 // --------------------------------------------------------- human player ----
 export const HP_PLACE_DELAY = 0.15; // s between placements from the box into the grab row (fast HP)
+/**
+ * HAND LOADING (`updateHumanPlayers`): a robot with NO intake (`noIntake`) is loaded by the human
+ * player while any part of it is in its own LOADING ZONE (manual G432: "DRIVE TEAM members may load
+ * SCORING ELEMENTS into a ROBOT that is partially or fully in the LOADING ZONE"), TELEOP only.
+ * One artifact per `HP_HAND_LOAD_S` (APPROX: a person dropping balls one at a time into a hopper),
+ * from the box first, else off the zone's own floor, and only while the robot is nearly still —
+ * nobody hand-feeds a robot driving past (`HP_HAND_LOAD_MAX_SPEED` in/s, `_MAX_TURN` rad/s, both
+ * APPROX). Robots WITH an intake are left to it: the rule allows loading them too, but the sim's
+ * human player stages the grab row for them, as it always has.
+ */
+export const HP_HAND_LOAD_S = 0.4;
+export const HP_HAND_LOAD_MAX_SPEED = 12;
+export const HP_HAND_LOAD_MAX_TURN = 1.5;
 /** the alliance-area pool is two 3-ball preload sets (4P+2G total); each present
  * robot takes one, and any leftover sets seed the human-player box (spawn.ts hpBox) */
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];
@@ -2950,6 +3168,43 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
     name: 'Ditto', teamName: 'Galactic Narwhal Chicken Effect - Diamond', teamNumber: 22489,
     length: 14.5, width: 16, intake: 'vector', massLb: 28, drivetrain: 'mecanum',
     driveRpm: 450, flywheelInertia: 0.9, canSort: false, assists: PRESET_ASSISTS,
+  },
+  /**
+   * THE KIT ROBOT — the season's official starter bot, as the sim can build it. LAST, because
+   * `ROBOT_PRESETS[0]` is the build `DEFAULT_SPEC` mirrors, and every card above it is a team's.
+   * No vendor is named (the BIOBUZZ card's owner ruling, `games/biobuzz/presets.ts`).
+   *
+   * FROM THE KIT'S DOCUMENTATION AND ITS OWN TELEOP / AUTONOMOUS OPMODES:
+   *  · drive: skid-steer, two 312-rpm gearmotors (19.2:1) on 96-mm wheels, two driven and two
+   *    omni ⇒ `tank`; `driveRpm` = π·(96/25.4)·312/60 = 61.7 in/s ÷ (`SPEED_PER_RPM` 0.20367 ·
+   *    1.06 tank) = 286, the BIOBUZZ kit card's own conversion.
+   *  · launcher: no turret — the robot turns to aim ⇒ `launcher: 'fixed'`. One 1:1 motor
+   *    (6000 rpm, 28 PPR) driving two 96-mm wheels at LAUNCHER_TARGET_VELOCITY 1125 ticks/s =
+   *    2411 rpm, at any range ⇒ flywheel `fixed` [2411], 96 mm. The feeder (two continuous
+   *    servos) runs FEED_TIME 0.20 s a shot, and only above LAUNCHER_MIN_VELOCITY 1075
+   *    (`FLY_FEED_MIN_FRAC`).
+   *  · hood: fixed polycarbonate ramps; the guide exits at 90° (measured on the CAD), flown at the
+   *    effective `DECODE_KIT_HOOD_DEG` (see there: the flight stage has no spin).
+   *  · INTAKE: none — the human player loads it by hand in the LOADING ZONE (`intake: 'none'`,
+   *    `handLoad`, G432). The launcher end is the robot's front: its autonomous starts with that
+   *    end against the goal.
+   *  · frame 17.0 in long (measured on the CAD).
+   *  · hopper 3 (`HOPPER_CAPACITY`, the same).
+   * WHERE THE SIM CANNOT FOLLOW IT, each a clamp rather than a choice:
+   *  · MASS: the kit is 13.5 lb with its hub; DECODE's tank floor is 22 (`DRIVETRAIN_LIMITS`), so
+   *    the card sits ON the floor, with `flywheelInertia` 0 to keep it there.
+   *  · RELEASE POINT: a standard fixed launcher releases at the turret's point (a sixth of the
+   *    length behind the centre, `LAUNCH_HEIGHT` 12 in); the kit's is 13.0 in up and 3.2 in behind
+   *    its front. The effective hood is calibrated from the sim's point.
+   *  · Width 16 is APPROX (the skid-steer's CAD file is cut off at the source; the mecanum
+   *    variant's 17.8 in is across its wider wheels).
+   */
+  {
+    name: 'StarterBot', teamName: 'Kit robot · tank', teamNumber: 0,
+    length: 17, width: 16, intake: 'none', massLb: 22, drivetrain: 'tank',
+    driveRpm: 286, flywheelInertia: 0, canSort: false, assists: PRESET_ASSISTS,
+    launcher: 'fixed', hoodDeg: DECODE_KIT_HOOD_DEG,
+    flywheel: { mode: 'fixed', rpm: [2411], wheelMm: 96, feedS: 0.2 },
   },
 ] as const;
 

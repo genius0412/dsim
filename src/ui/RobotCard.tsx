@@ -34,6 +34,7 @@ export function RobotCard({
   on,
   team,
   real = false,
+  imported = false,
   thumb,
   onPick,
   onDelete,
@@ -47,6 +48,9 @@ export function RobotCard({
   team?: string;
   /** a documented real-world robot rather than an archetype demo — a "Real robot" badge */
   real?: boolean;
+  /** a robot from the CAD importer (`spec.imported`): an "Imported" badge, the same spelling as
+   *  `real`. The CALLER says so, because only the caller knows where the card came from. */
+  imported?: boolean;
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
   onPick(): void;
@@ -62,6 +66,7 @@ export function RobotCard({
       <span className="ot">
         <Marquee text={spec.name || 'Unnamed'} />
         {real ? <span className="ds-badge">Real robot</span> : null}
+        {imported ? <span className="ds-badge">Imported</span> : null}
       </span>
       {team ? (
         <span className="od">

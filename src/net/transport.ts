@@ -74,6 +74,8 @@ const RECONNECT_JITTER_MS = 400;
  * "reconnecting" do nothing, never reaching the second attempt that would have worked.
  * Comfortably above a measured Fly cold boot (~6 s) so a waking machine is never cut off. */
 const CONNECT_TIMEOUT_MS = 8000;
+/** the close code a server uses to release an idle socket; never reconnected (server/index.ts) */
+export const IDLE_CLOSE_CODE = 4002;
 
 export class WebSocketTransport implements Transport {
   /**
@@ -150,9 +152,18 @@ export class WebSocketTransport implements Transport {
         this.reopenCb?.();
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (this.disposed || this.ws !== ws) return; // superseded/abandoned socket
       this.clearConnectTimer();
+      // THE SERVER LET US GO ON PURPOSE (an auto-stopping region releasing a socket that sat
+      // outside a live match with nobody at it — see `IDLE_RELEASE_MS` in server/index.ts).
+      // Reconnecting would wake the machine straight back up for nobody, which is the whole
+      // thing the release exists to stop; the seat is already freed, so report it as over.
+      if (e.code === IDLE_CLOSE_CODE) {
+        this.disposed = true;
+        this.failCb?.();
+        return;
+      }
       this.downCb?.();
       this.scheduleReconnect();
     };

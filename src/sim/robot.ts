@@ -4,7 +4,19 @@ import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../mat
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
+import { importedInertia, importedWheels } from './imported';
+import { decodeImportLaunchZ, decodeImportMouth, decodeImportTurret } from './importedMech';
 import { robotsEnabled } from './match';
+import {
+  decodeFixedAim,
+  decodeFixedFacing,
+  decodeFixedLauncher,
+  decodeFixedOnTarget,
+  decodeFixedRelease,
+  decodeFixedShotScores,
+  decodeShotSpecial,
+} from './fixedShot';
+import { flyFeedDue, flyReady, flyShot, flyStep } from './flywheel';
 import { allocBallId } from './ballIds';
 
 /** launch is legal when ANY part of the robot is inside a launch zone. Uses a
@@ -17,14 +29,15 @@ export function robotInLaunchZone(r: RobotState): boolean {
 }
 
 export function turretWorldPos(r: RobotState): { x: number; y: number } {
-  const o = rot({ x: r.spec.length * C.TURRET_OFFSET_FRAC, y: 0 }, r.heading);
+  // an IMPORT's turret is where it was placed on the CAD (`decodeImportTurret`)
+  const o = rot(r.spec.imported ? decodeImportTurret(r.spec) : { x: r.spec.length * C.TURRET_OFFSET_FRAC, y: 0 }, r.heading);
   return { x: r.pos.x + o.x, y: r.pos.y + o.y };
 }
 
 /** exact ballistic solution through the goal opening. The hood angle
  * steepens at close range so a solution exists at every distance. */
-function solveShot(d: number): { speed: number; angle: number } {
-  const dh = C.GOAL_OPENING_Z - C.LAUNCH_HEIGHT;
+function solveShot(d: number, launchZ: number = C.LAUNCH_HEIGHT): { speed: number; angle: number } {
+  const dh = C.GOAL_OPENING_Z - launchZ;
   const dd = Math.max(d, 0.5);
   // Minimum-speed trajectory that reaches the goal opening at (dd, dh). Unlike a
   // fixed-hood solve, it ALWAYS exists, is finite, and varies SMOOTHLY with
@@ -45,6 +58,8 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   const tp = turretWorldPos(r);
   const g = goalCenter(r.alliance);
   const wv = { x: r.vel.x * C.SHOT_ROBOT_VEL_INHERIT, y: r.vel.y * C.SHOT_ROBOT_VEL_INHERIT };
+  // an IMPORT releases at its placed height (`decodeImportLaunchZ`); the same constant otherwise
+  const lz = r.spec.imported ? decodeImportLaunchZ(r.spec) : C.LAUNCH_HEIGHT;
   let dx = g.x - tp.x;
   let dy = g.y - tp.y;
 
@@ -54,12 +69,12 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   // console.log(`  Target Goal Center: (${g.x.toFixed(2)}, ${g.y.toFixed(2)})`);
   // console.log(`  Vector to Goal (dx, dy): (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
 
-  let sol = solveShot(hyp(dx, dy));
+  let sol = solveShot(hyp(dx, dy), lz);
   for (let i = 0; i < 3; i++) {
     const t = hyp(dx, dy) / Math.max(sol.speed * dcos(sol.angle), 1);
     dx = g.x - tp.x - wv.x * t;
     dy = g.y - tp.y - wv.y * t;
-    sol = solveShot(hyp(dx, dy));
+    sol = solveShot(hyp(dx, dy), lz);
   }
   const yaw = datan2(dy, dx);
   // console.log(`  Calculated Yaw: ${(yaw * 180 / Math.PI).toFixed(2)} deg`);
@@ -234,12 +249,11 @@ export function updateRobot(
     const cw = targetOmega;
     const hx = Math.max(r.spec.length / 2 - C.WHEEL_INSET, 1);
     const hy = Math.max(r.spec.width / 2 - C.WHEEL_INSET, 1);
-    const pos: [number, number][] = [
-      [hx, hy],
-      [hx, -hy],
-      [-hx, hy],
-      [-hx, -hy],
-    ]; // FL, FR, BL, BR — matches drawRobot's wheel order
+    // pod i sits at wheel i — `WHEEL_CORNERS` order, the same list the traction loop and every
+    // renderer read. An imported robot's are its own wheels (`wheelLocals`), and its forward
+    // kinematics divides by their own Σr² rather than 4(hx² + hy²)
+    const impWheels = !!r.spec.imported;
+    const pos = wheelLocals(r.spec);
     const maxStep = C.MODULE_SLEW_RATE * dt;
     const speedFrac = clamp(hyp(r.vel.x, r.vel.y) / dp.maxSpeed, 0, 1);
     let sumX = 0;
@@ -247,8 +261,8 @@ export function updateRobot(
     let sumT = 0;
     for (let i = 0; i < 4; i++) {
       // inverse kinematics: this module's desired velocity vector
-      const dvx = cvx - cw * pos[i][1];
-      const dvy = cvy + cw * pos[i][0];
+      const dvx = cvx - cw * pos[i].y;
+      const dvy = cvy + cw * pos[i].x;
       const spd = hyp(dvx, dvy);
       let driveSpd = 0;
       if (spd > 0.02 * dp.maxSpeed) {
@@ -294,13 +308,15 @@ export function updateRobot(
       const fy = driveSpd * dsin(r.moduleAngles[i]);
       sumX += fx;
       sumY += fy;
-      sumT += pos[i][0] * fy - pos[i][1] * fx; // moment about center
+      sumT += pos[i].x * fy - pos[i].y * fx; // moment about center
     }
     // forward kinematics of the four modules → the ACHIEVED chassis motion (equals
     // the command when perfect; the pod errors make it drift + yaw)
     targetFwd = sumX / 4;
     targetStrafe = sumY / 4;
-    targetOmega = sumT / (4 * (hx * hx + hy * hy));
+    targetOmega = impWheels
+      ? sumT / Math.max(pos.reduce((a, p) => a + p.x * p.x + p.y * p.y, 0), 1e-6)
+      : sumT / (4 * (hx * hx + hy * hy));
   }
 
   // motor torque–speed integration in the robot frame: accel falls off toward the
@@ -477,7 +493,10 @@ export function updateRobot(
   const slipW = r.slipW ?? 0;
   const sl = rot({ x: r.slipX ?? 0, y: r.slipY ?? 0 }, -r.heading);
   if (sl.x !== 0 || sl.y !== 0 || slipW !== 0) {
-    for (let i = 0; i < wheels.length; i++) {
+    // round the PERIMETER (`WHEEL_PERIMETER`): the order these forces have always been summed in,
+    // so every drivetrain without pods steps bit-identically across the SIM_VERSION 5 fix. `i`
+    // is still the `WHEEL_CORNERS` index, so wheel i reads pod i.
+    for (const i of C.WHEEL_PERIMETER) {
       const wl = wheels[i];
       // how fast THIS wheel is being dragged across itself, rotation included
       const sx = sl.x - slipW * wl.y;
@@ -539,6 +558,20 @@ export function updateRobot(
 }
 
 /**
+ * The four wheel ground-contact points in the ROBOT frame, in `WHEEL_CORNERS` order (FL, FR, BL,
+ * BR) — so `wheelLocals(spec)[i]` is where `moduleAngles[i]` steers. The swerve IK/FK, the
+ * traction loop and the canvas sprites all read it. `wheelContacts` puts the same points in world
+ * space, walked in `WHEEL_PERIMETER` order.
+ */
+export function wheelLocals(spec: RobotSpec): { x: number; y: number }[] {
+  // an import's own wheels; `importedWheels` speaks FL, FR, BL, BR, which IS `WHEEL_CORNERS`
+  if (spec.imported) return importedWheels(spec.imported);
+  const ix = Math.max(spec.length / 2 - C.WHEEL_INSET, 1);
+  const iy = Math.max(spec.width / 2 - C.WHEEL_INSET, 1);
+  return C.WHEEL_CORNERS.map(([sx, sy]) => ({ x: sx * ix, y: sy * iy }));
+}
+
+/**
  * The chassis's angular inertia about its own centre, for `m` = `shoveMass`.
  *
  * A rectangle's `m(L² + W²)/12`, over the CHASSIS rather than the footprint, and about the
@@ -547,23 +580,9 @@ export function updateRobot(
  * model's `maxTurn` (derived from the half-diagonal about that centre) stays the free-space
  * answer. `solveRobots` states the same mass properties on the body.
  */
-/**
- * The four wheel ground-contact points in the ROBOT frame — the same layout `wheelContacts`
- * puts in world space for BASE parking, kept here as locals because the traction model needs
- * the moment arms rather than the world positions. FL/FR/BR/BL, matching `moduleAngles`.
- */
-export function wheelLocals(spec: RobotSpec): { x: number; y: number }[] {
-  const ix = Math.max(spec.length / 2 - C.WHEEL_INSET, 1);
-  const iy = Math.max(spec.width / 2 - C.WHEEL_INSET, 1);
-  return [
-    { x: ix, y: iy },
-    { x: ix, y: -iy },
-    { x: -ix, y: -iy },
-    { x: -ix, y: iy },
-  ];
-}
-
 export function chassisInertia(m: number, spec: RobotSpec): number {
+  // an imported robot: a uniform lamina in its hull's shape, about the origin the solver pins
+  if (spec.imported) return importedInertia(m, spec.imported);
   return (m * (spec.length * spec.length + spec.width * spec.width)) / 12;
 }
 
@@ -604,11 +623,14 @@ export function intakeClaims(world: World, commands: Map<number, RobotCommand>):
   for (const r of world.robots) {
     const running = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
     if (!running || r.hopper.length >= C.HOPPER_CAPACITY) continue;
+    if (C.noIntake(r.spec)) continue; // nothing to hold an artifact with: loaded by hand
     const preset = C.INTAKE_PRESETS[r.spec.intake];
-    const m = C.intakeMouth(r.spec);
+    // an IMPORT's mouth: ITS face, roller line, width and lateral centre (`decodeImportMouth`)
+    const imp = r.spec.imported ? decodeImportMouth(r.spec) : null;
+    const m = imp ? imp.mouth : C.intakeMouth(r.spec);
     if (m.drawIn <= 0) continue;
-    const hl = r.spec.length / 2;
-    const tip = hl + preset.reach;
+    const hl = imp ? imp.face : r.spec.length / 2;
+    const tip = imp ? imp.tip : hl + preset.reach;
     // The WHOLE mouth opening, not just the wheel span: on a wedge preset the wheels only
     // span the narrow throat, but the wedge funnels artifacts in from the full width of the
     // opening (product decision #10), and it is those outermost ones the chassis was
@@ -622,6 +644,7 @@ export function intakeClaims(world: World, commands: Map<number, RobotCommand>):
     for (const b of world.balls) {
       if (b.state.kind !== 'ground' || b.z > 6) continue;
       const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+      if (imp) local.y -= imp.yc;
       if (
         local.x > hl - C.BALL_RADIUS &&
         local.x < tip + C.BALL_RADIUS &&
@@ -640,6 +663,13 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
     r.aimAssist = true;
     r.autoIntake = true;
     r.autoFire = true;
+  }
+
+  // a FIXED SHOOTER / FIXED HOOD / SETPOINT WHEEL (`fixedShot.ts`) takes its own branch; every
+  // robot without one runs the lines below it exactly as before
+  if (decodeShotSpecial(r.spec)) {
+    updateFixedShotActions(world, r, cmd, dt);
+    return;
   }
 
   // ---- turret: aim assist tracks the firing solution exactly -------------
@@ -685,6 +715,131 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   updateIntake(world, r, cmd);
 }
 
+
+/**
+ * THE ACTIONS OF A ROBOT WITH A FIXED SHOOTER, A FIXED HOOD OR A SETPOINT WHEEL
+ * (`decodeShotSpecial`). The same three stages as the turret's — aim, flywheel, fire — with the
+ * hardware's limits in them:
+ *   · AIM: a fixed launcher points where the chassis does (plus its facing); a turret still yaws
+ *     onto the lead-compensated solution of whatever the build leaves free (`decodeFixedAim`).
+ *   · FLYWHEEL: a setpoint wheel ramps, drops per shot and gates the feeder (`flyStep`/`flyReady`),
+ *     and reports its own speed to the power-draw terms; a solved-speed build keeps the distance
+ *     ramp every other robot uses.
+ *   · FIRE: the driver's button fires once ready — after a FIXED launcher has turned onto its aim
+ *     heading, when aim assist is steering it — and the shot goes where the hardware sends it, in
+ *     band or not. AUTO FIRE (the player default, and every auto path) fires only a shot that the
+ *     flight stage, run forward, says would score: a launcher that can miss would otherwise empty
+ *     its hopper at the first wall it faced.
+ */
+function updateFixedShotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
+  if (r.autoPathActive) {
+    r.aimAssist = true;
+    r.autoIntake = true;
+    r.autoFire = true;
+  }
+  const fixed = decodeFixedLauncher(r.spec);
+  // ---- aim
+  if (fixed) r.turretHeading = wrapAngle(r.heading + decodeFixedFacing(r.spec));
+  else r.turretHeading = r.aimAssist ? decodeFixedAim(r).yaw : r.heading;
+
+  // ---- flywheel
+  const enabled = robotsEnabled(world);
+  if (r.spec.flywheel) {
+    const before = r.flyRpm ?? 0;
+    flyStep(r, cmd, enabled, world.time, dt);
+    const now = r.flyRpm ?? 0;
+    // the wheel's own speed is what draws current: a held setpoint, and its spin-up after a shot
+    // or a preset change (spinning down is free) — the same two terms, on the same 0..1 scale
+    r.flywheelSpinRate = dt > 0 ? Math.max(0, (now - before) / dt) / C.FLY_RPM_MAX : 0;
+    r.flywheelSpin = now / C.FLY_RPM_MAX;
+  } else {
+    const target = flywheelSpinTarget(r.alliance, r.pos);
+    r.flywheelSpinRate = dt > 0 ? Math.max(0, (target - r.flywheelSpin) / dt) : 0;
+    r.flywheelSpin = target;
+  }
+
+  // ---- fire (the feed clock read through `flyFeedDue`, so a 0.20-s feed is 12 ticks, not 13)
+  const canFire = enabled && r.hopper.length > 0 && flyFeedDue(r, world) && flyReady(r);
+  const zoneOk = world.mode === 'free' || robotInLaunchZone(r);
+  if (!canFire || !zoneOk) {
+    updateIntake(world, r, cmd);
+    return;
+  }
+  let go = false;
+  if (cmd.fire) {
+    // the driver's call — and with aim assist turning a fixed launcher, once it is on target
+    go = !(fixed && r.aimAssist) || decodeFixedOnTarget(r, cmd, world);
+  } else if (r.autoFire) {
+    go = decodeFixedShotScores(r, dt);
+  }
+  if (go) fireFixed(world, r);
+  updateIntake(world, r, cmd);
+}
+
+/** the shot of a `decodeShotSpecial` robot: `fire()`'s ball handling, the release from
+ * `decodeFixedRelease`, and the setpoint wheel's own cadence */
+function fireFixed(world: World, r: RobotState): void {
+  const rel = decodeFixedRelease(r);
+  const held = heldBallsOf(world, r.id);
+  let fireBall: Artifact | undefined;
+  if (r.spec.canSort) {
+    const retained = world.balls.filter(
+      (b) => b.state.kind === 'rail' && b.state.goal === r.alliance && !b.state.overflow && !b.state.pending,
+    ).length;
+    const want = world.motif[retained % 3];
+    fireBall = held.find((b) => b.color === want) ?? held[0];
+  } else {
+    fireBall = held[0];
+  }
+  const color: ArtifactColor = fireBall ? fireBall.color : r.hopper[0]!;
+  const hIdx = r.hopper.indexOf(color);
+  if (hIdx >= 0) r.hopper.splice(hIdx, 1);
+  r.lastFireAt = world.time;
+
+  const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
+  const ip = C.INTAKE_PRESETS[r.spec.intake];
+  if (r.spec.flywheel) {
+    // a SETPOINT WHEEL: the feeder's own time per artifact, and the wheel gives up some speed —
+    // the next feed waits for it to come back (`flyReady`), which is the recovery
+    const tuned = r.spec.imported?.tune?.shotInterval;
+    r.fireReadyAt = world.time + (tuned !== undefined ? tuned : Math.max(r.spec.flywheel.feedS + sortPenalty, ip.fireCap));
+    flyShot(r);
+  } else {
+    // a SOLVED wheel behind a fixed launcher or hood: the turret's own recovery model, unchanged
+    const shotNorm = Math.max(
+      0,
+      Math.min(1, (rel.speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
+    );
+    const closeRecovery =
+      C.FLYWHEEL_CLOSE_RECOVERY * Math.max(0, 1 - r.spec.flywheelInertia / C.FLYWHEEL_CLOSE_INERTIA_KNEE);
+    const recovery =
+      closeRecovery + C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
+    const tuned = r.spec.imported?.tune?.shotInterval;
+    // a tuned interval is the whole cycle, scheduled a hair early so `flyFeedDue`'s exact
+    // comparison cannot slip it a tick
+    r.fireReadyAt = tuned !== undefined ? world.time + tuned - C.FLY_FEED_TIME_EPS : world.time + Math.max(ip.fireInterval + recovery + sortPenalty, ip.fireCap);
+  }
+  if (fireBall) {
+    fireBall.state = { kind: 'flight', target: r.alliance };
+    fireBall.pos = { x: rel.origin.x, y: rel.origin.y };
+    fireBall.vel = { x: rel.vel.x, y: rel.vel.y };
+    fireBall.z = rel.z;
+    fireBall.vz = rel.vz;
+  } else {
+    world.balls.push({
+      id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+      color,
+      state: { kind: 'flight', target: r.alliance },
+      pos: { x: rel.origin.x, y: rel.origin.y },
+      vel: { x: rel.vel.x, y: rel.vel.y },
+      z: rel.z,
+      vz: rel.vz,
+    });
+  }
+  heldBallsOf(world, r.id).forEach((b, i) => {
+    if (b.state.kind === 'held') b.state.slot = i;
+  });
+}
 
 /** a robot's PHYSICAL held balls, in slot order (slot 0 = oldest / fired first) */
 function heldSlot(b: Artifact): number {
@@ -749,7 +904,10 @@ function fire(world: World, r: RobotState): void {
   // cap (fireCap): it can't fire faster than the cap, but a slower shot (recovery >
   // cap) fires at the same rate as everyone else.
   const interval = Math.max(ip.fireInterval + recovery + sortPenalty, ip.fireCap);
-  r.fireReadyAt = world.time + interval;
+  // an import's practice tuning names the whole cycle (`ImportTuning.shotInterval`), scheduled a
+  // hair early so `world.time >= fireReadyAt` fires on its own tick rather than the next
+  const tunedShot = r.spec.imported?.tune?.shotInterval;
+  r.fireReadyAt = tunedShot !== undefined ? world.time + tunedShot - C.FLY_FEED_TIME_EPS : world.time + interval;
 
   const vel = {
     x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
@@ -760,7 +918,7 @@ function fire(world: World, r: RobotState): void {
     fireBall.state = { kind: 'flight', target: r.alliance };
     fireBall.pos = { x: tp.x, y: tp.y };
     fireBall.vel = vel;
-    fireBall.z = C.LAUNCH_HEIGHT;
+    fireBall.z = r.spec.imported ? decodeImportLaunchZ(r.spec) : C.LAUNCH_HEIGHT;
     fireBall.vz = speed * dsin(angle);
   } else {
     // fallback: no physical held ball (shouldn't happen once preloads are held)
@@ -770,7 +928,7 @@ function fire(world: World, r: RobotState): void {
       state: { kind: 'flight', target: r.alliance },
       pos: { x: tp.x, y: tp.y },
       vel,
-      z: C.LAUNCH_HEIGHT,
+      z: r.spec.imported ? decodeImportLaunchZ(r.spec) : C.LAUNCH_HEIGHT,
       vz: speed * dsin(angle),
     });
   }
@@ -807,17 +965,22 @@ export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): v
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
+  if (C.noIntake(r.spec)) return; // no rollers to pull with
 
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
-  const hl = r.spec.length / 2;
-  const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
+  // an IMPORT's mouth (`decodeImportMouth`): everything below is written in the mouth's own
+  // frame, so its lateral centre `yc` is taken off `local.y` and the throat sits at (face, yc)
+  const imp = r.spec.imported ? decodeImportMouth(r.spec) : null;
+  const m = imp ? imp.mouth : C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const hl = imp ? imp.face : r.spec.length / 2;
+  const tip = imp ? imp.tip : hl + preset.reach; // the roller line (balls pass UNDER it)
   const velRobot = rot(r.vel, -r.heading);
   const captureHalf = m.throatHalf; // the funnel throat / the vectored-to centre
 
   // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
-  const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
-  const capWy = r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
+  const capImp = imp ? rot({ x: hl + C.BALL_RADIUS, y: imp.yc }, r.heading) : null;
+  const capWx = capImp ? r.pos.x + capImp.x : r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
+  const capWy = capImp ? r.pos.y + capImp.y : r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
   for (const a of ['red', 'blue'] as const) {
     const rect = classifierRect(a);
     if (capWx > rect.x0 - 0.5 && capWx < rect.x1 + 0.5 && capWy > rect.y0 && capWy < rect.y1) {
@@ -834,6 +997,7 @@ export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): v
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    if (imp) local.y -= imp.yc;
 
     /**
      * ...AND, ON A FUNNEL PRESET, THE ROLLER ITSELF. Its compliant wheels span the whole mouth
@@ -932,9 +1096,13 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
+  // NO INTAKE: the human player loads it by hand in its loading zone (`humanPlayer.ts`)
+  if (C.noIntake(r.spec)) return;
 
-  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
-  const hl = r.spec.length / 2;
+  // an IMPORT's mouth (`decodeImportMouth`), read in the mouth's own frame (`local.y − yc`)
+  const imp = r.spec.imported ? decodeImportMouth(r.spec) : null;
+  const m = imp ? imp.mouth : C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const hl = imp ? imp.face : r.spec.length / 2;
   const velRobot = rot(r.vel, -r.heading);
   // ALL intakes capture at the CENTER, directly under the compliant wheels
   // (funnel throat for sloped/triangle; the vectored-to center for vector)
@@ -955,14 +1123,15 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
    * their identity in their LATERAL bounds and their gates — which is where their identity
    * actually lives. See INTAKE_TREAD_FRAC for the derivation and for the floor under it.
    */
-  const axle = C.intakeAxleX(r.spec);
+  const axle = imp ? imp.axle : C.intakeAxleX(r.spec);
   const nip = C.intakeNip(r.spec);
   const nipLo = axle - nip.back;
   const nipHi = axle + nip.front;
 
   // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
-  const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
-  const capWy = r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
+  const capImp = imp ? rot({ x: hl + C.BALL_RADIUS, y: imp.yc }, r.heading) : null;
+  const capWx = capImp ? r.pos.x + capImp.x : r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
+  const capWy = capImp ? r.pos.y + capImp.y : r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
   for (const a of ['red', 'blue'] as const) {
     const rect = classifierRect(a);
     if (capWx > rect.x0 - 0.5 && capWx < rect.x1 + 0.5 && capWy > rect.y0 && capWy < rect.y1) {
@@ -975,6 +1144,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    if (imp) local.y -= imp.yc;
     // THE fore-aft grab, for every branch below. Fore-aft only — each branch still decides
     // for itself how far ACROSS the mouth it reaches, and on what terms.
     const onNip = local.x > nipLo && local.x < nipHi;
@@ -1065,7 +1235,8 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // feed it fast. A FLAT vector intake gets NO clump bonus: it can't devour a pile,
   // so a clump feeds at the normal per-ball (vectoring) rate, not faster.
   const interval = candidates.length >= 2 && m.wedge ? m.clumpInterval : single;
-  if (world.time - r.lastIntakeAt < interval) return;
+  const intakeK = r.spec.imported?.tune?.intakeTime;
+  if (world.time - r.lastIntakeAt < (intakeK !== undefined ? interval * intakeK : interval)) return;
 
   // triangle devours TWO from a clump per cycle (its two front storage slots)
   const room = C.HOPPER_CAPACITY - r.hopper.length;
@@ -1081,7 +1252,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     // resident front ball on that side slides to the other side to make room
     let side = 0;
     if (r.spec.intake === 'triangle' && slot >= 1) {
-      side = loc.y >= 0 ? 1 : -1;
+      side = (imp ? loc.y - imp.yc : loc.y) >= 0 ? 1 : -1;
       for (const o of world.balls) {
         if (o.state.kind === 'held' && o.state.robot === r.id && o.state.slot >= 1 && o.state.side === side) {
           o.state.side = -side;

@@ -24,6 +24,8 @@ export interface AutoView {
   errors: Finding[];
   warnings: Finding[];
   unsupported: string[];
+  /** commands this build cannot run (no mechanism for them), with the reason */
+  notOnRobot: { name: string; why: string }[];
 }
 
 export function autoView(l: LoadedAuto): AutoView {
@@ -50,5 +52,6 @@ export function autoView(l: LoadedAuto): AutoView {
     errors: l.findings.filter((f) => f.severity === 'error'),
     warnings: l.findings.filter((f) => f.severity === 'warning'),
     unsupported: l.unsupported,
+    notOnRobot: l.notOnRobot,
   };
 }
