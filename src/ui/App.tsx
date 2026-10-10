@@ -2312,7 +2312,9 @@ export function App() {
         onNav={goNav}
         right={right}
         showAdmin={isAdmin}
-        showRail={screen !== 'home'}
+        home={screen === 'home'}
+        screenKey={screen}
+        onBack={() => goNav('home')}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}

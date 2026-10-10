@@ -795,14 +795,20 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
-- **PHONE LAYOUT.** At ≤900px `.ds-body` wraps into ONE nav row: the rail (order 1) and the
-  collapsed friends chip (order 2) share the first line and the content takes its own
-  (`.ds-body > .ds-main` order 3). The strips WRAP, they do not scroll. In a room, friends
-  drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the rail's Home item goes
-  (the DSIM mark routes home), the subnav becomes an `auto-fit` grid, and the friends chip is
-  icon-only, its label visually hidden
-  but still read. The profile hero is a CONTAINER query
-  (`@container hero (max-width: 439px)`): picture + name on top, stats three across below.
+- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub: every other shell
+  screen carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as
+  the title lookup; Admin is a bar link). `.ds-app[data-screen]` swaps the six accent tokens per
+  section (Play coral, Configure blue, Records violet, Profile amber, the rest mint), so the bar,
+  buttons and page wash turn one colour together; the values are hand-tuned per theme and
+  `contrast.mjs` reads them out of the stylesheet. **`TopStrip`** sits above the bar on every
+  shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can
+  run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
+  answers `unfilled`, nothing once both are gone. At ≤900px `.ds-body` wraps so the collapsed
+  friends chip takes the first line and the content its own (`.ds-body > .ds-main`). In a room,
+  friends drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the subnav becomes an
+  `auto-fit` grid and the friends chip is icon-only, its label visually hidden but still read. The
+  profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
+  stats three across below.
 - ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
   `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
   match `shell.css` by hand — change one, grep for the other.

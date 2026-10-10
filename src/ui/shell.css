@@ -398,7 +398,7 @@
      the bar/rail/footer visibly stop short of. On macOS's overlay scrollbars this
      reserves nothing, so nothing changes there either way.) */
   overflow-y: scroll;
-  background: var(--ds-bg);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ds-accent-soft) 35%, var(--ds-bg)), var(--ds-bg) 320px);
   color: var(--ds-ink);
   font-family: var(--ds-font-ui);
   display: flex;
@@ -421,8 +421,8 @@
   gap: 20px;
   padding: 14px 22px;
   min-height: var(--ds-bar-h);
-  border-bottom: 1px solid var(--ds-line);
-  background: var(--ds-bar);
+  border-bottom: 2px solid var(--ds-accent);
+  background: color-mix(in srgb, var(--ds-accent-soft) 40%, var(--ds-bar));
   position: sticky;
   top: 0;
   z-index: 10;
@@ -504,6 +504,141 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* ---- per-screen colour ---------------------------------------------------
+   Each section of the app owns one hue, and `.ds-app[data-screen]` (stamped by AppShell) swaps the
+   six accent tokens for it, so the bar, the tiles' edges, the buttons and the page wash all turn
+   that colour together. Home and everything unlisted keep the mint. The values are HAND-TUNED
+   per theme, not derived: every pair below is held to 4.5:1 in `scripts/contrast.mjs` (accent
+   fill vs its ink, accent on the page, soft ink and soft mut on the soft fill). Dark swaps the
+   ink to near-black, as the base dark block does. Only the shell is scoped: `.game-root` and the
+   other full-screen surfaces are outside `.ds-app`, so the field never changes colour. */
+.ds-app[data-screen='modes'],
+.ds-app[data-screen='watch'],
+.ds-app[data-screen='competitions'] {
+  --ds-accent: #8d3e25;
+  --ds-accent-ink: #ffffff;
+  --ds-accent-edge: #592718;
+  --ds-accent-soft: #f2d7cf;
+  --ds-accent-soft-ink: #54291c;
+  --ds-accent-soft-mut: #643426;
+}
+.ds-app[data-screen='configure'],
+.ds-app[data-screen='robotimport'] {
+  --ds-accent: #25528d;
+  --ds-accent-ink: #ffffff;
+  --ds-accent-edge: #183459;
+  --ds-accent-soft: #cfdef2;
+  --ds-accent-soft-ink: #1c3454;
+  --ds-accent-soft-mut: #264164;
+}
+.ds-app[data-screen='records'] {
+  --ds-accent: #56258d;
+  --ds-accent-ink: #ffffff;
+  --ds-accent-edge: #361859;
+  --ds-accent-soft: #dfcff2;
+  --ds-accent-soft-ink: #361c54;
+  --ds-accent-soft-mut: #432664;
+}
+.ds-app[data-screen='profile'],
+.ds-app[data-screen='account'] {
+  --ds-accent: #8d6725;
+  --ds-accent-ink: #ffffff;
+  --ds-accent-edge: #594118;
+  --ds-accent-soft: #f2e5cf;
+  --ds-accent-soft-ink: #54401c;
+  --ds-accent-soft-mut: #644d26;
+}
+:root[data-theme='dark'] .ds-app[data-screen='modes'],
+:root[data-theme='dark'] .ds-app[data-screen='watch'],
+:root[data-theme='dark'] .ds-app[data-screen='competitions'] {
+  --ds-accent: #d7947f;
+  --ds-accent-ink: #0f1214;
+  --ds-accent-edge: #9b5946;
+  --ds-accent-soft: #462d25;
+  --ds-accent-soft-ink: #eab4a4;
+  --ds-accent-soft-mut: #d3a192;
+}
+:root[data-theme='dark'] .ds-app[data-screen='configure'],
+:root[data-theme='dark'] .ds-app[data-screen='robotimport'] {
+  --ds-accent: #7fa5d7;
+  --ds-accent-ink: #0f1214;
+  --ds-accent-edge: #466b9b;
+  --ds-accent-soft: #253346;
+  --ds-accent-soft-ink: #a4c2ea;
+  --ds-accent-soft-mut: #92aed3;
+}
+:root[data-theme='dark'] .ds-app[data-screen='records'] {
+  --ds-accent: #a87fd7;
+  --ds-accent-ink: #0f1214;
+  --ds-accent-edge: #6d469b;
+  --ds-accent-soft: #342546;
+  --ds-accent-soft-ink: #c5a4ea;
+  --ds-accent-soft-mut: #b092d3;
+}
+:root[data-theme='dark'] .ds-app[data-screen='profile'],
+:root[data-theme='dark'] .ds-app[data-screen='account'] {
+  --ds-accent: #d7b77f;
+  --ds-accent-ink: #0f1214;
+  --ds-accent-edge: #9b7c46;
+  --ds-accent-soft: #463a25;
+  --ds-accent-soft-ink: #ead0a4;
+  --ds-accent-soft-mut: #d3bb92;
+}
+
+/* ---- the top strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
+   Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
+   an ad box is 90px + its 14px label, and the strip adds 4px above and below. Narrow viewports
+   take the 320x50 unit (`TOP_NARROW_PX` in AdSlot). */
+.ds-topstrip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 112px;
+  flex: none;
+  background: var(--ds-bar);
+  border-bottom: 1px solid var(--ds-line);
+}
+.ds-topstrip.compact {
+  height: 64px;
+}
+@media (max-width: 759px) {
+  .ds-topstrip {
+    height: 72px;
+  }
+  .ds-topstrip.compact {
+    height: 56px;
+  }
+}
+
+/* Back and the admin link in the app bar: outlined, and colour-only on hover like the rest of the
+   bar's controls. The title is the section's name, set in the screen's own accent. */
+.ds-bar-back,
+.ds-bar-link {
+  font: inherit;
+  font-size: var(--ds-t-control);
+  font-weight: 700;
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: none;
+  color: var(--ds-ink);
+  cursor: pointer;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
+}
+.ds-bar-back:hover,
+.ds-bar-link:hover {
+  background: var(--ds-panel);
+  border-color: var(--ds-accent);
+}
+.ds-bar-title {
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-accent);
+  white-space: nowrap;
 }
 
 /* region picker in the top bar: the Select plus its on-demand Ping button read as
@@ -677,72 +812,7 @@
   align-items: stretch;
   width: 100%;
 }
-.ds-rail {
-  flex: none;
-  width: 214px;
-  align-self: stretch;
-  padding: 24px 14px 40px;
-  border-right: 1px solid var(--ds-line);
-  background: var(--ds-bar);
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-4);
-}
-.ds-rail-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ds-rail-btn {
-  font: inherit;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  border-radius: var(--ds-round);
-  border: 1px solid transparent;
-  background: none;
-  color: var(--ds-ink-dim);
-  cursor: pointer;
-  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
-}
-.ds-rail-btn .rl {
-  font-size: 15px;
-  font-weight: 700;
-}
-/* the hint line under each rail label (restored, owner 2026-09-23) */
-.ds-rail-btn .rh {
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
-.ds-rail-btn:hover {
-  color: var(--ds-ink);
-  background: var(--ds-panel);
-  border-color: var(--ds-line);
-}
-/* SELECTED, the whole vocabulary (one place, so a new control picks from it instead of
-   inventing a sixth):
-   - LATCHED NAV — "you are here": soft fill + accent edge, flat. `.ds-rail-btn.on` and
-     `.ds-subnav-btn.on` are the SAME treatment; the rail's block shadow made two adjacent
-     columns read as two different components.
-   - OPTION CARD — a pick in a grid of cards (`.ds-opt.on`, OptRow): the same soft fill +
-     edge, plus the keycap's accent-edge shadow because the card is a pressable.
-   - SEGMENTED — one of N inline (`.ds-seg.on`, which the export menu and the start-position
-     Close/Far pick now use too): solid accent fill, accent-ink.
-   - TAB STRIP — `.ds-tab.on`: accent ink + underline.
-   - TOGGLE KEY — a cap that is ON (`.game-btn.on`, the keyboard's CAPS `.ds-osk-key.on`):
-     solid accent fill, accent-ink, held FLUSH on its edge — a cap that stayed down.
-   Latched nav, segmented and tabs are COLOUR-ONLY controls: they never move, and all four
-   fade at `--ds-dur-fade` (one duration, so a rail beside a tab strip cannot disagree).
-   "Recommended" (`.ds-tile.primary`) is NOT a selection and so takes none of these: an
-   accent edge and kicker on the ordinary tile fill. */
-.ds-rail-btn.on {
-  background: var(--ds-accent-soft);
-  border-color: var(--ds-accent);
-  color: var(--ds-accent-soft-ink);
-}
-.ds-rail-btn.on .rh,
+
 .ds-subnav-btn.on .sh {
   color: var(--ds-accent-soft-mut);
 }
@@ -5703,42 +5773,13 @@ button.bb-cell:where(:not(:disabled)):active {
     flex-wrap: wrap;
     align-items: stretch;
   }
-  .ds-rail {
-    flex: 1 1 0;
-    min-width: 0;
-    width: auto;
-    align-self: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--ds-line);
-  }
-  .ds-rail-items {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .ds-rail-btn {
-    flex: none;
-    padding: 8px 12px;
-  }
   /* the hint line is the first thing to go when the rail turns horizontal (main's rule) */
-  .ds-rail-btn .rh,
+  
   .ds-subnav-btn .sh {
     display: none;
   }
-  /* Order the friends panel directly after the rail: collapsed it is a chip at the
-     right end of the rail's row, expanded it is a full-width strip above the content
-     rather than a side column.
-     SCOPE the order to `.ds-body`'s children: on home (`showRail={false}`) the
-     content is `.ds-main.ds-main-home`, a DIRECT flex child of `.ds-app`, and an
-     unscoped `.ds-main { order: 3 }` pushed it BELOW the order:0 footer — the
-     footer rendered at the very top of the page on phones. */
-  .ds-body > .ds-rail {
-    order: 1;
-  }
+  /* The friends panel: collapsed it is a chip, expanded a full-width strip above the content
+     rather than a side column. */
   .ds-friends {
     order: 2;
     width: 100%;
@@ -5840,23 +5881,6 @@ button.bb-cell:where(:not(:disabled)):active {
 }
 
 @media (max-width: 640px) {
-  /* HOME IS THE MARK. The bar's DSIM mark already routes home (`AppShell`), so the rail's
-     own Home item is the one to give up for the other four to fit ONE row at 375px. */
-  .ds-rail-btn.home {
-    display: none;
-  }
-  .ds-rail {
-    padding: var(--ds-s-2);
-  }
-  .ds-rail-items {
-    gap: var(--ds-s-1);
-  }
-  .ds-rail-btn {
-    padding: 8px 6px;
-  }
-  .ds-rail-btn .rl {
-    font-size: var(--ds-t-control);
-  }
   /* the Configure sub-nav as a GRID, the `.ds-segs.even` shape: its six sections wrapped as a
      ragged 4 + 2 (or 3 + 2 + 1), and a grid reads as a deliberate 3 + 3 */
   .ds-subnav {
@@ -6916,12 +6940,6 @@ a.ds-cta {
 .ds-menu-btn.primary .ds-qcount,
 .ds-menu-btn.primary .ds-qcount b {
   color: var(--ds-accent-ink);
-}
-.ds-rail-btn.on .ds-qcount {
-  color: var(--ds-accent-soft-mut);
-}
-.ds-rail-btn.on .ds-qcount b {
-  color: var(--ds-accent-soft-ink);
 }
 .ds-qcount-sep {
   opacity: 0.55;

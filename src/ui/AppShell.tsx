@@ -9,7 +9,8 @@ import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
-import { NavRail } from './NavRail';
+import { RAIL_ITEMS } from './NavRail';
+import { TopStrip } from './TopStrip';
 import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
@@ -34,11 +35,9 @@ function PresenceChip({ p }: { p: Presence }) {
 }
 
 /**
- * App chrome for the routed content screens. The top bar is deliberately thin —
- * brand, presence, and the auth slot — because navigation lives elsewhere:
- *
- *   HOME  (`showRail={false}`) — the destinations are the centered main menu.
- *   EVERY OTHER SCREEN         — the same destinations as a persistent left rail.
+ * App chrome for the routed content screens. There is no persistent navigation: the home menu
+ * is the only hub, so every other screen carries a Back button and its own title in the top bar,
+ * and `data-screen` lets the stylesheet give each section its own dominant colour.
  *
  * Full-screen surfaces (the game, lobby, record run, ranked, replay) render
  * outside this shell entirely and own their own back/Esc semantics.
@@ -49,7 +48,9 @@ export function AppShell({
   right,
   children,
   showAdmin,
-  showRail = true,
+  home = false,
+  screenKey,
+  onBack,
   onDownload,
   onContributors,
   onPrivacy,
@@ -69,8 +70,12 @@ export function AppShell({
   children: ReactNode;
   /** show the Admin entry (only the signed-in admin account) */
   showAdmin?: boolean;
-  /** false on home, where the menu itself is the navigation */
-  showRail?: boolean;
+  /** home has no Back, no title and no friends panel, and its menu is the navigation */
+  home?: boolean;
+  /** the current screen, stamped on `.ds-app` as `data-screen` for per-screen colour */
+  screenKey: string;
+  /** Back, in the top bar of every screen but home */
+  onBack: () => void;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
@@ -127,8 +132,14 @@ export function AppShell({
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
-    <div className="ds-app">
+    <div className="ds-app" data-screen={screenKey}>
+      <TopStrip />
       <header className="ds-bar">
+        {!home && (
+          <button className="ds-bar-back" onClick={onBack}>
+            Back
+          </button>
+        )}
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
           <Logo size={24} />
           {APP_NAME}
@@ -142,6 +153,8 @@ export function AppShell({
           <span className="sep" aria-hidden="true">·</span>
           {season.name}
         </span>
+        {/* a span, not a heading: every screen already has its own h1 */}
+        {!home && <span className="ds-bar-title">{RAIL_ITEMS.find((it) => it.id === active)?.label ?? ''}</span>}
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone
@@ -156,6 +169,11 @@ export function AppShell({
             <QueueCounts className="bar" allGames />
             {presence && <PresenceChip p={presence} />}
           </span>
+          {showAdmin && (
+            <button className="ds-bar-link" onClick={() => onNav('admin')}>
+              Admin
+            </button>
+          )}
           {!inActivity && right}
         </div>
       </header>
@@ -172,9 +190,8 @@ export function AppShell({
           it would push the room off the bottom of the viewport). */}
       {lanOn && <LanBanner />}
 
-      {showRail ? (
+      {!home ? (
         <div className="ds-body">
-          <NavRail active={active} onNav={onNav} showAdmin={showAdmin} />
           <main className="ds-main">
             {children}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
@@ -193,7 +210,7 @@ export function AppShell({
           />
         </div>
       ) : (
-        // The home screen deliberately gets NO ad. It is the first thing a new
+        // The home screen deliberately gets NO page ad (the top strip is chrome, not inventory). It is the first thing a new
         // visitor sees and the page an AdSense reviewer lands on; it should read
         // as a product, not as inventory.
         <main className="ds-main ds-main-home">{children}</main>

@@ -26,6 +26,7 @@ const CLIENT = (import.meta.env.VITE_ADSENSE_CLIENT as string | undefined)?.trim
 const SLOT_GAME = (import.meta.env.VITE_ADSENSE_SLOT_GAME as string | undefined)?.trim() || '';
 const SLOT_MENU = (import.meta.env.VITE_ADSENSE_SLOT_MENU as string | undefined)?.trim() || '';
 const SLOT_RESULTS = (import.meta.env.VITE_ADSENSE_SLOT_RESULTS as string | undefined)?.trim() || '';
+const SLOT_TOP = (import.meta.env.VITE_ADSENSE_SLOT_TOP as string | undefined)?.trim() || '';
 
 /**
  * PERSONALIZED ADS ARE OPT-IN, and the default is deliberately the low-revenue one.
@@ -70,16 +71,19 @@ export const ADSENSE_CLIENT = CLIENT;
  *                inventory: no gameplay, no clearance rule, no frame budget.
  *  - `results` — the post-match results screen. Also safe, and it is the moment
  *                a player is actually reading rather than driving.
+ *  - `top`     — the strip above every shell screen. Its space is reserved even when
+ *                ads are off or unfilled; the sponsor banner fills it then (`TopStrip`).
  *  - `game`    — the columns flanking the live field. The highest-risk unit: it
  *                sits beside a 60 Hz canvas and is subject to AdSense's
  *                game-adjacency clearance rule. Kept OFF unless its own slot id
  *                is set, so the safe units can ship first.
  */
-export type AdUnit = 'game' | 'menu' | 'results';
+export type AdUnit = 'game' | 'menu' | 'results' | 'top';
 
 export function slotFor(unit: AdUnit): string {
   if (unit === 'game') return SLOT_GAME;
   if (unit === 'results') return SLOT_RESULTS;
+  if (unit === 'top') return SLOT_TOP;
   return SLOT_MENU;
 }
 

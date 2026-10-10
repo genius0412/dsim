@@ -22,7 +22,18 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
   // inventory) is the right unit.
   menu: { w: 300, h: 250 },
   results: { w: 300, h: 250 },
+  // the leaderboard banner; `sizeFor` swaps in a 320x50 on a narrow viewport
+  top: { w: 728, h: 90 },
 };
+
+/** the top strip is the one unit whose size depends on the viewport */
+export const TOP_NARROW_PX = 760;
+function sizeFor(unit: AdUnit): { w: number; h: number } {
+  if (unit === 'top' && typeof innerWidth === 'number' && innerWidth < TOP_NARROW_PX) {
+    return { w: 320, h: 50 };
+  }
+  return SIZE[unit];
+}
 
 /**
  * One AdSense unit.
@@ -103,7 +114,7 @@ export function AdSlot({ unit, className }: { unit: AdUnit; className?: string }
 
   if (!active) return null;
 
-  const { w, h } = SIZE[unit];
+  const { w, h } = sizeFor(unit);
   // the reserved box must include the "Advertisement" label, or the unit overflows
   // its own container by the label's height and the box stops being exact
   const LABEL_H = 14;
