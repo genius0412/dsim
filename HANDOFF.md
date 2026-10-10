@@ -1,3 +1,13 @@
+# HANDOFF — 2026-10-10 (BIOBUZZ 3D: the online wall bump fix reaches main)
+
+**State: on `main`; PRODUCTION deploy started 2026-10-10 from `main` with a 2-minute announcement (see the follow-up line once done).** `npm test` (5176), `build`, `server:check`, `docaudit`, `bundleaudit`, `test:workers` (83) pass. Sim change behind `SIM_PATCH` 8 (it is 3 on `alpha`). No `SIM_VERSION` bump, no wire change.
+
+- **Owner:** "sometimes in online games, when I drive against the wall, there seems to be an invisible bump"; then "deploy to prod", then "deploy very soon".
+- **Cause and fix:** `docs/area/biobuzz.md`, "THE WALL SQUARE-UP IS A TURN THE 3D SOLVE MAKES". On `alpha` since 2026-10-02 (c91e709a).
+- **Why 8:** `main` has stamped replays 5 since 2026-10-04 without this rule, so `>= 3` would replay them with it. Proof (`scratch/bbrec-proof.ts` in the release worktree): 40 bot 2v2 3D matches recorded on `main` 0942857b replay bit-identically on this commit; forced onto the new rule, 40 of 40 differ. `alpha`'s `config.ts` marks 8 taken; its next patch is 9.
+- **Owner call still open:** one G402 3D duel shape now bills twice (1.17 s gap vs `BB_G402_REARM_S` 1.0 s); `scripts/smoke-biobuzz/rules.ts`.
+- A tab opened before the deploy predicts with the old rule until reloaded; reconcile corrects it.
+
 # HANDOFF — 2026-10-10 (Controls: BIOBUZZ's own binds in All games; turn with the triggers)
 
 **State: on `main` and `alpha`. Client only: no server change, no deploy needed beyond Vercel.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass on `main`.
