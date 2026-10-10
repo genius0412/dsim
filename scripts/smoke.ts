@@ -680,6 +680,12 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
     'chain 2v2': ['d2cde2f99ed4705e', 'b99cb7d8dbe6bb93', '1c35d03be5729213', '8b62e7b72a8758aa', 'a87422c57eb9ed68', '14894c2c59b82e12'],
   },
+  7: {
+    'decode solo': ['2d126b8eff58a52e', '69880a216f5edbfc', '43fec73b03b36692', 'be59a3d52ce6c79c', 'a366239b68377195', '523dd1a09e25d9a6'],
+    'decode 2v2': ['d3022bac45c08d85', '27a27dbacf93a19e', '30957503e8bb1ace', '0a9156d4ac7e7195', 'f239c0530136017d', 'deab4f9a69fa97a2'],
+    'decode endgame': ['3b9d810c02bd3914', '1c20b9abda179361', '36656dec80993361', '0e6f99892e5fa0bb'],
+    'chain 2v2': ['cf5f39a500d7f3d5', 'e092c89d2d413cfa', 'fbd9baa5385dd445', '12ded1338c9f7637', 'a6749d8218e78654', 'e7af9771737af2ff'],
+  },
 };
 const goldenArmed = (w: World): World => {
   // the sim-driven countdown multiplayer and solo practice both use, so `pre` is covered too

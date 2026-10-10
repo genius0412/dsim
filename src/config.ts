@@ -242,8 +242,16 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *    BALANCE_VERSION is NOT bumped with it: the owner declined a balance bump on 2026-09-17 (see
  *    the note under BALANCE_VERSION), and neither change is a balance decision. Every replay
  *    stamped 5 plays as `behaviour` DRIFT on a 5 build.
+ * 7: TWO CHAIN REACTION FIXES (owner-approved 2026-10-10):
+ *    · THE DRUM/DUMPER AIM ASSIST TURNS A TANK (`chainAimAssist` writes the side drives, as
+ *      BIOBUZZ's does), so a tank or butterfly-in-tank-mode drum/dumper that holds fire turns onto
+ *      the goal and shoots instead of sitting still;
+ *    · `beamBlock` MEASURES A STANDARD ROBOT'S KEEP-OUT FROM ITS FOOTPRINT CENTRE, not a symmetric
+ *      radius about the origin, so a front-only or back-only intake no longer parks over a beam.
+ *    Imports keep their hull-bounds keep-out. Output moves only for those builds; every replay
+ *    stamped 6 plays as `behaviour` DRIFT on a 7 build.
  */
-export const SIM_VERSION = 6;
+export const SIM_VERSION = 7;
 
 /**
  * A BEHAVIOUR FIX SMALL ENOUGH NOT TO RETIRE EVERY REPLAY. `SIM_VERSION` refuses every older
