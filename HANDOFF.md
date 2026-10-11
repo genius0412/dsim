@@ -1,6 +1,6 @@
 # HANDOFF — 2026-10-11b (gamepad: Drive curve and Turn curve are separate sliders)
 
-**State: branch `feat/split-stick-sensitivity`, PR into `alpha`. Client only: no server change, no deploy beyond Vercel.** `tsc`, `server:check`, `build`, `bundleaudit`, `docaudit`, `uiaudit` pass; `npm test` passes but for two timing checks (`imports/cost` sanitise < 1 ms, BIOBUZZ step3d p95) that are load-dependent on this machine.
+**State: merged into `alpha` (PR #118). Client only: no server change, no deploy beyond Vercel.** ⚠️ **CLEARED FOR `main` (owner, 2026-10-11):** take it to `main` with the next set of bug fixes that go there; it needs no separate go. `tsc`, `server:check`, `build`, `bundleaudit`, `docaudit`, `uiaudit` pass; `npm test` passes but for two timing checks (`imports/cost` sanitise < 1 ms, BIOBUZZ step3d p95) that are load-dependent on this machine.
 
 - **Owner:** separate the stick sensitivity for turning and strafing.
 - **What:** `PadBindings.turnCurve` beside `curve`. `curve` (now "Drive curve") shapes the drive stick and the tank sticks; `turnCurve` ("Turn curve") shapes the turn stick or the triggers (`GamepadInput.sample`). A stored blob without `turnCurve` loads it as its own `curve`, so nobody's turning changes; an older client ignores the field. Rule in `docs/area/ui.md`.
