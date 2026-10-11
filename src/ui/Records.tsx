@@ -1,74 +1,81 @@
+import type { ComponentType } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
 import { Leaderboard } from './Leaderboard';
+import { RecordsHub } from './RecordsHub';
+import { RECORDS_HUB, type RecordsPageKey, type RecordsView } from './recordsPages';
 import { Stats } from './Stats';
 import { UserSearchBar } from './UserSearchBar';
 
-export const RECORDS_TABS = ['leaderboard', 'career'] as const;
-export type RecordsTab = (typeof RECORDS_TABS)[number];
-
-export function isRecordsTab(s: string | null): s is RecordsTab {
-  return s !== null && (RECORDS_TABS as readonly string[]).includes(s);
+/** what every page of Records is handed; a page takes the few it needs */
+interface PageProps {
+  myUserId: string | null;
+  game?: GameId;
+  onWatch: (replayId: string) => void;
+  onWatchLocal?: (replay: Replay) => void;
+  onOpenProfile: (username: string) => void;
 }
 
-const LABELS: Record<RecordsTab, string> = {
-  leaderboard: 'Leaderboard',
-  career: 'Career',
+function LeaderboardPage({ myUserId, game, onWatch, onOpenProfile }: PageProps) {
+  return (
+    <>
+      <h1 className="ds-h1">Leaderboards</h1>
+      <Leaderboard myUserId={myUserId} game={game} onWatch={onWatch} onOpenProfile={onOpenProfile} />
+    </>
+  );
+}
+
+function CareerPage({ game, onWatch, onWatchLocal, onOpenProfile }: PageProps) {
+  return (
+    <>
+      <h1 className="ds-h1">My records</h1>
+      <Stats game={game} onWatch={onWatch} onWatchLocal={onWatchLocal} onOpenProfile={onOpenProfile} />
+    </>
+  );
+}
+
+function PlayersPage({ onOpenProfile }: PageProps) {
+  return (
+    <>
+      <h1 className="ds-h1">Players</h1>
+      <p className="ds-sub">Search by display name or @username to open a profile.</p>
+      <UserSearchBar onOpenProfile={onOpenProfile} />
+    </>
+  );
+}
+
+/**
+ * ONE COMPONENT PER KEY of `RECORDS_PAGES`, typed so that a page added to the registry with no
+ * component here fails the typecheck. (`recordsPages.ts` is DOM-free so the router and `npm test`
+ * can read the keys; this is the half that needs React.)
+ */
+const PAGES: Record<RecordsPageKey, ComponentType<PageProps>> = {
+  leaderboard: LeaderboardPage,
+  career: CareerPage,
+  players: PlayersPage,
 };
 
 /**
- * Records — the global leaderboard and your own career, behind one destination.
- * Both panels are the existing components; only the heading and the tab strip
- * are new. `/leaderboard` and `/stats` still resolve here (see App's parsePath)
- * so old links and the replay viewer's "back" keep working.
+ * Records — a hub and the pages behind it. `/records` is the hub (`RecordsHub`: search, the feed,
+ * a link to each page); `/records/<key>` is one page. There is no tab strip: the way between pages
+ * is the hub, and Back in the app bar returns to it (`App`'s `onBack`). `/leaderboard` and `/stats`
+ * still resolve here (App's parsePath) so old links and the replay viewer's "back" keep working.
  */
 export function Records({
-  tab,
-  onTab,
+  view,
+  onView,
   myUserId,
   game,
   onWatch,
   onWatchLocal,
   onOpenProfile,
-}: {
-  tab: RecordsTab;
-  onTab: (t: RecordsTab) => void;
-  myUserId: string | null;
-  game?: GameId;
-  onWatch: (replayId: string) => void;
-  /** watch a replay held only on this DEVICE (a local solo-practice run) */
-  onWatchLocal?: (replay: Replay) => void;
-  onOpenProfile: (username: string) => void;
+}: PageProps & {
+  view: RecordsView;
+  onView: (v: RecordsView) => void;
 }) {
-  return (
-    <>
-      <h1 className="ds-h1">Records</h1>
-
-      <UserSearchBar onOpenProfile={onOpenProfile} />
-
-      {/* These buttons change the URL (/records vs /records/career), so they are
-          NAVIGATION, not an ARIA tablist. The old `role="tab"` + `aria-selected` was a
-          partial tabs pattern — worse than none: a screen reader announced "tab, 1 of 2",
-          the user pressed → expecting to move, and nothing happened (no tabpanel, no
-          aria-controls, no roving tabindex). Matches Configure's sub-nav and NavRail. */}
-      <nav className="ds-tabs" aria-label="Records sections">
-        {RECORDS_TABS.map((t) => (
-          <button
-            key={t}
-            className={`ds-tab${tab === t ? ' on' : ''}`}
-            aria-current={tab === t ? 'page' : undefined}
-            onClick={() => onTab(t)}
-          >
-            {LABELS[t]}
-          </button>
-        ))}
-      </nav>
-
-      {tab === 'leaderboard' ? (
-        <Leaderboard myUserId={myUserId} game={game} onWatch={onWatch} onOpenProfile={onOpenProfile} />
-      ) : (
-        <Stats game={game} onWatch={onWatch} onWatchLocal={onWatchLocal} onOpenProfile={onOpenProfile} />
-      )}
-    </>
-  );
+  if (view === RECORDS_HUB) {
+    return <RecordsHub game={game} onPage={onView} onOpenProfile={onOpenProfile} onWatch={onWatch} />;
+  }
+  const Page = PAGES[view];
+  return <Page myUserId={myUserId} game={game} onWatch={onWatch} onWatchLocal={onWatchLocal} onOpenProfile={onOpenProfile} />;
 }

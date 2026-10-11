@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-10b (round 2: legal, ad banner, Records hub), branch `ux-flow-redesign`, NOT pushed, NOT deployed
+
+**Commits since the first round:** `4adaab63` legal, `6f4b1b13` ad-frame strip (not on Home), `e384a2f4` Records feed endpoint, plus the hub UI + docs commit after it. Shared lane: 4441 checks pass. `dbtest` passes the 8 new `feed/db` checks; its 4 `analytics/*` failures were already there (not from this work, not investigated).
+
+- **Legal:** privacy policy now covers Public rooms; `LEGAL_UPDATED` is **October 10, 2026**, so every signed-in account re-accepts once. Pin in `scripts/smoke.ts` moved. The policy says the *name the host plays under in the room* is published; `Room.listing` uses `player.name`, so they agree.
+- **Banner:** `TopStrip` is a 728x90 / 320x50 outlined frame with a label above; the Offset banner fills the same frame ("Sponsored"). Gone on Home, hidden under 520px tall. `shiftaudit`: 638 state changes, 0 shifts. Needs `VITE_ADSENSE_SLOT_TOP` for a real ad.
+- **Records hub:** `/records` = search + page links + feed; pages are the `RECORDS_PAGES` registry. New endpoint `GET /api/records/recent` (no migration). **Server change: needs `./scripts/fly-deploy.sh` from a `main` worktree**, together with Browse rooms. Dev review: `http://localhost:5180/decode/records?mock=1` (the fixture is DEV-only).
+- **Not built:** Achievements page; Players page is search only (no recent-opponent suggestions); the feed covers the selected game's current season only.
+- **Gotchas:** this worktree's `node_modules` has Zenith STUBS (28 expected tsc errors, 6 `AUTO:`/`IMPORT:` BIOBUZZ-lane failures). A Python edit script with `
+` inside a non-raw string once wrote real newlines into a regex in `smoke.ts` and killed a shard: put test text in a file and read it.
+
+
 # HANDOFF — 2026-10-10 (UX flow redesign, branch `ux-flow-redesign` off `alpha`, NOT pushed, NOT deployed)
 
 **State:** five commits on `ux-flow-redesign` (`f0feddb2` shell, `bab6bd06` + its revert, `87857261` back to original buttons, `ea4d66a9` solo setup, `d090c1fe` public rooms, `b07149e2` results fit). `tsc` adds nothing beyond the 28 Zenith-stub errors, `uiaudit` / `docaudit` / `contrast` pass, the SHARED test lane passes (4413). The BIOBUZZ lane has 6 failures that are all `AUTO:` / `IMPORT:` checks, and they fail because this worktree's `node_modules` holds the 250-byte Zenith STUBS (copied from the main tree; the real tarballs are in a private repo). Not a regression; confirm on a machine with the real packages.

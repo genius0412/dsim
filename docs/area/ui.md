@@ -812,6 +812,15 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `auto-fit` grid and the friends chip is icon-only, its label visually hidden but still read. The
   profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
   stats three across below.
+- **RECORDS IS A HUB AND THE PAGES BEHIND IT (2026-10-10).** `/records` is `RecordsHub` (a player search, a
+  link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
+  season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
+  (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
+  `Records.tsx`'s `PAGES`, which is typed `Record<RecordsPageKey, …>` so a missing component fails the
+  typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: Back in the app bar
+  returns to the hub, from the hub to Home. `/leaderboard`, `/stats` and `/records/career` still resolve.
+  **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
+  server (read once at load; a production bundle drops it).
 - ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
   solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,
   320 and 244px. A short or narrow window (`max-height: 640px`, `max-width: 720px`) now lays the SOLO breakdown

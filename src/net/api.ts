@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
 import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
-import type { AccessGroup, BannerKind, ListedRoom, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
+import type { AccessGroup, BannerKind, ListedRoom, LiveRoom, RecentRecord, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -222,6 +222,18 @@ export function fetchRecords(
     (view?.window && view.window !== 'season' ? `&window=${view.window}` : '') +
     (view?.window === 'all' && view.era ? `&era=${view.era}` : '');
   return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${v}${gameParam(game)}`);
+}
+
+/**
+ * The Records feed: new No.1s and top-3 scores of the current season, over a time frame
+ * (`GET /api/records/recent`). A server older than this route fails the read, which the hub shows as
+ * its error state; nothing else depends on it.
+ */
+export function fetchRecentRecords(
+  window: 'day' | 'week' | 'month' | 'season',
+  game?: GameId,
+): Promise<{ rows: RecentRecord[]; window: string; windowStart: string | null }> {
+  return getJson(`/api/records/recent?window=${window}${gameParam(game)}`);
 }
 
 export function fetchElo(

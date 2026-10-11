@@ -9538,3 +9538,75 @@ input.admin-months {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-md);
 }
+
+/* ---- the Records hub: the page links, and the feed of new records ---------------------- */
+.ds-hub-pages {
+  margin: var(--ds-s-4) 0;
+}
+.ds-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* the list scrolls inside its panel, so the hub's controls never leave the screen */
+  max-height: min(56dvh, 560px);
+  overflow-y: auto;
+}
+.ds-feed-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-feed-row:first-child {
+  border-top: 0;
+}
+.rf-rank {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-caps);
+  color: var(--ds-mut);
+}
+.rf-rank.r1 {
+  color: var(--ds-accent);
+}
+.rf-text {
+  min-width: 0;
+  font-size: var(--ds-t-control);
+  overflow-wrap: anywhere;
+}
+.rf-name {
+  padding: 0;
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+.rf-when {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+/* the Watch cell keeps its width when a run has no replay, so the times line up down the list */
+.rf-nowatch {
+  display: block;
+  width: 64px;
+}
+@media (max-width: 640px) {
+  /* the page links stack: three narrow cards wrapped their own labels */
+  .ds-opts.ds-hub-pages {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* the season name repeats what Home says, and the title needs the room */
+  .ds-bar-season {
+    display: none;
+  }
+  .ds-feed-row {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+  }
+  .rf-nowatch,
+  .ds-feed-row .ds-btn {
+    grid-column: 2 / 4;
+    justify-self: start;
+  }
+}

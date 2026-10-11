@@ -77,7 +77,8 @@ import { SoloSetup } from './SoloSetup';
 import { RoomBrowser } from './RoomBrowser';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
-import { Records, isRecordsTab, type RecordsTab } from './Records';
+import { Records } from './Records';
+import { RECORDS_HUB, isRecordsPage, recordsViewOf, type RecordsView } from './recordsPages';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
@@ -249,7 +250,7 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'robotimport':
       return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
-      return a.sub === 'career' ? '/records/career' : '/records';
+      return isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records';
     case 'profile':
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
@@ -334,7 +335,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
-  if (records) return at('records', { sub: records[1] ?? 'leaderboard' });
+  // a bare `/records` is the HUB; `/records/<page>` is one page of it (`recordsPages.ts`)
+  if (records) return at('records', { sub: records[1] ?? RECORDS_HUB });
 
   // legacy paths kept alive so old links (and anything a player bookmarked
   // before the nav restructure) still resolve to their new home
@@ -2303,7 +2305,7 @@ export function App() {
   );
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
-  const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  const recordsView: RecordsView = recordsViewOf(route.sub);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
 
@@ -2337,7 +2339,11 @@ export function App() {
         showAdmin={isAdmin}
         home={screen === 'home'}
         wide={screen === 'solosetup'}
-        onBack={() => (screen === 'solosetup' || screen === 'rooms' ? navigate('modes') : goNav('home'))}
+        onBack={() => (screen === 'solosetup' || screen === 'rooms'
+            ? navigate('modes')
+            : screen === 'records' && recordsView !== RECORDS_HUB
+              ? navigate('records', { sub: RECORDS_HUB })
+              : goNav('home'))}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
@@ -2657,8 +2663,8 @@ export function App() {
 
       {screen === 'records' && (
         <Records
-          tab={recordsTab}
-          onTab={(t) => navigate('records', { sub: t })}
+          view={recordsView}
+          onView={(v) => navigate('records', { sub: v })}
           myUserId={accountUserId}
           game={settings.game}
           onWatch={watchReplay}

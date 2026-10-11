@@ -18472,6 +18472,77 @@ const recordDrive: CommandSource = (tick) => {
   check('browse: junk on the heartbeat is ignored, not thrown on', browseRooms([null, undefined, 3, 'x', {}, { listing: false }]).length === 0);
 }
 
+/** THE RECORDS FEED (`server/recentRecords.ts`): a run's rank is replayed from the board's history. */
+{
+  const { feedFromRows, FEED_TOP } = await import('../server/recentRecords');
+  const t = (m: number) => new Date(Date.UTC(2026, 9, 1, 0, m)).toISOString();
+  const run = (id: number, userId: string, score: number, m: number) => ({ id, userId, partnerId: null, score, createdAt: t(m), replayId: `r${id}` });
+
+  const first = feedFromRows([run(1, 'a', 100, 0)], null, 10);
+  check('feed: the first run on a board is No.1', first.length === 1 && first[0].rank === 1 && first[0].userId === 'a');
+
+  const overtake = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 150, 5)], null, 10);
+  check('feed: a score that beats the best takes No.1 (newest first)', overtake[0].userId === 'b' && overtake[0].rank === 1);
+  check('feed: ...and the run it overtook still shows the place it took AT THE TIME', overtake[1].userId === 'a' && overtake[1].rank === 1);
+
+  const own = feedFromRows([run(1, 'a', 100, 0), run(2, 'a', 90, 5), run(3, 'a', 100, 9)], null, 10);
+  check('feed: a worse run, or one that only equals their best, is not an entry', own.length === 1);
+  const better = feedFromRows([run(1, 'a', 100, 0), run(2, 'a', 120, 5)], null, 10);
+  check('feed: a player beating their own best is an entry, and is not ranked against themselves', better.length === 2 && better[0].rank === 1);
+
+  const tie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 5)], null, 10);
+  check('feed: a tie goes to whoever set it first (b is No.2)', tie.find((e) => e.userId === 'b')?.rank === 2);
+
+  const crowded = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3)], null, 10);
+  check('feed: only the top three places are entries', FEED_TOP === 3 && crowded.length === 3 && !crowded.some((e) => e.userId === 'd'));
+  const climb = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3), run(5, 'd', 350, 9)], null, 10);
+  check('feed: a player climbing into the top three enters at the place they took (d to No.2)', climb[0].userId === 'd' && climb[0].rank === 2);
+
+  const inWindow = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 200, 30), run(3, 'c', 150, 40)], t(20), 10);
+  check('feed: a window keeps only runs set inside it', inWindow.length === 2 && inWindow.every((e) => e.createdAt >= t(20)));
+  check('feed: ...but ranks them against the whole history, not just the window', inWindow.find((e) => e.userId === 'c')?.rank === 2);
+
+  check('feed: the limit caps the answer, newest kept',
+    feedFromRows([run(1, 'a', 10, 0), run(2, 'b', 20, 1), run(3, 'c', 30, 2)], null, 2).map((e) => e.userId).join() === 'c,b');
+  const shuffled = feedFromRows([run(2, 'b', 150, 5), run(1, 'a', 100, 0)], null, 10);
+  check('feed: input order does not matter', shuffled[0].userId === 'b' && shuffled[1].userId === 'a');
+  check('feed: an empty board is an empty feed', feedFromRows([], null, 10).length === 0);
+}
+
+/** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
+{
+  const { RECORDS_PAGES, RECORDS_HUB, isRecordsPage, recordsViewOf } = await import('../src/ui/recordsPages');
+  const { feedAgo, feedVerb, FEED_WINDOWS } = await import('../src/ui/recordsFeed');
+  const keys = RECORDS_PAGES.map((p) => p.key);
+  check('records: every page key is unique', new Set(keys).size === keys.length);
+  check('records: the hub is not a page key (it is what the pages hang off)', !keys.includes(RECORDS_HUB as never));
+  check('records: leaderboard, career and players are pages', ['leaderboard', 'career', 'players'].every((k) => isRecordsPage(k)));
+  check('records: a bare /records, or anything unknown, is the HUB', recordsViewOf(null) === RECORDS_HUB && recordsViewOf('hub') === RECORDS_HUB && recordsViewOf('nope') === RECORDS_HUB);
+  check('records: a known sub is its own page', recordsViewOf('career') === 'career' && recordsViewOf('leaderboard') === 'leaderboard');
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: a bare /records parses to the hub, not to the leaderboard',
+    app.includes("at('records', { sub: records[1] ?? RECORDS_HUB })"));
+  check('records: the old /leaderboard and /stats links still resolve to their pages',
+    app.includes("startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' })") &&
+      app.includes("startsWith('/stats')) return at('records', { sub: 'career' })"));
+  check('records: a page builds /records/<key> and the hub builds /records',
+    app.includes("isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records'"));
+  check('records: Back from a page returns to the hub, from the hub to Home',
+    app.includes("screen === 'records' && recordsView !== RECORDS_HUB"));
+  const recordsSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: every registry key has a component (Record<RecordsPageKey, ...>)', recordsSrc.includes('Record<RecordsPageKey, ComponentType<PageProps>>'));
+  const now = Date.UTC(2026, 9, 10, 12);
+  check('records feed: ages read like the rest of the app',
+    feedAgo(new Date(now - 30_000).toISOString(), now) === 'just now' && feedAgo(new Date(now - 5 * 60_000).toISOString(), now) === '5m ago' &&
+      feedAgo(new Date(now - 3 * 3600_000).toISOString(), now) === '3h ago' && feedAgo(new Date(now - 4 * 86400_000).toISOString(), now) === '4d ago');
+  check('records feed: the verb names the place and the board',
+    feedVerb({ rank: 1, mode: 'solo', score: 412, partnerHandle: null }) === 'took No.1 in Solo with 412' &&
+      feedVerb({ rank: 2, mode: 'duo', score: 640, partnerHandle: 'x' }) === 'reached No.2 in Duo with 640');
+  check('records feed: the frames are the board vocabulary, season last', FEED_WINDOWS.map((w) => w.key).join() === 'day,week,month,season');
+  const mockSrc = readFileSync('src/ui/recordsFeedMock.ts', 'utf8');
+  check('records feed: the review fixture is gated on a DEV build', mockSrc.includes('import.meta.env.DEV'));
+}
+
 {
   const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,
