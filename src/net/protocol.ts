@@ -1049,6 +1049,27 @@ export interface ListedRoom {
   region?: string;
 }
 
+/**
+ * One entry of the Records feed (`GET /api/records/recent`): a run that was a player's new personal
+ * best and ranked 1 to 3 on its board AT THE TIME. Names are the public handle and username already
+ * shown on every leaderboard row; an entry with no username is dropped, so every row links somewhere.
+ */
+export interface RecentRecord {
+  userId: string;
+  handle: string;
+  username: string;
+  /** a duo run's partner, when they have a public profile */
+  partnerHandle: string | null;
+  partnerUsername: string | null;
+  mode: 'solo' | 'duo';
+  score: number;
+  /** 1, 2 or 3: the place it took when it was set, not where it sits now */
+  rank: number;
+  createdAt: string;
+  /** the run's replay, which is the proof of the score */
+  replayId: string | null;
+}
+
 /** a competition match, as a room describes itself to a client */
 export interface CompetitionRef {
   slug: string;

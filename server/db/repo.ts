@@ -18,6 +18,8 @@ import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
 import { dbEnabled, q, tx, type Tx } from './pool';
+import { feedFromRows, type FeedRow } from '../recentRecords';
+import type { RecentRecord } from '../../src/net/protocol';
 import {
   ACCESS_GROUPS,
   BANNER_KINDS,
@@ -3017,6 +3019,101 @@ export async function recordLeaderboard(opts: {
      limit $${params.length}`,
     params,
   );
+}
+
+/** how many runs of one board the feed will replay; a season's board is far below it, and a board
+ *  past it fails SAFE (the oldest runs fall off, which only makes an early rank read too high) */
+const FEED_ROWS_MAX = 200_000;
+/** how long a feed answer is reused: a busy hub costs one read per window, not one per visitor */
+const FEED_TTL_MS = 30_000;
+const feedCache = new Map<string, { at: number; val: RecentRecord[] }>();
+
+/**
+ * The Records feed: new No.1s and top-3 scores of one game's current season, solo and duo, since
+ * `since` (an ISO instant, or null for the whole season), newest first. See `recentRecords.ts` for
+ * what counts and why nothing is stored. The OVERALL drivetrain board and the live era only, like
+ * the board a visitor lands on.
+ *
+ * Handles, usernames and replay ids are already public on every leaderboard row, and a moderator
+ * who clears a player's records deletes the rows, so they leave the feed on their own: there is no
+ * hide flag to honour and none to add here.
+ */
+export async function recentRecords(opts: {
+  game?: Game;
+  balanceVersion: number;
+  since: string | null;
+  limit?: number;
+}): Promise<RecentRecord[]> {
+  const game = g(opts.game);
+  const limit = Math.min(50, Math.max(1, opts.limit ?? 30));
+  const key = `${game}:${opts.balanceVersion}:${opts.since ?? ''}:${limit}`;
+  const hit = feedCache.get(key);
+  if (hit && Date.now() - hit.at < FEED_TTL_MS) return hit.val;
+
+  const phys = await boardPhysics(game, opts.balanceVersion);
+  const entries: ((ReturnType<typeof feedFromRows>)[number] & { mode: 'solo' | 'duo' })[] = [];
+  for (const mode of ['solo', 'duo'] as const) {
+    const params: unknown[] = [opts.balanceVersion, mode, game];
+    let physFilter = '';
+    if (phys) {
+      params.push(phys);
+      physFilter = `and r.physics = $${params.length}`;
+    }
+    const rows = await q<{ id: string; userId: string; partnerId: string | null; score: number; createdAt: string | Date; replayId: string | null }>(
+      `select r.id, r.user_id as "userId", r.partner_id as "partnerId", r.score,
+              r.created_at as "createdAt", r.replay_id as "replayId"
+         from records r
+        where r.balance_version = $1 and r.mode = $2 and r.game = $3 and r.score is not null ${physFilter}
+        order by r.created_at asc, r.id asc
+        limit ${FEED_ROWS_MAX}`,
+      params,
+    );
+    const feedRows: FeedRow[] = rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      partnerId: r.partnerId,
+      score: Number(r.score),
+      createdAt: new Date(r.createdAt).toISOString(),
+      replayId: r.replayId,
+    }));
+    for (const e of feedFromRows(feedRows, opts.since, limit)) entries.push({ ...e, mode });
+  }
+  entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const top = entries.slice(0, limit);
+  const ids = [...new Set(top.flatMap((e) => [e.userId, e.partnerId].filter((x): x is string => !!x)))];
+  const names = ids.length
+    ? await q<{ userId: string; handle: string; username: string | null }>(
+        `select user_id as "userId", handle, username from profiles where user_id = any($1::text[])`,
+        [ids],
+      )
+    : [];
+  const byId = new Map(names.map((n) => [n.userId, n]));
+  const out: RecentRecord[] = [];
+  for (const e of top) {
+    const who = byId.get(e.userId);
+    // no public username, nowhere to link to: the same rule the player search applies
+    if (!who?.username) continue;
+    const partner = e.partnerId ? byId.get(e.partnerId) : undefined;
+    out.push({
+      userId: e.userId,
+      handle: who.handle,
+      username: who.username,
+      partnerHandle: partner?.username ? partner.handle : null,
+      partnerUsername: partner?.username ?? null,
+      mode: e.mode,
+      score: e.score,
+      rank: e.rank,
+      createdAt: e.createdAt,
+      replayId: e.replayId,
+    });
+  }
+  feedCache.set(key, { at: Date.now(), val: out });
+  return out;
+}
+
+/** test seam: forget cached feed answers so the next call reads the table */
+export function resetRecentRecordsCacheForTests(): void {
+  feedCache.clear();
 }
 
 export async function personalBest(

@@ -85,6 +85,7 @@ import {
   exportAccount,
   listSeasonsCached,
   recordLeaderboard,
+  recentRecords,
   coerceCategory,
   saveSettingsFromClient,
   setHandle,
@@ -1917,6 +1918,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         ? (era ?? (serverPhysics(simModuleFor(game)) === '3d' ? '3d' : '2d'))
         : ((dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game)));
       return json(200, { season, mode, drivetrain, physics, rows, game, category, window, windowStart: start, resetsAt }), true;
+    }
+
+    // THE RECORDS FEED: new No.1s and top-3 scores over a time frame (`server/recentRecords.ts`).
+    // Public like the leaderboard it is drawn from; `window` is the board's own vocabulary
+    // (season / day / week / month; `all` is the whole season here, a feed has no lifetime view).
+    if (url.pathname === '/api/records/recent') {
+      const window = coerceWindow(url.searchParams.get('window'));
+      const { start } = windowBounds(window, new Date());
+      const n = Math.floor(Number(url.searchParams.get('limit') ?? 30) || 30);
+      const rows = dbEnabled ? await recentRecords({ game, balanceVersion: season, since: start, limit: n }) : [];
+      return json(200, { season, game, window, windowStart: start, rows }), true;
     }
 
     if (url.pathname === '/api/elo') {
