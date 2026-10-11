@@ -42,7 +42,9 @@
  *    detent are degenerate — both are terms in one number — so the split is a stated choice and
  *    the script says so rather than pretending to a two-dimensional fit it does not have.
  * 4. **FIT the damping** by bisection on a REAL 8-POLLEN tip, measured stop to stop, against
- *    `BB_TIP_SWING_S` (4.0 s, owner ruling).
+ *    `BB_TIP_SWING_S` (4.0 s, owner ruling). ⚠️ With the swing PACE switched off: since
+ *    2026-10-11 a released tray is driven at the count's pace (`BB3_HIVE_SWING_EASE`), which takes
+ *    `BB_TIP_SWING_S` at any damping, so this fits the FREE see-saw an undriven tray still is.
  * 5. **VERIFY** every row through the real `step3d` pipeline — which now has to agree with the
  *    PUBLISHED TABLE on every row, the owner's requirement — and **WRITE** the constants, with
  *    their derivation, into `config.ts`'s generated block.
@@ -73,7 +75,12 @@ import {
   hivePivotX,
   hiveTrayComW,
 } from '../src/games/biobuzz/sim3d/bodies';
-import { __setDetentForCalibration, hiveContentsTorque, hiveTiltAngle } from '../src/games/biobuzz/sim3d/hive3d';
+import {
+  __setDetentForCalibration,
+  __setSwingPaceForCalibration,
+  hiveContentsTorque,
+  hiveTiltAngle,
+} from '../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../src/games/biobuzz/sim3d/math3';
 import {
   BB3_ELEMENT_MASS,
@@ -237,6 +244,9 @@ function rowTips(pollen: number, nectar: number, detent: number, ballastW: numbe
 function swingSeconds(damping: number, detent: number, ballastW: number): number {
   __setDetentForCalibration(detent);
   __setBallastForCalibration({ mass: BB3_HIVE_BALLAST, w: ballastW });
+  // the FREE see-saw: a paced swing (`hiveSwingPace`) takes BB_TIP_SWING_S at any damping, so the
+  // bisection below would run to one end of its range and write that into config.ts
+  __setSwingPaceForCalibration(false);
   try {
     const w = stage(778);
     fillCell(w, 8, 0);
@@ -258,6 +268,7 @@ function swingSeconds(damping: number, detent: number, ballastW: number): number
   } finally {
     __setDetentForCalibration(null);
     __setBallastForCalibration(null);
+    __setSwingPaceForCalibration(null);
   }
 }
 

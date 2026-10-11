@@ -31,7 +31,6 @@ import {
   BB3_HIVE_PIVOT_Z,
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
-  BB3_HIVE_TIP_CREEP_W,
   BB3_HIVE_TRAY_MASS,
   BB3_REST_SPEED,
   BB_HALF_X,
@@ -42,7 +41,7 @@ import {
   BB_POLLEN_R,
   BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
-import { BB_TIP_SWING_S, hiveLoad, hiveTakingSide, hiveWillTip } from '../../src/games/biobuzz/hive';
+import { BB_TIP_RATE_MAX, BB_TIP_SWING_S, hiveLoad, hiveTakingSide, hiveWillTip } from '../../src/games/biobuzz/hive';
 import { bbKindIndex } from '../../src/games/biobuzz/score';
 import type { Alliance, Artifact, World } from '../../src/types';
 
@@ -1232,6 +1231,7 @@ export function hive3dChecks(check: Check): void {
   });
 
   commitChecks(check);
+  paceChecks(check);
   settleChecks(check);
 }
 
@@ -1337,19 +1337,18 @@ function commitChecks(check: Check): void {
     );
   }
 
-  /* ── THE CREEP IS A FLOOR, NOT A CAP ──────────────────────────────────────────────────────
-     `hiveSwingRate`'s mechanic — more load, faster swing — has to survive a commit that works by
-     holding a MINIMUM rate. A cell at twice its threshold must still beat one at threshold, and
-     the 8-POLLEN reference swing two hundred lines up (4.12 s free, 4.08 s with this) is the
-     other half of the same statement: at 0.25 rad/s, the first value tried, it was 3.12 s and
-     that check failed. */
+  /* ── THE COMMIT KEEPS `hiveSwingRate`'S MECHANIC ─────────────────────────────────────────
+     More load, faster swing, has to survive a commit that DRIVES the swing. A cell at twice its
+     threshold must still beat one at threshold, and the 8-POLLEN reference swing two hundred
+     lines up is the other half of the same statement. (This block was written for the 0.12 rad/s
+     anti-stall floor the paced swing replaced; `paceChecks` below is the full statement now.) */
   {
     const atThreshold = tipTick(loaded(4103, 8, 0).world);
     const heavy = tipTick(loaded(4104, 16, 0).world);
     check(
       'the anti-stall is a FLOOR: a 16-POLLEN cell still swings faster than an 8-POLLEN one',
       heavy > 0 && atThreshold > 0 && heavy <= atThreshold,
-      `16P ${heavy} ticks vs 8P ${atThreshold} (the anti-stall creep is ${BB3_HIVE_TIP_CREEP_W} rad/s and never binds on either)`,
+      `16P ${heavy} ticks vs 8P ${atThreshold}`,
     );
     check(
       'and a threshold cell is still inside the published swing',
@@ -1400,6 +1399,84 @@ function commitChecks(check: Check): void {
       breakaways === 0 && w.biobuzz!.hives[A].tips === 0 && engine.containmentFixes === 0,
       `${breakaways} breakaways, ${w.biobuzz!.hives[A].tips} tips, ${engine.containmentFixes} containment fixes`,
     );
+  }
+}
+
+/**
+ * THE COUNT SETS THE SWING'S PACE, NOT THE PACKING (owner report 2026-10-11: "even if there's a
+ * lot of balls in the Hive, it may sometimes tip slower than if there's just the bare minimum").
+ * `BB3_HIVE_SWING_EASE` carries the measurement. Before the paced swing, lift → TIP scored:
+ *
+ *   8P   two-wide line 3.00 s · guide 4.08 · piled four-wide 4.97 · piled two-wide 5.13
+ *   9P   piled four-wide 4.47     10P piled four-wide 4.07     12P piled four-wide 3.35
+ *   3P3N piled two-wide 5.32 (the ruling is 4.0)
+ *
+ * so a piled cell — which is what a volley into a tilted tray builds — tipped slower with MORE in
+ * it than a minimum cell in a line. After: every threshold row at every packing 3.77–3.87 s, 9P
+ * 2.85–2.90, 10P 2.28–2.35, 12P 1.62, 14P+ 1.27–1.30 at the `BB_TIP_RATE_MAX` cap.
+ *
+ * Measured lift → scored, the window the driver watches: from the tray leaving its stop (the pin
+ * lifted) to `up` flipping (§10.5.1's damper contact).
+ */
+function paceSeconds(pollen: number, nectar: number, packing: Packing, seed: number): number {
+  const { world } = loaded(seed, pollen, nectar, packing);
+  const body = engineFor(world).hiveTrays[A];
+  const startUp = world.biobuzz!.hives[A].up;
+  let left = -1;
+  for (let t = 0; t < 600; t++) {
+    step3d(world, 1 / 60, new Map());
+    if (left < 0 && Math.abs(trayTilt(body)) < STOP_RAD) left = t;
+    if (world.biobuzz!.hives[A].up !== startUp) return left < 0 ? Infinity : (t - left) / 60;
+  }
+  return Infinity;
+}
+
+function paceChecks(check: Check): void {
+  const PACKINGS: Packing[] = ['guide', 'crammed4', 'crammed2', 'line2'];
+  // ── one count, four packings, one swing ────────────────────────────────────────────────────
+  for (const [p, n] of [
+    [8, 0],
+    [3, 3],
+  ] as const) {
+    const t = PACKINGS.map((k, i) => paceSeconds(p, n, k, 5100 + i));
+    const lo = Math.min(...t);
+    const hi = Math.max(...t);
+    check(
+      `pace: ${p}P+${n}N at threshold swings in BB_TIP_SWING_S (${BB_TIP_SWING_S}s) whatever the packing`,
+      hi - lo <= 0.15 && Math.abs(lo - BB_TIP_SWING_S) <= 0.4 && Math.abs(hi - BB_TIP_SWING_S) <= 0.4,
+      `${PACKINGS.map((k, i) => `${k} ${t[i].toFixed(2)}s`).join(', ')} (free see-saw: 3.00–5.32 s)`,
+    );
+  }
+  // ── the owner's report: MORE in the cell is never SLOWER ──────────────────────────────────
+  {
+    const minimumInALine = paceSeconds(8, 0, 'line2', 5110);
+    const ninePiled = paceSeconds(9, 0, 'crammed4', 5111);
+    const twelvePiled = paceSeconds(12, 0, 'crammed4', 5112);
+    check(
+      'pace: 9 POLLEN piled against the back wall tips FASTER than 8 in a line (it was 4.47 s vs 3.00)',
+      ninePiled < minimumInALine - 0.5,
+      `9P piled ${ninePiled.toFixed(2)}s, 8P line ${minimumInALine.toFixed(2)}s`,
+    );
+    const ladder = [8, 9, 10, 12, 14].map((k, i) => paceSeconds(k, 0, 'guide', 5120 + i));
+    check(
+      'pace: the swing gets strictly faster with every POLLEN up to the BB_TIP_RATE_MAX cap',
+      ladder.every((v, i) => i === 0 || v < ladder[i - 1]) && twelvePiled < ladder[1],
+      `8..14P ${ladder.map((v) => v.toFixed(2)).join(' → ')}s; 12P piled ${twelvePiled.toFixed(2)}s`,
+    );
+    check(
+      'pace: a full cell is capped at BB_TIP_SWING_S / BB_TIP_RATE_MAX, not flung',
+      Math.abs(ladder[4] - BB_TIP_SWING_S / BB_TIP_RATE_MAX) <= 0.15,
+      `14P ${ladder[4].toFixed(2)}s against ${(BB_TIP_SWING_S / BB_TIP_RATE_MAX).toFixed(2)}s`,
+    );
+  }
+  // ── pure JSON, so a peer that rebuilds mid-swing agrees ───────────────────────────────────
+  {
+    const runs = [0, 1].map(() => {
+      const { world } = loaded(5130, 10, 1, 'crammed4');
+      for (let t = 0; t < 150; t++) step3d(world, 1 / 60, new Map());
+      return worldHash(world);
+    });
+    check('pace: two runs of a paced swing hash identically', runs[0] === runs[1], `${runs[0]} vs ${runs[1]}`);
   }
 }
 

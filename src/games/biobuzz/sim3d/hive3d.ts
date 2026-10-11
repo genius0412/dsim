@@ -1,4 +1,6 @@
 import type { Alliance, World } from '../../../types';
+import type { BbElementKind } from '../flower';
+import type { BbHiveState } from '../state';
 import { dsin } from '../../../math';
 import { GRAVITY } from '../../../config';
 import {
@@ -6,11 +8,11 @@ import {
   BB3_HIVE_PIVOT_Z,
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
-  BB3_HIVE_TIP_CREEP_W,
+  BB3_HIVE_SWING_EASE,
   BB_HIVE_TILT_DEG,
   BB_POLLEN_R,
 } from '../config';
-import { BB_TIP_SWING_S, hiveLoad, hiveTimerStep, hiveWillTip, otherSide } from '../hive';
+import { BB_TIP_SWING_S, hiveLoad, hiveSwingRate, hiveTimerStep, hiveWillTip, otherSide } from '../hive';
 import { bbKindIndex } from '../score';
 import { elementMass, hiveCellLocalBox, hivePivotX, hiveTrayMassProps, useHiveDynamic } from './bodies';
 import type { Engine3d } from './engineImpl';
@@ -43,8 +45,10 @@ import { rotate2, tiltQuatX } from './math3';
  *  2. **the DETENT**, `BB3_HIVE_DETENT`: a PIN that holds the bar at its stop until the load
  *     table lifts it. It used to be a breakaway torque the load had to beat — see the trigger
  *     note below for the measurement that retired that reading.
- *  3. **the DAMPING**, `BB3_HIVE_DAMPING`: angular damping on the body, which is what makes the
- *     stop-to-stop swing take the owner's 4.0 s instead of under two.
+ *  3. **the DAMPING**, `BB3_HIVE_DAMPING`: angular damping on the body, which is what made the
+ *     FREE stop-to-stop swing take the owner's 4.0 s instead of under two. ⚠️ Since 2026-10-11 a
+ *     released swing is DRIVEN at the count's pace (`hiveSwingPace`, `BB3_HIVE_SWING_EASE`), so
+ *     the damping no longer sets the swing time; it governs only an undriven tray.
  *
  * ⚠️ **WHY THE DETENT IS A HOLD AND NOT JOINT FRICTION.** Rapier has no joint friction, and the
  * two things it does have are both worse here. A MOTOR with a torque cap holds the tray at its
@@ -83,9 +87,12 @@ import { rotate2, tiltQuatX } from './math3';
  * read 0 more, the load weighed 5701 against a hold of 5915 -- short by 214, less than a quarter
  * of what one more POLLEN adds -- and the tray sat on its stop for the rest of the match.
  *
- * ⚠️ The detent is now a PIN THE TABLE LIFTS, not a breakaway the load beats. EVERYTHING AFTER
- * the release is unchanged and still the free see-saw: gravity, the contents leaving because the
- * floor tilted out from under them, the damping, and the joint's far limit. `hiveContentsTorque`
+ * ⚠️ The detent is now a PIN THE TABLE LIFTS, not a breakaway the load beats. AND THE SWING AFTER
+ * THE RELEASE RUNS AT THE COUNT'S PACE TOO (2026-10-11, `BB3_HIVE_SWING_EASE`), for the same
+ * reason one level down: a free see-saw's speed is its contents' torque, so a pile against the
+ * back wall swung slower with MORE in it than a minimum cell in a line. The tray is still a body
+ * on its joint — the contents leave because the floor tilts out from under them, and the joint's
+ * far limit ends the swing — it is the rate that is the table's, through `hiveSwingRate`. `hiveContentsTorque`
  * and `hiveRestoringTorque` stay exported and stay correct -- they are how the HIVE3D lane and
  * `scripts/hive-calibrate.ts` MEASURE the tray. They are no longer what triggers it.
  */
@@ -220,6 +227,86 @@ export function hiveHoldTorque(alliance: Alliance, theta: number): number {
   return Math.abs(hiveRestoringTorque(alliance, theta)) + (detentOverride ?? BB3_HIVE_DETENT);
 }
 
+/**
+ * CALIBRATION-ONLY PACE OVERRIDE. `scripts/hive-calibrate.ts` fits `BB3_HIVE_DAMPING` against
+ * the FREE see-saw's swing time, and a paced swing takes `BB_TIP_SWING_S` whatever the damping
+ * is, so that bisection would walk to one end of its range and write the result into
+ * `config.ts`. `false` turns the pace off for the measurement; `null` (the default) is production.
+ */
+let paceOff = false;
+
+export function __setSwingPaceForCalibration(on: boolean | null): void {
+  paceOff = on === false;
+}
+
+/** `1 − m`, the share of the profile that the bell carries — see `BB3_HIVE_SWING_EASE`. */
+const EASE_BELL = 1 - BB3_HIVE_SWING_EASE;
+
+/** swing progress at which the tray stops counting as AT its stop: `BB3_HIVE_STOP_DEG` of the
+ * `BB_HIVE_TILT_DEG` rest, as a fraction of the stop-to-stop travel. */
+const P_STOP = (1 - STOP_RAD / REST_RAD) / 2;
+
+/**
+ * `∫ dp / g(p)` over the STOP-TO-STOP span `[P_STOP, 1 − P_STOP]`, for the profile's shape
+ * `g(p) = m + (1 − m)·4p(1 − p)`: the time a unit-peak swing takes per unit of travel, between
+ * the two moments §10.5.1 and the HIVE3D lane measure a swing by (it leaves the near stop; it
+ * reaches the far one). Over the full `[0, 1]` its closed form is `atanh(√a)/√a` with `a = 1 − m`;
+ * it is SUMMED here (midpoint rule, 4096 slices) because plain arithmetic is bit-identical on every
+ * engine and a transcendental is not, and this lands in every server's and every replay's swing.
+ */
+const SWING_SHAPE_INTEGRAL = ((): number => {
+  const n = 4096;
+  const span = 1 - 2 * P_STOP;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const p = P_STOP + ((i + 0.5) / n) * span;
+    sum += 1 / (BB3_HIVE_SWING_EASE + EASE_BELL * 4 * p * (1 - p));
+  }
+  return (sum / n) * span;
+})();
+
+/** the profile's PEAK rate (rad/s) at swing rate 1: whatever makes the stop-to-stop travel take
+ * `BB_TIP_SWING_S` — 0.354 rad/s at the shipped numbers. */
+const SWING_PEAK_W = (2 * REST_RAD * SWING_SHAPE_INTEGRAL) / BB_TIP_SWING_S;
+
+/**
+ * THE PACED SWING'S RATE at tilt `theta`, rad/s, unsigned — see `BB3_HIVE_SWING_EASE` for why a
+ * released tray runs to a profile rather than to its contents' torque. `upSign` names the stop
+ * the swing LEFT; `rate` is `hiveSwingRateNow`. A pure function of the JSON, like the pin.
+ */
+export function hiveSwingPace(theta: number, upSign: number, rate: number): number {
+  const p = Math.min(1, Math.max(0, (1 - (upSign * theta) / REST_RAD) / 2));
+  return rate * SWING_PEAK_W * (BB3_HIVE_SWING_EASE + EASE_BELL * 4 * p * (1 - p));
+}
+
+/**
+ * THE SWING RATE IN FORCE — the timer tray's own rule (`hiveTimerStep`) on the dynamic tray.
+ *
+ * Until the release it is `hiveSwingRate` of the cell, so a driver who keeps firing into a
+ * tipping tray speeds it up (the 2026-09-13 mechanic); it is RATCHETED with the rate already
+ * latched, because a 3D cell can lose an element before level (one bouncing out of the top) and a
+ * swing that slows down mid-way is the inconsistency this exists to remove. From the release on,
+ * `contents` is the RISING cell (`hiveTakingSide`), so the latched `swingRate` is the only memory
+ * of the load that started the swing, which is exactly why the field is state.
+ */
+export function hiveSwingRateNow(hive: BbHiveState, kindOf: (id: number) => BbElementKind): number {
+  const latched = hive.tipping > 0 ? (hive.swingRate ?? 1) : 1;
+  if (hive.tipping > 0 && hive.released) return latched;
+  return Math.max(latched, hiveSwingRate(hiveLoad(hive.contents, kindOf)));
+}
+
+/**
+ * set a tray turning toward the stop `far` at the paced rate for its current tilt.
+ *
+ * NOT pre-scaled for `BB3_HIVE_DAMPING`. MEASURED per tick on a threshold swing: a velocity set
+ * here is the velocity the step moves the tray at, plus the one tick of gravity and contact the
+ * solve adds on top (3–4 % through most of the swing, up to 19 % for the few ticks the cell is
+ * spilling past −12°). Scaling it by `1 + dt·c` as a damping correction ran every swing 11 % fast.
+ */
+function paceSwing(body: Engine3d['hiveTrays'][Alliance], theta: number, far: number, rate: number): void {
+  body.setAngvel({ x: far * hiveSwingPace(theta, -far, rate), y: 0, z: 0 }, true);
+}
+
 /** the angle a tray at `stop` sign should be pinned to. */
 function stopAngle(sign: number): number {
   return sign >= 0 ? REST_RAD : -REST_RAD;
@@ -230,8 +317,9 @@ function stopAngle(sign: number): number {
  *
  * While a tray is AT a stop and the LOAD TABLE has not called for a tip, it is pinned there
  * exactly: rotation set to the stop, angular velocity zeroed. The tick the table calls for one,
- * the pin is not applied and the body is an ordinary dynamic one for the rest of the swing —
- * gravity, the contents sliding out, the damping and the joint's far limit, and nothing else.
+ * the pin is not applied and the swing is DRIVEN at the count's pace (`hiveSwingPace`) until the
+ * far stop, where the joint's limit takes it; the tray stays a dynamic body throughout, so the
+ * contents still slide out because its floor tilts.
  *
  * ⚠️ **THE PIN IS SKIPPED WHEN IT WOULD BE A NO-OP**, and that guard is not an optimisation. A
  * `setRotation`/`setAngvel` pair is a WRITE even when the values are unchanged, and (measured on
@@ -250,12 +338,14 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
     const upSign = hive?.up === 'south' ? -1 : 1;
     const load = hiveLoad(hive?.contents ?? [], kindOf);
     /**
-     * ⚠️ **A TIP THE TABLE CALLED FOR IS COMMITTED TO THE FAR STOP** (owner, 2026-09-20: "people
-     * are still reporting hive not tipping in some cases"). `BB3_HIVE_TIP_CREEP_W` carries the
-     * measurement; the short version is that the mid-swing hand-over (`hiveTakingSide`) puts the
-     * driver's own continued fire into the RISING cell, whose load torques the tray BACK, and a
-     * free see-saw loses that argument from as far over as −24.2°. The table is the rule, so a
-     * swing it started finishes.
+     * ⚠️ **A TIP THE TABLE CALLED FOR RUNS TO THE FAR STOP AT THE COUNT'S PACE** — two owner
+     * reports, one mechanism. 2026-09-20 ("people are still reporting hive not tipping in some
+     * cases"): the mid-swing hand-over (`hiveTakingSide`) puts the driver's own continued fire into
+     * the RISING cell, whose load torques the tray BACK, and a free see-saw lost that argument from
+     * as far over as −24.2°. 2026-10-11 ("a lot of balls in the Hive... may sometimes tip slower
+     * than... the bare minimum"): a free swing's speed is set by the contents' LEVER ARM, which is
+     * packing, not count. `BB3_HIVE_SWING_EASE` carries the measurement. So a released tray is
+     * DRIVEN along `hiveSwingPace` — set, not floored, every tick between the stops.
      *
      * `owed` is a pure function of the JSON — a swing counted down in `hives[a].tipping` with the
      * tray away from both stops — so a peer that rebuilds its engine mid-swing computes the same
@@ -264,24 +354,13 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
      * zeroes its angular velocity every tick it holds, so the tray can only leave a stop on a tick
      * the table lifted the pin.
      *
-     * ⚠️ **NOT AT EITHER STOP, AND THAT IS TWO SEPARATE REASONS.** At the FAR stop the creep would
-     * hold `|ω|` at its own rate forever and `hiveDynamicTick` would never see the
-     * `BB3_HIVE_REST_W` it scores the TIP on. At the NEAR stop a stale `tipping > 0` — the state a
-     * failed swing used to leave behind — would be crept into a full PHANTOM tip with an empty
-     * cell; the failed-swing reset in `hiveDynamicTick` owns that case, and it can only own it if
-     * this does not out-run it. Nothing is needed at the near stop anyway: over 420 fuzzed
-     * scenarios the pin lifting was ALWAYS enough to get the tray moving (0 runs of "pin lifted,
-     * no swing"), and gravity leaving a stop is exactly the free see-saw this is not replacing.
+     * ⚠️ **NOT AT THE FAR STOP**: driven there, `|ω|` would never fall to the `BB3_HIVE_REST_W`
+     * `hiveDynamicTick` scores the TIP on — the profile hands the tray to the joint's limit at its
+     * own arrival speed and the stop does the rest. The NEAR stop is the pin-lift branch below.
      */
     const far = -upSign;
     const owed = !atStop && (hive?.tipping ?? 0) > 0;
-    if (owed) {
-      const av = body.angvel();
-      // a FLOOR, never a cap: only ever raise |ω| toward the far stop, so a heavier tray still
-      // swings faster (`hiveSwingRate`'s mechanic) and a healthy swing — measured 0.20–0.50 rad/s
-      // throughout — never meets this line at all.
-      if (av.x * far < BB3_HIVE_TIP_CREEP_W) body.setAngvel({ x: far * BB3_HIVE_TIP_CREEP_W, y: 0, z: 0 }, true);
-    }
+    if (owed && hive && !paceOff) paceSwing(body, theta, far, hiveSwingRateNow(hive, kindOf));
     if (!atStop) {
       engine.hiveHeld[a] = false;
       continue;
@@ -320,6 +399,15 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
         }
       }
       engine.hiveHeld[a] = false;
+      /**
+       * AND IT LEAVES THE STOP AT THE PACE TOO. The tray only counts as swinging (`tipping`) once
+       * it is `BB3_HIVE_STOP_DEG` off its stop, and a threshold load is by construction the one
+       * that BARELY out-weighs the tray, so the first degree was gravity's alone: measured 10 to
+       * 24 ticks depending on packing, all of it dead time between "0 MORE TO TIP" and anything
+       * moving. Only from the stop the swing LEAVES — at the far one the pin-lift is a NEW tip
+       * starting, which `hiveDynamicTick` has not flipped `up` for yet.
+       */
+      if (hive && sign === upSign && !paceOff) paceSwing(body, theta, far, hiveSwingRateNow(hive, kindOf));
       continue;
     }
     engine.hiveHeld[a] = true;
@@ -352,6 +440,7 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
 function hiveDynamicTick(world: World, engine: Engine3d): void {
   const bb = world.biobuzz;
   if (!bb) return;
+  const kindOf = bbKindIndex(world);
   for (const a of ALLIANCES) {
     const hive = bb.hives[a];
     const theta = hive.angle ?? trayTilt(engine.hiveTrays[a]);
@@ -366,7 +455,7 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
        * in some cases"). There was no failure path here at all: `tipping` and `released` could
        * only be cleared by reaching the FAR stop, so a tray that started over, passed level and
        * came back — which the load landing in the rising cell did, 5 times in 420 fuzzed volleys
-       * (see `BB3_HIVE_TIP_CREEP_W`, which is why it no longer happens that way) — sat on its own
+       * (see `BB3_HIVE_SWING_EASE`: the swing is driven now, which is why it no longer happens that way) — sat on its own
        * stop with `released` latched TRUE for the rest of the match. `hiveTakingSide` then names
        * `otherSide(up)` forever, so `derive.ts` fills `contents` from the DOWN cell, the pin reads
        * the DOWN cell, and `hud.ts` prints the DOWN cell: the up cell can be filled to the brim
@@ -377,10 +466,10 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
        * the table still calls for a tip the pin lifts again on the very next tick and the swing
        * restarts from a clean state. It is a safety net for the general case (a jam, a reconnect
        * restoring a stale angle, a robot leaning on the tray) and not only for the reversal the
-       * anti-stall creep above now prevents.
+       * paced swing above now prevents.
        */
       if (Math.abs(theta) >= STOP_RAD && Math.sign(theta) === upSign && Math.abs(omega) < BB3_HIVE_REST_W) {
-        bb.hives[a] = { ...hive, tipping: 0, released: false };
+        bb.hives[a] = { ...settledHive(hive), tipping: 0, released: false };
         continue;
       }
       if (settledAtFarStop) {
@@ -411,7 +500,10 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
         const n = Object.values(bb.spill ?? {}).filter((x) => x === a).length;
         world.events.push(`${a.toUpperCase()} HIVE SPILLS ${n || hive.contents.length}`);
       }
-      bb.hives[a] = { ...hive, tipping: tippingFromAngle(theta, upSign), released };
+      // the rate is read BEFORE `released` flips: on the release tick `contents` is still the
+      // emptying cell (derive ran against last tick's hand-over), and from then on it latches
+      const swingRate = hiveSwingRateNow(hive, kindOf);
+      bb.hives[a] = { ...hive, tipping: tippingFromAngle(theta, upSign), released, swingRate };
       continue;
     }
 
@@ -441,9 +533,22 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
           spill[b.id] = a;
         }
       }
-      bb.hives[a] = { ...hive, tipping: tippingFromAngle(theta, upSign), released: false };
+      bb.hives[a] = {
+        ...hive,
+        tipping: tippingFromAngle(theta, upSign),
+        released: false,
+        swingRate: hiveSwingRateNow({ ...hive, tipping: 0 }, kindOf),
+      };
     }
   }
+}
+
+/** a hive with no swing in progress carries no `swingRate`, the same as the timer tray's (which
+ * builds its settled state without one) — omitted rather than `undefined`, because a key holding
+ * `undefined` is still a key to anything that walks the object. */
+function settledHive(hive: BbHiveState): BbHiveState {
+  const { swingRate: _drop, ...rest } = hive;
+  return rest;
 }
 
 /** the timer's countdown that corresponds to a live angle — the inverse of `hiveTiltAngle`'s own

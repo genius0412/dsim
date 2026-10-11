@@ -1,3 +1,33 @@
+# HANDOFF — 2026-10-11 (BIOBUZZ hive tip: the count sets the swing's pace; tray interpolated online)
+
+**READ FIRST.** Branch `claude/dsim-bug-fixes-lk980p`. Report: "even if there's a lot of balls in
+the Hive, it may sometimes tip slower than if there's just the bare minimum… look for any bugs or
+visual glitches." Two found, both fixed:
+
+1. **Swing speed was set by PACKING, not count** (`sim3d/hive3d.ts`, `config.ts`
+   `BB3_HIVE_SWING_EASE`). After the pin lifted, the tray was a free see-saw, so its speed was the
+   contents' torque (mass × lever arm). Measured lift → TIP: 8 POLLEN 3.00 s in a line, 5.13 s
+   piled against the back wall (what a volley into a tilted cell builds); 9 piled 4.47 s; 3P+3N
+   piled 5.32 s. Now the released swing is DRIVEN along `hiveSwingPace`, scaled by the timer tray's
+   own `hiveSwingRate` (latched in `hives[a].swingRate`): every threshold row at every packing
+   3.77–3.87 s, 9P ≈2.9, 10P ≈2.3, 12P 1.62, 14P+ ≈1.3 (cap). Replaces `BB3_HIVE_TIP_CREEP_W`.
+   `hive-calibrate` turns the pace off to fit `BB3_HIVE_DAMPING` (it now only governs an undriven
+   tray). ⚠️ **SERVER CHANGE — every connected BIOBUZZ match is 3D, so this needs a deploy.**
+2. **The tray stepped at 30 Hz and ran ahead of its own contents online** (`game.ts`). Elements
+   were interpolated, the tray angle came off the newest snapshot. `snapBuf.hives` + `interpHives`.
+   Client-only.
+
+**State.** `npm test`: `smoke.ts` ALL PASS (2746); BIOBUZZ the one known `fieldDims.gen.ts` drift
+and nothing else (HIVE3D 104/104 incl. new `paceChecks`). `docaudit` passes. `tsc` shows only the
+missing-Zenith errors: the vendored tarballs are gitignored and were absent in this container, so
+the suite ran against throwaway stubs in `node_modules/@horizon36596` (not committed; removed).
+
+**Next.** Owner: play a few tips at different loads to confirm the feel of the ease (1/3 of peak
+at each stop) — `BB3_HIVE_SWING_EASE` is the one dial; `BB_TIP_SWING_S` / `BB_TIP_RATE_*` are the
+existing rulings. Then deploy the server.
+
+---
+
 # HANDOFF — 2026-09-27 (Zenith autos on `alpha`, vendored, no Zenith release)
 
 **READ FIRST.** Branch `claude/zenith-dsim-auto-pathing-g29xta` is merged into `alpha` and pushed.

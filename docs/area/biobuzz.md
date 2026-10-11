@@ -214,7 +214,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     a 4P3N cell broke away at tick 204, spilled at level on 299, reached **−24.2°** (five degrees
     short of the far stop) and was turned around there by 1 POLLEN + 3 NECTAR that had landed in the
     rising cell, coasting back to its own stop. The balls dump on the floor and NO TIP is scored.
-    `hiveDetentHold` now creeps a stalled swing forward at `BB3_HIVE_TIP_CREEP_W` (0.12 rad/s),
+    `hiveDetentHold` now creeps a stalled swing forward at `BB3_HIVE_TIP_CREEP_W` (0.12 rad/s;
+    since 2026-10-11 the PACED SWING below replaces it — the swing is driven, so it cannot stall),
     between the stops only. It is an ANTI-STALL, not a rate: a healthy swing runs 0.20–0.50 rad/s
     and never meets it, so the lane's 8-POLLEN reference swing is **4.12 s free → 4.08 s**. The
     first value tried, 0.25 (the mean rate of a nominal 4 s swing), applied from the breakaway, put
@@ -237,6 +238,26 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   all either side. The creep flings nothing — spill dispersal is 3895 → 3935 elements tagged at mean
   61.0 → 61.1 in from the pivot, max 106.9 → 106.9. The fast subset, worst seeds included, is
   `commitChecks` in `scripts/smoke-biobuzz/hive3d.ts`.
+- ⚠️ **AND THE COUNT SETS THE SWING'S PACE, NOT THE TORQUE** (owner report 2026-10-11: "even if
+  there's a lot of balls in the Hive, it may sometimes tip slower than if there's just the bare
+  minimum"). The released tray was a FREE see-saw, so its speed was the contents' torque — mass ×
+  LEVER ARM, i.e. packing. A threshold load barely out-weighs the tray by construction, so a
+  threshold swing crawled on the 0.12 anti-stall for its first second and a half. MEASURED, lift →
+  TIP scored: 8 POLLEN **3.00 s** in a line, 4.08 per the guide, **5.13** piled two-wide against
+  the back wall — and a pile is what a volley into a tilted cell builds, because the up cell's floor
+  slopes to the pivot. 9 piled took 4.47 s, 12 piled 3.35, 3P+3N piled 5.32. Now `hiveDetentHold`
+  DRIVES a released tray (`setAngvel`, set not floored, every tick from the pin lift to the far
+  stop) along `hiveSwingPace`: a bell over swing progress, `BB3_HIVE_SWING_EASE` (1/3) of peak at
+  either stop, normalised so a rate-1 swing is `BB_TIP_SWING_S` STOP TO STOP, times
+  `hiveSwingRateNow` — the timer tray's own `hiveSwingRate`, ratcheted until the release and
+  latched in `hives[a].swingRate` after it (from then `contents` is the rising cell). After: every
+  threshold row at every packing **3.77–3.87 s**; 9P 2.85–2.90, 10P 2.28–2.35, 12P 1.62, 14P+
+  1.27–1.30 at the cap. The tray stays a dynamic body, so the spill is still physical and the
+  rising cell can no longer turn a swing around. `BB3_HIVE_DAMPING` now only governs an UNDRIVEN
+  tray; `hive-calibrate` switches the pace off (`__setSwingPaceForCalibration(false)`) to fit it,
+  or its bisection would walk to an end of the range. NOT pre-scaled for damping: measured, a set
+  velocity is the velocity the step moves the tray at (a `1 + dt·c` correction ran 11 % fast).
+  Checks: `paceChecks` in `scripts/smoke-biobuzz/hive3d.ts`.
 - ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
   G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
   it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word

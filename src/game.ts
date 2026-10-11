@@ -41,7 +41,7 @@ import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/mo
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
 import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } from './games/biobuzz/sim3d/engine';
 import { PREDICT_FULL_BUDGET_MS } from './games/biobuzz/config';
-import { biobuzzPhysics } from './games/biobuzz/state';
+import { biobuzzPhysics, type BbHiveState } from './games/biobuzz/state';
 import {
   getPredictionPref,
   markOffNoticeShown,
@@ -99,6 +99,9 @@ const BALL_SMOOTH_MAX = 12; // in
  * 14–25 in in one frame against 2–4 in of real motion.
  */
 const BALL_SWITCH_MAX = 48; // in
+
+/** one snapshot's HIVE tray poses, for `displayWorld` to interpolate (`snapBuf.hives`) */
+type HiveSnap = Record<Alliance, { angle?: number; tipping: number }>;
 
 // Minecraft-style entity INTERPOLATION for REMOTE robots + balls: render them a
 // couple snapshots in the PAST and lerp between the two authoritative states that
@@ -628,6 +631,17 @@ export class GameController {
     /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
      *  a 2D room allocates nothing it did not allocate before) */
     balls: { id: number; x: number; y: number; z: number; kind: string; state: BallState }[];
+    /**
+     * each HIVE tray's tilt + swing countdown, 3D-physics worlds only (null otherwise).
+     *
+     * ⚠️ **THE TRAY IS ON THE INTERPOLATION CLOCK, LIKE WHAT IS SITTING IN IT.** It used to be
+     * drawn straight off `this.world`, which is the NEWEST snapshot: it stepped at 30 Hz (a
+     * 1.9° jump per snapshot at a full-cell swing's 1 rad/s, held for five frames on a 144 Hz
+     * screen), and it ran `INTERP_DELAY_TICKS` AHEAD of the seated elements riding it, which are
+     * interpolated — 0.6 in of daylight between a ball and its floor at a threshold swing's peak,
+     * 1.7 in on a full cell, through exactly the second and a half the driver is watching it.
+     */
+    hives: HiveSnap | null;
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -2305,6 +2319,13 @@ export class GameController {
             state: { ...b.state } as BallState,
           }))
         : [],
+      hives:
+        biobuzzPhysics(w) === '3d' && w.biobuzz
+          ? {
+              red: { angle: w.biobuzz.hives.red.angle, tipping: w.biobuzz.hives.red.tipping },
+              blue: { angle: w.biobuzz.hives.blue.angle, tipping: w.biobuzz.hives.blue.tipping },
+            }
+          : null,
     });
     if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
   }
@@ -2775,7 +2796,42 @@ export class GameController {
         z: lerp(p.z, q.z, a),
       };
     });
-    return { ...this.world, robots, balls: this.drawPredictedElements(balls, dtSec, released) };
+    return {
+      ...this.world,
+      robots,
+      balls: this.drawPredictedElements(balls, dtSec, released),
+      biobuzz: this.interpHives(s0.hives, s1.hives, a),
+    };
+  }
+
+  /**
+   * THE HIVE TRAYS AT THE INTERPOLATION CLOCK — see `snapBuf.hives` for why.
+   *
+   * Each field lerps only when BOTH bracketing snapshots carry it: `angle` is absent on a
+   * kinematic-tray world (the timer's formula draws it there, off `tipping`), and `tipping` is
+   * 0 at rest, so a lerp across a swing's first or last snapshot would draw a countdown the sim
+   * never had. Either way that tray is drawn from the newest world, which is what it was before.
+   * The scoring state (`up`, `tips`, `contents`) is untouched — this is the pose and nothing else.
+   */
+  private interpHives(
+    h0: HiveSnap | null,
+    h1: HiveSnap | null,
+    a: number,
+  ): World['biobuzz'] {
+    const bb = this.world.biobuzz;
+    if (!bb || !h0 || !h1) return bb;
+    const hive = (side: Alliance): BbHiveState => {
+      const now = bb.hives[side];
+      const p = h0[side];
+      const q = h1[side];
+      const angle = typeof p.angle === 'number' && typeof q.angle === 'number' ? lerp(p.angle, q.angle, a) : now.angle;
+      const tipping = p.tipping > 0 && q.tipping > 0 ? lerp(p.tipping, q.tipping, a) : now.tipping;
+      return angle === now.angle && tipping === now.tipping ? now : { ...now, angle, tipping };
+    };
+    const red = hive('red');
+    const blue = hive('blue');
+    // a settled field is every frame but the swing's few seconds: hand back the world's own object
+    return red === bb.hives.red && blue === bb.hives.blue ? bb : { ...bb, hives: { red, blue } };
   }
 
   /**

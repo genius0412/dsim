@@ -3972,7 +3972,9 @@ export const BB3_FLOWER_SCATTER_FRAC = 0.75;
  *    what the dynamic tray has to REPRODUCE stop to stop under gravity alone. It is not a free
  *    choice once the other two are fixed: a see-saw released at one stop accelerates under the
  *    ballast's own torque, and the damping is the only thing between "four seconds" and "half a
- *    second and a bang".
+ *    second and a bang". ⚠️ SINCE 2026-10-11 THE RELEASED SWING IS DRIVEN at the count's pace
+ *    (`BB3_HIVE_SWING_EASE`), so this fits the FREE see-saw — what an undriven tray does — and
+ *    `hive-calibrate` switches the pace off to measure it. It no longer sets a tip's duration.
  */
 
 /** the tray assembly's own mass (lb) — APPROX. The CAD carries no density, so this is the
@@ -3990,35 +3992,39 @@ export const BB3_HIVE_STOP_DEG = 29;
 export const BB3_HIVE_REST_W = 0.15;
 
 /**
- * ⚠️ **A TIP THE TABLE CALLED FOR IS COMMITTED TO THE FAR STOP** (owner, 2026-09-20: "people are
- * still reporting hive not tipping in some cases") — the rad/s `hiveDetentHold` creeps a STALLED
- * swing forward at. It is an ANTI-STALL, not a swing rate: it binds only while the tray is
- * between its stops and turning toward the far stop SLOWER than this, which a healthy swing
- * never is (measured 0.20–0.50 rad/s throughout).
+ * ⚠️ **THE COUNT SETS THE SWING'S PACE, NOT THE TORQUE** (owner report 2026-10-11: "even if
+ * there's a lot of balls in the Hive, it may sometimes tip slower than if there's just the bare
+ * minimum"). This is the speed half of the ruling `BB3_HIVE_DYNAMIC`'s header records for the
+ * TRIGGER, and it fails for the same reason: one count does not determine one torque.
  *
- * The thing that stalls a freed see-saw is the game's own documented mechanic. `hiveTakingSide`
- * hands over at the release, so a driver who keeps firing through a swing is filling the RISING
- * cell — and a load in the rising cell is torque on the WRONG side of the pivot. MEASURED (fuzz
- * seed 9039, `scratch/hivemiss.ts`, 420 randomized volleys): a 4P3N tip broke away at tick 204,
- * spilled at level on 299, reached **−24.2°** — five degrees short of the far stop — and was
- * turned around there by 1 POLLEN + 3 NECTAR that had landed in the rising cell, coasting back to
- * its OWN stop, where the pin re-engaged. No tip, the load on the floor, and the state machine
- * left `released` latched (see `hiveDynamicTick`'s failed-swing reset, which is the other half of
- * this bug). 5 of 420 runs ended that way; 8 entered the latched state.
+ * Until this, the released tray was a FREE see-saw, so its swing time was set by the contents'
+ * torque, which is mass × LEVER ARM, and the lever arm is where the balls happen to sit. A cell
+ * tips at its threshold, which is by construction the load that barely out-weighs the tray, so a
+ * threshold swing had almost no net torque and spent its first second and a half crawling on the
+ * old 0.12 rad/s anti-stall floor. MEASURED (`hive3d.ts`'s `fillCell` packings, real `step3d`,
+ * lift → TIP scored): 8 POLLEN took **3.00 s** in a two-wide line, **4.08** per the field guide,
+ * **4.97** piled four-wide up the back wall and **5.13** piled two-wide. A pile against the back
+ * wall is what a volley into a tilted cell actually builds, because the up cell's floor slopes
+ * toward the pivot. So 9 POLLEN piled (4.47 s), 10 (4.07) and 12 (3.35) all tipped SLOWER than 8 in
+ * a line, and 3P+3N piled two-wide took 5.32 s against a 4.0 s ruling.
  *
- * Past CENTRE is not enough, which is why this runs to the far stop rather than to level: every
- * measured reversal happened well past level, at −24.2°, −20.6° and −9.0°.
+ * Now `hiveDetentHold` DRIVES the released tray along one angle profile, scaled by
+ * `hiveSwingRate` of the load (`hive.ts` — the same mechanic the timer tray has always used: a
+ * threshold load swings in `BB_TIP_SWING_S`, each element over it faster, capped at
+ * `BB_TIP_RATE_MAX`). The tray is still a dynamic body on its joint, so the contents still slide
+ * out because its floor tilts and a robot under it still meets a solid; it just no longer gets a
+ * vote on how fast the swing runs, and the rising cell's load cannot turn it around (which is what
+ * the anti-stall this replaces existed for).
  *
- * ⚠️ **AND IT IS 0.12, NOT A RATE THAT SETS THE PACE.** The first pass made it 0.25 — the mean
- * rate of a nominal 4 s swing — and applied it from the breakaway. A free swing accelerates from
- * zero and decelerates into its stop, so a floor AT the mean is well above the curve at both ends:
- * MEASURED, the lane's 8-POLLEN reference swing fell from 4.12 s to 3.12 and broke the owner's own
- * `BB_TIP_SWING_S` ruling. At 0.12, binding only between the stops, the same reference measures
- * **4.08 s** — 0.04 s of the tail — and every stall still clears. At the cell's own 19.8-in arm
- * 0.12 rad/s is 2.4 in/s of carry, a hundredth of the slowest shot the tray sees, and the measured
- * spill dispersal is unchanged (mean 61.0 in from the pivot either side, max 106.9).
+ * THE PROFILE is `ω(p) = rate · Ω · (m + (1 − m) · 4p(1 − p))` over swing progress `p` (0 at the
+ * near stop, 1 at the far one), with `Ω` solved so a rate-1 swing takes `BB_TIP_SWING_S`. `m` is
+ * this constant: the fraction of peak speed the tray leaves its stop with and arrives at the far
+ * one with. A see-saw accelerates out of its stop and decelerates into the next, and 1/3 puts a
+ * threshold swing's start at 0.123 rad/s (the old anti-stall's 0.12, which is what the tray
+ * visibly ran at off its stop before) and its peak at 0.37 — the free swing measured 0.12 → 0.49.
+ * It arrives at the far stop under `BB3_HIVE_REST_W`, so a threshold TIP scores on contact.
  */
-export const BB3_HIVE_TIP_CREEP_W = 0.12;
+export const BB3_HIVE_SWING_EASE = 1 / 3;
 
 // ── BEGIN GENERATED: hive-calibrate ─────────────────────────────────────────────────────────
 // Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the four values below — edit the

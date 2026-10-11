@@ -90,6 +90,16 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     and it keeps the old drawing. That is the honest limit of this fix: Auto picks Full whenever
     the machine holds `PREDICT_FULL_BUDGET_MS`, and a machine that cannot afford Full cannot
     afford to predict elements either.
+- ⚠️ **THE HIVE TRAY IS ON THE INTERPOLATION CLOCK TOO** (2026-10-11, from a BIOBUZZ "hive tip
+  speed is inconsistent" report). `displayWorld` interpolated every element but drew the tray's
+  `hives[a].angle` straight off `this.world`, the NEWEST snapshot: it stepped at 30 Hz (1.9° a
+  snapshot at a full cell's 1 rad/s) and ran `INTERP_DELAY_TICKS` ahead of the seated elements
+  riding it — 0.6 in between a ball and its floor at a threshold swing's peak, 1.7 in on a full
+  cell. `snapBuf.hives` carries `angle` + `tipping` per snapshot (3D only) and `interpHives` lerps
+  each where BOTH bracketing snapshots carry it; the scoring state (`up`, `tips`, `contents`) is
+  never touched, and a settled field returns the world's own object. Client-only, no wire change.
+  The honest limit: an element the FULL predictor carried into a cell stays predicted
+  (`drawPredictedElements`) and rides the predictor's tray, which is at the newest snapshot's angle.
 - ⚠️ **A RE-TAG IS NOT A TELEPORT.** `displayWorld` SNAPPED an element to the newer snapshot on
   ANY `state.kind` change, which is right for a hopper and wrong for a game whose tags are
   DERIVED from body positions every tick (`derive.ts`): `ground`, `flight` and `element` all
