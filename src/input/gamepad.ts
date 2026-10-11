@@ -174,7 +174,7 @@ export class GamepadInput {
       this.live = livePad(bindings);
     }
     const on = this.chords.resolve(held, this.live ?? bindings, now);
-    const ax = (i: number): number => shape(pad.axes[i] ?? 0, bindings.deadzone, bindings.curve);
+    const ax = (i: number, curve = bindings.curve): number => shape(pad.axes[i] ?? 0, bindings.deadzone, curve);
     // left stick = axes 0/1, right stick = axes 2/3
     const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
     const rotAxis = bindings.driveStick === 'left' ? 2 : 0;
@@ -183,8 +183,10 @@ export class GamepadInput {
     const [dx, dy] = shapeStick(pad.axes[drive[0]] ?? 0, pad.axes[drive[1]] ?? 0, bindings.deadzone, bindings.curve);
     // TURN WITH TRIGGERS: LT turns left (+, counter-clockwise, as `rotateCCW`), RT right. The
     // other stick then turns nothing, so a thumb resting on it cannot fight the triggers.
-    const trig = (i: number): number => shape(triggerTravel(pad.buttons[i]), bindings.deadzone, bindings.curve);
-    const rotate = bindings.turnWith === 'triggers' ? trig(PAD_TRIGGERS[0]) - trig(PAD_TRIGGERS[1]) : -ax(rotAxis);
+    // Turning, either way, is shaped by `turnCurve`; the drive stick and tank sticks by `curve`.
+    const trig = (i: number): number => shape(triggerTravel(pad.buttons[i]), bindings.deadzone, bindings.turnCurve);
+    const rotate =
+      bindings.turnWith === 'triggers' ? trig(PAD_TRIGGERS[0]) - trig(PAD_TRIGGERS[1]) : -ax(rotAxis, bindings.turnCurve);
     const sampleOut: GamepadSample = {
       connected: true,
       driveX: dx,

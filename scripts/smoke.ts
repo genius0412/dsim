@@ -26819,7 +26819,8 @@ const dumperSetup = (): RobotSetup => {
   check(
     'effective: the stick role and the sliders are carried through unchanged (they are global)',
     eff.pad.driveStick === DEFAULT_BINDINGS.pad.driveStick && eff.pad.deadzone === DEFAULT_BINDINGS.pad.deadzone &&
-      eff.pad.curve === DEFAULT_BINDINGS.pad.curve && eff.pad.triggerThreshold === DEFAULT_BINDINGS.pad.triggerThreshold &&
+      eff.pad.curve === DEFAULT_BINDINGS.pad.curve && eff.pad.turnCurve === DEFAULT_BINDINGS.pad.turnCurve &&
+      eff.pad.triggerThreshold === DEFAULT_BINDINGS.pad.triggerThreshold &&
       eff.pad.chordGraceMs === DEFAULT_BINDINGS.pad.chordGraceMs,
   );
   check('effective: the result carries no perGame of its own (it is already applied)', eff.perGame === undefined);
@@ -40994,6 +40995,21 @@ function fxImportFixed(): RobotSpec {
     'turn with: a default map round-trips byte for byte with the new field',
     J(mergeBindings(JSON.parse(J(DEFAULT_BINDINGS)))) === J(DEFAULT_BINDINGS),
   );
+  check(
+    'turn curve: defaults to linear; a blob from before the split turns on its own drive curve',
+    DEFAULT_BINDINGS.pad.turnCurve === 1 &&
+      mergeBindings({ pad: { curve: 2.2 } }).pad.turnCurve === 2.2 &&
+      mergeBindings({ pad: { curve: 2.2, turnCurve: 'x' } }).pad.turnCurve === 2.2 &&
+      mergeBindings({ pad: { buttons: { fire: [2] } } }).pad.turnCurve === 1,
+  );
+  check(
+    'turn curve: a stored value is kept apart from the drive curve, clamped to 1..3, and cloned',
+    mergeBindings({ pad: { curve: 1, turnCurve: 1.8 } }).pad.turnCurve === 1.8 &&
+      mergeBindings({ pad: { curve: 1, turnCurve: 1.8 } }).pad.curve === 1 &&
+      mergeBindings({ pad: { turnCurve: 9 } }).pad.turnCurve === 3 &&
+      mergeBindings({ pad: { turnCurve: 0.2 } }).pad.turnCurve === 1 &&
+      cloneBindings({ ...DEFAULT_BINDINGS, pad: { ...DEFAULT_BINDINGS.pad, turnCurve: 2.5 } }).pad.turnCurve === 2.5,
+  );
 
   const trig = cloneBindings(DEFAULT_BINDINGS);
   trig.pad.turnWith = 'triggers';
@@ -41067,6 +41083,40 @@ function fxImportFixed(): RobotSpec {
       'turn with: on the stick, RT shoots and the right stick turns, as before',
       off.fire && off.rotate < -0.8,
       `fire=${off.fire} rotate=${off.rotate.toFixed(2)}`,
+    );
+
+    // ---- TURN CURVE (`PadBindings.turnCurve`, owner 2026-10-11): turning and driving shaped apart
+    const soft = (curve: number, turnCurve: number, turnWith: 'stick' | 'triggers' = 'stick') => ({
+      ...DEFAULT_BINDINGS.pad,
+      curve,
+      turnCurve,
+      turnWith,
+    });
+    // half a stick each way, past the 0.12 deadzone: linear reads (0.5 - 0.12) / 0.88
+    const half = (0.5 - 0.12) / 0.88;
+    const t = s(soft(1, 3), [0.5, 0, -0.5, 0], {});
+    check(
+      'turn curve: a turn curve of 3 softens the turn stick and leaves the drive stick linear',
+      Math.abs(t.rotate - half ** 3) < 1e-9 && Math.abs(t.driveX - half) < 1e-9,
+      `rotate=${t.rotate.toFixed(4)} driveX=${t.driveX.toFixed(4)}`,
+    );
+    const d = s(soft(3, 1), [0.5, 0, -0.5, 0], {});
+    check(
+      'turn curve: a drive curve of 3 softens the drive stick and leaves turning linear',
+      Math.abs(d.rotate - half) < 1e-9 && Math.abs(d.driveX - half ** 3) < 1e-9,
+      `rotate=${d.rotate.toFixed(4)} driveX=${d.driveX.toFixed(4)}`,
+    );
+    const tr = s(soft(1, 2, 'triggers'), [0, 0, 0, 0], { 6: 0.5 });
+    check(
+      'turn curve: the triggers turn on the turn curve too',
+      Math.abs(tr.rotate - half ** 2) < 1e-9,
+      `rotate=${tr.rotate.toFixed(4)}`,
+    );
+    const tank = s(soft(2, 1), [0, -0.5, 0, -0.5], {});
+    check(
+      'turn curve: the tank sticks drive on the drive curve',
+      Math.abs(tank.leftY - half ** 2) < 1e-9 && Math.abs(tank.rightY - half ** 2) < 1e-9,
+      `leftY=${tank.leftY.toFixed(4)} rightY=${tank.rightY.toFixed(4)}`,
     );
   } finally {
     if (had) Object.defineProperty(nav, 'getGamepads', had);
