@@ -39,13 +39,14 @@ import {
  * anything else that is not a robot part out of it.
  *
  * ── THE FINISHES THE FAMILIES MAP TO (the numbers are the table's) ─────────────────────────
- *   aluminiumClearAnodised  metal, #c4c7ca, r 0.40, bead-blast grain — goBILDA channel/plates,
- *                           intake arms, braces, the shooter's side plates, the dumper
+ *   aluminiumClearAnodised  metal, #c4c7ca, r 0.50, bead-blast grain — goBILDA channel/plates,
+ *                           the chassis' inner plates and cross members, intake arms, braces, the
+ *                           shooter's side plates, the dumper
  *   aluminiumExtrusion      metal, #c4c7ca, r 0.35, anisotropy 0.5 + die lines along the part —
  *                           the Box Tube's three square tubes, the one extruded part with a known axis
  *   steel                   metal, #c4c5c7, r 0.40 — the mecanum/omni side plates, the flywheel shaft
  *   darkCoat                dielectric, KEEPS the scene's dark tone, r 0.45, clearcoat 0.2 — ALU_DK
- *                           rails and plates, the turret ring, the hood, the motor can, dark axles
+ *                           plates, the rear bar, the turret ring, the hood, the motor can, dark axles
  *   powderCoatFill          dielectric, KEEPS `chassisFill` (the cosmetic), r 0.5, clearcoat 0.3
  *   siliconeRubber          dielectric, KEEPS the tread/accent colour, r 0.7, IOR 1.41 — wheel
  *                           rollers and tyres, intake rollers and flaps, the flywheel tyre
@@ -152,20 +153,55 @@ function ensureAxisTangent(geo: THREE.BufferGeometry, axis: DetailAxis): boolean
   return true;
 }
 
+/**
+ * ⚠️ **A PART UNDER THE DECK SEES THE DECK, NOT THE ROOM** (2026-10-11, the bay: `renderBay.ts`'s
+ * `buildBay`, and the frame's aluminium inner plates and cross members, `buildFrame`). The room
+ * probe and the dome are the whole sky to every twin, so a bare-metal 5203
+ * gearbox in the bay mirrored the school hall's warm floor and lamps and read as brass on the
+ * Extreme close-ups — a part that, on a real robot, sits between a closed deck, a belly pan and two
+ * plates and sees the room only through the open end. A mesh tagged `userData.bbEnclosed` gets an
+ * ambient-occlusion term instead: a shared 1×1 black `aoMap` at `ENCLOSED_AO`, which three applies
+ * to the indirect diffuse and, through `computeSpecularOcclusion`, to the indirect specular — the
+ * reflections — and never to direct light (which the deck's own shadow handles on `shadows: max`).
+ * 0.8 leaves a fifth of the environment: about what an end mouth 2.4 in tall opens of the
+ * hemisphere a part in the bay looks out on. Its own twin, so the cap screws that share the
+ * gearbox's base material keep theirs.
+ */
+const ENCLOSED_AO = 0.8;
+let enclosedAoMap: THREE.DataTexture | null = null;
+function enclosedAo(): THREE.DataTexture {
+  if (!enclosedAoMap) {
+    enclosedAoMap = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+    enclosedAoMap.needsUpdate = true;
+  }
+  return enclosedAoMap;
+}
+
 /** the recipe for one tagged mesh, or null for an untagged one (left standard) */
 function recipeFor(mesh: THREE.Mesh): TwinRecipe | null {
   const family = mesh.userData.bbFamily as RobotFamily | undefined;
   const id: FinishId | undefined = family ? ROBOT_FAMILY_FINISH[family] : undefined;
   if (!id) return null;
   const finish = FINISHES[id];
+  let recipe: TwinRecipe;
   if (EXTRUDED.has(id)) {
     const axis = longAxis(mesh.geometry);
     const aniso = ensureAxisTangent(mesh.geometry, axis);
     // the axis and the tangent are part of WHICH twin this is: the cache keys on the id
-    return { id: `${id}@${axis}${aniso ? 'a' : ''}`, finish, axis, anisotropy: aniso };
+    recipe = { id: `${id}@${axis}${aniso ? 'a' : ''}`, finish, axis, anisotropy: aniso };
+  } else {
+    // a robot part moves: its detail is sampled in its OWN axes, so the texture rides with it
+    recipe = { id, finish, space: 'object' };
   }
-  // a robot part moves: its detail is sampled in its OWN axes, so the texture rides with it
-  return { id, finish, space: 'object' };
+  if (!mesh.userData.bbEnclosed) return recipe;
+  return {
+    ...recipe,
+    id: `${recipe.id}|enclosed`,
+    tweak: (t) => {
+      t.aoMap = enclosedAo();
+      t.aoMapIntensity = ENCLOSED_AO;
+    },
+  };
 }
 
 /** the twin of a PER-ROBOT base (one with a map) — see the header */

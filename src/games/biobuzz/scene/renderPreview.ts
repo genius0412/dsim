@@ -27,7 +27,7 @@ import {
   gpuProbe,
 } from './renderCore';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { bbWheelDetail, buildRobotGroup, disposeRobotGroup, type BbWheelDetail } from './renderRobots';
+import { bbWheelDetail, buildRobotGroup, disposeRobotGroup, onBayReady, type BbWheelDetail } from './renderRobots';
 import { importedMeshKey, onImportedMeshChange } from './renderImported';
 
 /**
@@ -707,6 +707,14 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       if (k === key) return;
       key = k;
       rebuild(builtSpec);
+    }),
+  );
+
+  // THE BAY'S CHUNK LANDS AFTER THE FIRST HIGH BUILD (`renderRobots.ts`'s `bbLoadBay`): a High
+  // robot built before it has no bay, so it is rebuilt once when it does
+  teardown.push(
+    onBayReady(() => {
+      if (!disposed && builtSpec && builtWheelDetail === 'high') rebuild(builtSpec);
     }),
   );
 

@@ -67,6 +67,12 @@
  *                `import('./renderPost')` and fetched only when one of them is on. It imports
  *                three.js from the scene chunk rather than carrying it, so it has none of the
  *                `scene` markers and would otherwise land in `other`. Matched by FILENAME.
+ *   bay        — BIOBUZZ 3D's BAY (`renderBay-*.js`, 2026-10-11): the hardware under a robot's deck on
+ *                High (drive motors, hubs, battery, leads) and the layout and lead router that place
+ *                it, reached only through `renderRobots.ts`'s `import('./renderBay')` the first time a
+ *                High robot is built. It imports three.js from the scene chunk rather than carrying
+ *                it, so it has no `scene` marker and would otherwise land in `other`. Matched by
+ *                FILENAME.
  *   importer   — THE ROBOT IMPORTER ENGINE (`docs/robot-import-plan.md` §4, `docs/area/robot-import.md`):
  *                `importerEngine-*.js`, the lazy three.js zone `src/robotImport/engine/` behind
  *                `engineLoader.ts`'s one dynamic import — the loaders (glTF, STL, OBJ+MTL, 3MF with
@@ -205,6 +211,8 @@ function routeFor(file, buf) {
   // names it after `renderSurfaces.ts`, its `renderSurface*.ts` helpers are merged into it (only
   // it imports them), and it imports three.js from `renderScene-*.js` rather than containing it.
   if (/^renderSurfaces-[^/]*\.js$/.test(base)) return 'surfaces';
+  // The bay under a High robot's deck, by FILENAME for the same reason (see the route table)
+  if (/^renderBay-[^/]*\.js$/.test(base)) return 'bay';
   // THE ROBOT IMPORTER, by FILENAME (see the route table). `engineLoader-*.js` exists only in the
   // measurement build, where the loader is an entry of its own; in the app it is inlined.
   // `geometry-*.js` is the measurement code (`src/robotImport/geometry.ts`) once the editor and the
@@ -606,7 +614,20 @@ const BASELINE = {
   // moved — recorded so the creep is visible. The orbit and free cameras held in the photographed
   // room (`renderCameras.ts`), the shadow catcher cut to the sun's footprint and the no-IBL dim
   // (`renderPhotoVenue.ts`), the outdoor stand-in's sky (`renderEnvironment.ts`).
-  scene: { gzip: 237.12 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-10-10, THE HIGH CHASSIS AND MECHANISMS (gfx/robot-detail): 231.54 -> 237.63, MEASURED,
+  // which crossed the tolerance (236.17), so the baseline moves to it. +3.28 is this branch,
+  // measured by building its base (be3dc944) the same day: 234.35 there, so the other +2.81 had
+  // already crept in under the tolerance before it. What was added, all in `renderRobots.ts`:
+  // `chamferBox`, `plateExtrude` and `chamferRing` (the edge breaks), `bbSidePlateCut` and the
+  // cut-plate builder, the cap screws, the merge cache's reference counting and eviction (+2.53),
+  // then the mechanisms' breaks and `roundSeg` (+0.75). 12.4 KB of ceiling left.
+  //
+  // 2026-10-11, THE BAY (gfx/robot-detail Stage 2): 237.63 -> 238.70 (+1.07), inside the tolerance,
+  // so the number is NOT moved. The bay itself — 7.89 KB, which in the scene chunk took it to 245.49
+  // — is its own lazy chunk (`bay`, below); what stays here is the shooter's 5203 profile, the
+  // loader and its rebuild keys, and the preview's rebuild on load.
+  scene: { gzip: 237.63 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:
@@ -646,6 +667,10 @@ const BASELINE = {
   // `materials` row is `physical` (Extreme, or a Custom that turns it on); a 2D player and a
   // standard-materials 3D player pay nothing.
   surfaces: { gzip: 20.74 * 1000 },
+  // 2026-10-11: NEW. `renderBay-*.js`, the bay under a High robot's deck, measured on the build that
+  // introduced it: the 5203s, the REV hubs and battery, their pure-number layout (`bbBayLayout`) and
+  // the lead router (`bayWires`, 3.3 KB of it). Lazy: fetched by the first High robot built.
+  bay: { gzip: 7.89 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.
