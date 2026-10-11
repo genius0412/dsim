@@ -18545,6 +18545,31 @@ const recordDrive: CommandSource = (tick) => {
   check('feed: an empty board is an empty feed', feedFromRows([], null, 10).length === 0);
 }
 
+/** WHO NEVER SEES AN AD, and the in-match ad layout (`src/ads/adFree.ts`, `GameView`, styles.css). */
+{
+  const { isAdFree } = await import('../src/ads/adFree');
+  check('ads: a plain account (or nobody) is shown ads', !isAdFree({}) && !isAdFree(null) && !isAdFree(undefined) && !isAdFree({ supporter: false, contributor: false }));
+  check('ads: a supporter is ad-free', isAdFree({ supporter: true }));
+  check('ads: an owner or admin is ad-free, by role alone', isAdFree({ role: 'owner' }) && isAdFree({ role: 'admin' }));
+  check('ads: a CONTRIBUTOR is ad-free, and is not treated as a supporter', isAdFree({ supporter: false, contributor: true }));
+  check('ads: an unknown role string is not an exemption', !isAdFree({ role: 'moderator' }));
+  const prov = readFileSync('src/ads/AdsProvider.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the provider gates on the exemption, not on supporter alone', prov.includes('adsConfigured() && checked && !adFree') && prov.includes('setAdFree(isAdFree(e))'));
+  const api = readFileSync('server/api.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the server sends the contributor flag beside the supporter one, from the access group', api.includes("includes('contributor')") && api.includes('contributor: false'));
+  const css = readFileSync('src/ui/styles.css', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the vertical columns need a window WIDER than tall (they shrank the field at 1280x900)',
+    css.includes('(min-width: 1280px) and (min-height: 640px) and (min-aspect-ratio: 8/5)'));
+  check('ads: the horizontal banner needs a window TALLER than wide, with its 150px clearance gutter (254px)',
+    css.includes('(max-aspect-ratio: 3/5) and (min-width: 620px)') && css.includes('flex: 0 0 254px'));
+  check('ads: the two orientations are exclusive (8/5 and 3/5 cannot both hold)', 8 / 5 > 1 && 3 / 5 < 1);
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the field is flanked by `left`/`right` columns and the banner is its own element', gv.includes('game-ad left') && gv.includes('game-ad right') && gv.includes('game-ad-h') && gv.includes("unit=\"gameh\""));
+  const sense = readFileSync('src/ads/adsense.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: only the in-match banner may run on a TABLET; every other unit stays off touch',
+    sense.includes("if (unit === 'gameh') return !isTouch() || tabletWide();") && sense.includes('return !isTouch();'));
+}
+
 /** THE BREADCRUMB TRAIL (`src/ui/crumbs.ts`): what the app bar shows is also where "up" goes. */
 {
   const { crumbsFor, parentOf } = await import('../src/ui/crumbs');

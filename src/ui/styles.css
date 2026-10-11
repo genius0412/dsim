@@ -81,8 +81,8 @@ button {
      are exactly the light/dark values of --ds-bg — keep the three in sync. */
   background: var(--ds-bg);
 }
-.game-ad:first-child { padding-right: 150px; }
-.game-ad:last-child { padding-left: 150px; }
+.game-ad.left { padding-right: 150px; }
+.game-ad.right { padding-left: 150px; }
 
 /* One ad unit. The box is sized explicitly so a late-arriving creative cannot
    reflow anything — `npm run shiftaudit` fails on any element moving >0.5px while
@@ -130,8 +130,42 @@ button {
   line-height: var(--ds-lh-tight);
 }
 
-@media (pointer: fine) and (min-width: 1280px) and (min-height: 640px) {
+/* THE VERTICAL COLUMNS take a window WIDER than tall. The `min-aspect-ratio` is new (2026-10-11): the
+   gate above reasons that the field is square, so height binds and the width beside it is spare, but
+   that only holds when the window is wide enough for the columns to leave `usableH` of canvas. At
+   1280x900 it is not (660px of canvas for a ~900px field), so the columns shrank the field. 8/5 is
+   the aspect where 1280 wide still clears (1280x800), and every wider window clears more. */
+@media (pointer: fine) and (min-width: 1280px) and (min-height: 640px) and (min-aspect-ratio: 8/5) {
   .game-ad {
+    display: flex;
+  }
+}
+
+/* THE HORIZONTAL BANNER takes a window TALLER than wide, the other axis: there the field is
+   width-bound, so the height beside it is spare. It sits BELOW the field, in the same shell turned into
+   a column, with the same 150px clearance gutter on the field-facing side (254px = a 90px unit, its 14px
+   label and the gutter). The aspect gate is derived, not a taste: the field needs W + ~152px of HUD
+   bands, the banner 254px, so H must be at least W + 406px; at 3/5 (H = 1.667W) that holds from W = 620px
+   up, which is the `min-width`. A window that cannot spare it gets no banner rather than a smaller field.
+   No `pointer` gate: this is the one unit allowed on a tablet (`adsConfigured('gameh')`). */
+.game-ad-h {
+  display: none;
+  flex: 0 0 254px;
+  align-items: flex-end;
+  justify-content: center;
+  /* the canvas letterbox colour, as for the columns */
+  background: var(--ds-bg);
+}
+@media (max-aspect-ratio: 3/5) and (min-width: 620px) {
+  .game-shell {
+    flex-direction: column;
+  }
+  .game-shell > .game-root {
+    height: auto;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+  .game-ad-h {
     display: flex;
   }
 }

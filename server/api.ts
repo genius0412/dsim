@@ -8,7 +8,7 @@ import { runStarSweep } from './stargazers';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { coerceWindow, windowBounds } from './boardWindow';
-import { CHALLENGE_FORMATS, RETIRED_FORMATS } from '../src/net/protocol';
+import { CHALLENGE_FORMATS, RETIRED_FORMATS, type AccessGroup } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
 import { replayHasImported } from '../src/net/imported';
 import { moderateName, scrubName } from './moderation';
@@ -86,6 +86,7 @@ import {
   listSeasonsCached,
   recordLeaderboard,
   recentRecords,
+  accessGroupsOf,
   coerceCategory,
   saveSettingsFromClient,
   setHandle,
@@ -1128,6 +1129,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
             // no database ⇒ nothing was ever granted, same "not asked = false" rule as
             // every other field on this no-db branch.
             unlockedCosmetics: [],
+            contributor: false,
           }),
           true
         );
@@ -1139,6 +1141,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return (
         json(200, {
           ...(await getSupporter(user.userId)),
+          // AD-FREE for a CONTRIBUTOR too (owner, 2026-10-11: supporter, admin and contributor never see
+          // an ad). Staff already arrive as `supporter`. It is a separate field and NOT folded into
+          // `supporter`, because that flag also means "has the perks" (badge, saved starts, cosmetics),
+          // which a contributor does not get. UX only: no ad decision is enforced here.
+          contributor: (await accessGroupsOf(user.userId).catch((): AccessGroup[] => [])).includes('contributor'),
           price: { amount: policy.monthlyPrice, currency: policy.currency },
           /**
            * THE ACCEPTED TERMS RIDE ALONG HERE rather than on a route of their own.

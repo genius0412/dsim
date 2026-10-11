@@ -27,6 +27,7 @@ const SLOT_GAME = (import.meta.env.VITE_ADSENSE_SLOT_GAME as string | undefined)
 const SLOT_MENU = (import.meta.env.VITE_ADSENSE_SLOT_MENU as string | undefined)?.trim() || '';
 const SLOT_RESULTS = (import.meta.env.VITE_ADSENSE_SLOT_RESULTS as string | undefined)?.trim() || '';
 const SLOT_BANNER = (import.meta.env.VITE_ADSENSE_SLOT_BANNER as string | undefined)?.trim() || '';
+const SLOT_GAME_H = (import.meta.env.VITE_ADSENSE_SLOT_GAME_H as string | undefined)?.trim() || '';
 
 /**
  * PERSONALIZED ADS ARE OPT-IN, and the default is deliberately the low-revenue one.
@@ -73,17 +74,21 @@ export const ADSENSE_CLIENT = CLIENT;
  *                a player is actually reading rather than driving.
  *  - `banner`  — the strip at the bottom of every shell screen but Home. Its space is reserved even when
  *                ads are off or unfilled; the sponsor banner fills it then (`BannerStrip`).
+ *  - `gameh`   — the horizontal banner BELOW the field during a match, on a window taller than wide. The
+ *                vertical columns (`game`) take a window wider than tall; the two never show together,
+ *                because the field only has slack on one axis at a time.
  *  - `game`    — the columns flanking the live field. The highest-risk unit: it
  *                sits beside a 60 Hz canvas and is subject to AdSense's
  *                game-adjacency clearance rule. Kept OFF unless its own slot id
  *                is set, so the safe units can ship first.
  */
-export type AdUnit = 'game' | 'menu' | 'results' | 'banner';
+export type AdUnit = 'game' | 'gameh' | 'menu' | 'results' | 'banner';
 
 export function slotFor(unit: AdUnit): string {
   if (unit === 'game') return SLOT_GAME;
   if (unit === 'results') return SLOT_RESULTS;
   if (unit === 'banner') return SLOT_BANNER;
+  if (unit === 'gameh') return SLOT_GAME_H;
   return SLOT_MENU;
 }
 
@@ -107,8 +112,19 @@ function isTouch(): boolean {
  * Can ads run in this build at all? Static only — it says nothing about whether
  * the current user is a supporter (see `AdsProvider`).
  */
-export function adsConfigured(): boolean {
-  return !!CLIENT && !isElectron() && !isTouch();
+export function adsConfigured(unit?: AdUnit): boolean {
+  if (!CLIENT || isElectron()) return false;
+  // THE ONE UNIT THAT MAY RUN ON TOUCH: the horizontal in-match banner, on a TABLET (owner, 2026-10-11).
+  // It has its own slot id, and its CSS gate (`.game-ad-h`) reveals it only on a window tall enough to
+  // hold it with the field's clearance, so a phone never gets it: this is the width half of that rule,
+  // so a phone does not even load the script for a slot it can never show.
+  if (unit === 'gameh') return !isTouch() || tabletWide();
+  return !isTouch();
+}
+
+/** a touch device with the width of a tablet, not a phone */
+function tabletWide(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(min-width: 768px)').matches;
 }
 
 declare global {

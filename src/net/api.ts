@@ -2275,6 +2275,9 @@ export interface TierPrice {
 export interface Entitlements {
   /** an active supporter membership — removes ads, unlocks cosmetic perks */
   supporter: boolean;
+  /** a CONTRIBUTOR (an access group): ad-free like a supporter, with none of the other perks. Absent from
+   *  a server older than 2026-10-11, which reads as not a contributor (`src/ads/adFree.ts`). */
+  contributor?: boolean;
   /** ISO instant the membership lapses, or null if not a supporter — and always
    *  null for staff, who are entitled by role rather than by a purchase */
   supporterUntil: string | null;
@@ -2330,6 +2333,7 @@ export async function fetchEntitlements(): Promise<Entitlements> {
       supporter: !!r.supporter,
       supporterUntil: r.supporterUntil ?? null,
       role: r.role === 'owner' || r.role === 'admin' ? r.role : undefined,
+      contributor: r.contributor === true,
       autoRenews: !!r.autoRenews,
       price: r.price,
       // PASSED THROUGH UNTOUCHED, including `undefined`. Coercing it to null here

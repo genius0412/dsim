@@ -3,6 +3,7 @@ import {
   ADSENSE_CLIENT,
   AD_TFCD,
   AD_TFUAC,
+  adsConfigured,
   ensureAdSenseLoaded,
   fillSlot,
   slotFor,
@@ -17,6 +18,8 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
   // AdSense requires >=150px of clearance between an ad and a game, and only a
   // 160px unit leaves that clearance on a 1366- or 1440-wide laptop.
   game: { w: 160, h: 600 },
+  // the horizontal in-match banner under the field; `sizeFor` swaps in a 320x50 below the banner width
+  gameh: { w: 728, h: 90 },
   // menu + results pages are not game-play pages, so the clearance rule does not
   // apply and the standard medium rectangle (the best-filled size in AdSense's
   // inventory) is the right unit.
@@ -29,7 +32,7 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
 /** the top strip is the one unit whose size depends on the viewport */
 export const BANNER_NARROW_PX = 760;
 function sizeFor(unit: AdUnit): { w: number; h: number } {
-  if (unit === 'banner' && typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX) {
+  if ((unit === 'banner' || unit === 'gameh') && typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX) {
     return { w: 320, h: 50 };
   }
   return SIZE[unit];
@@ -60,7 +63,10 @@ function sizeFor(unit: AdUnit): { w: number; h: number } {
  * own — the column around it has to disappear too.
  */
 export function useAdUnitActive(unit: AdUnit): boolean {
-  const { showAds } = useAds();
+  const { showAds, adFree, checked } = useAds();
+  // `gameh` is the one unit allowed on a tablet, so it asks the build for itself; everything else
+  // rides the provider's `showAds`, which already folded in the exemption and the fail-closed wait
+  if (unit === 'gameh') return checked && !adFree && adsConfigured('gameh') && !!slotFor(unit);
   return showAds && !!slotFor(unit);
 }
 

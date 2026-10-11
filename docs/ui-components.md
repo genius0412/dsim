@@ -502,7 +502,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-dialog-actions` | src/ui/shell.css:6474 | 12 |
-| `.ds-dialog-title` | src/ui/styles.css:1830 | 11 |
+| `.ds-dialog-title` | src/ui/styles.css:1864 | 11 |
 
 ## `ds-feed` — 2
 
