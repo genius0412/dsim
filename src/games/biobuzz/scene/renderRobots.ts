@@ -301,6 +301,15 @@ const BB_RAIL_T = 0.95;
 function innerHalfWidth(spec: Pick<RobotSpec, 'width'>): number {
   return Math.max(0.6, spec.width / 2 - BB_PLATE_T * 2 - BB_PLATE_GAP);
 }
+/** `innerHalfWidth`, for the RENDER lane (the face a drive motor is bolted to) */
+export const bbInnerHalfWidth = (spec: Pick<RobotSpec, 'width'>): number => innerHalfWidth(spec);
+/** the belly pan (`buildFrame`): its centre height, thickness and length. Its top face is the
+ *  floor the bay's hubs and battery stand on (`bbBayLayout`). */
+const BB_PAN_Z = 0.85;
+const BB_PAN_T = 0.22;
+function bbPanLength(spec: Pick<RobotSpec, 'length'>): number {
+  return spec.length - BB_RAIL_T * 2.6;
+}
 
 /**
  * ⚠️ NOTHING HERE DRAWS `heightIn`, AND THAT IS THE POINT (owner, 2026-09-18).
@@ -322,9 +331,10 @@ function innerHalfWidth(spec: Pick<RobotSpec, 'width'>): number {
  * `rotateX(+π/2)` maps shape `v → world z` and the extrusion depth `→ world −y`, which is the
  * orientation every caller wants (a side plate standing up along the chassis).
  *
- * `c` breaks every edge (`plateExtrude`); `0`, the default, is the plain extrusion.
+ * `c` breaks every edge (`plateExtrude`); `0`, the default, is the plain extrusion. `keep`, given,
+ * drops each hole it answers `false` for (centre `u, v` from the plate's centre, radius `r`).
  */
-function platePlane(along: number, up: number, t: number, holes: number, c = 0): THREE.ExtrudeGeometry {
+function platePlane(along: number, up: number, t: number, holes: number, c = 0, keep?: (u: number, v: number, r: number) => boolean): THREE.ExtrudeGeometry {
   const hu = along / 2;
   const hv = up / 2;
   const r = Math.min(0.6, up * 0.18);
@@ -342,6 +352,8 @@ function platePlane(along: number, up: number, t: number, holes: number, c = 0):
   if (holes > 0 && holeR > 0.25) {
     for (let i = 0; i < holes; i++) {
       const u = -hu + ((i + 0.5) * along) / holes;
+      // `keep` (High's inner plates) leaves solid plate where a motor is bolted on
+      if (keep && !keep(u, 0, holeR)) continue;
       const path = new THREE.Path();
       path.absarc(u, 0, holeR, 0, Math.PI * 2, true);
       shape.holes.push(path);
@@ -882,8 +894,9 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  *
  * What it may change is what `WHEEL_LOD.low` already drops from a wheel — detail the outline does
  * not depend on: edge breaks (`chamferBox`, `plateExtrude`, `chamferRing`) on the chassis and the
- * mechanisms, where the outer side plate's lightening cuts go (`bbSidePlateCut`), the cap screws
- * (`bbCapFasteners`) and how many steps round a round part takes (`roundSeg`). The machine's
+ * mechanisms, where the side plates' lightening cuts go (`bbSidePlateCut`, `bbInnerPlateLands`),
+ * the cap screws (`bbCapFasteners`), how many steps round a round part takes (`roundSeg`), and the
+ * hardware in the bay under the deck, seen only through an open end (`buildBay`). The machine's
  * outline, its footprint and every part's bounding box are the same on both levels (to a break, or
  * to the radius a coarser polygon fell short of), and so is every colour.
  *
@@ -893,9 +906,9 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  * plates stopping under the deck (`buildFrame`), at the same triangle count. Low and Medium pay
  * nothing for this.
  */
-const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean }> = {
-  low: { chamfer: false, cut: false, fasteners: false },
-  high: { chamfer: true, cut: true, fasteners: true },
+const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean; bay: boolean }> = {
+  low: { chamfer: false, cut: false, fasteners: false, bay: false },
+  high: { chamfer: true, cut: true, fasteners: true, bay: true },
 };
 /** an edge break of `c` on High, none on Low */
 function edgeFor(detail: BbWheelDetail, c: number): number {
@@ -1906,7 +1919,10 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
   const lod = ROBOT_LOD[detail];
   // NOT KEYED ON `heightIn`: nothing in the frame depends on it any more, so two builds that
   // differ only in declared height share this buffer. High adds its own suffix; Low keeps today's.
-  const key = `${spec.length}|${spec.width}|${spec.drivetrain}|${capSegs.map((s) => s.map((g) => `${g.a0.toFixed(3)}:${g.a1.toFixed(3)}`).join(',')).join('/')}${lod.chamfer ? '|hi' : ''}`;
+  // High's inner plates keep solid plate where the drive motors bolt on (`bbInnerPlateLands`, in
+  // the bay's chunk: until it lands, the plates keep their even holes)
+  const lands = lod.bay && BAY ? BAY.lands(spec) : [];
+  const key = `${spec.length}|${spec.width}|${spec.drivetrain}|${capSegs.map((s) => s.map((g) => `${g.a0.toFixed(3)}:${g.a1.toFixed(3)}`).join(',')).join('/')}${lod.chamfer ? '|hi' : ''}${lands.length ? `|L${lands.map((l) => [l.x0, l.x1, l.z0, l.z1].map((v) => v.toFixed(3)).join(':')).join(',')}` : ''}`;
 
   // ⚠️ A SWERVE CHASSIS HAS NO WHEEL CHANNEL. The pods bolt UNDER a box frame at `BB_POD_INSET`
   // from each face, and a 1.5-in-wide pod wheel there runs straight through an inner side plate
@@ -1929,10 +1945,15 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
     // carry different surface detail (the physical-materials tier)
     const inner = y !== outerY;
     const plateH = lod.chamfer || inner ? BB_SIDE_PLATE_CUT_H : BB_PLATE_H;
+    const keep =
+      inner && lands.length
+        ? (u: number, v: number, r: number): boolean =>
+            lands.every((l) => Math.hypot(Math.max(0, l.x0 - u, u - l.x1), Math.max(0, l.z0 - (v + plateH / 2), v + plateH / 2 - l.z1)) >= r + BB_PLATE_WEB)
+        : undefined;
     const p =
       lod.cut && !inner
         ? cutSidePlate(spec, BB_PLATE_T, edgeFor(detail, 0.03))
-        : platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, plateH, BB_PLATE_T, holes, edgeFor(detail, 0.03));
+        : platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, plateH, BB_PLATE_T, holes, edgeFor(detail, 0.03), keep);
     p.translate(0, sy * y, lod.cut && !inner ? 0 : plateH / 2);
     return p;
   };
@@ -1967,7 +1988,7 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
     // `BB_DECK_Z − 0.26` (the pod stack is derived from it), so nothing pokes through the lid.
     parts.push(chamferBoxAt(spec.length, spec.width, BB_DECK_T, 0, 0, BB_DECK_Z - BB_DECK_T / 2, edgeFor(detail, 0.05)));
     // BELLY PAN — thin, low, spanning the inner channel
-    parts.push(chamferBoxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.22, 0, 0, 0.85, edgeFor(detail, 0.03)));
+    parts.push(chamferBoxAt(bbPanLength(spec), innerHW * 2, BB_PAN_T, 0, 0, BB_PAN_Z, edgeFor(detail, 0.03)));
     return parts;
   });
   const frame = framePart(`frame:${key}`, () => {
@@ -2115,6 +2136,153 @@ export function buildEndPlates(spec: RobotSpec, id: number, detail: BbWheelDetai
     out.push(...parts);
   }
   return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// THE BAY (High) — its own lazy chunk, `renderBay.ts`; what stays here is what the shooter shares
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+/** goBILDA 5203 Yellow Jacket, 19.2:1 (5203-2402-0019): a Ø37.5 mm gearbox 41.6 mm long, a Ø36 mm
+ *  can, 116.4 mm from the mounting face to the end of the encoder cover, a 23.5 mm cover, an 8 mm
+ *  REX shaft 24 mm long. APPROX: which section label on the spec sheet's drawing is the gearbox and
+ *  which the cover, and the cover's Ø33 mm. The can is `BB_TURRET_MOTOR_R`'s 36 mm. */
+export const BB_DRIVE_MOTOR = {
+  gearR: (37.5 * MM) / 2,
+  gearL: 41.6 * MM,
+  canR: (36 * MM) / 2,
+  len: 116.4 * MM,
+  encR: (33 * MM) / 2,
+  encL: 23.5 * MM,
+  shaftR: (8 * MM) / 2,
+  shaftL: 24 * MM,
+} as const;
+
+/**
+ * A SOLID OF REVOLUTION ABOUT +x from a profile of `[t, r]` points (t along the axis, r out from
+ * it), with a crisp edge between profile segments and normals smooth round the axis — the build
+ * `chamferRing` uses, for an open profile. A segment that runs onto the axis closes the part with a
+ * fan (its degenerate half-quads are dropped). Wind the profile from the −t end so the solid is on
+ * the axis side: then `(−dr, dt)` is each segment's outward normal.
+ */
+export function turnedPart(profile: readonly (readonly [number, number])[], seg: number): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const uv: number[] = [];
+  const vtx = (t: number, r: number, a: number): [number, number, number] => [t, r * Math.cos(a), r * Math.sin(a)];
+  for (let i = 0; i + 1 < profile.length; i++) {
+    const [t0, r0] = profile[i];
+    const [t1, r1] = profile[i + 1];
+    const len = Math.hypot(t1 - t0, r1 - r0);
+    if (len < 1e-9) continue;
+    const nt = -(r1 - r0) / len;
+    const nr = (t1 - t0) / len;
+    const flat = Math.abs(nt) > 0.999;
+    for (let j = 0; j < seg; j++) {
+      const a0 = (j / seg) * Math.PI * 2;
+      const a1 = ((j + 1) / seg) * Math.PI * 2;
+      const quad: [number, number, number][] = [
+        [t0, r0, a0],
+        [t1, r1, a0],
+        [t1, r1, a1],
+        [t0, r0, a1],
+      ];
+      const am = (a0 + a1) / 2;
+      const want = [nt, nr * Math.cos(am), nr * Math.sin(am)];
+      for (const k of [
+        [0, 1, 2],
+        [0, 2, 3],
+      ]) {
+        let tri = k.map((q) => quad[q]);
+        const [A, B, C] = tri.map((q) => vtx(q[0], q[1], q[2]));
+        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+        const w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+        const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        if (Math.hypot(n[0], n[1], n[2]) < 1e-12) continue;
+        if (n[0] * want[0] + n[1] * want[1] + n[2] * want[2] < 0) tri = [tri[0], tri[2], tri[1]];
+        for (const [t, r, a] of tri) {
+          pos.push(...vtx(t, r, a));
+          nrm.push(nt, nr * Math.cos(a), nr * Math.sin(a));
+          uv.push(flat ? r * Math.cos(a) : a * r, flat ? r * Math.sin(a) : t);
+        }
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return g;
+}
+
+/**
+ * ⚠️ **THE BAY IS A LAZY CHUNK** (`renderBay.ts`, 2026-10-11). The hardware under the deck — drive
+ * motors, hubs, battery, leads, and the router that places them — is High-only and seen only
+ * through an open end, and it was 7.9 KB gzip of the scene chunk, whose ceiling is 250 KB. So it
+ * is fetched the first time a High robot is built (`bbLoadBay`), registers itself here
+ * (`bbRegisterBay`), and every High robot built after that carries it. Until it lands a High robot
+ * is built without it (and with the inner plates' even holes); `sync` keys a High group on whether
+ * it has landed, and the builder preview subscribes (`onBayReady`), so both rebuild once when it
+ * does. A thumbnail or an export taken before then has no bay — from where those cameras stand it
+ * cannot be seen anyway.
+ */
+export interface BbBayHooks {
+  /** the bay's meshes for one robot (`buildBay`; High only) */
+  build: (spec: RobotSpec, id: number) => THREE.Mesh[];
+  /** where High's inner plates stay solid for a motor's mount (`bbInnerPlateLands`) */
+  lands: (spec: RobotSpec) => { x0: number; x1: number; z0: number; z1: number }[];
+}
+let BAY: BbBayHooks | null = null;
+// what the bay's chunk builds with, from this one
+export {
+  ALU,
+  axleXs,
+  BB_DECK_T,
+  BB_OMNI,
+  BB_PAN_T,
+  BB_PAN_Z,
+  BB_PLATE_H,
+  BB_PLATE_T,
+  BB_POD_INSET,
+  BB_PROUD,
+  BB_RAIL_T,
+  bbPanLength,
+  chamferBox,
+  chamferBoxAt,
+  framePart,
+  intakeArmKeepOuts,
+  MM,
+  MOTOR,
+  SCREW,
+  solidMat,
+  SWEEPER,
+  tag,
+};
+let bayLoading: Promise<void> | null = null;
+const bayListeners = new Set<() => void>();
+/** called once, by `renderBay.ts` as it loads */
+export function bbRegisterBay(hooks: BbBayHooks): void {
+  BAY = hooks;
+  for (const f of [...bayListeners]) f();
+}
+/** fetch the bay's chunk (once; a failed fetch is tried again on the next High build) */
+export function bbLoadBay(): Promise<void> {
+  bayLoading ??= import('./renderBay').then(
+    () => undefined,
+    () => {
+      bayLoading = null;
+    },
+  );
+  return bayLoading;
+}
+/** has the bay's chunk landed? A High robot built before it has no bay. */
+export function bbBayReady(): boolean {
+  return BAY !== null;
+}
+/** be told when it lands (the builder preview rebuilds then); returns the unsubscribe */
+export function onBayReady(f: () => void): () => void {
+  bayListeners.add(f);
+  return () => {
+    bayListeners.delete(f);
+  };
 }
 
 /**
@@ -3552,9 +3720,30 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // ⚠️ THE CAN AND NOTHING ELSE. Its output SHAFT is part of `bb-turret-shaft` below: the lane's
   // "between the plates" measurement is about the can, and a shaft merged in here would put the
   // motor's own vertices out at the belt's plane and make that reading a lie.
-  const motorGeo = framePart(`shooterMotor:${which}${hk}`, () => [
-    new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, motorLen, roundSeg(detail, 12, 28)).translate(mx, motorFaceY - motorLen / 2, 0),
-  ]);
+  // On High it is a 5203 rather than a plain can (2026-10-11): a flywheel motor is the 1:1, so no
+  // gearbox, just the can and its encoder cover (`BB_DRIVE_MOTOR`'s cover) behind a broken edge, in
+  // the same envelope — the can's radius, face to far end — so the head's box does not move. Its
+  // face is against the plate and is left open.
+  const motorGeo = framePart(`shooterMotor:${which}${hk}`, () => {
+    if (!ROBOT_LOD[detail].chamfer) return [new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, motorLen, roundSeg(detail, 12, 28)).translate(mx, motorFaceY - motorLen / 2, 0)];
+    const R = BB_TURRET_MOTOR_R;
+    const E = Math.min(BB_DRIVE_MOTOR.encR, R - 0.06);
+    const cap = Math.min(BB_DRIVE_MOTOR.encL, motorLen / 3);
+    const can = turnedPart(
+      [
+        [0, R],
+        [motorLen - cap - 0.03, R],
+        [motorLen - cap, R - 0.03],
+        [motorLen - cap, E],
+        [motorLen - 0.03, E],
+        [motorLen, E - 0.03],
+        [motorLen, 0],
+      ],
+      28,
+    );
+    // +x (face → cover) onto −y: the face is on the drive-side plate, the cover toward the other
+    return [can.rotateZ(-Math.PI / 2).translate(mx, motorFaceY, 0)];
+  });
   const motor = new THREE.Mesh(motorGeo, solidMat(MOTOR, 0.5, 0.4));
   motor.name = 'bb-turret-motor';
   axle.add(cast(motor, 'dark'));
@@ -3882,7 +4071,7 @@ export function buildRobotGroup(
   alliance: Alliance,
   /** ⚠️ THE TIER'S DETAIL LEVEL, AND THE ONLY THING A TIER MAY CHANGE ABOUT THIS ROBOT: the
    *  wheels' tessellation (`WHEEL_LOD`) and the chassis' and mechanisms' edge breaks, plate cuts,
-   *  cap screws and round-part steps (`ROBOT_LOD`). It defaults to `high`, which the RENDER lane builds; the live scene and the
+   *  cap screws, round-part steps and the bay under the deck (`ROBOT_LOD`). It defaults to `high`, which the RENDER lane builds; the live scene and the
    *  builder preview pass their own (`bbWheelDetail`), and the match's `sync` rebuilds a group
    *  when it changes. */
   detail: BbWheelDetail = 'high',
@@ -3921,6 +4110,12 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
   if (screws) group.add(screws);
   const wheels = buildWheels(spec, accent, detail);
   for (const w of wheels.nodes) group.add(w);
+  // what an open end shows under the deck (High): drive motors, hubs, battery, leads — the bay's
+  // own chunk, fetched by the first High build (`bbLoadBay`)
+  if (ROBOT_LOD[detail].bay) {
+    if (BAY) for (const m of BAY.build(spec, id)) group.add(m);
+    else void bbLoadBay();
+  }
   // the handles the per-frame sync poses a MOVING drivetrain with. Absent for the three that do
   // not move (a preview has no `RobotState` at all, so both lists are simply empty there).
   group.userData.swervePods = wheels.pods;
@@ -4944,7 +5139,8 @@ export function buildBiobuzzRobots(): BbRobots {
       //
       // An IMPORT adds its mesh state (`importedMeshKey`: placeholder → mesh when the parse lands),
       // per device for the same reason the tier is, so the group swaps on the first frame after.
-      const key = `${bbSpecKey(r.spec)}|${wheelDetail}|${importedMeshKey(r.spec)}`;
+      // ...and a High group whether the bay's chunk had landed (`bbLoadBay`): it is rebuilt once when it does
+      const key = `${bbSpecKey(r.spec)}|${wheelDetail}|${importedMeshKey(r.spec)}${ROBOT_LOD[wheelDetail].bay && BAY ? '|bay' : ''}`;
       let entry = entries.get(r.id);
       if (!entry || entry.key !== key) {
         if (entry) {

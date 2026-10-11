@@ -1142,7 +1142,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     but AA and shadows). Low/Medium get the cheap one, High/Ultra/Extreme and the fixed-High replay
     export the full one; **no seventeenth dial was added**, and the RENDER lane asserts that. A LOW mecanum
     still has eleven real 45° rollers — measured, not promised. (Since 2026-10-10 the same level
-    also carries the chassis detail in `ROBOT_LOD` — THE HIGH CHASSIS below.) It is baked at build time, so
+    also carries the chassis detail in `ROBOT_LOD` — THE HIGH CHASSIS below — and the bay's hardware, THE BAY.) It is baked at build time, so
     `sync` folds it into its own rebuild key beside `bbSpecKey` (NOT into `bbSpecKey`, which the
     main chunk's thumbnail cache reads and which must not carry a per-device setting).
   - **Handedness is `x * sy >= 0 ? 1 : -1`, the 2D sprite's own expression**, and `hand: 1` is a
@@ -1242,12 +1242,112 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     the candidates (metalness +0.2, a darker base) moved it only to 194–201.
   - NOT DONE, because each reverses an owner ruling the RENDER lane enforces: pockets in the deck
     (2026-09-21, "the plate covers the whole chassis"), pockets in the full back plate
-    (2026-09-20), and the bay hardware (motors, hubs, battery, wires) those pockets would show.
+    (2026-09-20). The bay hardware is drawn only where an open end already shows it (THE BAY below).
     Also not done: a bolt circle on the turret ring (the turret plate sits on the ring's top face
     and turns over it, so a head there would stand in the plate) and the cross members as U
     channel (under the deck, seen from nowhere).
     The z-fight sweep (`overlap/z-fight`) covers four more size-extreme builds and three Low ones,
     and finds no coplanar pair on any of 16.
+- ⚠️ **THE BAY: WHAT AN OPEN END SHOWS UNDER THE DECK, AND NOTHING WHERE NOTHING SHOWS** (2026-10-11,
+  the same owner ask: "Make the robots more high quality"). With the deck and back plate closed, the
+  space between the inner plates is seen through an END MOUTH (the end plate there is two corner
+  plates, so the bay is open from the tiles to the cross member, and the builder's turntable goes
+  down to 1°) and, on swerve and X-drive, through the outer plate's cuts (no inner plate behind
+  them). Captured from a low front, it was an empty box: pan, two plates, the back plate. Chase and
+  driver range show none of it; the builder preview and a low free camera do.
+  - **What goes in, High only** (`renderBay.ts`'s `buildBay`, `ROBOT_LOD.bay`): a goBILDA 5203 on each driven wheel
+    (Ø37.5 gearbox 41.6 long in bare metal, Ø36 can, 116.4 face to encoder end — APPROX which
+    spec-sheet label is the gearbox and which the cover), a REV Control Hub on 6 mm standoffs with
+    the Expansion Hub on 10 mm ones (143 × 103 × 29.5, ports along both long sides), the REV
+    slim battery (113.5 × 90.5 × 23), and each motor's lead to the Control Hub. Drawn only when
+    `bbBayShown`: a side intake on a mecanum, tank or butterfly shows none of it and builds none of
+    it. Low and Medium build nothing.
+  - **Placement is pure numbers** (`bbBayLayout`, cached per `bbSpecKey`): motors coaxial with
+    each end axle and face-bolted to the inner plate; under 14.73 in wide, where an axle's pair
+    would meet, each sits 0.8 off its axle on a mount plate with a belt to the axle; on X-drive on
+    each omni's canted axle on a bracket hung from the deck; on swerve along y on the outer plate
+    behind the sign land (a pod carries no motor, 2026-09-19). All four or none: an X-drive's four
+    meet in the middle under 15 in long, so those get none. The hubs and the battery are placed as
+    ONE PAIR side by side: placed one at a time, the hub took the middle and the battery fitted on
+    0 of 270 mecanum builds. Over 540 builds (`robot/bay`): motors on every channel and swerve
+    build and 81 of 108 X-drives, a Control Hub on all 540 (stacked on 486), a battery on 495
+    (the misses: 13.5 × 14.5 channel chassis and 14.5-in-wide X-drives).
+  - **The obstacles are measured, not assumed** (`bbUnderDeckObstacles`): over 720 High builds
+    (5 drivetrains × 3 sizes × 3 intakes × 4 mounts × 4 launcher/lift sets) the only mechanism part
+    under the deck inside the frame is the intake arms, 1.1 in deep at the sides above z 3.6.
+  - ⚠️ **A LEAD IS ROUTED ROUND EVERYTHING, NEVER THROUGH IT, AND THE LEADS ARE ALL FOUR OR NONE**
+    (`bayWires`). A 5203's two 18 AWG leads, drawn as one 2.5 mm lead (APPROX; the encoder's lead
+    is not drawn), leave the encoder cover straight down, lie on the pan, and rise into a port on
+    the Control Hub's long side 0.3 off the case. The run on the pan is a breadth-first fill on a
+    0.125-in grid out from the open ports, walked downhill from the start keeping its heading while
+    that still descends, so it runs square to the frame and turns where it has to. (A* with a cost
+    per turn routed the same leads and was 0.55 KB more of the chunk.) Closed cells: anything within 0.09 of a part
+    that reaches the pan, another motor's drop, a lead already routed, and the floor under a hub
+    standing on the pan (a lead there runs hidden). A lead may pass under a motor's can (0.08 over
+    the lead on a tank). The rounded lead is then checked sample by sample against every part
+    (0.04 clear), the pan and the other leads (0.01 apart: they may lie side by side like a tied
+    bundle, never through each other); one that fails takes the next port. Two rules that came
+    from measuring: a port whose rise is under a motor's can is closed (an X-drive's cans run under
+    the raised hub's strips; checking the rise only after the search took X-drive leads from 252 to
+    306 of 324), and leads may lie side by side (kept a lead's clearance apart, a 14.5-in-wide
+    chassis has room for one lane past the hub, and the first lead walled off the next: the 27
+    builds 14.5 in wide of each channel drivetrain got 2 of 4 leads). Measured over the 540 builds: leads on every driven
+    mecanum, tank, butterfly and swerve build, and on 72 of the 81 driven X-drives (the 18 × 14.5
+    ones, where the battery takes one side of the raised hub and the other side is off the pan).
+    The RENDER lane checks every lead with its own distance code, not the router's.
+  - ⚠️ **HIGH'S INNER PLATES LEAVE THEIR LIGHTENING HOLES OUT WHERE A MOTOR BOLTS ON**
+    (`bbInnerPlateLands`). Low's holes are evenly spaced (r 1.13 at x ±4.83 on a 15-in chassis)
+    and the motors sit at x ±4.75: 292 of 304 sampled mount points (face discs, mount standoffs)
+    were over a hole, a motor face floating in a 2.26-in hole. On High all 304 land on plate.
+  - **The shooter's motor is a 5203 too** (High): the 1:1 has no gearbox, so it is the can, a
+    broken edge and the encoder cover, in the old cylinder's box to 1e-6 on both heads and the
+    fixed shooter, so `restTurretHeads` and every head keep-out are unchanged. +196 triangles a head.
+  - ⚠️ **A BAY PART'S PHYSICAL TWIN IS OCCLUDED FROM THE ROOM** (`bbEnclosed`, `renderSurfaceRobots.ts`).
+    The probe is every twin's whole sky, so on the Extreme low close-up in the school hall the bare
+    gearbox mirrored the warm room and read as brass: mean sRGB (195,179,155). A 1×1 black aoMap
+    at 0.8 cuts its indirect light and reflections (three's `computeSpecularOcclusion`), not its
+    direct light: (106,90,71), dark metal like the plates around it. Its own twin, so the cap
+    screws that share the base material keep theirs. It is darker, not neutral: still saturation
+    ~0.3 on the low front close-up, the same warm cast every bare metal part takes from that room's
+    probe (THE HIGH CHASSIS, physical aluminium), which is the probe's to fix, not the bay's.
+  - **Cost per robot, High, vs 79cd7e4b** (the bay, the shooter motors, less the dropped plate
+    holes): +2,236 to +3,316 triangles (the staggered 13.5 × 14.5 tank is the most), +4 meshes (+5
+    on X-drive for the brackets, +6 staggered for belts and mount plates), +0 shadow casters. The
+    bay is 2,764 triangles on most builds (each lead ~230, a 5-sided tube), 3,648 on the staggered
+    tank. Heaviest robot: the 18 × 18 butterfly, 34,076. A side-intake mecanum builds no bay and is
+    332 lighter (the dropped holes). Low and Medium: identical counts on every pinned build, and
+    the Low captures are pixel-identical to 79cd7e4b's. The leads share the hub cases' mesh and
+    material (black plastic), so they add no draw call. The RENDER lane holds the bay to
+    4,000 / 7 / 0 per robot (`robot/budget`). The layout is computed once per build: in node,
+    median ~2.3 ms, worst ~23 ms (an X-drive whose hub pair is searched to the end before it stands
+    on raised standoffs, and the 13.5 × 14.5 channel chassis); the leads are ~2 ms of the median.
+  - ⚠️ **THE BAY IS ITS OWN LAZY CHUNK** (`renderBay.ts` → `renderBay-*.js`, the `bay` route in
+    `npm run bundleaudit`). In the scene chunk it took that chunk from 237.63 to 245.49 KB gzip
+    against a 250 KB ceiling three other branches were also spending, the leads 3.3 KB of it. Now
+    the scene chunk is 238.70 (the shooter's 5203 profile, the loader, the rebuild keys) and the bay
+    is 7.89 KB fetched by the first High robot built (`bbLoadBay`). It registers itself with
+    `renderRobots.ts` as it loads (`bbRegisterBay`); until then a High robot is built without it and
+    with Low's evenly spaced inner-plate holes. `sync` keys a High group on whether it has landed
+    and the builder preview subscribes (`onBayReady`), so each rebuilds once when it lands. A
+    thumbnail or an export taken before then has no bay; from where those cameras stand it cannot
+    be seen. Nothing outside `renderRobots.ts` may import it statically (RENDER lane, `robot/bay
+    chunk`): one static import folds it back into the scene chunk.
+  - Not done, and why: the Box Tube's pivot motor (the pivot is at the frame edge on every mount —
+    over a cross member at front/back/centre, over a wheel channel at the sides and corners — so
+    there is no bay under its belt to put a motor in); a ramp-deploy servo (each intake arm sits
+    0.28 in from the mouth's edge, `BB_INTAKE_ARM_INSET`, and the ramp rail 0.15 inboard of the
+    arm, and a standard servo is 0.79 thick: outboard it leaves the footprint, inboard it is in the
+    throat); the battery's lead
+    (it ends in an XT30, the yellow the amber scan rejects); a shrink-wrap finish
+    for the battery (drawn in the hub cases' black plastic, one mesh fewer). Pockets in the deck
+    or the back plate, which would show the bay from above and behind, still need the owner's
+    word (THE HIGH CHASSIS).
+  - RENDER lane `robotBayChecks`: the 540-build layout sweep (inside the frame, under the deck,
+    clear of every obstacle, two assemblies ≥ 0.05 apart, the rates; every lead from inside its
+    cover to inside a port, off the pan, clear of every part and lead), 12 built robots (no other
+    part's triangle into a bay item or a lead, every bay vertex inside its item or within a lead's
+    radius of its centreline, tagged, enclosed, casting nothing), the plate under every mount, the
+    shooter motor's box, and the occluded twin.
 - ⚠️ **ONLINE "FULL" IS NOW THE REAL `step3d` ON THE CLIENT** (2026-09-27, owner: "FULL should predict
   EVERYTHING"), on one engine REWOUND onto each snapshot (`rewindEngineTo`), replayed only when the
   snapshot disagrees with the prediction — `docs/area/netcode.md` has the rule and the numbers.

@@ -261,6 +261,29 @@ import {
   bbFrameCacheStats,
   bbSidePlateCut,
 } from '../../src/games/biobuzz/scene/renderRobots';
+// ── the bay under the deck (gfx/robot-detail Stage 2, 2026-10-11), a block of its own. Its chunk
+// registers itself with `renderRobots.ts` as it loads (`bbRegisterBay`), so importing it here is
+// what puts the bay on every High robot this lane builds ──
+import { BB_DRIVE_MOTOR, bbBayReady, bbInnerHalfWidth, buildFixedShooter as bayBuildFixedShooter } from '../../src/games/biobuzz/scene/renderRobots';
+import {
+  BB_BAY_CEILING,
+  BB_BAY_FLOOR,
+  BB_HUB_PORT_STRIP,
+  BAY_WIRE_CLEAR,
+  BAY_WIRE_GAP,
+  BAY_WIRE_OWN,
+  BAY_WIRE_PORT_FREE,
+  BAY_WIRE_R,
+  bbBayHit,
+  bbBayLayout,
+  bbBayShapes,
+  bbBayShown,
+  bbInnerPlateLands,
+  bbUnderDeckObstacles,
+  type BbBayShape,
+} from '../../src/games/biobuzz/scene/renderBay';
+import { applyRobotSurfaces, revertRobotSurfaces } from '../../src/games/biobuzz/scene/renderSurfaceRobots';
+import { ROBOT_FAMILY_FINISH as BAY_FAMILY_FINISH } from '../../src/games/biobuzz/graphics/finishes';
 // ── the High mechanisms (gfx/robot-detail, 2026-10-10), a block of their own ──
 import { turretRadius as bbTurretRadiusForDetail } from '../../src/games/biobuzz/mounts';
 import { BB_TURRET_RING_H as BB_RING_H_FOR_DETAIL } from '../../src/games/biobuzz/config';
@@ -1814,6 +1837,7 @@ export function renderChecks(check: Check): void {
   robotOverlapChecks(check);
   robotDetailChecks(check);
   robotMechanismDetailChecks(check);
+  robotBayChecks(check);
   frontBackChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
@@ -2236,6 +2260,7 @@ function frontBackChecks(check: Check): void {
       ['parts.ts', readFileSync(join(BIOBUZZ_DIR, 'parts.ts'), 'utf8')],
       ['drawRobot.ts', readFileSync(join(BIOBUZZ_DIR, 'drawRobot.ts'), 'utf8')],
       ['scene/renderRobots.ts', readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8')],
+      ['scene/renderBay.ts', readFileSync(join(SCENE_DIR, 'renderBay.ts'), 'utf8')],
     ];
     for (const [name, src] of srcs) {
       const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -2323,7 +2348,7 @@ function frontBackChecks(check: Check): void {
   }
   check(
     'front/back 3D: NOTHING on a robot is emissive — the front bar is matte white, a robot part never glows (owner, 2026-09-27)',
-    !/emissive/.test(readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8').replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, '')),
+    ['renderRobots.ts', 'renderBay.ts'].every((f) => !/emissive/.test(readFileSync(join(SCENE_DIR, f), 'utf8').replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, ''))),
   );
   check(
     'front/back 3D: the 0.7-in nose box is GONE (it is what the report was about)',
@@ -3076,18 +3101,28 @@ function robotDetailChecks(check: Check): void {
   if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
   try {
     const mk = (extra: Record<string, unknown>): RobotSpec => coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, ...extra } as RobotSpec);
-    const count = (g: THREE.Object3D): { tris: number; meshes: number; casters: number } => {
+    // the bay (`robot:<id>:bay:*`, 2026-10-11) is counted apart: it has a budget of its own below
+    const count = (g: THREE.Object3D): { tris: number; meshes: number; casters: number; bay: { tris: number; meshes: number; casters: number } } => {
       let tris = 0;
       let meshes = 0;
       let casters = 0;
+      const bay = { tris: 0, meshes: 0, casters: 0 };
       g.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
+        const n = (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count) / 3;
+        if (/:bay:/.test(m.name)) {
+          bay.meshes++;
+          if (m.castShadow) bay.casters++;
+          bay.tris += n;
+          return;
+        }
         meshes++;
         if (m.castShadow) casters++;
-        tris += (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count) / 3;
+        tris += n;
       });
-      return { tris: Math.round(tris), meshes, casters };
+      bay.tris = Math.round(bay.tris);
+      return { tris: Math.round(tris), meshes, casters, bay };
     };
     // ── (1) + (2): the counts measured at be3dc944, before any of this existed — [low, high], each
     // [triangles, meshes, casters]
@@ -3153,12 +3188,16 @@ function robotDetailChecks(check: Check): void {
     let worst = 0;
     let screwsCast = 0;
     let screwMeshes = 0;
+    const bayBad: string[] = [];
+    const bayLines: string[] = [];
     for (const [name, spec, lo, hi] of PINNED) {
       const gl = buildRobotGroup(spec, 1, 'red', 'low');
       const gh = buildRobotGroup(spec, 1, 'red', 'high');
       const cl = count(gl);
       const ch = count(gh);
-      if (cl.tris !== lo[0] || cl.meshes !== lo[1] || cl.casters !== lo[2]) lowBad.push(`${name} ${cl.tris}/${cl.meshes}/${cl.casters} vs ${lo.join('/')}`);
+      if (cl.tris !== lo[0] || cl.meshes !== lo[1] || cl.casters !== lo[2] || cl.bay.meshes) lowBad.push(`${name} ${cl.tris}/${cl.meshes}/${cl.casters} vs ${lo.join('/')}, ${cl.bay.meshes} bay meshes`);
+      if (ch.bay.tris > 4000 || ch.bay.meshes > 7 || ch.bay.casters) bayBad.push(`${name} ${ch.bay.tris}/${ch.bay.meshes}/${ch.bay.casters}`);
+      bayLines.push(`${name} ${ch.bay.tris}/${ch.bay.meshes}`);
       if (ch.tris > hi[0] + 7000 || ch.meshes > hi[1] + 2 || ch.casters > hi[2] + 1) highBad.push(`${name} ${ch.tris}/${ch.meshes}/${ch.casters} vs ${hi.join('/')}`);
       worst = Math.max(worst, ch.tris - hi[0]);
       lines.push(`${name} +${ch.tris - hi[0]} tris +${ch.meshes - hi[1]} meshes`);
@@ -3194,7 +3233,12 @@ function robotDetailChecks(check: Check): void {
     check(`robot/lod: Low is today's robot — triangles, meshes and casters are the 2026-10-09 counts on all ${PINNED.length} builds`, lowBad.length === 0, lowBad.join('; '));
     check('robot/lod: ...and no Low chassis part has a broken edge (no facet leaning on all three axes)', lowCorners === 0, `${lowCorners} on Low, ${highCorners} on High`);
     check('robot/lod: ...while the High chassis does (else the checks around this one test nothing)', highCorners > 100, String(highCorners));
-    check(`robot/budget: High stays within +7,000 triangles, +2 meshes, +1 caster per robot (worst +${worst})`, highBad.length === 0, highBad.join('; ') || lines.join(', '));
+    check(`robot/budget: High stays within +7,000 triangles, +2 meshes, +1 caster per robot outside the bay (worst +${worst})`, highBad.length === 0, highBad.join('; ') || lines.join(', '));
+    check(
+      'robot/budget: the bay (Stage 2, 2026-10-11) is at most 4,000 triangles and 7 meshes per robot, and none of it casts a shadow',
+      bayBad.length === 0 && bayLines.length === PINNED.length,
+      bayBad.join('; ') || bayLines.join(', '),
+    );
     check('robot/budget: the cap screws are one mesh per robot and cast no shadow (a 0.3-in head is under a texel)', screwMeshes === PINNED.length && screwsCast === 0, `${screwMeshes} meshes, ${screwsCast} casting`);
     check('robot/footprint: every chassis part has the same bounding box on both levels (the structure inside it), and Low has no screws — a break only removes material', outline.length === 0, outline.slice(0, 6).join('; '));
     check('robot/footprint: ...inside the frame and under the low body (the end bars to their own ruled height)', outside.length === 0, outside.slice(0, 6).join('; '));
@@ -3382,6 +3426,534 @@ function robotDetailChecks(check: Check): void {
  *      are broken, while Low's extrusion has the same 48 points round the rim;
  *  (4) THE KEYS — built High first, a Low head still gets Low's buffers.
  */
+/**
+ * ⚠️ **THE BAY: WHAT AN OPEN END SHOWS UNDER THE DECK** (2026-10-11, owner: "Make the robots more high
+ * quality"; Stage 2 of the robot plan). On High a build whose bay can be seen — an end mouth, or a
+ * swerve/X-drive with no inner plate behind its side cuts — carries its drive motors (goBILDA 5203),
+ * a REV Control Hub with an Expansion Hub on it and the REV slim battery (`bbBayLayout`), and the
+ * shooter's motor is a 5203 profile in the can's own envelope. Pinned here:
+ *  (1) THE LAYOUT, pure numbers over 540 builds: every item inside the frame, under the deck and on
+ *      or over the pan; no item inside an obstacle under the deck (`bbUnderDeckObstacles`); two
+ *      assemblies ≥ 0.05 apart; placement rates per drivetrain;
+ *  (2) THE MESHES, built, on 12 robots: no other part's triangle reaches into a bay item (its box
+ *      shrunk 0.02), every bay vertex is inside its own item, none of it casts, every mesh is
+ *      tagged and enclosed; a build whose bay cannot be seen builds none;
+ *  (3) THE PLATE: a motor's face and a mount's standoffs land on solid inner plate (High's plate
+ *      leaves its lightening holes out there — `bbInnerPlateLands`);
+ *  (4) THE SHOOTER'S MOTOR keeps its box to 1e-6 on every head;
+ *  (5) THE PHYSICAL TWIN of a bay part is occluded from the room, and a part sharing its base
+ *      material elsewhere is not.
+ */
+function robotBayChecks(check: Check): void {
+  const hadDoc = 'document' in globalThis;
+  const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {}, width: 10 }) });
+  if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
+  try {
+    const mk = (extra: Record<string, unknown>): RobotSpec => coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, ...extra } as RobotSpec);
+    const extents = (s: BbBayShape): [number, number] => {
+      if (s.r !== undefined) return [s.r, s.r];
+      const c = Math.abs(Math.cos(s.a));
+      const n = Math.abs(Math.sin(s.a));
+      return [s.hx * c + s.hy * n, s.hx * n + s.hy * c];
+    };
+    type P3 = [number, number, number];
+    /** a point's distance to a shape, written here rather than borrowed from the router */
+    const shapeDist = (s: BbBayShape, q: readonly number[]): number => {
+      const dx = q[0] - s.cx;
+      const dy = q[1] - s.cy;
+      const dz = Math.max(0, s.z0 - q[2], q[2] - s.z1);
+      if (s.r !== undefined) return Math.hypot(Math.max(0, Math.hypot(dx, dy) - s.r), dz);
+      const lx = dx * Math.cos(-s.a) - dy * Math.sin(-s.a);
+      const ly = dx * Math.sin(-s.a) + dy * Math.cos(-s.a);
+      return Math.hypot(Math.max(0, Math.abs(lx) - s.hx), Math.max(0, Math.abs(ly) - s.hy), dz);
+    };
+    /** the closest two segments come (clamped closest points, the textbook form; scalar, it runs
+     *  ~1.4 M times in the sweep) */
+    const segDist = (p1: readonly number[], q1: readonly number[], p2: readonly number[], q2: readonly number[]): number => {
+      const d1x = q1[0] - p1[0], d1y = q1[1] - p1[1], d1z = q1[2] - p1[2];
+      const d2x = q2[0] - p2[0], d2y = q2[1] - p2[1], d2z = q2[2] - p2[2];
+      const rx = p1[0] - p2[0], ry = p1[1] - p2[1], rz = p1[2] - p2[2];
+      const a = d1x * d1x + d1y * d1y + d1z * d1z;
+      const e = d2x * d2x + d2y * d2y + d2z * d2z;
+      const f = d2x * rx + d2y * ry + d2z * rz;
+      const c = d1x * rx + d1y * ry + d1z * rz;
+      const b = d1x * d2x + d1y * d2y + d1z * d2z;
+      const den = a * e - b * b;
+      let sc = den > 1e-12 ? Math.min(1, Math.max(0, (b * f - c * e) / den)) : 0;
+      let tc = e > 1e-12 ? (b * sc + f) / e : 0;
+      if (tc < 0) {
+        tc = 0;
+        sc = a > 1e-12 ? Math.min(1, Math.max(0, -c / a)) : 0;
+      } else if (tc > 1) {
+        tc = 1;
+        sc = a > 1e-12 ? Math.min(1, Math.max(0, (b - c) / a)) : 0;
+      }
+      return Math.hypot(rx + d1x * sc - d2x * tc, ry + d1y * sc - d2y * tc, rz + d1z * sc - d2z * tc);
+    };
+    /** points along a polyline at most `step` apart */
+    const dense = (pts: readonly P3[], step: number): P3[] => {
+      const out: P3[] = [pts[0]];
+      for (let i = 1; i < pts.length; i++) {
+        const n = Math.max(1, Math.ceil(Math.hypot(...[0, 1, 2].map((k) => pts[i][k] - pts[i - 1][k])) / step));
+        for (let j = 1; j <= n; j++) out.push([0, 1, 2].map((k) => pts[i - 1][k] + ((pts[i][k] - pts[i - 1][k]) * j) / n) as P3);
+      }
+      return out;
+    };
+
+    // ── (1) THE LAYOUT ──────────────────────────────────────────────────────────────────────
+    {
+      const bad: string[] = [];
+      const rate: Record<string, { n: number; motors: number; hubs: number; stack: number; battery: number; wired: number }> = {};
+      const leadBad: string[] = [];
+      let leadCount = 0;
+      let builds = 0;
+      let shown = 0;
+      for (const dt of ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const) {
+        for (const L of [13.5, 15, 16.5, 18]) {
+          for (const W of [14.5, 16, 18]) {
+            for (const im of ['front', 'side', 'frontback'] as const) {
+              for (const kind of ['sweeper', 'siderollers', 'ramp'] as const) {
+                const spec = mk({ drivetrain: dt, length: L, width: W, intakeMount: im, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: null, intake: { kind } } });
+                const tag = `${dt} ${spec.length}x${spec.width} ${im} ${kind}`;
+                builds++;
+                if (bbBayShown(spec)) shown++;
+                const lay = bbBayLayout(spec);
+                const r = (rate[dt] ??= { n: 0, motors: 0, hubs: 0, stack: 0, battery: 0, wired: 0 });
+                r.n++;
+                if (lay.motors.length) r.motors++;
+                if (lay.hubs.length) r.hubs++;
+                if (lay.hubs.length > 1) r.stack++;
+                if (lay.battery) r.battery++;
+                if (lay.motors.length !== 0 && lay.motors.length !== 4) bad.push(`${tag}: ${lay.motors.length} motors`);
+                const hl = spec.length / 2;
+                const hw = spec.width / 2;
+                const shapes = bbBayShapes(spec, lay);
+                const obstacles = bbUnderDeckObstacles(spec);
+                for (const { what, s } of shapes) {
+                  const [ex, ey] = extents(s);
+                  if (Math.abs(s.cx) + ex > hl - 0.22 + 1e-6 || Math.abs(s.cy) + ey > hw - 0.22 + 1e-6 || s.z0 < BB_BAY_FLOOR - 1e-6 || s.z1 > BB_BAY_CEILING + 1e-6) bad.push(`${tag}: ${what} outside the bay`);
+                  for (const o of obstacles) if (bbBayHit(s, o, -1e-6)) bad.push(`${tag}: ${what} inside ${o.what}`);
+                }
+                shapes.forEach((a, i) =>
+                  shapes.slice(i + 1).forEach((b) => {
+                    if (a.what !== b.what && bbBayHit(a.s, b.s, 0.05)) bad.push(`${tag}: ${a.what} within 0.05 of ${b.what}`);
+                  }),
+                );
+                // THE LEADS: all or none; each from inside its motor's encoder cover to inside a
+                // port strip, off the pan, clear of every part (its own motor where it leaves the
+                // cover and the hub inside its port excepted) and of every other lead
+                if (lay.wires.length && lay.wires.length !== lay.motors.length) leadBad.push(`${tag}: ${lay.wires.length} of ${lay.motors.length} leads`);
+                if (lay.motors.length && lay.wires.length === lay.motors.length) r.wired++;
+                const parts = [...shapes, ...obstacles.filter((o) => o.what !== 'pan').map((s) => ({ what: s.what ?? '', s }))].map((p) => {
+                  const [ex, ey] = extents(p.s);
+                  return { ...p, x0: p.s.cx - ex, x1: p.s.cx + ex, y0: p.s.cy - ey, y1: p.s.cy + ey };
+                });
+                const T = BAY_WIRE_R + BAY_WIRE_CLEAR - 1e-6;
+                lay.wires.forEach((w, i) => {
+                  leadCount++;
+                  const m = lay.motors[w.motor];
+                  const start = w.pts[0];
+                  const end = w.pts[w.pts.length - 1];
+                  // the start: inside the cover, its ring too
+                  const t = (start[0] - m.x) * m.ux + (start[1] - m.y) * m.uy;
+                  const off = Math.hypot(start[0] - m.x - t * m.ux, start[1] - m.y - t * m.uy, start[2] - m.z);
+                  if (t < BB_DRIVE_MOTOR.len - BB_DRIVE_MOTOR.encL + BAY_WIRE_R || t > BB_DRIVE_MOTOR.len - BAY_WIRE_R || Math.hypot(off, BAY_WIRE_R) > BB_DRIVE_MOTOR.encR) leadBad.push(`${tag}: lead ${w.motor} starts outside its cover`);
+                  // the end: inside a port strip on the Control Hub's long side
+                  const hub = lay.hubs[0];
+                  const along = hub.hx > hub.hy;
+                  const hS = along ? hub.hy : hub.hx;
+                  const hL = along ? hub.hx : hub.hy;
+                  const n = along ? end[1] - hub.cy : end[0] - hub.cx;
+                  const u = along ? end[0] - hub.cx : end[1] - hub.cy;
+                  const P = BB_HUB_PORT_STRIP;
+                  const zs = hub.z0 + hub.h - P.drop;
+                  if (Math.abs(n) < hS + P.proud - P.t + 1e-6 || Math.abs(n) > hS + P.proud - 1e-6 || Math.abs(u) > hL - P.inset - BAY_WIRE_R || Math.abs(end[2] - zs) > P.h / 2 - BAY_WIRE_R) leadBad.push(`${tag}: lead ${w.motor} ends outside a port`);
+                  // only the parts near this lead at all, then every 0.02 in along it
+                  const lo = [0, 1, 2].map((k) => Math.min(...w.pts.map((q) => q[k])) - T);
+                  const hi = [0, 1, 2].map((k) => Math.max(...w.pts.map((q) => q[k])) + T);
+                  const near = parts.filter((p) => p.x1 >= lo[0] && p.x0 <= hi[0] && p.y1 >= lo[1] && p.y0 <= hi[1] && p.s.z1 >= lo[2] && p.s.z0 <= hi[2]);
+                  for (const q of dense(w.pts, 0.02)) {
+                    if (q[2] - BAY_WIRE_R < BB_BAY_FLOOR - 1e-6) leadBad.push(`${tag}: lead ${w.motor} into the pan`);
+                    const nearStart = Math.hypot(q[0] - start[0], q[1] - start[1]) < BAY_WIRE_OWN;
+                    const nearEnd = Math.hypot(q[0] - end[0], q[1] - end[1], q[2] - end[2]) < BAY_WIRE_PORT_FREE;
+                    for (const p of near) {
+                      if (q[0] < p.x0 - T || q[0] > p.x1 + T || q[1] < p.y0 - T || q[1] > p.y1 + T || q[2] < p.s.z0 - T || q[2] > p.s.z1 + T) continue;
+                      if ((nearStart && p.what === `motor${w.motor}`) || (nearEnd && p.what === 'hubs')) continue;
+                      if (shapeDist(p.s, q) < T) leadBad.push(`${tag}: lead ${w.motor} within ${T.toFixed(2)} of ${p.what}`);
+                    }
+                  }
+                  for (const o of lay.wires.slice(i + 1)) {
+                    let d = Infinity;
+                    for (let a = 1; a < w.pts.length; a++) for (let b = 1; b < o.pts.length; b++) d = Math.min(d, segDist(w.pts[a - 1], w.pts[a], o.pts[b - 1], o.pts[b]));
+                    if (d < 2 * BAY_WIRE_R + BAY_WIRE_GAP - 1e-3) leadBad.push(`${tag}: leads ${w.motor} and ${o.motor} ${d.toFixed(3)} apart`);
+                  }
+                });
+              }
+            }
+          }
+        }
+      }
+      const all = Object.values(rate).reduce((t, r) => ({ n: t.n + r.n, hubs: t.hubs + r.hubs, battery: t.battery + r.battery }), { n: 0, hubs: 0, battery: 0 });
+      const lines = Object.entries(rate).map(([dt, r]) => `${dt}: motors ${r.motors}/${r.n}, hubs ${r.hubs} (stacked ${r.stack}), battery ${r.battery}`).join('; ');
+      check(
+        `robot/bay: every item inside the frame, under the deck and over the pan, inside no obstacle, two assemblies ≥ 0.05 apart (${builds} builds, ${shown} with a bay to see)`,
+        bad.length === 0 && shown > builds / 2,
+        [...new Set(bad)].slice(0, 6).join('; ') || lines,
+      );
+      check(
+        'robot/bay: the drive motors on every mecanum, tank, butterfly and swerve build, and on every X-drive 15 in long or more (shorter, the four meet in the middle and none is drawn)',
+        ['mecanum', 'tank', 'butterfly', 'swerve'].every((dt) => rate[dt].motors === rate[dt].n) && rate.xdrive.motors * 3 >= rate.xdrive.n * 2 - 1e-9,
+        lines,
+      );
+      check('robot/bay: a Control Hub on ≥ 95 % of builds and a battery on ≥ 90 %', all.hubs >= all.n * 0.95 && all.battery >= all.n * 0.9, `${all.hubs}/${all.n} hubs, ${all.battery}/${all.n} batteries`);
+      const wiredLine = Object.entries(rate).map(([dt, r]) => `${dt} ${r.wired}/${r.motors}`).join(', ');
+      check(
+        `robot/bay leads: all or none, each from inside its motor's cover to inside a port, off the pan, ${BAY_WIRE_CLEAR} clear of every part and ${BAY_WIRE_GAP} of every other lead (${leadCount} leads)`,
+        leadBad.length === 0 && leadCount > 1000,
+        [...new Set(leadBad)].slice(0, 6).join('; ') || wiredLine,
+      );
+      check(
+        'robot/bay leads: every driven mecanum, tank, butterfly and swerve build is wired, and ≥ 85 % of the driven X-drives (on the narrowest, one side of the hub is free)',
+        ['mecanum', 'tank', 'butterfly', 'swerve'].every((dt) => rate[dt].wired === rate[dt].motors) && rate.xdrive.wired >= rate.xdrive.motors * 0.85,
+        wiredLine,
+      );
+      // the X-drive ruling, measured: 15 in long fits, 14 does not
+      check(
+        'robot/bay: an X-drive 15 x 16 (the Skimmer) carries its four motors; a 14 x 16 carries none',
+        bbBayLayout(mk({ drivetrain: 'xdrive', length: 15, width: 16 })).motors.length === 4 && bbBayLayout(mk({ drivetrain: 'xdrive', length: 14, width: 16 })).motors.length === 0,
+      );
+      check(
+        'robot/bay: a chassis under 14.73 in wide staggers its motors onto belt drives; 15 in wide does not',
+        bbBayLayout(mk({ width: 14.5 })).belts.length === 4 && bbBayLayout(mk({ width: 15 })).belts.length === 0,
+      );
+      check(
+        'robot/bay: a side intake on a channel drivetrain shows no bay; an end mouth does, and so does every swerve and X-drive',
+        !bbBayShown(mk({ intakeMount: 'side' })) && bbBayShown(mk({ intakeMount: 'front' })) && bbBayShown(mk({ intakeMount: 'side', drivetrain: 'swerve' })) && bbBayShown(mk({ intakeMount: 'side', drivetrain: 'xdrive' })),
+      );
+    }
+
+    // ── (2) THE MESHES, BUILT ───────────────────────────────────────────────────────────────
+    {
+      const builds: [string, RobotSpec][] = [
+        ...[...BB_PRESETS, ...BB_STARTER_BOTS.slice(0, 1)].map((s): [string, RobotSpec] => [s.name, coerceBiobuzzSpec(s as RobotSpec)]),
+        ['tank 13.5x14.5', mk({ drivetrain: 'tank', length: 13.5, width: 14.5 })],
+        ['xdrive 18x18', mk({ drivetrain: 'xdrive', length: 18, width: 18 })],
+        ['xdrive 15x15', mk({ drivetrain: 'xdrive', length: 15, width: 15 })],
+        ['butterfly 18x18', mk({ drivetrain: 'butterfly', length: 18, width: 18 })],
+        ['mecanum 15x14.5 frontback', mk({ width: 14.5, intakeMount: 'frontback' })],
+        ['swerve 18x15 side', mk({ drivetrain: 'swerve', length: 18, width: 15, intakeMount: 'side', bbMech: { launcher: { kind: 'fixed', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } })],
+        ['tank ramp + tube', mk({ drivetrain: 'tank', bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'ramp' } } })],
+      ];
+      type V3 = [number, number, number];
+      const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+      const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      /** does a triangle (in the box's own centred frame) cross a box of half-extents `h`? (SAT, 13 axes) */
+      const triBox = (v: V3[], h: V3): boolean => {
+        const e = [sub(v[1], v[0]), sub(v[2], v[1]), sub(v[0], v[2])];
+        const axes: V3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1], cross(e[0], e[1])];
+        for (const f of e) for (const u of [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]) axes.push(cross(u, f));
+        for (const a of axes) {
+          if (dot(a, a) < 1e-14) continue;
+          const p = v.map((q) => dot(a, q));
+          const r = h[0] * Math.abs(a[0]) + h[1] * Math.abs(a[1]) + h[2] * Math.abs(a[2]);
+          if (Math.min(...p) > r || Math.max(...p) < -r) return false;
+        }
+        return true;
+      };
+      /** a point into a shape's centred frame */
+      const local = (s: BbBayShape, q: V3): V3 => {
+        const c = Math.cos(s.a);
+        const n = Math.sin(s.a);
+        const dx = q[0] - s.cx;
+        const dy = q[1] - s.cy;
+        return [dx * c + dy * n, -dx * n + dy * c, q[2] - (s.z0 + s.z1) / 2];
+      };
+      const half = (s: BbBayShape, grow: number): V3 => [s.hx + grow, s.hy + grow, (s.z1 - s.z0) / 2 + grow];
+      const intrude: string[] = [];
+      const stray: string[] = [];
+      const flags: string[] = [];
+      let bayMeshes = 0;
+      let triTests = 0;
+      let leadVerts = 0;
+      let leadTests = 0;
+      for (const [label, spec] of builds) {
+        const g = buildRobotGroup(spec, 1, 'red', 'high');
+        g.updateMatrixWorld(true);
+        const lay = bbBayLayout(spec);
+        const shapes = bbBayShapes(spec, lay);
+        const meshes: THREE.Mesh[] = [];
+        g.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+        });
+        const bay = meshes.filter((m) => /:bay:/.test(m.name));
+        bayMeshes += bay.length;
+        if (bbBayShown(spec) && lay.motors.length && bay.length < 4) flags.push(`${label}: ${bay.length} bay meshes`);
+        for (const m of bay) {
+          if (m.castShadow) flags.push(`${label}: ${m.name} casts`);
+          if (!m.userData.bbFamily || !(m.userData.bbFamily in BAY_FAMILY_FINISH)) flags.push(`${label}: ${m.name} untagged`);
+          if (m.userData.bbEnclosed !== true) flags.push(`${label}: ${m.name} not enclosed`);
+          const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+          const v = new THREE.Vector3();
+          for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+            const q: V3 = [v.x, v.y, v.z];
+            // inside its own item (the port strips stand 0.05 proud of the case) — or on an
+            // X-drive motor's output shaft, which runs out of its face into the wheel's bore
+            const inItem = shapes.some(({ s }) => {
+              const p = local(s, q);
+              const h = half(s, 0.06);
+              return Math.abs(p[0]) <= h[0] && Math.abs(p[1]) <= h[1] && Math.abs(p[2]) <= h[2];
+            });
+            const onShaft = lay.motors.some((mo) => {
+              if (!mo.shaft) return false;
+              const t = (q[0] - mo.x) * mo.ux + (q[1] - mo.y) * mo.uy;
+              const rx = q[0] - mo.x - t * mo.ux;
+              const ry = q[1] - mo.y - t * mo.uy;
+              return t >= -BB_DRIVE_MOTOR.shaftL - 0.01 && t <= 0.01 && Math.hypot(rx, ry, q[2] - mo.z) <= BB_DRIVE_MOTOR.shaftR + 0.01;
+            });
+            // ...or on a lead: within its radius of the lead's centreline
+            const onLead = !inItem && !onShaft && m.name.endsWith(':bay:hub') && lay.wires.some((w) => w.pts.some((p, i) => i > 0 && segDist(q, q, w.pts[i - 1], p) <= BAY_WIRE_R + 1e-3));
+            if (onLead) leadVerts++;
+            if (!inItem && !onShaft && !onLead) {
+              stray.push(`${label}: ${m.name} vertex (${q.map((c) => c.toFixed(2)).join(', ')})`);
+              break;
+            }
+          }
+        }
+        // every OTHER part's triangles, against every bay item shrunk 0.02 (a face touching a
+        // motor's face or a standoff's end is a mount, not an overlap)
+        const boxes = shapes.map(({ what, s }) => {
+          const [ex, ey] = extents(s);
+          return { what, s, x0: s.cx - ex, x1: s.cx + ex, y0: s.cy - ey, y1: s.cy + ey };
+        });
+        // ...and against every lead, piece by piece: each straight piece of its centreline as a box
+        // of its own length and the lead's radius less 0.01, turned onto the piece
+        const pieces = lay.wires.flatMap((w) =>
+          w.pts.slice(1).map((b, i) => {
+            const a = w.pts[i];
+            const len = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+            const d: V3 = [(b[0] - a[0]) / len, (b[1] - a[1]) / len, (b[2] - a[2]) / len];
+            const ref: V3 = Math.abs(d[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1];
+            const c1 = cross(d, ref);
+            const l1 = Math.hypot(...c1);
+            const e1: V3 = [c1[0] / l1, c1[1] / l1, c1[2] / l1];
+            const e2 = cross(d, e1);
+            const R = BAY_WIRE_R;
+            return {
+              what: `lead ${w.motor}`,
+              c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] as V3,
+              axes: [d, e1, e2],
+              h: [len / 2, R - 0.01, R - 0.01] as V3,
+              // what is tested: everything within 0.1 of the lead (the pan under it among them)
+              lo: [0, 1, 2].map((k) => Math.min(a[k], b[k]) - R - 0.1),
+              hi: [0, 1, 2].map((k) => Math.max(a[k], b[k]) + R + 0.1),
+            };
+          }),
+        );
+        for (const m of meshes) {
+          if (/:bay:/.test(m.name)) continue;
+          const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+          const idx = m.geometry.getIndex();
+          const n = idx ? idx.count : pos.count;
+          const v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+          for (let t = 0; t + 2 < n; t += 3) {
+            for (let k = 0; k < 3; k++) v[k].fromBufferAttribute(pos, idx ? idx.getX(t + k) : t + k).applyMatrix4(m.matrixWorld);
+            const lo = [Math.min(v[0].x, v[1].x, v[2].x), Math.min(v[0].y, v[1].y, v[2].y), Math.min(v[0].z, v[1].z, v[2].z)];
+            const hi = [Math.max(v[0].x, v[1].x, v[2].x), Math.max(v[0].y, v[1].y, v[2].y), Math.max(v[0].z, v[1].z, v[2].z)];
+            for (const b of boxes) {
+              if (hi[0] < b.x0 || lo[0] > b.x1 || hi[1] < b.y0 || lo[1] > b.y1 || hi[2] < b.s.z0 || lo[2] > b.s.z1) continue;
+              triTests++;
+              const tri = v.map((p) => local(b.s, [p.x, p.y, p.z]));
+              if (triBox(tri, half(b.s, -0.02))) {
+                intrude.push(`${label}: ${m.name || m.parent?.name || '?'} into ${b.what}`);
+                break;
+              }
+            }
+            for (const pc of pieces) {
+              if (hi[0] < pc.lo[0] || lo[0] > pc.hi[0] || hi[1] < pc.lo[1] || lo[1] > pc.hi[1] || hi[2] < pc.lo[2] || lo[2] > pc.hi[2]) continue;
+              leadTests++;
+              const tri = v.map((p): V3 => {
+                const r: V3 = [p.x - pc.c[0], p.y - pc.c[1], p.z - pc.c[2]];
+                return [dot(r, pc.axes[0]), dot(r, pc.axes[1]), dot(r, pc.axes[2])];
+              });
+              if (triBox(tri, pc.h)) {
+                intrude.push(`${label}: ${m.name || m.parent?.name || '?'} into ${pc.what}`);
+                break;
+              }
+            }
+          }
+        }
+        // a build whose bay cannot be seen builds none of it
+        disposeRobotGroup(g);
+      }
+      const side = buildRobotGroup(mk({ intakeMount: 'side' }), 1, 'red', 'high');
+      let sideBay = 0;
+      side.traverse((o) => {
+        if (/:bay:/.test(o.name)) sideBay++;
+      });
+      disposeRobotGroup(side);
+      check(
+        `robot/bay mesh: no other part reaches into a bay item or a lead (${builds.length} built robots, ${bayMeshes} bay meshes, ${triTests} close triangles tested, ${leadTests} against leads)`,
+        intrude.length === 0 && triTests > 1000 && leadTests > 1000,
+        [...new Set(intrude)].slice(0, 6).join('; ') || `${triTests} / ${leadTests}`,
+      );
+      check(
+        `robot/bay mesh: ...every bay vertex is inside its own item, on an X-drive motor's shaft, or within a lead's radius of its centreline (${leadVerts} lead vertices)`,
+        stray.length === 0 && leadVerts > 1000,
+        stray.slice(0, 4).join('; ') || String(leadVerts),
+      );
+      check('robot/bay mesh: ...every bay mesh is tagged, enclosed and casts nothing, and a side-intake mecanum builds no bay', flags.length === 0 && sideBay === 0 && bayMeshes >= builds.length * 4, flags.slice(0, 4).join('; ') || `${sideBay} on the side build`);
+    }
+
+    // ── (3) THE PLATE UNDER A MOTOR ─────────────────────────────────────────────────────────
+    {
+      const bad: string[] = [];
+      let samples = 0;
+      let dropped = 0;
+      for (const [label, spec] of [
+        ['mecanum 15x17', mk({})],
+        ['mecanum 18x18', mk({ length: 18, width: 18 })],
+        ['tank 13.5x14.5', mk({ drivetrain: 'tank', length: 13.5, width: 14.5 })],
+        ['butterfly 16.5x16', mk({ drivetrain: 'butterfly', length: 16.5, width: 16 })],
+      ] as [string, RobotSpec][]) {
+        const lay = bbBayLayout(spec);
+        const innerHW = bbInnerHalfWidth(spec);
+        const frames = { low: buildFrame(spec, 'low'), high: buildFrame(spec, 'high') };
+        const faces = (objs: THREE.Object3D[], sy: number): [number, number][][] => {
+          const out: [number, number][][] = [];
+          for (const o of objs) {
+            const m = o as THREE.Mesh;
+            if (m.name !== 'robot:frame:rails') continue;
+            const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+            const idx = m.geometry.getIndex();
+            const n = idx ? idx.count : pos.count;
+            const p = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+            for (let t = 0; t + 2 < n; t += 3) {
+              for (let k = 0; k < 3; k++) p[k].fromBufferAttribute(pos, idx ? idx.getX(t + k) : t + k);
+              const nn = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
+              if (nn.lengthSq() < 1e-12) continue;
+              nn.normalize();
+              // the inner plate's INBOARD face: in the plane |y| = innerHW, facing the bay
+              if (nn.y * sy > -0.99 || p.some((q) => Math.abs(q.y - sy * innerHW) > 1e-3)) continue;
+              out.push(p.map((q) => [q.x, q.z] as [number, number]));
+            }
+          }
+          return out;
+        };
+        const covered = (tris: [number, number][][], x: number, z: number): boolean =>
+          tris.some(([a, b, c]) => {
+            const s1 = (b[0] - a[0]) * (z - a[1]) - (b[1] - a[1]) * (x - a[0]);
+            const s2 = (c[0] - b[0]) * (z - b[1]) - (c[1] - b[1]) * (x - b[0]);
+            const s3 = (a[0] - c[0]) * (z - c[1]) - (a[1] - c[1]) * (x - c[0]);
+            return (s1 >= -1e-9 && s2 >= -1e-9 && s3 >= -1e-9) || (s1 <= 1e-9 && s2 <= 1e-9 && s3 <= 1e-9);
+          });
+        for (const sy of [1, -1] as const) {
+          const hiTris = faces(frames.high, sy);
+          const loTris = faces(frames.low, sy);
+          const points: [number, number][] = [];
+          for (const m of lay.motors) {
+            if (Math.abs(m.y - sy * innerHW) > 1e-6) continue;
+            // the face disc, in rings
+            for (const rr of [0.2, 0.45, 0.7]) for (let a = 0; a < 8; a++) points.push([m.x + rr * Math.cos((a * Math.PI) / 4), m.z + rr * Math.sin((a * Math.PI) / 4)]);
+          }
+          for (const b of lay.belts) {
+            if (b.sy !== sy) continue;
+            for (const x of [b.x0, b.x1]) for (const dz of [0.68, -0.68]) points.push([x, b.z + dz]);
+          }
+          for (const [x, z] of points) {
+            samples++;
+            if (!covered(hiTris, x, z)) bad.push(`${label} ${sy > 0 ? 'left' : 'right'}: (${x.toFixed(2)}, ${z.toFixed(2)}) over a hole`);
+            if (!covered(loTris, x, z)) dropped++;
+          }
+        }
+      }
+      check(
+        `robot/bay plate: every drive motor's face and every mount standoff lands on solid inner plate on High (${samples} points)`,
+        bad.length === 0 && samples > 100,
+        bad.slice(0, 4).join('; '),
+      );
+      check("robot/bay plate: ...where Low's evenly spaced lightening holes would have put some of them over a hole", dropped > 0, `${dropped} of ${samples}`);
+      check(
+        'robot/bay plate: the lands are the motors\' faces and the mounts, and a swerve or X-drive has none (no inner plate)',
+        bbInnerPlateLands(mk({})).length === 4 && bbInnerPlateLands(mk({ width: 14.5 })).length === 4 && bbInnerPlateLands(mk({ drivetrain: 'swerve' })).length === 0 && bbInnerPlateLands(mk({ drivetrain: 'xdrive' })).length === 0,
+      );
+    }
+
+    // ── (4) THE SHOOTER'S MOTOR KEEPS ITS ENVELOPE ──────────────────────────────────────────
+    {
+      const bad: string[] = [];
+      let profiled = 0;
+      const motorOf = (g: THREE.Object3D): { box: THREE.Box3; tris: number }[] => {
+        g.updateMatrixWorld(true);
+        const out: { box: THREE.Box3; tris: number }[] = [];
+        g.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh || m.name !== 'bb-turret-motor') return;
+          out.push({ box: new THREE.Box3().setFromObject(m), tris: (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count) / 3 });
+        });
+        return out;
+      };
+      const spec = mk({});
+      for (const [label, make] of [
+        ['POLLEN turret', (d: 'low' | 'high') => buildTurret(spec, 'center', 0, d)],
+        ['NECTAR turret', (d: 'low' | 'high') => buildTurret(spec, 'left', 1, d)],
+        ['fixed shooter', (d: 'low' | 'high') => bayBuildFixedShooter(mk({ bbMech: { launcher: { kind: 'fixed', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'sweeper' } } }), undefined, d)],
+      ] as [string, (d: 'low' | 'high') => THREE.Group][]) {
+        const lo = motorOf(make('low'));
+        const hi = motorOf(make('high'));
+        if (lo.length !== 1 || hi.length !== 1) {
+          bad.push(`${label}: ${lo.length}/${hi.length} motors`);
+          continue;
+        }
+        if (lo[0].box.min.distanceTo(hi[0].box.min) > 1e-6 || lo[0].box.max.distanceTo(hi[0].box.max) > 1e-6) bad.push(`${label}: box moved`);
+        if (hi[0].tris !== lo[0].tris) profiled++;
+      }
+      check("robot/bay: the shooter's motor is a 5203 profile on High in the can's own box, to 1e-6, on both turret heads and the fixed shooter", bad.length === 0 && profiled === 3, bad.join('; ') || `${profiled} profiled`);
+    }
+
+    // ── (6) THE BAY IS ITS OWN LAZY CHUNK ────────────────────────────────────────────────────
+    // `renderRobots.ts` reaches `renderBay.ts` only through `import()` (`bbLoadBay`), and no other
+    // scene file imports it statically: one static import and Rollup folds the bay back into the
+    // scene chunk, whose 250 KB ceiling it was moved out of. Importing it registers its hooks.
+    {
+      const staticImporters = readdirSync(SCENE_DIR)
+        .filter((f) => f.endsWith('.ts') && f !== 'renderBay.ts')
+        .filter((f) => /from\s+'\.\/renderBay'/.test(readFileSync(join(SCENE_DIR, f), 'utf8')));
+      const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
+      check(
+        "robot/bay chunk: no scene file imports renderBay.ts statically, renderRobots.ts loads it with import(), and the loaded chunk has registered itself",
+        staticImporters.length === 0 && robotsSrc.includes("import('./renderBay')") && bbBayReady(),
+        staticImporters.join(', ') || `registered: ${bbBayReady()}`,
+      );
+    }
+
+    // ── (5) THE PHYSICAL TWIN UNDER THE DECK ───────────────────────────────────────────────
+    {
+      const g = buildRobotGroup(mk({}), 1, 'red', 'high');
+      applyRobotSurfaces(g);
+      const bayAo: number[] = [];
+      let screwAo = -1;
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const mat = m.material as THREE.MeshPhysicalMaterial;
+        if (/:bay:/.test(m.name)) bayAo.push(mat.aoMap ? mat.aoMapIntensity : 0);
+        if (/:fasteners$/.test(m.name)) screwAo = mat.aoMap ? mat.aoMapIntensity : 0;
+      });
+      revertRobotSurfaces(g);
+      disposeRobotGroup(g);
+      check(
+        'robot/bay: in physical mode a bay part is occluded from the room (an aoMap at 0.8 on its twin) and the cap screws that share the gearbox\'s base material are not',
+        bayAo.length >= 4 && bayAo.every((a) => a === 0.8) && screwAo === 0,
+        `${bayAo.join(', ')} / screws ${screwAo}`,
+      );
+    }
+  } finally {
+    if (!hadDoc) delete (globalThis as { document?: unknown }).document;
+  }
+}
+
 function robotMechanismDetailChecks(check: Check): void {
   const hadDoc = 'document' in globalThis;
   const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {}, width: 10 }) });
@@ -3400,9 +3972,10 @@ function robotMechanismDetailChecks(check: Check): void {
         ['dumper + tube, ramp', mk(mech({ kind: 'dumper', mount: 'back' }, { kind: 'vslide', mount: 'left' }, 'ramp'))],
         ['fixed + tube, swerve 18x18', mk({ drivetrain: 'swerve', length: 18, width: 18, ...mech({ kind: 'fixed', mount: 'front' }, { kind: 'vslide', mount: 'backright' }) })],
       ];
-      // a wheel's own tessellation is `WHEEL_LOD`'s business, and the screws exist on High only
+      // a wheel's own tessellation is `WHEEL_LOD`'s business, and the screws and the bay exist on
+      // High only
       const skip = (o: THREE.Object3D): boolean => {
-        for (let q: THREE.Object3D | null = o; q; q = q.parent) if (/^(bb-wheel|bb-pod-wheel|robot:wheel)/.test(q.name) || /:fasteners$/.test(q.name)) return true;
+        for (let q: THREE.Object3D | null = o; q; q = q.parent) if (/^(bb-wheel|bb-pod-wheel|robot:wheel)/.test(q.name) || /:fasteners$/.test(q.name) || /:bay:/.test(q.name)) return true;
         return false;
       };
       const parts = (g: THREE.Group): { name: string; box: THREE.Box3; tris: number }[] => {
@@ -12329,7 +12902,7 @@ function environmentAndReadoutChecks(check: Check): void {
     // runtime net for the day that type gets loosened to a plain string. "No robot material is
     // emissive" is already pinned (the front-bar block, above) — not duplicated here.
     {
-      const lines = codeLines(join(SCENE_DIR, 'renderRobots.ts'));
+      const lines = [...codeLines(join(SCENE_DIR, 'renderRobots.ts')), ...codeLines(join(SCENE_DIR, 'renderBay.ts'))];
       const families = new Set(Object.keys(ROBOT_FAMILY_FINISH));
       const seen: string[] = [];
       const bad: string[] = [];
