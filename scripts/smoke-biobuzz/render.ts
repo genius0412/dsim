@@ -49,6 +49,8 @@ import {
   bbTileDetail,
   TILE_JOINT,
   TILE_JOINT_SHADE,
+  TILE_JOINT_SHADE_W,
+  TILE_JOINT_W,
   TILE_MAT,
   TILE_TEX_SIZE,
   TILE_VOID,
@@ -403,6 +405,7 @@ import { ELEMENT_RADIUS_TOL_IN } from '../../src/games/biobuzz/scene/renderEleme
 import { FINISHES, ROBOT_FAMILY_FINISH, VENUE_FLOOR_FINISH, finishF0, type DetailKind, type FinishId } from '../../src/games/biobuzz/graphics/finishes';
 import { detailData, detailTexture } from '../../src/games/biobuzz/scene/renderSurfaceKit';
 import { probeBoxFor, probeGains } from '../../src/games/biobuzz/scene/renderSurfaceProbe';
+import { floorEdit } from '../../src/games/biobuzz/scene/renderSurfaceField'; // the tile joint (2026-10-10)
 // -- IMPORTED ROBOTS (robot import, rendering lane), in their own import block ----------------
 import { buildBiobuzzRobots, updateBiobuzzRobots } from '../../src/games/biobuzz/scene/renderRobots';
 import {
@@ -1315,6 +1318,7 @@ export function renderChecks(check: Check): void {
       const p1 = JSON.stringify(tileSeamPaths('tiles'));
       check('...and the same seams', p1 === JSON.stringify(tileSeamPaths('tiles')));
     }
+    tileSeamContrastChecks(check);
   }
 
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
@@ -11847,4 +11851,130 @@ function environmentAndReadoutChecks(check: Check): void {
       );
     }
   }
+}
+
+/**
+ * THE TILE JOINT IS A FAINT HAIRLINE (owner, 2026-10-10: "The edges between field tiles seem a
+ * little too dark"). Measured off the scene-preview's own frames (`__bbSeamProbe`, the darkest
+ * point of a joint below the DARKER of its two tiles), the old joint dipped 5-15 % at range
+ * (under 4 px/in; Medium 5-11, High 6-12, Extreme 10-15) and 22-51 % up close (8+ px/in). At range
+ * that is what the MIPS make of the painted line: they average it in linear light, so a seam's
+ * darkness there is its linear darkening integrated across the joint, in inches of black. These
+ * hold that integral, each colour's own darkening, and the Extreme floor's analytic seam, run
+ * through the real shader edit and evaluated.
+ */
+function tileSeamContrastChecks(check: Check): void {
+  const lin = (v: number): number => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+  // how much darker than the mat, in linear light: 0 is the mat, 1 is black
+  const dark = (h: string): number => 1 - lin(parseInt(h.slice(1, 3), 16)) / lin(parseInt(TILE_MAT.slice(1, 3), 16));
+  const pct = (v: number): string => `${(v * 100).toFixed(1)} %`;
+  const core = dark(TILE_JOINT);
+  const shade = dark(TILE_JOINT_SHADE);
+  check('the joint core is darker than the mat by at most half, in linear light (a hairline, not ink)',
+    core > 0 && core <= 0.5, `${TILE_JOINT}: ${pct(core)} (#232323 was 72 %)`);
+  check('...and its shade by at most a quarter, and less than the core',
+    shade > 0 && shade <= 0.25 && shade < core, `${TILE_JOINT_SHADE}: ${pct(shade)} (#383838 was 34 %)`);
+  const texel = (2 * BB_HALF_X) / TILE_TEX_SIZE.tiles;
+  check('the core is a canvas texel wide (thinner and the canvas paints a faint trace that beads)',
+    TILE_JOINT_W >= texel - 0.002 && TILE_JOINT_SHADE_W > TILE_JOINT_W, `core ${TILE_JOINT_W} in, shade ${TILE_JOINT_SHADE_W} in, texel ${texel.toFixed(4)} in`);
+  // what a mip conserves: the core over its width, the shade over the rest of its own
+  const painted = TILE_JOINT_W * core + (TILE_JOINT_SHADE_W - TILE_JOINT_W) * shade;
+  check('⚠️ the painted seam is 0.06-0.08 in of black per inch of joint: lighter than the old 0.094, and still a grid at range (0.044 lost it on Medium)',
+    painted >= 0.06 && painted <= 0.08, `${painted.toFixed(4)} in`);
+
+  // ── the Extreme floor's analytic seam: the REAL shader edit, run on a stub and evaluated ──
+  const stub = {
+    uniforms: {},
+    vertexShader: '#include <begin_vertex>',
+    fragmentShader: ['#include <map_fragment>', '#include <roughnessmap_fragment>', '#include <normal_fragment_maps>', '#include <aomap_fragment>'].join('\n'),
+  } as unknown as THREE.WebGLProgramParametersWithUniforms;
+  floorEdit(true)(stub);
+  const glsl = stub.fragmentShader;
+  // the seam's scalar terms, in the shader's own order, as GLSL -> JS (`float x =` -> `let x =`)
+  const TERM = /^\s*(?:float (bbGap|bbLo|bbHi|bbLip|bbNear|bbS|bbOcc) = .*;|bb(?:Gap|Lip) \*= bbNear;)\s*$/;
+  const lines = glsl.split('\n').filter((l) => TERM.test(l)).map((l) => l.trim().replace(/^float /, 'let '));
+  const names = lines.map((l) => /^let (\w+)/.exec(l)?.[1]).filter(Boolean);
+  check("the shader's seam terms are found: gap, edge, fade, light factor (else the checks below are vacuous)",
+    ['bbGap', 'bbLo', 'bbHi', 'bbLip', 'bbNear', 'bbS', 'bbOcc'].every((n) => names.includes(n)) && lines.length === 9, names.join(' '));
+  const seam = new Function(
+    'bbSd',
+    'bbH',
+    'const { min, max, sqrt } = Math;\n' +
+      'const clamp = (x, a, b) => min(max(x, a), b);\n' +
+      'const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };\n' +
+      `${lines.join('\n')}\nreturn { near: bbNear, occ: bbOcc };`,
+  ) as (sd: number, h: number) => { near: number; occ: number };
+  // how much a pixel loses, and that summed across the joint (both sides) for a pixel of half-footprint h
+  const loss = (sd: number, h: number): number => 1 - seam(sd, h).occ;
+  const across = (h: number): number => {
+    let s = 0;
+    for (let sd = 0.00025; sd < 0.3; sd += 0.0005) s += 2 * loss(sd, h) * 0.0005;
+    return s;
+  };
+  // bbH = 0.5 * length(fwidth(floor xy)): 0.71 of a pixel with the screen's axes along the field's,
+  // 1.0 on a diagonal. A pixel at N px/in is 1/N in.
+  const ALIGNED = Math.SQRT1_2;
+  const peak = loss(0, ALIGNED / 22);
+  check('up close (~22 px/in, the driver-wall floor) the seam darkens the pixel on the joint by 10-25 %: crisp, not a black line',
+    peak >= 0.1 && peak <= 0.25, `${pct(peak)} (was 42 %)`);
+  const added = across(0.002);
+  check("...and across the joint it adds at most a third of the painted seam's darkness",
+    added <= painted / 3, `${added.toFixed(4)} vs ${painted.toFixed(4)} in (was 0.0255 on top of 0.094)`);
+  let lightest = 0;
+  let darkest = 1;
+  for (let h = 0.001; h <= 0.3; h *= 1.25) {
+    for (let sd = 0; sd <= 0.3; sd += 0.0025) {
+      lightest = Math.max(lightest, seam(sd, h).occ);
+      darkest = Math.min(darkest, seam(sd, h).occ);
+    }
+  }
+  check('⚠️ nothing in the analytic seam brightens the floor: its light factor stays inside [0, 1] at every distance and footprint',
+    lightest <= 1 && darkest >= 0, `factor ${darkest.toFixed(3)}…${lightest.toFixed(3)}`);
+  check('...and no seam term turns the normal (a tilted edge lit the sunward rim brighter than the tile: a raised bead up close)',
+    !/\bnormal\s*=/.test(glsl), 'a `normal =` in the floor edit');
+  const four = ['directDiffuse', 'indirectDiffuse', 'directSpecular', 'indirectSpecular'];
+  check('...and that one factor scales all four light terms, and nothing is added to them',
+    four.every((t) => glsl.includes(`reflectedLight.${t} *= bbOcc;`)) && !/reflectedLight\.\w+\s*[+-]=/.test(glsl));
+  check('it is whole at ~22 px/in on any screen orientation (≥ 0.97 on a diagonal, where the footprint is widest)',
+    seam(0, ALIGNED / 22).near === 1 && seam(0, 1 / 22).near >= 0.97, `aligned ${seam(0, ALIGNED / 22).near.toFixed(3)}, diagonal ${seam(0, 1 / 22).near.toFixed(3)}`);
+  const goneAt = 4.4;
+  check(`...and gone by ${goneAt} px/in on any orientation (bbH reaches FAR at a pixel of 2.3 texels on a diagonal, 3.3 aligned), where the painted seam carries the joint alone`,
+    seam(0, ALIGNED / goneAt).near === 0 && seam(0, 1 / goneAt).near === 0 && loss(0, ALIGNED / goneAt) === 0 && across(ALIGNED / goneAt) === 0,
+    `bbH ${(ALIGNED / goneAt).toFixed(3)} in aligned, ${(1 / goneAt).toFixed(3)} on a diagonal`);
+  let step = 0;
+  let monotone = true;
+  for (let h = 0.001; h < 0.3; h += 0.0005) {
+    const a = seam(0, h).near;
+    const b = seam(0, h + 0.0005).near;
+    step = Math.max(step, Math.abs(b - a));
+    if (b > a + 1e-12) monotone = false;
+  }
+  check('...and the fade has no step and never comes back (no pop as a robot drives away)', monotone && step <= 0.01, `largest step ${step.toFixed(4)}`);
+
+  // ── THE FLATS REACH THE FILLETS. The shader stopped each flat 2E (0.0625 in) short of the fillet
+  // at either end, so the gap and the edge broke for a pixel at every flat/fillet junction up
+  // close. The polyline says where they meet: a flat runs from E before one flank's centre to E
+  // past the next one's (the dovetail's overhang). ──
+  const { e } = tileFlankGeometry();
+  const { period: P, amplitude: A } = BB_TILE_TOOTH;
+  const J = tileJunctions();
+  const L = J[2] - J[1];
+  const mid = L / 2;
+  const pts = tileSeamPolyline(0, J[1], J[2], 'y').map(([x, y]) => [x - J[1], y] as const);
+  const flats: [number, number][] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const [s0, t0] = pts[i - 1];
+    const [s1, t1] = pts[i];
+    if (Math.abs(Math.abs(t0) - A) < 1e-9 && Math.abs(t1 - t0) < 1e-9 && s1 - s0 > 0.5) flats.push([s0, s1]);
+  }
+  // a flank centre sits at mid + n·P/2; a flat starts E before one and ends E past the next
+  const onComb = (v: number): boolean => {
+    const n = (v - mid) / (P / 2);
+    return Math.abs(n - Math.round(n)) < 1e-6;
+  };
+  const interior = flats.filter(([s0, s1]) => s0 > A + 1e-6 && s1 < L - A - 1e-6 && Math.abs(s1 - (mid - A)) > 1e-6 && Math.abs(s0 - (mid + A)) > 1e-6);
+  check("the polyline's flats run from E before a flank's centre to E past the next one's",
+    interior.length >= 6 && interior.every(([s0, s1]) => onComb(s0 + e) && onComb(s1 - e)), `${interior.length} flats, E ${e.toFixed(5)}`);
+  check("...and the shader's flats are laid out the same way (no break at a flat/fillet junction)",
+    glsl.includes('float a = mid + k * hp - BB_E;') && glsl.includes('float b = mid + ( k + 1.0 ) * hp + BB_E;'));
 }
