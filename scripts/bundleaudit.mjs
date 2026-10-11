@@ -627,7 +627,13 @@ const BASELINE = {
   // so the number is NOT moved. The bay itself — 7.89 KB, which in the scene chunk took it to 245.49
   // — is its own lazy chunk (`bay`, below); what stays here is the shooter's 5203 profile, the
   // loader and its rebuild keys, and the preview's rebuild on load.
-  scene: { gzip: 237.63 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-10-11, THE THREE GRAPHICS BRANCHES MERGED (auto-extreme, photo-venues, robot-detail):
+  // 243.22, MEASURED on the merge, which is each branch's own growth added together (auto +0.78,
+  // venues +3.75, robots +4.35 over be3dc944's 234.35). The baseline moves to it. 6.8 KB of
+  // ceiling left: the next renderer feature that is not drawn on every frame belongs in a lazy
+  // chunk of its own (`bay`, `surfaces`, `postfx` are the pattern).
+  scene: { gzip: 243.22 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:

@@ -1191,6 +1191,14 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
           nothing true to fill with, and a +y wall at the stage edge would leave the cameras 51 in
           of room on that side. `PhotoVenue.furniture` names what a row still smears, and the lane
           fails if any preset column defaults to a row that has it.
+        - ⚠️ **A STORED BLOB FROM BEFORE THE MOVE IS MIGRATED ONCE (`GFX_MOVED_DEFAULTS`).** Found
+          driving the real app on a profile an older build had written: `{preset:'high', environment:
+          'school-hall'}` still drew the smeared hall, and a hand-picked High read back as Custom
+          because its settings no longer matched the column. `coerceGraphicsState` now replaces a
+          stored `school-hall` on High/Ultra/Extreme with the column's environment, once: `commit`
+          stamps `rev: GFX_STATE_REV` (2) on every write, and a stamped blob is never migrated, so a
+          school hall picked again afterwards sticks. Medium/Low never defaulted to it and are left
+          alone. The RENDER lane's `movedDefaultChecks` pins all of it.
         - ⚠️ **THE ORBIT AND FREE CAMERAS ARE HELD IN THE PHOTOGRAPHED ROOM.** At max zoom they left
           every room (walls 208–441 in out on y against a 620-in orbit) and a third to a half of
           the frame was a wall's base stretched over the floor. `BbCameras.setRoom` takes

@@ -713,10 +713,42 @@ export const GFX_PRESETS_ALL: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS,
 
 /** a stored blob → a state this build can run. Exported so the smoke lane can round-trip every
  * preset through it (the literal-list bug above is exactly the kind a round trip catches). */
+/**
+ * THE STORED BLOB'S REVISION, written by `commit` beside the state. A blob with none (or an older
+ * one) was written before a column default moved, so `GFX_MOVED_DEFAULTS` below applies to it ONCE;
+ * every write after that carries this number, so a value the player picks again afterwards sticks.
+ */
+export const GFX_STATE_REV = 2;
+
+/**
+ * ⚠ COLUMN DEFAULTS THAT MOVED, MIGRATED ONCE ON LOAD (2026-10-11).
+ *
+ * High, Ultra and Extreme used to default to `school-hall`. Its photograph now draws ~300
+ * auditorium chairs flat across the floor beside the field (`PhotoVenue.furniture`), so the
+ * columns moved to `events-hall`. A blob stored before the move carries `school-hall` as the
+ * column's own value, not as a pick: nothing can tell the two apart, and leaving it would show
+ * every existing High/Ultra player the smeared hall AND relabel a hand-picked High as Custom (its
+ * settings no longer match the column). Found driving the real app on a profile an older build
+ * had written. A player who wants the school hall picks it again; the revision stamp keeps it.
+ */
+export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [
+  { key: 'environment', from: 'school-hall', tiers: ['high', 'ultra', 'extreme'] },
+];
+
+function migrateMovedDefaults(settings: GraphicsSettings, tier: GraphicsTier, rev: unknown): GraphicsSettings {
+  if (typeof rev === 'number' && rev >= GFX_STATE_REV) return settings;
+  let out = settings;
+  for (const m of GFX_MOVED_DEFAULTS) {
+    const now = GFX_PRESETS[tier][m.key];
+    if (m.tiers.includes(tier) && out[m.key] === m.from && now !== m.from) out = { ...out, [m.key]: now };
+  }
+  return out;
+}
+
 export function coerceGraphicsState(raw: unknown): GraphicsState {
-  const o = (raw ?? {}) as { preset?: unknown; tier?: unknown; settings?: unknown; extremeTrial?: unknown };
+  const o = (raw ?? {}) as { preset?: unknown; tier?: unknown; settings?: unknown; extremeTrial?: unknown; rev?: unknown };
   const tier = oneOf<GraphicsTier>(GFX_TIERS, o.tier, GFX_DEFAULT_TIER);
-  const settings = coerceGraphicsSettings(o.settings, GFX_PRESETS[tier]);
+  const settings = migrateMovedDefaults(coerceGraphicsSettings(o.settings, GFX_PRESETS[tier]), tier, o.rev);
   let preset = oneOf<GraphicsPreset>(GFX_PRESETS_ALL, o.preset, 'auto');
   const extremeTrial = coerceExtremeTrial(o.extremeTrial);
   // A STORED PRESET NAME IS A CLAIM, NOT A FACT. If the settings under it no longer match the
@@ -797,7 +829,7 @@ function commit(next: GraphicsState): void {
   const prev = state;
   state = next;
   try {
-    localStorage.setItem(GRAPHICS_KEY, JSON.stringify(next));
+    localStorage.setItem(GRAPHICS_KEY, JSON.stringify({ ...next, rev: GFX_STATE_REV }));
   } catch {
     /* non-fatal: the pick still applies for this session */
   }

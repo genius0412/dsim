@@ -357,6 +357,7 @@ import { hFovFromV, vFovFromH, HUMAN_BINOCULAR_HFOV_DEG } from '../../src/games/
 // the wheel block below needs the preset COLUMNS (to assert the tier mapping) and the sim's own
 // wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
 import { GFX_PRESETS } from '../../src/games/biobuzz/graphics/settings';
+import { GFX_MOVED_DEFAULTS, GFX_STATE_REV } from '../../src/games/biobuzz/graphics/settings';
 import * as C from '../../src/config';
 import { bbRoleLabel } from '../../src/games/biobuzz/config';
 import { createCameras, setCameraTuning, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
@@ -1910,6 +1911,7 @@ export function renderChecks(check: Check): void {
   importedRobotChecks(check);
   fixedShooterChecks(check);
   photoVenueChecks(check);
+  movedDefaultChecks(check);
 }
 
 /**
@@ -14991,4 +14993,39 @@ function photoVenueChecks(check: Check): void {
       /tex\.onUpdate = \(\): void => \{\s*bitmap\.close\(\);/.test(pv) && /tex\.addEventListener\('dispose', \(\) => bitmap\.close\(\)\);/.test(pv),
     );
   }
+}
+
+/**
+ * A COLUMN DEFAULT THAT MOVED IS MIGRATED ONCE (2026-10-11): High/Ultra/Extreme went from
+ * `school-hall` to `events-hall`, and a blob an older build stored must not keep the smeared hall
+ * (or relabel a hand-picked High as Custom), while a school hall picked AFTER the move must stick.
+ */
+function movedDefaultChecks(check: Check): void {
+  const old = (t: GraphicsTier) => ({ ...GFX_PRESETS[t], environment: 'school-hall' as EnvironmentId });
+  for (const t of ['high', 'ultra', 'extreme'] as const) {
+    const named = coerceGraphicsState({ preset: t, tier: t, settings: old(t) });
+    check(
+      `moved defaults: a stored pre-move '${t}' (school-hall) loads as '${t}' on ${GFX_PRESETS[t].environment}`,
+      named.preset === t && named.settings.environment === GFX_PRESETS[t].environment,
+      `${named.preset} / ${named.settings.environment}`,
+    );
+    const auto = coerceGraphicsState({ preset: 'auto', tier: t, settings: old(t) });
+    check(`moved defaults: Auto on ${t} from before the move is migrated too`, auto.settings.environment === GFX_PRESETS[t].environment, auto.settings.environment);
+    const custom = coerceGraphicsState({ preset: 'custom', tier: t, settings: { ...old(t), shadows: 'off' } });
+    check(`moved defaults: a pre-move Custom branched from ${t} keeps its own rows and loses only the moved default`,
+      custom.preset === 'custom' && custom.settings.shadows === 'off' && custom.settings.environment === GFX_PRESETS[t].environment, custom.settings.environment);
+    const picked = coerceGraphicsState({ preset: 'custom', tier: t, settings: old(t), rev: GFX_STATE_REV });
+    check(`moved defaults: a school hall picked AFTER the move (rev ${GFX_STATE_REV}) sticks on ${t}`, picked.settings.environment === 'school-hall', picked.settings.environment);
+  }
+  const low = coerceGraphicsState({ preset: 'custom', tier: 'medium', settings: { ...GFX_PRESETS.medium, environment: 'school-hall' } });
+  check('moved defaults: a school hall picked on Medium (never its default) is left alone', low.settings.environment === 'school-hall', low.settings.environment);
+  check(
+    'moved defaults: every moved row names a value no tier it covers still defaults to',
+    GFX_MOVED_DEFAULTS.every((m) => m.tiers.every((t) => GFX_PRESETS[t][m.key] !== m.from)),
+  );
+  const settingsSrc = readFileSync(join(SCENE_DIR, '..', 'graphics', 'settings.ts'), 'utf8');
+  check(
+    'moved defaults: every write stamps the revision, so the migration runs once',
+    /localStorage\.setItem\(GRAPHICS_KEY, JSON\.stringify\(\{ \.\.\.next, rev: GFX_STATE_REV \}\)\)/.test(settingsSrc),
+  );
 }
