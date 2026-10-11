@@ -278,11 +278,16 @@ export function Lobby({
   /** what the create form asks for; sent only by `createRoom`, and only to a server that has `'rooms2'` */
   const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>('custom');
   const [serverRooms2, setServerRooms2] = useState(false);
+  /** the server honours `RoomSettings.runLength`; without it a room would run in FULL whatever was asked */
+  const [serverAutoOnly, setServerAutoOnly] = useState(false);
   const creatingRef = useRef(false);
   useEffect(() => {
     let alive = true;
     void serverCaps().then((c) => {
-      if (alive) setServerRooms2(c.includes('rooms2'));
+      if (alive) {
+        setServerRooms2(c.includes('rooms2'));
+        setServerAutoOnly(c.includes('autoOnly'));
+      }
     });
     return () => {
       alive = false;
@@ -606,7 +611,7 @@ export function Lobby({
        */
       physics: physicsOffered ? '3d' : undefined,
       // Public/Private lands with Browse rooms; until then every created room is Private
-      settings: creatingRef.current ? coerceRoomSettings('versus', undefined, { preset: setup, listed: false }) : undefined,
+      settings: creatingRef.current ? coerceRoomSettings('versus', undefined, { preset: setup, listed: false, runLength: serverAutoOnly ? settings.runLength : undefined }) : undefined,
     };
   }
 

@@ -55,6 +55,8 @@ export interface PracticeRunMeta {
    * this field existed, which is genuinely unknown rather than 2D.
    */
   physics?: string;
+  /** 'auto' = an AUTO-ONLY run (`Replay.runLength`); absent = a full match */
+  runLength?: 'auto';
   /**
    * WHICH RENDERER IT WAS WATCHED IN. The one fact the container has no room for, because it is
    * a property of the screen rather than of the simulation — the same asymmetry
@@ -151,6 +153,7 @@ export function savePracticeRun(replay: Replay, result: ReplayResult): PracticeR
     balanceVersion: replay.balanceVersion,
     sim: replay.sim ?? 0,
     physics: replay.physics,
+    ...(replay.runLength === 'auto' ? { runLength: 'auto' as const } : {}),
     view: getViewPref(),
     others: Math.max(0, replay.setups.length - 1),
     ...(replayHasImported(replay) ? { imported: true as const } : {}),

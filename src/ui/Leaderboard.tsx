@@ -553,7 +553,9 @@ export function Leaderboard({
               : isRecords
               ? category === 'total'
                 ? 'Be the first to set a score on this board.'
-                : `No ${category === 'auto' ? 'Auto' : 'TeleOp'} scores yet. Runs set from now on are split by period and appear here.`
+                : category === 'auto'
+                  ? 'No Auto scores yet. Run “Auto only” from Practice settings, then start a Solo record, to post here.'
+                  : 'No TeleOp scores yet. Runs set from now on are split by period and appear here.'
               : `Players appear here after ${minGames} ranked matches.`}
           </div>
         )}

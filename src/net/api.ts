@@ -821,6 +821,8 @@ export interface PracticeRun {
   physics?: string;
   /** which renderer it was watched in, or null/absent when unknown */
   view?: string | null;
+  /** 'auto' = an AUTO-ONLY run (migration 0063). Older servers omit it. */
+  runLength?: 'auto';
 }
 
 /**

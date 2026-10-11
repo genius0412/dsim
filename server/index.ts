@@ -17,7 +17,7 @@ import {
 import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
 import { visualSourceKey } from './importVisuals';
 import { clientIp } from './analytics';
-import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
+import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, runLengthAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
@@ -3670,7 +3670,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * this attempt may have created the room, and a room nobody ever joined would otherwise
      * be counted against `MAX_ROOMS` for the life of the process.
      */
-    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       abandon();
       return;
@@ -4048,7 +4048,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // still advances the world between snapshots off the authoritative commands (see
     // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
     // watch it either — and the honest answer is the same sentence a driver gets.
-    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       return;
     }
@@ -4166,7 +4166,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
         // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
         // "your slot expired".
-        if (r && !physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+        if (r && (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps)))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }

@@ -98,7 +98,7 @@ export function awardCard(world: World, robot: RobotState, rule: string): CardCo
  * the post-auto `transition` settle window, not just the `auto` clock. Everything
  * from TELEOP onward (including the post-match settle) is TELEOP. */
 function scoredAsAuto(world: World): boolean {
-  return world.match.phase === 'auto' || world.match.phase === 'transition';
+  return world.match.phase === 'auto' || world.match.phase === 'transition' || (world.match.phase === 'post' && world.runLength === 'auto');
 }
 
 export function addClassified(world: World, alliance: Alliance): void {

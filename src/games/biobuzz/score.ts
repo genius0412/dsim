@@ -1,5 +1,6 @@
 import type { Alliance, Artifact, RobotState, World } from '../../types';
 import { robotCorners, robotHullWorld, robotIntersectsRect } from '../../sim/physics';
+import { autoOnly } from '../../sim/match';
 import { START_TOUCH_TOL } from '../../config';
 import {
   BB_GARDEN,
@@ -339,7 +340,10 @@ export function bbScoreWorld(world: World): BbScore {
    * practice session has no moment at which anything was assessed.
    */
   const autoAssessed = phase !== 'pre' && phase !== 'auto';
-  const matchOver = phase === 'post';
+  const ended = phase === 'post';
+  // an AUTO-ONLY run ends at the AUTO buzzer: the instants §10.5 assesses at the end of the MATCH
+  // (CELL, GARDEN, TELEOP PARK) never happen. A TIP already swinging still pays (`ended`).
+  const matchOver = ended && !autoOnly(world);
 
   // ── LEAVE / PARK — a live COUNT while the instant is still ahead, the LATCH once it has
   //    passed. The POINTS wait for the instant either way; see the arithmetic at the bottom. ──
@@ -451,7 +455,7 @@ export function bbScoreWorld(world: World): BbScore {
      * releases at LEVEL, so mid-swing both predicates are true and the tip is owed ONCE.
      */
     const pending = !swinging && hiveWillTip(hiveLoad(hive.contents, kindOf));
-    out[a].tips = hive.tips + (matchOver && (swinging || pending) ? 1 : 0);
+    out[a].tips = hive.tips + (ended && (swinging || pending) ? 1 : 0);
     // ...and a load being paid as a TIP is NOT ALSO remaining in the CELL (§10.5 C) — the same
     // split the swinging case already made, now made for the pending one too.
     out[a].cellCount =
@@ -500,7 +504,7 @@ export function bbScoreWorld(world: World): BbScore {
     // what the instants still ahead owe, for the HUD alone — exactly the lines zeroed above.
     s.pendingPts =
       (autoAssessed ? 0 : s.leaveCount * BB_PTS.leave + s.parkAutoCount * BB_PTS.parkAuto) +
-      (matchOver
+      (ended
         ? 0
         : s.parkTeleCount * BB_PTS.parkTele +
           s.cellCount * BB_PTS.cell +

@@ -642,7 +642,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-badge` | src/ui/shell.css:884 | 57 |
+| `.ds-badge` | src/ui/shell.css:884 | 58 |
 
 ## `ds-banners` — 1
 
@@ -924,7 +924,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sec` | src/ui/shell.css:2031 | 24 |
+| `.ds-sec` | src/ui/shell.css:2031 | 25 |
 
 ## `ds-segs` — 1
 

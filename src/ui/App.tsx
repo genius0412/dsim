@@ -1166,6 +1166,7 @@ export function App() {
           // Measured: rejoining a 3D room built a 2D world, predicted a different game from the
           // one the server was scoring, and never latched `physicsPending`.
           physics: s.physics,
+          runLength: s.runLength, // an auto-only room: a rejoin that dropped it would predict a TELEOP the server never runs
           // ⚠️ AND THE MATCH GENERATION, for the same reason and with a worse symptom. The
           // server drops an `input` stamped with a stale generation, so a session rebuilt
           // without this one came back as 0 against a room on 1 and EVERY command was

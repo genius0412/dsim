@@ -1689,6 +1689,30 @@ async function main(): Promise<void> {
       check('category: the profile personal best is unchanged', (await repo.personalBest('cat-c', 'solo', 'tank', SEASON, 'decode')) === 300);
     }
 
+    // ---- run length (0063, rooms plan §4–5): an auto-only run is on the Auto board and nowhere else ----
+    {
+      await repo.ensureProfile('len-a', 'LenA');
+      await repo.ensureProfile('len-b', 'LenB');
+      const mk = (userId: string, score: number, autoScore: number, teleopScore: number | undefined, runLength?: 'auto') =>
+        repo.submitRecord({ userId, mode: 'solo', drivetrain: 'tank', score, balanceVersion: SEASON, replayId: id2d, game: 'decode', autoScore, teleopScore, runLength });
+      await mk('len-a', 50, 20, 30); // a full run
+      await mk('len-a', 90, 90, undefined, 'auto'); // an auto-only run that scored MORE than the full one
+      await mk('len-b', 40, 40, undefined, 'auto'); // a player with ONLY auto-only runs
+      const board = (category?: 'total' | 'auto' | 'teleop') =>
+        repo.recordLeaderboard({ mode: 'solo', drivetrain: 'tank', balanceVersion: SEASON, game: 'decode', category });
+      const len = async (c?: 'total' | 'auto' | 'teleop') => (await board(c)).filter((r) => r.userId.startsWith('len-'));
+      const total = await len();
+      check('run length: an auto-only run never reaches the Total board', total.length === 1 && total[0].userId === 'len-a' && total[0].score === 50, JSON.stringify(total.map((r) => [r.userId, r.score])));
+      const auto = await len('auto');
+      check('run length: the Auto board reads every row, auto-only included, best per player', auto.map((r) => `${r.userId}:${r.score}`).join(',') === 'len-a:90,len-b:40', JSON.stringify(auto.map((r) => [r.userId, r.score])));
+      check('run length: the TeleOp board is full runs only', (await len('teleop')).map((r) => r.userId).join(',') === 'len-a');
+      check('run length: the personal best and the rank ignore it', (await repo.personalBest('len-a', 'solo', 'tank', SEASON, 'decode')) === 50 && (await repo.personalBest('len-b', 'solo', 'tank', SEASON, 'decode')) === null);
+      check('run length: a column default of full keeps every earlier row on the Total board', ((await db.query(`select run_length from records where user_id = 'cat-a' limit 1`)).rows[0] as { run_length: string }).run_length === 'full');
+      // the replay row carries it
+      const rid = await repo.saveReplay({ ...(await repo.getReplay(id2d))!, runLength: 'auto', format: 5 }, SEASON, 'decode');
+      check('run length: a replay row stores and returns runLength', (await repo.getReplay(rid))?.runLength === 'auto' && (await repo.getReplay(id2d))?.runLength === undefined);
+    }
+
     // ---- practice runs: physics AND the view it was watched in ------------------------
     //
     // The two are different KINDS of fact and are sourced differently, which is the thing to
