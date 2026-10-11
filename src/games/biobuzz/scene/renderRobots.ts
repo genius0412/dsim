@@ -111,6 +111,7 @@ import {
 import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal, mouthAxes } from '../robot';
 import { bbDumpZ, bbDumperFrame, bbImportTurretAxleZ, bbSideRollerOffsets } from '../importMech';
 import { bbSpecKey } from '../specKey';
+import { loadOptionalChunk } from '../../../optionalChunks';
 import { driveParams } from '../../../sim/drivetrain';
 import type { MotionDrive } from '../../../robotImport/types';
 import {
@@ -838,8 +839,10 @@ const BB_WHEEL_W = BB_MECANUM.w;
 const BB_PLATE_GAP = BB_WHEEL_W + 0.4;
 
 /**
- * ⚠️ **THE TIER CHANGES THE TESSELLATION AND NOTHING ELSE** (owner, 2026-09-21: "of course, its
- * fidelity and simplification should depend on graphics settings").
+ * ⚠️ **THE TIER CHANGES DETAIL THE OUTLINE DOES NOT DEPEND ON, NEVER THE MACHINE** (owner,
+ * 2026-09-21: "of course, its fidelity and simplification should depend on graphics settings"). On
+ * a wheel that is the tessellation; since 2026-10-10 the same level also adds the chassis and bay
+ * detail listed at `ROBOT_LOD` below.
  *
  * Two levels, because the honest question a wheel asks the GPU is "how many sides does a barrel
  * get", and a third answer between five and eight buys nothing measurable. What a level may NOT
@@ -890,7 +893,8 @@ const WHEEL_LOD: Record<BbWheelDetail, {
 /**
  * ⚠️ **THE SAME LEVEL, READ BY THE CHASSIS** (2026-10-10, owner: "Make the robots more high
  * quality"). One switch, no new dial: `detail` is already in `sync`'s rebuild key and in the
- * preview's, so nothing new has to be keyed.
+ * preview's. The one thing keyed beside it is whether the bay's lazy chunk has landed (`sync`'s
+ * `|bay`, the preview's `onBayReady`), so a High robot built before it rebuilds once when it does.
  *
  * What it may change is what `WHEEL_LOD.low` already drops from a wheel — detail the outline does
  * not depend on: edge breaks (`chamferBox`, `plateExtrude`, `chamferRing`) on the chassis and the
@@ -902,9 +906,10 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  *
  * ⚠️ **`low` CALLS TODAY'S CODE, AND THE RENDER LANE PINS THAT IT IS NOT HEAVIER.** Every Low path
  * below is the pre-2026-10-10 builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the
- * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. The one Low change is the inner side
- * plates stopping under the deck (`buildFrame`), at the same triangle count. Low and Medium pay
- * nothing for this.
+ * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. The Low changes are the inner side
+ * plates stopping under the deck (`buildFrame`), and the top caps and end bars giving way to the
+ * intake arms' diagonal (`intakeArmKeepOuts`, 2026-10-11), both at the same triangle count on every
+ * pinned build. Low and Medium pay nothing for this.
  */
 const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean; bay: boolean }> = {
   low: { chamfer: false, cut: false, fasteners: false, bay: false },
@@ -1803,7 +1808,7 @@ function cutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeomet
 function buildCutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeometry {
   const hl = spec.length / 2;
   const cut = bbSidePlateCut(spec);
-  // the bottom corners keep the Low plate's 0.6 round; the top ones run up under the deck square
+  // the bottom corners keep the Low plate's 0.6 round; the top ones, under the deck, a 0.15 round
   const shape = polyPath(new THREE.Shape(), roundedRectPts(-hl, hl, 0, cut.h, Math.min(0.6, BB_PLATE_H * 0.18), 4, 0.15), false);
   for (const w of cut.windows) {
     const n = 24;
@@ -2018,6 +2023,10 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
   skinMesh.name = 'robot:frame:skin';
   const frameMesh = new THREE.Mesh(frame, solidMat(ALU, 0.45, 0.35));
   frameMesh.name = 'robot:frame:rails';
+  // the inner plates and cross members are under the deck on every tier: their physical twin sees
+  // the deck, not the room (`renderSurfaceRobots.ts`). Made aluminium above, they mirrored the
+  // school hall's warm probe as bronze in the bay on Extreme (2026-10-11).
+  frameMesh.userData.bbEnclosed = true;
   return [cast(skinMesh, 'fill'), cast(frameMesh, 'alu')];
 }
 
@@ -2257,21 +2266,34 @@ export {
   tag,
 };
 let bayLoading: Promise<void> | null = null;
+let bayFailures = 0;
+/** how many times a page fetches the bay's chunk before it stops asking */
+const BB_BAY_TRIES = 3;
 const bayListeners = new Set<() => void>();
 /** called once, by `renderBay.ts` as it loads */
 export function bbRegisterBay(hooks: BbBayHooks): void {
   BAY = hooks;
   for (const f of [...bayListeners]) f();
 }
-/** fetch the bay's chunk (once; a failed fetch is tried again on the next High build) */
+/**
+ * fetch the bay's chunk, once. A failed fetch is tried again by a later High build, up to
+ * `BB_BAY_TRIES` tries a page (Chromium keeps a failed module fetch for the page's life, so there a
+ * retry fails at once without a request). ⚠️ AN OPTIONAL CHUNK (`loadOptionalChunk`): its failure
+ * never reloads the page (`main.tsx` reloads on any other chunk's), since the robot is complete
+ * without it. Checked on a production build with the chunk's request cancelled: three tries, one
+ * request, no reload, and another chunk's failure still reloads.
+ */
 export function bbLoadBay(): Promise<void> {
-  bayLoading ??= import('./renderBay').then(
-    () => undefined,
-    () => {
-      bayLoading = null;
-    },
-  );
-  return bayLoading;
+  if (!bayLoading && bayFailures < BB_BAY_TRIES) {
+    bayLoading = loadOptionalChunk('renderBay', () => import('./renderBay')).then(
+      () => undefined,
+      () => {
+        bayFailures++;
+        bayLoading = null;
+      },
+    );
+  }
+  return bayLoading ?? Promise.resolve();
 }
 /** has the bay's chunk landed? A High robot built before it has no bay. */
 export function bbBayReady(): boolean {
@@ -2603,12 +2625,17 @@ const BB_ROLLER_FLAP_R = 2.0;
 const BB_ROLLER_Z = BB3_MOUTH_SLOT_Z + BB_ROLLER_HUB_R + 0.15;
 
 /**
- * THE INTAKE ARMS AS KEEP-OUTS, for the 3D chassis dressing (the top caps and the end bars) —
- * `buildIntake`'s own arm geometry: the bottom rail, the diagonal rising from it to the axle boss,
- * and the boss post, cut into 0.25-in slices along the arm so each slice carries the arm's real
- * height there (the diagonal is under the deck inside the frame and above it outside). A side
- * mouth's arms cross the end bars' ends and the side caps near the corners (381–462 and 594 of
- * 2,381 builds swept); a front or back mouth's pass under the caps and give nothing.
+ * THE INTAKE ARMS AS KEEP-OUTS, for the 3D chassis dressing (the top caps, their screws, the end
+ * bars) and the bay — `buildIntake`'s own arm geometry, cut into 0.25-in slices along the arm.
+ * Each slice gives two boxes: the bottom rail (and the boss post near the axle), and the diagonal
+ * over that slice.
+ *
+ * ⚠️ THE DIAGONAL IS HIGH AT THE ROOT AND LOW AT THE TIP (2026-10-11). `buildIntake` runs it from
+ * the rail's outer end up to `bossTop` at `armX0`, 1.1 in inside the frame, so over the frame it
+ * stands at z 4.6–5.3: across the top caps' band, and on a side mouth across the end bars' ends.
+ * This used to model the slope the other way (low at the root), which put the keep-out under the
+ * caps: the cap ran on through the arm on every build with an intake, Low included, and the High
+ * cap screws stood inside it on 419 of 600 random High builds.
  */
 function intakeArmKeepOuts(spec: RobotSpec): BbKeepOut[] {
   const hl = spec.length / 2;
@@ -2630,22 +2657,29 @@ function intakeArmKeepOuts(spec: RobotSpec): BbKeepOut[] {
     for (const sg of [1, -1] as const) {
       const y = sg * (f.half - BB_INTAKE_ARM_INSET - armT / 2);
       const step = 0.25;
-      for (let x = armX0; x < tip - 1e-9; x += step) {
+      // the diagonal's centreline height at `x`: `bossTop` at the root, `railZ` at the tip
+      const diagZ = (x: number): number => bossTop - ((x - armX0) / armLen) * (bossTop - railZ);
+      // from 0.06 before the root: the diagonal's square end leans 0.05 past it (half its depth
+      // times the slope's sine)
+      for (let x = armX0 - 0.06; x < tip - 1e-9; x += step) {
         const x1 = Math.min(tip, x + step);
-        // the diagonal's top over this slice (its far end), plus half its 0.34 thickness
-        let top = railZ + ((x1 - armX0) / armLen) * (bossTop - railZ) + 0.2;
-        if (x1 > outer - 0.55 && x < outer + 0.55) top = Math.max(top, bossTop);
         const [ax, ay] = toRobot(x, y - armT / 2);
         const [bx, by] = toRobot(x1, y + armT / 2);
-        out.push({
+        const box = (z0: number, z1: number): BbKeepOut => ({
           what: 'intakeArm',
           cx: (ax + bx) / 2,
           cy: (ay + by) / 2,
           hx: Math.abs(bx - ax) / 2,
           hy: Math.abs(by - ay) / 2,
-          z0: BB3_MOUTH_SLOT_Z,
-          z1: top,
+          z0,
+          z1,
         });
+        // the rail (0.5 deep about `railZ`), and the boss post and boss where the axle is
+        const boss = x1 > outer - 0.55 && x < outer + 0.55;
+        out.push(box(BB3_MOUTH_SLOT_Z, boss ? bossTop : railZ + 0.3));
+        // the diagonal over this slice: its centreline falls from `x` to `x1`; 0.2 covers half its
+        // 0.34 depth measured upright (0.18 at its slope) and its broken edges
+        out.push(box(diagZ(x1) - 0.2, diagZ(x) + 0.2));
       }
     }
   }

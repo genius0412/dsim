@@ -13,6 +13,7 @@ import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { adoptLanFromOrigin } from './net/lanAdopt';
 import { CHUNK_RELOAD_KEY } from './storageKeys';
+import { optionalChunkFailed } from './optionalChunks';
 import { appBuild, probePrimary } from './net/env';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
@@ -55,6 +56,8 @@ const lanReady = adoptLanFromOrigin().catch(() => false);
 // build that reloaded: the same build failing again is the loop being stopped, while the NEW
 // build it reloaded into going stale at the next deploy is a fresh case and reloads once more.
 window.addEventListener('vite:preloadError', (e) => {
+  // a chunk the app runs without (the BIOBUZZ bay) handles its own failure: `optionalChunks.ts`
+  if (optionalChunkFailed(e.payload)) return;
   const build = appBuild();
   try {
     if (sessionStorage.getItem(CHUNK_RELOAD_KEY) === build) return;

@@ -13,6 +13,8 @@ import type { RobotFamily } from '../graphics/finishes';
 import { BB_DECK_Z } from '../config';
 import { bbMouths } from '../robot';
 import { bbSpecKey } from '../specKey';
+import { bbIntakeMountOf } from '../mounts';
+import { bbIntakeKindOf } from '../mechs';
 import {
   ALU,
   axleXs,
@@ -397,10 +399,13 @@ const BAY_OFFSETS_WIDE = bayOffsets(5);
  * WHERE A DRIVE MOTOR OR ITS BELT DRIVE IS BOLTED TO AN INNER SIDE PLATE, in the plate's own (x, z):
  * a lightening hole there would leave a motor's face over a hole — on a 15-in chassis the plate's
  * end holes (r 1.13 at x ±4.83) sat round the motors' whole faces at x ±4.75. High's inner plates
- * leave these solid (`buildFrame`). EXPORTED for the RENDER lane.
+ * leave these solid (`buildFrame`). None where the bay is not drawn (`bbBayShown`): no motor is
+ * bolted there, and a build that shows no bay never pays for the layout (1.8–2.5 ms median, up to
+ * 20 ms, on a side-intake mecanum, tank or butterfly). Where it is drawn the layout is needed for the bay
+ * anyway, and the cache hands both the same one. EXPORTED for the RENDER lane.
  */
 export function bbInnerPlateLands(spec: RobotSpec): { x0: number; x1: number; z0: number; z1: number }[] {
-  if (spec.imported || spec.drivetrain === 'swerve' || spec.drivetrain === 'xdrive') return [];
+  if (spec.imported || spec.drivetrain === 'swerve' || spec.drivetrain === 'xdrive' || !bbBayShown(spec)) return [];
   const lay = bbBayLayout(spec);
   const innerHW = innerHalfWidth(spec);
   const R = BB_DRIVE_MOTOR.gearR;
@@ -414,8 +419,20 @@ export function bbInnerPlateLands(spec: RobotSpec): { x0: number; x1: number; z0
 
 const BAY_LAYOUT_CACHE = new Map<string, BbBayLayout>();
 /**
- * WHERE EVERYTHING IN THE BAY GOES — pure numbers, cached per build (`bbSpecKey`). EXPORTED for the
- * RENDER lane.
+ * THE LAYOUT'S CACHE KEY: only what moves anything under the deck — the size, the drivetrain and
+ * the mouths (mount, intake preset and kind), which are all `bbUnderDeckObstacles` and the motors
+ * read. It was `bbSpecKey`, so a colour, decal or team number change re-ran the whole layout
+ * (1.6 ms median, 3.5 worst) for an equal new object. The launcher and the lift stay out: nothing on the deck
+ * reaches under it (the RENDER lane sweeps them and asserts the obstacles do not change). An
+ * import keys on its whole descriptor, as everywhere. EXPORTED for the RENDER lane.
+ */
+export function bbBayLayoutKey(spec: RobotSpec): string {
+  if (spec.imported) return bbSpecKey(spec);
+  return [spec.length, spec.width, spec.drivetrain, bbIntakeMountOf(spec), spec.intake, bbIntakeKindOf(spec)].join('|');
+}
+/**
+ * WHERE EVERYTHING IN THE BAY GOES — pure numbers, cached per build (`bbBayLayoutKey`). EXPORTED
+ * for the RENDER lane.
  *
  *  1. THE DRIVE MOTORS, one per driven wheel: on mecanum, tank (its end axles) and butterfly (the
  *     corner set) coaxial with the axle and face-bolted to the inner plate — on a chassis under
@@ -436,7 +453,7 @@ const BAY_LAYOUT_CACHE = new Map<string, BbBayLayout>();
  * chassis and the 14.5-in-wide X-drives; nothing is forced in.
  */
 export function bbBayLayout(spec: RobotSpec): BbBayLayout {
-  const key = bbSpecKey(spec);
+  const key = bbBayLayoutKey(spec);
   const hit = BAY_LAYOUT_CACHE.get(key);
   if (hit) return hit;
   const obstacles = bbUnderDeckObstacles(spec);
@@ -643,13 +660,17 @@ export const BAY_WIRE_PORT_FREE = 0.12;
  *
  * A lead leaves its motor straight DOWN from the encoder cover, lies on the belly pan, and runs
  * along it to a port on one of the Control Hub's long sides, where it rises `BAY_PORT_OUT` off the
- * case and turns into the port. The run on the pan is a shortest path on a `BAY_WIRE_GRID` grid,
- * with a cost on each turn so a lead runs square to the frame the way a tied-down one does: every
- * cell within `BAY_WIRE_R + BAY_WIRE_CLEAR` of a part that reaches down to the pan is closed (the
- * hubs' standoffs, the battery, a staggered motor's mount plate, an X-drive's brackets and omnis,
- * the inner plates), and so is every other motor's drop and every lead already routed — a lead
- * never crosses another. A lead may pass UNDER a part that stands clear of the pan by the gap (a
- * motor's can, the Control Hub on its 6 mm standoffs). Its corners are rounded (`filletPolyline`),
+ * case and turns into the port. The run on the pan is a fewest-steps path on a `BAY_WIRE_GRID`
+ * grid: a breadth-first fill out from the open ports, then walked downhill from the motor's drop,
+ * keeping its heading while that still descends, so a lead runs square to the frame the way a
+ * tied-down one does and turns only where it has to. Every cell within `BAY_WIRE_R +
+ * BAY_WIRE_CLEAR` of a part that reaches down to the pan is closed (the hubs' standoffs, the
+ * battery, a staggered motor's mount plate, an X-drive's brackets and omnis, the inner plates), and
+ * so is every other motor's drop and every lead already routed — a lead never crosses another. A
+ * lead may pass UNDER a part that stands clear of the pan by the gap (a motor's can, a hub raised
+ * on 48 mm standoffs over an X-drive's motors), but not under a hub less than 0.5 in up (the
+ * Control Hub on its 6 mm standoffs), where it would run hidden and come out the far side. Its
+ * corners are rounded (`filletPolyline`),
  * and the rounded lead is checked again, sample by sample, against every part, the pan and the
  * other leads; one that fails takes the next port, and one with no clear port is left out rather
  * than drawn through a part. The ports are `BAY_PORT_PITCH` apart along the strip, one lead each.

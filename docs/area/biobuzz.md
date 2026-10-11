@@ -591,6 +591,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     STOPS where a part reaches the deck and runs LOW under a turret head, so a narrow chassis keeps a
     light bar. The arrow stays centred and shrinks before it slides sideways; `null` if nothing fits.
     Over 2,381 builds: turret × bar 1,080 → 0, ring × cap 1,297 → 0, ring × arrow 1,190 → 0.
+  - ⚠️ **THE ARM KEEP-OUT: AN INTAKE ARM'S DIAGONAL IS HIGH AT THE ROOT** (`intakeArmKeepOuts`,
+    2026-10-11, found reviewing the High chassis). `buildIntake` runs the diagonal from the rail's
+    outer end UP to `bossTop` at the arm's root, 1.1 in inside the frame, so over the frame it stands
+    at z 4.6–5.3: across the top caps (4.6–4.8) and, on a side mouth, across the end bars' ends. The
+    keep-out modelled the slope the other way, low at the root, so it stayed under the caps. On 400
+    random builds, Low and High, an intake triangle stood in a cap on every one and in an end bar on
+    114; the High cap screws stood in the arm on 419 of 600 (908 heads, the default's front pair at
+    (7.09, ±8.14) among them). Each 0.25-in slice is now two boxes, the rail (to 4.15, `bossTop` at
+    the boss) and the diagonal over that slice, starting 0.06 before the root (its square end leans
+    0.05 past it). A cap now stops 1.0 in short of the corner on a mouth's end (0.9 at both ends of
+    a side mouth's caps), a side mouth's end bars stop 0.26 short of each end, and no screw goes
+    under an arm: 0 hits on 600 random builds, the bay layout identical on 600, Low's counts
+    unchanged on every pinned build, and 2 screws (64 triangles) fewer on most presets. The arm's
+    root now shows over the deck where the cap ran through it. RENDER lane `robot/arms` tests the
+    BUILT triangles (every intake triangle against every cap piece and end bar, every arm vertex
+    inside the frame against its keep-out) over 120 builds on both levels, and `robot/fasteners`
+    every screw head against every other mesh. The old screw check measured the screws against the
+    keep-outs that had placed them, and passed throughout.
   - The Box Tube's slide-block cache key lacked the section length, so a second robot got the first
     one's blocks at the wrong height. Keyed now.
   - The butterfly's inboard traction wheels overlapped each other on every chassis under ~18.4 in;
@@ -1135,7 +1153,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     publishes no mecanum WIDTH (48 mm is the figure at which the eleven rollers overlap 1.68× in
     azimuth — under 1.0 the wheel rolls into a gap) and no omni ROLLER COUNT (nine per row is what
     end-to-end tiling asks for).
-  - **THE TIER CHANGES THE TESSELLATION AND NOTHING ELSE** ("of course, its fidelity and
+  - **THE TIER CHANGES DETAIL, NEVER THE MACHINE; ON A WHEEL, THE TESSELLATION** ("of course, its fidelity and
     simplification should depend on graphics settings"). `bbWheelDetail(settings, tier)` reads two
     settings that already exist — `meshDetail` set by hand, and otherwise the preset COLUMN, the
     same input `GFX_PIXEL_BUDGET` uses and for the same reason (nothing separates Medium from High
@@ -1176,7 +1194,9 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     `ExtrudeGeometry` call, and the RENDER lane pins Low's triangles, meshes and casters to the
     2026-10-09 counts on 11 builds (`robot/lod`). An order-independent digest of every Low
     triangle is unchanged on swerve and X-drive; on the others the one difference is the inner
-    side plates, which now stop at the deck's underside on every tier. Run up through the deck,
+    side plates, which now stop at the deck's underside on every tier. (Since 2026-10-11 the caps
+    and end bars also give way to the intake arms on every tier, at the same counts: THE ARM
+    KEEP-OUT, under the dressing rules above.) Run up through the deck,
     an aluminium inner plate fought the deck's top face: a silver line along both deck edges on
     the first Low capture, which the z-fight sweep missed because it built High only. It builds
     three Low robots now.
@@ -1208,7 +1228,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     → 19,448, StarterBot 18,464 → 18,084, 18 × 18 butterfly 29,792 → 31,644 (the heaviest robot).
     +1 mesh (the screws), +0 shadow casters. The RENDER lane holds every build to +7,000 / +2 / +1
     (`robot/budget`). Low and Medium: +0 on all 11 pinned builds, and the digest of every Low
-    triangle is the one the chassis commit measured.
+    triangle is the one the chassis commit measured (until the 2026-10-11 arm keep-out moved the
+    cap ends on every build with an intake; the counts are unchanged).
   - **THE MECHANISMS ON HIGH, same level** (`ROBOT_LOD`). Edge breaks on the turret plate (0.03),
     the shooter side plates, hood and feed throat (0.025), the fixed riser and the Box Tube's base
     plates (0.04), the swerve pods' fork and top plates (0.03); not on the hood cheeks (0.07 sheet)
@@ -1262,7 +1283,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     slim battery (113.5 × 90.5 × 23), and each motor's lead to the Control Hub. Drawn only when
     `bbBayShown`: a side intake on a mecanum, tank or butterfly shows none of it and builds none of
     it. Low and Medium build nothing.
-  - **Placement is pure numbers** (`bbBayLayout`, cached per `bbSpecKey`): motors coaxial with
+  - **Placement is pure numbers** (`bbBayLayout`, cached per `bbBayLayoutKey` — see THE LAYOUT IS
+    KEYED ON THE GEOMETRY below): motors coaxial with
     each end axle and face-bolted to the inner plate; under 14.73 in wide, where an axle's pair
     would meet, each sits 0.8 off its axle on a mount plate with a belt to the axle; on X-drive on
     each omni's canted axle on a bracket hung from the deck; on swerve along y on the outer plate
@@ -1310,17 +1332,36 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     screws that share the base material keep theirs. It is darker, not neutral: still saturation
     ~0.3 on the low front close-up, the same warm cast every bare metal part takes from that room's
     probe (THE HIGH CHASSIS, physical aluminium), which is the probe's to fix, not the bay's.
+  - **THE FRAME'S INNER PLATES AND CROSS MEMBERS ARE ENCLOSED TOO** (`robot:frame:rails`,
+    2026-10-11). They are under the deck on every tier, and made aluminium (TWO TONES) they mirrored
+    the school hall as bronze on the bay's walls: on the Extreme low front close-up, the left inner
+    plate went from mean sRGB (90,72,53) to (22,16,9), dark like the bay around it. Standard
+    materials draw them (196,188,183) on High; the twin is darker because it models the deck
+    over them, and only in physical mode. The belly pan is left in the skin mesh: it reads
+    (67,59,51) at Extreme against (68,63,60) on High, and its own mesh would cost a draw call a
+    robot. The wheels behind the side plates' windows keep the room's warm cast (they are what the
+    windows are cut to show).
   - **Cost per robot, High, vs 79cd7e4b** (the bay, the shooter motors, less the dropped plate
     holes): +2,236 to +3,316 triangles (the staggered 13.5 × 14.5 tank is the most), +4 meshes (+5
     on X-drive for the brackets, +6 staggered for belts and mount plates), +0 shadow casters. The
     bay is 2,764 triangles on most builds (each lead ~230, a 5-sided tube), 3,648 on the staggered
     tank. Heaviest robot: the 18 × 18 butterfly, 34,076. A side-intake mecanum builds no bay and is
-    332 lighter (the dropped holes). Low and Medium: identical counts on every pinned build, and
-    the Low captures are pixel-identical to 79cd7e4b's. The leads share the hub cases' mesh and
+    332 lighter (the dropped holes; since 2026-10-11 it keeps Low's holes, 23,828 triangles). Low
+    and Medium: identical counts on every pinned build, and the Low captures were pixel-identical to
+    79cd7e4b's until the arm keep-out moved the cap ends. The leads share the hub cases' mesh and
     material (black plastic), so they add no draw call. The RENDER lane holds the bay to
     4,000 / 7 / 0 per robot (`robot/budget`). The layout is computed once per build: in node,
     median ~2.3 ms, worst ~23 ms (an X-drive whose hub pair is searched to the end before it stands
     on raised standoffs, and the 13.5 × 14.5 channel chassis); the leads are ~2 ms of the median.
+  - **THE LAYOUT IS KEYED ON THE GEOMETRY** (`bbBayLayoutKey`, 2026-10-11): size, drivetrain, intake
+    mount, preset and kind, which is all the obstacles and the motors read. It was `bbSpecKey`, so a
+    colour or team-number change re-ran the layout (1.6 ms median, 3.5 worst, a new equal object);
+    now it is a cache hit. The launcher and lift stay out of the key because nothing on the deck
+    reaches under it, and the RENDER lane sweeps them (`robot/bay key`, 576 builds) to keep that
+    true. A build that shows no bay has no inner-plate lands (`bbInnerPlateLands`) and so never runs
+    the layout: a side-intake mecanum, tank or butterfly paid 1.8–2.5 ms median, 13–20 ms worst, per
+    new size for lands under motors that are not drawn. Where the bay shows, the bay needs the whole
+    layout anyway, so the lands read it from the same cache entry.
   - ⚠️ **THE BAY IS ITS OWN LAZY CHUNK** (`renderBay.ts` → `renderBay-*.js`, the `bay` route in
     `npm run bundleaudit`). In the scene chunk it took that chunk from 237.63 to 245.49 KB gzip
     against a 250 KB ceiling three other branches were also spending, the leads 3.3 KB of it. Now
@@ -1332,6 +1373,18 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     thumbnail or an export taken before then has no bay; from where those cameras stand it cannot
     be seen. Nothing outside `renderRobots.ts` may import it statically (RENDER lane, `robot/bay
     chunk`): one static import folds it back into the scene chunk.
+  - ⚠️ **THE BAY IS AN OPTIONAL CHUNK: ITS FAILURE NEVER RELOADS THE PAGE** (`src/optionalChunks.ts`,
+    2026-10-11). `main.tsx` reloads once on Vite's `vite:preloadError` to pick up a new deploy. The
+    bay is fetched by the first High robot, which can be mid-match after a switch to High, or as a
+    fixed-High replay export starts on a Low device, and a stale tab then reloaded and dropped the
+    match or the export for hardware under the deck. `bbLoadBay` goes through `loadOptionalChunk`,
+    and while it is in flight `main.tsx` leaves a failure naming the bay's file, or naming no file
+    (Safari's message), to the loader; another chunk's still reloads. A failed load is retried by a
+    later High build, at most `BB_BAY_TRIES` (3) times a page. A listener added later cannot cancel
+    the reload: Electron 43's Chromium calls a window's listeners in the order they were added,
+    capture or not (measured), so the rule has to be in `main.tsx`'s own listener. Checked on a
+    production build with the bay's request cancelled: three tries, one request (Chromium keeps a
+    failed module fetch for the page's life), no reload, and a blocked other chunk still reloads.
   - Not done, and why: the Box Tube's pivot motor (the pivot is at the frame edge on every mount —
     over a cross member at front/back/centre, over a wheel channel at the sides and corners — so
     there is no bay under its belt to put a motor in); a ramp-deploy servo (each intake arm sits

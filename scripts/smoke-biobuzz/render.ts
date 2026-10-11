@@ -264,7 +264,7 @@ import {
 // ── the bay under the deck (gfx/robot-detail Stage 2, 2026-10-11), a block of its own. Its chunk
 // registers itself with `renderRobots.ts` as it loads (`bbRegisterBay`), so importing it here is
 // what puts the bay on every High robot this lane builds ──
-import { BB_DRIVE_MOTOR, bbBayReady, bbInnerHalfWidth, buildFixedShooter as bayBuildFixedShooter } from '../../src/games/biobuzz/scene/renderRobots';
+import { BB_DRIVE_MOTOR, bbInnerHalfWidth, buildFixedShooter as bayBuildFixedShooter } from '../../src/games/biobuzz/scene/renderRobots';
 import {
   BB_BAY_CEILING,
   BB_BAY_FLOOR,
@@ -284,6 +284,10 @@ import {
 } from '../../src/games/biobuzz/scene/renderBay';
 import { applyRobotSurfaces, revertRobotSurfaces } from '../../src/games/biobuzz/scene/renderSurfaceRobots';
 import { ROBOT_FAMILY_FINISH as BAY_FAMILY_FINISH } from '../../src/games/biobuzz/graphics/finishes';
+// ── the robot-detail review fixes (gfx/robot-detail, 2026-10-11), a block of their own ──
+import { BB_CAP_SCREW_R, intakeArmKeepOuts } from '../../src/games/biobuzz/scene/renderRobots';
+import { bbBayLayoutKey } from '../../src/games/biobuzz/scene/renderBay';
+import { loadOptionalChunk, optionalChunkFailed } from '../../src/optionalChunks';
 // ── the High mechanisms (gfx/robot-detail, 2026-10-10), a block of their own ──
 import { turretRadius as bbTurretRadiusForDetail } from '../../src/games/biobuzz/mounts';
 import { BB_TURRET_RING_H as BB_RING_H_FOR_DETAIL } from '../../src/games/biobuzz/config';
@@ -1838,6 +1842,7 @@ export function renderChecks(check: Check): void {
   robotDetailChecks(check);
   robotMechanismDetailChecks(check);
   robotBayChecks(check);
+  robotReviewFixChecks(check);
   frontBackChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
@@ -2318,11 +2323,12 @@ function frontBackChecks(check: Check): void {
         `x[${rear.min.x.toFixed(3)}, ${rear.max.x.toFixed(3)}]`,
       );
       // FULL WIDTH is the property that survives occlusion — a mark narrow enough to hide behind
-      // a turret is the nose box this replaced.
+      // a turret is the nose box this replaced. A side mouth's arm roots stand 0.15 in over each
+      // end of both bars (the diagonal is high there, 2026-10-11), so there each bar stops 0.26 short
       for (const [name, b] of [['light bar', front], ['rear rail', rear]] as const) {
         check(
           `front/back 3D ${tag}: the ${name} spans most of the chassis width`,
-          b.max.y - b.min.y >= W - 2 * BB_END_BAR_INSET - 1e-6,
+          b.max.y - b.min.y >= W - 2 * BB_END_BAR_INSET - (mount === 'side' ? 0.6 : 0) - 1e-6,
           `${(b.max.y - b.min.y).toFixed(2)} in of ${W}`,
         );
       }
@@ -3092,7 +3098,7 @@ function robotOverlapChecks(check: Check): void {
  *      frame and under the low body;
  *  (4) THE SIDE PLATE — every window is centred on a wheel `buildWheels` puts there, nothing cuts
  *      the sign land, webs ≥ 0.4, no cut under 0.45, over every drivetrain and size;
- *  (5) THE SCREWS — on a top-cap piece, clear of every mechanism at their own height;
+ *  (5) THE SCREWS — on a top-cap piece (clear of every other part: `robotReviewFixChecks`);
  *  (6) THE CACHE — bounded over builder-style rebuilds, and a live group's buffers are never freed.
  */
 function robotDetailChecks(check: Check): void {
@@ -3325,25 +3331,19 @@ function robotDetailChecks(check: Check): void {
       for (const w of [11, 18]) specs.push(mk({ length: w, width: w }));
       let screws = 0;
       let off = 0;
-      let hit = 0;
-      const top = BB_TOP_CAP_Z[1] + BB_CAP_SCREW_H;
       for (const spec of specs) {
         const segs = bbTopCapSegments(spec);
-        const keep = bbChassisKeepOuts(spec);
         for (const p of bbCapFasteners(spec)) {
           screws++;
           const sy = p.y > 0 ? 1 : -1;
           const [y0, y1] = bbTopCapBand(spec, sy);
           if (p.y < y0 || p.y > y1 || !segs[sy > 0 ? 0 : 1].some((g) => p.x >= g.a0 + 0.4 - 1e-6 && p.x <= g.a1 - 0.4 + 1e-6)) off++;
-          for (const k of keep) {
-            if (k.z0 >= top || k.z1 <= BB_TOP_CAP_Z[1]) continue;
-            const d = k.r !== undefined ? Math.hypot(p.x - k.cx, p.y - k.cy) - k.r : Math.max(Math.abs(p.x - k.cx) - k.hx!, Math.abs(p.y - k.cy) - k.hy!);
-            if (d < 0.15) hit++;
-          }
         }
       }
       check(`robot/fasteners: every cap screw sits on a top-cap piece, 0.4 in from its ends (${specs.length} builds, ${screws} screws)`, off === 0 && screws > specs.length * 4, `${off} off a cap`);
-      check('robot/fasteners: ...and no screw head stands in a mechanism at its own height', hit === 0, `${hit} hits`);
+      // whether a head stands in another part is tested on the BUILT triangles, over every intake
+      // kind and mount, in `robotReviewFixChecks`: tested here against the keep-outs that placed
+      // them, it passed while 419 of 600 random High builds had a head inside an intake arm
     }
 
     // ── (6) THE CACHE ───────────────────────────────────────────────────────────────────────
@@ -3922,9 +3922,9 @@ function robotBayChecks(check: Check): void {
         .filter((f) => /from\s+'\.\/renderBay'/.test(readFileSync(join(SCENE_DIR, f), 'utf8')));
       const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
       check(
-        "robot/bay chunk: no scene file imports renderBay.ts statically, renderRobots.ts loads it with import(), and the loaded chunk has registered itself",
-        staticImporters.length === 0 && robotsSrc.includes("import('./renderBay')") && bbBayReady(),
-        staticImporters.join(', ') || `registered: ${bbBayReady()}`,
+        "robot/bay chunk: no scene file imports renderBay.ts statically, and renderRobots.ts loads it with import()",
+        staticImporters.length === 0 && robotsSrc.includes("import('./renderBay')"),
+        staticImporters.join(', '),
       );
     }
 
@@ -3947,6 +3947,276 @@ function robotBayChecks(check: Check): void {
         'robot/bay: in physical mode a bay part is occluded from the room (an aoMap at 0.8 on its twin) and the cap screws that share the gearbox\'s base material are not',
         bayAo.length >= 4 && bayAo.every((a) => a === 0.8) && screwAo === 0,
         `${bayAo.join(', ')} / screws ${screwAo}`,
+      );
+    }
+  } finally {
+    if (!hadDoc) delete (globalThis as { document?: unknown }).document;
+  }
+}
+
+/**
+ * ⚠️ **THE ROBOT-DETAIL REVIEW (2026-10-11)** — three faults the checks above could not see:
+ *  (1) THE INTAKE ARM'S DIAGONAL IS HIGH AT THE ROOT, and `intakeArmKeepOuts` modelled it low there.
+ *      The top cap ran on through the arm on every build with an intake (Low too), an arm root stood
+ *      in an end bar's end on 114 of 400 random builds, and the High cap screws stood in the arm on
+ *      419 of 600. `robot/fasteners` passed throughout: it tested screws against the same keep-outs
+ *      that placed them, and the arms were not in it. So these test the BUILT triangles: every intake
+ *      triangle against every cap piece, screw head and end bar, every screw head against every other
+ *      mesh, and every arm vertex inside the frame against its own keep-out, over intake kind × mount
+ *      × size × drivetrain, on both levels.
+ *  (2) THE BAY LAYOUT IS KEYED ON THE GEOMETRY (`bbBayLayoutKey`): a colour change is a cache hit,
+ *      and nothing outside the key moves an obstacle; a build that shows no bay has no lands, so it
+ *      never runs the layout.
+ *  (3) THE BAY IS AN OPTIONAL CHUNK (`optionalChunks.ts`): `main.tsx` leaves its failure, and only its
+ *      own, to its loader instead of reloading the page.
+ */
+function robotReviewFixChecks(check: Check): void {
+  const hadDoc = 'document' in globalThis;
+  const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {}, width: 10 }) });
+  if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
+  try {
+    const mk = (extra: Record<string, unknown>): RobotSpec => coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, ...extra } as RobotSpec);
+    type V3 = [number, number, number];
+    const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const lo = (t: V3[], k: number): number => Math.min(t[0][k], t[1][k], t[2][k]);
+    const hi = (t: V3[], k: number): number => Math.max(t[0][k], t[1][k], t[2][k]);
+    /** a triangle against an axis-aligned box (centre `c`, half-sizes `h`): separating axes */
+    const triBox = (t: V3[], c: V3, h: V3): boolean => {
+      for (let k = 0; k < 3; k++) if (lo(t, k) > c[k] + h[k] || hi(t, k) < c[k] - h[k]) return false;
+      const v = t.map((q) => sub(q, c));
+      const e = [sub(v[1], v[0]), sub(v[2], v[1]), sub(v[0], v[2])];
+      const axes: V3[] = [cross(e[0], e[1])];
+      for (const f of e) for (const u of [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]) axes.push(cross(u, f));
+      for (const a of axes) {
+        if (dot(a, a) < 1e-14) continue;
+        const p = v.map((q) => dot(a, q));
+        const r = h[0] * Math.abs(a[0]) + h[1] * Math.abs(a[1]) + h[2] * Math.abs(a[2]);
+        if (Math.min(...p) > r || Math.max(...p) < -r) return false;
+      }
+      return true;
+    };
+    /** two triangles that overlap by more than 0.005 on every separating axis */
+    const triTri = (A: V3[], B: V3[]): boolean => {
+      for (let k = 0; k < 3; k++) if (lo(A, k) > hi(B, k) || lo(B, k) > hi(A, k)) return false;
+      const eA = [sub(A[1], A[0]), sub(A[2], A[1]), sub(A[0], A[2])];
+      const eB = [sub(B[1], B[0]), sub(B[2], B[1]), sub(B[0], B[2])];
+      const axes: V3[] = [cross(eA[0], eA[1]), cross(eB[0], eB[1])];
+      for (const a of eA) for (const b of eB) axes.push(cross(a, b));
+      for (const ax of axes) {
+        const l = Math.sqrt(dot(ax, ax));
+        if (l < 1e-9) continue;
+        const pa = A.map((q) => dot(ax, q) / l);
+        const pb = B.map((q) => dot(ax, q) / l);
+        if (Math.min(...pa) >= Math.max(...pb) - 0.005 || Math.min(...pb) >= Math.max(...pa) - 0.005) return false;
+      }
+      return true;
+    };
+    const trisOf = (m: THREE.Mesh): V3[][] => {
+      const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const idx = m.geometry.getIndex();
+      const n = idx ? idx.count : pos.count;
+      const v = new THREE.Vector3();
+      const out: V3[][] = [];
+      for (let t = 0; t + 2 < n; t += 3) {
+        const tri: V3[] = [];
+        for (let k = 0; k < 3; k++) {
+          v.fromBufferAttribute(pos, idx ? idx.getX(t + k) : t + k).applyMatrix4(m.matrixWorld);
+          tri.push([v.x, v.y, v.z]);
+        }
+        out.push(tri);
+      }
+      return out;
+    };
+    const inIntake = (o: THREE.Object3D): boolean => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (p.name.startsWith('robot:intake:')) return true;
+      return false;
+    };
+
+    // ── (1) THE ARMS AGAINST THE DRESSING, ON THE BUILT TRIANGLES ────────────────────────────
+    {
+      const DT = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+      const SIZES: [number, number][] = [[11, 11], [13.5, 14.5], [15, 15], [18, 14.5], [18, 18]];
+      const LAUNCHERS = [
+        { kind: 'turret', mount: 'front', hoodDeg: 45 },
+        { kind: 'twinturret', mount: 'frontleft', mount2: 'backright', hoodDeg: 45 },
+        { kind: 'dumper', mount: 'back', hoodDeg: 45 },
+        { kind: 'fixed', mount: 'left', hoodDeg: 45 },
+        { kind: 'turret', mount: 'center', hoodDeg: 45 },
+      ];
+      const LIFTS = [null, { kind: 'vslide', mount: 'back' }, { kind: 'vslide', mount: 'frontright' }];
+      const S = 0.01; // a face that only touches is not a hit
+      let builds = 0;
+      let screws = 0;
+      let armVerts = 0;
+      const capHits: string[] = [];
+      const barHits: string[] = [];
+      const screwHits: string[] = [];
+      const armOut: string[] = [];
+      let i = 0;
+      for (const [L, W] of SIZES)
+        for (const im of ['front', 'back', 'side', 'frontback'] as const)
+          for (const kind of BB_INTAKE_KINDS) {
+            i++;
+            const spec = mk({ drivetrain: DT[i % DT.length], length: L, width: W, intakeMount: im, bbMech: { launcher: LAUNCHERS[i % LAUNCHERS.length], lift: LIFTS[i % LIFTS.length], intake: { kind } } });
+            for (const detail of ['low', 'high'] as const) {
+              const label = `${detail} ${spec.drivetrain} ${spec.length}x${spec.width} ${im} ${kind}`;
+              const g = buildRobotGroup(spec, 1, 'red', detail);
+              g.updateMatrixWorld(true);
+              builds++;
+              const intakeTris: V3[][] = [];
+              const barTris: V3[][] = [];
+              const others: { name: string; tris: V3[][] }[] = [];
+              g.traverse((o) => {
+                const m = o as THREE.Mesh;
+                if (!m.isMesh) return;
+                const tris = trisOf(m);
+                if (inIntake(m)) {
+                  intakeTris.push(...tris);
+                  // an ARM: an unnamed aluminium child of the mouth's own group (`buildIntake`)
+                  if (!m.name && m.userData.bbFamily === 'alu' && /^robot:intake:(front|back|left|right)$/.test(m.parent?.name ?? '')) {
+                    const keep = intakeArmKeepOuts(spec);
+                    for (const t of tris)
+                      for (const q of t) {
+                        if (Math.abs(q[0]) > spec.length / 2 - 1e-6 || Math.abs(q[1]) > spec.width / 2 - 1e-6) continue;
+                        armVerts++;
+                        const inside = keep.some((k) => Math.abs(q[0] - k.cx) <= k.hx! + 0.02 && Math.abs(q[1] - k.cy) <= k.hy! + 0.02 && q[2] >= k.z0 - 0.02 && q[2] <= k.z1 + 0.02);
+                        if (!inside && armOut.length < 4) armOut.push(`${label}: (${q.map((c) => c.toFixed(2)).join(', ')})`);
+                      }
+                  }
+                }
+                if (/:(front|rear):bar$/.test(m.name)) barTris.push(...tris);
+                if (!/:fasteners$/.test(m.name)) others.push({ name: m.name || m.parent?.name || '?', tris });
+              });
+              // every intake triangle against every top-cap piece
+              const segs = bbTopCapSegments(spec);
+              for (const sy of [1, -1] as const) {
+                const [y0, y1] = bbTopCapBand(spec, sy);
+                for (const sg of segs[sy > 0 ? 0 : 1]) {
+                  const c: V3 = [(sg.a0 + sg.a1) / 2, (y0 + y1) / 2, (BB_TOP_CAP_Z[0] + BB_TOP_CAP_Z[1]) / 2];
+                  const h: V3 = [(sg.a1 - sg.a0) / 2 - S, (y1 - y0) / 2 - S, (BB_TOP_CAP_Z[1] - BB_TOP_CAP_Z[0]) / 2 - S];
+                  if (intakeTris.some((t) => triBox(t, c, h))) capHits.push(`${label}: cap ${sy > 0 ? 'L' : 'R'} ${sg.a0.toFixed(2)}..${sg.a1.toFixed(2)}`);
+                }
+              }
+              // ...and every end bar
+              if (barTris.some((b) => intakeTris.some((t) => triTri(b, t)))) barHits.push(label);
+              // every screw head (High) against every other mesh the robot has, the cap it sits on
+              // included: the head's box starts a hair over the cap's top face
+              if (detail === 'high') {
+                for (const p of bbCapFasteners(spec)) {
+                  screws++;
+                  const c: V3 = [p.x, p.y, BB_TOP_CAP_Z[1] + BB_CAP_SCREW_H / 2 + S / 2];
+                  const h: V3 = [BB_CAP_SCREW_R * 0.9, BB_CAP_SCREW_R * 0.9, BB_CAP_SCREW_H / 2 - S / 2];
+                  const hit = others.find((o) => o.tris.some((t) => triBox(t, c, h)));
+                  if (hit && screwHits.length < 6) screwHits.push(`${label}: ${hit.name} at (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+                  else if (hit) screwHits.push('');
+                }
+              }
+              disposeRobotGroup(g);
+            }
+          }
+      check(
+        `robot/arms: no intake triangle stands in a top-cap piece, on Low or High (${builds} builds over intake kind × mount × size × drivetrain; it was every build with an intake)`,
+        capHits.length === 0 && builds >= 100,
+        capHits.slice(0, 4).join('; '),
+      );
+      check('robot/arms: ...nor in an end bar (an arm root stood in one on 114 of 400 random builds)', barHits.length === 0, barHits.slice(0, 4).join('; '));
+      check(
+        `robot/arms: every arm vertex inside the frame is inside its own keep-out (${armVerts} vertices), so the caps, bars and bay give way to the arm that is drawn`,
+        armOut.length === 0 && armVerts > 1000,
+        armOut.join('; '),
+      );
+      check(
+        `robot/fasteners: no cap screw head stands in any other part of the built robot (${screws} screws; 419 of 600 random High builds had one in an intake arm)`,
+        screwHits.length === 0 && screws > 300,
+        screwHits.filter(Boolean).join('; '),
+      );
+    }
+
+    // ── (2) THE BAY LAYOUT'S KEY IS THE GEOMETRY ─────────────────────────────────────────────
+    {
+      const base = mk({});
+      const a = bbBayLayout(base);
+      const recoloured = mk({ chassisColor: 'white', teamNumber: 12345 });
+      // every launcher and lift: two builds with one key must have the same obstacles under the deck
+      // (the coercer may change a size to fit a lift, which is then a different key, rightly)
+      const sig = (s: RobotSpec): string => JSON.stringify(bbUnderDeckObstacles(s));
+      const byKey = new Map<string, string>();
+      let swept = 0;
+      const moved: string[] = [];
+      for (const dt of ['mecanum', 'xdrive'] as const)
+        for (const im of ['front', 'side'] as const)
+          for (const kind of BB_SCORE_MODES)
+            for (const mount of BB_MOUNT_POSITIONS)
+              for (const lift of [null, 'back', 'left', 'frontright'] as const) {
+                const s = mk({ drivetrain: dt, intakeMount: im, bbMech: { launcher: { kind, mount, hoodDeg: 45 }, lift: lift ? { kind: 'vslide', mount: lift } : null, intake: { kind: 'sweeper' } } });
+                swept++;
+                const key = bbBayLayoutKey(s);
+                const got = sig(s);
+                const want = byKey.get(key);
+                if (want === undefined) byKey.set(key, got);
+                else if (want !== got) moved.push(`${key}: ${kind}@${mount} lift ${lift} moved an obstacle`);
+              }
+      check(
+        `robot/bay key: a colour or team number reuses the cached layout, and no launcher or lift outside the key moves an obstacle under the deck (${swept} builds, ${byKey.size} keys)`,
+        bbSpecKey(recoloured) !== bbSpecKey(base) && bbBayLayout(recoloured) === a && moved.length === 0 && byKey.size >= 4,
+        moved.slice(0, 4).join('; '),
+      );
+      check(
+        'robot/bay key: ...while the size, drivetrain, mount and intake kind are in it',
+        new Set([base, mk({ length: 16 }), mk({ width: 16 }), mk({ drivetrain: 'tank' }), mk({ intakeMount: 'back' }), mk({ bbMech: { ...base.bbMech, intake: { kind: 'ramp' } } })].map(bbBayLayoutKey)).size === 6,
+      );
+      check(
+        'robot/bay plate: a build that shows no bay has no lands, so it never runs the layout (a side-intake mecanum, tank, butterfly)',
+        (['mecanum', 'tank', 'butterfly'] as const).every((dt) => bbInnerPlateLands(mk({ drivetrain: dt, intakeMount: 'side' })).length === 0) && bbInnerPlateLands(mk({ drivetrain: 'tank' })).length > 0,
+      );
+    }
+
+    // ── (3) THE BAY IS AN OPTIONAL CHUNK ─────────────────────────────────────────────────────
+    {
+      const chromium = new TypeError('Failed to fetch dynamically imported module: https://playdsim.com/assets/renderBay-CXTSjxJQ.js');
+      const other = new TypeError('Failed to fetch dynamically imported module: https://playdsim.com/assets/GraphicsSection-Ab12Cd34.js');
+      const safari = new TypeError('Importing a module script failed.');
+      const idle = !optionalChunkFailed(chromium) && !optionalChunkFailed(safari);
+      let release: () => void = () => undefined;
+      const pending = loadOptionalChunk('renderBay', () => new Promise<void>((r) => (release = r)));
+      const during = [optionalChunkFailed(chromium), optionalChunkFailed(other), optionalChunkFailed(safari)];
+      release();
+      void pending;
+      check(
+        "robot/bay chunk: while the bay loads, its own failure (the file named, or no file named as Safari says it) is left to its loader; another chunk's still reloads; with nothing in flight every failure reloads",
+        idle && during[0] && !during[1] && during[2],
+        JSON.stringify({ idle, during }),
+      );
+      const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
+      const mainSrc = readFileSync(join(root, 'src', 'main.tsx'), 'utf8');
+      const listener = mainSrc.slice(mainSrc.indexOf("addEventListener('vite:preloadError'"));
+      check(
+        "robot/bay chunk: `bbLoadBay` loads it as an optional chunk, and `main.tsx`'s reload asks `optionalChunkFailed` before anything else",
+        robotsSrc.includes("loadOptionalChunk('renderBay', () => import('./renderBay'))") && /^addEventListener\('vite:preloadError', \(e\) => \{\s*(\/\/[^\n]*\n\s*)?if \(optionalChunkFailed\(e\.payload\)\) return;/.test(listener),
+      );
+    }
+
+    // ── (4) THE FRAME'S ALUMINIUM UNDER THE DECK IS ENCLOSED TOO ─────────────────────────────
+    {
+      const g = buildRobotGroup(mk({}), 1, 'red', 'high');
+      applyRobotSurfaces(g);
+      let rails = -1;
+      let skin = -1;
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const mat = m.material as THREE.MeshPhysicalMaterial;
+        if (m.name === 'robot:frame:rails') rails = mat.aoMap ? mat.aoMapIntensity : 0;
+        if (m.name === 'robot:frame:skin') skin = mat.aoMap ? mat.aoMapIntensity : 0;
+      });
+      revertRobotSurfaces(g);
+      disposeRobotGroup(g);
+      check(
+        "robot/bay: in physical mode the inner plates and cross members (under the deck on every tier) are occluded from the room like the bay; the skin (deck, outer plates, caps) is not",
+        rails === 0.8 && skin === 0,
+        `rails ${rails}, skin ${skin}`,
       );
     }
   } finally {

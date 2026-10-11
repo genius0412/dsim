@@ -155,7 +155,8 @@ function ensureAxisTangent(geo: THREE.BufferGeometry, axis: DetailAxis): boolean
 
 /**
  * ⚠️ **A PART UNDER THE DECK SEES THE DECK, NOT THE ROOM** (2026-10-11, the bay: `renderBay.ts`'s
- * `buildBay`). The room probe and the dome are the whole sky to every twin, so a bare-metal 5203
+ * `buildBay`, and the frame's aluminium inner plates and cross members, `buildFrame`). The room
+ * probe and the dome are the whole sky to every twin, so a bare-metal 5203
  * gearbox in the bay mirrored the school hall's warm floor and lamps and read as brass on the
  * Extreme close-ups — a part that, on a real robot, sits between a closed deck, a belly pan and two
  * plates and sees the room only through the open end. A mesh tagged `userData.bbEnclosed` gets an
