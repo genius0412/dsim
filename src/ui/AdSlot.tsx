@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ADSENSE_CLIENT,
   AD_TFCD,
   AD_TFUAC,
+  adsConfigured,
   ensureAdSenseLoaded,
   fillSlot,
   slotFor,
@@ -17,12 +18,25 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
   // AdSense requires >=150px of clearance between an ad and a game, and only a
   // 160px unit leaves that clearance on a 1366- or 1440-wide laptop.
   game: { w: 160, h: 600 },
+  // the horizontal in-match banner under the field; `sizeFor` swaps in a 320x50 below the banner width
+  gameh: { w: 728, h: 90 },
   // menu + results pages are not game-play pages, so the clearance rule does not
   // apply and the standard medium rectangle (the best-filled size in AdSense's
   // inventory) is the right unit.
   menu: { w: 300, h: 250 },
   results: { w: 300, h: 250 },
+  // the leaderboard banner; `sizeFor` swaps in a 320x50 on a narrow viewport
+  banner: { w: 728, h: 90 },
 };
+
+/** the top strip is the one unit whose size depends on the viewport */
+export const BANNER_NARROW_PX = 760;
+function sizeFor(unit: AdUnit): { w: number; h: number } {
+  if ((unit === 'banner' || unit === 'gameh') && typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX) {
+    return { w: 320, h: 50 };
+  }
+  return SIZE[unit];
+}
 
 /**
  * One AdSense unit.
@@ -49,7 +63,10 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
  * own — the column around it has to disappear too.
  */
 export function useAdUnitActive(unit: AdUnit): boolean {
-  const { showAds } = useAds();
+  const { showAds, adFree, checked } = useAds();
+  // `gameh` is the one unit allowed on a tablet, so it asks the build for itself; everything else
+  // rides the provider's `showAds`, which already folded in the exemption and the fail-closed wait
+  if (unit === 'gameh') return checked && !adFree && adsConfigured('gameh') && !!slotFor(unit);
   return showAds && !!slotFor(unit);
 }
 
@@ -70,10 +87,35 @@ export function MenuAd() {
   );
 }
 
+/**
+ * The results ad costs ~264px of a stage that is already `100dvh`, and a stage taller than the
+ * window scrolls (`.resx-stage` is the screen the redesign made a no-scroll rule for). Measured with
+ * a real match: the 1080p results screen has ~200px to spare, so a 300x250 unit scrolls it. The ad
+ * is therefore mounted only where it fits by construction, rather than hidden by CSS after it has
+ * loaded (a hidden ad is a policy problem and an unviewable impression). The owner's call whether
+ * to trade that inventory for a different placement.
+ */
+const RESULTS_AD_MIN_HEIGHT_PX = 1180;
+
+function useMinHeight(px: number): boolean {
+  const query = `(min-height: ${px}px)`;
+  const [ok, setOk] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia(query);
+    const on = (): void => setOk(m.matches);
+    on();
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [query]);
+  return ok;
+}
+
 /** the post-match results ad. Same reasoning as `MenuAd`; separate unit id so
  *  the two can be enabled, priced, and reported on independently. */
 export function ResultsAd() {
-  if (!useAdUnitActive('results')) return null;
+  const tall = useMinHeight(RESULTS_AD_MIN_HEIGHT_PX);
+  if (!useAdUnitActive('results') || !tall) return null;
   return (
     <div className="menu-ad">
       <AdSlot unit="results" />
@@ -103,7 +145,7 @@ export function AdSlot({ unit, className }: { unit: AdUnit; className?: string }
 
   if (!active) return null;
 
-  const { w, h } = SIZE[unit];
+  const { w, h } = sizeFor(unit);
   // the reserved box must include the "Advertisement" label, or the unit overflows
   // its own container by the label's height and the box stops being exact
   const LABEL_H = 14;

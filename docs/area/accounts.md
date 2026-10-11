@@ -395,6 +395,16 @@ sides. A custom one writes its row whatever the roster, and a bot room (`MatchOu
 does too but credits no `user_activity`. The Career panel's "Ranked W–L" is `m.ranked` only,
 so these add no free wins. A short roster never goes public (see UNANIMITY above), so a
 one-sided game is watchable by its players and staff only.
+**THE RECORDS FEED (`GET /api/records/recent?window&game`, 2026-10-10).** New No.1s and top-3 scores of the
+CURRENT season, solo and duo, over `day` / `week` / `month` / `season`. A run is an entry when it was its
+player's new personal best AND ranked 1 to 3 among the bests so far, a rank REPLAYED from `records` (every
+run keeps its `created_at`), so there is no migration and no `rank_at_time` column: `server/recentRecords.ts`
+is the pure ranking, `repo.recentRecords` the read (30 s cache, 200k-row cap per board). A run with no public
+username is dropped (still counted for the ranks behind it); a moderator clearing a player's records removes
+them from it; handles, usernames and replay ids are already public on every board. If it is ever measured
+too slow, the escape hatch is a `rank_at_time` column written in `submitRecord`, a migration and a separate
+decision. **A server change: needs a deploy.**
+
 **THE HOMEPAGE COUNTS GAMES AT THE SOURCE, NOT FROM `records`/`matches`** (owner, 2026-09-25:
 count custom, practice, LAN and Discord games too). `play_counts` (migration 0050) is a counter
 per UTC day × game × source (`record`/`ranked`/`custom`/`discord`/`practice`/`lan`) × mode.

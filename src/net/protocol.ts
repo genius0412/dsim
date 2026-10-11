@@ -1049,6 +1049,56 @@ export interface LiveRoom {
   competition?: CompetitionRef;
 }
 
+/**
+ * One PUBLIC room's card in Browse rooms (`GET /api/rooms`).
+ *
+ * Deliberately NOT a `LiveRoom`: it describes a room that may still be in its LOBBY, where there
+ * is no match clock, score or driver list, and it names the host only (a lobby row shows no
+ * driver names; those appear once a match is running, as in Watch live). It rides the presence
+ * heartbeat in the same array as `LiveRoom`s, marked `listing: true`, which is what keeps it out
+ * of `/api/live` (it is neither ranked nor a record, so `isPublicLive` drops it) and lets an
+ * older server and client ignore it.
+ */
+export interface ListedRoom {
+  /** the code to join, region-coded like any room */
+  room: string;
+  game: GameId;
+  /** the host's display name; the only person named on a lobby row */
+  host: string;
+  /** a lobby that has not started, or a match in progress */
+  state: 'lobby' | 'match';
+  /** seats taken (drivers plus bots) of `capacity` */
+  seats: number;
+  capacity: number;
+  perAlliance: { red: number; blue: number };
+  preset: RoomPreset;
+  /** can a new driver walk in right now (a seat is free and no match is running) */
+  joinable: boolean;
+  /** which Fly region hosts it, so a join can aim its socket there */
+  region?: string;
+}
+
+/**
+ * One entry of the Records feed (`GET /api/records/recent`): a run that was a player's new personal
+ * best and ranked 1 to 3 on its board AT THE TIME. Names are the public handle and username already
+ * shown on every leaderboard row; an entry with no username is dropped, so every row links somewhere.
+ */
+export interface RecentRecord {
+  userId: string;
+  handle: string;
+  username: string;
+  /** a duo run's partner, when they have a public profile */
+  partnerHandle: string | null;
+  partnerUsername: string | null;
+  mode: 'solo' | 'duo';
+  score: number;
+  /** 1, 2 or 3: the place it took when it was set, not where it sits now */
+  rank: number;
+  createdAt: string;
+  /** the run's replay, which is the proof of the score */
+  replayId: string | null;
+}
+
 /** a competition match, as a room describes itself to a client */
 export interface CompetitionRef {
   slug: string;

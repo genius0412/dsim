@@ -268,6 +268,17 @@ export function SponsorFooterMark() {
   );
 }
 
+/** TOP STRIP — the banner that fills the reserved ad strip at the bottom of every shell screen whenever
+ *  there is no ad to show. Rendered by `BannerStrip`, which owns the sponsor-active check and the
+ *  reserved height, so this is only the mark. */
+export function SponsorStripMark({ h }: { h: number }) {
+  return (
+    <SponsorMark placement="strip" h={h} className="sponsor-mark strip">
+      <span className="sponsor-pre">{SPONSOR.presents}</span>
+    </SponsorMark>
+  );
+}
+
 /** DOWNLOAD PAGE — the largest lockup in the app. The desktop build is the thing
  *  being handed over here, and the splash the user sees when they run it carries
  *  the same mark, so the two read as one handoff rather than as a surprise. */

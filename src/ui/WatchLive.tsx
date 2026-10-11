@@ -12,9 +12,10 @@ import { onUserActive, userIdle } from './userActivity';
  *
  * The LIST is everything live EXCEPT custom rooms (the server decides that; see
  * `isPublicLive`) — ranked matches, record runs and competition matches all appear. A custom room is
- * somebody's private game reached by a code they chose to hand out, so publishing
- * it here would hand that code to every visitor. They are still fully spectatable
- * — by CODE, in the box below, which is the same key that lets you join one.
+ * somebody's own game reached by a code they chose to hand out, so publishing it here would hand
+ * that code to every visitor. The exception is a PUBLIC room, whose host chose to list it: it is on
+ * Browse rooms (`RoomBrowser`, `GET /api/rooms`), never on this list. Every custom room is still
+ * fully spectatable — by CODE, in the box below, which is the same key that lets you join one.
  * Friends' custom games are reachable from the friends list without typing anything.
  *
  * Polls `GET /api/live` every few seconds; clicking a card spectates that room
@@ -173,7 +174,7 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
         {/* "Enter the room code to watch one" was the heading, the input's placeholder
             and its aria-label said a third time. The sentence that stays answers a real
             question — why isn't my friend's room in the list above? */}
-        <p className="ds-hint">Rooms aren’t listed publicly.</p>
+        <p className="ds-hint">A room shows in Browse rooms only if its host made it Public.</p>
         <div className="ds-watchcode">
           <input
             className="ds-input"

@@ -49,6 +49,7 @@ import {
   type ClientMsg,
   type EloDelta,
   type LiveRoom,
+  type ListedRoom,
   type LobbyPlayer,
   type MatchDriver,
   type PlayerIntro,
@@ -1625,6 +1626,39 @@ export class Room {
             },
           }
         : {}),
+    };
+  }
+
+  /**
+   * This room's card for Browse rooms, or null when it is not one: only a PUBLIC (`listed`)
+   * custom versus room qualifies, never a Discord-activity room, never a ranked or competition
+   * room (those carry no `settings`), and never one whose host has not signed in. A listed room
+   * is reachable by anyone, so it is tied to an account that can be held to account for it.
+   *
+   * `hostUserId` is for the server's own one-listed-room-per-account rule and is stripped before
+   * the card reaches a client (`GET /api/rooms`).
+   */
+  listing(): (ListedRoom & { listing: true; hostUserId: string }) | null {
+    const s = this.settings;
+    if (!s || !s.listed || this.config.kind !== 'versus' || this.ranked || this.group !== '') return null;
+    const host = this.clients.get(this.hostId);
+    if (!host?.userId) return null;
+    // a finished match only holds its players on the results screen
+    if (this.world && this.world.match.phase === 'post') return null;
+    const playing = this.phase === 'match';
+    return {
+      listing: true,
+      hostUserId: host.userId,
+      room: this.pendingCode() ?? this.code,
+      game: this.game,
+      host: host.player.name,
+      state: playing ? 'match' : 'lobby',
+      seats: this.seatsTaken,
+      capacity: this.capacity,
+      perAlliance: { ...s.perAlliance },
+      preset: s.preset,
+      joinable: !playing && this.seatsTaken < this.capacity,
+      region: SERVER_REGION || undefined,
     };
   }
 

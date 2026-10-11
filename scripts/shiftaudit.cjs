@@ -55,7 +55,7 @@ setTimeout(() => { log('WATCHDOG'); process.exit(2); }, 600000);
 process.on('unhandledRejection', (e) => { log('UNHANDLED REJECTION:', (e && e.stack) || e); process.exit(3); });
 process.on('uncaughtException', (e) => { log('UNCAUGHT:', (e && e.stack) || e); process.exit(3); });
 
-const ALL_PAGES = ['/', '/modes', '/configure/robot', '/configure/match', '/configure/controls',
+const ALL_PAGES = ['/', '/modes', '/solo-setup', '/configure/robot', '/configure/controls',
                '/configure/audio', '/configure/network', '/records', '/records/career', '/account', '/download',
                // The routes roadmap rounds 1-2 added. They were NOT in this list when they
                // shipped, which is the failure mode the list has: a page nobody adds here is a

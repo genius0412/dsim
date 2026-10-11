@@ -148,10 +148,12 @@ export function HomeMenu({
       </div>
 
       <nav className="ds-menu" aria-label="Main">
-        {/* the SAME filter the rail uses, so the two can never drift — and the home keycaps
-            are the FIRST thing a participant sees, so an entry that only ever reaches a
-            sign-in the embed cannot perform is the worst place to leave one */}
-        {railItems(inDiscordActivity()).map((it, i) => (
+        {/* PROFILE IS NOT HERE: it lives in the top-right menu (`ProfileMenu`). And the keycaps are
+            the FIRST thing a participant sees in a Discord activity, so `railItems` drops the entry
+            that only ever reaches a sign-in the embed cannot perform */}
+        {railItems(inDiscordActivity())
+          .filter((it) => it.id !== 'profile')
+          .map((it, i) => (
           <button
             key={it.id}
             className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}

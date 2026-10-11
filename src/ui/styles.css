@@ -81,8 +81,8 @@ button {
      are exactly the light/dark values of --ds-bg — keep the three in sync. */
   background: var(--ds-bg);
 }
-.game-ad:first-child { padding-right: 150px; }
-.game-ad:last-child { padding-left: 150px; }
+.game-ad.left { padding-right: 150px; }
+.game-ad.right { padding-left: 150px; }
 
 /* One ad unit. The box is sized explicitly so a late-arriving creative cannot
    reflow anything — `npm run shiftaudit` fails on any element moving >0.5px while
@@ -130,8 +130,42 @@ button {
   line-height: var(--ds-lh-tight);
 }
 
-@media (pointer: fine) and (min-width: 1280px) and (min-height: 640px) {
+/* THE VERTICAL COLUMNS take a window WIDER than tall. The `min-aspect-ratio` is new (2026-10-11): the
+   gate above reasons that the field is square, so height binds and the width beside it is spare, but
+   that only holds when the window is wide enough for the columns to leave `usableH` of canvas. At
+   1280x900 it is not (660px of canvas for a ~900px field), so the columns shrank the field. 8/5 is
+   the aspect where 1280 wide still clears (1280x800), and every wider window clears more. */
+@media (pointer: fine) and (min-width: 1280px) and (min-height: 640px) and (min-aspect-ratio: 8/5) {
   .game-ad {
+    display: flex;
+  }
+}
+
+/* THE HORIZONTAL BANNER takes a window TALLER than wide, the other axis: there the field is
+   width-bound, so the height beside it is spare. It sits BELOW the field, in the same shell turned into
+   a column, with the same 150px clearance gutter on the field-facing side (254px = a 90px unit, its 14px
+   label and the gutter). The aspect gate is derived, not a taste: the field needs W + ~152px of HUD
+   bands, the banner 254px, so H must be at least W + 406px; at 3/5 (H = 1.667W) that holds from W = 620px
+   up, which is the `min-width`. A window that cannot spare it gets no banner rather than a smaller field.
+   No `pointer` gate: this is the one unit allowed on a tablet (`adsConfigured('gameh')`). */
+.game-ad-h {
+  display: none;
+  flex: 0 0 254px;
+  align-items: flex-end;
+  justify-content: center;
+  /* the canvas letterbox colour, as for the columns */
+  background: var(--ds-bg);
+}
+@media (max-aspect-ratio: 3/5) and (min-width: 620px) {
+  .game-shell {
+    flex-direction: column;
+  }
+  .game-shell > .game-root {
+    height: auto;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+  .game-ad-h {
     display: flex;
   }
 }
@@ -2251,6 +2285,142 @@ button {
   }
   .resx-body-solo .resx-secondary {
     grid-area: 4 / 1 / 5 / 2;
+  }
+}
+
+/* ---- A SHORT OR NARROW WINDOW MUST NOT SCROLL THE RESULTS (UX redesign, 2026-10-10) ----
+   Measured with a real solo match at six sizes: 1920x1080, 1366x768 and 1280x720 fit, and 1024x600,
+   844x390 and 390x844 scrolled by 63, 320 and 244px. Two causes, and one fix each:
+   - the breakdown is ONE column of ~15 rows, and `--resx-u` bottoms out at 7px, so on a window under
+     ~640px tall the column alone is taller than the window. It becomes TWO columns of the same rows
+     (the solo table only: the versus table is three columns across two halves and is left alone).
+   - stacked on a phone, each half had `min-height: 40vh`, which is a third of the height before the
+     breakdown or the buttons arrive. It is a floor now, not a share.
+   The edge inset also shrinks here: 24px of padding on every side is a real fraction of 390px. */
+@media (max-height: 640px), (max-width: 720px) {
+  .resx-stage {
+    --resx-pad: clamp(12px, 2.4vmin, 24px);
+  }
+  .resx-breakdown-solo,
+  .resx-breakdown-solo tbody {
+    display: block;
+  }
+  .resx-breakdown-solo tbody {
+    column-count: 2;
+    column-gap: calc(2 * var(--resx-u));
+  }
+  .resx-breakdown-solo tr {
+    display: block;
+    break-inside: avoid;
+  }
+  .resx-breakdown-solo .resx-section {
+    break-after: avoid;
+  }
+  .resx-breakdown-solo .resx-section th,
+  .resx-breakdown-solo .resx-cat {
+    display: block;
+  }
+  /* the value is out of flow at the row's right edge, so the label only has to clear it */
+  .resx-breakdown-solo .resx-cat {
+    padding-inline: 0.4em 2.4em;
+    text-align: left;
+  }
+  /* the season line repeats what the eyebrow and the panel say, and a heading must not wrap */
+  .resx-season {
+    display: none;
+  }
+  /* `.resx-body` in front: the base `.resx-breakdown` block sits LATER in the file and would win a tie */
+  .resx-body .resx-breakdown {
+    margin-block: var(--ds-s-1);
+    font-size: calc(2.2 * var(--resx-u));
+  }
+  /* the eyebrow (SOLO PRACTICE) is the panel's own title one line up; the heading carries it */
+  .resx-eyebrow {
+    display: none;
+  }
+  .resx-section th {
+    letter-spacing: 0.08em;
+  }
+}
+/* ---- THE VERSUS BOARD on a short or narrow window (measured offline with a BIOBUZZ solo match and
+   an AI opponent, the one way to get both alliances onto the board without a second driver) ----
+   Before this, 844x390 scrolled by 241px and 390x844 by 141px. The centre table is value | label |
+   value, 15 rows tall; the SAME two-column split the solo table uses applies, with each row a
+   three-cell grid. The alliance halves also step their big type down so they stay inside their cell. */
+@media (max-height: 640px), (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-breakdown,
+  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
+    display: block;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
+    column-count: 2;
+    column-gap: calc(2 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown tr {
+    display: grid;
+    grid-template-columns: minmax(2.4ch, auto) minmax(0, 1fr) minmax(2.4ch, auto);
+    align-items: baseline;
+    break-inside: avoid;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown .resx-section {
+    display: block;
+    break-after: avoid;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown td,
+  .resx-body:not(.resx-body-solo) .resx-breakdown th {
+    padding: 0.16em 0.4em;
+  }
+  .resx-body:not(.resx-body-solo) .resx-cat {
+    text-align: center;
+  }
+  .resx-body:not(.resx-body-solo) .resx-total-num {
+    font-size: calc(8 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-winbanner {
+    font-size: calc(3.6 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-roster-row {
+    font-size: calc(2.8 * var(--resx-u));
+  }
+}
+@media (max-height: 640px) and (min-width: 721px) {
+  /* the centre column takes the room the two halves give back, so two table columns fit in it */
+  .resx-body:not(.resx-body-solo) {
+    grid-template-columns: 24% minmax(0, 1fr) 24%;
+  }
+}
+/* a PHONE UPRIGHT: the stacked halves size to their content (a floor under the content let the big
+   total spill out of its cell and over the table, measured), and the breakdown sits between them */
+@media (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-half {
+    min-height: 0;
+  }
+}
+
+/* a SHORT but WIDE window (a phone on its side, a small laptop): the alliance panel gives the
+   breakdown more of the width, so its two columns each have room for a label and a value. The
+   mirrored (blue) board has its own track rule above, so it is restated here after it. */
+@media (max-height: 640px) and (min-width: 721px) {
+  .resx-body-solo {
+    grid-template-columns: 42% minmax(0, 1fr);
+  }
+  .resx-body-solo:has(.resx-half.blue) {
+    grid-template-columns: minmax(0, 1fr) 42%;
+  }
+  /* the panel's three big things step down together, so the stack still fits its half */
+  .resx-total-num {
+    font-size: calc(8 * var(--resx-u));
+  }
+  .resx-winbanner,
+  .resx-body-solo .resx-roster-row {
+    font-size: calc(4 * var(--resx-u));
+  }
+}
+@media (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-half,
+  .resx-body-solo .resx-half.red,
+  .resx-body-solo .resx-half.blue {
+    min-height: 22vh;
   }
 }
 

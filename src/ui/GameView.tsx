@@ -359,6 +359,8 @@ export function GameView({
   // exactly where it was. GameController watches the canvas with a ResizeObserver,
   // so the camera re-fits the moment this flips.
   const ads = useAdUnitActive('game');
+  // the horizontal banner under the field, for a window taller than wide (see `.game-ad-h`)
+  const adsH = useAdUnitActive('gameh');
   // one subscription, not five MediaQueryList constructions per render at the 10 Hz HUD poll
   // — and, unlike reading the query during render, this actually updates when it changes
   const coarsePointer = useCoarsePointer();
@@ -762,7 +764,7 @@ export function GameView({
           visual difference defeats it. `aria-label` names the region instead, so
           a screen-reader user can skip past it knowingly. */}
       {ads && (
-        <aside className="game-ad" aria-label="Advertisement">
+        <aside className="game-ad left" aria-label="Advertisement">
           <AdSlot unit="game" />
         </aside>
       )}
@@ -1069,8 +1071,14 @@ export function GameView({
           visual difference defeats it. `aria-label` names the region instead, so
           a screen-reader user can skip past it knowingly. */}
       {ads && (
-        <aside className="game-ad" aria-label="Advertisement">
+        <aside className="game-ad right" aria-label="Advertisement">
           <AdSlot unit="game" />
+        </aside>
+      )}
+      {/* the banner is a sibling of the field like the columns, for the same reason (the HUD overlays are positioned against `.game-root`) */}
+      {adsH && (
+        <aside className="game-ad-h" aria-label="Advertisement">
+          <AdSlot unit="gameh" />
         </aside>
       )}
     </div>

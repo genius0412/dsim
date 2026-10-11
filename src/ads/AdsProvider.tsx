@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { adsConfigured } from './adsense';
+import { isAdFree } from './adFree';
 import { authClient, authEnabled } from '../lib/authClient';
 import { ENTITLEMENTS_CHANGED, fetchEntitlements } from '../net/api';
 
@@ -21,6 +22,8 @@ interface AdsState {
   showAds: boolean;
   /** does this account have an active supporter entitlement? */
   supporter: boolean;
+  /** supporter, staff or contributor: never shown an ad (`adFree.ts`) */
+  adFree: boolean;
   /** has the entitlement check finished? false ⇒ not known yet */
   checked: boolean;
   /**
@@ -36,13 +39,14 @@ interface AdsState {
   earnedCosmetics: readonly string[];
 }
 
-const Ctx = createContext<AdsState>({ showAds: false, supporter: false, checked: false, earnedCosmetics: [] });
+const Ctx = createContext<AdsState>({ showAds: false, supporter: false, adFree: false, checked: false, earnedCosmetics: [] });
 
 export function AdsProvider({ children }: { children: ReactNode }) {
   const session = authClient?.useSession();
   const userId = session?.data?.user?.id ?? null;
 
   const [supporter, setSupporter] = useState(false);
+  const [adFree, setAdFree] = useState(false);
   const [checked, setChecked] = useState(false);
   const [earnedCosmetics, setEarnedCosmetics] = useState<readonly string[]>([]);
   /* bumped by `ENTITLEMENTS_CHANGED` — a claimed reward that unlocked a cosmetic — so the
@@ -61,6 +65,7 @@ export function AdsProvider({ children }: { children: ReactNode }) {
     // never resolve.
     if (!authEnabled || !userId) {
       setSupporter(false);
+      setAdFree(false);
       setEarnedCosmetics([]);
       setChecked(true);
       checkedFor.current = null;
@@ -74,6 +79,7 @@ export function AdsProvider({ children }: { children: ReactNode }) {
     void fetchEntitlements().then((e) => {
       if (cancelled) return;
       setSupporter(e.supporter);
+      setAdFree(isAdFree(e));
       /* `?? []` because the field is passed through UNTOUCHED by `fetchEntitlements`, and
          `undefined` there means "this server did not say" (an older build, or the swallowed
          failure path) rather than "nothing earned". Both land on the same empty list here —
@@ -87,8 +93,8 @@ export function AdsProvider({ children }: { children: ReactNode }) {
     };
   }, [userId, epoch]);
 
-  const showAds = adsConfigured() && checked && !supporter;
-  return <Ctx.Provider value={{ showAds, supporter, checked, earnedCosmetics }}>{children}</Ctx.Provider>;
+  const showAds = adsConfigured() && checked && !adFree;
+  return <Ctx.Provider value={{ showAds, supporter, adFree, checked, earnedCosmetics }}>{children}</Ctx.Provider>;
 }
 
 /** ad gate + supporter status. Client state is UX only — the server is authority. */

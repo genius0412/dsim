@@ -209,7 +209,9 @@ that season has none) — then the bind panels —
   a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
   Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
   Switching says what happened in the Driving title when any map has a trigger bind.
-- **Configure ▸ Match is two cards: Match setup, then Practice.** Practice holds Practice
+- **SOLO SETUP (`SoloSetup.tsx`, `/solo-setup`) IS NOT A CONFIGURE SECTION** (it was Configure ▸ Match until 2026-10-10;
+  `/configure/match` still resolves, to it). The Play page's Solo practice tile opens it and its sticky bar
+  starts Solo practice or Free drive, both behind `guardStart`. It is two cards: Match setup, then Practice. Practice holds Practice
   physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
   Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
   difficulty row, which is always rendered and DISABLED unless the seat is AI (§1.4: no rows
@@ -349,11 +351,11 @@ Controls screen stands the layer down the same way while a rebind is armed
   tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
   OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
 
-## Configure — the six sections, and the three rules that hold them together
+## Configure — the five sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes six sections at `/configure/<key>`. **The ARRAY is the order on
+`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
-rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics, Network:
+rename one. Order is task order — Robot, Controls, Audio and Visual, Graphics, Network:
 build it, learn to drive it, set up the session, the two output sections, then the connection.
 **Network** (`NetworkSection.tsx`) holds client prediction, which sat in a Controls fold until
 2026-09-22 (owner: "Network prediction should NOT be part of controls") — it is how this machine
@@ -814,14 +816,37 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
-- **PHONE LAYOUT.** At ≤900px `.ds-body` wraps into ONE nav row: the rail (order 1) and the
-  collapsed friends chip (order 2) share the first line and the content takes its own
-  (`.ds-body > .ds-main` order 3). The strips WRAP, they do not scroll. In a room, friends
-  drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the rail's Home item goes
-  (the DSIM mark routes home), the subnav becomes an `auto-fit` grid, and the friends chip is
-  icon-only, its label visually hidden
-  but still read. The profile hero is a CONTAINER query
-  (`@container hero (max-width: 439px)`): picture + name on top, stats three across below.
+- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
+  Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
+  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). Full-screen surfaces keep their `ConsoleHead` Back: it leaves a live socket. Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
+  PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
+  full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
+  keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every
+  shell screen and RESERVES its height: the `banner` ad unit (728x90, 320x50 under 760px) when ads can
+  run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
+  answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. **FRIENDS IS AN OVERLAY (owner, 2026-10-10: it must not push the page).** The toggle card stays in the layout; opening it shows `.ds-friends-overlay`, a `position: fixed` sheet from the right edge under the app bar (full height in a room, which has no bar) with a transparent `.fr-scrim` behind it. Escape or a click outside closes it. It always starts closed: the stored open state (`decodesim.friendsPanelOpen`) and the squeeze media query are gone. At ≤900px `.ds-body` wraps so the toggle takes the first line and the content its own (`.ds-body > .ds-main`); at ≤640px the toggle is icon-only, its label visually hidden but still read. The
+  profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
+  stats three across below.
+- **RECORDS IS A HUB AND THE PAGES BEHIND IT (2026-10-10).** `/records` is `RecordsHub` (a player search, a
+  link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
+  season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
+  (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
+  `Records.tsx`'s `PAGES` (three now: Leaderboards, My records, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards; there is no Players page, the hub's search is how you find a player), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
+  typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: the trail in the app bar (`Records › Achievements`) is how you go up to the hub, and the hub is a top-level screen (up is Home). `/leaderboard`, `/stats` and `/records/career` still resolve.
+  **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
+  server (read once at load; a production bundle drops it).
+- **BROWSE ROOMS HAS TWO CONTROLS PER ROW (2026-10-10):** the row joins as a driver while a seat is free, and **Watch** opens `WatchLobby` (screen `watchlobby`, no URL of its own: a live socket like `game`). It shows both alliances and the seats, hands the socket to a spectator session when the host starts, and offers **Join this room** only while a seat is free. A watcher holds no seat and cannot change the room.
+- **THE RANKED SCREEN OPENS ON YOUR STANDING** (`RankedStanding`, above the 1v1/2v2 pick): the rating for the picked format, its rank, the games it is over and the overall W–L, from the one `fetchUserStats` read, in a box that is RESERVED while the read is in flight and stays empty on failure.
+- ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
+  solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,
+  320 and 244px. A short or narrow window (`max-height: 640px`, `max-width: 720px`) now lays the SOLO breakdown
+  out in two columns, shrinks the edge inset, and a stacked half is a `22vh` floor, not a `40vh` share; the
+  first five now fit; the short-window rule also drops the eyebrow and sets the breakdown at 2.2u (it needs `.resx-body` in front of `.resx-breakdown`, whose base block sits LATER in the file), which brought **844x390 to fit** (435px to 390). The **VERSUS board is measured too**, with a BIOBUZZ solo match and an AI opponent (the one way to get both alliances onto it without a second driver): it scrolled by 241px at 844x390 and 141px at 390x844, and now fits all six sizes by splitting its value | label | value table into two columns, narrowing the halves to 24% on a short window and letting stacked halves size to their content (a `min-height` floor let the big total spill over the table). 
+  The results ad
+  (`ResultsAd`, a 300x250 in the one column) cost ~264px and scrolled even a 1080p stage, so it mounts only
+  at `min-height: 1180px`; that is inventory traded for the no-scroll rule, and moving it into the alliance
+  panel's empty middle is the way to win it back. To re-measure: `scratch/shot-results.cjs` style drive
+  (start Solo practice, press Enter, wait for `.resx-stage`, compare `scrollHeight` to `clientHeight`).
 - ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
   `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
   match `shell.css` by hand — change one, grep for the other.

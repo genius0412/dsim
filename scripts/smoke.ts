@@ -18581,6 +18581,251 @@ const recordDrive: CommandSource = (tick) => {
   check('settings: a ranked room refuses the host controls', ranked.settings?.teamSwitch === true && errs(rsink).length > 0);
 }
 
+/**
+ * BROWSE ROOMS (`Room.listing`): which rooms are on the public list, and what a card says. The
+ * rule is conservative on purpose: a Public custom versus room whose host is signed in, and
+ * nothing else, because a listed room is reachable by anyone.
+ */
+{
+  const { coerceRoomSettings } = await import('../src/net/protocol');
+  const driver = (id: string, alliance: Alliance, signedIn = true): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: `Name ${id}`, teamName: 'Team ' + id, teamNumber: 7, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    ...(signedIn ? { userId: `u-${id}` } : {}),
+  });
+  const mkRoom = (code: string, listed: boolean, preset: 'casual-1v1' | 'custom' = 'casual-1v1') =>
+    new Room(code, () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset, listed }) });
+
+  const pub = mkRoom('browse-pub', true);
+  check('browse: an empty room has nobody to host it, so no card', pub.listing() === null);
+  pub.add(driver('h', 'red'));
+  const card = pub.listing();
+  check('browse: a Public room with a signed-in host lists, as a lobby', card?.state === 'lobby' && card.joinable === true);
+  check('browse: ...naming the host and the seats', card?.host === 'Name h' && card.seats === 1 && card.capacity === 2);
+  check('browse: ...the preset and the sides', card?.preset === 'casual-1v1' && card.perAlliance.red === 1 && card.perAlliance.blue === 1);
+  check('browse: ...and the host account, for the one-per-account rule', card?.hostUserId === 'u-h' && card.listing === true);
+  check('browse: the card names the host only, never a team or another driver',
+    /Name h/.test(JSON.stringify(card)) && !/Team|Name g/.test(JSON.stringify(card)));
+
+  pub.add(driver('g', 'blue'));
+  check('browse: a full room still lists but cannot be joined', pub.listing()?.seats === 2 && pub.listing()?.joinable === false);
+  pub.onMessage('h', { t: 'start' });
+  pub.advanceForTest(10);
+  check('browse: a running match lists as a match and is not joinable', pub.listing()?.state === 'match' && pub.listing()?.joinable === false);
+
+  const priv = mkRoom('browse-priv', false);
+  priv.add(driver('p', 'red'));
+  check('browse: a Private room never lists', priv.listing() === null);
+
+  const anon = mkRoom('browse-anon', true);
+  anon.add(driver('a', 'red', false));
+  check('browse: a Public room whose host is signed out does not list', anon.listing() === null);
+
+  const legacy = new Room('browse-legacy', () => {}, { kind: 'versus' });
+  legacy.add(driver('l', 'red'));
+  check('browse: a legacy room (no settings) never lists', legacy.listing() === null);
+
+  const rk = mkRoom('browse-ranked', true);
+  rk.add(driver('r', 'red'));
+  (rk as unknown as { ranked: boolean }).ranked = true;
+  check('browse: a ranked room never lists', rk.listing() === null);
+
+  const dc = mkRoom('browse-discord', true);
+  dc.add(driver('d', 'red'));
+  dc.group = 'activity-1';
+  check('browse: a Discord activity room never lists', dc.listing() === null);
+
+  const rec = new Room('browse-rec', () => {}, { kind: 'record', record: 'solo', settings: coerceRoomSettings('record', 'solo', { listed: true }) });
+  rec.add(driver('x', 'blue'));
+  check('browse: a record room never lists, whatever it asked for', rec.listing() === null);
+}
+
+/** BROWSE ROOMS, the endpoint half: what `browseRooms` makes of a heartbeat's worth of cards. */
+{
+  const { browseRooms, BROWSE_MAX } = await import('../server/browse');
+  const card = (room: string, host: string, seats: number, joinable = true) => ({
+    listing: true as const, hostUserId: host, room, game: 'decode' as const, host: `Name ${host}`,
+    state: 'lobby' as const, seats, capacity: 4, perAlliance: { red: 2, blue: 2 }, preset: 'casual-2v2' as const, joinable,
+  });
+  const live = { room: 'ranked-1', game: 'decode', mode: '1v1', ranked: true, players: [], score: { red: 0, blue: 0 }, spectators: 0 };
+  const out = browseRooms([live, card('a', 'u1', 1), card('b', 'u2', 3), card('c', 'u3', 4, false), card('d', 'u4', 2)]);
+  check('browse: a live match on the heartbeat is not a listing', !out.some((r) => r.room === 'ranked-1'));
+  check('browse: joinable rooms first, then the fullest', out.map((r) => r.room).join() === 'b,d,a,c', out.map((r) => r.room).join());
+  check('browse: the host account never reaches a client', out.every((r) => !('hostUserId' in r) && !('listing' in r)));
+  const dup = browseRooms([card('a', 'u1', 1), card('b', 'u1', 2), card('a', 'u2', 3)]);
+  check('browse: ONE listed room per account, and one card per code', dup.length === 1 && dup[0].room === 'a', dup.map((r) => r.room).join());
+  check('browse: a card with no host account is dropped', browseRooms([{ ...card('x', 'u9', 1), hostUserId: '' }]).length === 0);
+  const many = browseRooms(Array.from({ length: BROWSE_MAX + 20 }, (_, i) => card(`r${i}`, `u${i}`, 1)));
+  check('browse: one answer is capped', many.length === BROWSE_MAX);
+  check('browse: junk on the heartbeat is ignored, not thrown on', browseRooms([null, undefined, 3, 'x', {}, { listing: false }]).length === 0);
+}
+
+/** WATCHING A ROOM FROM ITS LOBBY (Browse rooms ▸ Watch, `WatchLobby`): what the server already gives a spectator. */
+{
+  const { coerceRoomSettings } = await import('../src/net/protocol');
+  const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: `Name ${id}`, teamName: 'Team ' + id, teamNumber: 7, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('watch-lobby', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', listed: true }) });
+  const hostSink: ServerMsg[] = [];
+  room.add(mk('h', 'red', hostSink));
+  const seen: ServerMsg[] = [];
+  const watcher = mk('w', 'red', seen);
+  room.addSpectator(watcher);
+  check('watch lobby: a watcher attaches to a room that has not started', room.spectatorCount() === 1);
+  check('watch lobby: ...is welcomed and sent the roster, with the room settings', seen.some((m) => m.t === 'welcome') && seen.some((m) => m.t === 'roster' && m.settings?.perAlliance.red === 1));
+  check('watch lobby: ...but no match start and no snapshot before the host starts', !seen.some((m) => m.t === 'matchStart' || m.t === 'snapshot'));
+  check('watch lobby: ...and holds no seat (the roster is the drivers only, the room is not full)',
+    room.listing()?.seats === 1 && room.listing()?.joinable === true);
+  room.add(mk('g', 'blue', []));
+  check('watch lobby: a driver joining reaches the watcher as a fresh roster', seen.filter((m) => m.t === 'roster').length >= 2 && (seen.filter((m) => m.t === 'roster').pop() as Extract<ServerMsg, { t: 'roster' }>).players.length === 2);
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(10);
+  const ms = seen.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('watch lobby: the host starting sends the watcher a match start with no robot of its own', ms?.yourRobotId === -1);
+  check('watch lobby: ...and then the live snapshot stream', seen.some((m) => m.t === 'snapshot'));
+  room.onMessage('w', { t: 'update', patch: { alliance: 'blue' } });
+  check('watch lobby: a watcher cannot change the room', watcher.player.alliance === 'red' && room.listing()?.seats === 2);
+  const src = readFileSync('src/ui/WatchLobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('watch lobby: the screen closes its socket unless a session took it over', src.includes('if (!handedOver.current) transport.close()'));
+  check('watch lobby: Join is offered only while a seat is free', src.includes('disabled={!open}') && src.includes('seats < capacity'));
+}
+
+/** THE RECORDS FEED (`server/recentRecords.ts`): a run's rank is replayed from the board's history. */
+{
+  const { feedFromRows, FEED_TOP } = await import('../server/recentRecords');
+  const t = (m: number) => new Date(Date.UTC(2026, 9, 1, 0, m)).toISOString();
+  const run = (id: number, userId: string, score: number, m: number) => ({ id, userId, partnerId: null, score, createdAt: t(m), replayId: `r${id}` });
+
+  const first = feedFromRows([run(1, 'a', 100, 0)], null, 10);
+  check('feed: the first run on a board is No.1', first.length === 1 && first[0].rank === 1 && first[0].userId === 'a');
+
+  const overtake = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 150, 5)], null, 10);
+  check('feed: a score that beats the best takes No.1 (newest first)', overtake[0].userId === 'b' && overtake[0].rank === 1);
+  check('feed: ...and the run it overtook still shows the place it took AT THE TIME', overtake[1].userId === 'a' && overtake[1].rank === 1);
+
+  const own = feedFromRows([run(1, 'a', 100, 0), run(2, 'a', 90, 5), run(3, 'a', 100, 9)], null, 10);
+  check('feed: a worse run, or one that only equals their best, is not an entry', own.length === 1);
+  const better = feedFromRows([run(1, 'a', 100, 0), run(2, 'a', 120, 5)], null, 10);
+  check('feed: a player beating their own best is an entry, and is not ranked against themselves', better.length === 2 && better[0].rank === 1);
+
+  const tie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 5)], null, 10);
+  check('feed: a tie goes to whoever set it first (b is No.2)', tie.find((e) => e.userId === 'b')?.rank === 2);
+
+  const crowded = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3)], null, 10);
+  check('feed: only the top three places are entries', FEED_TOP === 3 && crowded.length === 3 && !crowded.some((e) => e.userId === 'd'));
+  const climb = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3), run(5, 'd', 350, 9)], null, 10);
+  check('feed: a player climbing into the top three enters at the place they took (d to No.2)', climb[0].userId === 'd' && climb[0].rank === 2);
+
+  const inWindow = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 200, 30), run(3, 'c', 150, 40)], t(20), 10);
+  check('feed: a window keeps only runs set inside it', inWindow.length === 2 && inWindow.every((e) => e.createdAt >= t(20)));
+  check('feed: ...but ranks them against the whole history, not just the window', inWindow.find((e) => e.userId === 'c')?.rank === 2);
+
+  check('feed: the limit caps the answer, newest kept',
+    feedFromRows([run(1, 'a', 10, 0), run(2, 'b', 20, 1), run(3, 'c', 30, 2)], null, 2).map((e) => e.userId).join() === 'c,b');
+  const shuffled = feedFromRows([run(2, 'b', 150, 5), run(1, 'a', 100, 0)], null, 10);
+  check('feed: input order does not matter', shuffled[0].userId === 'b' && shuffled[1].userId === 'a');
+  check('feed: an empty board is an empty feed', feedFromRows([], null, 10).length === 0);
+}
+
+/** WHO NEVER SEES AN AD, and the in-match ad layout (`src/ads/adFree.ts`, `GameView`, styles.css). */
+{
+  const { isAdFree } = await import('../src/ads/adFree');
+  check('ads: a plain account (or nobody) is shown ads', !isAdFree({}) && !isAdFree(null) && !isAdFree(undefined) && !isAdFree({ supporter: false, contributor: false }));
+  check('ads: a supporter is ad-free', isAdFree({ supporter: true }));
+  check('ads: an owner or admin is ad-free, by role alone', isAdFree({ role: 'owner' }) && isAdFree({ role: 'admin' }));
+  check('ads: a CONTRIBUTOR is ad-free, and is not treated as a supporter', isAdFree({ supporter: false, contributor: true }));
+  check('ads: an unknown role string is not an exemption', !isAdFree({ role: 'moderator' }));
+  const prov = readFileSync('src/ads/AdsProvider.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the provider gates on the exemption, not on supporter alone', prov.includes('adsConfigured() && checked && !adFree') && prov.includes('setAdFree(isAdFree(e))'));
+  const api = readFileSync('server/api.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the server sends the contributor flag beside the supporter one, from the access group', api.includes("includes('contributor')") && api.includes('contributor: false'));
+  const css = readFileSync('src/ui/styles.css', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the vertical columns need a window WIDER than tall (they shrank the field at 1280x900)',
+    css.includes('(min-width: 1280px) and (min-height: 640px) and (min-aspect-ratio: 8/5)'));
+  check('ads: the horizontal banner needs a window TALLER than wide, with its 150px clearance gutter (254px)',
+    css.includes('(max-aspect-ratio: 3/5) and (min-width: 620px)') && css.includes('flex: 0 0 254px'));
+  check('ads: the two orientations are exclusive (8/5 and 3/5 cannot both hold)', 8 / 5 > 1 && 3 / 5 < 1);
+  const gv = readFileSync('src/ui/GameView.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: the field is flanked by `left`/`right` columns and the banner is its own element', gv.includes('game-ad left') && gv.includes('game-ad right') && gv.includes('game-ad-h') && gv.includes("unit=\"gameh\""));
+  const sense = readFileSync('src/ads/adsense.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('ads: only the in-match banner may run on a TABLET; every other unit stays off touch',
+    sense.includes("if (unit === 'gameh') return !isTouch() || tabletWide();") && sense.includes('return !isTouch();'));
+}
+
+/** THE BREADCRUMB TRAIL (`src/ui/crumbs.ts`): what the app bar shows is also where "up" goes. */
+{
+  const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
+  const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
+  const shellScreens = ['modes', 'solosetup', 'rooms', 'watch', 'competitions', 'configure', 'robotimport', 'records', 'profile', 'account',
+    'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
+  check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
+  check('crumbs: every shell screen has a trail', shellScreens.every((s) => crumbsFor(s, null, 'someone').length > 0), shellScreens.filter((s) => crumbsFor(s, null, 'x').length === 0).join());
+  check('crumbs: only the LAST crumb has no target, and every earlier one has one',
+    shellScreens.every((s) => { const t = crumbsFor(s, 'appearance', 'x'); return t.every((c, i) => (i === t.length - 1) === !c.to); }));
+  check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
+  check('crumbs: Play pages go back to Play, and Play goes Home',
+    parentOf(crumbsFor('rooms')).screen === 'modes' && parentOf(crumbsFor('solosetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
+  check('crumbs: every Records page goes back to the hub, with the registry labels',
+    RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
+  check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
+  check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
+  check('crumbs: the account page sits under Profile (Appearance), which is top-level',
+    crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
+  check('crumbs: Import robot goes back to Configure', parentOf(crumbsFor('robotimport')).screen === 'configure');
+  check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
+    shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
+  const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
+  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'solosetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
+}
+
+/** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
+{
+  const { RECORDS_PAGES, RECORDS_HUB, isRecordsPage, recordsViewOf } = await import('../src/ui/recordsPages');
+  const { feedAgo, feedVerb, FEED_WINDOWS } = await import('../src/ui/recordsFeed');
+  const keys = RECORDS_PAGES.map((p) => p.key);
+  check('records: every page key is unique', new Set(keys).size === keys.length);
+  check('records: the hub is not a page key (it is what the pages hang off)', !keys.includes(RECORDS_HUB as never));
+  check('records: leaderboard, career and achievements are pages', ['leaderboard', 'career', 'achievements'].every((k) => isRecordsPage(k)));
+  check('records: there is no Players page, because the hub has the search', !isRecordsPage('players') && recordsViewOf('players') === RECORDS_HUB);
+  const { BADGE_KEYS: BK, BADGE_EARN: BE, BADGE_LABELS: BL } = await import('../src/badges');
+  check('records: Achievements lists every badge with a name and how it is earned', BK.every((k) => !!BL[k] && !!BE[k]));
+  const pagesSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: Achievements has a route', pagesSrc.includes('achievements: AchievementsRoute'));
+  check('records: a bare /records, or anything unknown, is the HUB', recordsViewOf(null) === RECORDS_HUB && recordsViewOf('hub') === RECORDS_HUB && recordsViewOf('nope') === RECORDS_HUB);
+  check('records: a known sub is its own page', recordsViewOf('career') === 'career' && recordsViewOf('leaderboard') === 'leaderboard');
+  const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: a bare /records parses to the hub, not to the leaderboard',
+    app.includes("at('records', { sub: records[1] ?? RECORDS_HUB })"));
+  check('records: the old /leaderboard and /stats links still resolve to their pages',
+    app.includes("startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' })") &&
+      app.includes("startsWith('/stats')) return at('records', { sub: 'career' })"));
+  check('records: a page builds /records/<key> and the hub builds /records',
+    app.includes("isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records'"));
+  const recordsSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: every registry key has a component (Record<RecordsPageKey, ...>)', recordsSrc.includes('Record<RecordsPageKey, ComponentType<PageProps>>'));
+  const now = Date.UTC(2026, 9, 10, 12);
+  check('records feed: ages read like the rest of the app',
+    feedAgo(new Date(now - 30_000).toISOString(), now) === 'just now' && feedAgo(new Date(now - 5 * 60_000).toISOString(), now) === '5m ago' &&
+      feedAgo(new Date(now - 3 * 3600_000).toISOString(), now) === '3h ago' && feedAgo(new Date(now - 4 * 86400_000).toISOString(), now) === '4d ago');
+  check('records feed: the verb names the place and the board',
+    feedVerb({ rank: 1, mode: 'solo', score: 412, partnerHandle: null }) === 'took No.1 in Solo with 412' &&
+      feedVerb({ rank: 2, mode: 'duo', score: 640, partnerHandle: 'x' }) === 'reached No.2 in Duo with 640');
+  check('records feed: the frames are the board vocabulary, season last', FEED_WINDOWS.map((w) => w.key).join() === 'day,week,month,season');
+  const mockSrc = readFileSync('src/ui/recordsFeedMock.ts', 'utf8');
+  check('records feed: the review fixture is gated on a DEV build', mockSrc.includes('import.meta.env.DEV'));
+}
+
 {
   const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,
@@ -25367,7 +25612,7 @@ const dumperSetup = (): RobotSetup => {
   /* ---- the terms gate ------------------------------------------------------ */
   check(
     'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
-    LEGAL_VERSION === '2026-09-25',
+    LEGAL_VERSION === '2026-10-10',
     LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
   );
   check(
@@ -25378,6 +25623,11 @@ const dumperSetup = (): RobotSetup => {
   check(
     'terms gate: an unparseable date still yields a stable key rather than throwing',
     legalVersionOf('sometime soon') === 'sometime-soon',
+  );
+  check(
+    'privacy: the policy says a Public room is listed, who can list one, and what is published',
+    /Browse rooms/.test(PRIVACY_MD) && /Public/.test(PRIVACY_MD) && /signed in/.test(PRIVACY_MD) && /room\s+code/.test(PRIVACY_MD),
+    'a listing is a publication of a name; the policy has to be able to be read against it',
   );
   check("terms gate: the current version accepted is 'ok'", termsGateState(LEGAL_VERSION) === 'ok');
   check("terms gate: never accepted is 'never'", termsGateState(null) === 'never');
@@ -29814,18 +30064,19 @@ const dumperSetup = (): RobotSetup => {
  */
 {
   const rail = readFileSync('src/ui/NavRail.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const homeSrc = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
   const account = readFileSync('src/ui/Account.tsx', 'utf8').replace(/\r\n/g, '\n');
   const friendsSrc = readFileSync('src/ui/FriendsPanel.tsx', 'utf8').replace(/\r\n/g, '\n');
 
   check(
-    '⚠️ discord activity: the rail drops its Profile destination in the embed',
+    '⚠️ discord activity: the nav list drops its Profile destination in the embed',
     /return inActivity \? RAIL_ITEMS\.filter\(\(it\) => it\.id !== 'profile'\) : RAIL_ITEMS;/.test(rail) &&
-      /\{railItems\(inDiscordActivity\(\)\)\.map\(/.test(rail),
+      /railItems\(inDiscordActivity\(\)\)/.test(homeSrc),
     'both halves of Profile are an account, and the embed can never have one',
   );
   check(
     'discord activity: ...asked host-based, so a storage-blocked reload cannot bring it back',
-    /import \{ inDiscordActivity \} from '\.\.\/net\/discordActivity';/.test(rail),
+    /import \{[^}]*\binDiscordActivity\b[^}]*\} from '\.\.\/net\/discordActivity';/.test(homeSrc),
     '`discordGroup()` is empty there; the hostname is not',
   );
 
@@ -29938,9 +30189,10 @@ const dumperSetup = (): RobotSetup => {
   const appear = readFileSync('src/ui/Appearance.tsx', 'utf8').replace(/\r\n/g, '\n');
 
   check(
-    '⚠️ embed: the HOME keycaps use the same filter as the rail, so the two cannot drift',
-    /railItems\(inDiscordActivity\(\)\)\.map\(/.test(home) && !/\bRAIL_ITEMS\.map\(/.test(home),
-    'the rail hid Profile and the home menu kept it, which is the screen you actually land on',
+    '⚠️ embed: the HOME keycaps read the host-filtered list, and Profile is not one of them (it is the top-right menu)',
+    /railItems\(inDiscordActivity\(\)\)\s*\.filter\(\(it\) => it\.id !== 'profile'\)\s*\.map\(/.test(home) &&
+      !/\bRAIL_ITEMS\.map\(/.test(home),
+    'the home menu is the screen a participant lands on, so it must never offer Profile',
   );
   const noUser = appear.slice(appear.indexOf('if (!user) {'), appear.indexOf('if (!user) {') + 1600);
   check('appearance: the signed-out branch is still found (anchors the checks below)', noUser.length > 100);

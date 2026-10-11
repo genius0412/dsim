@@ -73,9 +73,14 @@ import {
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
+import { SoloSetup } from './SoloSetup';
+import { RoomBrowser } from './RoomBrowser';
+import { WatchLobby } from './WatchLobby';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
-import { Records, isRecordsTab, type RecordsTab } from './Records';
+import { Records } from './Records';
+import { RECORDS_HUB, isRecordsPage, recordsViewOf, type RecordsView } from './recordsPages';
+import { crumbsFor } from './crumbs';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
@@ -137,12 +142,19 @@ import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 type Screen =
   | 'home'
   | 'modes'
+  /** `/solo-setup`: alliance, start, autos, physics and the other robots, then Start. It was
+   *  Configure's Match section, so `/configure/match` lands here. */
+  | 'solosetup'
   | 'configure'
   /** `/configure/robot/import` and `/configure/robot/import/<id>`: the robot import editor. A screen
    *  of its own, not a Configure section, so its preview has the page's whole width. */
   | 'robotimport'
   | 'records'
   | 'lobby'
+  /** `/rooms`: Browse rooms, the Public rooms hosted right now */
+  | 'rooms'
+  /** a Public room being watched from its lobby (no URL: it is a live socket, like `game`) */
+  | 'watchlobby'
   | 'discordlobbies'
   | 'record'
   | 'duorecord'
@@ -235,16 +247,22 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '';
     case 'modes':
       return '/modes';
+    case 'solosetup':
+      return '/solo-setup';
     case 'configure':
       return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
     case 'robotimport':
       return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
-      return a.sub === 'career' ? '/records/career' : '/records';
+      return isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records';
     case 'profile':
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
+    case 'rooms':
+      return '/rooms';
+    case 'watchlobby':
+      return '/rooms';
     case 'discordlobbies':
       return '/discord-lobbies';
     case 'record':
@@ -315,6 +333,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
   if (comps) return at('competitions', { sub: comps[1] ?? null });
 
+  // the old Match section of Configure, BEFORE the configure match below
+  if (/^\/configure\/match\/?$/.test(rest)) return at('solosetup');
   // BEFORE the configure match, which would read `/configure/robot/import` as the robot section.
   // Where the importer is closed (`importerEnabled`) it is not matched at all and the path falls
   // through to that robot section, the page the importer would return to.
@@ -323,7 +343,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
-  if (records) return at('records', { sub: records[1] ?? 'leaderboard' });
+  // a bare `/records` is the HUB; `/records/<page>` is one page of it (`recordsPages.ts`)
+  if (records) return at('records', { sub: records[1] ?? RECORDS_HUB });
 
   // legacy paths kept alive so old links (and anything a player bookmarked
   // before the nav restructure) still resolve to their new home
@@ -332,7 +353,9 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/stats')) return at('records', { sub: 'career' });
 
   if (rest.startsWith('/modes')) return at('modes');
+  if (rest.startsWith('/solo-setup')) return at('solosetup');
   if (rest.startsWith('/lobby')) return at('lobby');
+  if (rest.startsWith('/rooms')) return at('rooms');
   /* ⚠️ THE DISCORD LOBBY BROWSER NEEDS A CASE HERE OR IT IS A WRITE-ONLY ROUTE. `screenSuffix`
      pushes `/discord-lobbies` and the canonicalise effect puts it in the address bar, but with
      no arm here the path fell through to `at('home')` — so a RELOAD while browsing lobbies
@@ -415,37 +438,6 @@ function devRouteFor(game: GameId, rest: string): ComponentType | null {
     }
   }
   return null;
-}
-
-/** which rail/menu entry lights up for a given screen */
-function navFor(screen: Screen): ShellNav {
-  switch (screen) {
-    case 'modes':
-    case 'game':
-    case 'lobby':
-    case 'discordlobbies':
-    case 'record':
-    case 'duorecord':
-    case 'matchmaking':
-    case 'watch':
-    case 'lan':
-    case 'competitions':
-    case 'compmatch':
-      return 'play';
-    case 'configure':
-    case 'robotimport':
-      return 'configure';
-    case 'records':
-      return 'records';
-    case 'account':
-    case 'accountreset':
-    case 'accountverify':
-      return 'profile';
-    case 'admin':
-      return 'admin';
-    default:
-      return 'home';
-  }
 }
 
 /** the landing route for each top-level destination */
@@ -759,6 +751,16 @@ export function App() {
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
   // (see `onAutoJoinConsumed`), so a later NORMAL visit to the same screen never
   // re-triggers the join.
+  /** the Public/Private choice for the room about to be created: the dialog is open (`asking`), and
+   *  the answer (`listed`) the Lobby reads when it creates the room. Reset when the Lobby is left. */
+  const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
+  /** the Public room being watched from its lobby (`WatchLobby`), or null */
+  const [watchedRoom, setWatchedRoom] = useState<{ room: string; game: GameId; region?: string } | null>(null);
+  // a history step onto the watch screen with nothing to watch (a reload, a forward button) lands on the list
+  useEffect(() => {
+    if (screen === 'watchlobby' && !watchedRoom) navigate('rooms');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, watchedRoom]);
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
@@ -2104,11 +2106,13 @@ export function App() {
         onStart={(s) => {
           setResumedRoom(null);
           setPendingLanName(null);
+          setRoomChoice({ asking: false, listed: false });
           beginSession(s, 'custom');
         }}
         onCancel={() => {
           setResumedRoom(null);
           setPendingLanName(null);
+          setRoomChoice({ asking: false, listed: false });
           /**
            * BACK GOES WHERE YOU CAME FROM, and in an activity that is the lobby browser.
            *
@@ -2121,6 +2125,7 @@ export function App() {
         }}
         config={auto?.config}
         signedIn={signedIn}
+        listed={roomChoice.listed}
         displayName={handle}
         myUserId={accountUserId}
         onOpenProfile={openProfile}
@@ -2142,6 +2147,37 @@ export function App() {
   // `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN match is —
   // a code-joined room, on a different server. Nothing about the room flow changes;
   // only `gameServerUrl()` now answers with the host's machine.
+  if (screen === 'watchlobby' && watchedRoom) {
+    const w = watchedRoom;
+    return fullScreen(
+      <WatchLobby
+        code={w.room}
+        region={w.region}
+        game={w.game}
+        onBack={() => {
+          setWatchedRoom(null);
+          navigate('rooms');
+        }}
+        onJoin={() => {
+          // a seat is free: leave the spectator socket (WatchLobby closes it) and join as a driver
+          setWatchedRoom(null);
+          guardStart(() => {
+            selectGame(w.game);
+            setPendingAutoJoin({ room: w.room, config: { kind: 'versus', game: w.game }, region: w.region });
+            navigate('lobby');
+          });
+        }}
+        onMatch={(transport, lobby, m) => {
+          // the host started: the spectator session TAKES OVER this socket, exactly as `spectateRoom`'s does
+          const s = new ServerSession(transport, false, m, lobby.clientId, w.room, true);
+          setWatchedRoom(null);
+          setSession(s);
+          setSessionKind(null); // spectating: no run of our own to restart
+          navigate('game');
+        }}
+      />,
+    );
+  }
   // Belt and braces on the `lanOn` guard: the Play tile is hidden and `/lan` no longer
   // parses where the flag is off, so nothing should reach this — but `navigate('lan')`
   // is still a callable function, and a screen that renders a whole feature is worth
@@ -2227,6 +2263,7 @@ export function App() {
         <Matchmaking
           settings={shown}
           signedIn={signedIn}
+          myUserId={accountUserId}
           onStart={(s) => beginSession(s, 'ranked')}
           onCancel={() => navigate('modes')}
           onSignIn={() => navigate('account')}
@@ -2305,7 +2342,9 @@ export function App() {
   );
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
-  const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  const recordsView: RecordsView = recordsViewOf(route.sub);
+  /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
+  const crumbs = crumbsFor(screen, route.sub, route.username);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
 
@@ -2333,11 +2372,13 @@ export function App() {
         />
       )}
       <AppShell
-        active={navFor(screen)}
         onNav={goNav}
         right={right}
         showAdmin={isAdmin}
-        showRail={screen !== 'home'}
+        home={screen === 'home'}
+        wide={screen === 'solosetup'}
+        crumbs={crumbs}
+        onCrumb={(to) => navigate(to.screen as Screen, { sub: to.sub ?? null })}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
@@ -2401,6 +2442,82 @@ export function App() {
         />
       )}
 
+      {screen === 'rooms' && (
+        <RoomBrowser
+          onHost={() => setRoomChoice({ asking: true, listed: false })}
+          onWatch={(room, game, region) => {
+            // the room's own season, as an accepted invite does: a watcher steps that room's world
+            selectGame(game);
+            setWatchedRoom({ room, game, region });
+            navigate('watchlobby');
+          }}
+          onJoin={(room, game, region) =>
+            guardStart(() => {
+              // the same hand-off an accepted invite makes: the INVITE names the game, and joining
+              // from the other one would leave the app configured for a game the room isn't playing
+              selectGame(game);
+              setPendingAutoJoin({ room, config: { kind: 'versus', game }, region });
+              navigate('lobby');
+            })
+          }
+        />
+      )}
+
+      {/* PUBLIC OR PRIVATE, asked before the lobby opens. Public needs an account: the server lists a
+          room only while its host is signed in (`Room.listing`), so offering it signed out would
+          promise a listing that never appears. Escape and the dismiss button both just close. */}
+      {roomChoice.asking && (
+        <OverlayDialog title="New room" onClose={() => setRoomChoice({ asking: false, listed: false })}>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button
+              className="secondary"
+              onClick={() => guardStart(() => {
+                setRoomChoice({ asking: false, listed: false });
+                navigate('lobby');
+              })}
+            >
+              Private room
+            </button>
+            <button
+              disabled={!signedIn}
+              onClick={() => guardStart(() => {
+                setRoomChoice({ asking: false, listed: true });
+                navigate('lobby');
+              })}
+            >
+              Public room
+            </button>
+          </div>
+          <p className="ds-sub overlay-sub">
+            {signedIn
+              ? 'A private room is for you and friends, by code. A public room shows in Browse rooms.'
+              : 'Sign in to host a public room. A private room is for you and friends, by code.'}
+          </p>
+        </OverlayDialog>
+      )}
+
+      {screen === 'solosetup' && (
+        <>
+          <h1 className="ds-h1">Solo practice</h1>
+          <SoloSetup
+            settings={shown}
+            onChange={update}
+            onStart={() =>
+              guardStart(() => {
+                update({ ...settings, mode: 'match' });
+                navigate('game');
+              })
+            }
+            onFreeDrive={() =>
+              guardStart(() => {
+                update({ ...settings, mode: 'free' });
+                navigate('game');
+              })
+            }
+          />
+        </>
+      )}
+
       {screen === 'modes' && (
         <ModeSelect
           game={settings.game}
@@ -2419,16 +2536,12 @@ export function App() {
               navigate('game');
             })
           }
-          onSoloMatch={() =>
-            guardStart(() => {
-              update({ ...settings, mode: 'match' });
-              navigate('game');
-            })
-          }
+          onSoloMatch={() => navigate('solosetup')}
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
-          onCustomRoom={() => guardStart(() => navigate('lobby'))}
+          onCustomRoom={() => setRoomChoice({ asking: true, listed: false })}
+          onBrowse={() => navigate('rooms')}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
           onCompetitions={() => navigate('competitions')}
@@ -2519,7 +2632,7 @@ export function App() {
               autoFocus
               onClick={() => {
                 setBadStart(false);
-                navigate('configure', { sub: 'match' });
+                navigate('solosetup');
               }}
             >
               Fix start position
@@ -2591,8 +2704,8 @@ export function App() {
 
       {screen === 'records' && (
         <Records
-          tab={recordsTab}
-          onTab={(t) => navigate('records', { sub: t })}
+          view={recordsView}
+          onView={(v) => navigate('records', { sub: v })}
           myUserId={accountUserId}
           game={settings.game}
           onWatch={watchReplay}

@@ -36,6 +36,7 @@ export const SPONSOR_PLACEMENTS = [
   'splash',
   'replay',
   'loading',
+  'strip',
 ] as const;
 export type SponsorPlacement = (typeof SPONSOR_PLACEMENTS)[number];
 
