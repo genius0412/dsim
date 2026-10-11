@@ -581,7 +581,8 @@ export interface GraphicsState {
  * card, a dock that switches to the discrete chip) is ignored, so that GPU gets its own trial.
  * One slot, not a map: the last trial wins. `periodMs` is the display's median frame period the
  * trial measured on Ultra, which the late-frame guard needs when a later match starts straight on
- * Extreme. "Reset to Auto" clears it.
+ * Extreme. `mp` is the megapixels the Extreme column drew: a verdict answers only for a canvas of
+ * about that size (`TRIAL_SIZE_SLACK` in `graphics/auto.ts`). "Reset to Auto" clears it.
  *
  * A build from before 2026-10-10 reads `{preset, tier, settings}` and ignores this field; one that
  * writes the blob drops it, which costs that device one more trial and nothing else.
@@ -590,6 +591,7 @@ export interface ExtremeTrial {
   gpu: string;
   pass: boolean;
   periodMs?: number;
+  mp?: number;
 }
 
 /** the longest renderer string kept. Real ones are under 150 characters; this only stops a corrupt
@@ -600,11 +602,13 @@ const TRIAL_GPU_MAX = 256;
  * "not trialled", which is always a safe reading). */
 export function coerceExtremeTrial(raw: unknown): ExtremeTrial | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
-  const o = raw as { gpu?: unknown; pass?: unknown; periodMs?: unknown };
+  const o = raw as { gpu?: unknown; pass?: unknown; periodMs?: unknown; mp?: unknown };
   if (typeof o.gpu !== 'string' || o.gpu.length > TRIAL_GPU_MAX || typeof o.pass !== 'boolean') return undefined;
   const out: ExtremeTrial = { gpu: o.gpu, pass: o.pass };
   // a frame period between 500 Hz and 10 Hz; anything else is junk and the guard uses its floor
   if (typeof o.periodMs === 'number' && Number.isFinite(o.periodMs) && o.periodMs >= 2 && o.periodMs <= 100) out.periodMs = o.periodMs;
+  // a canvas size up to 40 MP (8.3 is Extreme's own budget); junk leaves the verdict size-free
+  if (typeof o.mp === 'number' && Number.isFinite(o.mp) && o.mp > 0 && o.mp <= 40) out.mp = o.mp;
   return out;
 }
 

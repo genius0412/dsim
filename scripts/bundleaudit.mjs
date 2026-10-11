@@ -592,6 +592,8 @@ const BASELINE = {
   // hour (+0.60: the GPU timer in `renderGpuTimer.ts`, the readiness check, the context-loss
   // verdict), still under the tolerance, so the number is NOT moved. The base itself was already
   // 2.81 over 231.54.
+  // The review fixes on the same branch (the trial's bounded end, the size-keyed verdict, the lazy
+  // GPU timer) measured 235.13 (+0.18), still under it, not moved.
   scene: { gzip: 231.54 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
@@ -613,6 +615,9 @@ const BASELINE = {
   // code every 3D player loads anyway; destructuring the Reset-to-Auto import does not shrink it
   // (tried: 8.33). The section's Auto hint is +0.03. `settings-*.js` (2.34 -> 2.58) routes to
   // `other` on both builds.
+  // The review fixes on the same branch measured 8.80 (+0.50: `auto-*.js` 3.29 -> 3.76 for the
+  // bounded trial, the size-keyed verdict and the 75/144/165 Hz late line; the hint +0.03), inside
+  // the tolerance, so the number is NOT moved.
   graphics: { gzip: 8.3 * 1000 },
   // 2026-09-27: NEW. `renderPost-*.js`, the post-processing chunk: three's GTAO pass (with its
   // shaders and the simplex noise it seeds from) and UnrealBloom, plus `renderPost.ts`'s own

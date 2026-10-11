@@ -757,11 +757,13 @@ export function GraphicsSection() {
           />
           {/* the ONE thing the preset row cannot say for itself: Auto measures rather than
               guesses, and it keeps measuring. Since 2026-10-10 it can reach Extreme, but only
-              through a timed trial on this GPU (`graphics/auto.ts`), and the copy says so. */}
+              through a timed trial on this GPU (`graphics/auto.ts`), and a failed one is stored
+              until Reset to Auto, which is the only way back, so the copy says both. */}
           <p className="ds-hint">
             Auto measures two seconds of real frames, and lowers itself a step if a match keeps
             dropping under 40 fps. It moves to Extreme only after timing three seconds of it on
-            this GPU, and drops back to Ultra if Extreme falls behind.
+            this GPU. If Extreme falls behind, Auto goes back to Ultra and stays there on this GPU
+            until you press Reset to Auto.
           </p>
         </div>
       </section>

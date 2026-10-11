@@ -263,6 +263,10 @@ export const SLIP_WINDOW_MS = 3000;
  *
  * 500 ms is well past any frame a human would sit through (that is 2 fps) and well inside the
  * one-second tick a throttled background tab gets.
+ *
+ * ONE EXCEPTION (2026-10-10): where Extreme itself is being judged (the trial's window, the guard
+ * on an Auto Extreme) a gap on a page that was never hidden IS a slow frame, and is recorded as one.
+ * The scene counts hides (`GovernorOptions.hides`), so a background tab is still thrown away there.
  */
 export const STALL_MS = 500;
 
@@ -309,8 +313,23 @@ export const TRIAL_MS = 3000;
  * programs (GTAO, the physical twins) and allocate the bigger targets and the 4096 shadow map. */
 export const TRIAL_SETTLE_MS = 500;
 /** a trial whose chunks have not arrived by then is abandoned: back to Ultra, nothing stored,
- * because nothing was measured. */
+ * because nothing was measured. Wall clock from the switch, checked on EVERY frame, a stalled one
+ * included (a frame over `STALL_MS` used to skip the check, and a never-ready trial drawn at 2 fps
+ * sat on Extreme for the scene's whole life). A chunk that FAILED ends the trial the same way. */
 export const TRIAL_READY_TIMEOUT_MS = 15000;
+/**
+ * PASS needs the mean frame rate of the window's ON-TIME frames at or above this: the throughput
+ * half of the verdict, beside the late count's stutter half. It exists for a panel whose vsync
+ * grid leaves a gap below 60 fps. On 75 Hz the step after 75 fps is 37.5 fps, which
+ * `lateThreshold` has to count as on time (a GPU that holds 60 fps there draws a mix of one- and
+ * two-vsync frames), so only the rate tells 60 fps from 37.5 there; on 144 Hz three vsyncs are
+ * 48 fps, on 90 Hz two are 45. On 60 and 120 Hz it never decides: the late count already does.
+ *
+ * ON-TIME frames only, so that one main-thread hitch in the window (a 600 ms asset upload) is the
+ * one late frame it is and not a 48 fps mean. A slow Extreme does not hide behind that: its frames
+ * are late, and the late count fails it.
+ */
+export const TRIAL_MIN_FPS = 50;
 /** PASS needs the GPU p95 at or under this, where the GPU is timed: 16.7 ms less ~2.7 ms for the
  * compositor and for whatever the match adds after the trial (four robots, 56 elements). */
 export const TRIAL_GPU_MS = 14;
@@ -327,41 +346,55 @@ export const TRIAL_LATE_MAX = 0.05;
  * MEASURED on one GPU (RTX 4070 Ti SUPER via ANGLE D3D11, 1922 × 1081 CSS at DPR 1, offscreen,
  * two cameras): Ultra 0.50 to 0.61 ms p50 and 1.59 to 1.88 ms p95, Extreme 2.41 to 2.63 ms p50
  * and 2.59 to 2.85 ms p95. That is 4.3 to 4.8× on the median but only 1.4 to 1.8× on the p95,
- * because Ultra's own p95 sits about three times its median there. The gate reads a p95, so 3
- * errs on the side of trialling: a needless trial costs three seconds once per GPU, a gate that
- * is too strict means a GPU that could hold Extreme never gets it.
+ * because on that fast part Ultra's p95 is set by a few fixed-cost frames, about three times its
+ * median. So 3 is STRICT against the p95 ratio this part showed and LENIENT against the fill
+ * ratio. It matters only near the line, on a part slow enough for fill to dominate both columns,
+ * where the p95 ratio tends toward the median one: there 3 errs toward trialling, which costs
+ * three seconds once per GPU. The fast part measured clears the gate 2.5× over (1.88 ms against
+ * 4.67).
  */
 export const EXTREME_COST_FACTOR = 3;
 /** ENTRY: Ultra's GPU p95, where timed, at or under the PASS budget divided by the factor. */
 export const TRIAL_ENTRY_GPU_MS = TRIAL_GPU_MS / EXTREME_COST_FACTOR;
-/** a frame is LATE past `LATE_FACTOR` × the baseline period, and never under `LATE_FLOOR_MS`. */
-export const LATE_FACTOR = 1.5;
-/**
- * The floor under the late threshold, and the entry gate's ceiling on Ultra's own period.
- * 18 ms is a little under 56 fps: on a 60 Hz panel 1.5 × 16.7 = 25 ms (a missed vsync) decides,
- * and on a 144 Hz one the floor does, so "late" there means "under ~56 fps", not "missed one of
- * 144 refreshes". An Ultra that does not hold this itself is not trialled.
- */
-export const LATE_FLOOR_MS = 18;
-/** the period assumed when nothing measured one (a hand-picked Extreme): 60 Hz, so a late frame
- * is a frame under 40 fps, the slip rule's own line. */
+/** ENTRY: Ultra's own median frame period at or under this (55.6 Hz). An Ultra that does not hold
+ * ~56 fps itself, or a session capped at 30 fps (a battery saver), is not trialled. */
+export const ENTRY_PERIOD_MS = 18;
+/** the frame a late one is measured against: 60 fps. */
+export const LATE_TARGET_MS = 1000 / 60;
+/** a measured period within this fraction of a vsync of a whole number of vsyncs per 60 fps frame
+ * counts as that number. A 60 Hz panel measures 16.6 to 16.8 ms, and 16.67 / 16.6 is 1.004: without
+ * the slack, `ceil` would call that two vsyncs and move the late line to 41 ms. */
+const VSYNC_SLACK = 0.05;
+/** the period assumed when nothing measured one: 60 Hz, so a late frame is a frame under 40 fps,
+ * the slip rule's own line. */
 export const DEFAULT_PERIOD_MS = 1000 / 60;
 /**
  * ⚠️ THE GUARD ALSO READS THE PACE THIS SESSION IS ACTUALLY DRAWN AT: the 5th-percentile period of
  * the rolling window, when that is slower than the stored one. FOUND IN THE CAPTURE HARNESS, which
- * paints at 30 fps: every frame was "late" against 60 Hz and a hand-picked Extreme was lowered in
- * three seconds. A browser does the same on purpose (Chrome's energy saver and Safari's low power
+ * paints at 30 fps: every frame was "late" against 60 Hz and Extreme was lowered in three
+ * seconds. A browser does the same on purpose (Chrome's energy saver and Safari's low power
  * mode cap rAF at 30), and a stored PASS must not turn into a FAIL because a laptop went on
  * battery. The cost: a GPU-bound Extreme that holds a STEADY 30 fps looks exactly like a 30 fps
  * cap and is not caught by the late count. Where the GPU is timed, its p95 still catches it.
  */
 export const PACE_FLOOR_Q = 0.05;
+/** the slowest pace the guard takes for a cap: 25 fps. The caps it exists for are 30 fps; a pace
+ * slower than this is Extreme itself, and without the cap an Extreme drawn at 2 fps set its own
+ * late line at 3 s a frame and was never lowered. */
+export const PACE_FLOOR_MAX_MS = 40;
 /** fewer GPU results than this in a window and the window counts as untimed. */
 export const MIN_GPU_SAMPLES = 20;
 /**
- * THE EXTREME GUARD. It judges each quarter second between two checks (a BUCKET): bad with GPU
- * p95 over `GUARD_GPU_MS`, or more than `GUARD_LATE_MAX` of its frames late. Bad buckets back to
- * back for `GUARD_WINDOW_MS`, counted from the START of the first, lower Extreme to Ultra once.
+ * THE EXTREME GUARD, on an AUTO Extreme only. It judges each quarter second between two checks (a
+ * BUCKET): bad with GPU p95 over `GUARD_GPU_MS`, or more than `GUARD_LATE_MAX` of its frames late.
+ * Bad buckets back to back for `GUARD_WINDOW_MS`, counted from the START of the first, lower
+ * Extreme to Ultra once and store a FAIL.
+ *
+ * ⚠️ NOT ON A HAND-PICKED EXTREME. It was, briefly, and lowered one drawing 45 fps (a 22 ms GPU
+ * p95) and wrote a named Ultra over the player's pick. A hand pick keeps what it always had: the
+ * 25 ms CPU slip and nothing else (review, 2026-10-10; whether a hand pick should be guarded is
+ * the owner's call, and the answer in force is the one the setting had before Auto could reach
+ * Extreme).
  *
  * Quarter seconds and not a rolling window, because a rolling window keeps a one-second hiccup
  * in it for as long as the window is long, and "sustained" would then mean "recent". With a
@@ -375,20 +408,61 @@ export const GUARD_WINDOW_MS = 3000;
  * 32 fps; under that, the late count is already damning). */
 const GUARD_MIN_GPU = 8;
 
-/** the period past which a frame counts as late, for a display whose own period is `periodMs`. */
+/**
+ * The period past which a frame counts as LATE, for a display whose own period is `periodMs`:
+ * HALF A VSYNC PAST the vsyncs a 60 fps frame needs on that display. `k` is how many vsyncs a
+ * 60 fps frame takes there (1 on 60 Hz, 2 on 120 Hz, 3 on 144 and 165 Hz, 4 on 240 Hz), and a frame
+ * that took `k + 1` or more is late. 25 ms on 60 Hz (a missed vsync), 20.8 on 120, 24.3 on 144,
+ * 21.2 on 165, 18.75 on 240.
+ *
+ * ⚠️ IT USED TO BE max(1.5 × the period, 18 ms), and the 18 ms floor made high-refresh panels the
+ * strictest. rAF periods snap to whole vsyncs, and on 165 Hz three of them are 18.2 ms: a frame
+ * that missed its SECOND vsync (55 fps) was late, so a PASS needed about 82 fps there against 60
+ * on a 60 Hz panel, for the same GPU work (review, 2026-10-10: 11.5 ms of GPU failed on 165 Hz
+ * with 12 % late and passed on 60 Hz with none). The line sits between two vsync multiples so
+ * that period jitter cannot move a frame across it, and a GPU that holds 60 fps draws no late
+ * frames on any panel.
+ */
 export function lateThreshold(periodMs: number): number {
-  return Math.max(LATE_FACTOR * periodMs, LATE_FLOOR_MS);
+  const p = Math.max(1, periodMs);
+  const k = Math.max(1, Math.ceil(LATE_TARGET_MS / p - VSYNC_SLACK));
+  return (k + 0.5) * p;
+}
+
+/**
+ * A VERDICT IS FOR A SIZE. The trial times whatever canvas exists at the time, and Extreme's
+ * cost is its pixels: a PASS measured in a 1080p window (about 4.7 MP at 150 %) says little about
+ * a 1440p or 4K one, which the 8.3 MP budget lets reach 1.8× that. So the verdict stores the
+ * megapixels the Extreme column drew (`ExtremeTrial.mp`), a PASS covers a canvas up to this many
+ * times bigger, and a FAIL one down to this many times smaller. Outside that, Auto measures again.
+ * 1.3 lets a window move between maximised and full screen without a new trial.
+ */
+export const TRIAL_SIZE_SLACK = 1.3;
+
+/** does stored verdict `v` answer for a canvas whose Extreme column draws `mp` megapixels? One
+ * stored without a size, or with no size to compare against, stands as it is. */
+export function verdictStands(v: ExtremeTrial, mp: number | undefined): boolean {
+  if (mp === undefined || v.mp === undefined) return true;
+  return v.pass ? mp <= v.mp * TRIAL_SIZE_SLACK : mp >= v.mp / TRIAL_SIZE_SLACK;
+}
+
+/** an `ExtremeTrial`, with the optional fields only where they were measured. */
+function makeVerdict(gpu: string, pass: boolean, periodMs: number | undefined, mp: number | undefined): ExtremeTrial {
+  const v: ExtremeTrial = { gpu, pass };
+  if (periodMs !== undefined) v.periodMs = periodMs;
+  if (mp !== undefined) v.mp = Math.round(mp * 100) / 100;
+  return v;
 }
 
 /**
  * THE VERDICT A LOST CONTEXT LEAVES: an Auto device that lost its WebGL context ON Extreme has
- * failed Extreme as plainly as a trial can, so the next match does not try it again. `undefined`
- * keeps whatever is stored (`setGraphicsTier`'s third argument).
+ * failed Extreme as plainly as a trial can, so the next match does not try it again. `mp` is the
+ * size the Extreme column was drawing at. `undefined` keeps whatever is stored
+ * (`setGraphicsTier`'s third argument).
  */
-export function contextLossTrial(g: GraphicsState, gpu: string): ExtremeTrial | undefined {
+export function contextLossTrial(g: GraphicsState, gpu: string, mp?: number): ExtremeTrial | undefined {
   if (g.preset !== 'auto' || g.tier !== GFX_AUTO_MAX_TIER) return undefined;
-  const periodMs = extremeTrialFor(g, gpu)?.periodMs;
-  return periodMs === undefined ? { gpu, pass: false } : { gpu, pass: false, periodMs };
+  return makeVerdict(gpu, false, extremeTrialFor(g, gpu)?.periodMs, mp !== undefined && mp > 0 ? mp : undefined);
 }
 
 /**
@@ -412,6 +486,10 @@ export interface QualityGovernor {
   readonly p95Ms: number;
   /** where the governor is, for the smoke lane and a debugging session. */
   readonly phase: GovernorPhase;
+  /** does anything here read GPU time right now? Only the Ultra baseline, the trial and the guard
+   * on an Auto Extreme do; the scene times the GPU only while this is true. Read once per frame,
+   * allocates nothing. */
+  readonly wantsGpu: boolean;
   dispose(): void;
 }
 
@@ -422,12 +500,27 @@ export interface QualityGovernor {
  */
 export type GovernorPhase = 'warmup' | 'baseline' | 'trial-load' | 'trial-settle' | 'trial' | 'watch';
 
+/** is the scene drawing everything its settings ask for? `loading`: a chunk is in flight or the
+ * room probe is not captured yet. `failed`: a chunk would not load or threw, which is final for
+ * the scene's life, and the picture on screen is a cheaper one than the column it is labelled. */
+export type EffectsState = 'loading' | 'ready' | 'failed';
+
 export interface GovernorOptions {
   /** the WebGL renderer string the Extreme verdict is keyed by (`GpuProbe.renderer`). */
   gpu?: string;
-  /** is the scene drawing everything its settings ask for? (`renderScene.ts`: the post and
-   * surfaces chunks loaded or failed, the room probe captured). Absent means always. */
-  ready?: () => boolean;
+  /** the scene's `EffectsState` (`renderScene.ts`). Absent means always ready. */
+  effects?: () => EffectsState;
+  /**
+   * How many times the page has been HIDDEN (a count the scene keeps from `visibilitychange`).
+   * A gap past `STALL_MS` across a change is a tab that was not being drawn; one with no change
+   * while Extreme is judged (the trial window, the guard on an Auto Extreme) is Extreme being slow,
+   * and counts. Absent means never hidden.
+   */
+  hides?: () => number;
+  /** the megapixels the EXTREME column draws at the canvas's current size (`TRIAL_SIZE_SLACK`).
+   * Read only when a verdict is written or weighed. Absent means unknown: verdicts stand as
+   * stored. */
+  pixels?: () => number;
 }
 
 /**
@@ -458,7 +551,14 @@ export function createQualityGovernor(
   opts: GovernorOptions = {},
 ): QualityGovernor {
   const gpu = opts.gpu ?? '';
-  const ready = opts.ready ?? (() => true);
+  const effects = opts.effects ?? ((): EffectsState => 'ready');
+  const hides = opts.hides ?? ((): number => 0);
+  /** the Extreme column's megapixels now, or undefined where the scene cannot say (a canvas not
+   * laid out yet reads about a pixel, which is no size to store a verdict for). */
+  const mpNow = (): number | undefined => {
+    const v = opts.pixels?.();
+    return v !== undefined && Number.isFinite(v) && v >= 0.01 ? v : undefined;
+  };
   const CAP = 256;
   /** CPU ms and frame period ms, written together at `head`. */
   const buf = new Float32Array(CAP);
@@ -480,6 +580,8 @@ export function createQualityGovernor(
   let lastSampleAt = started;
   /** when the previous frame BEGAN, for its period. */
   let lastBegin = started;
+  /** the page-hide count at the previous sample (`GovernorOptions.hides`). */
+  let lastHides = hides();
   /** the frame period past which a frame counts as late, for the window or bucket being filled. */
   let lateMs = lateThreshold(DEFAULT_PERIOD_MS);
 
@@ -488,6 +590,8 @@ export function createQualityGovernor(
   let winN = 0;
   let winGpu = 0;
   let winLate = 0;
+  /** the on-time frames' summed period, for the trial's pace (`TRIAL_MIN_FPS`) */
+  let winOnTimeMs = 0;
   /** Ultra's median period from the baseline, once one has run. */
   let measuredPeriod: number | undefined;
   let trialStart = 0;
@@ -518,6 +622,7 @@ export function createQualityGovernor(
     winN = 0;
     winGpu = 0;
     winLate = 0;
+    winOnTimeMs = 0;
   };
   const resetBucket = (t: number): void => {
     bucketStart = t;
@@ -527,34 +632,39 @@ export function createQualityGovernor(
     bucketGpuOver = 0;
   };
   const pct = (f: number): string => `${Math.round(f * 100)}%`;
-  /** Auto, on Extreme: the only state a trial may write from. Anything else (a hand pick, Reset
-   * to Auto, a context loss) ends the trial with nothing stored. */
-  const onTrialTier = (): boolean => {
-    const g = getGraphics();
-    return g.preset === 'auto' && g.tier === GFX_AUTO_MAX_TIER;
-  };
-  /** the Extreme column itself, picked by hand or by Auto. A Custom branched from Extreme is the
-   * player's own tune (and may carry a frame cap the late count would misread): the CPU slip
-   * still covers it, the guard does not. */
-  const guarded = (g: GraphicsState): boolean =>
-    g.tier === GFX_AUTO_MAX_TIER && (g.preset === 'auto' || g.preset === GFX_AUTO_MAX_TIER);
+  /** Auto, on Extreme: the only state a trial may write from, and the only one the guard watches.
+   * Anything else (a hand pick, Reset to Auto, a context loss) ends a trial with nothing stored. */
+  const isAutoExtreme = (g: GraphicsState): boolean => g.preset === 'auto' && g.tier === GFX_AUTO_MAX_TIER;
+  const onTrialTier = (): boolean => isAutoExtreme(getGraphics());
+  /** is the Extreme guard watching? (It may still be paused while a chunk loads; see `check`.) */
+  const guarding = (): boolean => decide && !slipped && onTrialTier();
   /** the guard's late line: the display period the trial measured on this GPU, else this
-   * scene's own baseline, else 60 Hz (a hand pick nothing measured), or the pace this session is
-   * actually drawn at when that is slower (`PACE_FLOOR_Q`). Read at 4 Hz, never per frame. */
+   * scene's own baseline, else 60 Hz, or the pace this session is actually drawn at when that is
+   * slower (`PACE_FLOOR_Q`, capped at `PACE_FLOOR_MAX_MS`). Read at 4 Hz, never per frame. */
   const guardLateMs = (g: GraphicsState): number =>
     lateThreshold(
-      Math.max(extremeTrialFor(g, gpu)?.periodMs ?? measuredPeriod ?? DEFAULT_PERIOD_MS, quantile(lastOf(per, head, n), PACE_FLOOR_Q)),
+      Math.max(
+        extremeTrialFor(g, gpu)?.periodMs ?? measuredPeriod ?? DEFAULT_PERIOD_MS,
+        Math.min(PACE_FLOOR_MAX_MS, quantile(lastOf(per, head, n), PACE_FLOOR_Q)),
+      ),
     );
-  const verdict = (pass: boolean, g: GraphicsState): ExtremeTrial => {
-    const periodMs = measuredPeriod ?? extremeTrialFor(g, gpu)?.periodMs;
-    return periodMs === undefined ? { gpu, pass } : { gpu, pass, periodMs };
+  const verdict = (pass: boolean, g: GraphicsState): ExtremeTrial =>
+    makeVerdict(gpu, pass, measuredPeriod ?? extremeTrialFor(g, gpu)?.periodMs, mpNow());
+  /**
+   * AFTER A TRIAL THAT DID NOT KEEP EXTREME, THE CPU SLIP STARTS FROM NOTHING. Its rolling window
+   * would otherwise still hold the trial's Extreme frames, and a slow trial (six 120 ms frames a
+   * second) would go on to lower ULTRA a step, three seconds later, for frames Ultra never drew.
+   */
+  const forgetFrames = (): void => {
+    n = 0;
+    slipSince = 0;
   };
 
   const lower = (why: string): void => {
     const cur = getGraphics();
     const next = stepTier(cur.tier, -1);
     if (next === cur.tier) return; // already at Low — there is nowhere to go, and no line to write
-    // A HAND-PICKED PRESET IS STILL LOWERED, and that is deliberate: the slip rule is the one
+    // A HAND-PICKED PRESET IS STILL LOWERED BY THE CPU SLIP, and that is deliberate: it is the one
     // place a measurement overrides a choice, because the alternative is a player sitting at
     // 8 fps wondering why. It stops being `auto` though — it becomes the named tier it landed
     // on, so the picker tells the truth and the player can put it straight back.
@@ -563,6 +673,12 @@ export function createQualityGovernor(
     // or the next match would start there again.
     setGraphicsTier(next, auto, auto && cur.tier === GFX_AUTO_MAX_TIER ? verdict(false, cur) : undefined);
     onEvent?.(`Graphics lowered to ${GFX_PRESET_LABEL[next]} — ${why}`);
+  };
+
+  /** two seconds of Ultra next, then (with headroom) the trial. */
+  const startBaseline = (t: number): void => {
+    phase = 'baseline';
+    openWindow(t);
   };
 
   /** the warm-up's window closed: the step, then (on Ultra) the baseline. */
@@ -580,10 +696,22 @@ export function createQualityGovernor(
     if (!decide) return;
     const cur = getGraphics();
     if (cur.preset !== 'auto') return; // detection does not move a hand-picked preset
-    // AN AUTO EXTREME CAME FROM A STORED PASS (`applyFirstGuess`). This step's CPU number is not
-    // what that pass measured, and its first frames carry Extreme's shader compiles; the guard
-    // watches it from here, with the numbers that can see it.
-    if (cur.tier === GFX_AUTO_MAX_TIER) return;
+    if (cur.tier === GFX_AUTO_MAX_TIER) {
+      // AN AUTO EXTREME CAME FROM A STORED PASS (`applyFirstGuess`). This step's CPU number is not
+      // what that pass measured, and its first frames carry Extreme's shader compiles; the guard
+      // watches it from here, with the numbers that can see it. Unless the PASS is not this GPU's,
+      // or this canvas has outgrown the one it was measured on: then Ultra, and measure again.
+      const known = extremeTrialFor(cur, gpu);
+      if (known?.pass && verdictStands(known, mpNow())) return;
+      setGraphicsTier(GFX_AUTO_STEP_MAX_TIER, true);
+      onEvent?.(
+        known?.pass
+          ? `Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto). Measuring Extreme again at this window size.`
+          : `Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto)`,
+      );
+      startBaseline(t);
+      return;
+    }
     if (v > WARMUP_DOWN_MS) {
       const next = stepTier(cur.tier, -1);
       if (next !== cur.tier) {
@@ -604,15 +732,15 @@ export function createQualityGovernor(
     const g = getGraphics();
     if (g.preset !== 'auto' || g.tier !== GFX_AUTO_STEP_MAX_TIER) return;
     const known = extremeTrialFor(g, gpu);
-    if (known?.pass) {
+    if (known && verdictStands(known, mpNow())) {
+      // FAILED on this GPU at about this size: not again until Reset to Auto clears it
+      if (!known.pass) return;
       // measured before, on this GPU: no second trial, and the guard watches it
       setGraphicsTier(GFX_AUTO_MAX_TIER, true);
       onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_MAX_TIER]} (auto)`);
       return;
     }
-    if (known) return; // FAILED on this GPU: not again until Reset to Auto clears it
-    phase = 'baseline';
-    openWindow(t);
+    startBaseline(t);
   };
 
   /** two seconds of Ultra, then the entry gate. Nothing is stored either way. */
@@ -623,17 +751,16 @@ export function createQualityGovernor(
       return;
     }
     if (t - winStart < BASELINE_MS) return;
-    if (winN < 20) {
-      openWindow(t);
-      return;
-    }
     phase = 'watch';
+    // UNDER 20 FRAMES IN TWO SECONDS is an Ultra with no headroom at all: no trial. (It used to
+    // re-open the window, which on a slow enough device it did for the scene's whole life.)
+    if (winN < 20) return;
     const cpu = p95(lastOf(buf, head, winN));
     const period = median(lastOf(per, head, winN));
     const gpuMs = winGpu >= MIN_GPU_SAMPLES ? p95(lastOf(gbuf, ghead, winGpu)) : 0;
     // NO HEADROOM, NO TRIAL: a CPU already past the up-step's 6 ms, an Ultra that does not
     // itself hold ~56 fps, or (timed) an Ultra GPU frame Extreme's factor would push past 14 ms
-    if (cpu >= WARMUP_UP_MS || period > LATE_FLOOR_MS || gpuMs > TRIAL_ENTRY_GPU_MS) return;
+    if (cpu >= WARMUP_UP_MS || period > ENTRY_PERIOD_MS || gpuMs > TRIAL_ENTRY_GPU_MS) return;
     measuredPeriod = period;
     lateMs = lateThreshold(period);
     phase = 'trial-load';
@@ -642,24 +769,38 @@ export function createQualityGovernor(
     onEvent?.(`Graphics: trying ${GFX_PRESET_LABEL[GFX_AUTO_MAX_TIER]} (auto)`);
   };
 
+  /** back to Ultra, still Auto, NOTHING STORED: the column was never measured as labelled. */
+  const abandon = (why: string): void => {
+    phase = 'watch';
+    forgetFrames();
+    setGraphicsTier(GFX_AUTO_STEP_MAX_TIER, true);
+    onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto). ${why}`);
+  };
+
   /** wait for the chunks, let the programs compile, then three seconds of real Extreme frames. */
   const trialStep = (t: number): void => {
     if (!onTrialTier()) {
       phase = 'watch';
       return;
     }
+    const fx = effects();
+    // A CHUNK THAT FAILED is final for the scene, and what is on screen is Extreme without its AO
+    // or its physical materials: timing that would store a PASS for a cheaper picture than the
+    // one the next page starts on.
+    if (fx === 'failed') {
+      abandon('Extreme’s effects are unavailable here.');
+      return;
+    }
     if (phase === 'trial-load') {
-      if (ready()) {
+      if (fx === 'ready') {
         phase = 'trial-settle';
         settleUntil = t + TRIAL_SETTLE_MS;
       } else if (t - trialStart >= TRIAL_READY_TIMEOUT_MS) {
-        phase = 'watch';
-        setGraphicsTier(GFX_AUTO_STEP_MAX_TIER, true);
-        onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto). Extreme’s effects did not load.`);
+        abandon('Extreme’s effects did not load.');
       }
       return;
     }
-    if (!ready()) {
+    if (fx === 'loading') {
       phase = 'trial-load'; // a chunk went back in flight: wait again, inside the same timeout
       return;
     }
@@ -670,43 +811,59 @@ export function createQualityGovernor(
       }
       return;
     }
-    if (t - winStart < TRIAL_MS) return;
-    if (winN < 20) {
-      openWindow(t);
-      return;
-    }
+    // THE WINDOW ALWAYS ENDS AT `TRIAL_MS`, however few frames are in it. It used to re-open a
+    // window that ended with under 20 frames, so an Extreme drawn at 5 fps never reached a verdict;
+    // now 5 fps is the verdict (every one of those frames is late).
+    const span = t - winStart;
+    if (span < TRIAL_MS) return;
     phase = 'watch';
     resetBucket(t);
     guardFrom = -1;
-    const cpu = p95(lastOf(buf, head, winN));
+    const frames = Math.max(1, winN);
+    const onTime = winN - winLate;
+    const fps = (winN * 1000) / span;
+    const pace = onTime > 0 && winOnTimeMs > 0 ? (onTime * 1000) / winOnTimeMs : 0;
+    const cpu = p95(lastOf(buf, head, frames));
     const timed = winGpu >= MIN_GPU_SAMPLES;
     const gpuMs = timed ? p95(lastOf(gbuf, ghead, winGpu)) : 0;
-    const late = winLate / winN;
+    const late = winLate / frames;
     const why =
       timed && gpuMs > TRIAL_GPU_MS
         ? `${gpuMs.toFixed(1)} ms GPU p95`
         : late > TRIAL_LATE_MAX
-          ? `${pct(late)} of frames late`
-          : cpu > WARMUP_DOWN_MS
-            ? `${cpu.toFixed(1)} ms CPU p95`
-            : '';
+          ? // a window that is mostly late frames says it in frames per second
+            fps < TRIAL_MIN_FPS
+            ? `${Math.round(fps)} fps`
+            : `${pct(late)} of frames late`
+          : pace < TRIAL_MIN_FPS
+            ? `${Math.round(pace)} fps`
+            : cpu > WARMUP_DOWN_MS
+              ? `${cpu.toFixed(1)} ms CPU p95`
+              : '';
     const g = getGraphics();
     if (!why) {
       setGraphicsTier(GFX_AUTO_MAX_TIER, true, verdict(true, g));
       onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_MAX_TIER]} (auto, ${timed ? `${gpuMs.toFixed(1)} ms GPU p95, ` : ''}${pct(late)} of frames late)`);
       return;
     }
+    forgetFrames();
     setGraphicsTier(GFX_AUTO_STEP_MAX_TIER, true, verdict(false, g));
     onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto). On Extreme: ${why}.`);
   };
 
-  /** four times a second, after the warm-up: the clamp, the slip rule, the Extreme guard. */
+  /**
+   * Four times a second, in the baseline and after: the clamp, the slip rule, the Extreme guard.
+   *
+   * ⚠️ NOT DURING A TRIAL. The trial has its own CPU bar over its own window and always reaches a
+   * verdict; the slip's rolling window would also read the shader compiles Extreme's first frames
+   * carry (the reason `TRIAL_SETTLE_MS` exists) and could store a FAIL for them.
+   */
   const check = (t: number): void => {
     if (slipped || !decide) return;
     const cur = getGraphics();
     // AUTO ON EXTREME WITHOUT A PASS ON THIS GPU: `setGraphicsPreset('auto')` keeps a stored pass
     // without knowing which GPU it was measured on, and this is where that is checked.
-    if (phase === 'watch' && cur.preset === 'auto' && cur.tier === GFX_AUTO_MAX_TIER && !extremeTrialFor(cur, gpu)?.pass) {
+    if (phase === 'watch' && isAutoExtreme(cur) && !extremeTrialFor(cur, gpu)?.pass) {
       setGraphicsTier(GFX_AUTO_STEP_MAX_TIER, true);
       onEvent?.(`Graphics: ${GFX_PRESET_LABEL[GFX_AUTO_STEP_MAX_TIER]} (auto)`);
       return;
@@ -726,8 +883,8 @@ export function createQualityGovernor(
 
     // ── the Extreme guard ───────────────────────────────────────────────────────────────
     // The slip above times the CPU and cannot see a GPU-bound frame, which is all Extreme's
-    // extra cost is. This watches the trial's two numbers for as long as Extreme is on screen.
-    if (phase !== 'watch' || !guarded(cur) || !ready()) {
+    // extra cost is. This watches the trial's two numbers for as long as Auto keeps Extreme.
+    if (phase !== 'watch' || !isAutoExtreme(cur) || effects() === 'loading') {
       guardFrom = -1;
       resetBucket(t);
       lateMs = guardLateMs(cur);
@@ -765,19 +922,31 @@ export function createQualityGovernor(
   return {
     sample(ms: number): void {
       const t = now();
-      // THE STALL GUARD, before anything is recorded — see `STALL_MS`. A frame that arrived
-      // after a gap is not evidence about this machine's speed, and neither is a slip window,
-      // a guard bucket, a baseline or a trial window that was open across it.
       const gap = t - lastSampleAt;
       lastSampleAt = t;
       const begin = t - ms;
       const period = begin - lastBegin;
       lastBegin = begin;
-      if (gap > STALL_MS) {
+      const h = hides();
+      const wasHidden = h !== lastHides;
+      lastHides = h;
+      const trialing = phase === 'trial-load' || phase === 'trial-settle' || phase === 'trial';
+      // THE STALL GUARD, before anything is recorded — see `STALL_MS`. A frame that arrived
+      // after a gap is not evidence about this machine's speed, and neither is a slip window,
+      // a guard bucket, a baseline or a trial window that was open across it.
+      //
+      // ⚠️ EXCEPT WHERE EXTREME ITSELF IS BEING JUDGED, ON A PAGE THAT STAYED VISIBLE: the trial's
+      // measured window, and the guard on an Auto Extreme. There a gap is Extreme taking that long
+      // to draw, and it is recorded as the late frame it is. Discarding those is how a 1.5 fps
+      // Extreme never reached a verdict and sat on Extreme for the scene's life, every scene
+      // (review, 2026-10-10). The trial's clocks (its ready deadline, its settle) run on stalled
+      // frames too.
+      if (gap > STALL_MS && (wasHidden || !(phase === 'trial' || (phase === 'watch' && guarding())))) {
         slipSince = 0;
         guardFrom = -1;
         resetBucket(t);
         if (phase === 'baseline' || phase === 'trial') openWindow(t);
+        if (trialing) trialStep(t);
         return;
       }
       buf[head] = ms;
@@ -789,6 +958,8 @@ export function createQualityGovernor(
       if (period > lateMs) {
         winLate++;
         bucketLate++;
+      } else {
+        winOnTimeMs += period;
       }
 
       // ── the warm-up, once ──────────────────────────────────────────────────────────────
@@ -797,7 +968,7 @@ export function createQualityGovernor(
         return;
       }
       if (phase === 'baseline') baselineStep(t);
-      else if (phase === 'trial-load' || phase === 'trial-settle' || phase === 'trial') trialStep(t);
+      else if (trialing) trialStep(t);
 
       // ── the overlay's p95 and the checks, at 4 Hz ──────────────────────────────────────
       if (t - lastCheck < 250) return;
@@ -818,6 +989,10 @@ export function createQualityGovernor(
     },
     get phase(): GovernorPhase {
       return phase;
+    },
+    get wantsGpu(): boolean {
+      if (!decide || phase === 'warmup') return false;
+      return phase !== 'watch' || guarding();
     },
     dispose(): void {
       // A TRIAL IS NEVER LEFT STANDING. A scene torn down mid-trial (the view switched to 2D, the

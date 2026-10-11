@@ -64,7 +64,7 @@ import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { GFX_TIERS, resetGraphicsToAuto, setGraphicsPreset, setGraphicsTier, type GraphicsTier } from '../../src/games/biobuzz/graphics/settings';
-import { createQualityGovernor, type QualityGovernor } from '../../src/games/biobuzz/graphics/auto';
+import { createQualityGovernor, type EffectsState, type QualityGovernor } from '../../src/games/biobuzz/graphics/auto';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 
@@ -360,11 +360,17 @@ async function main(): Promise<void> {
   const trialParam = urlParams.get('trial');
   if (gfxParam === 'auto' && (trialParam === 'pass' || trialParam === 'fail')) {
     setGraphicsTier('ultra', true);
-    const sc = scene as unknown as { governor: QualityGovernor; gpuName: string; effectsReady(): boolean };
+    const sc = scene as unknown as {
+      governor: QualityGovernor;
+      gpuName: string;
+      effectsState(): EffectsState;
+      extremeMp(): number;
+    };
     let fakeT = 0;
     const inner = createQualityGovernor(() => fakeT, (line) => console.warn(`[trial] ${line}`), true, {
       gpu: sc.gpuName,
-      ready: () => sc.effectsReady(),
+      effects: () => sc.effectsState(),
+      pixels: () => sc.extremeMp(),
     });
     const onTrialGpu = trialParam === 'pass' ? 9 : 18;
     sc.governor = {
@@ -382,6 +388,8 @@ async function main(): Promise<void> {
       get phase() {
         return inner.phase;
       },
+      // fed fake GPU times on the fake clock, so the scene's real timer stays off
+      wantsGpu: false,
       dispose: () => inner.dispose(),
     };
     status(`forced Extreme trial: ${trialParam}`);
