@@ -1,7 +1,8 @@
 /* MOVING PARTS IN THE REAL EDITOR. Offscreen Electron (show: false, offscreen) against a production
  * build:
  *
- *   npm run build && npx vite preview --port 4175 --strictPort
+ *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4175 --strictPort   # the importer
+ *                                     # ships on alpha only; the variable opens it in a local build
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/robot-import/motion/motioneditor.cjs --cfg cfg.json
  *     cfg.json: { "files": "tag=path,...", "out": DIR, "port": 4175, "game": "biobuzz,decode,...",
  *                 "playOnly": false }   (paths in a file: Git Bash mangles several on a command line)

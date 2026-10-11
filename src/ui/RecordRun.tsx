@@ -7,10 +7,11 @@ import { RobotCard } from './RobotCard';
 import { teamLine } from './robotLabels';
 import { gameServerUrl, gameServerUrlWith, multiServer, selectedServer } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
+import { serverCaps } from '../net/api';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
-import type { ErrorCode, RecordKind } from '../net/protocol';
+import { coerceRoomSettings, type ErrorCode, type RecordKind } from '../net/protocol';
 import { loadActiveGame } from '../net/activeGame';
 import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
@@ -110,7 +111,7 @@ export function RecordRun({
      *  land AFTER this effect returns (the await above), so it cannot be the returned value. */
     let close: (() => void) | null = null;
 
-    const connect = (): void => {
+    const connectNow = (): void => {
       if (cancelled) return;
       setLoading3d(false);
       setStatus('Connecting to the record server…');
@@ -184,7 +185,7 @@ export function RecordRun({
           spec,
           assists: spec === settings.spec ? settings.assists : (spec.assists ?? settings.assists),
         },
-        { kind: 'record', record: mode, game: settings.game },
+        { kind: 'record', record: mode, game: settings.game, ...(settings.runLength === 'auto' ? { settings: coerceRoomSettings('record', mode, { runLength: 'auto' }) } : {}) },
       );
       // the server holds a 3D room's start until every seat reports in (`READY3D_CAP`). This
       // page only dials once the chunk has resolved, so the announcement goes out behind the
@@ -196,6 +197,17 @@ export function RecordRun({
         if (timer) window.clearTimeout(timer);
         if (!startedRef.current) lobby.dispose();
       };
+    };
+
+    // AUTO ONLY needs a server that honours it: an older one would drop the field and run a FULL
+    // match, which would then post to the Total board as if the player had asked for that
+    const connect = (): void => {
+      if (settings.runLength !== 'auto') return connectNow();
+      void serverCaps().then((caps) => {
+        if (cancelled) return;
+        if (caps.includes('autoOnly')) connectNow();
+        else setError('This server can’t run auto-only yet. Pick Full match in Practice settings.');
+      });
     };
 
     // the view downloads beside the physics; the room holds the run until it is built

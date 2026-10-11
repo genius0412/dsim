@@ -111,6 +111,7 @@ the production config under whichever app name it was given.
 | VM | shared-cpu-4x (iad) | shared-cpu-2x |
 | database | production Neon | the `alpha` Neon branch |
 | alpha results persist | never | yes |
+| robot importer | closed | open (`SERVER_CHANNEL`/`VITE_APP_CHANNEL` = `alpha`; robot-import.md "Where it ships") |
 
 Cost is close to zero while nobody is testing: the machine stops when idle and Fly bills
 only the rootfs.

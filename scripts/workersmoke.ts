@@ -13,7 +13,9 @@
  *     scenarios run against both over real WebSockets: a custom 1v1 from lobby to match, a
  *     spectator, a refused joiner, reports, a dropped socket reclaiming its seat, a lobby that
  *     empties, and a BIOBUZZ 3D record run. Every check has to pass on both, so the worker path
- *     is held to the behaviour of the in-process one rather than to a description of it.
+ *     is held to the behaviour of the in-process one rather than to a description of it. Both run
+ *     as the alpha deployment (`SERVER_CHANNEL=alpha`, where imported robots ship); a third, with
+ *     no channel, is production's import gate (`closedGate`).
  *
  * Kept out of `npm test` for the same reason `test:mm` is: a red `npm test` must keep meaning
  * "physics broke", and this boots two servers and four worker threads.
@@ -30,9 +32,10 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
-import { IMPORT_ID_TAKEN, IMPORT_MEMBER_NEEDS_UPDATE, IMPORT_REFUSED_HERE, IMPORT_REFUSED_RANKED, IMPORT_ROOM_NEEDS_UPDATE } from '../src/net/imported';
+import { IMPORT_ID_TAKEN, IMPORT_MEMBER_NEEDS_UPDATE, IMPORT_REFUSED_HERE, IMPORT_REFUSED_RANKED, IMPORT_ROOM_NEEDS_UPDATE, ROBOT_IMPORT_CAP } from '../src/net/imported';
 import * as IV from '../src/net/importVisuals';
 import { visualBytesInUse } from '../server/importVisuals';
+import { IMPORTS_OPEN_HERE } from '../server/channel';
 import { glbBytes, pngBytes } from './visualFixtures';
 import type { Alliance, RobotCommand } from '../src/types';
 import type { Client } from '../server/room';
@@ -157,6 +160,13 @@ function driver(room: RoomHandle, id: string, sock: ReturnType<typeof fakeSocket
 
 async function partA(): Promise<void> {
   console.log('\n== A. the pool, in this process ==');
+  // ⚠️ THE WORKERS' ENV SAYS THE OPPOSITE OF THIS THREAD'S IMPORT GATE (read when `channel.ts`
+  // loaded). A worker copies the env when it spawns, so a worker room that read its own would
+  // disagree with `RemoteRoom.importState()`; the "imports across the thread" checks catch that.
+  if (IMPORTS_OPEN_HERE) {
+    delete process.env.ROBOT_IMPORT;
+    process.env.SERVER_CHANNEL = 'stable';
+  } else process.env.ROBOT_IMPORT = '1';
   check('A: SIM_WORKERS=2 starts two workers', startRoomWorkers(2) === 2);
   const ready = await until(() => (workerPerf() ?? []).every((w) => w.ready), 30_000);
   check('A: both workers load both physics backends', ready);
@@ -294,7 +304,7 @@ async function partA(): Promise<void> {
   // worker that is a MIRROR a message behind plus whatever has been posted since — the same
   // arrangement `canJoin` counts an add in flight for. The worker's own Room refuses the rest.
   {
-    const imp = createRoom('wt-imp', () => {}, { kind: 'versus', game: 'decode' });
+    const imp = createRoom('wt-imp', () => {}, { kind: 'versus', game: 'decode', imports: true });
     const si = fakeSocket();
     const ci = clientOn(si, 'i1', 'u-i', 'red');
     ci.player.spec = { ...ci.player.spec, imported: IMP } as typeof ci.player.spec;
@@ -326,8 +336,61 @@ async function partA(): Promise<void> {
       so.msgs('welcome').length === 0 && so.msgs('error').some((m) => (m as { message?: string }).message === IMPORT_ROOM_NEEDS_UPDATE),
     );
     check('A: ...and the mirror settles back to no seat without the cap', await until(() => !imp.importState().capless, 3000));
-    const rec = createRoom('wt-imp-rec', () => {}, { kind: 'record', record: 'solo', game: 'decode' });
+    const rec = createRoom('wt-imp-rec', () => {}, { kind: 'record', record: 'solo', game: 'decode', imports: true });
     check('A: a record room on a worker does not allow imported robots', !rec.importState().allows);
+  }
+
+  // ---- where the importer ships: `RoomConfig.imports`, decided on THIS thread ---------------------
+  // Each room is joined by `add`, past the door, so what seats or refuses is the worker's own Room.
+  {
+    const here = IMPORTS_OPEN_HERE;
+    const impClient = (sock: ReturnType<typeof fakeSocket>, id: string, alliance: Alliance): Client => {
+      const c = clientOn(sock, id, `u-${id}`, alliance);
+      c.player.spec = { ...c.player.spec, imported: IMP } as typeof c.player.spec;
+      return c;
+    };
+    const answered = (sock: ReturnType<typeof fakeSocket>): Promise<boolean> =>
+      until(() => sock.msgs('welcome').length > 0 || sock.msgs('error').length > 0, 5000);
+    const refusedHere = (sock: ReturnType<typeof fakeSocket>): boolean =>
+      sock.msgs('welcome').length === 0 && sock.msgs('error').some((m) => (m as { message?: string }).message === IMPORT_REFUSED_HERE);
+
+    const dflt = createRoom('wt-gate', () => {}, { kind: 'versus', game: 'decode' });
+    check(
+      `A: a worker room built with no \`imports\` takes this thread's gate (${here ? 'open' : 'closed'}), not the worker's env`,
+      dflt.importState().allows === here && dflt.config.imports === here,
+    );
+    const sg = fakeSocket();
+    dflt.add(impClient(sg, 'g1', 'red'));
+    await answered(sg);
+    check(
+      "A: ⚠️ ...and the worker's Room agrees: it seats or refuses an imported robot by that same answer",
+      here ? sg.msgs('welcome').length > 0 : refusedHere(sg),
+      JSON.stringify(sg.msgs('error')),
+    );
+
+    const shut = createRoom('wt-shut', () => {}, { kind: 'versus', game: 'decode', imports: false });
+    check('A: a room closed by its config does not allow imported robots (the socket thread)', !shut.importState().allows);
+    const ss = fakeSocket();
+    shut.add(impClient(ss, 's1', 'red'));
+    await answered(ss);
+    check('A: ...the worker refuses one with the sentence, and does not seat it', refusedHere(ss), JSON.stringify(ss.msgs('error')));
+    const sp = fakeSocket();
+    shut.add(clientOn(sp, 's2', 'u-s2', 'red'));
+    await answered(sp);
+    check('A: ...and seats a standard robot', sp.msgs('welcome').length > 0);
+    shut.onMessage('s2', { t: 'visualPut', kind: 'top', id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+    const rr = await until(() => sp.msgs('visualRefused').length > 0, 3000);
+    check(
+      'A: ...and its look relay refuses an upload with the room reason',
+      rr && (sp.msgs('visualRefused')[0] as { reason?: string }).reason === 'room',
+      JSON.stringify(sp.msgs('visualRefused')),
+    );
+
+    const op = createRoom('wt-open', () => {}, { kind: 'versus', game: 'decode', imports: true });
+    const so2 = fakeSocket();
+    op.add(impClient(so2, 'o1', 'red'));
+    await answered(so2);
+    check('A: the same room opened by its config allows them on both threads', op.importState().allows && so2.msgs('welcome').length > 0);
   }
 
   // ---- reattach and the report resolvers answer across the thread ----------------------------
@@ -367,7 +430,7 @@ async function partA(): Promise<void> {
   {
     const png = pngBytes(128, 128, { noise: true, seed: 5 }); // 3 chunks
     const mesh = glbBytes({ tris: 6000 }); // 216 KB, 9 chunks
-    const room = createRoom('wt-vis', () => {}, { kind: 'versus', game: 'decode' });
+    const room = createRoom('wt-vis', () => {}, { kind: 'versus', game: 'decode', imports: true });
     const so = fakeSocket();
     const sv = fakeSocket();
     const co = clientOn(so, 'vo', 'u-vo', 'red');
@@ -412,7 +475,7 @@ async function partA(): Promise<void> {
     check('A: the owner leaving frees the assets, and the budget with them (seen from the socket thread)', await until(() => visualBytesInUse() === base, 3000), String(visualBytesInUse() - base));
     // a worker that dies with assets in its rooms must not leak the process budget
     const sx2 = fakeSocket();
-    const room2 = createRoom('wt-vis2', () => {}, { kind: 'versus', game: 'decode' });
+    const room2 = createRoom('wt-vis2', () => {}, { kind: 'versus', game: 'decode', imports: true });
     const cx2 = clientOn(sx2, 'vx', 'u-vx', 'red');
     cx2.player.spec = { ...cx2.player.spec, imported: IMP } as typeof cx2.player.spec;
     room2.add(cx2);
@@ -571,10 +634,14 @@ interface Server {
   log: string[];
 }
 
-async function boot(label: string, port: number, workers: number): Promise<Server> {
+/** `channel`: the server's `SERVER_CHANNEL`. 'alpha' is the deployment the importer ships to; '' is
+ *  production, which sets none. Neither gets `ROBOT_IMPORT`, so each reads its gate as deployed. */
+async function boot(label: string, port: number, workers: number, channel = 'alpha'): Promise<Server> {
   const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), SIM_WORKERS: String(workers) };
   // nothing here may reach a real database, identity provider or region router
   for (const k of ['DATABASE_URL', 'NEON_AUTH_URL', 'FLY_REGION', 'SERVER_REGION', 'MAX_ROOMS', 'FLY_MACHINE_ID']) delete env[k];
+  for (const k of ['ROBOT_IMPORT', 'SERVER_CHANNEL', 'LAN_MODE']) delete env[k];
+  if (channel) env.SERVER_CHANNEL = channel;
   const proc = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const log: string[] = [];
   proc.stdout!.on('data', (d) => log.push(String(d)));
@@ -736,6 +803,12 @@ async function scenarios(s: Server): Promise<void> {
   // Read off what the client SENT, so the first two do not depend on `coerceSpec` carrying the field.
   const impP = (name: string, alliance: Alliance) => ({ ...makePlayer(name, alliance, 0), spec: { ...DEFAULT_SPEC, name, imported: IMP } as typeof DEFAULT_SPEC });
   const stdP = (name: string, alliance: Alliance) => makePlayer(name, alliance, 0);
+  {
+    // these servers run as the alpha deployment does, where the importer ships (`closedGate` is production)
+    const caps = (((await (await fetch(`${s.http}/api/presence`)).json()) as { caps?: string[] }).caps ?? []);
+    check(L('the alpha server advertises robotImport and importVisuals on /api/presence'), caps.includes(ROBOT_IMPORT_CAP) && caps.includes(IV.IMPORT_VISUALS_CAP), caps.join(','));
+    check(L('...and its boot line says the gate is open'), s.log.join('').includes('imports=open'));
+  }
   {
     const X = await open();
     X.send({ t: 'join', room: newCode(), config: { kind: 'record', record: 'solo', game: 'decode' }, player: impP('X', 'blue'), caps: CLIENT_CAPS });
@@ -920,6 +993,40 @@ async function visuals(s: Server): Promise<void> {
   for (const k of [V, X, S, R]) k.close();
 }
 
+/**
+ * PRODUCTION'S IMPORT GATE, AT THE REAL DOORS: a server with no `SERVER_CHANNEL` (fly.toml sets
+ * none) on two workers. The importer ships to alpha only (owner, 2026-10-10), so this server says
+ * nothing about imports on `/api/presence` and every custom room it builds refuses them; the same
+ * steps on the alpha servers above are the paired acceptances.
+ */
+async function closedGate(s: Server): Promise<void> {
+  const L = (name: string): string => `B[${s.label}]: ${name}`;
+  const versus: RoomConfig = { kind: 'versus', game: 'decode' };
+  const impP = (name: string, alliance: Alliance) => ({ ...makePlayer(name, alliance, 0), spec: { ...DEFAULT_SPEC, name, imported: IMP } as typeof DEFAULT_SPEC });
+  const caps = (((await (await fetch(`${s.http}/api/presence`)).json()) as { caps?: string[] }).caps ?? []);
+  check(L('⚠️ /api/presence advertises neither robotImport nor importVisuals'), !caps.includes(ROBOT_IMPORT_CAP) && !caps.includes(IV.IMPORT_VISUALS_CAP) && caps.includes('rooms2'), caps.join(','));
+  check(L('the boot line says the gate is closed'), s.log.join('').includes('imports=closed'));
+  const open = (): Promise<Sock> => new Sock(s.url).open();
+  const room = newCode();
+  const P = await open();
+  P.send({ t: 'join', room, config: { ...versus, imports: true } as RoomConfig, player: impP('P', 'red'), caps: CLIENT_CAPS });
+  const pe = await P.until('error');
+  check(L('⚠️ a custom room refuses an imported robot at the door, with the sentence (a client cannot open it with `imports`)'), pe?.message === IMPORT_REFUSED_HERE, pe?.message);
+  P.close();
+  const G = await open();
+  G.send({ t: 'join', room, config: versus, player: makePlayer('G', 'red', 0), caps: CLIENT_CAPS });
+  check(L('...and seats a standard robot'), !!(await G.until('welcome')));
+  const mark = G.log.length;
+  G.send({ t: 'update', patch: { spec: { ...DEFAULT_SPEC, imported: IMP } as typeof DEFAULT_SPEC } });
+  const ge = await G.until('error', () => true, 3000, mark);
+  check(L('...refuses an update that brings an import'), ge?.message === IMPORT_REFUSED_HERE, ge?.message);
+  const m2 = G.log.length;
+  G.send({ t: 'visualPut', kind: 'top', id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
+  const vr = await G.until('visualRefused', () => true, 3000, m2);
+  check(L('...and its look relay refuses an upload with the room reason'), vr?.reason === 'room', JSON.stringify(vr));
+  G.close();
+}
+
 async function spread(s: Server): Promise<void> {
   const before = (await perf(s)).workers ?? [];
   const socks: Sock[] = [];
@@ -945,10 +1052,11 @@ async function spread(s: Server): Promise<void> {
 async function partB(): Promise<void> {
   console.log('\n== B. the real server, in-process and on two workers ==');
   const base = 18_700 + Math.floor(Math.random() * 500);
-  const servers = await Promise.all([boot('in-process', base, 0), boot('2 workers', base + 1, 2)]);
+  const servers = await Promise.all([boot('in-process', base, 0), boot('2 workers', base + 1, 2), boot('production gate, 2 workers', base + 2, 2, '')]);
   try {
-    for (const s of servers) await scenarios(s);
+    for (const s of servers.slice(0, 2)) await scenarios(s);
     await spread(servers[1]);
+    await closedGate(servers[2]);
     for (const s of servers) {
       const errors = s.log.join('').split('\n').filter((l) => /error|exception|failed/i.test(l) && !/deprecated/i.test(l));
       check(`B[${s.label}]: the server logged no errors`, errors.length === 0, errors.slice(0, 3).join(' | '));

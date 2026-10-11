@@ -42,7 +42,7 @@ import { initPhysics } from '../sim/physicsEngine';
 import { initPhysics3d } from '../games/biobuzz/sim3d/engine';
 import { coerceGameId, serverPhysics, type GameId } from '../games/types';
 import { simModuleFor } from '../games/sim';
-import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
+import { HEALTH_INTERVAL_MS, HOST_SEAT, hostRoomConfig, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
   (self as unknown as { postMessage: (m: HostOut) => void }).postMessage(m);
@@ -150,8 +150,9 @@ self.addEventListener('message', (e: MessageEvent) => {
     void Promise.all([initPhysics(), needs3d ? initPhysics3d() : null]).then(
       () => {
         /* No persistence callbacks — see the header. The room empties itself when the last
-           member leaves, and the page decides whether that ends the session. */
-        room = new Room(m.code, () => post({ k: 'empty' }), m.config);
+           member leaves, and the page decides whether that ends the session. Imported robots
+           only on the page's say-so (`hostRoomConfig`): an `open` without it is closed. */
+        room = new Room(m.code, () => post({ k: 'empty' }), hostRoomConfig(m));
         /* The host joins LAST — they are still on the LAN screen reading the code out while
            guests arrive — so the seat is claimed now or a guest gets it. See `reserveHost`. */
         room.reserveHost(HOST_SEAT);
@@ -186,9 +187,9 @@ self.addEventListener('message', (e: MessageEvent) => {
       return;
     }
     /* IMPORTED ROBOTS: the same admission rule the cloud's join door asks (`importAdmission`). A LAN
-       room is a custom room, so it allows them; what can refuse is a build without the capability
-       on either side of one. `Room.add` asks again, but a refusal HERE is the one that tells the
-       link to close, as the two above do. */
+       room is a custom room, so it allows them where the importer ships (`open.imports`); what
+       else can refuse is a build without the capability on either side of one. `Room.add` asks
+       again, but a refusal HERE is the one that tells the link to close, as the two above do. */
     const refusal = importAdmission(room.importState(), {
       imported: isImportedSpec(m.player?.spec),
       caps: coerceCaps(m.caps),

@@ -69,9 +69,17 @@ export async function readLibrary(game: GameId): Promise<LibraryView> {
   return { entries: list.value, thumbs, draft, error: null };
 }
 
-export function useLibrary(game: GameId): LibraryView {
-  const [view, setView] = useState<LibraryView>({ entries: null, thumbs: {}, draft: null, error: null });
+const NOT_READ: LibraryView = { entries: null, thumbs: {}, draft: null, error: null };
+
+/**
+ * `enabled` false (a build without the importer, `importerEnabled`) reads nothing: no library
+ * chunk, no `indexedDB.databases()`, no BroadcastChannel, no draft pruning. The view stays NOT READ
+ * (`entries: null`), not an empty list, which `ImportedPanel` would draw as a dead "Import the file".
+ */
+export function useLibrary(game: GameId, enabled = true): LibraryView {
+  const [view, setView] = useState<LibraryView>(NOT_READ);
   useEffect(() => {
+    if (!enabled) return;
     let dead = false;
     const read = (): void => {
       void readLibrary(game)
@@ -89,6 +97,6 @@ export function useLibrary(game: GameId): LibraryView {
       dead = true;
       off();
     };
-  }, [game]);
-  return view;
+  }, [game, enabled]);
+  return enabled ? view : NOT_READ;
 }

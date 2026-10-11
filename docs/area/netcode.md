@@ -50,7 +50,8 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     their codes and respawns (not if it never loaded physics, or after 5 deaths in 10 min). With
     no live worker `createRoom` falls back to in-process. A late joiner adding itself to a room
     its worker already disposed REVIVES it, as an in-process `Room` would take them.
-  - `room.ts` stays browser-safe for the LAN tab host; worker plumbing lives in `roomWorker.ts`.
+  - `room.ts` stays browser-safe for the LAN tab host; worker plumbing lives in `roomWorker.ts`.
+
 - **BROWSE ROOMS (`Room.listing`, `GET /api/rooms`, 2026-10-10).** A PUBLIC room is a `RoomSettings.listed` custom versus room whose HOST IS SIGNED IN; ranked, competition, record, Discord-activity and legacy rooms never list. The card (`ListedRoom`, `protocol.ts`) names the host only. It rides the presence heartbeat in the SAME array as the live matches, marked `listing: true` (no migration, no second heartbeat): `/api/live` drops it because it is neither ranked nor a record, and the admin list filters it out. It crosses the worker boundary as `RoomFacts.listing`. `browseRooms` keeps ONE listed room per host account. **WATCHING A LOBBY needs NO server change**: `attachSpectator` already admits a spectator to a room that has not started and `broadcast` already sends spectators every `roster`, then `matchStart` (`yourRobotId: -1`) when the host starts. The client half is `WatchLobby.tsx` (a roster view that hands its socket to a spectator `ServerSession` on `matchStart`, closes it otherwise); `spectateRoom` only ever listened for `matchStart`, which is why a lobby showed nothing. Verified over a real WebSocket: a spectator on a one-driver lobby receives `welcome`, `roster(1)`, `spectators`. ⚠️ **A SERVER CHANGE: it needs a deploy.** The privacy policy was reworded for it and `LEGAL_UPDATED` moved to October 10, 2026, so every signed-in account accepts the terms again once.
     The image builds TWO entries (`index.js`, `roomWorker.js`); the single-file LAN bundle has no
     worker and runs in-process.
@@ -72,7 +73,16 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   onto one alliance), Private. Capacity is the sum of the sides (`roomCapacity`, `Room.capacity`),
   clamped to `ROOM_CAPACITY` (4) until 3-4 a side lands. **No `settings` = the legacy room, byte
   for byte** (old clients, staged ranked/competition codes, LAN): everyone picks a side, any split
-  up to four seats. Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
+  up to four seats. **AUTO-ONLY RUNS** (rooms plan M4/M6): `World.runLength = 'auto'` ends the match at the
+  AUTO buzzer (AUTO → post, no transition; `autoOnly()` in `sim/match.ts`, read by each game's phase
+  machine). It is ABSENT on a full run, so no golden pin moved. A room asks via `RoomSettings.runLength`
+  at creation (never changed by a patch), `matchStart.runLength` tells clients (also listed field by field
+  in `App.beginSession` and re-read on every restart), and the replay is stamped **format 5** +
+  `Replay.runLength` (`REPLAY_FORMAT_AUTO`; `ReplayPlayer` reads it off the container, never the
+  settings). CLIENT cap `'autoOnly'` is checked at the join/spectate/rejoin doors (`runLengthAllowed`,
+  same sentence as `BB3D_REFUSAL`); SERVER cap `'autoOnly'` is what a client checks before asking, since an
+  older server would drop the field and run a FULL match. LAN rooms have no run length.
+  Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
   client gates on `serverCaps()`; an older server ignores them) are refused in a staged/ranked room
   (`hostControlRefusal`: a host there could demote an opponent and have them charged a no-show) and
   once the match is set up. Sides are enforced in `add` (a joiner lands on a side with room) and in
@@ -352,7 +362,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - ⚠️ **IMPORTED ROBOTS PLAY IN CUSTOM AND LAN ROOMS ONLY** (`RobotSpec.imported`,
   `docs/robot-import-plan.md`; rules and sentences in `src/net/imported.ts`). ⚠️ **A SERVER
   CHANGE, it needs a deploy.** The server decides, the client only avoids sending what will be
-  refused.
+  refused. ⚠️ **ALPHA ONLY until the owner says** (robot-import.md "Where it ships"): a server whose
+  `IMPORTS_OPEN_HERE` is false (`server/channel.ts`: no `SERVER_CHANNEL=alpha`, no `ROBOT_IMPORT=1`, or
+  `LAN_MODE`) advertises neither `robotImport` nor `importVisuals` (`advertisedCaps`) and its rooms
+  allow none (`RoomConfig.imports`, resolved once on the socket thread and sent to the worker; a
+  test opens a room with `imports: true`, never by env).
   - **The capability `'robotImport'` is in `CLIENT_CAPS` and `SERVER_CAPS`.** The client offers an
     imported spec to a room only when the server advertises it (`roomTakesImportedRobots`: the
     cloud's `serverCaps()`, a LAN server's own presence, or true for a room this tab hosts). An older

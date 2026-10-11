@@ -31,6 +31,10 @@
  * stamped with; a re-run rebuilds when it disagrees (a new Wi-Fi network, a different port) and
  * skips the minute when it does not.
  *
+ * The build is a `stable` one, so it has no robot importer (`importerEnabled`) and its tab-hosted
+ * room takes no imported robot. To test one, run with `VITE_ROBOT_IMPORT=1` in the environment and
+ * `--build` (the stamp records only the address).
+ *
  * Flags: `--port 9000` · `--host 192.168.1.50` (pick an adapter) · `--build` (force a rebuild).
  */
 import { spawn, spawnSync } from 'node:child_process';

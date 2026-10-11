@@ -1,8 +1,11 @@
 /* UNDO AND REDO IN THE REAL EDITOR (`docs/area/robot-import.md`, "Undo and redo"). Offscreen
  * Electron (show: false, offscreen) against a production build:
  *
- *   npm run build && npx vite preview --port 4174 --strictPort
+ *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4174 --strictPort
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/robot-import/undoeditor.cjs [--port 4174] [--out DIR]
+ *
+ * (`VITE_ROBOT_IMPORT=1`: the importer ships on the alpha channel only, `importerEnabled`; a local
+ * build without it has no editor route.)
  *
  * Drops the GLB fixture into the DECODE importer and checks that the editor's own edits leave Undo and
  * Redo off; then two edits (a turn, the weight), Ctrl+Z inside the number field (left to the field),

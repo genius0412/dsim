@@ -2,9 +2,14 @@
  * element, forces :hover / :hover:active and toggles the `on`/`primary` state classes,
  * asserting that NOTHING outside that element's own subtree moves.
  *
- *   npm run build && npx vite preview --port 4173      # in another shell
+ *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173   # in another shell
  *   npm run shiftaudit                                 # both themes
  *   DSIM_THEME=dark npm run shiftaudit                 # one theme
+ *
+ * `VITE_ROBOT_IMPORT=1` opens the robot importer in a local build (`importerEnabled`,
+ * src/seasonVisibility.ts: it ships on the alpha channel only). Without it the importer's route
+ * and the seeded pass are not in the build, and the run says so at the start and in its summary
+ * rather than auditing the robot page twice under the importer's name.
  *
  * Why it exists: the design system builds depth from HARD OFFSET SHADOWS and "thick"
  * keycap edges (`--ds-edge`, `--ds-block`). Those are easy to implement with a border
@@ -327,6 +332,20 @@ app.whenReady().then(async () => {
   };
   let seeded = null;
 
+  // IS THE IMPORTER IN THIS BUILD? It ships on the alpha channel only (`importerEnabled`); a local
+  // build has it with VITE_ROBOT_IMPORT=1. Where it is closed its route falls through to the robot
+  // page and the address bar is rewritten to it, so the run would audit /configure/robot a second
+  // time under the importer's name and the seeded pass could not make a robot. Said, not skipped quietly.
+  const IMPORT_PAGE = '/configure/robot/import';
+  let importerOpen = true;
+  if (PAGES.includes(IMPORT_PAGE) || SEED) {
+    await win.loadURL(BASE + '/decode' + IMPORT_PAGE);
+    importerOpen = await until(`location.pathname.endsWith(${JSON.stringify(IMPORT_PAGE)}) && !!document.querySelector('.ds-import-drop')`, 10000);
+    if (!importerOpen) {
+      say(`  IMPORTER NOT IN THIS BUILD: ${IMPORT_PAGE} and the seeded import pass are NOT audited (build with VITE_ROBOT_IMPORT=1 to audit them)`);
+    }
+  }
+
   for (const theme of THEMES) {
     // stamped by the blocking inline script in index.html, so it must precede the load
     await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
@@ -335,6 +354,7 @@ app.whenReady().then(async () => {
     let chromeDone = false;
     for (const page of PAGES) {
       if (page === 'seeded') continue;
+      if (page === IMPORT_PAGE && !importerOpen) continue;
       await win.loadURL(BASE + page);
       await sleep(1400);
       await auditHere(`[${theme}] ${page}`, !chromeDone);
@@ -342,7 +362,7 @@ app.whenReady().then(async () => {
     }
 
     // ---- with an imported robot: the robot page, then the editor (Edit) on each step ----
-    if (SEED) {
+    if (SEED && importerOpen) {
       if (seeded === null) seeded = await seedImport();
       if (seeded) {
         await win.loadURL(BASE + '/decode/configure/robot');
@@ -396,7 +416,7 @@ app.whenReady().then(async () => {
   }
 
   await js(`localStorage.removeItem('decodesim.theme'); 'ok'`);
-  say(`===== ${checked} state changes checked · ${problems} caused layout shift =====`);
+  say(`===== ${checked} state changes checked · ${problems} caused layout shift${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
   dbg.detach();
   process.exit(problems === 0 ? 0 : 1);
 });

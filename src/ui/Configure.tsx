@@ -121,7 +121,7 @@ export function Configure({
           {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} />}
           {section === 'controls' && (
             <ControlsSection
-              tutorialGame={settings.game}
+              activeGame={settings.game}
               bindings={settings.bindings}
               onChange={(bindings) => onChange({ ...settings, bindings })}
               onEditTouchControls={onEditTouchControls}

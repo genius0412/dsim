@@ -1097,6 +1097,10 @@ export interface GameSettings {
    * blob, so this rides along with no protocol change).
    */
   practicePhysics?: Physics;
+  /** THE RUN LENGTH THIS PLAYER ASKS FOR: 'auto' ends the match at the AUTO buzzer (`World.runLength`).
+   *  Absent / 'full' = the whole match. Read by solo practice, and sent as the ASK when this player
+   *  creates a record room or a room (`RoomSettings.runLength`); a room already made decides for itself. */
+  runLength?: 'full' | 'auto';
   /**
    * SOLO PRACTICE OPPONENTS (plan §6): `'off'`, or a TIER from the active game's own
    * `GameSimModule.bot.tiers`. Absent reads `'off'`, which is every settings blob that predates
@@ -1251,6 +1255,10 @@ export interface World {
   /** the `SIM_PATCH` a REPLAY was recorded under, set only by `ReplayPlayer`. Absent (every
    * live world) ⇒ the current rules. See `SIM_PATCH` in `config.ts`. */
   simPatch?: number;
+  /** 'auto' = an AUTO-ONLY run: the match ends when AUTO does (no transition, no TELEOP). ABSENT
+   * for a full run, so every full-run world and golden pin is byte-identical. Set after
+   * `createWorld`, the way `simPatch` is; see `autoOnly` in `sim/match.ts`. */
+  runLength?: 'auto';
   motif: Motif;
   robots: RobotState[];
   balls: Artifact[];
@@ -1268,6 +1276,10 @@ export interface World {
    *  re-discovering the pin a hair later every tick. Derived state, plain JSON, in every
    *  snapshot; absent from an older snapshot ⇒ empty. See . */
   pinnedArtifacts?: number[];
+  /** the next artifact id to hand out (`allocBallId`, sim/ballIds.ts): a HIGH-WATER MARK, so an
+   *  id is never reused within a match. Absent from an older world or snapshot ⇒ the old
+   *  `max(id) + 1`. BIOBUZZ keeps its own counter on `world.biobuzz`. */
+  nextBallId?: number;
   /** persistent penalty-engine state (Section 11 fouls) */
   penalties: PenaltyState;
   // Add gameSettings to World interface

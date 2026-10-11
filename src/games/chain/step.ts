@@ -3,7 +3,7 @@ import * as C from '../../config';
 import { solveRobots } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
-import { robotsEnabled } from '../../sim/match';
+import { autoOnly, clockExpired, robotsEnabled } from '../../sim/match';
 import { CHAIN_HALF_X, CHAIN_HALF_Y } from './config';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
@@ -43,8 +43,23 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
     let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     // turretless shooters (drum/dumper) turn the whole robot to face the goal while the
     // fire button is held — override the rotate command before the drivetrain model.
+    //
+    // ⚠️ A TANK TURNS ONLY FROM ITS SIDE DRIVES. The shared drive model takes a tank's (and a
+    // butterfly in tank mode's) yaw from `rightDrive − leftDrive` and ignores `rotate`
+    // (`src/sim/robot.ts`), so overriding `rotate` alone left a tank drum or dumper facing
+    // wherever the driver left it — and the fire gate never opened, so the manual fire button
+    // did nothing at all. BIOBUZZ found and fixed the same thing (`src/games/biobuzz/step.ts`);
+    // this is its fix: the turn goes into `rotate` for every other drivetrain (`omega = rotate ·
+    // maxTurn`) AND into the side drives as the driver's own forward (their mean) ∓ the turn
+    // (`omega = (rd − ld) · maxTurn / 2`, the same rate), with the forward trimmed so the turn
+    // always gets its share. Only a tank reads the side drives, so nothing else changes.
     const aim = chainAimAssist(r, cmd, enabled);
-    if (aim !== null) cmd = { ...cmd, rotate: aim };
+    if (aim !== null) {
+      const fwd = ((cmd.leftDrive ?? 0) + (cmd.rightDrive ?? 0)) / 2;
+      const room = 1 - Math.abs(aim);
+      const f = Math.max(-room, Math.min(room, fwd));
+      cmd = { ...cmd, rotate: aim, leftDrive: f - aim, rightDrive: f + aim };
+    }
     actual.set(r.id, cmd);
     // raised center of gravity (from ground clearance) makes the drive sluggish:
     // scale the movement command by the CoG factor before the drivetrain model.
@@ -102,7 +117,7 @@ function chainStepMatch(world: World, dt: number): void {
   if (m.phase === 'pre') {
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
-    if (m.preCountdown <= 0) {
+    if (clockExpired(m.preCountdown)) {
       m.preCountdown = undefined;
       m.phase = 'auto';
       m.phaseTimeLeft = C.AUTO_DURATION;
@@ -112,10 +127,16 @@ function chainStepMatch(world: World, dt: number): void {
   }
   if (m.phase === 'freeplay' || m.phase === 'post') return;
   m.phaseTimeLeft -= dt;
-  if (m.phaseTimeLeft > 0) return;
+  if (!clockExpired(m.phaseTimeLeft)) return; // see `clockExpired`: exact phase lengths
   switch (m.phase) {
     case 'auto':
       for (const r of world.robots) r.autoPathActive = false;
+      if (autoOnly(world)) {
+        m.phase = 'post';
+        m.phaseTimeLeft = 0;
+        world.events.push('AUTO COMPLETE', 'MATCH COMPLETE');
+        break;
+      }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');

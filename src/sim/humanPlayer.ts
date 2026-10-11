@@ -3,6 +3,7 @@ import * as C from '../config';
 import { loadSlots, loadZone, inRect, type Rect } from './field';
 import { heldSlotPos, robotIntersectsRect } from './physics';
 import { hyp, rot } from '../math';
+import { allocBallId } from './ballIds';
 
 /** The human player works the loading zone. They CONTINUOUSLY grab loose/returned
  * artifacts out of the zone into the off-field box (up to the 6-out-of-play cap),
@@ -62,7 +63,7 @@ export function updateHumanPlayers(world: World): void {
       if (!occupied && !robotNear) {
         const color = hp.box.shift()!;
         world.balls.push({
-          id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+          id: allocBallId(world),
           color,
           state: { kind: 'ground' },
           pos: { x: slot.x, y: slot.y },

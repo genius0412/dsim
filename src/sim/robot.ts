@@ -17,6 +17,7 @@ import {
   decodeShotSpecial,
 } from './fixedShot';
 import { flyFeedDue, flyReady, flyShot, flyStep } from './flywheel';
+import { allocBallId } from './ballIds';
 
 /** launch is legal when ANY part of the robot is inside a launch zone. Uses a
  * true OBB-vs-triangle overlap (not just corner containment): the launch wedge
@@ -922,7 +923,7 @@ function fire(world: World, r: RobotState): void {
   } else {
     // fallback: no physical held ball (shouldn't happen once preloads are held)
     world.balls.push({
-      id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+      id: allocBallId(world),
       color,
       state: { kind: 'flight', target: r.alliance },
       pos: { x: tp.x, y: tp.y },

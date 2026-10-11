@@ -18,7 +18,7 @@ import {
 import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
 import { visualSourceKey } from './importVisuals';
 import { clientIp } from './analytics';
-import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
+import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, runLengthAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
@@ -28,7 +28,7 @@ import { warmUp, warmupEnabled } from './warmup';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
-import { SERVER_CHANNEL, isAlphaServer } from './channel';
+import { IMPORTS_OPEN_HERE, SERVER_CHANNEL, advertisedCaps, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
 import { LanSignalling } from './lanSignal';
@@ -239,7 +239,9 @@ const LAN_ANON_HOSTS = !authConfigured;
  * where `process.env` does not belong — the client imports that module.
  */
 const presenceCaps: string[] = [
-  ...SERVER_CAPS,
+  /* `robotImport` and `importVisuals` only where the importer ships (`IMPORTS_OPEN_HERE`): a client
+     offers an imported robot, or uploads its look, only on those words */
+  ...advertisedCaps(SERVER_CAPS, IMPORTS_OPEN_HERE),
   /* `lan` SAYS THIS DEPLOYMENT OFFERS LAN AT ALL, and it is what lights the client's entry
      points — the Play tile, `/lan`, the banner, the Career rows. It exists because the
      client half used to be `VITE_LAN_ENABLED`, baked in at BUILD time, so switching LAN on
@@ -3713,7 +3715,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * this attempt may have created the room, and a room nobody ever joined would otherwise
      * be counted against `MAX_ROOMS` for the life of the process.
      */
-    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       abandon();
       return;
@@ -4091,7 +4093,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // still advances the world between snapshots off the authoritative commands (see
     // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
     // watch it either — and the honest answer is the same sentence a driver gets.
-    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       return;
     }
@@ -4209,7 +4211,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
         // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
         // "your slot expired".
-        if (r && !physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+        if (r && (!physicsAllowed(r.physics, coerceCaps(msg.caps)) || !runLengthAllowed(r.config.settings, coerceCaps(msg.caps)))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
@@ -4681,7 +4683,7 @@ console.log(
       : 'none'
   }${LAN_MODE ? ' lan=1 (self-hosted: nothing here persists)' : ''}${
     isAlphaServer() ? ' (alpha results PERSIST here)' : ''
-  }`,
+  } imports=${IMPORTS_OPEN_HERE ? 'open' : 'closed'}`,
 );
 });
 /**

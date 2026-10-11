@@ -20,6 +20,7 @@ import type { GameModule } from './games/module';
 import type { GameId } from './games/types';
 import { registeredGames } from './games';
 import { appChannel } from './net/env';
+import { importerOpenOn } from './net/imported';
 import { gameVisibleOn, visibleGameIdsOn, visibleSeasonsOn, type Season } from './seasons';
 
 /** the seasons this build may show, in registry order */
@@ -49,3 +50,23 @@ export const visibleGames = (): GameModule[] =>
  * gate above, kept beside it so there is one place that knows what `alpha` means.
  */
 export const devRoutesEnabled = (): boolean => appChannel() === 'alpha';
+
+/**
+ * Does this build offer the ROBOT IMPORTER? The rule is `importerOpenOn` (`src/net/imported.ts`),
+ * asked of this build's channel, so the alpha site has it and production does not, with no new
+ * Vercel variable. Two more ways in, neither of them a deployment: the dev server, and
+ * `VITE_ROBOT_IMPORT=1` on a local `vite build` for the preview probes (exactly `1`; anything else
+ * is off).
+ *
+ * ⚠️ THE COSMETIC HALF. It hides the editor's route, the library row, the lobby's library cards and
+ * the Network panel, and `App` shows a stored import as the standard robot (`withoutImport`). The
+ * server refuses an import on a channel where the rule is closed. It hides; it never deletes: the
+ * stored settings, the library and the account copy are left as they are.
+ *
+ * Read it only outside the smoke import graph (`App`, `Menu`, `Lobby`, `NetworkSection`,
+ * `net/api.ts`): this file reaches `net/env.ts`, which reads `import.meta.env` at load.
+ */
+export const importerEnabled = (): boolean =>
+  import.meta.env.DEV ||
+  importerOpenOn(appChannel()) ||
+  (import.meta.env.VITE_ROBOT_IMPORT as string | undefined)?.trim() === '1';

@@ -6,7 +6,8 @@
 - **Banner:** `TopStrip` is a 728x90 / 320x50 outlined frame with a label above; the Offset banner fills the same frame ("Sponsored"). Gone on Home, hidden under 520px tall. `shiftaudit`: 638 state changes, 0 shifts. Needs `VITE_ADSENSE_SLOT_TOP` for a real ad.
 - **Records hub:** `/records` = search + page links + feed; pages are the `RECORDS_PAGES` registry. New endpoint `GET /api/records/recent` (no migration). **Server change: needs `./scripts/fly-deploy.sh` from a `main` worktree**, together with Browse rooms. Dev review: `http://localhost:5180/decode/records?mock=1` (the fixture is DEV-only).
 - **Since built:** Achievements, Players' Recently played, the ranked standing, the versus results fit, and **Watch** on Browse rooms (a lobby is watchable; no server change, `WatchLobby.tsx`). **Still not done:** deploy; the signed-in views (Achievements, ranked standing) were never seen with real data; the feed covers the selected game's current season only.
-- **Gotchas:** this worktree's `node_modules` has Zenith STUBS (28 expected tsc errors, 6 `AUTO:`/`IMPORT:` BIOBUZZ-lane failures). A Python edit script with `
+- **Gotchas:** this worktree's `node_modules` has Zenith STUBS (28 expected tsc errors, 6 `AUTO:`/`IMPORT:` BIOBUZZ-lane failures). A Python edit script with `
+
 ` inside a non-raw string once wrote real newlines into a regex in `smoke.ts` and killed a shard: put test text in a file and read it.
 
 
@@ -21,6 +22,34 @@
 - **Results screen:** fits 1920x1080, 1366x768, 1280x720, 1024x600, 390x844. 844x390 still scrolls ~45px. The VERSUS board could not be measured offline. The results ad now mounts only at 1180px tall (see ui.md).
 - **Gotchas:** this machine has no `pkill`; kill by pid. A `Stop-Process` filter that matches the worktree path kills its own shell. `sed -i` here flips CRLF to LF (git normalises, but edit multi-line with a CRLF-aware script).
 
+# HANDOFF — 2026-10-10c (AUTO-ONLY RUNS: rooms plan M4 + M6)
+
+**State: branch `rooms-m4-m6-auto-only`, stacked on #101 (SIM_VERSION 6). Shared smoke ALL PASS, `test:mm` 234, `test:workers` 170, `dbtest` all pass but 2 analytics checks that fail on #101's head too (not this work), BIOBUZZ lane has only the 6 Zenith-stub failures. SERVER CHANGE: migration 0063 + replay format 5, so a deploy (client first, server second).**
+
+- **Sim:** `World.runLength = 'auto'` (absent on a full run, so no golden moved) ends the match at the AUTO buzzer in DECODE, Chain Reaction and BIOBUZZ (`autoOnly()`, `sim/match.ts`). DECODE post assesses AUTO PATTERN only (no BASE/DEPOT/TELEOP PATTERN); Chain has no endgame credit; BIOBUZZ pays LEAVE/AUTO PARK/TIPs but not CELL/GARDEN/TELEOP PARK.
+- **Replays:** format 5 + `Replay.runLength`, stamped only for an auto-only run; `replayHasImported` no longer reads >=3 as imported. `ReplayPlayer` takes it off the container.
+- **Rooms/records:** `RoomSettings.runLength` (creation only), `matchStart.runLength` (also in `App.beginSession`), client cap `autoOnly` checked at the doors, server cap `autoOnly` checked by RecordRun/Lobby before asking. DB: `records.run_length` / `replays.run_length` (0063); only the Auto board reads auto-only rows; PB/rank/user stats filter 'full'.
+- **Offline/UI:** Practice ▸ Run length (`GameSettings.runLength`, one setting for practice, record rooms and rooms you create), an "Auto only" badge on the practice list, an Auto-board empty-state hint.
+- **Not done:** history/recent-match feeds list auto-only records unlabelled; no host control to change run length after creation; LAN rooms have none; Lobby has no Run length row of its own (it follows the Practice setting).
+- **Gotchas:** the local Zenith stub needed `simFollowerParams`; Python is not installed here (use node for scripted edits); heredoc backslashes collapse, so write `[0-9]` not `d`.
+
+# (prior) HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
+
+# HANDOFF — 2026-10-10c (the wall bump fix is on `main` and in production, as SIM_PATCH 8)
+
+**State: `alpha`'s patch 3 (the BIOBUZZ 3D wall square-up, 2026-10-02) is on `main` as SIM_PATCH 8 and DEPLOYED to production 2026-10-10 19:01Z. On `alpha` only `config.ts` changed: 8 is marked taken, so the next patch here is 9.**
+
+- **Why 8 on `main`:** `main` stamped replays 5 since 10-04 without the rule, so `>= 3` there would replay them with it. 40 bot 2v2 3D matches recorded on `main` before the port replay bit-identically after it (40 of 40 differ when forced onto the rule). `main` gates it `>= 8` in `step3dImpl.ts`; `alpha` keeps `>= 3`. When `alpha` (SIM_VERSION 5) lands on `main`, take `alpha`'s gate; `main`'s SIM_VERSION-4 replays play as DRIFT at that point anyway.
+- **Still open for the owner:** one G402 3D duel now bills twice (1.17 s gap vs the 1.0 s re-arm window), `scripts/smoke-biobuzz/rules.ts`.
+
+# HANDOFF — 2026-10-10 (Controls: BIOBUZZ's own binds in All games; turn with the triggers)
+
+**State: on `main` and `alpha`. Client only: no server change, no deploy needed beyond Vercel.** `npm test`, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass on `main`.
+
+- **Owner:** people keep missing that BIOBUZZ's controls are on a separate panel; add an option to turn the drivetrain with the triggers; push to `main`.
+- **BIOBUZZ panel:** All games now lists the ACTIVE season's own actions on "{Season} mechanisms" and "{Season} 3D view" cards after Mechanisms (`allGamesPanels`, `controlsLayout.ts`). Season-only actions have one store (main), so both places edit the same bind. Intake/Shoot overrides stay in the season tab. `ControlsSection`'s `tutorialGame` prop is now `activeGame` (required).
+- **Turn with triggers:** `PadBindings.turnWith` ('stick' | 'triggers'), Controls ▸ Driving ▸ gamepad "Turn with". LT left, RT right, analog. Binds on LT/RT are PAUSED, not removed (`livePad`, `.ds-key.paused`), and come back when switched off; binding a trigger while on is refused as "Turn left/right". Hints and the start prompt read `livePadBinds`. Rules in `docs/area/ui.md`.
+- **Checked in the browser:** cards render at 1280 and 410 wide; a conflict on the BIOBUZZ card rings in place with no scope named; a rebind from All games shows in the BIOBUZZ tab; switching to triggers strikes LT/RT and shows the notice. Not checked with a physical pad; the pad path is covered by stubbed-`getGamepads` checks in `npm test`.
 
 # HANDOFF — 2026-10-09 (alpha catch-up: seven PRs merged, DEPLOYED to `dsim-alpha` as v148)
 
@@ -38,6 +67,27 @@
 - **Checked on the deployed server (2026-10-09):** `/health` ok, v148 complete, one machine in `iad`, new image, migrations 0061/0062 in the log, three worker threads, JIT warm-up 2700 ticks in ~3.2 s, no exceptions. The "health check failed" lines at each boot and the idle auto-stops are normal (the old release logged both). ⚠️ `/api/records` returns 200 on the OLD server too (it ignores unknown params), so a 200 there proves nothing; use the release number and the migration lines.
 - **Not tested, do this next:** (1) a real two-tab test on alpha — open one room in two tabs and confirm the first tab stops driving the seat; (2) leave a lobby idle past `LOBBY_IDLE_MINUTES` and confirm it closes (worker path especially: no `workersmoke` check drives the reaper or the host cap); (3) click through the Play page, the leaderboard Window selector and the pace line on the alpha client; (4) `npm test` with the real Zenith tarballs (`ZENITH_VENDOR_REPO`/`ZENITH_VENDOR_TOKEN`, `node scripts/fetch-zenith.mjs`).
 - **Deploy gotcha:** `fly-deploy.sh` stops without `vendor/zenith/*.tgz`; this machine has none and no token, so the alpha deploy was run from Saket's. `flyctl` is at `~/.fly/bin` (not on the bash PATH).
+
+# HANDOFF — 2026-10-10b (AUTO: a blocked leg reads stuck again)
+
+**State: on `alpha`. `src/auto/seat.ts` only. The server runs the seat too but never reads `stuck` (the HUD reads the client's seat), so no deploy; no wire change, no `SIM_PATCH`.** `npm test` 5592/5592 (the one BIOBUZZ failure in 10-10 below is fixed), `build`, `server:check`, `docaudit`, `bundleaudit` pass.
+
+- **Cause: alpha code, not the Zenith packages.** Every worktree's installed `@horizon36596/zenith-*` is byte-identical to the tarballs `package-lock.json` pins (sha512 `+LtJbp04…`). `git bisect` with fixed node_modules: passes at `16061229` (where the check was added), fails from the merge `01192b52` (PR #105, `9a66db14`). PR #105 dropped the team's Pedro gains for Pedro's defaults, which took `maxBrakingPower` from 0.3 to 0.2.
+- **Mechanism:** a robot pressed into a wall in 2D measures a velocity of about ±1e-6 in/s whose sign flips each tick. Pedro's `clampBrakingPower` caps power against the measured motion at `maxBrakingPower`, so the follower's 0.8 path power reads 0.2 on about half the ticks. The seat's fixed 0.25 "asking" floor reset the stall count on each of those ticks. At 0.3 they had counted. 3D asks a steady 0.8 at the wall, which is why only the 2D check failed.
+- **Fix:** the floor is half the braking cap the follower runs on (`simFollowerParams(loaded.robot).maxBrakingPower / 2`), so a future change to the robot file's gains moves the floor with it. Rule in `docs/area/autos.md` (STUCK).
+- **Measured** (scratch probe, wall and the lane's ramp-into-FLOWER auto, 2D and 3D): the fix reads stuck at the same moments the pre-#105 gains with the 0.25 floor did (wall 6.98 s; FLOWER 1.90–2.28 s). Unfixed #105 never read stuck in the 2D wall or in either FLOWER scene. The lane's FLOWER auto is an untimed path ending 1 in inside the FLOWER, so it reads stuck by the rule; it did before #105 too.
+
+# HANDOFF — 2026-10-10 (the robot importer is gated to alpha; main does not get it until the owner says)
+
+**State: on `alpha`. SERVER CHANGE (`server/channel.ts`, `room.ts`, `roomHost.ts`, `roomWorker.ts`, presence in `index.ts`), but no behaviour change on `dsim-alpha`: its `SERVER_CHANNEL=alpha` keeps the importer open.** `npm test` shared 4447 pass; BIOBUZZ 5591/5592, the one failure pre-existing (below). `test:workers` 170, `test:mm` 234, `test:comp` 1365, `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass.
+
+- **Owner:** "We will not deploy the robot importer feature to main until I tell you to, but we will keep it on alpha. Note that things like fixed shooter should stay. Gate the robot importer feature to deployment."
+- **The gate** (robot-import.md "Where it ships"): one rule, `importerOpenOn` / `IMPORTER_CHANNELS = ['alpha']` (`src/net/imported.ts`). Client: `importerEnabled()` (`src/seasonVisibility.ts`), off on a stable build: no import route, no Imported robots row, no lobby library cards, no relay setting, `useLibrary` idle, tab-hosted rooms closed. Server: `IMPORTS_OPEN_HERE` (`server/channel.ts`), off without `SERVER_CHANNEL=alpha` or `ROBOT_IMPORT=1`: presence drops `robotImport`/`importVisuals`, rooms refuse imports (`RoomConfig.imports`, resolved on the socket thread, sent to the worker).
+- **Nothing is stripped.** A gated client that meets a stored import shows and drives the standard robot (`withoutImport`), keeps the import stored, and puts edits in `lastStandardSpec` (`keepImportActive`). Settings saves still send the `robotImport`/`importTune` caps. **Not gated:** fixed shooters (DECODE and BIOBUZZ), fixed hood, setpoint flywheel, hand loading, StarterBots, the `SIM_PATCH`es, sim/render/relay support for imported specs.
+- **Checked live:** the alpha bundle bakes `"alpha"` as its channel and www bakes none; `fly.alpha.toml` sets `SERVER_CHANNEL='alpha'` in `[env]`, `fly.toml` does not. A stable build was walked by the client lane: the import URL lands on the robot page, no library chunk is fetched, a seeded import shows the standard robot and survives an edit. Adversarial review over five lenses (leak, data, alpha regression, ungated features, tests): one test defect confirmed and fixed (the custom-room cost check was timing the refusal path).
+- **Recipes:** import probes and `shiftaudit`'s import pass need `VITE_ROBOT_IMPORT=1 npm run build` (`npm run dev` is always open); a local game server needs `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`.
+- **Opening production** (owner's word only): add `'stable'` to `IMPORTER_CHANNELS`; the smoke check "production is closed until the owner opens it" fails on purpose then and is updated with it.
+- **Open:** (the BIOBUZZ "AUTO stuck" failure noted here is fixed in 10-10b.) A closed server's relay refusal says "Only custom and LAN rooms show imported robots", wrong inside a closed custom room; honest clients never get there (no `importVisuals` cap), so the copy was left.
 
 # HANDOFF — 2026-09-27d (review lane 9: server correctness, PR #104)
 

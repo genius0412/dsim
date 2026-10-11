@@ -28,8 +28,13 @@ export const HOST_SEAT = 'host-local';
 
 /** page → worker */
 export type HostIn =
-  /** start a room. Sent once, before anything else. */
-  | { k: 'open'; code: string; config: RoomConfig }
+  /**
+   * Start a room. Sent once, before anything else.
+   *
+   * `imports`: may an imported robot play here (`RoomConfig.imports`)? The PAGE's answer, from its
+   * build's channel, because a Worker has no server gate to fall back on. Absent means no.
+   */
+  | { k: 'open'; code: string; config: RoomConfig; imports?: boolean }
   /**
    * A player arrived (the host itself included, as a loopback peer).
    *
@@ -104,3 +109,12 @@ export const HEALTH_INTERVAL_MS = 2000;
  * down itself first, on reading the error.
  */
 export const REFUSE_CLOSE_MS = 250;
+
+/**
+ * The config the Worker builds its `Room` from: the page's, with `imports` taken from the `open`
+ * message alone. A config that carries its own `imports` does not count, and an `open` without the
+ * field is closed (the room's own default would read a server gate a tab does not have).
+ */
+export function hostRoomConfig(open: Extract<HostIn, { k: 'open' }>): RoomConfig {
+  return { ...open.config, imports: open.imports === true };
+}

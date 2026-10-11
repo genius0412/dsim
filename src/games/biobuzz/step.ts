@@ -3,7 +3,7 @@ import * as C from '../../config';
 import { solveRobots, type SweepFrom } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
-import { robotsEnabled } from '../../sim/match';
+import { autoOnly, clockExpired, robotsEnabled } from '../../sim/match';
 import { BB_FLOWER_UNLOCK_S, BB_HALF_X, BB_HALF_Y } from './config';
 import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
@@ -232,7 +232,7 @@ export function biobuzzStepMatch(world: World, dt: number): void {
     }
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
-    if (m.preCountdown <= 0) {
+    if (clockExpired(m.preCountdown)) {
       m.preCountdown = undefined;
       m.phase = 'auto';
       m.phaseTimeLeft = C.AUTO_DURATION;
@@ -249,13 +249,19 @@ export function biobuzzStepMatch(world: World, dt: number): void {
   if (m.phase === 'teleop' && before > BB_FLOWER_UNLOCK_S && m.phaseTimeLeft <= BB_FLOWER_UNLOCK_S) {
     world.events.push('FLOWER OWNERSHIP UNLOCKED');
   }
-  if (m.phaseTimeLeft > 0) return;
+  if (!clockExpired(m.phaseTimeLeft)) return; // see `clockExpired`: exact phase lengths
   switch (m.phase) {
     case 'auto':
       for (const r of world.robots) r.autoPathActive = false;
       // LEAVE and AUTO PARK, assessed at this instant and latched (Table 10-2). Before the
       // phase flips, so the predicates see the field as it was when the buzzer went.
       bbAssess(world, 'auto');
+      if (autoOnly(world)) {
+        m.phase = 'post';
+        m.phaseTimeLeft = 0;
+        world.events.push('AUTO COMPLETE', 'MATCH COMPLETE');
+        break;
+      }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');

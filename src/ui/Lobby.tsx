@@ -44,6 +44,7 @@ import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
 import { useLibrary } from '../robotImport/ui/useLibrary';
+import { importerEnabled } from '../seasonVisibility';
 import { libraryEntryFor } from '../robotImport/libraryIds';
 
 interface Props {
@@ -281,11 +282,16 @@ export function Lobby({
   /** what the create form asks for; sent only by `createRoom`, and only to a server that has `'rooms2'` */
   const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>('custom');
   const [serverRooms2, setServerRooms2] = useState(false);
+  /** the server honours `RoomSettings.runLength`; without it a room would run in FULL whatever was asked */
+  const [serverAutoOnly, setServerAutoOnly] = useState(false);
   const creatingRef = useRef(false);
   useEffect(() => {
     let alive = true;
     void serverCaps().then((c) => {
-      if (alive) setServerRooms2(c.includes('rooms2'));
+      if (alive) {
+        setServerRooms2(c.includes('rooms2'));
+        setServerAutoOnly(c.includes('autoOnly'));
+      }
     });
     return () => {
       alive = false;
@@ -324,8 +330,11 @@ export function Lobby({
   const importedActive = isImportedSpec(settings.spec);
   // THE IMPORTED ROBOTS on this device, offered in "Your robot" beside the saved ones when the room
   // takes them (the importer, lane 4). The server is asked as soon as there is one to offer, not
-  // only once one is active, so the cards can be shown before anybody picks one.
-  const importLibrary = useLibrary(settings.game);
+  // only once one is active, so the cards can be shown before anybody picks one. Neither the library
+  // nor the cards where the importer is closed (`importerEnabled`); `App` never hands this screen an
+  // imported robot there, so nothing here asks the server either.
+  const importerOn = importerEnabled();
+  const importLibrary = useLibrary(settings.game, importerOn);
   const hasImports = (importLibrary.entries?.length ?? 0) > 0;
   const [importOk, setImportOk] = useState<boolean | null>(null);
   useEffect(() => {
@@ -607,7 +616,11 @@ export function Lobby({
       physics: physicsOffered ? '3d' : undefined,
       // Public shows in Browse rooms (`Room.listing` lists it only while its host is signed in)
       settings: creatingRef.current
-        ? coerceRoomSettings('versus', undefined, { preset: setup, listed: listed && signedIn })
+        ? coerceRoomSettings('versus', undefined, {
+            preset: setup,
+            listed: listed && signedIn,
+            runLength: serverAutoOnly ? settings.runLength : undefined,
+          })
         : undefined,
     };
   }
@@ -1702,8 +1715,9 @@ export function Lobby({
                   onPick={() => pickSpec({ ...r })}
                 />
               ))}
-              {/* imported robots, where this room can play them (never a record room) */}
-              {importOk === true && !isRecord
+              {/* imported robots, where this room can play them (never a record room) and this build
+                  has the importer */}
+              {importerOn && importOk === true && !isRecord
                 ? (importLibrary.entries ?? []).map((e) => (
                     <RobotCard
                       key={e.id}

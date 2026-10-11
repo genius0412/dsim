@@ -46,7 +46,7 @@ the instant THAT game counts AUTO at (Chain `autoEnd`; BIOBUZZ and DECODE by `te
 they book the transition as AUTO), the fouls handed over at the same instant come off AUTO, and
 TELEOP is the rest; a run whose net total is 0 (a void) is 0 in both. A row from before 0062 has
 null splits and stays off the Auto/TeleOp boards, and `personalBest`/`recordRank`/the awards stay
-Total/Season. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
+Total/Season. **`run_length` (0063)**: an auto-only run (`replays.run_length`, `records.run_length`, default `'full'`) is read ONLY by the Auto board (`category=auto` reads every row); every other reader — Total, TeleOp, `personalBest`, `recordRank`, `getUserStats` — filters `run_length = 'full'`, inside `best`. `persistMatch` reads it off the REPLAY, stores `auto_score = score`, and returns no PB/rank reveal for it. History/recent feeds still list auto-only rows unlabelled. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
 Windows roll over at **08:00 UTC** (day; Monday week; the 1st for month, `server/boardWindow.ts`),
 computed by the SERVER; they sit inside the current season, so one era. `all` (lifetime) drops the
 season filter but keeps ONE physics inside `best` (the live era, or `era=2d|3d` for a game with
@@ -432,7 +432,9 @@ that carries what an older build cannot read (`carriesNew`: a fixed launcher, ho
 wheel, or NO intake); the older build's rewrite of `intake: 'none'` (the sloped preset, the length
 clamped to 15, the width raised to 14.5, measured on alpha's coercer) counts as "not read"
 (`olderReading`), not as a change. A save WITH the cap is stored as sent, so a new
-build that drops the import on purpose is never "repaired". Backward-compatible both ways (an older
+build that drops the import on purpose is never "repaired". The importer's deployment gate
+(robot-import.md "Where it ships") does NOT drop the caps: a gated build keeps the import in its
+blob and still sends them. Backward-compatible both ways (an older
 server ignores `caps`). `npm run dbtest` "settings:" drives the write on PGlite; smoke "settings
 keep:" holds the rules, including the one robot an older build rewrites rather than strips (a
 BIOBUZZ fixed launcher reads as a turret there) and so is not re-attached. A second cap,

@@ -36,7 +36,8 @@ export const CB_BEHAVIOUR = 16;
  * `call` is a request id: the worker answers it with a `reply` event.
  */
 export type Op =
-  | { k: 'create'; rid: number; code: string; config: RoomConfig; group: string; cbs: number }
+  /** `config.imports` is always decided by the socket thread (`RemoteRoom`); the worker reads no env for it */
+  | { k: 'create'; rid: number; code: string; config: RoomConfig & { imports: boolean }; group: string; cbs: number }
   | { k: 'group'; rid: number; group: string }
   | { k: 'add'; rid: number; seq: number; sock: number; client: ClientData }
   | { k: 'spec'; rid: number; seq: number; sock: number; client: ClientData }

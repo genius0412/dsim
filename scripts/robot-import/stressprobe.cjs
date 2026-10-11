@@ -2,7 +2,8 @@
  * PRODUCTION build, driving the real editor with the stress robots `stress.ts` writes:
  *
  *   npx tsx scripts/robot-import/stress.ts                       # → %TEMP%/dsim-robot-stress
- *   npm run build && npx vite preview --port 4173 --strictPort
+ *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173 --strictPort   # the importer
+ *                                     # ships on alpha only; the variable opens it in a local build
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/robot-import/stressprobe.cjs \
  *       [--port 4173] [--dir <stress dir>] [--files stress-s.glb,stress-l.stl] [--gpu] [--out results.json]
  *
