@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-11 (UX flow redesign merged into `alpha` and deployed to `dsim-alpha`)
+
+**State: PR #117 (`ux-flow-redesign`) merged into `alpha` after `alpha` was merged into it; `dsim-alpha` redeployed from that `alpha`. NOT on `main`, production untouched.** Gates on the merged tree, with the REAL Zenith tarballs: `tsc`, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass; shared smoke 4582 ALL PASS; BIOBUZZ 5597 checks with only the machine-dependent PREDICT/step3d timing failures; `test:mm` 234. `test:workers` (144/26, worker `.ts` loader) and `dbtest` (the 4 `analytics/*`) fail identically on `alpha` a0aee67e.
+
+- **Conflicts:** Lobby's create keeps `listed: listed && signedIn` and adds `alpha`'s `runLength`; App keeps the `/configure/match` → Solo setup redirect under `alpha`'s importer comment; ui.md keeps both Turn with triggers and Solo setup; `docs/ui-components.md` regenerated. `netcode.md` and `HANDOFF.md` had been saved CRLF on this branch (whole-file conflicts) and are merged as LF.
+- **One fix the merge needed:** `alpha`'s importer gate hands every screen `shown`, and the new `SoloSetup` was handed `settings` (smoke "importer gate/client: every screen is handed `shown`"). It gets `shown` now.
+- **The `AUTO stuck` BIOBUZZ failure** seen on the branch before the merge was `alpha`'s 6bde527b missing, not this work; it passes on the merged tree.
+- **Still open:** promoting to `main` + production (owner's go); the signed-in views (Achievements, ranked standing) with real data.
+
 # HANDOFF — 2026-10-10b (round 2: legal, ad banner, Records hub), branch `ux-flow-redesign`, NOT pushed, NOT deployed
 
 **Commits since the first round:** `4adaab63` legal, `6f4b1b13` ad-frame strip (not on Home), `e384a2f4` Records feed endpoint, plus the hub UI + docs commit after it. Shared lane: 4441 checks pass. `dbtest` passes the 8 new `feed/db` checks; its 4 `analytics/*` failures were already there (not from this work, not investigated).

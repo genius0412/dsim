@@ -2500,7 +2500,7 @@ export function App() {
         <>
           <h1 className="ds-h1">Solo practice</h1>
           <SoloSetup
-            settings={settings}
+            settings={shown}
             onChange={update}
             onStart={() =>
               guardStart(() => {
