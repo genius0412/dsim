@@ -10,7 +10,6 @@
 export const RECORDS_PAGES = [
   { key: 'leaderboard', label: 'Leaderboards', hint: 'Best runs and ranked ratings' },
   { key: 'career', label: 'My records', hint: 'Your runs, matches and awards' },
-  { key: 'players', label: 'Players', hint: 'Find a player by name' },
   { key: 'achievements', label: 'Achievements', hint: 'Badges and awards' },
 ] as const;
 

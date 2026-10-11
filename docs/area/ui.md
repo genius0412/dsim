@@ -804,19 +804,16 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
   keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every
-  shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can
+  shell screen and RESERVES its height: the `banner` ad unit (728x90, 320x50 under 760px) when ads can
   run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
-  answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. At ≤900px `.ds-body` wraps so the collapsed
-  friends chip takes the first line and the content its own (`.ds-body > .ds-main`). In a room,
-  friends drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the subnav becomes an
-  `auto-fit` grid and the friends chip is icon-only, its label visually hidden but still read. The
+  answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. **FRIENDS IS AN OVERLAY (owner, 2026-10-10: it must not push the page).** The toggle card stays in the layout; opening it shows `.ds-friends-overlay`, a `position: fixed` sheet from the right edge under the app bar (full height in a room, which has no bar) with a transparent `.fr-scrim` behind it. Escape or a click outside closes it. It always starts closed: the stored open state (`decodesim.friendsPanelOpen`) and the squeeze media query are gone. At ≤900px `.ds-body` wraps so the toggle takes the first line and the content its own (`.ds-body > .ds-main`); at ≤640px the toggle is icon-only, its label visually hidden but still read. The
   profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
   stats three across below.
 - **RECORDS IS A HUB AND THE PAGES BEHIND IT (2026-10-10).** `/records` is `RecordsHub` (a player search, a
   link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
   season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
   (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
-  `Records.tsx`'s `PAGES` (four now: Leaderboards, My records, Players with a Recently played list, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
+  `Records.tsx`'s `PAGES` (three now: Leaderboards, My records, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards; there is no Players page, the hub's search is how you find a player), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
   typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: Back in the app bar
   returns to the hub, from the hub to Home. `/leaderboard`, `/stats` and `/records/career` still resolve.
   **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
