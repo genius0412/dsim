@@ -12227,5 +12227,19 @@ function photoVenueChecks(check: Check): void {
       'photo venues: the light-gathering .hdr is the venue’s own same-origin file',
       /if \(def\.photo\) return \{ url: venueAssetUrl\(def\.photo\.ibl\), fallback: def\.photo\.fallback \};/.test(envSrc),
     );
+    // a failed `.hdr` on a photographed row replaces its LIGHT only — the photograph stays — so the
+    // player is not told about a room they are not shown (verified in Electron with the `.hdr`
+    // blocked: the events hall stayed, lit like the gym)
+    check(
+      'photo venues: a failed light-gathering map on a photographed row says the LIGHTING stands in, not the room',
+      /def\.photo\s*\?\s*`Couldn’t load the \$\{def\.name\} lighting\. Lighting it like \$\{alt\.name\} instead\.`/.test(envSrc),
+    );
+    // the decoded backdrop is 32 MB of CPU memory; one dropped before it ever reached the GPU (the
+    // player picked another venue mid-decode) must still let it go
+    const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+    check(
+      'photo venues: the decoded bitmap is closed once uploaded, and when its texture is freed unused',
+      /tex\.onUpdate = \(\): void => \{\s*bitmap\.close\(\);/.test(pv) && /tex\.addEventListener\('dispose', \(\) => bitmap\.close\(\)\);/.test(pv),
+    );
   }
 }

@@ -170,6 +170,9 @@ export async function loadPhotoBackdrop(path: string, anisotropy: number): Promi
       tex.onUpdate = (): void => {
         bitmap.close();
       };
+      // and when the texture is freed without ever being uploaded (the player picked another
+      // venue while this one decoded): `close` twice is a no-op
+      tex.addEventListener('dispose', () => bitmap.close());
     } else {
       tex = await new THREE.TextureLoader().loadAsync(url);
     }

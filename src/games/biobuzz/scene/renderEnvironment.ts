@@ -492,7 +492,13 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         // record is about the URL, not about which environment is on screen right now.
         if (disposed || mine !== epoch) return;
         const alt = applyFallback(source.fallback, lighting);
-        onEvent?.(`Couldn’t load the ${def.name} environment. Using ${alt.name} instead.`);
+        // a photographed venue keeps its photograph (`renderPhotoVenue.ts`): only its light is
+        // standing in, so the line says so rather than naming a room the player does not see
+        onEvent?.(
+          def.photo
+            ? `Couldn’t load the ${def.name} lighting. Lighting it like ${alt.name} instead.`
+            : `Couldn’t load the ${def.name} environment. Using ${alt.name} instead.`,
+        );
         // eslint-disable-next-line no-console
         console.warn(`BIOBUZZ 3D: HDRI environment failed to load; using ${alt.id} instead.`, err);
       } finally {

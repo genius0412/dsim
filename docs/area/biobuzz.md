@@ -929,7 +929,10 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
         hall 89 %, the hangar 99.7 %). The derived `.hdr` is box-filtered from the
         same 4k source (energy-conserving): school hall E_up 2.248 against Poly Haven's own 1k
         2.247. It replaces the 1k fetch (1.69 MB) at 0.43 MB; its PMREM cube is 128, not 256, so
-        the room probe follows to 128 (it reads the size off `scene.environment`).
+        the room probe follows to 128 (it reads the size off `scene.environment`). That costs
+        nothing visible: the same Extreme chase shot of a robot by the hive with a 1024-wide `.hdr`
+        (probe 256, 1.70 MB) differs by 0.65/255 on average and in 0.008 % of pixels by more
+        than 10.
       - **SAME ORIGIN.** All three files per venue are under `public/venues/` (reversing the old
         "nothing under `public/`" HDRI rule for DERIVED files only; README beside them: slug, URL,
         source md5, authors, the exact command). A Discord Activity's CSP refuses
@@ -951,13 +954,14 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
         foot. A luminance KNEE at 0.6 rolls every highlight toward 1.2, the field's lit white
         panels (1.2–1.7 raw): a window or a doorway into sunlight can match the field's whites but
         not outshine them. Per-row `intensity` 0.6–1 and `saturation` 0.8–0.85. Measured at
-        Extreme from the red driver (`scratch/measure.cjs`, sRGB-decoded rendered pixels): the
+        Extreme from the red driver (the scene-preview's `&swatch=1` points, rendered pixels read
+        offscreen in Electron and sRGB-decoded): the
         photographed floor beside the field 0.14–0.42 (the procedural room 0.37, gym 0.32); the
         mat 0.068–0.134 (gym 0.088, room 0.178, same tool); the top quarter's 95th percentile
         0.60–0.83 (room 0.48: the windows).
-      - **EACH ROW'S RIG FOLLOWS ITS PHOTOGRAPH'S LIGHT** (`scratch/tools/fieldlight.cjs`: the
-        brightest 1 % of the upper hemisphere), raised to 40° where the photograph's is lower (the
-        25° rule; the court's evening sun is at 12°). The school hall therefore left `BASE_RIG`: its
+      - **EACH ROW'S RIG FOLLOWS ITS PHOTOGRAPH'S LIGHT** (`scripts/venues/fieldlight.cjs`: the
+        brightest 1 % of the upper hemisphere), raised to 40–45° where the photograph's is lower
+        (the 25° rule; the court's evening sun is at 12°). The school hall therefore left `BASE_RIG`: its
         key now comes from the auditorium lights it shows (az 75°), and with it the fixed-High
         export's light.
       - **TIERS AND COST.** 4096 × 2048 from High up (44.7 MB of GPU memory with mipmaps), 2048 on
@@ -978,6 +982,21 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
         height or so across the floor at its foot (the hangar's leaning boards); the school hall's
         auditorium is a metre below the stage and a single floor plane draws it about 0.6 × as
         deep; its seats stand up only from near the lens.
+      - **CHECKED IN A LIVE SCENE, not only by source** (Electron, offscreen, the scene-preview's
+        `__bbSetGraphics` switching venues mid-run, 2026-10-10):
+        - Venue switches free the backdrop: events hall → hangar → room → events hall, each old
+          texture's `dispose` fired on the swap and `renderer.info.memory.textures` stayed at
+          40–41. The decoded bitmap is closed once uploaded, and also when its texture is freed
+          without ever being uploaded (picked away mid-decode).
+        - Same camera, events hall at Extreme: 246 draws and 478,350 triangles in the last scene
+          pass with the photograph, 250 and 478,808 with its procedural stand-in.
+        - The 4k WebP blocked: the procedural hall stands (no void), one message, and the third
+          build asks for nothing. The `.hdr` blocked: the photograph stays, lit by the row's
+          painted `fallback`, and the message says the LIGHTING stands in (it named a room the
+          player could not see).
+        - The fixed-High export scene (`quality: 'high'`, no input) built in the school hall had
+          its photograph and light settled 0.74 s after construction, before the first frame.
+        - `derive.cjs` re-run on the cached sources wrote byte-identical WebPs (md5 equal).
     - ⚠️ **AN ENVIRONMENT MAP IS SAMPLED IN THREE'S y-UP FRAME AND THIS SCENE IS z-UP.** Every
       camera here sets `up = (0,0,1)`, but an environment map is not in the scene graph:
       `textureCubeUV` takes a world direction and three's equirect convention is +y = zenith, so an
