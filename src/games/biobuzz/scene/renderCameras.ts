@@ -11,6 +11,7 @@ import {
   freeCamPanGain,
   freeCamPose,
   freeCamWheelSign,
+  FREE_CAM_DIST_MIN,
   FREE_CAM_NAV_DEFAULT,
   orbitFreeCam,
   panFreeCam,
@@ -476,12 +477,12 @@ const FREE_CAM_HALFLIFE = 0.08;
  * field is 141 in across, so ~250 in out at 32° holds the whole field with the hives' tops
  * inside the frame. */
 const ORBIT_RADIUS_DEFAULT = 250;
-const ORBIT_RADIUS_MIN = 90;
-const ORBIT_RADIUS_MAX = 620;
+export const ORBIT_RADIUS_MIN = 90;
+export const ORBIT_RADIUS_MAX = 620;
 const ORBIT_ELEV_DEFAULT = 0.56; // rad, ≈ 32°
-const ORBIT_ELEV_MIN = 0.08;
-const ORBIT_ELEV_MAX = 1.45; // just short of straight down, where the yaw becomes meaningless
-const ORBIT_CENTER_Z = 24;
+export const ORBIT_ELEV_MIN = 0.08;
+export const ORBIT_ELEV_MAX = 1.45; // just short of straight down, where the yaw becomes meaningless
+export const ORBIT_CENTER_Z = 24;
 const ORBIT_FOV = 55;
 /** slow auto-rotate, rad/s — one lap in a bit over two minutes, i.e. a match. Slow enough to
  * read as a gallery turntable rather than a moving shot. */
@@ -505,6 +506,32 @@ const EYE_OFFSET_MAX = 24;
  * non-DOM host (a headless harness), which reads as "motion is fine". */
 const reducedMotionMq: MediaQueryList | null =
   typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+/**
+ * A ROOM THE ORBIT AND FREE CAMERAS MAY NOT LEAVE (2026-10-11) — a photographed venue's real walls
+ * and ceiling, less a margin (`photoCameraRoom`, `renderPhotoVenue.ts`). A procedural venue is
+ * built wider than the cameras reach (`VENUE_MIN_HALF`); a photograph is the size the room was, as
+ * close as 208 in from the field's centre, and a camera past a wall saw that wall's base stretched
+ * across the floor for a third to a half of the frame. So the boom from the look-at point to the
+ * eye is shortened to stay inside, the way a follow camera stops at a wall: the direction is kept,
+ * only the distance gives. Null (every procedural venue) changes nothing.
+ */
+export interface CameraRoom {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+}
+
+/** the longest boom, up to `len`, from `target` along the unit `dir` that keeps the eye inside
+ * `room` — negative when `target` itself is outside it (the caller floors it) */
+export function boomInRoom(target: readonly number[], dir: readonly number[], len: number, room: CameraRoom): number {
+  let t = len;
+  for (let i = 0; i < 3; i++) {
+    const d = dir[i];
+    if (d > 1e-9) t = Math.min(t, (room.max[i] - target[i]) / d);
+    else if (d < -1e-9) t = Math.min(t, (room.min[i] - target[i]) / d);
+  }
+  return t;
+}
 
 function reducedMotion(): boolean {
   // THE OS PREFERENCE ALWAYS WINS. `tunedReducedMotion` is the player's own Graphics pick and can
@@ -566,6 +593,8 @@ export interface BbCameras {
    * view" chip). Sets the GOAL only — the eased pose (`update`) eases into it over a few
    * frames, same as every other free-cam move. */
   freeReset(viewAngle: number): void;
+  /** the room the orbit and free eyes stay inside (`CameraRoom`), or null for none */
+  setRoom(room: CameraRoom | null): void;
 }
 
 /** scratch target for `driver.lookAt` — one object, mutated every frame, never reallocated. */
@@ -606,6 +635,27 @@ export function createCameras(): BbCameras {
   /** the device's own free-cam layout. Defaulted rather than read from storage here: this file
    * is constructed by headless harnesses too, and `renderScene.ts` pushes the real one in. */
   let freeNav: FreeCamNav = FREE_CAM_NAV_DEFAULT;
+  /** see `CameraRoom` — per scene, like the rest of this state */
+  let room: CameraRoom | null = null;
+  const orbitTarget = [0, 0, ORBIT_CENTER_Z] as const;
+  /** the orbit boom's unit direction for the current yaw/elevation */
+  function orbitDir(): [number, number, number] {
+    const ce = Math.cos(orbitElev);
+    return [Math.cos(orbitYaw) * ce, Math.sin(orbitYaw) * ce, Math.sin(orbitElev)];
+  }
+  /** the orbit radius the room allows in the current direction (no room: the zoom limit) */
+  function orbitReach(): number {
+    if (!room) return ORBIT_RADIUS_MAX;
+    return Math.max(ORBIT_RADIUS_MIN, boomInRoom(orbitTarget, orbitDir(), ORBIT_RADIUS_MAX, room));
+  }
+  /** `s` with its distance shortened to what the room allows along its own direction */
+  function freeInRoom(s: FreeCamState): FreeCamState {
+    if (!room) return s;
+    const p = freeCamPose(s);
+    const d = [(p.eye[0] - p.target[0]) / s.dist, (p.eye[1] - p.target[1]) / s.dist, (p.eye[2] - p.target[2]) / s.dist];
+    const reach = Math.max(FREE_CAM_DIST_MIN, boomInRoom(p.target, d, s.dist, room));
+    return reach < s.dist ? { ...s, dist: reach } : s;
+  }
   /** wall-clock delta between updates, for the smoothing and the turntable. A RENDER file, so
    * `performance.now()` is allowed here (`scripts/smoke.ts`'s clock guard exempts `render*`/
    * `draw*` by name) — and required: `SceneFrame` carries no dt, and a camera that eased by a
@@ -834,14 +884,11 @@ export function createCameras(): BbCameras {
     orbit.aspect = Math.max(1e-3, safe.w / safe.h);
     orbit.fov = orbitFovDeg(orbit.aspect);
     if (orbitAuto && !reducedMotion()) orbitYaw += ORBIT_AUTO_RATE * dt;
-    const ce = Math.cos(orbitElev);
-    const se = Math.sin(orbitElev);
+    const dir = orbitDir();
+    // inside the photographed room (`CameraRoom`): the boom gives, the direction holds
+    const r = Math.min(orbitRadius, orbitReach());
     applyViewOffset(orbit);
-    orbit.position.set(
-      Math.cos(orbitYaw) * ce * orbitRadius,
-      Math.sin(orbitYaw) * ce * orbitRadius,
-      ORBIT_CENTER_Z + se * orbitRadius,
-    );
+    orbit.position.set(dir[0] * r, dir[1] * r, ORBIT_CENTER_Z + dir[2] * r);
     orbit.up.set(0, 0, 1);
     scratchTarget.set(0, 0, ORBIT_CENTER_Z);
     orbit.lookAt(scratchTarget);
@@ -887,7 +934,7 @@ export function createCameras(): BbCameras {
                 freeCurrent.target[1] + (freeGoal.target[1] - freeCurrent.target[1]) * k,
               ],
             };
-    const pose = freeCamPose(freeCurrent);
+    const pose = freeCamPose(freeInRoom(freeCurrent));
     free.position.set(pose.eye[0], pose.eye[1], pose.eye[2]);
     free.up.set(0, 0, 1);
     scratchTarget.set(pose.target[0], pose.target[1], pose.target[2]);
@@ -971,7 +1018,10 @@ export function createCameras(): BbCameras {
       // every distance, which is what stops a zoom from crawling when far out and lurching when
       // close in.
       const factor = Math.exp(deltaY * 0.0012);
-      orbitRadius = Math.max(ORBIT_RADIUS_MIN, Math.min(ORBIT_RADIUS_MAX, orbitRadius * factor));
+      // from the radius ON SCREEN, so a wheel notch in moves at once after the room shortened the
+      // boom, and a notch out stops at the wall rather than winding up a distance nobody sees
+      const reach = orbitReach();
+      orbitRadius = Math.max(ORBIT_RADIUS_MIN, Math.min(reach, Math.min(orbitRadius, reach) * factor));
     },
     setFreeNav(nav: FreeCamNav): void {
       freeNav = nav;
@@ -992,10 +1042,15 @@ export function createCameras(): BbCameras {
       // and clamp the `factor` this computes, same shape as `orbitZoom` above.
       const factor = Math.exp(deltaY * freeCamWheelSign(freeNav) * freeNav.zoomSpeed * FREE_DOLLY_RATE);
       const at = freeNav.zoomToCursor && ndc ? floorUnder(ndc.x, ndc.y) : null;
-      freeGoal = at ? dollyFreeCamToward(freeGoal, factor, at[0], at[1]) : dollyFreeCam(freeGoal, factor);
+      // the same rule as `orbitZoom`: from the distance the room allows, and back inside it after
+      const base = freeInRoom(freeGoal);
+      freeGoal = freeInRoom(at ? dollyFreeCamToward(base, factor, at[0], at[1]) : dollyFreeCam(base, factor));
     },
     freeReset(viewAngle: number): void {
       freeGoal = defaultFreeCam(viewAngle);
+    },
+    setRoom(next: CameraRoom | null): void {
+      room = next;
     },
   };
   return cams;

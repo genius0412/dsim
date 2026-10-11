@@ -35317,7 +35317,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   check(
     'imports/export: the replay export awaits the pictures (2D) or the scene’s assetsSettled (3D), bounded, BEFORE recordFast draws frame 0; the BIOBUZZ scene implements it',
     wait > 0 && wait < at && /scene\.assetsSettled\?\.\(shot\.world\)/.test(rv) && /importedTopsSettled\(importIds\)/.test(rv) &&
-      /assetsSettled\(world: World\): Promise<void> \{\s*return importedMeshesSettled\(/.test(rd('src/games/biobuzz/scene/renderScene.ts')),
+      /assetsSettled\(world: World\): Promise<void> \{\s*return (?:Promise\.all\(\[)?importedMeshesSettled\(/.test(rd('src/games/biobuzz/scene/renderScene.ts')),
   );
 }
 

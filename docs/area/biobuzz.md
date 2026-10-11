@@ -999,9 +999,10 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   - ⚠️ `WebGLRenderer.setViewport`/`setScissor` take CSS pixels and multiply by the pixel ratio
     THEMSELVES. The PiP minimap passed drawing-buffer pixels once and squared the ratio — at 75 %
     render scale the whole scene drew into 56 % of the canvas, which reads as a camera bug.
-  - **Environments** (plan §4.5) are ELEVEN, listed in `graphics/environments.ts` — which
+  - **Environments** (plan §4.5) are FIFTEEN, listed in `graphics/environments.ts` — which
     `src/contributors.ts` DERIVES its Third-party credits from, so a fetched one cannot ship
-    uncredited. Two are CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`, never bundled (use
+    uncredited. Five are PHOTOGRAPHED VENUES (2026-10-10, below); the rest of this paragraph is
+    the eleven before them. Two were CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`, never bundled (use
     `HDRLoader`, not `RGBELoader` — renamed in three 0.186; the old name warns on every load); one
     is three's own `RoomEnvironment`; the other **eight are PAINTED** (owner, 2026-09-21: "Add more
     choices for the 3d field background") — an equirectangular canvas per id, built once and run
@@ -1050,7 +1051,172 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
         painted at runtime), worst case 7 draws and 5,762 triangles against High scene totals of
         337k–462k. ~126 checks in the RENDER lane build it for real and measure it.
       - OPEN: `school-hall` and `monochrome-studio` still download 1.6–1.7 MB of HDRI that now
-        buys only IBL and reflections, since the geometry hides the photograph.
+        buys only IBL and reflections, since the geometry hides the photograph. (RESOLVED for
+        `school-hall` on 2026-10-10: it is a photographed venue now, below. `monochrome-studio`
+        still does.)
+    - ⚠️ **FIVE ENVIRONMENTS ARE PHOTOGRAPHS OF REAL ROOMS, AND THE FIELD STANDS IN THEM
+      (`scene/renderPhotoVenue.ts`, 2026-10-10).** Owner: "Please add actual good quality scenes
+      for backgrounds." `school-hall` (now visible, not just lighting), `events-hall` (the default
+      from High up and the replay export's, below), `hangar`, `court`, `quad`: Poly Haven CC0 panoramas, each a `photo` block on its
+      row. The procedural venues stay as the cheap options (Low/Medium default `room`) and as the
+      stand-in a photographed row shows while its backdrop loads and keeps if it cannot.
+      - **Projected per fragment onto a BOX the shape of the photographed room.** Each fragment
+        reads the panorama along the ray from the lens to itself, so the floor (63 in below the
+        lens) and the four walls (read off the photograph's own floor/wall junctions, in lens
+        heights) have the right scale and parallax from every camera. The lens is over the field
+        centre, so the tripod patch is under the field. A flattened sphere (three's
+        `GroundedSkybox`) was worked through and rejected: it must clear the camera's reach
+        (660 in), so in the events hall the lowest 33 in of a side wall 318 in out would smear
+        over 339 in of floor, and a driver 150 in off-centre would see the far wall at 0.64 of its
+        size. Furniture is the one thing a box cannot stand up.
+      - ⚠️ **THE BOX GROWS ROUND THE CAMERA, IN THE VERTEX SHADER.** The real rooms are 208–882 in
+        from the lens to a wall, and the orbit camera reaches 620 in out and 637 up. Any wall (or
+        the ceiling) within 30 in of `cameraPosition` moves past it, per camera and per pass, so the
+        probe's capture and the minimap get their own. A camera zoomed past a wall saw that wall's
+        base stretched over the floor behind it, so since 2026-10-11 the orbit and free cameras are
+        HELD in the room instead (below) and the push is left to the top-down shots and to the
+        few driver eyes within 30 in of a wall. `frustumCulled = false`: no bounding volume holds a
+        box that follows the eye.
+      - **THE LENS HEIGHT IS MEASURED.** `netball_court`'s painted lines (a 30.5 × 15.25 m netball
+        court) span 18.6 × 9.9 lens heights in the floor projection: 1.64 m and 1.54 m. 63 in for
+        every venue.
+      - ⚠️ **THE BACKDROP IS NOT A TONEMAPPED JPEG.** The scene tone-maps once, at its blit; a
+        tonemapped backdrop would be mapped twice and every lamp and window would come out grey.
+        `scripts/venues/derive.cjs` stores linear light through `e = v/(1+v)`, `v = gain·x`, as sRGB
+        8-bit WebP (q 0.9), and the shader inverts it. `gain` puts the floor's median near the
+        middle of the code range; it lives in `venues.cjs` AND on the row, and the RENDER lane
+        checks the two agree.
+      - ⚠️ **THE LIGHT IS A SEPARATE 512 × 256 `.hdr`, BECAUSE AN 8-BIT FILE CANNOT CARRY IT.**
+        Some rooms keep their light in a few very hot texels: clipped where the stored curve tops
+        out (x = 110 / gain), the school hall keeps 30.4 % of its up-facing irradiance (the events
+        hall 89 %, the hangar 99.7 %). The derived `.hdr` is box-filtered from the
+        same 4k source (energy-conserving): school hall E_up 2.248 against Poly Haven's own 1k
+        2.247. It replaces the 1k fetch (1.69 MB) at 0.43 MB; its PMREM cube is 128, not 256, so
+        the room probe follows to 128 (it reads the size off `scene.environment`). That costs
+        nothing visible: the same Extreme chase shot of a robot by the hive with a 1024-wide `.hdr`
+        (probe 256, 1.70 MB) differs by 0.65/255 on average and in 0.008 % of pixels by more
+        than 10.
+      - **SAME ORIGIN.** All three files per venue are under `public/venues/` (reversing the old
+        "nothing under `public/`" HDRI rule for DERIVED files only; README beside them: slug, URL,
+        source md5, authors, the exact command). A Discord Activity's CSP refuses
+        `dl.polyhaven.org`, and these load there like any other file: the school hall is no longer
+        substituted by the painted gym in the embed. `monochrome-studio` is the one cross-origin
+        HDRI left.
+      - **TURNED, CLEANED, DE-GLOSSED, IN THE DERIVE.** Each panorama is turned by a whole-column
+        `yaw` so the room's walls line up with x/y, in the backdrop AND the `.hdr` (they agree by
+        construction; the lane pins the shader's lookup against three's own equirect lookup under
+        `MAP_ROT`). Furniture near the lens is painted out: the events hall's banquet table and
+        ~40 chairs (2–5 lens heights out) were a carpet of white streaks behind the field from
+        every camera, refilled from the room's mirror image across x; the school hall's blue
+        lectern from the front row 22° round. A glossy floor's window REFLECTIONS project as
+        streaks pointing at the lens (from overhead the events hall was a white sunburst), so the
+        derive flattens floor brightness above 1.05 × the row's blurred 30th percentile, all of
+        the excess (`degloss`; the median, keeping 5 %, let them through — below). Sunlit patches
+        (the hangar) are ON the floor and are kept.
+      - **THE FIELD STANDS ON THE PHOTOGRAPH, AND STAYS THE BRIGHTEST THING.** A `ShadowMaterial`
+        catcher (the sun's own map over its whole footprint, opacity 0.4–0.45) and a 16-in contact band at the perimeter's
+        foot. A luminance KNEE at 0.6 rolls every highlight toward 1.2, the field's lit white
+        panels (1.2–1.7 raw): a window or a doorway into sunlight can match the field's whites but
+        not outshine them. Per-row `intensity` 0.6–1 and `saturation` 0.8–0.85. Measured at
+        Extreme from the red driver (the scene-preview's `&swatch=1` points, rendered pixels read
+        offscreen in Electron and sRGB-decoded): the
+        photographed floor beside the field 0.14–0.27 (the events hall 0.42 before its de-gloss was
+        retuned; the procedural room 0.37, gym 0.32); the
+        mat 0.068–0.134 (gym 0.088, room 0.178, same tool); the top quarter's 95th percentile
+        0.60–0.83 (room 0.48: the windows).
+      - **EACH ROW'S RIG FOLLOWS ITS PHOTOGRAPH'S LIGHT** (`scripts/venues/fieldlight.cjs`: the
+        brightest 1 % of the upper hemisphere), raised to 40–45° where the photograph's is lower
+        (the 25° rule; the court's evening sun is at 12°). The school hall therefore left `BASE_RIG`: its
+        key now comes from the auditorium lights it shows (az 75°), and with it the fixed-High
+        export's light.
+      - **TIERS AND COST.** 4096 × 2048 from High up (44.7 MB of GPU memory with mipmaps), 2048 on
+        Low/Medium, `meshDetail: 'low'` or a GPU under 4096 (`bbPhotoDetail`). One backdrop live per
+        scene: the previous one is freed on every venue swap and with the scene (a uniform, so
+        `disposeObject3D` cannot see it). 3 draws and 46 triangles against the procedural hall's
+        10 and 470. Downloads, 4k + `.hdr`: 0.8 (court) to 1.9 MB (quad). Decoded off the main
+        thread (`ImageBitmapLoader`) and closed once uploaded; the anisotropy row applies at load.
+      - **FAILURE IS THE PROCEDURAL VENUE, NEVER A VOID.** A failed backdrop keeps the generated room
+        standing, says so once, and is remembered like the HDRI (two tries, five minutes:
+        `photoBlocked`). A failed `.hdr` lights from the row's painted `fallback` while the
+        photograph stays. A lost context still drops the whole view to 2D, as before.
+      - **THE REPLAY EXPORT WAITS FOR IT.** Its environment (the events hall since 2026-10-11) is a
+        photograph that lands after the scene is built, so `assetsSettled` now includes the backdrop and the environment, and
+        `ReplayView` awaits it for every 3D export (bounded by its existing 5 s).
+      - Seen from every camera at Extreme and High: no seam at the panorama's wrap (−x), the nadir
+        under the field, the horizon level. Left as they are: objects against a wall stretch a lens
+        height or so across the floor at its foot (the hangar's leaning boards); the school hall's
+        auditorium is a metre below the stage and a single floor plane draws it about 0.6 × as
+        deep; its seats stand up only from near the lens (so it is a pick, not a default: below).
+      - **CHECKED IN A LIVE SCENE, not only by source** (Electron, offscreen, the scene-preview's
+        `__bbSetGraphics` switching venues mid-run, 2026-10-10):
+        - Venue switches free the backdrop: events hall → hangar → room → events hall, each old
+          texture's `dispose` fired on the swap and `renderer.info.memory.textures` stayed at
+          40–41. The decoded bitmap is closed once uploaded, and also when its texture is freed
+          without ever being uploaded (picked away mid-decode).
+        - Same camera, events hall at Extreme: 246 draws and 478,350 triangles in the last scene
+          pass with the photograph, 250 and 478,808 with its procedural stand-in.
+        - The 4k WebP blocked: the procedural hall stands (no void), one message, and the third
+          build asks for nothing. The `.hdr` blocked: the photograph stays, lit by the row's
+          painted `fallback`, and the message says the LIGHTING stands in (it named a room the
+          player could not see).
+        - The fixed-High export scene (`quality: 'high'`, no input) built in the school hall had
+          its photograph and light settled 0.74 s after construction, before the first frame.
+        - `derive.cjs` re-run on the cached sources wrote byte-identical WebPs (md5 equal).
+      - ⚠️ **AFTER REVIEW (2026-10-11): THE DEFAULTS DRAW CLEAN, AND THE CAMERAS STAY IN THE ROOM.**
+        Every point below was re-captured offscreen at port 5182 (the scene-preview); the RENDER
+        lane checks each one.
+        - ⚠️ **THE SCHOOL HALL IS A PICK, NOT A DEFAULT.** Its stage edge is 81 in out on +y (37.7°
+          below the lens), 9 in past the field's wall, and ~300 auditorium seats start just beyond
+          it: from both driver cameras a third of the frame was seats drawn flat across the floor,
+          plus a doorway at 0.82 rendered luminance beside the field. High, Ultra and the replay
+          export now render in the events hall, as Extreme did. Painting the seats out leaves
+          nothing true to fill with, and a +y wall at the stage edge would leave the cameras 51 in
+          of room on that side. `PhotoVenue.furniture` names what a row still smears, and the lane
+          fails if any preset column defaults to a row that has it.
+        - ⚠️ **THE ORBIT AND FREE CAMERAS ARE HELD IN THE PHOTOGRAPHED ROOM.** At max zoom they left
+          every room (walls 208–441 in out on y against a 620-in orbit) and a third to a half of
+          the frame was a wall's base stretched over the floor. `BbCameras.setRoom` takes
+          `photoCameraRoom` (the room less the 30-in push margin) from `renderScene` when the row is
+          PICKED, so a zoomed-out camera does not jump when the backdrop lands; the boom from the
+          look-at point shortens to stay inside (`boomInRoom`), the direction holds, and a wheel
+          notch works from the distance on screen (no dead zone). Closest reach at the lowest
+          elevation: school hall 178 in, events hall 288, court 335, quad 342, hangar 411; the
+          quad's canopy holds the eye under 159 in. Procedural venues pass null and are unchanged.
+          The driver and chase eyes are NOT held: the fitted driver eye stands 94–124 in out on 16:9
+          (the HUD's safe rect moves it) and 213 on a portrait phone, the height-accurate one 160
+          and 293. All are inside every
+          room except the school hall on a portrait phone (its stage is 479 in wide): the fitted eye
+          is 20 in from the −x wall (it moves 10 in, behind the driver), the height-accurate one
+          60 in past it.
+        - **THE SHADOW CATCHER IS THE SUN'S SHADOW FOOTPRINT** (`shadowFootprint`). The ±96-in
+          square cut the hive crossbar's shadow off in a straight line; the footprint of the
+          ±92-in light-space square at the rigs' 40–45° reaches 134–171 in. It is cut 4 in inside
+          every face of the frustum: a catcher reaching the far face drew it as a one-pixel dark
+          line across the floor ~120 in out, on the side away from the sun (the far face meets the
+          events hall's floor at 118 in).
+        - **THE PHOTOGRAPH DIMS WITH THE ENVIRONMENT LIGHTING** (`PHOTO_NO_IBL_DIM` 0.6, on the
+          scale and on the knee, re-applied live). It is unlit, so at Low it kept its Extreme
+          brightness: the events hall's floor rendered 0.488 against a 0.009 mat (54 ×). The
+          procedural rooms at Low: room 0.114 / 0.0128 (9 ×), gym 0.189 / 0.0103 (18 ×). At 0.6
+          the photographs stand 7–14 × (events hall 0.135 / 0.0096, school hall 0.102, hangar
+          0.110, quad 0.108, court 0.057); 0.3 put the events hall at 0.048 (5 ×), because ACES's
+          toe darkens faster than the scale. Dimming the knee too took the top quarter's 95th
+          percentile from 0.62–0.83 to 0.59–0.72 at Low.
+        - **AN OUTDOOR STAND-IN HAS A SKY.** While a court or quad backdrop is not live (Low and
+          Medium before it lands, or failed), the procedural outdoor venue's sky is the scene
+          background, and the room's letterbox colour made it near black over a daylit court. With
+          the lighting off, and while the `.hdr` loads, a photographed row open to the sky now
+          paints its painted `fallback`'s dome (`overcast`). Halls keep the room: their stand-in
+          has a ceiling.
+        - **THE EVENTS HALL DE-GLOSS IS REFERENCED TO THE CLEAN CONCRETE.** Its window reflections
+          cover nearly half of a row at 15° below the horizon (4–7 × the floor in the source), so a
+          median threshold sat on them and 5 % of a 7 × excess still drew a spoke. `pct: 0.3`,
+          `strength: 1`, `blur: 3`: the 2°-blurred rows' p90/p30 at −14…−28° went from 1.36–2.29 to
+          1.23–1.27, and the floor beside the field from 0.42 to 0.27 at Extreme (red nectar on the
+          mat 1.39, blue 1.56). The other four venues' files are byte-identical; the events hall's
+          are 785,528 / 249,240 / 427,861 bytes.
+        - The fixed-High export scene (`quality: 'high'`, no input) now builds in the events hall
+          and had its photograph and light settled 0.61 s after construction, before frame 0.
     - ⚠️ **AN ENVIRONMENT MAP IS SAMPLED IN THREE'S y-UP FRAME AND THIS SCENE IS z-UP.** Every
       camera here sets `up = (0,0,1)`, but an environment map is not in the scene graph:
       `textureCubeUV` takes a world direction and three's equirect convention is +y = zenith, so an

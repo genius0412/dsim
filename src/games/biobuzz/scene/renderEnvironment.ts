@@ -3,10 +3,13 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { environmentDef, environmentDefFor, type EnvironmentDef, type EnvironmentLook } from '../graphics/environments';
 import type { EnvironmentId } from '../graphics/settings';
+import { venueAssetUrl } from './renderPhotoVenue';
 
 /**
- * THE ENVIRONMENT MAP — a PAINTED dome, three's own procedural room, or one of the two CC0
- * HDRIs, run through `PMREMGenerator` and handed to the scene (`docs/biobuzz/plan-3d.md` §4.5).
+ * THE ENVIRONMENT MAP — a PAINTED dome, three's own procedural room, a CC0 HDRI fetched from Poly
+ * Haven, or a photographed venue's own `.hdr` (same-origin, `photo.ibl`), run through
+ * `PMREMGenerator` and handed to the scene (`docs/biobuzz/plan-3d.md` §4.5). The photographed
+ * venue's BACKDROP is not this file's: `renderPhotoVenue.ts` draws it.
  *
  * ── WHAT A PMREM IS FOR, IN ONE LINE ───────────────────────────────────────────────────────
  * A `MeshStandardMaterial` with nothing to reflect is a flat-shaded polygon. `scene.environment`
@@ -26,7 +29,9 @@ import type { EnvironmentId } from '../graphics/settings';
  *                 re-pick inside four hours is a memory-cache hit; and this loader keeps the
  *                 generated PMREM per id for the life of the scene, so switching back and forth
  *                 in the Graphics section costs nothing at all after the first of each.
- *   NEVER BUNDLED — no `public/` copy, no import, no data URI. `bundleaudit` would see it.
+ *   NEVER BUNDLED — no import, no data URI (`bundleaudit` would see it). The photographed
+ *                 venues' `.hdr` files are static files under `public/venues/`, fetched the same
+ *                 way.
  *
  * ── FAILURE IS A PAINTED ROOM, NOT A BLACK SCENE ───────────────────────────────────────────
  * A blocked CDN, an offline desktop build, a corporate proxy that rewrites `.hdr` to HTML: all
@@ -125,6 +130,18 @@ const hdriFailedAt = new Map<EnvironmentId, number>();
  * mysterious `+`: the next person to derive this on paper will get `-` too.
  */
 const MAP_ROT = new THREE.Euler(Math.PI / 2, 0, 0);
+
+/**
+ * THE LIGHT-GATHERING `.hdr` OF AN ENTRY, AND ITS PAINTED STAND-IN — a fetched HDRI's (Poly Haven,
+ * cross-origin) or a photographed venue's (`photo.ibl`, this site's own file, 2026-10-10). Both go
+ * through the same loader, the same failure memory and the same stand-in path; only where the
+ * bytes come from differs. Null for a generated entry.
+ */
+function lightSource(def: EnvironmentDef): { url: string; fallback: EnvironmentId } | null {
+  if (def.photo) return { url: venueAssetUrl(def.photo.ibl), fallback: def.photo.fallback };
+  if (def.hdri) return { url: def.hdri.url, fallback: def.hdri.fallback };
+  return null;
+}
 
 /** a hex as `#rrggbb`, for the canvas 2D API. */
 function hex(c: number): string {
@@ -361,11 +378,13 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
     current = def.id;
   };
 
-  /** the painted stand-in for a fetched entry we cannot have — see `EnvironmentDef.hdri.fallback`.
-   * A stand-in is required to be a PAINTED entry, and the `look` guard is the belt to that brace:
-   * a mistyped id resolves through `environmentDef` to the room, which still needs no network. */
-  const applyFallback = (def: EnvironmentDef, lighting: boolean): EnvironmentDef => {
-    const alt = environmentDef(def.hdri!.fallback);
+  /** the painted stand-in for a fetched entry we cannot have — see `EnvironmentDef.hdri.fallback`
+   * (and `photo.fallback`, which only ever stands in for the LIGHTING: the photographed venue keeps
+   * its own backdrop, `renderPhotoVenue.ts`). A stand-in is required to be a PAINTED entry, and
+   * the `look` guard is the belt to that brace: a mistyped id resolves through `environmentDef` to
+   * the room, which still needs no network. */
+  const applyFallback = (fallback: EnvironmentId, lighting: boolean): EnvironmentDef => {
+    const alt = environmentDef(fallback);
     if (alt.look) applySky(alt, lighting);
     else applyRoom(lighting);
     return alt;
@@ -408,16 +427,26 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         applySky(def, lighting);
         return;
       }
-      if (!def.hdri) {
+      const source = lightSource(def);
+      if (!source) {
         loading = false;
         applyRoom(lighting);
         return;
       }
+      /**
+       * A PHOTOGRAPHED ROW OPEN TO THE SKY (`court`, `quad`) PAINTS ITS STAND-IN'S SKY whenever its
+       * own map is not live: lighting off, still loading, or failed. Until its backdrop lands it is
+       * the procedural OUTDOOR venue that stands there, and that venue's sky is the background —
+       * the room's themed letterbox colour was a near-black sky over a daylit court (2026-10-11).
+       * A hall needs none of this (its stand-in has a ceiling), and keeps the room while loading.
+       */
+      const openSky = !!def.photo && def.venue.kind === 'outdoor';
       // AN HDRI WITH THE LIGHTING OFF IS NOT FETCHED — see `BbEnvironment.apply`. The room is the
       // honest fallback: it is the other environment that needs no network.
       if (!lighting) {
         loading = false;
-        applyRoom(false);
+        if (openSky) applyFallback(source.fallback, false);
+        else applyRoom(false);
         return;
       }
       const cached = cache.get(id);
@@ -431,14 +460,15 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
       if (Date.now() - (hdriFailedAt.get(id) ?? 0) >= HDRI_RETRY_MS) failedHdri.delete(id);
       if ((failedHdri.get(id) ?? 0) >= HDRI_MAX_TRIES) {
         loading = false;
-        applyFallback(def, lighting);
+        applyFallback(source.fallback, lighting);
         return;
       }
       loading = true;
       // the room lights the scene while the HDRI downloads, as it always did — and the
       // equirectangular shader compiles now, during the fetch, so the swap costs no hitch on the
       // frame it lands on (it used to be compiled at construction, for every scene)
-      if (!scene.environment) applyRoom(true);
+      if (openSky) applyFallback(source.fallback, true);
+      else if (!scene.environment) applyRoom(true);
       pmrem.compileEquirectangularShader();
       try {
         /**
@@ -449,7 +479,7 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
          */
         let src: THREE.DataTexture;
         try {
-          src = await new HDRLoader().loadAsync(def.hdri.url);
+          src = await new HDRLoader().loadAsync(source.url);
         } catch (err) {
           failedHdri.set(id, (failedHdri.get(id) ?? 0) + 1);
           hdriFailedAt.set(id, Date.now());
@@ -471,8 +501,14 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         // the COUNT is recorded at the fetch above, even if a newer pick has landed — that
         // record is about the URL, not about which environment is on screen right now.
         if (disposed || mine !== epoch) return;
-        const alt = applyFallback(def, lighting);
-        onEvent?.(`Couldn’t load the ${def.name} environment. Using ${alt.name} instead.`);
+        const alt = applyFallback(source.fallback, lighting);
+        // a photographed venue keeps its photograph (`renderPhotoVenue.ts`): only its light is
+        // standing in, so the line says so rather than naming a room the player does not see
+        onEvent?.(
+          def.photo
+            ? `Couldn’t load the ${def.name} lighting. Lighting it like ${alt.name} instead.`
+            : `Couldn’t load the ${def.name} environment. Using ${alt.name} instead.`,
+        );
         // eslint-disable-next-line no-console
         console.warn(`BIOBUZZ 3D: HDRI environment failed to load; using ${alt.id} instead.`, err);
       } finally {

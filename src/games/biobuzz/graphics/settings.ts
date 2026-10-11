@@ -279,11 +279,14 @@ export type PerfOverlay = 'off' | 'fps' | 'full';
  * stays the one place the settings SHAPE is written — the other file carries the data, and it
  * imports this, so the dependency only ever points one way.
  *
- * Nine of the eleven are PROCEDURAL (2026-09-21): they are painted, they cost no download, and
- * they are therefore live on every tier including the two where image-based lighting is off.
- * `school-hall` and `monochrome-studio` are the two fetched HDRIs and the only entries that cost
- * bytes; `school-hall` is also what the fixed-High replay export renders in, so it is a
- * CONTRACT, not merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it).
+ * Nine are PROCEDURAL (2026-09-21): they are painted, they cost no download, and they are
+ * therefore live on every tier including the two where image-based lighting is off. The other six
+ * cost bytes: `monochrome-studio` is a fetched HDRI, and `school-hall`, `events-hall`, `hangar`,
+ * `court` and `quad` are PHOTOGRAPHED VENUES (2026-10-10, same-origin files under `public/venues/`).
+ * `events-hall` is also what the fixed-High replay export renders in, so it is a CONTRACT, not
+ * merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it). It was `school-hall` until
+ * 2026-10-11: photographed, that hall's ~300 auditorium seats draw flat across the floor beside the
+ * field (`PhotoVenue.furniture`).
  */
 export type EnvironmentId =
   | 'room'
@@ -296,6 +299,10 @@ export type EnvironmentId =
   | 'cyc-light'
   | 'cyc-dark'
   | 'school-hall'
+  | 'events-hall'
+  | 'hangar'
+  | 'court'
+  | 'quad'
   | 'monochrome-studio';
 
 /** the allowlist `coerceGraphicsSettings` checks a stored `environment` against. A removed or
@@ -312,6 +319,10 @@ export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'cyc-light',
   'cyc-dark',
   'school-hall',
+  'events-hall',
+  'hangar',
+  'court',
+  'quad',
   'monochrome-studio',
 ];
 
@@ -474,7 +485,8 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'school-hall',
+    // the PHOTOGRAPHED events hall, which is also every replay export's (see `EnvironmentId`)
+    environment: 'events-hall',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -495,7 +507,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'school-hall',
+    environment: 'events-hall',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -519,7 +531,10 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'physical',
-    environment: 'school-hall',
+    // the PHOTOGRAPHED events hall (2026-10-10, owner: "actual good quality scenes for
+    // backgrounds"): the closest of the photographs to an FTC venue, and High's and Ultra's too
+    // since 2026-10-11 (the school hall's seats draw flat across the floor, `PhotoVenue.furniture`)
+    environment: 'events-hall',
     envLighting: true,
     reflections: true,
     // OFF, not on (owner, 2026-09-27): the Extreme budget goes to what surfaces ARE, not to glow.

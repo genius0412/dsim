@@ -1,6 +1,6 @@
 /**
- * ENVIRONMENTS — the procedural surrounds plus the two CC0 HDRI sets (`docs/biobuzz/plan-3d.md`
- * §4.5), as DATA. No three.js here: `scene/renderEnvironment.ts` is what loads one, and the
+ * ENVIRONMENTS — the procedural surrounds, one fetched CC0 HDRI and (since 2026-10-10) five
+ * PHOTOGRAPHED VENUES (`docs/biobuzz/plan-3d.md` §4.5; `PhotoVenue` below), as DATA. No three.js here: `scene/renderEnvironment.ts` is what loads one, and the
  * Graphics section and the Contributors page both read this list, neither of which may pull the
  * renderer chunk in.
  *
@@ -30,9 +30,11 @@
  *                                               `Cache-Control: max-age=14400`, so a second
  *                                               pick inside four hours is a memory-cache hit
  *                                               and no request at all. Measured 2026-09-18.
- * "never in any chunk"                        — nothing under `public/`, no `import`, no
- *                                               base64. The bytes only ever exist in the
- *                                               browser's HTTP cache.
+ * "never in any chunk"                        — no `import`, no base64. The fetched HDRI is
+ *                                               only ever in the browser's HTTP cache; the
+ *                                               photographed venues' files are DERIVED copies
+ *                                               under `public/venues/` (`PhotoVenue`), served
+ *                                               like any other static file.
  * "attribution on the Contributors page"      — `src/contributors.ts` renders `THIRD_PARTY`,
  *                                               which is built from this list, so an entry
  *                                               added here is credited by construction rather
@@ -40,8 +42,9 @@
  *
  * ── AND THE ONE CLIENT WHERE "FETCHED ON DEMAND" MEANS "NEVER" ─────────────────────────────
  * A Discord Activity is served behind a CSP that admits only dsim's two Activity URL Mappings,
- * so neither `.hdr` above can be fetched there AT ALL — and `school-hall` is High's and Ultra's
- * default column. `canFetchHdri` / `environmentDefFor` (below) answer that up front and hand the
+ * so a Poly Haven `.hdr` cannot be fetched there AT ALL — and until 2026-10-10 `school-hall`, High's
+ * and Ultra's default column, was one (it is a same-origin photographed venue now, which the embed
+ * loads like the rest of the site). `canFetchHdri` / `environmentDefFor` (below) answer that up front and hand the
  * entry's painted `fallback` to the renderer instead, rather than letting every scene build make
  * a request the browser refuses. Nothing is bundled and nothing is stored: see those two.
  *
@@ -198,6 +201,79 @@ export interface VenueSpec {
   gridded?: boolean;
 }
 
+/**
+ * ── THE PHOTOGRAPHED VENUES (2026-10-10) ───────────────────────────────────────────────────
+ *
+ * Owner: "Please add actual good quality scenes for backgrounds." Every surround above is a
+ * procedural box room; the two photographs this list had (`school-hall`, `monochrome-studio`) only
+ * lit the field, because the venue geometry hid them. A `photo` entry SHOWS its photograph: a
+ * Poly Haven CC0 panorama, re-encoded for display by `scripts/venues/derive.cjs` into
+ * `public/venues/`, and projected by `scene/renderPhotoVenue.ts` onto a box the shape of the
+ * room it was taken in — the floor at the capture height below the lens, the walls where the
+ * real walls are — so the floor has the right scale and the right parallax from every camera.
+ *
+ * ⚠️ **SAME ORIGIN, UNLIKE `hdri`.** The files are this site's own, so they load inside a Discord
+ * Activity (whose CSP refuses `dl.polyhaven.org`) and never need a painted stand-in for that
+ * reason. `fallback` exists for a transient failure only (`ibl`'s fetch, offline). This reverses
+ * the old "nothing under `public/`" rule for DERIVED files, and only for them: the photographs as
+ * published (16k–24k, 25–850 MB) are never committed.
+ */
+export interface PhotoRoom {
+  /** the walls, as signed distances from the capture point along x and y, inches (`x0`, `y0` < 0) */
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  /** the ceiling above the floor, inches */
+  ceil: number;
+}
+
+export interface PhotoVenue {
+  /** the backdrop, 4096 × 2048 (High and up) and 2048 × 1024 (Low, Medium, small GPUs) — paths
+   * relative to the app's base URL, resolved by the renderer (the Electron build's base is `./`) */
+  backdrop: string;
+  backdropLow: string;
+  /** the light-gathering map: a small linear `.hdr` box-filtered from the same 4k source. The
+   * backdrop cannot do this job — it is 8-bit, and some of these rooms keep most of their light in
+   * a few very hot texels (`derive.cjs`, ENCODING). */
+  ibl: string;
+  /** bytes of each, for the picker's note and the docs */
+  bytes: { backdrop: number; backdropLow: number; ibl: number };
+  /** the `gain` the backdrop was encoded with (`scripts/venues/venues.cjs`); the shader divides it
+   * back out. Must match the files, and the RENDER lane reads both to check it. */
+  gain: number;
+  /** a linear multiplier on the decoded photograph — the dim that keeps the field the brightest
+   * thing on screen */
+  intensity: number;
+  /** how much of the photograph's own colour is kept, 0–1 (the same rule: the field is the most
+   * saturated thing on screen) */
+  saturation: number;
+  /** the lens above the floor, inches — the number that sets the floor's scale */
+  height: number;
+  /** the box the photograph is projected onto */
+  room: PhotoRoom;
+  /** how dark the field's shadow lands on the photographed floor, 0–1 */
+  shadow: number;
+  /**
+   * FURNITURE NEAR THE FIELD THAT THE FLOOR PLANE DRAWS FLAT, if any is left in the files — what it
+   * is and where. A box stands up the floor and the walls and nothing else, so anything standing
+   * between the lens and a wall is drawn where its ray meets the floor: a stretched, flat smear
+   * across it (the events hall's banquet chairs were painted out in the derive for this). A row
+   * that carries this is a pick, never a preset column's default — the default is what most
+   * players see, and High's is every replay export's (2026-10-11, the RENDER lane pins it).
+   */
+  furniture?: string;
+  /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
+   * `hdri.fallback`: painted, and the same venue kind. */
+  fallback: EnvironmentId;
+  /** the Poly Haven asset the files are derived from, for the credit line */
+  slug: string;
+  page: string;
+  authors: readonly { name: string; role: string }[];
+  license: 'CC0 1.0';
+  licenseUrl: string;
+}
+
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -214,9 +290,12 @@ export interface EnvironmentDef {
    * is the empty-void picture this field was reported for. */
   venue: VenueSpec;
   /** the painted dome. Absent means the surround comes from somewhere else: three's own
-   * `RoomEnvironment` for `room` (whose background is the THEMED letterbox colour), or the
-   * fetched image for an `hdri` entry. */
+   * `RoomEnvironment` for `room` (whose background is the THEMED letterbox colour), the fetched
+   * image for an `hdri` entry, or the photograph for a `photo` one. */
   look?: EnvironmentLook;
+  /** a PHOTOGRAPHED venue (see `PhotoVenue`). Its `venue` above is still built: it is what stands
+   * while the photograph loads, and what stays if it cannot. */
+  photo?: PhotoVenue;
   /** absent for a procedural entry: it is generated, it has no author and it costs nothing. */
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
@@ -251,6 +330,40 @@ export interface EnvironmentDef {
 const PH_HDR = (slug: string): string => `https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/${slug}_1k.hdr`;
 const PH_PAGE = (slug: string): string => `https://polyhaven.com/a/${slug}`;
 const PH_LICENSE = 'https://polyhaven.com/license';
+
+/** a photographed venue's three files (`scripts/venues/derive.cjs` names them), with their sizes */
+const PHOTO_FILES = (
+  id: string,
+  backdrop: number,
+  backdropLow: number,
+  ibl: number,
+): Pick<PhotoVenue, 'backdrop' | 'backdropLow' | 'ibl' | 'bytes'> => ({
+  backdrop: `venues/${id}-4k.webp`,
+  backdropLow: `venues/${id}-2k.webp`,
+  ibl: `venues/${id}-ibl.hdr`,
+  bytes: { backdrop, backdropLow, ibl },
+});
+
+/** the credit block of a photographed venue */
+const PH_CREDIT = (
+  slug: string,
+  authors: readonly { name: string; role: string }[],
+): Pick<PhotoVenue, 'slug' | 'page' | 'authors' | 'license' | 'licenseUrl'> => ({
+  slug,
+  page: PH_PAGE(slug),
+  authors,
+  license: 'CC0 1.0',
+  licenseUrl: PH_LICENSE,
+});
+
+/**
+ * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED rather than
+ * assumed: on `netball_court` the court's own painted lines (a 30.5 × 15.25 m netball court) span
+ * 18.6 × 9.9 lens heights in the floor projection, which puts the lens at 1.64 and 1.54 m. 1.6 m it
+ * is, for every venue: the same photographer's rig, and the floor's scale next to the field is
+ * set by this one number.
+ */
+const PHOTO_LENS_IN = 63;
 
 /**
  * THE RIG THE THREE ORIGINAL ENVIRONMENTS ARE LIT BY — the same numbers `renderCore.ts` declares
@@ -608,35 +721,191 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      * (`gym_01`, `crossfit_gym`) and the climbing gym because it is the room an FTC event is
      * actually held in: a high ceiling, overhead fluorescents, and a floor bright enough to
      * bounce light back under a chassis. A weights room lights a robot from one wall.
+     *
+     * PHOTOGRAPHED SINCE 2026-10-10: the field stands on the stage the panorama was taken from,
+     * with the auditorium behind it (turned 180° so the seats are on the far side from the
+     * audience camera, `+y`). The stage is small — 7.6 lens heights wide, its front edge under 2
+     * out — so the stage-level box takes the auditorium too (12.0 deep in all). The auditorium
+     * floor is a metre below the stage, and one floor plane draws it about 0.6 × as deep as it is. The key comes from the auditorium
+     * lights, which is where the photograph's own light comes from (`fieldlight`: az 75°, el 35°).
+     *
+     * ⚠️ NOT A DEFAULT SINCE 2026-10-11 (`furniture` below): the stage edge is 81 in out on +y,
+     * 9 in past the field's wall (measured off the photograph: 37.7° below the lens), the seats
+     * start just beyond it, and from both driver cameras a third of the frame is seats drawn flat
+     * across the floor. Painting ~300 of them out leaves nothing true to fill with, and a +y wall
+     * at the stage edge would leave the cameras 51 in of room on that side. High, Ultra and the
+     * replay export render in the events hall instead.
      */
     id: 'school-hall',
     name: 'School hall',
-    note: 'Overhead hall lighting, 1.7 MB',
-    // the photographed rooms keep the SHARED rig they were tuned against — a fetched HDRI is
-    // already the ambient term, and giving it a second opinion about the key light would change
-    // two pictures that nothing asked to change (this is also the EXPORT's environment; see
-    // `GFX_PRESETS.high`).
-    rig: BASE_RIG,
-    // ⚠️ THE VENUE STANDS EVEN THOUGH THE SURROUND IS A PHOTOGRAPH, and this is the DEFAULT on
-    // High and Ultra and the fixed environment every replay export renders in. The HDRI keeps
-    // its two real jobs — it is the light-gathering map and it is what a robot's metal
-    // reflects — and loses only the one it was worst at: being the thing you see past the
-    // field. A 1k equirect blurred to 0.4 has no horizon and no parallax; a hall does.
+    note: 'On the stage, the auditorium behind, 1.2 MB',
+    rig: {
+      hemiSky: 0xfff6e8,
+      hemiGround: 0x5e5444,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2.1,
+      sun: [22, 116, 120],
+      sunColor: 0xfff1dc,
+      sunIntensity: 1.9,
+      exposure: 1.2,
+    },
+    // what stands while the photograph loads, and if it cannot: the procedural hall
     venue: { kind: 'hall', floor: 0x8a7352, wall: 0xaaa392, trim: 0x796f5e, lamp: 0xfff8ec, lampPower: 1.1, half: 700, ceil: 330, gridded: true },
-    hdri: {
-      url: PH_HDR('school_hall'),
-      // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead
-      // fittings. It is the nearest thing on the list to the photograph, and its own note
-      // ("Warm ceiling light off a wood floor") describes this hall too.
+    photo: {
+      ...PHOTO_FILES('school-hall', 726_594, 221_352, 430_592),
+      gain: 1.3,
+      intensity: 0.9,
+      saturation: 0.85,
+      height: PHOTO_LENS_IN,
+      room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
+      shadow: 0.4,
+      furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
+      // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
-      bytes: 1_693_261,
-      page: PH_PAGE('school_hall'),
-      authors: [
+      ...PH_CREDIT('school_hall', [
         { name: 'Dimitrios Savva', role: 'Photography' },
         { name: 'Jarod Guest', role: 'Processing' },
-      ],
-      license: 'CC0 1.0',
-      licenseUrl: PH_LICENSE,
+      ]),
+    },
+  },
+  {
+    /**
+     * AN EVENTS HALL — brick walls, a steel roof on trusses, a concrete floor: the shape of a
+     * venue an FTC qualifier is held in. Turned −20° so its long axis runs along x, the drivers'
+     * line of sight; the end walls are 9.7 and 10.6 lens heights out, the sides 5.1 and 5.8.
+     * The tables and chairs on the +y side are the one thing a single floor plane cannot draw
+     * standing up.
+     */
+    id: 'events-hall',
+    name: 'Events hall',
+    note: 'Brick walls, steel roof, concrete floor, 1.2 MB',
+    rig: {
+      hemiSky: 0xf2f6ff,
+      hemiGround: 0x5f5c56,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2.1,
+      sun: [27, -127, 109],
+      sunColor: 0xf4f8ff,
+      sunIntensity: 1.9,
+      exposure: 1.2,
+    },
+    venue: { kind: 'hall', floor: 0x77736c, wall: 0xb2aca2, trim: 0x6a645c, lamp: 0xf4f8ff, lampPower: 1.1, half: 700, ceil: 330 },
+    photo: {
+      ...PHOTO_FILES('events-hall', 785_528, 249_240, 427_861),
+      gain: 1,
+      intensity: 0.6,
+      saturation: 0.85,
+      height: PHOTO_LENS_IN,
+      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 300 },
+      shadow: 0.4,
+      fallback: 'gym',
+      ...PH_CREDIT('events_hall_interior', [
+        { name: 'Dimitrios Savva', role: 'Photography' },
+        { name: 'Jarod Guest', role: 'Processing' },
+      ]),
+    },
+  },
+  {
+    /**
+     * A HANGAR — a big shed with a clear floor, a light aircraft at one end and the open door at
+     * the other. Turned 90° so that axis is x, the drivers' line of sight. Daylight through the
+     * side windows (`fieldlight`: az 64°, el 20°), which the key follows at 40°.
+     */
+    id: 'hangar',
+    name: 'Hangar',
+    note: 'Daylight through high windows, 1.8 MB',
+    rig: {
+      hemiSky: 0xfff6ec,
+      hemiGround: 0x625a4e,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2.1,
+      sun: [61, 115, 109],
+      sunColor: 0xfff2e0,
+      sunIntensity: 1.9,
+      exposure: 1.2,
+    },
+    venue: { kind: 'hall', floor: 0x7d7465, wall: 0xa59d8c, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.1, half: 760, ceil: 360 },
+    photo: {
+      ...PHOTO_FILES('hangar', 1_329_858, 344_362, 430_444),
+      gain: 1.5,
+      intensity: 0.65,
+      saturation: 0.85,
+      height: PHOTO_LENS_IN,
+      room: { x0: -737, x1: 882, y0: -441, y1: 441, ceil: 410 },
+      shadow: 0.4,
+      fallback: 'workshop',
+      ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
+    },
+  },
+  {
+    /**
+     * AN OUTDOOR COURT at the end of the day — a fenced netball court, so the field stands on a
+     * painted sports surface whose lines give the eye an exact scale (the court lines measured
+     * the lens at 1.6 m). The box is the fence: 11.4 / 12.4 lens heights out along x, 6.1 / 5.8
+     * along y. The sun is low in the photograph (12°) and the key is raised to 40° for the
+     * RENDER lane's 25° rule (`sunset`'s measurement).
+     */
+    id: 'court',
+    name: 'Outdoor court',
+    note: 'Evening sky over a sports court, 0.8 MB',
+    rig: {
+      hemiSky: 0xe4edff,
+      hemiGround: 0x3f4a46,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2.1,
+      sun: [-16, -129, 109],
+      sunColor: 0xffecd2,
+      sunIntensity: 1.9,
+      exposure: 1.2,
+    },
+    venue: { kind: 'outdoor', floor: 0x45574f, wall: 0x8c9890, trim: 0x4b5a50, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
+    photo: {
+      ...PHOTO_FILES('court', 438_074, 116_978, 375_051),
+      gain: 2.5,
+      intensity: 1,
+      saturation: 0.8,
+      height: PHOTO_LENS_IN,
+      room: { x0: -718, x1: 781, y0: -384, y1: 365, ceil: 2000 },
+      shadow: 0.45,
+      fallback: 'overcast',
+      ...PH_CREDIT('netball_court', [
+        { name: 'Dimitrios Savva', role: 'Photography' },
+        { name: 'Jarod Guest', role: 'Processing' },
+      ]),
+    },
+  },
+  {
+    /**
+     * A COVERED SCHOOL QUAD — paving under a steel canopy, open to the courtyard on one side. The
+     * pavers are a second exact scale on the ground, the canopy keeps the light soft.
+     */
+    id: 'quad',
+    name: 'School quad',
+    note: 'Paving under a canopy, 1.9 MB',
+    rig: {
+      hemiSky: 0xfff8ee,
+      hemiGround: 0x645a4a,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2.1,
+      sun: [77, -92, 120],
+      sunColor: 0xfff4e2,
+      sunIntensity: 1.9,
+      exposure: 1.2,
+    },
+    venue: { kind: 'outdoor', floor: 0x8a7d66, wall: 0x9aa39a, trim: 0x5a6152, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
+    photo: {
+      ...PHOTO_FILES('quad', 1_436_898, 436_626, 449_016),
+      gain: 1.1,
+      intensity: 0.65,
+      saturation: 0.8,
+      height: PHOTO_LENS_IN,
+      room: { x0: -630, x1: 662, y0: -372, y1: 384, ceil: 190 },
+      shadow: 0.4,
+      fallback: 'overcast',
+      ...PH_CREDIT('school_quad', [
+        { name: 'Dimitrios Savva', role: 'Photography' },
+        { name: 'Jarod Guest', role: 'Processing' },
+      ]),
     },
   },
   {
@@ -682,8 +951,8 @@ export function environmentDef(id: EnvironmentId): EnvironmentDef {
  * client, `/gs` → the game server — `src/net/discordActivity.ts`), and `dl.polyhaven.org` is not
  * one of them, so an `.hdr` fetched from there is refused by the browser before it leaves.
  *
- * ── WHY THIS IS A DEFAULT-PATH BUG AND NOT AN EDGE ─────────────────────────────────────────
- * `school-hall` is the `environment` column on BOTH High and Ultra (`GFX_PRESETS`), an ordinary
+ * ── WHY THIS WAS A DEFAULT-PATH BUG AND NOT AN EDGE (until 2026-10-10, see above) ──────────
+ * `school-hall` was the `environment` column on BOTH High and Ultra (`GFX_PRESETS`), an ordinary
  * desktop lands on one of those from `graphics/auto.ts`'s first guess, and the warm-up governor
  * steps a laptop UP into them about two seconds into a match. So in the embed this fired on
  * essentially every 3D match, and it fired AGAIN on every scene build and every graphics change,
@@ -744,9 +1013,39 @@ export function pickableEnvironments(): readonly EnvironmentDef[] {
   return canFetchHdri() ? BB_ENVIRONMENTS : BB_ENVIRONMENTS.filter((e) => !e.hdri);
 }
 
-/** every environment that costs a download — what the Contributors page credits. */
+/** every environment whose light-gathering map is fetched CROSS-ORIGIN from Poly Haven. */
 export function hdriEnvironments(): EnvironmentDef[] {
   return BB_ENVIRONMENTS.filter((e) => e.hdri);
+}
+
+/** every PHOTOGRAPHED venue (same-origin files under `public/venues/`). */
+export function photoEnvironments(): EnvironmentDef[] {
+  return BB_ENVIRONMENTS.filter((e) => e.photo);
+}
+
+/** WHO TO CREDIT for an environment that is somebody's photograph — a fetched HDRI or a derived
+ * venue — or null for a generated one. What the Contributors page renders, per entry. */
+export function environmentCredit(e: EnvironmentDef): {
+  page: string;
+  authors: readonly { name: string; role: string }[];
+  license: string;
+  licenseUrl: string;
+  use: string;
+} | null {
+  if (e.photo) {
+    const p = e.photo;
+    return { page: p.page, authors: p.authors, license: p.license, licenseUrl: p.licenseUrl, use: 'BIOBUZZ 3D venue backdrop and lighting' };
+  }
+  if (e.hdri) {
+    const h = e.hdri;
+    return { page: h.page, authors: h.authors, license: h.license, licenseUrl: h.licenseUrl, use: 'BIOBUZZ 3D environment lighting' };
+  }
+  return null;
+}
+
+/** every environment that is somebody's photograph — what the Contributors page credits. */
+export function creditedEnvironments(): EnvironmentDef[] {
+  return BB_ENVIRONMENTS.filter((e) => environmentCredit(e) !== null);
 }
 
 /** the ids in the order the picker shows them — the one place the list's ORDER is read, so the

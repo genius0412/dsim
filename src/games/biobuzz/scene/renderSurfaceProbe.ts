@@ -27,7 +27,8 @@ import { SURFACE_UNIFORMS, lowerSurfaceUniforms } from './renderSurfaceKit';
  * reflecting nothing; their occlusion is left to GTAO.
  *
  * ── THE THREE NUMBERS THAT HAVE TO AGREE ────────────────────────────────────────────────────
- *   • THE CUBE SIZE equals the DOME's (128 for a painted dome, 256 for an HDRI and the room), read
+ *   • THE CUBE SIZE equals the DOME's (128 for a painted dome and a photographed venue's 512-wide
+ *     `.hdr`, 256 for the 1k HDRI and the room), read
  *     off `scene.environment` at capture. The `CUBEUV_*` defines a twin's program is compiled with
  *     come from `scene.environment`'s size, and the probe is sampled through the SAME
  *     `textureCubeUV`, so a mismatched probe would be read with the wrong mip layout. `raise`
@@ -55,9 +56,15 @@ const BOX_FLOOR_Z = -1;
 const OUTDOOR_REACH = 1.35;
 const OUTDOOR_SKY_IN = 5000;
 
+/** a box in field inches */
+export interface ProbeBox {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
 /** the proxy box the reflections are projected against, in field inches — plain numbers, so the
  * RENDER lane can pin it without a GL context. */
-export function probeBoxFor(venue: VenueSpec): { min: [number, number, number]; max: [number, number, number] } {
+export function probeBoxFor(venue: VenueSpec): ProbeBox {
   if (venue.kind === 'outdoor') {
     const r = venue.half * OUTDOOR_REACH;
     return { min: [-r, -r, BOX_FLOOR_Z], max: [r, r, OUTDOOR_SKY_IN] };
@@ -252,7 +259,7 @@ export interface RoomProbe {
    * The sun's shadow map is redrawn for the capture with the hidden objects gone, and flagged to
    * be redrawn again for the next scene pass.
    */
-  capture(renderer: THREE.WebGLRenderer, scene: THREE.Scene, hidden: readonly THREE.Object3D[], venue: VenueSpec): boolean;
+  capture(renderer: THREE.WebGLRenderer, scene: THREE.Scene, hidden: readonly THREE.Object3D[], venue: VenueSpec, room?: ProbeBox): boolean;
   /** write this probe into the shared uniforms, if it matches `scene.environment` — see the header */
   raise(scene: THREE.Scene): void;
   /** is there a capture at all */
@@ -366,7 +373,7 @@ export function createRoomProbe(): RoomProbe {
     get ready(): boolean {
       return target !== null;
     },
-    capture(renderer, scene, hidden, venue): boolean {
+    capture(renderer, scene, hidden, venue, room): boolean {
       const h = envHeight(scene);
       // a PMREM target is 4 × cubeSize tall, and cubeSize is a power of two ≥ 16
       const size = h / 4;
@@ -428,7 +435,9 @@ export function createRoomProbe(): RoomProbe {
 
       measure(renderer, scene, target.texture, size);
 
-      const box = probeBoxFor(venue);
+      // a photographed venue's own room when one is live (`renderPhotoVenue.ts`): the photograph
+      // is projected onto THAT box, so the reflection of it must be too
+      const box = room ?? probeBoxFor(venue);
       min.set(...box.min);
       max.set(...box.max);
       return true;

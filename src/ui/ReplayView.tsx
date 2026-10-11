@@ -1001,9 +1001,13 @@ export function ReplayView({
      * now and then. Exported from a viewer that had not shown them yet (the 3D file from a 2D
      * view, or the reverse), the first seconds came out as the robot's silhouette. Bounded: an
      * asset that never settles costs the export at most a few seconds, never the file.
+     *
+     * A 3D export waits on its scene even with no imported robot (2026-10-10): the events hall it
+     * renders in is a photograph that loads after the scene is built, and without the wait the
+     * first frames could be drawn in the generated room it stands in until then.
      */
     const importIds = [...new Set(shot.world.robots.flatMap((rb) => (rb.spec.imported ? [rb.spec.imported.id] : [])))];
-    if (importIds.length > 0) {
+    if (scene || importIds.length > 0) {
       const settled = scene ? (scene.assetsSettled?.(shot.world) ?? Promise.resolve()) : importedTopsSettled(importIds);
       await Promise.race([settled, new Promise<void>((done) => setTimeout(done, IMPORT_ASSET_WAIT_MS))]);
     }
