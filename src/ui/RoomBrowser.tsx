@@ -15,10 +15,13 @@ import { onUserActive, userIdle } from './userActivity';
  */
 export function RoomBrowser({
   onJoin,
+  onWatch,
   onHost,
 }: {
   /** join a listed room: its code, its season and the region that hosts it */
   onJoin: (room: string, game: ListedRoom['game'], region?: string) => void;
+  /** watch a room without a seat: its lobby until the host starts, then the match */
+  onWatch: (room: string, game: ListedRoom['game'], region?: string) => void;
   /** open the Public/Private choice for a new room */
   onHost: () => void;
 }) {
@@ -95,19 +98,25 @@ export function RoomBrowser({
         ) : (
           <div className="ds-panel-body ds-lobbies">
             {rooms.map((r) => (
-              <button
-                key={r.room}
-                className="ds-lobby-row"
-                disabled={!r.joinable}
-                onClick={() => onJoin(r.room, r.game, r.region)}
-              >
-                <span className="ll-code">{r.host}</span>
-                <span className="ll-game">{seasonFor(r.game).name}</span>
-                <span className="ll-count">
-                  {r.seats}/{r.capacity}
-                </span>
-                <span className="ll-go">{stateLabel(r)}</span>
-              </button>
+              // a row is TWO controls side by side (a button cannot hold a button): the row joins as a
+              // driver while a seat is free, and Watch is always there
+              <div key={r.room} className="ds-lobby-line">
+                <button
+                  className="ds-lobby-row"
+                  disabled={!r.joinable}
+                  onClick={() => onJoin(r.room, r.game, r.region)}
+                >
+                  <span className="ll-code">{r.host}</span>
+                  <span className="ll-game">{seasonFor(r.game).name}</span>
+                  <span className="ll-count">
+                    {r.seats}/{r.capacity}
+                  </span>
+                  <span className="ll-go">{stateLabel(r)}</span>
+                </button>
+                <button className="ds-btn" onClick={() => onWatch(r.room, r.game, r.region)}>
+                  Watch
+                </button>
+              </div>
             ))}
           </div>
         )}

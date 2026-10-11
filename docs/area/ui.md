@@ -821,6 +821,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   returns to the hub, from the hub to Home. `/leaderboard`, `/stats` and `/records/career` still resolve.
   **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
   server (read once at load; a production bundle drops it).
+- **BROWSE ROOMS HAS TWO CONTROLS PER ROW (2026-10-10):** the row joins as a driver while a seat is free, and **Watch** opens `WatchLobby` (screen `watchlobby`, no URL of its own: a live socket like `game`). It shows both alliances and the seats, hands the socket to a spectator session when the host starts, and offers **Join this room** only while a seat is free. A watcher holds no seat and cannot change the room.
 - **THE RANKED SCREEN OPENS ON YOUR STANDING** (`RankedStanding`, above the 1v1/2v2 pick): the rating for the picked format, its rank, the games it is over and the overall W–L, from the one `fetchUserStats` read, in a box that is RESERVED while the read is in flight and stays empty on failure.
 - ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
   solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,

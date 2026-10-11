@@ -9545,6 +9545,35 @@ input.admin-months {
 }
 /* YOUR RANKED STANDING at the top of the ranked screen. The box keeps its height while the read is in
    flight (an empty frame), so the number arriving moves nothing below it. */
+.ds-lobby-line {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ds-s-2);
+}
+.ds-lobby-line .ds-lobby-row {
+  flex: 1;
+  min-width: 0;
+}
+.ds-watchside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+}
+.ds-watchside.red {
+  border-color: var(--ds-red-ink);
+}
+.ds-watchside.blue {
+  border-color: var(--ds-blue-ink);
+}
+.ds-watchrow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ds-s-2);
+  margin: 0;
+}
 .ds-rankedstanding {
   display: flex;
   align-items: center;

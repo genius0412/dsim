@@ -18472,6 +18472,42 @@ const recordDrive: CommandSource = (tick) => {
   check('browse: junk on the heartbeat is ignored, not thrown on', browseRooms([null, undefined, 3, 'x', {}, { listing: false }]).length === 0);
 }
 
+/** WATCHING A ROOM FROM ITS LOBBY (Browse rooms ▸ Watch, `WatchLobby`): what the server already gives a spectator. */
+{
+  const { coerceRoomSettings } = await import('../src/net/protocol');
+  const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: `Name ${id}`, teamName: 'Team ' + id, teamNumber: 7, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('watch-lobby', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', listed: true }) });
+  const hostSink: ServerMsg[] = [];
+  room.add(mk('h', 'red', hostSink));
+  const seen: ServerMsg[] = [];
+  const watcher = mk('w', 'red', seen);
+  room.addSpectator(watcher);
+  check('watch lobby: a watcher attaches to a room that has not started', room.spectatorCount() === 1);
+  check('watch lobby: ...is welcomed and sent the roster, with the room settings', seen.some((m) => m.t === 'welcome') && seen.some((m) => m.t === 'roster' && m.settings?.perAlliance.red === 1));
+  check('watch lobby: ...but no match start and no snapshot before the host starts', !seen.some((m) => m.t === 'matchStart' || m.t === 'snapshot'));
+  check('watch lobby: ...and holds no seat (the roster is the drivers only, the room is not full)',
+    room.listing()?.seats === 1 && room.listing()?.joinable === true);
+  room.add(mk('g', 'blue', []));
+  check('watch lobby: a driver joining reaches the watcher as a fresh roster', seen.filter((m) => m.t === 'roster').length >= 2 && (seen.filter((m) => m.t === 'roster').pop() as Extract<ServerMsg, { t: 'roster' }>).players.length === 2);
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(10);
+  const ms = seen.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('watch lobby: the host starting sends the watcher a match start with no robot of its own', ms?.yourRobotId === -1);
+  check('watch lobby: ...and then the live snapshot stream', seen.some((m) => m.t === 'snapshot'));
+  room.onMessage('w', { t: 'update', patch: { alliance: 'blue' } });
+  check('watch lobby: a watcher cannot change the room', watcher.player.alliance === 'red' && room.listing()?.seats === 2);
+  const src = readFileSync('src/ui/WatchLobby.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('watch lobby: the screen closes its socket unless a session took it over', src.includes('if (!handedOver.current) transport.close()'));
+  check('watch lobby: Join is offered only while a seat is free', src.includes('disabled={!open}') && src.includes('seats < capacity'));
+}
+
 /** THE RECORDS FEED (`server/recentRecords.ts`): a run's rank is replayed from the board's history. */
 {
   const { feedFromRows, FEED_TOP } = await import('../server/recentRecords');

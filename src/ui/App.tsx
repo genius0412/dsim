@@ -75,6 +75,7 @@ import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { SoloSetup } from './SoloSetup';
 import { RoomBrowser } from './RoomBrowser';
+import { WatchLobby } from './WatchLobby';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records } from './Records';
@@ -151,6 +152,8 @@ type Screen =
   | 'lobby'
   /** `/rooms`: Browse rooms, the Public rooms hosted right now */
   | 'rooms'
+  /** a Public room being watched from its lobby (no URL: it is a live socket, like `game`) */
+  | 'watchlobby'
   | 'discordlobbies'
   | 'record'
   | 'duorecord'
@@ -256,6 +259,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'lobby':
       return '/lobby';
     case 'rooms':
+      return '/rooms';
+    case 'watchlobby':
       return '/rooms';
     case 'discordlobbies':
       return '/discord-lobbies';
@@ -765,6 +770,13 @@ export function App() {
   /** the Public/Private choice for the room about to be created: the dialog is open (`asking`), and
    *  the answer (`listed`) the Lobby reads when it creates the room. Reset when the Lobby is left. */
   const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
+  /** the Public room being watched from its lobby (`WatchLobby`), or null */
+  const [watchedRoom, setWatchedRoom] = useState<{ room: string; game: GameId; region?: string } | null>(null);
+  // a history step onto the watch screen with nothing to watch (a reload, a forward button) lands on the list
+  useEffect(() => {
+    if (screen === 'watchlobby' && !watchedRoom) navigate('rooms');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, watchedRoom]);
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
@@ -2142,6 +2154,37 @@ export function App() {
   // `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN match is —
   // a code-joined room, on a different server. Nothing about the room flow changes;
   // only `gameServerUrl()` now answers with the host's machine.
+  if (screen === 'watchlobby' && watchedRoom) {
+    const w = watchedRoom;
+    return fullScreen(
+      <WatchLobby
+        code={w.room}
+        region={w.region}
+        game={w.game}
+        onBack={() => {
+          setWatchedRoom(null);
+          navigate('rooms');
+        }}
+        onJoin={() => {
+          // a seat is free: leave the spectator socket (WatchLobby closes it) and join as a driver
+          setWatchedRoom(null);
+          guardStart(() => {
+            selectGame(w.game);
+            setPendingAutoJoin({ room: w.room, config: { kind: 'versus', game: w.game }, region: w.region });
+            navigate('lobby');
+          });
+        }}
+        onMatch={(transport, lobby, m) => {
+          // the host started: the spectator session TAKES OVER this socket, exactly as `spectateRoom`'s does
+          const s = new ServerSession(transport, false, m, lobby.clientId, w.room, true);
+          setWatchedRoom(null);
+          setSession(s);
+          setSessionKind(null); // spectating: no run of our own to restart
+          navigate('game');
+        }}
+      />,
+    );
+  }
   // Belt and braces on the `lanOn` guard: the Play tile is hidden and `/lan` no longer
   // parses where the flag is off, so nothing should reach this — but `navigate('lan')`
   // is still a callable function, and a screen that renders a whole feature is worth
@@ -2411,6 +2454,12 @@ export function App() {
       {screen === 'rooms' && (
         <RoomBrowser
           onHost={() => setRoomChoice({ asking: true, listed: false })}
+          onWatch={(room, game, region) => {
+            // the room's own season, as an accepted invite does: a watcher steps that room's world
+            selectGame(game);
+            setWatchedRoom({ room, game, region });
+            navigate('watchlobby');
+          }}
           onJoin={(room, game, region) =>
             guardStart(() => {
               // the same hand-off an accepted invite makes: the INVITE names the game, and joining
