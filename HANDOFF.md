@@ -7,6 +7,13 @@
 - **Not shipped, on purpose:** branch `gfx/edge-aa` (worktree `.claude/worktrees/gfx-edge-aa`) weights the MSAA resolve for the tone curve (the resolve averages HDR samples, so dark-on-bright edges keep a hard step). Correct for opaque edges, but four render calls, +16 B/px, and it left white dots along hive tray rims and skins: a new jagged artifact. Recorded in `docs/area/biobuzz.md` (HIGH AND UP DRAW AT LEAST THE PANEL'S OWN PIXELS). Extreme was capped at 12.4 MP rather than the branch's 16.6 (~0.9 GB of MSAA targets).
 - **Robot: FROZEN by the owner** ("The robot honestly looks worse" ... "Keep for now but do not work on it anymore. I will give feedback later"). What shipped in 2026-10-11 stays. The deck/back-plate pockets + red/black leads (owner said yes to D1/D2/D4 before seeing the result) were stopped mid-work and are UNCOMMITTED in `.claude/worktrees/gfx-robot-pockets` — not merged, wait for the owner's feedback.
 - **Offscreen capture gotcha:** an offscreen Electron page reports devicePixelRatio 1 whatever `force-device-scale-factor` says; use `webContents.enableDeviceEmulation({ deviceScaleFactor: 2, ... })` to see what a HiDPI player sees (`scratch/capdpr.cjs` in this worktree).
+# HANDOFF — 2026-10-11b (gamepad: Drive curve and Turn curve are separate sliders)
+
+**State: merged into `alpha` (PR #118). Client only: no server change, no deploy beyond Vercel.** ⚠️ **CLEARED FOR `main` (owner, 2026-10-11):** take it to `main` with the next set of bug fixes that go there; it needs no separate go. `tsc`, `server:check`, `build`, `bundleaudit`, `docaudit`, `uiaudit` pass; `npm test` passes but for two timing checks (`imports/cost` sanitise < 1 ms, BIOBUZZ step3d p95) that are load-dependent on this machine.
+
+- **Owner:** separate the stick sensitivity for turning and strafing.
+- **What:** `PadBindings.turnCurve` beside `curve`. `curve` (now "Drive curve") shapes the drive stick and the tank sticks; `turnCurve` ("Turn curve") shapes the turn stick or the triggers (`GamepadInput.sample`). A stored blob without `turnCurve` loads it as its own `curve`, so nobody's turning changes; an older client ignores the field. Rule in `docs/area/ui.md`.
+- **Checks:** smoke "turn curve: …" (fallback, clamp, clone, each curve shapes only its own axes, triggers, tank). In the browser: both sliders render in Controls ▸ Driving, a Turn curve of 2.2 stores apart from the Drive curve and survives a reload. Not checked with a physical pad.
 
 # HANDOFF — 2026-10-11 (BIOBUZZ 3D Extreme graphics: Auto can pick Extreme, photographed venues, lighter seams, robot detail)
 

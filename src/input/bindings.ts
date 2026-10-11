@@ -103,8 +103,17 @@ export interface PadBindings {
   deadzone: number;
   /** sensitivity curve exponent applied to stick input past the deadzone: 1 =
    * linear, higher = softer/more precise near center, ramping to full at the
-   * stick's edge (classic RC/gaming "expo" curve) */
+   * stick's edge (classic RC/gaming "expo" curve). Shapes the DRIVE stick (strafe and
+   * forward) and the two tank sticks; turning has its own, `turnCurve`. */
   curve: number;
+  /**
+   * THE SAME CURVE FOR TURNING: the turn stick's axis, or the triggers with `turnWith:
+   * 'triggers'`. Split from `curve` (owner, 2026-10-11) so a player can turn gently near center
+   * and still strafe linearly, or the other way round. A NEW SIBLING FIELD, like `turnWith`: an
+   * older client ignores it and turns on `curve`, and a stored blob without it loads it AS its
+   * `curve`, so nobody's turning changes until they move the slider.
+   */
+  turnCurve: number;
   /** analog trigger press threshold, 0.1-0.9 (LT/RT register as "held" past this) */
   triggerThreshold: number;
   /** the combo wait in ms, `PAD_CHORD_GRACE_MIN_MS..PAD_CHORD_GRACE_MAX_MS` (see the constant) */
@@ -562,6 +571,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     combos: NO_COMBOS(),
     deadzone: 0.12,
     curve: 1,
+    turnCurve: 1,
     triggerThreshold: 0.35,
     chordGraceMs: PAD_CHORD_GRACE_MS,
     menuButton: PAD_MENU_BUTTON,
@@ -600,6 +610,7 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
       combos,
       deadzone: b.pad.deadzone,
       curve: b.pad.curve,
+      turnCurve: b.pad.turnCurve,
       triggerThreshold: b.pad.triggerThreshold,
       chordGraceMs: b.pad.chordGraceMs,
       menuButton: b.pad.menuButton,
@@ -736,6 +747,7 @@ export function mergeBindings(saved: unknown): ControlBindings {
       combos?: unknown;
       deadzone?: unknown;
       curve?: unknown;
+      turnCurve?: unknown;
       triggerThreshold?: unknown;
       chordGraceMs?: unknown;
       menuButton?: unknown;
@@ -784,6 +796,11 @@ export function mergeBindings(saved: unknown): ControlBindings {
     if (typeof pad.curve === 'number' && Number.isFinite(pad.curve)) {
       out.pad.curve = Math.min(3, Math.max(1, pad.curve));
     }
+    // absent (a blob from before the split) or invalid: turn on the drive curve, as it always did
+    out.pad.turnCurve =
+      typeof pad.turnCurve === 'number' && Number.isFinite(pad.turnCurve)
+        ? Math.min(3, Math.max(1, pad.turnCurve))
+        : out.pad.curve;
     if (typeof pad.triggerThreshold === 'number' && Number.isFinite(pad.triggerThreshold)) {
       out.pad.triggerThreshold = Math.min(0.9, Math.max(0.1, pad.triggerThreshold));
     }
