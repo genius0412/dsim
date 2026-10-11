@@ -562,9 +562,7 @@
   }
 }
 
-/* Back and the admin link in the app bar: outlined, and colour-only on hover like the rest of the
-   bar's controls. The title is the section's name, set in the screen's own accent. */
-.ds-bar-back,
+/* The admin link in the app bar: outlined, and colour-only on hover like the rest of the bar's controls. */
 .ds-bar-link {
   font: inherit;
   font-size: var(--ds-t-control);
@@ -577,7 +575,6 @@
   cursor: pointer;
   transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
-.ds-bar-back:hover,
 .ds-bar-link:hover {
   background: var(--ds-panel);
   border-color: var(--ds-ink-dim);
@@ -622,13 +619,65 @@
   border-top: 1px solid var(--ds-line);
   background: var(--ds-bg);
 }
-.ds-bar-title {
+/* THE BREADCRUMB TRAIL after the season name (`crumbs.ts`). Parents are quiet links that go to ink on
+   hover (colour only, so `shiftaudit` stays green); the page you are on is ink, bold, uppercase. The
+   list may not grow the bar: it never wraps and the current page ellipsizes, and a phone shows only the
+   last two crumbs. Both colours are tokens `contrast.mjs` already holds on `--ds-bar`. */
+.ds-crumbs {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.ds-crumbs ol {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ds-crumbs li {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  min-width: 0;
+}
+.ds-crumbs .sep {
+  color: var(--ds-line-strong);
+}
+.ds-crumb {
+  font: inherit;
   font-size: var(--ds-t-xl);
   font-weight: 800;
   letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
-  color: var(--ds-ink);
   white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+  transition: color var(--ds-dur-fade);
+}
+.ds-crumb:hover {
+  color: var(--ds-ink);
+}
+.ds-crumb.here {
+  color: var(--ds-ink);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 640px) {
+  /* only the last two crumbs (and the separator between them): the bar is one line on a phone */
+  .ds-crumbs li:not(:nth-last-child(-n + 2)) {
+    display: none;
+  }
+  .ds-crumbs li:nth-last-child(2) .sep {
+    display: none;
+  }
+  .ds-crumb {
+    font-size: var(--ds-t-lg);
+  }
 }
 
 /* region picker in the top bar: the Select plus its on-demand Ping button read as
@@ -5794,6 +5843,9 @@ button.bb-cell:where(:not(:disabled)):active {
   .ds-body {
     flex-wrap: wrap;
     align-items: stretch;
+    /* the toggle and the content are TWO wrapped lines; with the default `stretch` the spare height of a short
+       page was shared between them, which turned the 46px toggle row into a 170px empty band */
+    align-content: flex-start;
   }
   /* the hint line is the first thing to go when the rail turns horizontal (main's rule) */
   

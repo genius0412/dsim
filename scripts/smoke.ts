@@ -18545,6 +18545,34 @@ const recordDrive: CommandSource = (tick) => {
   check('feed: an empty board is an empty feed', feedFromRows([], null, 10).length === 0);
 }
 
+/** THE BREADCRUMB TRAIL (`src/ui/crumbs.ts`): what the app bar shows is also where "up" goes. */
+{
+  const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
+  const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
+  const shellScreens = ['modes', 'solosetup', 'rooms', 'watch', 'competitions', 'configure', 'robotimport', 'records', 'profile', 'account',
+    'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
+  check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
+  check('crumbs: every shell screen has a trail', shellScreens.every((s) => crumbsFor(s, null, 'someone').length > 0), shellScreens.filter((s) => crumbsFor(s, null, 'x').length === 0).join());
+  check('crumbs: only the LAST crumb has no target, and every earlier one has one',
+    shellScreens.every((s) => { const t = crumbsFor(s, 'appearance', 'x'); return t.every((c, i) => (i === t.length - 1) === !c.to); }));
+  check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
+  check('crumbs: Play pages go back to Play, and Play goes Home',
+    parentOf(crumbsFor('rooms')).screen === 'modes' && parentOf(crumbsFor('solosetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
+  check('crumbs: every Records page goes back to the hub, with the registry labels',
+    RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
+  check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
+  check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
+  check('crumbs: the account page sits under Profile (Appearance), which is top-level',
+    crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
+  check('crumbs: Import robot goes back to Configure', parentOf(crumbsFor('robotimport')).screen === 'configure');
+  check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
+    shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
+  const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
+  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'solosetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
+}
+
 /** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
 {
   const { RECORDS_PAGES, RECORDS_HUB, isRecordsPage, recordsViewOf } = await import('../src/ui/recordsPages');
@@ -18568,8 +18596,6 @@ const recordDrive: CommandSource = (tick) => {
       app.includes("startsWith('/stats')) return at('records', { sub: 'career' })"));
   check('records: a page builds /records/<key> and the hub builds /records',
     app.includes("isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records'"));
-  check('records: Back from a page returns to the hub, from the hub to Home',
-    app.includes("screen === 'records' && recordsView !== RECORDS_HUB"));
   const recordsSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('records: every registry key has a component (Record<RecordsPageKey, ...>)', recordsSrc.includes('Record<RecordsPageKey, ComponentType<PageProps>>'));
   const now = Date.UTC(2026, 9, 10, 12);

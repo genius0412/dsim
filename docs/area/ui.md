@@ -799,8 +799,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
   Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
-  carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as the title
-  lookup; Admin is a bar link). Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
+  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). Full-screen surfaces keep their `ConsoleHead` Back: it leaves a live socket. Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
   keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every
@@ -814,8 +813,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
   (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
   `Records.tsx`'s `PAGES` (three now: Leaderboards, My records, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards; there is no Players page, the hub's search is how you find a player), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
-  typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: Back in the app bar
-  returns to the hub, from the hub to Home. `/leaderboard`, `/stats` and `/records/career` still resolve.
+  typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: the trail in the app bar (`Records › Achievements`) is how you go up to the hub, and the hub is a top-level screen (up is Home). `/leaderboard`, `/stats` and `/records/career` still resolve.
   **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
   server (read once at load; a production bundle drops it).
 - **BROWSE ROOMS HAS TWO CONTROLS PER ROW (2026-10-10):** the row joins as a driver while a seat is free, and **Watch** opens `WatchLobby` (screen `watchlobby`, no URL of its own: a live socket like `game`). It shows both alliances and the seats, hands the socket to a spectator session when the host starts, and offers **Join this room** only while a seat is free. A watcher holds no seat and cannot change the room.

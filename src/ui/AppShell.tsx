@@ -9,7 +9,7 @@ import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
-import { RAIL_ITEMS } from './NavRail';
+import type { Crumb, CrumbTarget } from './crumbs';
 import { BannerStrip } from './BannerStrip';
 import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
@@ -43,14 +43,14 @@ function PresenceChip({ p }: { p: Presence }) {
  * outside this shell entirely and own their own back/Esc semantics.
  */
 export function AppShell({
-  active,
   onNav,
   right,
   children,
   showAdmin,
   home = false,
   wide = false,
-  onBack,
+  crumbs,
+  onCrumb,
   onDownload,
   onContributors,
   onPrivacy,
@@ -64,7 +64,6 @@ export function AppShell({
   myUserId,
   game,
 }: {
-  active: ShellNav;
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
   children: ReactNode;
@@ -74,8 +73,10 @@ export function AppShell({
   wide?: boolean;
   /** home has no Back, no title and no friends panel, and its menu is the navigation */
   home?: boolean;
-  /** Back, in the top bar of every screen but home */
-  onBack: () => void;
+  /** where you are, after the season name: parents are links, the last is plain text. Empty on home. */
+  crumbs: readonly Crumb[];
+  /** go to a crumb */
+  onCrumb: (to: CrumbTarget) => void;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
@@ -134,11 +135,6 @@ export function AppShell({
     <PresenceProvider value={presence} game={game}>
     <div className="ds-app">
       <header className="ds-bar">
-        {!home && (
-          <button className="ds-bar-back" onClick={onBack}>
-            Back
-          </button>
-        )}
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
           <Logo size={24} />
           {APP_NAME}
@@ -152,8 +148,33 @@ export function AppShell({
           <span className="sep" aria-hidden="true">·</span>
           {season.name}
         </span>
-        {/* a span, not a heading: every screen already has its own h1 */}
-        {!home && <span className="ds-bar-title">{RAIL_ITEMS.find((it) => it.id === active)?.label ?? ''}</span>}
+        {/* THE TRAIL, in the place the old title was. Nothing LEFT of it (the mark, the season) depends
+            on the screen, so the bar never shifts when you navigate; the trail only grows to the right.
+            Every crumb but the last is a link, which is also how you go back (`crumbs.ts`). */}
+        {crumbs.length > 0 && (
+          <nav className="ds-crumbs" aria-label="Breadcrumb">
+            <ol>
+              {crumbs.map((c, i) => (
+                <li key={`${i}:${c.label}`}>
+                  {i > 0 && (
+                    <span className="sep" aria-hidden="true">
+                      ›
+                    </span>
+                  )}
+                  {c.to ? (
+                    <button className="ds-crumb" onClick={() => onCrumb(c.to as CrumbTarget)}>
+                      {c.label}
+                    </button>
+                  ) : (
+                    <span className="ds-crumb here" aria-current="page">
+                      {c.label}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </nav>
+        )}
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone

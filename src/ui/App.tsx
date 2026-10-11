@@ -80,6 +80,7 @@ import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records } from './Records';
 import { RECORDS_HUB, isRecordsPage, recordsViewOf, type RecordsView } from './recordsPages';
+import { crumbsFor } from './crumbs';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
@@ -435,39 +436,6 @@ function devRouteFor(game: GameId, rest: string): ComponentType | null {
     }
   }
   return null;
-}
-
-/** which rail/menu entry lights up for a given screen */
-function navFor(screen: Screen): ShellNav {
-  switch (screen) {
-    case 'modes':
-    case 'solosetup':
-    case 'rooms':
-    case 'game':
-    case 'lobby':
-    case 'discordlobbies':
-    case 'record':
-    case 'duorecord':
-    case 'matchmaking':
-    case 'watch':
-    case 'lan':
-    case 'competitions':
-    case 'compmatch':
-      return 'play';
-    case 'configure':
-    case 'robotimport':
-      return 'configure';
-    case 'records':
-      return 'records';
-    case 'account':
-    case 'accountreset':
-    case 'accountverify':
-      return 'profile';
-    case 'admin':
-      return 'admin';
-    default:
-      return 'home';
-  }
 }
 
 /** the landing route for each top-level destination */
@@ -2350,6 +2318,8 @@ export function App() {
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsView: RecordsView = recordsViewOf(route.sub);
+  /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
+  const crumbs = crumbsFor(screen, route.sub, route.username);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
 
@@ -2377,17 +2347,13 @@ export function App() {
         />
       )}
       <AppShell
-        active={navFor(screen)}
         onNav={goNav}
         right={right}
         showAdmin={isAdmin}
         home={screen === 'home'}
         wide={screen === 'solosetup'}
-        onBack={() => (screen === 'solosetup' || screen === 'rooms'
-            ? navigate('modes')
-            : screen === 'records' && recordsView !== RECORDS_HUB
-              ? navigate('records', { sub: RECORDS_HUB })
-              : goNav('home'))}
+        crumbs={crumbs}
+        onCrumb={(to) => navigate(to.screen as Screen, { sub: to.sub ?? null })}
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
