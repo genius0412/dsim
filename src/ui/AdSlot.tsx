@@ -23,13 +23,13 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
   menu: { w: 300, h: 250 },
   results: { w: 300, h: 250 },
   // the leaderboard banner; `sizeFor` swaps in a 320x50 on a narrow viewport
-  top: { w: 728, h: 90 },
+  banner: { w: 728, h: 90 },
 };
 
 /** the top strip is the one unit whose size depends on the viewport */
-export const TOP_NARROW_PX = 760;
+export const BANNER_NARROW_PX = 760;
 function sizeFor(unit: AdUnit): { w: number; h: number } {
-  if (unit === 'top' && typeof innerWidth === 'number' && innerWidth < TOP_NARROW_PX) {
+  if (unit === 'banner' && typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX) {
     return { w: 320, h: 50 };
   }
   return SIZE[unit];

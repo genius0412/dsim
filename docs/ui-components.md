@@ -683,6 +683,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 |---|---|---|
 | `.ds-banners` | src/ui/shell.css:9314 | 1 |
 
+## `ds-bannerstrip` — 1
+
+| class | declared | used |
+|---|---|---|
+| `.ds-bannerstrip` | src/ui/shell.css:514 | 1 |
+
 ## `ds-binds` — 1
 
 | class | declared | used |
@@ -693,7 +699,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-body` | src/ui/shell.css:799 | 4 |
+| `.ds-body` | src/ui/shell.css:799 | 5 |
 
 ## `ds-btn` — 1
 
@@ -1048,12 +1054,6 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-title` | src/ui/shell.css:4339 | 5 |
-
-## `ds-topstrip` — 1
-
-| class | declared | used |
-|---|---|---|
-| `.ds-topstrip` | src/ui/shell.css:514 | 1 |
 
 ## `ds-username` — 1
 

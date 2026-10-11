@@ -800,10 +800,10 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 - **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
   Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
   carries Back and its section title in the app bar (`AppShell`: `onBack`, `RAIL_ITEMS` as the title
-  lookup; Admin is a bar link). Play is ONE page with a Solo set and a Multiplayer set. ⚠️ **NO
+  lookup; Admin is a bar link). Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
-  keycaps and cards they were. **`TopStrip`** (NOT on Home) sits above the bar on every
+  keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every
   shell screen and RESERVES its height: the `top` ad unit (728x90, 320x50 under 760px) when ads can
   run, the sponsor's banner (`SponsorStripMark`, placement `strip`) when there is no ad or AdSense
   answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. At ≤900px `.ds-body` wraps so the collapsed

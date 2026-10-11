@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { sponsorActive } from '../sponsor';
-import { AdSlot, TOP_NARROW_PX, useAdUnitActive } from './AdSlot';
+import { AdSlot, BANNER_NARROW_PX, useAdUnitActive } from './AdSlot';
 import { SponsorStripMark } from './Sponsor';
 
 /** how long an ad gets to report a status before the banner takes the strip back */
@@ -23,8 +23,8 @@ const FILL_WAIT_MS = 5000;
  * Renders nothing, and so reserves nothing, once the sponsor term is over and there is no ad:
  * an empty strip is a gap, not a placeholder. It is never rendered on Home (`AppShell`).
  */
-export function TopStrip() {
-  const adOn = useAdUnitActive('top');
+export function BannerStrip() {
+  const adOn = useAdUnitActive('banner');
   const [unfilled, setUnfilled] = useState(false);
   const box = useRef<HTMLDivElement>(null);
 
@@ -54,9 +54,9 @@ export function TopStrip() {
   const sponsor = sponsorActive();
   if (!showAd && !sponsor) return null;
   return (
-    <div className="ds-topstrip" ref={box}>
+    <div className="ds-bannerstrip" ref={box}>
       {showAd ? (
-        <AdSlot unit="top" />
+        <AdSlot unit="banner" />
       ) : (
         <div className="ds-adframe">
           <span className="ad-slot-label">Sponsored</span>
@@ -69,9 +69,9 @@ export function TopStrip() {
   );
 }
 
-/** the phone-sized unit (320x50) below `TOP_NARROW_PX`, tracked live so a resize swaps the creative */
+/** the phone-sized unit (320x50) below `BANNER_NARROW_PX`, tracked live so a resize swaps the creative */
 function useNarrow(): boolean {
-  const query = `(max-width: ${TOP_NARROW_PX - 1}px)`;
+  const query = `(max-width: ${BANNER_NARROW_PX - 1}px)`;
   const [narrow, setNarrow] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
   useEffect(() => {
     if (typeof matchMedia !== 'function') return;

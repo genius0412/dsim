@@ -180,13 +180,6 @@ export function ModeSelect({
                   {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
                 </span>
               </button>
-
-              <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
-                <span>
-                  <span className="t">Duo record</span>
-                  {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
-                </span>
-              </button>
             </>
           )}
         </div>
@@ -206,6 +199,14 @@ export function ModeSelect({
               <span className="t">Browse rooms</span>
             </span>
           </button>
+          {compete && (
+            <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
+              <span>
+                <span className="t">Duo record</span>
+                {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
+              </span>
+            </button>
+          )}
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
             <span>
               <span className="t">Watch live</span>

@@ -10,7 +10,7 @@ import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
 import { RAIL_ITEMS } from './NavRail';
-import { TopStrip } from './TopStrip';
+import { BannerStrip } from './BannerStrip';
 import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
@@ -133,9 +133,6 @@ export function AppShell({
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
     <div className="ds-app">
-      {/* the ad strip is chrome for every screen but HOME: the first thing a visitor (and an AdSense
-          reviewer) sees should read as a product, not as inventory */}
-      {!home && <TopStrip />}
       <header className="ds-bar">
         {!home && (
           <button className="ds-bar-back" onClick={onBack}>
@@ -222,6 +219,12 @@ export function AppShell({
           they never appear over a live match (full-screen surfaces are outside
           this shell). Inside the FriendsProvider that wraps AppShell in App. */}
       <FriendToasts onOpenProfile={onOpenProfile} onJoinInvite={onJoinInvite} />
+
+      {/* the ad strip sits at the BOTTOM, just above the footer, on every screen but HOME: the first
+          thing a visitor (and an AdSense reviewer) sees should read as a product, not as inventory,
+          and nothing above the page's own content is an ad. `.ds-body` takes the spare height, so on a
+          short page the strip still lands at the foot of the window. */}
+      {!home && <BannerStrip />}
 
       <footer className="ds-foot">
         <span className="ds-foot-brand">

@@ -268,8 +268,8 @@ export function SponsorFooterMark() {
   );
 }
 
-/** TOP STRIP — the banner that fills the reserved ad strip above every shell screen whenever
- *  there is no ad to show. Rendered by `TopStrip`, which owns the sponsor-active check and the
+/** TOP STRIP — the banner that fills the reserved ad strip at the bottom of every shell screen whenever
+ *  there is no ad to show. Rendered by `BannerStrip`, which owns the sponsor-active check and the
  *  reserved height, so this is only the mark. */
 export function SponsorStripMark({ h }: { h: number }) {
   return (
