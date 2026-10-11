@@ -25,6 +25,7 @@ import { useParkedQueue } from './QueueBar';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
 import { ConsoleHead } from './ConsoleHead';
+import { RankedStanding } from './RankedStanding';
 import { useEscape } from './useEscape';
 import { VerifyEmailInline } from './VerifyCodeForm';
 import { OptRow, ToggleRow } from './OptRow';
@@ -108,6 +109,7 @@ interface StrategyState {
 export function Matchmaking({
   settings,
   signedIn,
+  myUserId,
   onStart,
   onCancel,
   onSignIn,
@@ -117,6 +119,8 @@ export function Matchmaking({
 }: {
   settings: GameSettings;
   signedIn: boolean;
+  /** the signed-in account's id, for the standing at the top of the page */
+  myUserId?: string | null;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
   onSignIn: () => void;
@@ -1179,6 +1183,7 @@ export function Matchmaking({
     'Ranked match',
     '',
     <>
+      <RankedStanding myUserId={myUserId} game={settings.game} mode={mode} />
       {/* OptRow, so the pick carries aria-pressed and not only the `.on` fill */}
       <OptRow<QueueMode>
         cols="two"

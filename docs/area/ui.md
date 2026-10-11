@@ -816,17 +816,18 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
   season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
   (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
-  `Records.tsx`'s `PAGES`, which is typed `Record<RecordsPageKey, …>` so a missing component fails the
+  `Records.tsx`'s `PAGES` (four now: Leaderboards, My records, Players with a Recently played list, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
   typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: Back in the app bar
   returns to the hub, from the hub to Home. `/leaderboard`, `/stats` and `/records/career` still resolve.
   **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
   server (read once at load; a production bundle drops it).
+- **THE RANKED SCREEN OPENS ON YOUR STANDING** (`RankedStanding`, above the 1v1/2v2 pick): the rating for the picked format, its rank, the games it is over and the overall W–L, from the one `fetchUserStats` read, in a box that is RESERVED while the read is in flight and stays empty on failure.
 - ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
   solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,
   320 and 244px. A short or narrow window (`max-height: 640px`, `max-width: 720px`) now lays the SOLO breakdown
   out in two columns, shrinks the edge inset, and a stacked half is a `22vh` floor, not a `40vh` share; the
-  first five now fit; the short-window rule also drops the eyebrow and sets the breakdown at 2.2u (it needs `.resx-body` in front of `.resx-breakdown`, whose base block sits LATER in the file), which brought **844x390 to fit** (435px to 390). The VERSUS board was not
-  measurable offline (it needs two drivers), so check it on a real room before relying on it. The results ad
+  first five now fit; the short-window rule also drops the eyebrow and sets the breakdown at 2.2u (it needs `.resx-body` in front of `.resx-breakdown`, whose base block sits LATER in the file), which brought **844x390 to fit** (435px to 390). The **VERSUS board is measured too**, with a BIOBUZZ solo match and an AI opponent (the one way to get both alliances onto it without a second driver): it scrolled by 241px at 844x390 and 141px at 390x844, and now fits all six sizes by splitting its value | label | value table into two columns, narrowing the halves to 24% on a short window and letting stacked halves size to their content (a `min-height` floor let the big total spill over the table). 
+  The results ad
   (`ResultsAd`, a 300x250 in the one column) cost ~264px and scrolled even a 1080p stage, so it mounts only
   at `min-height: 1180px`; that is inventory traded for the no-scroll rule, and moving it into the alliance
   panel's empty middle is the way to win it back. To re-measure: `scratch/shot-results.cjs` style drive

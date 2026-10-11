@@ -2227,6 +2227,7 @@ export function App() {
         <Matchmaking
           settings={settings}
           signedIn={signedIn}
+          myUserId={accountUserId}
           onStart={(s) => beginSession(s, 'ranked')}
           onCancel={() => navigate('modes')}
           onSignIn={() => navigate('account')}

@@ -9543,6 +9543,83 @@ input.admin-months {
 .ds-hub-pages {
   margin: var(--ds-s-4) 0;
 }
+/* YOUR RANKED STANDING at the top of the ranked screen. The box keeps its height while the read is in
+   flight (an empty frame), so the number arriving moves nothing below it. */
+.ds-rankedstanding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-4);
+  min-height: 88px;
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+}
+.ds-rankedstanding .rs-main {
+  display: flex;
+  flex-direction: column;
+}
+.ds-rankedstanding .rs-num {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  line-height: var(--ds-lh-tight);
+}
+.ds-rankedstanding .rs-cap,
+.ds-rankedstanding .rs-side {
+  font-size: var(--ds-t-md);
+  color: var(--ds-mut);
+}
+.ds-rankedstanding .rs-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--ds-s-1);
+}
+.ds-badge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ds-badge-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-badge-row:first-child {
+  border-top: 0;
+}
+/* an unearned badge is dimmed by its ART, never by `opacity` on the row: the sentence beside it is
+   the point of the row and has to stay readable (the same rule the touch pad's idle button follows) */
+.ds-badge-row:not(.earned) .badge-glyph {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.ds-badge-row .bd-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  min-width: 0;
+}
+.ds-badge-row .bd-earn {
+  font-size: var(--ds-t-md);
+  color: var(--ds-mut);
+}
+.ds-badge-row .bd-state {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+.ds-badge-row.earned .bd-state {
+  color: var(--ds-ok-ink);
+}
 .ds-feed {
   list-style: none;
   margin: 0;

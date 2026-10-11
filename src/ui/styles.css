@@ -2308,6 +2308,61 @@ button {
     letter-spacing: 0.08em;
   }
 }
+/* ---- THE VERSUS BOARD on a short or narrow window (measured offline with a BIOBUZZ solo match and
+   an AI opponent, the one way to get both alliances onto the board without a second driver) ----
+   Before this, 844x390 scrolled by 241px and 390x844 by 141px. The centre table is value | label |
+   value, 15 rows tall; the SAME two-column split the solo table uses applies, with each row a
+   three-cell grid. The alliance halves also step their big type down so they stay inside their cell. */
+@media (max-height: 640px), (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-breakdown,
+  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
+    display: block;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
+    column-count: 2;
+    column-gap: calc(2 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown tr {
+    display: grid;
+    grid-template-columns: minmax(2.4ch, auto) minmax(0, 1fr) minmax(2.4ch, auto);
+    align-items: baseline;
+    break-inside: avoid;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown .resx-section {
+    display: block;
+    break-after: avoid;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown td,
+  .resx-body:not(.resx-body-solo) .resx-breakdown th {
+    padding: 0.16em 0.4em;
+  }
+  .resx-body:not(.resx-body-solo) .resx-cat {
+    text-align: center;
+  }
+  .resx-body:not(.resx-body-solo) .resx-total-num {
+    font-size: calc(8 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-winbanner {
+    font-size: calc(3.6 * var(--resx-u));
+  }
+  .resx-body:not(.resx-body-solo) .resx-roster-row {
+    font-size: calc(2.8 * var(--resx-u));
+  }
+}
+@media (max-height: 640px) and (min-width: 721px) {
+  /* the centre column takes the room the two halves give back, so two table columns fit in it */
+  .resx-body:not(.resx-body-solo) {
+    grid-template-columns: 24% minmax(0, 1fr) 24%;
+  }
+}
+/* a PHONE UPRIGHT: the stacked halves size to their content (a floor under the content let the big
+   total spill out of its cell and over the table, measured), and the breakdown sits between them */
+@media (max-width: 720px) {
+  .resx-body:not(.resx-body-solo) .resx-half {
+    min-height: 0;
+  }
+}
+
 /* a SHORT but WIDE window (a phone on its side, a small laptop): the alliance panel gives the
    breakdown more of the width, so its two columns each have room for a label and a value. The
    mirrored (blue) board has its own track rule above, so it is restated here after it. */

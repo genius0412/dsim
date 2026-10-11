@@ -432,7 +432,7 @@ export function FriendsPanel({
 
 /** the non-self players with a public username from a page of match history,
  * deduped, freshest-first — everyone you've recently shared a match with. */
-function recentPeople(rows: MatchHistoryEntry[], myUserId: string): PublicProfile[] {
+export function recentPeople(rows: MatchHistoryEntry[], myUserId: string): PublicProfile[] {
   const seen = new Set<string>([myUserId]);
   const out: PublicProfile[] = [];
   for (const row of rows) {

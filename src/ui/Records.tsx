@@ -1,7 +1,9 @@
 import type { ComponentType } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
+import { AchievementsPage } from './AchievementsPage';
 import { Leaderboard } from './Leaderboard';
+import { RecentPlayers } from './RecentPlayers';
 import { RecordsHub } from './RecordsHub';
 import { RECORDS_HUB, type RecordsPageKey, type RecordsView } from './recordsPages';
 import { Stats } from './Stats';
@@ -34,14 +36,19 @@ function CareerPage({ game, onWatch, onWatchLocal, onOpenProfile }: PageProps) {
   );
 }
 
-function PlayersPage({ onOpenProfile }: PageProps) {
+function PlayersPage({ myUserId, onOpenProfile }: PageProps) {
   return (
     <>
       <h1 className="ds-h1">Players</h1>
       <p className="ds-sub">Search by display name or @username to open a profile.</p>
       <UserSearchBar onOpenProfile={onOpenProfile} />
+      <RecentPlayers myUserId={myUserId} onOpenProfile={onOpenProfile} />
     </>
   );
+}
+
+function AchievementsRoute({ myUserId, game }: PageProps) {
+  return <AchievementsPage myUserId={myUserId} game={game} />;
 }
 
 /**
@@ -53,6 +60,7 @@ const PAGES: Record<RecordsPageKey, ComponentType<PageProps>> = {
   leaderboard: LeaderboardPage,
   career: CareerPage,
   players: PlayersPage,
+  achievements: AchievementsRoute,
 };
 
 /**

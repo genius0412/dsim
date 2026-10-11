@@ -18516,7 +18516,11 @@ const recordDrive: CommandSource = (tick) => {
   const keys = RECORDS_PAGES.map((p) => p.key);
   check('records: every page key is unique', new Set(keys).size === keys.length);
   check('records: the hub is not a page key (it is what the pages hang off)', !keys.includes(RECORDS_HUB as never));
-  check('records: leaderboard, career and players are pages', ['leaderboard', 'career', 'players'].every((k) => isRecordsPage(k)));
+  check('records: leaderboard, career and players are pages', ['leaderboard', 'career', 'players', 'achievements'].every((k) => isRecordsPage(k)));
+  const { BADGE_KEYS: BK, BADGE_EARN: BE, BADGE_LABELS: BL } = await import('../src/badges');
+  check('records: Achievements lists every badge with a name and how it is earned', BK.every((k) => !!BL[k] && !!BE[k]));
+  const pagesSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('records: Players carries the Recently played list and Achievements has a route', pagesSrc.includes('<RecentPlayers') && pagesSrc.includes('achievements: AchievementsRoute'));
   check('records: a bare /records, or anything unknown, is the HUB', recordsViewOf(null) === RECORDS_HUB && recordsViewOf('hub') === RECORDS_HUB && recordsViewOf('nope') === RECORDS_HUB);
   check('records: a known sub is its own page', recordsViewOf('career') === 'career' && recordsViewOf('leaderboard') === 'leaderboard');
   const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
