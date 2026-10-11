@@ -19,7 +19,7 @@ type AutoModule = typeof import('./zenithEditor');
 const ZENITH_OPEN_NOTICE = 'Zenith is open in another window. Save there to bring the auto back here.';
 
 /**
- * THE AUTONOMOUS SECTION of Configure ▸ Match (docs/area/autos.md): the player's Zenith autos
+ * THE AUTONOMOUS SECTION of Solo setup (docs/area/autos.md): the player's Zenith autos
  * for this game, a preview of the selected one planned for their alliance and build, and the
  * switch that makes AUTO play it. Shown only for a game that plays Zenith autos
  * (`GameSimModule.zenithAutos`), which is BIOBUZZ.

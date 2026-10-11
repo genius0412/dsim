@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
 import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
-import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
+import type { AccessGroup, BannerKind, ListedRoom, LiveRoom, RecentRecord, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -226,6 +226,18 @@ export function fetchRecords(
   return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${v}${gameParam(game)}`);
 }
 
+/**
+ * The Records feed: new No.1s and top-3 scores of the current season, over a time frame
+ * (`GET /api/records/recent`). A server older than this route fails the read, which the hub shows as
+ * its error state; nothing else depends on it.
+ */
+export function fetchRecentRecords(
+  window: 'day' | 'week' | 'month' | 'season',
+  game?: GameId,
+): Promise<{ rows: RecentRecord[]; window: string; windowStart: string | null }> {
+  return getJson(`/api/records/recent?window=${window}${gameParam(game)}`);
+}
+
 export function fetchElo(
   mode: EloMode,
   season?: number,
@@ -338,9 +350,16 @@ export function reportPlayed(game: GameId, source: 'practice' | 'lan', mode?: '1
 
 /** every live RANKED match currently running (for the "Watch Live" list). Each
  * `room` code is spectated via `LobbyClient.spectate`. Custom and record rooms are
- * deliberately absent — they are reached by code (`fetchLiveRoom`). */
+ * deliberately absent — they are reached by code (`fetchLiveRoom`), and a Public room is on
+ * `fetchListedRooms`. */
 export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
   return getJson(`/api/live`);
+}
+
+/** Browse rooms: every Public room, in every region (`GET /api/rooms`). An older server has no such
+ *  route and the read fails, which the page says. */
+export function fetchListedRooms(): Promise<{ region: string; rooms: ListedRoom[] }> {
+  return getJson(`/api/rooms`);
 }
 
 /** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */
@@ -2261,6 +2280,9 @@ export interface TierPrice {
 export interface Entitlements {
   /** an active supporter membership — removes ads, unlocks cosmetic perks */
   supporter: boolean;
+  /** a CONTRIBUTOR (an access group): ad-free like a supporter, with none of the other perks. Absent from
+   *  a server older than 2026-10-11, which reads as not a contributor (`src/ads/adFree.ts`). */
+  contributor?: boolean;
   /** ISO instant the membership lapses, or null if not a supporter — and always
    *  null for staff, who are entitled by role rather than by a purchase */
   supporterUntil: string | null;
@@ -2316,6 +2338,7 @@ export async function fetchEntitlements(): Promise<Entitlements> {
       supporter: !!r.supporter,
       supporterUntil: r.supporterUntil ?? null,
       role: r.role === 'owner' || r.role === 'admin' ? r.role : undefined,
+      contributor: r.contributor === true,
       autoRenews: !!r.autoRenews,
       price: r.price,
       // PASSED THROUGH UNTOUCHED, including `undefined`. Coercing it to null here

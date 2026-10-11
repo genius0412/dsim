@@ -25,6 +25,20 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   Google serves EEA/UK/CH users no ads at all. It loads with the client id; the message
   itself is authored in the AdSense dashboard. The footer "Data" (was "Privacy & cookie settings")
   link must keep existing (consent you can't withdraw isn't consent).
+- **WHO NEVER SEES AN AD (owner, 2026-10-11): a supporter, an owner/admin and a CONTRIBUTOR** (`src/ads/adFree.ts`,
+  one pure rule, held by `npm test`). Staff already arrive as `supporter`; the contributor is the access group, sent
+  by `/api/user/entitlements` as `contributor` and NOT folded into `supporter`, because that flag also means "has the
+  perks" (badge, saved starts, cosmetics) and a contributor gets none of them. Beta testers and devs are NOT exempt.
+  UX only, nothing server-enforced; an older server omits the field, which reads as not a contributor.
+- **IN-MATCH AD SPACES FOLLOW THE WINDOW'S SHAPE (2026-10-11).** The field is square, so it has slack on ONE axis:
+  `game` (160x600 columns, `VITE_ADSENSE_SLOT_GAME`) takes a window at least 8:5 wide, and the new `gameh` (728x90, 320x50
+  under 760px, `VITE_ADSENSE_SLOT_GAME_H`) takes one at most 3:5 (taller than wide) and sits BELOW the field. They never
+  show together. Each carries the 150px clearance gutter (310px / 254px). The 8:5 is new: at 1280x900 the columns left
+  660px of canvas for a ~900px field. The 3:5 is derived (the field needs W + ~152px of HUD bands, the banner 254px),
+  so a window that cannot spare it gets NO banner rather than a smaller field. **`gameh` is the one unit allowed on a
+  TABLET** (`adsConfigured('gameh')`: touch and at least 768 wide); in practice a tablet in portrait is 3:4, nowhere near
+  3:5, so it appears on tall desktop windows and large foldables, and the way to give tablets one is to relax that ratio
+  and accept a smaller field. **Same sign-off as `game`: compare p95 frame time with `?perf=1` before setting the slot.**
 - **Three ad units, each with its own slot id**: `menu` (shell pages) and `results`
   (post-match) are SAFE; `game` (columns flanking the live field) is the risky one —
   60 Hz canvas + AdSense's 150px game-clearance rule. **Do not enable
@@ -143,7 +157,7 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     - Imported days are whole UTC days: range ends round to the nearest midnight, and an hourly
       range that reaches them is returned by day (`grain`). The chart marks the boundary.
     - `imported` stays in the response as `null` so a pre-change admin page does not break.
-  - **`LEGAL_UPDATED` moved to September 25, 2026** (owner) for first-party analytics, the host's
+  - **`LEGAL_UPDATED` moved to October 10, 2026** (owner) for Public rooms: a signed-in host's in-room name, the game, the seats and the room code are listed in Browse rooms while the room is still a lobby. Earlier: **September 25, 2026** (owner) for first-party analytics, the host's
     count removed and browser DNT/GPC no longer gating it: every signed-in account accepts once.
 - Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.

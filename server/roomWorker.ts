@@ -158,6 +158,7 @@ function pushFacts(rid: number): void {
     seats,
     staging: r.staging(),
     summary: r.summary(),
+    listing: r.listing(),
     presence: r.presenceSnapshot(),
     holds: r.holdsCapacity(),
     abandonable: r.isAbandonable(),

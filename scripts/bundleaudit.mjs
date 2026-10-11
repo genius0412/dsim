@@ -686,7 +686,7 @@ const BASELINE = {
   // `zenithHost.ts`, the HUD line) is in main: +5.15 KB against alpha @ c4afe65's 973.24.
   // 2026-09-26: 55.77 -> 59.93 (+4.16), MOVED here from main rather than grown. Merging alpha put
   // main at 984.51 against its 982.82 ceiling (alpha alone measures 980.38), so the Autonomous
-  // panel (`AutonomousSetup.tsx`, lazy in `MatchSetup`) and the editor popup (`zenithLaunch.ts`,
+  // panel (`AutonomousSetup.tsx`, lazy in `SoloSetup`) and the editor popup (`zenithLaunch.ts`,
   // `zenithHost.ts`, behind the client entry `src/ui/zenithEditor.ts`) went lazy. Main is 980.94
   // after it, +0.56 against alpha: the library read, the lobby chip and the HUD line.
   autos: { gzip: 59.93 * 1000 },

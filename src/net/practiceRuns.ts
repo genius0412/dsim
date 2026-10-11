@@ -64,7 +64,7 @@ export interface PracticeRunMeta {
    */
   view?: string;
   /**
-   * HOW MANY OTHER ROBOTS WERE ON THE FIELD (`Match ▸ Practice`: dummies and AI seats), off the
+   * HOW MANY OTHER ROBOTS WERE ON THE FIELD (`Solo setup`: dummies and AI seats), off the
    * container's own setups. A score made beside an AI partner, or against defenders, is not a
    * solo score, and the list says so. Absent on a run kept before this field, which was solo or
    * one of the old all-three line-ups — unknown, so no mark.

@@ -9,7 +9,8 @@ import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
-import { NavRail } from './NavRail';
+import type { Crumb, CrumbTarget } from './crumbs';
+import { BannerStrip } from './BannerStrip';
 import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
@@ -34,22 +35,22 @@ function PresenceChip({ p }: { p: Presence }) {
 }
 
 /**
- * App chrome for the routed content screens. The top bar is deliberately thin —
- * brand, presence, and the auth slot — because navigation lives elsewhere:
- *
- *   HOME  (`showRail={false}`) — the destinations are the centered main menu.
- *   EVERY OTHER SCREEN         — the same destinations as a persistent left rail.
+ * App chrome for the routed content screens. There is no persistent navigation: the home menu
+ * is the only hub, so every other screen carries a Back button and its own title in the top bar,
+ * and its own title.
  *
  * Full-screen surfaces (the game, lobby, record run, ranked, replay) render
  * outside this shell entirely and own their own back/Esc semantics.
  */
 export function AppShell({
-  active,
   onNav,
   right,
   children,
   showAdmin,
-  showRail = true,
+  home = false,
+  wide = false,
+  crumbs,
+  onCrumb,
   onDownload,
   onContributors,
   onPrivacy,
@@ -63,14 +64,19 @@ export function AppShell({
   myUserId,
   game,
 }: {
-  active: ShellNav;
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
   children: ReactNode;
   /** show the Admin entry (only the signed-in admin account) */
   showAdmin?: boolean;
-  /** false on home, where the menu itself is the navigation */
-  showRail?: boolean;
+  /** a screen that uses the whole width and height under the bar (Solo setup) instead of a column */
+  wide?: boolean;
+  /** home has no Back, no title and no friends panel, and its menu is the navigation */
+  home?: boolean;
+  /** where you are, after the season name: parents are links, the last is plain text. Empty on home. */
+  crumbs: readonly Crumb[];
+  /** go to a crumb */
+  onCrumb: (to: CrumbTarget) => void;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
@@ -142,6 +148,33 @@ export function AppShell({
           <span className="sep" aria-hidden="true">·</span>
           {season.name}
         </span>
+        {/* THE TRAIL, in the place the old title was. Nothing LEFT of it (the mark, the season) depends
+            on the screen, so the bar never shifts when you navigate; the trail only grows to the right.
+            Every crumb but the last is a link, which is also how you go back (`crumbs.ts`). */}
+        {crumbs.length > 0 && (
+          <nav className="ds-crumbs" aria-label="Breadcrumb">
+            <ol>
+              {crumbs.map((c, i) => (
+                <li key={`${i}:${c.label}`}>
+                  {i > 0 && (
+                    <span className="sep" aria-hidden="true">
+                      ›
+                    </span>
+                  )}
+                  {c.to ? (
+                    <button className="ds-crumb" onClick={() => onCrumb(c.to as CrumbTarget)}>
+                      {c.label}
+                    </button>
+                  ) : (
+                    <span className="ds-crumb here" aria-current="page">
+                      {c.label}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </nav>
+        )}
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone
@@ -156,6 +189,11 @@ export function AppShell({
             <QueueCounts className="bar" allGames />
             {presence && <PresenceChip p={presence} />}
           </span>
+          {showAdmin && (
+            <button className="ds-bar-link" onClick={() => onNav('admin')}>
+              Admin
+            </button>
+          )}
           {!inActivity && right}
         </div>
       </header>
@@ -172,10 +210,9 @@ export function AppShell({
           it would push the room off the bottom of the viewport). */}
       {lanOn && <LanBanner />}
 
-      {showRail ? (
+      {!home ? (
         <div className="ds-body">
-          <NavRail active={active} onNav={onNav} showAdmin={showAdmin} />
-          <main className="ds-main">
+          <main className={wide ? 'ds-main wide' : 'ds-main'}>
             {children}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
                 there is no clearance rule and no frame budget to protect. It
@@ -193,7 +230,7 @@ export function AppShell({
           />
         </div>
       ) : (
-        // The home screen deliberately gets NO ad. It is the first thing a new
+        // The home screen deliberately gets NO ad of any kind (no page ad, and no top strip above). It is the first thing a new
         // visitor sees and the page an AdSense reviewer lands on; it should read
         // as a product, not as inventory.
         <main className="ds-main ds-main-home">{children}</main>
@@ -203,6 +240,12 @@ export function AppShell({
           they never appear over a live match (full-screen surfaces are outside
           this shell). Inside the FriendsProvider that wraps AppShell in App. */}
       <FriendToasts onOpenProfile={onOpenProfile} onJoinInvite={onJoinInvite} />
+
+      {/* the ad strip sits at the BOTTOM, just above the footer, on every screen but HOME: the first
+          thing a visitor (and an AdSense reviewer) sees should read as a product, not as inventory,
+          and nothing above the page's own content is an ad. `.ds-body` takes the spare height, so on a
+          short page the strip still lands at the foot of the window. */}
+      {!home && <BannerStrip />}
 
       <footer className="ds-foot">
         <span className="ds-foot-brand">

@@ -506,6 +506,180 @@
   gap: 12px;
 }
 
+/* ---- the banner strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
+   Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
+   an ad box is 90px + its 14px label, and the strip adds 4px above and below. Narrow viewports
+   take the 320x50 unit (`BANNER_NARROW_PX` in AdSlot). The sponsor's banner fills the SAME frame
+   (`.ds-adframe`), so swapping one for the other changes nothing but the picture. */
+.ds-bannerstrip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 112px;
+  flex: none;
+  background: var(--ds-bar);
+  border-top: 1px solid var(--ds-line);
+}
+@media (max-width: 759px) {
+  .ds-bannerstrip {
+    height: 72px;
+  }
+}
+/* a window under 520px tall (a phone on its side) cannot spare a banner's worth of height */
+@media (max-height: 519px) {
+  .ds-bannerstrip {
+    display: none;
+  }
+}
+/* the ad unit's frame, outlined so it reads as a unit and not as part of the page; the sponsor's
+   banner has the same dimensions, the label included (14px, the same as `AdSlot`'s `LABEL_H`) */
+.ds-bannerstrip .adsbygoogle,
+.ds-adframe-box {
+  outline: 1px solid var(--ds-line);
+  outline-offset: 0;
+  background: var(--ds-panel);
+}
+.ds-adframe {
+  display: block;
+  width: 728px;
+  height: 104px;
+}
+.ds-adframe-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 728px;
+  height: 90px;
+}
+@media (max-width: 759px) {
+  .ds-adframe {
+    width: 320px;
+    height: 64px;
+  }
+  .ds-adframe-box {
+    width: 320px;
+    height: 50px;
+  }
+}
+
+/* The admin link in the app bar: outlined, and colour-only on hover like the rest of the bar's controls. */
+.ds-bar-link {
+  font: inherit;
+  font-size: var(--ds-t-control);
+  font-weight: 700;
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: none;
+  color: var(--ds-ink);
+  cursor: pointer;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
+}
+.ds-bar-link:hover {
+  background: var(--ds-panel);
+  border-color: var(--ds-ink-dim);
+}
+.ds-main.wide {
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+}
+/* SOLO SETUP: the two cards sit side by side on a wide window and stack on a narrow one. The way in
+   (Start / Free drive) is a bar pinned to the bottom of the scroll container, so it is on screen
+   whatever the page height, and it is the only thing that follows the player down the page. */
+.ds-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  flex: 1;
+}
+.ds-setup-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--ds-s-4);
+  align-items: start;
+}
+.ds-setup-cols > .ds-panel + .ds-panel {
+  margin-top: 0;
+}
+@media (min-width: 1100px) {
+  .ds-setup-cols {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+.ds-setup-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) 0;
+  margin-top: auto;
+  border-top: 1px solid var(--ds-line);
+  background: var(--ds-bg);
+}
+/* THE BREADCRUMB TRAIL after the season name (`crumbs.ts`). Parents are quiet links that go to ink on
+   hover (colour only, so `shiftaudit` stays green); the page you are on is ink, bold, uppercase. The
+   list may not grow the bar: it never wraps and the current page ellipsizes, and a phone shows only the
+   last two crumbs. Both colours are tokens `contrast.mjs` already holds on `--ds-bar`. */
+.ds-crumbs {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.ds-crumbs ol {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ds-crumbs li {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  min-width: 0;
+}
+.ds-crumbs .sep {
+  color: var(--ds-line-strong);
+}
+.ds-crumb {
+  font: inherit;
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+  transition: color var(--ds-dur-fade);
+}
+.ds-crumb:hover {
+  color: var(--ds-ink);
+}
+.ds-crumb.here {
+  color: var(--ds-ink);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 640px) {
+  /* only the last two crumbs (and the separator between them): the bar is one line on a phone */
+  .ds-crumbs li:not(:nth-last-child(-n + 2)) {
+    display: none;
+  }
+  .ds-crumbs li:nth-last-child(2) .sep {
+    display: none;
+  }
+  .ds-crumb {
+    font-size: var(--ds-t-lg);
+  }
+}
+
 /* region picker in the top bar: the Select plus its on-demand Ping button read as
    one control, so they sit tighter than the bar's own 12px rhythm. */
 .ds-server-menu {
@@ -677,72 +851,7 @@
   align-items: stretch;
   width: 100%;
 }
-.ds-rail {
-  flex: none;
-  width: 214px;
-  align-self: stretch;
-  padding: 24px 14px 40px;
-  border-right: 1px solid var(--ds-line);
-  background: var(--ds-bar);
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-4);
-}
-.ds-rail-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ds-rail-btn {
-  font: inherit;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  border-radius: var(--ds-round);
-  border: 1px solid transparent;
-  background: none;
-  color: var(--ds-ink-dim);
-  cursor: pointer;
-  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
-}
-.ds-rail-btn .rl {
-  font-size: 15px;
-  font-weight: 700;
-}
-/* the hint line under each rail label (restored, owner 2026-09-23) */
-.ds-rail-btn .rh {
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
-.ds-rail-btn:hover {
-  color: var(--ds-ink);
-  background: var(--ds-panel);
-  border-color: var(--ds-line);
-}
-/* SELECTED, the whole vocabulary (one place, so a new control picks from it instead of
-   inventing a sixth):
-   - LATCHED NAV — "you are here": soft fill + accent edge, flat. `.ds-rail-btn.on` and
-     `.ds-subnav-btn.on` are the SAME treatment; the rail's block shadow made two adjacent
-     columns read as two different components.
-   - OPTION CARD — a pick in a grid of cards (`.ds-opt.on`, OptRow): the same soft fill +
-     edge, plus the keycap's accent-edge shadow because the card is a pressable.
-   - SEGMENTED — one of N inline (`.ds-seg.on`, which the export menu and the start-position
-     Close/Far pick now use too): solid accent fill, accent-ink.
-   - TAB STRIP — `.ds-tab.on`: accent ink + underline.
-   - TOGGLE KEY — a cap that is ON (`.game-btn.on`, the keyboard's CAPS `.ds-osk-key.on`):
-     solid accent fill, accent-ink, held FLUSH on its edge — a cap that stayed down.
-   Latched nav, segmented and tabs are COLOUR-ONLY controls: they never move, and all four
-   fade at `--ds-dur-fade` (one duration, so a rail beside a tab strip cannot disagree).
-   "Recommended" (`.ds-tile.primary`) is NOT a selection and so takes none of these: an
-   accent edge and kicker on the ordinary tile fill. */
-.ds-rail-btn.on {
-  background: var(--ds-accent-soft);
-  border-color: var(--ds-accent);
-  color: var(--ds-accent-soft-ink);
-}
-.ds-rail-btn.on .rh,
+
 .ds-subnav-btn.on .sh {
   color: var(--ds-accent-soft-mut);
 }
@@ -886,6 +995,38 @@
   position: absolute;
   top: 0;
   right: 0;
+}
+/* THE FRIENDS OVERLAY (owner, 2026-10-10: opening friends must not push the page to the side). The
+   collapsed card stays in the layout exactly where it was; this sheet opens OVER the page from the
+   right edge, under the app bar, with a transparent scrim behind it that closes it on a click. It is
+   `position: fixed` on purpose and the old "never fixed" rule does not apply: that rule was about a
+   COLUMN that had to scroll with `.ds-app`, and this is a layer with a scroll of its own. */
+.fr-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+}
+.ds-friends-overlay {
+  position: fixed;
+  top: var(--ds-bar-h);
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  width: min(340px, 100vw);
+  padding: var(--ds-s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  background: var(--ds-bar);
+  border-left: 1px solid var(--ds-line);
+  box-shadow: var(--ds-block);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* a room screen has no app bar, so its sheet starts at the top of the window */
+.ds-room-layout .ds-friends-overlay {
+  top: 0;
 }
 .fr-head {
   display: flex;
@@ -4393,7 +4534,7 @@ tr.lb-detail td {
 .ds-sec > .ds-panel + .ds-panel {
   margin-top: 0;
 }
-/* Match ▸ Practice: ONE robot seat — what it is, then its difficulty. The two rows sit at the
+/* Solo setup, Practice: ONE robot seat — what it is, then its difficulty. The two rows sit at the
    field's own 8px, closer than the section's 12, so a tier row reads as its seat's; the rule
    between seats is the second seat's, like `.ds-ctl-row`. */
 .ds-seat {
@@ -5702,43 +5843,17 @@ button.bb-cell:where(:not(:disabled)):active {
   .ds-body {
     flex-wrap: wrap;
     align-items: stretch;
-  }
-  .ds-rail {
-    flex: 1 1 0;
-    min-width: 0;
-    width: auto;
-    align-self: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--ds-line);
-  }
-  .ds-rail-items {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .ds-rail-btn {
-    flex: none;
-    padding: 8px 12px;
+    /* the toggle and the content are TWO wrapped lines; with the default `stretch` the spare height of a short
+       page was shared between them, which turned the 46px toggle row into a 170px empty band */
+    align-content: flex-start;
   }
   /* the hint line is the first thing to go when the rail turns horizontal (main's rule) */
-  .ds-rail-btn .rh,
+  
   .ds-subnav-btn .sh {
     display: none;
   }
-  /* Order the friends panel directly after the rail: collapsed it is a chip at the
-     right end of the rail's row, expanded it is a full-width strip above the content
-     rather than a side column.
-     SCOPE the order to `.ds-body`'s children: on home (`showRail={false}`) the
-     content is `.ds-main.ds-main-home`, a DIRECT flex child of `.ds-app`, and an
-     unscoped `.ds-main { order: 3 }` pushed it BELOW the order:0 footer — the
-     footer rendered at the very top of the page on phones. */
-  .ds-body > .ds-rail {
-    order: 1;
-  }
+  /* The friends panel: collapsed it is a chip, expanded a full-width strip above the content
+     rather than a side column. */
   .ds-friends {
     order: 2;
     width: 100%;
@@ -5840,23 +5955,6 @@ button.bb-cell:where(:not(:disabled)):active {
 }
 
 @media (max-width: 640px) {
-  /* HOME IS THE MARK. The bar's DSIM mark already routes home (`AppShell`), so the rail's
-     own Home item is the one to give up for the other four to fit ONE row at 375px. */
-  .ds-rail-btn.home {
-    display: none;
-  }
-  .ds-rail {
-    padding: var(--ds-s-2);
-  }
-  .ds-rail-items {
-    gap: var(--ds-s-1);
-  }
-  .ds-rail-btn {
-    padding: 8px 6px;
-  }
-  .ds-rail-btn .rl {
-    font-size: var(--ds-t-control);
-  }
   /* the Configure sub-nav as a GRID, the `.ds-segs.even` shape: its six sections wrapped as a
      ragged 4 + 2 (or 3 + 2 + 1), and a grid reads as a deliberate 3 + 3 */
   .ds-subnav {
@@ -6924,12 +7022,6 @@ a.ds-cta {
 .ds-menu-btn.primary .ds-qcount,
 .ds-menu-btn.primary .ds-qcount b {
   color: var(--ds-accent-ink);
-}
-.ds-rail-btn.on .ds-qcount {
-  color: var(--ds-accent-soft-mut);
-}
-.ds-rail-btn.on .ds-qcount b {
-  color: var(--ds-accent-soft-ink);
 }
 .ds-qcount-sep {
   opacity: 0.55;
@@ -9537,4 +9629,182 @@ input.admin-months {
   background: var(--ds-tile);
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-md);
+}
+
+/* ---- the Records hub: the page links, and the feed of new records ---------------------- */
+.ds-hub-pages {
+  margin: var(--ds-s-4) 0;
+}
+/* YOUR RANKED STANDING at the top of the ranked screen. The box keeps its height while the read is in
+   flight (an empty frame), so the number arriving moves nothing below it. */
+.ds-lobby-line {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ds-s-2);
+}
+.ds-lobby-line .ds-lobby-row {
+  flex: 1;
+  min-width: 0;
+}
+.ds-watchside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+}
+.ds-watchside.red {
+  border-color: var(--ds-red-ink);
+}
+.ds-watchside.blue {
+  border-color: var(--ds-blue-ink);
+}
+.ds-watchrow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ds-s-2);
+  margin: 0;
+}
+.ds-rankedstanding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-4);
+  min-height: 88px;
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+}
+.ds-rankedstanding .rs-main {
+  display: flex;
+  flex-direction: column;
+}
+.ds-rankedstanding .rs-num {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  line-height: var(--ds-lh-tight);
+}
+.ds-rankedstanding .rs-cap,
+.ds-rankedstanding .rs-side {
+  font-size: var(--ds-t-md);
+  color: var(--ds-mut);
+}
+.ds-rankedstanding .rs-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--ds-s-1);
+}
+.ds-badge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ds-badge-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-badge-row:first-child {
+  border-top: 0;
+}
+/* an unearned badge is dimmed by its ART, never by `opacity` on the row: the sentence beside it is
+   the point of the row and has to stay readable (the same rule the touch pad's idle button follows) */
+.ds-badge-row:not(.earned) .badge-glyph {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.ds-badge-row .bd-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  min-width: 0;
+}
+.ds-badge-row .bd-earn {
+  font-size: var(--ds-t-md);
+  color: var(--ds-mut);
+}
+.ds-badge-row .bd-state {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+.ds-badge-row.earned .bd-state {
+  color: var(--ds-ok-ink);
+}
+.ds-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* the list scrolls inside its panel, so the hub's controls never leave the screen */
+  max-height: min(56dvh, 560px);
+  overflow-y: auto;
+}
+.ds-feed-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-feed-row:first-child {
+  border-top: 0;
+}
+.rf-rank {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-caps);
+  color: var(--ds-mut);
+}
+.rf-rank.r1 {
+  color: var(--ds-accent);
+}
+.rf-text {
+  min-width: 0;
+  font-size: var(--ds-t-control);
+  overflow-wrap: anywhere;
+}
+.rf-name {
+  padding: 0;
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+.rf-when {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+/* the Watch cell keeps its width when a run has no replay, so the times line up down the list */
+.rf-nowatch {
+  display: block;
+  width: 64px;
+}
+@media (max-width: 640px) {
+  /* the page links stack: three narrow cards wrapped their own labels */
+  .ds-opts.ds-hub-pages {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* the season name repeats what Home says, and the title needs the room */
+  .ds-bar-season {
+    display: none;
+  }
+  .ds-feed-row {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+  }
+  .rf-nowatch,
+  .ds-feed-row .ds-btn {
+    grid-column: 2 / 4;
+    justify-self: start;
+  }
 }

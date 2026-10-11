@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEscape } from './useEscape';
 import {
   fetchUserMatches,
   searchUsers,
@@ -42,7 +43,6 @@ function canChallenge(f: FriendRow): boolean {
   return f.online && f.status !== 'dnd' && f.activity !== 'match' && !!f.username;
 }
 
-import { FRIENDS_PANEL_OPEN_KEY as OPEN_KEY } from '../storageKeys';
 
 /** The room currently open beside this panel. Its region is the hosting region,
  * which may be different from the sender's currently preferred server. */
@@ -52,36 +52,6 @@ export interface RoomInviteTarget {
   kind: RoomKind;
   record?: 'solo' | 'duo';
   region?: string | null;
-}
-
-/**
- * Between these widths there is room for the left rail and the content, but not
- * for an expanded friends panel too — so the panel force-collapses to its icon
- * rail. Below 900px `.ds-body` turns into a column (see shell.css) and the panel
- * becomes a full-width strip, where being expanded is fine again.
- *
- * This is a CONSTRAINT, not a preference: the stored open/closed choice is left
- * untouched, so widening the window restores whatever the player had. Storing
- * "open" on a desktop must never produce a panel that eats a laptop screen.
- */
-// ponytail: literal widths, no shared breakpoint module yet (design review 18-10). They MUST
-// match shell.css: `.ds-body` collapses at `max-width: 900px`, and 1099/1100 is the builder
-// strip's split. It was `max-width: 1100px`, so at exactly 1100 the two disagreed (18-19).
-const SQUEEZE = '(max-width: 1099px) and (min-width: 901px)';
-
-function useMediaQuery(query: string): boolean {
-  const [match, setMatch] = useState(() =>
-    typeof matchMedia === 'function' ? matchMedia(query).matches : false,
-  );
-  useEffect(() => {
-    if (typeof matchMedia !== 'function') return;
-    const mq = matchMedia(query);
-    const on = (): void => setMatch(mq.matches);
-    on();
-    mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
-  }, [query]);
-  return match;
 }
 
 /** "just now" / "5m" / "3h" / "2d" — the server already rounds to these buckets,
@@ -95,15 +65,13 @@ function offlineFor(seconds: number | null): string {
 }
 
 /**
- * The friends list: a structural twin of `NavRail`, mirrored to the right edge.
- * A flex sibling inside `.ds-body`, never `position: fixed` — `.ds-app` is the
- * app's only scroll container, and a fixed panel would scroll independently of it.
+ * The friends list: a small toggle card at the right edge (a flex sibling inside `.ds-body`, so it
+ * is in the layout) and, when opened, an OVERLAY sheet over the page (`.ds-friends-overlay`,
+ * `position: fixed`) that closes on Escape or a click outside. Opening it never moves the page.
  *
- * Collapsed by default: a new account has no friends, so an expanded panel would
- * be a column of empty state on every screen. The incoming-request badge on the
- * collapsed rail is what earns the expand — without it a request would be
- * invisible until someone happened to open the panel, and the feature would
- * quietly not work.
+ * Closed by default, every time: a new account has no friends, so an open panel would be a sheet of
+ * empty state over every screen. The incoming-request badge on the toggle is what earns the open,
+ * without it a request would be invisible until someone happened to open the panel.
  */
 export function FriendsPanel({
   signedIn,
@@ -127,25 +95,15 @@ export function FriendsPanel({
   /** Keep links inert when leaving this surface would abandon a live room. */
   allowProfileNavigation?: boolean;
 }) {
-  const [open, setOpen] = useState(() => {
-    try {
-      return localStorage.getItem(OPEN_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const squeezed = useMediaQuery(SQUEEZE);
-  const expanded = open && !squeezed;
+  // AN OVERLAY, NOT A COLUMN (owner, 2026-10-10: "pressing friends should open friends as an overlay
+  // instead of pushing everything to the side"). The button stays where it is and the panel opens over
+  // the page, so nothing reflows. It always starts CLOSED: a stored "open" would put a sheet over every
+  // screen on load, which is the opposite of what an overlay is for.
+  const [open, setOpen] = useState(false);
+  const expanded = open;
+  useEscape(() => setOpen(false), open);
 
-  const toggle = (): void => {
-    const next = !expanded;
-    setOpen(next);
-    try {
-      localStorage.setItem(OPEN_KEY, next ? '1' : '0');
-    } catch {
-      /* private mode — the panel still works, it just won't remember */
-    }
-  };
+  const toggle = (): void => setOpen((o) => !o);
 
   const friends = useFriendsCtx();
   const [invited, setInvited] = useState<Record<string, 'sending' | 'sent'>>({});
@@ -167,8 +125,7 @@ export function FriendsPanel({
 
   const openProfile = allowProfileNavigation ? onOpenProfile : undefined;
 
-  if (!expanded) {
-    return (
+  const toggleCard = (
       <aside className="ds-friends collapsed" aria-label="Friends">
         {/* LABELLED. Collapsed, this was a bare 38px glyph floating in a 56px column
             with nothing to say what it opened — and the only thing naming it was a
@@ -176,7 +133,7 @@ export function FriendsPanel({
             match `.ds-rail`'s own nav items directly opposite it, not the expanded
             panel's uppercase title. It is also the button's accessible name now, so
             the tooltip that duplicated it is gone. */}
-        <button className="fr-toggle" onClick={toggle} aria-expanded={false}>
+        <button className="fr-toggle" onClick={toggle} aria-expanded={expanded}>
           <span className="fr-toggle-icon">
             <PeopleGlyph />
             {waiting > 0 && (
@@ -188,11 +145,16 @@ export function FriendsPanel({
           <span className="fr-toggle-label">Friends</span>
         </button>
       </aside>
-    );
-  }
+  );
+
+  if (!expanded) return toggleCard;
 
   return (
-    <aside className="ds-friends" aria-label="Friends">
+    <>
+    {toggleCard}
+    {/* a click anywhere outside closes it; the scrim is transparent, so the page stays readable behind the panel */}
+    <div className="fr-scrim" onClick={toggle} aria-hidden="true" />
+    <aside className="ds-friends-overlay" aria-label="Friends">
       <div className="fr-head">
         {/* the heading the section h3s below nest under */}
         <h2 className="fr-title">Friends</h2>
@@ -427,6 +389,7 @@ export function FriendsPanel({
         </>
       )}
     </aside>
+    </>
   );
 }
 

@@ -8,8 +8,8 @@ import type { GameId } from '../games/types';
 import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
 
 /**
- * Game-mode select — reached from PLAY. These are the tiles that used to live on
- * Home. Every start action is still wrapped in App's `guardStart()` (stale-build
+ * The PLAY page: Solo and Multiplayer, side by side on one page. These are the tiles that
+ * used to live on Home. Every start action is still wrapped in App's `guardStart()` (stale-build
  * refresh + scheduled-restart block) by the caller, so nothing here bypasses it.
  */
 export function ModeSelect({
@@ -24,6 +24,7 @@ export function ModeSelect({
   onDuoRecord,
   onRanked,
   onCustomRoom,
+  onBrowse,
   onWatch,
   onCompetitions,
   compete = true,
@@ -46,6 +47,8 @@ export function ModeSelect({
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
+  /** the Public rooms list */
+  onBrowse: () => void;
   onWatch: () => void;
   /** the competitions list (0059). Absent: no tile (an older caller). */
   onCompetitions?: () => void;
@@ -150,11 +153,12 @@ export function ModeSelect({
         </div>
       )}
 
-      {/* Offline, always available — the safe default (Solo Practice is primary).
+      {/* SOLO: offline and always available — Solo Practice is primary — then the two online runs
+          that need the game server and an account (`compete`).
           A TILE IS ITS TITLE: the mono kicker over each one (SOLO, RECORDS, LIVE …) repeated the
           title or the set's own label, so it is gone. */}
       <section className="ds-tileset">
-        <p className="ds-tileset-label">Practice · offline</p>
+        <p className="ds-tileset-label">Solo</p>
         <div className="ds-tiles">
           <button className="ds-tile primary" onClick={onSoloMatch}>
             <span>
@@ -167,35 +171,42 @@ export function ModeSelect({
               <span className="t">Free drive</span>
             </span>
           </button>
+
+          {compete && (
+            <>
+              <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
+                <span>
+                  <span className="t">Solo record</span>
+                  {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
+                </span>
+              </button>
+            </>
+          )}
         </div>
       </section>
 
+      {/* MULTIPLAYER: rooms, then the ranked matchmaker and competitions (those need an account) */}
       <section className="ds-tileset">
-        <p className="ds-tileset-label">Rooms · online</p>
+        <p className="ds-tileset-label">Multiplayer</p>
         <div className="ds-tiles">
-          {compete && (
-            <>
-          <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
-            <span>
-              <span className="t">Solo record</span>
-              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
-            </span>
-          </button>
-
-          <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
-            <span>
-              <span className="t">Duo record</span>
-              {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
-            </span>
-          </button>
-
-            </>
-          )}
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
             <span>
               <span className="t">Room</span>
             </span>
           </button>
+          <button className="ds-tile" onClick={onBrowse} disabled={!multiplayer}>
+            <span>
+              <span className="t">Browse rooms</span>
+            </span>
+          </button>
+          {compete && (
+            <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
+              <span>
+                <span className="t">Duo record</span>
+                {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
+              </span>
+            </button>
+          )}
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
             <span>
               <span className="t">Watch live</span>
@@ -220,49 +231,45 @@ export function ModeSelect({
               )}
             </span>
           </button>
-        </div>
-      </section>
 
-      {/* Ranked: the matchmaker and competitions (need the game server and an account) */}
-      {compete && (
-      <section className="ds-tileset">
-        <p className="ds-tileset-label">Ranked · online</p>
-        <div className="ds-tiles">
-          <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
-            <span>
-              <span className="t">
-                Find match
-                <QueueCounts className="tile" />
-              </span>
-              {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
-                  this line ALWAYS, with a non-breaking space when there was nothing to
-                  say, to stop the tile growing when `signedIn` resolves asynchronously.
-                  That trade is backwards: `.ds-tiles` is a grid, so the reserved line
-                  made Find Match, Solo Record AND Duo Record permanently a line taller
-                  for everyone, to spare signed-in users one shrink at first paint —
-                  and most visitors are signed out, where the line is there from the
-                  start and never moves at all. If the shift is worth fixing, thread an
-                  `authReady` flag down from AccountSync; do not reserve the line. */}
-              {multiplayer && !signedIn ? (
-                <span className="d">
-                  Sign in to play ranked
+          {compete && (
+            <>
+              <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
+                <span>
+                  <span className="t">
+                    Find match
+                    <QueueCounts className="tile" />
+                  </span>
+                  {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
+                      this line ALWAYS, with a non-breaking space when there was nothing to
+                      say, to stop the tile growing when `signedIn` resolves asynchronously.
+                      That trade is backwards: `.ds-tiles` is a grid, so the reserved line
+                      made Find Match, Solo Record AND Duo Record permanently a line taller
+                      for everyone, to spare signed-in users one shrink at first paint —
+                      and most visitors are signed out, where the line is there from the
+                      start and never moves at all. If the shift is worth fixing, thread an
+                      `authReady` flag down from AccountSync; do not reserve the line. */}
+                  {multiplayer && !signedIn ? (
+                    <span className="d">
+                      Sign in to play ranked
+                    </span>
+                  ) : importedActive ? (
+                    <span className="d">{IMPORT_COPY.standardOnly}</span>
+                  ) : null}
                 </span>
-              ) : importedActive ? (
-                <span className="d">{IMPORT_COPY.standardOnly}</span>
-              ) : null}
-            </span>
-          </button>
+              </button>
 
-          {onCompetitions && (
-            <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
-              <span>
-                <span className="t">Competitions</span>
-              </span>
-            </button>
+              {onCompetitions && (
+                <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
+                  <span>
+                    <span className="t">Competitions</span>
+                  </span>
+                </button>
+              )}
+            </>
           )}
         </div>
       </section>
-      )}
 
       {/* LAN — LAST on the page (owner, 2026-09-13). Never disabled on `multiplayer`: not
           needing our servers is the point of it.

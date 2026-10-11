@@ -10,6 +10,38 @@
 - **Robots** (`renderRobots.ts`, new lazy chunk `renderBay.ts` + `src/optionalChunks.ts`): High+ only — broken edges, side plates cut to show the wheels, cap screws, turned slew ring; under the deck a goBILDA 5203 per driven wheel, REV Control Hub + Expansion Hub, battery and routed motor wires. Low is triangle-identical. **Honest result: from the chase/driver cameras the robot still reads as a dark block** (the reviewer measured ~1,000 changed pixels of 7.9 M), because the owner's 2026-09-21 full-deck and 2026-09-20 full-back-plate rulings hide the bay. The design plan (`.claude/worktrees/invisible-wall-collision-fa5f4b/scratch/robot-design/PLAN.md`, §2) asks the owner: D1 pocketed deck (wheels still covered), D2 2-3 pockets in the back plate, D4 dark-red battery leads. **Pending the owner's answer.**
 - **Known leftovers:** a faint ghost of the painted-out banquet table behind the hive in the events hall; a whitish tint where the floor reflections were; the hangar's leaning boards smear along the right of the driver view (a pick, not a default); anisotropy changes apply to a photo backdrop on its next load; `monochrome-studio` still fetches a cross-origin .hdr.
 - **Capture tooling:** `scratch/cap.cjs` + `scratch/sp.vite.config.mjs` (scene-preview with a private vite cache, port + query as separate args) and `scratch/appcap3.cjs` (walks the real app by button text). ⚠️ Any electron argument containing a colon (`http://...`, `wait:4000`) reads as a URL scheme and electron exits 127 with no output.
+# HANDOFF — 2026-10-11 (UX flow redesign merged into `alpha` and deployed to `dsim-alpha`)
+
+**State: PR #117 (`ux-flow-redesign`) merged into `alpha` after `alpha` was merged into it; `dsim-alpha` redeployed from that `alpha`. NOT on `main`, production untouched.** Gates on the merged tree, with the REAL Zenith tarballs: `tsc`, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass; shared smoke 4582 ALL PASS; BIOBUZZ 5597 checks with only the machine-dependent PREDICT/step3d timing failures; `test:mm` 234. `test:workers` (144/26, worker `.ts` loader) and `dbtest` (the 4 `analytics/*`) fail identically on `alpha` a0aee67e.
+
+- **Conflicts:** Lobby's create keeps `listed: listed && signedIn` and adds `alpha`'s `runLength`; App keeps the `/configure/match` → Solo setup redirect under `alpha`'s importer comment; ui.md keeps both Turn with triggers and Solo setup; `docs/ui-components.md` regenerated. `netcode.md` and `HANDOFF.md` had been saved CRLF on this branch (whole-file conflicts) and are merged as LF.
+- **One fix the merge needed:** `alpha`'s importer gate hands every screen `shown`, and the new `SoloSetup` was handed `settings` (smoke "importer gate/client: every screen is handed `shown`"). It gets `shown` now.
+- **The `AUTO stuck` BIOBUZZ failure** seen on the branch before the merge was `alpha`'s 6bde527b missing, not this work; it passes on the merged tree.
+- **Still open:** promoting to `main` + production (owner's go); the signed-in views (Achievements, ranked standing) with real data.
+
+# HANDOFF — 2026-10-10b (round 2: legal, ad banner, Records hub), branch `ux-flow-redesign`, NOT pushed, NOT deployed
+
+**Commits since the first round:** `4adaab63` legal, `6f4b1b13` ad-frame strip (not on Home), `e384a2f4` Records feed endpoint, plus the hub UI + docs commit after it. Shared lane: 4441 checks pass. `dbtest` passes the 8 new `feed/db` checks; its 4 `analytics/*` failures were already there (not from this work, not investigated).
+
+- **Legal:** privacy policy now covers Public rooms; `LEGAL_UPDATED` is **October 10, 2026**, so every signed-in account re-accepts once. Pin in `scripts/smoke.ts` moved. The policy says the *name the host plays under in the room* is published; `Room.listing` uses `player.name`, so they agree.
+- **Banner:** `TopStrip` is a 728x90 / 320x50 outlined frame with a label above; the Offset banner fills the same frame ("Sponsored"). Gone on Home, hidden under 520px tall. `shiftaudit`: 638 state changes, 0 shifts. Needs `VITE_ADSENSE_SLOT_TOP` for a real ad.
+- **Records hub:** `/records` = search + page links + feed; pages are the `RECORDS_PAGES` registry. New endpoint `GET /api/records/recent` (no migration). **Server change: needs `./scripts/fly-deploy.sh` from a `main` worktree**, together with Browse rooms. Dev review: `http://localhost:5180/decode/records?mock=1` (the fixture is DEV-only).
+- **Since built:** Achievements, Players' Recently played, the ranked standing, the versus results fit, and **Watch** on Browse rooms (a lobby is watchable; no server change, `WatchLobby.tsx`). **Still not done:** deploy; the signed-in views (Achievements, ranked standing) were never seen with real data; the feed covers the selected game's current season only.
+- **Gotchas:** this worktree's `node_modules` has Zenith STUBS (28 expected tsc errors, 6 `AUTO:`/`IMPORT:` BIOBUZZ-lane failures). A Python edit script with `
+
+` inside a non-raw string once wrote real newlines into a regex in `smoke.ts` and killed a shard: put test text in a file and read it.
+
+
+# HANDOFF — 2026-10-10 (UX flow redesign, branch `ux-flow-redesign` off `alpha`, NOT pushed, NOT deployed)
+
+**State:** five commits on `ux-flow-redesign` (`f0feddb2` shell, `bab6bd06` + its revert, `87857261` back to original buttons, `ea4d66a9` solo setup, `d090c1fe` public rooms, `b07149e2` results fit). `tsc` adds nothing beyond the 28 Zenith-stub errors, `uiaudit` / `docaudit` / `contrast` pass, the SHARED test lane passes (4413). The BIOBUZZ lane has 6 failures that are all `AUTO:` / `IMPORT:` checks, and they fail because this worktree's `node_modules` holds the 250-byte Zenith STUBS (copied from the main tree; the real tarballs are in a private repo). Not a regression; confirm on a machine with the real packages.
+
+- **Shell:** no left rail. Home is the only hub (Play, Configure, Records; Profile is the top-right menu). Every other shell screen has Back + its title in the bar. `TopStrip` reserves the ad space above the bar and shows the Offset banner when there is no ad (needs `VITE_ADSENSE_SLOT_TOP` for a real ad).
+- **Play page:** Solo set + Multiplayer set in the original tile style. Solo practice opens **Solo setup** (`/solo-setup`, was Configure ▸ Match; `/configure/match` redirects). Room asks Public/Private first; **Browse rooms** (`/rooms`) lists Public ones.
+- **SERVER CHANGE, needs `./scripts/fly-deploy.sh` from a `main` worktree:** `Room.listing`, `GET /api/rooms`, `server/browse.ts`, `/api/room` now matched exactly (it used to swallow `/api/rooms`). Public rooms ride the presence beat marked `listing: true` (no migration). Old clients ignore them. ⚠️ **`src/legalText.ts` still says a custom room is private to its code. A Public room is not; the owner must reword it before this ships.**
+- **Not built:** Records as a hub (the owner rejected colour coding and tiles, so it was left alone and needs a fresh brief); the ranked page restyle; spectating a lobby (Browse rooms JOINS as a driver instead); the per-account listing limit is enforced at the list, not at creation.
+- **Results screen:** fits 1920x1080, 1366x768, 1280x720, 1024x600, 390x844. 844x390 still scrolls ~45px. The VERSUS board could not be measured offline. The results ad now mounts only at 1180px tall (see ui.md).
+- **Gotchas:** this machine has no `pkill`; kill by pid. A `Stop-Process` filter that matches the worktree path kills its own shell. `sed -i` here flips CRLF to LF (git normalises, but edit multi-line with a CRLF-aware script).
 
 # HANDOFF — 2026-10-10c (AUTO-ONLY RUNS: rooms plan M4 + M6)
 

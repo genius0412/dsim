@@ -95,8 +95,6 @@ export const TUTORIAL_SEEN_KEY = 'decodesim.tutorial.v1';
 export const CHAIN_DISCLAIMER_KEY = 'decodesim.chainDisclaimer.v2';
 /** which in-app announcements have been read (the last 200 ids) */
 export const SEEN_ANNOUNCEMENTS_KEY = 'decodesim.seenAnnouncements.v1';
-/** the friends rail was left expanded */
-export const FRIENDS_PANEL_OPEN_KEY = 'decodesim.friendsPanelOpen';
 /** the address of the self-hosted (LAN) server this browser last joined */
 export const LAN_SERVER_KEY = 'decodesim.lanServer.v1';
 /** the multiplayer room this browser is in, so a reload rejoins instead of losing the match */
@@ -260,13 +258,6 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'local',
     category: 'preference',
     purpose: 'Which mouse-button layout the free 3D camera uses, and which way the scroll wheel zooms.',
-    retention: 'Until you clear your browser data.',
-  },
-  {
-    key: FRIENDS_PANEL_OPEN_KEY,
-    storage: 'local',
-    category: 'preference',
-    purpose: 'Whether the friends rail is expanded.',
     retention: 'Until you clear your browser data.',
   },
   {

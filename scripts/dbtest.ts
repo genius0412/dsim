@@ -6868,6 +6868,58 @@ async function main(): Promise<void> {
       `${said(r)} ${JSON.stringify(raceTable)}`);
   }
 
+  // ---- THE RECORDS FEED (server/recentRecords.ts, repo.recentRecords) --------------------------
+  /*
+   * The SQL half: the same ranks as the pure function, with names joined, no-username rows dropped,
+   * a window honoured, a duo's partner named, and the cache reused. The board is hand-built on
+   * `chain` at a balance version nothing else writes.
+   */
+  {
+    const G = 'chain' as const;
+    const BV = 950;
+    await db.query(
+      `insert into seasons (game, balance_version, act, active) values ($1, $2, 3, false) on conflict (game, balance_version) do nothing`,
+      [G, BV],
+    );
+    for (const u of ['fd-a', 'fd-b', 'fd-c', 'fd-d', 'fd-nouser']) await repo.ensureProfile(u, u.toUpperCase());
+    for (const u of ['fd-a', 'fd-b', 'fd-c', 'fd-d']) await db.query(`update profiles set username = $2 where user_id = $1`, [u, u.replace('-', '_')]);
+    const rec = (u: string, score: number, at: string, mode: 'solo' | 'duo' = 'solo', partner: string | null = null) =>
+      db.query(
+        `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, game, created_at) values ($1, $2, $3, 'tank', $4, $5, $6, $7)`,
+        [u, partner, mode, score, BV, G, at],
+      );
+    await rec('fd-a', 100, '2026-10-01T10:00:00Z');
+    await rec('fd-b', 200, '2026-10-02T10:00:00Z'); // No.1 at the time, ahead of a
+    await rec('fd-a', 90, '2026-10-03T10:00:00Z'); // worse than their own best: not an entry
+    await rec('fd-nouser', 300, '2026-10-04T10:00:00Z'); // takes No.1 but has no public username
+    await rec('fd-c', 250, '2026-10-05T10:00:00Z'); // No.2 at the time, behind fd-nouser's 300
+    await rec('fd-d', 50, '2026-10-06T10:00:00Z'); // 5th: not in the top three
+    await rec('fd-a', 160, '2026-10-07T10:00:00Z', 'duo', 'fd-b');
+    repo.resetRecentRecordsCacheForTests();
+    const feed = await repo.recentRecords({ game: G, balanceVersion: BV, since: null, limit: 30 });
+    const solo = feed.filter((f) => f.mode === 'solo');
+    const line = (xs: typeof solo) => xs.map((f) => `${f.username}:${f.score}:${f.rank}`).join();
+    check('feed/db: each entry keeps the place it took AT THE TIME (b was No.1 when set, c No.2), newest first',
+      line(solo) === 'fd_c:250:2,fd_b:200:1,fd_a:100:1', line(solo));
+    check('feed/db: a run with no public username is dropped, but still counts toward the ranks behind it',
+      !feed.some((f) => f.userId === 'fd-nouser') && solo.find((f) => f.userId === 'fd-c')?.rank === 2);
+    check('feed/db: a run below the top three is not an entry', !feed.some((f) => f.userId === 'fd-d'));
+    check('feed/db: a duo run is on the feed with its partner named',
+      feed.some((f) => f.mode === 'duo' && f.username === 'fd_a' && f.partnerUsername === 'fd_b' && f.rank === 1));
+    repo.resetRecentRecordsCacheForTests();
+    const windowed = await repo.recentRecords({ game: G, balanceVersion: BV, since: '2026-10-05T00:00:00Z', limit: 30 });
+    check('feed/db: a window keeps only runs set inside it, ranked against the whole history',
+      windowed.filter((f) => f.mode === 'solo').map((f) => f.username).join() === 'fd_c' && windowed.find((f) => f.username === 'fd_c' && f.mode === 'solo')?.rank === 2);
+    await db.query(`delete from records where user_id = 'fd-b' and mode = 'solo' and balance_version = $1`, [BV]);
+    const cached = await repo.recentRecords({ game: G, balanceVersion: BV, since: '2026-10-05T00:00:00Z', limit: 30 });
+    check('feed/db: an answer is reused for a short while (one read per window, not per visitor)', cached.length === windowed.length);
+    repo.resetRecentRecordsCacheForTests();
+    const cleared = await repo.recentRecords({ game: G, balanceVersion: BV, since: null, limit: 30 });
+    check('feed/db: a moderator clearing a player’s records removes them from the feed on its own',
+      !cleared.some((f) => f.userId === 'fd-b' && f.mode === 'solo'));
+    check('feed/db: another game has an empty feed of its own', (await repo.recentRecords({ game: 'decode', balanceVersion: BV, since: null })).length === 0);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

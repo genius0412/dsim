@@ -844,7 +844,7 @@ export function Results({
 
   // SOLO means NOBODY TO SHOW AN OPPOSING HALF FOR, which is not the same as "no session".
   // `canRematch` (`!session` at the call site) only says the run was local: a BIOBUZZ solo
-  // practice with AI seats in Match ▸ Practice (`MatchSetup`), and `src/game.ts` seats a
+  // practice with AI seats in Solo setup (`SoloSetup`), and `src/game.ts` seats a
   // NON-PASSIVE bot for it — a real opponent, with a real score and a real winner. Reading
   // `canRematch` alone hid all of that behind a one-sided screen. The roster is the honest
   // test, because `rosterFor` already drops `passive` setups, so a practice dummy is absent

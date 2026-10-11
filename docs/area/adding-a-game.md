@@ -45,7 +45,7 @@ inline branches stay untouched:
 | `Builder` | `Menu.tsx` (the Customize section) |
 | `DrivingRows` | `Menu.tsx` — the end of the robot page's Driving panel (BIOBUZZ: the pass-target picker) |
 | `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
-| `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
+| `startEditor` | `SoloSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
 | `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
 | `resultsRows` | `Results.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
 | ~~`mobileButtons`~~ | **no longer a slot** — a game's touch buttons are `src/games/<id>/mobile.ts`, merged with the shared set by `src/ui/mobileActions.ts`. The set is DERIVED from `ACTION_GAMES` and `npm test` asserts every action a game uses is reachable on touch, so a new season control fails the suite until it has a button or a written reason. A genuinely new action still needs a protocol bit |

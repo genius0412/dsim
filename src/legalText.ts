@@ -27,12 +27,15 @@
 /**
  * Last substantive revision — shown on both pages.
  *
+ * October 10, 2026 (owner): Public rooms. A host who is signed in can now list a room in Browse
+ * rooms, which publishes their in-room name, the game, the seats taken and the room code.
+ *
  * September 25, 2026 (owner): first-party analytics, the host's count removed, browser Do Not
  * Track / GPC no longer gating that analytics, and the site-lockdown and tester-group text.
  * Moving this asks EVERY signed-in account to accept the terms again, once — move it for a
  * material change, never for a typo.
  */
-export const LEGAL_UPDATED = 'September 25, 2026';
+export const LEGAL_UPDATED = 'October 10, 2026';
 
 /**
  * THE SAME REVISION, AS A SORTABLE KEY — what an acceptance is recorded against.
@@ -249,8 +252,8 @@ keeps a **live snapshot** of what is happening on it right now. This is operatio
 state, not history:
 
 - **If you are signed in**, the snapshot can include your account id, a coarse
-  activity (in menus / in a lobby / in a match), the room code of a match you are
-  in, and whether you are waiting in a ranked queue and for how long.
+  activity (in menus / in a lobby / in a match), the room code of the room or match you
+  are in, and whether you are waiting in a ranked queue and for how long.
 - **If you are not signed in**, your session appears with the same coarse activity,
   identified by a **connection id**. That id is the one our server generates to
   route messages on your socket: it is **not** your IP address, **not** a device
@@ -265,9 +268,20 @@ Every snapshot is **overwritten by the next one** a few seconds later, and a
 server's entry disappears when it stops reporting. Nothing here accumulates into a
 timeline, so it cannot be used to reconstruct what anyone was doing earlier.
 
-Separately, matches in progress are **listed publicly** so anyone can spectate
-them, including the display names and team numbers of the players in them. That
-list is what the “Watch Live” screen shows.
+Separately, some things are **listed publicly**, and each is a choice or a public
+competition rather than something we do to every room:
+
+- **Matches in progress** that are ranked, record runs or competition matches are listed so
+  anyone can spectate them, including the display names and team numbers of the players in
+  them. That list is what the “Watch Live” screen shows.
+- **A Public room** is listed in “Browse rooms” **from the moment it opens, while it is still
+  a lobby**, and for as long as its host keeps it Public. It is never listed unless its host
+  is signed in **and chooses Public** when they create it. What is published is the **name
+  the host plays under in that room**, the game, how many seats are taken, and the **room
+  code**, so anyone can join or watch it. Other drivers’ names appear only once a match is
+  running, as above. A Private room is not listed, and its code is shared only by whoever
+  holds it. Taking a room out of the list can take a few seconds to show, and a code someone
+  has already seen keeps working until the room closes.
 
 ## Site administrators
 
@@ -290,7 +304,8 @@ Administrators can also **watch a live match without appearing in the spectator
 count** that players see. We are stating this rather than leaving it implicit: the
 count shown during a match reflects ordinary spectators, and an administrator
 observing for moderation is deliberately not included in it. Matches are already
-publicly spectatable by anyone, so this changes who is *visible*, not what is.
+publicly spectatable by anyone (a Public room as well, while it is listed), so this changes
+who is *visible*, not what is.
 
 ## Cookies and similar technologies
 
