@@ -487,6 +487,77 @@ function plateExtrude(shape: THREE.Shape, t: number, c: number, curveSegments = 
 }
 
 /**
+ * A BORED RING, `rIn … rOut` across and `[0, h]` tall about the z axis, its two TOP edges broken by
+ * a 45° flat of `c` — a lathe of a six-segment profile, `seg` steps round. The bottom edges are
+ * square: the ring stands on the deck and nothing sees under it.
+ *
+ * Built by hand rather than as a bevelled `ExtrudeGeometry` because of the normals. An extrusion's
+ * side wall is flat-shaded per facet, which at the 24 steps the turret ring had read as a row of
+ * light and dark stripes round its rim in every close-up; here each profile segment keeps its own
+ * normal (crisp edges across the profile) while the normal turns smoothly round the axis. UVs in
+ * inches: plan position on the flat faces, arc length × height on the walls. Non-indexed.
+ */
+function chamferRing(rIn: number, rOut: number, h: number, c: number, seg: number): THREE.BufferGeometry {
+  const k = Math.min(c, (rOut - rIn) * 0.45, h * 0.45);
+  // the profile (r, z), wound so `(dz, −dr)` is the outward normal of each segment
+  const P: [number, number][] = [
+    [rIn, 0],
+    [rOut, 0],
+    [rOut, h - k],
+    [rOut - k, h],
+    [rIn + k, h],
+    [rIn, h - k],
+  ];
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const uv: number[] = [];
+  const vtx = (r: number, z: number, a: number): number[] => [r * Math.cos(a), r * Math.sin(a), z];
+  for (let i = 0; i < P.length; i++) {
+    const [r0, z0] = P[i];
+    const [r1, z1] = P[(i + 1) % P.length];
+    const len = Math.hypot(r1 - r0, z1 - z0);
+    const nr = (z1 - z0) / len;
+    const nz = -(r1 - r0) / len;
+    // a flat face takes plan UVs, anything else arc length × height
+    const flat = Math.abs(nz) > 0.999;
+    for (let j = 0; j < seg; j++) {
+      const a0 = (j / seg) * Math.PI * 2;
+      const a1 = ((j + 1) / seg) * Math.PI * 2;
+      const quad: [number, number, number][] = [
+        [r0, z0, a0],
+        [r1, z1, a0],
+        [r1, z1, a1],
+        [r0, z0, a1],
+      ];
+      // two triangles, wound so the face normal agrees with the profile's outward normal
+      const am = (a0 + a1) / 2;
+      const want = [nr * Math.cos(am), nr * Math.sin(am), nz];
+      for (const t of [
+        [0, 1, 2],
+        [0, 2, 3],
+      ]) {
+        let tri = t.map((q) => quad[q]);
+        const [A, B, C] = tri.map((q) => vtx(q[0], q[1], q[2]));
+        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+        const w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+        const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        if (n[0] * want[0] + n[1] * want[1] + n[2] * want[2] < 0) tri = [tri[0], tri[2], tri[1]];
+        for (const [r, z, a] of tri) {
+          pos.push(...vtx(r, z, a));
+          nrm.push(nr * Math.cos(a), nr * Math.sin(a), nz);
+          uv.push(flat ? r * Math.cos(a) : a * r, flat ? r * Math.sin(a) : z);
+        }
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return g;
+}
+
+/**
  * ONE MERGED, CACHED MESH per (key, material) — the draw-call budget, and the reason the new
  * drivetrain does not cost four times what the box did.
  *
@@ -810,10 +881,11 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  * preview's, so nothing new has to be keyed.
  *
  * What it may change is what `WHEEL_LOD.low` already drops from a wheel — detail the outline does
- * not depend on: edge breaks (`chamferBox`, `plateExtrude`), where the outer side plate's
- * lightening cuts go (`bbSidePlateCut`) and the cap screws (`bbCapFasteners`). The machine's
- * outline, its footprint and every part's bounding box are the same on both levels, and so is
- * every colour.
+ * not depend on: edge breaks (`chamferBox`, `plateExtrude`, `chamferRing`) on the chassis and the
+ * mechanisms, where the outer side plate's lightening cuts go (`bbSidePlateCut`), the cap screws
+ * (`bbCapFasteners`) and how many steps round a round part takes (`roundSeg`). The machine's
+ * outline, its footprint and every part's bounding box are the same on both levels (to a break, or
+ * to the radius a coarser polygon fell short of), and so is every colour.
  *
  * ⚠️ **`low` CALLS TODAY'S CODE, AND THE RENDER LANE PINS THAT IT IS NOT HEAVIER.** Every Low path
  * below is the pre-2026-10-10 builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the
@@ -828,6 +900,16 @@ const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fastene
 /** an edge break of `c` on High, none on Low */
 function edgeFor(detail: BbWheelDetail, c: number): number {
   return ROBOT_LOD[detail].chamfer ? c : 0;
+}
+/** the turret ring's steps round on High (`chamferRing`). Low's extrusion has the same 48 points
+ *  round its rim; what High changes is the normals across them and the broken top edges. */
+const TURRET_RING_SEG_HIGH = 48;
+/** a round part's steps round: `low` on Low, `high` on High. The shooter's flywheel, motor, pulleys
+ *  and shafts read as polygons in a close-up at Low's 8–14; a silhouette is tessellation, which is
+ *  what the tier may change. Every High count is a multiple of four, so a part's extents along its
+ *  own axes are its true radius on both levels or larger, never smaller. */
+function roundSeg(detail: BbWheelDetail, low: number, high: number): number {
+  return ROBOT_LOD[detail].chamfer ? high : low;
 }
 
 /**
@@ -1057,11 +1139,11 @@ export function buildDriveWheel(
 
 /** shared wheel geometry, one per (radius, width, segments) — four to six per robot, identical. */
 const WHEEL_GEO_CACHE = new Map<string, THREE.CylinderGeometry>();
-function wheelGeometry(r: number, w: number): THREE.CylinderGeometry {
-  const key = `${r}|${w}`;
+function wheelGeometry(r: number, w: number, seg = 14): THREE.CylinderGeometry {
+  const key = `${r}|${w}${seg !== 14 ? `|${seg}` : ''}`;
   const hit = WHEEL_GEO_CACHE.get(key);
   if (hit) return hit;
-  const geo = new THREE.CylinderGeometry(r, r, w, 14);
+  const geo = new THREE.CylinderGeometry(r, r, w, seg);
   WHEEL_GEO_CACHE.set(key, geo);
   SHARED_GEO.add(geo);
   return geo;
@@ -1244,9 +1326,11 @@ const BB_BUTTERFLY_LIFT = Math.min(0.6, BB_DECK_Z - 0.26 - 2 * BB_MECANUM.r);
  * 2.2-in puck floating at deck height with the wheel left behind pointing forward — it could not
  * turn, and nothing about it said "module".
  */
-function podParts(): THREE.Object3D[] {
+function podParts(detail: BbWheelDetail = 'high'): THREE.Object3D[] {
   const forkY = BB_POD_FORK_Y;
-  const struct = framePart('swervePod:struct', () => {
+  // High breaks the fork plates' and the top plate's edges (`ROBOT_LOD`)
+  const podC = edgeFor(detail, 0.03);
+  const struct = framePart(`swervePod:struct${podC > 0 ? `|c${podC}` : ''}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     // TWIN FORK PLATES carrying the axle, one either side of the wheel. Each is a plate hanging
     // off the top plate and TAPERING to a boss around the axle — see `BB_POD_FORK_L`. Built in
@@ -1262,25 +1346,26 @@ function podParts(): THREE.Object3D[] {
       // down the leading edge to the boss, round its underside, and back up the trailing edge
       shape.absarc(0, BB_POD_WHEEL_R, BB_POD_FORK_BOSS_R, Math.PI, 0, false);
       shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: BB_POD_FORK_T, bevelEnabled: false, curveSegments: 12 });
+      const g = plateExtrude(shape, BB_POD_FORK_T, podC, 12);
       g.rotateX(Math.PI / 2);
       g.translate(0, s * forkY + BB_POD_FORK_T / 2, 0);
       parts.push(g);
     }
     // THE TOP PLATE the fork hangs off
-    parts.push(boxAt(BB_POD_L, forkY * 2 + BB_POD_FORK_T, 0.3, 0, 0, BB_POD_PLATE_Z - 0.15));
+    parts.push(chamferBoxAt(BB_POD_L, forkY * 2 + BB_POD_FORK_T, 0.3, 0, 0, BB_POD_PLATE_Z - 0.15, podC));
     // THE KINGPIN — the vertical steering axis itself, through the contact patch. It shows in
     // the gap between the wheel's crown and the top plate, which is the only place it can.
-    const pin = new THREE.CylinderGeometry(0.28, 0.28, BB_POD_PLATE_Z - 0.3 - BB_POD_WHEEL_R * 2, 8);
+    const pin = new THREE.CylinderGeometry(0.28, 0.28, BB_POD_PLATE_Z - 0.3 - BB_POD_WHEEL_R * 2, roundSeg(detail, 8, 16));
     pin.rotateX(Math.PI / 2);
     pin.translate(0, 0, (BB_POD_WHEEL_R * 2 + BB_POD_PLATE_Z - 0.3) / 2);
     parts.push(pin);
     return parts;
   });
   const ringZ = BB_POD_PLATE_Z + BB_POD_RING_H / 2;
-  const ring = framePart('swervePod:ring', () => {
+  const hk = ROBOT_LOD[detail].chamfer ? '|hi' : '';
+  const ring = framePart(`swervePod:ring${hk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
-    const race = new THREE.CylinderGeometry(BB_POD_RING_R, BB_POD_RING_R, BB_POD_RING_H, 20);
+    const race = new THREE.CylinderGeometry(BB_POD_RING_R, BB_POD_RING_R, BB_POD_RING_H, roundSeg(detail, 20, 40));
     race.rotateX(Math.PI / 2);
     race.translate(0, 0, ringZ);
     parts.push(race);
@@ -1290,7 +1375,7 @@ function podParts(): THREE.Object3D[] {
       BB_POD_RING_R + BB_POD_RING_FLANGE,
       BB_POD_RING_R + BB_POD_RING_FLANGE,
       0.15,
-      20,
+      roundSeg(detail, 20, 40),
     );
     flange.rotateX(Math.PI / 2);
     flange.translate(0, 0, ringZ + BB_POD_RING_H / 2 - 0.075);
@@ -1302,10 +1387,10 @@ function podParts(): THREE.Object3D[] {
   // caster, which is not what a swerve module is.
   const driveY = forkY + BB_POD_FORK_T / 2 + BB_POD_DRIVE_T / 2;
   const topZ = BB_POD_PLATE_Z - 0.3 - BB_POD_PULLEY_R - 0.05;
-  const drive = framePart('swervePod:drive', () => {
+  const drive = framePart(`swervePod:drive${hk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     for (const z of [BB_POD_WHEEL_R, topZ]) {
-      const p = new THREE.CylinderGeometry(BB_POD_PULLEY_R, BB_POD_PULLEY_R, BB_POD_DRIVE_T, 12);
+      const p = new THREE.CylinderGeometry(BB_POD_PULLEY_R, BB_POD_PULLEY_R, BB_POD_DRIVE_T, roundSeg(detail, 12, 24));
       p.translate(0, driveY, z);
       parts.push(p);
     }
@@ -1350,11 +1435,11 @@ export function buildSwervePod(accent: string = TREAD, detail: BbWheelDetail = '
   pod.add(wheel);
   // the HUB, a whisker proud of the tyre on both faces so it reads as a ring around the fork's
   // boss rather than disappearing behind it
-  const hub = new THREE.Mesh(wheelGeometry(BB_POD_HUB_R, BB_POD_WHEEL_W + 0.14), solidMat(ALU, 0.4, 0.5));
+  const hub = new THREE.Mesh(wheelGeometry(BB_POD_HUB_R, BB_POD_WHEEL_W + 0.14, roundSeg(detail, 14, 28)), solidMat(ALU, 0.4, 0.5));
   hub.name = 'bb-pod-hub';
   hub.position.set(0, 0, BB_POD_WHEEL_R);
   pod.add(cast(hub, 'alu'));
-  for (const p of podParts()) pod.add(p);
+  for (const p of podParts(detail)) pod.add(p);
   return pod;
 }
 
@@ -3131,12 +3216,13 @@ function sidePlateCorners(H: BbHeadDims): number[] {
  * something to hang from (2 of 4 parts survived, measured). Every list in this section is one
  * kind or the other; `toNonIndexed()` is the way across if one ever has to mix.
  */
-function arcBand(rIn: number, rOut: number, th0: number, th1: number, depth: number, y0: number): THREE.ExtrudeGeometry {
+function arcBand(rIn: number, rOut: number, th0: number, th1: number, depth: number, y0: number, c = 0): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
   shape.absarc(0, 0, rOut, th0, th1, false);
   if (rIn > 0) shape.absarc(0, 0, rIn, th1, th0, true);
   shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 24 });
+  // `c` breaks every edge (`plateExtrude`, High); `0` is the plain extrusion it always was
+  const geo = plateExtrude(shape, depth, c, 24);
   geo.rotateX(Math.PI / 2);
   geo.translate(0, y0 + depth / 2, 0);
   return geo;
@@ -3193,7 +3279,7 @@ function roundedRect<T extends THREE.Path>(p: T, x0: number, x1: number, halfW: 
  * past 1.98 in. So a cheek meets exactly two things — the hood, which it IS, and the shaft it is
  * journalled on.
  */
-function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
+function buildHoodNode(H: BbHeadDims, which: 0 | 1, detail: BbWheelDetail = 'high'): THREE.Group {
   const pitch = new THREE.Group();
   const halfW = H.elemR;
   // a cheek's lateral width is DERIVED, not chosen: the channel's half, less `BB_HOOD_SIDE_CLEAR`
@@ -3213,8 +3299,10 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
 
   // THE ARC — one element diameter clear of the wheel, less the compression, and `BB_HOOD_T`
   // thick, which is what stands it proud of the plates at every elevation.
-  const hoodGeo = framePart(`hood:${which}`, () => [
-    arcBand(H.hoodR, H.hoodR + BB_HOOD_T, TH_EXIT, thFeed, halfW * 2, 0),
+  // High breaks its edges (0.025); the cheeks are 0.07 sheet and keep square ones
+  const hoodC = edgeFor(detail, 0.025);
+  const hoodGeo = framePart(`hood:${which}${hoodC > 0 ? `|c${hoodC}` : ''}`, () => [
+    arcBand(H.hoodR, H.hoodR + BB_HOOD_T, TH_EXIT, thFeed, halfW * 2, 0, hoodC),
   ]);
   const hood = new THREE.Mesh(hoodGeo, solidMat(TURRET_BARREL, 0.35, 0.55));
   hood.name = 'bb-turret-hood';
@@ -3278,17 +3366,23 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
  * so the parameter is gone rather than left dead. The DRIVE wheels and the intake rollers still
  * take it — see `buildWheels`/`buildIntake`.
  */
-function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1): void {
+function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1, detail: BbWheelDetail = 'high'): void {
+  // High breaks the plates' and the throat's edges (`ROBOT_LOD`); Low builds exactly what it did
+  const plateC = edgeFor(detail, 0.03);
+  const sideC = edgeFor(detail, 0.025);
+  const ck = (c: number): string => (c > 0 ? `|c${c}` : '');
+  // the round parts' own key suffix on High (`roundSeg`)
+  const hk = ROBOT_LOD[detail].chamfer ? '|hi' : '';
   // ── THE TURRET PLATE, ON THE SLEW RING, CUT THROUGH FOR THE FEED ──────────────────────────
   // ⚠️ THE SLOT IS THE POINT. The element comes up the rotation axis, through the ring bearing's
   // bore and through this plate, which is what makes the feed path something you can see rather
   // than something a comment claims. It is a rounded RECTANGLE, not a bore: on the NECTAR head
   // the hood's tail dips 0.14 in below the plate at full elevation, at a radius a circle big
   // enough to pass the element would not reach.
-  const plateGeo = framePart(`turretPlate:${which}`, () => {
+  const plateGeo = framePart(`turretPlate:${which}${ck(plateC)}`, () => {
     const shape = roundedRect(new THREE.Shape(), H.plateBackX, H.plateFrontX, H.plateHalfW, 0.5);
     shape.holes.push(roundedRect(new THREE.Path(), H.slotBackX, H.slotFrontX, H.slotHalfW, 0.25, true));
-    const g = new THREE.ExtrudeGeometry(shape, { depth: BB_TURRET_PLATE_T, bevelEnabled: false, curveSegments: 8 });
+    const g = plateExtrude(shape, BB_TURRET_PLATE_T, plateC, 8);
     g.translate(0, 0, BB_TURRET_PLATE_TOP_Z - BB_DECK_Z - BB_TURRET_PLATE_T);
     return [g];
   });
@@ -3313,7 +3407,27 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // whole plate now, rear flat included, so there is no seam to draw and nothing to keep in step.
   // The genus-0 ruling is also why there are no bolt HOLES in it: a hole is a hole to the check
   // that caught the hood-shaped one, and the pilot is where `bb-turret-shaft` crosses the plate.
-  const sideGeo = framePart(`shooterSidePlate:${which}`, () => {
+  const sideGeo = framePart(`shooterSidePlate:${which}${ck(sideC)}`, () => {
+    // ⚠️ HIGH DRAWS THE CORNERS AND NOTHING ELSE. Every constraint in `sidePlateR` is a straight
+    // line, so the profile is the convex polygon through `sidePlateCorners` and the 480 samples Low
+    // still takes all lie on its edges: about 1,900 triangles a plate for what is five corners.
+    // With the edge break on top, High's plate is ~50. The RENDER lane compares the two outlines
+    // (`robot/head`).
+    if (sideC > 0) {
+      const shape = new THREE.Shape();
+      const corners = sidePlateCorners(H)
+        .map((c) => ((c % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2))
+        .sort((a, b) => a - b);
+      corners.forEach((th, i) => {
+        const r = sidePlateR(th, H);
+        if (i === 0) shape.moveTo(Math.cos(th) * r, Math.sin(th) * r);
+        else shape.lineTo(Math.cos(th) * r, Math.sin(th) * r);
+      });
+      shape.closePath();
+      const geo = plateExtrude(shape, BB_SHOOTER_PLATE_T, sideC, 1);
+      geo.rotateX(Math.PI / 2);
+      return [geo];
+    }
     const angles: number[] = [];
     const N = 480;
     for (let i = 0; i < N; i++) angles.push((Math.PI * 2 * i) / N);
@@ -3352,16 +3466,16 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // flywheel black"). It was `tint3d(SWEEPER, accent, 0.5)` for one day; a magenta accent made the
   // one part of the machine that is obviously a compliant tyre read as painted plastic.
   const fwW = H.elemR * 2 * BB_FLYWHEEL_W_FRAC;
-  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2));
+  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW, roundSeg(detail, 14, 36)), solidMat(SWEEPER, 0.45, 0.2));
   wheel.name = 'bb-turret-flywheel';
   axle.add(cast(wheel, 'rubber'));
   // the HUB inside it, and a spacer collar each side — a wheel on a shaft rather than a puck
-  const hubGeo = framePart(`flywheelHub:${which}`, () => {
+  const hubGeo = framePart(`flywheelHub:${which}${hk}`, () => {
     const parts: THREE.BufferGeometry[] = [
-      new THREE.CylinderGeometry(BB_FLYWHEEL_R * BB_FLYWHEEL_HUB_FRAC, BB_FLYWHEEL_R * BB_FLYWHEEL_HUB_FRAC, fwW + 0.06, 12),
+      new THREE.CylinderGeometry(BB_FLYWHEEL_R * BB_FLYWHEEL_HUB_FRAC, BB_FLYWHEEL_R * BB_FLYWHEEL_HUB_FRAC, fwW + 0.06, roundSeg(detail, 12, 24)),
     ];
     for (const s of [1, -1] as const) {
-      parts.push(new THREE.CylinderGeometry(BB_FLYWHEEL_SPACER_R, BB_FLYWHEEL_SPACER_R, 0.3, 10).translate(0, s * (fwW / 2 + 0.15), 0));
+      parts.push(new THREE.CylinderGeometry(BB_FLYWHEEL_SPACER_R, BB_FLYWHEEL_SPACER_R, 0.3, roundSeg(detail, 10, 20)).translate(0, s * (fwW / 2 + 0.15), 0));
     }
     return parts;
   });
@@ -3376,9 +3490,9 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // All three are in the FRONT quadrant, because that is the only interior the machine has left:
   // the element rises up the rotation axis and is carried from θ = 180° round to the lip, and the
   // hood sweeps everything outside that. Nothing is adjusted here — this draws the list.
-  const braceGeo = framePart(`shooterBrace:${which}`, () =>
+  const braceGeo = framePart(`shooterBrace:${which}${hk}`, () =>
     BB_TURRET_BRACES.map((site) => {
-      const g = new THREE.CylinderGeometry(BB_TURRET_BRACE_R, BB_TURRET_BRACE_R, H.tieSpan, 10);
+      const g = new THREE.CylinderGeometry(BB_TURRET_BRACE_R, BB_TURRET_BRACE_R, H.tieSpan, roundSeg(detail, 10, 16));
       g.translate(Math.cos(site.th) * site.r, 0, Math.sin(site.th) * site.r);
       return g;
     }),
@@ -3411,8 +3525,8 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // fastened through them with screws, it does not pass through them.
   const wallX = -(H.wallR + BB_FEED_WALL_T / 2);
   const wallTop = BB_SIDE_PLATE_TOP_Z - 0.06;
-  const throatGeo = framePart(`feedThroat:${which}`, () => [
-    boxAt(BB_FEED_WALL_T, H.plateGap, wallTop - BB_SIDE_PLATE_BOTTOM_Z, wallX, 0, (wallTop + BB_SIDE_PLATE_BOTTOM_Z) / 2),
+  const throatGeo = framePart(`feedThroat:${which}${ck(sideC)}`, () => [
+    chamferBoxAt(BB_FEED_WALL_T, H.plateGap, wallTop - BB_SIDE_PLATE_BOTTOM_Z, wallX, 0, (wallTop + BB_SIDE_PLATE_BOTTOM_Z) / 2, sideC),
   ]);
   const throat = new THREE.Mesh(throatGeo, solidMat(ALU, 0.4, 0.45));
   throat.name = 'bb-turret-throat';
@@ -3438,8 +3552,8 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // ⚠️ THE CAN AND NOTHING ELSE. Its output SHAFT is part of `bb-turret-shaft` below: the lane's
   // "between the plates" measurement is about the can, and a shaft merged in here would put the
   // motor's own vertices out at the belt's plane and make that reading a lie.
-  const motorGeo = framePart(`shooterMotor:${which}`, () => [
-    new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, motorLen, 12).translate(mx, motorFaceY - motorLen / 2, 0),
+  const motorGeo = framePart(`shooterMotor:${which}${hk}`, () => [
+    new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, motorLen, roundSeg(detail, 12, 28)).translate(mx, motorFaceY - motorLen / 2, 0),
   ]);
   const motor = new THREE.Mesh(motorGeo, solidMat(MOTOR, 0.5, 0.4));
   motor.name = 'bb-turret-motor';
@@ -3451,9 +3565,9 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // the motor's own reaches from its mounting FACE — which is the plate's inner face, so the shaft
   // crosses the plate the way a real one crosses its mount's pilot bore, and the pulley lands
   // outboard beside the flywheel's.
-  const shaftGeo = framePart(`shooterShaft:${which}`, () => [
-    new THREE.CylinderGeometry(0.26, 0.26, shaftOut - shaftIn, 8).translate(0, (shaftIn + shaftOut) / 2, 0),
-    new THREE.CylinderGeometry(0.16, 0.16, shaftOut - motorFaceY, 8).translate(mx, (shaftOut + motorFaceY) / 2, 0),
+  const shaftGeo = framePart(`shooterShaft:${which}${hk}`, () => [
+    new THREE.CylinderGeometry(0.26, 0.26, shaftOut - shaftIn, roundSeg(detail, 8, 16)).translate(0, (shaftIn + shaftOut) / 2, 0),
+    new THREE.CylinderGeometry(0.16, 0.16, shaftOut - motorFaceY, roundSeg(detail, 8, 16)).translate(mx, (shaftOut + motorFaceY) / 2, 0),
   ]);
   const shaft = new THREE.Mesh(shaftGeo, solidMat(ALU, 0.3, 0.7));
   shaft.name = 'bb-turret-shaft';
@@ -3462,13 +3576,13 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // THE BELT — two pulleys and the two straight tangent runs between them, merged into one part,
   // in a plane `BB_BELT_CLEAR` outboard of the side plate's outer face. A `TubeGeometry` over a
   // closed spline is the obvious alternative and costs ~20× the vertices for a loop 0.16 thick.
-  const beltGeo = framePart(`shooterBelt:${which}`, () => {
+  const beltGeo = framePart(`shooterBelt:${which}${hk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
     for (const [r, x] of [
       [BB_FW_PULLEY_R, 0],
       [BB_MOTOR_PULLEY_R, mx],
     ] as const) {
-      const p = new THREE.CylinderGeometry(r, r, BB_BELT_W + 0.08, 14);
+      const p = new THREE.CylinderGeometry(r, r, BB_BELT_W + 0.08, roundSeg(detail, 14, 28));
       p.translate(x, beltY, 0);
       parts.push(p);
     }
@@ -3520,7 +3634,13 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
  * the bug. It is not imported anywhere in `src/` — `buildRobotGroup` below is still the one
  * generator the match and the builder share.
  */
-export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 = 0): THREE.Group {
+export function buildTurret(
+  spec: RobotSpec,
+  mountPos: BbMountPos,
+  which: 0 | 1 = 0,
+  /** the robot's detail level (`ROBOT_LOD`): High breaks the head's edges and turns the ring */
+  detail: BbWheelDetail = 'high',
+): THREE.Group {
   const group = new THREE.Group();
   const H = bbHead(which);
   const ring = turretRadius(spec);
@@ -3532,7 +3652,10 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
   // head turns on it, which is the same statement `drawRobot.ts` makes in 2D. It is BORED, because
   // the feed comes up through it; the bore passes the element and stops short of the race.
   const ringBore = Math.min(H.elemR + 0.25, Math.max(0.2, ring - 0.45));
-  const ringGeo = framePart(`turretRing:${ring.toFixed(4)}:${which}`, () => {
+  // High: a lathe with its top edges broken and smooth normals round the rim (`chamferRing`)
+  const ringC = edgeFor(detail, 0.03);
+  const ringGeo = framePart(`turretRing:${ring.toFixed(4)}:${which}${ringC > 0 ? `|c${ringC}` : ''}`, () => {
+    if (ringC > 0) return [chamferRing(ringBore, ring, BB_TURRET_RING_H, ringC, TURRET_RING_SEG_HIGH)];
     const shape = new THREE.Shape();
     shape.absarc(0, 0, ring, 0, Math.PI * 2, false);
     const bore = new THREE.Path();
@@ -3557,9 +3680,9 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
   const axle = new THREE.Group();
   axle.name = 'bb-turret-axle';
   axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);
-  addFixedShooter(head, axle, H, which);
+  addFixedShooter(head, axle, H, which, detail);
 
-  const pitch = buildHoodNode(H, which);
+  const pitch = buildHoodNode(H, which, detail);
   pitch.name = 'bb-turret-pitch';
   axle.add(pitch);
   head.add(axle);
@@ -3581,7 +3704,12 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
  *
  * `lip` (an IMPORT) puts the head so its muzzle lands on the placed lip at the placed height.
  */
-export function buildFixedShooter(spec: RobotSpec, lip?: { x: number; y: number; z: number }): THREE.Group {
+export function buildFixedShooter(
+  spec: RobotSpec,
+  lip?: { x: number; y: number; z: number },
+  /** the robot's detail level (`ROBOT_LOD`): High breaks the riser's and the head's edges */
+  detail: BbWheelDetail = 'high',
+): THREE.Group {
   const group = new THREE.Group();
   const H = bbHead(0);
   const face = bbFixedFacing(spec);
@@ -3595,7 +3723,10 @@ export function buildFixedShooter(spec: RobotSpec, lip?: { x: number; y: number;
   group.position.set(axis.x, axis.y, lip ? BB_DECK_Z + (lip.z - muzzle.z) : BB_DECK_Z);
   const ring = turretRadius(spec);
   const side = Math.max(1.2, ring * 1.3);
-  const riserGeo = framePart(`fixedRiser:${side.toFixed(4)}`, () => [boxAt(side, side, BB_TURRET_RING_H, 0, 0, BB_TURRET_RING_H / 2)]);
+  const riserC = edgeFor(detail, 0.04);
+  const riserGeo = framePart(`fixedRiser:${side.toFixed(4)}${riserC > 0 ? `|c${riserC}` : ''}`, () => [
+    chamferBoxAt(side, side, BB_TURRET_RING_H, 0, 0, BB_TURRET_RING_H / 2, riserC),
+  ]);
   const riser = new THREE.Mesh(riserGeo, solidMat(TURRET_RING, 0.4, 0.5));
   riser.name = 'bb-fixed-riser';
   riser.rotation.z = face;
@@ -3606,8 +3737,8 @@ export function buildFixedShooter(spec: RobotSpec, lip?: { x: number; y: number;
   const axle = new THREE.Group();
   axle.name = 'bb-fixed-axle';
   axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);
-  addFixedShooter(head, axle, H, 0);
-  const pitch = buildHoodNode(H, 0);
+  addFixedShooter(head, axle, H, 0, detail);
+  const pitch = buildHoodNode(H, 0, detail);
   pitch.name = 'bb-fixed-pitch';
   pitch.rotation.y = -hood;
   axle.add(pitch);
@@ -3682,7 +3813,7 @@ function buildDumper(
   // the FIXED half: the shaft and the posts that stand it off the deck.
   const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}${at ? `|${shaftZ.toFixed(3)}` : ''}${dk}`, () => {
     const parts: THREE.BufferGeometry[] = [];
-    const shaft = new THREE.CylinderGeometry(0.34, 0.34, half * 2, 8);
+    const shaft = new THREE.CylinderGeometry(0.34, 0.34, half * 2, roundSeg(detail, 8, 16));
     shaft.translate(pivot, 0, shaftZ);
     parts.push(shaft);
     for (const s of [1, -1] as const) {
@@ -3750,8 +3881,8 @@ export function buildRobotGroup(
   id: number,
   alliance: Alliance,
   /** ⚠️ THE TIER'S DETAIL LEVEL, AND THE ONLY THING A TIER MAY CHANGE ABOUT THIS ROBOT: the
-   *  wheels' tessellation (`WHEEL_LOD`) and the chassis' edge breaks, plate cuts and cap screws
-   *  (`ROBOT_LOD`). It defaults to `high`, which the RENDER lane builds; the live scene and the
+   *  wheels' tessellation (`WHEEL_LOD`) and the chassis' and mechanisms' edge breaks, plate cuts,
+   *  cap screws and round-part steps (`ROBOT_LOD`). It defaults to `high`, which the RENDER lane builds; the live scene and the
    *  builder preview pass their own (`bbWheelDetail`), and the match's `sync` rebuilds a group
    *  when it changes. */
   detail: BbWheelDetail = 'high',
@@ -3859,7 +3990,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
   const heads: THREE.Group[] = [];
   const pitches: THREE.Group[] = [];
   if (bbIsTurreted(launcher)) {
-    const t0 = buildTurret(spec, launcher.mount, 0);
+    const t0 = buildTurret(spec, launcher.mount, 0, detail);
     group.add(t0);
     heads.push(t0.userData.head as THREE.Group);
     pitches.push(t0.userData.pitch as THREE.Group);
@@ -3867,7 +3998,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
       // ⚠️ `1`, AND IT IS NOT A LABEL. Turret 1 is the NECTAR exit (`bbTurretFor`), and a NECTAR
       // is 3.6 in where a POLLEN is 2.8 — so this head is built to a different dimension set and
       // releases from a different muzzle, which is the sim's own answer too.
-      const t1 = buildTurret(spec, launcher.mount2, 1);
+      const t1 = buildTurret(spec, launcher.mount2, 1, detail);
       group.add(t1);
       heads.push(t1.userData.head as THREE.Group);
       pitches.push(t1.userData.pitch as THREE.Group);
@@ -3877,7 +4008,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
     group.add(d);
     group.userData.dumpArm = d.userData.dumpArm;
   } else if (launcher.kind === 'fixed') {
-    group.add(buildFixedShooter(spec));
+    group.add(buildFixedShooter(spec, undefined, detail));
   }
   // A BUILT ROBOT'S HOOD STARTS WHERE A SPAWNED ONE DOES — `BB_TURRET_PITCH_REST`, an elevation the
   // aim solve actually produces. The match's `sync` overwrites it on its first frame; the builder
@@ -3888,7 +4019,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
   group.userData.launcher = launcher;
 
   if (lift) {
-    const tube = buildBoxTube(spec, lift.mount, id);
+    const tube = buildBoxTube(spec, lift.mount, id, detail);
     group.add(tube.node);
     group.userData.tubeStages = tube.stages;
     group.userData.tube = tube.rig;
@@ -4016,13 +4147,13 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
     // sim's muzzle; the dumper on the sim's release line and lip (`bbDumperFrame`, `bbDumpZ`)
     // (the standard head, ridden up or down whole so its own proportions hold)
     if (bbIsTurreted(launcher)) {
-      const t0 = buildTurret(spec, launcher.mount, 0);
+      const t0 = buildTurret(spec, launcher.mount, 0, detail);
       t0.position.z += bbImportTurretAxleZ(spec, 0) - BB_TURRET_AXLE_Z;
       group.add(t0);
       heads.push(t0.userData.head as THREE.Group);
       pitches.push(t0.userData.pitch as THREE.Group);
       if (launcher.kind === 'twinturret' && launcher.mount2) {
-        const t1 = buildTurret(spec, launcher.mount2, 1);
+        const t1 = buildTurret(spec, launcher.mount2, 1, detail);
         t1.position.z += bbImportTurretAxleZ(spec, 1) - BB_TURRET_AXLE_Z;
         group.add(t1);
         heads.push(t1.userData.head as THREE.Group);
@@ -4035,11 +4166,11 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
       group.userData.dumpArm = d.userData.dumpArm;
     } else if (launcher.kind === 'fixed') {
       // the FIXED shooter with its muzzle on the sim's release (`bbFixedLocal`: the placed lip)
-      group.add(buildFixedShooter(spec, bbFixedLocal(spec)));
+      group.add(buildFixedShooter(spec, bbFixedLocal(spec), detail));
     }
     for (const p of pitches) p.rotation.y = -BB_TURRET_PITCH_REST;
     if (lift) {
-      const tube = buildBoxTube(spec, lift.mount, id);
+      const tube = buildBoxTube(spec, lift.mount, id, detail);
       group.add(tube.node);
       group.userData.tubeStages = tube.stages;
       group.userData.tube = tube.rig;
@@ -4296,6 +4427,8 @@ export function buildBoxTube(
   spec: RobotSpec,
   mount: BbMountPos,
   id: number,
+  /** the robot's detail level (`ROBOT_LOD`): High breaks the base plates' edges */
+  detail: BbWheelDetail = 'high',
 ): { node: THREE.Group; stages: THREE.Object3D[]; rig: BbTubeRig } {
   const place = bbPlacePointLocal(spec);
   const frame = bbBoxTubeFrame(spec, mount, place);
@@ -4311,13 +4444,16 @@ export function buildBoxTube(
   const boxes = bbBoxTubeStowedBoxes(frame, stageTable);
   const plateMat = solidMat(ALU_DK, 0.55, 0.35);
   const darkMat = solidMat(MOTOR, 0.6, 0.2);
+  // High breaks the base plates' edges; the tubes keep square ones, because each is four walls
+  // butted at the corners and a break on each wall would open a groove down every corner
+  const baseC = edgeFor(detail, 0.04);
   const base = cast(
     new THREE.Mesh(
-      framePart(`tube:base|${L.toFixed(3)}`, () => {
+      framePart(`tube:base|${L.toFixed(3)}${baseC > 0 ? `|c${baseC}` : ''}`, () => {
         const parts: THREE.BufferGeometry[] = [];
         for (const b of boxes) {
           if (b.what !== 'plate') continue;
-          parts.push(boxAt(b.u1 - b.u0, b.v1 - b.v0, b.z1 - b.z0, (b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2, (b.z0 + b.z1) / 2));
+          parts.push(chamferBoxAt(b.u1 - b.u0, b.v1 - b.v0, b.z1 - b.z0, (b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2, (b.z0 + b.z1) / 2, baseC));
         }
         // the axle, through both plates and the base tube's foot. It stops `BB_PROUD` INSIDE the
         // pulley and the spool flange: ending exactly in their outer faces put its end caps in the

@@ -261,6 +261,9 @@ import {
   bbFrameCacheStats,
   bbSidePlateCut,
 } from '../../src/games/biobuzz/scene/renderRobots';
+// ── the High mechanisms (gfx/robot-detail, 2026-10-10), a block of their own ──
+import { turretRadius as bbTurretRadiusForDetail } from '../../src/games/biobuzz/mounts';
+import { BB_TURRET_RING_H as BB_RING_H_FOR_DETAIL } from '../../src/games/biobuzz/config';
 import { lengthLimits } from '../../src/sim/drivetrain';
 import { BB_MOUNT_POSITIONS, bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
 import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbMuzzleLocal } from '../../src/games/biobuzz/robot';
@@ -1810,6 +1813,7 @@ export function renderChecks(check: Check): void {
   endPlateChecks(check);
   robotOverlapChecks(check);
   robotDetailChecks(check);
+  robotMechanismDetailChecks(check);
   frontBackChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
@@ -2565,14 +2569,16 @@ function cosmeticsChecks(check: Check): void {
     check('buildTurret keeps the flywheel at bare SWEEPER black', flywheelHex() === '12161c', String(flywheelHex()));
     check(
       'buildTurret takes NO accent argument — the cosmetic cannot reach the flywheel from anywhere',
-      /export function buildTurret\(spec: RobotSpec, mountPos: BbMountPos, which: 0 \| 1 = 0\): THREE\.Group/.test(
+      // (2026-10-10: a trailing `detail` level joined `which`; the signature still has no accent)
+      /export function buildTurret\(\s*spec: RobotSpec,\s*mountPos: BbMountPos,\s*which: 0 \| 1 = 0,(?:\s*\/\*\*[^*]*\*\/)?\s*detail: BbWheelDetail = 'high',\s*\): THREE\.Group/.test(
         readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8'),
       ),
     );
     const robotsSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
     check(
       '...and the wheel mesh is built on a FLAT SWEEPER, not a tint3d of it',
-      robotsSrc.includes('wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2)'),
+      // (the optional third argument is High's segment count, 2026-10-10)
+      /wheelGeometry\(BB_FLYWHEEL_R, fwW(?:, roundSeg\([^)]*\))?\), solidMat\(SWEEPER, 0\.45, 0\.2\)/.test(robotsSrc),
     );
     // the 2D sprites make the same promise, in both games — one `drawRoller` call each, and the
     // accent is not what they hand it
@@ -3360,6 +3366,177 @@ function robotDetailChecks(check: Check): void {
   }
 }
 
+/**
+ * ⚠️ **THE MECHANISMS ON HIGH** (2026-10-10, the same `ROBOT_LOD` level as the chassis). High breaks
+ * the edges of the turret plate, the shooter side plates, the hood, the feed throat, the fixed
+ * shooter's riser, the Box Tube's base plates and the swerve pods' fork and top plates; turns the
+ * turret ring as a lathe with broken top edges and smooth normals round its rim; and gives the
+ * round parts (flywheel, its hub and spacers, the braces, motor, shafts, pulleys, the pods' ring,
+ * kingpin and pulleys, the dumper's shaft) more steps round. Pinned here:
+ *  (1) THE OUTLINE — every mechanism part's box on High is Low's to within 0.06: grown by at most
+ *      the true radius a 14-gon fell short of, or cut by at most a break where the extreme was a
+ *      corner (a rotated box's — the intake arm's diagonal loses 0.012);
+ *  (2) THE SIDE PLATE — High draws the profile's corners only, and the outline is the same convex
+ *      polygon (equal area) at under a tenth of Low's triangles;
+ *  (3) THE RING — its wall normals point straight out (smooth round the rim) and its top edges
+ *      are broken, while Low's extrusion has the same 48 points round the rim;
+ *  (4) THE KEYS — built High first, a Low head still gets Low's buffers.
+ */
+function robotMechanismDetailChecks(check: Check): void {
+  const hadDoc = 'document' in globalThis;
+  const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {}, width: 10 }) });
+  if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
+  try {
+    const mk = (extra: Record<string, unknown>): RobotSpec => coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, ...extra } as RobotSpec);
+    const mech = (launcher: Record<string, unknown>, lift: Record<string, unknown> | null, intake = 'sweeper'): Record<string, unknown> => ({
+      bbMech: { launcher: { hoodDeg: 45, ...launcher }, lift, intake: { kind: intake } },
+    });
+    // ── (1) THE OUTLINE ─────────────────────────────────────────────────────────────────────
+    {
+      const builds: [string, RobotSpec][] = [
+        ['centre turret + tube', mk(mech({ kind: 'turret', mount: 'center' }, { kind: 'vslide', mount: 'back' }))],
+        ['twin turret, swerve', mk({ drivetrain: 'swerve', ...mech({ kind: 'twinturret', mount: 'left', mount2: 'right' }, null) })],
+        ['fixed, tank, side rollers', mk({ drivetrain: 'tank', ...mech({ kind: 'fixed', mount: 'back' }, null, 'siderollers') })],
+        ['dumper + tube, ramp', mk(mech({ kind: 'dumper', mount: 'back' }, { kind: 'vslide', mount: 'left' }, 'ramp'))],
+        ['fixed + tube, swerve 18x18', mk({ drivetrain: 'swerve', length: 18, width: 18, ...mech({ kind: 'fixed', mount: 'front' }, { kind: 'vslide', mount: 'backright' }) })],
+      ];
+      // a wheel's own tessellation is `WHEEL_LOD`'s business, and the screws exist on High only
+      const skip = (o: THREE.Object3D): boolean => {
+        for (let q: THREE.Object3D | null = o; q; q = q.parent) if (/^(bb-wheel|bb-pod-wheel|robot:wheel)/.test(q.name) || /:fasteners$/.test(q.name)) return true;
+        return false;
+      };
+      const parts = (g: THREE.Group): { name: string; box: THREE.Box3; tris: number }[] => {
+        g.updateMatrixWorld(true);
+        const out: { name: string; box: THREE.Box3; tris: number }[] = [];
+        g.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh || skip(m)) return;
+          const n = m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count;
+          out.push({ name: m.name || `(${m.parent?.name ?? ''})`, box: new THREE.Box3().setFromObject(m), tris: n / 3 });
+        });
+        return out;
+      };
+      const fmt = (b: THREE.Box3): string => `${b.min.toArray().map((v) => v.toFixed(3))}…${b.max.toArray().map((v) => v.toFixed(3))}`;
+      const bad: string[] = [];
+      let compared = 0;
+      let changed = 0;
+      let shrunk = 0;
+      for (const [label, spec] of builds) {
+        const gl = buildRobotGroup(spec, 1, 'red', 'low');
+        const gh = buildRobotGroup(spec, 1, 'red', 'high');
+        const pl = parts(gl);
+        const ph = parts(gh);
+        if (pl.length !== ph.length) bad.push(`${label}: ${pl.length} parts on Low, ${ph.length} on High`);
+        else
+          pl.forEach((l, i) => {
+            const h = ph[i];
+            compared++;
+            if (h.tris !== l.tris) changed++;
+            if (h.name !== l.name) bad.push(`${label}: part ${i} is ${l.name} on Low, ${h.name} on High`);
+            else if (!l.box.clone().expandByScalar(0.05).containsBox(h.box) || !h.box.clone().expandByScalar(0.06).containsBox(l.box))
+              bad.push(`${label}: ${h.name} ${fmt(h.box)} vs Low ${fmt(l.box)}`);
+            else if (!h.box.clone().expandByScalar(1e-4).containsBox(l.box)) shrunk++;
+          });
+        disposeRobotGroup(gl);
+        disposeRobotGroup(gh);
+      }
+      check(
+        `robot/mechanisms: every mechanism part's box on High is Low's to within 0.05 out and 0.06 in (${builds.length} builds, ${compared} parts, ${changed} re-tessellated)`,
+        bad.length === 0 && changed > 30,
+        bad.slice(0, 5).join('; ') || `${changed} changed, ${shrunk} with a box a break cut into`,
+      );
+    }
+
+    // ── (2) + (3) + (4): ONE HEAD OF EACH KIND, BUILT HIGH FIRST ────────────────────────────
+    {
+      type P2 = [number, number];
+      const hull = (pts: P2[]): number => {
+        const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        const cross = (o: P2, a: P2, b: P2): number => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        const half = (list: P2[]): P2[] => {
+          const out: P2[] = [];
+          for (const q of list) {
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+          }
+          return out.slice(0, -1);
+        };
+        const h = [...half(p), ...half([...p].reverse())];
+        let a = 0;
+        for (let i = 0; i < h.length; i++) a += h[i][0] * h[(i + 1) % h.length][1] - h[(i + 1) % h.length][0] * h[i][1];
+        return Math.abs(a) / 2;
+      };
+      const named = (g: THREE.Object3D, n: string): THREE.Mesh => {
+        let found: THREE.Mesh | null = null;
+        g.traverse((o) => {
+          if (!found && o.name === n && (o as THREE.Mesh).isMesh) found = o as THREE.Mesh;
+        });
+        if (!found) throw new Error(`no ${n}`);
+        return found;
+      };
+      const verts = (m: THREE.Mesh): THREE.Vector3[] => {
+        const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const out: THREE.Vector3[] = [];
+        for (let i = 0; i < pos.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(pos, i));
+        return out;
+      };
+      const tris = (m: THREE.Mesh): number => (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute('position').count) / 3;
+      const spec = mk({});
+      for (const which of [0, 1] as const) {
+        const hi = buildTurret(spec, 'center', which, 'high');
+        const lo = buildTurret(spec, 'center', which, 'low');
+        const tag = which ? 'NECTAR head' : 'POLLEN head';
+        // (2) the same profile, from its corners alone. The plate lies in its own x–z plane.
+        const sh = named(hi, 'bb-turret-side-plate');
+        const sl = named(lo, 'bb-turret-side-plate');
+        const ah = hull(verts(sh).map((v): P2 => [v.x, v.z]));
+        const al = hull(verts(sl).map((v): P2 => [v.x, v.z]));
+        check(
+          `robot/head: the ${tag}'s High side plate is Low's profile from its corners alone — area ${ah.toFixed(4)} vs ${al.toFixed(4)} sq in, ${tris(sh)} triangles against ${tris(sl)}`,
+          Math.abs(ah - al) <= 1e-5 * al && tris(sh) * 10 < tris(sl),
+        );
+        // (3) the ring: radial normals on its outer wall, a broken top edge, and Low's 48 points
+        const ringR = bbTurretRadiusForDetail(spec);
+        const rh = named(hi, 'bb-turret-ring');
+        const rl = named(lo, 'bb-turret-ring');
+        const nrm = rh.geometry.getAttribute('normal') as THREE.BufferAttribute;
+        let wall = 0;
+        let bent = 0;
+        let chamferTop = false;
+        verts(rh).forEach((v, i) => {
+          const r = Math.hypot(v.x, v.y);
+          if (Math.abs(r - ringR) < 1e-4 && Math.abs(nrm.getZ(i)) < 1e-6) {
+            wall++;
+            if ((nrm.getX(i) * v.x + nrm.getY(i) * v.y) / r < 0.9999) bent++;
+          }
+          if (Math.abs(v.z - BB_RING_H_FOR_DETAIL) < 1e-4 && Math.abs(r - (ringR - 0.03)) < 1e-4) chamferTop = true;
+        });
+        const lowAngles = new Set(
+          verts(rl)
+            .filter((v) => Math.abs(Math.hypot(v.x, v.y) - ringR) < 1e-4)
+            .map((v) => Math.round((((((Math.atan2(v.y, v.x) * 180) / Math.PI) % 360) + 360) % 360) * 10) % 3600),
+        );
+        check(
+          `robot/head: the ${tag}'s High ring is smooth round its rim (${wall} wall normals, all radial) with its top edge broken; Low's has ${lowAngles.size} points round`,
+          wall > 0 && bent === 0 && chamferTop && lowAngles.size === 48,
+          `${bent} not radial, chamfer ${chamferTop}`,
+        );
+        // (4) the level is in every key: built High first, Low still has Low's tessellation
+        const fwSeg = (g: THREE.Object3D): number => (named(g, 'bb-turret-flywheel').geometry as THREE.CylinderGeometry).parameters.radialSegments;
+        check(
+          `robot/head: built High first, the ${tag} on Low still gets Low's buffers (the level is in every key)`,
+          fwSeg(lo) === 14 && fwSeg(hi) === 36 && rl.geometry !== rh.geometry && sl.geometry !== sh.geometry && tris(sl) > 1000,
+          `flywheel ${fwSeg(lo)}/${fwSeg(hi)} steps, side plate ${tris(sl)}/${tris(sh)} triangles`,
+        );
+        disposeRobotGroup(hi);
+        disposeRobotGroup(lo);
+      }
+    }
+  } finally {
+    if (!hadDoc) delete (globalThis as { document?: unknown }).document;
+  }
+}
+
 function endPlateChecks(check: Check): void {
   const MOUNTS = ['front', 'back', 'side', 'frontback'] as const;
   const DRIVETRAINS = ['mecanum', 'swerve', 'tank'] as const;
@@ -3728,13 +3905,19 @@ function hoodPlateChecks(check: Check): void {
         return r;
       };
       for (let i = 0; i < ids.size; i++) parent.set(i, i);
+      // ⚠️ each union reads its roots AFTER the one before it (2026-10-10). Reading `c`'s root
+      // first and joining `a`'s to `b`'s after could leave it stale — when `a` and `c` already
+      // shared a root — and the second union then closed a cycle that `find` never left: the lane
+      // hung here on the High side plate (a bevelled extrusion of the profile's corners).
+      const union = (x: number, y: number): void => {
+        const rx = find(x);
+        const ry = find(y);
+        if (rx !== ry) parent.set(rx, ry);
+      };
       for (const [a, b, c] of faces) {
         for (const [q, s] of [[a, b], [b, c], [c, a]] as const) edges.set(ek(q, s), (edges.get(ek(q, s)) ?? 0) + 1);
-        const ra = find(a);
-        const rb = find(b);
-        const rc = find(c);
-        if (ra !== rb) parent.set(ra, rb);
-        if (find(b) !== rc) parent.set(find(b), rc);
+        union(a, b);
+        union(b, c);
       }
       const comps = new Set([...parent.keys()].map(find)).size;
       const boundary = [...edges.values()].filter((c) => c === 1).length;
@@ -6843,8 +7026,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           'a DOUBLE turret builds its NECTAR head as turret 1, so the picture and bbMuzzleLocal pick the same one',
           // the WHICH argument is the seam this pins. There USED to be a trailing `accent` here;
           // the flywheel stopped taking the cosmetic on 2026-09-21 and the parameter went with it.
-          robotsCode.includes('buildTurret(spec, launcher.mount, 0)') &&
-            robotsCode.includes('buildTurret(spec, launcher.mount2, 1)'),
+          // (the trailing `detail` is the 2026-10-10 robot detail level, `ROBOT_LOD`)
+          robotsCode.includes('buildTurret(spec, launcher.mount, 0, detail)') &&
+            robotsCode.includes('buildTurret(spec, launcher.mount2, 1, detail)'),
         );
       }
       // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
@@ -6860,9 +7044,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       {
         check(
           'a swerve pod is a real assembly: fork + kingpin, slew ring, belt drive',
-          robotsCode.includes("framePart('swervePod:struct'") &&
-            robotsCode.includes("framePart('swervePod:ring'") &&
-            robotsCode.includes("framePart('swervePod:drive'") &&
+          // (the keys are templates since 2026-10-10: High appends its edge break and segments)
+          /framePart\(['`]swervePod:struct/.test(robotsCode) &&
+            /framePart\(['`]swervePod:ring/.test(robotsCode) &&
+            /framePart\(['`]swervePod:drive/.test(robotsCode) &&
             /TWIN FORK PLATES/.test(robotsSrc) &&
             /THE KINGPIN/.test(robotsSrc) &&
             /THE BELT DRIVE/.test(robotsSrc),

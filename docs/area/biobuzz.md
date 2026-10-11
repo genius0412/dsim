@@ -1202,10 +1202,33 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     clear aluminium (`ALU`). The pan stays in the fill because it is the floor of a bay the deck
     keeps in shade, and robots receive no shadow in standard mode. The rear bar stays `BB_REAR_INK`:
     a silver one would compete with the white front bar. Mesh count unchanged.
-  - **Cost per robot, High** (triangles, 2026-10-09 → now): Pollinator 22,416 → 25,524, Forager
-    20,216 → 23,868, Skimmer 28,080 → 30,452, Sniper 17,284 → 19,448, StarterBot 18,464 → 20,612,
-    18 × 18 butterfly 29,792 → 34,012 (the worst, +4,220). +1 mesh (the screws), +0 shadow casters.
-    The RENDER lane holds every build to +7,000 / +2 / +1 (`robot/budget`).
+  - **Cost per robot, High** (triangles, 2026-10-09 → now, chassis and mechanisms together):
+    Pollinator 22,416 → 23,156, Forager 20,216 → 23,900 (the most added, +3,684), Skimmer 28,080 →
+    25,716 (−2,364: two turret heads, each 2,368 lighter, see THE MECHANISMS below), Sniper 17,284
+    → 19,448, StarterBot 18,464 → 18,084, 18 × 18 butterfly 29,792 → 31,644 (the heaviest robot).
+    +1 mesh (the screws), +0 shadow casters. The RENDER lane holds every build to +7,000 / +2 / +1
+    (`robot/budget`). Low and Medium: +0 on all 11 pinned builds, and the digest of every Low
+    triangle is the one the chassis commit measured.
+  - **THE MECHANISMS ON HIGH, same level** (`ROBOT_LOD`). Edge breaks on the turret plate (0.03),
+    the shooter side plates, hood and feed throat (0.025), the fixed riser and the Box Tube's base
+    plates (0.04), the swerve pods' fork and top plates (0.03); not on the hood cheeks (0.07 sheet)
+    or the Box Tube's tubes (four butted walls each, so a break opens a groove down every corner).
+    The turret ring is a lathe (`chamferRing`) with its top edges broken and its normals smooth
+    round the rim: as a flat-shaded 48-step extrusion it read as light and dark stripes in every
+    close-up. More steps round (`roundSeg`) on the parts a close-up showed as polygons: flywheel
+    14 → 36, motor can 12 → 28, belt pulleys 14 → 28, hub, spacers, braces, shafts, the pods' ring,
+    kingpin and pulleys, the dumper's shaft. Every High count is a multiple of four, so a part
+    reaches its true radius on each axis. The shooter side plate on High is drawn from its five
+    corners: every constraint in `sidePlateR` is a straight line, so Low's 480 samples lie on its
+    edges, 1,936 triangles a plate against 36 (same area to 1e-5, `robot/head`). That pays for the
+    rest: the two plates save 3,800 triangles, the breaks and the extra steps add back 1,432, and a
+    turret head is 2,368 lighter on High than it was. Every mechanism part's box
+    on High is Low's to within 0.05 out (a 14-gon's shortfall) and 0.06 in (a break cutting the
+    corner of a rotated box: the intake arm's diagonal, 0.012) — `robot/mechanisms`, 242 parts over
+    5 builds.
+  - The genus check on the shooter side plate (`hood-inside/…: ONE piece`) hung on the High plate:
+    its union-find read one root before a union that could make it stale and then closed a cycle
+    `find` never left. Each union reads its roots after the one before now.
   - ⚠️ **THE MERGE CACHE IS BOUNDED NOW.** `FRAME_CACHE` grew without limit, one entry per layout,
     and every drag of a builder slider is a layout: 200 builder-style rebuilds added 789 entries and
     10.1 MB of positions at High, 25.5 MB with the High chassis. Each key a group used is counted
@@ -1220,6 +1243,9 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   - NOT DONE, because each reverses an owner ruling the RENDER lane enforces: pockets in the deck
     (2026-09-21, "the plate covers the whole chassis"), pockets in the full back plate
     (2026-09-20), and the bay hardware (motors, hubs, battery, wires) those pockets would show.
+    Also not done: a bolt circle on the turret ring (the turret plate sits on the ring's top face
+    and turns over it, so a head there would stand in the plate) and the cross members as U
+    channel (under the deck, seen from nowhere).
     The z-fight sweep (`overlap/z-fight`) covers four more size-extreme builds and three Low ones,
     and finds no coplanar pair on any of 16.
 - ⚠️ **ONLINE "FULL" IS NOW THE REAL `step3d` ON THE CLIENT** (2026-09-27, owner: "FULL should predict

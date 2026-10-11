@@ -587,7 +587,15 @@ const BASELINE = {
   // 2026-10-01, THE IMPORTED ROBOT: 226.59 -> 231.54 (+4.95), MEASURED. `renderImported.ts` (+2.86) and
   // three.js moving into a chunk the importer shares (+1.98): see the RE-MEASURED entry above. 18 KB of
   // ceiling left.
-  scene: { gzip: 231.54 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-10-10, THE HIGH CHASSIS AND MECHANISMS (gfx/robot-detail): 231.54 -> 237.63, MEASURED,
+  // which crossed the tolerance (236.17), so the baseline moves to it. +3.28 is this branch,
+  // measured by building its base (be3dc944) the same day: 234.35 there, so the other +2.81 had
+  // already crept in under the tolerance before it. What was added, all in `renderRobots.ts`:
+  // `chamferBox`, `plateExtrude` and `chamferRing` (the edge breaks), `bbSidePlateCut` and the
+  // cut-plate builder, the cap screws, the merge cache's reference counting and eviction (+2.53),
+  // then the mechanisms' breaks and `roundSeg` (+0.75). 12.4 KB of ceiling left.
+  scene: { gzip: 237.63 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:
