@@ -32,7 +32,7 @@ Decisions, one line each:
 6. **Prediction is a setting: Off, Light, Full.** Light (drive model plus walls, no 3D wasm) is
    the 2D default; Full (a small 3D prediction world) the 3D default; Off is pure interpolation.
 7. **Graphics: presets Auto / Low / Medium / High / Ultra / Extreme / Custom** over sixteen
-   detailed settings, per device. Auto never picks Extreme (2026-09-27). Auto detects the GPU, benchmarks two seconds, and picks; software GL
+   detailed settings, per device. Auto reaches Extreme only through a measured trial (2026-10-10; from 2026-09-27 until then it never picked it). Auto detects the GPU, benchmarks two seconds, and picks; software GL
    falls back to the 2D view. `powerPreference: 'high-performance'`, hardware acceleration never
    disabled in the app.
 8. **Practice is local**: physics 2D or 3D, view 2D or 3D, AI opponents off or a tier. Practice
@@ -440,7 +440,7 @@ not offered at all. Extreme renders at 150 % on top of MSAA 4x, which is sharper
 thin edges, and `SMAAPass` alone is 38 KB gzipped of lookup textures. AO and bloom are post passes
 in a lazy chunk fetched the first time either is on, so they apply live once it arrives. They draw
 in the match and the live replay viewer only: the builder preview has no post chain, and the
-replay export stays fixed at High (4.7). Auto never picks Extreme (4.6). Materials also switches
+replay export stays fixed at High (4.7). Auto reaches Extreme only through a measured trial (4.6). Materials also switches
 to `physical` at Extreme only — its own lazy chunk, see `docs/area/biobuzz.md`'s PHYSICAL MATERIALS.
 
 ### 4.5 Environments
@@ -458,7 +458,10 @@ Auto is the default preset. On the first 3D launch: read the WebGL renderer stri
 memory, core count and DPR into a first guess (integrated GPU → Medium, discrete → High, phone →
 Low); then a **two-second warm-up** on the real scene measures frame-time p95 and moves the preset
 one step down if p95 exceeds 16.7 ms, one step up if it is under 6 ms with headroom, never past
-Ultra (the warm-up measures CPU time, and Extreme's cost is GPU fill). The result is
+Ultra (the warm-up measures CPU time, and Extreme's cost is GPU fill). Since 2026-10-10 an Auto
+device on Ultra with headroom then TRIALS Extreme: three seconds of real Extreme frames, timed on
+the GPU where the browser allows it and counted for late frames everywhere, with the verdict
+stored per GPU and canvas size (`docs/area/biobuzz.md`, AUTO PICKS EXTREME). The result is
 stored; a persistent slip of p95 above 25 ms in a match lowers the preset once and writes one
 event-log line. `WebGLRenderer` is created with `powerPreference: 'high-performance'` so dual-GPU
 laptops pick the discrete GPU. A software renderer string (SwiftShader, llvmpipe, Basic Render

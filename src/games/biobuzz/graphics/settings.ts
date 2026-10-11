@@ -19,6 +19,8 @@
  *     any one setting — there is no setting it could be derived from. It is the column the
  *     current settings were last branched from, so a player who picks High and then turns
  *     shadows off keeps High's 2.2 MP backbuffer cap, which is what they asked for.
+ * A fourth, optional field (2026-10-10) is not a setting at all: `extremeTrial`, Auto's stored
+ * Extreme verdict for this device (`ExtremeTrial`).
  *
  * Nothing here imports three.js or touches a canvas: this is the MODEL. `scene/renderScene.ts`
  * subscribes and applies; `graphics/auto.ts` writes into it after detection; `ui/
@@ -365,18 +367,26 @@ export type GraphicsTier = 'low' | 'medium' | 'high' | 'ultra' | 'extreme';
 export const GFX_TIERS: readonly GraphicsTier[] = ['low', 'medium', 'high', 'ultra', 'extreme'];
 
 /**
- * THE HIGHEST TIER AUTO WILL PICK. Extreme is past it on purpose, for four reasons:
+ * THE HIGHEST TIER AUTO'S FIRST GUESS AND ITS CPU WARM-UP STEP MAY PICK. Extreme is past it, for
+ * three reasons that still hold:
  *   • the warm-up measures CPU submit time (`renderScene.ts`), and Extreme's cost is almost all
- *     GPU fill: a fast Ultra frame says nothing about whether a supersampled frame with two
- *     post passes on it will hold 60 fps;
- *   • after the warm-up only the 25 ms slip moves the tier, so a machine that climbed into
- *     Extreme and landed at 45 fps would stay there for the whole match;
- *   • `firstGuess` cannot tell machines apart at the top (`deviceMemory` caps at 8);
- *   • Extreme downloads a chunk. Auto must not start a download nobody asked for.
- * So Auto stops here, and Extreme is only ever a hand pick. `stepTier` takes this as its ceiling
- * on the way up; `setGraphicsPreset('auto')` clamps to it.
+ *     GPU fill: a fast Ultra frame says nothing about whether a supersampled frame with AO on it
+ *     will hold 60 fps;
+ *   • after the warm-up only the 25 ms slip moves the tier, and it cannot see a GPU-bound frame;
+ *   • `firstGuess` cannot tell machines apart at the top (`deviceMemory` caps at 8).
+ * `stepTier` takes this as the warm-up's ceiling on the way up, `contextLossTier` drops to it, and
+ * `setGraphicsPreset('auto')` clamps to it unless the device holds a PASS (`ExtremeTrial`).
  */
-export const GFX_AUTO_MAX_TIER: GraphicsTier = 'ultra';
+export const GFX_AUTO_STEP_MAX_TIER: GraphicsTier = 'ultra';
+
+/**
+ * THE HIGHEST TIER AUTO MAY SIT ON: Extreme, since 2026-10-10 (owner: "Extreme should be able to
+ * be picked by auto"). It is reached only through a MEASURED TRIAL (`graphics/auto.ts`): GPU time
+ * where the browser can time it, the frame period where it cannot, three seconds of real Extreme
+ * frames after its chunks have loaded. The verdict is stored per GPU (`ExtremeTrial`) and a
+ * GPU/late-frame slip guards it afterwards. The download Auto now starts is the owner's call.
+ */
+export const GFX_AUTO_MAX_TIER: GraphicsTier = 'extreme';
 
 export type GraphicsPreset = 'auto' | GraphicsTier | 'custom';
 
@@ -559,6 +569,53 @@ export interface GraphicsState {
   /** always one of the five columns — see this file's header on why it is not derived. */
   tier: GraphicsTier;
   settings: GraphicsSettings;
+  /** Auto's Extreme verdict for this device, if a trial has run (`ExtremeTrial`). */
+  extremeTrial?: ExtremeTrial;
+}
+
+/**
+ * THE RESULT OF AUTO'S EXTREME TRIAL (`graphics/auto.ts`), stored in the graphics blob so a device
+ * that failed does not re-trial every match and a device that passed starts on Extreme.
+ *
+ * Keyed by `gpu`, the WebGL renderer string the trial ran on: a verdict for another GPU (a new
+ * card, a dock that switches to the discrete chip) is ignored, so that GPU gets its own trial.
+ * One slot, not a map: the last trial wins. `periodMs` is the display's median frame period the
+ * trial measured on Ultra, which the late-frame guard needs when a later match starts straight on
+ * Extreme. `mp` is the megapixels the Extreme column drew: a verdict answers only for a canvas of
+ * about that size (`TRIAL_SIZE_SLACK` in `graphics/auto.ts`). "Reset to Auto" clears it.
+ *
+ * A build from before 2026-10-10 reads `{preset, tier, settings}` and ignores this field; one that
+ * writes the blob drops it, which costs that device one more trial and nothing else.
+ */
+export interface ExtremeTrial {
+  gpu: string;
+  pass: boolean;
+  periodMs?: number;
+  mp?: number;
+}
+
+/** the longest renderer string kept. Real ones are under 150 characters; this only stops a corrupt
+ * blob from carrying a megabyte around. */
+const TRIAL_GPU_MAX = 256;
+
+/** field by field, like every other stored value: anything malformed is dropped (no verdict means
+ * "not trialled", which is always a safe reading). */
+export function coerceExtremeTrial(raw: unknown): ExtremeTrial | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const o = raw as { gpu?: unknown; pass?: unknown; periodMs?: unknown; mp?: unknown };
+  if (typeof o.gpu !== 'string' || o.gpu.length > TRIAL_GPU_MAX || typeof o.pass !== 'boolean') return undefined;
+  const out: ExtremeTrial = { gpu: o.gpu, pass: o.pass };
+  // a frame period between 500 Hz and 10 Hz; anything else is junk and the guard uses its floor
+  if (typeof o.periodMs === 'number' && Number.isFinite(o.periodMs) && o.periodMs >= 2 && o.periodMs <= 100) out.periodMs = o.periodMs;
+  // a canvas size up to 40 MP (8.3 is Extreme's own budget); junk leaves the verdict size-free
+  if (typeof o.mp === 'number' && Number.isFinite(o.mp) && o.mp > 0 && o.mp <= 40) out.mp = o.mp;
+  return out;
+}
+
+/** the stored verdict, if it was measured on THIS gpu. */
+export function extremeTrialFor(g: GraphicsState, gpu: string): ExtremeTrial | undefined {
+  const v = g.extremeTrial;
+  return v && v.gpu === gpu ? v : undefined;
 }
 
 /** what a device that has never opened this screen gets, before `graphics/auto.ts` has run.
@@ -642,15 +699,25 @@ export const GFX_PRESETS_ALL: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS,
 /** a stored blob → a state this build can run. Exported so the smoke lane can round-trip every
  * preset through it (the literal-list bug above is exactly the kind a round trip catches). */
 export function coerceGraphicsState(raw: unknown): GraphicsState {
-  const o = (raw ?? {}) as { preset?: unknown; tier?: unknown; settings?: unknown };
+  const o = (raw ?? {}) as { preset?: unknown; tier?: unknown; settings?: unknown; extremeTrial?: unknown };
   const tier = oneOf<GraphicsTier>(GFX_TIERS, o.tier, GFX_DEFAULT_TIER);
   const settings = coerceGraphicsSettings(o.settings, GFX_PRESETS[tier]);
   let preset = oneOf<GraphicsPreset>(GFX_PRESETS_ALL, o.preset, 'auto');
+  const extremeTrial = coerceExtremeTrial(o.extremeTrial);
   // A STORED PRESET NAME IS A CLAIM, NOT A FACT. If the settings under it no longer match the
   // column — an older build wrote a row this one coerced, or a column moved between releases —
   // the honest label is `custom`, because that is what the picker would otherwise lie about.
   if (preset !== 'custom' && preset !== 'auto' && !matchesPreset(settings, preset)) preset = 'custom';
-  return { preset, tier, settings };
+  // AUTO SITS ON EXTREME ONLY WITH A PASS. A tab closed in the middle of a trial leaves
+  // `auto`/`extreme` stored with no verdict; that reads back as Auto on Ultra.
+  if (preset === 'auto' && tier === 'extreme' && !extremeTrial?.pass) return withTrial(presetState(GFX_AUTO_STEP_MAX_TIER, 'auto'), extremeTrial);
+  return withTrial({ preset, tier, settings }, extremeTrial);
+}
+
+/** `s` with the verdict attached, or without the key at all when there is none (so a state with no
+ * verdict serialises exactly as it did before the field existed). */
+function withTrial(s: GraphicsState, v: ExtremeTrial | undefined): GraphicsState {
+  return v ? { ...s, extremeTrial: v } : s;
 }
 
 /** the live state, read synchronously by the scene on every settings change. Loaded once, on
@@ -732,19 +799,26 @@ function minTier(a: GraphicsTier, b: GraphicsTier): GraphicsTier {
 export function setGraphicsPreset(preset: GraphicsPreset): void {
   if (preset === 'custom') return; // `custom` is a CONSEQUENCE of editing a setting, never a pick
   const cur = getGraphics();
-  // Auto keeps the tier it is on until detection runs, but never above its own ceiling: picking
-  // Auto while on Extreme must not leave "Auto" sitting on a tier Auto would never choose.
-  const tier = preset === 'auto' ? minTier(cur.tier, GFX_AUTO_MAX_TIER) : preset;
-  commit({ preset, tier, settings: { ...GFX_PRESETS[tier] } });
+  // Auto keeps the tier it is on until detection runs, but never above what Auto could reach on
+  // its own: Extreme stays only for a device whose stored trial PASSED. Which GPU the pass was
+  // measured on is checked by the scene's governor (`graphics/auto.ts`), since this file cannot
+  // probe: a pass from another GPU drops back to Ultra at its first check.
+  const ceiling = cur.extremeTrial?.pass ? GFX_AUTO_MAX_TIER : GFX_AUTO_STEP_MAX_TIER;
+  const tier = preset === 'auto' ? minTier(cur.tier, ceiling) : preset;
+  commit(withTrial({ preset, tier, settings: { ...GFX_PRESETS[tier] } }, cur.extremeTrial));
 }
 
 /**
  * Write the tier AUTO decided. `keepAuto` is what separates the two callers: the detector and
  * the warm-up are still "Auto" and must stay labelled that way, while a player who has picked
  * a column by hand is not moved by anything.
+ *
+ * `trial` replaces the stored Extreme verdict in the same commit (one notification, not two);
+ * omitted, the stored one is kept.
  */
-export function setGraphicsTier(tier: GraphicsTier, keepAuto: boolean): void {
-  commit({ preset: keepAuto ? 'auto' : tier, tier, settings: { ...GFX_PRESETS[tier] } });
+export function setGraphicsTier(tier: GraphicsTier, keepAuto: boolean, trial?: ExtremeTrial): void {
+  const v = trial ?? getGraphics().extremeTrial;
+  commit(withTrial({ preset: keepAuto ? 'auto' : tier, tier, settings: { ...GFX_PRESETS[tier] } }, v));
 }
 
 /** change ONE setting. The preset becomes `custom` unless the result happens to land exactly
@@ -753,11 +827,12 @@ export function setGraphicsSetting<K extends keyof GraphicsSettings>(key: K, val
   const cur = getGraphics();
   const settings = { ...cur.settings, [key]: value };
   const named = GFX_TIERS.find((t) => matchesPreset(settings, t));
-  commit({ preset: named ?? 'custom', tier: named ?? cur.tier, settings });
+  commit(withTrial({ preset: named ?? 'custom', tier: named ?? cur.tier, settings }, cur.extremeTrial));
 }
 
 /** forget everything and let detection decide again (§4.4's "Reset to Auto" button). The
- * caller re-runs `graphics/auto.ts`; this only clears the stored opinion. */
+ * caller re-runs `graphics/auto.ts`; this only clears the stored opinion — the Extreme verdict
+ * included, so the button is also how a device that failed its trial gets another one. */
 export function resetGraphicsToAuto(): void {
   commit(presetState(GFX_DEFAULT_TIER, 'auto'));
 }
@@ -848,7 +923,7 @@ export function contextLossTier(g: GraphicsState): GraphicsTier | null {
   // Extreme's budget only costs memory when something asks past 100 % of the device ratio
   const bigBackbuffer = g.tier === 'extreme' && s.renderScale > 100;
   if (!wantsPost(s) && s.shadows !== 'max' && !bigBackbuffer) return null;
-  return minTier(g.tier, GFX_AUTO_MAX_TIER);
+  return minTier(g.tier, GFX_AUTO_STEP_MAX_TIER);
 }
 
 /** how many multisamples a render target needs for `aa`; 0 means render straight to the

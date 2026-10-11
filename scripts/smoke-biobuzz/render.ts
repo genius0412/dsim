@@ -322,6 +322,7 @@ import type { SceneFrame } from '../../src/games/module';
 import { viewAngleOf } from '../../src/sim/field';
 import {
   GFX_AUTO_MAX_TIER,
+  GFX_AUTO_STEP_MAX_TIER,
   GFX_NOT_OFFERED,
   GFX_PIXEL_BUDGET,
   GFX_PRESETS,
@@ -369,6 +370,32 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
+// -- AUTO'S EXTREME TRIAL (2026-10-10), in its own import block ---------------------------
+import {
+  BASELINE_MS,
+  EXTREME_COST_FACTOR,
+  GUARD_GPU_MS,
+  GUARD_LATE_MAX,
+  GUARD_WINDOW_MS,
+  ENTRY_PERIOD_MS,
+  PACE_FLOOR_MAX_MS,
+  TRIAL_ENTRY_GPU_MS,
+  TRIAL_GPU_MS,
+  TRIAL_LATE_MAX,
+  TRIAL_MIN_FPS,
+  TRIAL_MS,
+  TRIAL_READY_TIMEOUT_MS,
+  TRIAL_SETTLE_MS,
+  TRIAL_SIZE_SLACK,
+  applyFirstGuess,
+  contextLossTrial,
+  lateThreshold,
+  verdictStands,
+  type EffectsState,
+  type QualityGovernor,
+} from '../../src/games/biobuzz/graphics/auto';
+import { coerceExtremeTrial, extremeTrialFor, setGraphicsSetting, type ExtremeTrial, type GraphicsState } from '../../src/games/biobuzz/graphics/settings';
+import { GPU_TIMER_SLOTS, createGpuTimer } from '../../src/games/biobuzz/scene/renderGpuTimer';
 import {
   BASE_RIG,
   BB_ENVIRONMENTS,
@@ -4543,13 +4570,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       stepTier('low', -1) === 'low' &&
         stepTier('extreme', 1) === 'extreme' &&
         stepTier('high', -1) === 'medium' &&
-        stepTier('ultra', 1, GFX_AUTO_MAX_TIER) === 'ultra' &&
-        stepTier('extreme', 1, GFX_AUTO_MAX_TIER) === 'extreme' &&
+        stepTier('ultra', 1, GFX_AUTO_STEP_MAX_TIER) === 'ultra' &&
+        stepTier('extreme', 1, GFX_AUTO_STEP_MAX_TIER) === 'extreme' &&
         stepTier('extreme', -1) === 'ultra',
     );
-    // AUTO NEVER PICKS EXTREME (`GFX_AUTO_MAX_TIER`'s own note). Every probe above, plus the top
-    // of the market: `deviceMemory` caps at 8 in the real API, so nothing in `firstGuess`'s inputs
-    // can tell a monster machine apart from a merely fast discrete GPU.
+    // THE FIRST GUESS NEVER SAYS EXTREME (`GFX_AUTO_STEP_MAX_TIER`'s own note; since 2026-10-10
+    // Auto reaches Extreme only through a measured trial). Every probe above, plus the top of the
+    // market: `deviceMemory` caps at 8 in the real API, so nothing in `firstGuess`'s inputs can
+    // tell a monster machine apart from a merely fast discrete GPU.
     {
       const monster: GpuProbe = { ...base, renderer: 'NVIDIA GeForce RTX 4090', memoryGb: 8, cores: 32, dpr: 1 };
       const probes: GpuProbe[] = [
@@ -4621,17 +4649,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check('warm-up: comfortably inside the budget steps the preset UP one', getGraphics().tier === 'high', getGraphics().tier);
     }
 
-    // AUTO NEVER CLIMBS INTO EXTREME, even off a warm-up that would otherwise step up
+    // THE WARM-UP STEP NEVER CLIMBS INTO EXTREME, even off frames that would otherwise step up:
+    // the only way past Ultra is the measured trial, which starts with a baseline (block below)
     {
       setGraphicsTier('ultra', true);
       const clock = { t: 0 };
       const gov = createQualityGovernor(() => clock.t);
       drive(gov, clock, 200, 3); // 3 ms frames: comfortably inside WARMUP_UP_MS
       check(
-        'warm-up: an Auto device already at Ultra with 3 ms frames stays at Ultra, not Extreme',
-        getGraphics().tier === 'ultra' && getGraphics().preset === 'auto',
-        getGraphics().tier,
+        'warm-up: an Auto device already at Ultra with 3 ms frames stays at Ultra (the step stops there; a baseline follows)',
+        getGraphics().tier === 'ultra' && getGraphics().preset === 'auto' && gov.phase === 'baseline',
+        `${getGraphics().tier} ${gov.phase}`,
       );
+      gov.dispose();
     }
 
     // a HAND-PICKED preset is not moved by detection
@@ -4655,8 +4685,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
     }
 
-    // AUTO, PICKED WHILE ON EXTREME, DROPS TO ULTRA — `setGraphicsPreset('auto')` clamps to the
-    // ceiling rather than leaving "Auto" sitting on a tier Auto would never have chosen itself.
+    // AUTO, PICKED WHILE ON EXTREME WITH NO STORED PASS, DROPS TO ULTRA — `setGraphicsPreset('auto')`
+    // clamps rather than leaving "Auto" on an Extreme no trial measured (a PASS keeps it: below).
     {
       setGraphicsTier('extreme', false);
       setGraphicsPreset('auto');
@@ -4746,6 +4776,884 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
     check('the warm-up window is the spec\u2019s two seconds', WARMUP_MS === 2000);
     resetGraphicsToAuto();
+  }
+
+  // ══ AUTO'S EXTREME TRIAL (owner, 2026-10-10: "Extreme should be able to be picked by auto") ══
+  //
+  // Auto reaches Extreme only by drawing it and measuring it (`graphics/auto.ts`). Everything
+  // here is the POLICY on a fake clock with fake samples, the same way the governor block above
+  // is driven: frames in, preset changes and stored verdicts out. The GPU timer helper is driven
+  // against a fake WebGL context at the end.
+  //
+  // ⚠️ WRITES THE SHARED SETTINGS STORE, like the block above. Every case starts from
+  // `resetGraphicsToAuto()` and the block ends on it.
+  {
+    const P60 = 1000 / 60;
+    interface Frames {
+      cpu: number;
+      period?: number;
+      /** GPU ms per frame, or omitted for a browser that cannot time the GPU */
+      gpu?: number;
+      /** every `lateEvery`th frame takes `latePeriod` instead (a missed vsync) */
+      lateEvery?: number;
+      latePeriod?: number;
+      /** the page was hidden before each of these frames (`GovernorOptions.hides`) */
+      hidden?: boolean;
+    }
+    /** the fake clock, and the page-hide count the governors built here read */
+    interface Clock {
+      t: number;
+      hides: number;
+    }
+    /** feed `ms` worth of frames; the period is the clock step, so `now() - cpu` is each frame's start. */
+    const feed = (gov: QualityGovernor, clock: Clock | { t: number }, ms: number, f: Frames): void => {
+      const end = clock.t + ms;
+      let i = 0;
+      while (clock.t < end) {
+        i++;
+        const late = f.lateEvery !== undefined && i % f.lateEvery === 0;
+        clock.t += late ? (f.latePeriod ?? 2 * P60) : (f.period ?? P60);
+        if (f.hidden && 'hides' in clock) clock.hides++;
+        gov.sample(f.cpu);
+        if (f.gpu !== undefined) gov.gpuSample(f.gpu);
+      }
+    };
+    const GOOD: Frames = { cpu: 3, gpu: 3 };
+    /** what the fake scene reports: chunks ready (`v`), a chunk that failed, and the canvas size in
+     * Extreme megapixels (omitted: the scene cannot say). */
+    interface Fx {
+      v: boolean;
+      failed?: boolean;
+      mp?: number;
+    }
+    const effectsOf = (fx: Fx): (() => EffectsState) => () => (fx.failed ? 'failed' : fx.v ? 'ready' : 'loading');
+    /** a fresh Auto device on `tier`, a governor keyed to `gpu`, and its event lines. */
+    const start = (tier: GraphicsTier, gpu = 'GPU-A', ready: Fx = { v: true }, decide = true) => {
+      resetGraphicsToAuto();
+      setGraphicsTier(tier, true);
+      const clock: Clock = { t: 0, hides: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l), decide, {
+        gpu,
+        effects: effectsOf(ready),
+        hides: () => clock.hides,
+        pixels: () => ready.mp ?? NaN,
+      });
+      return { gov, clock, lines, ready };
+    };
+    /** a governor on whatever the store holds now (a stored verdict, a hand pick), on its own clock */
+    const govOn = (gpu = 'GPU-A', fx: Fx = { v: true }) => {
+      const clock: Clock = { t: 0, hides: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l), true, {
+        gpu,
+        effects: effectsOf(fx),
+        hides: () => clock.hides,
+        pixels: () => fx.mp ?? NaN,
+      });
+      return { gov, clock, lines };
+    };
+    /** warm-up and baseline on Ultra with headroom: the trial has started when this returns. */
+    const toTrial = (gpu = 'GPU-A', ready: Fx = { v: true }, base: Frames = GOOD) => {
+      const s = start('ultra', gpu, ready);
+      feed(s.gov, s.clock, WARMUP_MS + 20, base);
+      feed(s.gov, s.clock, BASELINE_MS + 20, base);
+      return s;
+    };
+    /** through the settle and one full measurement window. */
+    const measure = (s: { gov: QualityGovernor; clock: { t: number } }, f: Frames): void => {
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + TRIAL_MS + 300, f);
+    };
+    const g = () => getGraphics();
+    const state = () => `${g().preset}/${g().tier} ${JSON.stringify(g().extremeTrial ?? null)}`;
+
+    check('auto/trial: Auto may sit on Extreme now, and its first guess and warm-up step still stop at Ultra', GFX_AUTO_MAX_TIER === 'extreme' && GFX_AUTO_STEP_MAX_TIER === 'ultra');
+    // DELIBERATE PINS: these tie docs/area/biobuzz.md's numbers to the code's. The behaviour each
+    // one drives is checked by the cases below.
+    check(
+      'auto/trial: the numbers the doc quotes — 3 s window, 14 ms GPU, 5 % late, 50 fps on-time pace, an 18 ms entry period, entry GPU = 14 ms ÷ the 3× Extreme factor',
+      TRIAL_MS === 3000 && TRIAL_GPU_MS === 14 && TRIAL_LATE_MAX === 0.05 && TRIAL_MIN_FPS === 50 && ENTRY_PERIOD_MS === 18 && EXTREME_COST_FACTOR === 3 && Math.abs(TRIAL_ENTRY_GPU_MS - 14 / 3) < 1e-9,
+    );
+    check('auto/guard: the guard’s numbers: 20 ms GPU p95 or 25 % late frames, sustained 3 s; a cap is taken for 25 fps at the slowest', GUARD_GPU_MS === 20 && GUARD_LATE_MAX === 0.25 && GUARD_WINDOW_MS === 3000 && PACE_FLOOR_MAX_MS === 40);
+    {
+      // THE LATE LINE, PANEL BY PANEL: half a vsync past the vsyncs a 60 fps frame takes there. The
+      // old max(1.5 × period, 18 ms) put it at 18 ms on 144 and 165 Hz, which made a 55 fps frame
+      // late there and nowhere else.
+      const panels: [hz: number, line: number][] = [[60, 25], [75, 33.33], [100, 25], [120, 20.83], [144, 24.31], [165, 21.21], [240, 18.75]];
+      const got = panels.map(([hz]) => lateThreshold(1000 / hz));
+      check(
+        'auto/late: the late line is 25 / 33.3 / 25 / 20.8 / 24.3 / 21.2 / 18.75 ms on 60 / 75 / 100 / 120 / 144 / 165 / 240 Hz',
+        panels.every(([, line], i) => Math.abs(got[i] - line) < 0.01),
+        got.map((v) => v.toFixed(2)).join(' '),
+      );
+      // a 60 Hz panel measures 16.6 to 16.8 ms; without the slack 16.6 would read as two vsyncs a frame
+      check('auto/late: a 60 Hz panel measured at 16.6 or 16.8 ms still draws its line at one missed vsync', Math.abs(lateThreshold(16.6) - 24.9) < 0.01 && Math.abs(lateThreshold(16.8) - 25.2) < 0.01, `${lateThreshold(16.6)} ${lateThreshold(16.8)}`);
+      // a GPU that holds 60 fps draws no late frame on any panel: its slowest frame is ceil(16.7 / P) vsyncs
+      const ok = panels.every(([hz]) => {
+        const p = 1000 / hz;
+        return Math.ceil(P60 / p - 1e-9) * p < lateThreshold(p) && (Math.ceil(P60 / p - 1e-9) + 1) * p > lateThreshold(p);
+      });
+      check('auto/late: on every panel a 60 fps frame is on time and one more vsync is late', ok);
+    }
+
+    // ── entry, waiting for the chunks, and a PASS on a timed GPU ─────────────────────────────
+    {
+      const ready = { v: false };
+      const s = start('ultra', 'GPU-A', ready);
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      check('auto/trial: a warm-up that lands on Ultra runs a BASELINE first, still on Ultra', s.gov.phase === 'baseline' && g().tier === 'ultra', `${s.gov.phase} ${state()}`);
+      feed(s.gov, s.clock, BASELINE_MS + 20, GOOD);
+      check(
+        'auto/trial: a baseline with headroom starts the trial — Auto, on Extreme, with a line',
+        s.gov.phase === 'trial-load' && g().preset === 'auto' && g().tier === 'extreme' && s.lines.some((l) => /trying Extreme/.test(l)),
+        `${s.gov.phase} ${state()} | ${s.lines.join(' | ')}`,
+      );
+      // the chunks have not arrived: ten seconds of terrible frames must decide NOTHING
+      feed(s.gov, s.clock, 10000, { cpu: 40, gpu: 40, period: 50 });
+      check('auto/trial: nothing is measured until the scene reports Extreme ready', s.gov.phase === 'trial-load' && g().tier === 'extreme' && !g().extremeTrial, `${s.gov.phase} ${state()}`);
+      ready.v = true;
+      feed(s.gov, s.clock, 100, { cpu: 40, gpu: 40, period: 50 });
+      check('auto/trial: ready, then a settle (the first frames compile Extreme’s programs)', s.gov.phase === 'trial-settle', s.gov.phase);
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS, { cpu: 5, gpu: 9 });
+      check('auto/trial: after the settle, the measured window', s.gov.phase === 'trial', s.gov.phase);
+      feed(s.gov, s.clock, TRIAL_MS + 100, { cpu: 5, gpu: 9 });
+      const v = g().extremeTrial;
+      check(
+        'auto/trial: PASS (9 ms GPU p95, no late frames, 5 ms CPU) keeps Extreme under Auto and stores a PASS for this GPU with the measured period',
+        s.gov.phase === 'watch' && g().preset === 'auto' && g().tier === 'extreme' && v?.gpu === 'GPU-A' && v.pass === true && Math.abs((v.periodMs ?? 0) - P60) < 0.01,
+        state(),
+      );
+      check('auto/trial: ...and the PASS line names the GPU time', s.lines.some((l) => /Extreme \(auto, 9\.0 ms GPU p95, 0% of frames late\)/.test(l)), s.lines.join(' | '));
+      // the PASS is a measurement and survives the blob round trip
+      const round = coerceGraphicsState(JSON.parse(JSON.stringify(g())));
+      check(
+        'auto/trial: the stored PASS survives a JSON round trip through the coercer',
+        round.preset === 'auto' && round.tier === 'extreme' && round.extremeTrial?.pass === true && round.extremeTrial.gpu === 'GPU-A',
+        JSON.stringify(round.extremeTrial ?? null),
+      );
+    }
+
+    // ── the three ways to FAIL ──────────────────────────────────────────────────────────────
+    {
+      const s = toTrial();
+      measure(s, { cpu: 5, gpu: 18 });
+      check(
+        'auto/trial: FAIL by GPU (18 ms p95 > 14) goes back to Ultra, still Auto, and stores a FAIL',
+        g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial?.pass === false && g().extremeTrial?.gpu === 'GPU-A',
+        state(),
+      );
+      check('auto/trial: ...with a line naming the measurement', s.lines.some((l) => /Ultra \(auto\)\. On Extreme: 18\.0 ms GPU p95\./.test(l)), s.lines.join(' | '));
+    }
+    {
+      // NO TIMER (Firefox, Safari): one frame in ten misses its vsync, 10 % > 5 %
+      const s = toTrial('GPU-A', { v: true }, { cpu: 3 });
+      measure(s, { cpu: 5, lateEvery: 10 });
+      check('auto/trial: FAIL by late frames on a browser with no GPU timer (10 % > 5 %)', g().tier === 'ultra' && g().extremeTrial?.pass === false, state());
+      check('auto/trial: ...and the line says late frames', s.lines.some((l) => /On Extreme: (9|10|11)% of frames late\./.test(l)), s.lines.join(' | '));
+    }
+    {
+      // NO TIMER, and a healthy Extreme: one miss in fifty is 2 %
+      const s = toTrial('GPU-A', { v: true }, { cpu: 3 });
+      measure(s, { cpu: 5, lateEvery: 50 });
+      check('auto/trial: PASS with no GPU timer at all (2 % late), and the line says no GPU time it does not have', g().tier === 'extreme' && g().extremeTrial?.pass === true && s.lines.some((l) => /Extreme \(auto, [1-3]% of frames late\)/.test(l)), `${state()} | ${s.lines.join(' | ')}`);
+    }
+    {
+      const s = toTrial();
+      measure(s, { cpu: 20, gpu: 9 });
+      check('auto/trial: FAIL by CPU (20 ms p95 > 16.7) even with a fast GPU', g().tier === 'ultra' && g().extremeTrial?.pass === false && s.lines.some((l) => /20\.0 ms CPU p95/.test(l)), `${state()} | ${s.lines.join(' | ')}`);
+    }
+
+    // ── entry conditions: no headroom, no trial, nothing stored ──────────────────────────────
+    {
+      const s = start('ultra');
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      feed(s.gov, s.clock, BASELINE_MS + 20, { cpu: 7, gpu: 3 });
+      check('auto/entry: a baseline CPU p95 at 7 ms (not under the 6 ms up-step) does not trial', s.gov.phase === 'watch' && g().tier === 'ultra' && !g().extremeTrial, `${s.gov.phase} ${state()}`);
+    }
+    {
+      const s = start('ultra');
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      feed(s.gov, s.clock, BASELINE_MS + 20, { cpu: 3, gpu: 6 });
+      check('auto/entry: a timed Ultra GPU p95 of 6 ms (× 3 > 14) does not trial', s.gov.phase === 'watch' && g().tier === 'ultra' && !g().extremeTrial, `${s.gov.phase} ${state()}`);
+    }
+    {
+      const s = start('ultra');
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      feed(s.gov, s.clock, BASELINE_MS + 20, { cpu: 3, period: 20 });
+      check('auto/entry: an Ultra that does not itself hold ~56 fps (20 ms median period) does not trial', s.gov.phase === 'watch' && g().tier === 'ultra' && !g().extremeTrial, `${s.gov.phase} ${state()}`);
+    }
+    {
+      // the up-step path: a fast High steps to Ultra, and the baseline is measured ON Ultra
+      const s = start('high');
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      const afterWarm = `${g().tier}/${s.gov.phase}`;
+      feed(s.gov, s.clock, BASELINE_MS + 20, GOOD);
+      check('auto/entry: a warm-up that STEPS UP to Ultra baselines Ultra, then trials', afterWarm === 'ultra/baseline' && g().tier === 'extreme' && s.gov.phase.startsWith('trial'), `${afterWarm} → ${g().tier}/${s.gov.phase}`);
+      s.gov.dispose();
+    }
+    {
+      // a warm-up p95 inflated by startup compiles (10 ms: no up-step) still gets its baseline
+      const s = start('ultra');
+      feed(s.gov, s.clock, WARMUP_MS + 20, { cpu: 10, gpu: 3 });
+      check('auto/entry: a warm-up on Ultra between 6 and 16.7 ms still runs a fresh baseline', s.gov.phase === 'baseline', s.gov.phase);
+      feed(s.gov, s.clock, BASELINE_MS + 20, GOOD);
+      check('auto/entry: ...which is what decides (here: a trial)', s.gov.phase.startsWith('trial') && g().tier === 'extreme', `${s.gov.phase} ${state()}`);
+      s.gov.dispose();
+    }
+    {
+      const s = start('high');
+      feed(s.gov, s.clock, WARMUP_MS + 20, { cpu: 10, gpu: 3 });
+      feed(s.gov, s.clock, 8000, GOOD);
+      check('auto/entry: a warm-up that ends below Ultra never baselines or trials', s.gov.phase === 'watch' && g().tier === 'high', `${s.gov.phase} ${state()}`);
+    }
+
+    // ── a stored verdict: no re-trial after a FAIL, a new GPU re-trials, a PASS starts there ──
+    {
+      resetGraphicsToAuto();
+      setGraphicsTier('ultra', true, { gpu: 'GPU-A', pass: false, periodMs: P60 });
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, 12000, GOOD);
+      check('auto/verdict: a device that FAILED on this GPU does not trial again (12 s of perfect frames)', gov.phase === 'watch' && g().tier === 'ultra' && g().extremeTrial?.pass === false, `${gov.phase} ${state()}`);
+      const other = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-B' });
+      feed(other, clock, WARMUP_MS + 20, GOOD);
+      check('auto/verdict: ...but a verdict measured on ANOTHER GPU is not this one’s: it baselines', other.phase === 'baseline', other.phase);
+      other.dispose();
+    }
+    {
+      resetGraphicsToAuto();
+      setGraphicsTier('medium', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const probe: GpuProbe = { renderer: 'GPU-A', vendor: '', adapter: '', memoryGb: 2, cores: 2, dpr: 1, webgl2: true, software: false };
+      const tier = applyFirstGuess(probe, '');
+      check('auto/verdict: a stored PASS on this GPU starts the device on Extreme (first guess or not)', tier === 'extreme' && g().tier === 'extreme' && g().preset === 'auto', state());
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 12, gpu: 9 });
+      check('auto/verdict: ...and its warm-up does not step it (no trial, no step: the guard watches)', gov.phase === 'watch' && g().tier === 'extreme', `${gov.phase} ${state()}`);
+      setGraphicsTier('medium', true, { gpu: 'GPU-A', pass: true });
+      const otherTier = applyFirstGuess({ ...probe, renderer: 'GPU-B' }, '');
+      check('auto/verdict: a PASS stored for another GPU is a first guess like any other', otherTier !== 'extreme' && g().tier === otherTier, state());
+    }
+    {
+      // the warm-up lands on Ultra with a PASS already stored (Auto picked again mid-session)
+      resetGraphicsToAuto();
+      setGraphicsTier('ultra', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, GOOD);
+      check('auto/verdict: a warm-up that lands on Ultra with a PASS stored goes to Extreme without a second trial', g().tier === 'extreme' && gov.phase === 'watch', `${gov.phase} ${state()}`);
+    }
+
+    // ── coercion: junk, an old blob, a half-finished trial ───────────────────────────────────
+    {
+      const base = { preset: 'auto', tier: 'ultra', settings: GFX_PRESETS.ultra };
+      const junk: unknown[] = [null, 'x', 5, [], { gpu: 5, pass: true }, { gpu: 'a', pass: 'yes' }, { gpu: 'x'.repeat(300), pass: true }, { pass: true }];
+      const kept = junk.filter((j) => coerceGraphicsState({ ...base, extremeTrial: j }).extremeTrial !== undefined);
+      check('auto/coerce: a malformed verdict is dropped, never half-read', kept.length === 0, JSON.stringify(kept));
+      const odd = coerceGraphicsState({ ...base, extremeTrial: { gpu: 'a', pass: true, periodMs: 1e9 } }).extremeTrial;
+      check('auto/coerce: a junk period is dropped and the verdict kept', odd?.pass === true && odd.periodMs === undefined, JSON.stringify(odd ?? null));
+      const old = coerceGraphicsState(base);
+      check('auto/coerce: an old blob (no verdict) reads back with no `extremeTrial` key at all', !('extremeTrial' in old) && old.preset === 'auto' && old.tier === 'ultra', JSON.stringify(Object.keys(old)));
+      const mid = coerceGraphicsState({ preset: 'auto', tier: 'extreme', settings: GFX_PRESETS.extreme });
+      check('auto/coerce: Auto on Extreme with no PASS (a tab closed mid-trial) reads back as Auto on Ultra', mid.preset === 'auto' && mid.tier === 'ultra' && matchesPreset(mid.settings, 'ultra'), `${mid.preset}/${mid.tier}`);
+      const passed = coerceGraphicsState({ preset: 'auto', tier: 'extreme', settings: GFX_PRESETS.extreme, extremeTrial: { gpu: 'a', pass: true } });
+      check('auto/coerce: ...and with a PASS it stays on Extreme', passed.tier === 'extreme' && passed.preset === 'auto');
+      const s = coerceGraphicsState({ ...base, extremeTrial: { gpu: 'a', pass: true } });
+      check('auto/coerce: a verdict answers for its own GPU only', extremeTrialFor(s, 'a')?.pass === true && extremeTrialFor(s, 'b') === undefined);
+      check('auto/coerce: an old build that reads the blob ignores the field (the three it reads are unchanged)', coerceGraphicsState({ ...base, extremeTrial: { gpu: 'a', pass: true } }).settings.shadows === GFX_PRESETS.ultra.shadows);
+      check('auto/coerce: the field’s own coercer takes a well-formed verdict as is', JSON.stringify(coerceExtremeTrial({ gpu: 'a', pass: false, periodMs: 6.9 })) === '{"gpu":"a","pass":false,"periodMs":6.9}');
+    }
+
+    // ── picking Auto: a stored PASS keeps Extreme, and a foreign one is caught at the next frame ─
+    {
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', false, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      setGraphicsPreset('auto');
+      check("auto/pick: setGraphicsPreset('auto') on Extreme with a stored PASS keeps Extreme", g().preset === 'auto' && g().tier === 'extreme', state());
+      const clock = { t: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l), true, { gpu: 'GPU-B' });
+      feed(gov, clock, WARMUP_MS + 600, GOOD);
+      check('auto/pick: ...but a governor on ANOTHER GPU drops it to Ultra at its first check', g().preset === 'auto' && g().tier === 'ultra', `${state()} | ${lines.join(' | ')}`);
+      resetGraphicsToAuto();
+      check('auto/pick: Reset to Auto clears the verdict (how a failed device gets another trial)', g().extremeTrial === undefined);
+    }
+
+    // ── the Extreme guard ───────────────────────────────────────────────────────────────────
+    {
+      // AUTO, from a stored PASS: GPU p95 25 ms sustained
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const clock = { t: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l), true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      feed(gov, clock, 2000, { cpu: 4, gpu: 25 });
+      const mid = g().tier;
+      feed(gov, clock, 3000, { cpu: 4, gpu: 25 });
+      check('auto/guard: two seconds of 25 ms GPU frames are not yet sustained', mid === 'extreme', mid);
+      check(
+        'auto/guard: three seconds of them lower an Auto Extreme to Ultra, still Auto, and store a FAIL',
+        g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial?.pass === false && g().extremeTrial?.gpu === 'GPU-A',
+        state(),
+      );
+      check('auto/guard: ...with one line that names the GPU time', lines.filter((l) => /lowered to Ultra — 25\.0 ms GPU p95 on Extreme/.test(l)).length === 1, lines.join(' | '));
+      const once = g().tier;
+      feed(gov, clock, 6000, { cpu: 40, gpu: 40 });
+      check('auto/guard: once per scene, shared with the CPU slip', g().tier === once, g().tier);
+    }
+    {
+      // NO TIMER: a third of the frames late
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4 });
+      feed(gov, clock, 4500, { cpu: 4, lateEvery: 3 });
+      check('auto/guard: a third of the frames late, sustained, lowers it with no GPU timer at all', g().tier === 'ultra' && g().extremeTrial?.pass === false, state());
+    }
+    {
+      // A SESSION PAINTED AT 30 FPS (Chrome's energy saver, Safari's low power mode, the capture
+      // harness): every frame is 33 ms against a stored 60 Hz PASS, and none of them is evidence
+      for (const hand of [false, true]) {
+        resetGraphicsToAuto();
+        setGraphicsTier('extreme', !hand, hand ? undefined : { gpu: 'GPU-A', pass: true, periodMs: P60 });
+        const clock = { t: 0 };
+        const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+        feed(gov, clock, 12000, { cpu: 4, period: 2 * P60 });
+        check(
+          `auto/guard: a session capped at 30 fps does not lower ${hand ? 'a hand-picked' : 'an Auto'} Extreme, or store a FAIL (the guard reads the pace it is drawn at)`,
+          g().tier === 'extreme' && g().preset === (hand ? 'extreme' : 'auto') && g().extremeTrial?.pass !== false,
+          state(),
+        );
+      }
+      // ...while an Extreme the GPU holds at ~40 fps on a 60 Hz panel (16.7 / 33.3 alternating)
+      // still shows half its frames late against the panel's own 16.7
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4 });
+      feed(gov, clock, 4500, { cpu: 4, lateEvery: 2 });
+      check('auto/guard: ...but an Extreme alternating 16.7 / 33.3 ms (half its vsyncs missed) is still lowered', g().tier === 'ultra' && g().extremeTrial?.pass === false, state());
+    }
+    {
+      // a HICCUP is not sustained: 1.5 s of bad frames, then good ones
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      feed(gov, clock, 1500, { cpu: 4, gpu: 30, lateEvery: 2 });
+      feed(gov, clock, 8000, { cpu: 4, gpu: 9 });
+      check('auto/guard: a second and a half of bad frames between good ones lowers nothing', g().tier === 'extreme', state());
+    }
+    {
+      // the STALL guard holds for the Extreme guard too, for a page that was HIDDEN between frames
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const { gov, clock } = govOn();
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      feed(gov, clock, 12000, { cpu: 4, period: 1000, hidden: true });
+      check('auto/guard: a tab that was not being drawn (hidden, one frame a second) is not evidence', g().tier === 'extreme', state());
+    }
+    {
+      // ...but on a page that stayed VISIBLE, a frame a second on an Auto Extreme IS Extreme. Before
+      // the review (2026-10-10) every such frame was thrown away as a stall, and an Extreme drawn
+      // at 2 fps from a stored PASS was never lowered, in any scene.
+      for (const period of [650, 1000]) {
+        resetGraphicsToAuto();
+        setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+        const { gov, clock, lines } = govOn();
+        feed(gov, clock, WARMUP_MS + 20, { cpu: 4 });
+        feed(gov, clock, 6000, { cpu: 4, period });
+        check(
+          `auto/guard: an Auto Extreme drawn at ${(1000 / period).toFixed(1)} fps on a visible page is lowered to Ultra inside 6 s and stores a FAIL`,
+          g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial?.pass === false && lines.some((l) => /of frames late on Extreme/.test(l)),
+          `${state()} | ${lines.join(' | ')}`,
+        );
+      }
+      // and the same visible stalls on anything else are still the stall guard's (no slip)
+      resetGraphicsToAuto();
+      setGraphicsTier('high', false);
+      const { gov, clock } = govOn();
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4 });
+      feed(gov, clock, 12000, { cpu: 40, period: 1000 });
+      check('auto/guard: visible one-second frames on a hand-picked High are still not evidence (only Extreme on Auto counts them)', g().preset === 'high' && g().tier === 'high', state());
+    }
+    {
+      // A HAND-PICKED Extreme is NOT guarded (review, 2026-10-10): 22 ms of GPU (~45 fps) and
+      // 16.7 / 33.3 alternating frames both keep the player's pick and store nothing
+      for (const f of [{ cpu: 8, gpu: 22 }, { cpu: 8, lateEvery: 2 }, { cpu: 8, gpu: 18, lateEvery: 2 }] as Frames[]) {
+        resetGraphicsToAuto();
+        setGraphicsTier('extreme', false);
+        const { gov, clock } = govOn();
+        feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+        feed(gov, clock, 8000, f);
+        check(
+          `auto/guard: a hand-picked Extreme is left alone at ${f.gpu ? `${f.gpu} ms GPU` : 'no GPU timer'}${f.lateEvery ? ', half its frames late' : ''} (the guard is Auto’s)`,
+          g().preset === 'extreme' && g().tier === 'extreme' && g().extremeTrial === undefined && !gov.wantsGpu,
+          state(),
+        );
+      }
+      // ...while the CPU slip still lowers a hand pick, as it always has, to a NAMED Ultra
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', false);
+      const { gov, clock } = govOn();
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      feed(gov, clock, 4500, { cpu: 30, gpu: 9 });
+      check('auto/guard: the 25 ms CPU slip still lowers a hand-picked Extreme to a NAMED Ultra, with no verdict', g().preset === 'ultra' && g().tier === 'ultra' && g().extremeTrial === undefined, state());
+    }
+    {
+      // a hand-picked Extreme on a 60 Hz panel with no timer that misses one vsync in eight:
+      // 12.5 % late, under the guard's 25 %
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', false);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4 });
+      feed(gov, clock, 8000, { cpu: 4, lateEvery: 8, latePeriod: 30 });
+      check('auto/guard: a hand-picked Extreme that misses one vsync in eight is left alone (12.5 % < 25 %)', g().preset === 'extreme', state());
+    }
+    {
+      // a CUSTOM branched from Extreme is the player's own tune: the guard leaves it to the CPU slip
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', false);
+      setGraphicsSetting('hfov', 110);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      feed(gov, clock, 6000, { cpu: 4, gpu: 25 });
+      check('auto/guard: a Custom branched from Extreme is not guarded (a GPU-bound one is the CPU slip’s, or nobody’s)', g().preset === 'custom' && g().tier === 'extreme', state());
+    }
+
+    // ── the trial and everything else that may happen during one ─────────────────────────────
+    {
+      // the STALL guard inside the trial window: ten one-second gaps would be 5 % late on their own
+      const s = toTrial();
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + 1500, { cpu: 5, gpu: 9 });
+      feed(s.gov, s.clock, 10000, { cpu: 5, gpu: 9, period: 1000, hidden: true });
+      measure(s, { cpu: 5, gpu: 9 });
+      check('auto/trial: a tab hidden mid-trial restarts the window instead of failing it', g().tier === 'extreme' && g().extremeTrial?.pass === true, `${state()} | ${s.lines.join(' | ')}`);
+    }
+
+    // ── a SLOW Extreme always reaches a verdict (review, 2026-10-10) ─────────────────────────
+    // It used to be stuck in the trial for the scene's life: a window with under 20 frames was
+    // re-opened, frames over 500 ms were thrown away as stalls, and the CPU slip does not run in a
+    // trial. Every case here must end within a bounded time, with nothing left on trial.
+    {
+      // 5 fps (200 ms frames), no GPU timer
+      const s = toTrial('GPU-A', { v: true }, { cpu: 3 });
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + TRIAL_MS + 400, { cpu: 5, period: 200 });
+      check(
+        'auto/slow: a 5 fps Extreme FAILS at the end of its 3 s window (Ultra, still Auto, a FAIL stored, the line says 5 fps)',
+        s.gov.phase === 'watch' && g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial?.pass === false && s.lines.some((l) => /On Extreme: 5 fps\./.test(l)),
+        `${s.gov.phase} ${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // 1.5 fps (650 ms frames, each one past STALL_MS) on a page that stayed visible, through the
+      // settle and the window
+      const s = toTrial();
+      feed(s.gov, s.clock, 6000, { cpu: 5, gpu: 600, period: 650 });
+      check(
+        'auto/slow: 650 ms frames on a visible page are Extreme’s, not stalls: FAIL inside 6 s',
+        s.gov.phase === 'watch' && g().tier === 'ultra' && g().extremeTrial?.pass === false,
+        `${s.gov.phase} ${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // 6.25 fps with 120 ms CPU frames: a FAIL, and the CPU slip does not then lower ULTRA for the
+      // trial's frames (its rolling window is cleared on the way back)
+      const s = toTrial('GPU-A', { v: true }, { cpu: 3 });
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + TRIAL_MS + 400, { cpu: 120, period: 160 });
+      const after = `${g().tier} ${JSON.stringify(g().extremeTrial ?? null)}`;
+      feed(s.gov, s.clock, 6000, { cpu: 3 });
+      check(
+        'auto/slow: a 120 ms CPU Extreme FAILS, and Ultra is not slipped afterwards for frames it never drew',
+        after.startsWith('ultra') && g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial?.pass === false,
+        `${after} → ${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // the chunks never arrive AND every frame is past STALL_MS: the 15 s deadline still fires
+      const s = toTrial('GPU-A', { v: false });
+      feed(s.gov, s.clock, TRIAL_READY_TIMEOUT_MS + 1300, { cpu: 5, period: 600 });
+      check(
+        'auto/slow: never-ready chunks with 600 ms frames abandon the trial at 15 s: Ultra, still Auto, nothing stored',
+        s.gov.phase === 'watch' && g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial === undefined && s.lines.some((l) => /did not load/.test(l)),
+        `${s.gov.phase} ${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // ONE main-thread hitch in the window is one late frame, not a 48 fps mean: still a PASS
+      const s = toTrial();
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + 1000, { cpu: 5, gpu: 9 });
+      feed(s.gov, s.clock, 600, { cpu: 5, gpu: 9, period: 600 });
+      measure(s, { cpu: 5, gpu: 9 });
+      check('auto/slow: one 600 ms hitch inside the window still PASSES (one late frame of ~145)', g().tier === 'extreme' && g().extremeTrial?.pass === true, `${state()} | ${s.lines.join(' | ')}`);
+    }
+
+    // ── HIGH-REFRESH PANELS: the same GPU work gets the same verdict as on 60 Hz ────────────
+    {
+      const hz = (n: number): number => 1000 / n;
+      const trialOn = (panel: number, f: Frames, base: Frames = { cpu: 3, gpu: 3, period: hz(panel) }) => {
+        const s = toTrial('GPU-A', { v: true }, base);
+        measure(s, f);
+        return s;
+      };
+      // 165 Hz, 11.5 ms of GPU: two vsyncs a frame, one in eight at three (~77 fps). It FAILED with
+      // 12 % late under the old 18 ms floor, and passed on 60 Hz.
+      let s = trialOn(165, { cpu: 5, gpu: 11.5, period: 2 * hz(165), lateEvery: 8, latePeriod: 3 * hz(165) });
+      check('auto/hz: 165 Hz, 11.5 ms GPU (~77 fps) PASSES, as on 60 Hz', g().tier === 'extreme' && g().extremeTrial?.pass === true && Math.abs((g().extremeTrial?.periodMs ?? 0) - hz(165)) < 0.05, `${state()} | ${s.lines.join(' | ')}`);
+      s = trialOn(60, { cpu: 5, gpu: 11.5 });
+      check('auto/hz: ...and the same work on 60 Hz PASSES', g().extremeTrial?.pass === true, state());
+      // 144 Hz, 12 ms (~66 fps): two vsyncs, one in eight at three
+      s = trialOn(144, { cpu: 5, gpu: 12, period: 2 * hz(144), lateEvery: 8, latePeriod: 3 * hz(144) });
+      check('auto/hz: 144 Hz, 12 ms GPU (~66 fps) PASSES', g().tier === 'extreme' && g().extremeTrial?.pass === true, `${state()} | ${s.lines.join(' | ')}`);
+      // 144 Hz with no timer, every other frame at four vsyncs (~43 fps): late frames FAIL it
+      s = trialOn(144, { cpu: 5, period: 3 * hz(144), lateEvery: 2, latePeriod: 4 * hz(144) }, { cpu: 3, period: hz(144) });
+      check('auto/hz: 144 Hz, half the frames at four vsyncs (~41 fps) FAILS on late frames', g().tier === 'ultra' && g().extremeTrial?.pass === false && s.lines.some((l) => /of frames late\.|fps\./.test(l)), `${state()} | ${s.lines.join(' | ')}`);
+      // 75 Hz, no timer, every frame at two vsyncs: 37.5 fps, all of it on time by the vsync grid
+      s = trialOn(75, { cpu: 5, period: 2 * hz(75) }, { cpu: 3, period: hz(75) });
+      check('auto/hz: 75 Hz at a steady 37.5 fps (on time by the grid) FAILS on its pace', g().tier === 'ultra' && g().extremeTrial?.pass === false && s.lines.some((l) => /On Extreme: 3[78] fps\./.test(l)), `${state()} | ${s.lines.join(' | ')}`);
+      // 75 Hz at ~60 fps: three frames at one vsync, one at two
+      s = trialOn(75, { cpu: 5, period: hz(75), lateEvery: 4, latePeriod: 2 * hz(75) }, { cpu: 3, period: hz(75) });
+      check('auto/hz: 75 Hz at ~60 fps (one frame in four at two vsyncs) PASSES', g().tier === 'extreme' && g().extremeTrial?.pass === true, `${state()} | ${s.lines.join(' | ')}`);
+      // the guard on a 165 Hz PASS: Extreme settling at three vsyncs (55 fps) is not late there
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: hz(165) });
+      const o = govOn();
+      feed(o.gov, o.clock, WARMUP_MS + 20, { cpu: 4, period: hz(165) });
+      feed(o.gov, o.clock, 8000, { cpu: 4, period: 3 * hz(165) });
+      check('auto/hz: the guard leaves a 165 Hz Extreme at a steady 55 fps alone', g().tier === 'extreme', state());
+      feed(o.gov, o.clock, 5000, { cpu: 4, period: 3 * hz(165), lateEvery: 2, latePeriod: 5 * hz(165) });
+      check('auto/hz: ...and lowers it when half its frames take five vsyncs (~41 fps)', g().tier === 'ultra' && g().extremeTrial?.pass === false, state());
+    }
+
+    // ── a chunk that FAILED: the column on screen is not the one the verdict would be for ─────
+    {
+      const fx: Fx = { v: false };
+      const s = toTrial('GPU-A', fx);
+      feed(s.gov, s.clock, 1000, { cpu: 5, gpu: 9 });
+      fx.failed = true;
+      feed(s.gov, s.clock, 100, { cpu: 5, gpu: 9 });
+      check(
+        'auto/failed: a chunk that fails while the trial waits ends it: Ultra, still Auto, NOTHING stored',
+        s.gov.phase === 'watch' && g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial === undefined && s.lines.some((l) => /unavailable/.test(l)),
+        `${s.gov.phase} ${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // ...and one that fails mid-window (post dropped while drawing): no PASS for a stripped Extreme
+      const fx: Fx = { v: true };
+      const s = toTrial('GPU-A', fx);
+      feed(s.gov, s.clock, TRIAL_SETTLE_MS + 1500, { cpu: 5, gpu: 3 });
+      fx.failed = true;
+      feed(s.gov, s.clock, TRIAL_MS, { cpu: 5, gpu: 3 });
+      check('auto/failed: a chunk that fails mid-window stores no PASS', g().tier === 'ultra' && g().extremeTrial === undefined, `${state()} | ${s.lines.join(' | ')}`);
+    }
+
+    // ── a verdict is for a SIZE (`ExtremeTrial.mp`, `TRIAL_SIZE_SLACK`) ──────────────────────
+    {
+      check('auto/size: the slack is 1.3×', TRIAL_SIZE_SLACK === 1.3);
+      const pass: ExtremeTrial = { gpu: 'a', pass: true, mp: 4.67 };
+      const fail: ExtremeTrial = { gpu: 'a', pass: false, mp: 8.3 };
+      check(
+        'auto/size: a PASS answers for up to 1.3× its canvas, a FAIL for down to 1 / 1.3 of it, and one with no size (or no size to compare) for any',
+        verdictStands(pass, 6) && !verdictStands(pass, 6.2) && verdictStands(fail, 6.5) && !verdictStands(fail, 6.3) && verdictStands({ gpu: 'a', pass: true }, 8.3) && verdictStands(pass, undefined),
+      );
+      // the trial stores the size it measured, rounded
+      const s = toTrial('GPU-A', { v: true, mp: 4.66556 });
+      measure(s, { cpu: 5, gpu: 9 });
+      check('auto/size: a trial stores the Extreme megapixels it drew (to 0.01)', g().extremeTrial?.pass === true && g().extremeTrial?.mp === 4.67, state());
+      // a PASS at 4.67 MP, and the canvas has grown to 8.3 (a 1440p window): Extreme for the
+      // warm-up (a first guess cannot see the canvas), then Ultra and a fresh trial
+      const fx: Fx = { v: true, mp: 8.3 };
+      const probe: GpuProbe = { renderer: 'GPU-A', vendor: '', adapter: '', memoryGb: 8, cores: 8, dpr: 1, webgl2: true, software: false };
+      check('auto/size: the stored PASS still starts the page on Extreme', applyFirstGuess(probe, '') === 'extreme' && g().tier === 'extreme', state());
+      const big = govOn('GPU-A', fx);
+      feed(big.gov, big.clock, WARMUP_MS + 20, GOOD);
+      check(
+        'auto/size: ...and the warm-up sends a canvas past 1.3× the measured one back to Ultra and a fresh baseline, with a line',
+        g().preset === 'auto' && g().tier === 'ultra' && big.gov.phase === 'baseline' && big.lines.some((l) => /Measuring Extreme again/.test(l)),
+        `${big.gov.phase} ${state()} | ${big.lines.join(' | ')}`,
+      );
+      feed(big.gov, big.clock, BASELINE_MS + 20, GOOD);
+      measure(big, { cpu: 5, gpu: 18 });
+      check('auto/size: the new trial’s verdict replaces the old one, with the new size', g().extremeTrial?.pass === false && g().extremeTrial?.mp === 8.3, state());
+      // a FAIL at 8.3 MP does not answer for a 4.67 MP window: that one is trialled
+      const small = govOn('GPU-A', { v: true, mp: 4.67 });
+      feed(small.gov, small.clock, WARMUP_MS + 20, GOOD);
+      check('auto/size: a FAIL measured on a much bigger canvas does not stop a trial on a smaller one', small.gov.phase === 'baseline', small.gov.phase);
+      small.gov.dispose();
+      // ...but one at about the same size does
+      resetGraphicsToAuto();
+      setGraphicsTier('ultra', true, { gpu: 'GPU-A', pass: false, mp: 4.67 });
+      const same = govOn('GPU-A', { v: true, mp: 4.2 });
+      feed(same.gov, same.clock, 8000, GOOD);
+      check('auto/size: a FAIL at about this size is final until Reset to Auto', same.gov.phase === 'watch' && g().tier === 'ultra', `${same.gov.phase} ${state()}`);
+      // the size field is coerced like the rest
+      const base = { preset: 'auto', tier: 'ultra', settings: GFX_PRESETS.ultra };
+      const mps = [-1, 0, 41, 'x', NaN].map((mp) => coerceGraphicsState({ ...base, extremeTrial: { gpu: 'a', pass: true, mp } }).extremeTrial);
+      check('auto/size: a junk size is dropped and the verdict kept', mps.every((v) => v?.pass === true && v.mp === undefined), JSON.stringify(mps));
+      check('auto/size: a good size is kept', coerceGraphicsState({ ...base, extremeTrial: { gpu: 'a', pass: true, mp: 4.67 } }).extremeTrial?.mp === 4.67);
+      // a context loss on Auto Extreme stores the size it lost the context at
+      const lost = contextLossTrial({ preset: 'auto', tier: 'extreme', settings: { ...GFX_PRESETS.extreme } }, 'GPU-A', 8.3);
+      check('auto/size: a context loss stores its FAIL with the size', lost?.pass === false && lost.mp === 8.3, JSON.stringify(lost ?? null));
+    }
+
+    // ── the GPU is timed only while something reads it (`wantsGpu`) ────────────────────────
+    {
+      const fx: Fx = { v: false };
+      const s = start('ultra', 'GPU-A', fx);
+      const seen: string[] = [];
+      const note = (label: string): void => void seen.push(`${label}:${s.gov.wantsGpu ? 'on' : 'off'}`);
+      note('warmup');
+      feed(s.gov, s.clock, WARMUP_MS + 20, GOOD);
+      note('baseline');
+      feed(s.gov, s.clock, BASELINE_MS + 20, GOOD);
+      note('trial');
+      fx.v = true;
+      measure(s, { cpu: 5, gpu: 18 });
+      note('ultra-watch');
+      check(
+        'auto/gpu: timed in the baseline and the trial, not in the warm-up or on an Auto Ultra afterwards',
+        seen.join(' ') === 'warmup:off baseline:on trial:on ultra-watch:off',
+        seen.join(' '),
+      );
+      resetGraphicsToAuto();
+      setGraphicsTier('extreme', true, { gpu: 'GPU-A', pass: true, periodMs: P60 });
+      const x = govOn();
+      feed(x.gov, x.clock, WARMUP_MS + 20, { cpu: 4, gpu: 9 });
+      const onAutoX = x.gov.wantsGpu;
+      feed(x.gov, x.clock, 4500, { cpu: 4, gpu: 25 });
+      check('auto/gpu: timed on an Auto Extreme (the guard reads it), and not once the guard has lowered it', onAutoX && g().tier === 'ultra' && !x.gov.wantsGpu, `${onAutoX} ${state()}`);
+      resetGraphicsToAuto();
+      setGraphicsTier('low', false);
+      const low = govOn();
+      feed(low.gov, low.clock, 6000, GOOD);
+      const fixed = start('ultra', 'GPU-A', { v: true }, false);
+      feed(fixed.gov, fixed.clock, 6000, GOOD);
+      check('auto/gpu: never timed on a hand-picked Low, or on a fixed-tier scene', !low.gov.wantsGpu && !fixed.gov.wantsGpu);
+    }
+    {
+      // the player picks a column mid-trial: the trial is over and NOTHING is stored
+      const s = toTrial();
+      feed(s.gov, s.clock, 200, { cpu: 5, gpu: 9 });
+      setGraphicsPreset('high');
+      measure(s, { cpu: 5, gpu: 30 });
+      check('auto/trial: a hand pick mid-trial ends it, keeps the pick, and stores nothing', s.gov.phase === 'watch' && g().preset === 'high' && g().extremeTrial === undefined, `${s.gov.phase} ${state()}`);
+    }
+    {
+      // the chunks never arrive
+      const s = toTrial('GPU-A', { v: false });
+      feed(s.gov, s.clock, TRIAL_READY_TIMEOUT_MS + 100, { cpu: 5, gpu: 9 });
+      check(
+        'auto/trial: chunks that never load abandon the trial: Ultra, still Auto, nothing stored (nothing was measured)',
+        s.gov.phase === 'watch' && g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial === undefined && s.lines.some((l) => /did not load/.test(l)),
+        `${state()} | ${s.lines.join(' | ')}`,
+      );
+    }
+    {
+      // the scene is torn down mid-trial (the view went 2D): never leave an unmeasured Extreme
+      const s = toTrial();
+      feed(s.gov, s.clock, 300, { cpu: 5, gpu: 9 });
+      s.gov.dispose();
+      check('auto/trial: a scene disposed mid-trial puts Auto back on Ultra and stores nothing', g().preset === 'auto' && g().tier === 'ultra' && g().extremeTrial === undefined, state());
+    }
+    {
+      // decide=false (the replay export, the gallery) never baselines, trials or writes
+      const s = start('ultra', 'GPU-A', { v: true }, false);
+      feed(s.gov, s.clock, 12000, GOOD);
+      check('auto/trial: a decide=false governor never trials, however fast', s.gov.phase === 'watch' && g().tier === 'ultra' && g().extremeTrial === undefined, `${s.gov.phase} ${state()}`);
+    }
+    {
+      // a hand-picked Ultra is never trialled
+      resetGraphicsToAuto();
+      setGraphicsTier('ultra', false);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t, undefined, true, { gpu: 'GPU-A' });
+      feed(gov, clock, 12000, GOOD);
+      check('auto/trial: a hand-picked Ultra is never trialled', gov.phase === 'watch' && g().preset === 'ultra' && g().tier === 'ultra', `${gov.phase} ${state()}`);
+    }
+    {
+      // a lost context: Auto on Extreme stores a FAIL; a hand pick and a lower tier store nothing
+      const autoX: GraphicsState = { preset: 'auto', tier: 'extreme', settings: { ...GFX_PRESETS.extreme }, extremeTrial: { gpu: 'GPU-A', pass: true, periodMs: 7 } };
+      const v = contextLossTrial(autoX, 'GPU-A');
+      check(
+        'auto/context loss: Auto on Extreme leaves a FAIL for this GPU (keeping the measured period); a hand pick or a lower tier leaves the stored verdict alone',
+        v?.pass === false && v.gpu === 'GPU-A' && v.periodMs === 7 &&
+          contextLossTrial({ ...autoX, preset: 'extreme' }, 'GPU-A') === undefined &&
+          contextLossTrial({ ...autoX, tier: 'ultra' }, 'GPU-A') === undefined,
+        JSON.stringify(v ?? null),
+      );
+    }
+    resetGraphicsToAuto();
+
+    // ── the scene's feed, read as source ────────────────────────────────────────────────────
+    {
+      const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+      const body = sceneSrc.slice(sceneSrc.indexOf('  render(world: World, frame: SceneFrame): void {'));
+      const at = (s: string): number => body.indexOf(s);
+      const order = [
+        at('const timeGpu = this.governor.wantsGpu;'),
+        at('if (timeGpu && !this.gpuTimer) this.gpuTimer = createGpuTimer('),
+        at('this.gpuTimer?.poll(this.gpuSink);'),
+        at('if (timeGpu) this.gpuTimer?.begin();'),
+        at('this.renderer.render(this.scene, camera);'),
+        at('this.renderMinimap(frame);'),
+        at('this.gpuTimer?.end();'),
+        at('this.governor.sample(cost);'),
+      ];
+      check(
+        'auto/scene: render() makes the timer only once the governor wants GPU time, polls old results, opens a query (only while wanted) before the scene pass and closes it after the minimap, before the governor is fed',
+        order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])),
+        order.join(' < '),
+      );
+      check(
+        'auto/scene: no GPU timer is made at construction (Low to High, a hand pick and a fixed-tier scene never make one)',
+        !/this\.gpuTimer = this\.fixedTier/.test(sceneSrc) &&
+          (sceneSrc.match(/createGpuTimer\(/g) ?? []).length === 1 &&
+          sceneSrc.includes('if (timeGpu && !this.gpuTimer) this.gpuTimer = createGpuTimer('),
+      );
+      check(
+        'auto/scene: the governor is told the GPU, the effects state, the page hides and the Extreme canvas size',
+        /gpu: this\.gpuName,\s*effects: \(\) => this\.effectsState\(\),\s*hides: \(\) => this\.pageHides,\s*pixels: \(\) => this\.extremeMp\(\),/.test(sceneSrc) &&
+          /visibilityState === 'hidden'\) this\.pageHides\+\+/.test(sceneSrc),
+      );
+      check(
+        'auto/scene: a chunk that failed reads as failed, not ready',
+        /if \(\(post && this\.postFailed\) \|\| \(surf && this\.surfacesFailed\)\) return 'failed';/.test(sceneSrc),
+      );
+      check(
+        'auto/scene: a context loss stores the Extreme verdict, with its size, through contextLossTrial',
+        sceneSrc.includes("setGraphicsTier(lowered, g.preset === 'auto', contextLossTrial(g, this.gpuName, this.extremeMp()))"),
+      );
+      const ui = readFileSync(join(root, 'src', 'ui', 'GraphicsSection.tsx'), 'utf8').replace(/\s+/g, ' ');
+      check(
+        'auto/ui: the Graphics section no longer says Extreme is a hand pick only, and the Auto row shows the tier it is on',
+        !/hand pick only/.test(ui) && /gfx\.preset === 'auto' \? `on \$\{GFX_PRESET_LABEL\[gfx\.tier\]\}`/.test(ui),
+      );
+      check(
+        'auto/ui: ...and it says a failed Extreme is remembered until Reset to Auto',
+        /If Extreme falls behind, Auto goes back to Ultra and stays there on this GPU until you press Reset to Auto\./.test(ui),
+      );
+    }
+
+    // ── the GPU timer, against a fake WebGL 2 context ───────────────────────────────────────
+    {
+      const AVAILABLE = 0x8867;
+      const RESULT = 0x8866;
+      const ext = { TIME_ELAPSED_EXT: 0x88bf, GPU_DISJOINT_EXT: 0x8fbb };
+      interface FakeQ { id: number; endedAt: number; ns: number }
+      const fake = (supported: boolean) => {
+        const st = { frame: 0, created: 0, deleted: 0, flushes: 0, lost: false, disjoint: false, active: null as FakeQ | null, begun: 0, nsNext: 5e6 };
+        const gl = {
+          QUERY_RESULT_AVAILABLE: AVAILABLE,
+          QUERY_RESULT: RESULT,
+          getExtension: (n: string) => (supported && n === 'EXT_disjoint_timer_query_webgl2' ? ext : null),
+          createQuery: (): FakeQ => ({ id: st.created++, endedAt: -1, ns: 0 }),
+          deleteQuery: () => void st.deleted++,
+          flush: () => void st.flushes++,
+          isContextLost: () => st.lost,
+          beginQuery: (_t: number, q: FakeQ) => {
+            if (st.active) throw new Error('nested query');
+            st.active = q;
+            st.begun++;
+          },
+          endQuery: () => {
+            if (!st.active) throw new Error('no active query');
+            st.active.endedAt = st.frame;
+            st.active.ns = st.nsNext;
+            st.active = null;
+          },
+          getParameter: (p: number) => {
+            if (p !== ext.GPU_DISJOINT_EXT) return null;
+            const d = st.disjoint;
+            st.disjoint = false; // reading the flag clears it
+            return d;
+          },
+          // a result lands two frames after its query closed
+          getQueryParameter: (q: FakeQ, p: number) => (p === AVAILABLE ? q.endedAt >= 0 && st.frame - q.endedAt >= 2 : q.ns),
+        };
+        return { gl: gl as unknown as WebGL2RenderingContext, st };
+      };
+      {
+        const { gl, st } = fake(false);
+        const t = createGpuTimer(gl);
+        let got = 0;
+        t.begin();
+        t.end();
+        t.poll(() => got++);
+        check('gpu timer: without the extension it reports unsupported and every call is a no-op', !t.supported && got === 0 && st.created === 0 && st.begun === 0);
+      }
+      {
+        const { gl, st } = fake(true);
+        const t = createGpuTimer(gl);
+        const got: number[] = [];
+        const sink = (ms: number): void => void got.push(ms);
+        for (let f = 0; f < 1000; f++) {
+          st.frame = f;
+          st.nsNext = (5 + (f % 3)) * 1e6;
+          t.poll(sink);
+          t.begin();
+          t.end();
+        }
+        check(
+          'gpu timer: a thousand frames reuse the same four queries (nothing created per frame), flush once each (else the query times the next frame’s wait), and hand back every result two frames late, in ms',
+          t.supported && st.created === GPU_TIMER_SLOTS && GPU_TIMER_SLOTS === 4 && got.length === 998 && got[0] === 5 && got[1] === 6 && got[2] === 7 && st.flushes === 1000,
+          `created ${st.created}, results ${got.length}, first ${got.slice(0, 3).join(',')}`,
+        );
+        // the GPU falls behind: with every slot pending, a frame is simply not timed
+        const before = st.begun;
+        for (let f = 1000; f < 1010; f++) {
+          st.frame = 1000; // no time passes on the GPU: nothing completes
+          t.poll(sink);
+          t.begin();
+          t.end();
+        }
+        check('gpu timer: with all four slots in flight it skips the frame instead of nesting or allocating', st.begun - before === 3 && st.created === GPU_TIMER_SLOTS, String(st.begun - before));
+        // a disjoint event drops everything in flight
+        const n0 = got.length;
+        st.disjoint = true;
+        st.frame = 1100;
+        t.poll(sink);
+        check('gpu timer: GPU_DISJOINT_EXT drops every result in flight', got.length === n0, String(got.length - n0));
+        st.frame = 1101;
+        t.begin();
+        t.end();
+        st.frame = 1103;
+        t.poll(sink);
+        check('gpu timer: ...and timing resumes on the next frame', got.length === n0 + 1, String(got.length - n0));
+        // a lost context: no calls, no throw, nothing handed out
+        st.lost = true;
+        const b2 = st.begun;
+        let threw = false;
+        try {
+          t.begin();
+          t.end();
+          st.frame = 1200;
+          t.poll(sink);
+          t.dispose();
+        } catch {
+          threw = true;
+        }
+        check('gpu timer: a lost context makes every call a quiet no-op', !threw && st.begun === b2 && got.length === n0 + 1);
+      }
+      {
+        // the per-frame methods, read as source: no allocation syntax in begin/end/poll
+        const src = readFileSync(join(SCENE_DIR, 'renderGpuTimer.ts'), 'utf8').replace(/\r\n/g, '\n');
+        const body = (name: string): string => {
+          const i = src.indexOf(`    ${name}(`);
+          return i < 0 ? '' : src.slice(i, src.indexOf('\n    },', i));
+        };
+        const perFrame = ['begin', 'end', 'poll'].map(body);
+        const alloc = perFrame.filter((b) => b === '' || /\bnew\s|=>|\.push\(|\.slice\(|\.map\(|\.filter\(|`|=\s*\[|=\s*\{|\(\s*\{/.test(b.slice(b.indexOf('{') + 1)));
+        check('gpu timer: begin/end/poll contain no allocation (no new, closure, array or object literal, template, push/slice/map/filter)', alloc.length === 0, alloc.map((b) => b.slice(0, 40)).join(' | '));
+        check('gpu timer: the file is a render* file (it may touch GL) and imports nothing', !/^import /m.test(src));
+      }
+    }
   }
 
   // ---- the environments, and that every fetched one is credited ---------------------------
@@ -4877,7 +5785,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       check(
         'the governor is created with the fixed-tier decide flag, so a replay export never rewrites the device preset',
-        sceneSrc.includes('createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier)'),
+        sceneSrc.includes('createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier, {'),
       );
       check(
         'a failed post chunk, or a pass that throws mid-frame, drops back to the plain picture instead of throwing onward',
