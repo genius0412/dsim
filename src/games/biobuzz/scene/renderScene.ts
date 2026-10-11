@@ -382,7 +382,7 @@ class BiobuzzScene implements GameScene {
       watchContextLoss(canvas, () => {
         /**
          * EXTREME-CLASS SETTINGS DO NOT GET TO LOSE THE CONTEXT TWICE. A GPU that cannot hold
-         * them (the post chain's targets, a 4096 shadow map, a supersampled 8.3 MP target) loses
+         * them (the post chain's targets, a 4096 shadow map, a supersampled 12.4 MP target) loses
          * the context, the player reloads, the stored settings are unchanged, and it is lost
          * again: a loop that ends in 2D every time. `contextLossTier` says which column to drop
          * to, asked of the SETTINGS. A fixed-tier scene (export, gallery) never touches the
@@ -392,7 +392,9 @@ class BiobuzzScene implements GameScene {
         if (!this.fixedTier) {
           try {
             const g = getGraphics();
-            lowered = contextLossTier(g);
+            // what the scene was drawing: the renderer keeps its size in JS, so this reads on a dead context
+            const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+            lowered = contextLossTier(g, buf.x * buf.y);
             // an Auto device that lost the context ON Extreme also stores a FAILED verdict, so
             // the next match does not trial its way back into the same loss
             if (lowered) setGraphicsTier(lowered, g.preset === 'auto', contextLossTrial(g, this.gpuName, this.extremeMp()));

@@ -716,7 +716,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   note; this is a no-op the day `convert.py` orients its tessellation before merging.
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
   `graphics/settings.ts` is the model — the nineteen dials (§4.4's sixteen plus
-  `elementDetail`, below, `bloom`, and `materials`), the five preset columns, the 0.6/1.2/2.2/4.0/8.3 MP pixel budgets,
+  `elementDetail`, below, `bloom`, and `materials`), the five preset columns, the 0.6/1.2/3.7/8.3/12.4 MP pixel budgets (High and up raised for HiDPI panels on 2026-10-11, below),
   `localStorage['decodesim.graphics']` with field-by-field coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the Extreme trial →
   the in-match slip rule and Extreme guard) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
   this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
@@ -725,7 +725,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   needs the next 3D view (it picks the GLB) and SMAA is **not offered on this build**
   (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
   - ⚠️ **EXTREME (2026-09-27) IS A HAND PICK OR AN AUTO TRIAL'S PASS, AND ITS EFFECTS ARE A LAZY CHUNK.** The fifth column:
-    150 % render scale under an 8.3 MP budget, MSAA 4x, a 4096 VSM map (`shadows: 'max'`, a value
+    150 % render scale under a 12.4 MP budget (8.3 until 2026-10-11), MSAA 4x, a 4096 VSM map (`shadows: 'max'`, a value
     of its own so a stored `soft` still means 2048), ambient occlusion and bloom. The rules:
     - **Auto reaches it only through a measured trial** (2026-10-10, block below). The first
       guess and the warm-up's up-step still stop at Ultra (`GFX_AUTO_STEP_MAX_TIER`): the warm-up
@@ -822,7 +822,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     - **The verdict is stored per GPU and per size**: `extremeTrial: { gpu, pass, periodMs, mp }` in
       the graphics blob, coerced field by field (`coerceExtremeTrial`). `mp` is the megapixels the
       EXTREME column draws at the canvas's size when the verdict is written (the scene's
-      `extremeMp`: 150 % under the 8.3 MP budget). A PASS answers for a canvas up to 1.3× that, a
+      `extremeMp`: 150 % under the 12.4 MP budget). A PASS answers for a canvas up to 1.3× that, a
       FAIL for one down to 1 / 1.3 (`TRIAL_SIZE_SLACK`, `verdictStands`); outside that Auto
       measures again. Without it a PASS measured in a 1080p window (about 4.7 MP) was reused on a
       1440p or 4K one (8.3 MP, 1.8× the pixels). A FAIL at about this size is not retried until
@@ -876,6 +876,39 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     - **UI**: the preset row's hint names the column Auto is on ("on Ultra"), and the copy says
       Auto moves to Extreme only after timing it on this GPU, and that a failed Extreme stays on
       Ultra until Reset to Auto.
+  - ⚠️ **HIGH AND UP DRAW AT LEAST THE PANEL'S OWN PIXELS (owner, 2026-10-11: "Every straight line,
+    in the field especially, is zigzaggy"; shown three crops, they picked the stair-stepped edges,
+    not the CAD tile teeth, wall notches or hive tray tabs).** The owner's display runs at DPR ~2.
+    `GFX_PIXEL_BUDGET` was 2.2 / 4.0 / 8.3 MP for High / Ultra / Extreme, sized for DPR 1, so at
+    1920 × 1080 CSS on a 2× panel High drew at a ratio of 1.03 and Ultra at 1.39 and the browser
+    stretched the frame 1.94× / 1.44×: every MSAA edge became 2-pixel stairs. Now 3.7 / 8.3 / 12.4:
+    Ultra is native on any 4K panel, High native to 2560 × 1440 at DPR 1 (1.34 on a 2× 1080p
+    window), Extreme keeps its full 150 % to 1440p and 1.22× per axis past native on 4K. Extreme
+    is NOT 2 × 4K: the 4× half-float MSAA colour + depth + resolve is ~56 bytes a pixel, so
+    16.6 MP would be ~0.9 GB before the post chain. Low and Medium are unchanged. A lost context
+    while drawing past a column's OLD pixel count steps one column down (`GFX_LOSS_SAFE_PX`,
+    `contextLossTier(g, backbufferPx)`), so Ultra on a 4K panel cannot loop into 2D. The RENDER
+    lane's `hidpiBudgetChecks` pins the ratios and the loss rule.
+    - ⚠️ **PLAIN OFFSCREEN ELECTRON NEVER SHOWS THIS.** Inside an offscreen window
+      `window.devicePixelRatio` is 1 whatever `force-device-scale-factor` says, so every capture
+      drew at ratio 1 and looked fine. `webContents.enableDeviceEmulation({ deviceScaleFactor: 2,
+      ... })` is what makes the PAGE see 2.
+    - ⚠️ **THE OTHER CAUSE IS KNOWN AND DELIBERATELY NOT SHIPPED: THE MSAA RESOLVE HAPPENS IN HDR.**
+      The scene target is linear half-float and tone mapping happens in the blit, so the hardware
+      resolve averages HDR samples; a dark rail half-covering a lit white panel (1.2–1.7 raw ×
+      exposure) tone-maps to nearly the panel's value and the edge keeps a hard step. Measured on
+      an RTX 4070 Ti SUPER with a canvas readback (share of high-contrast edge pixels holding an
+      in-between value): AA off 0.08, MSAA 4x 0.37, MSAA 4x with tone mapping moved into the
+      materials 0.47 — but that turned the clear panels grey (their blend depends on the HDR value
+      under them). Branch `gfx/edge-aa` (not merged) built a correct version: opaque samples
+      stored compressed c/(1+2·exposure·c) through three's CustomToneMapping slot (applied only
+      while the target is flagged `isXRRenderTarget`), decoded back, and glass re-solved per
+      fragment in the compressed space — four render calls, +16 bytes a pixel, edge score
+      0.31 → 0.36 on the events hall. It also left faint white dots along hive tray rims and
+      skins where one transparent layer crosses another (`scratch/r2/cap/events-hive-cmp.png` in
+      that worktree): a new jagged artifact, which is the thing the owner reported. Not merged;
+      the budgets fix the owner's own screen. Revisit only with a design that leaves glass edges
+      clean.
   - **PHYSICAL MATERIALS (2026-09-27) is a lazy chunk, reached from exactly two places.**
     `scene/renderSurfaces.ts` (+ its `renderSurface*.ts` helpers) is imported only as
     `import('./renderSurfaces')`, from `renderScene.ts` and `renderPreview.ts`. Standard mode is

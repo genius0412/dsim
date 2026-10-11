@@ -15,10 +15,10 @@
  *   • `preset` is what the PICKER shows: one of the five named columns, `auto`, or `custom`
  *     the moment any single setting differs from the column it claims.
  *   • `tier` is one of the five columns ALWAYS, even under `custom`/`auto`, because the PIXEL
- *     BUDGET (§4.4's 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP) is a property of the preset COLUMN and not of
+ *     BUDGET (0.6 / 1.2 / 3.7 / 8.3 / 12.4 MP) is a property of the preset COLUMN and not of
  *     any one setting — there is no setting it could be derived from. It is the column the
  *     current settings were last branched from, so a player who picks High and then turns
- *     shadows off keeps High's 2.2 MP backbuffer cap, which is what they asked for.
+ *     shadows off keeps High's 3.7 MP backbuffer cap, which is what they asked for.
  * A fourth, optional field (2026-10-10) is not a setting at all: `extremeTrial`, Auto's stored
  * Extreme verdict for this device (`ExtremeTrial`).
  *
@@ -406,16 +406,27 @@ export type GraphicsPreset = 'auto' | GraphicsTier | 'custom';
  * pixel ratio; this caps the product, so a 200 % scale on a 4K panel cannot ask a laptop iGPU
  * for 33 million pixels a frame. Read by `effectivePixelRatio` below, which is the only
  * consumer — the renderer never does this arithmetic itself.
+ *
+ * ⚠️ HIGH AND UP ARE SIZED TO DRAW AT LEAST THE PANEL'S OWN PIXELS (2026-10-11, owner: "Every
+ * straight line, in the field especially, is zigzaggy"). They were 2.2 / 4.0 / 8.3, sized for a
+ * DPR-1 screen. On a 2× panel at 1920 × 1080 CSS (a 4K monitor at 200 %, the owner's case) that
+ * drew High at a ratio of 1.03 and Ultra at 1.39, and the browser stretched the frame 1.94× and
+ * 1.44× to the panel, so every MSAA edge became a stair of 2-pixel steps. Now:
+ *   High    3.7 MP  native up to 2560 × 1440 at DPR 1; 1.34 at 1920 × 1080 DPR 2
+ *   Ultra   8.3 MP  native up to a 4K panel (3840 × 2160 at DPR 1, or 1920 × 1080 at DPR 2)
+ *   Extreme 12.4 MP its full 150 % up to 1440p at DPR 1; 1.22× per axis past native on a 4K panel
+ * Extreme is NOT 2 × 4K: the 4× half-float MSAA target, its depth and resolve cost about 56 bytes a
+ * pixel, so 16.6 MP would be ~0.9 GB before the post chain, for 1.41× instead of 1.22× past
+ * native. Low and Medium keep 0.6 and 1.2: they are for machines that could not hold the frame
+ * rate, where a soft picture is the trade they are making. A lost context past the old counts
+ * steps a column down (`contextLossTier`, `GFX_LOSS_SAFE_PX`).
  */
 export const GFX_PIXEL_BUDGET: Record<GraphicsTier, number> = {
   low: 0.6e6,
   medium: 1.2e6,
-  high: 2.2e6,
-  ultra: 4.0e6,
-  // a 4K UHD frame (3840 × 2160). Extreme renders at 150 %, so this is what lets a 1080p window
-  // supersample at all (1.5² × 2.07 MP = 4.7 MP, past Ultra's 4.0) and is still a ceiling on a
-  // HiDPI 4K panel, where 150 % of the device ratio would ask for 18 MP.
-  extreme: 8.3e6,
+  high: 3.7e6,
+  ultra: 8.3e6,
+  extreme: 12.4e6,
 };
 
 /**
@@ -518,7 +529,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     perfOverlay: 'off',
   },
   extreme: {
-    // SUPERSAMPLED: 150 % of the device ratio, capped by the 8.3 MP budget above. On the thin
+    // SUPERSAMPLED: 150 % of the device ratio, capped by the 12.4 MP budget above. On the thin
     // straight edges this field is made of (tape, frame rails, the seam teeth) that is the one
     // AA step past MSAA 4x that is visible, and it is why SMAA is still not offered.
     renderScale: 150,
@@ -622,7 +633,7 @@ export function coerceExtremeTrial(raw: unknown): ExtremeTrial | undefined {
   const out: ExtremeTrial = { gpu: o.gpu, pass: o.pass };
   // a frame period between 500 Hz and 10 Hz; anything else is junk and the guard uses its floor
   if (typeof o.periodMs === 'number' && Number.isFinite(o.periodMs) && o.periodMs >= 2 && o.periodMs <= 100) out.periodMs = o.periodMs;
-  // a canvas size up to 40 MP (8.3 is Extreme's own budget); junk leaves the verdict size-free
+  // a canvas size up to 40 MP (12.4 is Extreme's own budget); junk leaves the verdict size-free
   if (typeof o.mp === 'number' && Number.isFinite(o.mp) && o.mp > 0 && o.mp <= 40) out.mp = o.mp;
   return out;
 }
@@ -954,23 +965,44 @@ export function wantsSurfaces(s: GraphicsSettings): boolean {
 }
 
 /**
+ * The backbuffer each column drew before the 2026-10-11 budgets: the pixel counts that shipped
+ * without a reported context-loss loop. See `contextLossTier`.
+ */
+export const GFX_LOSS_SAFE_PX: Record<GraphicsTier, number> = {
+  low: 0.6e6,
+  medium: 1.2e6,
+  high: 2.2e6,
+  ultra: 4.0e6,
+  extreme: 8.3e6,
+};
+
+/**
  * WHERE A LOST WEBGL CONTEXT LEAVES THE STORED PRESET: the tier to drop to, or `null` to leave it.
  *
  * A GPU that cannot hold Extreme-class settings (the post chain's targets, the 4096 shadow map,
- * Extreme's 8.3 MP budget at a render scale past 100 %) loses the context, the scene falls back to 2D, and the next reload
+ * Extreme's 12.4 MP budget at a render scale past 100 %) loses the context, the scene falls back to 2D, and the next reload
  * brings the same settings back and loses it again. So a state carrying any of them drops to
  * its own column with them gone: Extreme to Ultra, a Custom to the column it branched from
  * (never ABOVE Ultra, and never above where it was). It asks the SETTINGS, like `wantsPost`: a
  * Custom branched from Ultra with AO and Max shadows turned on is exactly as heavy as Extreme,
  * and a Custom branched from Extreme with all three turned back off is not heavy at all, so a
  * driver reset must not cost that player their FOV and frame cap.
+ *
+ * ⚠️ AND A COLUMN DRAWING MORE PIXELS THAN IT USED TO DROPS ONE COLUMN (2026-10-11). The HiDPI
+ * budgets let Ultra draw 8.3 MP on a 4K panel (old Extreme's target size) and High 3.7 MP where it
+ * drew 2.2. Neither carries an Extreme-class setting, so without this a GPU that loses the context
+ * at Ultra on a 4K panel reloads into the same settings and loses it again. `backbufferPx` is what
+ * the scene was drawing at the loss; past its column's `GFX_LOSS_SAFE_PX` it steps one column down
+ * (Ultra to High, High to Medium), and a second loss steps again while it is still past it.
  */
-export function contextLossTier(g: GraphicsState): GraphicsTier | null {
+export function contextLossTier(g: GraphicsState, backbufferPx = 0): GraphicsTier | null {
   const s = g.settings;
   // Extreme's budget only costs memory when something asks past 100 % of the device ratio
   const bigBackbuffer = g.tier === 'extreme' && s.renderScale > 100;
-  if (!wantsPost(s) && s.shadows !== 'max' && !bigBackbuffer) return null;
-  return minTier(g.tier, GFX_AUTO_STEP_MAX_TIER);
+  if (wantsPost(s) || s.shadows === 'max' || bigBackbuffer) return minTier(g.tier, GFX_AUTO_STEP_MAX_TIER);
+  const i = GFX_TIERS.indexOf(g.tier);
+  if (i > 0 && backbufferPx > GFX_LOSS_SAFE_PX[g.tier] * 1.001) return GFX_TIERS[i - 1];
+  return null;
 }
 
 /** how many multisamples a render target needs for `aa`; 0 means render straight to the

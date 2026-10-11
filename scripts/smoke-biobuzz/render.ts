@@ -1912,6 +1912,7 @@ export function renderChecks(check: Check): void {
   fixedShooterChecks(check);
   photoVenueChecks(check);
   movedDefaultChecks(check);
+  hidpiBudgetChecks(check);
 }
 
 /**
@@ -5763,9 +5764,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       'the budgets are the spec table\u2019s own five numbers',
       GFX_PIXEL_BUDGET.low === 0.6e6 &&
         GFX_PIXEL_BUDGET.medium === 1.2e6 &&
-        GFX_PIXEL_BUDGET.high === 2.2e6 &&
-        GFX_PIXEL_BUDGET.ultra === 4.0e6 &&
-        GFX_PIXEL_BUDGET.extreme === 8.3e6,
+        GFX_PIXEL_BUDGET.high === 3.7e6 &&
+        GFX_PIXEL_BUDGET.ultra === 8.3e6 &&
+        GFX_PIXEL_BUDGET.extreme === 12.4e6,
     );
     check('Extreme\u2019s budget sits above Ultra\u2019s (it is the tier meant to ask for more, not just look different)', GFX_PIXEL_BUDGET.extreme > GFX_PIXEL_BUDGET.ultra);
     check('Extreme renders at 150 %', GFX_PRESETS.extreme.renderScale === 150);
@@ -7172,7 +7173,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       check(
         'a context loss asks contextLossTier (the settings), not the Extreme label',
-        sceneSrc.includes('lowered = contextLossTier(g);') && !sceneSrc.includes("g.tier === 'extreme'"),
+        sceneSrc.includes('lowered = contextLossTier(g, buf.x * buf.y);') && !sceneSrc.includes("g.tier === 'extreme'"),
       );
       check(
         'a post pass that throws puts back what the passes change (override material, hidden glass, background, autoClear)',
@@ -15028,4 +15029,26 @@ function movedDefaultChecks(check: Check): void {
     'moved defaults: every write stamps the revision, so the migration runs once',
     /localStorage\.setItem\(GRAPHICS_KEY, JSON\.stringify\(\{ \.\.\.next, rev: GFX_STATE_REV \}\)\)/.test(settingsSrc),
   );
+}
+
+/**
+ * HIGH AND UP DRAW AT LEAST THE PANEL'S OWN PIXELS (owner, 2026-10-11: "Every straight line, in
+ * the field especially, is zigzaggy"). On a 2x panel the old budgets drew High at 1.03 and Ultra
+ * at 1.39 and the browser stretched the frame; a lost context past the old counts steps down.
+ */
+function hidpiBudgetChecks(check: Check): void {
+  const pr = (t: GraphicsTier, w: number, h: number, dpr: number) => effectivePixelRatio({ ...GFX_PRESETS[t] }, t, w, h, dpr);
+  check('hidpi: Ultra is native on a 4K panel at 200 % (1920 x 1080 CSS, DPR 2)', Math.abs(pr('ultra', 1920, 1080, 2) - 2) < 0.01, String(pr('ultra', 1920, 1080, 2)));
+  check('hidpi: Ultra is native on a 4K panel at 100 %', Math.abs(pr('ultra', 3840, 2160, 1) - 1) < 0.01, String(pr('ultra', 3840, 2160, 1)));
+  check('hidpi: High is native at 2560 x 1440, DPR 1', Math.abs(pr('high', 2560, 1440, 1) - 1) < 0.01, String(pr('high', 2560, 1440, 1)));
+  check('hidpi: High draws more than before on a 2x panel (was 1.03)', pr('high', 1920, 1080, 2) > 1.3, String(pr('high', 1920, 1080, 2)));
+  check('hidpi: Extreme keeps its full 150 % at 1440p, DPR 1', Math.abs(pr('extreme', 2560, 1440, 1) - 1.5) < 0.01, String(pr('extreme', 2560, 1440, 1)));
+  check('hidpi: Extreme still supersamples past native on a 4K panel at 200 %', pr('extreme', 1920, 1080, 2) > 2.2, String(pr('extreme', 1920, 1080, 2)));
+  check('hidpi: Low and Medium keep their old caps (0.6, 1.2 MP)', GFX_PIXEL_BUDGET.low === 0.6e6 && GFX_PIXEL_BUDGET.medium === 1.2e6);
+  const g = (t: GraphicsTier): GraphicsState => ({ preset: t, tier: t, settings: { ...GFX_PRESETS[t] } });
+  check('hidpi loss: Ultra past its old 4.0 MP steps down to High', contextLossTier(g('ultra'), 8.29e6) === 'high', String(contextLossTier(g('ultra'), 8.29e6)));
+  check('hidpi loss: Ultra inside its old 4.0 MP is left alone', contextLossTier(g('ultra'), 3.9e6) === null, String(contextLossTier(g('ultra'), 3.9e6)));
+  check('hidpi loss: High past its old 2.2 MP steps down to Medium', contextLossTier(g('high'), 3.6e6) === 'medium', String(contextLossTier(g('high'), 3.6e6)));
+  check('hidpi loss: Extreme still drops to Ultra whatever it drew', contextLossTier(g('extreme'), 1e6) === 'ultra', String(contextLossTier(g('extreme'), 1e6)));
+  check('hidpi loss: Low never steps below Low', contextLossTier(g('low'), 9e6) === null, String(contextLossTier(g('low'), 9e6)));
 }

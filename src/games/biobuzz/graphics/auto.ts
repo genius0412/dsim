@@ -338,8 +338,8 @@ export const TRIAL_LATE_MAX = 0.05;
 /**
  * WHAT EXTREME COSTS ON THE GPU, AS A MULTIPLE OF ULTRA, as the entry gate applies it to Ultra's
  * GPU p95. From what the column adds:
- *   • 150 % render scale: 1.5² = 2.25× the pixels at 1080p and 1440p, 2.07× where the 8.3 MP
- *     budget caps it against Ultra's 4.0 MP;
+ *   • 150 % render scale: 1.5² = 2.25× the pixels at 1080p and 1440p, 1.5× on a 4K panel, where
+ *     the 12.4 MP budget caps it against Ultra's 8.3 MP;
  *   • on those pixels, GTAO's G-buffer pass and its half-resolution AO + denoise, and the
  *     physical twins' heavier shading;
  *   • the 4096 VSM map (4× the texels, 16 blur taps for 8).
@@ -432,7 +432,7 @@ export function lateThreshold(periodMs: number): number {
 /**
  * A VERDICT IS FOR A SIZE. The trial times whatever canvas exists at the time, and Extreme's
  * cost is its pixels: a PASS measured in a 1080p window (about 4.7 MP at 150 %) says little about
- * a 1440p or 4K one, which the 8.3 MP budget lets reach 1.8× that. So the verdict stores the
+ * a 1440p one (8.3 MP, 1.8× that) or a 4K panel (12.4 MP, the budget, 2.6×). So the verdict stores the
  * megapixels the Extreme column drew (`ExtremeTrial.mp`), a PASS covers a canvas up to this many
  * times bigger, and a FAIL one down to this many times smaller. Outside that, Auto measures again.
  * 1.3 lets a window move between maximised and full screen without a new trial.

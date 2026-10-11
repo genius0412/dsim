@@ -413,7 +413,7 @@ One preset picker and every setting under it; changing a setting switches the pr
 
 | setting | values | Low | Medium | High | Ultra | Extreme |
 |---|---|---|---|---|---|---|
-| Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP) | 75 | 100 | 100 | 100 | 150 |
+| Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 3.7 / 8.3 / 12.4 MP since 2026-10-11; was 2.2 / 4.0 / 8.3 for High and up) | 75 | 100 | 100 | 100 | 150 |
 | Max frame rate | 30 / 60 / 120 / display | 60 | display | display | display | display |
 | Anti-aliasing | off / MSAA 2x / MSAA 4x | off | MSAA 2x | MSAA 4x | MSAA 4x | MSAA 4x |
 | Shadows | off / low 1024 / high 2048 / soft / max 4096 | off | low | high | soft | max |
@@ -723,7 +723,7 @@ until then); confirm the pitch-and-roll upgrade date after the yaw-only game is 
 | `BB3_HEIGHT_MIN/DEFAULT/MAX` | 12 / 18 / 29 in | rules |
 | `BB3_MECH_Z` turret/dumper/tube | 14 / 12 / 10 in | APPROX |
 | `PREDICT_ELEMENT_RADIUS` | 36 in | APPROX |
-| `GFX_PIXEL_BUDGET` Low/Medium/High/Ultra/Extreme | 0.6 / 1.2 / 2.2 / 4.0 / 8.3 MP | budget |
+| `GFX_PIXEL_BUDGET` Low/Medium/High/Ultra/Extreme | 0.6 / 1.2 / 3.7 / 8.3 / 12.4 MP (HiDPI, 2026-10-11) | budget |
 | `GFX_WARMUP_S`, `GFX_STEP_DOWN_P95_MS`, `GFX_STEP_UP_P95_MS`, `GFX_SLIP_P95_MS` | 2 s, 16.7, 6, 25 | APPROX |
 | `BB3_EYE_DEFAULT/MIN/MAX`, `BB3_DRIVER_SETBACK`, `BB3_CAM_FOV` | 62/44/72 in, 12 in, 70° | APPROX |
 | budgets | step 1.5 ms; cores/room 0.10; snapshot 10,000 B; Full reconcile 8 ms; Light 1 ms; renderer 250 KB gz; main +10 KB gz; field GLB 600 / 250 KB br | this document |
