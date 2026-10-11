@@ -124,7 +124,7 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   same reasoning as `combos`: an older client ignores it and plays the main map. An overridable
   action PRESENT in a game's override is **DESYNCED** there; ABSENT inherits main, and "sync back"
   is the deletion of the entry. `padButtons` and `padCombos` for one action are ONE UNIT. Stick
-  role, deadzone, curve, trigger threshold and the combo wait stay GLOBAL.
+  role, deadzone, both curves, trigger threshold and the combo wait stay GLOBAL.
   ⚠️ **THE MIGRATION (2026-09-22).** `perGame` used to take an override of ANY action a game
   used, so every season scope listed the drive keys and stick sliders again with SYNCED beside
   each (owner: "Shared settings like drivetrain controls SHOULD BE only shown on global"), and a
@@ -173,7 +173,7 @@ the ACTIVE season's tutorial, titled "{Season} tutorial" (`activeGame`; the row 
 that season has none) — then the bind panels —
   Driving, Mechanisms (Intake and Shoot), the active season's own cards, Match — each a keyboard
   column and a gamepad column, and a Gamepad panel for the trigger threshold, combo wait and menu
-  navigation (the stick role, Turn with, deadzone and curve head the Driving panel's gamepad
+  navigation (the stick role, Turn with, deadzone, Drive curve and Turn curve head the Driving panel's gamepad
   column). A season scope is ONE panel: that season's own actions.
   ⚠️ **THE ACTIVE SEASON'S OWN MECHANISMS ARE IN ALL GAMES TOO** (owner, 2026-10-10: "People keep
   missing the fact that there is a separate panel for biobuzz controls"). `allGamesPanels(active)`
@@ -199,8 +199,13 @@ that season has none) — then the bind panels —
   single-press capture never showed it; commit-on-release made it a real window.
 - **TURN WITH TRIGGERS** (`PadBindings.turnWith`, owner 2026-10-10; Controls ▸ Driving ▸ gamepad
   "Turn with": the other stick, or Triggers). LT turns left and RT right, analog, through the
-  stick deadzone and curve (`GamepadInput.sample`); the other stick then turns nothing. A new
+  stick deadzone and the turn curve (`GamepadInput.sample`); the other stick then turns nothing. A new
   sibling field, so an older client ignores it and turns with the stick.
+- **DRIVE CURVE AND TURN CURVE ARE TWO SLIDERS** (owner 2026-10-11). `PadBindings.curve` shapes the
+  drive stick (strafe and forward, radially) and the two tank sticks; `PadBindings.turnCurve` shapes
+  turning, on the stick or the triggers. `turnCurve` is a new sibling field: an older client ignores
+  it and turns on `curve`, and a stored blob without it loads it as its own `curve`, so the split
+  changes nobody's turning until they move the slider.
   ⚠️ **A BIND ON A TRIGGER IS PAUSED, NEVER REMOVED.** Shoot and Intake default to RT and LT, so
   removing them on the switch is the silent unbind the conflict policy forbids. `livePad` drops
   every bind with a trigger in it (combos too) from the map the chord resolver plays, the keycap

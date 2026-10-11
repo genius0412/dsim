@@ -1,3 +1,11 @@
+# HANDOFF — 2026-10-11b (gamepad: Drive curve and Turn curve are separate sliders)
+
+**State: branch `feat/split-stick-sensitivity`, PR into `alpha`. Client only: no server change, no deploy beyond Vercel.** `tsc`, `server:check`, `build`, `bundleaudit`, `docaudit`, `uiaudit` pass; `npm test` passes but for two timing checks (`imports/cost` sanitise < 1 ms, BIOBUZZ step3d p95) that are load-dependent on this machine.
+
+- **Owner:** separate the stick sensitivity for turning and strafing.
+- **What:** `PadBindings.turnCurve` beside `curve`. `curve` (now "Drive curve") shapes the drive stick and the tank sticks; `turnCurve` ("Turn curve") shapes the turn stick or the triggers (`GamepadInput.sample`). A stored blob without `turnCurve` loads it as its own `curve`, so nobody's turning changes; an older client ignores the field. Rule in `docs/area/ui.md`.
+- **Checks:** smoke "turn curve: …" (fallback, clamp, clone, each curve shapes only its own axes, triggers, tank). In the browser: both sliders render in Controls ▸ Driving, a Turn curve of 2.2 stores apart from the Drive curve and survives a reload. Not checked with a physical pad.
+
 # HANDOFF — 2026-10-11 (BIOBUZZ 3D Extreme graphics: Auto can pick Extreme, photographed venues, lighter seams, robot detail)
 
 **State: on `alpha`. CLIENT ONLY: nothing under `src/sim`, `server`, `src/net` or `sim3d` changed, no SIM/BALANCE bump, so Vercel is the whole deploy.** `npm test` 6022 BIOBUZZ + shared ALL PASS, `build`, `server:check`, `bundleaudit` (scene baseline moved 237.63 -> 243.22 KB gz, 6.8 KB under the 250 ceiling), `docaudit`, `uiaudit`, `contrast` pass. Real app driven offscreen (Free drive in 3D, Configure ▸ Graphics, Contributors). Four branches, each implemented, adversarially reviewed and fixed, then merged: `gfx/auto-extreme`, `gfx/photo-venues`, `gfx/tile-seams`, `gfx/robot-detail` (worktrees under `.claude/worktrees/gfx-*`; their `scratch/` holds every capture).

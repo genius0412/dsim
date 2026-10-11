@@ -756,13 +756,22 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                     onChange={(deadzone) => setPad({ deadzone })}
                   />
                   <PadSlider
-                    label="Sensitivity curve"
+                    label="Drive curve"
                     shown={pad.curve === 1 ? '1.0 · linear' : pad.curve.toFixed(1)}
                     value={pad.curve}
                     min={1}
                     max={3}
                     step={0.1}
                     onChange={(curve) => setPad({ curve })}
+                  />
+                  <PadSlider
+                    label="Turn curve"
+                    shown={pad.turnCurve === 1 ? '1.0 · linear' : pad.turnCurve.toFixed(1)}
+                    value={pad.turnCurve}
+                    min={1}
+                    max={3}
+                    step={0.1}
+                    onChange={(turnCurve) => setPad({ turnCurve })}
                   />
                 </>
               )}
