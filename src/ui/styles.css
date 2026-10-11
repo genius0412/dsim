@@ -2295,8 +2295,14 @@ button {
   .resx-season {
     display: none;
   }
-  .resx-breakdown {
-    margin-block: var(--ds-s-2);
+  /* `.resx-body` in front: the base `.resx-breakdown` block sits LATER in the file and would win a tie */
+  .resx-body .resx-breakdown {
+    margin-block: var(--ds-s-1);
+    font-size: calc(2.2 * var(--resx-u));
+  }
+  /* the eyebrow (SOLO PRACTICE) is the panel's own title one line up; the heading carries it */
+  .resx-eyebrow {
+    display: none;
   }
   .resx-section th {
     letter-spacing: 0.08em;
