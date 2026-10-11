@@ -44,7 +44,17 @@ import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots }
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
-import { bbPhotoDetail, buildPhotoVenue, loadPhotoBackdrop, photoBackdropOf, photoBlocked, photoRoomBox, venueAssetUrl } from './renderPhotoVenue';
+import {
+  bbPhotoDetail,
+  buildPhotoVenue,
+  loadPhotoBackdrop,
+  photoBackdropOf,
+  photoBlocked,
+  photoCameraRoom,
+  photoRoomBox,
+  setPhotoVenueLighting,
+  venueAssetUrl,
+} from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
@@ -576,6 +586,11 @@ class BiobuzzScene implements GameScene {
       this.venueKey = key;
       if (def.photo && photo) this.loadPhoto(def, photo === 'hi' ? def.photo.backdrop : def.photo.backdropLow, key);
     }
+    // a photographed room is as big as it was, so the orbit and free cameras stay inside it from
+    // the moment it is picked (not when it lands, which would jump a zoomed-out camera in), and
+    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`)
+    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : null);
+    setPhotoVenueLighting(this.venue, def, s.envLighting);
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
     this.syncSurfaces();
@@ -629,7 +644,7 @@ class BiobuzzScene implements GameScene {
           tex.dispose();
           return;
         }
-        this.swapVenue(buildPhotoVenue(def, tex), def);
+        this.swapVenue(buildPhotoVenue(def, tex, this.sun, this.settings.envLighting), def);
         this.tuneMaterials();
         this.renderer.shadowMap.needsUpdate = true;
       })
@@ -1303,7 +1318,7 @@ class BiobuzzScene implements GameScene {
 
   /** `GameScene.assetsSettled`: every imported robot's mesh in `world`, parsed or known absent —
    * and the photographed venue's backdrop and the environment's light-gathering map, loaded or
-   * failed (2026-10-10: the replay export renders in the school hall, which is a photograph now) */
+   * failed (2026-10-10: the replay export renders in a photographed venue, the events hall) */
   assetsSettled(world: World): Promise<void> {
     return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.photoLoading, this.envLoading]).then(() => undefined);
   }

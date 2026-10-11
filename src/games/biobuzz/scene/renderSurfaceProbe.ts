@@ -27,7 +27,8 @@ import { SURFACE_UNIFORMS, lowerSurfaceUniforms } from './renderSurfaceKit';
  * reflecting nothing; their occlusion is left to GTAO.
  *
  * ── THE THREE NUMBERS THAT HAVE TO AGREE ────────────────────────────────────────────────────
- *   • THE CUBE SIZE equals the DOME's (128 for a painted dome, 256 for an HDRI and the room), read
+ *   • THE CUBE SIZE equals the DOME's (128 for a painted dome and a photographed venue's 512-wide
+ *     `.hdr`, 256 for the 1k HDRI and the room), read
  *     off `scene.environment` at capture. The `CUBEUV_*` defines a twin's program is compiled with
  *     come from `scene.environment`'s size, and the probe is sampled through the SAME
  *     `textureCubeUV`, so a mismatched probe would be read with the wrong mip layout. `raise`

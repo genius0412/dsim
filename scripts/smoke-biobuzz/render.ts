@@ -399,6 +399,20 @@ import {
   photoUv,
   pushedRoomBox,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
+// -- the photographed venues' review fixes (2026-10-11), likewise their own block ---------------
+import {
+  PHOTO_NO_IBL_DIM,
+  photoCameraRoom,
+  CATCHER_INSET_IN,
+  photoScale,
+  setPhotoVenueLighting,
+} from '../../src/games/biobuzz/scene/renderPhotoVenue';
+import {
+  ORBIT_CENTER_Z as CAM_ORBIT_CENTER_Z,
+  ORBIT_RADIUS_MAX as CAM_ORBIT_RADIUS_MAX,
+  boomInRoom,
+  createCameras as createPhotoCameras,
+} from '../../src/games/biobuzz/scene/renderCameras';
 import { Renderer } from '../../src/render/renderer';
 import type { RobotSpec, World } from '../../src/types';
 import { mkWorld, type Check } from './harness';
@@ -11014,8 +11028,10 @@ function environmentAndReadoutChecks(check: Check): void {
     // HIGH so the file does not come out at whatever the machine that made it was set to, which
     // means `GFX_PRESETS.high.environment` is what every exported video is rendered in. Eight new
     // choices must not quietly become one of them.
-    check('the fixed-High export tier still renders in the school hall', GFX_PRESETS.high.environment === 'school-hall');
-    check('...and Ultra with it', GFX_PRESETS.ultra.environment === 'school-hall');
+    // the events hall since 2026-10-11: the photographed school hall smears its auditorium's seats
+    // across the floor beside the field (`PhotoVenue.furniture`, checked in the photo block)
+    check('the fixed-High export tier renders in the photographed events hall', GFX_PRESETS.high.environment === 'events-hall');
+    check('...and Ultra with it', GFX_PRESETS.ultra.environment === 'events-hall');
     check('...and Extreme renders in the photographed events hall (2026-10-10)', GFX_PRESETS.extreme.environment === 'events-hall');
     check(
       'Low and Medium still default to the generated room',
@@ -11129,7 +11145,7 @@ function environmentAndReadoutChecks(check: Check): void {
     );
 
     // OFF-EMBED NOTHING MOVES. The photographs are still the High/Ultra default on the web and in
-    // the desktop build, and the fixed-High replay export still renders in the school hall.
+    // the desktop build, and the fixed-High replay export renders in one (the events hall).
     check('outside an activity every id resolves to its own declared row', BB_ENVIRONMENT_IDS.every((id) => environmentDefFor(id) === environmentDef(id)));
     check('outside an activity an HDRI is still fetchable', canFetchHdri());
     check('...and the picker still offers all eleven', pickableEnvironments().length === BB_ENVIRONMENTS.length);
@@ -12062,59 +12078,369 @@ function photoVenueChecks(check: Check): void {
     );
   }
 
-  // THE BOX HOLDS EVERY CAMERA. Inside the true room it IS the true room (exact walls); beyond a
-  // wall the wall moves out past the eye; and the far corner stays inside the 4000-in far plane.
+  // THE CAMERAS STAY IN THE ROOM (2026-10-11). Through the REAL camera code (`createCameras`), with
+  // the room `renderScene` hands it: the orbit wheeled out to its limit and the free cam dollied
+  // out and panned to the field's corners, at every yaw and from flat to straight down, must stand
+  // inside the photographed room less the push margin — so the box drawn for them IS the room, and
+  // no wall's base is ever stretched across the floor in front of them. Before this the orbit
+  // reached 620 in against walls 208–441 in out, and a third to a half of the frame was smear.
   {
-    const eyes: [number, number, number][] = [];
-    for (let yaw = 0; yaw < 360; yaw += 15) {
-      const a = (yaw * Math.PI) / 180;
-      for (const el of [0.08, 0.56, 1.0, 1.45]) {
-        // orbit: radius 620 at the extremes, about (0, 0, 24) (renderCameras.ts)
-        eyes.push([Math.cos(a) * Math.cos(el) * 620, Math.sin(a) * Math.cos(el) * 620, 24 + Math.sin(el) * 620]);
-      }
-      // free cam: dolly 420 at pitch 8°, its target panned to the field's corner margin
-      eyes.push([82.7 + Math.cos(a) * Math.cos(0.14) * 420, 82.7 + Math.sin(a) * Math.cos(0.14) * 420, Math.sin(0.14) * 420]);
+    const world = mkWorld('practice', 1);
+    const robot = world.robots[0];
+    const frame = (o: Partial<SceneFrame> = {}): SceneFrame => ({
+      alpha: 0,
+      viewAngle: viewAngleOf('red'),
+      camera: 'orbit',
+      width: 1600,
+      height: 900,
+      dpr: 1,
+      ...o,
+    });
+    const inside = (p: THREE.Vector3, room: { min: readonly number[]; max: readonly number[] }): boolean =>
+      p.x >= room.min[0] - 1e-6 && p.x <= room.max[0] + 1e-6 && p.y >= room.min[1] - 1e-6 && p.y <= room.max[1] + 1e-6 && p.z <= room.max[2] + 1e-6;
+    /** how many walls `eye` moves: the vertex shader's push, in plain numbers */
+    const pushes = (box: ReturnType<typeof photoRoomBox>, eye: [number, number, number]): number => {
+      // a wall moved by more than a rounding error (an eye ON the margin moves one by 1e-13)
+      const b = pushedRoomBox(box, eye);
+      return [0, 1, 2].filter((i) => Math.abs(b.min[i] - box.min[i]) > 1e-6 || Math.abs(b.max[i] - box.max[i]) > 1e-6).length;
+    };
+
+    // the control: with no room set, the wheel reaches the old 620 — so what holds the eyes below
+    // is the room, not some other limit
+    {
+      const cams = createPhotoCameras();
+      cams.update(frame(), world, 'orbit');
+      for (let i = 0; i < 40; i++) cams.orbitZoom(2000);
+      cams.update(frame(), world, 'orbit');
+      const r = cams.orbit.position.distanceTo(new THREE.Vector3(0, 0, CAM_ORBIT_CENTER_Z));
+      check('photo cameras: with no room the orbit still wheels out to its 620-in limit', Math.abs(r - CAM_ORBIT_RADIUS_MAX) < 1e-6, r.toFixed(2));
     }
-    eyes.push([0, 0, 800], [0, 0, 300]); // the overhead camera and the minimap's
-    let outside = 0;
+
+    let orbitOut = 0;
+    let freeOut = 0;
+    let orbitPushed = 0;
+    let freePushed = 0;
     let farthest = 0;
-    let moved = 0;
+    let samples = 0;
+    let respond = true;
+    const notes: string[] = [];
     for (const e of photos) {
       const box = photoRoomBox(e.photo!);
-      for (const eye of eyes) {
-        const b = pushedRoomBox(box, eye);
-        const inside =
-          eye[0] >= b.min[0] + PUSH_MARGIN_IN - 1e-9 &&
-          eye[0] <= b.max[0] - PUSH_MARGIN_IN + 1e-9 &&
-          eye[1] >= b.min[1] + PUSH_MARGIN_IN - 1e-9 &&
-          eye[1] <= b.max[1] - PUSH_MARGIN_IN + 1e-9 &&
-          eye[2] > b.min[2] &&
-          eye[2] <= b.max[2] - PUSH_MARGIN_IN + 1e-9;
-        if (!inside) outside++;
-        for (const cx of [b.min[0], b.max[0]]) {
-          for (const cy of [b.min[1], b.max[1]]) {
-            for (const cz of [b.min[2], b.max[2]]) farthest = Math.max(farthest, Math.hypot(cx - eye[0], cy - eye[1], cz - eye[2]));
+      const room = photoCameraRoom(e.photo!);
+      const cams = createPhotoCameras();
+      cams.setRoom(room);
+      cams.setFreeNav({ ...FREE_CAM_NAV_DEFAULT, smoothing: false });
+      cams.update(frame(), world, 'orbit');
+      let reach = 0;
+      for (let el = 0; el <= 12; el++) {
+        // elevation from the floor up to straight down (the drag clamps it), at 24 yaws
+        cams.orbitDrag(0, -10_000);
+        cams.orbitDrag(0, (el / 12) * 400);
+        for (let k = 0; k < 24; k++) {
+          cams.orbitDrag(-(2 * Math.PI) / 24 / 0.006, 0);
+          for (let i = 0; i < 20; i++) cams.orbitZoom(2000);
+          cams.update(frame(), world, 'orbit');
+          const p = cams.orbit.position;
+          samples++;
+          reach = Math.max(reach, p.distanceTo(new THREE.Vector3(0, 0, CAM_ORBIT_CENTER_Z)));
+          if (!inside(p, room)) orbitOut++;
+          if (pushes(box, [p.x, p.y, p.z])) orbitPushed++;
+          for (const cx of [box.min[0], box.max[0]]) {
+            for (const cy of [box.min[1], box.max[1]]) {
+              for (const cz of [box.min[2], box.max[2]]) farthest = Math.max(farthest, Math.hypot(cx - p.x, cy - p.y, cz - p.z));
+            }
+          }
+          // and a notch IN moves the eye at once, from where the room stopped it
+          if (k === 5 && el === 2) {
+            const before = p.clone();
+            cams.orbitZoom(-200);
+            cams.update(frame(), world, 'orbit');
+            if (!(cams.orbit.position.distanceTo(new THREE.Vector3(0, 0, CAM_ORBIT_CENTER_Z)) < before.distanceTo(new THREE.Vector3(0, 0, CAM_ORBIT_CENTER_Z)) - 1)) respond = false;
           }
         }
       }
-      // a chase eye (60 in behind a robot anywhere on the field, 40 up) and a driver just behind the
-      // wall: inside every room, so the box drawn for them is the room as photographed
-      for (const eye of [
-        [122, 0, 54],
-        [-122, 0, 54],
-        [0, 122, 54],
-        [0, -122, 54],
-        [148, 0, 62],
-        [-148, 0, 62],
-      ] as [number, number, number][]) {
-        const b = pushedRoomBox(box, eye);
-        if ([0, 1, 2].some((i) => b.min[i] !== box.min[i] || b.max[i] !== box.max[i])) moved++;
+      notes.push(`${e.id} orbit ≤ ${reach.toFixed(0)}`);
+      // free cam: dollied all the way out, its target at the field's corners and centre, every yaw,
+      // from its lowest pitch to its highest
+      for (const [tx, ty] of [
+        [0, 0],
+        [1, 1],
+        [-1, 1],
+        [-1, -1],
+        [1, -1],
+      ]) {
+        for (let k = 0; k < 24; k++) {
+          for (const dp of [-10_000, 10_000]) {
+            cams.freeReset(viewAngleOf('red'));
+            cams.freePan(tx * 10_000, ty * 10_000);
+            cams.freeOrbit((k / 24) * 2000, dp);
+            // both wheel directions, whichever this layout calls "out"
+            for (const sign of [-1, 1]) {
+              for (let i = 0; i < 20; i++) cams.freeDolly(sign * 2000);
+              cams.update(frame({ camera: 'free' }), world, 'free');
+              const p = cams.free.position;
+              samples++;
+              if (!inside(p, room)) freeOut++;
+              if (pushes(box, [p.x, p.y, p.z])) freePushed++;
+            }
+          }
+        }
       }
     }
-    check('photo venues: every camera position the controls allow is inside the box it is drawn with', outside === 0, String(outside));
-    check('photo venues: ...and the box’s far corner is inside the cameras’ 4000-in far plane from all of them', farthest < 4000, farthest.toFixed(0));
-    check('photo venues: a chase or driver eye stands in the TRUE room (nothing pushed, walls exact)', moved === 0, String(moved));
+    check(
+      'photo cameras: the orbit eye, wheeled all the way out at every yaw and elevation, stays inside the photographed room less the margin',
+      orbitOut === 0,
+      `${orbitOut} outside; ${notes.join(', ')}`,
+    );
+    check('photo cameras: ...so no wall is ever moved for it (the box it is drawn with is the room)', orbitPushed === 0, String(orbitPushed));
+    check('photo cameras: the free eye, dollied out and panned to the field’s corners, likewise', freeOut === 0 && freePushed === 0, `${freeOut} / ${freePushed}`);
+    check('photo cameras: a wheel notch in moves the eye at once after the room stopped it (no dead zone)', respond);
+    check('photo cameras: ...and the box’s far corner is inside the 4000-in far plane from every one of them', farthest < 4000 && samples > 1000, `${farthest.toFixed(0)} over ${samples}`);
+    // the same boom, in plain numbers: a target outside the room gets a negative reach (the camera
+    // code floors it), a direction with no wall in it the full length
+    check(
+      'photo cameras: boomInRoom shortens to the nearest wall along the boom and no further',
+      Math.abs(boomInRoom([0, 0, 24], [0, -1, 0], 620, { min: [-500, -178, -1], max: [500, 500, 300] }) - 178) < 1e-9 &&
+        boomInRoom([0, 0, 24], [1, 0, 0], 200, { min: [-500, -178, -1], max: [500, 500, 300] }) === 200,
+    );
+
+    // THE DRIVER AND CHASE CAMERAS ARE NOT HELD (a driver stands where a driver stands): every eye
+    // they take — the fitted driver eye and the height-accurate one at 48 and 84 in, on a 16:9, a
+    // 4:3, a landscape and a portrait phone screen, both alliances, both roles; the chase eye behind
+    // a robot at each corner — is checked against the TRUE room. The school hall is the one room
+    // they leave, and only on a portrait phone: its stage is 479 in wide, and a portrait screen
+    // stands the fitted eye 213 in out (20 in from the −x wall, which moves 10 in behind it) and the
+    // height-accurate one 293 in out, past it. It is not a default anywhere (`PhotoVenue.furniture`).
+    {
+      const narrow = new Set(['school-hall']);
+      const out: string[] = [];
+      let n = 0;
+      for (const e of photos) {
+        const box = photoRoomBox(e.photo!);
+        const cams = createPhotoCameras();
+        cams.setRoom(photoCameraRoom(e.photo!));
+        for (const [w, h] of [
+          [1600, 900],
+          [1024, 768],
+          [844, 390],
+          [390, 844],
+        ]) {
+          for (const height of [null, 48, 84]) {
+            setDriverHeightIn(height);
+            for (const al of ['red', 'blue'] as const) {
+              robot.alliance = al;
+              for (const cat of ['close', 'far'] as const) {
+                cams.update(frame({ camera: 'driver', viewAngle: viewAngleOf(al), width: w, height: h, localRobotId: robot.id, localStartCat: cat }), world, 'driver');
+                const p = cams.driver.position;
+                n++;
+                const ok = p.x > box.min[0] && p.x < box.max[0] && p.y > box.min[1] && p.y < box.max[1] && p.z < box.max[2];
+                if (!ok && !(narrow.has(e.id) && h > w)) out.push(`${e.id} ${w}×${h} ${height ?? 'fit'} ${al}`);
+              }
+            }
+          }
+        }
+        setDriverHeightIn(null);
+        for (const [x, y, hd] of [
+          [66, 66, Math.PI / 4],
+          [-66, 66, (3 * Math.PI) / 4],
+          [-66, -66, (-3 * Math.PI) / 4],
+          [66, -66, -Math.PI / 4],
+          [66, 66, (-3 * Math.PI) / 4],
+        ]) {
+          robot.pos = { x, y };
+          robot.heading = hd;
+          for (let i = 0; i < 6; i++) cams.nudgeEye(1);
+          cams.update(frame({ camera: 'chase', localRobotId: robot.id }), world, 'chase');
+          const p = cams.chase.position;
+          n++;
+          if (!(p.x > box.min[0] && p.x < box.max[0] && p.y > box.min[1] && p.y < box.max[1] && p.z < box.max[2])) out.push(`${e.id} chase ${x},${y}`);
+        }
+      }
+      setDriverHeightIn(null);
+      check(
+        'photo cameras: every driver and chase eye stands in the TRUE room (the school hall on a portrait phone excepted, see above)',
+        out.length === 0 && n === photos.length * 53,
+        out.slice(0, 6).join('; ') || String(n),
+      );
+      // and the exception is what the docs say it is, not a wider one
+      const sh = photos.find((e) => e.id === 'school-hall')!;
+      const shBox = photoRoomBox(sh.photo!);
+      const cams = createPhotoCameras();
+      cams.update(frame({ camera: 'driver', viewAngle: viewAngleOf('red'), width: 1600, height: 900 }), world, 'driver');
+      const wide = cams.driver.position.clone();
+      cams.update(frame({ camera: 'driver', viewAngle: viewAngleOf('red'), width: 390, height: 844 }), world, 'driver');
+      const tall = cams.driver.position.clone();
+      check(
+        'photo cameras: the school hall’s driver eye is inside its stage on a 16:9 screen, and within the push margin of the −x wall only on a portrait one',
+        pushes(shBox, [wide.x, wide.y, wide.z]) === 0 && tall.x > shBox.min[0] && tall.x < shBox.min[0] + PUSH_MARGIN_IN,
+        `${wide.x.toFixed(1)} / ${tall.x.toFixed(1)} vs ${shBox.min[0]}`,
+      );
+    }
+
+    // the top-down shots stand above the ceiling at the field's centre (orthographic, straight
+    // down): only the ceiling moves for them, never a wall
+    let topDownWalls = 0;
+    for (const e of photos) {
+      const box = photoRoomBox(e.photo!);
+      for (const eye of [
+        [0, 0, 800],
+        [0, 0, 300],
+      ] as [number, number, number][]) {
+        const b = pushedRoomBox(box, eye);
+        if ([0, 1].some((i) => b.min[i] !== box.min[i] || b.max[i] !== box.max[i])) topDownWalls++;
+      }
+    }
+    check('photo cameras: the overhead and minimap shots move only the ceiling', topDownWalls === 0, String(topDownWalls));
+    // renderScene hands the room over when the row is PICKED (a camera does not jump in when the
+    // backdrop lands), and clears it for a procedural venue
+    check(
+      'photo cameras: renderScene sets the room from the photographed row, null for any other',
+      /this\.cameras\.setRoom\(def\.photo \? photoCameraRoom\(def\.photo\) : null\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
+    );
   }
+
+  // THE SHADOW CATCHER IS THE SUN'S SHADOW FOOTPRINT. The sun's shadow camera is a square of
+  // ±(BB_HALF + 20) in light space; at the rigs' 40–45° its footprint on the floor reaches 1.4–1.6 ×
+  // that along the sun's azimuth, and a catcher the size of the square (±96 in) cut the hive
+  // crossbar's shadow off in a straight line. A catcher past the frustum's edge drew that edge as a
+  // one-pixel dark line instead. Built with three's own light, set up as `renderScene` sets it up:
+  // every catcher corner must sit inside the frustum, within a few inches of its edge, and the
+  // catcher must reach well past the old ±96.
+  {
+    const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    check(
+      'photo shadow: renderScene builds the catcher from its own sun, with this row’s rig on it',
+      /const half = BB_HALF_X \+ 20;/.test(sc) &&
+        /cam\.near = 1;\s*cam\.far = 260;/.test(sc) &&
+        /buildPhotoVenue\(def, tex, this\.sun, this\.settings\.envLighting\)/.test(sc),
+    );
+    const half = BB_HALF_X + 20;
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    let outside = 0;
+    let slack = 0;
+    let farCut = 0;
+    let reach = Infinity;
+    for (const e of photos) {
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(...e.rig.sun);
+      const cam = light.shadow.camera;
+      cam.left = -half;
+      cam.right = half;
+      cam.top = half;
+      cam.bottom = -half;
+      cam.near = 1;
+      cam.far = 260;
+      cam.updateProjectionMatrix();
+      const g = buildPhotoVenue(e, tex, light, true);
+      const catcher = g.getObjectByName('bb-venue:photo-shadow') as THREE.Mesh;
+      g.updateMatrixWorld(true);
+      light.shadow.updateMatrices(light);
+      const pos = catcher.geometry.attributes.position;
+      let far = 0;
+      let cut = false;
+      for (let i = 0; i < pos.count; i++) {
+        const w = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(catcher.matrixWorld);
+        far = Math.max(far, Math.abs(w.x), Math.abs(w.y));
+        // into light space: inside the square, and only the inset short of its edge
+        const l = w.clone().applyMatrix4(cam.matrixWorldInverse);
+        const edge = half - Math.max(Math.abs(l.x), Math.abs(l.y));
+        if (!(edge > 0) || -l.z < cam.near || -l.z > cam.far) outside++;
+        slack = Math.max(slack, edge);
+        if (Math.abs(-l.z - (cam.far - CATCHER_INSET_IN)) < 0.01) cut = true;
+      }
+      if (cut) farCut++;
+      reach = Math.min(reach, far);
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) {
+          m.geometry.dispose();
+          (m.material as THREE.Material).dispose();
+        }
+      });
+    }
+    check('photo shadow: every catcher corner is inside the sun’s shadow frustum, depth too (no face of it lands on the floor)', outside === 0, String(outside));
+    check('photo shadow: ...and only the inset short of its sides (it covers the whole footprint)', slack <= CATCHER_INSET_IN + 0.01, slack.toFixed(3));
+    check('photo shadow: ...and cut short of the far face where the floor leaves it (every venue’s footprint does)', farCut === photos.length, String(farCut));
+    check('photo shadow: ...which reaches past the old ±(BB_HALF + 24) catcher in every venue', reach > BB_HALF_X + 24 + 20, reach.toFixed(0));
+  }
+
+  // THE PHOTOGRAPH FOLLOWS THE ENVIRONMENT-LIGHTING ROW. Unlit, it kept its Extreme brightness at
+  // Low and Medium while the field lost the IBL (the events hall's floor stood 54 × the mat).
+  {
+    const def = environmentDef('events-hall');
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    const g = buildPhotoVenue(def, tex, new THREE.DirectionalLight(), false);
+    const mat = (g.getObjectByName('bb-venue:photo') as THREE.Mesh).material as THREE.ShaderMaterial;
+    const dark = mat.uniforms.bbScale.value as number;
+    const darkKnee = mat.uniforms.bbKnee.value as number;
+    setPhotoVenueLighting(g, def, true);
+    const lit = mat.uniforms.bbScale.value as number;
+    const litKnee = mat.uniforms.bbKnee.value as number;
+    setPhotoVenueLighting(g, environmentDef('hangar'), false);
+    const untouched = mat.uniforms.bbScale.value as number;
+    check(
+      'photo lighting: with the environment lighting off the photograph is dimmed by PHOTO_NO_IBL_DIM, and back on when it is on',
+      PHOTO_NO_IBL_DIM > 0 && PHOTO_NO_IBL_DIM < 1 && Math.abs(dark - lit * PHOTO_NO_IBL_DIM) < 1e-12 && lit === photoScale(def.photo!, true),
+      `${dark} / ${lit}`,
+    );
+    check(
+      'photo lighting: ...and its highlight knee with it (an exposure change on the whole photograph)',
+      litKnee === PHOTO_KNEE && Math.abs(darkKnee - PHOTO_KNEE * PHOTO_NO_IBL_DIM) < 1e-12,
+      `${darkKnee} / ${litKnee}`,
+    );
+    check('photo lighting: ...and a row that is not the built one is left alone', untouched === lit);
+    check(
+      'photo lighting: renderScene re-applies it on every settings change',
+      /setPhotoVenueLighting\(this\.venue, def, s\.envLighting\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
+    );
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  }
+
+  // AN OUTDOOR STAND-IN HAS A SKY. Until a court or quad backdrop lands (Low and Medium, a slow
+  // network) or if it cannot, the procedural OUTDOOR venue stands there, and its sky is the scene
+  // background: the room's letterbox colour was a near-black sky over a daylit court.
+  {
+    const envSrc = readFileSync(join(SCENE_DIR, 'renderEnvironment.ts'), 'utf8');
+    check(
+      'photo sky: a photographed row open to the sky paints its stand-in’s sky with the lighting off and while its map loads',
+      /const openSky = !!def\.photo && def\.venue\.kind === 'outdoor';/.test(envSrc) &&
+        /if \(openSky\) applyFallback\(source\.fallback, false\);\s*else applyRoom\(false\);/.test(envSrc) &&
+        /if \(openSky\) applyFallback\(source\.fallback, true\);\s*else if \(!scene\.environment\) applyRoom\(true\);/.test(envSrc),
+    );
+    const outdoor = photos.filter((e) => e.venue.kind === 'outdoor');
+    check(
+      'photo sky: every outdoor photographed row has one, and its stand-in has a painted sky',
+      outdoor.length >= 2 && outdoor.every((e) => !!environmentDef(e.photo!.fallback).look),
+      outdoor.map((e) => `${e.id}→${e.photo!.fallback}`).join(' '),
+    );
+  }
+
+  // THE DEFAULTS ARE ROOMS THAT DRAW CLEAN. A photographed row still carrying furniture the floor
+  // plane draws flat (`PhotoVenue.furniture`) is a pick, never a preset column's default — High's
+  // is every replay export's. The school hall's auditorium seats are the one such row.
+  check(
+    'photo venues: no preset column defaults to a photographed room with furniture smeared across its floor',
+    GFX_TIERS.every((t) => !environmentDef(GFX_PRESETS[t].environment).photo?.furniture),
+    GFX_TIERS.map((t) => GFX_PRESETS[t].environment).join(' '),
+  );
+  check(
+    'photo venues: ...and the school hall says what is smeared, so it stays a pick',
+    !!environmentDef('school-hall').photo?.furniture,
+  );
+  // the derive's de-gloss is referenced to the clean concrete, not to a median the reflections raise
+  check(
+    'photo venues: the events hall de-gloss takes the floor level from a low percentile, at full strength',
+    (() => {
+      const g = (venuesCfg.find((v) => v.id === 'events-hall') as { degloss?: { pct?: number; strength?: number } } | undefined)?.degloss;
+      return !!g && typeof g.pct === 'number' && g.pct < 0.5 && g.strength === 1;
+    })(),
+  );
 
   // THE BUILT GROUP: three meshes, nothing casts, nothing blooms, the overlays never write depth
   // (GTAO's G-buffer pass leaves them out) and lie between the photographed floor and the CAD's
@@ -12122,7 +12448,7 @@ function photoVenueChecks(check: Check): void {
   {
     const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
     const def = environmentDef('events-hall');
-    const g = buildPhotoVenue(def, tex);
+    const g = buildPhotoVenue(def, tex, new THREE.DirectionalLight(), true);
     const room = g.getObjectByName('bb-venue:photo') as THREE.Mesh;
     const shadow = g.getObjectByName('bb-venue:photo-shadow') as THREE.Mesh;
     const contact = g.getObjectByName('bb-venue:photo-contact') as THREE.Mesh;
@@ -12163,8 +12489,30 @@ function photoVenueChecks(check: Check): void {
     const eye = rm.uniforms.bbEye.value as THREE.Vector3;
     check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + 63);
     // ⚠️ A PHOTOGRAPHED HIGHLIGHT NEVER OUTSHINES THE FIELD'S LIT WHITE PANELS (1.2–1.7 raw): the
-    // knee rolls everything off toward twice itself
-    check('photo venues: the highlight knee’s ceiling (2 × knee) is at or under the field’s lit white (1.2)', 2 * PHOTO_KNEE <= 1.2, String(PHOTO_KNEE));
+    // knee rolls everything off toward twice itself. The shader's line is pinned and mirrored here,
+    // and the mirror is run on every venue's HOTTEST texel (its `.hdr`, which keeps the light the
+    // 8-bit backdrop cannot) at the row's own dim.
+    {
+      const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+      check(
+        'photo venues: the shader rolls luminance off with the knee curve (k + (l − k) / (1 + (l − k) / k))',
+        /float k = l > bbKnee \? bbKnee \+ \( l - bbKnee \) \/ \( 1\.0 \+ \( l - bbKnee \) \/ bbKnee \) : l;/.test(pv),
+      );
+      const knee = (l: number): number => (l > PHOTO_KNEE ? PHOTO_KNEE + (l - PHOTO_KNEE) / (1 + (l - PHOTO_KNEE) / PHOTO_KNEE) : l);
+      let worst = 0;
+      let hottest = '';
+      for (const e of photos) {
+        const img = decodeRgbe(readFileSync(join(root, 'public', e.photo!.ibl)));
+        let max = 0;
+        for (let i = 0; i < img.data.length; i += 3) max = Math.max(max, 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2]);
+        const out = knee(max * e.photo!.intensity);
+        if (out > worst) {
+          worst = out;
+          hottest = `${e.id} ${max.toFixed(1)} raw`;
+        }
+      }
+      check('photo venues: the hottest photographed texel (a lamp or the sun) draws at or under the field’s lit white (1.2)', worst <= 1.2, `${worst.toFixed(3)} (${hottest})`);
+    }
     g.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh) {

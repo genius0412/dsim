@@ -48,7 +48,7 @@ module.exports = [
     // `photo.room` over its `height` (63 in).
     patches: [{ th: [26, 170], e: [-62, -3.5], feather: 3, room: { x0: -9.7, x1: 10.6, y0: -5.05, y1: 5.8, ceil: 4.76 } }],
     // the polished concrete's window reflections (derive.cjs, THE FLOOR DE-GLOSS)
-    degloss: { e: [-80, -4], blur: 2, above: 1.05, strength: 0.95 },
+    degloss: { e: [-80, -4], blur: 3, above: 1.05, strength: 1, pct: 0.3 },
   },
   {
     id: 'hangar',

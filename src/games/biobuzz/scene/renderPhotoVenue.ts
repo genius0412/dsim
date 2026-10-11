@@ -30,14 +30,19 @@ import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
  * it is.
  *
  * ── AND THE ROOM IS SMALLER THAN THE CAMERAS CAN REACH ──────────────────────────────────────
- * The real halls are 5–14 lens heights from the lens to a wall (300–880 in), and the orbit
- * camera zooms to 620 in and rises to 637 (`renderCameras.ts`). A camera outside a `BackSide` box
- * sees through the wall it is behind, which is the bug `VENUE_MIN_HALF` exists for. So the box
- * GROWS AROUND THE CAMERA, in the vertex shader: any wall (or the ceiling) the eye is within
- * `PUSH_MARGIN_IN` of moves out to keep it inside, per camera and per pass (`cameraPosition` is
- * whichever camera is drawing — the room probe's capture and the minimap included). Every camera
- * that stands in the room sees the room exactly; one that has zoomed out past a wall sees that
- * wall's base stretched over the floor between, which is what the sphere did everywhere.
+ * The real rooms are 208–882 in from the lens to a wall, and the orbit camera zooms to 620 in and
+ * rises to 637 (`renderCameras.ts`). A camera outside a `BackSide` box sees through the wall it is
+ * behind, which is the bug `VENUE_MIN_HALF` exists for, and a box that moved its wall out past the
+ * eye showed that wall's base stretched across the floor for a third to a half of the frame. Two
+ * rules, so neither happens:
+ *   • THE ORBIT AND FREE CAMERAS STAY IN THE ROOM (2026-10-11). `photoCameraRoom` is the room less
+ *     `PUSH_MARGIN_IN`, handed to `BbCameras.setRoom`; their boom shortens to stay inside it.
+ *   • THE BOX GROWS AROUND ANY OTHER CAMERA, in the vertex shader: a wall (or the ceiling) the eye
+ *     is within `PUSH_MARGIN_IN` of moves out to keep it inside, per camera and per pass
+ *     (`cameraPosition` is whichever camera is drawing). That is the overhead and minimap shots
+ *     above the ceiling (orthographic, straight down, so a wall is seen edge-on), a driver on a
+ *     portrait phone 20 in from the school hall's −x wall, a raised chase eye under the quad's
+ *     canopy — each within the margin or above the roof, never looking back across a moved wall.
  *
  * ── WHAT ELSE IS HERE ───────────────────────────────────────────────────────────────────────
  * The field's shadow on the photographed floor (`ShadowMaterial`, the sun's own map), and a soft
@@ -54,6 +59,18 @@ export const PHOTO_FLOOR_Z = -0.75;
 
 /** how close an eye may come to a wall (or the ceiling) before it moves out — see the header */
 export const PUSH_MARGIN_IN = 30;
+
+/**
+ * THE PHOTOGRAPH WITH THE ENVIRONMENT LIGHTING OFF (Low and Medium's `envLighting`), as a share
+ * of itself with it on — an exposure change on the whole photograph, so the highlight knee moves
+ * with it. The projection is unlit (it is the room's own light), so without this it kept its
+ * Extreme brightness while the field it surrounds lost the IBL: the events hall's floor stood
+ * 54 × the mat at Low (0.488 against 0.009 rendered). The procedural rooms' floors stand 9–18 ×
+ * theirs at Low (room 0.114 / 0.0128, gym 0.189 / 0.0103); at 0.6 the five photographs stand
+ * 7–14 × (events hall 0.135 / 0.0096). ACES's toe makes the rendered floor fall faster than the
+ * scale: 0.3 put the events hall at 0.048, 5 × its mat.
+ */
+export const PHOTO_NO_IBL_DIM = 0.6;
 
 /** the decoded backdrop's ceiling: the top code of the stored curve, `e / (1 − e)` at e = 254/255 */
 const E_MAX = 0.996;
@@ -97,6 +114,76 @@ export function photoRoomBox(p: PhotoVenue): { min: [number, number, number]; ma
     min: [p.room.x0, p.room.y0, PHOTO_FLOOR_Z],
     max: [p.room.x1, p.room.y1, PHOTO_FLOOR_Z + p.room.ceil],
   };
+}
+
+/** the room the orbit and free cameras are held inside (`BbCameras.setRoom`): the real walls and
+ * ceiling less `PUSH_MARGIN_IN`, so the vertex shader's push never moves a wall for them */
+export function photoCameraRoom(p: PhotoVenue): { min: [number, number, number]; max: [number, number, number] } {
+  const b = photoRoomBox(p);
+  return {
+    min: [b.min[0] + PUSH_MARGIN_IN, b.min[1] + PUSH_MARGIN_IN, b.min[2]],
+    max: [b.max[0] - PUSH_MARGIN_IN, b.max[1] - PUSH_MARGIN_IN, b.max[2] - PUSH_MARGIN_IN],
+  };
+}
+
+/** how far inside the sun's shadow frustum the catcher stops, light-space inches — see below */
+export const CATCHER_INSET_IN = 4;
+
+/**
+ * THE SHADOW CATCHER IS THE SUN'S SHADOW FOOTPRINT: the floor inside the sun's shadow camera (a box
+ * of ±(BB_HALF + 20) in light space, 1–260 in deep, `renderScene.ts`) — its four corner rays
+ * followed along the light to the floor, then cut where the floor leaves the box's depth. At the
+ * rigs' 40–45° the footprint reaches 1.4–1.6 × the square along the sun's azimuth, and a catcher
+ * the size of the square (±96 in) cut the hive crossbar's shadow off in a straight line. It stops
+ * `CATCHER_INSET_IN` inside every face: one that reached the far face drew it, a one-pixel dark
+ * line across the floor where that face meets it (seen at Extreme in the events hall, ~120 in out
+ * on the side away from the sun, where the far face reaches the floor at 118). Read off the live
+ * light, so the camera's own turn about the light axis is whatever three gives it.
+ * Returns the polygon's floor points, counter-clockwise seen from above.
+ */
+export function shadowFootprint(sun: THREE.DirectionalLight, z: number, inset = CATCHER_INSET_IN): [number, number][] {
+  sun.updateMatrixWorld(true);
+  sun.target.updateMatrixWorld(true);
+  sun.shadow.updateMatrices(sun);
+  const cam = sun.shadow.camera as THREE.OrthographicCamera;
+  const dir = cam.getWorldDirection(new THREE.Vector3());
+  const eye = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+  let poly: [number, number][] = [];
+  for (const [sx, sy] of [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ]) {
+    const x = sx < 0 ? cam.left + inset : cam.right - inset;
+    const y = sy < 0 ? cam.bottom + inset : cam.top - inset;
+    const p = new THREE.Vector3(x, y, -cam.near).applyMatrix4(cam.matrixWorld);
+    const t = (z - p.z) / dir.z;
+    poly.push([p.x + dir.x * t, p.y + dir.y * t]);
+  }
+  // depth along the light, linear on the floor: cut the quad to [near + inset, far − inset]
+  const depth = ([x, y]: [number, number]): number => (x - eye.x) * dir.x + (y - eye.y) * dir.y + (z - eye.z) * dir.z;
+  for (const [lim, sign] of [
+    [cam.near + inset, 1],
+    [cam.far - inset, -1],
+  ] as const) {
+    const keep = (q: [number, number]): number => sign * (depth(q) - lim);
+    const next: [number, number][] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const ka = keep(a);
+      const kb = keep(b);
+      if (ka >= 0) next.push(a);
+      if (ka >= 0 !== kb >= 0) {
+        const t = ka / (ka - kb);
+        next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    poly = next;
+  }
+  const area = poly.reduce((s, [x, y], i) => s + x * poly[(i + 1) % poly.length][1] - poly[(i + 1) % poly.length][0] * y, 0);
+  return area < 0 ? poly.reverse() : poly;
 }
 
 /**
@@ -322,13 +409,37 @@ function buildContact(): THREE.Mesh {
   return mesh;
 }
 
+/** the decode's linear scale: the encode `gain` divided back out, the row's dim, and the no-IBL dim
+ * (`PHOTO_NO_IBL_DIM`) when the environment lighting is off */
+export function photoScale(p: PhotoVenue, ibl: boolean): number {
+  return (p.intensity / p.gain) * (ibl ? 1 : PHOTO_NO_IBL_DIM);
+}
+
+/** the highlight knee for the environment-lighting row: `PHOTO_KNEE`, dimmed with the rest */
+export function photoKnee(ibl: boolean): number {
+  return PHOTO_KNEE * (ibl ? 1 : PHOTO_NO_IBL_DIM);
+}
+
+/** re-apply `photoScale` and `photoKnee` to a built photographed venue when the
+ * environment-lighting row changes (a rebuild would refetch and re-decode the backdrop); a no-op
+ * for any other venue */
+export function setPhotoVenueLighting(venue: THREE.Object3D | null, def: EnvironmentDef, ibl: boolean): void {
+  if (!def.photo || venue?.userData.photo !== def.id) return;
+  const room = venue.getObjectByName('bb-venue:photo') as THREE.Mesh | undefined;
+  const mat = room?.material as THREE.ShaderMaterial | undefined;
+  if (!mat?.uniforms?.bbScale) return;
+  mat.uniforms.bbScale.value = photoScale(def.photo, ibl);
+  mat.uniforms.bbKnee.value = photoKnee(ibl);
+}
+
 /**
  * BUILD the photographed venue for `def` around an already-loaded backdrop. One group, freed with
  * `disposeObject3D` — EXCEPT the backdrop texture, which is a uniform and so invisible to that
  * walk: the caller owns it and frees it with the venue (one 44.7 MB texture per live venue, never
- * two).
+ * two). `sun` is the scene's key light with this row's rig on it (the catcher is its shadow
+ * footprint, `shadowFootprint`) and `ibl` the environment-lighting row (`photoScale`).
  */
-export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture): THREE.Group {
+export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture, sun: THREE.DirectionalLight, ibl: boolean): THREE.Group {
   const p = def.photo!;
   const group = new THREE.Group();
   group.name = 'bb-venue';
@@ -346,9 +457,9 @@ export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture): T
       bbBoxMin: { value: new THREE.Vector3(...box.min) },
       bbBoxMax: { value: new THREE.Vector3(...box.max) },
       bbMargin: { value: PUSH_MARGIN_IN },
-      bbScale: { value: p.intensity / p.gain },
+      bbScale: { value: photoScale(p, ibl) },
       bbSat: { value: p.saturation },
-      bbKnee: { value: PHOTO_KNEE },
+      bbKnee: { value: photoKnee(ibl) },
     },
     vertexShader: VERT,
     fragmentShader: FRAG,
@@ -364,14 +475,18 @@ export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture): T
   group.add(room);
 
   // the field's shadow on the photographed floor — the sun's own map, so it is the shadow the mat
-  // shows, continued. Sized to the sun's shadow camera (±(BB_HALF + 20), renderScene.ts): there is
-  // nothing to catch past it.
-  const catcher = new THREE.Mesh(
-    new THREE.PlaneGeometry((BB_HALF_X + 24) * 2, (BB_HALF_Y + 24) * 2),
-    new THREE.ShadowMaterial({ opacity: p.shadow, depthWrite: false }),
-  );
+  // shows, continued out to (just inside) the edge of that map's footprint on the floor
+  const z = PHOTO_FLOOR_Z + 0.04;
+  const f = shadowFootprint(sun, z);
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.Float32BufferAttribute(f.flatMap(([x, y]) => [x, y, 0]), 3));
+  cg.setAttribute('normal', new THREE.Float32BufferAttribute(f.flatMap(() => [0, 0, 1]), 3));
+  // a convex polygon, counter-clockwise from above: a fan
+  cg.setIndex(f.slice(2).flatMap((_, i) => [0, i + 1, i + 2]));
+  cg.computeBoundingSphere();
+  const catcher = new THREE.Mesh(cg, new THREE.ShadowMaterial({ opacity: p.shadow, depthWrite: false }));
   catcher.name = 'bb-venue:photo-shadow';
-  catcher.position.z = PHOTO_FLOOR_Z + 0.04;
+  catcher.position.z = z;
   catcher.receiveShadow = true;
   catcher.castShadow = false;
   group.add(catcher);

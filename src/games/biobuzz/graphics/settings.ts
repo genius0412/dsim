@@ -281,8 +281,10 @@ export type PerfOverlay = 'off' | 'fps' | 'full';
  * therefore live on every tier including the two where image-based lighting is off. The other six
  * cost bytes: `monochrome-studio` is a fetched HDRI, and `school-hall`, `events-hall`, `hangar`,
  * `court` and `quad` are PHOTOGRAPHED VENUES (2026-10-10, same-origin files under `public/venues/`).
- * `school-hall` is also what the fixed-High replay export renders in, so it is a CONTRACT, not
- * merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it).
+ * `events-hall` is also what the fixed-High replay export renders in, so it is a CONTRACT, not
+ * merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it). It was `school-hall` until
+ * 2026-10-11: photographed, that hall's ~300 auditorium seats draw flat across the floor beside the
+ * field (`PhotoVenue.furniture`).
  */
 export type EnvironmentId =
   | 'room'
@@ -473,7 +475,8 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'school-hall',
+    // the PHOTOGRAPHED events hall, which is also every replay export's (see `EnvironmentId`)
+    environment: 'events-hall',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -494,7 +497,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'school-hall',
+    environment: 'events-hall',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -519,8 +522,8 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     elementDetail: 'cad',
     materials: 'physical',
     // the PHOTOGRAPHED events hall (2026-10-10, owner: "actual good quality scenes for
-    // backgrounds"): the closest of the photographs to an FTC venue. High and Ultra keep the
-    // school hall — High is the replay export's fixed column, so its environment is a contract.
+    // backgrounds"): the closest of the photographs to an FTC venue, and High's and Ultra's too
+    // since 2026-10-11 (the school hall's seats draw flat across the floor, `PhotoVenue.furniture`)
     environment: 'events-hall',
     envLighting: true,
     reflections: true,

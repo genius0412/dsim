@@ -594,6 +594,11 @@ const BASELINE = {
   // projection's two shaders, the backdrop loader and its failure memory, the contact band) and
   // `renderScene.ts`'s venue swap and photo wiring. The photographs themselves are static files
   // under `public/venues/`, not chunks. 12.9 KB of ceiling left.
+  //
+  // 2026-10-11, the same venues after review: 238.10 (+0.98), inside the 4.74 KB tolerance, so NOT
+  // moved — recorded so the creep is visible. The orbit and free cameras held in the photographed
+  // room (`renderCameras.ts`), the shadow catcher cut to the sun's footprint and the no-IBL dim
+  // (`renderPhotoVenue.ts`), the outdoor stand-in's sky (`renderEnvironment.ts`).
   scene: { gzip: 237.12 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason

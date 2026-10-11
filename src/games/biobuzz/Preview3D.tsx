@@ -138,8 +138,8 @@ async function drain(): Promise<void> {
       // machine happened to be set to). Two reasons, and they point the same way. A thumbnail sits
       // on the same screen as the live turntable, so one drawn at a tier the device is not on is a
       // second picture of the same robot that does not match the first — the exact drift this
-      // whole feature is built to avoid. And High selects the `school-hall` environment: pinning it
-      // would fetch its light-gathering `.hdr` (0.4 MB since it became a photographed venue) to
+      // whole feature is built to avoid. And High selects the `events-hall` environment: pinning it
+      // would fetch its photograph and light-gathering `.hdr` (1.2 MB, a photographed venue) to
       // draw three 96px cards, on a menu screen, for somebody whose own setting asked for the
       // procedural room. The cache is per DOCUMENT and regenerated on demand, so a
       // settings change catching up on the next load is the whole of the cost.

@@ -433,11 +433,20 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
         applyRoom(lighting);
         return;
       }
+      /**
+       * A PHOTOGRAPHED ROW OPEN TO THE SKY (`court`, `quad`) PAINTS ITS STAND-IN'S SKY whenever its
+       * own map is not live: lighting off, still loading, or failed. Until its backdrop lands it is
+       * the procedural OUTDOOR venue that stands there, and that venue's sky is the background —
+       * the room's themed letterbox colour was a near-black sky over a daylit court (2026-10-11).
+       * A hall needs none of this (its stand-in has a ceiling), and keeps the room while loading.
+       */
+      const openSky = !!def.photo && def.venue.kind === 'outdoor';
       // AN HDRI WITH THE LIGHTING OFF IS NOT FETCHED — see `BbEnvironment.apply`. The room is the
       // honest fallback: it is the other environment that needs no network.
       if (!lighting) {
         loading = false;
-        applyRoom(false);
+        if (openSky) applyFallback(source.fallback, false);
+        else applyRoom(false);
         return;
       }
       const cached = cache.get(id);
@@ -458,7 +467,8 @@ export function createEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Sc
       // the room lights the scene while the HDRI downloads, as it always did — and the
       // equirectangular shader compiles now, during the fetch, so the swap costs no hitch on the
       // frame it lands on (it used to be compiled at construction, for every scene)
-      if (!scene.environment) applyRoom(true);
+      if (openSky) applyFallback(source.fallback, true);
+      else if (!scene.environment) applyRoom(true);
       pmrem.compileEquirectangularShader();
       try {
         /**

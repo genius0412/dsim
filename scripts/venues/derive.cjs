@@ -233,7 +233,10 @@ function patchMirror(img, p) {
  * so the concrete's grain, cracks and stains under a reflection keep their contrast.
  *
  * `g`: `e` the elevation band (degrees, below the horizon), `blur` the radius in degrees, `above`,
- * `strength`.
+ * `strength`, and `pct` (optional, default the median): the percentile of the blurred row taken as
+ * the floor's own level. Where the reflections cover a large share of a row (the events hall's run
+ * of windows: nearly half of it at 15° below the horizon) the median is raised by them and lets
+ * them through; a lower percentile is the clean concrete.
  */
 function degloss(img, g) {
   const { width: W, height: H, data } = img;
@@ -275,7 +278,7 @@ function degloss(img, g) {
   for (let y = row0; y < row1; y++) {
     const by = y - y0;
     const row = Array.from(blur.subarray(by * W, by * W + W)).sort((a, b) => a - b);
-    const T = row[row.length >> 1] * g.above;
+    const T = row[g.pct === undefined ? row.length >> 1 : Math.floor((row.length - 1) * g.pct)] * g.above;
     for (let x = 0; x < W; x++) {
       const Lb = blur[by * W + x];
       if (!(Lb > T)) continue;

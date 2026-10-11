@@ -254,6 +254,15 @@ export interface PhotoVenue {
   room: PhotoRoom;
   /** how dark the field's shadow lands on the photographed floor, 0–1 */
   shadow: number;
+  /**
+   * FURNITURE NEAR THE FIELD THAT THE FLOOR PLANE DRAWS FLAT, if any is left in the files — what it
+   * is and where. A box stands up the floor and the walls and nothing else, so anything standing
+   * between the lens and a wall is drawn where its ray meets the floor: a stretched, flat smear
+   * across it (the events hall's banquet chairs were painted out in the derive for this). A row
+   * that carries this is a pick, never a preset column's default — the default is what most
+   * players see, and High's is every replay export's (2026-10-11, the RENDER lane pins it).
+   */
+  furniture?: string;
   /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
    * `hdri.fallback`: painted, and the same venue kind. */
   fallback: EnvironmentId;
@@ -719,6 +728,13 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      * out — so the stage-level box takes the auditorium too (12.0 deep in all). The auditorium
      * floor is a metre below the stage, and one floor plane draws it about 0.6 × as deep as it is. The key comes from the auditorium
      * lights, which is where the photograph's own light comes from (`fieldlight`: az 75°, el 35°).
+     *
+     * ⚠️ NOT A DEFAULT SINCE 2026-10-11 (`furniture` below): the stage edge is 81 in out on +y,
+     * 9 in past the field's wall (measured off the photograph: 37.7° below the lens), the seats
+     * start just beyond it, and from both driver cameras a third of the frame is seats drawn flat
+     * across the floor. Painting ~300 of them out leaves nothing true to fill with, and a +y wall
+     * at the stage edge would leave the cameras 51 in of room on that side. High, Ultra and the
+     * replay export render in the events hall instead.
      */
     id: 'school-hall',
     name: 'School hall',
@@ -743,6 +759,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
+      furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
       ...PH_CREDIT('school_hall', [
@@ -774,7 +791,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     },
     venue: { kind: 'hall', floor: 0x77736c, wall: 0xb2aca2, trim: 0x6a645c, lamp: 0xf4f8ff, lampPower: 1.1, half: 700, ceil: 330 },
     photo: {
-      ...PHOTO_FILES('events-hall', 786_620, 249_910, 426_811),
+      ...PHOTO_FILES('events-hall', 785_528, 249_240, 427_861),
       gain: 1,
       intensity: 0.6,
       saturation: 0.85,
@@ -935,7 +952,7 @@ export function environmentDef(id: EnvironmentId): EnvironmentDef {
  * one of them, so an `.hdr` fetched from there is refused by the browser before it leaves.
  *
  * ── WHY THIS WAS A DEFAULT-PATH BUG AND NOT AN EDGE (until 2026-10-10, see above) ──────────
- * `school-hall` is the `environment` column on BOTH High and Ultra (`GFX_PRESETS`), an ordinary
+ * `school-hall` was the `environment` column on BOTH High and Ultra (`GFX_PRESETS`), an ordinary
  * desktop lands on one of those from `graphics/auto.ts`'s first guess, and the warm-up governor
  * steps a laptop UP into them about two seconds into a match. So in the embed this fired on
  * essentially every 3D match, and it fired AGAIN on every scene build and every graphics change,
