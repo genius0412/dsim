@@ -62,12 +62,12 @@ export function crumbsFor(screen: string, sub: string | null = null, username: s
       return [];
     case 'modes':
       return [here('Play')];
-    case 'solosetup':
-      return trail(PLAY)('Solo practice');
+    case 'matchsetup':
+      return trail(PLAY)('Match setup');
+    case 'practicesetup':
+      return trail(PLAY)('Practice setup');
     case 'rooms':
       return trail(PLAY)('Browse rooms');
-    case 'watch':
-      return trail(PLAY)('Watch live');
     case 'competitions':
       return trail(PLAY)('Competitions');
     case 'configure':

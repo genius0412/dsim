@@ -214,17 +214,21 @@ that season has none) — then the bind panels —
   a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
   Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
   Switching says what happened in the Driving title when any map has a trigger bind.
-- **SOLO SETUP (`SoloSetup.tsx`, `/solo-setup`) IS NOT A CONFIGURE SECTION** (it was Configure ▸ Match until 2026-10-10;
-  `/configure/match` still resolves, to it). The Play page's Solo practice tile opens it and its sticky bar
-  starts Solo practice or Free drive, both behind `guardStart`. It is two cards: Match setup, then Practice. Practice holds Practice
-  physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
-  Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
-  difficulty row, which is always rendered and DISABLED unless the seat is AI (§1.4: no rows
-  appear or vanish). Stored per game in `GameSettings.practiceSeats`, a sibling of the legacy
-  `practiceBots`/`practiceDummies` (left in the blob, no longer read, so older clients keep
-  theirs). Applies in Solo practice AND Free drive; the spawn is `practiceSetups` in
-  `settings.ts`, DOM-free so `npm test` holds it. A run with other robots gets a "With robots"
-  badge in Practice replays (`PracticeRunMeta.others`) — practice runs are never ranked anyway.
+- **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`, `/match-setup`, `/practice-setup`) ARE NOT CONFIGURE SECTIONS**
+  (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
+  STARTS straight away (behind `guardStart`), and the two cards are two buttons at the top of the Play
+  page. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
+  Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
+  Partner / Opponent 1 / Opponent 2, each None · Dummy · AI (AI only where the game registers a
+  `BotDriver`) with its own difficulty row, which is always rendered and DISABLED unless the seat is AI
+  (§1.4: no rows appear or vanish). `/configure/match` and the old `/solo-setup` land on Match setup.
+  ⚠️ THE RUN LENGTH PICKER IS GONE; `GameSettings.runLength` is still read by Solo practice, record
+  runs and the rooms you create, so it keeps its stored value and nothing can change it now. Seats are
+  stored per game in `GameSettings.practiceSeats`, a sibling of the legacy `practiceBots`/
+  `practiceDummies` (left in the blob, no longer read, so older clients keep theirs). Applies in Solo
+  practice AND Free drive; the spawn is `practiceSetups` in `settings.ts`, DOM-free so `npm test`
+  holds it. A run with other robots gets a "With robots" badge in Practice replays
+  (`PracticeRunMeta.others`) — practice runs are never ranked anyway.
 - "Flip front" reverses robot-centric drive so the shooter side leads — applied at INPUT level
   in `GameController`, sim untouched; REVERSED chip in the HUD.
 - All `GameSettings` persist to `localStorage['decodesim.settings.v1']` via `src/settings.ts`
@@ -490,7 +494,10 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   curve equals the re-simulated one. While a NEW run's curve is still being made the tag reads `—`,
   never the previous run's curve under the new run's name (`usePace`'s `shownRun`).
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
-  in the top-right chips.
+  in the top-right chips. ONE exception, owner 2026-10-12 ("allow notifications from people while in
+  match"): friend toasts (`FriendToasts inMatch`, top-left, information only — no Accept on an invite,
+  no profile link, because either would leave the match). The ranked search is a bottom-left corner
+  card (`QueueBar`); pressing FIND MATCH parks the search and goes back, it is not a page.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.

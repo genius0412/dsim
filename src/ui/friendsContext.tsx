@@ -331,17 +331,20 @@ export function useFriendsCtx(): FriendsCtx {
 }
 
 /**
- * The floating notification stack. Rendered inside `AppShell` only, so it lives
- * on the menu shell and NEVER over a live match (product decision: no popup toasts
- * over the field). A request toast can be actioned inline (Accept/Decline); a
- * challenge/invite toast joins the room or dismisses.
+ * The floating notification stack. Rendered inside `AppShell` and, since 2026-10-12 (owner: "allow
+ * notifications from people while in match"), over a live match too. `inMatch` makes it INFORMATION
+ * ONLY there: accepting an invite or opening a profile would navigate away from the match (a forfeit
+ * in a ranked one), so those are left out and Decline / Dismiss remain. Outside a match a request
+ * toast can be actioned inline (Accept/Decline); a challenge/invite toast joins the room or dismisses.
  */
 export function FriendToasts({
   onOpenProfile,
   onJoinInvite,
+  inMatch = false,
 }: {
   onOpenProfile: (username: string) => void;
   onJoinInvite: (invite: RoomInvite) => void;
+  inMatch?: boolean;
 }) {
   const friends = useFriendsCtx();
   const { toasts, dismissToast, pauseToasts } = friends;
@@ -349,7 +352,7 @@ export function FriendToasts({
   // into it, so one that mounts WITH its first toast never announces that toast.
   return (
     <div
-      className="fr-toasts"
+      className={inMatch ? 'fr-toasts in-match' : 'fr-toasts'}
       role="region"
       aria-label="Friend notifications"
       aria-live="polite"
@@ -365,7 +368,7 @@ export function FriendToasts({
           <button
             className="fr-toast-who"
             onClick={() => t.from.username && onOpenProfile(t.from.username)}
-            disabled={!t.from.username}
+            disabled={!t.from.username || inMatch}
           >
             <span className="fr-toast-name">{t.from.handle}</span>
             <SupporterBadge supporter={t.from.supporter} role={t.from.role} />
@@ -384,15 +387,17 @@ export function FriendToasts({
               // dismissing just clears it off your screen. Both are offered
               // because they mean different things to the person waiting.
               <>
-                <button
-                  className="ds-btn small primary"
-                  onClick={() => {
-                    onJoinInvite(t.invite!);
-                    dismissToast(t.id);
-                  }}
-                >
-                  Accept
-                </button>
+                {!inMatch && (
+                  <button
+                    className="ds-btn small primary"
+                    onClick={() => {
+                      onJoinInvite(t.invite!);
+                      dismissToast(t.id);
+                    }}
+                  >
+                    Accept
+                  </button>
+                )}
                 {/* GHOST, as in the panel and the flyout. Bordered, it read as a
                     second competing action where the other two places read as one
                     action plus an out — the same decision, offered three times. */}

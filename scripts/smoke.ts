@@ -18765,7 +18765,7 @@ const recordDrive: CommandSource = (tick) => {
 {
   const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
   const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
-  const shellScreens = ['modes', 'solosetup', 'rooms', 'watch', 'competitions', 'configure', 'robotimport', 'records', 'profile', 'account',
+  const shellScreens = ['modes', 'matchsetup', 'practicesetup', 'rooms', 'competitions', 'configure', 'robotimport', 'records', 'profile', 'account',
     'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
   check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
   check('crumbs: every shell screen has a trail', shellScreens.every((s) => crumbsFor(s, null, 'someone').length > 0), shellScreens.filter((s) => crumbsFor(s, null, 'x').length === 0).join());
@@ -18773,7 +18773,7 @@ const recordDrive: CommandSource = (tick) => {
     shellScreens.every((s) => { const t = crumbsFor(s, 'appearance', 'x'); return t.every((c, i) => (i === t.length - 1) === !c.to); }));
   check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
   check('crumbs: Play pages go back to Play, and Play goes Home',
-    parentOf(crumbsFor('rooms')).screen === 'modes' && parentOf(crumbsFor('solosetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
+    parentOf(crumbsFor('rooms')).screen === 'modes' && parentOf(crumbsFor('matchsetup')).screen === 'modes' && parentOf(crumbsFor('practicesetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
   check('crumbs: every Records page goes back to the hub, with the registry labels',
     RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
   check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
@@ -18786,7 +18786,7 @@ const recordDrive: CommandSource = (tick) => {
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
   const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
-  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'solosetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
+  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
 }
 
 /** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
@@ -29549,10 +29549,10 @@ const dumperSetup = (): RobotSetup => {
 
   // bound the scan to the Watch live tile ITSELF — a lazy [\s\S]*? walks straight past it into
   // the next section and is then satisfied by the LAN gate below, which cannot fail
-  const watchTile = modes.match(/onClick=\{onWatch\}[\s\S]{0,2000}?<\/button>/);
-  check('discord activity: the Watch live tile is still found (the checks below are anchored on it)', !!watchTile);
+  const watchTile = modes.match(/onClick=\{onBrowse\}[\s\S]{0,2000}?<\/button>/);
+  check('discord activity: the Browse rooms tile (which absorbed Watch live) is still found (the checks below are anchored on it)', !!watchTile);
   check(
-    '⚠️ discord activity: Watch live says this activity’s lobbies are not listed, and names the code that reaches one',
+    '⚠️ discord activity: Browse rooms says this activity’s lobbies are not listed, and names the code that reaches one',
     !!watchTile &&
       /\{inActivity && \(/.test(watchTile[0]) &&
       /aren’t listed/.test(watchTile[0]) &&

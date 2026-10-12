@@ -987,6 +987,11 @@ export function Matchmaking({
     // is thrown away at `matchAssigned` and `openAssignedRoom` makes it on the real one; the
     // latch is per `LobbyClient`, so saying it twice on two sockets is correct, not double.
     announcePhysicsReady(lobby, challengeRef.current?.game ?? settings.game);
+    // THE SEARCH IS A CORNER NOTIFICATION, NOT A PAGE (owner, 2026-10-12). Leaving while searching
+    // PARKS the queue (`teardown`), `QueueBar` pins it in the corner, and the keeper's takeover brings
+    // this screen back when a match is found. The search page below stays for the ways back into it
+    // (the bar's View button, a reload-resume). A challenge keeps it: it is a wait on a person.
+    if (!challengeRef.current) onCancel();
   };
 
   /** a ranked match was assigned: drop the matchmaker socket and open a fresh one to

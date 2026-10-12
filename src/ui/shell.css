@@ -437,10 +437,22 @@
   align-items: center;
   gap: 12px;
   margin-left: -8px; /* pulls the dot toward the mark; the bar's own gap is 20px */
-  font-size: var(--ds-t-md);
-  font-weight: 400;
+  /* ONE SIZE across the bar: mark, season and crumb all read at --ds-t-lg (owner, 2026-10-12) */
+  font: inherit;
+  font-size: var(--ds-t-lg);
+  font-weight: 600;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
   color: var(--ds-mut);
   white-space: nowrap;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: color var(--ds-dur-fade);
+}
+.ds-bar-season:hover {
+  color: var(--ds-ink);
 }
 .ds-bar-season .sep {
   color: var(--ds-line-strong);
@@ -452,7 +464,7 @@
   gap: 10px;
   font-weight: 900;
   letter-spacing: 0.05em;
-  font-size: 18px;
+  font-size: var(--ds-t-lg);
   background: none;
   border: 0;
   color: inherit;
@@ -646,7 +658,7 @@
 }
 .ds-crumb {
   font: inherit;
-  font-size: var(--ds-t-xl);
+  font-size: var(--ds-t-lg);
   font-weight: 800;
   letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
@@ -1003,7 +1015,7 @@
    COLUMN that had to scroll with `.ds-app`, and this is a layer with a scroll of its own. */
 .fr-scrim {
   position: fixed;
-  inset: 0;
+  inset: 0 0 var(--fr-foot, 0px) 0;
   z-index: 40;
   background: transparent;
 }
@@ -1011,7 +1023,7 @@
   position: fixed;
   top: var(--ds-bar-h);
   right: 0;
-  bottom: 0;
+  bottom: var(--fr-foot, 0px);
   z-index: 41;
   width: min(340px, 100vw);
   padding: var(--ds-s-4);
@@ -1265,6 +1277,14 @@
   gap: 8px;
   width: min(320px, calc(100vw - 32px));
   pointer-events: none; /* the cards re-enable it — clicks pass through the gaps */
+}
+.fr-toasts.in-match {
+  /* over a match: the top-left corner, clear of the bottom score bar, the right-hand chip column
+     and the top-centre queue chip; information only, so a tap never leaves the field */
+  top: 64px;
+  left: 16px;
+  right: auto;
+  bottom: auto;
 }
 .fr-toast {
   pointer-events: auto;
@@ -2119,6 +2139,14 @@ button.ds-key:where(:not(:disabled)):active,
 }
 /* faint 24" tile grid behind the play area */
 /* home play sections (Practice / Compete / Custom) */
+.ds-tiles.cols3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 640px) {
+  .ds-tiles.cols3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .ds-tileset + .ds-tileset {
   margin-top: 20px;
 }
@@ -4418,6 +4446,7 @@ tr.lb-detail td {
 /* the title and its sub-line are ONE group (`ConsoleHead`): the sub is the title's caption,
    8px under it, and the column's gap spaces the whole group from what follows. */
 .ds-title {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--ds-s-2);
@@ -4425,9 +4454,17 @@ tr.lb-detail td {
 .ds-title > .ds-sub {
   margin: 0;
 }
-/* a sub that comes and goes keeps its line (Ranked's "searching…"), so the panel never moves */
+/* a sub that comes and goes (Ranked's "searching…") HANGS in the page gap under the title instead of
+   reserving a line of its own: the empty reserved line plus the two gaps left ~52px of nothing between
+   the title and the panel (owner, 2026-10-12), and out of flow the panel still never moves. The gap is
+   --ds-s-5 (24px) and a line is 20px, so a one-line sub fits. */
 .ds-title > .ds-sub.reserve {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
   min-height: 1lh;
+  margin-top: 2px;
 }
 .ds-title h1 {
   font-size: var(--ds-t-h1);
@@ -7040,9 +7077,10 @@ a.ds-cta {
    and it always carries the way out. */
 .ds-queuebar {
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: max(12px, env(safe-area-inset-bottom));
+  /* PINNED IN THE BOTTOM-LEFT CORNER (owner, 2026-10-12): the ranked search is a notification, not a
+     page. The friend toasts own the bottom-right. */
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 60;
   display: flex;
   align-items: center;
@@ -7088,6 +7126,8 @@ a.ds-cta {
    other floating HUD surfaces use it — a dark card on the dark field is barely
    1.4:1 by fill, so its edge is what says where it ends. */
 .ds-queuebar.over {
+  left: 50%;
+  transform: translateX(-50%);
   bottom: auto;
   top: max(10px, env(safe-area-inset-top));
   border-color: var(--ds-hud-line);
@@ -9485,19 +9525,19 @@ input.admin-months {
 .ds-banner-bypass {
   align-self: center;
   margin: 0;
-  padding: var(--ds-s-1) var(--ds-s-3);
+  padding: var(--ds-s-2) var(--ds-s-4);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
   background: var(--ds-panel);
   color: var(--ds-ink);
-  font-size: var(--ds-t-sm);
+  font-size: var(--ds-t-md);
   font-weight: 600;
   line-height: var(--ds-lh-tight);
   box-shadow: var(--ds-block-sm);
 }
 .ds-banner-more {
   font: inherit;
-  font-size: var(--ds-t-sm);
+  font-size: var(--ds-t-md);
   font-weight: 600;
   cursor: pointer;
 }

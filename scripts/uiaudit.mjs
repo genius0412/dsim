@@ -117,7 +117,7 @@ const BASELINE = {
   // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
   // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
   // → 11, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'off-scale-font-size': 11,
+  'off-scale-font-size': 10,
   // 45 → 43, 2026-09-22: the builder hero's `24px` name and the `10px` CUSTOM chip beside it.
   // The name is `--ds-t-xl`, and the chip is gone: the preset cards right under the hero
   // already show whether the build is one of them.

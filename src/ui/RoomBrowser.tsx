@@ -4,6 +4,7 @@ import { fetchListedRooms } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { seasonFor } from '../seasons';
 import { onUserActive, userIdle } from './userActivity';
+import { WatchLive } from './WatchLive';
 
 /**
  * "Browse rooms" — the Public rooms hosted right now, in every region. A row joins that room the
@@ -17,6 +18,7 @@ export function RoomBrowser({
   onJoin,
   onWatch,
   onHost,
+  onWatchLive,
 }: {
   /** join a listed room: its code, its season and the region that hosts it */
   onJoin: (room: string, game: ListedRoom['game'], region?: string) => void;
@@ -24,6 +26,8 @@ export function RoomBrowser({
   onWatch: (room: string, game: ListedRoom['game'], region?: string) => void;
   /** open the Public/Private choice for a new room */
   onHost: () => void;
+  /** spectate a live match or a room by code (the former Watch live screen) */
+  onWatchLive: (roomCode: string, region?: string) => void;
 }) {
   const [rooms, setRooms] = useState<ListedRoom[] | null>(null);
   const [error, setError] = useState(false);
@@ -121,6 +125,7 @@ export function RoomBrowser({
           </div>
         )}
       </div>
+      <WatchLive onWatch={onWatchLive} />
       {configured && (
         <p className="ds-hint">
           A room that goes Private can take a few seconds to leave this list, and a code you have already seen
