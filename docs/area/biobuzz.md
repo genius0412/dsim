@@ -1924,3 +1924,59 @@ shrink every saved 15 × 17 build of that shape. Now the length range is the uni
 range is the widest one any rectangle holding that length allows; `coerceBiobuzzSpec` clamps
 length first and then reads width off it. The HOPPER slider is still 1–4 for every build
 (`BB_STORAGE_MAX`, owner ruling).
+
+---
+
+# IMMERSIVE VR (`scene/renderXR.ts`) — WebXR, added 2026-10-11
+
+**What it is.** On a browser that can open an `immersive-vr` session (Safari on Apple Vision
+Pro is the one tested), the 3D view shows an **Enter VR** button. Pressing it stands the player
+at their own driver station at 1:1 scale, facing across the field, with a venue scoreboard
+(red | phase + clock | blue) above the far wall. Same world, same physics, same input: the XR
+path is a second CAMERA on the existing scene and nothing else. `src/sim/`, `sim3d/` and
+`src/input/` are untouched, so solo free drive and solo matches step exactly as on the flat view.
+
+**How it fits.** `GameScene.xr?: SceneXR` (`src/games/module.ts`) is optional and only the
+BIOBUZZ scene supplies it, and only when `BbXR.supported()` says yes, so no other game and no
+non-XR browser sees a change except the dt clamp below. The rig (a Group parent of the XR
+camera) carries the whole units/axes conversion: 39.37 in/m, WebXR +Y up → field +Z up, WebXR
+forward → across the field. It sits on the floor at `driverEyePoint`'s x/y for the local
+robot's alliance and TOP/BOTTOM role, in a `local-floor` space, so the player's real height
+and lean come from the headset. It re-places itself when the role changes.
+
+⚠️ **THREE FACTS MEASURED ON VISION PRO** (2026-10-11, visionOS Safari), each the cause of a
+real failure before the fix:
+
+1. **Window `requestAnimationFrame` FREEZES while immersive.** `GameController.loop` is driven
+   from `renderer.setAnimationLoop` instead (`enterXR`), and `xrDriving` stops `loop` from
+   re-queuing a window rAF. `xrDriving` is set BEFORE `requestSession`, because the first XR
+   frame can run `loop` before `enter` resolves.
+2. **The XR frame timestamp is a DIFFERENT CLOCK** from window rAF (~406 s behind). Passing it
+   through made `dt` hugely negative, drained the accumulator, and froze the sim with the
+   headset still drawing at 90 fps. XR frames are timed with `performance.now()`, and
+   `frameLogic` now clamps `dt` at zero as well as at 0.25 s. That clamp is the one change on
+   the non-XR path, and it cannot fire on a monotonic clock.
+3. **Never `setRenderTarget(null)` inside the XR render.** three binds the headset's
+   framebuffer at the start of each XR frame. Null sends the frame to the hidden page canvas:
+   a black headset, 761 frames drawn and none seen. The XR branch at the top of
+   `BiobuzzScene.render` skips the frame cap, the MSAA target, the minimap and the governor.
+
+**Cost.** Render scale 0.5 of native (`XR_FRAMEBUFFER_SCALE`), foveation 1, shadows OFF while
+presenting (restored on exit). On Vision Pro that is ~200k triangles, ~2 ms CPU per frame, and
+90 fps. An XR-capable browser also creates its WebGL context with `antialias: true`, because
+the XR framebuffer is drawn into directly with no MSAA target to resolve through. That flag is
+set once at context creation and so also applies to that browser's flat view.
+
+**Known gaps (not bugs in the sim):**
+- Controller input is `navigator.getGamepads()` only (a paired DualSense on Vision Pro, which
+  Safari exposes inside the session after a one-time permission prompt that is easy to miss).
+  XR controllers (`session.inputSources[].gamepad`, e.g. Quest Touch) are NOT mapped, and no
+  hand or gaze input is used. No rumble: Safari exposes no `vibrationActuator` there.
+- The button only exists on the 3D view. Leaving VR uses the platform gesture (the Digital
+  Crown on Vision Pro). The 2D HUD, menus and the pause screen are not drawn in the headset.
+  Alliance and role are whatever the match already gave the local robot.
+- Untested on Quest and other headsets. Nothing in the code is Apple-specific, but Quest's
+  input and GPU budget are the two open questions.
+- On Vision Pro the FLAT Safari window ran the 3D view at ~7 fps (CPU ~2.6 ms/frame, so a GPU
+  or compositor limit). Not investigated. The `antialias` flag above is one suspect, since it
+  only applies to XR-capable browsers. The immersive view is unaffected.
