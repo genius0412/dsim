@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-12 (BIOBUZZ online: the hive tray is drawn at the same moment as the balls in it)
+
+**State: PR `fix/hive-tray-interp` → `alpha`, not merged. CLIENT ONLY: no wire change, no `SIM_VERSION`, no server deploy.** `npm test` ALL PASS but the known `fieldDims.gen.ts` drift; client and server `tsc` identical to `alpha`'s. Run with stand-ins for the private Zenith tarballs (not in this sandbox), so `build`/`bundleaudit` were not run.
+
+- **Owner report (2026-10-11):** hive tips felt inconsistent in speed. Two findings, two outcomes:
+  - **Swing speed: KEPT AS PHYSICS (owner ruling 2026-10-12).** After the pin lifts the 3D tray is a free see-saw, so speed is the contents' torque: 8 POLLEN 3.00 s in a line, 5.13 s piled on the inner wall; piled, 9 → 4.47 s, 12 → 3.35 s. A count-paced swing was built and the owner rejected it as less realistic. Recorded in `docs/area/biobuzz.md`; nothing changed on `alpha`.
+  - **Visual glitch: FIXED in this PR.** On the interpolated path (prediction Off / Light / Balanced, and spectators) the tray was drawn off the newest snapshot while its contents were interpolated: 30 Hz steps and a ball-to-floor gap. `src/games/biobuzz/trayDraw.ts` + `displayWorld`; see `docs/area/netcode.md` (A MOVING HIVE TRAY AND WHAT RIDES IT…). Full prediction (Auto's pick on ordinary machines) never had it.
+- ⚠️ **The 2026-10-11 session pushed that work to `origin/claude/dsim-bug-fixes-lk980p`, a PRE-REWRITE branch.** Never merge it or base anything on it: it shares no history with `alpha`. This PR was rebuilt on `alpha` from scratch, and the count-paced swing in it was dropped per the ruling above. Fourteen pre-rewrite `claude/*` branches are still on origin; deleting them is the owner's call.
+
 # HANDOFF — 2026-10-11b (stair-stepped edges on HiDPI: High and up draw native pixels; robot work frozen)
 
 **State: on `alpha`. CLIENT ONLY.** `npm test` 6034 BIOBUZZ + shared ALL PASS, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass; real app Free drive in 3D checked offscreen.
