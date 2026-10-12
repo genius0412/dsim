@@ -1,3 +1,17 @@
+# HANDOFF — 2026-10-12 (hosting cost: month-end budget across Fly + Neon + Vercel; the checkup is a routine again)
+
+**State: commit `ce1fcc61` (Vercel) on branch `claude/server-load-cost-optimization-0c49bc` off `main`, and on `alpha` (344067c5). The push to `main` was blocked as a production deploy: the owner pushes the branch (`git push origin claude/server-load-cost-optimization-0c49bc:main`) or says to.** `npm test` (5178), `build`, `docaudit` pass. Client + `vercel.json` only; no server change, no Fly deploy.
+
+- **Owner:** a routine that checks and predicts load, resizes machines and keeps the bill low across Vercel, Neon and Fly; target $60/month, acceptable under $150, may go over during a month but the month must close under.
+- **Found:** the 3-hourly capacity routine had stopped on 2026-10-05: it was registered under another app account. Re-registered as `dsim-capacity-checkup` (files in `~/.claude/scheduled-tasks/dsim-capacity-checkup/`). Its permission mode and folder are set in the app (routine → Edit), not by Claude.
+- **Routine now:** budget is the CALENDAR-MONTH total of all three services (`month.totalMonthEnd`, cost.mjs). `ledger.json` keeps each finished day's Fly cost because Prometheus holds ~14 days. `forecast` = same hour of the week over two weeks × growth; it can only trigger an early upsize on a region that also throttled this week, and it blocks a downsize into a coming peak. `services.mjs` reads Neon and Vercel billing when `NEON_API_KEY` / `VERCEL_BILLING_TOKEN` are in that folder's `.env`; until then both are estimates (`budget-config.json`: Neon $25, Vercel $20).
+- **Fly prices** in cost.mjs were ~6.4% under today's (docs.fly.io/about/pricing): performance-2x/4GB in iad is $66.92 for 730 h, not $62.86.
+- **Measured (Oct 1–12):** Fly $50.75 so far, $4.46/day at live sizes → $137 for October; with the estimates, ~$182 total. Even the floor plan closes October at ~$169: iad (performance-2x, never resized by the routine) is $67 and its load rose 38% week over week (forecast 7-day peak 1.03 of 1.2 cores).
+- **Vercel:** `/assets/*` was served `max-age=0, must-revalidate`, so every page view re-checked every hashed file. Now `immutable` (`vercel.json`). `/version.json` was fetched every 90 s by every open tab, hidden or not; now never while hidden, every 2 min while visible (`src/net/version.ts`). Speed Insights is enabled on the project with no data (owner: disable it). Skew Protection is on, so the team is on Pro.
+- **sjc:** performance-1x with a worst hourly mean of 0.19 cores over 7 days; safe plan is shared-cpu-8x (−$12.8/month). It had live matches the whole session, so the routine takes it on its next run.
+- **Not reachable from here:** Neon (the production-read classifier blocked a metadata query; no API key), Vercel billing (the stored token is project-scoped).
+- **Levers that are the owner's:** 3 Fly performance blocks in iad ($432/yr, ≈ −$24/month, backdated to the 1st); Neon compute max 1 CU / min 0.25 CU on the Launch plan, once measured.
+
 # HANDOFF — 2026-10-11b (stair-stepped edges on HiDPI: High and up draw native pixels; robot work frozen)
 
 **State: on `alpha`. CLIENT ONLY.** `npm test` 6034 BIOBUZZ + shared ALL PASS, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass; real app Free drive in 3D checked offscreen.
