@@ -172,6 +172,21 @@ button {
   width: 100%;
   height: 100%;
 }
+/* WEBXR: "Enter VR", over the 3D view, added by `GameController.mountXrButton` only when the
+   browser can open an immersive session. Above the HUD (z-10) so it stays clickable mid-match.
+   Centred with auto margins, not a translate: the keycap's hover/press sink owns `transform`. */
+.game-xr-enter {
+  position: absolute;
+  inset-inline: 0;
+  bottom: var(--ds-s-5);
+  width: max-content;
+  margin-inline: auto;
+  z-index: 20;
+}
+/* `.ds-btn` sets `display`, which beats the UA's `[hidden]` rule */
+.game-xr-enter[hidden] {
+  display: none;
+}
 
 .game-canvas {
   display: block;
