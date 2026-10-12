@@ -113,23 +113,6 @@ export function ModeSelect({
         </p>
       )}
 
-      {/* MATCH SETUP and PRACTICE SETUP, above everything (owner, 2026-10-12). Solo practice starts
-          straight away, so the options it used to ask for first live here. */}
-      <section className="ds-tileset">
-        <div className="ds-tiles">
-          <button className="ds-tile" onClick={onMatchSetup}>
-            <span>
-              <span className="t">Match setup</span>
-            </span>
-          </button>
-          <button className="ds-tile" onClick={onPracticeSetup}>
-            <span>
-              <span className="t">Practice setup</span>
-            </span>
-          </button>
-        </div>
-      </section>
-
       {activeGame && (
         <div className="ds-rejoin" role="alert">
           <b>You’re already in a game.</b>
@@ -172,6 +155,23 @@ export function ModeSelect({
         </div>
       )}
 
+      {/* MATCH SETUP and PRACTICE SETUP, below the tutorial offer (owner, 2026-10-12). Solo practice
+          starts straight away, so the options it used to ask for first live here. */}
+      <section className="ds-tileset">
+        <div className="ds-tiles">
+          <button className="ds-tile" onClick={onMatchSetup}>
+            <span>
+              <span className="t">Match setup</span>
+            </span>
+          </button>
+          <button className="ds-tile" onClick={onPracticeSetup}>
+            <span>
+              <span className="t">Practice setup</span>
+            </span>
+          </button>
+        </div>
+      </section>
+
       {/* SOLO: offline and always available — Solo Practice is primary — then the two online runs
           that need the game server and an account (`compete`).
           A TILE IS ITS TITLE: the mono kicker over each one (SOLO, RECORDS, LIVE …) repeated the
@@ -200,17 +200,6 @@ export function ModeSelect({
                 </span>
               </button>
             </>
-          )}
-          {/* LAN — LAST in the grid. Never disabled on `multiplayer`: not needing our servers is the
-              point of it. Hidden where `LAN_ENABLED` is off (a greyed tile advertises a mode this
-              build will not play), and in a Discord activity, where hosting needs an account the
-              embed never has and the other machine cannot be on this network. */}
-          {lanOn && !inActivity && (
-            <button className="ds-tile" onClick={onLan}>
-              <span>
-                <span className="t">LAN</span>
-              </span>
-            </button>
           )}
         </div>
       </section>
@@ -284,6 +273,17 @@ export function ModeSelect({
                 </button>
               )}
             </>
+          )}
+          {/* LAN — LAST in the grid. Never disabled on `multiplayer`: not needing our servers is the
+              point of it. Hidden where `LAN_ENABLED` is off (a greyed tile advertises a mode this
+              build will not play), and in a Discord activity, where hosting needs an account the
+              embed never has and the other machine cannot be on this network. */}
+          {lanOn && !inActivity && (
+            <button className="ds-tile" onClick={onLan}>
+              <span>
+                <span className="t">LAN</span>
+              </span>
+            </button>
           )}
         </div>
       </section>
