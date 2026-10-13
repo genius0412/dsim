@@ -20,6 +20,7 @@ export function ModeSelect({
   onRejoin,
   onFreeDrive,
   onSoloMatch,
+  onRobot,
   onMatchSetup,
   onPracticeSetup,
   onRecordRun,
@@ -44,6 +45,7 @@ export function ModeSelect({
   onRejoin: () => void;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
+  onRobot: () => void;
   onMatchSetup: () => void;
   onPracticeSetup: () => void;
   onRecordRun: () => void;
@@ -158,7 +160,12 @@ export function ModeSelect({
       {/* MATCH SETUP and PRACTICE SETUP, below the tutorial offer (owner, 2026-10-12). Solo practice
           starts straight away, so the options it used to ask for first live here. */}
       <section className="ds-tileset">
-        <div className="ds-tiles">
+        <div className="ds-tiles cols3">
+          <button className="ds-tile" onClick={onRobot}>
+            <span>
+              <span className="t">Robot</span>
+            </span>
+          </button>
           <button className="ds-tile" onClick={onMatchSetup}>
             <span>
               <span className="t">Match setup</span>

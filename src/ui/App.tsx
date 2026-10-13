@@ -251,7 +251,7 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'practicesetup':
       return '/practice-setup';
     case 'configure':
-      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
+      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'controls'}`;
     case 'robotimport':
       return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
@@ -340,7 +340,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
   if (robotImport && importerEnabled()) return at('robotimport', { sub: robotImport[1] ?? null });
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
-  if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
+  if (configure) return at('configure', { sub: configure[1] ?? 'controls' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
   // a bare `/records` is the HUB; `/records/<page>` is one page of it (`recordsPages.ts`)
   if (records) return at('records', { sub: records[1] ?? RECORDS_HUB });
@@ -2015,6 +2015,62 @@ export function App() {
     return () => window.clearInterval(iv);
   }, [signedIn, screen]);
 
+  // The lobby's Back did these resets itself; the app bar and the trail leave without it.
+  useEffect(() => {
+    if (screen !== 'lobby') return;
+    return () => {
+      setResumedRoom(null);
+      setPendingLanName(null);
+      setRoomChoice({ asking: false, listed: false });
+    };
+  }, [screen]);
+
+  // the shell's right-hand cluster and trail, hoisted so the pre-connection pages (`shell` below) share them
+  const right = authEnabled ? (
+    <ProfileMenu
+      handle={handle}
+      preferredServerId={settings.preferredServerId ?? selectedServerId()}
+      onChangeServer={(id) => update({ ...settings, preferredServerId: id })}
+      onAccount={() => navigate('account')}
+      onAppearance={() => navigate('account', { sub: 'appearance' })}
+    />
+  ) : (
+    <ServerMenu
+      value={settings.preferredServerId ?? selectedServerId()}
+      onChange={(id) => update({ ...settings, preferredServerId: id })}
+    />
+  );
+  /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
+  const crumbs = crumbsFor(screen, route.sub, route.username);
+  /**
+   * THE APP SHELL AROUND A PRE-CONNECTION PAGE (Find match, Duo record, Room entry, LAN). The
+   * screen asks for it, because it also has live-socket states (a joined room) that stay
+   * full-screen. The caller owns the one `FriendsProvider` above it.
+   */
+  const shell = (body: ReactNode): JSX.Element => (
+    <AppShell
+      onNav={goNav}
+      right={right}
+      showAdmin={isAdmin}
+      crumbs={crumbs}
+      onCrumb={(to) => navigate(to.screen as Screen, { sub: to.sub ?? null })}
+      onDownload={() => navigate('download')}
+      onContributors={() => navigate('contributors')}
+      onChangelog={() => navigate('changelogs')}
+      onPrivacy={() => navigate('privacy')}
+      onTerms={() => navigate('terms')}
+      onDonate={() => navigate('donate')}
+      signedIn={signedIn}
+      onOpenProfile={openProfile}
+      onJoinInvite={onJoinInvite}
+      onSpectate={spectateRoom}
+      myUserId={accountUserId}
+      game={settings.game}
+    >
+      {body}
+    </AppShell>
+  );
+
   /**
    * Wrap a FULL-SCREEN surface so the "you are still queued" indicator survives it.
    *
@@ -2114,6 +2170,7 @@ export function App() {
       <Lobby
         settings={shown}
         onSettingsChange={update}
+        shell={shell}
         /* Both exits from the lobby drop the handed-over socket reference, so a later,
            ordinary visit to this screen cannot re-adopt a room the player has left. */
         onStart={(s) => {
@@ -2198,14 +2255,11 @@ export function App() {
   if (lanOn && screen === 'lan') {
     return roomScreen(
       <LanPanel
+        shell={shell}
         signedIn={signedIn}
         game={settings.game}
         onBack={() => navigate('modes')}
         displayName={handle}
-        myUserId={accountUserId}
-        onOpenProfile={openProfile}
-        onJoinInvite={onJoinInvite}
-        onSpectate={spectateRoom}
         onConnected={(code, game, name) =>
           guardStart(() => {
             /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
@@ -2245,6 +2299,7 @@ export function App() {
       <Lobby
         settings={shown}
         onSettingsChange={update}
+        shell={shell}
         config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record', true)}
         onCancel={() => navigate('modes')}
@@ -2273,17 +2328,27 @@ export function App() {
             is a remount on the way in and out, not an identity change: the session store hands
             the same user straight back, and the settings load stays guarded by `syncedUser`. */}
         {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
-        <Matchmaking
-          settings={shown}
+        <FriendsProvider
           signedIn={signedIn}
-          myUserId={accountUserId}
-          onStart={(s) => beginSession(s, 'ranked')}
-          onCancel={() => navigate('modes')}
-          onSignIn={() => navigate('account')}
-          onSettingsChange={update}
-          challenge={pendingChallenge ?? undefined}
-          onChallengeConsumed={() => setPendingChallenge(null)}
-        />
+          activity="lobby"
+          game={settings.game}
+          sound={settings.audio.volume.master > 0}
+          onHostRoom={hostForChallenge}
+          onQueueChallenge={startChallenge}
+        >
+          <Matchmaking
+            shell={shell}
+            settings={shown}
+            signedIn={signedIn}
+            myUserId={accountUserId}
+            onStart={(s) => beginSession(s, 'ranked')}
+            onCancel={() => navigate('modes')}
+            onSignIn={() => navigate('account')}
+            onSettingsChange={update}
+            challenge={pendingChallenge ?? undefined}
+            onChallengeConsumed={() => setPendingChallenge(null)}
+          />
+        </FriendsProvider>
       </>
     );
   }
@@ -2339,25 +2404,9 @@ export function App() {
   // width. Without auth there's no avatar to hang it on, so it stays a bar-level
   // control on its own. No bar "Profile" button beside it: the home keycaps and the
   // rail both already go there, and a third copy was the bar repeating nav (review 01-06).
-  const right = authEnabled ? (
-    <ProfileMenu
-      handle={handle}
-      preferredServerId={settings.preferredServerId ?? selectedServerId()}
-      onChangeServer={(id) => update({ ...settings, preferredServerId: id })}
-      onAccount={() => navigate('account')}
-      onAppearance={() => navigate('account', { sub: 'appearance' })}
-    />
-  ) : (
-    <ServerMenu
-      value={settings.preferredServerId ?? selectedServerId()}
-      onChange={(id) => update({ ...settings, preferredServerId: id })}
-    />
-  );
 
-  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
+  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'controls';
   const recordsView: RecordsView = recordsViewOf(route.sub);
-  /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
-  const crumbs = crumbsFor(screen, route.sub, route.username);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
 
@@ -2540,6 +2589,7 @@ export function App() {
               navigate('game');
             })
           }
+          onRobot={() => navigate('configure', { sub: 'robot' })}
           onMatchSetup={() => navigate('matchsetup')}
           onPracticeSetup={() => navigate('practicesetup')}
           onRecordRun={() => guardStart(() => navigate('record'))}

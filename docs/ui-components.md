@@ -494,7 +494,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-console` | src/ui/shell.css:957 | 25 |
+| `.ds-console` | src/ui/shell.css:957 | 21 |
 | `.ds-console-in` | src/ui/shell.css:4367 | 12 |
 
 ## `ds-dialog` — 2
@@ -806,7 +806,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-h1` | src/ui/competitions.css:43 | 25 |
+| `.ds-h1` | src/ui/competitions.css:43 | 26 |
 
 ## `ds-h2` — 1
 
@@ -1046,7 +1046,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tile` | src/ui/shell.css:2072 | 11 |
+| `.ds-tile` | src/ui/shell.css:2072 | 12 |
 
 ## `ds-tiles` — 1
 

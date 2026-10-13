@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-13 (Robot beside the setup tiles; Find match / Duo record / Room / LAN are shell pages)
+
+**State:** `npm test` green except `AUTO: the handed field's red loading zone…` (the private `@horizon36596/zenith-*` packages are missing on this box, which also fails `tsc` in `src/auto`; not from this change). `uiaudit`, `docaudit` green. **NOT verified in the GUI** — run `/verify` before trusting the layout.
+
+- Robot is a Play tile (route still `/configure/robot`, no sub-nav); Configure is four sections, `/configure` opens Controls. Home hints reworded (`NavRail.tsx`).
+- `App.tsx` `shell(body)` wraps the pre-connection states of `Matchmaking`, `Lobby`, `LanPanel`; `ConsoleHead` with no `onBack` renders the title only. Joined room, `MatchStrategy`, `WatchLobby` stay full-screen.
+- Check by hand: queue in Find match then click the `Play` crumb (should park like Back did); room entry then the trail; `.ds-main .ds-console-in` override in `shell.css`; Solo record still has the old header (not requested).
+
+
 # HANDOFF — 2026-10-12 (hosting cost: month-end budget across Fly + Neon + Vercel; the checkup is a routine again)
 
 **State: commit `ce1fcc61` (Vercel) on branch `claude/server-load-cost-optimization-0c49bc` off `main`, and on `alpha` (344067c5). The push to `main` was blocked as a production deploy: the owner pushes the branch (`git push origin claude/server-load-cost-optimization-0c49bc:main`) or says to.** `npm test` (5178), `build`, `docaudit` pass. Client + `vercel.json` only; no server change, no Fly deploy.

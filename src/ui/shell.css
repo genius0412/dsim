@@ -9848,3 +9848,11 @@ input.admin-months {
     justify-self: start;
   }
 }
+
+/* a `.ds-console-in` inside the shell (Find match, Room, LAN) is the page's column, not the page:
+   `.ds-main` already owns the width, the gutter and the padding. */
+.ds-main .ds-console-in {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}

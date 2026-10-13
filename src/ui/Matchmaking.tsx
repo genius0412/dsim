@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
 import { gameServerUrl, gameServerUrlWith, multiServer, nearestHttpUrl } from '../net/env';
 import { probeHome } from '../net/ping';
@@ -107,6 +107,7 @@ interface StrategyState {
 }
 
 export function Matchmaking({
+  shell,
   settings,
   signedIn,
   myUserId,
@@ -123,6 +124,8 @@ export function Matchmaking({
   myUserId?: string | null;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
+  /** wraps a pre-connection page in the app shell (App's `shell`); live-socket states stay full-screen */
+  shell: (body: ReactNode) => JSX.Element;
   onSignIn: () => void;
   onSettingsChange: (s: GameSettings) => void;
   /** arrived here from a RATED "play a friend" challenge: queue under its token
@@ -1044,15 +1047,15 @@ export function Matchmaking({
   /** the console scaffold every full-screen setup surface shares (Lobby, Record
    * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
   const page = (title: string, sub: string, body: JSX.Element): JSX.Element => (
-    <div className="ds-console">
+    shell(
       <div className="ds-console-in narrow">
         {/* the sub's line is RESERVED: `sub` is '' on every state except searching, so
             pressing FIND MATCH used to add a line to the header block and push the panel
             down with it. Every sub this page passes is a single line. */}
-        <ConsoleHead onBack={onCancel} title={title} sub={sub} reserveSub />
+        <ConsoleHead title={title} sub={sub} reserveSub />
         <div className="ds-panel ds-panel-body stack">{body}</div>
-      </div>
-    </div>
+      </div>,
+    )
   );
 
   // ranked requires an account (ELO / leaderboard). Custom rooms stay open to

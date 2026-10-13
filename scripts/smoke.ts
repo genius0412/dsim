@@ -8789,8 +8789,8 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // renders the `.ds-back` itself
     const consoleHead = readFileSync('src/ui/ConsoleHead.tsx', 'utf8');
     check(
-      'lan screen: renders a .ds-back control',
-      /<ConsoleHead\s+onBack=\{onBack\}/.test(lan) && /className="ds-back"/.test(consoleHead),
+      'lan screen: is a shell page (app bar + trail is the way back), with no Back button of its own',
+      /shell\(\s*<div className="ds-console-in narrow">\s*<ConsoleHead title="LAN play"/.test(lan) && /<LanPanel\s+shell=\{shell\}/.test(app) && consoleHead.includes('{onBack && ('),
     );
     check(
       'lan screen: Esc is the same exit as the button, not a second one',
@@ -18765,7 +18765,7 @@ const recordDrive: CommandSource = (tick) => {
 {
   const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
   const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
-  const shellScreens = ['modes', 'matchsetup', 'practicesetup', 'rooms', 'competitions', 'configure', 'robotimport', 'records', 'profile', 'account',
+  const shellScreens = ['modes', 'matchsetup', 'practicesetup', 'rooms', 'competitions', 'matchmaking', 'duorecord', 'lobby', 'lan', 'configure', 'robotimport', 'records', 'profile', 'account',
     'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
   check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
   check('crumbs: every shell screen has a trail', shellScreens.every((s) => crumbsFor(s, null, 'someone').length > 0), shellScreens.filter((s) => crumbsFor(s, null, 'x').length === 0).join());
@@ -18773,14 +18773,14 @@ const recordDrive: CommandSource = (tick) => {
     shellScreens.every((s) => { const t = crumbsFor(s, 'appearance', 'x'); return t.every((c, i) => (i === t.length - 1) === !c.to); }));
   check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
   check('crumbs: Play pages go back to Play, and Play goes Home',
-    parentOf(crumbsFor('rooms')).screen === 'modes' && parentOf(crumbsFor('matchsetup')).screen === 'modes' && parentOf(crumbsFor('practicesetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
+    parentOf(crumbsFor('rooms')).screen === 'modes' && ['matchmaking', 'duorecord', 'lobby', 'lan'].every((x) => parentOf(crumbsFor(x)).screen === 'modes') && parentOf(crumbsFor('matchsetup')).screen === 'modes' && parentOf(crumbsFor('practicesetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
   check('crumbs: every Records page goes back to the hub, with the registry labels',
     RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
   check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
   check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
   check('crumbs: the account page sits under Profile (Appearance), which is top-level',
     crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
-  check('crumbs: Import robot goes back to Configure', parentOf(crumbsFor('robotimport')).screen === 'configure');
+  check('crumbs: Import robot goes back to Robot, which is a Play page', parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot')[0].label === 'Play' && crumbsFor('configure', 'controls').length === 1);
   check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
     shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
@@ -31287,7 +31287,7 @@ const dumperSetup = (): RobotSetup => {
       /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
   check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
     /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
-      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'controls' })"));
   check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
     /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
   check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
