@@ -486,8 +486,9 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   (`useRecordedRunCurve`), stored under the replay's seed + length (`playedRef`; the client never
   learns the server's replay id) and found again from the fetched replay; (2) a drifted replay is
   re-run and accepted only if it lands EXACTLY on its score — a miss is cached (`Entry.miss`) so it
-  is not re-simulated every match. DECODE's sim-4 records land (719 → 719); BIOBUZZ's do not
-  (850 → 99), so a BIOBUZZ WR set by someone else stays `—` until the server runs this sim.
+  is not re-simulated every match. On sim 5 DECODE's sim-4 records landed (719 → 719) and
+  BIOBUZZ's did not (850 → 99); on sim 7 none land (DECODE 719 → 50, BIOBUZZ 889 → 173). So a
+  record from before a sim change, set by someone else, is `—` until it is beaten on the new sim.
   The chip is rendered from the first frame of a paced match (`—` until there is a number), so
   the row's height never changes mid-match. GREEN ahead, RED behind (ink and edge, like `.warn`),
   plain `--ds-ink` level; on the opaque `--ds-hud` fill, not the row's soft one, because light

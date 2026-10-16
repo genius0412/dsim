@@ -115,8 +115,10 @@ export const playedRef = (game: GameId, seed: number, ticks: number): string => 
  * a drift to it (2026-10-09: records stamped sim 4, alpha on 5; a tester's "WR doesn't exist,
  * record runs don't work"). Two ways back in, both checked against the number the run is known by:
  *   - a curve the player's own client RECORDED while playing the run (`playedRef`), and
- *   - a drifted replay that re-runs here onto exactly its recorded score. DECODE's sim-4 records do
- *     (719 → 719); BIOBUZZ's do not (850 → 99, 808 → 111, 784 → 203), and those stay refused.
+ *   - a drifted replay that re-runs here onto exactly its recorded score. On sim 5, DECODE's sim-4
+ *     records did (719 → 719) and BIOBUZZ's did not (850 → 99); on sim 7 (2026-10-15) none do
+ *     (DECODE 719 → 50, BIOBUZZ 889 → 173), so a record from before a sim change is `—` until
+ *     it is beaten on the new sim.
  */
 export class PaceStale extends Error {
   constructor() {
