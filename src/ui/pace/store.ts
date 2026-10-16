@@ -125,6 +125,8 @@ export class PaceStale extends Error {
     super('That run was played on an older version of DSIM, so it cannot be raced.');
     this.name = 'PaceStale';
   }
+  /** the chip's own words for it */
+  readonly short = 'OLD VERSION';
 }
 
 // ── the worker ────────────────────────────────────────────────────────────────────────────────

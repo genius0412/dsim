@@ -30,7 +30,9 @@ export interface PaceTarget {
   expect?: number;
 }
 
-export type PaceResolution = { ok: true; target: PaceTarget } | { ok: false; why: string };
+/** `why` is the sentence (tooltip, screen reader); `short` is what the chip itself says, since a
+ *  tooltip never shows over a match (`.hud` takes no pointer) */
+export type PaceResolution = { ok: true; target: PaceTarget } | { ok: false; why: string; short: string };
 
 /** the HUD's short name for a source */
 export const PACE_TAG: Record<Exclude<PaceSource, 'off'>, string> = {
@@ -55,7 +57,7 @@ export async function resolvePace(
   const mode = run.kind === 'record' ? run.mode : 'solo';
 
   if (source === 'replay') {
-    if (!picked) return { ok: false, why: 'No replay picked. Open a replay and choose Use as pace.' };
+    if (!picked) return { ok: false, why: 'No replay picked. Open a replay and choose Use as pace.', short: 'NOT PICKED' };
     if (picked.replayId) return { ok: true, target: { ...fromServer(picked.replayId), alliance: picked.alliance, pin: true } };
     // a run watched straight off the results screen: its curve was stored when it was picked,
     // and on this device that is the only copy
@@ -73,7 +75,7 @@ export async function resolvePace(
   if (source === 'wr') {
     const { rows } = await fetchRecords(mode, 'overall', undefined, game);
     const best = rows[0]?.score;
-    if (best == null) return { ok: false, why: 'No record on this board yet.' };
+    if (best == null) return { ok: false, why: 'No record on this board yet.', short: 'NONE YET' };
     // A TIE AT THE TOP CAN BE RACED ON ANY OF ITS RUNS, and one may be playable when another is
     // not: a record set on an older season's balance stays on the board, but its replay is a
     // different match on this build. So the first tied run this build may be able to pace is the
@@ -90,17 +92,17 @@ export async function resolvePace(
         return { ok: true, target: { ...target, load: () => Promise.resolve(replay) } };
       }
     }
-    return { ok: false, why: 'The record was set on an older version of DSIM, so it cannot be raced.' };
+    return { ok: false, why: 'The record was set on an older version of DSIM, so it cannot be raced.', short: 'OLD VERSION' };
   }
 
   // PB
   if (run.kind === 'record') {
-    if (!userId) return { ok: false, why: 'Sign in to race your best record.' };
+    if (!userId) return { ok: false, why: 'Sign in to race your best record.', short: 'SIGN IN' };
     const stats = await fetchUserStats(userId, undefined, game);
     const best = stats.records.find((r) => r.mode === mode);
     return best?.replayId
       ? { ok: true, target: { ...fromServer(best.replayId), expect: best.best ?? undefined } }
-      : { ok: false, why: `No ${mode} record yet. Finish a run to set one.` };
+      : { ok: false, why: `No ${mode} record yet. Finish a run to set one.`, short: 'NONE YET' };
   }
 
   // solo practice: your best practice run in this game, on this device or on the account, that
@@ -139,5 +141,5 @@ export async function resolvePace(
       return { ok: true, target: { ...c.target, load: () => Promise.resolve(replay) } };
     }
   }
-  return { ok: false, why: 'No practice run on this version yet. Finish one to set a best.' };
+  return { ok: false, why: 'No practice run on this version yet. Finish one to set a best.', short: 'NONE YET' };
 }

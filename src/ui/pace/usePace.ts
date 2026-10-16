@@ -93,24 +93,24 @@ export function usePace(
     const same = shownFor.current === target;
     shownFor.current = target;
     let live = true;
-    setState((s) => (same && s ? { ...s, why: '' } : { tag, curve: null, why: '' }));
+    setState((s) => (same && s ? { ...s, why: '', short: '' } : { tag, curve: null, why: '', short: '' }));
     void (async () => {
       try {
         const res = await resolvePace(source, run, settings.game, userId, picked);
         if (!live) return;
         if (!res.ok) {
-          setState({ tag, curve: null, why: res.why });
+          setState({ tag, curve: null, why: res.why, short: res.short });
           return;
         }
         const t = res.target;
         // the SAME source can now be a DIFFERENT run (a new best since the last match): its
         // curve, not the old run's, or nothing while it is made — the old run under the new
         // run's name would be a number about a race nobody is running
-        if (shownRun.current !== t.key && !storedCurve(curveKey(t.key))) setState({ tag, curve: null, why: '' });
+        if (shownRun.current !== t.key && !storedCurve(curveKey(t.key))) setState({ tag, curve: null, why: '', short: '' });
         const curve = await curveFor(t.key, settings.game, t.load, t.alliance, t.pin, t.expect);
         if (!live) return;
         shownRun.current = t.key;
-        setState({ tag, curve, why: '' });
+        setState({ tag, curve, why: '', short: '' });
       } catch (err) {
         if (!live) return;
         const why =
@@ -119,7 +119,7 @@ export function usePace(
             : err instanceof Error && err.message
               ? err.message
               : 'Could not load the pace run.';
-        setState({ tag, curve: null, why });
+        setState({ tag, curve: null, why, short: err instanceof PaceStale ? err.short : 'UNAVAILABLE' });
       }
     })();
     return () => {
@@ -129,6 +129,6 @@ export function usePace(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [on, source, runKey, settings.game, userId, picked?.key, round]);
 
-  return on ? (state ?? { tag: PACE_TAG[source as Exclude<typeof source, 'off'>], curve: null, why: '' }) : null;
+  return on ? (state ?? { tag: PACE_TAG[source as Exclude<typeof source, 'off'>], curve: null, why: '', short: '' }) : null;
 }
 

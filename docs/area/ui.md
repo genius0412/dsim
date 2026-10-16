@@ -489,8 +489,11 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   is not re-simulated every match. On sim 5 DECODE's sim-4 records landed (719 → 719) and
   BIOBUZZ's did not (850 → 99); on sim 7 none land (DECODE 719 → 50, BIOBUZZ 889 → 173). So a
   record from before a sim change, set by someone else, is `—` until it is beaten on the new sim.
-  The chip is rendered from the first frame of a paced match (`—` until there is a number), so
-  the row's height never changes mid-match. GREEN ahead, RED behind (ink and edge, like `.warn`),
+  The chip is rendered from the first frame of a paced match (`— WR` while it is worked out), so
+  the row's height never changes mid-match. ⚠️ **A REFUSAL IS SAID ON THE CHIP**, not only in its
+  tooltip: `WR · OLD VERSION`, `PB · SIGN IN`, `· NONE YET`, `· NOT PICKED`, `· UNAVAILABLE`
+  (`PaceState.short`). `.hud` takes no pointer, so the tooltip never shows in a match, and a bare
+  `—` read to a tester as "WR doesn't exist" (2026-10-09). GREEN ahead, RED behind (ink and edge, like `.warn`),
   plain `--ds-ink` level; on the opaque `--ds-hud` fill, not the row's soft one, because light
   theme's green ink is 4.08:1 on `--ds-hud-soft` (contrast-checked, both themes and the 3D scrim).
   ⚠️ **NOT IN THE SCORE BAR** (owner, 2026-10-08: in-panel versions "broke the clean, symmetrical
