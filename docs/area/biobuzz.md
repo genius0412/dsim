@@ -177,6 +177,15 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   TABLE LIFTS. Everything after the release is still the free see-saw. `hiveContentsTorque` /
   `hiveRestoringTorque` remain exported: they are how the HIVE3D lane and `hive-calibrate.ts`
   MEASURE the tray, not what triggers it.
+- ⚠️ **AFTER THE PIN LIFTS, THE 3D SWING'S SPEED IS THE CONTENTS' TORQUE, AND THAT IS ON
+  PURPOSE** (owner ruling 2026-10-12: "isn't [that] more accurate to real life, because that is how
+  real physics work? ... then just keep it"). Where the load sits matters, not only how much:
+  measured lift → TIP, 8 POLLEN 3.00 s in a two-wide line and 5.13 s piled against the inner wall
+  (where a volley into a tilted cell rolls to); piled, 9 → 4.47 s and 12 → 3.35 s, so at one
+  packing more is always faster. A count-paced swing (every packing 3.8 s, faster per extra
+  element) was built on 2026-10-11 and REJECTED by the owner; do not reintroduce it as a "fix" for
+  "a full hive tipped slower than a light one" — check the packing first. The table still decides
+  WHETHER it tips (above); only the swing after that is physics. The anti-stall creep below stays.
 - ⚠️ **A CELL COUNTS WHAT IS IN IT, NOT WHAT HAS STOPPED MOVING** (owner report 2026-09-19: "a lot
   of delay registering when the balls land in the hive... a significant amount of lengthened
   tipping time due to the registration time"). `derive.ts` needed `BB3_REST_TICKS` of stillness

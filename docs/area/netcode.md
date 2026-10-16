@@ -276,6 +276,18 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     reaches the launch, which is the moment the interpolated robot fires it. A ball the
     predictor already has (your own shot) is drawn predicted at once, and neither case eases in
     from a previous drawn pose (`released`).
+  - ⚠️ **A MOVING HIVE TRAY AND WHAT RIDES IT ARE DRAWN AT ONE MOMENT** (`src/games/biobuzz/trayDraw.ts`,
+    2026-10-12, from a "hive tip speed is inconsistent" report). On the interpolated path (Off,
+    Light, Balanced, every spectator) `displayWorld` lerped the seated elements but drew the tray's
+    `hives[a].angle` off `this.world`, the NEWEST snapshot, so the tray stepped at 30 Hz and sat
+    `INTERP_DELAY_TICKS` ahead of the balls in it. `snapBuf.hives` now carries each snapshot's tray
+    pose and seated ids, `interpTrays` lerps the tray, and `trayRiders` keeps an element seated in
+    BOTH bracketing snapshots of a moving tray off the prediction (a predicted LANDING otherwise
+    stays predicted, pinned at the newest pose). Riders come from the snapshots, not the newest
+    world, which empties the cell at the spill tick while the render clock still has it seated.
+    Measured on a real 12-POLLEN tip: ball-to-tray gap 0.43 in → 0.002 in, frames the tray held
+    still mid-swing 76 → 0 of 152. Full never had it (it steps the whole world, tray included).
+    Client-only. Smoke: "tray draw:" (HIVE3D).
   - **A LIGHT PREDICTOR CARRIES NO ELEMENTS**, so `elements()` returns `null` (not an empty list)
     and it keeps the old drawing. That is the honest limit of this fix: Auto picks Full whenever
     the machine holds `PREDICT_FULL_BUDGET_MS`, and a machine that cannot afford Full cannot

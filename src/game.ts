@@ -50,6 +50,7 @@ import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
 import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } from './games/biobuzz/sim3d/engine';
 import { PREDICT_FULL_BUDGET_MS, PREDICT_WORLD_BUDGET_MS } from './games/biobuzz/config';
 import { biobuzzPhysics } from './games/biobuzz/state';
+import { interpTrays, traySnap, trayRiders, type TraySnap } from './games/biobuzz/trayDraw';
 import {
   getPredictionPref,
   markOffNoticeShown,
@@ -708,6 +709,9 @@ export class GameController {
     /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
      *  a 2D room allocates nothing it did not allocate before) */
     balls: { id: number; x: number; y: number; z: number; kind: string; state: BallState }[];
+    /** each HIVE tray's tilt, swing countdown and seated ids, 3D-physics worlds only (null
+     *  otherwise), so the tray is drawn on the SAME clock as the elements riding it — `trayDraw.ts` */
+    hives: TraySnap | null;
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -2476,6 +2480,7 @@ export class GameController {
             state: { ...b.state } as BallState,
           }))
         : [],
+      hives: traySnap(w),
     });
     if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
   }
@@ -3152,6 +3157,13 @@ export class GameController {
     // released this frame, per the branch below: `drawPredictedElements` must not ease FROM here
     const released = new Set<number>();
     const predicted = new Set((this.predictor?.elements() ?? []).map((e) => e.id));
+    // ⚠️ THE TRAY AND WHAT RIDES IT ARE ONE CLOCK (`trayDraw.ts`). A moving tray is drawn at the
+    // interpolation clock, so an element seated in it must be too — from the moment BOTH
+    // bracketing snapshots have it seated until they no longer do, whatever the newest world says.
+    const riding = new Set<number>();
+    for (const id of trayRiders(s0.hives, s1.hives)) {
+      if (b0.get(id)?.kind === 'element' && b1.get(id)?.kind === 'element') riding.add(id);
+    }
     const balls = this.world.balls.map((ball) => {
       if (ball.state.kind === 'held' || ball.state.kind === 'stock') return ball;
       const p = b0.get(ball.id);
@@ -3181,7 +3193,12 @@ export class GameController {
         z: lerp(p.z, q.z, a),
       };
     });
-    return { ...this.world, robots, balls: this.drawPredictedElements(balls, dtSec, released) };
+    return {
+      ...this.world,
+      robots,
+      balls: this.drawPredictedElements(balls, dtSec, released, riding),
+      biobuzz: interpTrays(this.world.biobuzz, s0.hives, s1.hives, a),
+    };
   }
 
   /**
@@ -3199,7 +3216,12 @@ export class GameController {
    * A LIGHT predictor carries no elements at all and `elements()` returns null, so this is one
    * map lookup and out.
    */
-  private drawPredictedElements(balls: Artifact[], dtSec: number, released: ReadonlySet<number>): Artifact[] {
+  private drawPredictedElements(
+    balls: Artifact[],
+    dtSec: number,
+    released: ReadonlySet<number>,
+    riding: ReadonlySet<number>,
+  ): Artifact[] {
     const pe = this.predictor?.elements();
     if (!pe && this.ballSmooth.size === 0 && this.ballDrawn.size === 0) return balls;
     const by = pe ? new Map(pe.map((e) => [e.id, e] as const)) : null;
@@ -3207,8 +3229,12 @@ export class GameController {
     return balls.map((ball) => {
       const e = by?.get(ball.id);
       const kind = ball.state.kind;
+      // a predicted LANDING stays predicted until its tray moves: then it rides the tray's clock,
+      // even on the frames where the newest world has already spilled it (`trayRiders`)
       const use =
-        !!e && (kind === 'ground' || kind === 'flight' || (kind === 'element' && this.ballPredicted.has(ball.id)));
+        !!e &&
+        !riding.has(ball.id) &&
+        (kind === 'ground' || kind === 'flight' || (kind === 'element' && this.ballPredicted.has(ball.id)));
       const base = use ? { x: e!.x, y: e!.y, z: e!.z } : { x: ball.pos.x, y: ball.pos.y, z: ball.z };
       let off = this.ballSmooth.get(ball.id) ?? null;
       // A SOURCE SWITCH is the one discontinuity `noteElementCorrection` cannot see: an element

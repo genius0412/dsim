@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { Check } from './harness';
 import { mkWorld3d } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
@@ -48,6 +49,7 @@ import {
 import { BB_TIP_SWING_S, hiveLoad, hiveTakingSide, hiveWillTip } from '../../src/games/biobuzz/hive';
 import { bbKindIndex } from '../../src/games/biobuzz/score';
 import type { Alliance, Artifact, World } from '../../src/types';
+import { interpTrays, traySnap, trayRiders, type TraySnap } from '../../src/games/biobuzz/trayDraw';
 
 /**
  * HIVE3D — the DYNAMIC SEE-SAW (Day 2 lane A, `docs/biobuzz/plan-3d.md` §9).
@@ -1236,6 +1238,7 @@ export function hive3dChecks(check: Check): void {
 
   commitChecks(check);
   settleChecks(check);
+  trayDrawChecks(check);
 }
 
 /**
@@ -1908,4 +1911,150 @@ function settleChecks(check: Check): void {
       `${a.length} samples, first mismatch ${a.findIndex((h, i) => h !== b[i])}`,
     );
   }
+}
+
+/**
+ * TRAY DRAW — THE TRAY AND THE ELEMENTS RIDING IT ARE DRAWN AT ONE MOMENT (`trayDraw.ts`).
+ *
+ * In a 3D room on the interpolated path (prediction Off, Light or Balanced, and every spectator)
+ * `displayWorld` lerped each seated element between the two snapshots bracketing the render clock
+ * but drew the tray off the NEWEST snapshot: it stepped at 30 Hz and sat `INTERP_DELAY_TICKS`
+ * ahead of what was riding it. `game.ts` cannot be imported headlessly, so this replays a REAL
+ * dynamic-tray tip through the client's own clock arithmetic: snapshots every
+ * `SNAPSHOT_INTERVAL` ticks (read off `server/room.ts`), a render clock `INTERP_DELAY_TICKS`
+ * behind the newest (read off `game.ts`), and the tray drawn both ways. The gap is a seated
+ * element's distance from the tray drawn under it: its arm about the pivot times the angle error.
+ */
+function trayDrawChecks(check: Check): void {
+  const delay = Number(/const INTERP_DELAY_TICKS = (\d+)/.exec(readFileSync('src/game.ts', 'utf8'))?.[1]);
+  const every = Number(/const SNAPSHOT_INTERVAL = (\d+)/.exec(readFileSync('server/room.ts', 'utf8'))?.[1]);
+  check(
+    'tray draw: the client render clock and the server snapshot cadence are read from source',
+    delay > 0 && every > 0,
+    `INTERP_DELAY_TICKS=${delay} SNAPSHOT_INTERVAL=${every}`,
+  );
+  if (!(delay > 0 && every > 0)) return;
+
+  // ── the lerp itself, on synthetic snapshots of a real 3D world ──
+  {
+    const w = mkWorld3d('free', 7);
+    const bb = w.biobuzz!;
+    const at = (red: number | undefined, tip = 0): TraySnap => ({
+      red: { angle: red, tipping: tip, contents: [1, 2, 3] },
+      blue: { angle: bb.hives.blue.angle, tipping: bb.hives.blue.tipping, contents: [] },
+    });
+    const mid = interpTrays(bb, at(0.1), at(0.3), 0.5);
+    check(
+      'tray draw: a tray between two snapshots is drawn at the lerp of their angles',
+      Math.abs((mid?.hives.red.angle ?? NaN) - 0.2) < 1e-12,
+      `drawn ${mid?.hives.red.angle}`,
+    );
+    const half = interpTrays(bb, at(undefined), at(0.3), 0.5);
+    check(
+      'tray draw: a snapshot with no angle (a kinematic tray) leaves that tray to the newest world',
+      half?.hives.red.angle === bb.hives.red.angle,
+      `drawn ${half?.hives.red.angle} newest ${bb.hives.red.angle}`,
+    );
+    const still = traySnap(w);
+    check(
+      'tray draw: a settled field hands back the world’s own object (no per-frame allocation)',
+      !!still && interpTrays(bb, still, still, 0.5) === bb,
+    );
+    check(
+      'tray draw: a 2D world buffers no trays, so its draw is untouched',
+      traySnap({ ...w, biobuzz: { ...bb, physics: '2d' } } as World) === null,
+    );
+    check(
+      'tray draw: nothing rides a tray that is not moving',
+      !!still && trayRiders(still, still).size === 0,
+    );
+    const spilled = { ...at(0.3), red: { ...at(0.3).red, contents: [2, 3, 4] } };
+    check(
+      'tray draw: a moving tray’s riders are the ids BOTH bracketing snapshots have seated',
+      [...trayRiders(at(0.1), spilled)].sort().join() === '2,3',
+      [...trayRiders(at(0.1), spilled)].join(),
+    );
+  }
+
+  // ── a real tip, replayed through the client's clock ──
+  withTray(true, () => {
+    const { world } = loaded(4242, 12, 0, 'crammed4');
+    const startUp = world.biobuzz!.hives[A].up;
+    const angle: number[] = [];
+    const arm: number[] = [];
+    const snaps: { tick: number; hives: TraySnap; bb: World['biobuzz'] }[] = [];
+    let tipped = -1;
+    for (let t = 0; t < 600 && tipped < 0; t++) {
+      step3d(world, SIM_DT, new Map());
+      const h = world.biobuzz!.hives[A];
+      angle.push(h.angle ?? NaN);
+      const seated = world.balls.filter((b) => h.contents.includes(b.id));
+      arm.push(seated.reduce((m, b) => Math.max(m, Math.hypot(b.pos.y, b.z - BB3_HIVE_PIVOT_Z)), 0));
+      if ((t + 1) % every === 0) snaps.push({ tick: t, hives: traySnap(world)!, bb: structuredClone(world.biobuzz) });
+      if (h.up !== startUp) tipped = t;
+    }
+    check('tray draw: the fixture really tips, on the dynamic tray', tipped > 0 && angle.every(Number.isFinite), `tipped at tick ${tipped}`);
+    if (tipped <= 0) return;
+
+    let gapOld = 0;
+    let gapNew = 0;
+    let frames = 0;
+    let frozenOld = 0;
+    let frozenNew = 0;
+    let ridersOk = true;
+    let ridersSeen = 0;
+    let spillLead = 0;
+    let prevOld = NaN;
+    let prevNew = NaN;
+    for (let T = every * 2 + delay; T <= tipped; T++) {
+      const newest = [...snaps].reverse().find((s) => s.tick <= T);
+      const r = T - delay;
+      const i0 = snaps.findIndex((s, k) => s.tick <= r && (snaps[k + 1]?.tick ?? Infinity) > r);
+      if (!newest || i0 < 0 || !snaps[i0 + 1]) continue;
+      const s0 = snaps[i0];
+      const s1 = snaps[i0 + 1];
+      const a = (r - s0.tick) / (s1.tick - s0.tick);
+      const drawnOld = hiveTiltAngle({ ...world, biobuzz: newest.bb } as World, A);
+      const drawnNew = hiveTiltAngle({ ...world, biobuzz: interpTrays(newest.bb, s0.hives, s1.hives, a) } as World, A);
+      const moving = Math.abs(angle[r] - angle[r - 1]) > 1e-4;
+      if (moving && arm[r] > 0) {
+        frames++;
+        gapOld = Math.max(gapOld, arm[r] * Math.abs(drawnOld - angle[r]));
+        gapNew = Math.max(gapNew, arm[r] * Math.abs(drawnNew - angle[r]));
+        if (drawnOld === prevOld) frozenOld++;
+        if (drawnNew === prevNew) frozenNew++;
+        // the riders are what the RENDER CLOCK has seated, even once the newest world has spilled them
+        const riders = trayRiders(s0.hives, s1.hives);
+        const seated = s0.hives[A].contents.filter((id) => s1.hives[A].contents.includes(id));
+        ridersSeen = Math.max(ridersSeen, riders.size);
+        if (riders.size !== seated.length || !seated.every((id) => riders.has(id))) ridersOk = false;
+        if (newest.bb!.hives[A].contents.length < seated.length) spillLead++;
+      }
+      prevOld = drawnOld;
+      prevNew = drawnNew;
+    }
+    const detail = `${frames} moving frames · gap old ${gapOld.toFixed(2)} in → new ${gapNew.toFixed(3)} in · frozen frames old ${frozenOld} → new ${frozenNew}`;
+    check('tray draw: the swing gave enough moving frames to judge', frames >= 30, detail);
+    check(
+      '⚠️ tray draw: drawn off the NEWEST snapshot, the tray sat far from the balls riding it (the baseline the fix is measured against)',
+      gapOld > 0.25 && gapOld > 50 * gapNew,
+      detail,
+    );
+    check('⚠️ tray draw: on the interpolation clock, a seated ball stays on the tray drawn under it (< 0.1 in)', gapNew < 0.1, detail);
+    check('tray draw: ...and it never holds still for a frame mid-swing, where the newest-snapshot tray stepped at 30 Hz', frozenOld > 0 && frozenNew === 0, detail);
+    check(
+      '⚠️ tray draw: while the tray moves, everything the render clock has seated rides its clock — including the frames after the newest world spilled it',
+      ridersOk && ridersSeen > 0 && spillLead > 0,
+      `${ridersSeen} riders at most · ${spillLead} frames where the newest world had already spilled what the render clock still had seated`,
+    );
+  });
+
+  // ── and `game.ts` actually uses it ──
+  const game = readFileSync('src/game.ts', 'utf8');
+  check('tray draw: every snapshot buffers its tray poses', game.includes('hives: traySnap(w),'));
+  check('tray draw: displayWorld draws the trays at the interpolation clock', game.includes('biobuzz: interpTrays(this.world.biobuzz, s0.hives, s1.hives, a),'));
+  check(
+    'tray draw: a predicted landing stops being drawn predicted once its tray moves',
+    game.includes('!riding.has(ball.id) &&') && game.includes('for (const id of trayRiders(s0.hives, s1.hives)) {'),
+  );
 }
