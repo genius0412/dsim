@@ -23,7 +23,7 @@
 
 # HANDOFF — 2026-10-12 (BIOBUZZ online: the hive tray is drawn at the same moment as the balls in it)
 
-**State: merged into `alpha` (PR #120). CLIENT ONLY: no wire change, no `SIM_VERSION`, no server deploy.** `npm test` ALL PASS but the known `fieldDims.gen.ts` drift; client and server `tsc` identical to `alpha`'s. Run with stand-ins for the private Zenith tarballs (not in this sandbox), so `build`/`bundleaudit` were not run.
+**State: merged into `alpha` (PR #120). CLIENT ONLY: no wire change, no `SIM_VERSION`, no server deploy.** ⚠️ **HELD FOR `main` (owner, 2026-10-16): NOT on `main` yet. Take it to `main` with the next MAJOR update, not on its own and not with a routine bug-fix push.** `npm test` ALL PASS but the known `fieldDims.gen.ts` drift; client and server `tsc` identical to `alpha`'s. Run with stand-ins for the private Zenith tarballs (not in this sandbox), so `build`/`bundleaudit` were not run.
 
 - **Owner report (2026-10-11):** hive tips felt inconsistent in speed. Two findings, two outcomes:
   - **Swing speed: KEPT AS PHYSICS (owner ruling 2026-10-12).** After the pin lifts the 3D tray is a free see-saw, so speed is the contents' torque: 8 POLLEN 3.00 s in a line, 5.13 s piled on the inner wall; piled, 9 → 4.47 s, 12 → 3.35 s. A count-paced swing was built and the owner rejected it as less realistic. Recorded in `docs/area/biobuzz.md`; nothing changed on `alpha`.
