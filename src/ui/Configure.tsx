@@ -44,8 +44,7 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
  * row carries one, since a sub-nav where some rows have a second line and others do not reads
  * as unfinished. The narrow layouts hide `.sh` with the rail's `.rh`.
  */
-const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
-  robot: { label: 'Robot', hint: 'Presets, build, intake' },
+const LABELS: Record<Exclude<ConfigureSection, 'robot'>, { label: string; hint: string }> = {
   controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and visual', hint: 'Sounds, voice & theme' },
@@ -88,8 +87,20 @@ export function Configure({
   // is a 3D setting. The route key stays valid so a bookmarked /configure/graphics under a 2D
   // game lands on Robot rather than a blank page (design review 22-03).
   const has3d = !!moduleFor(settings.game).scene;
-  const sections = CONFIGURE_SECTIONS.filter((s) => s !== 'graphics' || has3d);
-  if (!sections.includes(section)) section = 'robot';
+  // Robot is a Play page now (a tile beside Match setup and Practice setup); its route stays
+  // `/configure/robot`, so it renders here without the sub-nav.
+  if (section === 'robot') {
+    return (
+      <>
+        <h1 className="ds-h1">Robot</h1>
+        <Menu settings={settings} onChange={onChange} onImport={onImport} />
+      </>
+    );
+  }
+  const sections = CONFIGURE_SECTIONS.filter(
+    (s): s is Exclude<ConfigureSection, 'robot'> => s !== 'robot' && (s !== 'graphics' || has3d),
+  );
+  if (!sections.includes(section)) section = 'controls';
   return (
     <>
       <h1 className="ds-h1">Configure</h1>
@@ -118,7 +129,6 @@ export function Configure({
         </nav>
 
         <div className="ds-subnav-body">
-          {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} />}
           {section === 'controls' && (
             <ControlsSection
               activeGame={settings.game}

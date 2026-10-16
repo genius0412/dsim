@@ -102,6 +102,27 @@ export function FriendsPanel({
   const [open, setOpen] = useState(false);
   const expanded = open;
   useEscape(() => setOpen(false), open);
+  // THE SHEET STOPS AT THE FOOTER (owner, 2026-10-12). It is `position: fixed`, the footer scrolls with
+  // `.ds-app` and wraps (no fixed height), so the part of the footer on screen is measured, not
+  // assumed. A room screen has no footer and reads 0.
+  useEffect(() => {
+    if (!open) return;
+    const root = document.documentElement;
+    const measure = (): void => {
+      const foot = document.querySelector('.ds-foot');
+      const top = foot ? foot.getBoundingClientRect().top : window.innerHeight;
+      root.style.setProperty('--fr-foot', `${Math.max(0, window.innerHeight - top)}px`);
+    };
+    measure();
+    const scroller = document.querySelector('.ds-app');
+    scroller?.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      scroller?.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+      root.style.removeProperty('--fr-foot');
+    };
+  }, [open]);
 
   const toggle = (): void => setOpen((o) => !o);
 

@@ -8,7 +8,8 @@ import { fmtTime } from './timerPanel';
 import { onUserActive, userIdle } from './userActivity';
 
 /**
- * "Watch Live" — the games currently in progress on the game server.
+ * "Live now" — rendered under the public rooms on Browse rooms (the two screens were merged,
+ * 2026-10-12). The games currently in progress on the game server.
  *
  * The LIST is everything live EXCEPT custom rooms (the server decides that; see
  * `isPublicLive`) — ranked matches, record runs and competition matches all appear. A custom room is
@@ -24,11 +25,8 @@ import { onUserActive, userIdle } from './userActivity';
  */
 export function WatchLive({
   onWatch,
-  onBack,
 }: {
   onWatch: (roomCode: string, region?: string) => void;
-  /** return to the mode-select screen */
-  onBack: () => void;
 }) {
   const [rooms, setRooms] = useState<LiveRoom[] | null>(null);
   const [error, setError] = useState(false);
@@ -74,11 +72,6 @@ export function WatchLive({
 
   return (
     <>
-      <button className="ds-back" onClick={onBack}>
-        ← Back
-      </button>
-      <h1 className="ds-h1">Watch live</h1>
-
       {/* ONE panel, four bodies. The populated grid used to render with NO panel at
           all, so the page swapped a ~90px bordered card for a bare full-width grid of
           shadowed tiles the instant `/api/live` answered — and on a 4-second poll a

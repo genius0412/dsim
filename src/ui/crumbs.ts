@@ -10,8 +10,9 @@ import { RECORDS_HUB, RECORDS_PAGES, isRecordsPage } from './recordsPages';
  * changes between screens, which is why this replaced a Back button that only existed off Home.
  *
  * DOM-free and string-keyed (the `Screen` union lives in `App.tsx`), so `npm test` can hold it.
- * Full-screen surfaces (the game, a lobby, ranked, a replay, LAN) are NOT here: they render outside
- * the shell and their Back leaves a live socket, which is a different action.
+ * Full-screen surfaces (the game, a joined room, a replay) are NOT here: they render outside the
+ * shell and their Back leaves a live socket, which is a different action. The screens BEFORE a
+ * connection (Find match, Duo record, Room entry, LAN) are shell pages and have a trail.
  */
 export interface CrumbTarget {
   screen: string;
@@ -26,7 +27,7 @@ export interface Crumb {
 const HOME: CrumbTarget = { screen: 'home' };
 const PLAY: Crumb = { label: 'Play', to: { screen: 'modes' } };
 const RECORDS: Crumb = { label: 'Records', to: { screen: 'records', sub: RECORDS_HUB } };
-const CONFIGURE: Crumb = { label: 'Configure', to: { screen: 'configure' } };
+const ROBOT: Crumb = { label: 'Robot', to: { screen: 'configure', sub: 'robot' } };
 const PROFILE: Crumb = { label: 'Profile', to: { screen: 'account', sub: 'appearance' } };
 
 /** the pages reached from the footer, each one level under Home */
@@ -62,18 +63,27 @@ export function crumbsFor(screen: string, sub: string | null = null, username: s
       return [];
     case 'modes':
       return [here('Play')];
-    case 'solosetup':
-      return trail(PLAY)('Solo practice');
+    case 'matchsetup':
+      return trail(PLAY)('Match setup');
+    case 'practicesetup':
+      return trail(PLAY)('Practice setup');
     case 'rooms':
       return trail(PLAY)('Browse rooms');
-    case 'watch':
-      return trail(PLAY)('Watch live');
     case 'competitions':
       return trail(PLAY)('Competitions');
+    case 'matchmaking':
+      return trail(PLAY)('Find match');
+    case 'duorecord':
+      return trail(PLAY)('Duo record');
+    case 'lobby':
+      return trail(PLAY)('Room');
+    case 'lan':
+      return trail(PLAY)('LAN');
+    // Robot is a Play page (a tile beside the two setup tiles) that keeps the `/configure/robot` route
     case 'configure':
-      return [here('Configure')];
+      return sub === 'robot' ? trail(PLAY)('Robot') : [here('Configure')];
     case 'robotimport':
-      return trail(CONFIGURE)('Import robot');
+      return trail(PLAY, ROBOT)('Import robot');
     case 'records': {
       if (!isRecordsPage(sub)) return [here('Records')];
       const page = RECORDS_PAGES.find((p) => p.key === sub);

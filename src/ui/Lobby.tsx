@@ -48,6 +48,8 @@ import { importerEnabled } from '../seasonVisibility';
 import { libraryEntryFor } from '../robotImport/libraryIds';
 
 interface Props {
+  /** wraps a pre-connection page in the app shell (App's `shell`); live-socket states stay full-screen */
+  shell: (body: ReactNode) => JSX.Element;
   settings: GameSettings;
   onSettingsChange: (s: GameSettings) => void;
   onStart: (session: NetSession) => void;
@@ -194,6 +196,7 @@ export function Lobby({
   settings,
   onSettingsChange,
   onStart,
+  shell,
   onCancel,
   config = { kind: 'versus' },
   signedIn = false,
@@ -1077,16 +1080,9 @@ export function Lobby({
   if (autoEntry && phase !== 'room') {
     const joiningGroup = !!group;
     return (
-      <RoomFriendsLayout
-        signedIn={signedIn}
-        myUserId={myUserId}
-        onOpenProfile={onOpenProfile}
-        onJoinInvite={onJoinInvite}
-        onSpectate={onSpectate}
-      >
-        <div className="ds-console">
+      shell(
           <div className="ds-console-in narrow">
-            <ConsoleHead onBack={onCancel} title={joiningGroup ? 'Discord lobby' : 'Room'} />
+            <ConsoleHead title={joiningGroup ? 'Discord lobby' : 'Room'} />
             <div className="ds-panel ds-panel-body stack">
               {phase === 'error' && errorCode === 'in_progress' ? (
                 /* NOT AN ERROR, A QUEUE. The room is running a match and will open again on
@@ -1148,23 +1144,15 @@ export function Lobby({
               )}
             </div>
           </div>
-        </div>
-      </RoomFriendsLayout>
+)
     );
   }
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
-      <RoomFriendsLayout
-        signedIn={signedIn}
-        myUserId={myUserId}
-        onOpenProfile={onOpenProfile}
-        onJoinInvite={onJoinInvite}
-        onSpectate={onSpectate}
-      >
-      <div className="ds-console">
+      shell(
         <div className="ds-console-in narrow">
-          <ConsoleHead onBack={onCancel} title={isRecord ? 'Duo record' : 'Room'} />
+          <ConsoleHead title={isRecord ? 'Duo record' : 'Room'} />
           <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
@@ -1324,8 +1312,7 @@ export function Lobby({
             )}
           </div>
         </div>
-      </div>
-      </RoomFriendsLayout>
+)
     );
   }
 

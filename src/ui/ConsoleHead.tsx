@@ -21,7 +21,8 @@ export function ConsoleHead({
   subRow,
   reserveSub,
 }: {
-  onBack: () => void;
+  /** absent ⇒ no head row: a shell page, whose app bar and trail are the way back */
+  onBack?: () => void;
   backLabel?: string;
   title?: ReactNode;
   /** the one muted line under the title */
@@ -35,15 +36,17 @@ export function ConsoleHead({
   const hasSub = sub !== undefined && sub !== null && sub !== '' && sub !== false;
   return (
     <>
-      <div className="ds-head">
-        <button className="ds-back" onClick={onBack}>
-          {backLabel}
-        </button>
-        <span className="ds-mark">
-          <Logo size={24} />
-          {APP_NAME}
-        </span>
-      </div>
+      {onBack && (
+        <div className="ds-head">
+          <button className="ds-back" onClick={onBack}>
+            {backLabel}
+          </button>
+          <span className="ds-mark">
+            <Logo size={24} />
+            {APP_NAME}
+          </span>
+        </div>
+      )}
       {title !== undefined && (
         <div className="ds-title">
           <h1>{title}</h1>

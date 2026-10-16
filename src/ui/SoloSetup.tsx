@@ -33,31 +33,30 @@ const SEAT_LABELS = ['Partner', 'Opponent 1', 'Opponent 2'] as const;
 const COLS = { 2: 'two', 3: 'three', 4: 'four', 5: 'five' } as const;
 
 /**
- * SOLO SETUP — the screen between the Play page's Solo practice tile and the field. It holds every
- * pre-game option that belongs to a solo session rather than to the robot: alliance, start position
- * and the autonomous routine, and, in a card of its own, the practice around the match (its physics
- * and the three other robots), then the two ways in: Solo practice and Free drive.
- * Ranked and Custom rooms assign alliance + start in the lobby / strategy screen instead.
+ * MATCH SETUP and PRACTICE SETUP — the two cards that used to be one "Solo practice" screen between
+ * the Play tile and the field (owner, 2026-10-12: Solo practice now starts straight away, and these
+ * two are buttons at the top of Play). `part` picks the card. Match setup holds alliance, start
+ * position and the autonomous routine; Practice setup holds the practice physics and the three other
+ * robots. Ranked and Custom rooms assign alliance + start in the lobby / strategy screen instead.
  *
- * It was the MATCH section of `Configure` until 2026-10-10 (`/configure/match`, which now lands
- * here). Nothing in it is a setting of the robot, and a solo session is where all of it is used.
+ * It was the MATCH section of `Configure` until 2026-10-10 (`/configure/match`, which lands on Match
+ * setup). Nothing in it is a setting of the robot.
  *
  * ⚠️ THE `.pp` (Pedro Pathing visualizer) IMPORT IS GONE, on purpose (owner, 2026-09-25): a path
  * with no commands cannot be an auto a team would run on its robot. Autos are Zenith files, which
  * name the robot's own commands (`AutonomousSetup`).
+ *
+ * ⚠️ THE RUN LENGTH PICKER IS GONE from here (owner, 2026-10-12). `GameSettings.runLength` is still
+ * read by Solo practice, record runs and the rooms you create, and keeps whatever it was set to.
  */
 export function SoloSetup({
   settings,
   onChange,
-  onStart,
-  onFreeDrive,
+  part,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
-  /** a full practice match. The caller wraps it in `guardStart()`. */
-  onStart: () => void;
-  /** free drive with the same seats. The caller wraps it in `guardStart()`. */
-  onFreeDrive: () => void;
+  part: 'match' | 'practice';
 }) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   const setAlliance = (alliance: Alliance) => set({ alliance });
@@ -85,8 +84,8 @@ export function SoloSetup({
   };
 
   return (
-    <div className="ds-setup">
-    <div className="ds-setup-cols">
+    <>
+    {part === 'match' && (
     <section className="ds-panel">
       <div className="ds-panel-h">
         <h2 className="ds-panel-title">Match setup</h2>
@@ -172,14 +171,16 @@ export function SoloSetup({
 
       </div>
     </section>
+    )}
 
     {/* PRACTICE: WHAT THE FIELD AROUND YOU IS — its own card (owner, 2026-09-23), because none
         of it is the match you are setting up: it is the practice around it, and it applies to
         Free drive as much as to Solo practice. Ranked, record and Custom rooms decide all of it
         for themselves. */}
+    {part === 'practice' && (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <h2 className="ds-panel-title">Practice</h2>
+        <h2 className="ds-panel-title">Practice setup</h2>
       </div>
       <div className="ds-panel-body stack">
         {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
@@ -202,20 +203,6 @@ export function SoloSetup({
             />
           </section>
         )}
-
-        <section className="ds-sec">
-          <h2>Run length</h2>
-          {/* one setting, three places it applies: Solo practice, and the record / custom rooms you create */}
-          <OptRow<'full' | 'auto'>
-            value={settings.runLength ?? 'full'}
-            cols="two"
-            onPick={(runLength) => set({ runLength })}
-            options={[
-              { v: 'full', t: 'Full match', d: 'AUTO, then DRIVER-CONTROLLED' },
-              { v: 'auto', t: 'Auto only', d: 'Ends when AUTO does' },
-            ]}
-          />
-        </section>
 
         {/* THE THREE OTHER ROBOTS, one block each: what the seat is, then — only in a game with
             an AI driver — its difficulty. The difficulty row is DISABLED rather than absent
@@ -252,18 +239,7 @@ export function SoloSetup({
         </section>
       </div>
     </section>
-    </div>
-
-    {/* THE WAY IN stays on screen: the page owns the viewport height and the two cards scroll
-        inside it, so Start is never below a fold. Primary rightmost (ui-standard §6). */}
-    <div className="ds-setup-bar">
-      <button className="ds-btn" onClick={onFreeDrive}>
-        Free drive
-      </button>
-      <button className="ds-btn primary" onClick={onStart}>
-        Start solo practice
-      </button>
-    </div>
-    </div>
+    )}
+    </>
   );
 }

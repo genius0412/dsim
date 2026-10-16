@@ -214,17 +214,21 @@ that season has none) — then the bind panels —
   a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
   Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
   Switching says what happened in the Driving title when any map has a trigger bind.
-- **SOLO SETUP (`SoloSetup.tsx`, `/solo-setup`) IS NOT A CONFIGURE SECTION** (it was Configure ▸ Match until 2026-10-10;
-  `/configure/match` still resolves, to it). The Play page's Solo practice tile opens it and its sticky bar
-  starts Solo practice or Free drive, both behind `guardStart`. It is two cards: Match setup, then Practice. Practice holds Practice
-  physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
-  Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
-  difficulty row, which is always rendered and DISABLED unless the seat is AI (§1.4: no rows
-  appear or vanish). Stored per game in `GameSettings.practiceSeats`, a sibling of the legacy
-  `practiceBots`/`practiceDummies` (left in the blob, no longer read, so older clients keep
-  theirs). Applies in Solo practice AND Free drive; the spawn is `practiceSetups` in
-  `settings.ts`, DOM-free so `npm test` holds it. A run with other robots gets a "With robots"
-  badge in Practice replays (`PracticeRunMeta.others`) — practice runs are never ranked anyway.
+- **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`, `/match-setup`, `/practice-setup`) ARE NOT CONFIGURE SECTIONS**
+  (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
+  STARTS straight away (behind `guardStart`), and the two cards are two buttons at the top of the Play
+  page. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
+  Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
+  Partner / Opponent 1 / Opponent 2, each None · Dummy · AI (AI only where the game registers a
+  `BotDriver`) with its own difficulty row, which is always rendered and DISABLED unless the seat is AI
+  (§1.4: no rows appear or vanish). `/configure/match` and the old `/solo-setup` land on Match setup.
+  ⚠️ THE RUN LENGTH PICKER IS GONE; `GameSettings.runLength` is still read by Solo practice, record
+  runs and the rooms you create, so it keeps its stored value and nothing can change it now. Seats are
+  stored per game in `GameSettings.practiceSeats`, a sibling of the legacy `practiceBots`/
+  `practiceDummies` (left in the blob, no longer read, so older clients keep theirs). Applies in Solo
+  practice AND Free drive; the spawn is `practiceSetups` in `settings.ts`, DOM-free so `npm test`
+  holds it. A run with other robots gets a "With robots" badge in Practice replays
+  (`PracticeRunMeta.others`) — practice runs are never ranked anyway.
 - "Flip front" reverses robot-centric drive so the shooter side leads — applied at INPUT level
   in `GameController`, sim untouched; REVERSED chip in the HUD.
 - All `GameSettings` persist to `localStorage['decodesim.settings.v1']` via `src/settings.ts`
@@ -356,9 +360,9 @@ Controls screen stands the layer down the same way while a rebind is armed
   tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
   OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
 
-## Configure — the five sections, and the three rules that hold them together
+## Configure — the sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
+`src/ui/Configure.tsx` routes five keys at `/configure/<key>`, but **ROBOT IS A PLAY PAGE** (owner, 2026-10-13): a third tile beside Match setup and Practice setup, and the trail reads `Play › Robot`. Its route stays `/configure/robot` (the importer, `/my-robot` and the audit scripts use it) and it renders without the sub-nav, so Configure is four sections and `/configure` opens Controls. **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
 rename one. Order is task order — Robot, Controls, Audio and Visual, Graphics, Network:
 build it, learn to drive it, set up the session, the two output sections, then the connection.
@@ -490,7 +494,10 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   curve equals the re-simulated one. While a NEW run's curve is still being made the tag reads `—`,
   never the previous run's curve under the new run's name (`usePace`'s `shownRun`).
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
-  in the top-right chips.
+  in the top-right chips. ONE exception, owner 2026-10-12 ("allow notifications from people while in
+  match"): friend toasts (`FriendToasts inMatch`, top-left, information only — no Accept on an invite,
+  no profile link, because either would leave the match). The ranked search is a bottom-left corner
+  card (`QueueBar`); pressing FIND MATCH parks the search and goes back, it is not a page.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.
@@ -823,7 +830,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
   Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
-  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). Full-screen surfaces keep their `ConsoleHead` Back: it leaves a live socket. Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
+  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Find match, Duo record, Room entry and LAN are shell pages** (2026-10-13): `App`'s `shell(body)` is handed to `Matchmaking`, `Lobby` and `LanPanel`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`). A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
   keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every

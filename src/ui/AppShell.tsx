@@ -141,13 +141,12 @@ export function AppShell({
         </button>
         {/* WHICH SEASON IS LOADED, on every shell screen (owner, 2026-09-22: "the UI does not show
             which game mode I am in"). The app is DSIM and the season is what is loaded, so the
-            two are separate words with a separator, not one name. Plain text, not a control: the
-            game is switched on the home page. No aria-label: that is not allowed on a generic
-            span, and the visible name is the whole message. */}
-        <span className="ds-bar-season">
+            two are separate words with a separator, not one name. A link home, like the mark
+            (owner, 2026-10-12); the game is still switched on the home page. */}
+        <button className="ds-bar-season" onClick={() => onNav('home')}>
           <span className="sep" aria-hidden="true">·</span>
           {season.name}
-        </span>
+        </button>
         {/* THE TRAIL, in the place the old title was. Nothing LEFT of it (the mark, the season) depends
             on the screen, so the bar never shifts when you navigate; the trail only grows to the right.
             Every crumb but the last is a link, which is also how you go back (`crumbs.ts`). */}
@@ -236,9 +235,8 @@ export function AppShell({
         <main className="ds-main ds-main-home">{children}</main>
       )}
 
-      {/* floating friend-request / challenge notifications — menu shell only, so
-          they never appear over a live match (full-screen surfaces are outside
-          this shell). Inside the FriendsProvider that wraps AppShell in App. */}
+      {/* floating friend-request / challenge notifications. A live match mounts its own
+          (`inMatch`, App.tsx). Inside the FriendsProvider that wraps AppShell in App. */}
       <FriendToasts onOpenProfile={onOpenProfile} onJoinInvite={onJoinInvite} />
 
       {/* the ad strip sits at the BOTTOM, just above the footer, on every screen but HOME: the first

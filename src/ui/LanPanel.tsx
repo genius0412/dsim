@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { LINKS } from '../seasons';
 import type { GameId } from '../games/types';
 import { desktop, type LanHostStatus } from '../desktop';
@@ -9,13 +9,11 @@ import { setTabHosting } from '../lan/hosting';
 import { keepHostedRoom, takeHostedRoom } from '../lan/hostKeeper';
 import { generateRoomCode, normalizeRoomCode } from '../net/roomCode';
 import { serverCaps } from '../net/api';
-import type { RoomInvite } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
 import { copyText } from './copyText';
 import { ConsoleHead } from './ConsoleHead';
-import { RoomFriendsLayout } from './Lobby';
 
 /**
  * LAN PLAY — host a game on this machine, or join one on this network.
@@ -24,12 +22,8 @@ import { RoomFriendsLayout } from './Lobby';
  * replays are still saved to the host's account, which is the whole reason hosting is gated
  * on being signed in. See docs/lan-selfhost.md.
  *
- * ⚠️ **THIS SCREEN BYPASSES `AppShell`**, the same way `Lobby`'s entry phase does (and for
- * the same reason: the screen it's modeled on has none of the shell's chrome). `App.tsx`
- * renders it as an early return, wrapped in `RoomFriendsLayout` — the exact wrapper `Lobby`
- * uses for its own Friends panel — rather than as a child of `<AppShell>`. One consequence:
- * `LanBanner` (rendered by `AppShell`) doesn't show here, same as it already doesn't show
- * inside `Lobby`'s room screens — the "Connected to …" block below covers that case instead.
+ * It renders inside `AppShell` (the `shell` prop), so the app bar's breadcrumb is the way back and
+ * `LanBanner` shows above it.
  *
  * TWO CONSTRAINTS SHAPE THIS SCREEN, and neither is obvious from looking at it:
  *
@@ -70,10 +64,7 @@ export function LanPanel({
   signedIn,
   game,
   displayName,
-  myUserId,
-  onOpenProfile,
-  onJoinInvite,
-  onSpectate,
+  shell,
   onConnected,
   onBack,
 }: {
@@ -90,11 +81,8 @@ export function LanPanel({
   game: GameId;
   /** Saved DSIM display name — the same pre-fill `Lobby`'s own Your name field uses. */
   displayName?: string | null;
-  /** Account context forwarded into the persistent room Friends panel. */
-  myUserId?: string | null;
-  onOpenProfile: (username: string) => void;
-  onJoinInvite: (invite: RoomInvite) => void;
-  onSpectate: (room: string, region?: string) => void;
+  /** wraps the page in the app shell (App's `shell`) */
+  shell: (body: ReactNode) => JSX.Element;
   /** connected to a LAN server — take the player to the room screen */
   /**
    * Go to the room screen. The CODE is passed when this navigation already knows which room
@@ -427,16 +415,9 @@ export function LanPanel({
   const joinUrls = (host?.addresses ?? []).map((a) => `http://${a.address}:${port}`);
 
   return (
-    <RoomFriendsLayout
-      signedIn={signedIn}
-      myUserId={myUserId}
-      onOpenProfile={onOpenProfile}
-      onJoinInvite={onJoinInvite}
-      onSpectate={onSpectate}
-    >
-      <div className="ds-console">
+    shell(
         <div className="ds-console-in narrow">
-          <ConsoleHead onBack={onBack} title="LAN play" />
+          <ConsoleHead title="LAN play" />
 
           {active && (
             <div className="ds-panel ds-panel-body stack">
@@ -737,7 +718,6 @@ export function LanPanel({
             </>
           )}
         </div>
-      </div>
-    </RoomFriendsLayout>
+)
   );
 }

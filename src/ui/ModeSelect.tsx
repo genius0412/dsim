@@ -20,12 +20,14 @@ export function ModeSelect({
   onRejoin,
   onFreeDrive,
   onSoloMatch,
+  onRobot,
+  onMatchSetup,
+  onPracticeSetup,
   onRecordRun,
   onDuoRecord,
   onRanked,
   onCustomRoom,
   onBrowse,
-  onWatch,
   onCompetitions,
   compete = true,
   onTutorial,
@@ -43,13 +45,15 @@ export function ModeSelect({
   onRejoin: () => void;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
+  onRobot: () => void;
+  onMatchSetup: () => void;
+  onPracticeSetup: () => void;
   onRecordRun: () => void;
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
   /** the Public rooms list */
   onBrowse: () => void;
-  onWatch: () => void;
   /** the competitions list (0059). Absent: no tile (an older caller). */
   onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
@@ -153,6 +157,28 @@ export function ModeSelect({
         </div>
       )}
 
+      {/* MATCH SETUP and PRACTICE SETUP, below the tutorial offer (owner, 2026-10-12). Solo practice
+          starts straight away, so the options it used to ask for first live here. */}
+      <section className="ds-tileset">
+        <div className="ds-tiles cols3">
+          <button className="ds-tile" onClick={onRobot}>
+            <span>
+              <span className="t">Robot</span>
+            </span>
+          </button>
+          <button className="ds-tile" onClick={onMatchSetup}>
+            <span>
+              <span className="t">Match setup</span>
+            </span>
+          </button>
+          <button className="ds-tile" onClick={onPracticeSetup}>
+            <span>
+              <span className="t">Practice setup</span>
+            </span>
+          </button>
+        </div>
+      </section>
+
       {/* SOLO: offline and always available — Solo Practice is primary — then the two online runs
           that need the game server and an account (`compete`).
           A TILE IS ITS TITLE: the mono kicker over each one (SOLO, RECORDS, LIVE …) repeated the
@@ -188,15 +214,27 @@ export function ModeSelect({
       {/* MULTIPLAYER: rooms, then the ranked matchmaker and competitions (those need an account) */}
       <section className="ds-tileset">
         <p className="ds-tileset-label">Multiplayer</p>
-        <div className="ds-tiles">
+        <div className="ds-tiles cols3">
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
             <span>
-              <span className="t">Room</span>
+              <span className="t">New room</span>
             </span>
           </button>
           <button className="ds-tile" onClick={onBrowse} disabled={!multiplayer}>
             <span>
               <span className="t">Browse rooms</span>
+              {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH. `isPublicLive` admits ranked
+                  matches and record runs only, and every activity room is a custom room, so the
+                  match four people in this voice channel are playing is reachable only by its code
+                  (the box under the list). The code is derived from the instance they are already
+                  in, so printing it here is the cheapest place to close the gap. */}
+              {inActivity && (
+                <span className="d">
+                  {activityCode
+                    ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
+                    : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'}
+                </span>
+              )}
             </span>
           </button>
           {compete && (
@@ -207,31 +245,6 @@ export function ModeSelect({
               </span>
             </button>
           )}
-          <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
-            <span>
-              <span className="t">Watch live</span>
-              {/* ⚠️ THE LIST BEHIND THIS TILE CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH.
-                  `isPublicLive` admits ranked matches and record runs only — a custom room is
-                  private to the code its host handed out — and every activity room is a custom
-                  room. So in the embed the tile opens on a page about strangers, while the match
-                  four people in this voice channel are playing is reachable the whole time, by
-                  the code box under that list.
-
-                  The code is the missing half: a participant who was not in the lobby has no way
-                  to learn it, even though it is DERIVED from the instance they are already in.
-                  Printing it here is the cheapest place to close that — the tile that needs it is
-                  the one that says it. Not a restatement of the label: it names the limit and the
-                  one thing to type. */}
-              {inActivity && (
-                <span className="d">
-                  {activityCode
-                    ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
-                    : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'}
-                </span>
-              )}
-            </span>
-          </button>
-
           {compete && (
             <>
               <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
@@ -268,35 +281,20 @@ export function ModeSelect({
               )}
             </>
           )}
+          {/* LAN — LAST in the grid. Never disabled on `multiplayer`: not needing our servers is the
+              point of it. Hidden where `LAN_ENABLED` is off (a greyed tile advertises a mode this
+              build will not play), and in a Discord activity, where hosting needs an account the
+              embed never has and the other machine cannot be on this network. */}
+          {lanOn && !inActivity && (
+            <button className="ds-tile" onClick={onLan}>
+              <span>
+                <span className="t">LAN</span>
+              </span>
+            </button>
+          )}
         </div>
       </section>
 
-      {/* LAN — LAST on the page (owner, 2026-09-13). Never disabled on `multiplayer`: not
-          needing our servers is the point of it.
-
-          Hidden entirely where `LAN_ENABLED` is off, rather than shown disabled: a greyed tile
-          advertises a mode this build will not play, and the reason it is off is that the
-          feature is being held back, not that the player is missing a prerequisite.
-
-          ⚠️ HIDDEN IN A DISCORD ACTIVITY FOR THE SAME REASON, and it is not a theoretical
-          case: `LAN_SIGNALLING` is ON in production, so this section really does render in
-          the embed. Behind it, hosting a tab needs an account (`mayTabHost`) and the embed is
-          always signed out because Discord's CSP blocks auth, and joining needs the other
-          machine to be on this network — which a cross-origin iframe in a voice channel with
-          people in four countries is not. The screen's only remedy is a sign-in that cannot
-          happen, so the tile is a dead end and is not offered, exactly like the Compete set. */}
-      {lanOn && !inActivity && (
-        <section className="ds-tileset">
-          <p className="ds-tileset-label">LAN · same network</p>
-          <div className="ds-tiles">
-            <button className="ds-tile" onClick={onLan}>
-              <span>
-                <span className="t">Host or join</span>
-              </span>
-            </button>
-          </div>
-        </section>
-      )}
     </>
   );
 }
