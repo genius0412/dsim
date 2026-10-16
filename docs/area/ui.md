@@ -478,8 +478,22 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   measured, a 723-point DECODE record from sim v2 re-ran as 40 on v5 and BIOBUZZ v3 records ran
   598 → 96. WR takes the first PLAYABLE run tied at the top; practice PB the best run on this sim.
   After a `SIM_VERSION` or `BALANCE_VERSION` bump every older PB/WR shows `—` until beaten — expected, not a bug.
-  The chip is rendered from the first frame of a paced match (`—` until there is a number), so
-  the row's height never changes mid-match. GREEN ahead, RED behind (ink and edge, like `.warn`),
+  ⚠️ **A RECORD IS STAMPED WITH THE SERVER'S SIM** (2026-10-09, tester: "WR doesn't exist, record
+  runs don't work, practice is fine"). The one Fly app runs main's sim, so while alpha's client is
+  ahead EVERY record — set today included — is a drift here, and record pace was `—` everywhere.
+  Two ways back in, both checked against the score the run is known by (`PaceTarget.expect`, its
+  board/stats row): (1) a RECORD RUN RECORDS ITS OWN CURVE from the HUD while played
+  (`useRecordedRunCurve`), stored under the replay's seed + length (`playedRef`; the client never
+  learns the server's replay id) and found again from the fetched replay; (2) a drifted replay is
+  re-run and accepted only if it lands EXACTLY on its score — a miss is cached (`Entry.miss`) so it
+  is not re-simulated every match. On sim 5 DECODE's sim-4 records landed (719 → 719) and
+  BIOBUZZ's did not (850 → 99); on sim 7 none land (DECODE 719 → 50, BIOBUZZ 889 → 173). So a
+  record from before a sim change, set by someone else, is `—` until it is beaten on the new sim.
+  The chip is rendered from the first frame of a paced match (`— WR` while it is worked out), so
+  the row's height never changes mid-match. ⚠️ **A REFUSAL IS SAID ON THE CHIP**, not only in its
+  tooltip: `WR · OLD VERSION`, `PB · SIGN IN`, `· NONE YET`, `· NOT PICKED`, `· UNAVAILABLE`
+  (`PaceState.short`). `.hud` takes no pointer, so the tooltip never shows in a match, and a bare
+  `—` read to a tester as "WR doesn't exist" (2026-10-09). GREEN ahead, RED behind (ink and edge, like `.warn`),
   plain `--ds-ink` level; on the opaque `--ds-hud` fill, not the row's soft one, because light
   theme's green ink is 4.08:1 on `--ds-hud-soft` (contrast-checked, both themes and the 3D scrim).
   ⚠️ **NOT IN THE SCORE BAR** (owner, 2026-10-08: in-panel versions "broke the clean, symmetrical

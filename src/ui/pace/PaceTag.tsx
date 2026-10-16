@@ -21,6 +21,9 @@ export interface PaceState {
   curve: PaceCurve | null;
   /** why there is no number, for the tooltip; empty while it is still being worked out */
   why: string;
+  /** the same in a word or two, ON the chip (`WR · OLD VERSION`): a tooltip never shows over a
+   *  match, and a bare `—` read to a beta tester as "WR doesn't exist" (2026-10-09) */
+  short: string;
 }
 
 /** provided by `GameView` for a paced match (`usePace`); a score bar with no provider shows no
@@ -47,7 +50,7 @@ export function PaceTag({ hud }: { hud: HudSnapshot }) {
   const tone = delta == null || delta === 0 ? 'level' : delta > 0 ? 'ahead' : 'behind';
   return (
     <span className={`pace ${tone}`} title={label} aria-label={label}>
-      {delta == null ? '—' : fmtPace(delta)} {pace.tag}
+      {delta != null ? `${fmtPace(delta)} ${pace.tag}` : pace.short ? `${pace.tag} · ${pace.short}` : `— ${pace.tag}`}
     </span>
   );
 }
