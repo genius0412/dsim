@@ -127,7 +127,7 @@ SATELLITE_SIZES=(
   ord:shared-cpu-8x:2048
   sjc:shared-cpu-8x:2048
   lhr:performance-1x:2048
-  gru:shared-cpu-4x:1024
+  gru:shared-cpu-8x:2048
   jnb:shared-cpu-4x:1024
   syd:shared-cpu-8x:2048
   nrt:shared-cpu-8x:2048
