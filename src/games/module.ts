@@ -508,6 +508,18 @@ export interface SceneFrame {
    * so a scene must read the four numbers during `render` and never retain the reference.
    */
   insets?: SceneInsets;
+  /**
+   * A HOST-PLACED CAMERA (the home menu's backdrop, `src/ui/MenuStage.tsx`). Present ⇒ the scene
+   * renders from exactly this eye toward this target with this vertical FOV, still fitted into
+   * `insets`' safe rect, and `camera` is not consulted. Field inches, z up. Absent ⇒ unchanged.
+   */
+  pose?: ScenePose;
+}
+
+export interface ScenePose {
+  eye: readonly [number, number, number];
+  target: readonly [number, number, number];
+  fovDeg: number;
 }
 
 /**

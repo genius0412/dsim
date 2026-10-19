@@ -5536,6 +5536,24 @@ function driverEyeChecks(check: Check): void {
     check('driverEye/source: graphics/driverEye.ts does not import scene/', !/from\s+['"]\.\.\/scene\//.test(src));
   }
 
+  // ---- A HOST-PLACED CAMERA (`SceneFrame.pose`, the menu stage): exactly there, whatever was asked ----
+  {
+    const cams = createCameras();
+    const world = mkWorld('practice', 1);
+    const pose = { eye: [-120, -150, 90] as const, target: [10, 20, 0] as const, fovDeg: 31 };
+    const cam = cams.update(frameFor({ camera: 'driver', pose }), world, 'driver') as THREE.PerspectiveCamera;
+    const dir = new THREE.Vector3();
+    cam.getWorldDirection(dir);
+    const want = new THREE.Vector3(130, 170, -90).normalize();
+    check(
+      'menu stage: a SceneFrame.pose renders from its eye toward its target with its FOV, over the asked camera',
+      cam === cams.active && cam.position.distanceTo(new THREE.Vector3(-120, -150, 90)) < 1e-6 && dir.distanceTo(want) < 1e-6 && cam.fov === 31,
+      `${cam.position.toArray()} ${dir.toArray()} fov ${cam.fov}`,
+    );
+    cams.update(frameFor({ camera: 'driver' }), world, 'driver');
+    check('menu stage: the next frame without a pose is back on the asked camera', cams.active === cams.driver);
+  }
+
   // ---- WIRING: scene/renderCameras.ts's actual driver camera --------------------------------
   {
     const cams = createCameras();
