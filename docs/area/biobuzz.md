@@ -106,6 +106,8 @@ are off the LIVE board only: an archived season shows the solve it was played on
 2D board (`accounts.md`, "THE ERA IS PER SEASON"). An old client without the `'bb3d'` cap is
 now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
+**A HOST-PLACED CAMERA (`SceneFrame.pose`, 2026-10-18).** The menu stage (`src/ui/MenuStage.tsx`, `docs/area/ui.md` THE MENU STAGE) draws the match scene from its own eye/target/FOV. `renderCameras.ts` honours a pose before the camera switch, through `free`'s THREE camera and the same safe-rect `insets`, and leaves the free cam's eased state alone, so a later frame without a pose resumes it. The RENDER lane pins both.
+
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via
 `GameSettings.practicePhysics` (default `'3d'`; Practice setup has the control). A record run
 whose 3D chunk fails to load REFUSES (`RecordRun.tsx` preflights it); only a practice falls back

@@ -214,10 +214,11 @@ that season has none) — then the bind panels —
   a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
   Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
   Switching says what happened in the Driving title when any map has a trigger bind.
-- **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`, `/match-setup`, `/practice-setup`) ARE NOT CONFIGURE SECTIONS**
+- **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`) ARE NOT CONFIGURE SECTIONS**
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
-  STARTS straight away (behind `guardStart`), and the two cards are two buttons at the top of the Play
-  page. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
+  STARTS straight away (behind `guardStart`). Since 2026-10-18 the two cards are the Play page's RIGHT
+  COLUMN, stacked (see THE MENU STAGE below); `/match-setup`, `/practice-setup`, `/solo-setup` and
+  `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
   Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
   Partner / Opponent 1 / Opponent 2, each None · Dummy · AI (AI only where the game registers a
   `BotDriver`) with its own difficulty row, which is always rendered and DISABLED unless the seat is AI
@@ -359,6 +360,104 @@ Controls screen stands the layer down the same way while a rebind is armed
   hidden browser tab, and the layer polls the pad on rAF, so a stubbed gamepad in a background
   tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
   OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
+
+## THE MENU STAGE — Home and Play over the field (owner, 2026-10-18, after MoSim's home)
+
+The owner asked for DSIM's front door to look like MoSim's, and answered every layout question; the
+rulings below are theirs, not defaults.
+
+- **ONE stage behind both screens** (`src/ui/MenuStage.tsx`, mounted by `App` while `screen` is `home`
+  or `modes`). Going Home → Play is a change of `view`, not a remount, which is what lets the camera
+  FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it up).
+- **The selected game's field.** BIOBUZZ: the match's own 3D scene (`createBiobuzzScene`, lazy,
+  `interactive: false`) in the player's own Graphics environment, drawn through `SceneFrame.pose`
+  ON DEMAND (while the camera moves, and once when `assetsSettled` resolves), not every frame.
+  DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
+  phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and TILTED in CSS.
+  A dark backdrop (`--ds-stage-bg`) until the 3D fades in. Home has game pieces only; the player's
+  robot joins for Play and leaves when the camera is back up.
+- **Home** (`HomeMenu.tsx`): no app-bar fill or mark (the bar keeps only its right-hand cluster:
+  profile, Admin, online chip), ONE LEFT COLUMN on a left-to-right scrim — wordmark, sponsor, game
+  switcher, the keycaps, the labelled
+  social pills, the stats — and the normal footer. Text drawn ON the scrim is category 3 (on-field
+  tokens, the sponsor's light-ink cut); the keycaps, pills, switcher and cards keep their themed fills.
+  ⚠️ Do not put a colour on `.ds-home` itself: it leaked into the white tutorial card in light theme.
+- **Play** (`ModeSelect.tsx`) keeps the app bar (its fill slides down during the fly, a `::before`
+  moved by `transform`), the ad strip, no footer, no friends panel. The robot's free area
+  (`.ds-setup-view`) is the 3D ORBIT's drag surface (`stageOrbit`; it eases back on release) — the stage
+  is behind the shell, so the page owns the pointer — and on a 2D stage the page draws the 2D preview
+  there itself (`useStageMode`). Bottom-left: `RobotStrip` (`Menu.tsx`), ONE scrolling row of
+  `RobotCard`s — the unsaved current build when it matches no card, saved robots, imports, presets,
+  then New robot (the first preset's build, then the builder). Picking the card that is ALREADY on
+  opens the builder (an import's opens the importer). Header: Import. Right column: Match setup, then
+  Practice setup, scrolling, with Solo and Multiplayer pinned under them; each REPLACES the column with
+  its list (Solo practice / Free drive / Solo record; New room, Browse rooms, Duo record, Find match,
+  Competitions, LAN) and a Back. Every gate the old tiles had is kept.
+- **The camera frames what the page leaves free**: `insetsFor` reads `.ds-setup-view` (Play) and the
+  column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
+  hand-tuned `POSES`/`SHOW` constants; the showcase spot is on open floor, clear of the hive's legs.
+- ⚠️ **A PHONE'S HOME IS NOT ON THE STAGE, AND IT FITS AN iPHONE SE IN SAFARI WITH NO SCROLL**
+  (owner, 2026-10-18: "restore that page … to the original one", alpha's; then "fit without needing
+  to scroll for any phone"). Below 720px `App.tsx` mounts no `MenuStage` for Home and passes no
+  `stage`: it is the normal shell (`.ds-app.is-home`) and `HomeMenu stage={false}` renders alpha's
+  order, compacted by `.ds-app.is-home …` rules in the phone block:
+  - no footer (`> .ds-foot` hidden); a "More" link opens a bottom sheet (`MoreSheet`, `useDialog`)
+    with the stats breakdown and the SAME footer contents (`FootBody` from AppShell, via
+    `FootContext`). So the sponsor's footer credit and the consent link are never copied.
+  - labels-only keycaps (`.mh` hidden; Play keeps its queue count), the switcher on one row of
+    three equal segments, and the social pills as three equal icon + name pills on one row (owner:
+    "full text instead of icons"; `--ds-t-md`, which is what fits "Instagram" at 360).
+  - the stats as one line ("N players · N games played") on ONE BASELINE (`align-items: baseline`,
+    tight line-heights; the tiles had been centred on each other, owner: "on the same row"), no bar queue line (it ran the profile
+    button 2px off a 390 screen), and the column centred in the height left.
+
+  Measured `scroll 0` at 375x550, 360x640, 390x664, 360x740, 414x736 and 390x844, all three games,
+  both themes; the column ends at 499px. A smaller or sideways phone may scroll (owner's call).
+  **The base `.ds-home*` / `.ds-homestats*` / `.ds-menu` / `.ds-menu-btn` rules are alpha's
+  verbatim**; the desktop look is `.ds-app.stage-home …` overrides and the phone look
+  `.ds-app.is-home …` overrides, so neither reaches the other. Scope any new Home rule the same way.
+- ⚠️ **THE TUTORIAL OFFER AND THE REJOIN BANNER ARE ON PLAY**, desktop and phone (owner,
+  2026-10-18), as `.ds-setup-notice` floating at the top-left of `.ds-setup-view`, opaque, with the
+  floating edge. On desktop the view gets `.has-notice` and a left padding the width of the stack,
+  so the 2D robot (sized off the content box) and the 3D camera (`insetsFor` reads the content box)
+  stand BESIDE the cards. On a phone they span the robot band, over the robot (the owner's choice).
+  Its pointerdown stops, so a tap is not an orbit drag.
+- Phone Play keeps its stage: the robot in a top 42dvh band, Robot | Settings toggle buttons under
+  it, the two buttons pinned, no per-game queue line and no "· N signed in" in the bar (≤ 440px), and
+  no scroll track (a narrow desktop window carried Home's track into Play and overflowed it by 10px
+  at 360x740).
+- ⚠️ **BOTH SCREENS FIT THE WINDOW; THERE IS NO PAGE SCROLLBAR** (owner, 2026-10-18). Measured
+  `scrollHeight - clientHeight` = 0 on Home and Play at 1920x1080, 1536x864, 1366x768, 1280x720,
+  and on both at 390x844 and 360x740 (`scratch/stage.cjs` prints it per size); a phone's Home down
+  to 375x550 (above). A landscape phone (844x390) scrolls. Home's bar is OUT OF FLOW and a window ≤ 820px tall takes a tighter column. Play's right
+  column scrolls INSIDE itself on a thin track; its cards are `flex: none`, or Match setup shrinks
+  and cuts off its own map. `.ds-app.on-stage` is `overflow-y: auto`, not the shell's always-on `scroll`.
+- **ONE SPACING**: Home has one inset (`--ds-s-7`, the bar's too) and one gap between groups
+  (`--ds-s-4`, `--ds-s-3` when short); no group carries a margin of its own.
+  **Every group is CENTRED on the column's axis** (owner: "center this"), and the switcher, the pills
+  and the two stat tiles stretch to the column's width, so it has one left and one right edge. The
+  three-across rows (switcher, pills, stat tiles) share ONE gap (`--ds-s-2`) and EQUAL items
+  (`flex: 1 1 0`), so the switcher's and the pills' edges line up; "Chain Reaction" fits a third
+  only at the 8px inset given and never wraps.
+- **The desktop scrim is SOLID behind the whole column** (to 492px) and only then fades,
+  and the online chip has a `--ds-scrim-strong` plate: the BIOBUZZ warehouse is bright in places
+  (`contrast.mjs` checks the pale text against its 99th-percentile wall). **The 2D field** is sized to
+  the free area right of the column and above the footer (`.ds-stage-2d.home img`); at 86vh it ran
+  off the window at 1366 and 1920 and touched the Play keycap at 1280x720. Play uses 16px for the page edge, the gap between areas and
+  the panel padding. `.ds-panel + .ds-panel`'s margin is zeroed in the setup column, whose flex gap
+  owns it, so a 32px gap never appears.
+- **A lost WebGL context drops the stage to its 2D field** (`webglcontextlost`), the way a match
+  drops to 2D. Before this, the stage showed an empty backdrop.
+- ⚠️ **THE 2D STAGE IS AN `<img>`, NOT A CANVAS IN THE PAGE.** The field is drawn once into a
+  detached canvas and shown through `toBlob`. A canvas left in the page went BLANK after any window
+  resize (pixels still readable in it, nothing on screen, a redraw did not bring it back; a fresh
+  canvas or an image did) — measured offscreen 2026-10-18, and a phone rotating is a resize. The 3D
+  stage draws once more 150ms after a resize settles, for the same reason. Never HIDE a mounted stage
+  (`display: none`, `visibility: hidden`): a 3D scene that drew and was then hidden came back blank.
+- **Every picker card carries its robot's picture**, presets included (owner: "I can't see the
+  robot"). The 2D robot on Play is sized to the free area (`ResizeObserver`, 96..400px).
+- **A first visit (nothing stored) opens on BIOBUZZ**, web and activity alike; `defaultSettings()`
+  stays DECODE.
 
 ## Configure — the sections, and the three rules that hold them together
 
@@ -844,7 +943,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
   Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
-  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Find match, Duo record, Room entry and LAN are shell pages** (2026-10-13): `App`'s `shell(body)` is handed to `Matchmaking`, `Lobby` and `LanPanel`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`). A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is ONE page with a Solo set (Solo practice, Free drive, Solo record) and a Multiplayer set (Duo record is a two-driver run, so it lives here). ⚠️ **NO
+  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Find match, Duo record, Room entry and LAN are shell pages** (2026-10-13): `App`'s `shell(body)` is handed to `Matchmaking`, `Lobby` and `LanPanel`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`). A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is the robot setup over the menu stage (2026-10-18, THE MENU STAGE above): its Solo list is Solo practice, Free drive, Solo record, and its Multiplayer list holds Duo record (a two-driver run). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
   keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every

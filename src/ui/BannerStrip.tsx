@@ -16,7 +16,8 @@ const FILL_WAIT_MS = 5000;
  * `FILL_WAIT_MS` is treated as unfilled too (an extension that eats the script never answers).
  *
  * BOTH FILL THE SAME FRAME, and that is what makes it a banner rather than two different things:
- * a 728x90 box (320x50 on a phone) with its label above it, outlined by a hairline. The ad's label
+ * a 728x90 box (320x50 on a phone) with its label beside it (sideways, `.side-label`; above it on a
+ * phone), outlined by a hairline. The ad's label
  * is "Advertisement" (an AdSense requirement) and the sponsor's is "Sponsored", because the sponsor
  * is a placement we sold, not an AdSense unit. Same box, so the swap moves nothing.
  *
@@ -58,7 +59,7 @@ export function BannerStrip() {
       {showAd ? (
         <AdSlot unit="banner" />
       ) : (
-        <div className="ds-adframe">
+        <div className={`ds-adframe${narrow ? '' : ' side-label'}`}>
           <span className="ad-slot-label">Sponsored</span>
           <div className="ds-adframe-box">
             <SponsorStripMark h={narrow ? 24 : 44} />

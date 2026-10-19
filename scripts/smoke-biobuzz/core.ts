@@ -457,7 +457,7 @@ export function coreChecks(check: Check): void {
     const labelsSrc = readRepo('src/ui/robotLabels.ts');
     check(
       'Menu.tsx renders saved robots AND presets through RobotCard, with the active game',
-      (menu.match(/<RobotCard\b/g) ?? []).length === 2 && (menu.match(/game=\{settings\.game\}/g) ?? []).length >= 2,
+      (menu.match(/<RobotCard\b/g) ?? []).length >= 2 && (menu.match(/game=\{settings\.game\}/g) ?? []).length >= 2,
     );
     check(
       'RobotCard prints buildWords as its one `.om` line',

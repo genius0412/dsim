@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
 import { APP_NAME, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
@@ -49,6 +49,7 @@ export function AppShell({
   showAdmin,
   home = false,
   wide = false,
+  stage,
   crumbs,
   onCrumb,
   onDownload,
@@ -73,6 +74,12 @@ export function AppShell({
   wide?: boolean;
   /** home has no Back, no title and no friends panel, and its menu is the navigation */
   home?: boolean;
+  /**
+   * THE MENU STAGE is behind this screen (`MenuStage.tsx`): the shell goes transparent over it. On
+   * `home` the bar keeps only its right-hand cluster (no mark, no season, no fill); on `setup` (Play)
+   * the bar's fill slides down while the camera flies, and there is no footer and no friends panel.
+   */
+  stage?: 'home' | 'setup';
   /** where you are, after the season name: parents are links, the last is plain text. Empty on home. */
   crumbs: readonly Crumb[];
   /** go to a crumb */
@@ -133,7 +140,9 @@ export function AppShell({
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
-    <div className="ds-app">
+    <FootContext.Provider value={{ game, onDownload, onContributors, onPrivacy, onTerms, onDonate, onChangelog }}>
+    {/* `is-home` is Home OFF the stage (a phone), where the footer is the "More" sheet instead */}
+    <div className={stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}>
       <header className="ds-bar">
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
           <Logo size={24} />
@@ -209,7 +218,11 @@ export function AppShell({
           it would push the room off the bottom of the viewport). */}
       {lanOn && <LanBanner />}
 
-      {!home ? (
+      {stage === 'setup' ? (
+        // THE PLAY PAGE OVER THE STAGE: the robot is the picture, so no page ad under it and no friends
+        // panel beside it (owner, 2026-10-18); the banner strip below still runs
+        <main className="ds-main ds-main-stage">{children}</main>
+      ) : !home ? (
         <div className="ds-body">
           <main className={wide ? 'ds-main wide' : 'ds-main'}>
             {children}
@@ -245,55 +258,84 @@ export function AppShell({
           short page the strip still lands at the foot of the window. */}
       {!home && <BannerStrip />}
 
-      <footer className="ds-foot">
-        <span className="ds-foot-brand">
-          {APP_NAME}
-          {/* the app's presenting sponsor, on EVERY shell screen. The home menu
-              announces it; this is the standing credit that makes "presented by"
-              a property of the product rather than of its landing page. */}
-          <SponsorFooterMark />
-        </span>
-        <span className="ds-foot-links">
-          {/* TWO GROUPS, by position and weight: the product's own destinations at the
-              link weight, then the legal set small and muted (design review 11-19). The
-              consent link's label ("Data") is fixed by the privacy policy, which names it verbatim
-              (legalText.ts), and outside the EEA/UK/CH it lands on the same page as Privacy
-              — so the two sit together at the legal weight instead of reading as six peers.
-              No `.bold` on any of them: within a group they are peers. No Discord link
-              here: the home page carries it. Each group is its own element, so a phone can
-              give each one its own row instead of breaking wherever the width runs out. */}
-          <span className="ds-foot-group">
-            <FootLink href={`/${game}/download`} go={onDownload}>
-              Download
-            </FootLink>
-            <FootLink href={`/${game}/contributors`} go={onContributors}>
-              Contributors
-            </FootLink>
-            {/* hidden until the tier is actually open for business - see
-                SUPPORT_ENABLED. A link to a page that cannot take a payment is a
-                dead end, and a broken purchase path is a cited AdSense rejection. */}
-            {SUPPORT_ENABLED && (
-              <FootLink href={`/${game}/donate`} go={onDonate}>
-                Support
-              </FootLink>
-            )}
-            <FootLink href={`/${game}/changelogs`} go={onChangelog}>
-              Changes
-            </FootLink>
-          </span>
-          <span className="ds-foot-group">
-            <FootLink href={`/${game}/privacy`} go={onPrivacy} legal>
-              Privacy
-            </FootLink>
-            <ConsentLink onPrivacy={onPrivacy} />
-            <FootLink href={`/${game}/terms`} go={onTerms} legal>
-              Terms
-            </FootLink>
-          </span>
-        </span>
-      </footer>
+      {stage !== 'setup' && (
+        <footer className="ds-foot">
+          <FootBody />
+        </footer>
+      )}
     </div>
+    </FootContext.Provider>
     </PresenceProvider>
+  );
+}
+
+/** the footer's destinations, handed down so Home's "More" sheet (`HomeMenu.tsx`) can show the SAME
+ * links rather than a copy that drifts — the consent link above all must never fall out of one */
+interface FootNav {
+  game: GameId;
+  onDownload: () => void;
+  onContributors: () => void;
+  onPrivacy: () => void;
+  onTerms: () => void;
+  onDonate: () => void;
+  onChangelog: () => void;
+}
+const FootContext = createContext<FootNav | null>(null);
+
+/** the footer's contents: the brand run and the two link groups. Rendered in the shell's footer and
+ * in a phone Home's "More" sheet, which replaces that footer there (owner, 2026-10-18). */
+export function FootBody() {
+  const nav = useContext(FootContext);
+  if (!nav) throw new Error('FootBody outside AppShell');
+  const { game, onDownload, onContributors, onPrivacy, onTerms, onDonate, onChangelog } = nav;
+  return (
+    <>
+      <span className="ds-foot-brand">
+        {APP_NAME}
+        {/* the app's presenting sponsor, on EVERY shell screen. The home menu
+            announces it; this is the standing credit that makes "presented by"
+            a property of the product rather than of its landing page. */}
+        <SponsorFooterMark />
+      </span>
+      <span className="ds-foot-links">
+        {/* TWO GROUPS, by position and weight: the product's own destinations at the
+            link weight, then the legal set small and muted (design review 11-19). The
+            consent link's label ("Data") is fixed by the privacy policy, which names it verbatim
+            (legalText.ts), and outside the EEA/UK/CH it lands on the same page as Privacy
+            — so the two sit together at the legal weight instead of reading as six peers.
+            No `.bold` on any of them: within a group they are peers. No Discord link
+            here: the home page carries it. Each group is its own element, so a phone can
+            give each one its own row instead of breaking wherever the width runs out. */}
+        <span className="ds-foot-group">
+          <FootLink href={`/${game}/download`} go={onDownload}>
+            Download
+          </FootLink>
+          <FootLink href={`/${game}/contributors`} go={onContributors}>
+            Contributors
+          </FootLink>
+          {/* hidden until the tier is actually open for business - see
+              SUPPORT_ENABLED. A link to a page that cannot take a payment is a
+              dead end, and a broken purchase path is a cited AdSense rejection. */}
+          {SUPPORT_ENABLED && (
+            <FootLink href={`/${game}/donate`} go={onDonate}>
+              Support
+            </FootLink>
+          )}
+          <FootLink href={`/${game}/changelogs`} go={onChangelog}>
+            Changes
+          </FootLink>
+        </span>
+        <span className="ds-foot-group">
+          <FootLink href={`/${game}/privacy`} go={onPrivacy} legal>
+            Privacy
+          </FootLink>
+          <ConsentLink onPrivacy={onPrivacy} />
+          <FootLink href={`/${game}/terms`} go={onTerms} legal>
+            Terms
+          </FootLink>
+        </span>
+      </span>
+    </>
   );
 }
 

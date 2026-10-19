@@ -72,7 +72,7 @@ import {
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
-import { SoloSetup } from './SoloSetup';
+import { MenuStage, usePhone, type StageView } from './MenuStage';
 import { RoomBrowser } from './RoomBrowser';
 import { WatchLobby } from './WatchLobby';
 import { LanPanel } from './LanPanel';
@@ -140,11 +140,10 @@ import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 
 type Screen =
   | 'home'
+  /** `/modes`, the Play page: the robot setup over the menu stage (`ModeSelect`). Match setup and
+   *  Practice setup are its right-hand column, so `/match-setup`, `/practice-setup`, `/solo-setup`
+   *  and `/configure/match` all land here. */
   | 'modes'
-  /** `/solo-setup`: alliance, start, autos, physics and the other robots, then Start. It was
-   *  Configure's Match section, so `/configure/match` lands here. */
-  | 'matchsetup'
-  | 'practicesetup'
   | 'configure'
   /** `/configure/robot/import` and `/configure/robot/import/<id>`: the robot import editor. A screen
    *  of its own, not a Configure section, so its preview has the page's whole width. */
@@ -246,10 +245,6 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '';
     case 'modes':
       return '/modes';
-    case 'matchsetup':
-      return '/match-setup';
-    case 'practicesetup':
-      return '/practice-setup';
     case 'configure':
       return `/configure/${isConfigureSection(a.sub) ? a.sub : 'controls'}`;
     case 'robotimport':
@@ -332,8 +327,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const comps = rest.match(/^\/competitions(?:\/([a-z0-9-]{3,48}(?:\/[a-z]+)?))?\/?$/);
   if (comps) return at('competitions', { sub: comps[1] ?? null });
 
-  // the old Match section of Configure, BEFORE the configure match below
-  if (/^\/configure\/match\/?$/.test(rest)) return at('matchsetup');
+  // the old Match section of Configure, BEFORE the configure match below: the Play page holds it now
+  if (/^\/configure\/match\/?$/.test(rest)) return at('modes');
   // BEFORE the configure match, which would read `/configure/robot/import` as the robot section.
   // Where the importer is closed (`importerEnabled`) it is not matched at all and the path falls
   // through to that robot section, the page the importer would return to.
@@ -352,8 +347,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/stats')) return at('records', { sub: 'career' });
 
   if (rest.startsWith('/modes')) return at('modes');
-  if (rest.startsWith('/match-setup') || rest.startsWith('/solo-setup')) return at('matchsetup');
-  if (rest.startsWith('/practice-setup')) return at('practicesetup');
+  // the two setup screens are the Play page's right-hand column now (2026-10-18)
+  if (rest.startsWith('/match-setup') || rest.startsWith('/solo-setup') || rest.startsWith('/practice-setup')) return at('modes');
   if (rest.startsWith('/lobby')) return at('lobby');
   // `/watch` was merged into Browse rooms (2026-10-12)
   if (rest.startsWith('/rooms') || rest.startsWith('/watch')) return at('rooms');
@@ -504,12 +499,12 @@ export function App() {
   const [settings, setSettings] = useState<GameSettings>(() => {
     const stored = loadSettings();
     /**
-     * THE DISCORD ACTIVITY OPENS ON BIOBUZZ, and only the activity does.
+     * A FIRST VISIT OPENS ON BIOBUZZ (owner, 2026-10-18: the newest season, and the one whose home
+     * page is the 3D field). It was the Discord activity alone until then.
      *
-     * The app-wide default in `defaultSettings()` stays DECODE — the website and the
-     * desktop app are unchanged. Inside the embed there is no game-prefixed URL to read a
-     * season from, so `settings.game` is the whole story, and the current season is the
-     * one a player dropping into a voice channel expects to land on.
+     * The default in `defaultSettings()` stays DECODE (the smoke suite, the server and every
+     * coercer read it); this seeds only an origin with NOTHING stored. A game-prefixed URL still
+     * wins below, and a channel that hides BIOBUZZ falls back to DECODE through `gameVisible`.
      *
      * ⚠️ It seeds a DEFAULT, it does not pin a season. A player who picks another season
      * in the activity has settings stored for that origin from then on, so this stops
@@ -522,8 +517,7 @@ export function App() {
      * on the home page", both of which stay true — this only changes what that value
      * STARTS as, so there is no second source of truth for the season.
      */
-    const s =
-      inDiscordActivity() && !hasStoredSettings() ? switchGame(stored, 'biobuzz') : stored;
+    const s = !hasStoredSettings() ? switchGame(stored, 'biobuzz') : stored;
     // a SAVED game hidden on this channel is dropped as well, not just a hidden
     // URL prefix: `coerceSettings` validates `game` as a `GameId` and knows
     // nothing about channels, so a stored `biobuzz` from an alpha build (the same
@@ -2040,6 +2034,11 @@ export function App() {
       onChange={(id) => update({ ...settings, preferredServerId: id })}
     />
   );
+  /** the menu stage's view (`MenuStage.tsx`): Home's high shot, Play's robot, or none */
+  // a phone's Home is the pre-stage page, in the normal shell (owner, 2026-10-18)
+  const phone = usePhone();
+  const stageView: StageView | null =
+    screen === 'home' ? (phone ? null : 'home') : screen === 'modes' ? 'setup' : null;
   /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
   const crumbs = crumbsFor(screen, route.sub, route.username);
   /**
@@ -2433,11 +2432,14 @@ export function App() {
           }}
         />
       )}
+      {/* THE MENU STAGE behind Home and Play: ONE mount for both, so Play is a camera fly, not a page load */}
+      {stageView && <MenuStage game={settings.game} view={stageView} spec={shown.spec} alliance={shown.alliance} />}
       <AppShell
         onNav={goNav}
         right={right}
         showAdmin={isAdmin}
         home={screen === 'home'}
+        stage={stageView ?? undefined}
         crumbs={crumbs}
         onCrumb={(to) => navigate(to.screen as Screen, { sub: to.sub ?? null })}
         onDownload={() => navigate('download')}
@@ -2490,6 +2492,7 @@ export function App() {
       {screen === 'home' && (
         <HomeMenu
           settings={shown}
+          stage={stageView === 'home'}
           multiplayer={multiplayer}
           discord={inActivity ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={goNav}
@@ -2558,25 +2561,22 @@ export function App() {
         </OverlayDialog>
       )}
 
-      {(screen === 'matchsetup' || screen === 'practicesetup') && (
-        <>
-          <h1 className="ds-h1">{screen === 'matchsetup' ? 'Match setup' : 'Practice setup'}</h1>
-          <SoloSetup settings={shown} onChange={update} part={screen === 'matchsetup' ? 'match' : 'practice'} />
-        </>
-      )}
-
       {screen === 'modes' && (
         <ModeSelect
-          game={settings.game}
-          importedActive={!!shown.spec.imported}
-          multiplayer={multiplayer}
-          signedIn={signedIn}
+          settings={shown}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
           onRejoin={() => {
             const ref = loadActiveGame();
             if (ref) rejoinGame(ref);
             else setActiveGame(null);
           }}
+          /* THE FIRST-RUN OFFER. Absent for a game with no tutorial. */
+          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
+          onChange={update}
+          onEditRobot={() => navigate('configure', { sub: 'robot' })}
+          onImport={(id) => (importerOn ? navigate('robotimport', { sub: id ?? null }) : navigate('configure', { sub: 'robot' }))}
+          multiplayer={multiplayer}
+          signedIn={signedIn}
           onFreeDrive={() =>
             guardStart(() => {
               update({ ...settings, mode: 'free' });
@@ -2589,9 +2589,6 @@ export function App() {
               navigate('game');
             })
           }
-          onRobot={() => navigate('configure', { sub: 'robot' })}
-          onMatchSetup={() => navigate('matchsetup')}
-          onPracticeSetup={() => navigate('practicesetup')}
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
@@ -2600,10 +2597,6 @@ export function App() {
           onLan={() => navigate('lan')}
           onCompetitions={() => navigate('competitions')}
           compete={!inActivity}
-          /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
-             no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
-             section rather than gaining a disabled tile. */
-          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
@@ -2686,7 +2679,7 @@ export function App() {
               autoFocus
               onClick={() => {
                 setBadStart(false);
-                navigate('matchsetup');
+                navigate('modes');
               }}
             >
               Fix start position

@@ -989,6 +989,22 @@ export function createCameras(): BbCameras {
       // from wherever it last was when the player last looked.
       updateDriver(frame, world, dt);
       updateOverhead(frame);
+      // A HOST-PLACED CAMERA (`SceneFrame.pose`) is drawn through `free`'s THREE camera. The free
+      // cam's own eased state is not touched, so a later frame without a pose resumes it as it was.
+      if (frame.pose) {
+        resolveSafeRect(frame);
+        free.aspect = Math.max(1e-3, safe.w / safe.h);
+        free.fov = frame.pose.fovDeg;
+        applyViewOffset(free);
+        const { eye, target } = frame.pose;
+        free.position.set(eye[0], eye[1], eye[2]);
+        free.up.set(0, 0, 1);
+        scratchTarget.set(target[0], target[1], target[2]);
+        free.lookAt(scratchTarget);
+        free.updateProjectionMatrix();
+        cams.active = free;
+        return free;
+      }
       let picked: THREE.Camera;
       if (camera === 'chase') picked = updateChase(frame, world, dt) ? chase : driver;
       else if (camera === 'orbit') {

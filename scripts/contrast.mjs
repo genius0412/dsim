@@ -111,6 +111,10 @@ const LABEL_STROKE_ON_TILE = LABEL_STROKE_SOLID;
 const LABEL_STROKE_ON_BACKDROP = LABEL_STROKE_SOLID;
 // the ranked-intro scrim, and the results/net scrim: dark in BOTH themes
 const INTRO_SCRIM = composite('#080a0e', 0.72, FIELD);
+// Home's column scrim and the online chip's own (`.ds-home-scrim`, both --ds-scrim-strong) over
+// the BIOBUZZ menu stage's warehouse at its brightest: the 99th-percentile pixel of the lit back
+// wall, measured offscreen at 1920x1080 on 2026-10-18. Pure white behind would be 4.4:1.
+const HOME_SCRIM_BRIGHT = composite('#080a0e', 0.72, '#dee0e1');
 
 /** `rgba(r, g, b, a)` → ['#rrggbb', a]. --ds-hud is translucent, so its real colour
  *  depends on what is behind it, and that is the canvas rather than a themed surface. */
@@ -300,6 +304,7 @@ const hudPairs = (t) => {
     ['canvas countdown on the field', t('--ds-on-field'), FIELD, AA],
     ['canvas .intro-vs on the scrim', t('--ds-on-field-dim'), INTRO_SCRIM, AA],
     ['canvas .intro-eyebrow on the scrim', t('--ds-on-field-accent'), INTRO_SCRIM, AA],
+    ['Home caption / stats line / online chip on the scrim over the 3D stage', t('--ds-on-field-dim'), HOME_SCRIM_BRIGHT, AA],
     ['canvas .mobile-joystick-label', t('--ds-on-field-dim'), FIELD, AA],
 
     /* THE DRIVER-NAME LABELS over remote robots (`renderer.ts`), in COLORS.redLabel /
