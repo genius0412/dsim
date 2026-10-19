@@ -1,28 +1,48 @@
-import { useMemo, useState } from 'react';
-import { APP_NAME } from '../seasons';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { GameSettings } from '../types';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
-import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
-import type { GameId } from '../games/types';
 import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
+import { SoloSetup } from './SoloSetup';
+import { RobotStrip } from './Menu';
+import { RobotPreview } from './RobotPreview';
+import { ChainRobotPreview } from '../games/chain/RobotPreview';
+import { FootprintSvg } from './FootprintSvg';
+import { moduleFor } from '../games';
+import { stageOrbit, useStageMode } from './MenuStage';
+import { APP_NAME } from '../seasons';
+import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
 
 /**
- * The PLAY page: Solo and Multiplayer, side by side on one page. These are the tiles that
- * used to live on Home. Every start action is still wrapped in App's `guardStart()` (stale-build
- * refresh + scheduled-restart block) by the caller, so nothing here bypasses it.
+ * THE PLAY PAGE — THE ROBOT SETUP (owner, 2026-10-18, after MoSim's robot select). It sits over the
+ * menu stage, which flew the camera down to the player's robot on the way in: the robot is the
+ * picture, the picker row is bottom-left, and Match setup and Practice setup are stacked in the right
+ * column with Solo and Multiplayer pinned under them. Each of those two REPLACES the column with its
+ * own list (Solo practice / Free drive / Solo record; the rooms, ranked, competitions and LAN), with a
+ * way back. Every start action is still wrapped in App's `guardStart()` by the caller.
+ *
+ * The free area over the robot is the drag surface for the 3D orbit (`stageOrbit`): the stage is
+ * behind the shell, so the page owns the pointer. On a 2D stage the page draws the robot itself.
+ *
+ * On a phone the robot is on top and the picker and the settings are two tabs under it, with the
+ * two buttons pinned at the bottom.
  */
+type Side = 'settings' | 'solo' | 'multi';
+
 export function ModeSelect({
+  settings,
+  onChange,
+  onEditRobot,
+  onImport,
   multiplayer,
   signedIn,
   onLan,
   activeGame,
   onRejoin,
+  onTutorial,
   onFreeDrive,
   onSoloMatch,
-  onRobot,
-  onMatchSetup,
-  onPracticeSetup,
   onRecordRun,
   onDuoRecord,
   onRanked,
@@ -30,271 +50,259 @@ export function ModeSelect({
   onBrowse,
   onCompetitions,
   compete = true,
-  onTutorial,
-  game,
-  importedActive = false,
 }: {
+  settings: GameSettings;
+  onChange: (s: GameSettings) => void;
+  /** open the builder (Configure ▸ Robot) on the active robot */
+  onEditRobot: () => void;
+  /** open the robot importer: a new import, or `id` to edit a library robot */
+  onImport: (id?: string) => void;
   multiplayer: boolean;
   signedIn: boolean;
-  /** show the "Ranked · online" tileset (ranked + records). Off inside a Discord
-   * Activity, which has no account (auth is CSP-blocked in the embed) and is meant
-   * as a drop-in casual lobby — so ranked/records would only show as dead tiles. */
+  /** show ranked, records and competitions. Off inside a Discord Activity, which has no account
+   * (auth is CSP-blocked in the embed) and is meant as a drop-in casual lobby. */
   compete?: boolean;
-  /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
-  activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
-  onRejoin: () => void;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
-  onRobot: () => void;
-  onMatchSetup: () => void;
-  onPracticeSetup: () => void;
   onRecordRun: () => void;
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
   /** the Public rooms list */
   onBrowse: () => void;
-  /** the competitions list (0059). Absent: no tile (an older caller). */
+  /** the competitions list (0059). Absent: no entry (an older caller). */
   onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
+  /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
+  activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
+  onRejoin: () => void;
   /**
-   * START THE TUTORIAL — absent when the active game has no tutorial, in which case this page
-   * shows nothing about one.
-   *
-   * The CARD below is offered only to a device that has not been through it (`tutorialSeen`,
-   * per-device and fail-open like `chainDisclaimer`). It is not a permanent tile: once you have
-   * played, an offer to be taught is clutter on the page you go through to start every run, and
-   * Controls keeps an entry that runs it again for anybody who wants it.
+   * START THE TUTORIAL — absent when the game has no tutorial. Offered only to a device that has
+   * not been through it for THIS game (`tutorialSeen`, per game, fail-open); once played, an offer
+   * to be taught is clutter, and Controls keeps an entry that runs it again.
    */
   onTutorial?: () => void;
-  /** the season the offer is for: the seen flag is kept PER GAME (design review 12-12).
-   *  Absent ⇒ the legacy reading, "has this device been through any tutorial". */
-  game?: GameId;
-  /** the active robot is an IMPORT, which ranked and record runs refuse: their tiles say they play
-   *  the last standard robot instead (the server enforces it; this is the player being told first) */
-  importedActive?: boolean;
 }) {
   const lanOn = useLanEnabled();
+  // READ PER GAME, and again when the game changes. Not re-read on every render: the flag is set by
+  // the tutorial itself, and the card must not vanish mid-interaction.
+  const [seen, setSeen] = useState(() => tutorialSeen(settings.game));
+  useEffect(() => setSeen(tutorialSeen(settings.game)), [settings.game]);
+  const stageMode = useStageMode();
+  const [side, setSide] = useState<Side>('settings');
+  /** the phone's two tabs under the robot; ignored from 721px up, where both are on screen */
+  const [tab, setTab] = useState<'robot' | 'settings'>('robot');
+  const importedActive = !!settings.spec.imported;
   /**
-   * TWO OF THE TILES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks
-   * the question itself rather than taking a prop.
-   *
-   * `compete` IS a prop because App already had the value; this one is
-   * `inDiscordActivity()` — HOST-BASED, the one predicate for "am I in an activity",
-   * which cannot be lost the way the instance id can (see the note on it in
-   * `discordActivity.ts`, and App's own `inActivity`). Reading it here rather than
-   * threading a second boolean keeps the two answers from ever disagreeing on one screen,
-   * and it is a hostname test, so it costs nothing.
-   *
-   * ⚠️ `activityCode` is the party's MAIN lobby code, and it needs the instance id, which
-   * `inActivity` does not — a storage-blocked reload has the second and not the first. So
-   * it is computed separately and the copy below degrades to "you need a room code" rather
-   * than printing `roomCodeForInstance('')`, which is a valid-looking code for nothing.
+   * TWO OF THE ENTRIES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks the
+   * question itself (`inDiscordActivity()`, host-based, cannot be lost). `activityCode` is the
+   * party's MAIN lobby code and needs the instance id, which a storage-blocked reload can lack, so
+   * the copy degrades to "you need a room code" rather than printing a code for nothing.
    */
   const inActivity = useMemo(() => inDiscordActivity(), []);
   const activityCode = useMemo(() => {
     const id = discordInstanceId();
     return id ? roomCodeForInstance(id) : '';
   }, []);
-  /**
-   * READ ONCE, at mount. A lazy initializer rather than a call in the render body: the flag is
-   * set by the tutorial itself, so re-reading it on every render would make the card vanish
-   * mid-interaction if this page happened to re-render while a run was finishing elsewhere.
-   */
-  const [seen, setSeen] = useState(() => tutorialSeen(game));
+
+  const spec = settings.spec;
+  const mod = moduleFor(settings.game);
+  const GamePreview = mod.Preview;
+  // THE 2D ROBOT FITS THE FREE AREA: a fixed 260 ran under the picker at 720 and was lost at 1080
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState(240);
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => {
+      const { width, height } = e.contentRect;
+      setFit(Math.max(96, Math.min(400, Math.floor(Math.min(width, height) - 32))));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  /** the robot on a 2D stage: an import's footprint, else the game's own 2D schematic */
+  const robot2d = spec.imported ? (
+    <FootprintSvg imported={spec.imported} drivetrain={spec.drivetrain} size={fit} />
+  ) : GamePreview ? (
+    <GamePreview spec={spec} size={fit} alliance={settings.alliance} caption={false} />
+  ) : settings.game === 'decode' ? (
+    <RobotPreview spec={spec} size={fit} caption={false} />
+  ) : (
+    <ChainRobotPreview spec={spec} size={fit} caption={false} />
+  );
+
+  /** one entry of a Solo / Multiplayer list: a tile, as the Play page always drew them */
+  const entry = (
+    label: ReactNode,
+    onClick: () => void,
+    opts: { disabled?: boolean; note?: ReactNode; primary?: boolean } = {},
+  ) => (
+    <button className={`ds-tile${opts.primary ? ' primary' : ''}`} onClick={onClick} disabled={opts.disabled}>
+      <span>
+        <span className="t">{label}</span>
+        {opts.note ? <span className="d">{opts.note}</span> : null}
+      </span>
+    </button>
+  );
+  const importNote = importedActive ? IMPORT_COPY.standardOnly : null;
+
+  const list =
+    side === 'solo' ? (
+      <>
+        {entry('Solo practice', onSoloMatch, { primary: true })}
+        {entry('Free drive', onFreeDrive)}
+        {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer, note: importNote })}
+      </>
+    ) : side === 'multi' ? (
+      <>
+        {entry('New room', onCustomRoom, { disabled: !multiplayer })}
+        {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
+            room, reachable only by its code, so the code is printed where the player looks */}
+        {entry('Browse rooms', onBrowse, {
+          disabled: !multiplayer,
+          note: inActivity
+            ? activityCode
+              ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
+              : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'
+            : null,
+        })}
+        {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
+        {/* the sign-in line is CONDITIONAL, never a reserved blank line: a reserved line made
+            every tile in the old grid a line taller for everybody */}
+        {compete &&
+          entry(
+            <>
+              Find match
+              <QueueCounts className="tile" />
+            </>,
+            onRanked,
+            { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
+          )}
+        {compete && onCompetitions && entry('Competitions', onCompetitions, { disabled: !multiplayer })}
+        {/* LAN: never disabled on `multiplayer` (not needing our servers is the point); hidden where
+            the flag is off and in a Discord activity */}
+        {lanOn && !inActivity && entry('LAN', onLan)}
+      </>
+    ) : null;
+
   return (
-    <>
-      <h1 className="ds-h1">Pick a mode</h1>
-      {/* NO GAME SERVER is said ONCE, as the page's sub-line, not as a "Needs the game server"
-          line on each of the five online tiles (design review 02-04). `multiplayer` is a
-          build-time flag, so in practice only dev and audit builds ever show this. */}
-      {!multiplayer && (
-        <p className="ds-sub" role="status">
-          Online play is unavailable: this build has no game server.
-        </p>
-      )}
-
-      {activeGame && (
-        <div className="ds-rejoin" role="alert">
-          <b>You’re already in a game.</b>
-          <button className="ds-btn primary" onClick={onRejoin}>
-            Rejoin match →
-          </button>
-        </div>
-      )}
-
-      {/* THE FIRST-RUN TUTORIAL OFFER, above the modes and below the rejoin banner.
-          Above them because it is the thing a new player should do first and the modes are what
-          they would otherwise guess at; a single card rather than a tile in the Practice set,
-          because it disappears for good once the device has been through it and a grid that
-          changes shape is harder to learn than a banner that goes away. */}
-      {onTutorial && !seen && (
-        <div className="ds-tut-offer">
-          {/* NO SUB-LINE. "Learn the controls on the real field." said what the button under it
-              says, and NO STEP COUNT either: it was "Six steps", which is BIOBUZZ’s number —
-              DECODE’s tutorial has four, and a build with no Box Tube is asked five. The count is
-              resolved per game and per ROBOT (`TutorialStep.applies`), so the only honest place it
-              can be printed is the card itself, which does print it. */}
-          <b>New to {APP_NAME}?</b>
-          {/* NOT NOW sets the flag that finishing or exiting a run sets (design review 12-13): an
-              experienced driver on a new device should not have to start the tutorial to get
-              rid of the offer for it. */}
-          <span className="ds-tut-offer-acts">
-            <button
-              className="ds-btn ghost"
-              onClick={() => {
-                markTutorialSeen(game);
-                setSeen(true);
-              }}
-            >
-              Not now
-            </button>
-            <button className="ds-btn primary" onClick={onTutorial}>
-              Start the tutorial
-            </button>
-          </span>
-        </div>
-      )}
-
-      {/* MATCH SETUP and PRACTICE SETUP, below the tutorial offer (owner, 2026-10-12). Solo practice
-          starts straight away, so the options it used to ask for first live here. */}
-      <section className="ds-tileset">
-        <div className="ds-tiles cols3">
-          <button className="ds-tile" onClick={onRobot}>
-            <span>
-              <span className="t">Robot</span>
-            </span>
-          </button>
-          <button className="ds-tile" onClick={onMatchSetup}>
-            <span>
-              <span className="t">Match setup</span>
-            </span>
-          </button>
-          <button className="ds-tile" onClick={onPracticeSetup}>
-            <span>
-              <span className="t">Practice setup</span>
-            </span>
-          </button>
-        </div>
-      </section>
-
-      {/* SOLO: offline and always available — Solo Practice is primary — then the two online runs
-          that need the game server and an account (`compete`).
-          A TILE IS ITS TITLE: the mono kicker over each one (SOLO, RECORDS, LIVE …) repeated the
-          title or the set's own label, so it is gone. */}
-      <section className="ds-tileset">
-        <p className="ds-tileset-label">Solo</p>
-        <div className="ds-tiles">
-          <button className="ds-tile primary" onClick={onSoloMatch}>
-            <span>
-              <span className="t">Solo practice</span>
-            </span>
-          </button>
-
-          <button className="ds-tile" onClick={onFreeDrive}>
-            <span>
-              <span className="t">Free drive</span>
-            </span>
-          </button>
-
-          {compete && (
-            <>
-              <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
-                <span>
-                  <span className="t">Solo record</span>
-                  {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
-                </span>
-              </button>
-            </>
-          )}
-        </div>
-      </section>
-
-      {/* MULTIPLAYER: rooms, then the ranked matchmaker and competitions (those need an account) */}
-      <section className="ds-tileset">
-        <p className="ds-tileset-label">Multiplayer</p>
-        <div className="ds-tiles cols3">
-          <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
-            <span>
-              <span className="t">New room</span>
-            </span>
-          </button>
-          <button className="ds-tile" onClick={onBrowse} disabled={!multiplayer}>
-            <span>
-              <span className="t">Browse rooms</span>
-              {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH. `isPublicLive` admits ranked
-                  matches and record runs only, and every activity room is a custom room, so the
-                  match four people in this voice channel are playing is reachable only by its code
-                  (the box under the list). The code is derived from the instance they are already
-                  in, so printing it here is the cheapest place to close the gap. */}
-              {inActivity && (
-                <span className="d">
-                  {activityCode
-                    ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
-                    : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'}
-                </span>
-              )}
-            </span>
-          </button>
-          {compete && (
-            <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
-              <span>
-                <span className="t">Duo record</span>
-                {importedActive ? <span className="d">{IMPORT_COPY.standardOnly}</span> : null}
-              </span>
-            </button>
-          )}
-          {compete && (
-            <>
-              <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
-                <span>
-                  <span className="t">
-                    Find match
-                    <QueueCounts className="tile" />
-                  </span>
-                  {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
-                      this line ALWAYS, with a non-breaking space when there was nothing to
-                      say, to stop the tile growing when `signedIn` resolves asynchronously.
-                      That trade is backwards: `.ds-tiles` is a grid, so the reserved line
-                      made Find Match, Solo Record AND Duo Record permanently a line taller
-                      for everyone, to spare signed-in users one shrink at first paint —
-                      and most visitors are signed out, where the line is there from the
-                      start and never moves at all. If the shift is worth fixing, thread an
-                      `authReady` flag down from AccountSync; do not reserve the line. */}
-                  {multiplayer && !signedIn ? (
-                    <span className="d">
-                      Sign in to play ranked
-                    </span>
-                  ) : importedActive ? (
-                    <span className="d">{IMPORT_COPY.standardOnly}</span>
-                  ) : null}
-                </span>
-              </button>
-
-              {onCompetitions && (
-                <button className="ds-tile" onClick={onCompetitions} disabled={!multiplayer}>
-                  <span>
-                    <span className="t">Competitions</span>
-                  </span>
+    <div className={`ds-setup tab-${tab}`}>
+      <h1 className="ds-sr">Play</h1>
+      {/* THE ROBOT'S SPACE: the drag surface for the 3D orbit, or the 2D robot on a 2D stage */}
+      <div
+        ref={viewRef}
+        className={activeGame || (onTutorial && !seen) ? 'ds-setup-view has-notice' : 'ds-setup-view'}
+        onPointerDown={(e) => {
+          if (stageMode === '3d') e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) stageOrbit.drag(e.movementX, e.movementY);
+        }}
+        onPointerUp={() => stageOrbit.release()}
+        onPointerCancel={() => stageOrbit.release()}
+      >
+        {stageMode === '2d' && <div className="ds-setup-robot2d">{robot2d}</div>}
+        {/* THE REJOIN BANNER AND THE TUTORIAL OFFER float over the robot (owner, 2026-10-18), on
+            both desktop and phone. Off Home so the phone's Home fits its screen. Pointer events stop
+            here, so a tap on a button is not an orbit drag. */}
+        {(activeGame || (onTutorial && !seen)) && (
+          <div className="ds-setup-notice" onPointerDown={(e) => e.stopPropagation()}>
+            {activeGame && (
+              <div className="ds-rejoin" role="alert">
+                <b>You’re already in a game.</b>
+                <button className="ds-btn primary small" onClick={onRejoin}>
+                  Rejoin match →
                 </button>
-              )}
-            </>
-          )}
-          {/* LAN — LAST in the grid. Never disabled on `multiplayer`: not needing our servers is the
-              point of it. Hidden where `LAN_ENABLED` is off (a greyed tile advertises a mode this
-              build will not play), and in a Discord activity, where hosting needs an account the
-              embed never has and the other machine cannot be on this network. */}
-          {lanOn && !inActivity && (
-            <button className="ds-tile" onClick={onLan}>
-              <span>
-                <span className="t">LAN</span>
-              </span>
-            </button>
-          )}
+              </div>
+            )}
+            {onTutorial && !seen && (
+              <div className="ds-tut-offer">
+                <b>New to {APP_NAME}?</b>
+                {/* NOT NOW sets the flag that finishing or exiting a run sets (design review 12-13) */}
+                <span className="ds-tut-offer-acts">
+                  <button
+                    className="ds-btn ghost small"
+                    onClick={() => {
+                      markTutorialSeen(settings.game);
+                      setSeen(true);
+                    }}
+                  >
+                    Not now
+                  </button>
+                  <button className="ds-btn primary small" onClick={onTutorial}>
+                    Start the tutorial
+                  </button>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* THE PHONE'S TABS. Toggle buttons, not a tablist (OptRow's ruling). Hidden from 721px up. */}
+      <div className="ds-setup-tabs ds-segs" role="group" aria-label="Show">
+        <button className={`ds-seg${tab === 'robot' ? ' on' : ''}`} aria-pressed={tab === 'robot'} onClick={() => setTab('robot')}>
+          Robot
+        </button>
+        <button
+          className={`ds-seg${tab === 'settings' ? ' on' : ''}`}
+          aria-pressed={tab === 'settings'}
+          onClick={() => setTab('settings')}
+        >
+          Settings
+        </button>
+      </div>
+
+      <section className="ds-panel ds-setup-picker">
+        <div className="ds-panel-h">
+          <h2 className="ds-panel-title">Robot</h2>
+          <button className="ds-btn small" onClick={() => onImport()}>
+            Import
+          </button>
+        </div>
+        <div className="ds-panel-body">
+          <RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} onImport={onImport} />
         </div>
       </section>
 
-    </>
+      <div className="ds-setup-side">
+        {side === 'settings' ? (
+          <div className="ds-setup-scroll">
+            {!multiplayer && (
+              <p className="ds-sub" role="status">
+                Online play is unavailable: this build has no game server.
+              </p>
+            )}
+            <SoloSetup settings={settings} onChange={onChange} part="match" />
+            <SoloSetup settings={settings} onChange={onChange} part="practice" />
+          </div>
+        ) : (
+          <section className="ds-panel ds-setup-list">
+            <div className="ds-panel-h">
+              <button className="ds-btn ghost small" onClick={() => setSide('settings')}>
+                ← Back
+              </button>
+              <h2 className="ds-panel-title">{side === 'solo' ? 'Solo' : 'Multiplayer'}</h2>
+            </div>
+            <div className="ds-panel-body ds-setup-entries">{list}</div>
+          </section>
+        )}
+        {side === 'settings' && (
+          <div className="ds-setup-go">
+            <button className="ds-menu-btn primary" onClick={() => setSide('solo')}>
+              <span className="ml">Solo</span>
+            </button>
+            <button className="ds-menu-btn" onClick={() => setSide('multi')}>
+              <span className="ml">
+                Multiplayer
+                <QueueCounts className="menu" />
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

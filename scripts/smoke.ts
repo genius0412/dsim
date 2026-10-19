@@ -18765,7 +18765,7 @@ const recordDrive: CommandSource = (tick) => {
 {
   const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
   const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
-  const shellScreens = ['modes', 'matchsetup', 'practicesetup', 'rooms', 'competitions', 'matchmaking', 'duorecord', 'lobby', 'lan', 'configure', 'robotimport', 'records', 'profile', 'account',
+  const shellScreens = ['modes', 'rooms', 'competitions', 'matchmaking', 'duorecord', 'lobby', 'lan', 'configure', 'robotimport', 'records', 'profile', 'account',
     'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
   check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
   check('crumbs: every shell screen has a trail', shellScreens.every((s) => crumbsFor(s, null, 'someone').length > 0), shellScreens.filter((s) => crumbsFor(s, null, 'x').length === 0).join());
@@ -18773,7 +18773,7 @@ const recordDrive: CommandSource = (tick) => {
     shellScreens.every((s) => { const t = crumbsFor(s, 'appearance', 'x'); return t.every((c, i) => (i === t.length - 1) === !c.to); }));
   check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
   check('crumbs: Play pages go back to Play, and Play goes Home',
-    parentOf(crumbsFor('rooms')).screen === 'modes' && ['matchmaking', 'duorecord', 'lobby', 'lan'].every((x) => parentOf(crumbsFor(x)).screen === 'modes') && parentOf(crumbsFor('matchsetup')).screen === 'modes' && parentOf(crumbsFor('practicesetup')).screen === 'modes' && parentOf(crumbsFor('modes')).screen === 'home');
+    parentOf(crumbsFor('rooms')).screen === 'modes' && ['matchmaking', 'duorecord', 'lobby', 'lan'].every((x) => parentOf(crumbsFor(x)).screen === 'modes') && parentOf(crumbsFor('modes')).screen === 'home');
   check('crumbs: every Records page goes back to the hub, with the registry labels',
     RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
   check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
@@ -28816,8 +28816,8 @@ const dumperSetup = (): RobotSetup => {
 
   const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
   check(
-    'discord activity: the season is seeded to BIOBUZZ, and only inside the activity',
-    /inDiscordActivity\(\) && !hasStoredSettings\(\) \? switchGame\(stored, 'biobuzz'\)/.test(app),
+    'first visit: an origin with nothing stored is seeded to BIOBUZZ, on the web and in the activity alike (owner, 2026-10-18)',
+    /const s = !hasStoredSettings\(\) \? switchGame\(stored, 'biobuzz'\) : stored;/.test(app),
   );
   check(
     '⚠️ discord activity: the seed defers to a STORED pick, so a chosen season is never overridden',
@@ -29549,12 +29549,12 @@ const dumperSetup = (): RobotSetup => {
 
   // bound the scan to the Watch live tile ITSELF — a lazy [\s\S]*? walks straight past it into
   // the next section and is then satisfied by the LAN gate below, which cannot fail
-  const watchTile = modes.match(/onClick=\{onBrowse\}[\s\S]{0,2000}?<\/button>/);
+  const watchTile = modes.match(/entry\('Browse rooms', onBrowse, \{[\s\S]{0,1200}?\}\)\}/);
   check('discord activity: the Browse rooms tile (which absorbed Watch live) is still found (the checks below are anchored on it)', !!watchTile);
   check(
     '⚠️ discord activity: Browse rooms says this activity’s lobbies are not listed, and names the code that reaches one',
     !!watchTile &&
-      /\{inActivity && \(/.test(watchTile[0]) &&
+      /note: inActivity\s*\?/.test(watchTile[0]) &&
       /aren’t listed/.test(watchTile[0]) &&
       /code \$\{activityCode\}/.test(watchTile[0]),
     'the live list admits ranked and record rooms only, so the group’s own match is never in it',
@@ -29567,7 +29567,7 @@ const dumperSetup = (): RobotSetup => {
 
   check(
     '⚠️ discord activity: the LAN tileset is not rendered in the embed',
-    /\{lanOn && !inActivity && \(/.test(modes),
+    /\{lanOn && !inActivity && entry\('LAN'/.test(modes),
     'hosting needs an account the embed cannot get, and "same network" is not what a voice channel is',
   );
   check(
@@ -31295,7 +31295,7 @@ const dumperSetup = (): RobotSetup => {
       /const update = \(next: GameSettings\): void =>\s*commit\(importerOn \? next : keepImportActive\(settingsRef\.current, shownRef\.current, next\)\);/.test(app));
   check('importer gate/client: every screen is handed `shown` (the editor alone gets the stored copy, and it renders only where they are the same)',
     (app.match(/settings=\{settings\}/g) ?? []).length === 1 && /<ImportEditor\s+key=\{`[^`]*`\}\s+settings=\{settings\}/.test(app) &&
-      /<Account settings=\{shown\} onChange=\{update\} onReset=\{commit\}/.test(app) && /importedActive=\{!!shown\.spec\.imported\}/.test(app));
+      /<Account settings=\{shown\} onChange=\{update\} onReset=\{commit\}/.test(app) && /<ModeSelect\s+settings=\{shown\}/.test(app));
   check('importer gate/client: `switchGame` runs on the stored copy only (the projection never reaches an archived loadout)',
     !/switchGame\(shown/.test(app) && /update\(switchGame\(settings, g\)\)/.test(app) && /const ns = switchGame\(cur, s\.game\)/.test(app) &&
       /const s = settingsRef\.current;\n    if \(s\.game === g\) return;\n    const next = switchGame\(s, g\);/.test(app));

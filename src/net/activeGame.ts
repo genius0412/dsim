@@ -22,7 +22,7 @@ export interface ActiveGameRef {
   /** the matchStart payload (seed/setups/yourRobotId/…) to rebuild the session */
   start: MatchStart;
   ranked: boolean;
-  /** what kind of game, for the Home rejoin card label */
+  /** what kind of game, for the rejoin card's label (on Play) */
   kind: 'ranked' | 'custom' | 'record';
   savedAt: number;
 }

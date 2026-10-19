@@ -149,10 +149,13 @@ export function AdSlot({ unit, className }: { unit: AdUnit; className?: string }
   // the reserved box must include the "Advertisement" label, or the unit overflows
   // its own container by the label's height and the box stops being exact
   const LABEL_H = 14;
+  // the wide top strip puts the label BESIDE the box (sideways, shell.css `.side-label`) to save the
+  // 14px of height; every other unit, and the phone-sized strip, keeps it above
+  const side = unit === 'banner' && w === SIZE.banner.w;
   return (
     <div
-      className={`ad-slot${className ? ' ' + className : ''}`}
-      style={{ width: w, height: h + LABEL_H }}
+      className={`ad-slot${side ? ' side-label' : ''}${className ? ' ' + className : ''}`}
+      style={side ? { width: w + LABEL_H + 4, height: h } : { width: w, height: h + LABEL_H }}
     >
       {/* the label is required by AdSense: ads must be distinguishable from content */}
       <span className="ad-slot-label">Advertisement</span>

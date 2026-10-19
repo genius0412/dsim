@@ -123,6 +123,8 @@
      is not transitioned: it snaps, so a label never passes through a sub-contrast mid-tone. */
   --ds-dur-press: 60ms;
   --ds-dur-fade: 150ms;
+  /* the menu stage's camera fly, Home <-> Play (`FLY_MS` in MenuStage.tsx says it too) */
+  --ds-dur-fly: 1000ms;
   --ds-ease: ease-out;
   /* the ONE disabled look for a pressable (DESIGN.md Buttons). The dashed lock on `.bb-cell` /
      `.chassis-sw` is the documented exception: "someone else's" is not "unavailable". */
@@ -520,14 +522,15 @@
 
 /* ---- the banner strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
    Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
-   an ad box is 90px + its 14px label, and the strip adds 4px above and below. Narrow viewports
-   take the 320x50 unit (`BANNER_NARROW_PX` in AdSlot). The sponsor's banner fills the SAME frame
-   (`.ds-adframe`), so swapping one for the other changes nothing but the picture. */
+   the 90px box has its 14px label BESIDE it on its left (`.side-label`, sideways), and the strip
+   adds 8px above and below. Narrow viewports take the 320x50 unit (`BANNER_NARROW_PX` in AdSlot)
+   with the label above it. The sponsor's banner fills the SAME frame (`.ds-adframe`), so swapping
+   one for the other changes nothing but the picture. Every page, Play included, gets this height. */
 .ds-bannerstrip {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 112px;
+  height: calc(90px + 2 * var(--ds-s-2));
   flex: none;
   background: var(--ds-bar);
   border-top: 1px solid var(--ds-line);
@@ -560,8 +563,33 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: none;
   width: 728px;
   height: 90px;
+}
+/* THE SIDE LABEL (760px and wider): the label sits left of the box as sideways text reading bottom
+   to top, so the frame is 728 + 14 + 4 wide and 90 tall (AdSlot sets the same size inline).
+   `.ds-adframe` and the ad's wrapper have IDENTICAL outer dimensions, so the swap moves nothing. */
+.ad-slot.side-label,
+.ds-adframe.side-label {
+  display: flex;
+  gap: var(--ds-s-1);
+  overflow: visible; /* the box's 1px outline would be clipped by `.ad-slot`'s overflow: hidden */
+}
+.ds-adframe.side-label {
+  width: calc(728px + 14px + var(--ds-s-1));
+  height: 90px;
+}
+.side-label .ad-slot-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  margin: 0;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
 }
 @media (max-width: 759px) {
   .ds-adframe {
@@ -2205,7 +2233,8 @@ button.ds-key:where(:not(:disabled)):active,
 /* ...and the panel pair is held to the same rule: inside a flex column that owns a gap of
    its own, the margin would ADD to it (Configure's cards sat 40px apart, not 24). */
 .ds-subnav-body > .ds-panel + .ds-panel,
-.ds-robot > .ds-panel + .ds-panel {
+.ds-robot > .ds-panel + .ds-panel,
+.ds-setup-scroll > .ds-panel + .ds-panel {
   margin-top: 0;
 }
 /* ...and the trailing half, because the sibling rule above only fires when a panel is
@@ -9855,4 +9884,808 @@ input.admin-months {
   width: 100%;
   margin: 0;
   padding: 0;
+}
+
+/* ---- THE MENU STAGE (`MenuStage.tsx`): the field behind Home and Play ------------------------
+   Owner, 2026-10-18, after MoSim's home. ONE fixed layer behind the shell for both screens, so Play
+   is a camera fly and not a page load. Its ground is `--ds-stage-bg` until the scene fades in, and
+   it is dark in both themes, which is why what is drawn straight on it is category 3. */
+.ds-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: var(--ds-stage-bg);
+}
+/* the shell goes transparent over it, and is positioned so it paints ABOVE the fixed stage. Both
+   screens are laid out to FIT the window, so the always-on scroll track `.ds-app` keeps for the
+   other screens (it pins their centred column) is only a strip down the field here: `auto`, so a
+   track appears only on a window too short to fit. */
+.ds-app.on-stage {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.ds-stage-3d {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity var(--ds-dur-fly) var(--ds-ease);
+}
+.ds-stage-3d.shown {
+  opacity: 1;
+}
+/* THE 2D STAGE: the game's own field, tilted. Play zooms the tilt toward the robot's space. */
+.ds-stage-2d {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 1400px;
+}
+.ds-stage-2d img {
+  width: min(86vh, 880px);
+  height: min(86vh, 880px);
+  transition:
+    transform var(--ds-dur-fly) ease-in-out,
+    width var(--ds-dur-fly) ease-in-out,
+    height var(--ds-dur-fly) ease-in-out;
+}
+/* HOME: the tilted field fits the FREE AREA right of the column (its 492px, see the scrim) and
+   above the footer (~48px), 24px clear of each edge. Sized off whichever is tighter: tilted, the
+   square's outline is ~1.42 of its side wide and ~0.94 tall (measured at 1280..1920). It is
+   centred in the window by the flex box, so it is moved to the free area's centre, less the
+   perspective's own lean (~5% right, ~11% down, of its side). At 86vh it ran off the right and
+   under the footer at 1366x768 and 1920x1080, and touched the Play keycap at 1280x720. */
+.ds-stage-2d.home img {
+  width: min(calc((100vw - 516px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
+  height: min(calc((100vw - 516px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
+  transform: translate(calc(234px - 5%), calc(-24px - 11%)) rotateX(50deg) rotateZ(-30deg);
+}
+.ds-stage-2d.setup img {
+  transform: translate(-16vw, 4vh) rotateX(38deg) rotateZ(-14deg) scale(1.3);
+}
+
+/* HOME ON THE STAGE (desktop): ONE LEFT COLUMN over the field (owner, 2026-10-18, after MoSim). All of it
+   is scoped to `.stage-home`: the PHONE's Home is the pre-stage page, restored as it was on alpha (owner,
+   2026-10-18: "restore that page, only that page, to the original one"), so the base rules above are
+   alpha's and these override them only over the stage. */
+/* ONE LEFT COLUMN over the menu stage (owner, 2026-10-18, after MoSim): the field takes the right.
+   `.ds-main` keeps its own max-width, so the column is pinned to the left edge here instead. */
+.ds-app.stage-home .ds-main-home {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  max-width: none;
+  margin: 0;
+  /* ONE INSET for every edge of Home: the column's left, and the bar's own (below) */
+  padding: var(--ds-s-7);
+}
+/* ONE GAP between the column's groups; each group's own margin is zeroed below. Every group is
+   CENTRED on the column's axis (owner, 2026-10-18: "center this"), and the switcher, the pills and
+   the stat tiles stretch to its full width, so the column has one left and one right edge. */
+.ds-app.stage-home .ds-home {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ds-s-4);
+  padding: 0;
+}
+/* THE SCRIM the column reads on: dark to clear, left to right, so the field on the right stays
+   clear. Its ground is the stage, which is dark in both themes, so it is category 3 and the text
+   drawn straight on it takes the on-field tokens; the keycaps, pills and switcher keep their own
+   themed fills. Fixed, behind the column, under the bar. */
+.ds-app.stage-home .ds-home-scrim {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(840px, 72vw);
+  /* SOLID behind the whole column (its 48px inset + 420px + a 24px margin), and only then fading:
+     the BIOBUZZ warehouse is bright in places, and a fade that began at the left edge left the
+     column's right half on a 0.5 veil, where the pale caption and stats lines lost their contrast */
+  background: linear-gradient(90deg, var(--ds-scrim-strong) 0 492px, transparent 100%);
+  pointer-events: none;
+  z-index: -1;
+}
+.ds-app.stage-home .ds-home-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-s-3);
+  /* drawn straight on the scrim (category 3); everything else in the column is on its own fill */
+  color: var(--ds-on-field);
+  /* tracks the window's HEIGHT too, so a 720 laptop and a phone take a smaller mark */
+  font-size: clamp(40px, min(7vw, 7.5vh), 64px);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-tight);
+  /* the one display size in the app (the home wordmark), deliberately off the type scale;
+     its line-height is still the single-line 1 */
+  line-height: var(--ds-lh-tight);
+  margin: 0;
+}
+/* game switcher (DECODE / Chain Reaction / BIOBUZZ) — centered under the title. The season
+   changes every screen after it, so on home it is the shared `.ds-seg` at control size with a
+   visible edge on the unpicked ones (design review 01-01): the bare 12px strip read as the
+   smallest thing on the page, under the social pills. Colour/border only between states, so
+   nothing moves on click (shiftaudit). */
+/* THE THREE-ACROSS ROWS (this, the pills, the stat tiles) share ONE gap and EQUAL items, so the
+   switcher's and the pills' edges line up. `.ds-segs` is declared later at the same specificity,
+   and its 4px gap won over this one until the selector was doubled. */
+.ds-app.stage-home .ds-segs.ds-home-games {
+  flex-wrap: nowrap;
+  gap: var(--ds-s-2);
+  margin: 0;
+}
+.ds-app.stage-home .ds-home-games .ds-seg {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: var(--ds-t-lg);
+  /* a third of the column holds "Chain Reaction" (110px at 15px) only at this inset; one line
+     always, since a wrapped label grew the row and gave a 720 laptop a scrollbar */
+  padding: var(--ds-s-2);
+  white-space: nowrap;
+  border-color: var(--ds-line);
+  /* a FILL, so the unpicked ones read on the dark scrim in the light theme too */
+  background: var(--ds-panel);
+}
+.ds-app.stage-home .ds-home-games .ds-seg.on {
+  border-color: var(--ds-accent);
+}
+/* Discord / Instagram / GitHub — between the game switcher and the menu (owner, 2026-09-23,
+   reversing 01-02). They WRAP: three pills no longer fit side by side on the narrowest phones. */
+.ds-app.stage-home .ds-home-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+}
+
+.ds-app.stage-home .ds-home-link {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+}
+
+.ds-app.stage-home .ds-menu {
+  gap: var(--ds-s-2);
+}
+
+.ds-app.stage-home .ds-homestats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ds-s-2);
+  margin: 0;
+}
+/* no offset block: it stood 2px past the column's right edge, the one thing in it that did */
+.ds-app.stage-home .ds-homestats .ds-stat {
+  box-shadow: none;
+}
+.ds-app.stage-home .ds-homestats .ds-stat .sv {
+  /* on the type scale (20-08): 22px was the one off-scale size in the stat family */
+  font-size: var(--ds-t-xl);
+  line-height: var(--ds-lh-heading);
+}
+/* the words in the UI face; the counts carry `.ds-num`, so only the digits are mono (01-04) */
+.ds-app.stage-home .ds-homestats-break {
+  /* its own row under the two tiles, as two centred lines */
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-heading);
+  /* on the home scrim (category 3), not a themed surface */
+  color: var(--ds-on-field-dim);
+}
+.ds-app.stage-home .ds-homestats-break .hb-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  column-gap: var(--ds-s-4);
+  row-gap: var(--ds-s-1);
+}
+/* the count reads ahead of its label */
+.ds-app.stage-home .ds-homestats-break .ds-num {
+  color: var(--ds-on-field);
+}
+
+
+.ds-app.stage-home .ds-home-presents {
+  margin: 0;
+}
+/* on the home scrim the plate is dark in BOTH themes, so the caption is on-field and the cut is
+   the light-ink one (the in-game 3D chip's rule, above, for the same reason) */
+.ds-app.stage-home .ds-home-presents .sponsor-mark {
+  color: var(--ds-on-field-dim);
+}
+.ds-app.stage-home .ds-home-presents .sponsor-mark:hover {
+  color: var(--ds-on-field);
+}
+.ds-app.stage-home .ds-home-presents .sponsor-logo-swap .on-light {
+  display: none;
+}
+.ds-app.stage-home .ds-home-presents .sponsor-logo-swap .on-dark {
+  display: block;
+}
+
+/* the keycaps over the stage (Home's column, Play's Solo / Multiplayer) are a step tighter */
+.ds-app.on-stage .ds-menu-btn {
+  padding: var(--ds-s-3) var(--ds-s-4);
+}
+
+/* THE BAR OVER THE STAGE. On Home only its right-hand cluster shows (profile, Admin, the online
+   chip), over the scene; on Play its fill slides down while the camera flies. The fill is a
+   pseudo-element moved by `transform`, and the left items fade, so nothing reflows (shiftaudit). */
+.ds-app.on-stage .ds-bar {
+  background: none;
+  border-bottom-color: transparent;
+}
+/* On Home the bar takes no height (it holds only the right-hand cluster), so the column has the
+   whole window above the footer, and its inset is Home's one inset (`.ds-main-home`) */
+.ds-app.stage-home .ds-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding-inline: var(--ds-s-7);
+}
+.ds-app.on-stage .ds-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--ds-bar);
+  border-bottom: 1px solid var(--ds-line);
+  transition: transform var(--ds-dur-fly) ease-in-out;
+}
+.ds-app.stage-home .ds-bar::before {
+  transform: translateY(-101%);
+}
+.ds-app.on-stage .ds-bar > :not(.ds-bar-right) {
+  transition: opacity var(--ds-dur-fly) ease-in-out, transform var(--ds-dur-fly) ease-in-out, visibility var(--ds-dur-fly);
+}
+.ds-app.stage-home .ds-bar > :not(.ds-bar-right) {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-16px);
+}
+/* the cluster's own text sits on the scene on Home (category 3) */
+.ds-app.stage-home .ds-presence,
+.ds-app.stage-home .ds-presence-sub,
+.ds-app.stage-home .ds-qcount.bar {
+  color: var(--ds-on-field-dim);
+}
+.ds-app.stage-home .ds-presence b,
+.ds-app.stage-home .ds-qcount.bar b,
+.ds-app.stage-home .ds-qcount.bar .ds-qcount-game,
+.ds-app.stage-home .ds-bar-link {
+  color: var(--ds-on-field);
+}
+/* ...and the scene behind it can be bright (the BIOBUZZ warehouse's back wall), so the text sits
+   on a small scrim of its own. Not on a phone, whose Home draws no field. */
+@media (min-width: 721px) {
+  .ds-app.stage-home .ds-presence,
+  .ds-app.stage-home .ds-qcount.bar {
+    padding: var(--ds-s-1) var(--ds-s-2);
+    border-radius: var(--ds-round);
+    background: var(--ds-scrim-strong);
+  }
+}
+
+/* ---- THE PLAY PAGE OVER THE STAGE (`ModeSelect.tsx`) ----------------------------------------
+   The robot's space top-left (the 3D orbit's drag surface), the picker row under it, and the
+   settings column on the right with Solo and Multiplayer pinned at its foot. The column's width
+   and the picker's height are what `insetsFor` in MenuStage.tsx frames the robot clear of. */
+/* ONE spacing on Play: 16px is the page's edge, the gap between its areas, and a panel's own
+   padding (`.ds-panel-body`), so every edge on the page is 16 from the next one */
+.ds-main.ds-main-stage {
+  max-width: none;
+  display: flex;
+  min-height: 480px;
+  padding: var(--ds-s-4);
+}
+.ds-setup {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(420px, 36vw);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'view side'
+    'picker side';
+  gap: var(--ds-s-4);
+}
+/* the 2D robot hangs from the TOP of its area, so its card starts on the same line as Match setup
+   beside it (centred, it sat 8px lower: the fit leaves 16 of slack, split above and below) */
+.ds-setup-view {
+  grid-area: view;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  touch-action: none;
+  cursor: grab;
+}
+.ds-setup-view:active {
+  cursor: grabbing;
+}
+/* ONE CARD LOOK on Play: the 2D robot, the picker and the settings panels share the panel's
+   border and radius and carry NO offset block. Over the field the 4px block read as a heavy drop
+   shadow on the picker alone, because the scrolling column clipped the settings panels' own. */
+.ds-setup-robot2d {
+  border-radius: var(--ds-round);
+  overflow: hidden;
+}
+/* THE REJOIN BANNER AND THE TUTORIAL OFFER, floating over the robot's space (owner, 2026-10-18) at
+   its top-left, on desktop and phone. They float over the FIELD, so they are opaque and take the
+   floating-surface edge (`--ds-hud-line`); the rejoin's accent tint is mixed into the panel, not
+   into transparency, or the field would show through it. */
+.ds-setup-view {
+  position: relative;
+}
+.ds-setup-notice {
+  position: absolute;
+  top: var(--ds-s-4);
+  left: var(--ds-s-4);
+  z-index: 1;
+  width: 280px;
+  max-width: calc(100% - 2 * var(--ds-s-4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  cursor: auto;
+}
+.ds-setup-notice > .ds-rejoin,
+.ds-setup-notice > .ds-tut-offer {
+  margin: 0;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-4);
+  border-color: var(--ds-hud-line);
+  background: var(--ds-panel);
+}
+/* the heading over its buttons, so the stack stays a narrow column at the view's edge */
+.ds-setup-notice b {
+  flex: 1 1 100%;
+}
+/* DESKTOP: the robot stands BESIDE the cards, not under them: the view's left edge is padded by
+   the stack, and the 2D robot (sized off the content box) and the 3D camera (`insetsFor` reads the
+   content box) both centre in what is left */
+@media (min-width: 721px) {
+  .ds-setup-view.has-notice {
+    padding-left: calc(280px + 2 * var(--ds-s-4));
+  }
+}
+.ds-setup-notice > .ds-rejoin {
+  border-color: var(--ds-accent);
+  background: color-mix(in srgb, var(--ds-accent) 12%, var(--ds-panel));
+}
+.ds-setup .ds-panel {
+  box-shadow: none;
+}
+/* every head on Play is one height, with or without a button in it (Import, Back): a bare title
+   made a 40px head beside the picker's 50 */
+.ds-setup .ds-panel-h {
+  min-height: var(--ds-s-7);
+  padding-block: var(--ds-s-2);
+}
+.ds-setup-picker {
+  grid-area: picker;
+  min-width: 0;
+}
+.ds-setup-side {
+  grid-area: side;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+}
+.ds-setup-scroll,
+.ds-setup-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* a THIN track: the full-width system one stood 15px into the column beside its cards */
+.ds-setup-list {
+  scrollbar-width: thin;
+}
+/* THE COLUMN'S TRACK SITS IN THE PAGE EDGE, not inside the column: an 8px gutter, always reserved,
+   and the column reaches 8px past its edge to hold it, so the panels end on the same right edge as
+   Solo and Multiplayer under them (inside, they stopped a track's width short of the buttons).
+   A sized ::-webkit-scrollbar is what makes the gutter exactly 8 (Chromium ignores it once
+   `scrollbar-width` is set, so Firefox alone gets `thin`, which is 8 there too). */
+.ds-setup-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  scrollbar-gutter: stable;
+  margin-right: calc(-1 * var(--ds-s-2));
+}
+.ds-setup-scroll::-webkit-scrollbar {
+  width: var(--ds-s-2);
+}
+.ds-setup-scroll::-webkit-scrollbar-thumb {
+  border-radius: var(--ds-round-full);
+  background: var(--ds-line-strong);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .ds-setup-scroll {
+    scrollbar-width: thin;
+  }
+}
+/* THE COLUMN FADES OUT, IT IS NOT SLICED: a card cut at the column's foot read as a broken panel
+   rather than "there is more" (review 2026-10-18: Match setup's map ended in a hard line at 1366,
+   Practice setup's head was cut mid-glyph at 1080). The robot strip's technique, on the block axis:
+   the fade is there while there is more below and gone at the end (an inactive timeline, a column
+   that fits, applies none). Two mask layers, so the track in the page edge stays solid. */
+@property --setup-fade-b {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@supports (animation-timeline: scroll()) {
+  .ds-setup-scroll {
+    mask-image:
+      linear-gradient(to bottom, black calc(100% - var(--setup-fade-b)), transparent),
+      linear-gradient(black, black);
+    mask-size:
+      calc(100% - var(--ds-s-2)) 100%,
+      var(--ds-s-2) 100%;
+    mask-position:
+      left top,
+      right top;
+    mask-repeat: no-repeat;
+    animation: setup-fade-b linear both;
+    animation-timeline: scroll(self block);
+    animation-range: calc(100% - 64px) 100%;
+  }
+}
+@keyframes setup-fade-b {
+  from {
+    --setup-fade-b: 64px;
+  }
+  to {
+    --setup-fade-b: 0px;
+  }
+}
+/* the cards keep their height and the COLUMN scrolls; shrunk, Match setup cut its own map off */
+.ds-setup-scroll > .ds-panel {
+  flex: none;
+}
+/* the start map is a fixed 300 (its backing store), so in this column it is CENTRED rather than
+   stretched; left-aligned it ended ~88px short of the RED/BLUE row above it */
+.ds-setup-scroll .ds-startpos-stage {
+  margin-inline: auto;
+}
+/* a card here carries a picture beside its name, so it is wider than the builder's preset strip */
+.ds-setup-picker .ds-opts.robots.strip {
+  grid-auto-columns: 320px;
+}
+/* ...and its "there is more" fade is wider than the builder's: 40px across a 320px card left the clipped
+   card reading as SLICED mid-word at the strip's end (review 2026-10-18, "KITSUNE" at 1366). Desktop
+   only: a phone's next card peeks in by ~40px, and a wider fade would lie across the picked card. */
+@supports (animation-timeline: scroll()) {
+  @media (min-width: 721px) {
+    .ds-setup-picker .ds-opts.robots.strip {
+      animation-name: setup-strip-fade-l, setup-strip-fade-r;
+      animation-range:
+        0 96px,
+        calc(100% - 96px) 100%;
+    }
+  }
+}
+@keyframes setup-strip-fade-l {
+  from {
+    --strip-fade-l: 0px;
+  }
+  to {
+    --strip-fade-l: 96px;
+  }
+}
+@keyframes setup-strip-fade-r {
+  from {
+    --strip-fade-r: 96px;
+  }
+  to {
+    --strip-fade-r: 0px;
+  }
+}
+/* the strip reserves its own track and shadow room under the cards, so the body gives back the
+   same amount: the cards then sit 20px from the panel's head and 20px from its foot */
+.ds-setup-picker .ds-panel-body {
+  padding-bottom: var(--ds-s-1);
+}
+.ds-setup-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-setup-go {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ds-s-4);
+}
+/* the phone's two tabs; the desktop shows both panes. They are Home's game switcher (every
+   segment a filled, edged box, the picked one accent), shared halves of the row. */
+.ds-setup-tabs {
+  display: none;
+  gap: var(--ds-s-2);
+}
+.ds-setup-tabs .ds-seg {
+  flex: 1;
+  font-size: var(--ds-t-control);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-color: var(--ds-line);
+  background: var(--ds-panel);
+}
+.ds-setup-tabs .ds-seg.on {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent);
+}
+
+/* PHONE: the field on top, the column under it (owner: "field top, menu below"; Play: "robot top,
+   tabs below"). The ground under the band is the stage's own, so the on-field text still reads. */
+@media (max-width: 720px) {
+  /* ---- A PHONE'S HOME FITS ITS SCREEN (owner, 2026-10-18): down to an iPhone SE in Safari
+     (~375x550 visible); smaller or sideways may scroll. The page is alpha's (`.ds-app.is-home`, no
+     stage), compacted: no footer (its contents are the "More" sheet), labels-only keycaps, the
+     switcher and the pills on one row each, the pills as icons, and the stats as one line. ONE gap
+     between the groups and no margins of their own. */
+  .ds-app.is-home > .ds-foot {
+    display: none;
+  }
+  /* no scroll TRACK: the shell's always-on one took 15px in a narrow desktop window and set the
+     column 7px left of centre (a phone's overlays anyway); a too-short screen still scrolls */
+  .ds-app.is-home {
+    scrollbar-width: none;
+  }
+  /* centred in the height left (nothing in the column comes and goes per game any more: the
+     tutorial offer and the rejoin banner are on Play) */
+  .ds-app.is-home .ds-main-home {
+    align-items: center;
+    padding: var(--ds-s-3) var(--ds-s-4);
+  }
+  /* the bar's per-game queue line ran the profile button 2px off a 390 screen; the Play keycap
+     carries the same count (as on Play's phone bar) */
+  .ds-app.is-home .ds-qcount.bar {
+    display: none;
+  }
+  .ds-app.is-home .ds-home {
+    gap: var(--ds-s-3);
+    padding: 0;
+  }
+  .ds-app.is-home .ds-home > * {
+    margin: 0;
+  }
+  .ds-app.is-home .ds-segs.ds-home-games {
+    flex-wrap: nowrap;
+    width: 100%;
+    gap: var(--ds-s-1);
+  }
+  .ds-app.is-home .ds-home-games .ds-seg {
+    flex: 1 1 0;
+    min-width: 0;
+    white-space: nowrap;
+    font-size: var(--ds-t-md);
+    padding: var(--ds-s-2) var(--ds-s-1);
+  }
+  /* icon AND name (owner), three equal pills on one row: at this size "Instagram" fits a third of a
+     360 phone's column */
+  .ds-app.is-home .ds-home-links {
+    flex-wrap: nowrap;
+    width: 100%;
+    gap: var(--ds-s-2);
+  }
+  .ds-app.is-home .ds-home-link {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    gap: var(--ds-s-1);
+    padding: var(--ds-s-2) var(--ds-s-1);
+    font-size: var(--ds-t-md);
+    white-space: nowrap;
+  }
+  .ds-app.is-home .ds-home-link svg {
+    width: 15px;
+    height: 15px;
+  }
+  .ds-app.is-home .ds-menu {
+    gap: var(--ds-s-2);
+  }
+  .ds-app.is-home .ds-menu-btn {
+    padding: var(--ds-s-3) var(--ds-s-4);
+  }
+  .ds-app.is-home .ds-menu-btn .mh {
+    display: none;
+  }
+  /* "2,489 players · 149,434 games played": the tiles flattened to one line of text */
+  /* ONE BASELINE for the counts, the labels and the dot (owner: "on the same row"): the tiles were
+     centred on each other, and the mono digits, the small caps labels and the dot each sat on a
+     line of their own height */
+  .ds-app.is-home .ds-homestats {
+    flex-wrap: nowrap;
+    align-items: baseline;
+    gap: var(--ds-s-2);
+    line-height: var(--ds-lh-tight);
+  }
+  .ds-app.is-home .ds-homestats .ds-stat {
+    display: flex;
+    align-items: baseline;
+    gap: var(--ds-s-1);
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+  }
+  .ds-app.is-home .ds-homestats .ds-stat .sv {
+    font-size: var(--ds-t-sm);
+  }
+  .ds-app.is-home .ds-homestats .ds-stat .sv,
+  .ds-app.is-home .ds-homestats .ds-stat .sl {
+    line-height: var(--ds-lh-tight);
+  }
+  .ds-app.is-home .ds-homestats .ds-stat .sl {
+    margin: 0;
+  }
+  .ds-app.is-home .ds-homestats .ds-stat + .ds-stat::before {
+    content: '·';
+    margin-right: var(--ds-s-1);
+    color: var(--ds-mut);
+  }
+  .ds-app.is-home .ds-home-more {
+    align-self: center;
+    font-size: var(--ds-t-sm);
+  }
+  /* THE "MORE" SHEET: up from the bottom edge, full width; its footer contents keep the phone
+     footer's centred rows */
+  .ds-more-backdrop {
+    place-items: end stretch;
+    padding: 0;
+  }
+  .ds-more-sheet {
+    max-width: none;
+    border-radius: var(--ds-round-md) var(--ds-round-md) 0 0;
+  }
+  .ds-more-sheet .ds-homestats-break {
+    margin-bottom: var(--ds-s-4);
+  }
+  .ds-more-foot {
+    padding: var(--ds-s-4) 0 0;
+    background: none;
+  }
+  /* Play's robot band; Home draws no field on a phone (owner), so its stage is the bare ground */
+  .ds-stage.setup {
+    bottom: auto;
+    height: 42dvh;
+  }
+  /* the bar's per-game queue line wrapped to three lines here and grew the bar over the page; the
+     Play keycap and the Multiplayer button carry the same count */
+  .ds-app.on-stage .ds-qcount.bar {
+    display: none;
+  }
+  /* the online chip stands Play's one gap from the profile button, not the bar's 12 */
+  .ds-app.stage-setup .ds-bar-right {
+    gap: var(--ds-s-4);
+  }
+  /* A STEP SMALLER on a phone (owner, 2026-10-18): Play's Solo / Multiplayer keycaps. Phone Home is
+     the pre-stage page (owner: "restore that page to the original"), so these do not reach it. */
+  .ds-app.on-stage .ds-menu-btn {
+    padding: var(--ds-s-2) var(--ds-s-4);
+  }
+  .ds-app.on-stage .ds-menu-btn .ml {
+    font-size: var(--ds-t-lg);
+  }
+  .ds-app.on-stage .ds-menu-btn .ml,
+  .ds-app.on-stage .ds-menu-btn .mh {
+    line-height: var(--ds-lh-heading);
+  }
+  /* NO SCROLL TRACK on a phone's Play. A phone's scrollbar overlays and takes no width; a narrow
+     DESKTOP window's took 15px, and arriving from Home (which scrolls on a phone, and keeps its track)
+     it stayed, wrapped the picker card a line taller and made Play overflow by 10px at 360x740
+     (measured, 2026-10-18). The page still scrolls. */
+  .ds-app.stage-setup {
+    scrollbar-width: none;
+  }
+  /* the page GROWS with its pane (`auto`, not the desktop's 480 floor): held to the window, the
+     settings pane ran out of it, and the pinned buttons stuck over the banner strip */
+  .ds-main.ds-main-stage {
+    min-height: auto;
+    padding-bottom: var(--ds-s-2);
+  }
+  /* A COLUMN, not a grid: a grid kept the hidden pane's row and its gaps (the settings tab sat 32
+     under the tabs, not 16), and stretched its auto rows into a tall tab and a picker with an empty
+     band under its one card. Here band, tabs, pane and buttons are each 16 from the next. */
+  .ds-setup {
+    display: flex;
+    flex-direction: column;
+  }
+  .ds-setup > * {
+    flex: none;
+  }
+  .ds-setup-view {
+    height: calc(42dvh - var(--ds-bar-h) - var(--ds-s-4));
+    align-items: center;
+  }
+  /* the cards span the band, one row each where the words fit, so they cover as little of the robot as
+     they can (owner: floating over the band) */
+  .ds-setup-notice {
+    right: var(--ds-s-4);
+    width: auto;
+    max-width: none;
+  }
+  .ds-setup-notice b {
+    flex: 1 1 auto;
+  }
+  .ds-setup-tabs {
+    display: flex;
+  }
+  .ds-setup.tab-robot .ds-setup-scroll,
+  .ds-setup.tab-settings .ds-setup-picker {
+    display: none;
+  }
+  .ds-setup-scroll,
+  .ds-setup-list {
+    overflow-y: visible;
+  }
+  /* the pane does not scroll here, so no fade, and no mask to clip a focus ring at its edge */
+  .ds-setup-scroll {
+    margin-right: 0;
+    mask-image: none;
+  }
+  /* the next card PEEKS in at the edge, so the row says it scrolls; at a fixed 320 the one card
+     filled the panel and the "there is more" fade lay across the picked card itself */
+  .ds-setup-picker .ds-opts.robots.strip {
+    grid-auto-columns: 85%;
+  }
+  /* pinned on the page's own ground; its top padding is given back so it too sits 16 under the
+     pane, and the page's bottom edge is halved so the buttons end 16 from it */
+  .ds-setup-go {
+    position: sticky;
+    bottom: 0;
+    margin-top: calc(-1 * var(--ds-s-2));
+    padding-block: var(--ds-s-2);
+    background: var(--ds-bg);
+  }
+}
+
+/* A PHONE: the chip keeps its online count and drops "· N signed in", which squeezed Play's crumb
+   to "P…" at 360, and to "PL…" at 390 once both counts reached two digits */
+@media (max-width: 440px) {
+  .ds-app.stage-setup .ds-presence-sub {
+    display: none;
+  }
+}
+
+/* A SHORT WINDOW (a 720 or 768 laptop): Home's column still fits above the footer, a step
+   tighter rather than scrolling (owner, 2026-10-18: "no big scrollbar") */
+@media (min-width: 721px) and (max-height: 820px) {
+  .ds-app.stage-home .ds-main-home {
+    padding-block: var(--ds-s-5);
+  }
+  .ds-app.stage-home .ds-home {
+    gap: var(--ds-s-3);
+  }
+  .ds-app.stage-home .ds-home-title svg {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-stage-3d,
+  .ds-stage-2d img,
+  .ds-app.on-stage .ds-bar::before,
+  .ds-app.on-stage .ds-bar > :not(.ds-bar-right) {
+    transition: none;
+  }
 }

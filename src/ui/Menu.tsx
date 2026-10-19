@@ -981,3 +981,123 @@ export function Menu({ settings, onChange, onImport }: Props) {
     </>
   );
 }
+
+/**
+ * THE PLAY PAGE'S ROBOT PICKER (owner, 2026-10-18, after MoSim's robot select): ONE row that scrolls
+ * sideways — the saved robots, this device's imports, then the presets, each the builder's own
+ * `RobotCard` — closed by a "New robot" card. Picking a card is the builder's own pick (the same
+ * `applySpec` and the same match rules); picking the card that is ALREADY on opens the builder.
+ * An unsaved build matches no card, so it leads the row as "Current build", or it could not be
+ * edited from here.
+ */
+export function RobotStrip({
+  settings,
+  onChange,
+  onEdit,
+  onImport,
+}: {
+  settings: GameSettings;
+  onChange: (s: GameSettings) => void;
+  /** open the builder on the active robot */
+  onEdit: () => void;
+  /** open the importer: `id` edits a library robot */
+  onImport: (id?: string) => void;
+}) {
+  const spec = settings.spec;
+  const applySpec = (next: RobotSpec) => onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
+  const mod = moduleFor(settings.game);
+  const isDecode = settings.game === 'decode';
+  const Preview = mod.Preview;
+  const SavedThumb = mod.savedThumb;
+  const preview2d = (s: RobotSpec, size: number) =>
+    Preview ? (
+      <Preview spec={s} size={size} alliance={settings.alliance} caption={false} />
+    ) : isDecode ? (
+      <RobotPreview spec={s} size={size} caption={false} />
+    ) : (
+      <ChainRobotPreview spec={s} size={size} caption={false} />
+    );
+  const thumbOf = (s: RobotSpec) =>
+    SavedThumb ? <SavedThumb spec={s} alliance={settings.alliance} /> : <span className="ds-robot-card-thumb">{preview2d(s, 88)}</span>;
+  const presets = mod.presets ? mod.presets.list : isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
+  const presetMatches = mod.presets ? mod.presets.matches : isDecode ? specMatches : chainSpecMatches;
+  const realPresets = mod.presets?.realCount ?? 0;
+  const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>
+    specMatches(a, b) && a.name === b.name && a.teamName === b.teamName && a.teamNumber === b.teamNumber;
+  const importerOn = importerEnabled();
+  const library = useLibrary(settings.game, importerOn);
+  const importedId = spec.imported?.id ?? null;
+  const entries = library.entries ?? [];
+  const savedOn = settings.savedRobots.map((r) => !spec.imported && sameRobot(spec, r));
+  const importOn = entries.map((e) => answersFor(e, importedId));
+  const presetOn = presets.map((p) => !spec.imported && presetMatches(spec, p));
+  const current = !savedOn.includes(true) && !importOn.includes(true) && !presetOn.includes(true);
+  /** a card's pick: the one already on opens its editor, any other becomes the robot */
+  const pick = (on: boolean, apply: () => void, edit: () => void = onEdit) => (on ? edit() : apply());
+  return (
+    <div className="ds-opts robots strip" role="group" aria-label="Robots" tabIndex={0}>
+      {current && (
+        <RobotCard spec={spec} game={settings.game} on team={teamLine(spec)} thumb={thumbOf(spec)} onPick={onEdit} />
+      )}
+      {settings.savedRobots.map((r, i) => (
+        <RobotCard
+          key={`s${i}`}
+          spec={r}
+          game={settings.game}
+          on={savedOn[i]}
+          team={teamLine(r)}
+          thumb={thumbOf(r)}
+          onPick={() => pick(savedOn[i], () => applySpec({ ...r }))}
+        />
+      ))}
+      {entries.map((e, i) => (
+        <RobotCard
+          key={e.id}
+          spec={e.spec}
+          game={e.game}
+          on={importOn[i]}
+          imported
+          team={teamLine(e.spec)}
+          thumb={
+            <span className="ds-robot-card-thumb">
+              {library.thumbs[e.id] ? (
+                <img className="ds-import-thumb" src={library.thumbs[e.id]} alt="" />
+              ) : e.spec.imported ? (
+                <FootprintSvg imported={e.spec.imported} drivetrain={e.spec.drivetrain} size={88} />
+              ) : null}
+            </span>
+          }
+          onPick={() => pick(importOn[i], () => applySpec({ ...e.spec }), () => onImport(e.id))}
+        />
+      ))}
+      {presets.map((p, i) => (
+        <RobotCard
+          key={p.name}
+          spec={p}
+          game={settings.game}
+          on={presetOn[i]}
+          real={i < realPresets}
+          team={p.teamNumber ? teamLine(p) : undefined}
+          // EVERY CARD HERE CARRIES ITS PICTURE (owner, 2026-10-18: "I can't see the robot"): this
+          // row is how a robot is chosen, so a preset is shown, not only named
+          thumb={thumbOf(p)}
+          onPick={() =>
+            pick(presetOn[i], () => applySpec({ ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber }))
+          }
+        />
+      ))}
+      {/* NEW starts from the first preset's build, keeping the player's own name, and opens the builder */}
+      <button
+        type="button"
+        className="ds-opt ds-opt-add"
+        onClick={() => {
+          const p = presets[0];
+          if (p) applySpec({ ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber });
+          onEdit();
+        }}
+      >
+        <span className="ot">New robot</span>
+      </button>
+    </div>
+  );
+}
