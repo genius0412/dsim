@@ -39,6 +39,14 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   TABLET** (`adsConfigured('gameh')`: touch and at least 768 wide); in practice a tablet in portrait is 3:4, nowhere near
   3:5, so it appears on tall desktop windows and large foldables, and the way to give tablets one is to relax that ratio
   and accept a smaller field. **Same sign-off as `game`: compare p95 frame time with `?perf=1` before setting the slot.**
+- **THE TOP STRIP'S LABEL IS BESIDE THE BOX, NOT ABOVE IT (owner, 2026-10-18).** The owner wanted the desktop strip
+  smaller and kept the 728x90 slot for revenue, so the only height left to cut was the 14px label. At 760px and wider
+  `BannerStrip`'s `banner` unit (`AdSlot`, `w === 728`) and the sponsor's `.ds-adframe` both take `.side-label`: the
+  label is sideways text (`writing-mode: vertical-rl` + `rotate(180deg)`, reads bottom-to-top) on the box's left, so
+  the frame is 728 + 14 + 4 wide and 90 tall and the strip is `calc(90px + 2 * var(--ds-s-2))` = 106px on EVERY page
+  (the old Play-only `height: auto` override is gone). The label text stays "Advertisement" (AdSense requires it).
+  The two frames must keep identical outer dimensions so a swap moves nothing. Every other unit (`gameh`, `menu`, ...)
+  and the 320x50 phone strip keep the label above. The `max-height: 519px` rule still hides the strip.
 - **Three ad units, each with its own slot id**: `menu` (shell pages) and `results`
   (post-match) are SAFE; `game` (columns flanking the live field) is the risky one —
   60 Hz canvas + AdSense's 150px game-clearance rule. **Do not enable

@@ -1,4 +1,28 @@
-# HANDOFF — 2026-10-09 (pace for record runs: the server's sim is not alpha's)
+# HANDOFF — 2026-10-18 (MoSim-style Home + Play over a live field)
+
+**State: branch `feat/mosim-home` off `alpha`; client only, no server change, no deploy. Uncommitted at the time of writing.**
+
+- **What:** Home and Play now sit over ONE persistent field stage (`src/ui/MenuStage.tsx`). Home is a left column over the selected game's field (BIOBUZZ 3D in the player's environment; DECODE/Chain tilted 2D). Play is the robot setup: the camera flies to the robot (1 s), picker row bottom-left (`RobotStrip` in `Menu.tsx`), Match + Practice setup stacked on the right, and Solo / Multiplayer swapping the column for their lists. Every rule is in `docs/area/ui.md`, THE MENU STAGE; each was the owner's answer to a question, so do not "simplify" them.
+- **Seam:** an additive `SceneFrame.pose` (`src/games/module.ts`), honoured by `renderCameras.ts`; RENDER-lane checks pin it.
+- **Routes:** `matchsetup`/`practicesetup` screens are gone; their URLs land on `/modes`. A first visit seeds BIOBUZZ on the web too (was activity-only).
+- **Verified:** `uiaudit` (new `--ds-dur-fly` token), `uiindex`, `contrast`, `docaudit`, `bundleaudit` (main carries no three), `vite build`, and offscreen Electron shots at 1366x768 + 390x844, both themes, three games (`scratch/stage.cjs`, `scratch/stage/`).
+- **Not green, and NOT from this branch:** this checkout has no `vendor/zenith/*.tgz`, so `node_modules` holds a 0.0.0 zenith stub. `tsc` (so `npm run build`) fails in `src/auto/**`, and `npm test` fails the 6 AUTO/IMPORT lane checks. `balls: ...LANDED predicted` (reads `src/game.ts`, untouched here) also fails. Restore the tarballs and re-run.
+- **Not run:** `shiftaudit`. The sandbox could not reach `vite preview` on localhost.
+- **Owner pass 2 (same day):** spacing unified, every picker card has a picture, both screens fit the window with no scrollbar at six sizes, phone Home has no field and smaller controls, and a lost WebGL context falls back to the 2D stage. Details in ui.md THE MENU STAGE.
+- **Owner pass 3 (same day): "the field isn't even visible", "center this", "the spacing is horrid", "design consistency".**
+  - The blank field was the stage NOT REPAINTING AFTER A WINDOW RESIZE (the offscreen screenshot run resizes between shots). The 2D field is now an `<img>` (a canvas in the page stayed blank). The 3D stage draws once more 150ms after a resize settles. Phone Home covers the stage with `::after` rather than hiding it.
+  - Home: the column's contents are centred and its three-across rows share edges. The scrim is solid behind the column, and the online chip has a plate over the bright 3D scene. Light-theme phone Home is light. The 2D field is sized to the free area.
+  - Play: one panel look, tabs styled like the switcher, fades instead of hard cuts on the right column and the picker strip, the ad strip clear of the window edge, and the crumb fits at 360.
+  - 60-shot matrix (3 games, 5 sizes, 2 themes): scroll 0 everywhere, and no blank field. uiaudit, contrast (421; adds HOME_SCRIM_BRIGHT), docaudit and bundleaudit pass. npm test shows the same 7 pre-existing zenith failures.
+- **Owner pass 4: phone Home restored to alpha's** ("restore that page, only that page, to the original one"). Below 720px Home has no stage; it is the normal shell with alpha's markup (`HomeMenu stage={false}`). The base Home CSS is alpha's verbatim, and the desktop look is `.ds-app.stage-home` overrides. The tutorial offer and Rejoin banner sit above the keycaps there. Pixel-identical to alpha apart from live counts.
+- **Owner pass 5: phone Home fits with no scroll down to iPhone SE in Safari (375x550)**, with every choice made by the owner:
+  - The footer becomes a "More" sheet built from the shared `FootBody`.
+  - The keycaps show labels only, the switcher and the icon pills sit on one row each, and the stats are one line.
+  - The tutorial offer and the Rejoin banner moved to Play, on desktop too, floating over the robot area.
+  - Rules: ui.md THE MENU STAGE.
+- **Next:** owner sign-off on the look and the home angle / showcase framing (`POSES`/`SHOW` in MenuStage.tsx are hand-tuned constants); a `prefers-reduced-motion` drive of the fly; check the resize redraw on a real browser (the blank-after-resize was measured offscreen only).
+
+## 2026-10-09 (pace for record runs: the server's sim is not alpha's)
 
 **State: branch `fix/pace-records` off `alpha`; client only, no server change, no deploy.** `build`, `server:check`, `uiaudit` (after `uiindex`), `docaudit`, `bundleaudit` pass.
 
