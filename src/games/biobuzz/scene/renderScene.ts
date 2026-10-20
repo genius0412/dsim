@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { GameScene, GameSceneFactory, SceneCamera, SceneFrame, SceneOptions } from '../../module';
+import type { GameScene, GameSceneFactory, SceneCamera, SceneFrame, SceneOptions, SceneXR } from '../../module';
 import type { World } from '../../../types';
 import { BB_HALF_X, BB_HALF_Y, BB_VIEW_MARGIN } from '../config';
 import {
@@ -40,6 +40,7 @@ import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } fro
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDefFor } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
+import { BbXR } from './renderXR';
 import {
   SceneUnsupportedError,
   createSceneLights,
@@ -151,6 +152,11 @@ class BiobuzzScene implements GameScene {
   get camera(): SceneCamera {
     return this.lastCamera;
   }
+  /** WEBXR: present only when the browser can open an `immersive-vr` session (`renderXR.ts`). */
+  get xr(): SceneXR | undefined {
+    return this.xrRig ?? undefined;
+  }
+  private readonly xrRig: BbXR | null;
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
@@ -224,7 +230,7 @@ class BiobuzzScene implements GameScene {
   private dragX = 0;
   private dragY = 0;
 
-  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions, xrCapable = false) {
     this.canvas = canvas;
     this.host = host;
     this.onQualityEvent = opts.onQualityEvent;
@@ -249,7 +255,10 @@ class BiobuzzScene implements GameScene {
     // filter come with the shared factory (`renderCore.ts`), which the builder preview builds
     // its renderer from too — so the same robot cannot come out two different colours in the
     // two places this game draws it.
-    this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false });
+    // XR renders straight into the headset's framebuffer (no MSAA target to resolve through), so an
+    // XR-capable browser asks for a multisampled default framebuffer instead.
+    this.renderer = createSceneRenderer(canvas, { antialias: xrCapable, alpha: false });
+    this.xrRig = xrCapable ? new BbXR(this.renderer, this.scene) : null;
     /**
      * A LOST CONTEXT TAKES THE SAME EXIT AS AN UNSUPPORTED ONE — `fallBackTo2d()` plus an
      * event-log line, exactly what the factory below does for a failed WebGL2 probe or a
@@ -762,6 +771,21 @@ class BiobuzzScene implements GameScene {
   }
 
   render(world: World, frame: SceneFrame): void {
+    // ── WEBXR: one pass into the headset's framebuffer, from the driver-station rig ─────────
+    // No frame cap (the headset paces it), no MSAA target or blit, no minimap, no governor.
+    if (this.xrRig?.presenting) {
+      updateBiobuzzField(this.field, world);
+      updateBiobuzzElements(this.elements, world);
+      updateBiobuzzRobots(this.robots, world);
+      updateBiobuzzReticle(this.reticle, world, frame.localRobotId, this.reticleOn);
+      if (this.robots.group.children.length !== this.robotChildren) this.tuneMaterials();
+      this.xrRig.update(world, frame.localRobotId, frame.localStartCat);
+      // NO setRenderTarget(null) here: three binds the headset's framebuffer at the start of each
+      // XR frame, and null would send the frame to the hidden page canvas (a black headset —
+      // measured on Vision Pro 2026-10-11: 761 frames drawn, nothing seen)
+      this.renderer.render(this.scene, this.xrRig.camera);
+      return;
+    }
     const t0 = performance.now();
     // ── the frame cap (§4.4 row 2) ─────────────────────────────────────────────────────────
     // A SKIPPED FRAME RETURNS BEFORE ANY WORK, including the mesh updates: they are the other
@@ -911,10 +935,13 @@ class BiobuzzScene implements GameScene {
     // setting can still push past it deliberately (§4.4 offers up to 200 %), which is the
     // difference between "the browser said 3" and "the player asked for it".
     this.hostDpr = Math.min(dpr, 2);
+    // three refuses a canvas resize while the headset is presenting; the next resize after exit catches up
+    if (this.xrRig?.presenting) return;
     this.syncSize();
   }
 
   dispose(): void {
+    this.xrRig?.exit();
     for (const off of this.teardown) off();
     this.teardown.length = 0;
     this.governor.dispose();
@@ -1019,8 +1046,9 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
     buildBiobuzzField(quality.meshDetail),
     quality.elementDetail === 'cad' ? loadElementGeometries().catch(() => null) : null,
   ]);
+  const xrCapable = await BbXR.supported();
   host.appendChild(canvas);
   // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
   // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
-  return new BiobuzzScene(canvas, field, host, opts);
+  return new BiobuzzScene(canvas, field, host, opts, xrCapable);
 };
