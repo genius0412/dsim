@@ -368,14 +368,14 @@ rulings below are theirs, not defaults.
 
 - **ONE stage behind both screens** (`src/ui/MenuStage.tsx`, mounted by `App` while `screen` is `home`
   or `modes`). Going Home → Play is a change of `view`, not a remount, which is what lets the camera
-  FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it up).
+  FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it back).
 - **The selected game's field.** BIOBUZZ: the match's own 3D scene (`createBiobuzzScene`, lazy,
   `interactive: false`) in the player's own Graphics environment, drawn through `SceneFrame.pose`
   ON DEMAND (while the camera moves, and once when `assetsSettled` resolves), not every frame.
   DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
   phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and TILTED in CSS.
   A dark backdrop (`--ds-stage-bg`) until the 3D fades in. Home has game pieces only; the player's
-  robot joins for Play and leaves when the camera is back up.
+  robot joins for Play and leaves when the camera is back at Home.
 - **Home** (`HomeMenu.tsx`): no app-bar fill or mark (the bar keeps only its right-hand cluster:
   profile, Admin, online chip), ONE LEFT COLUMN on a left-to-right scrim — wordmark, sponsor, game
   switcher, the keycaps, the labelled
@@ -395,7 +395,14 @@ rulings below are theirs, not defaults.
   Competitions, LAN) and a Back. Every gate the old tiles had is kept.
 - **The camera frames what the page leaves free**: `insetsFor` reads `.ds-setup-view` (Play) and the
   column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
-  hand-tuned `POSES`/`SHOW` constants; the showcase spot is on open floor, clear of the hive's legs.
+  hand-tuned `POSES`/`SHOW` constants in `menuStagePoses.ts` (DOM-free, so the BIOBUZZ RENDER lane
+  reads them); the showcase spot is on open floor, clear of the hive's legs.
+- ⚠️ **HOME'S EYE IS AT THE PANORAMA'S LENS HEIGHT (62 in), NOT A DRONE SHOT** (2026-10-21). A
+  photographed venue is exact only from its lens (`renderPhotoVenue.ts`); anything in the photograph
+  that is not floor or wall is drawn flat on the floor, and an eye above the lens sees it from above.
+  The first Home eye stood 150 in up: the school hall's seats, the hangar's clutter and the quad's
+  canopy posts lay across the floor as streaks, and at 85 in the seats already stretch. The RENDER
+  lane holds the Home eye within 2 in of every venue's lens and both eyes inside every room.
 - ⚠️ **A PHONE'S HOME IS NOT ON THE STAGE, AND IT FITS AN iPHONE SE IN SAFARI WITH NO SCROLL**
   (owner, 2026-10-18: "restore that page … to the original one", alpha's; then "fit without needing
   to scroll for any phone"). Below 720px `App.tsx` mounts no `MenuStage` for Home and passes no

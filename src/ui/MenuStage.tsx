@@ -5,12 +5,13 @@ import type { GameScene, SceneInsets, ScenePose } from '../games/module';
 import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
+import { POSES, SHOW, type StageView } from './menuStagePoses';
 
 /**
  * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to MoSim's) — the field
  * behind Home and Play. App mounts it behind the shell for both screens, so going Home → Play is a
- * change of `view` and not a remount, and that is what lets the camera FLY from the high
- * audience-corner shot down to the player's robot.
+ * change of `view` and not a remount, and that is what lets the camera FLY from the
+ * audience-corner shot down to the player's robot. The poses are in `menuStagePoses.ts`.
  *
  * Two renderings, one contract:
  * - **3D** (BIOBUZZ): the match's own scene (`createBiobuzzScene`, lazy), drawn through a
@@ -22,7 +23,7 @@ import { DEFAULT_ASSISTS } from '../sim/spawn';
  * Nothing here steps a world. Owner rulings in `docs/area/ui.md`, "THE MENU STAGE".
  */
 
-export type StageView = 'home' | 'setup';
+export type { StageView };
 
 /**
  * A PHONE'S HOME HAS NO STAGE (owner, 2026-10-18: "restore that page, only that page, to the
@@ -46,20 +47,6 @@ type StageMode = '2d' | '3d';
 const FLY_MS = 1000;
 /** the orbit's drift back to the showcase angle after a drag, as a half-life */
 const ORBIT_RETURN_S = 0.35;
-
-// ── the showcase (BIOBUZZ field inches: +x audience right, +y away from the audience, z up) ──
-// ponytail: hand-placed and tuned from screenshots; a game with its own 3D field adds its own row.
-const SHOW = { x: -48, y: 30, heading: -Math.PI / 2 + 0.6 };
-const POSES: Record<StageView, ScenePose> = {
-  // high over the audience-LEFT corner, looking diagonally across the field (MoSim's shot)
-  home: { eye: [-175, -205, 150], target: [10, 20, 0], fovDeg: 38 },
-  // low in front of the robot, the rear wall and the stands behind it
-  setup: {
-    eye: [SHOW.x + 14, SHOW.y - 46, 22],
-    target: [SHOW.x, SHOW.y, 7],
-    fovDeg: 34,
-  },
-};
 
 /** where the page's own chrome sits, so the camera frames the field / robot in what is left. READ
  * OFF THE PAGE: Play's free area is `.ds-setup-view` itself, Home's is everything right of the
@@ -260,7 +247,7 @@ function Stage3d({
         pose = target;
         ins = targetIns;
       }
-      // the robot leaves only once the camera is back up (it would vanish mid-flight otherwise)
+      // the robot leaves only once the camera is back (it would vanish mid-flight otherwise)
       if (robotOn && dropRobotAt && now >= dropRobotAt) {
         robotOn = false;
         dropRobotAt = 0;

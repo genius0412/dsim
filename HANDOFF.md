@@ -1,4 +1,14 @@
-# HANDOFF — 2026-10-18 (MoSim-style Home + Play over a live field)
+# HANDOFF — 2026-10-21 (Home's photographed venue was distorted)
+
+**State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).**
+
+- **Report (owner):** "Alpha currently has distorted real 3d backgrounds."
+- **Cause:** the Home stage's camera stood 150 in up and 285 in off-centre. A photographed venue is projected from its lens (63 in above the floor, at the field's centre), so anything that is not floor or wall is drawn flat on the floor; from above, the school hall's seats, the hangar's clutter and the quad's canopy posts lay across the floor as streaks. Match cameras were not changed by this and were not the regression.
+- **Fix:** Home's eye is at the lens height, `[-150, -170, 62]` (`src/ui/menuStagePoses.ts`, split out DOM-free). Play's pose is unchanged. Two RENDER-lane checks: the Home eye is within 2 in of every venue's lens, and both eyes sit inside every room less the push margin. Rules in ui.md THE MENU STAGE and the `SceneFrame.pose` paragraph of biobuzz.md.
+- **Verified:** Home in all five photographed venues and the Home → Play fly, in the browser pane at 1600x900. The render lane passes (2982). `docaudit` passes.
+- **Next:** owner look at the lower Home angle (it is a spectator's view now, not a drone shot). Going higher brings the streaks back: 85 in already stretches the seats.
+
+## 2026-10-18 (MoSim-style Home + Play over a live field)
 
 **State: branch `feat/mosim-home` off `alpha`; client only, no server change, no deploy. Uncommitted at the time of writing.**
 

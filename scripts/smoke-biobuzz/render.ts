@@ -479,6 +479,7 @@ import {
   photoScale,
   setPhotoVenueLighting,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
+import { POSES as MENU_POSES } from '../../src/ui/menuStagePoses';
 import {
   ORBIT_CENTER_Z as CAM_ORBIT_CENTER_Z,
   ORBIT_RADIUS_MAX as CAM_ORBIT_RADIUS_MAX,
@@ -14719,6 +14720,28 @@ function photoVenueChecks(check: Check): void {
       'photo cameras: renderScene sets the room from the photographed row, null for any other',
       /this\.cameras\.setRoom\(def\.photo \? photoCameraRoom\(def\.photo\) : null\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
     );
+
+    // THE MENU STAGE'S EYES (`src/ui/menuStagePoses.ts`, 2026-10-21). Home is a still, wide shot of
+    // the room, so its eye is held to the lens: from the first eye, 150 in up, the school hall's
+    // seats, the hangar's clutter and the quad's canopy posts lay flat across the floor. Both eyes
+    // stand inside every room less the margin, so no wall moves for them, and the fly between them
+    // is a straight line in a box, so it stays inside too.
+    {
+      const off: string[] = [];
+      const out: string[] = [];
+      for (const e of photos) {
+        const lens = PHOTO_FLOOR_Z + e.photo!.height;
+        if (Math.abs(MENU_POSES.home.eye[2] - lens) > 2) off.push(`${e.id}: lens ${lens}, eye ${MENU_POSES.home.eye[2]}`);
+        const box = photoRoomBox(e.photo!);
+        const room = photoCameraRoom(e.photo!);
+        for (const [view, p] of Object.entries(MENU_POSES)) {
+          const eye: [number, number, number] = [p.eye[0], p.eye[1], p.eye[2]];
+          if (!inside(new THREE.Vector3(...eye), room) || pushes(box, eye)) out.push(`${e.id} ${view}`);
+        }
+      }
+      check('menu stage: the Home eye is at every photographed venue’s lens height, within 2 in', off.length === 0, off.join('; '));
+      check('menu stage: both eyes stand inside every photographed room less the margin', out.length === 0, out.join(', '));
+    }
   }
 
   // THE SHADOW CATCHER IS THE SUN'S SHADOW FOOTPRINT. The sun's shadow camera is a square of

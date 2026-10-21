@@ -106,7 +106,7 @@ are off the LIVE board only: an archived season shows the solve it was played on
 2D board (`accounts.md`, "THE ERA IS PER SEASON"). An old client without the `'bb3d'` cap is
 now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
-**A HOST-PLACED CAMERA (`SceneFrame.pose`, 2026-10-18).** The menu stage (`src/ui/MenuStage.tsx`, `docs/area/ui.md` THE MENU STAGE) draws the match scene from its own eye/target/FOV. `renderCameras.ts` honours a pose before the camera switch, through `free`'s THREE camera and the same safe-rect `insets`, and leaves the free cam's eased state alone, so a later frame without a pose resumes it. The RENDER lane pins both.
+**A HOST-PLACED CAMERA (`SceneFrame.pose`, 2026-10-18).** The menu stage (`src/ui/MenuStage.tsx`, `docs/area/ui.md` THE MENU STAGE) draws the match scene from its own eye/target/FOV. `renderCameras.ts` honours a pose before the camera switch, through `free`'s THREE camera and the same safe-rect `insets`, and leaves the free cam's eased state alone, so a later frame without a pose resumes it. The RENDER lane pins both. ⚠️ A pose is not held inside the photographed room the way the orbit and free cams are, and the further its eye is from the panorama's lens (the field's centre, 62.25 in up) the flatter the photograph's furniture lies on the floor: keep a wide shot at the lens height (`src/ui/menuStagePoses.ts`, which the RENDER lane checks against every venue).
 
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via
 `GameSettings.practicePhysics` (default `'3d'`; Practice setup has the control). A record run

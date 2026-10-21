@@ -2034,7 +2034,7 @@ export function App() {
       onChange={(id) => update({ ...settings, preferredServerId: id })}
     />
   );
-  /** the menu stage's view (`MenuStage.tsx`): Home's high shot, Play's robot, or none */
+  /** the menu stage's view (`MenuStage.tsx`): Home's corner shot, Play's robot, or none */
   // a phone's Home is the pre-stage page, in the normal shell (owner, 2026-10-18)
   const phone = usePhone();
   const stageView: StageView | null =
