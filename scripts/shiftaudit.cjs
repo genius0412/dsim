@@ -310,7 +310,7 @@ app.whenReady().then(async () => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
       for (let i = 0; i < 100 && !document.querySelector('.ds-import-filerow'); i++) await wait(200);
       if (!document.querySelector('.ds-import-filerow')) return 'the file was not read';
-      document.querySelectorAll('.ds-import-steps .ds-tab')[3]?.click();
+      { const tabs = document.querySelectorAll('.ds-import-steps .ds-tab'); tabs[tabs.length - 1]?.click(); }
       await wait(600);
       let save = null;
       for (let i = 0; i < 100; i++) {
@@ -373,8 +373,9 @@ app.whenReady().then(async () => {
         // the panel's Edit appears once the library has answered (IndexedDB, after the first paint)
         const EDIT = `[...([...document.querySelectorAll('.ds-panel-title')].find((t) => t.textContent.trim() === 'Imported robot')?.closest('.ds-panel-h')?.querySelectorAll('.ds-btn') ?? [])].find((x) => /^Edit/.test(x.textContent.trim()))`;
         const edit = (await until(`!!${EDIT}`, 8000)) && (await js(`(() => { const b = ${EDIT}; if (!b) return false; b.click(); return true; })()`));
-        if (edit && (await until(`location.pathname.includes('/configure/robot/import') && document.querySelectorAll('.ds-import-steps .ds-tab').length === 4`, 8000))) {
-          for (let k = 0; k < 4; k++) {
+        if (edit && (await until(`location.pathname.includes('/configure/robot/import') && document.querySelectorAll('.ds-import-steps .ds-tab').length >= 4`, 8000))) {
+          const steps = await js(`document.querySelectorAll('.ds-import-steps .ds-tab').length`);
+          for (let k = 0; k < steps; k++) {
             await js(`document.querySelectorAll('.ds-import-steps .ds-tab')[${k}].click(); true`);
             await sleep(700);
             await auditHere(`[${theme}] importer, editing the imported robot, step ${k + 1}`, false);
@@ -396,6 +397,9 @@ app.whenReady().then(async () => {
     })()`);
     if (await clickText('Play') === 'MISS') log('  (could not reach Play)');
     await sleep(900);
+    // Free drive is in the Solo list on Play
+    if (await clickText('Solo') === 'MISS') log('  (could not reach Solo)');
+    await sleep(500);
     if (await clickText('Free drive') === 'MISS') log('  (could not reach Free drive)');
     await sleep(3500);
     await js(FREEZE);

@@ -681,6 +681,11 @@
   gap: var(--ds-s-2);
   min-width: 0;
 }
+/* a PARENT never shrinks: squeezed below its text (360px wide, "Records" in a 63px item) it ran its
+   label under the separator, and only the page you are on is meant to ellipsize */
+.ds-crumbs li:not(:last-child) {
+  flex: none;
+}
 .ds-crumbs .sep {
   color: var(--ds-line-strong);
 }
@@ -6853,6 +6858,8 @@ a.ds-cta {
   letter-spacing: 0.03em;
 }
 .ds-startpos-inputs label small {
+  /* `small` alone is `smaller` than the label's 11px, i.e. 9.2px, under the type floor */
+  font-size: inherit;
   font-weight: 400;
   text-transform: none;
   color: var(--ds-mut);
@@ -10034,8 +10041,12 @@ input.admin-months {
   /* a FILL, so the unpicked ones read on the dark scrim in the light theme too */
   background: var(--ds-panel);
 }
+/* the PICKED season keeps its accent fill: the unpicked rule above is one class heavier than
+   `.ds-seg.on`, so without this the picked one took `--ds-panel` and its accent-ink label
+   vanished into it (white on white in light, dark on dark in dark). */
 .ds-app.stage-home .ds-home-games .ds-seg.on {
   border-color: var(--ds-accent);
+  background: var(--ds-accent);
 }
 /* Discord / Instagram / GitHub — between the game switcher and the menu (owner, 2026-09-23,
    reversing 01-02). They WRAP: three pills no longer fit side by side on the narrowest phones. */
@@ -10612,8 +10623,12 @@ input.admin-months {
   .ds-setup > * {
     flex: none;
   }
+  /* 42dvh, but never so tall that a short phone scrolls: everything else on the Robot tab is 501px
+     (bar 63, tabs 36, picker 214, pinned buttons 52, the 72px banner strip, and the gaps), so what
+     is left is the band (measured at 360x640, where the strip alone pushed Play 51px past the
+     window). Never under 120px, which still holds the 96px robot. */
   .ds-setup-view {
-    height: calc(42dvh - var(--ds-bar-h) - var(--ds-s-4));
+    height: clamp(120px, 100dvh - 501px, calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));
     align-items: center;
   }
   /* the cards span the band, one row each where the words fit, so they cover as little of the robot as
