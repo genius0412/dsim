@@ -30,15 +30,14 @@ npx tsx scripts/smoke-biobuzz/index.ts --lane render    # the files, the rows an
 
 (`--only <id,id>` on each.) The two GPU stages need CUDA; `meshes.py` runs on any CPU with numpy,
 opencv, scipy and pillow (torch and moge are imported only where the GPU stages use them).
-**Without a CUDA GPU here, `GPU-REBUILD.md` is the runbook**: a friend runs `depth.py` and
-`layers.py` from a sparse clone and sends `scratch/venues-layers/` back; the rest runs here.
+**`GPU-REBUILD.md` is the runbook** for the pending rebuild below, end to end on a CUDA machine.
 
 ### PENDING REBUILD (2026-10-24): hangar, school hall, events hall
 
 The pipeline's inputs were re-measured; the shipped files and rows are still the old ones until
 `GPU-REBUILD.md` is done (the RENDER lane holds rows and files together, so neither moves alone):
-- **hangar**: turned 18° (`venues.cjs` `yaw` 72, was 90; the turned backdrop is built into
-  `scratch/venues-derived/`, not `public/`), the box re-measured in that frame, and its arched roof
+- **hangar**: turned 18° (`venues.cjs` `yaw` 72, was 90; `derive.cjs --only hangar` rebuilds the backdrop
+  as the runbook's first step), the box re-measured in that frame, and its arched roof
   held as a gable (`ROOMS`: eave 328, ridge 483);
 - **school hall**: the auditorium 44 in below the stage (was 25.3, off MoGe; now off the front
   rows' seats) and the stage lip a polyline with its two thrusts (`FLOOR_STEPS['school-hall']`);

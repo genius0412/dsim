@@ -16,9 +16,7 @@
   - events-hall gable roof.
   - All in pipeline inputs only (`layers.py`, `venues.cjs`). Shipped files and rows are unchanged.
 - **Runbook:** `scripts/venues/GPU-REBUILD.md`.
-  - A friend runs `depth.py` + `layers.py` for the three venues and sends `scratch/venues-layers` back.
-  - They need `hangar-4k.webp` from `scratch/venues-derived/` (a copy is on the owner's Desktop, `dsim-for-gpu-friend/`).
-  - The owner's half (meshes/pack/sync-env, hand edits, captures) is at the bottom of the runbook.
+  - The repo owner runs the whole pipeline on a CUDA machine: derive (hangar), depth/layers (GPU), meshes/pack/sync-env, hand edits, render lane, captures, one commit.
 - **Also found, not fixed:** the events hall is turned ~5–6° against its box (yaw ≈ −26, not −20) and its end walls look off by ~50 in. That needs its own re-measure, together with its derive furniture patch.
 
 ## 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
