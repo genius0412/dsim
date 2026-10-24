@@ -1,6 +1,19 @@
-# HANDOFF — 2026-10-21 (Home's photographed venue was distorted)
+# HANDOFF — 2026-10-24 (photographed venues draw nothing flat; alpha UI sweep)
 
 **State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).**
+
+- **Ask (owner):** "can you just make it NOT smear?" ("do the best thing and not a workaround"), then "fix all other UI issues on alpha".
+- **Venues:** every photographed venue is now two layers (`renderPhotoVenue.ts`, THE LAYERED ROOM): the measured room (box plus the school hall's floor step, 25 in down past y 80) textured with the backdrop with its furniture inpainted out, and the furniture as MoGe-2 relief textured with the original. The shader drops furniture faces the lens saw edge-on (`PHOTO_STRETCH_MAX`). New files per venue: `<id>-bg-{4k,2k}.webp`, `<id>-fg-{4k,2k}.webp`, `<id>-room.glb` (38–86 KB). The box path stays as the fallback.
+- **Pipeline:** `scripts/venues/README.md` (depth.py → layers.py → meshes.py → pack.ts → sync-env.mjs), with each rule's measurement. The Python env (CUDA torch, MoGe 2.0, transformers, LaMa) lives outside the repo, in `D:\ml\dsim-venues`.
+- **Home** is back to the original high corner shot (`menuStagePoses.ts`, 150 in up). It holds because every photo venue is layered; the RENDER lane checks that.
+- **UI sweep:** merged from a subagent branch. It covers Home's picked-game chip, Play at 360x640, crumbs, the offline note, contrast, touch labels, the replay header on phones, the competitions error, and the stale shiftaudit/importprobe drivers. Details are in the commit messages.
+- **Verified:** offscreen Electron captures of Home, Play and a started solo match in all five venues (high Home shot, both driver sides), Medium tier, and the fallback with the room file blocked. The render lane passes (3065), and so do `npm test`, `npm run build`, `uiaudit`, `contrast` and `docaudit`.
+- **Known limits:** the school hall's seats from the opposite driver's corner are still rough (a single photo cannot show chairs from the side); the court's floodlight pole bends slightly from the high shot. The school hall is still a pick, not a default (`PhotoVenue.furniture`); the owner could revisit that now.
+- **UI items found but not fixed (owner calls):** the touch-pad rings overlap the score bar in portrait; the BIOBUZZ tutorial card overlaps a button column on phones; MENU/Esc in a match return Home rather than Play; Home at 721–860 px shows only a sliver of field.
+
+## 2026-10-21 (Home's photographed venue was distorted)
+
+**State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).** Superseded on 2026-10-24: Home is high again, over the layered rooms.
 
 - **Report (owner):** "Alpha currently has distorted real 3d backgrounds."
 - **Cause:** the Home stage's camera stood 150 in up and 285 in off-centre. A photographed venue is projected from its lens (63 in above the floor, at the field's centre), so anything that is not floor or wall is drawn flat on the floor; from above, the school hall's seats, the hangar's clutter and the quad's canopy posts lay across the floor as streaks. Match cameras were not changed by this and were not the regression.

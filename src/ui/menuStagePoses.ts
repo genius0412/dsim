@@ -11,16 +11,16 @@ export type StageView = 'home' | 'setup';
 export const SHOW = { x: -48, y: 30, heading: -Math.PI / 2 + 0.6 };
 
 /**
- * ⚠️ HOME'S EYE IS AT THE PANORAMA'S LENS HEIGHT (62.25 in: 63 in above the photographed floor at
- * −0.75). A photographed venue is projected from its lens (`renderPhotoVenue.ts`), so anything in
- * the photograph that is not floor or wall is drawn where its ray meets the floor, and an eye above
- * the lens sees that smear from above. The first Home eye stood 150 in up (2026-10-18): the school
- * hall's seats, the hangar's clutter and the quad's canopy posts lay across the floor as streaks.
- * At 85 in the seats already stretch. The RENDER lane holds it to the lens.
+ * ⚠️ HOME IS A HIGH SHOT, 87 in above the panorama's lens, which a photographed venue drawn on its
+ * box cannot take: everything in the photograph that is not floor or wall is drawn flat on the
+ * floor, and from up here the school hall's seats, the hangar's clutter and the quad's canopy posts
+ * lay across it as streaks (2026-10-21). It stands because every photographed venue is drawn as its
+ * LAYERED ROOM (`renderPhotoVenue.ts`), which draws nothing flat; the RENDER lane holds both. Only a
+ * venue whose layer files fail to load falls back to the box and smears from here.
  */
 export const POSES: Record<StageView, ScenePose> = {
-  // over the audience-LEFT corner, looking diagonally across the field
-  home: { eye: [-150, -170, 62], target: [10, 20, 0], fovDeg: 38 },
+  // high over the audience-LEFT corner, looking diagonally across the field (MoSim's shot)
+  home: { eye: [-175, -205, 150], target: [10, 20, 0], fovDeg: 38 },
   // low in front of the robot, the rear wall and the stands behind it
   setup: {
     eye: [SHOW.x + 14, SHOW.y - 46, 22],

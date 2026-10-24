@@ -55,13 +55,17 @@ import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenu
 import {
   bbPhotoDetail,
   buildPhotoVenue,
+  disposePhotoSource,
   loadPhotoBackdrop,
-  photoBackdropOf,
+  loadPhotoLayers,
   photoBlocked,
   photoCameraRoom,
   photoRoomBox,
+  photoTexturesOf,
   setPhotoVenueLighting,
   venueAssetUrl,
+  type BbPhotoDetail,
+  type PhotoLayerAssets,
 } from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
@@ -299,10 +303,10 @@ class BiobuzzScene implements GameScene {
    * the drag. */
   private venue: THREE.Group | null = null;
   private venueKey = '';
-  /** the PHOTOGRAPHED venue's backdrop (`renderPhotoVenue.ts`) while one is live — a uniform, so
-   * `disposeObject3D` cannot see it: freed here, with the venue it belongs to (one 44.7 MB 4k
-   * texture per live venue, never two). */
-  private photoTex: THREE.Texture | null = null;
+  /** the PHOTOGRAPHED venue's textures (`renderPhotoVenue.ts`) while one is live: the box's one
+   * backdrop, or the layered room's two — uniforms, so `disposeObject3D` cannot see them: freed
+   * here, with the venue they belong to (one venue's set at a time, never two). */
+  private photoTex: THREE.Texture[] = [];
   /** the backdrop fetch in flight (settled either way), and the environment's — what
    * `assetsSettled` waits on, so an export does not start on the generated room and cut to the
    * photograph a second in */
@@ -621,7 +625,7 @@ class BiobuzzScene implements GameScene {
       // loads, and keeps it if the backdrop cannot load
       this.swapVenue(buildBiobuzzVenue(def.venue, detail), def);
       this.venueKey = key;
-      if (def.photo && photo) this.loadPhoto(def, photo === 'hi' ? def.photo.backdrop : def.photo.backdropLow, key);
+      if (def.photo && photo) this.loadPhoto(def, photo, key);
     }
     // a photographed room is as big as it was, so the orbit and free cameras stay inside it from
     // the moment it is picked (not when it lands, which would jump a zoomed-out camera in), and
@@ -652,9 +656,9 @@ class BiobuzzScene implements GameScene {
       this.scene.remove(old);
       disposeObject3D(old);
     }
-    const tex = photoBackdropOf(next);
-    if (this.photoTex && this.photoTex !== tex) this.photoTex.dispose();
-    this.photoTex = tex;
+    const texs = photoTexturesOf(next);
+    for (const t of this.photoTex) if (!texs.includes(t)) t.dispose();
+    this.photoTex = texs;
     this.venue = next;
     this.withSurfaces('could not be applied', (sf) => sf.applyVenue(next, def));
     this.probeDirty = true;
@@ -668,20 +672,34 @@ class BiobuzzScene implements GameScene {
   }
 
   /**
-   * FETCH a photographed venue's backdrop and swap it in when it lands — if the scene still wants
-   * that same venue (`key`). Fire-and-forget like `env.apply`; a failure keeps the procedural venue
+   * FETCH a photographed venue and swap it in when it lands — if the scene still wants that same
+   * venue (`key`). The layered room first (`loadPhotoLayers`); if its files fail, the backdrop on
+   * the box. Fire-and-forget like `env.apply`; a failure of both keeps the procedural venue
    * standing, says so once, and is remembered (`photoBlocked`) so a scene build does not ask again.
    */
-  private loadPhoto(def: EnvironmentDef, path: string, key: string): void {
-    if (photoBlocked(venueAssetUrl(path))) return;
+  private loadPhoto(def: EnvironmentDef, detail: BbPhotoDetail, key: string): void {
+    const p = def.photo!;
+    const path = detail === 'hi' ? p.backdrop : p.backdropLow;
     const aniso = Math.min(this.settings.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
-    this.photoLoading = loadPhotoBackdrop(path, aniso)
-      .then((tex) => {
+    const layered = !!p.layers && !photoBlocked(venueAssetUrl(p.layers.mesh));
+    if (!layered && photoBlocked(venueAssetUrl(path))) return;
+    const box = (): Promise<THREE.Texture> => {
+      if (photoBlocked(venueAssetUrl(path))) return Promise.reject(new Error(`${path}: blocked after repeated failures`));
+      return loadPhotoBackdrop(path, aniso);
+    };
+    const wanted: Promise<THREE.Texture | PhotoLayerAssets> = layered
+      ? loadPhotoLayers(p, detail, aniso).catch((err: unknown) => {
+          console.warn(`BIOBUZZ 3D: the ${def.name} room layers failed to load; drawing its photograph on the box.`, err);
+          return box();
+        })
+      : box();
+    this.photoLoading = wanted
+      .then((src) => {
         if (this.disposed || this.venueKey !== key) {
-          tex.dispose();
+          disposePhotoSource(src);
           return;
         }
-        this.swapVenue(buildPhotoVenue(def, tex, this.sun, this.settings.envLighting), def);
+        this.swapVenue(buildPhotoVenue(def, src, this.sun, this.settings.envLighting), def);
         this.tuneMaterials();
         this.renderer.shadowMap.needsUpdate = true;
       })
@@ -1241,7 +1259,7 @@ class BiobuzzScene implements GameScene {
       const hidden = this.probeHidden();
       const def = environmentDefFor(this.settings.environment);
       // a live PHOTOGRAPHED venue is projected against its own room box, not the procedural one
-      const room = this.photoTex && def.photo ? photoRoomBox(def.photo) : undefined;
+      const room = this.photoTex.length > 0 && def.photo ? photoRoomBox(def.photo) : undefined;
       this.withSurfaces('failed while capturing reflections', (sf) => {
         sf.recapture(this.renderer, this.scene, hidden, def, room);
       });
@@ -1458,8 +1476,8 @@ class BiobuzzScene implements GameScene {
         /* teardown carries on: a leak beats a scene that cannot be disposed */
       }
     }
-    this.photoTex?.dispose();
-    this.photoTex = null;
+    for (const t of this.photoTex) t.dispose();
+    this.photoTex = [];
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();

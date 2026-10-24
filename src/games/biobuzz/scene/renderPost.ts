@@ -105,6 +105,8 @@ const AO_CLIP_Z_MAX_IN = 90;
  * ceiling and sees the field through it; the G-buffer drew the ceiling OVER the field, the clip
  * box then discarded every pixel as out of range, and AO silently did nothing at full cost. The
  * venue is outside the clip box anyway, so leaving it out of the G-buffer changes nothing else.
+ * A mesh flagged `userData.aoExclude` is left out the same way: the photographed venue's furniture
+ * (`renderPhotoVenue.ts`), which is `DoubleSide` so it shows from behind as well.
  *
  * ⚠️ `_overrideVisibility` is three's PRIVATE name (0.186; the bundled `.d.ts` still calls it
  * `overrideVisibility`). The constructor checks the base still has it, and warns once if an
@@ -140,7 +142,7 @@ class FieldGtaoPass extends GTAOPass {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      if (mats.some((m) => m.depthWrite === false || m.visible === false || m.side === THREE.BackSide)) {
+      if (mesh.userData.aoExclude === true || mats.some((m) => m.depthWrite === false || m.visible === false || m.side === THREE.BackSide)) {
         o.visible = false;
         cache.push(o);
       }

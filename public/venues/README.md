@@ -28,3 +28,11 @@ Contributors page (built from `src/games/biobuzz/graphics/environments.ts`) and 
 | quad | [school_quad](https://polyhaven.com/a/school_quad) (https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/school_quad_4k.hdr) | `ddecfc04a5f94a3a6834883fe47492e0` | Dimitrios Savva (Photography), Jarod Guest (Processing) | 0 | 1.1 | 0.9 | — | 1436898 | 436626 | 449016 |
 
 Sizes are bytes.
+
+## The layered room
+
+`<id>-bg-4k.webp`, `<id>-bg-2k.webp` (the backdrop with its furniture inpainted out),
+`<id>-fg-4k.webp`, `<id>-fg-2k.webp` (the original backdrop, the furniture's rows only) and
+`<id>-room.glb` (the room and furniture meshes) are derived from the backdrops above by the
+pipeline in `scripts/venues/README.md` (MoGe-2 depth, OneFormer segmentation, LaMa inpainting;
+MIT, MIT and Apache-2.0). Rerun it after this script.

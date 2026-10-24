@@ -397,12 +397,13 @@ rulings below are theirs, not defaults.
   column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
   hand-tuned `POSES`/`SHOW` constants in `menuStagePoses.ts` (DOM-free, so the BIOBUZZ RENDER lane
   reads them); the showcase spot is on open floor, clear of the hive's legs.
-- ⚠️ **HOME'S EYE IS AT THE PANORAMA'S LENS HEIGHT (62 in), NOT A DRONE SHOT** (2026-10-21). A
-  photographed venue is exact only from its lens (`renderPhotoVenue.ts`); anything in the photograph
-  that is not floor or wall is drawn flat on the floor, and an eye above the lens sees it from above.
-  The first Home eye stood 150 in up: the school hall's seats, the hangar's clutter and the quad's
-  canopy posts lay across the floor as streaks, and at 85 in the seats already stretch. The RENDER
-  lane holds the Home eye within 2 in of every venue's lens and both eyes inside every room.
+- ⚠️ **HOME'S HIGH SHOT NEEDS THE LAYERED ROOMS** (2026-10-24). Drawn on its box, a photographed
+  venue lays everything that is not floor or wall flat across the floor when seen from above the
+  lens: from Home's eye, 150 in up, the school hall's seats, the hangar's clutter and the quad's
+  canopy posts were streaks (owner: "distorted real 3d backgrounds", 2026-10-21). Every
+  photographed venue is now drawn as its layered room (`renderPhotoVenue.ts`), which draws nothing
+  flat, so Home keeps the high corner shot. The RENDER lane holds both: no photographed row without
+  layers, and both eyes inside every room.
 - ⚠️ **A PHONE'S HOME IS NOT ON THE STAGE, AND IT FITS AN iPHONE SE IN SAFARI WITH NO SCROLL**
   (owner, 2026-10-18: "restore that page … to the original one", alpha's; then "fit without needing
   to scroll for any phone"). Below 720px `App.tsx` mounts no `MenuStage` for Home and passes no
