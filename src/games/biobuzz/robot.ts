@@ -81,7 +81,7 @@ import {
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
 } from './config';
-import { bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
+import { bbAutoSorts, bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
 import { approach } from '../../math';
 import { EDGE_ANGLE } from './mounts';
 import {
@@ -334,9 +334,12 @@ export interface BbIntakePull {
 export interface BbIntakeAct {
   pull: BbIntakePull[];
   take: Artifact[];
+  /** the index into `bbMouths(spec)` each `take` came in by, in the same order. A sorter throws
+   * an opponent NECTAR back out of the mouth it entered (`nectarReject.ts`). */
+  mouth: number[];
 }
 
-const NO_ACT: BbIntakeAct = { pull: [], take: [] };
+const NO_ACT: BbIntakeAct = { pull: [], take: [], mouth: [] };
 
 /**
  * THE INTAKE, AS A ROLLER RATHER THAN AS A TRIGGER RECT — the ONE implementation, called by
@@ -418,6 +421,13 @@ export interface BbIntakeOpts {
    * everything else is — it does not get a shorter transit for starting further out.
    */
   extraReach?: number;
+  /**
+   * THE ROBOT'S OWN STATE ON TOP OF ITS HARDWARE — `nectarReject.ts`'s `bbSorterTakes`: a `bar`
+   * sorter's bar down keeps NECTAR out, and a reject the sorter has just thrown out is ignored
+   * for `BB_SORT_IGNORE_S`. A filter rather than an import because `nectarReject.ts` reads this file's
+   * mouth geometry and an import back would be a cycle. Absent takes everything the spec accepts.
+   */
+  takes?: (b: Artifact) => boolean;
 }
 
 export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}): BbIntakeAct {
@@ -425,6 +435,10 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
   const atRoller = opts.seat === 'footprint';
   const dt = opts.dt ?? SIM_DT;
   const extraReach = opts.extraReach ?? 0;
+  const takes = opts.takes;
+  // the opponent's NECTAR is taken from `SIM_PATCH` 10 (`bbIntakeAccepts`); a replay recorded
+  // before it refuses it the way that build did
+  const opponentNectar = simPatchAtLeast(world, 10);
   const cap = bbHopperCap(r.spec);
   const room = cap - r.hopper.length;
   // A FULL HOPPER DOES NOT PULL. The element is left to the solve and the chassis pushes it,
@@ -444,6 +458,7 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
     half: number;
     seated: boolean;
     period: number;
+    mouth: number;
   }
   const cands: Cand[] = [];
   const pull: BbIntakePull[] = [];
@@ -454,7 +469,8 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
     // too high off the tiles for a sweeper to reach. A 2D ground element is always at z = 0,
     // so this only ever bites in 3D.
     if (b.z > BB3_INTAKE_Z) continue;
-    if (!bbIntakeAccepts(r.spec, r.alliance, b.color)) continue;
+    if (!bbIntakeAccepts(r.spec, r.alliance, b.color, opponentNectar)) continue;
+    if (takes && !takes(b)) continue;
     const er = b.r ?? BB_POLLEN_R;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
     const vLocal = rot(b.vel, -r.heading);
@@ -550,30 +566,32 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
         (1 + BB_INTAKE_CLOSE_BONUS * closing);
       const intakeK = r.spec.imported?.tune?.intakeTime;
       const period = intakeK !== undefined ? period0 * intakeK : period0;
-      cands.push({ ball: b, v, half: g.half, seated, period });
+      cands.push({ ball: b, v, half: g.half, seated, period, mouth: i });
       break; // an element is in at most one mouth: opposite edges cannot both hold it
     }
   }
 
   const seated = cands.filter((c) => c.seated);
-  if (seated.length === 0) return { pull, take: [] };
+  if (seated.length === 0) return { pull, take: [], mouth: [] };
   // most central first, id as the deterministic tie-break — the same ordering rule DECODE's
   // `updateIntake` sorts its candidates by.
   seated.sort((a, b) => Math.abs(a.v) - Math.abs(b.v) || a.ball.id - b.ball.id);
-  if (world.time - r.lastIntakeAt < seated[0].period) return { pull, take: [] };
+  if (world.time - r.lastIntakeAt < seated[0].period) return { pull, take: [], mouth: [] };
 
   const lanes = Math.max(1, Math.floor((2 * seated[0].half) / BB_INTAKE_LANE_W));
   const laneW = (2 * seated[0].half) / lanes;
   const used = new Set<number>();
   const take: Artifact[] = [];
+  const mouth: number[] = [];
   for (const c of seated) {
     if (take.length >= Math.min(room, lanes)) break;
     const lane = clamp(Math.floor((c.v + c.half) / laneW), 0, lanes - 1);
     if (used.has(lane)) continue; // two elements in one lane queue; they do not both fit
     used.add(lane);
     take.push(c.ball);
+    mouth.push(c.mouth);
   }
-  return { pull, take };
+  return { pull, take, mouth };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -900,8 +918,8 @@ export interface BbShot {
  * FIRE, if this mechanism wants to this tick.
  *
  *  • turret      — one element every `BB_FIRE_INTERVAL`, from the turret ring, along
- *                  `turretHeading`. A SINGLE turret only ever holds POLLEN (its intake refuses
- *                  NECTAR — `bbIntakeAccepts`).
+ *                  `turretHeading`. POLLEN, and NECTAR too on a POLLEN + NECTAR intake
+ *                  (`bbIntakeFeedOf`, owner 2026-10-24), each from the same ring.
  *  • twinturret  — TWO INDIVIDUAL turrets, each with its OWN feed off the shared hopper and
  *                  BOTH FIRING ON THE SAME BEAT. A POLLEN leaves turret 0 (`mount`,
  *                  `turretHeading`, `bbTurretPitch`) and a NECTAR leaves turret 1 (`mount2`,
@@ -950,9 +968,17 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
    * for turret 0 and the top NECTAR for turret 1 — two feeds off one hopper, which is what lets
    * both fire on one beat.
    */
+  /**
+   * ...AND NEVER AN OPPONENT NECTAR THE SORTER IS THROWING BACK (`nectarReject.ts`). On a `reverse` or
+   * `passthrough` build that element is in the reject path, not the feed, so the launcher fires
+   * past it. A build with no sorter launches whatever is on top, the opponent's NECTAR included:
+   * shooting it away is one of the two ways its driver has to get rid of it.
+   */
+  const sorts = bbAutoSorts(r.spec);
   const feed = (which: 0 | 1): (typeof r.hopper)[number] | undefined => {
     for (let i = r.hopper.length - 1; i >= 0; i--) {
       const c = r.hopper[i];
+      if (sorts && isNectarColour(c) && c !== r.alliance) continue;
       if (bbTurretFor(launcher, isNectarColour(c)) === which) return c;
     }
     return undefined;
@@ -982,6 +1008,9 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     // RE-ARM, and the aim gate. Respecting `fireReadyAt` is what stops a held fire button
     // re-dumping on every capture.
     if (r.fireReadyAt > world.time) return;
+    // A BUCKET HEAVES EVERYTHING IN IT, so while the sorter still has an opponent NECTAR inside
+    // (at most `BB_SORT_PASS_S`) the dump waits for it to leave rather than throwing it too.
+    if (world.biobuzz?.sorter?.[r.id]?.some((e) => !e.out)) return;
     const target = shot?.target ?? null;
     // ⚠️ THE CATAPULT'S BUCKET HOLDS `BB_DUMP_BUCKET`; the CONVERGING 2D dump takes the whole
     // hopper, as it always has (`BbShot.cluster`). A build that stores more than the bucket

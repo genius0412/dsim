@@ -15,7 +15,7 @@ import {
 } from './config';
 import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
 import { bbSideRollerOffsets } from './importMech';
-import { bbCarriesNectar, bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbCarriesNectar, bbIntakeKindOf, bbLiftOf } from './mechs';
 import { bbIndexElements } from './spawn';
 import { capturePollen } from './elements';
 import { bbParkedNow } from './score';
@@ -143,14 +143,14 @@ function giveNectar(world: World, r: RobotState): Artifact | null {
  * CAN THIS BUILD PLACE A NECTAR IN A FLOWER AT ALL? Two pieces of hardware, and both are
  * required:
  *  · a BOX TUBE — `placeInFlower` refuses at its first line without one; and
- *  · a launcher that CARRIES NECTAR (`bbCarriesNectar`: a single turret feeds POLLEN only), or
+ *  · an intake that CARRIES NECTAR (`bbCarriesNectar`: a POLLEN-only intake refuses one), or
  *    the intake refuses the NECTAR the step would have to hand it.
  *
  * It is ONE predicate used by both FLOWER steps, negated for the second, so the two are exactly
  * complementary: every build is offered exactly one of them, and no build is offered neither.
  */
 function canPlaceNectar(spec: RobotSpec): boolean {
-  return !!bbLiftOf(spec) && bbCarriesNectar(bbLauncherOf(spec, 0));
+  return !!bbLiftOf(spec) && bbCarriesNectar(spec);
 }
 
 /** move `n` GROUND POLLEN into the alliance's up CELL, on top of whatever is staged there. */

@@ -529,11 +529,22 @@ function preloads(world: World, startId: number): Artifact[] {
         out.push(ball);
         world.balls.push(ball);
         if (capturePollen(world, r, ball)) continue;
-        // hopper full: park it on the tiles against the front face, spread across the mouth
-        const lx = e.front + BB_POLLEN_R;
+        // hopper full: park it on the tiles against the front face, spread across the mouth —
+        // or against the REAR face when the front one would put it over the centre line. TU06
+        // (§10.3.4): a pre-load on the tiles is "fully contained on its own ALLIANCE side of the
+        // FIELD" (red plays x < 0). A start hard on the line facing across has neither face clear,
+        // and the element is moved onto its own side, still against the line.
         const ly = (k - (PRELOAD_PER_ROBOT - 1) / 2) * POLLEN_D;
-        const w = rot({ x: lx, y: ly }, r.heading);
-        ball.pos = { x: r.pos.x + w.x, y: r.pos.y + w.y };
+        const own = a === 'red' ? -1 : 1;
+        const at = (lx: number): Vec2 => {
+          const w = rot({ x: lx, y: ly }, r.heading);
+          return { x: r.pos.x + w.x, y: r.pos.y + w.y };
+        };
+        const ownSide = (p: Vec2): boolean => own * p.x >= BB_POLLEN_R;
+        let p = at(e.front + BB_POLLEN_R);
+        if (!ownSide(p)) p = at(-(e.rear + BB_POLLEN_R));
+        if (!ownSide(p)) p = { x: own * BB_POLLEN_R, y: p.y };
+        ball.pos = p;
       }
     }
   }

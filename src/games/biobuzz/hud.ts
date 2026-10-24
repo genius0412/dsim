@@ -157,6 +157,13 @@ export interface BiobuzzFieldHud {
    * match tally carries the count.
    */
   controlMajor: Record<Alliance, boolean>;
+  /**
+   * G408 WARNINGS this alliance has drawn this MATCH — CONTROL of the OPPONENT's NECTAR, one per
+   * instance (`penalties.ts`, `bb.g408`). A count, for the same reason `warnings` is one. The
+   * second instance's YELLOW CARD needs nothing here: it is the shared card, and the shared
+   * chrome already shows a robot's card.
+   */
+  opponentNectar: Record<Alliance, number>;
 }
 
 /** an empty slice — the shape a pre-BIOBUZZ snapshot gets, with every count at 0. */
@@ -209,7 +216,18 @@ function emptyHud(): BiobuzzFieldHud {
     pins: [],
     warnings: { red: 0, blue: 0 },
     controlMajor: { red: false, blue: false },
+    opponentNectar: { red: 0, blue: 0 },
   };
+}
+
+/** G408 warnings per ALLIANCE, summed off `bb.g408`. Absent on every world that never drew one. */
+function opponentNectarWarnings(world: World, bb: NonNullable<World['biobuzz']>): Record<Alliance, number> {
+  const out: Record<Alliance, number> = { red: 0, blue: 0 };
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    out[r.alliance] += bb.g408?.[r.id] ?? 0;
+  }
+  return out;
 }
 
 /**
@@ -331,5 +349,6 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
   out.pins = livePins(world);
   out.warnings = controlWarnings(world);
   out.controlMajor = controlMajors(world, bb);
+  out.opponentNectar = opponentNectarWarnings(world, bb);
   return out;
 }

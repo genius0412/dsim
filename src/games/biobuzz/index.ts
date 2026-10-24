@@ -10,6 +10,7 @@ import {
   BiobuzzScoreBar,
   biobuzzResultsRows,
 } from './HudSlots';
+import { BB_FLOWER_UNLOCK_S } from './config';
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
@@ -39,6 +40,8 @@ import { BIOBUZZ_TUTORIAL } from './tutorial';
  *    filled (2026-09-21) — a different slot in a different coordinate system, over a live scene.
  */
 export const BIOBUZZ_MODULE: GameModule = {
+  // Table 9-1: the 1:00 "Chime", FLOWER Ownership Unlocked — the moment G410 lifts
+  teleopChimes: [BB_FLOWER_UNLOCK_S],
   ...BIOBUZZ_SIM,
   // ---- renderers. The scene gallery draws through these same three functions, which is what
   // makes a gallery cell evidence about the real game screen rather than about a second

@@ -96,6 +96,12 @@ export interface GoldenScene {
   every: number;
   /** the driver; defaults to `scriptedCommand` (a game adds its own buttons by wrapping it) */
   command?: (id: number, tick: number) => RobotCommand;
+  /**
+   * the `SIM_PATCH` to run the scene under, as a replay recorded then would (`World.simPatch`).
+   * The stamp is left OUT of the hash: it is the replay's label, not state the sim wrote, so the
+   * scene stamped with the patch a row was recorded at hashes to that row. Absent: live rules.
+   */
+  patch?: number;
 }
 
 /** run a scene: its checkpoint hashes (the last is the tick-`ticks` world) and the final world,
@@ -103,12 +109,13 @@ export interface GoldenScene {
  *  pins nothing */
 export function runGolden(scene: GoldenScene, dt: number): { hashes: string[]; world: World } {
   const w = scene.build();
+  if (scene.patch !== undefined) w.simPatch = scene.patch;
   const out: string[] = [];
   for (let t = 1; t <= scene.ticks; t++) {
     const cmds = new Map<number, RobotCommand>();
     for (const r of w.robots) cmds.set(r.id, (scene.command ?? scriptedCommand)(r.id, t));
     scene.step(w, dt, cmds);
-    if (t % scene.every === 0) out.push(goldenHash(w));
+    if (t % scene.every === 0) out.push(goldenHash(scene.patch === undefined ? w : { ...w, simPatch: undefined }));
   }
   return { hashes: out, world: w };
 }

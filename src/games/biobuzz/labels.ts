@@ -16,13 +16,18 @@ import {
   bbIntakeMountOf,
 } from './mounts';
 import {
+  type BbIntakeFeed,
   type BbIntakeKind,
   type BbLauncherSpec,
+  type BbNectarReject,
   type BbLiftKind,
   type BbLiftSpec,
+  bbDefaultFeed,
+  bbIntakeFeedOf,
   bbIsTurreted,
   bbLauncherOf,
   bbLiftOf,
+  bbNectarRejectOf,
 } from './mechs';
 
 /**
@@ -47,15 +52,17 @@ export const BB_MODE_LABELS: Record<BbScoreMode, string> = {
 /** the one-line TRADEOFF each launcher is actually picked for. A label says what it is; a
  * blurb says why you would choose it, which is the only thing a picker really has to convey.
  *
- * What separates the three is WHICH ELEMENTS they can carry (a single turret feeds POLLEN
- * only — `bbCarriesNectar`, `mechs.ts`) and HOW THEY AIM (a turret aims itself, a dumper turns
- * the robot). ⚠️ None of these may sell a launcher on hopper size: the hopper is capped at 4 for
- * every build (owner ruling 2026-09-12), so that difference does not exist. */
+ * What separates them is HOW THEY AIM (a turret aims itself, a dumper and a fixed shooter turn
+ * the robot) and how they release. WHICH ELEMENTS a robot carries is the INTAKE's feed since
+ * 2026-10-24 (`bbIntakeFeedOf`), so no blurb here may say POLLEN only: a single turret fires a
+ * NECTAR the intake took. The double turret is the one launcher that fixes the feed (it has a
+ * NECTAR turret to feed). ⚠️ None of these may sell a launcher on hopper size: the hopper is
+ * capped at 4 for every build (owner ruling 2026-09-12), so that difference does not exist. */
 export const BB_MODE_BLURBS: Record<BbScoreMode, string> = {
-  turret: 'POLLEN only · aims itself',
+  turret: 'Aims itself · fires whatever the intake takes',
   twinturret: 'One POLLEN turret, one NECTAR turret',
-  dumper: 'POLLEN and NECTAR · turn to aim',
-  fixed: 'POLLEN only · turn to aim, one range',
+  dumper: 'Heaves the whole hopper · turn to aim',
+  fixed: 'Turn to aim, one range',
 };
 
 /** the label for a resolved LAUNCHER slot. One function so a picker option, a preset card and a
@@ -120,10 +127,44 @@ export const BB_INTAKE_LABELS: Record<BbIntakeKind, string> = {
  * identically (`mechs.ts`); what differs is whether the hardware can also reach the POLLEN
  * sitting at the bottom of a FLOWER's opening, which the sweeper's roller line never does. */
 export const BB_INTAKE_KIND_BLURBS: Record<BbIntakeKind, string> = {
-  sweeper: 'Ground POLLEN only · can’t reach into a FLOWER’s opening',
+  sweeper: 'From the ground only · can’t reach into a FLOWER’s opening',
   siderollers: 'Reaches into a FLOWER’s opening and pulls the bottom POLLEN out',
   ramp: 'Deploy to wedge under a FLOWER’s bottom POLLEN · folded, it takes nothing',
 };
+
+/** what the intake is sized for (`BbIntakeFeed`, `mechs.ts`) */
+export const BB_FEED_LABELS: Record<BbIntakeFeed, string> = {
+  pollen: 'POLLEN only',
+  mixed: 'POLLEN + NECTAR',
+};
+
+/** ...and the tradeoff. A roller cannot see colour, so a NECTAR intake takes the opponent's too. */
+export const BB_FEED_BLURBS: Record<BbIntakeFeed, string> = {
+  pollen: 'No NECTAR fits, so nothing to sort',
+  mixed: 'Takes the opponent’s NECTAR too · holding one is G408',
+};
+
+/** what a POLLEN + NECTAR intake does with the opponent's NECTAR (`BbNectarReject`, `mechs.ts`) */
+export const BB_REJECT_LABELS: Record<BbNectarReject, string> = {
+  none: 'No sorter',
+  reverse: 'Auto-reverse',
+  passthrough: 'Pass-through',
+  bar: 'NECTAR bar',
+};
+
+/** the blurb for a sorter on this intake. The bar's depends on the intake: a ramp's IS the ramp. */
+export function bbRejectBlurb(k: BbNectarReject, intake: BbIntakeKind): string {
+  switch (k) {
+    case 'none':
+      return 'Reverse the intake yourself to spit it out';
+    case 'reverse':
+      return 'Sees it, reverses, spits it back out · still G408';
+    case 'passthrough':
+      return 'Routes it through and back out · never stops · still G408';
+    case 'bar':
+      return intake === 'ramp' ? 'Deploy the ramp to keep every NECTAR out' : 'Drop the bar to keep every NECTAR out';
+  }
+}
 
 /** MOUNT labels — kept SHORT, because they sit in a 4-up button grid. The buttons carry no
  * blurb (owner, 2026-09-24). */
@@ -174,6 +215,13 @@ export function bbConfigSummary(spec: RobotSpec): string {
     `${bbLauncherMountLabel(launcher)} launcher`,
   ];
   if (lift) parts.push(`${bbLiftKindLabel(lift.kind)} · ${BB_MOUNT_POS_LABELS[lift.mount]}`);
+  // THE FEED when it is not the one the launcher implies (a single turret built POLLEN + NECTAR, a
+  // dumper built POLLEN-only), and a sorter whenever there is one. A build that is neither says
+  // nothing new, so every line written before the feed was a choice reads as it always did.
+  const feed = bbIntakeFeedOf(spec);
+  if (feed !== bbDefaultFeed(launcher)) parts.push(BB_FEED_LABELS[feed]);
+  const reject = bbNectarRejectOf(spec);
+  if (reject !== 'none') parts.push(BB_REJECT_LABELS[reject]);
   // POLLEN, never "balls" — the user-visible word for this game's scoring element.
   parts.push(`${spec.ballStorage ?? 0} pollen`);
   return parts.join(' · ');

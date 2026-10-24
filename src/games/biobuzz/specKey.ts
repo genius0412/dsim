@@ -1,7 +1,7 @@
 import type { RobotSpec } from '../../types';
 import { clampCosmetics } from '../../cosmetics';
 import { bbDeployedHeightIn } from './config';
-import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
 
 /**
  * A BUILD'S GEOMETRY IDENTITY — the fields that change what a BIOBUZZ robot LOOKS like in 3D,
@@ -65,7 +65,10 @@ export function bbSpecKey(spec: RobotSpec): string {
     launcher.mount2 ?? '',
     lift?.mount ?? '',
   ].join('|');
-  return spec.imported ? `${key}|${importedDigest(spec)}` : key;
+  // a NECTAR BAR is hardware on the mouth (`buildIntake`); appended only when there is one, so
+  // every other build's key is the bytes it always was
+  const bar = bbIntakeKindOf(spec) !== 'ramp' && bbNectarRejectOf(spec) === 'bar' ? '|bar' : '';
+  return spec.imported ? `${key}${bar}|${importedDigest(spec)}` : `${key}${bar}`;
 }
 
 /**

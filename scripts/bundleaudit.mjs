@@ -484,7 +484,11 @@ const BASELINE = {
   // and the pace line adds +4.17 — the score-bar tag, the Pace setting, the replay viewer's Use as
   // pace, `usePace` and the resolver/curve store it calls, and the live curve solo practice records.
   // The re-simulation itself is the lazy `paceWorker` route, not main.
-  main: { gzip: 1034.49 * 1000 },
+  // 2026-10-24: 1034.49 -> 1055.46, RAISED on purpose and measured: alpha's own base (2c676c1a)
+  // already measures 1052.63 (+18.14 of drift since the last raise, inside the 2% tolerance), and
+  // the opponent-NECTAR work adds +2.83 — the intake feed and sorter vocabulary, `nectarReject.ts`,
+  // G408, the builder's two new pickers, the NECTAR bar sprite and the REV touch button.
+  main: { gzip: 1055.46 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.

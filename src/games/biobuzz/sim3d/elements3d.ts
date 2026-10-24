@@ -1,5 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
 import { BB_HOOD_DEFAULT_DEG, BB_RAMP_EMBED_DEPTH, bbHeightNow, bbRampDeployS } from '../config';
+import { bbBarStep, bbOnCapture, bbSorterTakes, bbSorterTick } from '../nectarReject';
 import { capturePollen } from '../elements';
 import {
   bbAimTarget,
@@ -108,10 +109,18 @@ export function elements3dCapture(
   for (const rob of robots) {
     if (rob.passive) continue;
     const cmd = cmds.get(rob.id);
+    // the sorter and REVERSE first, exactly as 2D (`play.ts`'s `intakeTick`)
+    if (bbSorterTick(world, rob, cmd, enabled)) continue;
     if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) continue;
-    const act = bbIntakeAct(world, rob, { lowFlight: true, extraReach: bbIntakeExtraReach(rob, world.time) });
+    const act = bbIntakeAct(world, rob, {
+      lowFlight: true,
+      extraReach: bbIntakeExtraReach(rob, world.time),
+      takes: (b) => bbSorterTakes(world, rob, b),
+    });
     for (const p of act.pull) p.ball.vel = p.vel;
-    for (const b of act.take) capturePollen(world, rob, b);
+    act.take.forEach((b, k) => {
+      if (capturePollen(world, rob, b)) bbOnCapture(world, rob, b, act.mouth[k]);
+    });
   }
 }
 
@@ -213,6 +222,7 @@ export function elements3dAimAndLaunch(
     // THE RAMP TOGGLE — same place the 2D pipeline steps it (`play.ts` stage 5b), alongside the
     // turret slew just below, with the same `enabled` gate driver control runs under.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
+    bbBarStep(rob, cmds.get(rob.id), enabled, world.time);
     // THE SWING GUARD, right after the toggle — see `bbRampSwingStep3d`'s own header.
     bbRampSwingStep3d(world, rob);
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);

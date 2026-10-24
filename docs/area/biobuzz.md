@@ -2964,3 +2964,60 @@ shrink every saved 15 × 17 build of that shape. Now the length range is the uni
 range is the widest one any rectangle holding that length allows; `coerceBiobuzzSpec` clamps
 length first and then reads width off it. The HOPPER slider is still 1–4 for every build
 (`BB_STORAGE_MAX`, owner ruling).
+
+# THE OPPONENT'S NECTAR, AND TEAM UPDATES THROUGH TU06 — 2026-10-24 (`SIM_PATCH` 10)
+
+The sim was built on Competition Manual V1. Everything TU01–TU06 changed in the game sections
+(a word diff of V1 against the TU06 PDF) and what the sim does about each:
+
+| change | sim |
+|---|---|
+| G408 note: REPEATED CONTROL of the opponent's NECTAR is likely STRATEGIC "even if the ROBOT has a sorting mechanism that automatically discards opponent NECTAR" | modelled, below |
+| G407 note: the same for CONTROL of 5+ with a "keep and discard the rest" sorter | nothing to change: a full hopper never pulls (`bbIntakeAct`), so no intake takes a fifth to sort |
+| G402 examples: (A) CONTROLLING elements on the opposing side, (B) contacting an opposing ROBOT on its side | (A) is new: `bbOnCapture` bills a MAJOR for an element taken from wholly across the line in AUTO. (B) was already the contact rule |
+| Table 9-1: the 1:00 FLOWER-unlock cue is a "Chime" (V1: TBD) | `GameModule.teleopChimes`, `MatchAudio.sfxChime` |
+| §10.3.4: a pre-load on the TILES is "fully contained on its own ALLIANCE side" | `spawn.ts`'s overflow pre-load tries the front face, then the rear, then the line |
+| G426: one NECTAR per TIP, re-entry of NECTAR that left the FIELD, no need to enter at once | already true: the human player is a button, and nothing leaves the field |
+| G419 (exposed wiring, a delicate intake), G425's penalty owner, the violation-table rewording, Section 12 tables | not modelled (no damage, no drive-team bodies) or wording only |
+| Table 10-2/10-3 | layout only; every number unchanged. `manual.ts` still cites TU03 for the RP table, which is right: the numbers have not moved |
+
+**A ROLLER CANNOT SEE COLOUR.** Before patch 10 every intake refused the opponent's NECTAR at the
+roller, which no hardware can do. Now:
+
+- **The intake's FEED is its own choice** (`BbIntakeSpec.feed`, `bbIntakeFeedOf`): `pollen` (no
+  NECTAR fits) or `mixed`. It used to follow the launcher (`bbCarriesNectar(launcher)`); the owner
+  ruled a single turret can fire NECTAR too, so the feed is picked in the builder and
+  `bbCarriesNectar` takes the spec. An absent feed is the launcher's old one (`bbDefaultFeed`:
+  double turret and dumper mixed, single turret and fixed shooter POLLEN only), and the coercer
+  writes `feed` only when it differs, so every old spec coerces to its old bytes. A double turret is
+  always mixed.
+- **A mixed intake takes EITHER alliance's NECTAR** (`bbIntakeAccepts(…, opponentNectar)`), from
+  patch 10. Replays stamped below 10 pass `false` and refuse it, and the golden lane re-simulates
+  the 2v2 scene at patch 9 onto the row it had (`'biobuzz 2v2 (2d) @ patch 9'`).
+- **G408** (`penalties.ts`): each instance of HOLDING one is a VERBAL WARNING (edge per
+  robot × element), the second this match is STRATEGIC and draws the shared `awardCard` YELLOW, once
+  per match (`bb.held[id].g408card`). Herding is not counted. The HUD pins `G408 OPPONENT NECTAR`
+  for 3 s per instance (`bb.g408`).
+- **Getting rid of it** (`BbNectarReject`, `nectarReject.ts`), picked in the builder for a mixed
+  intake: `none` (the driver reverses or launches it), `reverse` (sensor, `BB_SORT_DETECT_S`, then
+  the intake runs backwards `BB_SORT_REVERSE_S` and takes nothing), `passthrough` (out of the mouth
+  it came in by after `BB_SORT_PASS_S`, intake never stops), `bar` (down, no NECTAR enters at all —
+  the robot's own included — so no G408; on a `ramp` intake the deployed ramp is the bar). An
+  auto-sorted reject is ignored by its own intake for `BB_SORT_IGNORE_S`, or a robot driving
+  forward re-takes it every tick. The launcher feeds past a reject in transit and a dumper waits for
+  it to leave.
+- **REVERSE is a driver control on every build** (`RobotCommand.bbReverse`, protocol bit 4096, key
+  `;`, pad D-DOWN 13, touch REV on a mixed build with no auto-sorter). LIFO, one per
+  `BB_REVERSE_PERIOD_S` off `lastIntakeAt`; it wins over `intake`. Counted as driver input by the
+  room's participation credit.
+- **One writer for held → ground at the mouth**: `bbEject`. 3D needs nothing more: `syncElement`
+  builds the body next tick, as for a side roller's FLOWER release.
+- **The Box Tube places its own alliance's NECTAR only** (`placeInFlower`, both pipelines), which
+  keeps G410's offender the NECTAR's colour.
+- **The AI** targets by `bbIntakeWants` (never the opponent's NECTAR) and, with no sorter, reverses
+  one out at once (`ai/policy.ts`'s `command`).
+- **State**: `bb.sorter`, `bb.sortRev`, `bb.g408`, `RobotState.bbBarOut`/`bbBarAt` — every one
+  absent until used, so a match without them ships what it did.
+
+Not done: the robot importer's editor does not offer the feed or a sorter (an import reads its
+launcher's old feed), and Zenith autos have no reverse button (`AutoButtons`).

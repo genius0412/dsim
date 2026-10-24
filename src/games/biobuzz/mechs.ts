@@ -106,10 +106,60 @@ export interface BbLiftSpec {
 export const BB_INTAKE_KINDS = ['sweeper', 'siderollers', 'ramp'] as const;
 export type BbIntakeKind = (typeof BB_INTAKE_KINDS)[number];
 
+/**
+ * WHAT AN INTAKE IS SIZED FOR — a choice of its own since 2026-10-24 (owner: "intake type
+ * (pollen only vs nectar and pollen) selection needs to be a separate thing"). It used to be a
+ * side effect of the LAUNCHER (`bbCarriesNectar` read the launcher kind: a single turret fed
+ * POLLEN only), and the owner's ruling that a single turret can fire NECTAR too is what split it.
+ *
+ *   `pollen`  the roller gap and the throat are sized for a 2.8-in POLLEN. A 3.6-in NECTAR does
+ *             not fit through, so it is refused — any NECTAR, either colour.
+ *   `mixed`   sized for a NECTAR, which a POLLEN passes too. ⚠️ AN INTAKE CANNOT TELL COLOURS
+ *             APART: a `mixed` intake takes the OPPONENT's NECTAR as readily as its own, and
+ *             holding one is G408 (`penalties.ts`). What the robot does about it is
+ *             `BbNectarReject`. Before `SIM_PATCH` 10 every intake refused the opponent's NECTAR
+ *             outright, which no hardware can do.
+ *
+ * A DOUBLE turret is always `mixed` (it has a NECTAR turret to feed). An ABSENT feed is the one
+ * the launcher implied before the split (`bbDefaultFeed`), so every stored spec takes exactly the
+ * elements it took before.
+ */
+export const BB_INTAKE_FEEDS = ['pollen', 'mixed'] as const;
+export type BbIntakeFeed = (typeof BB_INTAKE_FEEDS)[number];
+
+/**
+ * WHAT A `mixed` INTAKE DOES WITH AN OPPONENT NECTAR (owner, 2026-10-24). TU06's G408 note is the
+ * rule all four live under: "REPEATED instances of a ROBOT CONTROLLING an opponent's NECTAR are
+ * likely to be perceived as STRATEGIC, even if the ROBOT has a sorting mechanism that
+ * automatically discards opponent NECTAR by returning it to approximately its original state." A
+ * sorter that throws it back still CONTROLLED it; only the bar keeps it out.
+ *
+ *   `none`         nothing: it rides in with everything else. The driver reverses the intake
+ *                  (`RobotCommand.bbReverse`) or launches it to get rid of it.
+ *   `reverse`      a colour sensor at the throat. An opponent NECTAR reverses the intake on its
+ *                  own (`BB_SORT_DETECT_S` to see it, `BB_SORT_REVERSE_S` running backwards) and
+ *                  spits it out of the mouth it came in by. Nothing is taken while it reverses.
+ *   `passthrough`  the same sensor, but the element is routed through the intake and drops back
+ *                  out of the mouth it came in by (`BB_SORT_PASS_S` in transit). The rollers never
+ *                  stop, so the rest of the pile keeps coming in.
+ *   `bar`          a deployable bar across the mouth (the `bbRamp` button), low enough that a
+ *                  POLLEN passes under it and a NECTAR does not. Down, it keeps EVERY NECTAR out,
+ *                  the robot's own included. On a `ramp` intake the ramp is the bar: deployed, its
+ *                  crossbar does the same job, so the build carries no second mechanism.
+ *
+ * Meaningful on a `mixed` feed only: a `pollen` intake cannot take a NECTAR to sort.
+ */
+export const BB_NECTAR_REJECTS = ['none', 'reverse', 'passthrough', 'bar'] as const;
+export type BbNectarReject = (typeof BB_NECTAR_REJECTS)[number];
+
 /** THE INTAKE SLOT. Optional on the container: a spec written before archetypes existed reads
- * as the `sweeper`, which is exactly the hardware it was drawn with. */
+ * as the `sweeper`, which is exactly the hardware it was drawn with. `feed` and `reject` are
+ * written only when they differ from what the build implies without them (`coerceBbMech`), so a
+ * spec saved before they existed coerces to the same bytes it always did. */
 export interface BbIntakeSpec {
   kind: BbIntakeKind;
+  feed?: BbIntakeFeed;
+  reject?: BbNectarReject;
 }
 
 /** ALL THREE SLOTS, as they sit on the spec. The launcher is mandatory; the lift may be `null`;
@@ -180,26 +230,68 @@ export function bbIsTurreted(launcher: BbLauncherSpec): boolean {
 }
 
 /**
- * Can this launcher's robot carry NECTAR at all? A SINGLE turret feeds POLLEN only; a DOUBLE
- * turret has a dedicated NECTAR turret, and a DUMPER heaves whatever is in its hopper. The
- * intake (`capturePollen`, `elements.ts`) refuses a NECTAR for a build this says no to.
+ * THE FEED A BUILD HAD BEFORE THE FEED WAS ITS OWN CHOICE — what an absent `feed` reads as. A
+ * DOUBLE turret and a DUMPER took their own NECTAR; a single turret and a FIXED launcher (one
+ * small wheel) fed POLLEN only.
  */
-export function bbCarriesNectar(launcher: BbLauncherSpec): boolean {
-  // a FIXED launcher is one small wheel sized for a POLLEN, like a single turret's
-  return launcher.kind === 'twinturret' || launcher.kind === 'dumper';
+export function bbDefaultFeed(launcher: BbLauncherSpec): BbIntakeFeed {
+  return launcher.kind === 'twinturret' || launcher.kind === 'dumper' ? 'mixed' : 'pollen';
+}
+
+/** THIS BUILD'S INTAKE FEED. A double turret is always `mixed`; an absent or unknown feed is
+ * `bbDefaultFeed`. PURE and safe on a raw spec. */
+export function bbIntakeFeedOf(spec: RobotSpec): BbIntakeFeed {
+  const launcher = bbLauncherOf(spec, 0); // the hood is irrelevant to `kind`, which is all this reads
+  if (launcher.kind === 'twinturret') return 'mixed';
+  const f = spec.bbMech?.intake?.feed;
+  return (BB_INTAKE_FEEDS as readonly string[]).includes(f as string) ? (f as BbIntakeFeed) : bbDefaultFeed(launcher);
+}
+
+/** WHAT THIS BUILD DOES WITH AN OPPONENT NECTAR. Always `none` on a `pollen` feed, which never
+ * takes one. */
+export function bbNectarRejectOf(spec: RobotSpec): BbNectarReject {
+  if (bbIntakeFeedOf(spec) !== 'mixed') return 'none';
+  const k = spec.bbMech?.intake?.reject;
+  return (BB_NECTAR_REJECTS as readonly string[]).includes(k as string) ? (k as BbNectarReject) : 'none';
+}
+
+/** does this build's sorter throw an opponent NECTAR back out by itself (`reverse`, `passthrough`)? */
+export function bbAutoSorts(spec: RobotSpec): boolean {
+  const k = bbNectarRejectOf(spec);
+  return k === 'reverse' || k === 'passthrough';
 }
 
 /**
- * WILL THIS BUILD'S INTAKE TAKE AN ELEMENT OF `color`? — the one predicate `capturePollen` asks.
- *
- * POLLEN (yellow): always. NECTAR (`red`/`blue`): only this robot's OWN alliance's (G408, for
- * every build), and only when its launcher can carry NECTAR at all (`bbCarriesNectar`). PURE
- * over the spec, so the builder and a smoke check can ask it without a world.
+ * Can this robot carry NECTAR at all? Its intake's FEED (`bbIntakeFeedOf`), and nothing about its
+ * launcher any more: a single turret fires a NECTAR from the ring it fires a POLLEN from.
  */
-export function bbIntakeAccepts(spec: RobotSpec, alliance: Alliance, color: string): boolean {
+export function bbCarriesNectar(spec: RobotSpec): boolean {
+  return bbIntakeFeedOf(spec) === 'mixed';
+}
+
+/**
+ * WILL THIS BUILD'S INTAKE TAKE AN ELEMENT OF `color`? — the predicate `capturePollen` and the
+ * roller (`bbIntakeAct`) ask, before the robot's runtime state (the bar, a sorter's ignore list)
+ * is added on top.
+ *
+ * POLLEN (yellow): always. NECTAR (`red`/`blue`): only on a `mixed` feed, and then EITHER colour,
+ * because a roller cannot see one. `opponentNectar` false is the rule before `SIM_PATCH` 10, when
+ * the intake refused the opponent's outright; replays recorded under it pass false. PURE over the
+ * spec, so the builder and a smoke check can ask it without a world.
+ */
+export function bbIntakeAccepts(spec: RobotSpec, alliance: Alliance, color: string, opponentNectar = true): boolean {
   if (color !== 'red' && color !== 'blue') return true;
-  // the hood default is irrelevant to `kind`, which is all this reads
-  return color === alliance && bbCarriesNectar(bbLauncherOf(spec, 0));
+  if (!bbCarriesNectar(spec)) return false;
+  return color === alliance || opponentNectar;
+}
+
+/**
+ * WHAT A DRIVER MEANS TO PICK UP — what this build accepts, minus the opponent's NECTAR. The AI
+ * targets by this (`ai/policy.ts`) and never by `bbIntakeAccepts`, or a `mixed` bot would drive
+ * at the opponent's NECTAR on purpose.
+ */
+export function bbIntakeWants(spec: RobotSpec, alliance: Alliance, color: string): boolean {
+  return bbIntakeAccepts(spec, alliance, color, false);
 }
 
 /** which turret an element leaves from: a DOUBLE turret sends NECTAR out of turret 1 and POLLEN

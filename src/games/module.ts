@@ -41,6 +41,12 @@ import type { TutorialSpec } from '../tutorial/types';
  *   it is not in anybody's way.
  */
 export interface GameModule extends GameSimModule {
+  /**
+   * TELEOP seconds-left marks at which the field plays its CHIME (`MatchAudio.sfxChime`). BIOBUZZ's
+   * Table 9-1 has one, FLOWER Ownership Unlocked at 1:00 ("Chime", TU06; V1 had it as TBD). Absent
+   * ⇒ no chime, which is DECODE and Chain Reaction.
+   */
+  teleopChimes?: readonly number[];
   /** `screenUp` is world-space "up" for z-lift — CR raises the beams into extruded tubes. */
   drawField(ctx: CanvasRenderingContext2D, world: World, screenUp?: Vec2): void;
   /** extra overlays drawn after the field, before robots (DECODE: ramp strips) */

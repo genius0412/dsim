@@ -298,8 +298,12 @@ export const SIM_VERSION = 7;
  *      aim assist's would-land gate (`bbLaunch`), as the team's robot would. Only an auto seat sets
  *      the bit, and no replay before 9 carries it, so 9 only keeps a newer replay honest on an
  *      older client. 2026-10-24, `alpha`.
+ *  10  BIOBUZZ, the opponent's NECTAR: a POLLEN + NECTAR intake takes it like its own, since a roller
+ *      cannot tell colours apart (`bbIntakeAccepts`), and holding one is G408. During AUTO, taking
+ *      an element from the opponent's half is G402 (TU06's first example, `nectarReject.ts`). Before it,
+ *      every intake refused the opponent's NECTAR. 2026-10-24, `alpha`.
  */
-export const SIM_PATCH = 9;
+export const SIM_PATCH = 10;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */
