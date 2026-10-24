@@ -495,7 +495,10 @@ const BASELINE = {
   // 55.75 KB). Only a player HOSTING a LAN room downloads this worker; nobody else pays for it.
   // 2026-10-01: 778.01 -> 797.84 (+19.83), MEASURED: the imported robot's sim and the visuals relay,
   // which a LAN host's Room runs (see the RE-MEASURED entry above). Alpha's own drift was +3.67 of it.
-  hostWorker: { gzip: 797.84 * 1000 },
+  // 2026-10-24: 797.84 -> 841.86 (+44.02), MEASURED: the LAN host's Room imports the auto seat
+  // statically, so it carries the same re-vendored Zenith as the `autos` chunk (+35.27 there; see
+  // that entry), plus alpha's drift since 2026-10-01. Still only a player hosting a LAN room pays it.
+  hostWorker: { gzip: 841.86 * 1000 },
   // 2026-10-07: NEW, MEASURED. `paceWorker-*.js` (see the route table): the server-safe sim and
   // Rapier 2D, the replay player and the curve. The same weight as the LAN host's sim, and like it
   // fetched only by somebody who uses it: a player with a pace on whose curve is not yet stored.
@@ -689,7 +692,14 @@ const BASELINE = {
   // panel (`AutonomousSetup.tsx`, lazy in `SoloSetup`) and the editor popup (`zenithLaunch.ts`,
   // `zenithHost.ts`, behind the client entry `src/ui/zenithEditor.ts`) went lazy. Main is 980.94
   // after it, +0.56 against alpha: the library read, the lobby chip and the HUD line.
-  autos: { gzip: 59.93 * 1000 },
+  // 2026-10-24: 59.93 -> 95.20 (+35.27), MEASURED. The re-vendor of Zenith `main` 3bb573c (auto
+  // format 4) is nearly all of it, and none of it is dead code: Rollup already drops what DSIM does
+  // not reach (marking the three packages `sideEffects: false` built byte-identical chunks). What
+  // DSIM now reaches is Zenith's own checks, which run the BIOBUZZ ledger (hive tips, LEGAL_APPROACH),
+  // the envelope, transfer and strut rules, and `loadAuto`'s parser over the new file kinds. That
+  // is what makes DSIM's findings match Zenith's. The rest is this change's `src/auto` work (shot
+  // patience, findings in the file's frame, the load sentences) and the panel's helpers.
+  autos: { gzip: 95.2 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown

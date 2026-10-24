@@ -8,7 +8,7 @@
  *
  * | name           | on the robot                                  | here                                          |
  * |----------------|-----------------------------------------------|-----------------------------------------------|
- * | `shootAll`     | spin up, launch `count`, settle 250 ms        | hold FIRE until `count` have left the hopper (or it is empty), then settle 250 ms |
+ * | `shootAll`     | spin up, launch `count`, settle 250 ms        | hold FIRE until `count` have left the hopper (or it is empty), then settle 250 ms; nothing leaving for `bbShotPatienceS`, it gives up and the seat says so |
  * | `setIntake`    | set the roller(s), done the same loop         | FORWARD holds INTAKE on until a STOP; REVERSE is a STOP (DSIM has no outtake) |
  * | `launcherIdle` | flywheel to 0                                 | done at once: DSIM's flywheel has no idle state to leave |
  * | `relocalize`   | vision relocalisation                         | done at once: DSIM's belief is the truth       |
@@ -30,14 +30,71 @@ import biobuzzField from '@horizon36596/zenith-season-biobuzz/field/biobuzz.fiel
 import type { AutoButtons, AutoCommand, AutoHost, GameAutoAdapter } from '../../../auto/types';
 import { driveParams } from '../../../sim/drivetrain';
 import type { RobotSpec, RobotState, World } from '../../../types';
+import { FLY_FEED_MIN_FRAC, FLY_RAMP_INERTIA_SLOW, FLY_RAMP_RPM_S, FLY_SHOT_DROP } from '../../../config';
+import { clamp } from '../../../math';
 import { bbFootprint, bbHopperCap, bbRampSwingProgress } from '../robot';
-import { bbIntakeKindOf } from '../mechs';
-import { BB_HALF_X, BB_HALF_Y, BB_RAMP_DEPLOY_S, BB_START_POSES } from '../config';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf } from '../mechs';
+import {
+  BB_DUMP_RELOAD_S,
+  BB_FIRE_INTERVAL,
+  BB_FIXED_FLY_DEFAULT,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HOOD_DEFAULT_DEG,
+  BB_RAMP_DEPLOY_S,
+  BB_START_POSES,
+  BB_TURRET_SLEW,
+} from '../config';
 import { bbImportMouths } from '../importMech';
 import { polyBounds } from '../../../sim/imported';
 
 /** The wait after the last launch, so the last piece has cleared before the robot drives off. */
 const SHOT_SETTLE_S = 0.25;
+
+/** What `bbShotPatienceS` allows on top of the build's own aim and beat. */
+const SHOOT_PATIENCE_S = 1;
+
+/**
+ * HOW LONG `shootAll` WAITS FOR SOMETHING TO LEAVE THE HOPPER before it gives up, from its start
+ * and again after every launch. Aim Assist is on for every robot (`coerceAssists`), so a held FIRE
+ * is released only when the shot would land (`bbLaunch`); from a pose it cannot score from, nothing
+ * ever leaves and the auto used to hold FIRE for the rest of AUTO (StarterBot, 28 in from the cell,
+ * scores from 41 to 46 in). A real robot's `shootAll` launches and moves on, so the host gives up.
+ *
+ * Read off the build, never typed: the aim (a turret's half slew; a chassis-aimed launcher's half
+ * turn, doubled because the aim brakes onto the heading) plus the longest wait between two launches
+ * it is ready for (a fixed wheel's feed and recovery, a turret's beat, a dumper's re-arm), plus
+ * `SHOOT_PATIENCE_S`. Measured 2026-10-24 over the five presets at four poses, 2D and 3D: every
+ * pose that scores launches first within 1.18 s (StarterBot turning half a turn) with no later
+ * gap over 0.30 s; StarterBot's patience is 2.35 s.
+ */
+export function bbShotPatienceS(spec: RobotSpec): number {
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const tune = spec.imported?.tune;
+  let aimS: number;
+  if (bbIsTurreted(launcher)) {
+    const slew = tune?.turretSlew !== undefined ? (tune.turretSlew * Math.PI) / 180 : BB_TURRET_SLEW;
+    aimS = slew > 0 ? Math.PI / slew : 0;
+  } else {
+    const turn = driveParams(spec, false).maxTurn;
+    const rate = tune?.aimTurn !== undefined ? Math.min(turn, (tune.aimTurn * Math.PI) / 180) : turn;
+    aimS = rate > 0 ? (2 * Math.PI) / rate : 0;
+  }
+  let beatS: number;
+  if (launcher.kind === 'fixed') {
+    const f = spec.flywheel;
+    const feed = tune?.shotInterval ?? f?.feedS ?? BB_FIXED_FLY_DEFAULT.feedS;
+    const rate = tune?.spinUp ?? FLY_RAMP_RPM_S * (1 - FLY_RAMP_INERTIA_SLOW * clamp(spec.flywheelInertia ?? 0, 0, 1));
+    const rpm = Math.max(0, ...(f?.rpm ?? BB_FIXED_FLY_DEFAULT.rpm));
+    // a launch takes FLY_SHOT_DROP of the wheel's speed, and the feeder waits for FLY_FEED_MIN_FRAC
+    beatS = feed + (rate > 0 ? Math.max(0, rpm * (FLY_SHOT_DROP - (1 - FLY_FEED_MIN_FRAC))) / rate : 0);
+  } else if (launcher.kind === 'dumper') {
+    beatS = tune?.reload ?? BB_DUMP_RELOAD_S;
+  } else {
+    beatS = tune?.shotInterval ?? BB_FIRE_INTERVAL;
+  }
+  return SHOOT_PATIENCE_S + aimS + beatS;
+}
 
 /**
  * `setRamp` gives up after this long without the ramp reaching the state it asked for, so a press
@@ -47,7 +104,10 @@ const SHOT_SETTLE_S = 0.25;
  */
 const RAMP_GIVE_UP_S = 1;
 
-/** The sentence the autonomous panel shows when a build without a ramp runs `setRamp`. */
+/**
+ * The reason the autonomous panel shows when a build without a ramp runs `setRamp`. Short, and
+ * without "it ends at once": the panel appends that.
+ */
 const NO_RAMP = 'this build has no ramp. Choose the “Deployable ramp” intake to use it.';
 
 export const BIOBUZZ_AUTO_COMMANDS = ['shootAll', 'setIntake', 'launcherIdle', 'relocalize', 'cancelAll', 'setRamp'] as const;
@@ -218,7 +278,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
         name: 'setRamp',
         summary: hasRamp
           ? 'Deploy or stow the ramp intake, for pulling pollen out of a flower. state: DEPLOY or STOW. Ends once the ramp has swung. DSIM only: the team robot has no ramp.'
-          : 'Deploy or stow the ramp intake. This build has no ramp, so it ends at once. DSIM only: the team robot has no ramp.',
+          : 'Deploy or stow the ramp intake. This build has no ramp (nor does the team robot), so it ends at once.',
         params: {
           state: { type: 'enum', values: ['DEPLOY', 'STOW'], default: 'DEPLOY' },
         },
@@ -243,6 +303,8 @@ class BiobuzzAutoHost implements AutoHost {
   private firing = 0;
   /** setRamp commands holding the RAMP button now */
   private rampPress = 0;
+  /** shootAll commands that gave up with nothing leaving the hopper (`AutoHost.cantShootCount`) */
+  private gaveUp = 0;
 
   constructor(
     public world: World,
@@ -284,11 +346,21 @@ class BiobuzzAutoHost implements AutoHost {
     return { initialize: run, execute() {}, isFinished: () => true, end() {} };
   }
 
+  /**
+   * FIRE held until `count` have left the hopper (or it is empty), then the settle. If nothing
+   * leaves for the build's patience (`bbShotPatienceS`, restarted by every launch), it lets go and
+   * ends at once, counted for the seat to say (`cantShootCount`): the auto must not stand at a
+   * pose it cannot score from for the rest of AUTO.
+   */
   private shootAll(count: number): AutoCommand {
     let startHeld = 0;
     let want = 0;
     let settleFrom: number | null = null;
     let holding = false;
+    let quit = false;
+    let lastHeld = 0;
+    let waitFrom = 0;
+    let patience = 0;
     const release = (): void => {
       if (holding) {
         holding = false;
@@ -298,20 +370,34 @@ class BiobuzzAutoHost implements AutoHost {
     return {
       initialize: () => {
         startHeld = this.held();
+        lastHeld = startHeld;
+        waitFrom = this.world.time;
+        const r = robotOf(this.world, this.robotId);
+        patience = r ? bbShotPatienceS(r.spec) : 0;
         want = Math.max(0, Math.min(Math.round(count), startHeld));
         settleFrom = want === 0 ? this.world.time : null;
         holding = want > 0;
         if (holding) this.firing += 1;
       },
       execute: () => {
-        if (settleFrom !== null) return;
-        const launched = startHeld - this.held();
-        if (launched >= want || this.held() === 0) {
+        if (settleFrom !== null || quit) return;
+        const held = this.held();
+        const launched = startHeld - held;
+        if (launched >= want || held === 0) {
           release();
           settleFrom = this.world.time;
+          return;
+        }
+        // a launch restarts the wait; an intake adding one does not
+        if (held < lastHeld) waitFrom = this.world.time;
+        lastHeld = held;
+        if (this.world.time - waitFrom >= patience - 1e-9) {
+          release();
+          quit = true;
+          this.gaveUp += 1;
         }
       },
-      isFinished: () => settleFrom !== null && this.world.time - settleFrom >= SHOT_SETTLE_S - 1e-9,
+      isFinished: () => quit || (settleFrom !== null && this.world.time - settleFrom >= SHOT_SETTLE_S - 1e-9),
       end: () => release(),
     };
   }
@@ -381,6 +467,10 @@ class BiobuzzAutoHost implements AutoHost {
     return { intake: this.intakeOn, fire: this.firing > 0, bbRamp: this.rampPress > 0 };
   }
 
+  cantShootCount(): number {
+    return this.gaveUp;
+  }
+
   release(): void {
     this.intakeOn = false;
     this.firing = 0;
@@ -407,12 +497,21 @@ const TO_DSIM_X = BB_HALF_X / (biobuzzField.sizeIn.xIn / 2);
 const TO_DSIM_Y = BB_HALF_Y / (biobuzzField.sizeIn.yIn / 2);
 const toDsim = (v: number, k: number): number => Math.round(v * k * 1e4) / 1e4;
 
+/**
+ * The keys of an obstacle, zone or element that hold a POINT rather than a number: a HIVE's
+ * `pivotIn`, and a strut's two end centres (field format 3: `fromIn`, `toIn`, each
+ * `{ xIn, yIn, zIn }`). Each is moved like the item itself; its `zIn` is a height and stays, as
+ * does the strut's `radiusIn`. A point key Zenith adds later and this list lacks is the bug the
+ * AUTO lane's "every position moved" check exists for.
+ */
+const POINT_KEYS = ['pivotIn', 'fromIn', 'toIn'] as const;
+
 /** One obstacle, zone or element with its plan-view position keys moved into DSIM's frame. */
 function inDsimFrame<T extends object>(item: T): T {
   const out = { ...item } as Record<string, unknown>;
   for (const key of ['xIn', 'minXIn', 'maxXIn']) if (typeof out[key] === 'number') out[key] = toDsim(out[key], TO_DSIM_X);
   for (const key of ['yIn', 'minYIn', 'maxYIn']) if (typeof out[key] === 'number') out[key] = toDsim(out[key], TO_DSIM_Y);
-  if (typeof out.pivotIn === 'object' && out.pivotIn !== null) out.pivotIn = inDsimFrame(out.pivotIn);
+  for (const key of POINT_KEYS) if (typeof out[key] === 'object' && out[key] !== null) out[key] = inDsimFrame(out[key]);
   return out as T;
 }
 

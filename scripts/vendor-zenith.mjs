@@ -6,7 +6,7 @@
  * packed tarballs under `vendor/zenith/` (`file:` specs in package.json). This builds the
  * three packages in the checkout, packs them over the old tarballs and writes
  * `vendor/zenith/SOURCE.md` with the commit they came from, so a diff of the tarballs always
- * names its source, then reinstalls them so the lockfile's integrity hashes match.
+ * names its source, then writes each tarball's sha512 into package-lock.json and runs `npm ci`.
  *
  *   node scripts/vendor-zenith.mjs [path/to/zenith]
  *
@@ -15,6 +15,7 @@
  * script against a Zenith checkout before `npm ci`. The day the packages publish, the `file:`
  * specs become version ranges and this script goes.
  */
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,7 +26,9 @@ if (!existsSync(resolve(zenith, 'packages/core/package.json'))) {
   console.error(`vendor-zenith: ${zenith} is not a Zenith checkout`);
   process.exit(1);
 }
-const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] }).toString().trim();
+// npx, pnpm and npm are .cmd shims on Windows, which execFileSync starts only through a shell
+const run = (cmd, args, cwd) =>
+  execFileSync(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'inherit'], shell: process.platform === 'win32' }).toString().trim();
 
 const sha = run('git', ['rev-parse', 'HEAD'], zenith);
 const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], zenith);
@@ -52,6 +55,21 @@ Do not edit the tarballs by hand; re-run the script against a Zenith checkout.
 );
 // `npm install` alone reports "up to date" for a changed `file:` tarball and keeps the OLD
 // integrity hash in package-lock.json, which `npm ci` (the Fly image) then refuses. Installing the
-// tarballs by path re-hashes them.
-run('npm', ['install', '--no-audit', '--no-fund', ...['schema', 'core', 'season-biobuzz'].map((p) => `./vendor/zenith/horizon36596-zenith-${p}-${version}.tgz`)], process.cwd());
+// tarballs by path re-hashes them, but it also rewrites unrelated rows wherever this npm differs
+// from the one that wrote the lockfile, so only the three integrity values are replaced, in place.
+const lockPath = resolve('package-lock.json');
+let lock = readFileSync(lockPath, 'utf8');
+const rows = JSON.parse(lock).packages ?? {};
+for (const pkg of ['schema', 'core', 'season-biobuzz']) {
+  const old = rows[`node_modules/@horizon36596/zenith-${pkg}`]?.integrity;
+  if (!old) {
+    console.error(`vendor-zenith: package-lock.json has no integrity for @horizon36596/zenith-${pkg}; install it once with npm install`);
+    process.exit(1);
+  }
+  const tarball = readFileSync(resolve(out, `horizon36596-zenith-${pkg}-${version}.tgz`));
+  const next = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
+  lock = lock.split(`"integrity": "${old}"`).join(`"integrity": "${next}"`);
+}
+writeFileSync(lockPath, lock);
+run('npm', ['ci', '--no-audit', '--no-fund'], process.cwd());
 console.log(`vendor-zenith: packed schema, core and season-biobuzz ${version} from ${sha.slice(0, 7)} (${branch}), lockfile refreshed`);

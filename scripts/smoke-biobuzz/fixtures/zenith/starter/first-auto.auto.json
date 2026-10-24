@@ -1,0 +1,69 @@
+{
+  "$schema": "https://libraries.horizon36596.org/zenith/schema/v1/auto.json",
+  "formatVersion": 4,
+  "name": "first-auto",
+  "title": "First auto",
+  "description": "The smallest useful auto: drive out from the start tile, score the four preloaded pollen, and park. Three steps: a path, a command and another path. The getting-started guide walks through it.",
+  "robot": "autos/robot.json",
+  "field": "autos/field/biobuzz.field.json",
+  "alliance": "RED",
+  "authors": [
+    "Horizon (FTC 36596)"
+  ],
+  "created": "2026-09-23",
+  "start": {
+    "pose": {
+      "ref": "start"
+    },
+    "holds": {
+      "pollen": 4
+    }
+  },
+  "steps": [
+    {
+      "id": "driveOut",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "start"
+          },
+          "to": {
+            "ref": "scoreSouth"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "notes": "A straight line north to the scoring spot. Tangent heading keeps the front of the robot pointing the way it drives."
+    },
+    {
+      "id": "scorePreload",
+      "kind": "command",
+      "name": "score",
+      "args": {
+        "count": 4
+      },
+      "notes": "Launches the four preloaded pollen. score is stationary in robot.json, so it runs as its own step while the robot stands still."
+    },
+    {
+      "id": "park",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": "current",
+          "to": {
+            "ref": "park"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "notes": "from current starts where the last step ended, so the park leg follows on from wherever the robot scored."
+    }
+  ]
+}

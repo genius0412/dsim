@@ -15,6 +15,7 @@ import { renderChecks } from './render';
 import { tutorialChecks } from './tutorial';
 import { net3dChecks } from './net3d';
 import { autoChecks } from './autos';
+import { autoUiChecks } from './autosUi';
 import { goldenChecks } from './golden';
 import { importedChecks, importedPerfChecks } from './imported';
 import { fixedChecks } from './fixed';
@@ -104,6 +105,9 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // Zenith autos driven by an auto seat (docs/area/autos.md): no teleport, arrival, the heading
   // modes, the alliance rule, the commands, replay-without-seat, and the hand-back at the buzzer.
   { name: 'AUTO', fn: autoChecks },
+  // what the Autonomous panel and the match screen say and do about the player's autos: the
+  // library's refusals and Undo, plurals, the pre-match line (docs/area/autos.md). DOM-free.
+  { name: 'AUTOUI', fn: autoUiChecks },
   // imported robots (docs/robot-import-plan.md): the mechanisms on a CAD hull — the placed mouth,
   // the 3D bands, the placed launchers and Box Tube. The cross-game checks are in smoke.ts.
   { name: 'IMPORT', fn: importedChecks },

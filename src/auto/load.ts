@@ -41,6 +41,7 @@ import {
 } from '@horizon36596/zenith-core';
 import {
   childLists,
+  FORMAT_VERSIONS,
   withChildLists,
   type Auto,
   type Field,
@@ -66,8 +67,14 @@ export interface LoadedAuto {
   mirrored: boolean;
   robot: Robot;
   field: Field;
+  /** the running routine's plan: what the seat drives, in the robot's alliance */
   plan: Plan;
   estimate: Estimate;
+  /**
+   * Zenith's findings for the FILE, in its own alliance (a tank's legs re-headed there first), so
+   * they name the elements Zenith names for the same file; step ids are the same in both frames.
+   * A "robot.json does not register" finding for a name `unsupported` lists is left out.
+   */
   findings: Finding[];
   /** named commands and conditions the file uses that this game does not run */
   unsupported: string[];
@@ -128,12 +135,40 @@ function describe(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** `detail` with its own closing full stop (and trailing space) taken off. */
+const unstopped = (detail: string): string => detail.trim().replace(/[.\s]+$/, '');
+
+/**
+ * `head` and a detail from Zenith or the parser as ONE sentence: the detail's own full stop is
+ * folded into the one this adds, so a message that already ends in "." never reads "..".
+ */
+export function sentence(head: string, detail: string): string {
+  const d = unstopped(detail);
+  return /[?!]$/.test(d) ? `${head}${d}` : `${head}${d}.`;
+}
+
 function parseJson(text: string, what: string): unknown {
   try {
     return JSON.parse(text);
   } catch (e) {
-    throw new AutoLoadError(`The ${what} is not valid JSON (${describe(e)}).`);
+    throw new AutoLoadError(`The ${what} is not valid JSON (${unstopped(describe(e))}).`);
   }
+}
+
+/**
+ * A FILE FROM A NEWER ZENITH. Zenith's own migration refuses it as "this build of Zenith knows N",
+ * which in DSIM names the wrong program. Read before the schema runs, against the newest format
+ * the vendored schema reads (`FORMAT_VERSIONS`), never a typed number.
+ */
+function refuseNewer(json: unknown, kind: 'auto' | 'waypoints'): void {
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) return;
+  const v = (json as { formatVersion?: unknown }).formatVersion;
+  const max = FORMAT_VERSIONS[kind];
+  if (typeof v !== 'number' || !Number.isInteger(v) || v <= max) return;
+  const what = kind === 'auto' ? 'This auto was' : 'This waypoints file was';
+  throw new AutoLoadError(
+    `${what} saved by a newer Zenith (file format ${v}), and this DSIM reads up to format ${max}. Reload DSIM; if it still says this, DSIM needs an update.`,
+  );
 }
 
 /** Every `{ref}` replaced by its waypoint, in the file's own alliance frame. */
@@ -170,6 +205,7 @@ export function namesUsed(auto: Auto): { commands: string[]; conditions: string[
   const add = (list: string[], name: string): void => {
     if (!list.includes(name)) list.push(name);
   };
+  // a `transfer` (format 4) is planner-only: it names ledger locations, never a command or condition
   const walk = (s: Step): void => {
     if (s.kind === 'command') add(commands, s.name);
     if (s.kind === 'path') {
@@ -196,10 +232,25 @@ export function autoStartPose(loaded: LoadedAuto, alliance: Alliance, adapter: G
 /** Parse an auto file's text on its own, for the library: its name, alliance and any error. */
 export function parseAutoText(text: string): Auto {
   try {
-    return loadAuto(parseJson(text, 'auto file'));
+    const json = parseJson(text, 'auto file');
+    refuseNewer(json, 'auto');
+    return loadAuto(json);
   } catch (e) {
     if (e instanceof AutoLoadError) throw e;
-    throw new AutoLoadError(`This is not a Zenith auto file: ${describe(e)}.`);
+    throw new AutoLoadError(sentence('This is not a Zenith auto file: ', describe(e)));
+  }
+}
+
+/** Zenith's SCHEMA finding for a name the robot file does not register (`checkRegistry`): the name, or null. */
+function unregisteredName(f: Finding): string | null {
+  if (f.code !== 'SCHEMA') return null;
+  const m = /names the (?:command|condition) ("(?:[^"\\]|\\.)*"), which robot\.json does not register\.$/.exec(f.message);
+  if (!m) return null;
+  try {
+    const name: unknown = JSON.parse(m[1]);
+    return typeof name === 'string' ? name : null;
+  } catch {
+    return null;
   }
 }
 
@@ -220,35 +271,51 @@ export function loadZenithAuto(
   let waypoints: Waypoints | null = null;
   if (setup.waypoints !== undefined) {
     try {
-      waypoints = loadWaypoints(parseJson(setup.waypoints, 'waypoints file'));
+      const json = parseJson(setup.waypoints, 'waypoints file');
+      refuseNewer(json, 'waypoints');
+      waypoints = loadWaypoints(json);
     } catch (e) {
       if (e instanceof AutoLoadError) throw e;
-      throw new AutoLoadError(`The waypoints file is not valid: ${describe(e)}.`);
+      throw new AutoLoadError(sentence('The waypoints file is not valid: ', describe(e)));
     }
   }
   const written = inlineRefs(auto, waypoints, field);
-  const mirrored = written.alliance !== DSIM_ALLIANCE[alliance] && mirrorForField(field) !== 'none';
-  const asWritten = mirrored ? mirrorAuto(written, mirrorForField(field)) : written;
-  let running = asWritten;
-  let resolved = resolve(running);
-  let thePlan = planAuto(resolved, robot, field);
+  const mode = mirrorForField(field);
+  const mirrored = written.alliance !== DSIM_ALLIANCE[alliance] && mode !== 'none';
+  // THE FILE'S OWN FRAME FIRST: the routine as written (a tank's legs re-headed here), which is
+  // what the findings describe, so DSIM names the elements Zenith names for this file. Re-heading
+  // is a property of each leg's own shape, so doing it before the mirror drives what doing it
+  // after did.
+  let inFile = written;
+  let fileResolved = resolve(inFile);
+  let filePlan = planAuto(fileResolved, robot, field);
   let reheaded: string[] = [];
   if (adapter.holonomic?.(spec) === false) {
-    const t = tankHeadings(asWritten, thePlan);
+    const t = tankHeadings(written, filePlan);
     if (t.reheaded.length > 0) {
-      running = t.auto;
+      inFile = t.auto;
       reheaded = t.reheaded;
-      resolved = resolve(running);
-      thePlan = planAuto(resolved, robot, field);
+      fileResolved = resolve(inFile);
+      filePlan = planAuto(fileResolved, robot, field);
     }
   }
-  const est = estimatePlan(thePlan, robot);
-  const findings = [...resolved.findings, ...check(thePlan, est, robot, field, adapter.rules?.(field))];
+  const fileEst = estimatePlan(filePlan, robot);
+  // THE ROBOT'S ALLIANCE: what the seat drives
+  const running = mirrored ? mirrorAuto(inFile, mode) : inFile;
+  const thePlan = mirrored ? planAuto(resolve(running), robot, field) : filePlan;
+  const est = mirrored ? estimatePlan(thePlan, robot) : fileEst;
   const used = namesUsed(written);
   const unsupported = [
     ...used.commands.filter((n) => !adapter.commands.includes(n)),
     ...used.conditions.filter((n) => !adapter.conditions.includes(n)),
   ];
+  // A NAME DSIM DOES NOT RUN IS LISTED, NOT A PROBLEM. Zenith reads it against DSIM's robot file,
+  // which registers only what DSIM runs, and calls it an error; DSIM runs it as done at once and
+  // `unsupported` already names it, so Zenith's sentence would say it a second time, wrongly.
+  const findings = [...fileResolved.findings, ...check(filePlan, fileEst, robot, field, adapter.rules?.(field))].filter((f) => {
+    const name = unregisteredName(f);
+    return name === null || !unsupported.includes(name);
+  });
   const cannot = adapter.notOnRobot?.(spec) ?? {};
   const notOnRobot = used.commands.filter((n) => Object.hasOwn(cannot, n)).map((name) => ({ name, why: cannot[name] }));
   return { written, running, mirrored, robot, field, plan: thePlan, estimate: est, findings, unsupported, reheaded, notOnRobot };

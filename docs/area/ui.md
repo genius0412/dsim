@@ -218,7 +218,7 @@ that season has none) — then the bind panels —
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
   STARTS straight away (behind `guardStart`). Since 2026-10-18 the two cards are the Play page's RIGHT
   COLUMN, stacked (see THE MENU STAGE below); `/match-setup`, `/practice-setup`, `/solo-setup` and
-  `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
+  `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine (its order, library then buttons then preview, is what keeps it reachable in the scrolling column: `docs/area/autos.md`, "The Autonomous panel").
   Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
   Partner / Opponent 1 / Opponent 2, each None · Dummy · AI (AI only where the game registers a
   `BotDriver`) with its own difficulty row, which is always rendered and DISABLED unless the seat is AI

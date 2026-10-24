@@ -878,12 +878,16 @@ export function GameView({
           <span aria-hidden="true">◄</span> {driveSpec ? 'EDITOR' : 'MENU'}
         </button>
         {/* RESET is a LOCAL rebuild — meaningless (and desyncing) in lockstep, so
-            solo only. In multiplayer use REMATCH on the results screen (host). */}
+            solo only. In multiplayer use REMATCH on the results screen (host).
+            ⚠️ THE BUTTON IS RESET, AND EVERY LINE THAT NAMES IT SAYS RESET (the pre-match hint, the
+            Autonomous panel; the touch pad's list already says "RESET button"). RESTART was tried
+            for W4-D14 and is 14px wider, which pushed the sponsor chip off a 360px phone's
+            portrait HUD row (the row is MENU, this, the chip). */}
         {!session && (
           <button
             className="game-btn"
             onClick={() => controllerRef.current?.restart()}
-            title="Restart"
+            title="Start this run over"
           >
             <span aria-hidden="true">⟲</span> RESET
           </button>
@@ -984,7 +988,7 @@ export function GameView({
               MENU precisely because it has no keys to press. */}
           {!coarsePointer && (
             <p className="ds-hint">
-              Esc · menu &nbsp;·&nbsp; {keyLabel(effBindings.keys.restart[0] ?? '?')} · restart
+              Esc · menu &nbsp;·&nbsp; {keyLabel(effBindings.keys.restart[0] ?? '?')} · reset
             </p>
           )}
         </MatchOverlay>

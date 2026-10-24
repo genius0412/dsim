@@ -1,0 +1,259 @@
+{
+  "$schema": "https://libraries.horizon36596.org/zenith/schema/v1/auto.json",
+  "formatVersion": 4,
+  "name": "cycle-and-park",
+  "title": "Cycle and park",
+  "description": "Score all four preloaded pollen, which tips the hive, try one garden cycle with a time limit, score again on the other side of the hive only if the robot picked something up, and park. It is the auto the generated Java in examples/starter/generated/ comes from, so it uses most of what the file format can say: markers, timeouts, an end condition, a race, a deadline group with a sequence in it, and a branch.",
+  "robot": "autos/robot.json",
+  "field": "autos/field/biobuzz.field.json",
+  "alliance": "RED",
+  "authors": [
+    "Horizon (FTC 36596)"
+  ],
+  "created": "2026-09-24",
+  "start": {
+    "pose": {
+      "ref": "start"
+    },
+    "holds": {
+      "pollen": 4
+    }
+  },
+  "steps": [
+    {
+      "id": "driveOut",
+      "kind": "path",
+      "timeoutS": 4,
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "start"
+          },
+          "to": {
+            "ref": "scoreSouth"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "markers": [
+        {
+          "at": {
+            "t": 0.25
+          },
+          "command": {
+            "name": "spinUp"
+          }
+        }
+      ],
+      "notes": "The marker spins the launcher up a quarter of the way out, so it is ready when the robot arrives. timeoutS stops the step if the robot is held up."
+    },
+    {
+      "id": "scorePreload",
+      "kind": "command",
+      "name": "score",
+      "args": {
+        "count": 4
+      },
+      "timeoutS": 3,
+      "notes": "Launches all four preloaded pollen in one volley. The up cell starts with 3 nectar, and the tip table says 3 pollen tip a cell holding 3 nectar, so this volley tips the hive: it dumps the cell onto the floor on the south side and the empty north cell comes up."
+    },
+    {
+      "id": "toGarden",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "bezier",
+          "from": "current",
+          "control": [
+            {
+              "xIn": -20,
+              "yIn": -52,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that turns the robot south-west, away from the hive"
+            },
+            {
+              "xIn": -24,
+              "yIn": -60,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that lines the robot up along the south wall, heading west"
+            }
+          ],
+          "to": {
+            "ref": "gardenSweepStart"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "notes": "A curve over to the east end of the RED garden line. It turns the robot away from the hive and arrives heading west along the south wall, so tangent heading needs no turn on the spot at the end."
+    },
+    {
+      "id": "collect",
+      "kind": "parallel",
+      "mode": "race",
+      "steps": [
+        {
+          "id": "sweepGarden",
+          "kind": "path",
+          "segments": [
+            {
+              "kind": "line",
+              "from": "current",
+              "to": {
+                "ref": "gardenSweepEnd"
+              }
+            }
+          ],
+          "heading": {
+            "mode": "tangent"
+          },
+          "speedFraction": 0.3,
+          "markers": [
+            {
+              "at": {
+                "t": 0
+              },
+              "command": {
+                "name": "intakeOn"
+              }
+            }
+          ],
+          "endCondition": {
+            "condition": "hopperFull"
+          },
+          "expect": {
+            "collectFrom": "gardenRed",
+            "count": 4
+          },
+          "notes": "Drives slowly west along the south wall with the intake leading, over the RED garden line. The marker starts the intake as the path starts, and endCondition ends the path early once the robot is full."
+        },
+        {
+          "id": "giveUp",
+          "kind": "wait",
+          "seconds": 2.5
+        }
+      ],
+      "notes": "A race ends when its first member ends: the sweep, once it arrives or the robot is full, or the two and a half second limit, whichever comes first."
+    },
+    {
+      "id": "stopIntake",
+      "kind": "command",
+      "name": "intakeOff"
+    },
+    {
+      "id": "scoreIfCollected",
+      "kind": "branch",
+      "condition": "holdingPiece",
+      "then": [
+        {
+          "id": "returnToScore",
+          "kind": "parallel",
+          "mode": "deadline",
+          "deadline": "driveBack",
+          "steps": [
+            {
+              "id": "driveBack",
+              "kind": "path",
+              "segments": [
+                {
+                  "kind": "bezier",
+                  "from": "current",
+                  "control": [
+                    {
+                      "xIn": -30,
+                      "yIn": -62,
+                      "provenance": "SET FROM EDITOR: starter example, a curve control point that backs the robot east along the south wall"
+                    },
+                    {
+                      "xIn": -40,
+                      "yIn": -50,
+                      "provenance": "SET FROM EDITOR: starter example, a curve control point that turns the robot north, west of the hive frame"
+                    }
+                  ],
+                  "to": {
+                    "xIn": -40,
+                    "yIn": 0,
+                    "provenance": "SET FROM EDITOR: starter example, where the two paths meet beside the hive frame, the robot backing north"
+                  }
+                },
+                {
+                  "kind": "bezier",
+                  "from": {
+                    "xIn": -40,
+                    "yIn": 0,
+                    "provenance": "SET FROM EDITOR: starter example, where the two paths meet beside the hive frame, the robot backing north"
+                  },
+                  "control": [
+                    {
+                      "xIn": -40,
+                      "yIn": 40,
+                      "provenance": "SET FROM EDITOR: starter example, a curve control point that keeps the robot west of the hive frame until it is past it"
+                    },
+                    {
+                      "xIn": -13,
+                      "yIn": 30,
+                      "provenance": "SET FROM EDITOR: starter example, a curve control point that brings the robot in to the scoring spot from the south, clear of the hive frame"
+                    }
+                  ],
+                  "to": {
+                    "ref": "scoreNorth"
+                  }
+                }
+              ],
+              "heading": {
+                "mode": "tangentReversed"
+              },
+              "notes": "After the first tip the up cell faces north, and a launch only scores from the up cell's own quarter of the field, so the robot backs east along the wall and north up the west side of the hive frame to the scoring spot on the other side. Under the hive, between the hive frame's west legs and the centre line, an 18 in robot has a fraction of an inch to spare, and a robot over the centre line during AUTO breaks G402, so it goes round the west side of the frame instead."
+            },
+            {
+              "id": "clearThenSpinUp",
+              "kind": "sequence",
+              "steps": [
+                {
+                  "id": "clearGarden",
+                  "kind": "wait",
+                  "seconds": 0.5
+                },
+                {
+                  "id": "readyLauncher",
+                  "kind": "command",
+                  "name": "spinUp"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "scoreCollected",
+          "kind": "command",
+          "name": "score",
+          "args": {
+            "count": 4
+          },
+          "timeoutS": 3
+        }
+      ],
+      "else": [],
+      "notes": "The branch reads holdingPiece once, when it starts. With nothing aboard the robot skips the trip back and goes straight to park."
+    },
+    {
+      "id": "park",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": "current",
+          "to": {
+            "ref": "parkLoadingZone"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangentReversed"
+      },
+      "notes": "Ends the auto partly inside RED's loading zone, which counts as PARK at the end of AUTO."
+    }
+  ]
+}

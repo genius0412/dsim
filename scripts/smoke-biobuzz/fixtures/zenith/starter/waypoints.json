@@ -1,0 +1,60 @@
+{
+  "$schema": "https://libraries.horizon36596.org/zenith/schema/v1/waypoints.json",
+  "formatVersion": 1,
+  "waypoints": {
+    "start": {
+      "xIn": -13,
+      "yIn": -63,
+      "headingRad": 1.5708,
+      "provenance": "SET FROM EDITOR: starter example, against the south wall in RED's half, 4 in west of the centre line, facing the hive, so it drives straight north to scoreSouth; measure your own start tile"
+    },
+    "scoreSouth": {
+      "xIn": -13,
+      "yIn": -36,
+      "headingRad": 1.5708,
+      "provenance": "SET FROM EDITOR: starter example, south of the RED hive on x = -13, outside the legal approach margin, facing the up cell; 4 in clear of the centre line, so the robot can turn on the spot here without a corner crossing it"
+    },
+    "scoreNorth": {
+      "xIn": -13,
+      "yIn": 44,
+      "headingRad": -1.5708,
+      "provenance": "SET FROM EDITOR: starter example, north of the RED hive on x = -13, outside the legal approach margin, facing the up cell once the first tip has turned it north; 8 in farther from the hive than scoreSouth, so a robot coming round the west side of the hive frame has room to turn in toward the cell"
+    },
+    "flowerNorthApproach": {
+      "xIn": -24,
+      "yIn": 46,
+      "headingRad": 1.5708,
+      "provenance": "PLACEHOLDER: starter example, south of flower1 on the north wall, intake facing it"
+    },
+    "flowerNorthPickup": {
+      "xIn": -24,
+      "yIn": 57,
+      "headingRad": 1.5708,
+      "provenance": "PLACEHOLDER: starter example, the intake against flower1's retrieval opening, the frame 1 in short of its foot"
+    },
+    "gardenSweepStart": {
+      "xIn": -46,
+      "yIn": -62,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: starter example, east of the RED garden line, intake facing west along the south wall, frame 1 in off it"
+    },
+    "gardenSweepEnd": {
+      "xIn": -62,
+      "yIn": -62,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: starter example, the west end of the RED garden line, frame 1 in off the south and west walls, the intake over the last pollen"
+    },
+    "park": {
+      "xIn": -40,
+      "yIn": -36,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: starter example, an open spot in RED's half to finish in"
+    },
+    "parkLoadingZone": {
+      "xIn": -56,
+      "yIn": 36,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: starter example, partly inside RED's loading zone on the north side, which PARK asks for at the end of AUTO"
+    }
+  }
+}

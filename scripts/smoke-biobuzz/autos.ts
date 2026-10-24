@@ -38,8 +38,14 @@ import {
 import { HOST_BUILD, openMessage } from '../../src/ui/zenithOpen';
 import { autoHudLine, autoPreNotice } from '../../src/ui/autoHud';
 import type { GameAutoStatus } from '../../src/game';
-import { BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
+import { BB_PRESET_LIST, BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
 import { nonHolonomic } from '../../src/auto/drive';
+import { AutoLoadError, loadZenithAuto, parseAutoText } from '../../src/auto/load';
+import { runAutoHeadless } from '../../src/auto/headless';
+import { bbShotPatienceS } from '../../src/games/biobuzz/auto';
+import { bbLauncherOf } from '../../src/games/biobuzz/mechs';
+import { FORMAT_VERSIONS } from '@horizon36596/zenith-schema';
+import zenithBiobuzzField from '@horizon36596/zenith-season-biobuzz/field/biobuzz.field.json' with { type: 'json' };
 
 /**
  * THE AUTO LANE — Zenith autos driven by an auto seat (docs/area/autos.md).
@@ -223,6 +229,65 @@ export function autoChecks(check: Check): void {
       "AUTO: the handed field moves a garden pollen inside DSIM's wall and keeps its radius",
       pollen !== undefined && pollen.xIn > -70.6 && pollen.radiusIn === 1.4,
       `xIn ${String(pollen?.xIn)}, radiusIn ${String(pollen?.radiusIn)}`,
+    );
+  }
+  {
+    // EVERY POSITION MOVED, NESTED ONES INCLUDED. Walks Zenith's own file beside the handed one: a
+    // number under an x key is scaled by DSIM's wall over Zenith's, one under a y key likewise, and
+    // every other number (a height, a radius) is kept. Field format 3's struts carry their ends as
+    // `fromIn`/`toIn` objects, which the first version of the scale skipped (the HIVE frame's legs
+    // stayed at Zenith's 144 in while their foot bars moved).
+    type Json = Record<string, unknown>;
+    const handed = adapter.field() as Json & { sizeIn: { xIn: number; yIn: number } };
+    const raw = zenithBiobuzzField as unknown as Json & { sizeIn: { xIn: number; yIn: number } };
+    const kx = handed.sizeIn.xIn / raw.sizeIn.xIn;
+    const ky = handed.sizeIn.yIn / raw.sizeIn.yIn;
+    const bad: string[] = [];
+    let moved = 0;
+    const walk = (r: unknown, h: unknown, path: string, key: string): void => {
+      if (typeof r === 'number') {
+        const want = /^(xIn|minXIn|maxXIn)$/.test(key) ? r * kx : /^(yIn|minYIn|maxYIn)$/.test(key) ? r * ky : r;
+        if (want !== r) moved++;
+        if (typeof h !== 'number' || Math.abs(h - want) > 1e-3) bad.push(`${path} ${r} -> ${String(h)} (want ${want.toFixed(4)})`);
+      } else if (r !== null && typeof r === 'object') {
+        for (const [k, v] of Object.entries(r)) walk(v, (h as Json | undefined)?.[k], `${path}.${k}`, k);
+      }
+    };
+    for (const list of ['obstacles', 'zones', 'elements'] as const) {
+      const rs = (raw[list] ?? []) as Json[];
+      const hs = (handed[list] ?? []) as Json[];
+      rs.forEach((o, i) => walk(o, hs[i], `${list}.${String(o.id)}`, ''));
+    }
+    const struts = ((handed.obstacles ?? []) as Json[]).filter((o) => o.kind === 'strut');
+    check(
+      "AUTO: every plan-view position in the handed field is in DSIM's frame, struts' ends included, and every height and size is kept",
+      bad.length === 0 && moved > 0 && struts.length === 4,
+      bad.length ? bad.slice(0, 4).join(' | ') : `${moved} numbers moved, ${struts.length} struts`,
+    );
+    // ...and the legs land on DSIM's own HIVE frame (FIRST's CAD, `field-measurements.json`): each
+    // foot inside 0.5 in of the A-frame leg's measured footprint, each top within 0.5 in of the
+    // pivot's x. Zenith's legs are CAD numbers already, so the scale moves them 0.44 in inboard;
+    // measured 2026-10-24, the feet sit inside the footprint and the tops 0.25 in off the pivot.
+    const cad = JSON.parse(readFileSync(join(here, '..', '..', 'public', 'models', 'biobuzz', 'field-measurements.json'), 'utf8')) as {
+      hive: { frameLegFootprints: { part: string; x: [number, number]; y: [number, number] }[]; trays: { blue: { pivot: [number, number, number] } } };
+    };
+    const legs = cad.hive.frameLegFootprints.filter((p) => /A-Frame Leg/.test(p.part));
+    const pivotX = cad.hive.trays.blue.pivot[0];
+    const TOL = 0.5;
+    const off = (v: number, [a, b]: [number, number]): number => (v < a ? a - v : v > b ? v - b : 0);
+    let worstFoot = 0;
+    let worstTop = 0;
+    for (const s of struts) {
+      const from = s.fromIn as { xIn: number; yIn: number };
+      const to = s.toIn as { xIn: number; yIn: number };
+      const foot = Math.min(...legs.map((l) => Math.hypot(off(from.xIn, l.x), off(from.yIn, l.y))));
+      worstFoot = Math.max(worstFoot, foot);
+      worstTop = Math.max(worstTop, Math.abs(Math.abs(to.xIn) - pivotX));
+    }
+    check(
+      `AUTO: the handed field's HIVE frame legs sit on DSIM's measured frame (feet within ${TOL} in of the leg footprints, tops within ${TOL} in of the pivot)`,
+      legs.length === 4 && struts.length === 4 && worstFoot <= TOL && worstTop <= TOL,
+      `feet ${worstFoot.toFixed(2)} in out, tops ${worstTop.toFixed(2)} in off`,
     );
   }
 
@@ -451,6 +516,18 @@ export function autoChecks(check: Check): void {
         `AUTO: the robot file handed to Zenith lists setRamp with a DEPLOY/STOW state, for ${label}`,
         c !== undefined && c.params?.state?.type === 'enum' && c.params.state.values?.join() === 'DEPLOY,STOW' && !!c.summary && !(c.requires ?? []).includes('intake'),
         JSON.stringify(c),
+      );
+    }
+    {
+      // DSIM-9: the summary read "This build has no ramp, so it ends at once. DSIM only: the team
+      // robot has no ramp." and the panel's "Not on this robot" line said it a third time
+      const file = adapter.robot(BB_DEFAULT_SPEC as RobotSpec) as { commands: Cmd[] };
+      const summary = file.commands.find((x) => x.name === 'setRamp')?.summary ?? '';
+      const why = adapter.notOnRobot?.(BB_DEFAULT_SPEC as RobotSpec).setRamp ?? '';
+      check(
+        "AUTO: without a ramp, setRamp's summary says \"no ramp\" once, and the panel's reason leaves \"at once\" to the panel",
+        (summary.match(/no ramp/gi) ?? []).length === 1 && /ends at once/.test(summary) && why.length > 0 && !/at once/.test(why),
+        `${summary} | ${why}`,
       );
     }
     const rampAuto = {
@@ -1102,5 +1179,294 @@ export function autoChecks(check: Check): void {
       stuckAt > 5.5 && stuckAt < 7.6 && st.state === 'running' && line === 'AUTO STUCK ON RAM',
       `stuck at ${stuckAt.toFixed(2)} s, ${st.state} at ${st.stepId}, ${line}`,
     );
+  }
+
+  // ── W4-D3: a shootAll from a pose the robot cannot score from ends, and says so ──────────────
+  // Aim Assist is on for every robot, so a shot leaves only when it would land. StarterBot (a tank
+  // with a fixed launcher at the back) scores from 41 to 46 in off the cell; from 28 in its
+  // shootAll held FIRE for the rest of AUTO with nothing on screen but SHOOT, and a headless run's
+  // trace ended the step at its own start. Measured 2026-10-24: the step never ended (29.5 s);
+  // now it ends after the build's patience (2.35 s) and the routine finishes at 4.15 s.
+  {
+    const starter = BB_STARTER_BOTS[0];
+    const noShot = zen({
+      formatVersion: 4,
+      name: 'no-shot',
+      alliance: 'RED',
+      start: { pose: { xIn: -13, yIn: -63, headingRad: Math.PI / 2 } },
+      steps: [
+        { id: 'driveOut', kind: 'path', segments: [{ kind: 'line', from: 'current', to: { xIn: -13, yIn: -42 } }], heading: { mode: 'constant', headingRad: Math.PI / 2 } },
+        { id: 'shoot', kind: 'command', name: 'shootAll', args: { count: 4 } },
+        { id: 'slide', kind: 'path', segments: [{ kind: 'line', from: 'current', to: { xIn: -36, yIn: -42 } }], heading: { mode: 'constant', headingRad: Math.PI / 2 } },
+      ],
+    });
+    const patience = bbShotPatienceS(starter);
+    check('AUTO shoot: StarterBot waits longer than it takes to aim and fire from a pose it scores from (1.18 s), and not much more', patience > 1.5 && patience < 3, `${patience.toFixed(2)} s`);
+    for (const physics of ['2d', '3d'] as const) {
+      for (const alliance of ['red', 'blue'] as const) {
+        const { world, seat, setup: s } = stage(noShot, alliance, physics, { spec: starter });
+        const r = world.robots[0];
+        const held = r.hopper.length;
+        startMatch(world);
+        const commands = new Map<number, RobotCommand>();
+        const recorded: RobotCommand[] = [];
+        let named: string | undefined;
+        let early = false;
+        let ticks = 0;
+        for (; ticks < Math.round(30 / SIM_DT) && seat.status().state !== 'done'; ticks++) {
+          const c = localizeCommand(seat.step(world, cmd({})));
+          recorded.push(c);
+          commands.set(0, c);
+          world.events.length = 0;
+          BIOBUZZ_SIM.step(world, SIM_DT, commands);
+          const st = seat.status();
+          if (st.stepId === 'shoot' && st.cantShoot !== undefined) early = true;
+          if (named === undefined && st.cantShoot !== undefined) named = st.cantShoot;
+        }
+        const shoot = seat.trace()?.steps.find((x) => x.id === 'shoot');
+        const took = shoot ? shoot.endS - shoot.startS : -1;
+        check(
+          `AUTO shoot ${physics} ${alliance}: StarterBot's shootAll from 28 in gives up after its patience and the routine finishes inside AUTO`,
+          seat.status().state === 'done' && ticks * SIM_DT < 30 && Math.abs(took - patience) < 3 * SIM_DT,
+          `${seat.status().state} at ${(ticks * SIM_DT).toFixed(2)} s, shoot took ${took.toFixed(2)} s (patience ${patience.toFixed(2)})`,
+        );
+        check(
+          `AUTO shoot ${physics} ${alliance}: ...and the seat names the step (cantShoot) once it has given up, not while it waits`,
+          named === 'shoot' && !early && r.hopper.length === held,
+          `cantShoot ${String(named)}, early ${early}, hopper ${held} -> ${r.hopper.length}`,
+        );
+        if (physics === '2d' && alliance === 'red') {
+          // the seat still only reads: its recorded commands, replayed with no seat, give the same world
+          const replay = BIOBUZZ_SIM.createWorld('match', 7, [s], undefined, '2d');
+          startMatch(replay);
+          const map = new Map<number, RobotCommand>();
+          for (const c of recorded) {
+            map.set(0, c);
+            replay.events.length = 0;
+            BIOBUZZ_SIM.step(replay, SIM_DT, map);
+          }
+          const rr = replay.robots[0];
+          check('AUTO shoot: a run that gave up a shot replays from its recorded commands with no seat', rr.pos.x === r.pos.x && rr.pos.y === r.pos.y && rr.heading === r.heading && rr.hopper.length === r.hopper.length);
+          // the window closes: 3 s of match time after the give-up the status no longer names it
+          for (let i = 0; i < Math.round(3.5 / SIM_DT); i++) {
+            commands.set(0, localizeCommand(seat.step(world, cmd({}))));
+            world.events.length = 0;
+            BIOBUZZ_SIM.step(world, SIM_DT, commands);
+          }
+          check('AUTO shoot: ...and the status stops naming it 3 s after', seat.status().cantShoot === undefined && seat.status().state === 'done', JSON.stringify(seat.status()));
+        }
+      }
+    }
+    // a pose it CAN score from: all four leave and nothing is named
+    for (const alliance of ['red', 'blue'] as const) {
+      const fromWall = zen({
+        formatVersion: 4,
+        name: 'wall-shot',
+        alliance: 'RED',
+        start: { pose: { xIn: -34, yIn: -63.17, headingRad: Math.PI / 2 } },
+        steps: [{ id: 'shoot', kind: 'command', name: 'shootAll', args: { count: 4 } }],
+      });
+      const { world, seat } = stage(fromWall, alliance, '2d', { spec: starter });
+      startMatch(world);
+      let named = false;
+      const commands = new Map<number, RobotCommand>();
+      for (let i = 0; i < Math.round(10 / SIM_DT) && seat.status().state !== 'done'; i++) {
+        commands.set(0, localizeCommand(seat.step(world, cmd({}))));
+        world.events.length = 0;
+        BIOBUZZ_SIM.step(world, SIM_DT, commands);
+        if (seat.status().cantShoot !== undefined) named = true;
+      }
+      check(`AUTO shoot 2d ${alliance}: StarterBot from a pose it scores from fires all four and never reads cantShoot`, seat.status().state === 'done' && world.robots[0].hopper.length === 0 && !named, `${seat.status().state}, hopper ${world.robots[0].hopper.length}, named ${named}`);
+    }
+    // every preset, from a pose most of them cannot score from: the step always ends
+    for (const spec of BB_PRESET_LIST) {
+      const mid = zen({
+        formatVersion: 4,
+        name: 'mid-shot',
+        alliance: 'RED',
+        start: { pose: { xIn: -40, yIn: -10, headingRad: 0 } },
+        steps: [{ id: 'shoot', kind: 'command', name: 'shootAll', args: { count: 4 } }],
+      });
+      const { world, seat } = stage(mid, 'red', '2d', { spec });
+      startMatch(world);
+      let named = false;
+      const commands = new Map<number, RobotCommand>();
+      for (let i = 0; i < Math.round(10 / SIM_DT) && seat.status().state !== 'done'; i++) {
+        commands.set(0, localizeCommand(seat.step(world, cmd({}))));
+        world.events.length = 0;
+        BIOBUZZ_SIM.step(world, SIM_DT, commands);
+        if (seat.status().cantShoot !== undefined) named = true;
+      }
+      const left = world.robots[0].hopper.length;
+      check(
+        `AUTO shoot: ${spec.name} (${bbLauncherOf(spec, 30).kind}) never holds a shootAll forever, and names it only when shots stayed in`,
+        seat.status().state === 'done' && named === (left > 0),
+        `${seat.status().state} at ${world.time.toFixed(2)} s, hopper ${left}, named ${named}`,
+      );
+    }
+    // headless: the same file ends, and its trace has the shot's real length
+    const h = runAutoHeadless({ game: 'biobuzz', spec: starter, setup: noShot });
+    const hs = h.trace.steps.find((x) => x.id === 'shoot');
+    check(
+      'AUTO headless: StarterBot\'s no-shot run finishes, and the trace times the shoot step (was 0 s, at its own start)',
+      h.state === 'done' && hs !== undefined && Math.abs(hs.endS - hs.startS - patience) < 3 * SIM_DT,
+      `${h.state}, shoot ${hs ? `${hs.startS.toFixed(2)}..${hs.endS.toFixed(2)}` : 'missing'}`,
+    );
+    // headless: a step still running at the buzzer ends there, interrupted
+    const long = runAutoHeadless({
+      game: 'biobuzz',
+      spec: { ...BB_DEFAULT_SPEC } as RobotSpec,
+      setup: zen({ ...probeAuto(), steps: [{ id: 'long', kind: 'wait', seconds: 40 }] }),
+    });
+    const ls = long.trace.steps.find((x) => x.id === 'long');
+    check(
+      'AUTO headless: a step still running at the buzzer ends at the buzzer, interrupted (not at its own start)',
+      long.state === 'running' && ls !== undefined && ls.endS > 29.9 && ls.interrupted && !long.trace.completed,
+      `${long.state}, long ${ls ? `${ls.startS.toFixed(2)}..${ls.endS.toFixed(2)} interrupted ${ls.interrupted}` : 'missing'}`,
+    );
+  }
+
+  // ── format 4: a transfer, an envelope on a command, a rejoinFrom after it ───────────────────
+  {
+    const dir = join(here, 'fixtures', 'zenith');
+    const f4Text = readFileSync(join(dir, 'format4.auto.json'), 'utf8');
+    const f4 = JSON.parse(f4Text) as { formatVersion: number; steps: { kind: string; envelope?: unknown; rejoinFrom?: unknown }[] };
+    check(
+      'AUTO format 4: the fixture is format 4 with a transfer, an envelope on a command and a path with rejoinFrom after it',
+      f4.formatVersion === 4 && f4.steps.some((x) => x.kind === 'transfer') && f4.steps.some((x) => x.kind === 'command' && x.envelope) && f4.steps.some((x) => x.kind === 'path' && x.rejoinFrom),
+    );
+    for (const alliance of ['blue', 'red'] as const) {
+      const l = loadZenithAuto({ auto: f4Text }, alliance, { ...BB_DEFAULT_SPEC } as RobotSpec, adapter);
+      const errors = l.findings.filter((x) => x.severity === 'error');
+      check(`AUTO format 4 ${alliance}: it loads with no error finding and nothing unsupported`, errors.length === 0 && l.unsupported.length === 0, errors.map((x) => `${x.code}: ${x.message}`).join(' | ') || l.unsupported.join(', '));
+    }
+    const run = (text: string, physics: '2d' | '3d', spec?: RobotSpec) => {
+      const { world, seat } = stage({ auto: text }, 'blue', physics, spec ? { spec } : {});
+      startMatch(world);
+      const log = drive(world, seat, 30);
+      return { world, seat, log, dp: driveParams(world.robots[0].spec) };
+    };
+    for (const physics of ['2d', '3d'] as const) {
+      const { world, seat, log, dp } = run(f4Text, physics);
+      const t = seat.trace()?.steps.find((x) => x.id === 'partnerScores');
+      check(
+        `AUTO format 4 ${physics}: it plays to done inside AUTO, shoots its two, and the transfer takes one scheduler tick at most`,
+        seat.status().state === 'done' && log.ticks * SIM_DT < 30 && world.robots[0].hopper.length === 2 && t !== undefined && t.endS - t.startS <= SIM_DT + 1e-6,
+        `${seat.status().state} at ${(log.ticks * SIM_DT).toFixed(2)} s, hopper ${world.robots[0].hopper.length}, transfer ${t ? (t.endS - t.startS).toFixed(3) : '?'} s`,
+      );
+      check(
+        `AUTO format 4 ${physics}: ...inside the drivetrain's own turn and speed limits every tick`,
+        log.maxDh <= dp.maxTurn * SIM_DT * 1.05 && log.maxDp <= dp.maxSpeed * SIM_DT * 1.05,
+        `max ${log.maxDh.toFixed(4)} rad/tick (limit ${(dp.maxTurn * SIM_DT).toFixed(4)}), ${log.maxDp.toFixed(3)} in/tick (limit ${(dp.maxSpeed * SIM_DT).toFixed(3)})`,
+      );
+    }
+    {
+      // THE TRANSFER MOVES NOTHING: the same file with a zero-second wait in its place drives the
+      // robot identically, tick for tick (the runtime runs a transfer as exactly that wait)
+      const asWait = JSON.stringify({
+        ...JSON.parse(f4Text),
+        steps: (JSON.parse(f4Text) as { steps: { kind: string }[] }).steps.map((x) => (x.kind === 'transfer' ? { id: 'partnerScores', kind: 'wait', seconds: 0 } : x)),
+      });
+      const a = run(f4Text, '2d');
+      const b = run(asWait, '2d');
+      const same = a.log.poses.length === b.log.poses.length && a.log.poses.every((p, i) => p.x === b.log.poses[i].x && p.y === b.log.poses[i].y);
+      const ra = a.world.robots[0];
+      const rb = b.world.robots[0];
+      check(
+        'AUTO format 4: the transfer moves no robot (the run is the run with a zero-second wait in its place, tick for tick)',
+        same && ra.heading === rb.heading && ra.hopper.length === rb.hopper.length,
+        `${a.log.poses.length} vs ${b.log.poses.length} ticks`,
+      );
+    }
+    {
+      const tank = BB_STARTER_BOTS[0];
+      const { seat, log } = run(f4Text, '2d', tank);
+      check('AUTO format 4: a tank (StarterBot) loads it, re-headed, and plays it to done inside AUTO', seat.status().state === 'done' && log.ticks * SIM_DT < 30 && (seat.loaded?.reheaded.length ?? 0) > 0, `${seat.status().state} at ${seat.status().stepId}, ${(log.ticks * SIM_DT).toFixed(2)} s`);
+    }
+  }
+
+  // ── W4-D1: a load error is one sentence; a newer file says so in DSIM's words ───────────────
+  {
+    const msg = (text: string): string => {
+      try {
+        parseAutoText(text);
+        return '(loaded)';
+      } catch (e) {
+        return e instanceof AutoLoadError ? e.message : `(not an AutoLoadError) ${String(e)}`;
+      }
+    };
+    const max = FORMAT_VERSIONS.auto;
+    const newer = msg(JSON.stringify({ ...probeAuto(), formatVersion: max + 1 }));
+    check(
+      'AUTO load: a file from a newer Zenith says which format it is, which DSIM reads, and what to do (not "this build of Zenith")',
+      newer === `This auto was saved by a newer Zenith (file format ${max + 1}), and this DSIM reads up to format ${max}. Reload DSIM; if it still says this, DSIM needs an update.`,
+      newer,
+    );
+    const wpNewer = (() => {
+      try {
+        loadZenithAuto({ auto: JSON.stringify(probeAuto()), waypoints: JSON.stringify({ formatVersion: FORMAT_VERSIONS.waypoints + 1, waypoints: {} }) }, 'blue', { ...BB_DEFAULT_SPEC } as RobotSpec, adapter);
+        return '(loaded)';
+      } catch (e) {
+        return e instanceof AutoLoadError ? e.message : String(e);
+      }
+    })();
+    check('AUTO load: ...and so does a waypoints file from a newer Zenith', wpNewer.startsWith('This waypoints file was saved by a newer Zenith (file format ') && !/build of Zenith/.test(wpNewer), wpNewer);
+    const cases: [string, string][] = [
+      ['not an object', '[]'],
+      ['no integer formatVersion', JSON.stringify({ ...probeAuto(), formatVersion: 3.5 })],
+      ['a schema message that ends in a full stop', JSON.stringify({ ...probeAuto(), formatVersion: 4, steps: [{ id: 'w', kind: 'wait', seconds: 1, envelope: { polygon: [{ xIn: 0, yIn: 0 }, { xIn: 1, yIn: 0 }, { xIn: 0, yIn: 1 }], maxDurationS: 1, actualDurationS: 2, provenance: 'SET BY HAND: x' } }] })],
+      ['a missing name', JSON.stringify({ ...probeAuto(), name: undefined })],
+      ['bad JSON', '{"formatVersion": 4,'],
+    ];
+    const bad = cases.map(([what, text]) => [what, msg(text)] as const).filter(([, m]) => /\.\./.test(m) || !/[.?!]$/.test(m) || m.startsWith('('));
+    check('AUTO load: every load error ends in one full stop, never ".."', bad.length === 0, bad.map(([w, m]) => `${w}: ${m}`).join(' | ') || cases.map(([, t]) => msg(t)).join(' | '));
+  }
+
+  // ── W4-D7: the findings are the FILE's, so a mirrored run names what Zenith names ───────────
+  {
+    const dir = join(here, 'fixtures', 'zenith', 'starter');
+    const auto = readFileSync(join(dir, 'collect-and-score.auto.json'), 'utf8');
+    const waypoints = readFileSync(join(dir, 'waypoints.json'), 'utf8');
+    for (const [label, spec] of [['default', { ...BB_DEFAULT_SPEC } as RobotSpec], ['StarterBot (tank)', BB_STARTER_BOTS[0]]] as const) {
+      const red = loadZenithAuto({ auto, waypoints }, 'red', spec, adapter);
+      const blue = loadZenithAuto({ auto, waypoints }, 'blue', spec, adapter);
+      const a = JSON.stringify(red.findings);
+      const b = JSON.stringify(blue.findings);
+      check(
+        `AUTO findings: a RED file played as BLUE gives the findings it gives as RED, element names included (${label})`,
+        blue.mirrored && !red.mirrored && a === b && /flower1Foot/.test(b),
+        a === b ? `${red.findings.length} findings` : `RED ${red.findings.map((x) => x.message.slice(0, 60)).join(' | ')} // BLUE ${blue.findings.map((x) => x.message.slice(0, 60)).join(' | ')}`,
+      );
+      check(
+        `AUTO findings: ...while the robot still drives the mirrored routine (${label})`,
+        Math.hypot(red.plan.startPose.xIn + blue.plan.startPose.xIn, red.plan.startPose.yIn + blue.plan.startPose.yIn) < 1e-6 && red.reheaded.join() === blue.reheaded.join(),
+      );
+    }
+  }
+
+  // ── W4-D16: Zenith's starter autos show no red line for a name DSIM already lists ───────────
+  // `fixtures/zenith/starter/` is Zenith's public starter example, unedited. Measured 2026-10-24 on
+  // the default build: first-auto 0 errors (was 1, "score"); collect-and-score 6 (was 14: STRUCTURE
+  // x2 at flower1, PERIMETER x2, CAPACITY x2); all-step-kinds 5 (was 12: PERIMETER x4, CAPACITY);
+  // cycle-and-park 4 (was 11: PERIMETER x3, CAPACITY). What is left is real against DSIM's robot and
+  // walls (a 4-pollen hopper, walls at 70.674 in).
+  {
+    const dir = join(here, 'fixtures', 'zenith', 'starter');
+    const waypoints = readFileSync(join(dir, 'waypoints.json'), 'utf8');
+    const RULES = new Set(['PERIMETER', 'STRUCTURE', 'CAPACITY', 'LEGAL_APPROACH', 'START_ILLEGAL', 'OPPONENT_SIDE', 'TIME_BUDGET', 'CLEARANCE', 'KEEPOUT']);
+    for (const name of ['first-auto', 'collect-and-score', 'all-step-kinds', 'cycle-and-park']) {
+      const auto = readFileSync(join(dir, `${name}.auto.json`), 'utf8');
+      for (const alliance of ['red', 'blue'] as const) {
+        const l = loadZenithAuto({ auto, waypoints }, alliance, { ...BB_DEFAULT_SPEC } as RobotSpec, adapter);
+        const errors = l.findings.filter((x) => x.severity === 'error');
+        const notRule = errors.filter((x) => !RULES.has(x.code) || /does not register/.test(x.message));
+        const listed = /"(\w+)", which robot\.json does not register/;
+        check(
+          `AUTO starter ${name} ${alliance}: loads with no error but real rule problems, and what DSIM does not run is listed, not red`,
+          notRule.length === 0 && !l.findings.some((x) => listed.test(x.message)) && l.unsupported.length === (name === 'first-auto' ? 1 : name === 'collect-and-score' ? 4 : 5),
+          `unsupported [${l.unsupported.join(', ')}]; errors ${errors.map((x) => x.code).join(', ') || 'none'}${notRule.length ? `; NOT RULES: ${notRule.map((x) => x.message).join(' | ')}` : ''}`,
+        );
+      }
+    }
   }
 }

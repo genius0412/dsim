@@ -6,3 +6,4 @@
  */
 export * from '../auto/zenithAutos';
 export { launchZenith, type LaunchOptions } from './zenithLaunch';
+export { ZENITH_NOT_READY } from './zenithHost';
