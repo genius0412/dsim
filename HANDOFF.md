@@ -1,4 +1,15 @@
-# HANDOFF — 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
+# HANDOFF — 2026-10-24d (Home balance, wheel-scrolling robot strip, the Play list as popups)
+
+**State: branch `ui/menu-popups` off `alpha` (worktree `.claude/worktrees/menu-popups`), PR into `alpha`. Client only, no server change, no deploy.** `vite build`, `uiaudit`, `docaudit` pass; `npm test` shared ALL PASS. BIOBUZZ fails the known `balls: … LANDED predicted` plus the AUTO / AUTOUI / IMPORT lanes, which crash inside the Zenith packages: the worktree's `node_modules` is a junction to the main checkout's, whose Zenith install has no type files (`tsc` reports the same TS7016s in `src/auto/`). That is the install, not this change; rerun in a checkout with a fresh `npm ci`.
+
+- **Owner:** Home's column hugs the left edge; the robot presets should scroll with a plain wheel; Multiplayer order Ranked (renamed from Find match), Duo record, New room, Browse rooms, Competitions, LAN; entries open the way New room does (a popup), every popup the same width. Answers to the questions: Ranked, Duo record, Browse rooms, LAN, Solo record and Competitions all popups; 520px; inset scales with width; old URLs deep-link.
+- **Home:** `--home-inset: max(48px, 7vw)` for the column's left (90px at 1280, 134 at 1920); the scrim and the 2D field's free area follow it. Measured no page scroll at 1920x1080, 1366x768 and 1280x720.
+- **Strip:** a native non-passive `wheel` listener in `RobotStrip` turns vertical wheel into `scrollLeft`.
+- **Popups:** `POPUPS` + `PopupPanel` + `popupShell` in `App.tsx`; the five early returns (lobby, duorecord, lan, record, matchmaking) are gone, and they render inside the shell with Play mounted under them. Rules in `docs/area/ui.md` (THE MENU STAGE). Driven offscreen against `vite preview`: every popup 520px over Play, Escape and × go back to `/modes` with the Multiplayer list still open, `/ranked` and `/record` load as Play with the popup up.
+- **Not driven:** with a game server (the local build has none, so every Multiplayer entry was disabled and each popup was opened by URL): queueing ranked and getting a match (the strategy window should fill the host), joining a duo room (full-screen inside the host), LAN (its flag comes from the server). Check those on the alpha preview.
+- **Known ceiling:** while a full-screen state fills the host, Tab can still reach the app bar behind it (a `ponytail:` comment at the host).
+
+## 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
 
 **State: on `alpha`, NOT on `main`. SERVER CHANGE (the sim and the input door): `dsim-alpha` DEPLOYED from `f4dbb2a8` (release v155, 2026-10-24 06:57Z, after the owner renewed the flyctl login): `/health` ok, one machine on the new image, clean boot, and the compiled server and room worker carry `bbFireUnaimed` and `SIM_PATCH = 9`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Rule in `docs/area/autos.md` ("A `shootAll` THAT CANNOT SCORE FIRES ANYWAY").
 

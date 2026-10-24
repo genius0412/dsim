@@ -157,6 +157,19 @@ export function ModeSelect({
       </>
     ) : side === 'multi' ? (
       <>
+        {/* ORDER (owner, 2026-10-24): Ranked, Duo record, New room, Browse rooms, Competitions, LAN.
+            The sign-in line is CONDITIONAL, never a reserved blank line: a reserved line made
+            every tile in the old grid a line taller for everybody */}
+        {compete &&
+          entry(
+            <>
+              Ranked
+              <QueueCounts className="tile" />
+            </>,
+            onRanked,
+            { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
+          )}
+        {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
         {entry('New room', onCustomRoom, { disabled: !multiplayer })}
         {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
             room, reachable only by its code, so the code is printed where the player looks */}
@@ -168,18 +181,6 @@ export function ModeSelect({
               : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'
             : null,
         })}
-        {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
-        {/* the sign-in line is CONDITIONAL, never a reserved blank line: a reserved line made
-            every tile in the old grid a line taller for everybody */}
-        {compete &&
-          entry(
-            <>
-              Find match
-              <QueueCounts className="tile" />
-            </>,
-            onRanked,
-            { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
-          )}
         {compete && onCompetitions && entry('Competitions', onCompetitions, { disabled: !multiplayer })}
         {/* LAN: never disabled on `multiplayer` (not needing our servers is the point); hidden where
             the flag is off and in a Discord activity */}
