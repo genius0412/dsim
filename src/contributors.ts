@@ -68,6 +68,7 @@ export const BETA_TESTERS: Contributor[] = [
   { name: 'Leo', userId: 'ea913af1-d8ab-455c-a274-7f2132b2f5ad' },
   { name: 'Aadvik Gupta', userId: '8df89c67-7ebb-4275-aa9a-9a75312c1a1b', github: 'aadvikgg' },
   { name: 'Daniel', userId: '0bb4ce4d-b046-47a7-a040-91315c7f3a28' },
+  { name: 'Arush Yadlapati', userId: 'a232300a-5a1a-4e5d-ae26-d0631f9b33d8', github: 'ArushYadlapati' },
 ];
 
 /**
