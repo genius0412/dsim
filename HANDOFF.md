@@ -1,6 +1,6 @@
 # HANDOFF — 2026-10-24d (Team Updates through TU06; the opponent's NECTAR, sorters, REVERSE; SIM_PATCH 10)
 
-**State: on `alpha`, NOT on `main`. SERVER CHANGE (sim, protocol bit 4096, room participation credit): `dsim-alpha` needs a redeploy, see the end.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass (main's baseline raised, below). Rules: `docs/area/biobuzz.md`, last section.
+**State: on `alpha`, NOT on `main`. SERVER CHANGE (sim, protocol bit 4096, room participation credit): `dsim-alpha` DEPLOYED from `64d87a12` (2026-10-24 10:05Z): `/health` ok, one machine on the new image, clean boot, the compiled room worker carries `bbReverse`.** Verified headless in Electron: builder pickers save `feed`/`reject`, Z moves the bar, `;` empties the hopper, Controls lists Reverse intake. `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass (main's baseline raised, below). Rules: `docs/area/biobuzz.md`, last section.
 
 - **Owner:** review every new Team Update and update the sim. A POLLEN + NECTAR intake takes the opponent's NECTAR too, with penalties; auto-reject, pass-through and a deployable bar (the ramp doubling as it) as options; reverse in the controls; a single turret can be POLLEN + NECTAR, so the intake's feed is its own choice.
 - **Manual:** downloaded TU06 (`node scripts/manual.mjs`) and word-diffed it against V1. Game changes: the G408 and G407 sorter notes, G402's two AUTO examples, the 1:00 "Chime", pre-loads on the own side, G426 notes, G419/G425 wording. Points and RP thresholds unchanged. The table of what the sim did per item is in the guide.
@@ -12,7 +12,6 @@
 - **Bundle:** `main` baseline 1034.49 → 1055.46 KB. Untouched alpha measures 1052.63; this adds 2.83.
 - **Not done:** the importer editor offers no feed/sorter (imports read the launcher's old feed); Zenith autos have no reverse button.
 - **When this reaches `main`:** 10 is free there (main is at 8). Give it the next number above main's latest if main has moved.
-- **Deploy:** `./scripts/fly-deploy.sh --alpha` from this tree (vendor tarballs present), then `/health` and one machine.
 
 ## HANDOFF — 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
 
