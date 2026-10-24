@@ -8,7 +8,7 @@
  *
  * | name           | on the robot                                  | here                                          |
  * |----------------|-----------------------------------------------|-----------------------------------------------|
- * | `shootAll`     | spin up, launch `count`, settle 250 ms        | hold FIRE until `count` have left the hopper (or it is empty), then settle 250 ms; nothing leaving for `bbShotPatienceS`, it gives up and the seat says so |
+ * | `shootAll`     | spin up, launch `count`, settle 250 ms        | hold FIRE until `count` have left the hopper (or it is empty), then settle 250 ms; after the build's aim time it fires UNAIMED, like the robot (`bbAimWindowS`); it gives up only if even that launches nothing |
  * | `setIntake`    | set the roller(s), done the same loop         | FORWARD holds INTAKE on until a STOP; REVERSE is a STOP (DSIM has no outtake) |
  * | `launcherIdle` | flywheel to 0                                 | done at once: DSIM's flywheel has no idle state to leave |
  * | `relocalize`   | vision relocalisation                         | done at once: DSIM's belief is the truth       |
@@ -30,11 +30,13 @@ import biobuzzField from '@horizon36596/zenith-season-biobuzz/field/biobuzz.fiel
 import type { AutoButtons, AutoCommand, AutoHost, GameAutoAdapter } from '../../../auto/types';
 import { driveParams } from '../../../sim/drivetrain';
 import type { RobotSpec, RobotState, World } from '../../../types';
-import { FLY_FEED_MIN_FRAC, FLY_RAMP_INERTIA_SLOW, FLY_RAMP_RPM_S, FLY_SHOT_DROP } from '../../../config';
-import { clamp } from '../../../math';
-import { bbFootprint, bbHopperCap, bbRampSwingProgress } from '../robot';
+import { FLY_FEED_MIN_FRAC, FLY_RAMP_INERTIA_SLOW, FLY_RAMP_RPM_S, FLY_SHOT_DROP, SIM_DT, simPatchAtLeast } from '../../../config';
+import { clamp, wrapAngle } from '../../../math';
+import { bbAimHeading, bbFootprint, bbHopperCap, bbRampSwingProgress } from '../robot';
+import { bbAimTarget } from '../play';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf } from '../mechs';
 import {
+  BB_AIM_TOL,
   BB_DUMP_RELOAD_S,
   BB_FIRE_INTERVAL,
   BB_FIXED_FLY_DEFAULT,
@@ -55,18 +57,50 @@ const SHOT_SETTLE_S = 0.25;
 const SHOOT_PATIENCE_S = 1;
 
 /**
- * HOW LONG `shootAll` WAITS FOR SOMETHING TO LEAVE THE HOPPER before it gives up, from its start
- * and again after every launch. Aim Assist is on for every robot (`coerceAssists`), so a held FIRE
- * is released only when the shot would land (`bbLaunch`); from a pose it cannot score from, nothing
- * ever leaves and the auto used to hold FIRE for the rest of AUTO (StarterBot, 28 in from the cell,
- * scores from 41 to 46 in). A real robot's `shootAll` launches and moves on, so the host gives up.
+ * THE EARLIEST `shootAll` FIRES UNAIMED, from its start and again after every launch: the build's
+ * own aim and beat, so a wheel has spun up and a turret or chassis has had the time a full aim
+ * takes. Read off the build, never typed: the aim (a turret's half slew; a chassis-aimed launcher's
+ * half turn, doubled because the aim brakes onto the heading) plus the longest wait between two
+ * launches it is ready for (a fixed wheel's feed and recovery, a turret's beat, a dumper's re-arm).
+ * StarterBot's is 1.35 s.
  *
- * Read off the build, never typed: the aim (a turret's half slew; a chassis-aimed launcher's half
- * turn, doubled because the aim brakes onto the heading) plus the longest wait between two launches
- * it is ready for (a fixed wheel's feed and recovery, a turret's beat, a dumper's re-arm), plus
- * `SHOOT_PATIENCE_S`. Measured 2026-10-24 over the five presets at four poses, 2D and 3D: every
- * pose that scores launches first within 1.18 s (StarterBot turning half a turn) with no later
- * gap over 0.30 s; StarterBot's patience is 2.35 s.
+ * It is a floor, not the switch: `shootAll` goes unaimed only once aiming has also SETTLED
+ * (`bbAimSettled` for `AIM_SETTLED_S`), because a chassis-aimed launcher making a big turn while
+ * the follower holds its pose takes longer than its window. Measured 2026-10-24 (5 presets, 676
+ * poses each, 2D): 27 of 1982 poses that score fired their first aimed shot after the window alone,
+ * up to 3.37 s (StarterBot); with the settle rule, none fires unaimed before the aimed shot would.
+ */
+export function bbAimWindowS(spec: RobotSpec): number {
+  return bbShotPatienceS(spec) - SHOOT_PATIENCE_S;
+}
+
+/** how long aiming must stay settled before `shootAll` fires unaimed */
+const AIM_SETTLED_S = 0.25;
+/** a chassis or turret turning slower than this (rad/s) has stopped aiming */
+const AIM_SETTLED_RATE = 0.2;
+/** past the window, aiming that never settles (a robot shoved while it aims) fires unaimed after this */
+const AIM_SETTLE_CAP_S = 3;
+
+/**
+ * HAS AIM ASSIST FINISHED AIMING? Read off the world, written nowhere: a chassis-aimed launcher
+ * (fixed, dumper) is within `BB_AIM_TOL` of the heading aim assist turns it to and has stopped
+ * turning; a turret has stopped slewing (both axes, both turrets of a double) on a chassis that is
+ * not turning. A settled aim whose shot still would not land is the "would miss" a robot fires
+ * through anyway.
+ */
+export function bbAimSettled(world: World, r: RobotState): boolean {
+  if (Math.abs(r.angVel) > AIM_SETTLED_RATE) return false;
+  const want = bbAimHeading(r, bbAimTarget(world, r), !simPatchAtLeast(world, 4));
+  if (want !== null) return Math.abs(wrapAngle(want - r.heading)) < BB_AIM_TOL;
+  const still = (v: number | undefined): boolean => Math.abs(v ?? 0) <= AIM_SETTLED_RATE;
+  return still(r.bbTurretYawVel) && still(r.bbTurretPitchVel) && still(r.bbTurret2YawVel) && still(r.bbTurret2PitchVel);
+}
+
+/**
+ * HOW LONG AN UNAIMED `shootAll` WAITS FOR SOMETHING TO LEAVE THE HOPPER before it gives up: the aim
+ * window plus `SHOOT_PATIENCE_S`, from the switch to unaimed and again after every launch. With the
+ * would-land gate gone only the launcher itself can hold a shot back (a wheel that never reaches its
+ * feed speed), and the auto must still not stand there for the rest of AUTO.
  */
 export function bbShotPatienceS(spec: RobotSpec): number {
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
@@ -305,6 +339,9 @@ class BiobuzzAutoHost implements AutoHost {
   private rampPress = 0;
   /** shootAll commands that gave up with nothing leaving the hopper (`AutoHost.cantShootCount`) */
   private gaveUp = 0;
+  /** shootAll commands firing unaimed now, and how many have switched so far (`unaimedCount`) */
+  private firingUnaimed = 0;
+  private wentUnaimed = 0;
 
   constructor(
     public world: World,
@@ -329,6 +366,7 @@ class BiobuzzAutoHost implements AutoHost {
         return this.instant(() => {
           this.intakeOn = false;
           this.firing = 0;
+          this.firingUnaimed = 0;
           this.rampPress = 0;
         });
       case 'setRamp':
@@ -347,24 +385,33 @@ class BiobuzzAutoHost implements AutoHost {
   }
 
   /**
-   * FIRE held until `count` have left the hopper (or it is empty), then the settle. If nothing
-   * leaves for the build's patience (`bbShotPatienceS`, restarted by every launch), it lets go and
-   * ends at once, counted for the seat to say (`cantShootCount`): the auto must not stand at a
-   * pose it cannot score from for the rest of AUTO.
+   * FIRE held until `count` have left the hopper (or it is empty), then the settle. Aim assist
+   * aims and gates the release for the build's aim window (`bbAimWindowS`, restarted by every
+   * launch); past it the shot is released UNAIMED (`bbFireUnaimed`), as the team's robot would,
+   * and the seat says so (`unaimedCount`). If even then nothing leaves for `bbShotPatienceS`, it
+   * lets go and ends at once (`cantShootCount`): the auto must not stand there for the rest of AUTO.
    */
   private shootAll(count: number): AutoCommand {
     let startHeld = 0;
     let want = 0;
     let settleFrom: number | null = null;
     let holding = false;
+    let unaimed = false;
     let quit = false;
     let lastHeld = 0;
     let waitFrom = 0;
+    let aimWindow = 0;
     let patience = 0;
+    /** consecutive ticks aiming has been settled (`bbAimSettled`) */
+    let settledTicks = 0;
     const release = (): void => {
       if (holding) {
         holding = false;
         this.firing = Math.max(0, this.firing - 1);
+      }
+      if (unaimed) {
+        unaimed = false;
+        this.firingUnaimed = Math.max(0, this.firingUnaimed - 1);
       }
     };
     return {
@@ -373,6 +420,7 @@ class BiobuzzAutoHost implements AutoHost {
         lastHeld = startHeld;
         waitFrom = this.world.time;
         const r = robotOf(this.world, this.robotId);
+        aimWindow = r ? bbAimWindowS(r.spec) : 0;
         patience = r ? bbShotPatienceS(r.spec) : 0;
         want = Math.max(0, Math.min(Math.round(count), startHeld));
         settleFrom = want === 0 ? this.world.time : null;
@@ -391,7 +439,17 @@ class BiobuzzAutoHost implements AutoHost {
         // a launch restarts the wait; an intake adding one does not
         if (held < lastHeld) waitFrom = this.world.time;
         lastHeld = held;
-        if (this.world.time - waitFrom >= patience - 1e-9) {
+        const waited = this.world.time - waitFrom;
+        const r = robotOf(this.world, this.robotId);
+        settledTicks = r && bbAimSettled(this.world, r) ? settledTicks + 1 : 0;
+        const settled = settledTicks * SIM_DT >= AIM_SETTLED_S - 1e-9 || waited >= aimWindow + AIM_SETTLE_CAP_S - 1e-9;
+        if (!unaimed && waited >= aimWindow - 1e-9 && settled) {
+          // aim assist had its time and the shot still would not land: fire as the robot would
+          unaimed = true;
+          this.firingUnaimed += 1;
+          this.wentUnaimed += 1;
+          waitFrom = this.world.time;
+        } else if (unaimed && waited >= patience - 1e-9) {
           release();
           quit = true;
           this.gaveUp += 1;
@@ -464,16 +522,26 @@ class BiobuzzAutoHost implements AutoHost {
   }
 
   buttons(): AutoButtons {
-    return { intake: this.intakeOn, fire: this.firing > 0, bbRamp: this.rampPress > 0 };
+    return {
+      intake: this.intakeOn,
+      fire: this.firing > 0,
+      bbRamp: this.rampPress > 0,
+      ...(this.firingUnaimed > 0 ? { bbFireUnaimed: true } : {}),
+    };
   }
 
   cantShootCount(): number {
     return this.gaveUp;
   }
 
+  unaimedCount(): number {
+    return this.wentUnaimed;
+  }
+
   release(): void {
     this.intakeOn = false;
     this.firing = 0;
+    this.firingUnaimed = 0;
     this.rampPress = 0;
   }
 }

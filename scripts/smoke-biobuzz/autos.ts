@@ -42,7 +42,8 @@ import { BB_PRESET_LIST, BB_STARTER_BOTS } from '../../src/games/biobuzz/presets
 import { nonHolonomic } from '../../src/auto/drive';
 import { AutoLoadError, loadZenithAuto, parseAutoText } from '../../src/auto/load';
 import { runAutoHeadless } from '../../src/auto/headless';
-import { bbShotPatienceS } from '../../src/games/biobuzz/auto';
+import { bbAimWindowS, bbShotPatienceS } from '../../src/games/biobuzz/auto';
+import { dequantizeCommand, quantizeCommand, sanitizeQCommand, SEAT_ONLY_BUTTONS } from '../../src/net/protocol';
 import { bbLauncherOf } from '../../src/games/biobuzz/mechs';
 import { FORMAT_VERSIONS } from '@horizon36596/zenith-schema';
 import zenithBiobuzzField from '@horizon36596/zenith-season-biobuzz/field/biobuzz.field.json' with { type: 'json' };
@@ -1181,12 +1182,12 @@ export function autoChecks(check: Check): void {
     );
   }
 
-  // ── W4-D3: a shootAll from a pose the robot cannot score from ends, and says so ──────────────
-  // Aim Assist is on for every robot, so a shot leaves only when it would land. StarterBot (a tank
-  // with a fixed launcher at the back) scores from 41 to 46 in off the cell; from 28 in its
-  // shootAll held FIRE for the rest of AUTO with nothing on screen but SHOOT, and a headless run's
-  // trace ended the step at its own start. Measured 2026-10-24: the step never ended (29.5 s);
-  // now it ends after the build's patience (2.35 s) and the routine finishes at 4.15 s.
+  // ── W4-D3: a shootAll from a pose the robot cannot score from FIRES, like the robot ─────────
+  // Aim Assist is on for every robot, so a held FIRE leaves only when the shot would land. StarterBot
+  // (a tank with a fixed launcher at the back) scores from 41 to 46 in off the cell; from 28 in its
+  // shootAll held FIRE for the rest of AUTO (29.5 s). The team's robot runs its own shootAll and
+  // fires anyway, so once aim assist has had the build's aim window and the aim has settled, the
+  // host presses `bbFireUnaimed` (`SIM_PATCH` 9): all four leave, and miss.
   {
     const starter = BB_STARTER_BOTS[0];
     const noShot = zen({
@@ -1200,8 +1201,13 @@ export function autoChecks(check: Check): void {
         { id: 'slide', kind: 'path', segments: [{ kind: 'line', from: 'current', to: { xIn: -36, yIn: -42 } }], heading: { mode: 'constant', headingRad: Math.PI / 2 } },
       ],
     });
+    const window = bbAimWindowS(starter);
     const patience = bbShotPatienceS(starter);
-    check('AUTO shoot: StarterBot waits longer than it takes to aim and fire from a pose it scores from (1.18 s), and not much more', patience > 1.5 && patience < 3, `${patience.toFixed(2)} s`);
+    check(
+      'AUTO shoot: StarterBot lets aim assist aim for its own aim and beat (~1.35 s) before an unaimed shot, and gives up only a second past that',
+      window > 1 && window < 2 && Math.abs(patience - window - 1) < 1e-9,
+      `window ${window.toFixed(2)} s, patience ${patience.toFixed(2)} s`,
+    );
     for (const physics of ['2d', '3d'] as const) {
       for (const alliance of ['red', 'blue'] as const) {
         const { world, seat, setup: s } = stage(noShot, alliance, physics, { spec: starter });
@@ -1211,29 +1217,32 @@ export function autoChecks(check: Check): void {
         const commands = new Map<number, RobotCommand>();
         const recorded: RobotCommand[] = [];
         let named: string | undefined;
-        let early = false;
+        let cant = false;
+        let firstLaunch = -1;
+        let shootStart = -1;
         let ticks = 0;
         for (; ticks < Math.round(30 / SIM_DT) && seat.status().state !== 'done'; ticks++) {
           const c = localizeCommand(seat.step(world, cmd({})));
           recorded.push(c);
           commands.set(0, c);
           world.events.length = 0;
+          const before = r.hopper.length;
           BIOBUZZ_SIM.step(world, SIM_DT, commands);
           const st = seat.status();
-          if (st.stepId === 'shoot' && st.cantShoot !== undefined) early = true;
-          if (named === undefined && st.cantShoot !== undefined) named = st.cantShoot;
+          if (shootStart < 0 && st.stepId === 'shoot') shootStart = st.timeS;
+          if (firstLaunch < 0 && r.hopper.length < before) firstLaunch = st.timeS;
+          if (named === undefined && st.outOfRange !== undefined) named = st.outOfRange;
+          if (st.cantShoot !== undefined) cant = true;
         }
-        const shoot = seat.trace()?.steps.find((x) => x.id === 'shoot');
-        const took = shoot ? shoot.endS - shoot.startS : -1;
         check(
-          `AUTO shoot ${physics} ${alliance}: StarterBot's shootAll from 28 in gives up after its patience and the routine finishes inside AUTO`,
-          seat.status().state === 'done' && ticks * SIM_DT < 30 && Math.abs(took - patience) < 3 * SIM_DT,
-          `${seat.status().state} at ${(ticks * SIM_DT).toFixed(2)} s, shoot took ${took.toFixed(2)} s (patience ${patience.toFixed(2)})`,
+          `AUTO shoot ${physics} ${alliance}: StarterBot from 28 in fires all four once aiming has had its window, and the routine finishes inside AUTO`,
+          seat.status().state === 'done' && ticks * SIM_DT < 30 && held === 4 && r.hopper.length === 0 && firstLaunch - shootStart >= window - 1e-6,
+          `${seat.status().state} at ${(ticks * SIM_DT).toFixed(2)} s, hopper ${held} -> ${r.hopper.length}, first shot ${(firstLaunch - shootStart).toFixed(2)} s into the step (window ${window.toFixed(2)})`,
         );
         check(
-          `AUTO shoot ${physics} ${alliance}: ...and the seat names the step (cantShoot) once it has given up, not while it waits`,
-          named === 'shoot' && !early && r.hopper.length === held,
-          `cantShoot ${String(named)}, early ${early}, hopper ${held} -> ${r.hopper.length}`,
+          `AUTO shoot ${physics} ${alliance}: ...the seat names the step as shot out of range, and never as one it could not shoot`,
+          named === 'shoot' && !cant,
+          `outOfRange ${String(named)}, cantShoot ${cant}`,
         );
         if (physics === '2d' && alliance === 'red') {
           // the seat still only reads: its recorded commands, replayed with no seat, give the same world
@@ -1246,18 +1255,35 @@ export function autoChecks(check: Check): void {
             BIOBUZZ_SIM.step(replay, SIM_DT, map);
           }
           const rr = replay.robots[0];
-          check('AUTO shoot: a run that gave up a shot replays from its recorded commands with no seat', rr.pos.x === r.pos.x && rr.pos.y === r.pos.y && rr.heading === r.heading && rr.hopper.length === r.hopper.length);
-          // the window closes: 3 s of match time after the give-up the status no longer names it
+          check(
+            'AUTO shoot: a run that fired unaimed replays from its recorded commands with no seat',
+            rr.pos.x === r.pos.x && rr.pos.y === r.pos.y && rr.heading === r.heading && rr.hopper.length === r.hopper.length,
+          );
+          // ...and a replay stamped before SIM_PATCH 9 ignores the bit: its shots stay in, as they did
+          const old = BIOBUZZ_SIM.createWorld('match', 7, [s], undefined, '2d');
+          old.simPatch = 7;
+          startMatch(old);
+          for (const c of recorded) {
+            map.set(0, c);
+            old.events.length = 0;
+            BIOBUZZ_SIM.step(old, SIM_DT, map);
+          }
+          check(
+            'AUTO shoot: a world stamped SIM_PATCH 7 ignores bbFireUnaimed (the same commands keep all four in)',
+            recorded.some((c) => c.bbFireUnaimed === true) && old.robots[0].hopper.length === held,
+            `hopper ${old.robots[0].hopper.length}`,
+          );
+          // the window closes: 3 s of match time after the switch the status no longer names it
           for (let i = 0; i < Math.round(3.5 / SIM_DT); i++) {
             commands.set(0, localizeCommand(seat.step(world, cmd({}))));
             world.events.length = 0;
             BIOBUZZ_SIM.step(world, SIM_DT, commands);
           }
-          check('AUTO shoot: ...and the status stops naming it 3 s after', seat.status().cantShoot === undefined && seat.status().state === 'done', JSON.stringify(seat.status()));
+          check('AUTO shoot: ...and the status stops naming it 3 s after', seat.status().outOfRange === undefined && seat.status().state === 'done', JSON.stringify(seat.status()));
         }
       }
     }
-    // a pose it CAN score from: all four leave and nothing is named
+    // a pose it CAN score from: all four leave aimed, and nothing is named
     for (const alliance of ['red', 'blue'] as const) {
       const fromWall = zen({
         formatVersion: 4,
@@ -1269,16 +1295,24 @@ export function autoChecks(check: Check): void {
       const { world, seat } = stage(fromWall, alliance, '2d', { spec: starter });
       startMatch(world);
       let named = false;
+      let unaimed = false;
       const commands = new Map<number, RobotCommand>();
       for (let i = 0; i < Math.round(10 / SIM_DT) && seat.status().state !== 'done'; i++) {
-        commands.set(0, localizeCommand(seat.step(world, cmd({}))));
+        const c = localizeCommand(seat.step(world, cmd({})));
+        if (c.bbFireUnaimed) unaimed = true;
+        commands.set(0, c);
         world.events.length = 0;
         BIOBUZZ_SIM.step(world, SIM_DT, commands);
-        if (seat.status().cantShoot !== undefined) named = true;
+        const st = seat.status();
+        if (st.cantShoot !== undefined || st.outOfRange !== undefined) named = true;
       }
-      check(`AUTO shoot 2d ${alliance}: StarterBot from a pose it scores from fires all four and never reads cantShoot`, seat.status().state === 'done' && world.robots[0].hopper.length === 0 && !named, `${seat.status().state}, hopper ${world.robots[0].hopper.length}, named ${named}`);
+      check(
+        `AUTO shoot 2d ${alliance}: StarterBot from a pose it scores from fires all four AIMED, and nothing is named`,
+        seat.status().state === 'done' && world.robots[0].hopper.length === 0 && !named && !unaimed,
+        `${seat.status().state}, hopper ${world.robots[0].hopper.length}, named ${named}, unaimed ${unaimed}`,
+      );
     }
-    // every preset, from a pose most of them cannot score from: the step always ends
+    // every preset, from a pose most of them cannot score from: the step ends with the hopper fired
     for (const spec of BB_PRESET_LIST) {
       const mid = zen({
         formatVersion: 4,
@@ -1289,28 +1323,43 @@ export function autoChecks(check: Check): void {
       });
       const { world, seat } = stage(mid, 'red', '2d', { spec });
       startMatch(world);
-      let named = false;
+      let cant = false;
       const commands = new Map<number, RobotCommand>();
       for (let i = 0; i < Math.round(10 / SIM_DT) && seat.status().state !== 'done'; i++) {
         commands.set(0, localizeCommand(seat.step(world, cmd({}))));
         world.events.length = 0;
         BIOBUZZ_SIM.step(world, SIM_DT, commands);
-        if (seat.status().cantShoot !== undefined) named = true;
+        if (seat.status().cantShoot !== undefined) cant = true;
       }
       const left = world.robots[0].hopper.length;
       check(
-        `AUTO shoot: ${spec.name} (${bbLauncherOf(spec, 30).kind}) never holds a shootAll forever, and names it only when shots stayed in`,
-        seat.status().state === 'done' && named === (left > 0),
-        `${seat.status().state} at ${world.time.toFixed(2)} s, hopper ${left}, named ${named}`,
+        `AUTO shoot: ${spec.name} (${bbLauncherOf(spec, 30).kind}) never holds a shootAll forever: it fires its preload, and gives up only if shots stayed in`,
+        seat.status().state === 'done' && left === 0 && !cant,
+        `${seat.status().state} at ${world.time.toFixed(2)} s, hopper ${left}, gave up ${cant}`,
       );
     }
     // headless: the same file ends, and its trace has the shot's real length
     const h = runAutoHeadless({ game: 'biobuzz', spec: starter, setup: noShot });
     const hs = h.trace.steps.find((x) => x.id === 'shoot');
     check(
-      'AUTO headless: StarterBot\'s no-shot run finishes, and the trace times the shoot step (was 0 s, at its own start)',
-      h.state === 'done' && hs !== undefined && Math.abs(hs.endS - hs.startS - patience) < 3 * SIM_DT,
+      'AUTO headless: StarterBot’s out-of-range run finishes, and the trace times the shoot step (was 0 s, at its own start)',
+      h.state === 'done' && hs !== undefined && hs.endS - hs.startS > window && hs.endS - hs.startS < window + 3,
       `${h.state}, shoot ${hs ? `${hs.startS.toFixed(2)}..${hs.endS.toFixed(2)}` : 'missing'}`,
+    );
+    // the wire: the bit survives the quantize round trip the seat's command takes, and no client may send it
+    const seatCmd = localizeCommand({ ...cmd({ fire: true }), bbFireUnaimed: true });
+    const q = quantizeCommand(seatCmd);
+    const fromClient = sanitizeQCommand({ ...q });
+    check(
+      'AUTO shoot: bbFireUnaimed rides the quantized command (replays, snapshots, prediction) and the door clears it from every client packet',
+      seatCmd.bbFireUnaimed === true &&
+        (q.buttons & SEAT_ONLY_BUTTONS) !== 0 &&
+        fromClient !== null &&
+        (fromClient.buttons & SEAT_ONLY_BUTTONS) === 0 &&
+        dequantizeCommand(fromClient).fire === true &&
+        dequantizeCommand(fromClient).bbFireUnaimed === undefined &&
+        !('bbFireUnaimed' in localizeCommand(cmd({ fire: true }))),
+      JSON.stringify({ q: q.buttons, client: fromClient?.buttons }),
     );
     // headless: a step still running at the buzzer ends there, interrupted
     const long = runAutoHeadless({

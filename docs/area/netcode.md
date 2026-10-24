@@ -218,6 +218,10 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 - **`src/net/protocol.ts`** — JSON `ClientMsg` (join/update/start/restart/input) and
   `ServerMsg` (welcome/roster/matchStart/snapshot/drop), plus quantize helpers. The client
   must PREDICT on `localizeCommand(cmd)` (exactly what the server decodes).
+  ⚠️ **`SEAT_ONLY_BUTTONS`**: `buttons` is kept whole by `sanitizeQCommand` (a newer client's bit
+  is not dropped), EXCEPT bits only a seat the room runs may set. Today that is bit 2048,
+  `bbFireUnaimed` (a Zenith auto firing past aim assist's gate, `docs/area/autos.md`): the door
+  clears it from every client packet, and replays, snapshots and prediction carry it as usual.
 - **`game.ts` `stepServer`** applies its OWN command locally + `sendInput`, buffering it; on a
   snapshot it snaps `this.world` to the authoritative world and REPLAYS buffered inputs past
   `serverTick` (`reconcile`). Only the local robot is predicted. **`session: null` ⇒ the solo

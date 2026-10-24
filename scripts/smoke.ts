@@ -354,7 +354,7 @@ import {
   wrapNav,
   type NavRect,
 } from '../src/input/padNav';
-import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
+import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, SEAT_ONLY_BUTTONS, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import { buildPaceCurve, clockKey, coerceCurve, netScore, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
@@ -15048,8 +15048,8 @@ function pinScene(
     check('sanitizeQCommand: every malformed payload is refused, not coerced',
       bad.every((b) => sanitizeQCommand(b) === null));
     const allBits = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 0xffff });
-    check('sanitizeQCommand: a full uint16 of buttons is legal — every bit is a real action now',
-      allBits !== null && allBits.buttons === 0xffff);
+    check('sanitizeQCommand: a full uint16 of buttons is legal, and keeps every bit but the seat-only ones (bbFireUnaimed)',
+      allBits !== null && allBits.buttons === (0xffff & ~SEAT_ONLY_BUTTONS));
     // ⚠️ 256 USED TO BE REFUSED (the protocol was a uint8). `BTN_BBRAMP` is exactly that bit, so
     // this is the one value whose meaning inverted the day the field widened — worth its own
     // check rather than folding it into `allBits` above, where a regression back to uint8 would

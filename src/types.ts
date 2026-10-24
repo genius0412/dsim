@@ -88,6 +88,14 @@ export interface RobotCommand {
    * reads false.
    */
   flyPreset?: boolean;
+  /**
+   * BIOBUZZ, A ZENITH AUTO'S SHOT: with `fire`, release without waiting for aim assist's
+   * would-land gate (`bbLaunch`), the way the team's robot runs its own `shootAll`: it fires and
+   * misses. Aim assist still steers. Set ONLY by an auto seat (`src/games/biobuzz/auto`), once
+   * aiming has had the build's own aim time; `sanitizeQCommand` clears it from every client packet,
+   * so no driver can send it. Protocol bit 2048. Read from `SIM_PATCH` 9. Optional; absent reads false.
+   */
+  bbFireUnaimed?: boolean;
 }
 
 /**

@@ -294,8 +294,12 @@ export const SIM_VERSION = 7;
  *      straight in, its CAD 0.38; now 0.38.
  *   8  (`main` only) 3 above, as it reached `main` on 2026-10-10: a `main` replay stamped 5 had not
  *      run it, so it needed a number above 5 there. Taken; the next patch on this branch is 9.
+ *   9  BIOBUZZ, a Zenith auto's shot: `RobotCommand.bbFireUnaimed` releases a held FIRE without
+ *      aim assist's would-land gate (`bbLaunch`), as the team's robot would. Only an auto seat sets
+ *      the bit, and no replay before 9 carries it, so 9 only keeps a newer replay honest on an
+ *      older client. 2026-10-24, `alpha`.
  */
-export const SIM_PATCH = 7;
+export const SIM_PATCH = 9;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

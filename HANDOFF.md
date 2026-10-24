@@ -1,4 +1,15 @@
-# HANDOFF — 2026-10-24c (Contributors page; Developer, Beta Tester and Contributor badges)
+# HANDOFF — 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
+
+**State: on `alpha`, NOT on `main`. SERVER CHANGE (the sim and the input door): `dsim-alpha` redeployed.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Rule in `docs/area/autos.md` ("A `shootAll` THAT CANNOT SCORE FIRES ANYWAY").
+
+- **Owner:** make an auto's `shootAll` fire even when aim assist says it would miss, like a real robot.
+- **How:** the host lets aim assist aim, then presses the new `RobotCommand.bbFireUnaimed` (protocol bit 2048) once the build's aim window has passed AND aiming has settled for 0.25 s (3 s cap). `bbLaunch` then skips the would-land gate. StarterBot from 28 in: all four leave 1.37 s into the step (it used to keep them for the whole AUTO). HUD: `AUTO SHOT OUT OF RANGE ON <STEP>`.
+- **Why the settle rule:** the window alone released early on 27 of 1982 scoring poses (a tank turning while the follower holds its pose fired its first aimed shot up to 3.37 s in). With it, 6 of 2626 scoring poses over 2D and 3D, all at the 3 s cap, where the aimed shot would have come at 5.6 to 7.3 s. Probe: `scratch/aimwindow-probe.ts` (gitignored; a world stamped `simPatch` 7 shows the gate alone).
+- **Trust:** the bit is seat-only (`SEAT_ONLY_BUTTONS`): `sanitizeQCommand` clears it from every client packet, so no driver can skip the gate in ranked, records or rooms. Replays, snapshots and prediction carry it.
+- **`SIM_PATCH` 9** (alpha was 7; 8 is `main`'s). A world stamped below 9 ignores the bit (AUTO check). No old replay carries it.
+- **When this reaches `main`:** 9 is free there too (main is at 8); give it the next number above main's latest if main has moved.
+
+## 2026-10-24c (Contributors page; Developer, Beta Tester and Contributor badges)
 
 **State: on `alpha`. SERVER change (team badge grants + boot sync), no migration; `dsim-alpha` redeployed.** `npm test`, `dbtest` (team badge block), `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `dbtest` has 4 unrelated failures: the analytics blocks insert rows dated 2026-09-10, now past the 30-day raw retention.
 

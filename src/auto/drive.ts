@@ -76,7 +76,12 @@ export function powersToCommand(r: RobotState, p: DrivePowerTriple, buttons: Aut
   const s = Number.isFinite(p.strafe) ? p.strafe : 0;
   const t = Number.isFinite(p.turn) ? p.turn : 0;
   // `bbRamp` rides only while pressed, so a command that never presses it is the one it always was
-  const base = { intake: buttons.intake, fire: buttons.fire, ...(buttons.bbRamp ? { bbRamp: true } : {}) };
+  const base = {
+    intake: buttons.intake,
+    fire: buttons.fire,
+    ...(buttons.bbRamp ? { bbRamp: true } : {}),
+    ...(buttons.bbFireUnaimed ? { bbFireUnaimed: true } : {}),
+  };
   if (dp.saturation === 'tank') {
     // `updateRobot`'s tank: forward = (ld + rd) / 2, turn = (rd - ld) / 2, in units of full
     // speed and full turn. A tank cannot strafe, so the request is steered (`nonHolonomic`), and

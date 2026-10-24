@@ -37,14 +37,27 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   build without the `ramp` intake ends it at once and the panel lists it as not on this robot
   (`GameAutoAdapter.notOnRobot`), rather than as unknown to DSIM. Its summary says "no ramp" once;
   the `notOnRobot` reason leaves "it ends at once" to the panel.
-- ⚠️ **A `shootAll` THAT CANNOT SHOOT ENDS, AND SAYS SO.** Aim Assist is on for every robot
-  (`coerceAssists`; headless too), so FIRE releases a shot only when it would land. From a pose the
-  build cannot score from nothing leaves, and the auto held FIRE for the rest of AUTO (StarterBot
-  28 in from the cell; it scores from 41 to 46). So `shootAll` gives up when nothing has left the
-  hopper for `bbShotPatienceS(spec)` (the build's aim and launch beat plus 1 s, restarted by each
-  launch; StarterBot **2.35 s**), and the seat reports `AutoSeatStatus.cantShoot` (the step id) for
-  3 s of match time. The HUD reads it as `AUTO COULDN’T SHOOT ON <STEP>` (STUCK wins over it). A real robot would launch and
-  miss; DSIM keeps the preload, because the seat cannot switch Aim Assist off.
+- ⚠️ **A `shootAll` THAT CANNOT SCORE FIRES ANYWAY, LIKE THE ROBOT** (owner, 2026-10-24). Aim Assist
+  is on for every robot (`coerceAssists`; headless too): it steers a chassis-aimed launcher, slews a
+  turret, and releases FIRE only when the shot would land. From a pose the build cannot score from
+  nothing left, and the auto held FIRE for the rest of AUTO (StarterBot 28 in from the cell; it
+  scores from 41 to 46). The team's robot runs its own `shootAll` and fires. So the host first lets
+  aim assist aim, and switches to `RobotCommand.bbFireUnaimed` (release without the would-land gate)
+  only when BOTH the build's aim window has passed (`bbAimWindowS`: its aim plus one launch beat,
+  StarterBot **1.35 s**) AND aiming has SETTLED for 0.25 s (`bbAimSettled`: the chassis within
+  `BB_AIM_TOL` of aim assist's heading and not turning, or a turret no longer slewing); past the
+  window plus 3 s it switches anyway. The window alone was not enough: a tank making a big turn
+  while the follower holds its pose fired its first AIMED shot up to 3.37 s in. Measured over the
+  five presets (2D 676 poses each, 3D 196): with the rule, no aimed shot is released early except at
+  the 3 s cap (6 of 2626 scoring poses, whose aimed shot would have come at 5.6 to 7.3 s), and every
+  pose that cannot score empties its hopper (median switch 1.37 s). The seat reports
+  `AutoSeatStatus.outOfRange` for 3 s and the HUD reads `AUTO SHOT OUT OF RANGE ON <STEP>`. If even
+  unaimed nothing leaves for `bbShotPatienceS` (window plus 1 s), it gives up as before
+  (`cantShoot`, `AUTO COULDN’T SHOOT ON <STEP>`). STUCK wins over both.
+  ⚠️ **`bbFireUnaimed` IS A SEAT-ONLY BIT** (protocol bit 2048, `SEAT_ONLY_BUTTONS`): it skips a gate
+  every driver has, so `sanitizeQCommand` clears it from every client packet. It rides replays, the
+  snapshot's `cmds` and prediction like any button. Read from `SIM_PATCH` 9; a world stamped 7
+  ignores it, which an AUTO check holds.
 - **FORMAT 4**: a `transfer` is planner-only; the runtime and the live run treat it as a zero-second
   wait (one scheduler tick), so it moves nothing. `envelope` and `rejoinFrom` are planner-only too.
   `mirrorAuto` is called without `mirrorId`, so a running routine's transfer and `expect` ids stay

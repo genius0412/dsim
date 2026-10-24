@@ -1,5 +1,5 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
-import { INTAKE_RAIL_T, SIM_DT } from '../../config';
+import { INTAKE_RAIL_T, SIM_DT, simPatchAtLeast } from '../../config';
 import { importedSolids, type RobotSolids, type SolidShape } from '../../sim/artifactSolids';
 import { importedExtents } from '../../sim/imported';
 import {
@@ -957,7 +957,11 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     }
     return undefined;
   };
-  const lands = (which: number): boolean => !r.aimAssist || (shot?.lands[which] ?? false);
+  // A ZENITH AUTO'S SHOT (`cmd.bbFireUnaimed`, set only by the auto seat once aiming has had its
+  // time) is released like aim assist off: the team's robot runs its own `shootAll` and fires
+  // whether or not it would land. `SIM_PATCH` 9; no earlier replay carries the bit.
+  const unaimed = cmd.bbFireUnaimed === true && simPatchAtLeast(world, 9);
+  const lands = (which: number): boolean => !r.aimAssist || unaimed || (shot?.lands[which] ?? false);
   // ARMED IF *ANY* EXIT IS. A dumper heaves the whole hopper out of exit 0, so it asks about
   // that one; a launcher with two turrets is not blocked by the one that is empty or still
   // slewing.

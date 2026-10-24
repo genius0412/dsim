@@ -100,6 +100,9 @@ class Seat implements AutoSeat {
   /** the host's give-up count as of the last tick, and the latest give-up: its step and match time */
   private cantShootSeen = 0;
   private cantShoot: { stepId: string; at: number } | null = null;
+  /** the host's unaimed-shot count as of the last tick, and the latest: its step and match time */
+  private unaimedSeen = 0;
+  private outOfRange: { stepId: string; at: number } | null = null;
   /** the match time of the last tick the seat drove */
   private now = 0;
 
@@ -165,6 +168,8 @@ class Seat implements AutoSeat {
     this.stalledTicks = 0;
     this.cantShootSeen = 0;
     this.cantShoot = null;
+    this.unaimedSeen = 0;
+    this.outOfRange = null;
     this.trial = true;
     this.trialTicks = 0;
   }
@@ -208,6 +213,13 @@ class Seat implements AutoSeat {
       const was = this.active.length ? this.active[this.active.length - 1] : tick.activeStepIds[tick.activeStepIds.length - 1];
       this.cantShoot = { stepId: was ?? '', at: world.time };
     }
+    // a shot released unaimed this tick belongs to a command that is still running
+    const unaimed = host.unaimedCount?.() ?? 0;
+    if (unaimed > this.unaimedSeen) {
+      this.unaimedSeen = unaimed;
+      const now = tick.activeStepIds.length ? tick.activeStepIds[tick.activeStepIds.length - 1] : this.active[this.active.length - 1];
+      this.outOfRange = { stepId: now ?? '', at: world.time };
+    }
     this.now = world.time;
     this.active = tick.activeStepIds;
     if (tick.finished && this.state === 'running') this.state = 'done';
@@ -223,13 +235,17 @@ class Seat implements AutoSeat {
     if (this.error) return { state: 'error', stepId: null, timeS: 0, error: this.error };
     const active = this.state === 'running' ? this.active : [];
     const c = this.cantShoot;
-    const cant = c !== null && (this.state === 'running' || this.state === 'done') && this.now - c.at < CANT_SHOOT_SHOW_S - 1e-9;
+    const shown = (x: { at: number } | null): boolean =>
+      x !== null && (this.state === 'running' || this.state === 'done') && this.now - x.at < CANT_SHOOT_SHOW_S - 1e-9;
+    const cant = shown(c);
+    const o = this.outOfRange;
     return {
       state: this.state,
       stepId: active.length ? active[active.length - 1] : null,
       timeS: this.run?.timeS ?? 0,
       ...(this.state === 'running' && this.stalledTicks * SIM_DT >= STUCK_S ? { stuck: true } : {}),
-      ...(cant ? { cantShoot: c.stepId } : {}),
+      ...(cant && c ? { cantShoot: c.stepId } : {}),
+      ...(shown(o) && o ? { outOfRange: o.stepId } : {}),
     };
   }
 

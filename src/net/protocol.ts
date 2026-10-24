@@ -85,6 +85,16 @@ const BTN_BBPASS = 512;
 // `driveMode`. Bit 1024, inside the 16 bits every sanitizer since 2026-09-20 admits, so an older
 // server accepts the packet and ignores the bit — on a build that has no presets to step.
 const BTN_FLYPRESET = 1024;
+// A ZENITH AUTO'S UNAIMED SHOT (BIOBUZZ, `RobotCommand.bbFireUnaimed`). ⚠️ SERVER-ONLY: only an
+// auto seat sets it, and the seat runs where the world is authoritative (`Room.frameCommands`, the
+// LAN host, solo practice) or in a client's own prediction of that. A driver must never send it:
+// it skips aim assist's would-land gate, which every robot has (`coerceAssists`). So
+// `sanitizeQCommand`, the door every client packet comes through, clears it. It is still a
+// `buttons` bit because the replay track and the snapshot's `cmds` are this same lattice, and
+// both must carry what the seat did.
+const BTN_BBFIRE_UNAIMED = 2048;
+/** the bits a client may not send: the door clears them (`sanitizeQCommand`) */
+export const SEAT_ONLY_BUTTONS = BTN_BBFIRE_UNAIMED;
 /** the widest `buttons` an honest sender can produce — every bit above is refused. */
 const BUTTONS_MAX = 0xffff;
 
@@ -104,7 +114,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbNectar ? BTN_BBNECTAR : 0) |
       (c.bbRamp ? BTN_BBRAMP : 0) |
       (c.bbPass ? BTN_BBPASS : 0) |
-      (c.flyPreset ? BTN_FLYPRESET : 0),
+      (c.flyPreset ? BTN_FLYPRESET : 0) |
+      (c.bbFireUnaimed ? BTN_BBFIRE_UNAIMED : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -145,8 +156,10 @@ export function sanitizeQCommand(raw: unknown): QCommand | null {
   if (ld === null || rd === null) return null;
   // `buttons` is kept WHOLE rather than masked to the bits this build knows: a mask here would
   // be a silent way to drop a newer client's action. `dequantizeCommand` reads the bits it
-  // understands and ignores the rest, which is the back-compat rule already.
-  const out: QCommand = { dx, dy, rot, buttons: q.buttons };
+  // understands and ignores the rest, which is the back-compat rule already. The ONE exception is
+  // `SEAT_ONLY_BUTTONS`: bits a client never has the right to send, cleared rather than refused,
+  // so the rest of the driver's input still counts.
+  const out: QCommand = { dx, dy, rot, buttons: q.buttons & ~SEAT_ONLY_BUTTONS };
   if (ld !== undefined) out.ld = ld;
   if (rd !== undefined) out.rd = rd;
   return out;
@@ -170,6 +183,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbRamp: (q.buttons & BTN_BBRAMP) !== 0,
     bbPass: (q.buttons & BTN_BBPASS) !== 0,
     flyPreset: (q.buttons & BTN_FLYPRESET) !== 0,
+    ...((q.buttons & BTN_BBFIRE_UNAIMED) !== 0 ? { bbFireUnaimed: true } : {}),
   };
 }
 

@@ -31,7 +31,7 @@ export interface ZenithAutoSetup {
  * BIOBUZZ's ramp toggle, the driver's own button; absent reads false, and a host that never
  * presses it leaves the command exactly as it was before the field existed.
  */
-export type AutoButtons = Pick<RobotCommand, 'intake' | 'fire' | 'bbRamp'>;
+export type AutoButtons = Pick<RobotCommand, 'intake' | 'fire' | 'bbRamp' | 'bbFireUnaimed'>;
 
 /**
  * A named command as a host runs it: the scheduler's life cycle, the one SolversLib and
@@ -64,6 +64,12 @@ export interface AutoHost {
    * and names the step (`AutoSeatStatus.cantShoot`). Absent: this game's commands never give up.
    */
   cantShootCount?(): number;
+  /**
+   * How many shooting commands have fired UNAIMED so far (`RobotCommand.bbFireUnaimed`): aiming
+   * had the build's own aim time and the shot still would not land, so it was released anyway, as
+   * the team's robot would. Only counts up; the seat names the step (`AutoSeatStatus.outOfRange`).
+   */
+  unaimedCount?(): number;
   /** the end of AUTO: let go of everything */
   release(): void;
 }
@@ -125,7 +131,13 @@ export interface AutoSeatStatus {
   /**
    * Set while `running` or `done`, for 3 s of match time after a shooting command gave up with
    * nothing leaving the hopper (a pose it cannot score from): the id of the step it ran in. The
-   * auto has moved on by then. The HUD reads it as `AUTO CAN'T SHOOT FROM HERE`.
+   * auto has moved on by then. The HUD reads it as `AUTO COULDN’T SHOOT ON <STEP>`.
    */
   cantShoot?: string;
+  /**
+   * Set while `running` or `done`, for 3 s of match time after a shooting command started firing
+   * unaimed (`AutoHost.unaimedCount`): the id of its step. The HUD reads it as
+   * `AUTO SHOT OUT OF RANGE ON <STEP>`: the robot fired, and from that pose it misses.
+   */
+  outOfRange?: string;
 }

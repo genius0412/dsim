@@ -838,7 +838,9 @@ export function coreChecks(check: Check): void {
       buttons.length >= 3,
       buttons.join(', '),
     );
-    const missing = buttons.filter((b) => !expr.includes(`c.${b}`));
+    // `bbFireUnaimed` is a seat-only bit (`SEAT_ONLY_BUTTONS`) that never comes without `fire`,
+    // which is counted: a driver cannot send it, and an auto seat that sets it is already firing
+    const missing = buttons.filter((b) => b !== 'bbFireUnaimed' && !expr.includes(`c.${b}`));
     check(
       'every bb* command counts as driver input, `bbNectar` included',
       missing.length === 0,

@@ -409,10 +409,12 @@ export function autoUiChecks(check: Check): void {
     );
     const base = { name: 'cycle', problems: [], timeS: 5 } as const;
     check(
-      'AUTOUI hud: a shot the auto gave up on is named on the HUD, and STUCK still wins',
+      'AUTOUI hud: a shot the auto gave up on, or fired out of range, is named on the HUD, and STUCK still wins',
       autoHudLine({ phase: 'auto', auto: { ...base, state: 'running', stepId: 'park', cantShoot: 'shoot' } }) === 'AUTO COULDN’T SHOOT ON SHOOT' &&
         autoHudLine({ phase: 'auto', auto: { ...base, state: 'running', stepId: 'park', stuck: true, cantShoot: 'shoot' } }) === 'AUTO STUCK ON PARK' &&
-        autoHudLine({ phase: 'teleop', auto: { ...base, state: 'stopped', stepId: null, cantShoot: 'shoot' } }) === null,
+        autoHudLine({ phase: 'teleop', auto: { ...base, state: 'stopped', stepId: null, cantShoot: 'shoot' } }) === null &&
+        autoHudLine({ phase: 'auto', auto: { ...base, state: 'running', stepId: 'park', outOfRange: 'shoot' } }) === 'AUTO SHOT OUT OF RANGE ON SHOOT' &&
+        autoHudLine({ phase: 'auto', auto: { ...base, state: 'running', stepId: 'park', stuck: true, outOfRange: 'shoot' } }) === 'AUTO STUCK ON PARK',
       String(autoHudLine({ phase: 'auto', auto: { ...base, state: 'running', stepId: 'park', cantShoot: 'shoot' } })),
     );
   }

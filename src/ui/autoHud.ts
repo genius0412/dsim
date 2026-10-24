@@ -9,8 +9,8 @@ import type { GameAutoStatus, HudSnapshot } from '../game';
 type AutoHud = Pick<HudSnapshot, 'auto' | 'phase'>;
 
 /**
- * The line on the second HUD card: the step running (or STUCK on it), a shot the auto gave up on,
- * AUTO DONE, or AUTO OFF when it cannot run. STUCK wins over the shot: the robot is held now, and
+ * The line on the second HUD card: the step running (or STUCK on it), a shot the auto gave up on or
+ * fired out of range, AUTO DONE, or AUTO OFF when it cannot run. STUCK wins over the shot: the robot is held now, and
  * the shot is a step already behind it (`AutoSeatStatus.cantShoot` stays up for 3 s of match time).
  */
 export function autoHudLine({ auto, phase }: AutoHud): string | null {
@@ -18,6 +18,10 @@ export function autoHudLine({ auto, phase }: AutoHud): string | null {
   if (auto.state === 'running' && auto.stuck) return `AUTO STUCK ON ${(auto.stepId ?? auto.name).toUpperCase()}`;
   if (auto.cantShoot !== undefined && (auto.state === 'running' || auto.state === 'done') && (phase === 'auto' || phase === 'freeplay')) {
     return `AUTO COULDN’T SHOOT ON ${(auto.cantShoot || auto.name).toUpperCase()}`;
+  }
+  // the auto fired anyway after aim assist settled on a shot that would not land: it missed
+  if (auto.outOfRange !== undefined && (auto.state === 'running' || auto.state === 'done') && (phase === 'auto' || phase === 'freeplay')) {
+    return `AUTO SHOT OUT OF RANGE ON ${(auto.outOfRange || auto.name).toUpperCase()}`;
   }
   if (auto.state === 'running') return `AUTO · ${(auto.stepId ?? auto.name).toUpperCase()}`;
   const early = phase === 'pre' || phase === 'auto' || phase === 'freeplay';
