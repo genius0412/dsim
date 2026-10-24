@@ -213,8 +213,8 @@ export function AppShell({
       {/* "LAN game · address · not ranked", whenever this device is pointed at a self-hosted
           server. On the SHELL screens specifically, which is where the misunderstanding
           would actually happen: somebody looking at a leaderboard and wondering why the
-          match they just played is not on it. The room screens replace this shell outright
-          and say it their own way (`.ds-room-layout` is a 100dvh flex box — a strip above
+          match they just played is not on it. A joined room covers this shell (an opaque popup
+          state, `App.tsx`) and says it its own way (`.ds-room-layout` is a 100dvh flex box — a strip above
           it would push the room off the bottom of the viewport). */}
       {lanOn && <LanBanner />}
 

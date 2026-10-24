@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { GameSettings } from '../types';
 import type { DrivetrainType, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS, chassisFill } from '../config';
@@ -1034,8 +1034,22 @@ export function RobotStrip({
   const current = !savedOn.includes(true) && !importOn.includes(true) && !presetOn.includes(true);
   /** a card's pick: the one already on opens its editor, any other becomes the robot */
   const pick = (on: boolean, apply: () => void, edit: () => void = onEdit) => (on ? edit() : apply());
+  // A PLAIN WHEEL SCROLLS THE ROW (owner, 2026-10-24: not only Shift+wheel). Native and non-passive:
+  // React's wheel listener is passive, so it cannot stop the page scrolling too.
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || el.scrollWidth <= el.clientWidth) return;
+      el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   return (
-    <div className="ds-opts robots strip" role="group" aria-label="Robots" tabIndex={0}>
+    <div ref={stripRef} className="ds-opts robots strip" role="group" aria-label="Robots" tabIndex={0}>
       {current && (
         <RobotCard spec={spec} game={settings.game} on team={teamLine(spec)} thumb={thumbOf(spec)} onPick={onEdit} />
       )}

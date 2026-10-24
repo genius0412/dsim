@@ -386,12 +386,12 @@ rulings below are theirs, not defaults.
   moved by `transform`), the ad strip, no footer, no friends panel. The robot's free area
   (`.ds-setup-view`) is the 3D ORBIT's drag surface (`stageOrbit`; it eases back on release) — the stage
   is behind the shell, so the page owns the pointer — and on a 2D stage the page draws the 2D preview
-  there itself (`useStageMode`). Bottom-left: `RobotStrip` (`Menu.tsx`), ONE scrolling row of
+  there itself (`useStageMode`). Bottom-left: `RobotStrip` (`Menu.tsx`), ONE scrolling row (a plain wheel scrolls it sideways, owner 2026-10-24) of
   `RobotCard`s — the unsaved current build when it matches no card, saved robots, imports, presets,
   then New robot (the first preset's build, then the builder). Picking the card that is ALREADY on
   opens the builder (an import's opens the importer). Header: Import. Right column: Match setup, then
   Practice setup, scrolling, with Solo and Multiplayer pinned under them; each REPLACES the column with
-  its list (Solo practice / Free drive / Solo record; New room, Browse rooms, Duo record, Find match,
+  its list (Solo practice / Free drive / Solo record; Ranked, Duo record, New room, Browse rooms,
   Competitions, LAN) and a Back. Every gate the old tiles had is kept.
 - **The camera frames what the page leaves free**: `insetsFor` reads `.ds-setup-view` (Play) and the
   column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
@@ -448,14 +448,42 @@ rulings below are theirs, not defaults.
   to 375x550 (above). A landscape phone (844x390) scrolls. Home's bar is OUT OF FLOW and a window ≤ 820px tall takes a tighter column. Play's right
   column scrolls INSIDE itself on a thin track; its cards are `flex: none`, or Match setup shrinks
   and cuts off its own map. `.ds-app.on-stage` is `overflow-y: auto`, not the shell's always-on `scroll`.
-- **ONE SPACING**: Home has one inset (`--ds-s-7`, the bar's too) and one gap between groups
+- ⚠️ **THE PLAY LIST'S ENTRIES OPEN AS POPUPS OVER PLAY, ALL 520px** (owner, 2026-10-24: "instead of
+  opening new pages, i want things to show up the way the New room screen shows up. use the same width
+  for every popup"). Multiplayer reads Ranked (renamed from Find match), Duo record, New room, Browse
+  rooms, Competitions, LAN. `POPUPS` in `App.tsx` lists the screens (`matchmaking`, `duorecord`,
+  `lobby`, `rooms`, `competitions` without a `sub`, `lan`, `record`): each keeps its URL, so a reload or a
+  link opens Play with it up, but it renders in ONE `.overlay.ds-popup-host` in the SHELL's tree with
+  `ModeSelect` mounted under it. They used to be early returns, and an early return remounts the stage
+  (the WebGL scene) and Play (its list state) on every open. `popupShell` (`PopupPanel`: `useDialog`,
+  a close control LAST in the DOM so focus lands on the popup's own first control, Escape closes) is
+  handed to `Matchmaking`, `Lobby`, `LanPanel` and `RecordRun` where `shell` used to be, and wraps
+  `RoomBrowser` and `CompList` directly; closing is `navigate('modes')`, so Play's list is where it
+  was. A state that was ALWAYS full-screen (a joined room, `MatchStrategy`) does not call it and fills
+  the host, opaque, as the same component instance, so no socket drops. The shell's `FriendsProvider`
+  reports `lobby` (`match` for Solo record) under one, which is why the separate presence heartbeat
+  and ranked's own `AccountSync` mount are gone. Every `OverlayDialog` takes `.ds-popup` too, so New
+  room and the start guards are the same width. Browse rooms' Host a room closes the popup before
+  New room opens, so two scrims never stack.
+  ⚠️ **NO SHELL BACKDROP OVER A POPUP.** The early returns used to keep the gates, the claim and notice
+  dialogs and the announcements off a room by replacing `AppShell`; inside it, they would land on a
+  joined room or the 20-second strategy window. So all of them wait while `popup` is set (`modalsWait`,
+  the gates' `suspended`, Announcements unmounted) and show once the player is back on Play. Under a
+  full-screen state `shell.css` sets the bar, the footer and Play to `visibility: hidden` so Tab cannot
+  reach behind it. Ranked's **Match found** is `popupShell(body, true)`: no × and Escape does nothing,
+  because the clocks are running and leaving only parks the seat for the takeover to pull back. A
+  plain search closes and keeps searching in the queue bar.
+- **ONE SPACING**: Home has one inset (`--ds-s-7`, the bar's too) EXCEPT the column's left, which is
+  `--home-inset` = `max(48px, 7vw)` (owner, 2026-10-24: "all the homepage things are too left"; 90px
+  at 1280, 134px at 1920). The scrim's solid stop, its width and the 2D field's free area all add it,
+  and the 3D camera needs nothing (`insetsFor` reads the column off the DOM), and one gap between groups
   (`--ds-s-4`, `--ds-s-3` when short); no group carries a margin of its own.
   **Every group is CENTRED on the column's axis** (owner: "center this"), and the switcher, the pills
   and the two stat tiles stretch to the column's width, so it has one left and one right edge. The
   three-across rows (switcher, pills, stat tiles) share ONE gap (`--ds-s-2`) and EQUAL items
   (`flex: 1 1 0`), so the switcher's and the pills' edges line up; "Chain Reaction" fits a third
   only at the 8px inset given and never wraps.
-- **The desktop scrim is SOLID behind the whole column** (to 492px) and only then fades,
+- **The desktop scrim is SOLID behind the whole column** (to the inset + 444px) and only then fades,
   and the online chip has a `--ds-scrim-strong` plate: the BIOBUZZ warehouse is bright in places
   (`contrast.mjs` checks the pale text against its 99th-percentile wall). **The 2D field** is sized to
   the free area right of the column and above the footer (`.ds-stage-2d.home img`); at 86vh it ran
@@ -625,8 +653,9 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips. ONE exception, owner 2026-10-12 ("allow notifications from people while in
   match"): friend toasts (`FriendToasts inMatch`, top-left, information only — no Accept on an invite,
-  no profile link, because either would leave the match). The ranked search is a bottom-left corner
-  card (`QueueBar`); pressing FIND MATCH parks the search and goes back, it is not a page.
+  no profile link, because either would leave the match). The ranked search is a bottom-RIGHT
+  pinned card (`QueueBar`, owner 2026-10-24; it was bottom-left), with the friend toasts stacked above it;
+  closing Ranked while it searches parks the search there, it is not a page.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.
@@ -968,7 +997,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   has played a match or holds a best — a wall of zeros tells a new player nothing.
 - **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
   Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
-  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Find match, Duo record, Room entry and LAN are shell pages** (2026-10-13): `App`'s `shell(body)` is handed to `Matchmaking`, `Lobby` and `LanPanel`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`). A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is the robot setup over the menu stage (2026-10-18, THE MENU STAGE above): its Solo list is Solo practice, Free drive, Solo record, and its Multiplayer list holds Duo record (a two-driver run). ⚠️ **NO
+  shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Ranked, Duo record, Room entry, LAN and Solo record are popups over Play** (2026-10-24, THE MENU STAGE above; shell pages from 2026-10-13): `App`'s `popupShell(body)` is handed to `Matchmaking`, `Lobby`, `LanPanel` and `RecordRun`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`), and the bar shows Play's trail under one. A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is the robot setup over the menu stage (2026-10-18, THE MENU STAGE above): its Solo list is Solo practice, Free drive, Solo record, and its Multiplayer list holds Duo record (a two-driver run). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the
   keycaps and cards they were. **`BannerStrip`** (NOT on Home; it is the `banner` ad unit, env `VITE_ADSENSE_SLOT_BANNER`) sits at the BOTTOM, just above the footer, on every

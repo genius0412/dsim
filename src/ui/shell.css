@@ -7239,9 +7239,9 @@ a.ds-cta {
    and it always carries the way out. */
 .ds-queuebar {
   position: fixed;
-  /* PINNED IN THE BOTTOM-LEFT CORNER (owner, 2026-10-12): the ranked search is a notification, not a
-     page. The friend toasts own the bottom-right. */
-  left: max(16px, env(safe-area-inset-left));
+  /* A PINNED NOTIFICATION IN THE BOTTOM-RIGHT CORNER (owner, 2026-10-24; bottom-left before): the ranked
+     search is a notification, not a page, so it sits where the friend toasts do, under them (below). */
+  right: max(16px, env(safe-area-inset-right));
   bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 60;
   display: flex;
@@ -7249,7 +7249,8 @@ a.ds-cta {
   gap: var(--ds-s-2);
   padding: 8px 12px;
   border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round-full);
+  /* a card like the toasts it stacks under, not a pill */
+  border-radius: var(--ds-round);
   background: var(--ds-panel);
   box-shadow: var(--ds-block);
   font-size: 13px;
@@ -7279,6 +7280,11 @@ a.ds-cta {
 .ds-queuebar .qb-err {
   color: var(--ds-danger);
   font-size: 12px;
+}
+/* the friend toasts stack ABOVE the pinned bar, not under it.
+   ponytail: a fixed one-line offset; a bar that wraps (its error line) can touch the lowest toast */
+body:has(.ds-queuebar:not(.over)) .fr-toasts:not(.in-match) {
+  bottom: calc(16px + 44px + var(--ds-s-2));
 }
 
 /* ---- the queue on a FULL-SCREEN surface (live match, record run, lobby) ------
@@ -10029,9 +10035,10 @@ input.admin-months {
   }
 }
 
-/* a `.ds-console-in` inside the shell (Find match, Room, LAN) is the page's column, not the page:
-   `.ds-main` already owns the width, the gutter and the padding. */
-.ds-main .ds-console-in {
+/* a `.ds-console-in` inside the shell (a popup's Ranked, Room, LAN) is the page's column, not the page:
+   `.ds-main` already owns the width, the gutter and the padding. NOT one inside a `.ds-console`: a joined
+   room and the strategy window are full-screen consoles in the popup host, and keep their own gutter. */
+.ds-main .ds-console-in:not(.ds-console > *) {
   width: 100%;
   margin: 0;
   padding: 0;
@@ -10085,16 +10092,23 @@ input.admin-months {
     width var(--ds-dur-fly) ease-in-out,
     height var(--ds-dur-fly) ease-in-out;
 }
-/* HOME: the tilted field fits the FREE AREA right of the column (its 492px, see the scrim) and
+/* HOME'S LEFT INSET GROWS WITH THE WINDOW (owner, 2026-10-24: "all the homepage things are too left"):
+   48px pinned the column to the edge of a 1920 window. 7vw is 90px at 1280 and 134px at 1920. On the
+   2D stage too, which is mounted beside the shell rather than inside it, so it sizes the free area. */
+.ds-app.stage-home,
+.ds-stage-2d.home {
+  --home-inset: max(var(--ds-s-7), 7vw);
+}
+/* HOME: the tilted field fits the FREE AREA right of the column (inset + 420 + 24, see the scrim) and
    above the footer (~48px), 24px clear of each edge. Sized off whichever is tighter: tilted, the
    square's outline is ~1.42 of its side wide and ~0.94 tall (measured at 1280..1920). It is
    centred in the window by the flex box, so it is moved to the free area's centre, less the
    perspective's own lean (~5% right, ~11% down, of its side). At 86vh it ran off the right and
    under the footer at 1366x768 and 1920x1080, and touched the Play keycap at 1280x720. */
 .ds-stage-2d.home img {
-  width: min(calc((100vw - 516px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
-  height: min(calc((100vw - 516px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
-  transform: translate(calc(234px - 5%), calc(-24px - 11%)) rotateX(50deg) rotateZ(-30deg);
+  width: min(calc((100vw - var(--home-inset) - 468px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
+  height: min(calc((100vw - var(--home-inset) - 468px) * 0.7), calc((100vh - 96px) * 1.06), 880px);
+  transform: translate(calc(var(--home-inset) / 2 + 210px - 5%), calc(-24px - 11%)) rotateX(50deg) rotateZ(-30deg);
 }
 .ds-stage-2d.setup img {
   transform: translate(-16vw, 4vh) rotateX(38deg) rotateZ(-14deg) scale(1.3);
@@ -10112,8 +10126,9 @@ input.admin-months {
   justify-content: flex-start;
   max-width: none;
   margin: 0;
-  /* ONE INSET for every edge of Home: the column's left, and the bar's own (below) */
+  /* ONE INSET for the other edges and the bar's own (below); the left one grows with the window */
   padding: var(--ds-s-7);
+  padding-inline-start: var(--home-inset);
 }
 /* ONE GAP between the column's groups; each group's own margin is zeroed below. Every group is
    CENTRED on the column's axis (owner, 2026-10-18: "center this"), and the switcher, the pills and
@@ -10136,11 +10151,11 @@ input.admin-months {
 .ds-app.stage-home .ds-home-scrim {
   position: fixed;
   inset: 0 auto 0 0;
-  width: min(840px, 72vw);
-  /* SOLID behind the whole column (its 48px inset + 420px + a 24px margin), and only then fading:
+  width: calc(min(840px, 72vw) + var(--home-inset) - var(--ds-s-7));
+  /* SOLID behind the whole column (its inset + 420px + a 24px margin), and only then fading:
      the BIOBUZZ warehouse is bright in places, and a fade that began at the left edge left the
      column's right half on a 0.5 veil, where the pale caption and stats lines lost their contrast */
-  background: linear-gradient(90deg, var(--ds-scrim-strong) 0 492px, transparent 100%);
+  background: linear-gradient(90deg, var(--ds-scrim-strong) 0 calc(var(--home-inset) + 444px), transparent 100%);
   pointer-events: none;
   z-index: -1;
 }
@@ -10824,6 +10839,46 @@ input.admin-months {
   .ds-app.stage-setup .ds-presence-sub {
     display: none;
   }
+}
+
+/* THE PLAY PAGE'S POPUPS (`App.tsx` `POPUPS`; owner, 2026-10-24: "instead of opening new pages, i
+   want things to show up the way the New room screen shows up. use the same width for every popup").
+   Ranked, Duo record, the room entry, Browse rooms, Competitions, LAN and Solo record draw over Play
+   in ONE host; every shell dialog, New room included, is the same 520px. */
+.ds-popup-host {
+  position: fixed;
+}
+.overlay-panel.ds-popup {
+  width: min(520px, 100%);
+}
+.overlay-panel.ds-popup.page {
+  position: relative;
+  text-align: left;
+}
+.ds-popup-x {
+  position: absolute;
+  top: var(--ds-s-3);
+  right: var(--ds-s-3);
+}
+/* the page's own card would be a card inside the dialog's: the dialog is the card */
+.ds-popup .ds-console-in > .ds-panel {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+/* A STATE THAT WAS ALWAYS FULL-SCREEN (a joined room, the strategy window) fills the host, opaque */
+.ds-popup-host > :not(.ds-popup) {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  background: var(--ds-bg);
+}
+/* ...and the shell under it leaves the Tab order: `visibility`, not `display`, so Play stays laid out and
+   the stage stays loaded for the way back. The friend toasts and any shell modal stay up. */
+body:has(.ds-popup-host > :not(.ds-popup))
+  :is(.ds-bar, .ds-foot, .ds-bannerstrip, .ds-main-stage > :not(.ds-popup-host, .overlay, .ds-modal-backdrop)) {
+  visibility: hidden;
 }
 
 /* A SHORT WINDOW (a 720 or 768 laptop): Home's column still fits above the footer, a step

@@ -7,9 +7,7 @@ import {
   saveAccountSettings,
   fetchAdminStatus,
   fetchProfile,
-  fetchFriends,
   dismissRoomInvite,
-  type Activity,
   type RoomInvite,
 } from '../net/api';
 import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
@@ -20,6 +18,7 @@ import { moduleFor } from '../games';
 import { preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
 import { FriendsProvider, FriendToasts } from './friendsContext';
+import { CloseGlyph } from './FriendsPanel';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
@@ -473,12 +472,45 @@ function OverlayDialog({
   const titleId = useId();
   return (
     <div className="overlay">
-      <div ref={ref} className="overlay-panel" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div ref={ref} className="overlay-panel ds-popup" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <h2 className="ds-dialog-title" id={titleId}>
           {title}
         </h2>
         {children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * THE PLAY PAGE'S POPUPS (owner, 2026-10-24: "instead of opening new pages, i want things to show up
+ * the way the New room screen shows up"). Each of these screens draws over Play, which stays mounted
+ * behind it, so the stage does not reload and closing lands back on the list it was opened from. The
+ * URL is still the screen's own, so a reload or a shared link opens Play with the popup up.
+ */
+const POPUPS: Partial<Record<Screen, string>> = {
+  matchmaking: 'Ranked',
+  duorecord: 'Duo record',
+  lobby: 'Room',
+  rooms: 'Browse rooms',
+  competitions: 'Competitions',
+  lan: 'LAN',
+  record: 'Solo record',
+};
+
+/** a popup's frame: the shell dialog's panel at the one popup width, and a close control */
+function PopupPanel({ label, onClose, children }: { label: string; onClose?: () => void; children: ReactNode }) {
+  // no `onClose` is a popup that cannot be left right now (Ranked's "Match found"): no ×, and Escape does nothing
+  const ref = useDialog(onClose);
+  return (
+    <div ref={ref} className="overlay-panel ds-popup page" role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}>
+      {children}
+      {/* LAST in the DOM, so `useDialog` focuses the popup's own first control rather than this */}
+      {onClose && (
+        <button className="ds-btn ghost small ds-popup-x" onClick={onClose} aria-label="Close">
+          <CloseGlyph />
+        </button>
+      )}
     </div>
   );
 }
@@ -1990,25 +2022,6 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Rich-presence heartbeat for the FULL-SCREEN surfaces (game / solo record /
-  // ranked queue) that render outside AppShell's FriendsProvider — so friends see
-  // "In a match" instead of the caller silently dropping to offline mid-game. The
-  // shell and room screens are heartbeated by their FriendsProvider. Fire-and-forget:
-  // it only records presence, never renders.
-  useEffect(() => {
-    if (!signedIn) return;
-    // `game` is heartbeated by its own FriendsProvider (friend toasts over a match, below)
-    const full = screen === 'record' || screen === 'matchmaking';
-    if (!full) return;
-    const act: Activity = screen === 'matchmaking' ? 'lobby' : 'match';
-    const beat = (): void => {
-      if (document.visibilityState === 'visible') void fetchFriends(act, settingsRef.current.game).catch(() => {});
-    };
-    beat();
-    const iv = window.setInterval(beat, 30_000);
-    return () => window.clearInterval(iv);
-  }, [signedIn, screen]);
-
   // The lobby's Back did these resets itself; the app bar and the trail leave without it.
   useEffect(() => {
     if (screen !== 'lobby') return;
@@ -2019,7 +2032,7 @@ export function App() {
     };
   }, [screen]);
 
-  // the shell's right-hand cluster and trail, hoisted so the pre-connection pages (`shell` below) share them
+  // the shell's right-hand cluster and trail, hoisted so the pre-connection pages (`popupShell` below) share them
   const right = authEnabled ? (
     <ProfileMenu
       handle={handle}
@@ -2034,40 +2047,22 @@ export function App() {
       onChange={(id) => update({ ...settings, preferredServerId: id })}
     />
   );
+  /** the popup this screen is over Play, if it is one (`POPUPS`): a competition's own page is not */
+  const popup = (screen === 'competitions' && route.sub) || (screen === 'lan' && !lanOn) ? undefined : POPUPS[screen];
   /** the menu stage's view (`MenuStage.tsx`): Home's corner shot, Play's robot, or none */
   // a phone's Home is the pre-stage page, in the normal shell (owner, 2026-10-18)
   const phone = usePhone();
   const stageView: StageView | null =
-    screen === 'home' ? (phone ? null : 'home') : screen === 'modes' ? 'setup' : null;
-  /** the bar's trail, which is also where "up" goes (`crumbs.ts`) */
-  const crumbs = crumbsFor(screen, route.sub, route.username);
-  /**
-   * THE APP SHELL AROUND A PRE-CONNECTION PAGE (Find match, Duo record, Room entry, LAN). The
-   * screen asks for it, because it also has live-socket states (a joined room) that stay
-   * full-screen. The caller owns the one `FriendsProvider` above it.
-   */
-  const shell = (body: ReactNode): JSX.Element => (
-    <AppShell
-      onNav={goNav}
-      right={right}
-      showAdmin={isAdmin}
-      crumbs={crumbs}
-      onCrumb={(to) => navigate(to.screen as Screen, { sub: to.sub ?? null })}
-      onDownload={() => navigate('download')}
-      onContributors={() => navigate('contributors')}
-      onChangelog={() => navigate('changelogs')}
-      onPrivacy={() => navigate('privacy')}
-      onTerms={() => navigate('terms')}
-      onDonate={() => navigate('donate')}
-      signedIn={signedIn}
-      onOpenProfile={openProfile}
-      onJoinInvite={onJoinInvite}
-      onSpectate={spectateRoom}
-      myUserId={accountUserId}
-      game={settings.game}
-    >
+    screen === 'home' ? (phone ? null : 'home') : screen === 'modes' || popup ? 'setup' : null;
+  /** the bar's trail, which is also where "up" goes (`crumbs.ts`). Under a popup it is Play's. */
+  const crumbs = crumbsFor(popup ? 'modes' : screen, route.sub, route.username);
+  /** close a popup: back to the Play list it opened from (a Discord activity's room goes to its lobby list) */
+  const closePopup = (): void => navigate(screen === 'lobby' && inActivity && discordGroupId ? 'discordlobbies' : 'modes');
+  /** the frame a popup screen draws its pre-connection states in, passed where `shell` used to be */
+  const popupShell = (body: ReactNode, locked = false): JSX.Element => (
+    <PopupPanel label={popup ?? ''} onClose={locked ? undefined : closePopup}>
       {body}
-    </AppShell>
+    </PopupPanel>
   );
 
   /**
@@ -2086,23 +2081,6 @@ export function App() {
       {node}
     </>
   );
-
-  // Lobby screens bypass AppShell, so they need their own single friends store.
-  // Keeping it here means the persistent room panel has the same polling,
-  // challenge, and invitation semantics as the menu-shell panel.
-  const roomScreen = (node: JSX.Element): JSX.Element =>
-    fullScreen(
-      <FriendsProvider
-        signedIn={signedIn}
-        activity="lobby"
-        game={settings.game}
-        sound={settings.audio.volume.master > 0}
-        onHostRoom={hostForChallenge}
-        onQueueChallenge={startChallenge}
-      >
-        {node}
-      </FriendsProvider>,
-    );
 
   // full-screen surfaces (outside the shell)
   if (screen === 'game') {
@@ -2163,59 +2141,6 @@ export function App() {
       />
     );
   }
-  if (screen === 'lobby') {
-    const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
-    return roomScreen(
-      <Lobby
-        settings={shown}
-        onSettingsChange={update}
-        shell={shell}
-        /* Both exits from the lobby drop the handed-over socket reference, so a later,
-           ordinary visit to this screen cannot re-adopt a room the player has left. */
-        onStart={(s) => {
-          setResumedRoom(null);
-          setPendingLanName(null);
-          setRoomChoice({ asking: false, listed: false });
-          beginSession(s, 'custom');
-        }}
-        onCancel={() => {
-          setResumedRoom(null);
-          setPendingLanName(null);
-          setRoomChoice({ asking: false, listed: false });
-          /**
-           * BACK GOES WHERE YOU CAME FROM, and in an activity that is the lobby browser.
-           *
-           * A participant reaches this screen from the Discord lobby list, never from Modes
-           * — the activity auto-joins. Sending them to Modes put a screen they had not used
-           * between them and the only thing they wanted, which is the other lobby, and Modes
-           * in the embed is mostly entries that need an account they cannot have.
-           */
-          navigate(inActivity && discordGroupId ? 'discordlobbies' : 'modes');
-        }}
-        config={auto?.config}
-        signedIn={signedIn}
-        listed={roomChoice.listed}
-        displayName={handle}
-        myUserId={accountUserId}
-        onOpenProfile={openProfile}
-        onJoinInvite={onJoinInvite}
-        onSpectate={spectateRoom}
-        autoJoin={auto?.room}
-        autoJoinRegion={auto?.region}
-        onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={inActivity}
-        group={discordGroupId}
-        resume={resumedRoom ?? undefined}
-        initialName={pendingLanName ?? undefined}
-      />
-    );
-  }
-  // LAN. Bypasses AppShell the same way `screen === 'lobby'` does — the mockup this
-  // screen was redesigned against has none of the shell's chrome (rail, top bar), the
-  // same reason Lobby renders here instead of inside AppShell.
-  // `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN match is —
-  // a code-joined room, on a different server. Nothing about the room flow changes;
-  // only `gameServerUrl()` now answers with the host's machine.
   if (screen === 'watchlobby' && watchedRoom) {
     const w = watchedRoom;
     return fullScreen(
@@ -2245,110 +2170,6 @@ export function App() {
           navigate('game');
         }}
       />,
-    );
-  }
-  // Belt and braces on the `lanOn` guard: the Play tile is hidden and `/lan` no longer
-  // parses where the flag is off, so nothing should reach this — but `navigate('lan')`
-  // is still a callable function, and a screen that renders a whole feature is worth
-  // guarding at the point of render too.
-  if (lanOn && screen === 'lan') {
-    return roomScreen(
-      <LanPanel
-        shell={shell}
-        signedIn={signedIn}
-        game={settings.game}
-        onBack={() => navigate('modes')}
-        displayName={handle}
-        onConnected={(code, game, name) =>
-          guardStart(() => {
-            /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
-               JOIN it rather than offer a create/join form. Without this the player lands
-               on the entry screen and has to type the code a second time — and the
-               transport waiting in `pending.ts` would then be adopted by whatever they
-               typed, which need not be the room it is connected to. Same one-shot
-               `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
-            if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
-            if (name) setPendingLanName(name);
-            navigate('lobby');
-          })
-        }
-      />,
-    );
-  }
-  if (screen === 'record') {
-    return fullScreen(
-      <RecordRun
-        settings={shown}
-        mode="solo"
-        onStart={(s) => beginSession(s, 'record')}
-        onCancel={() => navigate('modes')}
-        /* the launcher only offers this when the server refused with `active_game`, so the
-           record is the match that refusal is about — go there instead of dead-ending. */
-        onRejoinActive={() => {
-          const ref = loadActiveGame();
-          if (ref) rejoinGame(ref);
-          else navigate('modes');
-        }}
-      />
-    );
-  }
-  if (screen === 'duorecord') {
-    const auto = pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin : undefined;
-    return roomScreen(
-      <Lobby
-        settings={shown}
-        onSettingsChange={update}
-        shell={shell}
-        config={auto?.config ?? { kind: 'record', record: 'duo' }}
-        onStart={(s) => beginSession(s, 'record', true)}
-        onCancel={() => navigate('modes')}
-        signedIn={signedIn}
-        displayName={handle}
-        myUserId={accountUserId}
-        onOpenProfile={openProfile}
-        onJoinInvite={onJoinInvite}
-        onSpectate={spectateRoom}
-        autoJoin={auto?.room}
-        autoJoinRegion={auto?.region}
-        onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={inActivity}
-        group={discordGroupId}
-      />
-    );
-  }
-  if (screen === 'matchmaking') {
-    return (
-      <>
-        {/* THE RANKED SCREEN NEEDS THE ACCOUNT ON A DIRECT LOAD. `signedIn` is set by
-            AccountSync alone, which the shell renders and this early return used to skip, so a
-            page load on /ranked (a reload, or the staged-match redirect above) never learned
-            who was signed in: a signed-in player was told "Ranked needs an account", and the
-            reload path for a found match had no account to rejoin with. Mounting it here too
-            is a remount on the way in and out, not an identity change: the session store hands
-            the same user straight back, and the settings load stays guarded by `syncedUser`. */}
-        {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
-        <FriendsProvider
-          signedIn={signedIn}
-          activity="lobby"
-          game={settings.game}
-          sound={settings.audio.volume.master > 0}
-          onHostRoom={hostForChallenge}
-          onQueueChallenge={startChallenge}
-        >
-          <Matchmaking
-            shell={shell}
-            settings={shown}
-            signedIn={signedIn}
-            myUserId={accountUserId}
-            onStart={(s) => beginSession(s, 'ranked')}
-            onCancel={() => navigate('modes')}
-            onSignIn={() => navigate('account')}
-            onSettingsChange={update}
-            challenge={pendingChallenge ?? undefined}
-            onChallengeConsumed={() => setPendingChallenge(null)}
-          />
-        </FriendsProvider>
-      </>
     );
   }
   if (screen === 'compmatch' && route.sub) {
@@ -2408,11 +2229,14 @@ export function App() {
   const recordsView: RecordsView = recordsViewOf(route.sub);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
+  /** the claim and notice dialogs wait for every other modal this shell can raise, and for a popup:
+   *  a popup can be a live room or the ranked strategy window, which a backdrop must never cover */
+  const modalsWait = legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart || !!popup;
 
   return (
     <FriendsProvider
       signedIn={signedIn}
-      activity="menu"
+      activity={screen === 'record' ? 'match' : popup && screen !== 'rooms' && screen !== 'competitions' ? 'lobby' : 'menu'}
       game={settings.game}
       sound={settings.audio.volume.master > 0}
       onHostRoom={hostForChallenge}
@@ -2468,22 +2292,23 @@ export function App() {
           signed-in account that has not accepted yet can still go and read them; the
           gate is back the moment the route is anything else. */}
       {authEnabled && (
-        <TermsGate suspended={legalScreen}>
-          <UsernameGate suspended={legalScreen}>
+        <TermsGate suspended={legalScreen || !!popup}>
+          <UsernameGate suspended={legalScreen || !!popup}>
             {/* THE CLAIM DIALOG waits behind both gates (it is their child), and behind every
-                other modal this shell can raise — an announcement, a start guard. It is
-                inside `AppShell`, which a match, a lobby and the ranked screen replace, so it
-                can never appear over a field. "Equip now" on a decal puts it on the active
+                other modal this shell can raise — an announcement, a start guard — and behind a
+                popup (`modalsWait`): a joined room and the ranked strategy window are popups
+                inside `AppShell` now, so waiting is what keeps it off them. A match replaces
+                `AppShell`, so it can never appear over a field. "Equip now" on a decal puts it on the active
                 robot, the same edit the builder's own swatch makes. */}
             <RewardDialog
-              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+              blocked={modalsWait}
               onEquipCosmetic={equipCosmetic}
             />
             {/* THE NOTICE POP-UP (0057): what a moderator did about this player's report, match
                 or standing. Same place and the same waits as the claim dialog, and it yields to
                 that dialog too, so the two backdrops never stack. */}
             <NoticeDialog
-              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+              blocked={modalsWait}
             />
           </UsernameGate>
         </TermsGate>
@@ -2503,28 +2328,6 @@ export function App() {
               if (window.location.pathname !== path) window.history.pushState(null, '', path);
             }
           }}
-        />
-      )}
-
-      {screen === 'rooms' && (
-        <RoomBrowser
-          onHost={() => setRoomChoice({ asking: true, listed: false })}
-          onWatchLive={spectateRoom}
-          onWatch={(room, game, region) => {
-            // the room's own season, as an accepted invite does: a watcher steps that room's world
-            selectGame(game);
-            setWatchedRoom({ room, game, region });
-            navigate('watchlobby');
-          }}
-          onJoin={(room, game, region) =>
-            guardStart(() => {
-              // the same hand-off an accepted invite makes: the INVITE names the game, and joining
-              // from the other one would leave the app configured for a game the room isn't playing
-              selectGame(game);
-              setPendingAutoJoin({ room, config: { kind: 'versus', game }, region });
-              navigate('lobby');
-            })
-          }
         />
       )}
 
@@ -2561,7 +2364,7 @@ export function App() {
         </OverlayDialog>
       )}
 
-      {screen === 'modes' && (
+      {(screen === 'modes' || popup) && (
         <ModeSelect
           settings={shown}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
@@ -2598,6 +2401,161 @@ export function App() {
           onCompetitions={() => navigate('competitions')}
           compete={!inActivity}
         />
+      )}
+      {/* THE POPUPS OVER PLAY (`POPUPS`). A state that was always full-screen (a joined room, the
+          strategy window) does not call `popupShell`, and fills the host instead: the same component,
+          so no socket is dropped on the way in, and `shell.css` hides the shell under it from Tab. */}
+      {popup && (
+        <div className="overlay ds-popup-host">
+          {screen === 'lobby' && (
+            <Lobby
+              settings={shown}
+              onSettingsChange={update}
+              shell={popupShell}
+              /* Both exits from the lobby drop the handed-over socket reference, so a later,
+                 ordinary visit to this screen cannot re-adopt a room the player has left. */
+              onStart={(s) => {
+                setResumedRoom(null);
+                setPendingLanName(null);
+                setRoomChoice({ asking: false, listed: false });
+                beginSession(s, 'custom');
+              }}
+              onCancel={closePopup}
+              config={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.config : undefined}
+              signedIn={signedIn}
+              listed={roomChoice.listed}
+              displayName={handle}
+              myUserId={accountUserId}
+              onOpenProfile={openProfile}
+              onJoinInvite={onJoinInvite}
+              onSpectate={spectateRoom}
+              autoJoin={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.room : undefined}
+              autoJoinRegion={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.region : undefined}
+              onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+              discordActivity={inActivity}
+              group={discordGroupId}
+              resume={resumedRoom ?? undefined}
+              initialName={pendingLanName ?? undefined}
+            />
+          )}
+          {screen === 'duorecord' && (
+            <Lobby
+              settings={shown}
+              onSettingsChange={update}
+              shell={popupShell}
+              config={pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin.config : { kind: 'record', record: 'duo' }}
+              onStart={(s) => beginSession(s, 'record', true)}
+              onCancel={closePopup}
+              signedIn={signedIn}
+              displayName={handle}
+              myUserId={accountUserId}
+              onOpenProfile={openProfile}
+              onJoinInvite={onJoinInvite}
+              onSpectate={spectateRoom}
+              autoJoin={pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin.room : undefined}
+              autoJoinRegion={pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin.region : undefined}
+              onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+              discordActivity={inActivity}
+              group={discordGroupId}
+            />
+          )}
+          {screen === 'matchmaking' && (
+            <Matchmaking
+              shell={popupShell}
+              settings={shown}
+              signedIn={signedIn}
+              myUserId={accountUserId}
+              onStart={(s) => beginSession(s, 'ranked')}
+              onCancel={closePopup}
+              onSignIn={() => navigate('account')}
+              onSettingsChange={update}
+              challenge={pendingChallenge ?? undefined}
+              onChallengeConsumed={() => setPendingChallenge(null)}
+            />
+          )}
+          {screen === 'record' && (
+            <RecordRun
+              shell={popupShell}
+              settings={shown}
+              mode="solo"
+              onStart={(s) => beginSession(s, 'record')}
+              onCancel={closePopup}
+              /* the launcher only offers this when the server refused with `active_game`, so the
+                 record is the match that refusal is about — go there instead of dead-ending. */
+              onRejoinActive={() => {
+                const ref = loadActiveGame();
+                if (ref) rejoinGame(ref);
+                else navigate('modes');
+              }}
+            />
+          )}
+          {/* `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN match is — a
+              code-joined room, on a different server; only `gameServerUrl()` answers differently. */}
+          {screen === 'lan' && (
+            <LanPanel
+              shell={popupShell}
+              signedIn={signedIn}
+              game={settings.game}
+              onBack={closePopup}
+              displayName={handle}
+              onConnected={(code, game, name) =>
+                guardStart(() => {
+                  /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
+                     JOIN it rather than offer a create/join form. Without this the player lands
+                     on the entry screen and has to type the code a second time — and the
+                     transport waiting in `pending.ts` would then be adopted by whatever they
+                     typed, which need not be the room it is connected to. Same one-shot
+                     `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
+                  if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
+                  if (name) setPendingLanName(name);
+                  navigate('lobby');
+                })
+              }
+            />
+          )}
+          {screen === 'rooms' &&
+            popupShell(
+              <RoomBrowser
+                onHost={() => {
+                  // New room is its own dialog: close this one first, so two scrims never stack
+                  navigate('modes');
+                  setRoomChoice({ asking: true, listed: false });
+                }}
+                onWatchLive={spectateRoom}
+                onWatch={(room, game, region) => {
+                  // the room's own season, as an accepted invite does: a watcher steps that room's world
+                  selectGame(game);
+                  setWatchedRoom({ room, game, region });
+                  navigate('watchlobby');
+                }}
+                onJoin={(room, game, region) =>
+                  guardStart(() => {
+                    // the same hand-off an accepted invite makes: the INVITE names the game, and joining
+                    // from the other one would leave the app configured for a game the room isn't playing
+                    selectGame(game);
+                    setPendingAutoJoin({ room, config: { kind: 'versus', game }, region });
+                    navigate('lobby');
+                  })
+                }
+              />,
+            )}
+          {screen === 'competitions' &&
+            popupShell(
+              <LoadBoundary what="competitions" fallback={<p className="ds-loading">Loading competitions…</p>}>
+                <Competitions
+                  sub={null}
+                  game={settings.game}
+                  signedIn={signedIn}
+                  onRoute={(sub) => navigate('competitions', { sub })}
+                  onPlay={(slug) => navigate('compmatch', { sub: slug })}
+                  onWatch={spectateRoom}
+                  onWatchReplay={(id) => watchReplay(id)}
+                  onProfile={openProfile}
+                  onSignIn={() => navigate('account')}
+                />
+              </LoadBoundary>,
+            )}
+        </div>
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
       {showChainDisclaimer && (
@@ -2798,7 +2756,7 @@ export function App() {
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
-      {screen === 'competitions' && (
+      {screen === 'competitions' && route.sub && (
         <LoadBoundary what="competitions" fallback={<p className="ds-loading">Loading competitions…</p>}>
           <Competitions
             sub={route.sub}
@@ -2832,7 +2790,7 @@ export function App() {
           winning that slot over the homepage itself. (Fresh visitors never see
           it at all now — see `useAnnouncements`.) It stands down on the legal pages like the
           gates above: a full-screen reveal over /privacy covered the document itself. */}
-      {!legalScreen && (
+      {!legalScreen && !popup && (
         <Announcements muted={settings.audio.volume.master <= 0} onActiveChange={setAnnActive} />
       )}
       </AppShell>

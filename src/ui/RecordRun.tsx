@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
 import type { RobotSpec } from '../types';
 import { isImportedSpec } from '../net/imported';
@@ -36,6 +36,7 @@ export function RecordRun({
   onStart,
   onCancel,
   onRejoinActive,
+  shell,
 }: {
   settings: GameSettings;
   mode: RecordKind;
@@ -45,6 +46,8 @@ export function RecordRun({
    *  with `active_game` AND this browser still knows which match that is. Optional so
    *  nothing breaks for a caller that does not wire it. */
   onRejoinActive?: () => void;
+  /** the popup frame over Play (`App.tsx` `popupShell`) */
+  shell: (body: ReactNode) => JSX.Element;
 }) {
   const [status, setStatus] = useState('Connecting to the record server…');
   /**
@@ -249,14 +252,13 @@ export function RecordRun({
 
   /** the console scaffold every full-screen setup surface shares (Lobby,
    * Matchmaking, MatchStrategy) — back control + brand mark, then a titled panel. */
-  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
-    <div className="ds-console">
+  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element =>
+    shell(
       <div className="ds-console-in narrow">
-        <ConsoleHead onBack={onCancel} title={title} sub={sub} />
+        <ConsoleHead title={title} sub={sub} />
         <div className="ds-panel ds-panel-body stack">{body}</div>
-      </div>
-    </div>
-  );
+      </div>,
+    );
 
   const kind = mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0';
 

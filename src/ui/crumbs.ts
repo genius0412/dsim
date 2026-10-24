@@ -11,8 +11,9 @@ import { RECORDS_HUB, RECORDS_PAGES, isRecordsPage } from './recordsPages';
  *
  * DOM-free and string-keyed (the `Screen` union lives in `App.tsx`), so `npm test` can hold it.
  * Full-screen surfaces (the game, a joined room, a replay) are NOT here: they render outside the
- * shell and their Back leaves a live socket, which is a different action. The screens BEFORE a
- * connection (Find match, Duo record, Room entry, LAN) are shell pages and have a trail.
+ * shell and their Back leaves a live socket, which is a different action. Ranked, Duo record, Room
+ * entry and LAN are popups over Play now (`App.tsx` `POPUPS`), and the bar shows Play's trail under
+ * one; their entries here are what a crumb to one of them would read.
  */
 export interface CrumbTarget {
   screen: string;
@@ -68,7 +69,7 @@ export function crumbsFor(screen: string, sub: string | null = null, username: s
     case 'competitions':
       return trail(PLAY)('Competitions');
     case 'matchmaking':
-      return trail(PLAY)('Find match');
+      return trail(PLAY)('Ranked');
     case 'duorecord':
       return trail(PLAY)('Duo record');
     case 'lobby':
