@@ -10849,10 +10849,15 @@ input.admin-months {
   position: fixed;
 }
 .overlay-panel.ds-popup {
+  position: relative;
   width: min(520px, 100%);
 }
+/* a shell dialog's centred title gives up the corner X's inset on BOTH sides, so it stays centred
+   and wraps before it reaches the X */
+.ds-popup > .ds-dialog-title {
+  padding-inline: var(--ds-s-6);
+}
 .overlay-panel.ds-popup.page {
-  position: relative;
   text-align: left;
 }
 .ds-popup-x {

@@ -456,8 +456,9 @@ function screenForNav(n: ShellNav): Screen {
  * ONE SHELL DIALOG over the `.overlay` scrim (design review C07). Every start guard below is
  * one of these, so the dialog semantics live in one place: the PANEL is the dialog (not the
  * scrim), labelled by its visible title, and `useDialog` moves focus in, traps Tab and hands
- * focus back. `onClose` is the SAME handler as the dialog's visible dismiss button; omit it
- * for one that has to be answered, and Escape does nothing.
+ * focus back. `onClose` is the SAME handler as Escape and the corner X; omit it for one that
+ * has to be answered, and there is no X and Escape does nothing. The X is LAST in the DOM
+ * (placed by CSS) so `useDialog`'s first-control focus still lands on the dialog's own buttons.
  */
 function OverlayDialog({
   title,
@@ -477,6 +478,11 @@ function OverlayDialog({
           {title}
         </h2>
         {children}
+        {onClose && (
+          <button className="ds-btn ghost small ds-popup-x" onClick={onClose} aria-label="Close">
+            <CloseGlyph />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2333,7 +2339,7 @@ export function App() {
 
       {/* PUBLIC OR PRIVATE, asked before the lobby opens. Public needs an account: the server lists a
           room only while its host is signed in (`Room.listing`), so offering it signed out would
-          promise a listing that never appears. Escape and the dismiss button both just close. */}
+          promise a listing that never appears. Escape and the corner X both just close. */}
       {roomChoice.asking && (
         <OverlayDialog title="New room" onClose={() => setRoomChoice({ asking: false, listed: false })}>
           <div className="overlay-buttons ds-dialog-actions">

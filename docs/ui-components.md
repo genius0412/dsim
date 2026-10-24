@@ -479,9 +479,9 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-popup` | src/ui/shell.css:10851 | 4 |
+| `.ds-popup` | src/ui/shell.css:10851 | 5 |
 | `.ds-popup-host` | src/ui/shell.css:10848 | 1 |
-| `.ds-popup-x` | src/ui/shell.css:10858 | 1 |
+| `.ds-popup-x` | src/ui/shell.css:10863 | 2 |
 
 ## `ds-presence` — 3
 
@@ -547,7 +547,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-dialog-actions` | src/ui/shell.css:6661 | 12 |
-| `.ds-dialog-title` | src/ui/styles.css:1864 | 12 |
+| `.ds-dialog-title` | src/ui/shell.css:10857 | 12 |
 
 ## `ds-feed` — 2
 
@@ -748,7 +748,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:882 | 365 |
+| `.ds-btn` | src/ui/shell.css:882 | 366 |
 
 ## `ds-checkline` — 1
 
