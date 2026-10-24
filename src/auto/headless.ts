@@ -69,8 +69,10 @@ export function runAutoHeadless(o: HeadlessOptions): HeadlessResult {
     id: 0,
     alliance,
     spec: o.spec,
-    // robot-centric, no assists: the auto drives, and an assist would only fight it
-    assists: { ...DEFAULT_ASSISTS, fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: false },
+    // robot-centric, no intake or fire assist: the auto drives. Aim Assist stays ON whatever is
+    // asked (`coerceAssists` forces it for every robot), so a shot leaves only when it would land,
+    // exactly as in a match; `shootAll` gives up from a pose it cannot score from.
+    assists: { ...DEFAULT_ASSISTS, fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false },
     startIndex: 0,
     zenithAuto: o.setup,
   };
@@ -89,6 +91,10 @@ export function runAutoHeadless(o: HeadlessOptions): HeadlessResult {
   }
   const r = world.robots[0];
   const st = seat.status();
+  // THE BUZZER: the loop stops at the end of AUTO without stepping into TELEOP, where the seat
+  // would let go on its own, so the run is ended here. Without it a step still running kept the
+  // `endS` it opened with, and Zenith drew a 30 s run as 0.6 s long.
+  if (st.state !== 'done') seat.end();
   const trace = seat.trace();
   if (!trace) throw new Error(st.error ?? 'The auto did not run.');
   return {

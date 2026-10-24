@@ -1,0 +1,437 @@
+{
+  "$schema": "https://libraries.horizon36596.org/zenith/schema/v1/auto.json",
+  "formatVersion": 4,
+  "name": "collect-and-score",
+  "title": "Collect and score",
+  "description": "A full BIOBUZZ auto. Drive out and shoot all four preloaded pollen, which tips the hive on the first volley; the tip turns the up cell to the north, so the robot goes to the other side of the hive, takes four pollen from the flower on the north wall and scores them, then collects the RED garden line and scores again on the north side for the second tip. It shows three ways to run a command alongside driving: a marker on a path, a parallel deadline group with a sequence in it, and a wait until the robot reports full.",
+  "robot": "autos/robot.json",
+  "field": "autos/field/biobuzz.field.json",
+  "alliance": "RED",
+  "authors": [
+    "Horizon (FTC 36596)"
+  ],
+  "created": "2026-09-23",
+  "start": {
+    "pose": {
+      "ref": "start"
+    },
+    "holds": {
+      "pollen": 4
+    }
+  },
+  "steps": [
+    {
+      "id": "driveOut",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "start"
+          },
+          "to": {
+            "ref": "scoreSouth"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "notes": "A straight line north to the scoring spot south of the hive, facing its up cell."
+    },
+    {
+      "id": "shootPreloads",
+      "kind": "command",
+      "name": "score",
+      "args": {
+        "count": 4
+      },
+      "notes": "Launches all four preloaded pollen in one volley. The up cell starts with 3 nectar, and the tip table says 3 pollen tip a cell holding 3 nectar, so this volley tips the hive: it dumps the cell onto the floor on the south side and the empty north cell comes up."
+    },
+    {
+      "id": "toOtherSide",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "bezier",
+          "from": "current",
+          "control": [
+            {
+              "xIn": -40,
+              "yIn": -46,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+            },
+            {
+              "xIn": -50,
+              "yIn": 4.79,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+            },
+            {
+              "xIn": -40,
+              "yIn": 34,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+            }
+          ],
+          "to": {
+            "ref": "flowerNorthApproach"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "piecewise",
+        "ranges": [
+          {
+            "startT": 0,
+            "endT": 0.2038,
+            "heading": {
+              "mode": "linear",
+              "fromRad": 1.5708,
+              "toRad": 2.3722
+            }
+          },
+          {
+            "startT": 0.2038,
+            "endT": 0.8679,
+            "heading": {
+              "mode": "tangent"
+            }
+          },
+          {
+            "startT": 0.8679,
+            "endT": 1,
+            "heading": {
+              "mode": "linear",
+              "fromRad": 1.0385,
+              "toRad": 1.5708
+            }
+          }
+        ]
+      },
+      "notes": "After the tip the up cell faces north, and a launch only scores from the up cell's own quarter of the field, so the robot goes to the other side of the hive. It goes around the west of the hive frame, not under it: the frame's west legs keep an 18 in robot's centre east of about x = -9, and its footprint is 18 in wide, so under the hive it would cross the centre line into BLUE's side (G402). It keeps facing north while it leaves the scoring spot, turns to drive nose-first once its footprint is clear of the centre line, and turns back to face north for the flower."
+    },
+    {
+      "id": "collectFlower",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": "current",
+          "to": {
+            "ref": "flowerNorthPickup"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "tangent"
+      },
+      "speedFraction": 0.3,
+      "markers": [
+        {
+          "at": {
+            "t": 0
+          },
+          "command": {
+            "name": "intakeOn"
+          }
+        }
+      ],
+      "endCondition": {
+        "condition": "hopperFull"
+      },
+      "expect": {
+        "collectFrom": "flower1",
+        "count": 4
+      },
+      "notes": "Drives slowly up to flower1 with the intake running. The marker starts the intake as the path starts, without a separate step; endCondition ends the path early once the robot is full, and expect tells the ledger it takes the flower's four pollen."
+    },
+    {
+      "id": "waitForFull",
+      "kind": "wait",
+      "until": "hopperFull",
+      "timeoutS": 1,
+      "notes": "Gives the intake up to one more second. A wait until ends as soon as its condition is true, and timeoutS stops it waiting forever."
+    },
+    {
+      "id": "stopIntake",
+      "kind": "command",
+      "name": "intakeOff"
+    },
+    {
+      "id": "toScoreNorth",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "bezier",
+          "from": "current",
+          "control": [
+            {
+              "xIn": -24,
+              "yIn": 46,
+              "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+            },
+            {
+              "xIn": -13,
+              "yIn": 60,
+              "provenance": "SET BY HAND: starter example, a curve control point on x = -13, the scoring spots' line, that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+            }
+          ],
+          "to": {
+            "ref": "scoreNorth"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "piecewise",
+        "ranges": [
+          {
+            "startT": 0,
+            "endT": 0.2041,
+            "heading": {
+              "mode": "tangentReversed"
+            }
+          },
+          {
+            "startT": 0.2041,
+            "endT": 0.5442,
+            "heading": {
+              "mode": "linear",
+              "fromRad": 2.8274,
+              "toRad": 4.7124
+            }
+          },
+          {
+            "startT": 0.5442,
+            "endT": 1,
+            "heading": {
+              "mode": "constant",
+              "headingRad": -1.5708
+            }
+          }
+        ]
+      },
+      "notes": "Backs off the flower, turns around and comes in to the scoring spot north of the hive from the north, so the launcher faces the up cell when it gets there. It does the turn while it is still west of x = -13, so its footprint stays on RED's side of the centre line."
+    },
+    {
+      "id": "scoreFlowerPollen",
+      "kind": "command",
+      "name": "score",
+      "args": {
+        "count": 4
+      },
+      "notes": "Four pollen into the north cell. It came up empty, and an empty cell takes 8 pollen to tip, so this is half of the second tip."
+    },
+    {
+      "id": "toGarden",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "bezier",
+          "from": "current",
+          "control": [
+            {
+              "xIn": -46.817,
+              "yIn": 40.929,
+              "provenance": "SET FROM SIM: starter example, a curve control point Optimize path placed with the instant sim, that takes the robot back south around the west of the hive frame, clear of its west bar and legs and on RED's side of the centre line"
+            },
+            {
+              "xIn": -32.123,
+              "yIn": -14.286,
+              "provenance": "SET FROM SIM: starter example, a curve control point Optimize path placed with the instant sim, that takes the robot back south around the west of the hive frame, clear of its west bar and legs and on RED's side of the centre line"
+            },
+            {
+              "xIn": -47.399,
+              "yIn": 22.796,
+              "provenance": "SET FROM SIM: starter example, a curve control point Optimize path placed with the instant sim, that takes the robot back south around the west of the hive frame, clear of its west bar and legs and on RED's side of the centre line"
+            }
+          ],
+          "to": {
+            "ref": "gardenSweepStart"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "piecewise",
+        "ranges": [
+          {
+            "startT": 0,
+            "endT": 0.2186,
+            "heading": {
+              "mode": "linear",
+              "fromRad": -1.5708,
+              "toRad": -2.0354
+            }
+          },
+          {
+            "startT": 0.2186,
+            "endT": 0.9238,
+            "heading": {
+              "mode": "tangent"
+            }
+          },
+          {
+            "startT": 0.9238,
+            "endT": 1,
+            "heading": {
+              "mode": "linear",
+              "fromRad": -1.5697,
+              "toRad": -3.1416
+            }
+          }
+        ]
+      },
+      "notes": "Back south around the west of the hive frame, not under it, to the east end of the RED garden line, turning so the intake faces west along it. It starts its turn at the scoring spot, which is 4 in clear of the centre line, and drives nose-first once it is round, so its footprint stays on RED's side of the centre line (G402)."
+    },
+    {
+      "id": "sweepGarden",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": "current",
+          "to": {
+            "ref": "gardenSweepEnd"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "constant",
+        "headingRad": 3.1416
+      },
+      "speedFraction": 0.3,
+      "markers": [
+        {
+          "at": {
+            "t": 0
+          },
+          "command": {
+            "name": "intakeOn"
+          }
+        }
+      ],
+      "endCondition": {
+        "condition": "hopperFull"
+      },
+      "expect": {
+        "collectFrom": "gardenRed",
+        "count": 4
+      },
+      "notes": "Drives slowly west along the south wall with the intake leading, over the four pollen of the RED garden line. The first tip's dump also lands in this quarter, so the line may have been knocked about; watch a real tip before trusting this sweep."
+    },
+    {
+      "id": "stopGardenIntake",
+      "kind": "command",
+      "name": "intakeOff"
+    },
+    {
+      "id": "returnToScore",
+      "kind": "parallel",
+      "mode": "deadline",
+      "deadline": "driveBack",
+      "steps": [
+        {
+          "id": "driveBack",
+          "kind": "path",
+          "segments": [
+            {
+              "kind": "bezier",
+              "from": "current",
+              "control": [
+                {
+                  "xIn": -40,
+                  "yIn": -62,
+                  "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+                },
+                {
+                  "xIn": -58,
+                  "yIn": 62,
+                  "provenance": "PLACEHOLDER: starter example, a curve control point that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+                },
+                {
+                  "xIn": -13,
+                  "yIn": 56,
+                  "provenance": "SET BY HAND: starter example, a curve control point on x = -13, the scoring spots' line, that takes the robot around the west of the hive frame, clear of its west bar and legs, so the whole footprint stays on RED's side of the centre line"
+                }
+              ],
+              "to": {
+                "ref": "scoreNorth"
+              }
+            }
+          ],
+          "heading": {
+            "mode": "piecewise",
+            "ranges": [
+              {
+                "startT": 0,
+                "endT": 0.0586,
+                "heading": {
+                  "mode": "constant",
+                  "headingRad": 3.1416
+                }
+              },
+              {
+                "startT": 0.0586,
+                "endT": 0.1612,
+                "heading": {
+                  "mode": "linear",
+                  "fromRad": -3.1416,
+                  "toRad": -1.7852
+                }
+              },
+              {
+                "startT": 0.1612,
+                "endT": 0.707,
+                "heading": {
+                  "mode": "tangentReversed"
+                }
+              },
+              {
+                "startT": 0.707,
+                "endT": 0.8242,
+                "heading": {
+                  "mode": "linear",
+                  "fromRad": -2.0008,
+                  "toRad": -1.5708
+                }
+              },
+              {
+                "startT": 0.8242,
+                "endT": 1,
+                "heading": {
+                  "mode": "constant",
+                  "headingRad": -1.5708
+                }
+              }
+            ]
+          },
+          "notes": "North around the west of the frame, east along the north side of the hive and down to the scoring spot north of it, turning to face the up cell. It does the turn west of x = -13, and the last stretch is a straight drive south, so its footprint stays on RED's side of the centre line (G402)."
+        },
+        {
+          "id": "clearThenSpinUp",
+          "kind": "sequence",
+          "steps": [
+            {
+              "id": "clearGarden",
+              "kind": "wait",
+              "seconds": 0.5
+            },
+            {
+              "id": "readyLauncher",
+              "kind": "command",
+              "name": "spinUp"
+            }
+          ]
+        }
+      ],
+      "notes": "A deadline group ends when its deadline member, the drive, ends. The sequence beside it keeps the intake on for half a second while the robot leaves the garden, then stops it and spins the launcher up on the way back."
+    },
+    {
+      "id": "scoreGardenPollen",
+      "kind": "command",
+      "name": "score",
+      "args": {
+        "count": 4
+      },
+      "notes": "Four more pollen into the north cell, which now holds 8, so the hive tips a second time."
+    }
+  ]
+}

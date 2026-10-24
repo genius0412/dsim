@@ -58,6 +58,12 @@ export interface AutoHost {
   condition(name: string): boolean | null;
   /** the buttons held right now by whatever the auto started */
   buttons(): AutoButtons;
+  /**
+   * How many shooting commands have given up so far because nothing left the hopper for the
+   * build's patience (BIOBUZZ `shootAll`). Only ever counts up; the seat reads it after each tick
+   * and names the step (`AutoSeatStatus.cantShoot`). Absent: this game's commands never give up.
+   */
+  cantShootCount?(): number;
   /** the end of AUTO: let go of everything */
   release(): void;
 }
@@ -116,4 +122,10 @@ export interface AutoSeatStatus {
   error?: string;
   /** set while `running`: a path step with no `timeoutS` has asked for power and the robot has not moved for 1.5 s */
   stuck?: boolean;
+  /**
+   * Set while `running` or `done`, for 3 s of match time after a shooting command gave up with
+   * nothing leaving the hopper (a pose it cannot score from): the id of the step it ran in. The
+   * auto has moved on by then. The HUD reads it as `AUTO CAN'T SHOOT FROM HERE`.
+   */
+  cantShoot?: string;
 }

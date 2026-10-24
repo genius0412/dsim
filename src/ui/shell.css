@@ -691,6 +691,11 @@
   gap: var(--ds-s-2);
   min-width: 0;
 }
+/* a PARENT never shrinks: squeezed below its text (360px wide, "Records" in a 63px item) it ran its
+   label under the separator, and only the page you are on is meant to ellipsize */
+.ds-crumbs li:not(:last-child) {
+  flex: none;
+}
 .ds-crumbs .sep {
   color: var(--ds-line-strong);
 }
@@ -1599,8 +1604,10 @@
   color: var(--ds-accent-ink);
   border-color: transparent;
 }
+/* SOLID accent-ink: `contrast.mjs` holds this exact pair. The 74% mix that came back with the
+   restored hint lines measured 4.40:1 in light, under AA for 12px type. */
 .ds-menu-btn.primary .mh {
-  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
+  color: var(--ds-accent-ink);
 }
 /* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
 .ds-subnav-layout {
@@ -3369,6 +3376,25 @@ tr.lb-detail td {
   align-items: center;
   gap: 8px;
 }
+/* A PHONE: Back, the title and two buttons are ~410px of one row, and "Use as pace" broke onto
+   three lines beside a two-line Download (390px, measured). Back and the title share the first
+   row, the actions take the second, and a button's label never wraps. */
+@media (max-width: 560px) {
+  .ds-replay-top {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: var(--ds-s-2);
+  }
+  .ds-replay-top > .ds-panel-title {
+    justify-self: end;
+  }
+  .ds-replay-actions {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+  .ds-replay-actions .ds-btn {
+    white-space: nowrap;
+  }
+}
 /* live scoreboard over the replay. Mirrors the in-match HUD order (red · clock ·
    blue) so it reads the same way. It sits on the BAR surface, not the canvas, so
    --ds-ink/--ds-line are the correct tokens here (not the --ds-on-field set). */
@@ -4781,6 +4807,49 @@ tr.lb-detail td {
     right: 4px;
   }
 }
+/* A LIST OF OPTIONS AT ROW HEIGHT: one column, the name left and its state right, for a set that
+   can reach twelve (the Autonomous library). Twelve tiles of the card shape were ~900px and pushed
+   the preview and its buttons off the screen (Zenith UX sweep W4-D11). Past four rows it scrolls
+   inside itself, the fifth cut in half to say so. The padding is the room the cards' shadow, hover
+   lift and 2px+2px focus ring draw in, which a scroll container would clip; the negative margin
+   puts the cards back on the section's edge. Each row is a `.ds-opt-slot`, so the delete is
+   still a sibling of the card and not nested in it. */
+.ds-opts.list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-s-2);
+  max-height: calc(4.5 * var(--ds-s-7));
+  overflow-y: auto;
+  padding: var(--ds-s-1);
+  margin: calc(-1 * var(--ds-s-1));
+  scrollbar-width: thin;
+}
+/* the slot's own column may not grow to a long name's width, or the list scrolls sideways */
+.ds-opts.list .ds-opt-slot {
+  grid-template-columns: minmax(0, 1fr);
+}
+.ds-opts.list .ds-opt-slot > .ds-opt {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  min-height: calc(var(--ds-s-7) - var(--ds-s-2));
+  padding: var(--ds-s-2) calc(var(--ds-s-7) - var(--ds-s-2)) var(--ds-s-2) var(--ds-s-3);
+}
+.ds-opts.list .ot {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-opts.list .od {
+  flex: none;
+  white-space: nowrap;
+}
+/* centred on the row, by transform: a row is a fixed height here, and the 24px target sits in the middle of it */
+.ds-opts.list .ds-opt-del {
+  top: 50%;
+  transform: translateY(-50%);
+}
 /* "save current" / "add" slot: dashed, muted until hovered */
 .ds-opt-add {
   border-style: dashed;
@@ -5901,6 +5970,14 @@ button.bb-cell:where(:not(:disabled)):active {
   max-height: none;
   aspect-ratio: auto;
 }
+/* ...and on a PHONE-WIDTH card the toggle left the picture ~60px of a 112px column (a tall sliver
+   with the robot lost in it). BIOBUZZ's card gives the picture the larger share instead; the name
+   and the build line are one-line marquees and a few wrapped lines, which the 160px row holds. */
+@container hero (max-width: 439px) {
+  .ds-hero-in:has(.bb-prev) {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
 /* 3D ASKED FOR AND NOT AVAILABLE: the segment reads as the chassis map's TAKEN cell does — a
    dashed edge and muted ink — and its title says why. Still a button: pressing it retries. */
 .ds-seg.off {
@@ -6760,14 +6837,39 @@ a.ds-cta {
   border-radius: var(--ds-round);
   border: 1px dashed var(--ds-line);
 }
-/* THE AUTONOMOUS SECTION (`AutonomousSetup.tsx`): the selected Zenith auto's preview beside its
-   verdict, facts and actions. Its own family rather than `ds-startpos-*` (two components must not
-   share a container class), laid out the same way so the two sections read as one screen. */
-.ds-auto {
+/* THE AUTONOMOUS SECTION (`AutonomousSetup.tsx`): the library (`.ds-opts.list`), then the selected
+   auto's verdict, buttons and switch (`.ds-auto-side`), then its preview beside its facts
+   (`.ds-auto-view`). Its own family rather than `ds-startpos-*` (two components must not share a
+   container class). The ORDER is the reach: the buttons come before the 300px preview, so in Play's
+   scrolling column they are one screen under the library, not a screen and a half. */
+.ds-auto-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+/* the line under the library: a sentence and the Undo that goes with it */
+.ds-auto-note {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.ds-auto-note > p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.ds-auto-note > .ds-btn {
+  flex: none;
+}
+.ds-auto-view {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: var(--ds-s-4);
+}
+.ds-auto-view > .ds-facts {
+  flex: 1 1 180px;
+  min-width: 180px;
 }
 .ds-auto-stage {
   flex: 0 1 auto;
@@ -6793,13 +6895,6 @@ a.ds-cta {
   border-radius: var(--ds-round-md);
   border: 1px dashed var(--ds-line);
   line-height: var(--ds-lh-heading);
-}
-.ds-auto-side {
-  flex: 1 1 200px;
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-3);
 }
 .ds-auto-status {
   font-family: var(--ds-font-mono);
@@ -6889,6 +6984,8 @@ a.ds-cta {
   letter-spacing: 0.03em;
 }
 .ds-startpos-inputs label small {
+  /* `small` alone is `smaller` than the label's 11px, i.e. 9.2px, under the type floor */
+  font-size: inherit;
   font-weight: 400;
   text-transform: none;
   color: var(--ds-mut);
@@ -10088,8 +10185,13 @@ input.admin-months {
   /* a FILL, so the unpicked ones read on the dark scrim in the light theme too */
   background: var(--ds-panel);
 }
+/* the PICKED season keeps its accent fill: the unpicked rule above is one class heavier than
+   `.ds-seg.on`, so without this the picked one took `--ds-panel` and its accent-ink label
+   vanished into it (white on white in light, dark on dark in dark; Zenith UX sweep W4-D15). */
 .ds-app.stage-home .ds-home-games .ds-seg.on {
   border-color: var(--ds-accent);
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
 }
 /* Discord / Instagram / GitHub — between the game switcher and the menu (owner, 2026-09-23,
    reversing 01-02). They WRAP: three pills no longer fit side by side on the narrowest phones. */
@@ -10666,8 +10768,12 @@ input.admin-months {
   .ds-setup > * {
     flex: none;
   }
+  /* 42dvh, but never so tall that a short phone scrolls: everything else on the Robot tab is 501px
+     (bar 63, tabs 36, picker 214, pinned buttons 52, the 72px banner strip, and the gaps), so what
+     is left is the band (measured at 360x640, where the strip alone pushed Play 51px past the
+     window). Never under 120px, which still holds the 96px robot. */
   .ds-setup-view {
-    height: calc(42dvh - var(--ds-bar-h) - var(--ds-s-4));
+    height: clamp(120px, 100dvh - 501px, calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));
     align-items: center;
   }
   /* the cards span the band, one row each where the words fit, so they cover as little of the robot as

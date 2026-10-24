@@ -29,7 +29,7 @@ import { createLiveRun, flattenSteps, simFollowerParams, type LiveRun, type SimT
 import { SIM_DT } from '../config';
 import type { RobotCommand, World } from '../types';
 import { powersToCommand } from './drive';
-import { AutoLoadError, loadZenithAuto, type LoadedAuto } from './load';
+import { AutoLoadError, loadZenithAuto, sentence, type LoadedAuto } from './load';
 import type { AutoHost, AutoSeatStatus, GameAutoAdapter, ZenithAutoSetup } from './types';
 
 export interface AutoSeat {
@@ -44,6 +44,12 @@ export interface AutoSeat {
    * already put the robot at the start pose (a world rebuild, as Reset does).
    */
   arm(): void;
+  /**
+   * The buzzer, for a caller that steps the world itself and stops at the end of AUTO without
+   * stepping into TELEOP (`runAutoHeadless`): the steps still open end here, interrupted, so the
+   * trace does not leave a running step at its own start. The run stays readable (`trace()`).
+   */
+  end(): void;
   dispose(): void;
 }
 
@@ -69,6 +75,13 @@ const STUCK_S = 1.5;
 const STUCK_SPEED_IN_PER_S = 1;
 const STUCK_TURN_RAD_PER_S = 0.2;
 
+/**
+ * CAN'T SHOOT: how long, in match time, the status names a shooting command that gave up
+ * (`AutoHost.cantShootCount`). The command has ended and the auto moved on, so this is a window
+ * for the HUD to say it, not a state.
+ */
+const CANT_SHOOT_SHOW_S = 3;
+
 class Seat implements AutoSeat {
   readonly loaded: LoadedAuto | null;
   private readonly error: string | null;
@@ -84,6 +97,11 @@ class Seat implements AutoSeat {
   /** the stuck test's power floor: half the follower's braking cap */
   private readonly stuckPower: number;
   private stalledTicks = 0;
+  /** the host's give-up count as of the last tick, and the latest give-up: its step and match time */
+  private cantShootSeen = 0;
+  private cantShoot: { stepId: string; at: number } | null = null;
+  /** the match time of the last tick the seat drove */
+  private now = 0;
 
   constructor(
     world: World,
@@ -99,7 +117,7 @@ class Seat implements AutoSeat {
       try {
         loaded = loadZenithAuto(setup, r.alliance, r.spec, adapter);
       } catch (e) {
-        error = e instanceof AutoLoadError ? e.message : `The auto could not be loaded: ${String(e)}`;
+        error = e instanceof AutoLoadError ? e.message : sentence('The auto could not be loaded: ', e instanceof Error ? e.message : String(e));
       }
     }
     this.loaded = loaded;
@@ -145,8 +163,14 @@ class Seat implements AutoSeat {
     this.state = 'waiting';
     this.active = [];
     this.stalledTicks = 0;
+    this.cantShootSeen = 0;
+    this.cantShoot = null;
     this.trial = true;
     this.trialTicks = 0;
+  }
+
+  end(): void {
+    this.stop();
   }
 
   step(world: World, driver: RobotCommand): RobotCommand {
@@ -176,6 +200,15 @@ class Seat implements AutoSeat {
       vyInPerS: r.vel.y,
       omegaRadPerS: r.angVel,
     });
+    // a shooting command that gave up this tick has already ended, so it is named by the step
+    // that was innermost on the tick before
+    const gaveUp = host.cantShootCount?.() ?? 0;
+    if (gaveUp > this.cantShootSeen) {
+      this.cantShootSeen = gaveUp;
+      const was = this.active.length ? this.active[this.active.length - 1] : tick.activeStepIds[tick.activeStepIds.length - 1];
+      this.cantShoot = { stepId: was ?? '', at: world.time };
+    }
+    this.now = world.time;
     this.active = tick.activeStepIds;
     if (tick.finished && this.state === 'running') this.state = 'done';
     const inner = this.active.length ? this.active[this.active.length - 1] : null;
@@ -189,11 +222,14 @@ class Seat implements AutoSeat {
   status(): AutoSeatStatus {
     if (this.error) return { state: 'error', stepId: null, timeS: 0, error: this.error };
     const active = this.state === 'running' ? this.active : [];
+    const c = this.cantShoot;
+    const cant = c !== null && (this.state === 'running' || this.state === 'done') && this.now - c.at < CANT_SHOOT_SHOW_S - 1e-9;
     return {
       state: this.state,
       stepId: active.length ? active[active.length - 1] : null,
       timeS: this.run?.timeS ?? 0,
       ...(this.state === 'running' && this.stalledTicks * SIM_DT >= STUCK_S ? { stuck: true } : {}),
+      ...(cant ? { cantShoot: c.stepId } : {}),
     };
   }
 

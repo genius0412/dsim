@@ -480,6 +480,16 @@ import {
   setPhotoVenueLighting,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
 import { POSES as MENU_POSES } from '../../src/ui/menuStagePoses';
+// -- the layered rooms (2026-10-24) ---------------------------------------------------------------
+import {
+  PHOTO_LAYER_PARTS,
+  PHOTO_STRETCH_MAX,
+  clipToFloor,
+  photoTexturesOf,
+  type PhotoLayerAssets,
+} from '../../src/games/biobuzz/scene/renderPhotoVenue';
+import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
+import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
 import {
   ORBIT_CENTER_Z as CAM_ORBIT_CENTER_Z,
   ORBIT_RADIUS_MAX as CAM_ORBIT_RADIUS_MAX,
@@ -567,6 +577,30 @@ const WIND_FIX_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
 const WIND_PRISTINE_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
 const WIND_CLEAR_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
 const WIND_FIX_LOW: THREE.Group | null = await parseShippedGlb('field-low.glb');
+
+/** every photographed venue's LAYERED ROOM (`public/venues/<id>-room.glb`, `scripts/venues/pack.ts`),
+ *  decoded the same way, for `photoVenueChecks` */
+async function parseVenueRoom(path: string): Promise<THREE.Group | null> {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const buf = readFileSync(join(here, '..', '..', 'public', path));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    return await new Promise<THREE.Group | null>((resolve) => {
+      loader.parse(ab, '', (g) => resolve(g.scene), () => resolve(null));
+    });
+  } catch {
+    return null;
+  }
+}
+const VENUE_ROOMS: Map<string, THREE.Group | null> = new Map(
+  await Promise.all(
+    photoEnvironments()
+      .filter((e) => e.photo?.layers)
+      .map(async (e) => [e.id, await parseVenueRoom(e.photo!.layers!.mesh)] as const),
+  ),
+);
 /** and the SCORING ELEMENTS. `elements.glb` is a separate asset from a separate pipeline
  * (`scripts/field-cad/elements.mjs`) but the same pinned STEP, so it decodes the same way. */
 const ELEMENTS_GLB_SCENE: THREE.Group | null = await parseShippedGlb('elements.glb');
@@ -14378,11 +14412,14 @@ function photoVenueChecks(check: Check): void {
         `${ibl.width}×${ibl.height}`,
       );
     }
-    // the brief's ceiling for one backdrop, and a picker note that states what High pays
+    // the brief's ceiling for one backdrop, and a picker note that states what High pays: the
+    // layered room's textures, meshes and light map where it has layers (the box's backdrop is then
+    // fetched only if they fail), else the box's 4k and the light map
     check(`photo ${e.id}: the 4k backdrop is at most 1.5 MB`, p.bytes.backdrop <= 1.5e6, String(p.bytes.backdrop));
-    const mb = (p.bytes.backdrop + p.bytes.ibl) / 1e6;
+    const l = p.layers;
+    const mb = (l ? l.bytes.bg + l.bytes.fg + l.bytes.mesh + p.bytes.ibl : p.bytes.backdrop + p.bytes.ibl) / 1e6;
     check(
-      `photo ${e.id}: the picker's note states the High-tier download (4k + IBL) to 0.1 MB`,
+      `photo ${e.id}: the picker's note states the High-tier download to 0.1 MB`,
       e.note.includes(`${mb.toFixed(1)} MB`),
       `${e.note} vs ${mb.toFixed(2)}`,
     );
@@ -14721,26 +14758,27 @@ function photoVenueChecks(check: Check): void {
       /this\.cameras\.setRoom\(def\.photo \? photoCameraRoom\(def\.photo\) : null\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
     );
 
-    // THE MENU STAGE'S EYES (`src/ui/menuStagePoses.ts`, 2026-10-21). Home is a still, wide shot of
-    // the room, so its eye is held to the lens: from the first eye, 150 in up, the school hall's
-    // seats, the hangar's clutter and the quad's canopy posts lay flat across the floor. Both eyes
-    // stand inside every room less the margin, so no wall moves for them, and the fly between them
-    // is a straight line in a box, so it stays inside too.
+    // THE MENU STAGE'S EYES (`src/ui/menuStagePoses.ts`). Home is a high shot, 87 in above the lens,
+    // which a venue drawn on its box cannot take (the seats, clutter and canopy posts lay flat
+    // across the floor from there, 2026-10-21); it stands because every photographed venue has its
+    // LAYERED ROOM. Both eyes stand inside every room, and the fly between them is a straight line
+    // in a box, so it stays inside too.
     {
-      const off: string[] = [];
+      const unlayered = photos.filter((e) => !e.photo!.layers).map((e) => e.id);
+      check(
+        'menu stage: the Home eye is above the lens, so every photographed venue has its layered room',
+        MENU_POSES.home.eye[2] > PHOTO_FLOOR_Z + 63 + PUSH_MARGIN_IN && unlayered.length === 0,
+        unlayered.join(', '),
+      );
       const out: string[] = [];
       for (const e of photos) {
-        const lens = PHOTO_FLOOR_Z + e.photo!.height;
-        if (Math.abs(MENU_POSES.home.eye[2] - lens) > 2) off.push(`${e.id}: lens ${lens}, eye ${MENU_POSES.home.eye[2]}`);
         const box = photoRoomBox(e.photo!);
-        const room = photoCameraRoom(e.photo!);
         for (const [view, p] of Object.entries(MENU_POSES)) {
-          const eye: [number, number, number] = [p.eye[0], p.eye[1], p.eye[2]];
-          if (!inside(new THREE.Vector3(...eye), room) || pushes(box, eye)) out.push(`${e.id} ${view}`);
+          const [x, y, z] = p.eye;
+          if (!(x > box.min[0] && x < box.max[0] && y > box.min[1] && y < box.max[1] && z > box.min[2] && z < box.max[2])) out.push(`${e.id} ${view}`);
         }
       }
-      check('menu stage: the Home eye is at every photographed venue’s lens height, within 2 in', off.length === 0, off.join('; '));
-      check('menu stage: both eyes stand inside every photographed room less the margin', out.length === 0, out.join(', '));
+      check('menu stage: both eyes stand inside every photographed room', out.length === 0, out.join(', '));
     }
   }
 
@@ -14757,7 +14795,7 @@ function photoVenueChecks(check: Check): void {
       'photo shadow: renderScene builds the catcher from its own sun, with this row’s rig on it',
       /const half = BB_HALF_X \+ 20;/.test(sc) &&
         /cam\.near = 1;\s*cam\.far = 260;/.test(sc) &&
-        /buildPhotoVenue\(def, tex, this\.sun, this\.settings\.envLighting\)/.test(sc),
+        /buildPhotoVenue\(def, src, this\.sun, this\.settings\.envLighting\)/.test(sc),
     );
     const half = BB_HALF_X + 20;
     const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
@@ -15002,14 +15040,21 @@ function photoVenueChecks(check: Check): void {
       'photo venues: the scene builds the generated venue first and then asks for the photograph',
       /this\.swapVenue\(buildBiobuzzVenue\(def\.venue, detail\), def\);[\s\S]{0,200}this\.loadPhoto\(/.test(sc),
     );
-    check('photo venues: a blocked backdrop is not requested again', /if \(photoBlocked\(venueAssetUrl\(path\)\)\) return;/.test(sc));
     check(
-      'photo venues: a backdrop that lands after its venue was replaced is freed, not shown',
-      /if \(this\.disposed \|\| this\.venueKey !== key\) \{\s*tex\.dispose\(\);/.test(sc),
+      'photo venues: a blocked backdrop is not requested again (nor blocked layers, which fall to it)',
+      /const layered = !!p\.layers && !photoBlocked\(venueAssetUrl\(p\.layers\.mesh\)\);\s*if \(!layered && photoBlocked\(venueAssetUrl\(path\)\)\) return;/.test(sc),
     );
     check(
-      'photo venues: the previous backdrop is freed on every swap, and with the scene',
-      /if \(this\.photoTex && this\.photoTex !== tex\) this\.photoTex\.dispose\(\);/.test(sc) && /this\.photoTex\?\.dispose\(\);/.test(sc),
+      'photo venues: the layered room is asked for first, and the box’s backdrop only if it fails',
+      /loadPhotoLayers\(p, detail, aniso\)\.catch\(\(err: unknown\) => \{[\s\S]{0,200}return box\(\);/.test(sc),
+    );
+    check(
+      'photo venues: a photograph that lands after its venue was replaced is freed, not shown',
+      /if \(this\.disposed \|\| this\.venueKey !== key\) \{\s*disposePhotoSource\(src\);/.test(sc),
+    );
+    check(
+      'photo venues: the previous photograph’s textures are freed on every swap, and with the scene',
+      /for \(const t of this\.photoTex\) if \(!texs\.includes\(t\)\) t\.dispose\(\);/.test(sc) && /for \(const t of this\.photoTex\) t\.dispose\(\);/.test(sc),
     );
     check(
       'photo venues: the room probe is projected against the photographed room when it is live',
@@ -15033,6 +15078,219 @@ function photoVenueChecks(check: Check): void {
     check(
       'photo venues: the decoded bitmap is closed once uploaded, and when its texture is freed unused',
       /tex\.onUpdate = \(\): void => \{\s*bitmap\.close\(\);/.test(pv) && /tex\.addEventListener\('dispose', \(\) => bitmap\.close\(\)\);/.test(pv),
+    );
+  }
+
+  layeredRoomChecks(check, photos, webpSize);
+}
+
+/**
+ * THE LAYERED ROOMS (2026-10-24, `renderPhotoVenue.ts`, THE LAYERED ROOM). Every photographed venue
+ * is drawn as its measured room with the furniture painted out, and the furniture as its own relief,
+ * because the box drew every chair, seat row and canopy post as a streak across the floor from any
+ * eye but the lens. The files are what the row states, the meshes are what `scripts/venues/pack.ts`
+ * writes, and the build is what the renderer draws.
+ */
+function layeredRoomChecks(check: Check, photos: EnvironmentDef[], webpSize: (buf: Buffer) => [number, number] | null): void {
+  const near = (a: number, b: number, tol = 2): boolean => Math.abs(a - b) <= tol;
+  const worldPoints = (m: THREE.Mesh): THREE.Vector3[] => {
+    const a = m.geometry.attributes.position;
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i < a.count; i++) out.push(new THREE.Vector3(a.getX(i), a.getY(i), a.getZ(i)).applyMatrix4(m.matrixWorld));
+    return out;
+  };
+  const partsOf = (id: string): Map<string, THREE.Mesh> => {
+    const parts = new Map<string, THREE.Mesh>();
+    const g = VENUE_ROOMS.get(id) ?? null;
+    g?.updateMatrixWorld(true);
+    g?.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) parts.set((m.userData.name as string | undefined) ?? m.name, m);
+    });
+    return parts;
+  };
+
+  for (const e of photos) {
+    const p = e.photo!;
+    const l = p.layers;
+    if (!l) {
+      check(`photo ${e.id}: has its layered room`, false);
+      continue;
+    }
+    check(
+      `photo ${e.id}: five relative layer files, never a CDN`,
+      [l.bg, l.bgLow, l.fg, l.fgLow].every((u) => new RegExp(`^venues/${e.id}-(bg|fg)-(4k|2k)\\.webp$`).test(u)) && l.mesh === `venues/${e.id}-room.glb`,
+    );
+    const rows = Math.round((l.fgRows[1] - l.fgRows[0]) * 2048);
+    check(
+      `photo ${e.id}: the furniture's rows lie in the panorama, on the 4k's 4-row grid`,
+      l.fgRows[0] >= 0 && l.fgRows[0] < l.fgRows[1] && l.fgRows[1] <= 1 && (l.fgRows[0] * 2048) % 4 === 0 && (l.fgRows[1] * 2048) % 4 === 0,
+      String(l.fgRows),
+    );
+    for (const [path, bytes, size] of [
+      [l.bg, l.bytes.bg, [4096, 2048]],
+      [l.bgLow, l.bytes.bgLow, [2048, 1024]],
+      [l.fg, l.bytes.fg, [4096, rows]],
+      [l.fgLow, l.bytes.fgLow, [2048, rows / 2]],
+    ] as [string, number, number[]][]) {
+      const buf = readFileSync(join(root, 'public', path));
+      const wh = webpSize(buf);
+      check(
+        `photo ${e.id}: ${path} is the size the row states, a ${size[0]} × ${size[1]} WebP`,
+        buf.length === bytes && !!wh && wh[0] === size[0] && wh[1] === size[1],
+        `${buf.length} vs ${bytes}; ${wh}`,
+      );
+    }
+    check(`photo ${e.id}: the room texture is at most 1.5 MB, like the backdrop it stands for`, l.bytes.bg <= 1.5e6, String(l.bytes.bg));
+    check(`photo ${e.id}: ${l.mesh} is the size the row states`, readFileSync(join(root, 'public', l.mesh)).length === l.bytes.mesh);
+
+    const parts = partsOf(e.id);
+    const all = PHOTO_LAYER_PARTS.every((k) => parts.has(k));
+    check(`photo ${e.id}: the room file decodes with its four parts`, all, [...parts.keys()].join(','));
+    if (!all) continue;
+    const eye = new THREE.Vector3(0, 0, PHOTO_FLOOR_Z + p.height);
+    const box = photoRoomBox(p);
+    // THE ROOM IS THE MEASURED ROOM: its walls and ceiling where the box's are, its floor at the box's
+    // or below it (a step, the school hall's auditorium), and the floor round the field the
+    // photographed floor plane the shadow catcher and the contact band lie on
+    const room = [...worldPoints(parts.get('bg-lo')!), ...worldPoints(parts.get('bg-hi')!)];
+    const rb = new THREE.Box3().setFromPoints(room);
+    check(
+      `photo ${e.id}: the room mesh is the measured room (walls and ceiling at the box's, the floor at or below its)`,
+      near(rb.min.x, box.min[0]) && near(rb.max.x, box.max[0]) && near(rb.min.y, box.min[1]) && near(rb.max.y, box.max[1]) && near(rb.max.z, box.max[2]) && rb.min.z <= box.min[2] + 0.5,
+      `${rb.min.toArray().map((v) => v.toFixed(0))} … ${rb.max.toArray().map((v) => v.toFixed(0))}`,
+    );
+    const offFloor = room.filter((v) => Math.abs(v.x) < 100 && Math.abs(v.y) < 76 && v.z < eye.z && Math.abs(v.z - PHOTO_FLOOR_Z) > 0.1).length;
+    check(`photo ${e.id}: the room's floor round the field is the photographed floor plane`, offFloor === 0, String(offFloor));
+    // THE FURNITURE: in the rows its texture holds, clear of the field, inside the room
+    const furn = [...worldPoints(parts.get('fg-lo')!), ...worldPoints(parts.get('fg-hi')!)];
+    let offRows = 0;
+    let inField = 0;
+    let outRoom = 0;
+    for (const v of furn) {
+      const [, vt] = photoUv(v.x - eye.x, v.y - eye.y, v.z - eye.z);
+      if (vt < l.fgRows[0] - 1 / 1024 || vt > l.fgRows[1] + 1 / 1024) offRows++;
+      if (Math.abs(v.x) < BB_HALF_X + 8 && Math.abs(v.y) < BB_HALF_Y + 8) inField++;
+      if (v.x < box.min[0] - 2 || v.x > box.max[0] + 2 || v.y < box.min[1] - 2 || v.y > box.max[1] + 2 || v.z > box.max[2] + 2) outRoom++;
+    }
+    check(`photo ${e.id}: every furniture vertex looks up the rows its texture holds`, furn.length > 0 && offRows === 0, `${offRows} of ${furn.length}`);
+    check(`photo ${e.id}: no furniture stands on the field, and none outside the room`, inField === 0 && outRoom === 0, `${inField} / ${outRoom}`);
+    // THE SPLIT AT THE LENS: the top-down cameras leave the upper halves out
+    let wrongHalf = 0;
+    for (const k of PHOTO_LAYER_PARTS) {
+      const m = parts.get(k)!;
+      const pts = worldPoints(m);
+      const idx = m.geometry.index!;
+      for (let t = 0; t < idx.count; t += 3) {
+        const cz = (pts[idx.getX(t)].z + pts[idx.getX(t + 1)].z + pts[idx.getX(t + 2)].z) / 3;
+        if (k.endsWith('-lo') ? cz > eye.z + 1 : cz < eye.z - 1) wrongHalf++;
+      }
+    }
+    check(`photo ${e.id}: every triangle is in the half the lens height puts it in`, wrongHalf === 0, String(wrongHalf));
+  }
+
+  // THE BUILD, from a real room file: what the renderer draws
+  {
+    const def = environmentDef('school-hall');
+    const parts = partsOf(def.id);
+    if (PHOTO_LAYER_PARTS.every((k) => parts.has(k))) {
+      const bg = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+      const fg = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+      const assets: PhotoLayerAssets = {
+        bg,
+        fg,
+        parts: new Map(PHOTO_LAYER_PARTS.map((k) => [k, { geometry: parts.get(k)!.geometry, position: parts.get(k)!.position.clone(), scale: parts.get(k)!.scale.clone() }])),
+      };
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(...def.rig.sun);
+      const half = BB_HALF_X + 20;
+      Object.assign(light.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 1, far: 260 });
+      light.shadow.camera.updateProjectionMatrix();
+      const g = buildPhotoVenue(def, assets, light, true);
+      const meshes: THREE.Mesh[] = [];
+      g.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+      });
+      const part = (k: string): THREE.Mesh | undefined => meshes.find((m) => m.name === `bb-venue:photo-${k}`);
+      check(
+        'layered rooms: the build is the four parts, the shadow catcher and the contact band',
+        meshes.length === 6 && PHOTO_LAYER_PARTS.every((k) => !!part(k)) && !!part('shadow') && !!part('contact') && g.userData.layered === true,
+        meshes.map((m) => m.name).join(','),
+      );
+      const mat = (k: string): THREE.ShaderMaterial => part(k)!.material as THREE.ShaderMaterial;
+      check(
+        'layered rooms: the room is BackSide and never culled (it surrounds the eye); the furniture DoubleSide, out of the AO pass, dropping what the lens never saw',
+        ['bg-lo', 'bg-hi'].every((k) => mat(k).side === THREE.BackSide && part(k)!.frustumCulled === false) &&
+          ['fg-lo', 'fg-hi'].every((k) => mat(k).side === THREE.DoubleSide && part(k)!.userData.aoExclude === true && 'BB_FURNITURE' in mat(k).defines! && mat(k).defines!.BB_STRETCH_MAX === PHOTO_STRETCH_MAX.toFixed(1)),
+      );
+      check(
+        'layered rooms: the upper halves are on the overhead layer the top-down cameras leave out, the lower halves on the default',
+        ['bg-hi', 'fg-hi'].every((k) => part(k)!.layers.mask === 1 << VENUE_OVERHEAD_LAYER) && ['bg-lo', 'fg-lo'].every((k) => part(k)!.layers.mask === 1),
+      );
+      const rows = def.photo!.layers!.fgRows;
+      check(
+        'layered rooms: the room samples the inpainted texture over the whole panorama, the furniture the original over its rows',
+        ['bg-lo', 'bg-hi'].every((k) => mat(k).uniforms.bbMap.value === bg && mat(k).uniforms.bbRows.value.x === 0 && mat(k).uniforms.bbRows.value.y === 1) &&
+          ['fg-lo', 'fg-hi'].every((k) => mat(k).uniforms.bbMap.value === fg && mat(k).uniforms.bbRows.value.x === rows[0] && mat(k).uniforms.bbRows.value.y === rows[1]),
+      );
+      const owned = photoTexturesOf(g);
+      check('layered rooms: the scene owns both textures (and frees them with the venue)', owned.length === 2 && owned.includes(bg) && owned.includes(fg));
+      setPhotoVenueLighting(g, def, false);
+      check(
+        'layered rooms: the environment-lighting row reaches all four parts',
+        PHOTO_LAYER_PARTS.every((k) => mat(k).uniforms.bbScale.value === photoScale(def.photo!, false)),
+      );
+      check(
+        'layered rooms: nothing casts, nothing is tagged for bloom',
+        meshes.every((m) => !m.castShadow && typeof (m.material as THREE.Material).userData.bloomBase !== 'number'),
+      );
+      // the field's shadow stays on the stage: the auditorium below it is 25 in lower
+      const floor = def.photo!.layers!.floor!;
+      const catcher = part('shadow')!.geometry.attributes.position;
+      let past = 0;
+      for (let i = 0; i < catcher.count; i++) if (catcher.getY(i) > floor.y1 + 1e-6) past++;
+      check('layered rooms: the school hall’s shadow catcher stops at its stage edge', !!floor && past === 0 && catcher.count >= 3, `${past} of ${catcher.count}`);
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && !PHOTO_LAYER_PARTS.some((k) => m.name === `bb-venue:photo-${k}`)) m.geometry.dispose();
+        if (m.isMesh) (m.material as THREE.Material).dispose();
+      });
+    } else check('layered rooms: the school hall’s room file decodes for the build checks', false);
+  }
+
+  // the catcher's clip, in plain numbers
+  {
+    const sq: [number, number][] = [
+      [-10, -10],
+      [10, -10],
+      [10, 10],
+      [-10, 10],
+    ];
+    const c = clipToFloor(sq, { x0: -5, x1: 5, y0: -20, y1: 3 });
+    const xs = c.map((q) => q[0]);
+    const ys = c.map((q) => q[1]);
+    check(
+      'layered rooms: clipToFloor cuts a polygon to the floor rectangle and no further',
+      Math.min(...xs) === -5 && Math.max(...xs) === 5 && Math.min(...ys) === -10 && Math.max(...ys) === 3,
+      JSON.stringify(c),
+    );
+  }
+
+  // the shaders and the AO pass, by source
+  {
+    const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+    const layerVert = /const LAYER_VERT = \/\* glsl \*\/ `([\s\S]*?)`;/.exec(pv)?.[1] ?? '';
+    check(
+      'layered rooms: the layered meshes take no push (BackSide shows a surface only from the lens’s side, so an eye above the ceiling sees through it)',
+      layerVert.length > 0 && !/cameraPosition/.test(layerVert) && /vec4 w = modelMatrix \* vec4\( position, 1\.0 \);/.test(layerVert),
+    );
+    check(
+      'layered rooms: the furniture drops a fragment the eye faces more than PHOTO_STRETCH_MAX times as squarely as the lens did',
+      /#ifdef BB_FURNITURE[\s\S]*if \( faceEye > BB_STRETCH_MAX \* max\( faceLens, 1e-3 \) \) discard;[\s\S]*#endif/.test(pv) && PHOTO_STRETCH_MAX > 1,
+    );
+    check(
+      'layered rooms: the AO pass leaves out a mesh flagged aoExclude',
+      /mesh\.userData\.aoExclude === true \|\|/.test(readFileSync(join(SCENE_DIR, 'renderPost.ts'), 'utf8')),
     );
   }
 }

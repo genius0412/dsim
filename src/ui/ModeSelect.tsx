@@ -271,9 +271,11 @@ export function ModeSelect({
         {side === 'settings' ? (
           <div className="ds-setup-scroll">
             {!multiplayer && (
-              <p className="ds-sub" role="status">
-                Online play is unavailable: this build has no game server.
-              </p>
+              <section className="ds-panel" role="status">
+                <div className="ds-panel-body">
+                  <p className="ds-hint">Online play is unavailable: this build has no game server.</p>
+                </div>
+              </section>
             )}
             <SoloSetup settings={settings} onChange={onChange} part="match" />
             <SoloSetup settings={settings} onChange={onChange} part="practice" />

@@ -1,4 +1,4 @@
-# HANDOFF — 2026-10-24 (Contributors page; Developer, Beta Tester and Contributor badges)
+# HANDOFF — 2026-10-24c (Contributors page; Developer, Beta Tester and Contributor badges)
 
 **State: on `alpha`. SERVER change (team badge grants + boot sync), no migration; `dsim-alpha` redeployed.** `npm test`, `dbtest` (team badge block), `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `dbtest` has 4 unrelated failures: the analytics blocks insert rows dated 2026-09-10, now past the 30-day raw retention.
 
@@ -8,9 +8,37 @@
 - **Roster vs GitHub:** added Saket (featurescript) and Arush; Shaan now links his GitHub. Shlok removed: both his PRs were closed unmerged (the fix was reimplemented in d4aab7f8). `CONTRIBUTORS.md` (the CLA record) is unchanged; Saket and Arush are not in it.
 - **Groups on alpha:** dev = ace, felix, featurescript; contributor = baron, therealkingcob, arushyadlapati, aadvikgupta; beta was already arushyadlapati, aadvikgupta, dank201, leoo. Arush is in `beta` on alpha but not in the owner's beta list, so he is offered Beta Tester too; remove him from beta in the console if that is wrong. Production has no group members yet: add them in prod's console after this reaches `main`.
 
-# HANDOFF — 2026-10-21 (Home's photographed venue was distorted)
+## 2026-10-24b (AUTO + Zenith: host build 2, Zenith main vendored, the 0.1.2 sweep's DSIM items)
+
+**State: on `alpha`, NOT on `main` (owner: do not ship to main until told). SERVER CHANGE (custom rooms run the auto seat with the new Zenith): `dsim-alpha` redeployed, see below.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted` (alpha's own `game.ts` fails it too). `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. Rules in `docs/area/autos.md`.
+
+- **Owner:** make every AUTO feature work smoothly and integrate DSIM with Zenith; change zenith-dev where needed; nothing to `main` yet.
+- **Found:** Zenith `main` writes auto format 4 and its DSIM row sets `minBuild: 2`. Alpha vendored Zenith 0.1.1 (format 3) and sent host build 1, so the live beta Zenith showed "DSIM needs an update" with Save to DSIM and Simulate in DSIM off.
+- **Vendored:** Zenith `main` 3bb573c. The `dsim-vendor` branch of the vendor repository holds the same three tarballs (pushed right before this). `scripts/vendor-zenith.mjs` now runs on Windows and patches only the three lockfile hashes. ⚠️ Stop dev servers and test runs in the checkout before running it: `npm ci` half-deletes `node_modules` on `EPERM`.
+- **Zenith change:** Horizon-36596/zenith-dev#511 (`batch-ready`, not merged): `open.newAutoStart`, so New in Zenith starts at the start picked in DSIM. DSIM already sends it; an older Zenith ignores it.
+- **DSIM host side:** `HOST_BUILD` 2; `runFailed` with the reason; a second Edit in Zenith reuses the open window; a 12 s "Zenith hasn't answered" line; the robot read live at every `ready` and run; a preset build named by its preset on Zenith's bar; pop-up wording.
+- **Sim:** a `shootAll` that cannot shoot gives up after the build's own patience (StarterBot 2.35 s) and the HUD says `AUTO COULDN’T SHOOT ON <STEP>`; findings in the file's own frame (DSIM and Zenith name the same elements); unregistered-command findings are not red problems; struts scaled into DSIM's walls; format 4 and Zenith's public starter autos in the AUTO lane.
+- **Panel:** buttons before the preview, compact list, delete Undo, full-library refusals, pre-match line names what will not run, Start position says when an auto decides the start.
+- **Verified end to end** (headless Chromium, real popup, local Zenith on this branch): New in Zenith → start at DSIM's pose, Save to DSIM (format 4) lands in the library, Simulate in DSIM lays the run over the plan, a second Edit reuses the window with no prompt, closing Zenith clears DSIM's line. 12/12. Rerun with `node scripts/zenith-e2e.mjs <zenith-checkout>` (its header says which servers it needs).
+- **Owner calls left:** (1) StarterBot from a pose it cannot score from keeps its preload; a real robot would fire and miss. Making DSIM fire needs an aim-assist bypass on `RobotCommand` (wire + `SIM_PATCH`), so it was not built. (2) Merge #511 with the next `pnpm ship`. (3) Going to `main` waits for the Zenith release that carries host mode; the checklist is in autos.md, "Going to `main`".
+
+
+## 2026-10-24 (photographed venues draw nothing flat; alpha UI sweep)
 
 **State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).**
+
+- **Ask (owner):** "can you just make it NOT smear?" ("do the best thing and not a workaround"), then "fix all other UI issues on alpha".
+- **Venues:** every photographed venue is now two layers (`renderPhotoVenue.ts`, THE LAYERED ROOM): the measured room (box plus the school hall's floor step, 25 in down past y 80) textured with the backdrop with its furniture inpainted out, and the furniture as MoGe-2 relief textured with the original. The shader drops furniture faces the lens saw edge-on (`PHOTO_STRETCH_MAX`). New files per venue: `<id>-bg-{4k,2k}.webp`, `<id>-fg-{4k,2k}.webp`, `<id>-room.glb` (38–86 KB). The box path stays as the fallback.
+- **Pipeline:** `scripts/venues/README.md` (depth.py → layers.py → meshes.py → pack.ts → sync-env.mjs), with each rule's measurement. The Python env (CUDA torch, MoGe 2.0, transformers, LaMa) lives outside the repo, in `D:\ml\dsim-venues`.
+- **Home** is back to the original high corner shot (`menuStagePoses.ts`, 150 in up). It holds because every photo venue is layered; the RENDER lane checks that.
+- **UI sweep:** merged from a subagent branch. It covers Home's picked-game chip, Play at 360x640, crumbs, the offline note, contrast, touch labels, the replay header on phones, the competitions error, and the stale shiftaudit/importprobe drivers. Details are in the commit messages.
+- **Verified:** offscreen Electron captures of Home, Play and a started solo match in all five venues (high Home shot, both driver sides), Medium tier, and the fallback with the room file blocked. The render lane passes (3065). `npm run build`, `server:check`, `uiaudit`, `contrast` and `docaudit` pass. `npm test`: the shared lane passes; the BIOBUZZ lane has its one known failure (`balls: … LANDED predicted`, which reads `src/game.ts` and predates this work).
+- **Known limits:** the school hall's seats from the opposite driver's corner are still rough (a single photo cannot show chairs from the side); the court's floodlight pole bends slightly from the high shot. The school hall is still a pick, not a default (`PhotoVenue.furniture`); the owner could revisit that now.
+- **UI items found but not fixed (owner calls):** the touch-pad rings overlap the score bar in portrait; the BIOBUZZ tutorial card overlaps a button column on phones; MENU/Esc in a match return Home rather than Play; Home at 721–860 px shows only a sliver of field.
+
+## 2026-10-21 (Home's photographed venue was distorted)
+
+**State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).** Superseded on 2026-10-24: Home is high again, over the layered rooms.
 
 - **Report (owner):** "Alpha currently has distorted real 3d backgrounds."
 - **Cause:** the Home stage's camera stood 150 in up and 285 in off-centre. A photographed venue is projected from its lens (63 in above the floor, at the field's centre), so anything that is not floor or wall is drawn flat on the floor; from above, the school hall's seats, the hangar's clutter and the quad's canopy posts lay across the floor as streaks. Match cameras were not changed by this and were not the regression.

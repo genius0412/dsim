@@ -114,7 +114,7 @@ app.whenReady().then(async () => {
   budget('drop: the longest main-thread task', max(dropTasks), 200, 'ms');
 
   // save it, then five duplicates: six imports
-  await js(`document.querySelectorAll('.ds-import-steps .ds-tab')[3].click(); true`);
+  await js(`(() => { const t = document.querySelectorAll('.ds-import-steps .ds-tab'); t[t.length - 1].click(); return true; })()`);
   await sleep(800);
   await js(`[...document.querySelectorAll('.ds-import-foot .ds-btn.primary')].find((b) => /Save/.test(b.textContent))?.click(); true`);
   await until(`location.pathname.endsWith('/configure/robot')`);

@@ -21,8 +21,10 @@ export interface AutoView {
   /** the estimate is a lower bound (a step it cannot time) */
   atLeast: boolean;
   periodS: number;
+  /** Zenith's findings for the FILE, in its own alliance (`LoadedAuto.findings`): the names Zenith shows */
   errors: Finding[];
   warnings: Finding[];
+  /** names DSIM does not run (done at once); never also an error */
   unsupported: string[];
   /** commands this build cannot run (no mechanism for them), with the reason */
   notOnRobot: { name: string; why: string }[];

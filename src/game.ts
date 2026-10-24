@@ -32,8 +32,20 @@ import type { AutoSeatStatus, ZenithAutoSetup } from './auto/types';
  * the ERROR findings Zenith has for this file on this robot and alliance (a start in the other
  * half, a path through a wall, a routine over 30 s). They do not stop the seat, so without this
  * a file Zenith refuses drove in silence, or sat still, and nothing on the match screen said why.
+ * `unsupported`, `unsupportedConditions` and `notOnRobot` are the names the file uses that DSIM does
+ * not run and that this build cannot (`LoadedAuto`), and the pre-match line says what each does.
+ * Optional, so a status built without them reads as a file that uses none.
  */
-export type GameAutoStatus = AutoSeatStatus & { name: string; problems: string[] };
+export type GameAutoStatus = AutoSeatStatus & {
+  name: string;
+  problems: string[];
+  /** commands the file uses that DSIM does not run: each ends at once */
+  unsupported?: string[];
+  /** conditions the file uses that DSIM cannot read: each never reads true */
+  unsupportedConditions?: string[];
+  /** commands this build has no mechanism for: each ends at once */
+  notOnRobot?: string[];
+};
 
 export interface GameControllerZenithAuto extends ZenithAutoSetup {
   module: typeof import('./ui/zenithEditor');
@@ -829,6 +841,12 @@ export class GameController {
   private autoSeat: import('./auto/zenithAutos').AutoSeat | null = null;
   /** the seat's Zenith ERROR findings, read once per seat (`GameAutoStatus.problems`) */
   private autoProblems: string[] = [];
+  /** the names the file uses that DSIM does not run, and that this build cannot, read once per seat */
+  private autoSkips: { unsupported: string[]; unsupportedConditions: string[]; notOnRobot: string[] } = {
+    unsupported: [],
+    unsupportedConditions: [],
+    notOnRobot: [],
+  };
   /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
    *
@@ -1353,6 +1371,7 @@ export class GameController {
     this.autoSeat?.dispose();
     this.autoSeat = null;
     this.autoProblems = [];
+    this.autoSkips = { unsupported: [], unsupportedConditions: [], notOnRobot: [] };
     const za = this.zenithAuto;
     if (!za) return;
     const adapter = za.module.autoAdapterFor(this.gameId);
@@ -1361,6 +1380,16 @@ export class GameController {
     if (world.match.phase === 'freeplay') seat.arm();
     this.autoSeat = seat;
     this.autoProblems = seat.loaded ? seat.loaded.findings.filter((f) => f.severity === 'error').map((f) => f.message) : [];
+    if (seat.loaded) {
+      // `LoadedAuto.unsupported` joins commands and conditions, which fail differently (a command
+      // ends at once, a condition never reads true), so they are told apart here
+      const used = za.module.namesUsed(seat.loaded.written);
+      this.autoSkips = {
+        unsupported: used.commands.filter((n) => !adapter.commands.includes(n)),
+        unsupportedConditions: used.conditions.filter((n) => !adapter.conditions.includes(n)),
+        notOnRobot: seat.loaded.notOnRobot.map((c) => c.name),
+      };
+    }
     // a file that cannot run says so in the event log, and the driver keeps the robot
     const st = seat.status();
     if (st.state === 'error') world.events.push(`AUTO OFF: ${st.error ?? 'the auto could not be loaded'}`);
@@ -1396,7 +1425,7 @@ export class GameController {
   /** the auto seat's status for the HUD, or null when this run plays no auto */
   autoStatus(): GameAutoStatus | null {
     return this.autoSeat && this.zenithAuto
-      ? { ...this.autoSeat.status(), name: this.zenithAuto.name, problems: this.autoProblems }
+      ? { ...this.autoSeat.status(), name: this.zenithAuto.name, problems: this.autoProblems, ...this.autoSkips }
       : null;
   }
 

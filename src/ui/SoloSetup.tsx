@@ -13,7 +13,9 @@ import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { OptRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
-import { lazy } from 'react';
+import { lazy, useEffect, useState } from 'react';
+import { activeZenithAuto, AUTO_LIBRARY_CHANGED } from '../auto/library';
+import { ZENITH_AUTOS_KEY } from '../storageKeys';
 import { LoadBoundary } from './LoadBoundary';
 
 /** LAZY: only a game that plays Zenith autos shows it, so the main chunk does not carry it. */
@@ -31,6 +33,32 @@ export const botLabel = (tier: string): string => tier.charAt(0).toUpperCase() +
 const SEAT_LABELS = ['Partner', 'Opponent 1', 'Opponent 2'] as const;
 /** `.ds-opts`'s column modifiers by tile count, so a tier row lines up with the seat row */
 const COLS = { 2: 'two', 3: 'three', 4: 'four', 5: 'five' } as const;
+
+/**
+ * THE AUTO AUTO PLAYS for this game, kept current: its name, or null. A Zenith auto seats the robot
+ * at the file's own start, so the Start position picker does not apply while one is on, and the
+ * section says so (it used to say nothing, and a picked start was silently ignored). Re-read on
+ * every library write in this tab and on a write from another tab.
+ */
+function useActiveAutoName(game: GameSettings['game'], plays: boolean): string | null {
+  const read = (): string | null => (plays ? (activeZenithAuto(game)?.name ?? null) : null);
+  const [name, setName] = useState(read);
+  useEffect(() => {
+    const again = (): void => setName(read());
+    again();
+    const onStorage = (e: StorageEvent): void => {
+      if (e.key === ZENITH_AUTOS_KEY) again();
+    };
+    window.addEventListener(AUTO_LIBRARY_CHANGED, again);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(AUTO_LIBRARY_CHANGED, again);
+      window.removeEventListener('storage', onStorage);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, plays]);
+  return name;
+}
 
 /**
  * MATCH SETUP and PRACTICE SETUP — the two cards that used to be one "Solo practice" screen between
@@ -78,6 +106,7 @@ export function SoloSetup({
   // Chain Reaction. Offering a driver nothing can play is worse than offering nothing.
   const botDriver = moduleFor(settings.game).bot;
   const seats = practiceSeatsFor(settings, settings.game);
+  const autoName = useActiveAutoName(settings.game, !!moduleFor(settings.game).zenithAutos);
   const setSeat = (i: number, patch: Partial<PracticeSeat>): void => {
     const next = seats.map((x, j) => (j === i ? { ...x, ...patch } : x)) as PracticeSeats;
     set({ practiceSeats: { ...settings.practiceSeats, [settings.game]: next } });
@@ -117,6 +146,12 @@ export function SoloSetup({
 
         <section className="ds-sec">
           <h2>Start position</h2>
+          {autoName && (
+            <p className="ds-hint">
+              {autoName} plays in AUTO, so the robot starts where that auto starts. Turn off Play it in AUTO below to start
+              from here.
+            </p>
+          )}
           {StartEd ? (
             <StartEd
               maxSaved={maxSaved}

@@ -263,6 +263,9 @@ export interface PhotoVenue {
    * players see, and High's is every replay export's (2026-10-11, the RENDER lane pins it).
    */
   furniture?: string;
+  /** the room as its own geometry (`PhotoLayers`), which draws nothing flat; the box above is the
+   * fallback when these files cannot load */
+  layers?: PhotoLayers;
   /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
    * `hdri.fallback`: painted, and the same venue kind. */
   fallback: EnvironmentId;
@@ -272,6 +275,39 @@ export interface PhotoVenue {
   authors: readonly { name: string; role: string }[];
   license: 'CC0 1.0';
   licenseUrl: string;
+}
+
+/** a rectangle of a photographed room's floor, field inches */
+export interface PhotoFloor {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/**
+ * A PHOTOGRAPHED VENUE AS ITS OWN GEOMETRY (2026-10-24; `renderPhotoVenue.ts`, THE LAYERED ROOM).
+ * Derived from the backdrop by `scripts/venues/` (MoGe-2 depth, OneFormer furniture, LaMa
+ * inpainting; see that README): the room with its furniture painted out, the furniture alone, and
+ * the meshes they are drawn on. High and up load `bg` and `fg`, Low and Medium `bgLow` and `fgLow`
+ * (`bbPhotoDetail`); the box's `backdrop` is fetched only if one of these fails.
+ */
+export interface PhotoLayers {
+  /** the backdrop with the furniture inpainted out, 4096 × 2048 and 2048 × 1024 */
+  bg: string;
+  bgLow: string;
+  /** the ORIGINAL backdrop, rows `fgRows` only, 4096 and 2048 wide */
+  fg: string;
+  fgLow: string;
+  /** the room and furniture meshes (`scripts/venues/pack.ts`) */
+  mesh: string;
+  /** the panorama's rows `fg` holds, as shares of its height, top first */
+  fgRows: readonly [number, number];
+  /** where the room's floor is the photographed floor plane, when that is not the whole room: the
+   * field's shadow stops at its edge (the school hall's stage ends 80 in out, over an auditorium
+   * 30 in lower) */
+  floor?: PhotoFloor;
+  bytes: { bg: number; bgLow: number; fg: number; fgLow: number; mesh: number };
 }
 
 export interface EnvironmentDef {
@@ -342,6 +378,24 @@ const PHOTO_FILES = (
   backdropLow: `venues/${id}-2k.webp`,
   ibl: `venues/${id}-ibl.hdr`,
   bytes: { backdrop, backdropLow, ibl },
+});
+
+/** a photographed venue's layer files (`scripts/venues/meshes.py` and `pack.ts` name them), with
+ * the furniture's rows and the sizes (`sync-env.mjs` writes both) */
+const PHOTO_LAYERS = (
+  id: string,
+  fgRows: readonly [number, number],
+  bytes: PhotoLayers['bytes'],
+  floor?: PhotoFloor,
+): PhotoLayers => ({
+  bg: `venues/${id}-bg-4k.webp`,
+  bgLow: `venues/${id}-bg-2k.webp`,
+  fg: `venues/${id}-fg-4k.webp`,
+  fgLow: `venues/${id}-fg-2k.webp`,
+  mesh: `venues/${id}-room.glb`,
+  fgRows,
+  ...(floor ? { floor } : {}),
+  bytes,
 });
 
 /** the credit block of a photographed venue */
@@ -738,7 +792,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'school-hall',
     name: 'School hall',
-    note: 'On the stage, the auditorium behind, 1.2 MB',
+    note: 'On the stage, the auditorium behind, 1.5 MB',
     rig: {
       hemiSky: 0xfff6e8,
       hemiGround: 0x5e5444,
@@ -759,6 +813,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
+      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.703125], { bg: 571_412, bgLow: 175_712, fg: 380_916, fgLow: 126_790, mesh: 86_044 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
       furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
@@ -778,7 +833,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'events-hall',
     name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.2 MB',
+    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
     rig: {
       hemiSky: 0xf2f6ff,
       hemiGround: 0x5f5c56,
@@ -798,6 +853,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 300 },
       shadow: 0.4,
+      layers: PHOTO_LAYERS('events-hall', [0.177734375, 0.568359375], { bg: 684_238, bgLow: 213_540, fg: 433_312, fgLow: 150_396, mesh: 42_640 }),
       fallback: 'gym',
       ...PH_CREDIT('events_hall_interior', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -813,7 +869,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'hangar',
     name: 'Hangar',
-    note: 'Daylight through high windows, 1.8 MB',
+    note: 'Daylight through high windows, 2.0 MB',
     rig: {
       hemiSky: 0xfff6ec,
       hemiGround: 0x625a4e,
@@ -833,6 +889,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -737, x1: 882, y0: -441, y1: 441, ceil: 410 },
       shadow: 0.4,
+      layers: PHOTO_LAYERS('hangar', [0.376953125, 0.556640625], { bg: 1_148_178, bgLow: 307_092, fg: 341_228, fgLow: 95_796, mesh: 53_484 }),
       fallback: 'workshop',
       ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
     },
@@ -847,7 +904,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'court',
     name: 'Outdoor court',
-    note: 'Evening sky over a sports court, 0.8 MB',
+    note: 'Evening sky over a sports court, 1.1 MB',
     rig: {
       hemiSky: 0xe4edff,
       hemiGround: 0x3f4a46,
@@ -867,6 +924,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -718, x1: 781, y0: -384, y1: 365, ceil: 2000 },
       shadow: 0.45,
+      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_296 }),
       fallback: 'overcast',
       ...PH_CREDIT('netball_court', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -881,7 +939,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'quad',
     name: 'School quad',
-    note: 'Paving under a canopy, 1.9 MB',
+    note: 'Paving under a canopy, 2.1 MB',
     rig: {
       hemiSky: 0xfff8ee,
       hemiGround: 0x645a4a,
@@ -901,6 +959,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -630, x1: 662, y0: -372, y1: 384, ceil: 190 },
       shadow: 0.4,
+      layers: PHOTO_LAYERS('quad', [0.33984375, 0.5625], { bg: 1_271_930, bgLow: 380_350, fg: 342_984, fgLow: 115_444, mesh: 41_700 }),
       fallback: 'overcast',
       ...PH_CREDIT('school_quad', [
         { name: 'Dimitrios Savva', role: 'Photography' },

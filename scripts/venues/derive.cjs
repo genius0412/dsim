@@ -379,7 +379,19 @@ function readme(rows) {
       `| ${r.v.id} | [${r.v.slug}](https://polyhaven.com/a/${r.v.slug}) (${PH(r.v.slug)}) | \`${r.v.md5}\` | ${authors} | ${r.v.yaw} | ${r.v.gain} | ${r.v.quality} | ${clean} | ${r.b4} | ${r.b2} | ${r.bi} |`,
     );
   }
-  lines.push('', 'Sizes are bytes.', '');
+  lines.push(
+    '',
+    'Sizes are bytes.',
+    '',
+    '## The layered room',
+    '',
+    '`<id>-bg-4k.webp`, `<id>-bg-2k.webp` (the backdrop with its furniture inpainted out),',
+    '`<id>-fg-4k.webp`, `<id>-fg-2k.webp` (the original backdrop, the furniture\'s rows only) and',
+    '`<id>-room.glb` (the room and furniture meshes) are derived from the backdrops above by the',
+    'pipeline in `scripts/venues/README.md` (MoGe-2 depth, OneFormer segmentation, LaMa inpainting;',
+    'MIT, MIT and Apache-2.0). Rerun it after this script.',
+    '',
+  );
   return lines.join('\n');
 }
 

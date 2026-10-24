@@ -1,0 +1,30 @@
+{
+  "formatVersion": 4,
+  "name": "format4",
+  "title": "Format 4: a transfer, an envelope and a rejoin",
+  "description": "A test routine for the AUTO lane, in open field on the BLUE side: a transfer step (planner-only), an envelope on a command step, and a path with rejoinFrom after that command.",
+  "alliance": "BLUE",
+  "start": { "pose": { "xIn": 63.17, "yIn": 45, "headingRad": 3.1416, "provenance": "SET BY HAND: AUTO lane test pose, the TOP side-wall anchor" }, "holds": { "pollen": 4 } },
+  "steps": [
+    { "id": "out", "kind": "path", "segments": [{ "kind": "line", "from": "current", "to": { "xIn": 40, "yIn": 45, "provenance": "SET BY HAND: AUTO lane test pose" } }], "heading": { "mode": "constant", "headingRad": 3.1416 } },
+    { "id": "partnerScores", "kind": "transfer", "from": "partner", "to": "hiveOwnUpCell", "expectedCount": 1, "notes": "Planner-only: the partner scores one. Nothing on the robot runs it." },
+    {
+      "id": "shoot",
+      "kind": "command",
+      "name": "shootAll",
+      "args": { "count": 2 },
+      "envelope": {
+        "polygon": [{ "xIn": 28, "yIn": 33 }, { "xIn": 52, "yIn": 33 }, { "xIn": 52, "yIn": 57 }, { "xIn": 28, "yIn": 57 }],
+        "maxDurationS": 3,
+        "provenance": "SET BY HAND: AUTO lane test envelope, a box round the shoot pose"
+      }
+    },
+    {
+      "id": "back",
+      "kind": "path",
+      "rejoinFrom": { "xIn": 40, "yIn": 45, "headingRad": 3.1416, "provenance": "SET BY HAND: AUTO lane test rejoin, the shoot pose" },
+      "segments": [{ "kind": "line", "from": "current", "to": { "xIn": 50, "yIn": 25, "provenance": "SET BY HAND: AUTO lane test pose" } }],
+      "heading": { "mode": "constant", "headingRad": 3.1416 }
+    }
+  ]
+}

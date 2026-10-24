@@ -1,7 +1,10 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { BB_HALF_X, BB_HALF_Y } from '../config';
-import type { EnvironmentDef, PhotoVenue } from '../graphics/environments';
+import type { EnvironmentDef, PhotoFloor, PhotoVenue } from '../graphics/environments';
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
+import { VENUE_OVERHEAD_LAYER } from './renderVenue';
 
 /**
  * THE PHOTOGRAPHED VENUE (2026-10-10) — a real room around the field, from a panorama.
@@ -44,13 +47,37 @@ import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
  *     portrait phone 20 in from the school hall's −x wall, a raised chase eye under the quad's
  *     canopy — each within the margin or above the roof, never looking back across a moved wall.
  *
+ * ── THE LAYERED ROOM: NOTHING IS DRAWN FLAT (2026-10-24) ──────────────────────────────────────
+ * Owner: "can you just make it NOT smear?" — the box is right for the floor and the walls and for
+ * nothing else, so from any eye but the lens every chair, seat row and canopy post was a streak
+ * across the floor. A row with `PhotoVenue.layers` is drawn as two layers instead
+ * (`scripts/venues/`: MoGe-2 depth for every pixel, OneFormer to say which pixels are furniture,
+ * LaMa to paint the furniture out):
+ *   • THE ROOM (`bg-lo`, `bg-hi`): the measured room as a mesh closed round the lens — the box,
+ *     with the floor step a venue has (the school hall's auditorium, 25 in below its stage, which the
+ *     box drew at stage level and 0.6 × as deep) — textured with the INPAINTED backdrop, so a gap a
+ *     camera sees behind a chair shows the floor that is there, not the chair again. MoGe's own room
+ *     was tried and lost: its walls are a few per cent of noise, and a closed mesh bridges every jump
+ *     in depth with a sheet that is a smear seen from off the lens. The box never smeared the room.
+ *   • THE FURNITURE (`fg-lo`, `fg-hi`): the objects alone at MoGe's depth, textured with the
+ *     ORIGINAL backdrop's rows (`PhotoLayers.fgRows`), cut wherever the depth jumps, so a chair
+ *     stands where it stands and nothing is stretched from its edge to the floor behind it; and a
+ *     face the lens saw edge-on, which a camera elsewhere would draw as a streak, is dropped in the
+ *     shader (`PHOTO_STRETCH_MAX`) so the painted-out room shows there instead.
+ * Both are projected exactly as the box is (the lookup along the ray from the lens), so from the
+ * lens the picture is the photograph and from anywhere else it is the room. The room is `BackSide`
+ * like the box, which makes it visible only from the lens's side of each surface: an eye above the
+ * ceiling or outside a wall sees through it, so these meshes need no push. The upper halves are on
+ * `VENUE_OVERHEAD_LAYER` anyway, which the top-down cameras do not draw. The box stays the fallback
+ * for a row without layers and for a layer file that fails to load.
+ *
  * ── WHAT ELSE IS HERE ───────────────────────────────────────────────────────────────────────
  * The field's shadow on the photographed floor (`ShadowMaterial`, the sun's own map), and a soft
  * contact band around the perimeter's foot: without the two the field floats on the photograph.
  *
  * Nothing here casts, nothing writes `bloomBase` (bloom is selective, and a photograph is not a
- * lamp), and the proxy is `BackSide` and the two overlays `depthWrite: false`, so GTAO's G-buffer
- * pass leaves all three out (`renderPost.ts`).
+ * lamp), and the proxy is `BackSide`, the furniture is flagged `aoExclude` and the two overlays
+ * are `depthWrite: false`, so GTAO's G-buffer pass leaves them all out (`renderPost.ts`).
  */
 
 /** the photographed floor's z: the procedural ground's (`renderVenue.ts`), under the CAD's own
@@ -281,6 +308,88 @@ export async function loadPhotoBackdrop(path: string, anisotropy: number): Promi
   return tex;
 }
 
+// ──────────────────────────────────────────────────────────────── the layered room's loader ──
+
+/** the four meshes of a layered venue, by node name (`scripts/venues/pack.ts`) */
+export const PHOTO_LAYER_PARTS = ['bg-lo', 'bg-hi', 'fg-lo', 'fg-hi'] as const;
+export type PhotoLayerPart = (typeof PHOTO_LAYER_PARTS)[number];
+
+/** one part of the layered room: its geometry (quantised positions) and the node transform that
+ * dequantises it */
+export interface PhotoLayerPartAsset {
+  geometry: THREE.BufferGeometry;
+  position: THREE.Vector3;
+  scale: THREE.Vector3;
+}
+
+/** what a layered venue is built from (`loadPhotoLayers`) */
+export interface PhotoLayerAssets {
+  /** the room's texture: the backdrop with the furniture inpainted out */
+  bg: THREE.Texture;
+  /** the furniture's texture: the original backdrop, `PhotoLayers.fgRows` only */
+  fg: THREE.Texture;
+  parts: Map<PhotoLayerPart, PhotoLayerPartAsset>;
+}
+
+let layerLoader: GLTFLoader | null = null;
+
+/**
+ * LOAD a layered venue: its two textures (`loadPhotoBackdrop`, so decoded off the main thread and
+ * counted against `photoBlocked` like any backdrop) and its meshes (GLTFLoader with the meshopt
+ * decoder, as `renderFieldGlb.ts` loads the field). Rejects if any of the three fails, or the file
+ * lacks a part (a room without its floor would draw the field over nothing), having freed whatever
+ * did load; the caller falls back to the box.
+ */
+export async function loadPhotoLayers(p: PhotoVenue, detail: BbPhotoDetail, anisotropy: number): Promise<PhotoLayerAssets> {
+  const l = p.layers!;
+  const meshUrl = venueAssetUrl(l.mesh);
+  layerLoader ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const loader = layerLoader;
+  const [bg, fg, gltf] = await Promise.allSettled([
+    loadPhotoBackdrop(detail === 'hi' ? l.bg : l.bgLow, anisotropy),
+    loadPhotoBackdrop(detail === 'hi' ? l.fg : l.fgLow, anisotropy),
+    loader.loadAsync(meshUrl).catch((err: unknown) => {
+      notePhotoFailure(meshUrl);
+      throw err;
+    }),
+  ]);
+  const parts = new Map<PhotoLayerPart, PhotoLayerPartAsset>();
+  if (gltf.status === 'fulfilled') {
+    gltf.value.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      // GLTFLoader keeps a node's name as written in `userData.name`
+      const name = (mesh.userData.name as string | undefined) ?? mesh.name;
+      (mesh.material as THREE.Material).dispose();
+      if ((PHOTO_LAYER_PARTS as readonly string[]).includes(name)) {
+        parts.set(name as PhotoLayerPart, { geometry: mesh.geometry, position: mesh.position.clone(), scale: mesh.scale.clone() });
+      } else mesh.geometry.dispose();
+    });
+  }
+  const missing = PHOTO_LAYER_PARTS.filter((k) => !parts.has(k));
+  if (bg.status === 'fulfilled' && fg.status === 'fulfilled' && gltf.status === 'fulfilled' && missing.length === 0) {
+    return { bg: bg.value, fg: fg.value, parts };
+  }
+  if (bg.status === 'fulfilled') bg.value.dispose();
+  if (fg.status === 'fulfilled') fg.value.dispose();
+  for (const a of parts.values()) a.geometry.dispose();
+  const failed = [bg, fg, gltf].find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
+  notePhotoFailure(meshUrl);
+  throw new Error(`${l.mesh}: no ${missing.join(', ')}`);
+}
+
+/** free a loaded photograph that is not going to be drawn (its venue was replaced mid-load) */
+export function disposePhotoSource(src: THREE.Texture | PhotoLayerAssets): void {
+  if (src instanceof THREE.Texture) {
+    src.dispose();
+    return;
+  }
+  src.bg.dispose();
+  src.fg.dispose();
+  for (const a of src.parts.values()) a.geometry.dispose();
+}
+
 // ─────────────────────────────────────────────────────────────────────────── the projection ──
 
 const VERT = /* glsl */ `
@@ -303,9 +412,20 @@ void main() {
 	gl_Position = projectionMatrix * viewMatrix * vec4( w, 1.0 );
 }`;
 
+/** the layered room's vertex shader: a mesh already where the room is, so only the transform (the
+ * node's dequantisation, `pack.ts`) — no push (see the header) */
+const LAYER_VERT = /* glsl */ `
+varying vec3 vWorld;
+void main() {
+	vec4 w = modelMatrix * vec4( position, 1.0 );
+	vWorld = w.xyz;
+	gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+
 const FRAG = /* glsl */ `
 uniform sampler2D bbMap;
 uniform vec3 bbEye;
+uniform vec2 bbRows;
 uniform float bbScale;
 uniform float bbSat;
 uniform float bbKnee;
@@ -313,13 +433,27 @@ varying vec3 vWorld;
 #define BB_E_MAX ${E_MAX}
 void main() {
 	vec3 d = normalize( vWorld - bbEye );
+	#ifdef BB_FURNITURE
+	// WHERE THE LENS SAW NO TEXTURE, DRAW NONE. A piece of furniture is only the relief its own
+	// photograph shows, so a face the lens saw edge-on carries a pixel or two across its whole width;
+	// a camera that faces it squarely draws those pixels as streaks (the school hall's far seat block
+	// from the Home shot). Where this eye faces the surface more than BB_STRETCH_MAX times as squarely
+	// as the lens did, the room behind it (the furniture painted out) shows instead. From the lens
+	// the ratio is 1, so nothing is ever lost there.
+	vec3 n = normalize( cross( dFdx( vWorld ), dFdy( vWorld ) ) );
+	float faceLens = abs( dot( n, d ) );
+	float faceEye = abs( dot( n, normalize( vWorld - cameraPosition ) ) );
+	if ( faceEye > BB_STRETCH_MAX * max( faceLens, 1e-3 ) ) discard;
+	#endif
 	// three's equirect convention as this z-up scene samples it through MAP_ROT
 	// (renderEnvironment.ts): +x at u = 0.5, u grows clockwise seen from above, the zenith at the
 	// image's top row. The light-gathering .hdr is the same panorama, turned the same way, so the
 	// two agree by construction.
 	float u = atan( - d.y, d.x ) * 0.15915494309 + 0.5;
 	float v = 0.5 - asin( clamp( d.z, - 1.0, 1.0 ) ) * 0.31830988618;
-	vec2 uv = vec2( u, v );
+	// a texture holding only the panorama's rows bbRows (the furniture's, PhotoLayers.fgRows); the
+	// whole panorama is (0, 1)
+	vec2 uv = vec2( u, ( v - bbRows.x ) / ( bbRows.y - bbRows.x ) );
 	// THE SEAM. u jumps from 1 to 0 at the panorama's edge, so its screen derivative spikes there
 	// and the sampler drops to the smallest mip: a one-pixel line down every wall. The same
 	// derivative taken from u shifted half a turn is continuous at that edge; take the smaller.
@@ -420,40 +554,69 @@ export function photoKnee(ibl: boolean): number {
   return PHOTO_KNEE * (ibl ? 1 : PHOTO_NO_IBL_DIM);
 }
 
+/** every projection material in a built photographed venue: the box's, or the layered room's four */
+function photoMaterials(venue: THREE.Object3D): THREE.ShaderMaterial[] {
+  const out: THREE.ShaderMaterial[] = [];
+  venue.traverse((o) => {
+    const mat = (o as THREE.Mesh).isMesh ? ((o as THREE.Mesh).material as THREE.ShaderMaterial) : null;
+    if (mat?.uniforms?.bbScale) out.push(mat);
+  });
+  return out;
+}
+
 /** re-apply `photoScale` and `photoKnee` to a built photographed venue when the
  * environment-lighting row changes (a rebuild would refetch and re-decode the backdrop); a no-op
  * for any other venue */
 export function setPhotoVenueLighting(venue: THREE.Object3D | null, def: EnvironmentDef, ibl: boolean): void {
   if (!def.photo || venue?.userData.photo !== def.id) return;
-  const room = venue.getObjectByName('bb-venue:photo') as THREE.Mesh | undefined;
-  const mat = room?.material as THREE.ShaderMaterial | undefined;
-  if (!mat?.uniforms?.bbScale) return;
-  mat.uniforms.bbScale.value = photoScale(def.photo, ibl);
-  mat.uniforms.bbKnee.value = photoKnee(ibl);
+  for (const mat of photoMaterials(venue)) {
+    mat.uniforms.bbScale.value = photoScale(def.photo, ibl);
+    mat.uniforms.bbKnee.value = photoKnee(ibl);
+  }
 }
 
-/**
- * BUILD the photographed venue for `def` around an already-loaded backdrop. One group, freed with
- * `disposeObject3D` — EXCEPT the backdrop texture, which is a uniform and so invisible to that
- * walk: the caller owns it and frees it with the venue (one 44.7 MB texture per live venue, never
- * two). `sun` is the scene's key light with this row's rig on it (the catcher is its shadow
- * footprint, `shadowFootprint`) and `ibl` the environment-lighting row (`photoScale`).
- */
-export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture, sun: THREE.DirectionalLight, ibl: boolean): THREE.Group {
-  const p = def.photo!;
-  const group = new THREE.Group();
-  group.name = 'bb-venue';
-  group.userData.photo = def.id;
+/** `poly` (counter-clockwise from above) cut to the rectangle `r` — the shadow catcher kept on the
+ * part of the floor that is the photographed floor plane (`PhotoLayers.floor`) */
+export function clipToFloor(poly: [number, number][], r: PhotoFloor): [number, number][] {
+  let out = poly;
+  for (const [axis, lim, sign] of [
+    [0, r.x0, 1],
+    [0, r.x1, -1],
+    [1, r.y0, 1],
+    [1, r.y1, -1],
+  ] as const) {
+    const next: [number, number][] = [];
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i];
+      const b = out[(i + 1) % out.length];
+      const ka = sign * (a[axis] - lim);
+      const kb = sign * (b[axis] - lim);
+      if (ka >= 0) next.push(a);
+      if (ka >= 0 !== kb >= 0) {
+        const t = ka / (ka - kb);
+        next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    out = next;
+  }
+  return out;
+}
 
+/** how many times more squarely a camera may face a piece of furniture than the lens did before
+ * the fragment is dropped (see `FRAG`, BB_FURNITURE) */
+export const PHOTO_STRETCH_MAX = 1.75;
+
+/** the projection material, for the box (`VERT`, the push) or a layered part (`LAYER_VERT`);
+ * `furniture` drops what the lens never saw (`PHOTO_STRETCH_MAX`) */
+function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: readonly [number, number], ibl: boolean, layered: boolean, side: THREE.Side, furniture = false): THREE.ShaderMaterial {
   const box = photoRoomBox(p);
-  const size = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
-  const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
-  geo.translate((box.max[0] + box.min[0]) / 2, (box.max[1] + box.min[1]) / 2, (box.max[2] + box.min[2]) / 2);
-  const mat = new THREE.ShaderMaterial({
-    name: 'bb-venue:photo',
+  return new THREE.ShaderMaterial({
+    name,
+    defines: furniture ? { BB_FURNITURE: '', BB_STRETCH_MAX: PHOTO_STRETCH_MAX.toFixed(1) } : {},
     uniforms: {
-      bbMap: { value: backdrop },
+      bbMap: { value: map },
       bbEye: { value: new THREE.Vector3(0, 0, PHOTO_FLOOR_Z + p.height) },
+      bbRows: { value: new THREE.Vector2(rows[0], rows[1]) },
       bbBoxMin: { value: new THREE.Vector3(...box.min) },
       bbBoxMax: { value: new THREE.Vector3(...box.max) },
       bbMargin: { value: PUSH_MARGIN_IN },
@@ -461,23 +624,60 @@ export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture, su
       bbSat: { value: p.saturation },
       bbKnee: { value: photoKnee(ibl) },
     },
-    vertexShader: VERT,
+    vertexShader: layered ? LAYER_VERT : VERT,
     fragmentShader: FRAG,
-    side: THREE.BackSide,
+    side,
   });
-  const room = new THREE.Mesh(geo, mat);
-  room.name = 'bb-venue:photo';
-  // the vertex shader moves the walls per camera, so no bounding volume holds; it surrounds the
-  // eye anyway
-  room.frustumCulled = false;
-  room.castShadow = false;
-  room.receiveShadow = false;
-  group.add(room);
+}
+
+/**
+ * BUILD the photographed venue for `def` around what loaded: the layered room (`PhotoLayerAssets`,
+ * see the header) or one backdrop on the box. One group, freed with `disposeObject3D` — EXCEPT the
+ * textures, which are uniforms and so invisible to that walk: the caller owns them and frees them
+ * with the venue (`photoTexturesOf`). `sun` is the scene's key light with this row's rig on it (the
+ * catcher is its shadow footprint, `shadowFootprint`) and `ibl` the environment-lighting row
+ * (`photoScale`).
+ */
+export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoLayerAssets, sun: THREE.DirectionalLight, ibl: boolean): THREE.Group {
+  const p = def.photo!;
+  const group = new THREE.Group();
+  group.name = 'bb-venue';
+  group.userData.photo = def.id;
+  const layers = src instanceof THREE.Texture ? null : src;
+  group.userData.layered = !!layers;
+
+  if (layers) {
+    for (const part of PHOTO_LAYER_PARTS) {
+      const asset = layers.parts.get(part);
+      if (!asset) continue;
+      const room = part.startsWith('bg');
+      const mat = room
+        ? photoMaterial(`bb-venue:photo-${part}`, p, layers.bg, [0, 1], ibl, true, THREE.BackSide)
+        : photoMaterial(`bb-venue:photo-${part}`, p, layers.fg, p.layers!.fgRows, ibl, true, THREE.DoubleSide, true);
+      const mesh = new THREE.Mesh(asset.geometry, mat);
+      mesh.name = `bb-venue:photo-${part}`;
+      mesh.position.copy(asset.position);
+      mesh.scale.copy(asset.scale);
+      // the room surrounds the eye; the furniture is culled by its own bounds like any mesh
+      mesh.frustumCulled = !room;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      // furniture is seen from behind as well (DoubleSide), which the AO pass would otherwise draw
+      if (!room) mesh.userData.aoExclude = true;
+      // the upper halves are not drawn by the overhead camera or the minimap (see the header)
+      if (part.endsWith('-hi')) mesh.layers.set(VENUE_OVERHEAD_LAYER);
+      group.add(mesh);
+    }
+  } else {
+    group.add(buildBoxRoom(p, src as THREE.Texture, ibl));
+  }
 
   // the field's shadow on the photographed floor — the sun's own map, so it is the shadow the mat
-  // shows, continued out to (just inside) the edge of that map's footprint on the floor
+  // shows, continued out to (just inside) the edge of that map's footprint on the floor, and on the
+  // layered room only where its floor IS the photographed floor plane
   const z = PHOTO_FLOOR_Z + 0.04;
-  const f = shadowFootprint(sun, z);
+  const footprint = shadowFootprint(sun, z);
+  const f = layers && p.layers?.floor ? clipToFloor(footprint, p.layers.floor) : footprint;
   const cg = new THREE.BufferGeometry();
   cg.setAttribute('position', new THREE.Float32BufferAttribute(f.flatMap(([x, y]) => [x, y, 0]), 3));
   cg.setAttribute('normal', new THREE.Float32BufferAttribute(f.flatMap(() => [0, 0, 1]), 3));
@@ -495,9 +695,31 @@ export function buildPhotoVenue(def: EnvironmentDef, backdrop: THREE.Texture, su
   return group;
 }
 
-/** the backdrop texture a built photo venue is drawing, if `venue` is one */
-export function photoBackdropOf(venue: THREE.Object3D | null): THREE.Texture | null {
-  const room = venue?.getObjectByName('bb-venue:photo') as THREE.Mesh | undefined;
-  const mat = room?.material as THREE.ShaderMaterial | undefined;
-  return (mat?.uniforms?.bbMap?.value as THREE.Texture | undefined) ?? null;
+/** the photograph on the box (`VERT`/`FRAG`, see the header): a row without layers, or one whose
+ * layer files failed */
+function buildBoxRoom(p: PhotoVenue, backdrop: THREE.Texture, ibl: boolean): THREE.Mesh {
+  const box = photoRoomBox(p);
+  const size = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
+  const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
+  geo.translate((box.max[0] + box.min[0]) / 2, (box.max[1] + box.min[1]) / 2, (box.max[2] + box.min[2]) / 2);
+  const room = new THREE.Mesh(geo, photoMaterial('bb-venue:photo', p, backdrop, [0, 1], ibl, false, THREE.BackSide));
+  room.name = 'bb-venue:photo';
+  // the vertex shader moves the walls per camera, so no bounding volume holds; it surrounds the
+  // eye anyway
+  room.frustumCulled = false;
+  room.castShadow = false;
+  room.receiveShadow = false;
+  return room;
+}
+
+/** the textures a built photo venue is drawing (one on the box, two on the layered room), which
+ * the caller owns and frees with it; empty for any other venue */
+export function photoTexturesOf(venue: THREE.Object3D | null): THREE.Texture[] {
+  if (!venue) return [];
+  const out = new Set<THREE.Texture>();
+  for (const mat of photoMaterials(venue)) {
+    const t = mat.uniforms.bbMap?.value as THREE.Texture | undefined;
+    if (t) out.add(t);
+  }
+  return [...out];
 }

@@ -218,7 +218,7 @@ that season has none) — then the bind panels —
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
   STARTS straight away (behind `guardStart`). Since 2026-10-18 the two cards are the Play page's RIGHT
   COLUMN, stacked (see THE MENU STAGE below); `/match-setup`, `/practice-setup`, `/solo-setup` and
-  `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine.
+  `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine (its order, library then buttons then preview, is what keeps it reachable in the scrolling column: `docs/area/autos.md`, "The Autonomous panel").
   Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
   Partner / Opponent 1 / Opponent 2, each None · Dummy · AI (AI only where the game registers a
   `BotDriver`) with its own difficulty row, which is always rendered and DISABLED unless the seat is AI
@@ -397,12 +397,13 @@ rulings below are theirs, not defaults.
   column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
   hand-tuned `POSES`/`SHOW` constants in `menuStagePoses.ts` (DOM-free, so the BIOBUZZ RENDER lane
   reads them); the showcase spot is on open floor, clear of the hive's legs.
-- ⚠️ **HOME'S EYE IS AT THE PANORAMA'S LENS HEIGHT (62 in), NOT A DRONE SHOT** (2026-10-21). A
-  photographed venue is exact only from its lens (`renderPhotoVenue.ts`); anything in the photograph
-  that is not floor or wall is drawn flat on the floor, and an eye above the lens sees it from above.
-  The first Home eye stood 150 in up: the school hall's seats, the hangar's clutter and the quad's
-  canopy posts lay across the floor as streaks, and at 85 in the seats already stretch. The RENDER
-  lane holds the Home eye within 2 in of every venue's lens and both eyes inside every room.
+- ⚠️ **HOME'S HIGH SHOT NEEDS THE LAYERED ROOMS** (2026-10-24). Drawn on its box, a photographed
+  venue lays everything that is not floor or wall flat across the floor when seen from above the
+  lens: from Home's eye, 150 in up, the school hall's seats, the hangar's clutter and the quad's
+  canopy posts were streaks (owner: "distorted real 3d backgrounds", 2026-10-21). Every
+  photographed venue is now drawn as its layered room (`renderPhotoVenue.ts`), which draws nothing
+  flat, so Home keeps the high corner shot. The RENDER lane holds both: no photographed row without
+  layers, and both eyes inside every room.
 - ⚠️ **A PHONE'S HOME IS NOT ON THE STAGE, AND IT FITS AN iPHONE SE IN SAFARI WITH NO SCROLL**
   (owner, 2026-10-18: "restore that page … to the original one", alpha's; then "fit without needing
   to scroll for any phone"). Below 720px `App.tsx` mounts no `MenuStage` for Home and passes no
@@ -423,6 +424,10 @@ rulings below are theirs, not defaults.
   **The base `.ds-home*` / `.ds-homestats*` / `.ds-menu` / `.ds-menu-btn` rules are alpha's
   verbatim**; the desktop look is `.ds-app.stage-home …` overrides and the phone look
   `.ds-app.is-home …` overrides, so neither reaches the other. Scope any new Home rule the same way.
+  ⚠️ **A `.ds-app.stage-home` override out-weighs the shared `.ds-seg.on`**, so every state it restyles needs
+  its own `.on` twin. The switcher's unpicked fill (`--ds-panel`) won over the picked chip's accent, and
+  the accent-ink label vanished into it (white on white in light, dark on dark in dark) until
+  `.ds-app.stage-home .ds-home-games .ds-seg.on` set its own `background`.
 - ⚠️ **THE TUTORIAL OFFER AND THE REJOIN BANNER ARE ON PLAY**, desktop and phone (owner,
   2026-10-18), as `.ds-setup-notice` floating at the top-left of `.ds-setup-view`, opaque, with the
   floating edge. On desktop the view gets `.has-notice` and a left padding the width of the stack,
@@ -433,6 +438,10 @@ rulings below are theirs, not defaults.
   it, the two buttons pinned, no per-game queue line and no "· N signed in" in the bar (≤ 440px), and
   no scroll track (a narrow desktop window carried Home's track into Play and overflowed it by 10px
   at 360x740).
+  ⚠️ **The band is CLAMPED so a short phone fits** (2026-10-24): `height: clamp(120px, 100dvh - 501px,
+  42dvh - bar - 16px)`. 501 is everything else on the Robot tab (bar 63, tabs 36, picker 214, pinned
+  buttons 52, the 72px banner strip, the gaps); without it the strip alone pushed 360x640 Play 51px past
+  the window. Change the picker's or the strip's height and that number moves with it.
 - ⚠️ **BOTH SCREENS FIT THE WINDOW; THERE IS NO PAGE SCROLLBAR** (owner, 2026-10-18). Measured
   `scrollHeight - clientHeight` = 0 on Home and Play at 1920x1080, 1536x864, 1366x768, 1280x720,
   and on both at 390x844 and 360x740 (`scratch/stage.cjs` prints it per size); a phone's Home down
@@ -696,6 +705,12 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   itself into two thumb columns against the live viewport and reads a stored position only once
   the player has dragged that control. In LANDSCAPE the score bar and the breakdown chips are in
   the left and right gutters, and the packer treats both as obstacles.
+  **Touch labels sit on the 11px floor** (`.mb-lbl` is `1em` of the button's 11px, 12px on SHOOT; it was
+  `0.82em` = 9px, and an `em` is why the type audit never saw it). The one exception is CATALYST, eight
+  capitals that touch the ring of a 64px circle at 11px, so `.mobile-btn.catalyst .mb-lbl` keeps 9px. In a
+  short landscape phone the DRIVE / TURN label is inside the ring's top, not above it: above, it lay across
+  the score stack's last tile. Still open (the pad's packer is the owner's): in PORTRAIT the sticks' rings
+  cross the score bar and the breakdown chips, and the tutorial card sits over BIOBUZZ's second button column.
 - **ONE performance read-out**, `PerfHud`, bottom-right above the net chips on a desktop (the
   top-right cluster on a phone, where the bottom-right is the thumb pad), driven by
   `GameSettings.perfDisplay` alone (off · simple · detailed · graphs, default simple = fps,
@@ -934,6 +949,9 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   prediction panel, the server notice, the touch pad's idle labels, the score-bar
   tips and the replay-video labels, plus the results stage on `--ds-stage-bg`. A new in-match
   surface gets its pairs there.
+  **A pair must be the one that RENDERS.** The Home primary keycap's sub-line was `color-mix(accent-ink 74%,
+  transparent)` (4.40:1 in light) while `contrast.mjs` held solid `--ds-accent-ink` for it, so the audit
+  passed for a colour nobody saw. When a rule mixes alpha into an ink, check the mixed result.
 - **PATCH NOTES ARE READ AT `.ann-md`, NOT `.md`** (2026-09-25, owner: the card was "pretty
   small so it is hard to read"). The "What’s new" modal, `/changelogs` and the admin preview all
   render `AnnouncementItem`/`.ann-md`: body `--ds-t-lg` at `--ds-lh-long` and 68ch, title
