@@ -411,11 +411,20 @@ const PH_CREDIT = (
 });
 
 /**
- * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED rather than
- * assumed: on `netball_court` the court's own painted lines (a 30.5 × 15.25 m netball court) span
- * 18.6 × 9.9 lens heights in the floor projection, which puts the lens at 1.64 and 1.54 m. 1.6 m it
- * is, for every venue: the same photographer's rig, and the floor's scale next to the field is
- * set by this one number.
+ * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED PER VENUE
+ * (2026-10-24), because the rooms were read off the photographs in lens heights: a wrong lens sizes
+ * the whole room wrong against the true-scale field and gives wrong parallax from every eye off it.
+ * Each is read off gnomonic crops of its own backdrop: an object of known height h on the field's
+ * floor, its base α_b and top α_t below the horizon, gives h / (1 − tan α_t / tan α_b).
+ *
+ * This 63 is for the venues the measurement leaves within 2 % of it: the events hall's tables (0.76 m,
+ * two of them: 63.2 and 63.3 in), the quad's two steel doors (2.032 m leaves on a walkway 0.145 lens
+ * heights up, measured off its curb: 62.9 and 63.8). The school hall's references disagree by more
+ * than the change (the covered grand piano over its near leg 62.4–64.5, the wing door's leaf 65.5 at
+ * an old 1981 mm, 67.1 at 2032 mm) and the hangar's are too far out and too irregular to read (a
+ * bench, a table, a motorcycle wheel: 59–81), so both keep it. The COURT is measured to a few tenths
+ * and carries its own (`height` on its row): it was this number's source, read as 1.64 and 1.54 m off
+ * the netball lines, and averaged to 1.6.
  */
 const PHOTO_LENS_IN = 63;
 
@@ -897,10 +906,21 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
   {
     /**
      * AN OUTDOOR COURT at the end of the day — a fenced netball court, so the field stands on a
-     * painted sports surface whose lines give the eye an exact scale (the court lines measured
-     * the lens at 1.6 m). The box is the fence: 11.4 / 12.4 lens heights out along x, 6.1 / 5.8
-     * along y. The sun is low in the photograph (12°) and the key is raised to 40° for the
-     * RENDER lane's 25° rule (`sunset`'s measurement).
+     * painted sports surface whose lines give the eye an exact scale. The box is the fence: 11.4 /
+     * 12.4 lens heights out along x, 6.1 / 5.8 along y.
+     *
+     * THE LENS IS 64.6 in, MEASURED OFF THE LINES (2026-10-24): two courts are painted on it, a
+     * tennis court (white) and a netball court (yellow), centred on the lens. Each pair of parallel
+     * lines either side of it, read where it crosses the axis, puts the lens at its span over the
+     * sum of the two lines' cotangents: the service lines (12.75 m centre to centre) 64.8, the
+     * baselines (23.72) 64.9, the singles sidelines (8.18) 64.4, the doubles (10.92) 64.6, the netball
+     * sidelines (15.20) 64.5 and its third lines (10.12) 64.3. The first reading's 1.54 m does not
+     * reproduce off any pair; the surface tilts 0.2–0.5 % (drainage), which moves the far lines a few
+     * tenths and no more. The room was rescaled from 63 about the lens (× 1.0254,
+     * `scripts/venues/rescale-lens.ts`).
+     *
+     * The sun is low in the photograph (12°) and the key is raised to 40° for the RENDER lane's 25°
+     * rule (`sunset`'s measurement).
      */
     id: 'court',
     name: 'Outdoor court',
@@ -921,10 +941,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       gain: 2.5,
       intensity: 1,
       saturation: 0.8,
-      height: PHOTO_LENS_IN,
-      room: { x0: -718, x1: 781, y0: -384, y1: 365, ceil: 2000 },
+      height: 64.6,
+      room: { x0: -736, x1: 801, y0: -394, y1: 374, ceil: 2051 },
       shadow: 0.45,
-      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_296 }),
+      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_320 }),
       fallback: 'overcast',
       ...PH_CREDIT('netball_court', [
         { name: 'Dimitrios Savva', role: 'Photography' },

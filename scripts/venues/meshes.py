@@ -26,7 +26,7 @@ from PIL import Image
 from scipy.ndimage import label
 
 from depth import renderer_directions
-from layers import EYE, FLOOR_STEPS, LENS_IN, ROOMS, room_distance
+from layers import FLOOR_STEPS, LENS, ROOMS, eye, room_distance
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'public' / 'venues'
@@ -44,11 +44,11 @@ FG_GRAZE = 0.1
 WEBP_Q = 90
 
 
-def outward(verts: np.ndarray, tris: np.ndarray) -> np.ndarray:
-    """wind every triangle so its normal points away from the lens"""
+def outward(verts: np.ndarray, tris: np.ndarray, e: np.ndarray) -> np.ndarray:
+    """wind every triangle so its normal points away from the lens `e`"""
     v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
     n = np.cross(v1 - v0, v2 - v0)
-    c = (v0 + v1 + v2) / 3 - EYE
+    c = (v0 + v1 + v2) / 3 - e
     flip = np.einsum('ij,ij->i', n, c) < 0
     tris = tris.copy()
     tris[flip] = tris[flip][:, [0, 2, 1]]
@@ -68,10 +68,11 @@ def bg_mesh(venue: str) -> tuple[np.ndarray, np.ndarray]:
     its wall exactly (a depth map resampled to the grid put far walls inches off at a grazing ray)"""
     h, w = BG_GRID // 2, BG_GRID
     dirs = renderer_directions(h, w)
-    d = room_distance(dirs, ROOMS[venue], FLOOR_STEPS.get(venue))
-    pts = (EYE + dirs * d[..., None]).reshape(-1, 3)
-    top = EYE + np.array([0, 0, 1], np.float32) * float(np.median(d[0]))
-    bottom = EYE + np.array([0, 0, -1], np.float32) * LENS_IN
+    e = eye(venue)
+    d = room_distance(dirs, ROOMS[venue], FLOOR_STEPS.get(venue), e)
+    pts = (e + dirs * d[..., None]).reshape(-1, 3)
+    top = e + np.array([0, 0, 1], np.float32) * float(np.median(d[0]))
+    bottom = e + np.array([0, 0, -1], np.float32) * LENS[venue]
     verts = np.vstack([pts, top, bottom]).astype(np.float32)
     idx = np.arange(h * w).reshape(h, w)
     ti, bi = h * w, h * w + 1
@@ -79,7 +80,7 @@ def bg_mesh(venue: str) -> tuple[np.ndarray, np.ndarray]:
         np.stack([np.full(w, ti), idx[0], np.roll(idx[0], -1)], -1),
         np.stack([np.full(w, bi), np.roll(idx[-1], -1), idx[-1]], -1),
     ])
-    return verts, outward(verts, np.concatenate([grid_tris(h, w), caps]))
+    return verts, outward(verts, np.concatenate([grid_tris(h, w), caps]), e)
 
 
 def smooth_furniture(d_fg: np.ndarray, d_bg: np.ndarray) -> np.ndarray:
@@ -96,12 +97,12 @@ def smooth_furniture(d_fg: np.ndarray, d_bg: np.ndarray) -> np.ndarray:
     return np.where(valid, np.minimum(out, d_bg * 0.97), 0).astype(np.float32)
 
 
-def fg_mesh(d_fg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def fg_mesh(d_fg: np.ndarray, e: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """the furniture at full resolution, cut at every occlusion edge left after the smoothing"""
     h, w = d_fg.shape
     valid = (d_fg > 0).reshape(-1)
     dist = np.where(d_fg > 0, d_fg, 1).astype(np.float32)
-    verts = (EYE + renderer_directions(h, w) * dist[..., None]).reshape(-1, 3).astype(np.float32)
+    verts = (e + renderer_directions(h, w) * dist[..., None]).reshape(-1, 3).astype(np.float32)
     tris = grid_tris(h, w)
     tris = tris[valid[tris].all(1)]
     dt = dist.reshape(-1)[tris]
@@ -109,10 +110,10 @@ def fg_mesh(d_fg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
     n = np.cross(v1 - v0, v2 - v0)
     n /= np.clip(np.linalg.norm(n, axis=1, keepdims=True), 1e-9, None)
-    c = (v0 + v1 + v2) / 3 - EYE
+    c = (v0 + v1 + v2) / 3 - e
     c /= np.linalg.norm(c, axis=1, keepdims=True)
     tris = tris[np.abs(np.einsum('ij,ij->i', n, c)) > FG_GRAZE]
-    return compact(verts, outward(verts, tris))
+    return compact(verts, outward(verts, tris, e))
 
 
 def compact(verts: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -122,9 +123,9 @@ def compact(verts: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return verts[used], remap[tris].astype(np.uint32)
 
 
-def split_at_lens(verts: np.ndarray, tris: np.ndarray):
+def split_at_lens(verts: np.ndarray, tris: np.ndarray, e: np.ndarray):
     cz = verts[tris].mean(1)[:, 2]
-    return compact(verts, tris[cz < EYE[2]]), compact(verts, tris[cz >= EYE[2]])
+    return compact(verts, tris[cz < e[2]]), compact(verts, tris[cz >= e[2]])
 
 
 def fg_rows(d_fg: np.ndarray) -> tuple[float, float]:
@@ -149,8 +150,9 @@ def run(venue: str, layers_root: Path) -> dict:
     d_bg = np.load(src / 'bg_distance.npy')
     d_fg = np.load(src / 'fg_distance.npy')
     counts = {}
-    for name, (v, t) in (('bg', bg_mesh(venue)), ('fg', fg_mesh(smooth_furniture(d_fg, d_bg)))):
-        for part, (pv, pt) in zip(('lo', 'hi'), split_at_lens(v, t)):
+    e = eye(venue)
+    for name, (v, t) in (('bg', bg_mesh(venue)), ('fg', fg_mesh(smooth_furniture(d_fg, d_bg), e))):
+        for part, (pv, pt) in zip(('lo', 'hi'), split_at_lens(v, t, e)):
             np.save(src / f'mesh-{name}-{part}-pos.npy', pv.astype(np.float32))
             np.save(src / f'mesh-{name}-{part}-idx.npy', pt.astype(np.uint32))
             counts[f'{name}-{part}'] = int(len(pt))

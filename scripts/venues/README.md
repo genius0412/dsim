@@ -17,6 +17,7 @@ Everything under `public/venues/` is derived here. Two pipelines:
 | meshes | `meshes.py` | raw meshes (scratch) and `public/venues/<id>-bg-{4k,2k}.webp`, `<id>-fg-{4k,2k}.webp` |
 | pack | `pack.ts` | `public/venues/<id>-room.glb` (meshopt, quantised; the importer's format) |
 | sync | `sync-env.mjs` | each row's `PHOTO_LAYERS(...)` rows and sizes, and the picker note, in `environments.ts` |
+| rescale | `rescale-lens.ts` | only when a lens is RE-MEASURED: `public/venues/<id>-room.glb` scaled about the lens, no GPU |
 
 ```
 python scripts/venues/depth.py
@@ -27,7 +28,29 @@ node scripts/venues/sync-env.mjs
 npx tsx scripts/smoke-biobuzz/index.ts --lane render    # the files, the rows and the meshes agree
 ```
 
-(`--only <id,id>` on each.) Run the Python stages from `scripts/venues/` with a Python that has:
+(`--only <id,id>` on each.)
+
+### The lens height is per venue
+
+Every room was read off its photograph in LENS HEIGHTS, so each venue's lens (`PhotoVenue.height`,
+measured off its own photograph — `PHOTO_LENS_IN`'s note in `environments.ts`) sets the size of its
+whole room against the field. `layers.py` carries it per venue (`LENS`, with `eye(venue)`), and
+`meshes.py` takes it from there; `ROOMS` and `FLOOR_STEPS` must equal the rows (the RENDER lane
+compares the meshes with them).
+
+A re-measured lens does not need the GPU stages. Everything scales about the lens by
+k = new / old: the floor stays at `PHOTO_FLOOR_Z`, the lens moves, and a direction from it is
+unchanged, so the photograph's lookup, the furniture's rows and the split at the lens all hold.
+
+```
+npx tsx scripts/venues/rescale-lens.ts --only court --from 63 --to 64.6   # prints the new size
+```
+
+then, by the same k, the row's `room` (and its `PhotoLayers.floor`), `layers.py`'s `ROOMS`,
+`FLOOR_STEPS` (`y0` × k; `z` → `FLOOR_Z + k (z − FLOOR_Z)`) and `LENS`; the row's `height`; the
+printed size into the row's `bytes.mesh`; and the RENDER lane. A derive patch's `room`
+(`venues.cjs`) is in lens heights and does not change. The court was rescaled this way on
+2026-10-24 (63 → 64.6 in). Run the Python stages from `scripts/venues/` with a Python that has:
 
 - a CUDA `torch` (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`);
 - `moge` **2.0** (`git clone https://github.com/microsoft/MoGe`, `git checkout 925b8ed`,

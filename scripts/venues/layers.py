@@ -40,16 +40,25 @@ from depth import moge_directions, renderer_directions
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# `PHOTO_FLOOR_Z` and the lens (`PHOTO_LENS_IN`) in `renderPhotoVenue.ts` / `environments.ts`
+# `PHOTO_FLOOR_Z` in `renderPhotoVenue.ts`
 FLOOR_Z = -0.75
-LENS_IN = 63.0
-EYE = np.array([0.0, 0.0, FLOOR_Z + LENS_IN], np.float32)
+# each venue's lens above its floor, inches: `PhotoVenue.height` in `environments.ts`, MEASURED per
+# venue off its own photograph (`PHOTO_LENS_IN`'s note there). A re-measured lens rescales ROOMS and
+# FLOOR_STEPS about the lens (`rescale-lens.ts` does the room file the same way)
+LENS = {'school-hall': 63.0, 'events-hall': 63.0, 'hangar': 63.0, 'court': 64.6, 'quad': 63.0}
+
+
+def eye(venue: str) -> np.ndarray:
+    """the lens: above the field's centre, its venue's lens height above the floor"""
+    return np.array([0.0, 0.0, FLOOR_Z + LENS[venue]], np.float32)
+
+
 # `PhotoVenue.room` in `environments.ts`; meta.json repeats it and the RENDER lane compares
 ROOMS = {
     'school-hall': dict(x0=-233, x1=246, y0=-208, y1=551, ceil=260),
     'events-hall': dict(x0=-611, x1=668, y0=-318, y1=365, ceil=300),
     'hangar': dict(x0=-737, x1=882, y0=-441, y1=441, ceil=410),
-    'court': dict(x0=-718, x1=781, y0=-384, y1=365, ceil=2000),
+    'court': dict(x0=-736, x1=801, y0=-394, y1=374, ceil=2051),
     'quad': dict(x0=-630, x1=662, y0=-372, y1=384, ceil=190),
 }
 # the field and its walls with room to spare: nothing in the photograph stands there (the lens
@@ -185,18 +194,18 @@ def harmonic_fill(values: np.ndarray, known: np.ndarray, region: np.ndarray, fal
     return out
 
 
-def room_distance(dirs: np.ndarray, room: dict, step: dict | None = None) -> np.ndarray:
+def room_distance(dirs: np.ndarray, room: dict, step: dict | None, eye: np.ndarray) -> np.ndarray:
     """distance from the lens along each ray to the MEASURED ROOM: the box, its floor dropped to
     `step['z']` beyond `step['y0']` where the venue has a step (`FLOOR_STEPS`), and its walls running
     down to that floor. The lens is above the upper floor, so the step's own face is never seen."""
     with np.errstate(divide='ignore', invalid='ignore'):
-        tx = np.where(dirs[..., 0] > 0, (room['x1'] - EYE[0]) / dirs[..., 0], (room['x0'] - EYE[0]) / dirs[..., 0])
-        ty = np.where(dirs[..., 1] > 0, (room['y1'] - EYE[1]) / dirs[..., 1], (room['y0'] - EYE[1]) / dirs[..., 1])
-        tc = (FLOOR_Z + room['ceil'] - EYE[2]) / dirs[..., 2]
-        tf = (FLOOR_Z - EYE[2]) / dirs[..., 2]
+        tx = np.where(dirs[..., 0] > 0, (room['x1'] - eye[0]) / dirs[..., 0], (room['x0'] - eye[0]) / dirs[..., 0])
+        ty = np.where(dirs[..., 1] > 0, (room['y1'] - eye[1]) / dirs[..., 1], (room['y0'] - eye[1]) / dirs[..., 1])
+        tc = (FLOOR_Z + room['ceil'] - eye[2]) / dirs[..., 2]
+        tf = (FLOOR_Z - eye[2]) / dirs[..., 2]
         if step is not None:
-            beyond = EYE[1] + tf * dirs[..., 1] >= step['y0']
-            tf = np.where(beyond, (step['z'] - EYE[2]) / dirs[..., 2], tf)
+            beyond = eye[1] + tf * dirs[..., 1] >= step['y0']
+            tf = np.where(beyond, (step['z'] - eye[2]) / dirs[..., 2], tf)
     tz = np.where(dirs[..., 2] > 0, tc, tf)
     t = np.stack([tx, ty, tz], -1)
     t = np.where(np.isfinite(t) & (t > 0), t, np.inf)
@@ -205,6 +214,8 @@ def room_distance(dirs: np.ndarray, room: dict, step: dict | None = None) -> np.
 
 def run(venue: str, depth_root: Path, out_root: Path, device, lama) -> None:
     room = ROOMS[venue]
+    lens = LENS[venue]
+    e = eye(venue)
     src = ROOT / 'public' / 'venues' / f'{venue}-4k.webp'
     image4 = np.array(Image.open(src).convert('RGB'))
     raw = np.load(depth_root / venue / 'distance.npy')
@@ -213,20 +224,20 @@ def run(venue: str, depth_root: Path, out_root: Path, device, lama) -> None:
     image = cv2.resize(image4, (w, h), interpolation=cv2.INTER_AREA)
     dirs = renderer_directions(h, w)
 
-    # ---- the scale: the floor near the field is LENS_IN below the lens ----
+    # ---- the scale: the floor near the field is the lens height below the lens ----
     dep = -dirs[..., 2]
-    expected = LENS_IN / np.clip(dep, 1e-6, None)
+    expected = lens / np.clip(dep, 1e-6, None)
     near_floor = (nrm[..., 2] > 0.95) & (dep > np.sin(np.radians(30))) & (dep < np.sin(np.radians(80)))
     ratio = expected[near_floor] / raw[near_floor]
     scale = float(np.median(ratio))
     dist = raw * scale
-    d_room = room_distance(dirs, room, FLOOR_STEPS.get(venue))
+    d_room = room_distance(dirs, room, FLOOR_STEPS.get(venue), e)
 
     # ---- what is furniture, and the shell the depth is bent onto ----
     p_struct, p_shell = structure_probability(image, h, w, device)
     corr = shell_correction(dist, d_room, p_shell)
     dist = dist * corr
-    pts = EYE + dirs * dist[..., None]
+    pts = e + dirs * dist[..., None]
     in_field = (np.abs(pts[..., 0]) < FIELD_KEEP_OUT) & (np.abs(pts[..., 1]) < FIELD_KEEP_OUT)
     below_ceiling = pts[..., 2] < FLOOR_Z + room['ceil'] - 12
     # by class, and anything else the classes call room that stands well clear in front of the
@@ -301,7 +312,7 @@ def run(venue: str, depth_root: Path, out_root: Path, device, lama) -> None:
     f4 = cv2.resize(filled, (image4.shape[1], image4.shape[0]), interpolation=cv2.INTER_CUBIC)
     bg4 = np.where(m4[..., None], f4, image4).astype(np.uint8)
     Image.fromarray(bg4).save(out / 'bg-4k.png')
-    meta = dict(venue=venue, scale=scale, room=room, lens=LENS_IN, floorZ=FLOOR_Z, width=w, height=h,
+    meta = dict(venue=venue, scale=scale, room=room, lens=lens, floorZ=FLOOR_Z, width=w, height=h,
                 fgPixels=int(obj.sum()), shellCorrection=[float(corr.min()), float(np.median(corr)), float(corr.max())],
                 floorStep=FLOOR_STEPS.get(venue))
     (out / 'meta.json').write_text(json.dumps(meta, indent=2))

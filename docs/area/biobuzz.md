@@ -1141,9 +1141,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
         HELD in the room instead (below) and the push is left to the top-down shots and to the
         few driver eyes within 30 in of a wall. `frustumCulled = false`: no bounding volume holds a
         box that follows the eye.
-      - **THE LENS HEIGHT IS MEASURED.** `netball_court`'s painted lines (a 30.5 × 15.25 m netball
-        court) span 18.6 × 9.9 lens heights in the floor projection: 1.64 m and 1.54 m. 63 in for
-        every venue.
+      - **THE LENS HEIGHT IS MEASURED, PER VENUE (2026-10-24).** Every room was read off its
+        photograph in lens heights, so a wrong lens mis-sizes the whole room against the true-scale
+        field and gives wrong parallax from every eye off it. Method: gnomonic crops of the venue's
+        own backdrop (field frame, `u = atan2(−y, x)/2π + 0.5`, `v = 0.5 − asin z/π`); an object of
+        known height h on the field's floor, base α_b and top α_t below the horizon, gives
+        H = h / (1 − tan α_t / tan α_b); a pair of parallel floor lines a known span apart, one
+        each side, gives span / (cot α₁ + cot α₂). Verticals are vertical in every crop.
+        **Court 64.6 in** (1.64 m): six line pairs on the tennis and netball courts painted on it,
+        64.3–64.9 (`environments.ts`, the court row). The first reading's 1.54 m does not reproduce;
+        averaging it in is how 63 came about. **Events hall 63**: two 0.76 m tables, 63.2 and 63.3
+        (a bar counter, size unknown, read lower). **Quad 63**: two 2.032 m steel doors on a walkway
+        0.145 lens heights up (its curb), 62.9 and 63.8 (a wheelie bin, if 240 L, 66.5). **School
+        hall 63, unresolved**: the covered grand piano over its near leg says 62.4–64.5, the wing
+        door 65.5–67.1 (1981 or 2032 mm leaf) — they disagree by more than the change. **Hangar 63,
+        unreadable**: everything with a known size is 6–12 lens heights out at 4–9° below the
+        horizon, and a bench, a table and a motorcycle wheel scatter 59–81. A venue moves off 63
+        only past 2 %; the court did, and its room and room file were rescaled about the lens
+        (`scripts/venues/rescale-lens.ts`). The RENDER lane holds each lens to 55–75 in.
       - ⚠️ **THE BACKDROP IS NOT A TONEMAPPED JPEG.** The scene tone-maps once, at its blit; a
         tonemapped backdrop would be mapped twice and every lamp and window would come out grey.
         `scripts/venues/derive.cjs` stores linear light through `e = v/(1+v)`, `v = gain·x`, as sRGB

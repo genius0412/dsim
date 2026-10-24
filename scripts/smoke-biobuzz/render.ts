@@ -818,6 +818,12 @@ export function renderChecks(check: Check): void {
       specifiers.size === 1 && specifiers.has('./scene/renderScene'),
       [...specifiers].join(', '),
     );
+    // the idle warm (`preloadRoomView` → `warmScene`) rides the same chunk, never a fourth one
+    check(
+      'warmScene is filled from the SAME ./scene/renderScene chunk',
+      /warmScene:\s*\(\)\s*=>\s*import\(\s*['"]\.\/scene\/renderScene['"]\s*\)/.test(indexSrc),
+      'warmScene missing or on another specifier',
+    );
   }
 
   // ---- THE 3D PHYSICS IMPORT BOUNDARY — the other half of the same rule ------------------
@@ -14431,10 +14437,11 @@ function photoVenueChecks(check: Check): void {
       p.fallback,
     );
     check(`photo ${e.id}: not also a cross-origin HDRI (one light source per row)`, !e.hdri);
-    // THE ROOM: the lens 1.6 m up (the court lines' measurement), the field well inside it, and a
-    // ceiling above the lens
+    // THE ROOM: the lens at its venue's MEASURED height (`PHOTO_LENS_IN`'s note: off each photograph
+    // separately, the court 64.6 in off its lines), the field well inside it, and a ceiling above it.
+    // A tripod's eye height: a number outside that is a typo or feet, not a measurement
     const r = p.room;
-    check(`photo ${e.id}: the lens height is the measured 63 in`, p.height === 63);
+    check(`photo ${e.id}: the lens height is a measured tripod height, 55–75 in`, p.height >= 55 && p.height <= 75, String(p.height));
     check(
       `photo ${e.id}: the room surrounds the field and its alliance areas (every wall 200+ in out)`,
       r.x0 < -200 && r.x1 > 200 && r.y0 < -200 && r.y1 > 200,
@@ -14766,8 +14773,8 @@ function photoVenueChecks(check: Check): void {
     {
       const unlayered = photos.filter((e) => !e.photo!.layers).map((e) => e.id);
       check(
-        'menu stage: the Home eye is above the lens, so every photographed venue has its layered room',
-        MENU_POSES.home.eye[2] > PHOTO_FLOOR_Z + 63 + PUSH_MARGIN_IN && unlayered.length === 0,
+        'menu stage: the Home eye is above every lens, so every photographed venue has its layered room',
+        MENU_POSES.home.eye[2] > PHOTO_FLOOR_Z + Math.max(...photos.map((e) => e.photo!.height)) + PUSH_MARGIN_IN && unlayered.length === 0,
         unlayered.join(', '),
       );
       const out: string[] = [];
@@ -14970,7 +14977,7 @@ function photoVenueChecks(check: Check): void {
         [shadow, contact].every((m) => m.position.z > PHOTO_FLOOR_Z && m.position.z < -0.589),
     );
     const eye = rm.uniforms.bbEye.value as THREE.Vector3;
-    check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + 63);
+    check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + def.photo!.height);
     // ⚠️ A PHOTOGRAPHED HIGHLIGHT NEVER OUTSHINES THE FIELD'S LIT WHITE PANELS (1.2–1.7 raw): the
     // knee rolls everything off toward twice itself. The shader's line is pinned and mirrored here,
     // and the mirror is run on every venue's HOTTEST texel (its `.hdr`, which keeps the light the
