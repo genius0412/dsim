@@ -14372,7 +14372,7 @@ function photoVenueChecks(check: Check): void {
     slug: string;
     md5: string;
     gain: number;
-    patches?: { room?: Record<string, number> }[];
+    patches?: { room?: Record<string, number>; e?: [number, number] }[];
   }[];
   const { decodeRgbe } = req('../venues/rgbe.cjs') as {
     decodeRgbe: (b: Buffer) => { width: number; height: number; data: Float32Array };
@@ -14457,12 +14457,15 @@ function photoVenueChecks(check: Check): void {
       `photo ${e.id}: public/venues/README.md names its source, md5 and authors`,
       !!cfg && readme.includes(cfg.slug) && readme.includes(cfg.md5) && p.authors.every((a) => readme.includes(a.name)),
     );
-    // a FURNITURE PATCH's room is the row's room in lens heights — the two must describe one box
+    // a FURNITURE PATCH's room is the row's room in lens heights — the two must describe one box.
+    // Its walls: a patch lies below the horizon (`e` < 0, checked), where derive.cjs never reads
+    // its `ceil`, and the row's `ceil` is a gable's ridge where it has one (`PhotoRoom.eave`)
     for (const patch of cfg?.patches ?? []) {
       if (!patch.room) continue;
       const k = p.height;
-      const same = (['x0', 'x1', 'y0', 'y1', 'ceil'] as const).every((f) => Math.abs((patch.room![f] ?? NaN) * k - r[f]) <= 2);
-      check(`photo ${e.id}: the derive patch's room (× ${k} in) is the row's room, within 2 in`, same, JSON.stringify(patch.room));
+      const same = (['x0', 'x1', 'y0', 'y1'] as const).every((f) => Math.abs((patch.room![f] ?? NaN) * k - r[f]) <= 2);
+      check(`photo ${e.id}: the derive patch's walls (× ${k} in) are the row's, within 2 in`, same, JSON.stringify(patch.room));
+      check(`photo ${e.id}: the derive patch lies below the horizon (so its ceiling is never read)`, !!patch.e && patch.e[1] < 0, String(patch.e));
     }
   }
 
@@ -15167,6 +15170,14 @@ function layeredRoomChecks(check: Check, photos: EnvironmentDef[], webpSize: (bu
       near(rb.min.x, box.min[0]) && near(rb.max.x, box.max[0]) && near(rb.min.y, box.min[1]) && near(rb.max.y, box.max[1]) && near(rb.max.z, box.max[2]) && rb.min.z <= box.min[2] + 0.5,
       `${rb.min.toArray().map((v) => v.toFixed(0))} … ${rb.max.toArray().map((v) => v.toFixed(0))}`,
     );
+    // a GABLE roof (`PhotoRoom.eave`): the side walls top out at the eave, the ridge at `ceil` (above).
+    // Up to 8 in short of it: pack.ts keeps a subset of the room's grid, whose rays are 0.35° apart
+    // (6 in on a wall 1000 in out); never past it, where a flat ceiling would put the walls' tops
+    if (p.room.eave !== undefined) {
+      const side = room.filter((v) => Math.abs(v.y - box.min[1]) < 1 || Math.abs(v.y - box.max[1]) < 1);
+      const top = Math.max(...side.map((v) => v.z)) - (PHOTO_FLOOR_Z + p.room.eave);
+      check(`photo ${e.id}: the room mesh's side walls meet its gable roof at the eave`, top <= 2 && top >= -8, top.toFixed(1));
+    }
     const offFloor = room.filter((v) => Math.abs(v.x) < 100 && Math.abs(v.y) < 76 && v.z < eye.z && Math.abs(v.z - PHOTO_FLOOR_Z) > 0.1).length;
     check(`photo ${e.id}: the room's floor round the field is the photographed floor plane`, offFloor === 0, String(offFloor));
     // THE FURNITURE: in the rows its texture holds, clear of the field, inside the room

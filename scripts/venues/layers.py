@@ -27,16 +27,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image
 from scipy.ndimage import binary_dilation, binary_fill_holes, label
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import spsolve
 
-import utils3d
-from moge.utils.panorama import get_panorama_cameras, split_panorama_image
-
 from depth import moge_directions, renderer_directions
+
+# torch, utils3d and moge are imported where they are used, so `meshes.py` (which takes the room
+# from here) runs on a CPU-only box with numpy, opencv, scipy and pillow
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,23 +52,64 @@ def eye(venue: str) -> np.ndarray:
     return np.array([0.0, 0.0, FLOOR_Z + LENS[venue]], np.float32)
 
 
-# `PhotoVenue.room` in `environments.ts`; meta.json repeats it and the RENDER lane compares
+# `PhotoVenue.room` in `environments.ts`; meta.json repeats it, `sync-env.mjs` writes it back into the
+# row, and the RENDER lane compares the row with the room file. `ceil` is the HIGHEST ceiling (what
+# the box fallback and the cameras use); a room with `eave` has a GABLE roof instead of a flat one:
+# `eave` high at the side walls (y0, y1), rising in two flat slopes to `ceil` along the ridge, a line
+# parallel to x at y = `ridgeY` (`room_distance`).
 ROOMS = {
     'school-hall': dict(x0=-233, x1=246, y0=-208, y1=551, ceil=260),
-    'events-hall': dict(x0=-611, x1=668, y0=-318, y1=365, ceil=300),
-    'hangar': dict(x0=-737, x1=882, y0=-441, y1=441, ceil=410),
+    # PENDING REBUILD (2026-10-24): gable roof. Eave 145: the +y wall's top along x −60…+120 (an
+    # edge trace, 145–151) and the earlier read of 140–150. Ridge 250: the end walls' gable peaks,
+    # −x 220 at y ≈ −60 (a clean edge trace of the brick against the roof, x0 off its floor line)
+    # and +x 255–280 at y ≈ +100 (by eye, el 18.0° at az 9°); ridgeY 20 is their mean. NOT the
+    # 400–430 an earlier read gave: the peaks are 14.5° and 18° up, and a 17° pitch is what the
+    # photograph shows. The two peaks' y say the ridge runs ~7° off x, and the side walls' tops
+    # slope the same way in a wall-square crop (~5°): the hall is turned ~5–6° against its box
+    # (`yaw` −20 in `venues.cjs` would be ~−26). Not fixed here: the derive patch is in that frame
+    # and its room is the row's (the RENDER lane) — a follow-up with its own re-measure. The walls
+    # are as before (the floor lines put x0 nearer −663 and x1 ~650; same follow-up).
+    'events-hall': dict(x0=-611, x1=668, y0=-318, y1=365, ceil=250, eave=145, ridgeY=20),
+    # PENDING REBUILD (2026-10-24): TURNED 18° (`yaw` 72 in `venues.cjs`, was 90) and re-measured
+    # in that frame, in lens heights (H = 63 in). In the old files every long line ran at ~+18°:
+    # both side walls (17.6°, 18.6°), the open door's centre (18.5°), the roof's spine (18°); turned,
+    # the end walls' floor lines are level in a wall-square crop. Side walls ±6.9 H (±435): the +y
+    # curtains' feet 6.7–6.9 H, the −y pallet stacks' feet 6.85–6.98 H, and the two walls' window
+    # sill-to-head spans subtend the same angle within 0.4 % (tan-el span 0.2885 / 0.2875), so the
+    # lens is on the centre line — an earlier read of 12.3 H apart, 0.76 off-centre, was the clutter
+    # along the walls. x1 13.6 H (857): the open door's leaves, feet at 13.4–13.8 H. x0 −11.25 H
+    # (−709): the end wall's two side bays, feet at −11.0…−11.5 H; its middle bay (|y| ≲ 3.5 H,
+    # behind the aircraft) is recessed to −14.5 H, which a box cannot hold (future work). The roof
+    # is a shallow ARCH, held as a gable: eave 5.2 H (328, the wall-top beam, tan el / sin = 0.631
+    # and 0.594 over 6.9 H), crown 7.67 H (483, where the roof meets the door wall, el 26.1° over
+    # 13.6 H; the door's head is 5.19 H). A flat 410 was 1.2 H off at both.
+    'hangar': dict(x0=-709, x1=857, y0=-435, y1=435, ceil=483, eave=328, ridgeY=0),
     'court': dict(x0=-736, x1=801, y0=-394, y1=374, ceil=2051),
     'quad': dict(x0=-630, x1=662, y0=-372, y1=384, ceil=190),
 }
 # the field and its walls with room to spare: nothing in the photograph stands there (the lens
 # stood at its centre), and a foreground object there would stand inside the field
 FIELD_KEEP_OUT = 90.0
-# a venue whose floor is not one level: beyond `y0` it is `z` (field inches). The school hall's
-# field stands on a stage whose front edge is 80 in out, over an auditorium 25 in lower — read off
-# MoGe's depth of that floor (its flat run, `z` −25.3) and the stage edge (y 80), where the box drew
-# the whole auditorium at stage level and 0.6 x as deep. `PhotoLayers.floor` in `environments.ts`
-# repeats the stage's extent for the shadow catcher.
-FLOOR_STEPS = {'school-hall': dict(y0=80.0, z=-25.3)}
+# a venue whose floor is not one level: beyond the `edge` polyline (field inches, (x, y) points with
+# x rising; y between them by straight lines, the end values past the ends) it is `z`. The school
+# hall's field stands on a stage over an auditorium, where the box drew the whole auditorium at stage
+# level and 0.6 x as deep.
+#   z (PENDING REBUILD, 2026-10-24; was −25.3, MoGe's depth of the auditorium's flat run): the front
+#   rows' chairs, seat 0.45 m, seat-front over foot on six chairs at foot el 27.9–29.8°, put the lens
+#   2.49–2.88 m above the auditorium floor (mean 2.71, so 106.7 in): 44 in below the stage.
+#   edge (PENDING REBUILD; was a straight y0 = 80): the stage lip off a top-down projection at stage
+#   level, in lens heights × 63: the −x thrust's front at y 120 to x −148, a diagonal to (−32, 91),
+#   the centre (−25, 78) (0, 81) (38, 72) (57, 60), the stair foot (126, 50), then the +x thrust's
+#   front (137, 93) (189, 124) to the wall. Kept at 80 between x −25 and 134 where it measures
+#   nearer: the field's own wall stands at 72–76, and the floor round it must be the stage.
+# `PhotoLayers.floor` in `environments.ts` is the stage's rectangle for the shadow catcher, y1 the
+# edge's lowest y (`sync-env.mjs` writes it).
+FLOOR_STEPS = {
+    'school-hall': dict(
+        edge=[(-233, 120), (-148, 120), (-32, 91), (-25, 80), (134, 80), (137, 93), (189, 124), (246, 124)],
+        z=-44.0,
+    ),
+}
 
 # ADE20K classes that are the room's SHELL: what `PhotoVenue.room` (the box) measures, so the depth is
 # corrected toward the box on them (`shell_correction`)
@@ -87,6 +127,8 @@ STRUCTURE = {
 
 def project_views_to_panorama(h: int, w: int, maps: list[np.ndarray], exts, intrs) -> np.ndarray:
     """each view's scalar map onto the panorama, weighted toward each view's centre"""
+    import utils3d
+
     dirs = moge_directions(h, w)
     acc = np.zeros((h, w), np.float32)
     wsum = np.zeros((h, w), np.float32)
@@ -105,6 +147,8 @@ def project_views_to_panorama(h: int, w: int, maps: list[np.ndarray], exts, intr
 def structure_probability(image: np.ndarray, h: int, w: int, device) -> tuple[np.ndarray, np.ndarray]:
     """OneFormer (shi-labs/oneformer_ade20k_swin_large, MIT) on twelve 90-degree views: the share of
     each pixel's class score that is room structure, and the share that is the room's shell"""
+    import torch
+    from moge.utils.panorama import get_panorama_cameras, split_panorama_image
     from transformers import OneFormerForUniversalSegmentation, OneFormerProcessor
 
     name = 'shi-labs/oneformer_ade20k_swin_large'
@@ -196,15 +240,26 @@ def harmonic_fill(values: np.ndarray, known: np.ndarray, region: np.ndarray, fal
 
 def room_distance(dirs: np.ndarray, room: dict, step: dict | None, eye: np.ndarray) -> np.ndarray:
     """distance from the lens along each ray to the MEASURED ROOM: the box, its floor dropped to
-    `step['z']` beyond `step['y0']` where the venue has a step (`FLOOR_STEPS`), and its walls running
-    down to that floor. The lens is above the upper floor, so the step's own face is never seen."""
+    `step['z']` beyond the `step['edge']` polyline where the venue has a step (`FLOOR_STEPS`), and its
+    walls running down to that floor; its ceiling flat at `ceil`, or a gable where the room has an
+    `eave` (`ROOMS`). The lens is above the upper floor, so the step's own face is never seen."""
     with np.errstate(divide='ignore', invalid='ignore'):
         tx = np.where(dirs[..., 0] > 0, (room['x1'] - eye[0]) / dirs[..., 0], (room['x0'] - eye[0]) / dirs[..., 0])
         ty = np.where(dirs[..., 1] > 0, (room['y1'] - eye[1]) / dirs[..., 1], (room['y0'] - eye[1]) / dirs[..., 1])
         tc = (FLOOR_Z + room['ceil'] - eye[2]) / dirs[..., 2]
+        if 'eave' in room:
+            # the roof is the lower of two planes z = FLOOR_Z + ceil − m (y − ridgeY), one through
+            # each side wall's eave line (m = (ceil − eave) / (wall − ridgeY)). The lens is below
+            # both, so a ray meets the roof where it first crosses either.
+            tc = np.inf
+            for wall in (room['y0'], room['y1']):
+                m = (room['ceil'] - room['eave']) / (wall - room['ridgeY'])
+                t = (FLOOR_Z + room['ceil'] - m * (eye[1] - room['ridgeY']) - eye[2]) / (dirs[..., 2] + m * dirs[..., 1])
+                tc = np.minimum(tc, np.where(t > 0, t, np.inf))
         tf = (FLOOR_Z - eye[2]) / dirs[..., 2]
         if step is not None:
-            beyond = eye[1] + tf * dirs[..., 1] >= step['y0']
+            ex, ey = np.array(step['edge'], np.float64).T
+            beyond = eye[1] + tf * dirs[..., 1] >= np.interp(eye[0] + tf * dirs[..., 0], ex, ey)
             tf = np.where(beyond, (step['z'] - eye[2]) / dirs[..., 2], tf)
     tz = np.where(dirs[..., 2] > 0, tc, tf)
     t = np.stack([tx, ty, tz], -1)
@@ -325,6 +380,7 @@ def main() -> None:
     ap.add_argument('--depth', default=str(ROOT / 'scratch' / 'venues-depth'))
     ap.add_argument('--out', default=str(ROOT / 'scratch' / 'venues-layers'))
     args = ap.parse_args()
+    import torch
     from simple_lama_inpainting import SimpleLama
 
     device = torch.device('cuda')

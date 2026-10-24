@@ -29,12 +29,10 @@ os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image
 
-import utils3d
-from moge.model.v2 import MoGeModel
-from moge.utils.panorama import get_panorama_cameras, merge_panorama_depth, split_panorama_image
+# torch, utils3d and moge are imported where they are used: `layers.py` and `meshes.py` take
+# `renderer_directions` from here, and `meshes.py` runs on a CPU-only box
 
 ROOT = Path(__file__).resolve().parents[2]
 VENUES = ['school-hall', 'events-hall', 'hangar', 'court', 'quad']
@@ -67,6 +65,8 @@ def moge_directions(h: int, w: int) -> np.ndarray:
 def merge_normals(h: int, w: int, normals: list[np.ndarray], masks: list[np.ndarray], extrinsics, intrinsics) -> np.ndarray:
     """each view's camera-frame normals turned into MoGe's panorama frame and averaged where views
     overlap, weighted toward each view's centre"""
+    import utils3d
+
     dirs = moge_directions(h, w)
     acc = np.zeros((h, w, 3), np.float32)
     wsum = np.zeros((h, w), np.float32)
@@ -90,6 +90,10 @@ def merge_normals(h: int, w: int, normals: list[np.ndarray], masks: list[np.ndar
 
 
 def run(venue: str, model: MoGeModel, device, view_res: int, merge_w: int, out_root: Path) -> None:
+    import torch
+    import utils3d
+    from moge.utils.panorama import get_panorama_cameras, merge_panorama_depth, split_panorama_image
+
     src = ROOT / 'public' / 'venues' / f'{venue}-4k.webp'
     image = np.array(Image.open(src).convert('RGB'))
     exts, intrs = get_panorama_cameras()
@@ -128,6 +132,9 @@ def main() -> None:
     ap.add_argument('--out', default=str(ROOT / 'scratch' / 'venues-depth'))
     ap.add_argument('--model', default='Ruicheng/moge-2-vitl-normal')
     args = ap.parse_args()
+    import torch
+    from moge.model.v2 import MoGeModel
+
     device = torch.device('cuda')
     model = MoGeModel.from_pretrained(args.model).to(device).eval()
     for v in args.only.split(',') if args.only else VENUES:

@@ -224,8 +224,15 @@ export interface PhotoRoom {
   x1: number;
   y0: number;
   y1: number;
-  /** the ceiling above the floor, inches */
+  /** the ceiling above the floor, inches — the HIGHEST, a gable's ridge: the box and the cameras'
+   * room are flat at it */
   ceil: number;
+  /** a GABLE roof, the layered room's (`scripts/venues/layers.py`, `room_distance`): `eave` above
+   * the floor at the side walls (`y0`, `y1`), rising in two flat slopes to `ceil` along a ridge
+   * parallel to x at y = `ridgeY`. The room file carries the shape; the RENDER lane holds its eaves
+   * to `eave`. Absent: a flat ceiling. */
+  eave?: number;
+  ridgeY?: number;
 }
 
 export interface PhotoVenue {

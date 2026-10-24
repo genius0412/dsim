@@ -55,7 +55,10 @@ module.exports = [
     slug: 'small_hangar_01',
     md5: '14ec4d5609dd2e8a1f847ae9a4a54a32',
     authors: { 'Sergej Majboroda': 'All' },
-    yaw: 90,
+    // PENDING REBUILD (2026-10-24): was 90, which left every long line of the shed at ~+18° in the
+    // field frame (side walls 17.6° and 18.6°, the open door's centre 18.5°, the roof's spine 18°).
+    // The shipped hangar files are still the 90 turn until `scripts/venues/GPU-REBUILD.md` is done.
+    yaw: 72,
     gain: 1.5,
     quality: 0.9,
   },
