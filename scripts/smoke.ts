@@ -30676,8 +30676,12 @@ const dumperSetup = (): RobotSetup => {
       d.isDirectory() ? walk(joinPath(dir, d.name)) : /\.tsx?$/.test(d.name) ? [joinPath(dir, d.name)] : [],
     );
   // `render/importedAssets.ts` is the one owner of DISPLAY object URLs (an imported robot's top-down
-  // picture, revoked when its cache entry goes) — never a download, so it is not this rule's case
-  const revokers = walk('src').filter((f) => /revokeObjectURL/.test(readFileSync(f, 'utf8')) && !/importedAssets\.ts$/.test(f));
+  // picture, revoked when its cache entry goes) — never a download, so it is not this rule's case.
+  // `ui/MenuStage.tsx` owns the one DISPLAY url of the menu stage's 2D field image, revoked when the
+  // stage unmounts or the game changes; the same reasoning.
+  const revokers = walk('src').filter(
+    (f) => /revokeObjectURL/.test(readFileSync(f, 'utf8')) && !/importedAssets\.ts$|MenuStage\.tsx$/.test(f),
+  );
   const sb = readFileSync('src/ui/saveBlob.ts', 'utf8');
   check(
     '⚠️ downloads: only saveBlob revokes an object URL, and it waits well past the hand-off',
