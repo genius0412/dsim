@@ -169,4 +169,9 @@ export const BIOBUZZ_MODULE: GameModule = {
    * the preview factory; its header carries the same note.
    */
   previewScene: () => import('./scene/renderScene').then((m) => m.createRobotPreviewScene),
+  /**
+   * THE IDLE WARM (`preloadRoomView`), out of the SAME chunk and so the same `./scene/renderScene`
+   * specifier as `scene` and `previewScene` (see the note above: a third specifier is a third chunk).
+   */
+  warmScene: () => import('./scene/renderScene').then((m) => m.warmBiobuzz3d),
 };

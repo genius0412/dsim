@@ -45,10 +45,10 @@ import {
 import { createGpuTimer, type GpuTimer } from './renderGpuTimer';
 import { installViewKey, viewActionOf } from '../graphics/viewKey';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
-import { setClearPanelCap } from './renderFieldGlb';
+import { resolveGlbUrl, setClearPanelCap } from './renderFieldGlb';
 import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
 import { loadElementGeometries } from './renderElementsGlb';
-import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
+import { bbWantsBay, bbLoadBay, bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
@@ -643,6 +643,11 @@ class BiobuzzScene implements GameScene {
     this.syncSize();
   }
 
+  /** link the first frame's programs off the main thread (`createBiobuzzScene` awaits it, capped) */
+  warmShaders(): Promise<unknown> {
+    return this.renderer.compileAsync(this.scene, this.cameras.active).catch(() => undefined);
+  }
+
   /**
    * PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed (and its photograph
    * with it), `next`'s twins applied, the probe re-armed. One path for a procedural venue and a
@@ -694,12 +699,29 @@ class BiobuzzScene implements GameScene {
         })
       : box();
     this.photoLoading = wanted
-      .then((src) => {
+      .then(async (src) => {
         if (this.disposed || this.venueKey !== key) {
           disposePhotoSource(src);
           return;
         }
-        this.swapVenue(buildPhotoVenue(def, src, this.sun, this.settings.envLighting), def);
+        // UPLOAD AND COMPILE BEFORE THE SWAP, NOT ON THE FIRST FRAME THAT DRAWS IT. A 4k texture's
+        // upload + mip chain and the projection shader's link were a visible hitch on the frame the
+        // room appeared. `initTexture` does the upload now; `compileAsync` links off the main thread.
+        // The procedural venue keeps drawing meanwhile. Either may fail: the swap still happens.
+        const room = buildPhotoVenue(def, src, this.sun, this.settings.envLighting);
+        try {
+          for (const t of photoTexturesOf(room)) this.renderer.initTexture(t);
+          await this.renderer.compileAsync(room, this.cameras.active, this.scene);
+        } catch {
+          /* the first draw pays instead */
+        }
+        // the await is a window in which the player can have picked another venue or left
+        if (this.disposed || this.venueKey !== key) {
+          disposeObject3D(room);
+          disposePhotoSource(src);
+          return;
+        }
+        this.swapVenue(room, def);
         this.tuneMaterials();
         this.renderer.shadowMap.needsUpdate = true;
       })
@@ -1588,5 +1610,45 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
   host.appendChild(canvas);
   // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
   // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
-  return new BiobuzzScene(canvas, field, host, opts, probe.renderer);
+  const made = new BiobuzzScene(canvas, field, host, opts, probe.renderer);
+  // THE FIRST FRAME'S SHADERS LINK BEFORE THE FACTORY RESOLVES. The canvas is blank until it does
+  // anyway, and a first `render()` would otherwise compile every program synchronously and block on
+  // the link (the freeze on the first 3D scene). Capped: a driver with no
+  // `KHR_parallel_shader_compile` resolves `compileAsync` at once, and one that stalls must not hold
+  // the scene hostage. Any camera will do: compile reads materials, lights and the scene's fog.
+  await Promise.race([made.warmShaders(), new Promise<void>((r) => setTimeout(r, 1000))]);
+  return made;
 };
+
+/**
+ * WARM EVERYTHING A 3D BIOBUZZ SCENE WILL ASK FOR, while the player is on some other screen
+ * (`preloadRoomView` → `GameModule.warmScene`; same chunk, same specifier as `scene`). The effects
+ * chunks its settings want, the bay chunk if its robots would be High, and the SELECTED venue's and
+ * the field's files, fetched at low priority so they only fill the cache (the real load then reads
+ * it; `vercel.json` gives `/venues` and `/models` a day's `max-age`). A generated venue fetches
+ * nothing. Idempotent per URL, every failure ignored: the scene's own load is the error path.
+ * ⚠️ The texture size assumes a 4096 GPU; a smaller one fetches a file the scene does not use.
+ */
+const warmed = new Set<string>();
+export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().settings): void {
+  const tier = getGraphics().tier;
+  if (wantsPost(settings)) void import('./renderPost').catch(() => {});
+  if (surfacesOn(settings)) void import('./renderSurfaces').catch(() => {});
+  if (bbWantsBay(settings, tier)) void bbLoadBay();
+  const get = (url: string): void => {
+    if (warmed.has(url)) return;
+    warmed.add(url);
+    void fetch(url, { priority: 'low' } as RequestInit).catch(() => {});
+  };
+  get(resolveGlbUrl('models/biobuzz', settings.meshDetail));
+  const p = environmentDefFor(settings.environment).photo;
+  if (!p) return;
+  const hi = bbPhotoDetail(settings, tier, 4096) === 'hi';
+  const l = p.layers;
+  if (l) {
+    get(venueAssetUrl(hi ? l.bg : l.bgLow));
+    get(venueAssetUrl(hi ? l.fg : l.fgLow));
+    get(venueAssetUrl(l.mesh));
+  } else get(venueAssetUrl(hi ? p.backdrop : p.backdropLow));
+  if (settings.envLighting) get(venueAssetUrl(p.ibl));
+}

@@ -102,6 +102,12 @@ export interface GameModule extends GameSimModule {
    * that would drag it into the main bundle.
    */
   previewScene?: () => Promise<RobotPreviewFactory>;
+  /**
+   * WARM THE 3D SCENE'S OPTIONAL CHUNKS AND ASSET FILES on idle (`preloadRoomView`) — absent ⇒
+   * nothing to warm. Resolves to a fire-and-forget function over the chunk `scene` already fetched;
+   * the loader must use the same dynamic specifier as `scene`, like `previewScene`.
+   */
+  warmScene?: () => Promise<() => void>;
 
   // ---------------------------------------------------------------- UI slots --
 

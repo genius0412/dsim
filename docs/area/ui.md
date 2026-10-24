@@ -548,6 +548,15 @@ where the settings are stored, which nobody picks a section by, and went as clut
   chunk on idle via `preloadRoomView`. Long tasks: Medium 90–147 → ~62 ms, High 211–219 → ~105. The
   "prefetch bought nothing" finding was localhost, which has no network to hide: at 10 Mbit/s,
   click-to-ready goes 400 → 200 ms.
+- **THE IDLE WARM COVERS MORE THAN THE CHUNK (BIOBUZZ 3D, 2026-10-24).** `preloadRoomView` also
+  starts the 3D physics solve (solo practice has no lobby to do it) and calls the game's
+  `warmScene` (`warmBiobuzz3d`, same `./scene/renderScene` specifier as `scene`): the post /
+  surfaces / bay chunks its settings want, plus low-priority fetches of the SELECTED venue's files
+  at its detail tier and the field glb (`/venues`, `/models` carry a day's `max-age` in
+  `vercel.json`, so these fill the cache). The two things that used to hitch on a first draw now
+  run BEFORE it: `createBiobuzzScene` awaits `compileAsync` (capped 1 s) before resolving, and a
+  photo venue is `initTexture`d and `compileAsync`d before `swapVenue`, re-checking `venueKey` after
+  the await. Field glb / HDR module caches were NOT added (unmeasured).
 
 **Configure copy.** No decorative glyph (the `🎯` on preset cards, the `＋` on the add cards and
 the `✎` on Edit build are gone), no sentence whose content is where another screen is, and no

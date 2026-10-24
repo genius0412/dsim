@@ -87,7 +87,7 @@ function loader(): GLTFLoader {
  * base (`vite.config.ts`) so a bare `/models/...` 404s under `file://`. An already-absolute
  * (`http(s)://`) URL is passed through untouched.
  */
-function resolveGlbUrl(base: string, quality: 'high' | 'low'): string {
+export function resolveGlbUrl(base: string, quality: 'high' | 'low'): string {
   if (/^https?:\/\//i.test(base)) return base.endsWith('.glb') ? base : `${base.replace(/\/+$/, '')}/field${quality === 'low' ? '-low' : ''}.glb`;
   const filename = quality === 'low' ? 'field-low.glb' : 'field.glb';
   const trimmed = base.replace(/\/?field(-low)?\.glb$/i, '').replace(/^\/+/, '').replace(/\/+$/, '');

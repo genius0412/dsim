@@ -9,15 +9,24 @@
  * chunk, so the room's load hold (`VIEWREADY_CAP`) waits on the scene build and not on a
  * download.
  *
- * A no-op for a game with no scene and for a player on the 2D view. Unawaited; a failure here
+ * It also starts the 3D physics solve (`preloadRoomPhysics`) and, once the scene chunk lands, the
+ * game's `warmScene` (effects chunks, the selected venue's files). A no-op for a game with no scene and for a player on the 2D view. Unawaited; a failure here
  * is answered by the controller's own load, which falls back to the 2D view.
  */
 import { moduleFor } from '../games';
+import { preloadRoomPhysics } from './roomPhysics';
 import { getViewPref } from '../games/biobuzz/graphics/store';
 import type { GameId } from '../types';
 
 export function preloadRoomView(game: GameId): void {
-  const scene = moduleFor(game).scene;
-  if (!scene || getViewPref() !== '3d') return;
-  void scene().catch(() => {});
+  const m = moduleFor(game);
+  if (!m.scene || getViewPref() !== '3d') return;
+  // the solo practice has no lobby, so this is the only place its 3D solve is warmed
+  void preloadRoomPhysics(game).catch(() => {});
+  // the scene chunk first, then what it will ask for (effects chunks, the venue's files)
+  void m
+    .scene()
+    .then(() => m.warmScene?.())
+    .then((warm) => warm?.())
+    .catch(() => {});
 }
