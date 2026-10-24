@@ -7239,9 +7239,9 @@ a.ds-cta {
    and it always carries the way out. */
 .ds-queuebar {
   position: fixed;
-  /* PINNED IN THE BOTTOM-LEFT CORNER (owner, 2026-10-12): the ranked search is a notification, not a
-     page. The friend toasts own the bottom-right. */
-  left: max(16px, env(safe-area-inset-left));
+  /* A PINNED NOTIFICATION IN THE BOTTOM-RIGHT CORNER (owner, 2026-10-24; bottom-left before): the ranked
+     search is a notification, not a page, so it sits where the friend toasts do, under them (below). */
+  right: max(16px, env(safe-area-inset-right));
   bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 60;
   display: flex;
@@ -7249,7 +7249,8 @@ a.ds-cta {
   gap: var(--ds-s-2);
   padding: 8px 12px;
   border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round-full);
+  /* a card like the toasts it stacks under, not a pill */
+  border-radius: var(--ds-round);
   background: var(--ds-panel);
   box-shadow: var(--ds-block);
   font-size: 13px;
@@ -7279,6 +7280,11 @@ a.ds-cta {
 .ds-queuebar .qb-err {
   color: var(--ds-danger);
   font-size: 12px;
+}
+/* the friend toasts stack ABOVE the pinned bar, not under it.
+   ponytail: a fixed one-line offset; a bar that wraps (its error line) can touch the lowest toast */
+body:has(.ds-queuebar:not(.over)) .fr-toasts:not(.in-match) {
+  bottom: calc(16px + 44px + var(--ds-s-2));
 }
 
 /* ---- the queue on a FULL-SCREEN surface (live match, record run, lobby) ------
@@ -10029,9 +10035,10 @@ input.admin-months {
   }
 }
 
-/* a `.ds-console-in` inside the shell (Find match, Room, LAN) is the page's column, not the page:
-   `.ds-main` already owns the width, the gutter and the padding. */
-.ds-main .ds-console-in {
+/* a `.ds-console-in` inside the shell (a popup's Ranked, Room, LAN) is the page's column, not the page:
+   `.ds-main` already owns the width, the gutter and the padding. NOT one inside a `.ds-console`: a joined
+   room and the strategy window are full-screen consoles in the popup host, and keep their own gutter. */
+.ds-main .ds-console-in:not(.ds-console > *) {
   width: 100%;
   margin: 0;
   padding: 0;
@@ -10866,6 +10873,12 @@ input.admin-months {
   inset: 0;
   overflow-y: auto;
   background: var(--ds-bg);
+}
+/* ...and the shell under it leaves the Tab order: `visibility`, not `display`, so Play stays laid out and
+   the stage stays loaded for the way back. The friend toasts and any shell modal stay up. */
+body:has(.ds-popup-host > :not(.ds-popup))
+  :is(.ds-bar, .ds-foot, .ds-bannerstrip, .ds-main-stage > :not(.ds-popup-host, .overlay, .ds-modal-backdrop)) {
+  visibility: hidden;
 }
 
 /* A SHORT WINDOW (a 720 or 768 laptop): Home's column still fits above the footer, a step

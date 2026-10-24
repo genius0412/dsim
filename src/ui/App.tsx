@@ -499,15 +499,18 @@ const POPUPS: Partial<Record<Screen, string>> = {
 };
 
 /** a popup's frame: the shell dialog's panel at the one popup width, and a close control */
-function PopupPanel({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+function PopupPanel({ label, onClose, children }: { label: string; onClose?: () => void; children: ReactNode }) {
+  // no `onClose` is a popup that cannot be left right now (Ranked's "Match found"): no ×, and Escape does nothing
   const ref = useDialog(onClose);
   return (
     <div ref={ref} className="overlay-panel ds-popup page" role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}>
       {children}
       {/* LAST in the DOM, so `useDialog` focuses the popup's own first control rather than this */}
-      <button className="ds-btn ghost small ds-popup-x" onClick={onClose} aria-label="Close">
-        <CloseGlyph />
-      </button>
+      {onClose && (
+        <button className="ds-btn ghost small ds-popup-x" onClick={onClose} aria-label="Close">
+          <CloseGlyph />
+        </button>
+      )}
     </div>
   );
 }
@@ -2056,8 +2059,8 @@ export function App() {
   /** close a popup: back to the Play list it opened from (a Discord activity's room goes to its lobby list) */
   const closePopup = (): void => navigate(screen === 'lobby' && inActivity && discordGroupId ? 'discordlobbies' : 'modes');
   /** the frame a popup screen draws its pre-connection states in, passed where `shell` used to be */
-  const popupShell = (body: ReactNode): JSX.Element => (
-    <PopupPanel label={popup ?? ''} onClose={closePopup}>
+  const popupShell = (body: ReactNode, locked = false): JSX.Element => (
+    <PopupPanel label={popup ?? ''} onClose={locked ? undefined : closePopup}>
       {body}
     </PopupPanel>
   );
@@ -2226,6 +2229,9 @@ export function App() {
   const recordsView: RecordsView = recordsViewOf(route.sub);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
+  /** the claim and notice dialogs wait for every other modal this shell can raise, and for a popup:
+   *  a popup can be a live room or the ranked strategy window, which a backdrop must never cover */
+  const modalsWait = legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart || !!popup;
 
   return (
     <FriendsProvider
@@ -2286,22 +2292,23 @@ export function App() {
           signed-in account that has not accepted yet can still go and read them; the
           gate is back the moment the route is anything else. */}
       {authEnabled && (
-        <TermsGate suspended={legalScreen}>
-          <UsernameGate suspended={legalScreen}>
+        <TermsGate suspended={legalScreen || !!popup}>
+          <UsernameGate suspended={legalScreen || !!popup}>
             {/* THE CLAIM DIALOG waits behind both gates (it is their child), and behind every
-                other modal this shell can raise — an announcement, a start guard. It is
-                inside `AppShell`, which a match, a lobby and the ranked screen replace, so it
-                can never appear over a field. "Equip now" on a decal puts it on the active
+                other modal this shell can raise — an announcement, a start guard — and behind a
+                popup (`modalsWait`): a joined room and the ranked strategy window are popups
+                inside `AppShell` now, so waiting is what keeps it off them. A match replaces
+                `AppShell`, so it can never appear over a field. "Equip now" on a decal puts it on the active
                 robot, the same edit the builder's own swatch makes. */}
             <RewardDialog
-              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+              blocked={modalsWait}
               onEquipCosmetic={equipCosmetic}
             />
             {/* THE NOTICE POP-UP (0057): what a moderator did about this player's report, match
                 or standing. Same place and the same waits as the claim dialog, and it yields to
                 that dialog too, so the two backdrops never stack. */}
             <NoticeDialog
-              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+              blocked={modalsWait}
             />
           </UsernameGate>
         </TermsGate>
@@ -2397,9 +2404,8 @@ export function App() {
       )}
       {/* THE POPUPS OVER PLAY (`POPUPS`). A state that was always full-screen (a joined room, the
           strategy window) does not call `popupShell`, and fills the host instead: the same component,
-          so no socket is dropped on the way in. */}
+          so no socket is dropped on the way in, and `shell.css` hides the shell under it from Tab. */}
       {popup && (
-        // ponytail: a full-screen state covers Play but the app bar is still in the Tab order behind it; make the bar inert too if that bites
         <div className="overlay ds-popup-host">
           {screen === 'lobby' && (
             <Lobby
@@ -2784,7 +2790,7 @@ export function App() {
           winning that slot over the homepage itself. (Fresh visitors never see
           it at all now — see `useAnnouncements`.) It stands down on the legal pages like the
           gates above: a full-screen reveal over /privacy covered the document itself. */}
-      {!legalScreen && (
+      {!legalScreen && !popup && (
         <Announcements muted={settings.audio.volume.master <= 0} onActiveChange={setAnnActive} />
       )}
       </AppShell>

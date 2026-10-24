@@ -18801,6 +18801,18 @@ const recordDrive: CommandSource = (tick) => {
     ['matchmaking', 'duorecord', 'lobby', 'rooms', 'competitions', 'lan', 'record'].every((k) => popups.includes(`${k}:`)) &&
       appSrc.includes("{(screen === 'modes' || popup) && (\n        <ModeSelect") &&
       !/if \((lanOn && )?screen === '(lobby|duorecord|record|lan|matchmaking)'\)/.test(appSrc));
+  // a popup can be a joined room or the strategy window: no shell backdrop may land on it
+  check('play: the gates, the claim and notice dialogs and the announcements all wait for a popup',
+    /const modalsWait = [^;]*!!popup;/.test(appSrc) && (appSrc.match(/blocked=\{modalsWait\}/g) ?? []).length === 2 &&
+      appSrc.includes('<TermsGate suspended={legalScreen || !!popup}>') && appSrc.includes('<UsernameGate suspended={legalScreen || !!popup}>') &&
+      appSrc.includes('{!legalScreen && !popup && (\n        <Announcements'));
+  const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('play: Ranked\'s "Match found" cannot be closed (no ×, no Escape); a search can, and keeps going',
+    mm.includes('useEscape(onCancel, !strategy && !found);') && /'Match found',[\s\S]{0,400}?true, \/\/ no ×/.test(mm) &&
+      appSrc.includes('onClose={locked ? undefined : closePopup}') && !mm.includes('← Back</b> keeps'));
+  // a joined room sits inside `.ds-main` now; the in-shell column reset flattened it to the window's edge
+  check('play: a full-screen console in the popup host keeps its own gutter',
+    readFileSync('src/ui/shell.css', 'utf8').includes('.ds-main .ds-console-in:not(.ds-console > *) {'));
 }
 
 /** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
