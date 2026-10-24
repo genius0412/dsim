@@ -1594,8 +1594,10 @@
   color: var(--ds-accent-ink);
   border-color: transparent;
 }
+/* SOLID accent-ink: `contrast.mjs` holds this exact pair. The 74% mix that came back with the
+   restored hint lines measured 4.40:1 in light, under AA for 12px type. */
 .ds-menu-btn.primary .mh {
-  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
+  color: var(--ds-accent-ink);
 }
 /* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
 .ds-subnav-layout {
@@ -5869,6 +5871,14 @@ button.bb-cell:where(:not(:disabled)):active {
   height: 150px;
   max-height: none;
   aspect-ratio: auto;
+}
+/* ...and on a PHONE-WIDTH card the toggle left the picture ~60px of a 112px column (a tall sliver
+   with the robot lost in it). BIOBUZZ's card gives the picture the larger share instead; the name
+   and the build line are one-line marquees and a few wrapped lines, which the 160px row holds. */
+@container hero (max-width: 439px) {
+  .ds-hero-in:has(.bb-prev) {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
 }
 /* 3D ASKED FOR AND NOT AVAILABLE: the segment reads as the chassis map's TAKEN cell does — a
    dashed edge and muted ink — and its title says why. Still a button: pressing it retries. */

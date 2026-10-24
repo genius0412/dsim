@@ -3220,9 +3220,16 @@ button {
   line-height: var(--ds-lh-tight);
   font-size: 1.9em;
 }
+/* the label is the button's own size (11px, 12px on SHOOT): at 0.82em it was 9px, under the type
+   floor. ONE EXCEPTION, written down: CATALYST is eight capitals in a 64px circle, and at 11px it
+   is 55px wide where the circle's chord below the middle is under 53 (measured, it touched the
+   ring), so that label keeps 9px. */
 .mobile-btn .mb-lbl {
   font-weight: 800;
   letter-spacing: 0.5px;
+  font-size: 1em;
+}
+.mobile-btn.catalyst .mb-lbl {
   font-size: 0.82em;
 }
 .mobile-btn.pressed {
@@ -3594,6 +3601,11 @@ button {
     padding: 4px 8px;
     flex-wrap: nowrap;
     overflow: hidden;
+  }
+  /* the DRIVE / TURN label goes INSIDE the ring's top: above it, it lay across the score stack's
+     last tile in the left gutter (844 × 390, measured). The handle starts 33px down. */
+  .mobile-joystick-label {
+    top: var(--ds-s-2);
   }
 }
 
