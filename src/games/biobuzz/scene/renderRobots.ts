@@ -61,6 +61,7 @@ import {
   BB_MOTOR_MOUNT_RIM,
   BB_RAMP_ANGLE,
   bbRampDeployS,
+  BB_BAR_DEPLOY_S,
   BB_RAMP_DECK_Z,
   BB_RAMP_IN,
   BB_RAMP_L,
@@ -94,7 +95,7 @@ import {
   bbHopperCap,
   type BbHeadDims,
 } from '../config';
-import { bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
+import { bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf, type BbLauncherSpec } from '../mechs';
 import {
   BB_END_BAR_H,
   BB_FRONT_ARROW_T,
@@ -2841,12 +2842,21 @@ export function buildIntake(
   accent: string = SWEEPER,
   /** the robot's detail level (`ROBOT_LOD`): High breaks the arms' and the brace's edges */
   detail: BbWheelDetail = 'high',
-): { nodes: THREE.Object3D[]; rollers: BbRoller[]; sideRollers: BbSideRoller[]; rampPivots: THREE.Group[] } {
+): {
+  nodes: THREE.Object3D[];
+  rollers: BbRoller[];
+  sideRollers: BbSideRoller[];
+  rampPivots: THREE.Group[];
+  barPivots: BbBarPivot[];
+} {
   const rollerMat = solidMat(tint3d(SWEEPER, accent, 0.5), 0.5, 0.25);
   const nodes: THREE.Object3D[] = [];
   const rollers: BbRoller[] = [];
   const sideRollers: BbSideRoller[] = [];
   const rampPivots: THREE.Group[] = [];
+  const barPivots: BbBarPivot[] = [];
+  // a `bar` sorter's NECTAR bar, on any intake but the ramp (whose ramp is its bar)
+  const bar = kindHasBar(spec);
   // one archetype for the whole robot (`bbIntakeKindOf`), never per mouth — every mounted edge
   // carries the same hardware. Byte-identical for `sweeper`: nothing below reads `kind` on that
   // path except to skip the two blocks that draw the other archetypes' extra parts.
@@ -3206,9 +3216,59 @@ export function buildIntake(
       }
     }
 
+    // ── THE NECTAR BAR (`nectarReject.ts`): a round bar across the mouth on two arms pivoting on the
+    // side arms' axle bosses. Built in the PIVOT's frame along local +x, which is the arms
+    // pointing straight forward; `sync` swings it between `up` (arms vertical, the bar parked
+    // over the roller) and `down`, where the bar's underside sits `BAR_Z - BAR_R` = 3.0 in up,
+    // just past the tip line: under a POLLEN's 2.8-in top, into a NECTAR's 3.6. Plain aluminium
+    // and nothing else (owner, 2026-09-22: no gate markings on a robot).
+    if (bar) {
+      const pivot = new THREE.Group();
+      pivot.name = `robot:nectarbar:${m.edge}`;
+      pivot.position.set(outer, 0, bossTop);
+      g.add(pivot);
+      const dx = tip + BAR_PAST_TIP - outer;
+      const dz = BAR_Z - bossTop;
+      const len = Math.hypot(dx, dz);
+      const span = f.half - BB_INTAKE_ARM_INSET;
+      const barGeo = framePart(`nectarbar:bar|${span.toFixed(2)}`, () => [new THREE.CylinderGeometry(BAR_R, BAR_R, 2 * span, 12)]);
+      const barMesh = cast(new THREE.Mesh(barGeo, solidMat(ALU, 0.5, 0.3)), 'alu');
+      barMesh.name = `robot:nectarbar:bar:${m.edge}`;
+      barMesh.position.set(len, 0, 0);
+      pivot.add(barMesh);
+      const barArmGeo = framePart(`nectarbar:arm|${len.toFixed(2)}`, () => [boxAt(len, 0.25, 0.5, len / 2, 0, 0)]);
+      for (const sg of [1, -1] as const) {
+        const arm = cast(new THREE.Mesh(barArmGeo, solidMat(ALU, 0.45, 0.35)), 'alu');
+        arm.name = `robot:nectarbar:arm:${m.edge}:${sg === 1 ? 'l' : 'r'}`;
+        arm.position.set(0, sg * (span - 0.2), 0);
+        pivot.add(arm);
+      }
+      // R_y(θ) carries local +x to (cos θ, 0, −sin θ): UP is −π/2, DOWN is the angle that lands
+      // the bar's centre at (dx, dz) from the pivot
+      barPivots.push({ node: pivot, up: -Math.PI / 2, down: Math.asin(-dz / len) });
+    }
+
     nodes.push(g);
   }
-  return { nodes, rollers, sideRollers, rampPivots };
+  return { nodes, rollers, sideRollers, rampPivots, barPivots };
+}
+
+/** one mouth's NECTAR-bar pivot and its two end angles about local y */
+interface BbBarPivot {
+  node: THREE.Group;
+  up: number;
+  down: number;
+}
+
+/** the NECTAR bar's round section, its centre height when down, and how far past the tip line it
+ * stands. Underside at `BAR_Z − BAR_R` = 3.0 in: a 2.8-in POLLEN passes, a 3.6-in NECTAR does not. */
+const BAR_R = 0.25;
+const BAR_Z = 3.25;
+const BAR_PAST_TIP = 0.4;
+
+/** does this build draw the NECTAR bar? A `bar` sorter on an intake that is not the ramp. */
+function kindHasBar(spec: RobotSpec): boolean {
+  return bbIntakeKindOf(spec) !== 'ramp' && bbNectarRejectOf(spec) === 'bar';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4215,6 +4275,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
   group.userData.intakeRollers = intake.rollers;
   group.userData.sideRollers = intake.sideRollers;
   group.userData.rampPivots = intake.rampPivots;
+  group.userData.barPivots = intake.barPivots;
 
   const heads: THREE.Group[] = [];
   const pitches: THREE.Group[] = [];
@@ -4372,6 +4433,7 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
     group.userData.intakeRollers = intake.rollers;
     group.userData.sideRollers = intake.sideRollers;
     group.userData.rampPivots = intake.rampPivots;
+    group.userData.barPivots = intake.barPivots;
     // ...each turret at its placed axle height (`bbImportTurretAxleZ`), so its drawn lip is the
     // sim's muzzle; the dumper on the sim's release line and lip (`bbDumperFrame`, `bbDumpZ`)
     // (the standard head, ridden up or down whole so its own proportions hold)
@@ -5241,6 +5303,14 @@ export function buildBiobuzzRobots(): BbRobots {
         const e = smoothstep01(t);
         const angle = r.bbRampOut ? BB_RAMP_DEPLOYED_ROT * e : BB_RAMP_DEPLOYED_ROT * (1 - e);
         for (const pivot of rampPivots) pivot.rotation.y = angle;
+      }
+      // ...and a NECTAR bar the same way, off `bbBarAt` and `BB_BAR_DEPLOY_S`
+      const barPivots = entry.group.userData.barPivots as BbBarPivot[] | undefined;
+      if (barPivots && barPivots.length > 0) {
+        const t = Math.max(0, Math.min(1, (world.time - (r.bbBarAt ?? -Infinity)) / BB_BAR_DEPLOY_S));
+        const e = smoothstep01(t);
+        const down = r.bbBarOut ? e : 1 - e;
+        for (const b of barPivots) b.node.rotation.y = b.up + (b.down - b.up) * down;
       }
 
       // THE DRIVETRAIN POSE. Both of these are state the sim already writes and the 3D view was

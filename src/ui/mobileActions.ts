@@ -56,7 +56,7 @@ import type { GameId } from '../games/types';
 import { GAME_IDS } from '../games/types';
 import type { KeyAction } from '../input/bindings';
 import { KEY_ACTIONS, actionUsedBy } from '../input/bindings';
-import type { ArtifactColor, MobileLayout, MobilePos, RobotSpec } from '../types';
+import type { Alliance, ArtifactColor, MobileLayout, MobilePos, RobotSpec } from '../types';
 import { HOPPER_CAPACITY } from '../config';
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import { BB_TOUCH } from '../games/biobuzz/mobile';
@@ -75,6 +75,7 @@ export type TouchHoldField =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'bbReverse'
   | 'driveMode'
   | 'flyPreset';
 
@@ -118,7 +119,8 @@ export interface TouchLive {
   /** DECODE only fires from a launch zone; true for every other season */
   launchZoneOk: boolean;
   chain?: { carrying: boolean; ringAction: 'pickup' | 'place' | 'fling' | null };
-  bb?: { flowerInReach: boolean; nectarOk: boolean };
+  /** `alliance`: whose NECTAR the Box Tube will place (its own only, `placeInFlower`) */
+  bb?: { flowerInReach: boolean; nectarOk: boolean; alliance: Alliance };
 }
 
 export interface TouchButton {
@@ -338,6 +340,7 @@ export function touchLiveOf(hud: HudSnapshot): TouchLive {
     bb: bb && {
       flowerInReach: bb.robot?.flowerInReach ?? false,
       nectarOk: bb.field.nectarWhy[hud.alliance] === 'ok',
+      alliance: hud.alliance,
     },
   };
 }

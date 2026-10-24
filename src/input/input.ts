@@ -20,6 +20,7 @@ export interface VirtualInput {
   bbNectar: boolean;
   bbRamp: boolean;
   bbPass: boolean;
+  bbReverse: boolean;
   driveMode: boolean;
   flyPreset: boolean;
 }
@@ -54,6 +55,7 @@ export class InputManager {
     bbNectar: false,
     bbRamp: false,
     bbPass: false,
+    bbReverse: false,
     driveMode: false,
     flyPreset: false,
   };
@@ -207,6 +209,8 @@ export class InputManager {
          but a comment describing the opposite would send whoever reads it next looking for a
          latch that was never written. */
       bbPass: heldAny(keys.bbPass) || g.bbPass || this.virtualState.bbPass,
+      // BIOBUZZ: the intake runs BACKWARDS while this is held — genuinely held, like `intake`
+      bbReverse: heldAny(keys.bbReverse) || g.bbReverse || this.virtualState.bbReverse,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.

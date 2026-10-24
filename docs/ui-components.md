@@ -394,7 +394,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/competitions.css:61 | 90 |
+| `.ds-opt` | src/ui/competitions.css:61 | 92 |
 | `.ds-opt-add` | src/ui/importer.css:11 | 6 |
 | `.ds-opt-del` | src/ui/shell.css:4780 | 2 |
 | `.ds-opt-slot` | src/ui/shell.css:4772 | 3 |
@@ -928,7 +928,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:4676 | 56 |
+| `.ds-opts` | src/ui/shell.css:4676 | 58 |
 
 ## `ds-padhint` — 1
 

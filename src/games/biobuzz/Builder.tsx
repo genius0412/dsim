@@ -26,24 +26,35 @@ import {
   occupiedCells,
 } from './mounts';
 import {
+  BB_INTAKE_FEEDS,
   BB_INTAKE_KINDS,
   BB_LIFT_KINDS,
   BB_LIFT_POSITIONS,
+  BB_NECTAR_REJECTS,
+  type BbIntakeFeed,
   type BbIntakeKind,
+  type BbIntakeSpec,
+  type BbNectarReject,
   type BbLauncherSpec,
   type BbLiftKind,
   type BbLiftSpec,
   bbCellsAdjacent,
   bbFoldTwinMount,
+  bbIntakeFeedOf,
   bbIntakeKindOf,
   bbLauncherBlocker,
   bbLauncherOf,
   bbLiftOf,
+  bbNectarRejectOf,
   bbResolveLiftMount,
   bbResolveMount2,
   bbScoreModeMirror,
 } from './mechs';
 import {
+  BB_FEED_BLURBS,
+  BB_FEED_LABELS,
+  BB_REJECT_LABELS,
+  bbRejectBlurb,
   BB_INTAKE_KIND_BLURBS,
   BB_INTAKE_LABELS,
   BB_INTAKE_MOUNT_LABELS,
@@ -285,6 +296,8 @@ export function BiobuzzBuilder({ spec, setSpec, hideFrame = false }: BiobuzzBuil
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(spec);
   const intakeKind = bbIntakeKindOf(spec);
+  const feed = bbIntakeFeedOf(spec);
+  const reject = bbNectarRejectOf(spec);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
   // THE HEIGHT, read through the resolver rather than off the raw field (same rule as the
@@ -299,22 +312,36 @@ export function BiobuzzBuilder({ spec, setSpec, hideFrame = false }: BiobuzzBuil
   // both from the one launcher it is given. The NECTAR turret's cell and the Box Tube have no
   // flat field, so they live in the container alone.
   //
-  // `nextIntake` DEFAULTS TO THE CURRENT KIND, not to the sweeper: a launcher or Box Tube edit
+  // `nextIntake` DEFAULTS TO THE CURRENT INTAKE, not to the sweeper: a launcher or Box Tube edit
   // rebuilds `bbMech` from scratch (it is a container, not a set of independent fields), and
   // without this default every one of those edits would silently fold the intake back to the
   // sweeper on the next coercion (`coerceBbMech` reads `bbMech.intake` off exactly what is sent).
-  function send(next: BbLauncherSpec, nextLift: BbLiftSpec | null, nextIntake: BbIntakeKind = intakeKind) {
+  // The FEED and the sorter are always sent EXPLICITLY, resolved, so a launcher swap keeps the
+  // feed the player picked rather than the one the new launcher would imply; the coercer drops
+  // whichever of the two is the default again.
+  function send(next: BbLauncherSpec, nextLift: BbLiftSpec | null, nextIntake: BbIntakeSpec = { kind: intakeKind, feed, reject }) {
     setSpec({
       scoreMode: bbScoreModeMirror(next.kind),
       shooterMount: next.mount,
-      bbMech: { launcher: next, lift: nextLift, intake: { kind: nextIntake } },
+      bbMech: { launcher: next, lift: nextLift, intake: nextIntake },
     });
   }
 
   /** INTAKE pick. The launcher and the Box Tube survive the swap — same reasoning as `pickLift`
-   * keeping the launcher, the other way round. */
+   * keeping the launcher, the other way round — and so do the feed and the sorter. */
   function pickIntake(kind: BbIntakeKind) {
-    send(launcher, lift, kind);
+    send(launcher, lift, { kind, feed, reject });
+  }
+
+  /** FEED pick: what the intake is sized for. A double turret is always POLLEN + NECTAR, so its
+   * POLLEN-only button is disabled rather than offered and then undone by the coercer. */
+  function pickFeed(next: BbIntakeFeed) {
+    send(launcher, lift, { kind: intakeKind, feed: next, reject });
+  }
+
+  /** SORTER pick: what a POLLEN + NECTAR intake does with the opponent's NECTAR. */
+  function pickReject(next: BbNectarReject) {
+    send(launcher, lift, { kind: intakeKind, feed, reject: next });
   }
 
   /** LAUNCHER pick. The mount and hood survive the swap. A corner a turret was bolted to folds
@@ -500,6 +527,42 @@ export function BiobuzzBuilder({ spec, setSpec, hideFrame = false }: BiobuzzBuil
           </button>
         ))}
       </div>
+      {/* WHAT IT TAKES — its own choice since 2026-10-24 (it used to follow the launcher). Two
+          cards, and the blurb names the cost of the second: a roller cannot see colour. */}
+      <div className="ds-opts two">
+        {BB_INTAKE_FEEDS.map((f) => {
+          const locked = f === 'pollen' && launcher.kind === 'twinturret';
+          return (
+            <button
+              key={f}
+              className={`ds-opt ${feed === f ? 'on' : ''}`}
+              aria-pressed={feed === f}
+              disabled={locked}
+              title={locked ? 'A double turret has a NECTAR turret to feed' : undefined}
+              onClick={() => pickFeed(f)}
+            >
+              <span className="ot">{BB_FEED_LABELS[f]}</span>
+              <span className="od">{BB_FEED_BLURBS[f]}</span>
+            </button>
+          );
+        })}
+      </div>
+      {/* ...AND WHAT IT DOES WITH THE OPPONENT'S NECTAR, offered only when it can take one. */}
+      {feed === 'mixed' && (
+        <div className="ds-opts card4">
+          {BB_NECTAR_REJECTS.map((k) => (
+            <button
+              key={k}
+              className={`ds-opt ${reject === k ? 'on' : ''}`}
+              aria-pressed={reject === k}
+              onClick={() => pickReject(k)}
+            >
+              <span className="ot">{BB_REJECT_LABELS[k]}</span>
+              <span className="od">{bbRejectBlurb(k, intakeKind)}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="ds-opts four">
         {BB_INTAKE_MOUNTS.map((m) => (
           <button

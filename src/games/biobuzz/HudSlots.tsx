@@ -351,7 +351,10 @@ export function BiobuzzPinnedNotice({ hud }: GameHudProps) {
   // A flag, not a held bump: the MAJOR is a per-MATCH latch, so once it is true it stays the
   // fact for the rest of the match, the same way a red card would.
   const majored = f?.controlMajor[hud.alliance] ?? false;
-  if (!pin && !warned && !majored) return null;
+  // G408 — the opponent's NECTAR, held. A count like G407's, so the same held bump. `?.` on the
+  // field itself: a snapshot from a build before 2026-10-24 has no `opponentNectar`.
+  const robbed = useHeldBump(f?.opponentNectar?.[hud.alliance] ?? 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
+  if (!pin && !warned && !majored && !robbed) return null;
   return (
     <>
       {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
@@ -368,6 +371,9 @@ export function BiobuzzPinnedNotice({ hud }: GameHudProps) {
           {majored ? 'CONTROL 5+ MAJOR' : 'CONTROL 5+'}
         </div>
       )}
+      {/* G408 — CONTROL of the opponent's NECTAR. A warning worth no points, like G407's, and
+          the second one this match is a YELLOW CARD (the shared card chip). */}
+      {robbed && <div className="eventlog-line eventlog-pinned">G408 OPPONENT NECTAR</div>}
       {/* G421 — a PIN, counting. 20 points every three seconds, and the clock runs in a
           referee's head, so `nextIn` is the only warning either driver gets. */}
       {pin && <div className="eventlog-line eventlog-pinned">{pinLine(pin)}</div>}

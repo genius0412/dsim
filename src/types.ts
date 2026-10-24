@@ -96,6 +96,13 @@ export interface RobotCommand {
    * so no driver can send it. Protocol bit 2048. Read from `SIM_PATCH` 9. Optional; absent reads false.
    */
   bbFireUnaimed?: boolean;
+  /**
+   * BIOBUZZ, RUN THE INTAKE BACKWARDS while held: the rollers push the mouth clear and spit the
+   * held elements back out, last in first out, one per `BB_REVERSE_PERIOD_S` (`nectarReject.ts`). Wins
+   * over `intake` when both are held. Every build has it — a roller runs both ways. Protocol bit
+   * 4096. Optional; absent reads false.
+   */
+  bbReverse?: boolean;
 }
 
 /**
@@ -722,6 +729,13 @@ export interface RobotState {
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;
+  /** BIOBUZZ, a `bar` sorter on any intake but the `ramp` (whose ramp is its bar): is the
+   * NECTAR bar DOWN across the mouth? Toggled by `bbRamp` through the ramp's own latch
+   * (`bbRampHeld`/`bbRampUpAt`, which no other reader shares on such a build). Absent reads false,
+   * the raised start. Every other build leaves both absent. */
+  bbBarOut?: boolean;
+  /** `world.time` of the last bar toggle (either direction). */
+  bbBarAt?: number;
   /**
    * A SETPOINT FLYWHEEL's wheel speed right now, rpm (`src/sim/flywheel.ts`). Written ONLY for a
    * build with `spec.flywheel`, so no other robot carries it on the wire or in its JSON. It ramps

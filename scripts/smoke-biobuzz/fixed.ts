@@ -261,7 +261,7 @@ export function fixedChecks(check: Check): void {
       J(hostile.flywheel),
     );
     check('fixed: …and the clamped one is a fixed point', J(bbCoerce(hostile)) === J(hostile));
-    check('fixed: a fixed launcher carries no NECTAR (one small wheel)', !bbCarriesNectar(l));
+    check('fixed: a fixed launcher’s intake takes no NECTAR unless it is built POLLEN + NECTAR', !bbCarriesNectar(kit));
     check('fixed: it is ONE head on its edge, not a line across the side', !bbSpansEdge('fixed') && bbSpansEdge('dumper'));
     const tubeAtCorner = bbCoerce({ ...KIT, bbMech: { launcher: KIT.bbMech!.launcher, lift: { kind: 'vslide', mount: 'frontleft' } } });
     check('fixed: …so a Box Tube may sit on the corner beside it', tubeAtCorner.bbMech?.lift?.mount === 'frontleft', J(tubeAtCorner.bbMech?.lift));

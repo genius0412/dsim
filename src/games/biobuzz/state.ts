@@ -268,6 +268,18 @@ export interface BiobuzzState {
    * snapshot has two of them.
    */
   held: Record<number, Record<string, boolean>>;
+  /**
+   * OPPONENT NECTAR A SORTER IS HANDLING, per robot id (`nectarReject.ts`). A held entry is an element
+   * still inside the robot that leaves through mouth `m` at `at`; an `out` entry is one it has
+   * thrown out, which its own intake ignores until `at`. ABSENT on every world until a `reverse` or
+   * `passthrough` sorter takes one, and deleted again when the last entry expires, so a match
+   * without one carries nothing new on the wire.
+   */
+  sorter?: Record<number, BbSortEntry[]>;
+  /** `world.time` a `reverse` sorter's intake runs backwards until, per robot id. Absent otherwise. */
+  sortRev?: Record<number, number>;
+  /** G408 instances this match (CONTROL of the opponent's NECTAR), per robot id (`penalties.ts`). */
+  g408?: Record<number, number>;
   /** the next POLLEN id to hand out. Ids must be UNIQUE and MONOTONIC for the lifetime of a
    * world: the snapshot diff, the renderer's per-ball state and every event that names a
    * pollen key off it, so reusing one silently aliases two objects. Seeded past the initial
@@ -389,6 +401,15 @@ export interface BiobuzzState {
    * unchanged. Read through `biobuzzPhysics(world)` below — never this field directly.
    */
   physics?: Physics;
+}
+
+/** one element a robot's opponent-NECTAR sorter is handling (`BiobuzzState.sorter`). */
+export interface BbSortEntry {
+  id: number;
+  at: number;
+  /** the `bbMouths` index it came in by, and leaves by */
+  m: number;
+  out?: true;
 }
 
 /**

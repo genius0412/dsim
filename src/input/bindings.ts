@@ -24,6 +24,7 @@ export type KeyAction =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'bbReverse'
   | 'viewToggle'
   | 'cameraCycle'
   | 'eyeUp'
@@ -55,6 +56,7 @@ export type PadAction =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'bbReverse'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -245,7 +247,8 @@ export interface ControlBindings {
 //   fling    → `src/games/chain/play.ts` (the catapult throw)
 //   bbPlace / bbPlaceNectar → `src/games/biobuzz/play.ts` + `sim3d/elements3d.ts`
 //   bbNectar → `src/games/biobuzz/play.ts` (`bbHumanPlayerTick`, shared by the 2D and 3D paths)
-//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake archetype only)
+//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake) and `nectarReject.ts` (a `bar` sorter's bar)
+//   bbReverse → `src/games/biobuzz/nectarReject.ts` (`bbSorterTick`, both pipelines)
 //   intake / fire → all three, through three unrelated sites each
 //   flyPreset → `src/sim/flywheel.ts` (`flyStep`), DECODE's presets wheel. BIOBUZZ's fixed launcher
 //               runs ONE setpoint (`coerceBiobuzzSpec` folds presets), so it never reads the bit
@@ -274,6 +277,7 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbNectar: ['biobuzz'],
   bbRamp: ['biobuzz'],
   bbPass: ['biobuzz'],
+  bbReverse: ['biobuzz'],
   viewToggle: ['biobuzz'],
   cameraCycle: ['biobuzz'],
   eyeUp: ['biobuzz'],
@@ -396,6 +400,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbNectar',
   'bbRamp',
   'bbPass',
+  'bbReverse',
   'viewToggle',
   'cameraCycle',
   'eyeUp',
@@ -418,6 +423,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'bbNectar',
   'bbRamp',
   'bbPass',
+  'bbReverse',
   'driveMode',
   'flipFront',
   'park',
@@ -504,6 +510,10 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // BIOBUZZ: PASS to your partner — launch the held element at a field POINT rather than at
     // your own hive. Shares 'v' with Chain Reaction's catapult throw; see the role table above.
     bbPass: ['v'],
+    // BIOBUZZ: run the intake BACKWARDS while held (spit out what it took — the opponent's NECTAR,
+    // usually). ';', on the home row two keys from Intake's K. Every free letter is spoken for:
+    // g, h, j, u and y are the smoke lane's "assumed free" keys and m is the ramp's fallback.
+    bbReverse: [';'],
     // THE VIEW KEYS (`VIEW_ACTIONS`). T flips 2D and 3D, and I / O raise and lower the eye —
     // the keys they always had. The CAMERA moved off C, which is Place POLLEN, onto L: next to
     // I and O, and free in every game. Not U: the bindings smoke lane uses it as a free key.
@@ -559,6 +569,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // and `mergeBindings` will not stack it on a button such a map already uses.
       bbRamp: [11],
       bbPass: [10], // L3 — shared with `fling`
+      // D-DOWN — run the intake backwards: "back it out". The last free standard button (D-RIGHT
+      // is the in-match menu, `PAD_MENU_BUTTON`). It was the ramp's until 2026-09-26, moved after
+      // players said a press "restarted their run"; that was a TOGGLE, and a reverse is HELD and
+      // undoes nothing when it is pressed by mistake.
+      bbReverse: [13],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

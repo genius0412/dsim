@@ -15,7 +15,7 @@
  */
 import type { GameTouch, TouchButton } from '../../ui/mobileActions';
 import { BB_HOOD_DEFAULT_DEG } from './config';
-import { bbCarriesNectar, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbAutoSorts, bbCarriesNectar, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
 
 const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
   {
@@ -34,8 +34,8 @@ const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     ready: (l) => !l.bb || (l.bb.flowerInReach && l.held.includes('yellow')),
   },
   {
-    // place a held NECTAR. Needs the tube AND a launcher that can carry NECTAR at all — a
-    // single turret feeds POLLEN only, so that build can never have one to place.
+    // place a held NECTAR. Needs the tube AND an intake that takes NECTAR at all — a POLLEN-only
+    // intake (`bbIntakeFeedOf`) can never have one to place.
     action: 'bbPlaceNectar',
     hold: 'bbPlaceNectar',
     label: 'NECTAR',
@@ -43,8 +43,10 @@ const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     glyph: '◆',
     cls: 'bbplacenectar',
     side: 'right',
-    present: (c) => bbLiftOf(c.spec) !== null && bbCarriesNectar(bbLauncherOf(c.spec, BB_HOOD_DEFAULT_DEG)),
-    ready: (l) => !l.bb || (l.bb.flowerInReach && l.held.some((c) => c === 'red' || c === 'blue')),
+    present: (c) => bbLiftOf(c.spec) !== null && bbCarriesNectar(c.spec),
+    // the tube places its OWN alliance's NECTAR only (`placeInFlower`), so an opponent NECTAR in
+    // the hopper does not light it
+    ready: (l) => !l.bb || (l.bb.flowerInReach && l.held.some((c) => c === l.bb!.alliance)),
   },
   {
     // PASS to your partner: the same solver aimed at a field point rather than at the hive.
@@ -60,16 +62,33 @@ const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     ready: (l) => l.held.length > 0,
   },
   {
-    // the deployable ramp — the `ramp` intake archetype only; every other build's sim ignores
-    // the bit outright (`bbRampStep` returns before touching the robot).
+    // the deployable ramp, or a `bar` sorter's NECTAR bar on any other intake — one button, as
+    // on the keyboard (`bbRampStep`, `nectarReject.ts`'s `bbBarStep`). Every other build's sim ignores
+    // the bit outright. DEPLOY names both.
     action: 'bbRamp',
     hold: 'bbRamp',
-    label: 'RAMP',
-    aria: 'Deploy ramp',
+    label: 'DEPLOY',
+    aria: 'Deploy ramp / NECTAR bar',
     glyph: '◣',
     cls: 'bbramp',
     side: 'left',
-    present: (c) => bbIntakeKindOf(c.spec) === 'ramp',
+    present: (c) => bbIntakeKindOf(c.spec) === 'ramp' || bbNectarRejectOf(c.spec) === 'bar',
+  },
+  {
+    // REVERSE: run the intake backwards while held (`nectarReject.ts`). On the pad only where it is the
+    // way out for an opponent NECTAR: a POLLEN + NECTAR intake with no sorter of its own. A
+    // POLLEN-only intake never holds one, and an auto-reverse or pass-through build throws it out
+    // by itself. Every build still has the key and the pad button; the touch pad is the room the
+    // narrowest phones do not have to spare.
+    action: 'bbReverse',
+    hold: 'bbReverse',
+    label: 'REV',
+    aria: 'Reverse intake',
+    glyph: '◁',
+    cls: 'bbreverse',
+    side: 'right',
+    present: (c) => bbCarriesNectar(c.spec) && !bbAutoSorts(c.spec),
+    ready: (l) => l.held.length > 0,
   },
   {
     // THE HUMAN PLAYER (G426): enter one NECTAR into the alliance's own LOADING ZONE. No

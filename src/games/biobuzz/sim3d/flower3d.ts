@@ -163,7 +163,10 @@ export function flowerPlace3d(
   let color: Artifact['color'] | null = null;
   for (let j = rob.hopper.length - 1; j >= 0; j--) {
     const c = rob.hopper[j];
-    if ((c === 'red' || c === 'blue') === nectar) {
+    // THE TUBE PLACES ITS OWN ALLIANCE'S NECTAR ONLY. An opponent NECTAR a POLLEN + NECTAR
+    // intake took is in the hopper too, and no driver places one: it would hand the opponent the
+    // FLOWER (the top-most NECTAR owns it). It also keeps G410's offender the NECTAR's colour.
+    if (nectar ? c === rob.alliance : c !== 'red' && c !== 'blue') {
       color = c;
       break;
     }

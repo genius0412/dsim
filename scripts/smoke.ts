@@ -6592,7 +6592,8 @@ function queueTenth(w: World): void {
   // a returning player finding the new button on the map and finding nothing there. The stored
   // binds sit on a key and a button NO default uses, because a missing action whose default the
   // blob holds elsewhere is meant to lose it (the new-action rule, checked in the ramp block).
-  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [13] } } });
+  // (16, the guide button: since 2026-10-24 every standard button 0..15 has a default)
+  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [16] } } });
   const dropped = [
     ...KEY_ACTIONS.filter(
       (a) => a !== 'fire' && JSON.stringify(stale.keys[a]) !== JSON.stringify(DEFAULT_BINDINGS.keys[a]),
@@ -28252,9 +28253,9 @@ const dumperSetup = (): RobotSetup => {
     touchButtonsFor('chain').map((b) => b.action).join(','),
   );
   check(
-    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp and the human player',
+    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp, reverse and the human player',
     touchButtonsFor('biobuzz').map((b) => b.action).join(',') ===
-      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbNectar,flipFront,driveMode,park',
+      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbReverse,bbNectar,flipFront,driveMode,park',
     touchButtonsFor('biobuzz').map((b) => b.action).join(','),
   );
 
@@ -28426,15 +28427,15 @@ const dumperSetup = (): RobotSetup => {
     check('touch: THROW is idle unless carrying', !ready('fling', ring(false, 'pickup')) && ready('fling', ring(true, null)));
     const bb = (flowerInReach: boolean, held: TouchLive['held'], nectarOk = false): Partial<TouchLive> => ({
       held,
-      bb: { flowerInReach, nectarOk },
+      bb: { flowerInReach, nectarOk, alliance: 'blue' },
     });
     check(
       'touch: place POLLEN needs a FLOWER in reach AND a POLLEN held',
       !ready('bbPlace', bb(false, ['yellow'])) && !ready('bbPlace', bb(true, ['red'])) && ready('bbPlace', bb(true, ['yellow'])),
     );
     check(
-      'touch: place NECTAR needs a FLOWER in reach AND a NECTAR held',
-      !ready('bbPlaceNectar', bb(true, ['yellow'])) && ready('bbPlaceNectar', bb(true, ['blue'])),
+      'touch: place NECTAR needs a FLOWER in reach AND its OWN alliance’s NECTAR held (the tube never places the opponent’s)',
+      !ready('bbPlaceNectar', bb(true, ['yellow'])) && !ready('bbPlaceNectar', bb(true, ['red'])) && ready('bbPlaceNectar', bb(true, ['blue'])),
     );
     check('touch: PASS is idle with an empty hopper', !ready('bbPass', bb(false, [])) && ready('bbPass', bb(false, ['yellow'])));
     check('touch: HUMAN is idle unless the tick says an entry would be taken', !ready('bbNectar', bb(false, [])) && ready('bbNectar', bb(false, [], true)));
@@ -28586,8 +28587,10 @@ const dumperSetup = (): RobotSetup => {
           }
         }
         // 320 and 347 are a 10-button pad on a phone that genuinely has no room for one — the
-        // overflow doubles up there and always did. From 360 up, the widest build fits CLEAN.
-        if (vp.h >= 360) {
+        // overflow doubles up there and always did. From 360 up, a 10-button build fits CLEAN.
+        // The ELEVEN-button pad (2026-10-24: REV joins a POLLEN + NECTAR build with no sorter of
+        // its own) doubles up at 360 as well, and fits clean from 375 — measured on every width.
+        if (vp.h >= (p.buttons.length > 10 ? 375 : 360)) {
           for (let i = 0; i < all.length; i++) {
             for (let j = i + 1; j < all.length; j++) {
               if (Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) < (all[i].size + all[j].size) / 2) {
@@ -28600,7 +28603,7 @@ const dumperSetup = (): RobotSetup => {
     }
     check('⚠️ touch: on a narrow landscape phone the primary steps to 64px, never to the 44px floor', shrunk === '', shrunk);
     check('⚠️ touch: no button — overflow included — ever lands on a stick base on a real phone', onStick === '', onStick);
-    check('⚠️ touch: the widest pad the app can build is overlap-free on every landscape phone 360px and taller', stacked === '', stacked);
+    check('⚠️ touch: the widest pad the app can build is overlap-free on every landscape phone 360px and taller (375 for eleven buttons)', stacked === '', stacked);
     check('touch: and nothing in the band is under the 44px finger floor', tiny === '', tiny);
   }
 }
@@ -28708,8 +28711,9 @@ const dumperSetup = (): RobotSetup => {
   // restarting their run. A stored map keeps whatever it has; only a map with no ramp row takes R3,
   // and not if the player already put R3 on something that fires in BIOBUZZ.
   {
-    check('ramp pad: Deploy ramp defaults to R3, and D-DOWN is left unbound', J(DEFAULT_BINDINGS.pad.buttons.bbRamp) === J([11]) &&
-      !PAD_ACTIONS.some((a) => DEFAULT_BINDINGS.pad.buttons[a].includes(13)));
+    // D-DOWN went unbound with the move and became BIOBUZZ's held Reverse intake on 2026-10-24
+    check('ramp pad: Deploy ramp defaults to R3, and D-DOWN is only Reverse intake now', J(DEFAULT_BINDINGS.pad.buttons.bbRamp) === J([11]) &&
+      J(PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].includes(13))) === J(['bbReverse']));
     check(
       'ramp pad: a stored map with the ramp on D-DOWN keeps D-DOWN',
       J(mergeBindings({ pad: { buttons: { bbRamp: [13] } } }).pad.buttons.bbRamp) === J([13]),
@@ -34942,9 +34946,12 @@ function impPlayCheck(g: GameId): void {
 const L2_MECH_PINS: Record<string, string> = {
   decode: 'held=3611 2049313317:2420555697 2788731338:1198073570 1577943677:3474038497',
   chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
-  biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459',
+  biobuzz: 'held=1093 3422097223:1254981451 993448729:176113124 1743880239:96600886',
   bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
 };
+// `biobuzz` re-pinned 2026-10-24 for `SIM_PATCH` 10: the double turret and the dumper are POLLEN +
+// NECTAR intakes and take the opponent's NECTAR now. The patch-9 run must still be the old pin.
+const L2_MECH_PINS_PATCH9 = { biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459' };
 // `bb3d` re-pinned 2026-10-04 for `SIM_PATCH` 7 (the FLOWER plates over their measured outline); the
 // old pin is the patch-6 run's, checked beside it.
 const L2_MECH_PINS_PATCH6 = { bb3d: 'held=693 385226777:3749707125 2128002571:24819118' };
@@ -35048,6 +35055,8 @@ function l2MechRun(g: GameId | 'bb3d', ticks: number, patch?: number): string {
 {
   const got = l2MechRun('biobuzz', 900);
   check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 2D (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.biobuzz, got);
+  const old9 = l2MechRun('biobuzz', 900, 9);
+  check('imported mechanisms: …and under SIM_PATCH 9 (opponent NECTAR refused at the intake) the 2D run lands on the pin it had before patch 10', old9 === L2_MECH_PINS_PATCH9.biobuzz, old9);
 }
 {
   await initPhysics3d();
@@ -41095,7 +41104,7 @@ function fxImportFixed(): RobotSpec {
       padConflict(trig, 'biobuzz', 'bbPass', [6])?.action === 'rotateCCW' &&
       padConflict(trig, null, 'park', [6, 13])?.action === 'rotateCCW' &&
       padConflict(trig, null, 'fire', [7])?.action === 'rotateCW' &&
-      padConflict(trig, null, 'bbPass', [13]) === null &&
+      padConflict(trig, null, 'bbPass', [16]) === null &&
       // on the stick the triggers are ordinary buttons again
       padConflict(DEFAULT_BINDINGS, null, 'bbPass', [7])?.action === 'fire',
   );

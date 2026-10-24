@@ -28,6 +28,7 @@ import {
   drawWheels,
 } from './parts';
 import {
+  BB_BAR_DEPLOY_S,
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_PLATE_GAP,
@@ -62,7 +63,7 @@ import {
   bbBoxTubeStages,
   type BbBoxTubeFrame,
 } from './config';
-import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
 import {
   EDGE_ANGLE,
   type BbMountPos,
@@ -479,6 +480,45 @@ function bbRampEaseFrac(r: RobotState, world: World | undefined): number {
 }
 
 /**
+ * THE NECTAR BAR (`nectarReject.ts`) — a plain aluminium bar across each mouth on two short pivot arms,
+ * the 2D twin of the 3D scene's. Raised, it sits back over the roller; down, it stands just past
+ * the roller line, where it stops a NECTAR and lets a POLLEN under. Eased over `BB_BAR_DEPLOY_S`
+ * off `bbBarAt`, the ramp's way (`bbRampEaseFrac`). Plain hardware colours: no marking says it is
+ * a gate (owner, 2026-09-22: FTC-looking parts only).
+ */
+function drawNectarBar(ctx: CanvasRenderingContext2D, r: RobotState, world: World | undefined): void {
+  const t = world ? clamp((world.time - (r.bbBarAt ?? -Infinity)) / BB_BAR_DEPLOY_S, 0, 1) : 1;
+  const ease = t * t * (3 - 2 * t);
+  const e = r.bbBarOut ? ease : 1 - ease;
+  for (const m of bbMouths(r.spec)) {
+    const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
+    const pivot = f.depth - 1.4;
+    const x = pivot + e * 2.1;
+    ctx.save();
+    ctx.translate(f.ox, f.oy);
+    ctx.rotate(f.rot);
+    // the two arms, pivot to bar
+    ctx.strokeStyle = ALU_MID;
+    ctx.lineWidth = 0.35;
+    ctx.beginPath();
+    for (const y of [f.half - 0.3, -(f.half - 0.3)]) {
+      ctx.moveTo(pivot, y);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // the bar
+    ctx.fillStyle = e > 0.5 ? ALU : ALU_MID;
+    ctx.strokeStyle = ALU_DK;
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    ctx.rect(x - 0.25, -f.half, 0.5, 2 * f.half);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/**
  * ARCHETYPE HARDWARE THAT REACHES PAST THE FOOTPRINT (`siderollers`, `ramp`) — the `sweeper`
  * draws nothing here, and `drawBiobuzzIntake` above is unchanged for it (the RENDER lane pins
  * its pixels). Called OUTSIDE `drawBiobuzzRobot`'s footprint clip, same as the placement marker:
@@ -487,6 +527,8 @@ function bbRampEaseFrac(r: RobotState, world: World | undefined): number {
  */
 export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean, world: World | undefined): void {
   const kind = bbIntakeKindOf(r.spec);
+  // a `bar` sorter's NECTAR bar on any intake but the ramp (whose ramp is its bar)
+  if (kind !== 'ramp' && bbNectarRejectOf(r.spec) === 'bar') drawNectarBar(ctx, r, world);
   if (kind === 'sweeper') return;
   for (const m of bbMouths(r.spec)) {
     const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);

@@ -17,7 +17,7 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { BB_FLOWERS, BB_GARDEN, BB_HIVE_CELL_DY, BB_HIVE_X, BB_LZ, BB_PRESETS } from '../../src/games/biobuzz/config';
-import { bbCarriesNectar, bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import { bbCarriesNectar, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import { bbFlowerInReach } from '../../src/games/biobuzz/robot';
 import { bbHopperCap } from '../../src/games/biobuzz/robot';
 import { DECODE_TUTORIAL } from '../../src/games/decode/tutorial';
@@ -519,7 +519,7 @@ export function tutorialChecks(check: Check): void {
     );
     const bt = boxTubeSpec();
     check('applies: a Box Tube that can carry NECTAR gets the PLACE step', new TutorialRunner(BIOBUZZ_TUTORIAL, bt).steps.some((s) => s.id === 'nectar'));
-    check('applies: …and that build really has both pieces of hardware', !!bbLiftOf(bt) && bbCarriesNectar(bbLauncherOf(bt, 0)));
+    check('applies: …and that build really has both pieces of hardware', !!bbLiftOf(bt) && bbCarriesNectar(bt));
     check('applies: the default build (single turret, no tube) gets the RETRIEVE step', new TutorialRunner(BIOBUZZ_TUTORIAL, BB_DEFAULT_SPEC).steps.some((s) => s.id === 'retrieve'));
   }
 

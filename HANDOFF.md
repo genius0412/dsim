@@ -21,6 +21,21 @@
 - **Not driven:** with a game server (the local build has none, so every Multiplayer entry was disabled and each popup was opened by URL): queueing ranked and getting a match (the strategy window should fill the host), joining a duo room (full-screen inside the host), LAN (its flag comes from the server). Check those on the alpha preview.
 - **Known ceiling:** while a full-screen state fills the host, Tab can still reach the app bar behind it (a `ponytail:` comment at the host).
 
+## 2026-10-24d (Team Updates through TU06; the opponent's NECTAR, sorters, REVERSE; SIM_PATCH 10)
+
+**State: on `alpha`, NOT on `main`. SERVER CHANGE (sim, protocol bit 4096, room participation credit): `dsim-alpha` DEPLOYED from `64d87a12` (2026-10-24 10:05Z): `/health` ok, one machine on the new image, clean boot, the compiled room worker carries `bbReverse`.** Verified headless in Electron: builder pickers save `feed`/`reject`, Z moves the bar, `;` empties the hopper, Controls lists Reverse intake. `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass (main's baseline raised, below). Rules: `docs/area/biobuzz.md`, last section.
+
+- **Owner:** review every new Team Update and update the sim. A POLLEN + NECTAR intake takes the opponent's NECTAR too, with penalties; auto-reject, pass-through and a deployable bar (the ramp doubling as it) as options; reverse in the controls; a single turret can be POLLEN + NECTAR, so the intake's feed is its own choice.
+- **Manual:** downloaded TU06 (`node scripts/manual.mjs`) and word-diffed it against V1. Game changes: the G408 and G407 sorter notes, G402's two AUTO examples, the 1:00 "Chime", pre-loads on the own side, G426 notes, G419/G425 wording. Points and RP thresholds unchanged. The table of what the sim did per item is in the guide.
+- **Intake feed** (`BbIntakeSpec.feed`): `pollen` | `mixed`, picked in the builder. Absent = the launcher's old feed, written only when it differs, so old specs coerce to the same bytes. Double turret is always mixed.
+- **Opponent NECTAR** (`SIM_PATCH` 10): a mixed intake takes either colour. G408 = WARNING per instance held, YELLOW CARD (shared `awardCard`) on the second, once per match. G402 MAJOR for taking an element off the opponent's half in AUTO.
+- **Sorters** (`BbIntakeSpec.reject`, `src/games/biobuzz/nectarReject.ts`): none / auto-reverse / pass-through / NECTAR bar (`bbRamp` button; on a ramp intake the ramp is the bar). Drawn in 2D and 3D (bar only; plain aluminium).
+- **REVERSE** (`RobotCommand.bbReverse`, bit 4096): key `;`, pad D-DOWN (13, the last free button; it was the ramp's toggle until 2026-09-26), touch REV on mixed builds without an auto-sorter. The narrowest landscape phones (360 px tall) now double up one button on the widest 11-button pad; the smoke rule says 375 for eleven.
+- **Replays:** the golden lane runs the 2v2 scene at patch 9 and gets the old row exactly; `l2MechRun` biobuzz the same. `simGolden.ts` gained `GoldenScene.patch`.
+- **Bundle:** `main` baseline 1034.49 → 1055.46 KB. Untouched alpha measures 1052.63; this adds 2.83.
+- **Not done:** the importer editor offers no feed/sorter (imports read the launcher's old feed); Zenith autos have no reverse button.
+- **When this reaches `main`:** 10 is free there (main is at 8). Give it the next number above main's latest if main has moved.
+
 ## 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
 
 **State: on `alpha`, NOT on `main`. SERVER CHANGE (the sim and the input door): `dsim-alpha` DEPLOYED from `f4dbb2a8` (release v155, 2026-10-24 06:57Z, after the owner renewed the flyctl login): `/health` ok, one machine on the new image, clean boot, and the compiled server and room worker carry `bbFireUnaimed` and `SIM_PATCH = 9`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Rule in `docs/area/autos.md` ("A `shootAll` THAT CANNOT SCORE FIRES ANYWAY").

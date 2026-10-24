@@ -142,6 +142,7 @@ import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
   BB_INTAKE_KINDS,
   bbCarriesNectar,
+  bbIntakeFeedOf,
   bbCellsAdjacent,
   bbIntakeAccepts,
   bbIntakeKindOf,
@@ -1848,12 +1849,33 @@ export function robotChecks(check: Check): void {
     const specOf = (kind: string): RobotSpec =>
       bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind, mount: kind === 'dumper' ? 'back' : 'front', hoodDeg: 75 }, lift: null }) });
     check('intake rule: every build takes POLLEN', BB_SCORE_MODES.every((k) => bbIntakeAccepts(specOf(k), 'blue', 'yellow')));
-    check('intake rule: a SINGLE turret refuses even its own NECTAR', !bbIntakeAccepts(specOf('turret'), 'blue', 'blue'));
+    check('intake rule: a SINGLE turret with no feed set refuses even its own NECTAR (its old POLLEN-only intake)', !bbIntakeAccepts(specOf('turret'), 'blue', 'blue'));
     check('intake rule: a DOUBLE turret and a DUMPER take their own NECTAR', bbIntakeAccepts(specOf('twinturret'), 'blue', 'blue') && bbIntakeAccepts(specOf('dumper'), 'red', 'red'));
-    check('intake rule: NO build takes the opponent\'s NECTAR (G408)', BB_SCORE_MODES.every((k) => !bbIntakeAccepts(specOf(k), 'blue', 'red') && !bbIntakeAccepts(specOf(k), 'red', 'blue')));
+    // SIM_PATCH 10 (2026-10-24): a roller cannot see colour, so a POLLEN + NECTAR intake takes the
+    // opponent's NECTAR too (G408 bills holding it); a POLLEN-only one fits no NECTAR at all
     check(
-      'intake rule: bbCarriesNectar is exactly double turret + dumper',
-      BB_SCORE_MODES.every((k) => bbCarriesNectar(specOf(k).bbMech!.launcher) === (k === 'twinturret' || k === 'dumper')),
+      'intake rule: a POLLEN + NECTAR intake takes the OPPONENT’s NECTAR too, a POLLEN-only one takes no NECTAR',
+      BB_SCORE_MODES.every((k) => bbIntakeAccepts(specOf(k), 'blue', 'red') === bbCarriesNectar(specOf(k)) && bbIntakeAccepts(specOf(k), 'red', 'blue') === bbCarriesNectar(specOf(k))),
+    );
+    check(
+      'intake rule: ...and under the patch-9 rule (opponentNectar false) NO build takes the opponent’s NECTAR',
+      BB_SCORE_MODES.every((k) => !bbIntakeAccepts(specOf(k), 'blue', 'red', false) && !bbIntakeAccepts(specOf(k), 'red', 'blue', false)),
+    );
+    check(
+      'intake rule: with no feed set, bbCarriesNectar is exactly double turret + dumper',
+      BB_SCORE_MODES.every((k) => bbCarriesNectar(specOf(k)) === (k === 'twinturret' || k === 'dumper')),
+    );
+    const fed = (kind: string, feed: 'pollen' | 'mixed'): RobotSpec =>
+      bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind, mount: kind === 'dumper' ? 'back' : 'front', hoodDeg: 75 }, lift: null, intake: { kind: 'sweeper', feed } }) });
+    check(
+      'intake feed: the FEED is its own choice — a single turret or fixed shooter built POLLEN + NECTAR carries NECTAR, a dumper built POLLEN-only does not',
+      bbCarriesNectar(fed('turret', 'mixed')) && bbCarriesNectar(fed('fixed', 'mixed')) && !bbCarriesNectar(fed('dumper', 'pollen')),
+    );
+    check('intake feed: a DOUBLE turret is POLLEN + NECTAR whatever is asked', bbCarriesNectar(fed('twinturret', 'pollen')) && bbIntakeFeedOf(fed('twinturret', 'pollen')) === 'mixed');
+    check(
+      'intake feed: the coercer writes the feed only when it differs from the launcher’s old one, and is idempotent',
+      fed('turret', 'mixed').bbMech!.intake!.feed === 'mixed' && fed('turret', 'pollen').bbMech!.intake!.feed === undefined &&
+        fed('dumper', 'mixed').bbMech!.intake!.feed === undefined && JSON.stringify(bbCoerce(fed('turret', 'mixed'))) === JSON.stringify(fed('turret', 'mixed')),
     );
   }
   /** ...and the same rule THROUGH THE WORLD: a real intake, a real mouth, a real tick. */
@@ -1874,8 +1896,9 @@ export function robotChecks(check: Check): void {
       // margin over the new PERIOD_MAX (0.12 s) rather than tightened — this check is about
       // WHICH colour is taken, not how fast, and a false failure here reads as a rules bug.
       run(w, cmd({ intake: true }), 0.35);
-      // NECTAR only for the launchers that carry it: a double turret and a dumper
-      const want = colour === 'yellow' || (colour === 'blue' && (kind === 'twinturret' || kind === 'dumper'));
+      // NECTAR only for the builds whose intake takes it — with no feed set, a double turret and a
+      // dumper — and then EITHER colour (SIM_PATCH 10: the roller cannot tell them apart)
+      const want = colour === 'yellow' || kind === 'twinturret' || kind === 'dumper';
       const what = colour === 'yellow' ? 'POLLEN' : colour === 'blue' ? 'own NECTAR' : 'OPPONENT NECTAR';
       check(
         `intake [${kind}] ${what}: ${want ? 'taken' : 'left on the floor'}`,

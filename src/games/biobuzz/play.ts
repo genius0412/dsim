@@ -32,6 +32,7 @@ import {
   bbPassPresetPoint,
   isBbPassPreset,
 } from './passTargets';
+import { bbBarStep, bbOnCapture, bbSorterTakes, bbSorterTick } from './nectarReject';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
@@ -251,14 +252,22 @@ function intakeTick(
   cmd: RobotCommand | undefined,
   enabled: boolean,
 ): void {
+  // THE SORTER AND REVERSE FIRST (`nectarReject.ts`, the same call 3D makes): a due reject leaves, and
+  // an intake running backwards this tick neither pulls nor swallows.
+  if (bbSorterTick(world, rob, cmd, enabled)) return;
   if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) return;
   // ⚠️ `extraReach` — same predicate as 3D's `elements3dCapture` (owner report 2026-09-20). 2D
   // HAS NO RAMP COLLIDER (`docs/area/biobuzz.md`: "2D stays DRAWING-ONLY"), so nothing here is
   // solid for the element to meet — it is simply pulled from further out, the same shape as the
   // sweeper's own reach, and a real bar's push is not modelled here on purpose.
-  const act = bbIntakeAct(world, rob, { extraReach: bbIntakeExtraReach(rob, world.time) });
+  const act = bbIntakeAct(world, rob, {
+    extraReach: bbIntakeExtraReach(rob, world.time),
+    takes: (b) => bbSorterTakes(world, rob, b),
+  });
   for (const p of act.pull) p.ball.vel = p.vel;
-  for (const b of act.take) capturePollen(world, rob, b);
+  act.take.forEach((b, k) => {
+    if (capturePollen(world, rob, b)) bbOnCapture(world, rob, b, act.mouth[k]);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -715,6 +724,8 @@ export function updateBiobuzz(
     // just below, a ramp press IS driver control (like drive/intake/fire) and is gated on
     // `enabled`, so a press during `pre`/a phase transition/`post` is dropped, not queued.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
+    // ...and a `bar` sorter's bar, on the same button for a build with no ramp (`nectarReject.ts`)
+    bbBarStep(rob, cmds.get(rob.id), enabled, world.time);
     // THE SWING GUARD, right after the toggle — the 2D half of it (`bbRampSwingStep2d`).
     bbRampSwingStep2d(world, rob);
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
@@ -927,7 +938,10 @@ export function placeInFlower(
   let color: Artifact['color'] | null = null;
   for (let j = rob.hopper.length - 1; j >= 0; j--) {
     const c = rob.hopper[j];
-    if ((c === 'red' || c === 'blue') === nectar) {
+    // THE TUBE PLACES ITS OWN ALLIANCE'S NECTAR ONLY. An opponent NECTAR a POLLEN + NECTAR
+    // intake took is in the hopper too, and no driver places one: it would hand the opponent the
+    // FLOWER (the top-most NECTAR owns it). It also keeps G410's offender the NECTAR's colour.
+    if (nectar ? c === rob.alliance : c !== 'red' && c !== 'blue') {
       color = c;
       break;
     }

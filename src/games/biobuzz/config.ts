@@ -890,6 +890,33 @@ export const BB_INTAKE_CROSS_MAX = 80;
 export const BB_INTAKE_WALL_GRAB = 1.2;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — running the intake backwards, and the opponent-NECTAR sorters (`nectarReject.ts`)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** in/s an element leaves the mouth at when the rollers throw it out, relative to the robot and
+ * along the mouth's outward normal. Under `BB_INTAKE_DRAW_IN` (84): a roller spitting something
+ * out runs the same motor the other way, and an element pushed back across the bumper loses some
+ * of it. APPROX, picked so a parked robot's reject travels about a foot before it stops. */
+export const BB_EJECT_SPEED = 45;
+/** seconds between elements while the driver holds REVERSE (`RobotCommand.bbReverse`). One per
+ * period, last in first out: the last element taken is the one nearest the rollers. */
+export const BB_REVERSE_PERIOD_S = 0.15;
+/** `reverse` sorter: how long the colour sensor takes to call an opponent NECTAR, measured from
+ * the capture. Four ticks plus the feed: a REV colour sensor reads at ~50 Hz. */
+export const BB_SORT_DETECT_S = 0.1;
+/** `reverse` sorter: how long the intake then runs backwards. Nothing is taken in that time. */
+export const BB_SORT_REVERSE_S = 0.35;
+/** `passthrough` sorter: time from capture to the element dropping back out of its mouth. */
+export const BB_SORT_PASS_S = 0.45;
+/** seconds a sorter's reject is ignored by its own intake after it leaves. Without this a robot
+ * driving forward re-takes the element on the next tick and sorts it again, forever; in the real
+ * mechanism the reject leaves over the roller and the sensor is still looking at it. */
+export const BB_SORT_IGNORE_S = 0.6;
+/** seconds the `bar` sorter's bar takes to drop or lift (a servo on a short arm). It keeps NECTAR
+ * out only once it is fully down; lifting, it lets them in at once. */
+export const BB_BAR_DEPLOY_S = 0.2;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — launcher geometry (the four archetypes)
 // ─────────────────────────────────────────────────────────────────────────────
 
