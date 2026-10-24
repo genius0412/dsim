@@ -80,7 +80,7 @@ export function CompList({
       .catch((e: unknown) => {
         if (!alive) return;
         console.warn('[competitions] list failed', e);
-        setErr('Couldn’t load competitions. Check your connection and try again.');
+        setErr('Check your connection and try again.');
       });
     return () => {
       alive = false;
