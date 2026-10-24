@@ -1,4 +1,4 @@
-<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs -->
+<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/zenith-e2e.mjs, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs -->
 # AUTOS: Zenith `*.auto.json` routines, driven by an auto seat
 
 A Zenith auto is the file a team's robot plays through Zenith's robot runtime, drawn and checked
@@ -236,6 +236,11 @@ alliance the file was not written for is mirrored back (`traceInFileFrame`) befo
 Zenith, so it lies over the plan Zenith drew. The run stops at the end of AUTO without stepping into
 TELEOP, so it calls `seat.end()` (the buzzer): a step still open ends there, interrupted. Without
 it the step kept the `endS` it opened with, and Zenith drew a 30 s run as 0.6 s.
+
+**THE WHOLE EXCHANGE, THROUGH A REAL POPUP:** `node scripts/zenith-e2e.mjs <zenith-checkout>` (headless,
+12 checks: New in Zenith at DSIM's start, Save to DSIM, Simulate in DSIM, a reused window, Play it in
+AUTO, closing). Run it after any change to `src/ui/zenith*.ts` or a re-vendor; its header lists the two
+dev servers it needs. The smoke lanes hold the pure parts; only this sees both windows.
 
 ## Vendoring
 

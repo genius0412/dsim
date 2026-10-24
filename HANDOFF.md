@@ -1,4 +1,19 @@
-# HANDOFF — 2026-10-24 (photographed venues draw nothing flat; alpha UI sweep)
+# HANDOFF — 2026-10-24b (AUTO + Zenith: host build 2, Zenith main vendored, the 0.1.2 sweep's DSIM items)
+
+**State: on `alpha`, NOT on `main` (owner: do not ship to main until told). SERVER CHANGE (custom rooms run the auto seat with the new Zenith): `dsim-alpha` redeployed, see below.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted` (alpha's own `game.ts` fails it too). `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. Rules in `docs/area/autos.md`.
+
+- **Owner:** make every AUTO feature work smoothly and integrate DSIM with Zenith; change zenith-dev where needed; nothing to `main` yet.
+- **Found:** Zenith `main` writes auto format 4 and its DSIM row sets `minBuild: 2`. Alpha vendored Zenith 0.1.1 (format 3) and sent host build 1, so the live beta Zenith showed "DSIM needs an update" with Save to DSIM and Simulate in DSIM off.
+- **Vendored:** Zenith `main` 3bb573c. The `dsim-vendor` branch of the vendor repository holds the same three tarballs (pushed right before this). `scripts/vendor-zenith.mjs` now runs on Windows and patches only the three lockfile hashes. ⚠️ Stop dev servers and test runs in the checkout before running it: `npm ci` half-deletes `node_modules` on `EPERM`.
+- **Zenith change:** Horizon-36596/zenith-dev#511 (`batch-ready`, not merged): `open.newAutoStart`, so New in Zenith starts at the start picked in DSIM. DSIM already sends it; an older Zenith ignores it.
+- **DSIM host side:** `HOST_BUILD` 2; `runFailed` with the reason; a second Edit in Zenith reuses the open window; a 12 s "Zenith hasn't answered" line; the robot read live at every `ready` and run; a preset build named by its preset on Zenith's bar; pop-up wording.
+- **Sim:** a `shootAll` that cannot shoot gives up after the build's own patience (StarterBot 2.35 s) and the HUD says `AUTO COULDN’T SHOOT ON <STEP>`; findings in the file's own frame (DSIM and Zenith name the same elements); unregistered-command findings are not red problems; struts scaled into DSIM's walls; format 4 and Zenith's public starter autos in the AUTO lane.
+- **Panel:** buttons before the preview, compact list, delete Undo, full-library refusals, pre-match line names what will not run, Start position says when an auto decides the start.
+- **Verified end to end** (headless Chromium, real popup, local Zenith on this branch): New in Zenith → start at DSIM's pose, Save to DSIM (format 4) lands in the library, Simulate in DSIM lays the run over the plan, a second Edit reuses the window with no prompt, closing Zenith clears DSIM's line. 12/12. Rerun with `node scripts/zenith-e2e.mjs <zenith-checkout>` (its header says which servers it needs).
+- **Owner calls left:** (1) StarterBot from a pose it cannot score from keeps its preload; a real robot would fire and miss. Making DSIM fire needs an aim-assist bypass on `RobotCommand` (wire + `SIM_PATCH`), so it was not built. (2) Merge #511 with the next `pnpm ship`. (3) Going to `main` waits for the Zenith release that carries host mode; the checklist is in autos.md, "Going to `main`".
+
+
+## 2026-10-24 (photographed venues draw nothing flat; alpha UI sweep)
 
 **State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).**
 
