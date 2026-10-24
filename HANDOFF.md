@@ -1,4 +1,27 @@
-# HANDOFF — 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
+# HANDOFF — 2026-10-24d (BIOBUZZ 3D: idle warm + compile before draw; venue lens/room re-measured)
+
+**State: branch `perf/3d-preload-venues` off `alpha` (PR into alpha). Client only, no server change, no deploy.** Render lane 0 FAIL; `npm test` shared ALL PASS, BIOBUZZ fails only the known `balls: … LANDED predicted` plus the AUTO/AUTOUI/IMPORT lanes, because this box's `@horizon36596/zenith-*` are 0.0.0 stubs (no tarballs; `zenith-schema/index.js` was given a `FORMAT_VERSIONS` line locally so the lanes load). `vite build`, `docaudit`, `uiaudit`, `bundleaudit` (main/scene within baseline; `autos`/`hostWorker` "shrank" only because of the stubs) pass. `tsc` fails only in `src/auto/**` (stubs).
+
+- **Owner:** "preload all 3d things on alpha to resolve lag", "fix ugly warping of 3D scenes". Owner's choices: preload the code and the SELECTED venue only (not all five), shared caches rather than one live scene, and calibrate here while deferring the GPU rebuild.
+- **Preload (2f3a1e55):** `preloadRoomView` (the App idle hook) warms physics3d and calls the new `GameModule.warmScene` (`warmBiobuzz3d`, on the same chunk): post/surfaces/bay chunks and low-priority fetches of the selected venue's and the field's files. `createBiobuzzScene` awaits `compileAsync` (1 s cap); a photo swap runs `initTexture` + `compileAsync` before `swapVenue`. `vercel.json`: `/venues`, `/models` get a day's max-age + SWR.
+  - Measured in offscreen Electron against alpha:
+    - Cold Home: blocked time 1.8 s vs 2.6 s, worst task 939 ms vs 1599 ms, but the first 3D frame comes ~550 ms LATER (one cold sample each; the compile now happens before the canvas shows).
+    - Solo start: 2 long tasks vs 4–5.
+    - Venue swap: no hitch either way.
+  - Not done: module caches for the field GLB/HDR (unmeasured need).
+- **Lens (e660f62e):** court re-measured at 64.6 in (six line pairs, 64.3–64.9); room and `court-room.glb` rescaled about the lens (`scripts/venues/rescale-lens.ts`). Events hall and quad confirm 63. School hall and hangar stay at 63: their references disagree or are too far away to read.
+- **Bigger warp causes, pending a GPU rebuild (7c54bba3):**
+  - hangar photo turned 18° against its box (yaw 72), new box and a gable roof;
+  - school-hall auditorium 44 in down (not 25), stage edge a polyline;
+  - events-hall gable roof.
+  - All in pipeline inputs only (`layers.py`, `venues.cjs`). Shipped files and rows are unchanged.
+- **Runbook:** `scripts/venues/GPU-REBUILD.md`.
+  - A friend runs `depth.py` + `layers.py` for the three venues and sends `scratch/venues-layers` back.
+  - They need `hangar-4k.webp` from `scratch/venues-derived/` (a copy is on the owner's Desktop, `dsim-for-gpu-friend/`).
+  - The owner's half (meshes/pack/sync-env, hand edits, captures) is at the bottom of the runbook.
+- **Also found, not fixed:** the events hall is turned ~5–6° against its box (yaw ≈ −26, not −20) and its end walls look off by ~50 in. That needs its own re-measure, together with its derive furniture patch.
+
+## 2026-10-24c (AUTO: a shootAll that cannot score fires anyway, like the robot; SIM_PATCH 9)
 
 **State: on `alpha`, NOT on `main`. SERVER CHANGE (the sim and the input door): `dsim-alpha` DEPLOYED from `f4dbb2a8` (release v155, 2026-10-24 06:57Z, after the owner renewed the flyctl login): `/health` ok, one machine on the new image, clean boot, and the compiled server and room worker carry `bbFireUnaimed` and `SIM_PATCH = 9`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `test:workers` 170/170; `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Rule in `docs/area/autos.md` ("A `shootAll` THAT CANNOT SCORE FIRES ANYWAY").
 
