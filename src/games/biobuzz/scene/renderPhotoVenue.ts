@@ -54,7 +54,7 @@ import { VENUE_OVERHEAD_LAYER } from './renderVenue';
  * (`scripts/venues/`: MoGe-2 depth for every pixel, OneFormer to say which pixels are furniture,
  * LaMa to paint the furniture out):
  *   • THE ROOM (`bg-lo`, `bg-hi`): the measured room as a mesh closed round the lens — the box,
- *     with the floor step a venue has (the school hall's auditorium, 25 in below its stage, which the
+ *     with the floor step a venue has (the school hall's auditorium, 44 in below its stage, which the
  *     box drew at stage level and 0.6 × as deep) — textured with the INPAINTED backdrop, so a gap a
  *     camera sees behind a chair shows the floor that is there, not the chair again. MoGe's own room
  *     was tried and lost: its walls are a few per cent of noise, and a closed mesh bridges every jump

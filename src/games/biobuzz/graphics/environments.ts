@@ -311,8 +311,8 @@ export interface PhotoLayers {
   /** the panorama's rows `fg` holds, as shares of its height, top first */
   fgRows: readonly [number, number];
   /** where the room's floor is the photographed floor plane, when that is not the whole room: the
-   * field's shadow stops at its edge (the school hall's stage ends 80 in out, over an auditorium
-   * 30 in lower) */
+   * field's shadow stops at its edge (the school hall's stage edge is 80 in out at its nearest, with
+   * two thrusts further out, over an auditorium 44 in lower) */
   floor?: PhotoFloor;
   bytes: { bg: number; bgLow: number; fg: number; fgLow: number; mesh: number };
 }
@@ -829,7 +829,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.703125], { bg: 571_412, bgLow: 175_712, fg: 380_916, fgLow: 126_790, mesh: 86_044 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
+      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.71484375], { bg: 564_494, bgLow: 173_284, fg: 386_642, fgLow: 129_016, mesh: 86_668 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
       furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
@@ -849,7 +849,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'events-hall',
     name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
+    note: 'Brick walls, steel roof, concrete floor, 1.5 MB',
     rig: {
       hemiSky: 0xf2f6ff,
       hemiGround: 0x5f5c56,
@@ -867,9 +867,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       intensity: 0.6,
       saturation: 0.85,
       height: PHOTO_LENS_IN,
-      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 300 },
+      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 250, eave: 145, ridgeY: 20 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('events-hall', [0.177734375, 0.568359375], { bg: 684_238, bgLow: 213_540, fg: 433_312, fgLow: 150_396, mesh: 42_640 }),
+      layers: PHOTO_LAYERS('events-hall', [0.283203125, 0.568359375], { bg: 684_836, bgLow: 213_750, fg: 380_700, fgLow: 126_826, mesh: 43_676 }),
       fallback: 'gym',
       ...PH_CREDIT('events_hall_interior', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -880,32 +880,33 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
   {
     /**
      * A HANGAR — a big shed with a clear floor, a light aircraft at one end and the open door at
-     * the other. Turned 90° so that axis is x, the drivers' line of sight. Daylight through the
-     * side windows (`fieldlight`: az 64°, el 20°), which the key follows at 40°.
+     * the other. Turned 72° so that axis is x, the drivers' line of sight (90° left every long line
+     * of the shed at ~+18°). Daylight through the side windows (`fieldlight`: az 45°, el 20°),
+     * which the key follows at 40°.
      */
     id: 'hangar',
     name: 'Hangar',
-    note: 'Daylight through high windows, 2.0 MB',
+    note: 'Daylight through high windows, 1.8 MB',
     rig: {
       hemiSky: 0xfff6ec,
       hemiGround: 0x625a4e,
       hemiIbl: 1.3,
       hemiNoIbl: 2.1,
-      sun: [61, 115, 109],
+      sun: [94, 90, 109],
       sunColor: 0xfff2e0,
       sunIntensity: 1.9,
       exposure: 1.2,
     },
     venue: { kind: 'hall', floor: 0x7d7465, wall: 0xa59d8c, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.1, half: 760, ceil: 360 },
     photo: {
-      ...PHOTO_FILES('hangar', 1_329_858, 344_362, 430_444),
+      ...PHOTO_FILES('hangar', 1_331_394, 343_558, 430_660),
       gain: 1.5,
       intensity: 0.65,
       saturation: 0.85,
       height: PHOTO_LENS_IN,
-      room: { x0: -737, x1: 882, y0: -441, y1: 441, ceil: 410 },
+      room: { x0: -709, x1: 857, y0: -435, y1: 435, ceil: 483, eave: 328, ridgeY: 0 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('hangar', [0.376953125, 0.556640625], { bg: 1_148_178, bgLow: 307_092, fg: 341_228, fgLow: 95_796, mesh: 53_484 }),
+      layers: PHOTO_LAYERS('hangar', [0.44140625, 0.556640625], { bg: 1_151_120, bgLow: 306_910, fg: 204_964, fgLow: 59_102, mesh: 43_028 }),
       fallback: 'workshop',
       ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
     },

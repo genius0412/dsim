@@ -59,7 +59,7 @@ def eye(venue: str) -> np.ndarray:
 # parallel to x at y = `ridgeY` (`room_distance`).
 ROOMS = {
     'school-hall': dict(x0=-233, x1=246, y0=-208, y1=551, ceil=260),
-    # PENDING REBUILD (2026-10-24): gable roof. Eave 145: the +y wall's top along x −60…+120 (an
+    # Gable roof (2026-10-24). Eave 145: the +y wall's top along x −60…+120 (an
     # edge trace, 145–151) and the earlier read of 140–150. Ridge 250: the end walls' gable peaks,
     # −x 220 at y ≈ −60 (a clean edge trace of the brick against the roof, x0 off its floor line)
     # and +x 255–280 at y ≈ +100 (by eye, el 18.0° at az 9°); ridgeY 20 is their mean. NOT the
@@ -70,7 +70,7 @@ ROOMS = {
     # and its room is the row's (the RENDER lane) — a follow-up with its own re-measure. The walls
     # are as before (the floor lines put x0 nearer −663 and x1 ~650; same follow-up).
     'events-hall': dict(x0=-611, x1=668, y0=-318, y1=365, ceil=250, eave=145, ridgeY=20),
-    # PENDING REBUILD (2026-10-24): TURNED 18° (`yaw` 72 in `venues.cjs`, was 90) and re-measured
+    # TURNED 18° (2026-10-24; `yaw` 72 in `venues.cjs`, was 90) and re-measured
     # in that frame, in lens heights (H = 63 in). In the old files every long line ran at ~+18°:
     # both side walls (17.6°, 18.6°), the open door's centre (18.5°), the roof's spine (18°); turned,
     # the end walls' floor lines are level in a wall-square crop. Side walls ±6.9 H (±435): the +y
@@ -94,10 +94,10 @@ FIELD_KEEP_OUT = 90.0
 # x rising; y between them by straight lines, the end values past the ends) it is `z`. The school
 # hall's field stands on a stage over an auditorium, where the box drew the whole auditorium at stage
 # level and 0.6 x as deep.
-#   z (PENDING REBUILD, 2026-10-24; was −25.3, MoGe's depth of the auditorium's flat run): the front
+#   z (2026-10-24; was −25.3, MoGe's depth of the auditorium's flat run): the front
 #   rows' chairs, seat 0.45 m, seat-front over foot on six chairs at foot el 27.9–29.8°, put the lens
 #   2.49–2.88 m above the auditorium floor (mean 2.71, so 106.7 in): 44 in below the stage.
-#   edge (PENDING REBUILD; was a straight y0 = 80): the stage lip off a top-down projection at stage
+#   edge (2026-10-24; was a straight y0 = 80): the stage lip off a top-down projection at stage
 #   level, in lens heights × 63: the −x thrust's front at y 120 to x −148, a diagonal to (−32, 91),
 #   the centre (−25, 78) (0, 81) (38, 72) (57, 60), the stair foot (126, 50), then the +x thrust's
 #   front (137, 93) (189, 124) to the wall. Kept at 80 between x −25 and 134 where it measures
