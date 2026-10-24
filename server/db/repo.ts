@@ -7,6 +7,7 @@ import {
   isBadgeId,
   MAX_EQUIPPED_BADGES,
   podiumBadge,
+  TEAM_BADGES,
   withBadgeEquipped,
   type EquippedBadge,
 } from '../../src/badges';
@@ -1207,6 +1208,7 @@ export const REWARD_SOURCES: Readonly<Record<RewardSource, { silent: boolean }>>
   ranked_act: { silent: false },
   record_season: { silent: false },
   stargazer: { silent: false },
+  team: { silent: false },
   legacy: { silent: true },
 };
 const rewardIsSilent = (s: RewardSource): boolean => REWARD_SOURCES[s]?.silent === true;
@@ -6737,7 +6739,8 @@ export async function accessGroupsOf(userId: string): Promise<AccessGroup[]> {
   return rows.map((r) => r.grp).filter(isAccessGroup);
 }
 
-/** add an account to a group. Idempotent: a second grant keeps the first date and note. */
+/** add an account to a group. Idempotent: a second grant keeps the first date and note.
+ *  The group's TEAM BADGE comes with it (`grantTeamBadge`), pending until the player claims it. */
 export async function grantAccess(
   userId: string,
   group: AccessGroup,
@@ -6749,16 +6752,65 @@ export async function grantAccess(
      on conflict (user_id, grp) do nothing returning user_id`,
     [userId, group, grantedBy, note.slice(0, 200)],
   );
+  // even for an existing member: idempotent, and it repairs a member who has no grant yet
+  await grantTeamBadge(userId, group);
   return rows.length > 0;
 }
 
-/** take an account out of a group; false if it was not in it */
+/** take an account out of a group; false if it was not in it. The group's badge goes with it. */
 export async function revokeAccess(userId: string, group: AccessGroup): Promise<boolean> {
   const rows = await q<{ user_id: string }>(
     `delete from access_members where user_id = $1 and grp = $2 returning user_id`,
     [userId, group],
   );
+  await revokeReward(userId, teamBadgeKey(group), `removed from ${group}`);
   return rows.length > 0;
+}
+
+/**
+ * THE TEAM BADGES (`TEAM_BADGES`, `src/badges.ts`) — a group's membership IS its badge.
+ *
+ * One grant per account per group, keyed `team:<group>`, so leaving and re-joining re-opens the
+ * same key rather than minting a second grant (the badge never counts past 1). It goes through
+ * `grantReward` like every other reward: pending, and claimed through the dialog (owner,
+ * 2026-09-22: nothing is given silently).
+ */
+export const teamBadgeKey = (group: AccessGroup): string => `team:${group}`;
+
+export async function grantTeamBadge(userId: string, group: AccessGroup): Promise<GrantOutcome> {
+  return grantReward({
+    userId,
+    key: teamBadgeKey(group),
+    source: 'team',
+    reason: { kind: 'team', group },
+    items: [{ kind: 'badge', id: TEAM_BADGES[group] }],
+  });
+}
+
+/**
+ * RECONCILE the team badges with the groups — at every boot, on every machine, like
+ * `syncStaffRoles`. Grants to a member with no live grant (everyone who was in a group before
+ * the badges existed) and revokes from a holder who is no longer a member. SYMMETRIC, and it
+ * writes nothing when the two already agree.
+ */
+export async function syncTeamBadges(): Promise<{ granted: number; revoked: number }> {
+  let granted = 0;
+  let revoked = 0;
+  for (const group of ACCESS_GROUPS) {
+    const rows = await q<{ user_id: string }>(`select user_id from access_members where grp = $1`, [group]);
+    const members = new Set(rows.map((r) => r.user_id));
+    const live = await liveGrantHolders(teamBadgeKey(group));
+    for (const id of members) {
+      if (live.has(id)) continue;
+      const out = await grantTeamBadge(id, group);
+      if (out === 'created' || out === 'reopened') granted++;
+    }
+    for (const id of live) {
+      if (members.has(id)) continue;
+      if (await revokeReward(id, teamBadgeKey(group), `no longer in ${group}`)) revoked++;
+    }
+  }
+  return { granted, revoked };
 }
 
 /** every member, or one group's, newest first. Capped here, not by the route. */

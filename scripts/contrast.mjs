@@ -411,6 +411,12 @@ const serverPairs = (t) => {
     ['Podium badge numeral (gold)', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
     ['Podium badge numeral (silver)', t('--ds-podium-ink'), t('--ds-podium-silver'), AA],
     ['Podium badge numeral (bronze)', t('--ds-podium-ink'), t('--ds-podium-bronze'), AA],
+    // THE TEAM BADGES (developer, beta tester, contributor): three keycap-tile fills under ONE
+    // fixed ink, light block only, so each glyph is one pair for both themes. Held to text
+    // contrast like the numerals: a 2px stroked glyph on a 16px tile is as thin as type.
+    ['Team badge glyph (developer)', t('--ds-team-ink'), t('--ds-team-dev'), AA],
+    ['Team badge glyph (beta tester)', t('--ds-team-ink'), t('--ds-team-beta'), AA],
+    ['Team badge glyph (contributor)', t('--ds-team-ink'), t('--ds-team-contrib'), AA],
     // ⚠️ THE RIM IS WHAT KEEPS SILVER VISIBLE ON THE LIGHT PANEL (~1.9:1 by fill), so the rim
     // itself has to clear 1.4.11 against the panel in BOTH themes — this is that assertion.
     ['Badge / podium title rim on the panel (1.4.11)', t('--ds-mut'), panel, NON_TEXT],

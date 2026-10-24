@@ -217,6 +217,16 @@
   --ds-podium-silver: #b9c3cd;
   --ds-podium-bronze: #cd8a4f;
   --ds-podium-ink: #221a08;
+  /* THE TEAM BADGES (developer, beta tester, contributor) — a keycap tile each, a FILL under
+     one fixed dark ink. CATEGORY 2 like the podium: declared here only, they do not invert.
+     Three hues no other mark beside a name holds: not the owner's accent, the admin cyan,
+     the supporter gold, the award violet or the alliance red/blue. Like silver, the orange and
+     the pink are under 3:1 on the light panel by fill alone, so the --ds-mut rim every badge
+     wears is what separates them there. Each ink pair is measured in scripts/contrast.mjs. */
+  --ds-team-dev: #ff9a52;
+  --ds-team-beta: #f07cc8;
+  --ds-team-contrib: #8f9cff;
+  --ds-team-ink: #1b1426;
 
   /* Discord blurple — a FILL with fixed white ink (4.86:1), so it does NOT invert
      (same category as the alliance chips). Used only by the in-activity
@@ -4861,10 +4871,35 @@ tr.lb-detail td {
 }
 .contrib-body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
   min-width: 0;
+}
+/* a section header: its team badge, drawn, then the title */
+.contrib-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* the name, then its status disc and worn badges as SIBLINGS (docs/area/accounts.md). The
+   badges WRAP under a long name rather than squeezing it to an ellipsis on a narrow card. */
+.contrib-nameline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+}
+.contrib-nameline > .contrib-name {
+  min-width: 0;
+}
+/* the credit line: the role, or what they built */
+.contrib-role {
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink-dim);
 }
 /* name + @username are buttons (they navigate in-app), so they need the button
    reset — they must read as text, not as controls */
@@ -4898,10 +4933,11 @@ tr.lb-detail td {
   color: var(--ds-accent);
   text-decoration: underline;
 }
+/* top right of the card, beside the text rather than under it */
 .contrib-icons {
   display: flex;
+  flex: 0 0 auto;
   gap: 6px;
-  margin-top: 6px;
 }
 .contrib-icon {
   display: grid;
@@ -8545,6 +8581,7 @@ a.ds-cta {
 .appr-preview > .badge-mark,
 .award-list > li > .badge-mark,
 .appr-badge-art > .badge-mark,
+.contrib-head > .badge-mark,
 .rw-hero > .badge-mark {
   margin-left: 0;
 }
@@ -8570,6 +8607,23 @@ a.ds-cta {
 }
 .badge-mark.tier-record .badge-body {
   fill: var(--ds-award);
+}
+.badge-mark.team-developer .badge-body {
+  fill: var(--ds-team-dev);
+}
+.badge-mark.team-beta-tester .badge-body {
+  fill: var(--ds-team-beta);
+}
+.badge-mark.team-contributor .badge-body {
+  fill: var(--ds-team-contrib);
+}
+/* the team glyph: a stroked path in the tile's own box, like the podium numeral */
+.badge-mark .badge-team {
+  fill: none;
+  stroke: var(--ds-team-ink);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* THE STARGAZER DISC: a yellow ★ on the award violet. Yellow on that violet is ~2.4:1, so the
    star carries an award-ink outline — the outline is what separates it (both pairs in

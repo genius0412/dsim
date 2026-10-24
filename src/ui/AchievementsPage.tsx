@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GameId } from '../types';
 import { compareAwards } from '../awards';
-import { BADGE_EARN, BADGE_KEYS, BADGE_LABELS } from '../badges';
+import { BADGE_EARN, BADGE_LABELS, listedBadges } from '../badges';
 import { authEnabled } from '../lib/authClient';
 import { fetchUserStats, type UserStats } from '../net/api';
 import { gameServerConfigured } from '../net/env';
@@ -16,7 +16,8 @@ import { BadgeArt } from './BadgeMark';
  *
  * Every badge is listed, earned or not, because a badge is a category and its name alone does not
  * say what puts a count on it: `BADGE_EARN` is the sentence that does. An unearned badge is shown
- * dimmed (not hidden) so the page doubles as the list of what to go and do.
+ * dimmed (not hidden) so the page doubles as the list of what to go and do. A team badge is the
+ * exception (`listedBadges`): it is given, not earned, so only its holders see it here.
  */
 export function AchievementsPage({ myUserId, game }: { myUserId: string | null; game?: GameId }) {
   const [stats, setStats] = useState<UserStats | null>(null);
@@ -72,7 +73,7 @@ export function AchievementsPage({ myUserId, game }: { myUserId: string | null; 
           <div className="ds-loading">Loading achievements…</div>
         ) : (
           <ul className="ds-badge-list">
-            {BADGE_KEYS.map((id) => {
+            {listedBadges(counts).map((id) => {
               const n = counts[id] ?? 0;
               return (
                 <li key={id} className={`ds-badge-row${n > 0 ? ' earned' : ''}`}>

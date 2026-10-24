@@ -321,11 +321,14 @@ import {
   BADGE_LABELS,
   BADGE_TIER,
   MAX_EQUIPPED_BADGES,
+  TEAM_BADGES,
   coerceEquippedBadges,
+  isTeamBadge,
+  listedBadges,
   podiumBadge,
   withBadgeEquipped,
 } from '../src/badges';
-import { compareGrants, grantCards, rewardHeadline, rewardWhy, type RewardGrant } from '../src/rewards';
+import { compareGrants, grantCards, rewardEyebrow, rewardHeadline, rewardWhy, type RewardGrant } from '../src/rewards';
 import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
@@ -28144,6 +28147,36 @@ const dumperSetup = (): RobotSetup => {
   const q = [star, g({ id: 'late', reason: { kind: 'ranked_act', game: 'decode', act: 3, mode: '2v2', rank: 1, rating: 0 } }), rec, g({ id: 'early', reason: { kind: 'ranked_act', game: 'decode', act: 1, mode: '1v1', rank: 1, rating: 0 } })].sort(compareGrants);
   check('rewards: the queue shows the podium first, oldest act first, then records, then the rest',
     q.map((x) => x.id === 'x' ? x.reason.kind : x.id).join(',') === 'early,late,record_season,stargazer', q.map((x) => x.id === 'x' ? x.reason.kind : x.id).join(','));
+
+  /* THE TEAM BADGES (developer, beta tester, contributor) follow the access groups: the server
+     grants `TEAM_BADGES[group]` on `grantAccess`, so a group with no badge, or a badge naming a
+     group that does not exist, would be a membership that silently gives nothing. */
+  check('⚠️ team badges: one per access group, exactly', JSON.stringify(Object.keys(TEAM_BADGES).sort()) === JSON.stringify([...PROTO.ACCESS_GROUPS].sort()),
+    Object.keys(TEAM_BADGES).join());
+  check('team badges: each is a real badge in the team tile family', Object.values(TEAM_BADGES).every((id) => BADGE_KEYS.includes(id) && isTeamBadge(id)));
+  check('team badges: ...and only those three are', BADGE_KEYS.filter(isTeamBadge).length === 3);
+  check('team badges: a worn developer badge survives the wire', JSON.stringify(coerceEquippedBadges([{ id: 'developer', n: 1 }])) === JSON.stringify([{ id: 'developer', n: 1 }]));
+  // given, not earned: the picker and Achievements list a team badge to its holders only
+  check('⚠️ team badges: an account holding none sees none of them listed', !listedBadges({}).some(isTeamBadge) && listedBadges({}).includes('stargazer'));
+  check('team badges: ...and a holder sees theirs, and only theirs', listedBadges({ 'beta-tester': 1 }).filter(isTeamBadge).join() === 'beta-tester');
+  const team = g({ source: 'team', reason: { kind: 'team', group: 'beta' }, items: [{ kind: 'badge', id: 'beta-tester' }] });
+  check('team badges: the claim card heads with the badge, under "DSIM team"', rewardHeadline(team) === 'Beta Tester' && rewardEyebrow(team) === 'DSIM team', `${rewardEyebrow(team)} / ${rewardHeadline(team)}`);
+  check('team badges: ...and says why in one line', rewardWhy(team).join('|') === 'You test new builds of DSIM before they ship.', rewardWhy(team).join('|'));
+
+  // THE CONTRIBUTORS PAGE ROSTER: keyed by account id, avatars served from our own origin
+  const roster = await import('../src/contributors');
+  const people = [...roster.DEVELOPERS, ...roster.CONTRIBUTORS, ...roster.BETA_TESTERS];
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  check('contributors: every rostered account is an account ID, not a username', people.every((c) => c.userId === undefined || uuid.test(c.userId)),
+    people.filter((c) => c.userId && !uuid.test(c.userId)).map((c) => c.name).join());
+  check('contributors: the owner leads the developers', roster.DEVELOPERS[0]?.role === 'Owner');
+  for (const sec of [roster.DEVELOPERS, roster.CONTRIBUTORS, roster.BETA_TESTERS]) {
+    const ids = sec.flatMap((c) => (c.userId ? [c.userId] : []));
+    check('contributors: nobody is listed twice in one section', new Set(ids).size === ids.length);
+  }
+  const { existsSync } = await import('node:fs');
+  const missing = people.filter((c) => c.github && !existsSync(`public/contributors/${c.github.toLowerCase()}.webp`)).map((c) => c.github);
+  check('⚠️ contributors: every GitHub login has its vendored avatar (python scripts/contributor-avatars.py)', missing.length === 0, missing.join());
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

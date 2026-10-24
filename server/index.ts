@@ -137,6 +137,7 @@ import {
   challengeParty,
   clearRoomInvitesTo,
   syncStaffRoles,
+  syncTeamBadges,
   runRewardJob,
   type GlobalPresence,
   // the admin console's own layer (migration 0041)
@@ -4786,6 +4787,10 @@ migrate()
     await runRewardJob()
       .then((paid) => console.log(`[rewards] boot award job: ${paid.grants} grant(s) over ${paid.periods} new period(s)`))
       .catch((e) => console.error('[rewards] boot award job failed; the next boot or roll retries it:', e));
+    // the team badges follow the access groups (`syncTeamBadges`); a failure is retried next boot
+    await syncTeamBadges()
+      .then((t) => console.log(`[rewards] team badges synced: +${t.granted} -${t.revoked}`))
+      .catch((e) => console.error('[rewards] team badge sync failed; the next boot retries it:', e));
     /* THE COMPETITION RUNNER (0059) — on the matchmaker's machine only, and asleep unless a
        competition is running: one read at boot, then it arms itself from the API. */
     startCompetitionRunner(REGION === '' || REGION === MATCHMAKER_REGION);

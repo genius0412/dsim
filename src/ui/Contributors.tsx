@@ -1,58 +1,66 @@
 import { useEffect, useState } from 'react';
-import { CORE_TEAM, CONTRIBUTORS, THIRD_PARTY, type Contributor } from '../contributors';
-import { fetchProfileByUsername } from '../net/api';
+import type { BadgeId } from '../badges';
+import { BETA_TESTERS, CONTRIBUTORS, DEVELOPERS, THIRD_PARTY, type Contributor } from '../contributors';
+import { fetchProfile, type PublicProfile } from '../net/api';
 import { LINKS } from '../seasons';
+import { BadgeArt, BadgeMarks } from './BadgeMark';
+import { SupporterBadge } from './SupporterBadge';
+
+/** the three people sections, each headed by the team badge its members wear */
+const SECTIONS: readonly { title: string; badge: BadgeId; people: Contributor[] }[] = [
+  { title: 'Developers', badge: 'developer', people: DEVELOPERS },
+  { title: 'Contributors', badge: 'contributor', people: CONTRIBUTORS },
+  { title: 'Beta testers', badge: 'beta-tester', people: BETA_TESTERS },
+];
 
 /**
  * Contributors — the people, sponsor and open-source projects behind the sim, linked
  * from the footer.
  *
- * Display names are NOT hardcoded. The whole point of the handle system is that
- * `handle` is the one source of truth for what a player is called and can change
- * at any time, so each card resolves its own live handle from `inGameUsername`
- * and falls back to the static `fallbackName` while that's in flight, when the
- * contributor has no game account, or when the game server is unreachable.
+ * The CREDIT is static (`src/contributors.ts`: a name, a role, a GitHub login) and the PERSON
+ * is live: each card with a `userId` reads that account's profile for its current @username,
+ * in-game name, status disc and worn badges — the marks every other surface prints beside a
+ * name (`docs/area/ui.md`). A card whose profile does not resolve (no account, the server
+ * asleep, a Vercel preview with no game server) shows the credit alone and links nowhere.
  *
- * One fetch per contributor is fine at this size; past ~15 people this wants a
- * batch endpoint rather than N parallel requests.
+ * One fetch per unique account, once per visit: about a dozen at this size. Past ~20 people
+ * this wants a batch read rather than N parallel requests.
  */
 export function Contributors({ onOpenProfile }: { onOpenProfile: (username: string) => void }) {
+  const live = useLiveProfiles();
   return (
     <>
       <h1 className="ds-h1">Contributors</h1>
 
-      <section className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Core team</span>
-          <span className="ds-count">{CORE_TEAM.length}</span>
-        </div>
-        <div className="ds-panel-body">
-          <div className="contrib-grid">
-            {CORE_TEAM.map((c) => (
-              <ContributorCard key={c.fallbackName} c={c} onOpenProfile={onOpenProfile} />
-            ))}
+      {SECTIONS.map((sec) => (
+        <section key={sec.title} className="ds-panel">
+          <div className="ds-panel-h">
+            {/* the section's badge, drawn: what a member of it wears beside their name */}
+            <span className="contrib-head">
+              <BadgeArt id={sec.badge} size="md" />
+              <h2 className="ds-panel-title">{sec.title}</h2>
+            </span>
+            <span className="ds-count">{sec.people.length}</span>
           </div>
-        </div>
-      </section>
-
-      <section className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Contributors</span>
-          <span className="ds-count">{CONTRIBUTORS.length}</span>
-        </div>
-        <div className="ds-panel-body">
-          {/* No caption under this grid. It read "Names link to that driver's
-              in-game profile where they have one" — a sentence explaining that
-              links are links, under cards where the linked names already
-              hover-underline in the accent colour and the unlinked ones already
-              render as `.static` plain text. */}
-          <div className="contrib-grid">
-            {CONTRIBUTORS.map((c) => (
-              <ContributorCard key={c.fallbackName} c={c} onOpenProfile={onOpenProfile} />
-            ))}
+          <div className="ds-panel-body">
+            {/* No caption under this grid. It read "Names link to that driver's
+                in-game profile where they have one" — a sentence explaining that
+                links are links, under cards where the linked names already
+                hover-underline in the accent colour and the unlinked ones already
+                render as `.static` plain text. */}
+            <div className="contrib-grid">
+              {sec.people.map((c) => (
+                <ContributorCard
+                  key={c.userId ?? c.name}
+                  c={c}
+                  profile={c.userId ? live.get(c.userId) : undefined}
+                  onOpenProfile={onOpenProfile}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ))}
 
       {/* NO "Presented by" HERE. `AppShell`'s `<SponsorFooterMark />` already carries it on
           every shell screen, including this one — a second mark on this page said the same
@@ -153,92 +161,100 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
   );
 }
 
-function ContributorCard({
-  c,
-  onOpenProfile,
-}: {
-  c: Contributor;
-  onOpenProfile: (username: string) => void;
-}) {
-  const [handle, setHandle] = useState<string | null>(null);
-
+/** every rostered account's live profile, by id; fetched once, each id once */
+function useLiveProfiles(): Map<string, PublicProfile> {
+  const [profiles, setProfiles] = useState<Map<string, PublicProfile>>(() => new Map());
   useEffect(() => {
-    const username = c.inGameUsername;
-    if (!username) return;
     let cancelled = false;
-    fetchProfileByUsername(username)
-      .then((p) => {
-        if (!cancelled) setHandle(p.handle);
-      })
-      // no game server, asleep, or the account was deleted — the static name stands
-      .catch(() => {});
+    const ids = [...new Set(SECTIONS.flatMap((s) => s.people.flatMap((c) => (c.userId ? [c.userId] : []))))];
+    for (const id of ids) {
+      fetchProfile(id)
+        .then((p) => {
+          // an id with no profile here answers `{ handle: null, username: null }`, not a 404
+          if (cancelled || !p.username) return;
+          setProfiles((m) => new Map(m).set(id, p));
+        })
+        // no game server, asleep, or the account was deleted — the credit stands alone
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };
-  }, [c.inGameUsername]);
+  }, []);
+  return profiles;
+}
 
-  const name = handle ?? c.fallbackName;
-  const username = c.inGameUsername;
+function ContributorCard({
+  c,
+  profile,
+  onOpenProfile,
+}: {
+  c: Contributor;
+  profile?: PublicProfile;
+  onOpenProfile: (username: string) => void;
+}) {
+  const username = profile?.username ?? null;
+  // the in-game name, when it is not the credit's own (Saket T plays as "solver")
+  const handle = profile?.handle && profile.handle.toLowerCase() !== c.name.toLowerCase() ? profile.handle : null;
   const open = (): void => {
     if (username) onOpenProfile(username);
   };
 
   return (
     <div className="contrib-card">
-      <Avatar url={c.discordAvatarUrl} name={name} />
+      <Avatar login={c.github} name={c.name} />
       <div className="contrib-body">
-        {/* NO `title` on either of these. Both said "View <name>'s profile", on
-            two adjacent controls, over visible labels that already name the
-            person — the button text IS the accessible name. */}
-        {username ? (
-          <button className="contrib-name" onClick={open}>
-            {name}
-          </button>
-        ) : (
-          <span className="contrib-name static">{name}</span>
-        )}
-        {username ? (
+        {/* NO `title` on either button. Both said "View <name>'s profile", on two adjacent
+            controls, over visible labels that already name the person — the button text IS
+            the accessible name. The badges are SIBLINGS of the name, never inside it. */}
+        <span className="contrib-nameline">
+          {username ? (
+            <button className="contrib-name" onClick={open}>
+              {c.name}
+            </button>
+          ) : (
+            <span className="contrib-name static">{c.name}</span>
+          )}
+          {profile && <SupporterBadge supporter={profile.supporter} role={profile.role} />}
+          {profile && <BadgeMarks badges={profile.badges} />}
+        </span>
+        {username && (
           <button className="contrib-user" onClick={open}>
-            @{username}
+            {handle && `${handle} · `}@{username}
           </button>
-        ) : (
-          c.role && <span className="contrib-user static">{c.role}</span>
         )}
-        {/* `aria-label` only, no `title`. The glyph has no visible label so the
-            aria-label is required; the title just duplicated it into a hover
-            tooltip on an obvious Discord/GitHub mark. */}
+        {c.role && <span className="contrib-role">{c.role}</span>}
+      </div>
+      {/* `aria-label` only, no `title`. The glyph has no visible label so the aria-label is
+          required; the title just duplicated it into a hover tooltip on an obvious mark. */}
+      {(c.discordUrl || c.github) && (
         <div className="contrib-icons">
           {c.discordUrl && (
-            <a
-              className="contrib-icon"
-              href={c.discordUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={`${name} on Discord`}
-            >
+            <a className="contrib-icon" href={c.discordUrl} target="_blank" rel="noreferrer" aria-label={`${c.name} on Discord`}>
               <DiscordGlyph />
             </a>
           )}
-          {c.githubUrl && (
+          {c.github && (
             <a
               className="contrib-icon"
-              href={c.githubUrl}
+              href={`https://github.com/${c.github}`}
               target="_blank"
               rel="noreferrer"
-              aria-label={`${name} on GitHub`}
+              aria-label={`${c.name} on GitHub`}
             >
               <GitHubGlyph />
             </a>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-/** Discord avatar, or the contributor's initials when there's no URL on file.
- * `onError` covers a dead CDN link so a broken-image icon never ships. */
-function Avatar({ url, name }: { url?: string; name: string }) {
+/** The GitHub avatar, served from our own origin (`scripts/contributor-avatars.py` says why), or
+ * the person's initials when there is none. `onError` covers a missing file so a broken-image
+ * icon never ships. `BASE_URL`, not a bare `/`: the desktop build loads from `file://`. */
+function Avatar({ login, name }: { login?: string; name: string }) {
   const [failed, setFailed] = useState(false);
   const initials = name
     .split(/\s+/)
@@ -246,11 +262,11 @@ function Avatar({ url, name }: { url?: string; name: string }) {
     .map((w) => w[0]?.toUpperCase() ?? '')
     .join('');
 
-  if (!url || failed) return <div className="contrib-avatar fallback">{initials || '?'}</div>;
+  if (!login || failed) return <div className="contrib-avatar fallback">{initials || '?'}</div>;
   return (
     <img
       className="contrib-avatar"
-      src={url}
+      src={`${import.meta.env.BASE_URL ?? '/'}contributors/${login.toLowerCase()}.webp`}
       alt=""
       loading="lazy"
       onError={() => setFailed(true)}

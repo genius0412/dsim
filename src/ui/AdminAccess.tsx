@@ -7,12 +7,15 @@ import {
   type AccessGrantResult,
   type AccessMemberRow,
 } from '../net/api';
+import { BADGE_LABELS, TEAM_BADGES } from '../badges';
 import { ACCESS_GROUPS, ACCESS_GROUP_LABEL, type AccessGroup } from '../net/protocol';
 import { AccountName, ListState, When, confirmed, usePolled } from './adminBits';
 
 /**
  * ACCESS GROUPS (0051): beta testers, developers, contributors. A member gets past any
  * lockdown that lists their group, and a build baked closed (the alpha) lets every group in.
+ * Each group also gives its TEAM BADGE (`TEAM_BADGES`): added, the member is offered it to
+ * claim; removed, it is revoked (`grantAccess` / `revokeAccess`, server/db/repo.ts).
  *
  * Added BY PLAYER TAG (display name, @username or account id), stored BY ACCOUNT ID: a rename
  * keeps the membership, and the list shows today's name. Each deployment keeps its own list,
@@ -69,7 +72,14 @@ export function AdminAccess({ onOpenUser }: { onOpenUser?: (userId: string) => v
   };
 
   const remove = async (m: AccessMemberRow): Promise<void> => {
-    if (!confirmed('Remove', `${m.handle ?? m.userId} from ${ACCESS_GROUP_LABEL[m.group].toLowerCase()}s`, 'They lose lockdown access at their next check.')) return;
+    if (
+      !confirmed(
+        'Remove',
+        `${m.handle ?? m.userId} from ${ACCESS_GROUP_LABEL[m.group].toLowerCase()}s`,
+        `They lose lockdown access at their next check, and their ${BADGE_LABELS[TEAM_BADGES[m.group]]} badge now.`,
+      )
+    )
+      return;
     const r = await adminRevokeAccess(m.group, m.userId);
     setStatus(r.ok ? (r.removed ? 'Removed.' : 'They were not in that group.') : r.error);
     reload();
@@ -112,6 +122,10 @@ export function AdminAccess({ onOpenUser }: { onOpenUser?: (userId: string) => v
             Add all to {ACCESS_GROUP_LABEL[group].toLowerCase()}s
           </button>
         </div>
+        {/* membership IS the badge (`TEAM_BADGES`), so the person adding someone is told */}
+        <p className="ds-hint">
+          A member is offered the {BADGE_LABELS[TEAM_BADGES[group]]} badge to claim. Removing them takes it back.
+        </p>
         {status && <p className="ds-hint" role="status">{status}</p>}
         {results && results.some((x) => !x.ok) && (
           <ul className="adm-results">

@@ -178,7 +178,16 @@ rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
   machine drops its entry at once. **Each deployment has its own list**: alpha reads the alpha
   database. A tag that has never signed in on that site does not resolve: `GET /api/status`
   creates the profile, so signing in once on the closed screen is enough.
-- **Not built:** a badge for testers on profiles or rosters. `profiles.role` is untouched.
+- **EACH GROUP GIVES A TEAM BADGE** (2026-10-24): `dev` → Developer, `beta` → Beta Tester,
+  `contributor` → Contributor (`TEAM_BADGES`, `src/badges.ts`). Membership IS the badge, so there
+  is no second list: `grantAccess` grants it (`grantTeamBadge`, key `team:<group>`, source `team`,
+  PENDING like every reward) and `revokeAccess` revokes it, which re-counts the worn badges and
+  takes it off the name. A re-join re-opens the same key, so it never counts past 1.
+  `syncTeamBadges` runs at every boot after the award job and reconciles both ways (members who
+  predate the badges, holders removed by hand). Per deployment like the groups: alpha's badges
+  are alpha's. A team badge is listed in the picker and on Achievements only to its holders
+  (`listedBadges`): it is given, not something to go and earn. `profiles.role` is untouched.
+  Covered in `npm run dbtest` ("team badge:") and `npm test` ("team badges:").
 
 **STAFF ROLES — owner + admin badges, and perks, DONE.** `profiles.role`
 (`0020_staff_roles.sql`) is null | 'owner' | 'admin'. It is a **PROJECTION** of
@@ -277,8 +286,9 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   a row says so); the only silent source is `legacy`. `grantCosmetic` is now the inventory write a
   claim makes, not a grant path. A revoked grant keeps its row (`revoked_at`), so a re-star re-opens
   the same key as pending instead of minting a second grant.
-- **BADGES COUNT** (`src/badges.ts`). Five closed ids: `ranked-gold|silver|bronze` (act podium),
-  `record-holder` (season records) and `stargazer` (the GitHub star; revocable, never past 1). The
+- **BADGES COUNT** (`src/badges.ts`). Eight closed ids: `ranked-gold|silver|bronze` (act podium),
+  `record-holder` (season records), `stargazer` (the GitHub star; revocable, never past 1) and
+  the team badges `developer|beta-tester|contributor` (the access groups, above; same rules). The
   count is claimed, unrevoked grants carrying the id. `profiles.equipped_badges` (`[{id,n}]`, at
   most 3 — the owner kept 3 when titles folded in) is a PROJECTION of that count, rewritten only by
   `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so every

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { authClient, authEnabled } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import { fetchProfile, type PublicProfile } from '../net/api';
-import { BADGE_EARN, BADGE_KEYS, BADGE_LABELS, MAX_EQUIPPED_BADGES, withBadgeEquipped, type BadgeId } from '../badges';
+import { BADGE_EARN, BADGE_LABELS, MAX_EQUIPPED_BADGES, listedBadges, withBadgeEquipped, type BadgeId } from '../badges';
 import { rewardEyebrow, rewardHeadline } from '../rewards';
 import { useAds } from '../ads/AdsProvider';
 import { AuthDisabled } from './AuthDisabled';
@@ -222,8 +222,9 @@ function Unclaimed() {
  * THE BADGE PICKER — wear up to `MAX_EQUIPPED_BADGES`, in the order picked.
  *
  * EVERY badge is listed, the ones not yet earned as locked tiles that say how to earn them:
- * the set is five and closed, and a badge you cannot see is not one you can aim at. The same
- * call `CosmeticsRows` makes for locked swatches ("a visible locked option is honest").
+ * the set is small and closed, and a badge you cannot see is not one you can aim at. The same
+ * call `CosmeticsRows` makes for locked swatches ("a visible locked option is honest"). The
+ * team badges are the exception (`listedBadges`): given, not earned, so only a holder sees one.
  * Picking a fourth when three are worn swaps out the one worn longest (`withBadgeEquipped`).
  */
 function BadgePicker() {
@@ -249,7 +250,7 @@ function BadgePicker() {
       </div>
       <div className="ds-panel-body stack start">
         <div className="ds-opts two" role="group" aria-label="Badges">
-          {BADGE_KEYS.map((id) => {
+          {listedBadges(counts).map((id) => {
             const n = counts[id] ?? 0;
             const on = worn.includes(id);
             return (

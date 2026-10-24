@@ -3,7 +3,7 @@ import { seasonFor } from './seasons';
 import { DRIVETRAIN_LABELS } from './ui/labelData';
 import type { DrivetrainType } from './types';
 import { awardRankWord } from './awards';
-import { BADGE_LABELS, isBadgeId, type BadgeId } from './badges';
+import { BADGE_LABELS, TEAM_BADGES, isBadgeId, type BadgeId } from './badges';
 
 /**
  * THE REWARD LEDGER'S SHARED SHAPES, and the words for them.
@@ -52,10 +52,15 @@ export type RewardReason =
       placements: RecordPlacement[];
     }
   | { kind: 'stargazer' }
+  /** a member of an access group (`TEAM_BADGES`) — the key is the group, not the badge */
+  | { kind: 'team'; group: TeamGroup }
   | { kind: 'other'; note?: string };
 
+/** the access groups that give a badge, as `TEAM_BADGES` keys them */
+export type TeamGroup = keyof typeof TEAM_BADGES;
+
 /** where a grant came from. `SOURCES` in `server/db/repo.ts` says which of these are silent. */
-export type RewardSource = 'ranked_act' | 'record_season' | 'stargazer' | 'legacy';
+export type RewardSource = 'ranked_act' | 'record_season' | 'stargazer' | 'team' | 'legacy';
 
 /** a grant as the API sends it. */
 export interface RewardGrant {
@@ -131,6 +136,7 @@ export function rewardEyebrow(g: Pick<RewardGrant, 'reason'>): string {
   const r = g.reason;
   if (r.kind === 'ranked_act' || r.kind === 'record_season') return `${rewardPeriod(r)} ended`;
   if (r.kind === 'stargazer') return 'GitHub';
+  if (r.kind === 'team') return 'DSIM team';
   return 'Reward';
 }
 
@@ -153,8 +159,16 @@ export function rewardWhy(g: Pick<RewardGrant, 'reason'>): string[] {
     );
   }
   if (r.kind === 'stargazer') return ['You starred DSIM on GitHub. It stays while the star does.'];
+  if (r.kind === 'team') return [TEAM_WHY[r.group] ?? 'The DSIM team added you to a group.'];
   return r.note ? [r.note] : [];
 }
+
+/** why a team badge was given, one line per group. Unknown groups (a newer server) fall back. */
+const TEAM_WHY: Record<TeamGroup, string> = {
+  dev: 'You build DSIM.',
+  beta: 'You test new builds of DSIM before they ship.',
+  contributor: 'Your work is part of DSIM.',
+};
 
 /** a badge item as words, with the count it reaches once this grant is claimed. */
 export function rewardBadgeText(id: BadgeId, countAfter: number): string {

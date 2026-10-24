@@ -140,10 +140,11 @@ export function RewardCard({
 
   // the card's loudness comes from the GRANT, so every card of one reward looks alike: a
   // podium's metal, the record violet, or the neutral card for anything else (the GitHub
-  // star's disc is a badge, but not a competitive one)
+  // star's disc and the team badges are badges, but not competitive ones)
   const lead = grantBadges(grant)[0] ?? null;
   const leadTier = lead ? BADGE_TIER[lead] : null;
-  const tier = leadTier === 'stargazer' || (!leadTier && grant.reason.kind === 'stargazer') ? 'plain' : leadTier ?? 'record';
+  const plain = leadTier === 'stargazer' || leadTier === 'team' || (!leadTier && (grant.reason.kind === 'stargazer' || grant.reason.kind === 'team'));
+  const tier = plain ? 'plain' : leadTier ?? 'record';
   const headId = `rw-h-${grant.id}`;
 
   // the count THIS badge reaches — the one it is about to reach until the claim lands

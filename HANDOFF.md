@@ -1,3 +1,13 @@
+# HANDOFF — 2026-10-24 (Contributors page; Developer, Beta Tester and Contributor badges)
+
+**State: on `alpha`. SERVER change (team badge grants + boot sync), no migration; `dsim-alpha` redeployed.** `npm test`, `dbtest` (team badge block), `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `dbtest` has 4 unrelated failures: the analytics blocks insert rows dated 2026-09-10, now past the 30-day raw retention.
+
+- **Owner:** make the contributors page better; Dohun is owner, Felix and Saket admins; contributors should match GitHub; add developer and beta tester lists (beta testers: leo, aadvik, daniel/dank); give developers, beta testers and contributors a badge.
+- **Badges:** `developer`, `beta-tester`, `contributor` (`TEAM_BADGES`, `src/badges.ts`), a keycap tile each (`BadgeMark.tsx`, tokens `--ds-team-*`). They follow the admin console's ACCESS GROUPS: `grantAccess` grants the group's badge (pending, claimed via the reward dialog), `revokeAccess` revokes it, `syncTeamBadges` reconciles at every boot. Listed in the picker/Achievements only to holders. Rules in `docs/area/accounts.md` (Lockdown and access groups).
+- **Page:** three sections (Developers, Contributors, Beta testers), each headed by its badge. Roster in `src/contributors.ts`, keyed by ACCOUNT ID (usernames differ between alpha and prod: Aadvik is @aadvikg / @aadvikgupta). Cards show the credit name, live @username (+ in-game name when different), status disc, worn badges, a credit line and GitHub. Avatars are VENDORED in `public/contributors/` (`python scripts/contributor-avatars.py`), so visitors' IPs do not reach GitHub and the privacy policy needs no change.
+- **Roster vs GitHub:** added Saket (featurescript) and Arush; Shaan now links his GitHub. Shlok removed: both his PRs were closed unmerged (the fix was reimplemented in d4aab7f8). `CONTRIBUTORS.md` (the CLA record) is unchanged; Saket and Arush are not in it.
+- **Groups on alpha:** dev = ace, felix, featurescript; contributor = baron, therealkingcob, arushyadlapati, aadvikgupta; beta was already arushyadlapati, aadvikgupta, dank201, leoo. Arush is in `beta` on alpha but not in the owner's beta list, so he is offered Beta Tester too; remove him from beta in the console if that is wrong. Production has no group members yet: add them in prod's console after this reaches `main`.
+
 # HANDOFF — 2026-10-21 (Home's photographed venue was distorted)
 
 **State: committed to `alpha`; client only, no server change, no deploy needed (Vercel builds alpha).**

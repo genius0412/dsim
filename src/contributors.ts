@@ -1,93 +1,73 @@
 import { creditedEnvironments, environmentCredit } from './games/biobuzz/graphics/environments';
 
 /**
- * The Contributors page's roster.
+ * The Contributors page's roster: the team, the people whose work is in the GitHub repo, and
+ * the beta testers.
  *
- * This is HAND-MAINTAINED, and deliberately so: none of it is derivable from the
- * account system. Auth is Neon Auth only — there is no Discord OAuth anywhere in
- * this codebase, so a Discord avatar or profile link can't be looked up, and a
- * contributor's game account (if they even have one) isn't linked to their GitHub
- * handle either. Keep it in step with `CONTRIBUTORS.md`, which is the CLA record;
- * this file is only what the page renders.
+ * HAND-MAINTAINED, deliberately. Who counts as a contributor is a judgement about the repo
+ * (merged work on GitHub, which `CONTRIBUTORS.md` records alongside the CLA), not something the
+ * account system knows. What the account system DOES know is each person's live name and
+ * badges, so a card keyed by `userId` reads those at render time (`fetchProfile`).
  *
- * EVERY field except `fallbackName` is optional, and the card degrades cleanly
- * without each one — a contributor with no game account, no Discord, or no avatar
- * still renders. That matters because the page must also work when the game server
- * is unreachable (a cold Fly machine, or a Vercel preview with no
- * `VITE_GAME_SERVER_URL`), where NO live handle resolves for anyone.
+ * KEYED BY ACCOUNT ID, NOT USERNAME. The id is the Neon Auth `sub`, the same on alpha and
+ * production; a @username is per deployment and changes (Aadvik is @aadvikg on one and
+ * @aadvikgupta on the other). Every field except `name` is optional, and a card degrades
+ * cleanly without each one — which matters because the page must also work when the game
+ * server is unreachable, where no live profile resolves for anyone.
+ *
+ * The TEAM BADGES are not read from here: they follow the admin console's access groups
+ * (`TEAM_BADGES`, `src/badges.ts`). This list is the credits; the groups are who wears what.
  */
 export interface Contributor {
-  /** Shown until (or instead of) a live game handle resolves. Required — it is the
-   * only thing standing between a cold server and a page of blank cards. */
-  fallbackName: string;
-  /** Short role/credit line, e.g. "Project owner". */
+  /** the name the credit is in — a real name for the team and GitHub contributors */
+  name: string;
+  /** the account (`profiles.user_id`). Drives the live @username, the profile link and the
+   * badges beside the name. Omit for someone with no game account. */
+  userId?: string;
+  /** a short credit line: the role for the team, what they built for contributors */
   role?: string;
-  /** In-game username (the `/profile/<username>` slug). Drives the LIVE display
-   * name and the profile link. Omit for contributors with no game account: the
-   * card then shows `fallbackName` and isn't clickable. */
-  inGameUsername?: string;
-  /** Full Discord CDN avatar URL. Omit to render initials instead. */
-  discordAvatarUrl?: string;
+  /** GitHub login. Links the profile, and names the avatar vendored at
+   * `public/contributors/<login>.webp` (`scripts/contributor-avatars.py`). */
+  github?: string;
   /** Discord profile link (`https://discord.com/users/<id>`). */
   discordUrl?: string;
-  /** GitHub profile link. */
-  githubUrl?: string;
 }
 
-/**
- * CORE TEAM — the owner, plus anyone else `CONTRIBUTORS.md` marks with a staff-level
- * `role` rather than just a name. Today that is the owner alone; a second entry here
- * means giving them a `role` in `CONTRIBUTORS.md` first, not just moving their card.
- *
- * TODO(fill in): `discordAvatarUrl` and `discordUrl` still need collecting.
- */
-export const CORE_TEAM: Contributor[] = [
-  {
-    fallbackName: 'Dohun Kim',
-    role: 'Project owner',
-    inGameUsername: 'ace',
-    githubUrl: 'https://github.com/genius0412',
-  },
+/** THE TEAM — the owner and the admins (`ADMIN_USER_IDS`), who build and run DSIM. */
+export const DEVELOPERS: Contributor[] = [
+  { name: 'Dohun Kim', role: 'Owner', userId: '0c9c1654-c720-40f5-9352-1b0cde1c465a', github: 'genius0412' },
+  { name: 'Felix D', role: 'Admin', userId: 'e3d73282-ac91-4940-bd5c-4778ca34212c', github: 'crescent' },
+  { name: 'Saket T', role: 'Admin', userId: '5baefc21-e1e8-43b0-9278-4af2ea150882', github: 'featurescript' },
 ];
 
 /**
- * CONTRIBUTORS — everyone in `CONTRIBUTORS.md` who isn't core team, signed CLA and
- * pre-CLA alike (the page does not distinguish; `CONTRIBUTORS.md` is the record of
- * that, not this page). Names and GitHub handles come straight from that file, in
- * its order.
- *
- * TODO(fill in): `discordAvatarUrl`, `discordUrl`, and `inGameUsername` have to be
- * collected from each contributor — they aren't recorded anywhere in the repo.
- * Cards render correctly with the fields still missing, so this list can be
- * completed one person at a time without breaking the page.
+ * CONTRIBUTORS — everyone else with merged work in github.com/genius0412/dsim, in the order
+ * GitHub's contributor graph lists them (Shaan's commits carry an email GitHub does not link,
+ * so they are not on the graph, and come last). A closed, unmerged pull request is not here.
  */
 export const CONTRIBUTORS: Contributor[] = [
+  { name: 'Baron', role: 'Autonomous in multiplayer', userId: 'a509c53d-dc89-4dae-99de-2c6e30e537d9', github: 'BaronClaps' },
   {
-    fallbackName: 'Felix D',
-    inGameUsername: 'felix',
-    githubUrl: 'https://github.com/crescent',
+    name: 'therealkingcob',
+    role: 'Tank drive, gate penalties, touch controls',
+    userId: 'b696301c-8056-4fec-b4d9-16fccbba12d9',
+    github: 'therealkingcob',
   },
   {
-    fallbackName: 'Shlok Khandelwal',
-    githubUrl: 'https://github.com/shlok-k720',
+    name: 'Arush Yadlapati',
+    role: 'Discord Activity, gamepad combos',
+    userId: 'a232300a-5a1a-4e5d-ae26-d0631f9b33d8',
+    github: 'ArushYadlapati',
   },
-  {
-    fallbackName: 'Aadvik Gupta',
-    inGameUsername: 'aadvikg_',
-    githubUrl: 'https://github.com/aadvikgg',
-  },
-  {
-    fallbackName: 'Baron',
-    inGameUsername: 'Baron',
-    githubUrl: 'https://github.com/BaronClaps',
-  },
-  {
-    fallbackName: 'Shaan Sridhara',
-  },
-  {
-    fallbackName: 'therealkingcob',
-    githubUrl: 'https://github.com/therealkingcob',
-  },
+  { name: 'Aadvik Gupta', role: 'Robot builder and profile fixes', userId: '8df89c67-7ebb-4275-aa9a-9a75312c1a1b', github: 'aadvikgg' },
+  { name: 'Shaan Sridhara', role: 'Park mode, gamepad tuning', github: 'ShaanSridhara' },
+];
+
+/** BETA TESTERS — the players who try new builds on alpha before they ship. */
+export const BETA_TESTERS: Contributor[] = [
+  { name: 'Leo', userId: 'ea913af1-d8ab-455c-a274-7f2132b2f5ad' },
+  { name: 'Aadvik Gupta', userId: '8df89c67-7ebb-4275-aa9a-9a75312c1a1b', github: 'aadvikgg' },
+  { name: 'Daniel', userId: '0bb4ce4d-b046-47a7-a040-91315c7f3a28' },
 ];
 
 /**

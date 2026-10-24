@@ -12,7 +12,10 @@ import { BADGE_LABELS, BADGE_TIER, coerceEquippedBadges, isBadgeId, type BadgeId
  *     deliberately the plainer of the two (owner: "less special and cool than the ranked one");
  *   · the STARGAZER badge is the one disc: a yellow ★ on the award violet, which the owner asked
  *     for by name (2026-09-24). A disc like the owner's ★, told apart from it by the violet, the
- *     yellow and the star's outline — and by being a much bigger star.
+ *     yellow and the star's outline — and by being a much bigger star;
+ *   · the three TEAM badges (developer, beta tester, contributor) are a KEYCAP TILE — the
+ *     driver-station key the whole UI is drawn in — each in its own hue with its own stroked
+ *     glyph: `</>`, a flask, a git branch. Given, not won, so no metal and no crown.
  * Both carry a 1px `--ds-mut` rim. That is the lesson of the lavender pastel the accounts guide
  * records: a silver fill is ~1.9:1 on the light panel and would vanish there, and the rim is
  * what separates it — the same "an edge identifies a floating surface" rule the HUD follows.
@@ -50,6 +53,19 @@ const NUMERAL: Record<'gold' | 'silver' | 'bronze', string> = {
 const STAR_DISC_R = 61;
 const STAR = 'M64 25.5 73.4 54.5 103.9 54.5 79.3 72.5 88.7 101.5 64 83.5 39.3 101.5 48.7 72.5 24.1 54.5 54.6 54.5Z';
 
+/** THE TEAM TILE: a rounded square in the crest's 24 box, inset so the rim has room. */
+const TILE = 'M7.4 2.6H16.6A4.8 4.8 0 0 1 21.4 7.4V16.6A4.8 4.8 0 0 1 16.6 21.4H7.4A4.8 4.8 0 0 1 2.6 16.6V7.4A4.8 4.8 0 0 1 7.4 2.6Z';
+/** each team badge's glyph — stroked centrelines, centred on (12, 12) like the numerals */
+const TEAM_GLYPH: Record<'developer' | 'beta-tester' | 'contributor', string> = {
+  // </>
+  developer: 'M8.6 8.4 5.6 12 8.6 15.6M15.4 8.4 18.4 12 15.4 15.6M13.1 7.6 10.9 16.4',
+  // a conical flask with a fill line
+  'beta-tester': 'M10.2 6.4V10.4L6.9 16.2C6.4 17.1 7 18 8 18H16C17 18 17.6 17.1 17.1 16.2L13.8 10.4V6.4M9.2 6.4H14.8M8.5 14.6H15.5',
+  // a branch: two commits on a line, a third merging in
+  contributor:
+    'M8.6 8.3V15.7M8.6 8.3A1.7 1.7 0 1 1 8.6 4.9 1.7 1.7 0 1 1 8.6 8.3ZM8.6 15.7A1.7 1.7 0 1 1 8.6 19.1 1.7 1.7 0 1 1 8.6 15.7ZM15.4 9.8A1.7 1.7 0 1 1 15.4 6.4 1.7 1.7 0 1 1 15.4 9.8ZM15.4 9.8C15.4 13.2 12.2 13.6 8.6 15.7',
+};
+
 export type BadgeSize = 'sm' | 'md' | 'lg' | 'xl';
 
 export function BadgeArt({ id, n = 1, size = 'sm' }: { id: BadgeId; n?: number; size?: BadgeSize }) {
@@ -57,10 +73,16 @@ export function BadgeArt({ id, n = 1, size = 'sm' }: { id: BadgeId; n?: number; 
   const label = BADGE_LABELS[id];
   const said = n > 1 ? `${label} badge, earned ${n} times` : `${label} badge`;
   const podium = tier === 'gold' || tier === 'silver' || tier === 'bronze';
+  const team = tier === 'team' ? ` team-${id}` : '';
   return (
-    <span className={`badge-mark badge-${size} tier-${tier}`} role="img" aria-label={said} title={said}>
+    <span className={`badge-mark badge-${size} tier-${tier}${team}`} role="img" aria-label={said} title={said}>
       <span className="badge-glyph" aria-hidden="true">
-        {tier === 'stargazer' ? (
+        {tier === 'team' && id in TEAM_GLYPH ? (
+          <svg viewBox="0 0 24 24">
+            <path className="badge-body" d={TILE} />
+            <path className="badge-team" d={TEAM_GLYPH[id as keyof typeof TEAM_GLYPH]} />
+          </svg>
+        ) : tier === 'stargazer' ? (
           <svg viewBox="0 0 128 128">
             <circle className="badge-body" cx="64" cy="64" r={STAR_DISC_R} />
             <path className="badge-star" d={STAR} />

@@ -847,6 +847,39 @@ async function main(): Promise<void> {
     check('access: deleting the account deletes its memberships',
       (await db.query<{ c: string }>(`select count(*)::text as c from access_members where user_id = 'acc-1'`)).rows[0].c === '0');
 
+    // ---- the team badges follow the access groups (`TEAM_BADGES`, `grantTeamBadge`)
+    await repo.ensureProfile('team-1', 'Team One');
+    await repo.grantAccess('team-1', 'dev', 'admin-x');
+    const teamPending = (await repo.pendingRewards('team-1')).find((p) => p.source === 'team');
+    check('team badge: joining a group offers its badge, PENDING (nothing counts yet)',
+      !!teamPending && teamPending.items.length === 1 && teamPending.items[0].id === 'developer' && (await repo.badgeCounts('team-1')).developer === undefined,
+      JSON.stringify(teamPending));
+    check('team badge: ...and its reason names the group', JSON.stringify(teamPending?.reason) === JSON.stringify({ kind: 'team', group: 'dev' }));
+    await repo.grantAccess('team-1', 'dev', 'admin-y');
+    check('team badge: a second grant offers nothing new', (await repo.pendingRewards('team-1')).filter((p) => p.source === 'team').length === 1);
+    await repo.claimReward('team-1', teamPending!.id, true);
+    check('team badge: claimed with Equip now, it is worn beside the name',
+      JSON.stringify((await repo.getProfile('team-1'))?.badges) === JSON.stringify([{ id: 'developer', n: 1 }]), JSON.stringify((await repo.getProfile('team-1'))?.badges));
+    await repo.revokeAccess('team-1', 'dev');
+    check('⚠️ team badge: leaving the group takes the badge back AND off the name',
+      (await repo.badgeCounts('team-1')).developer === undefined && (await repo.getProfile('team-1'))?.badges?.length === 0);
+    await repo.grantAccess('team-1', 'dev', 'admin-x');
+    const teamRows = await db.query<{ n: number }>(`select count(*)::int as n from reward_grants where user_id = 'team-1' and grant_key = 'team:dev'`);
+    check('team badge: re-joining re-opens the SAME grant, so it never counts past 1',
+      teamRows.rows[0].n === 1 && (await repo.pendingRewards('team-1')).some((p) => p.source === 'team'));
+    // the boot sync: a member from before the badges existed, and a holder removed behind its back
+    await repo.ensureProfile('team-2', 'Team Two');
+    await db.query(`insert into access_members (user_id, grp, granted_by) values ('team-2', 'beta', 'x')`);
+    await db.query(`delete from access_members where user_id = 'team-1' and grp = 'dev'`);
+    const teamSync = await repo.syncTeamBadges();
+    check('⚠️ team badge: the boot sync grants a member with no grant and revokes a holder who left',
+      teamSync.granted === 1 && teamSync.revoked === 1, JSON.stringify(teamSync));
+    check('team badge: ...the member is offered the beta tester badge',
+      (await repo.pendingRewards('team-2')).some((p) => p.items.some((i) => i.id === 'beta-tester')));
+    check('team badge: ...and a second sync writes nothing', JSON.stringify(await repo.syncTeamBadges()) === JSON.stringify({ granted: 0, revoked: 0 }));
+    await repo.deleteAccount('team-1');
+    await repo.deleteAccount('team-2');
+
     // ---- banners
     const T2 = Date.now();
     const b1 = await repo.createBanner({ kind: 'known-bug', message: 'Ramp sticks. [Track it](https://x.y)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null }, 'admin-x');
