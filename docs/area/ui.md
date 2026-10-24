@@ -465,6 +465,14 @@ rulings below are theirs, not defaults.
   and ranked's own `AccountSync` mount are gone. Every `OverlayDialog` takes `.ds-popup` too, so New
   room and the start guards are the same width. Browse rooms' Host a room closes the popup before
   New room opens, so two scrims never stack.
+  ⚠️ **NO SHELL BACKDROP OVER A POPUP.** The early returns used to keep the gates, the claim and notice
+  dialogs and the announcements off a room by replacing `AppShell`; inside it, they would land on a
+  joined room or the 20-second strategy window. So all of them wait while `popup` is set (`modalsWait`,
+  the gates' `suspended`, Announcements unmounted) and show once the player is back on Play. Under a
+  full-screen state `shell.css` sets the bar, the footer and Play to `visibility: hidden` so Tab cannot
+  reach behind it. Ranked's **Match found** is `popupShell(body, true)`: no × and Escape does nothing,
+  because the clocks are running and leaving only parks the seat for the takeover to pull back. A
+  plain search closes and keeps searching in the queue bar.
 - **ONE SPACING**: Home has one inset (`--ds-s-7`, the bar's too) EXCEPT the column's left, which is
   `--home-inset` = `max(48px, 7vw)` (owner, 2026-10-24: "all the homepage things are too left"; 90px
   at 1280, 134px at 1920). The scrim's solid stop, its width and the 2D field's free area all add it,
@@ -645,8 +653,9 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips. ONE exception, owner 2026-10-12 ("allow notifications from people while in
   match"): friend toasts (`FriendToasts inMatch`, top-left, information only — no Accept on an invite,
-  no profile link, because either would leave the match). The ranked search is a bottom-left corner
-  card (`QueueBar`); pressing FIND MATCH parks the search and goes back, it is not a page.
+  no profile link, because either would leave the match). The ranked search is a bottom-RIGHT
+  pinned card (`QueueBar`, owner 2026-10-24; it was bottom-left), with the friend toasts stacked above it;
+  closing Ranked while it searches parks the search there, it is not a page.
 - Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge); "MATCH
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.

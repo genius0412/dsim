@@ -1,4 +1,16 @@
-# HANDOFF — 2026-10-24d (Home balance, wheel-scrolling robot strip, the Play list as popups)
+# HANDOFF — 2026-10-24e (the popups made safe to merge: shell modals wait, Match found locked, search pinned bottom-right)
+
+**State: same branch and PR as 24d (`ui/menu-popups`, PR #122 into `alpha`). Client only, no deploy.** `vite build`, `uiaudit`, `docaudit` pass; `npm test` shared ALL PASS (four new `play:` checks); BIOBUZZ has the same 10 failures as 24d (the Zenith install plus the known `LANDED predicted`). `shiftaudit`: 536 state changes, 0 shifts.
+
+- **Owner (asked "is it safe to merge?", then "fix everything"):** a search closes and keeps searching, shown as a pinned bottom-right notification; Match found cannot be closed; the gates and shell pop-ups wait while any popup is open; the 3D field stays loaded under a full-screen state.
+- **Shell modals:** TermsGate, UsernameGate, RewardDialog, NoticeDialog and Announcements all stand down while `popup` is set (`modalsWait` in `App.tsx`). Before this, a reward or a moderator notice could open over a joined room or the 20 s strategy window.
+- **Match found:** `popupShell(body, true)` drops the × and Escape; Matchmaking's `useEscape` is off while `found`. The tip reads "Closing this keeps you in the queue."
+- **Queue bar:** `.ds-queuebar` is a bottom-right card now (CompCallBar shares the class and moves with it). The friend toasts sit 44px + 8 above it while it is up (`ponytail:` fixed offset).
+- **Full-screen states:** the bar, the footer, the ad strip and Play go `visibility: hidden` under a joined room or the strategy window, so Tab stays in the room. Fixed on the way: `.ds-main .ds-console-in` (the in-shell column reset) had flattened a joined room against the window's left edge; it skips a `.ds-console` child now.
+- **Driven against a local game server** (`PORT=8899 npx tsx server/index.ts`, client built with `VITE_GAME_SERVER_URL=ws://127.0.0.1:8899`; ⚠️ 8787 on this machine is answered by an unrelated uvicorn): Browse rooms 520px, Escape back to `/modes`; New room → Private → CREATE ROOM fills the host with the gutter back, Tab stays inside, ← Leave returns to Play with the Multiplayer list; Duo record the same.
+- **Still not driven:** Ranked (needs sign-in, which a local build has no auth for): search → close → bar → View, Match found locked, strategy window full-screen. And LAN (the local server did not advertise it). Check both on the alpha preview after merging.
+
+## 2026-10-24d (Home balance, wheel-scrolling robot strip, the Play list as popups)
 
 **State: branch `ui/menu-popups` off `alpha` (worktree `.claude/worktrees/menu-popups`), PR into `alpha`. Client only, no server change, no deploy.** `vite build`, `uiaudit`, `docaudit` pass; `npm test` shared ALL PASS. BIOBUZZ fails the known `balls: … LANDED predicted` plus the AUTO / AUTOUI / IMPORT lanes, which crash inside the Zenith packages: the worktree's `node_modules` is a junction to the main checkout's, whose Zenith install has no type files (`tsc` reports the same TS7016s in `src/auto/`). That is the install, not this change; rerun in a checkout with a fresh `npm ci`.
 
