@@ -3366,6 +3366,25 @@ tr.lb-detail td {
   align-items: center;
   gap: 8px;
 }
+/* A PHONE: Back, the title and two buttons are ~410px of one row, and "Use as pace" broke onto
+   three lines beside a two-line Download (390px, measured). Back and the title share the first
+   row, the actions take the second, and a button's label never wraps. */
+@media (max-width: 560px) {
+  .ds-replay-top {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: var(--ds-s-2);
+  }
+  .ds-replay-top > .ds-panel-title {
+    justify-self: end;
+  }
+  .ds-replay-actions {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+  .ds-replay-actions .ds-btn {
+    white-space: nowrap;
+  }
+}
 /* live scoreboard over the replay. Mirrors the in-match HUD order (red · clock ·
    blue) so it reads the same way. It sits on the BAR surface, not the canvas, so
    --ds-ink/--ds-line are the correct tokens here (not the --ds-on-field set). */
