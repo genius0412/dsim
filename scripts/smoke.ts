@@ -8792,8 +8792,8 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // renders the `.ds-back` itself
     const consoleHead = readFileSync('src/ui/ConsoleHead.tsx', 'utf8');
     check(
-      'lan screen: is a shell page (app bar + trail is the way back), with no Back button of its own',
-      /shell\(\s*<div className="ds-console-in narrow">\s*<ConsoleHead title="LAN play"/.test(lan) && /<LanPanel\s+shell=\{shell\}/.test(app) && consoleHead.includes('{onBack && ('),
+      'lan screen: is a popup over Play (its close control is the way back), with no Back button of its own',
+      /shell\(\s*<div className="ds-console-in narrow">\s*<ConsoleHead title="LAN play"/.test(lan) && /<LanPanel\s+shell=\{popupShell\}/.test(app) && consoleHead.includes('{onBack && ('),
     );
     check(
       'lan screen: Esc is the same exit as the button, not a second one',
@@ -10575,11 +10575,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
    */
   {
     const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
-    const ranked = /if \(screen === 'matchmaking'\) \{[\s\S]*?\n {2}\}\n/.exec(app)?.[0] ?? '';
+    // a popup over Play since 2026-10-24: it renders in the shell's tree, under the shell's own AccountSync
+    const shellSync = app.indexOf('{authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}\n      {/* THE BLOCKING GATES');
     check(
-      'ranked reload: the ranked screen mounts AccountSync, ahead of Matchmaking',
-      /\{authEnabled && <AccountSync onUser=\{onSyncUser\} onLoad=\{onSyncLoad\} seed=\{onSyncSeed\} \/>\}/.test(ranked) &&
-        ranked.indexOf('<AccountSync') < ranked.indexOf('<Matchmaking'),
+      'ranked reload: the ranked screen is under the shell\'s AccountSync, ahead of Matchmaking',
+      !/if \(screen === 'matchmaking'\)/.test(app) && shellSync > 0 && shellSync < app.indexOf('<Matchmaking'),
     );
     const sync = readFileSync('src/ui/AccountSync.tsx', 'utf8').replace(/\r\n/g, '\n');
     check(
@@ -18789,7 +18789,18 @@ const recordDrive: CommandSource = (tick) => {
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
   const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
-  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
+  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes("crumbsFor(popup ? 'modes' : screen, route.sub, route.username)"));
+  // THE PLAY PAGE'S POPUPS AND THE MULTIPLAYER ORDER (owner, 2026-10-24)
+  const ms = readFileSync('src/ui/ModeSelect.tsx', 'utf8');
+  const multi = ms.slice(ms.indexOf("side === 'multi' ?"), ms.indexOf(') : null;', ms.indexOf("side === 'multi' ?")));
+  const at = ['Ranked', "'Duo record'", "'New room'", "'Browse rooms'", "'Competitions'", "'LAN'"].map((l) => multi.indexOf(l));
+  check('play: Multiplayer reads Ranked, Duo record, New room, Browse rooms, Competitions, LAN',
+    at.every((i, k) => i > 0 && (k === 0 || i > at[k - 1])) && !ms.includes('Find match'), at.join());
+  const popups = /const POPUPS[^=]*= \{([^}]*)\}/.exec(appSrc)?.[1] ?? '';
+  check('play: every Play list entry that was a page is a popup over Play, and Play stays mounted under it',
+    ['matchmaking', 'duorecord', 'lobby', 'rooms', 'competitions', 'lan', 'record'].every((k) => popups.includes(`${k}:`)) &&
+      appSrc.includes("{(screen === 'modes' || popup) && (\n        <ModeSelect") &&
+      !/if \((lanOn && )?screen === '(lobby|duorecord|record|lan|matchmaking)'\)/.test(appSrc));
 }
 
 /** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
