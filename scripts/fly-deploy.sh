@@ -124,8 +124,8 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # the memory column is the floor, not a choice. Change a size HERE — a manual
 # `fly machine update` is undone by the next deploy.
 SATELLITE_SIZES=(
-  ord:shared-cpu-8x:2048
-  sjc:shared-cpu-8x:2048
+  ord:shared-cpu-4x:1024
+  sjc:performance-1x:2048
   lhr:performance-1x:2048
   gru:shared-cpu-8x:2048
   jnb:shared-cpu-4x:1024
