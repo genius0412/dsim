@@ -132,7 +132,7 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 SATELLITE_SIZES=(
   ord:shared-cpu-4x:1024
   sjc:performance-1x:2048
-  lhr:performance-1x:2048
+  lhr:shared-cpu-8x:2048
   gru:shared-cpu-8x:2048
   jnb:shared-cpu-4x:1024
   syd:shared-cpu-8x:2048
