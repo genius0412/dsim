@@ -492,6 +492,10 @@ export class GameController {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly audio = new MatchAudio();
   private raf = 0;
+  /** WEBXR: while true the headset's frame callback drives `loop`, not window rAF (which Safari
+   * freezes during an immersive session) — see `enterXR` */
+  private xrDriving = false;
+  private xrButton: HTMLButtonElement | null = null;
   /** re-fits the camera when the canvas resizes without the window doing so
    *  (ad columns mounting/unmounting) — see the constructor */
   private canvasObserver: ResizeObserver | null = null;
@@ -1418,6 +1422,7 @@ export class GameController {
       this.hudInsetsDirty = true;
       this.hudInsetsEpoch = null;
       this.scene = scene;
+      this.mountXrButton(scene);
       // the 2D overlay projects labels and auto paths through the scene's camera from here on
       this.renderer.setScene(scene);
       this.sceneEverShown = true;
@@ -1441,6 +1446,8 @@ export class GameController {
     if (!this.scene) return;
     const scene = this.scene;
     this.scene = null;
+    this.xrButton?.remove();
+    this.xrButton = null;
     this.renderer.setScene(null);
     try {
       scene.element.remove();
@@ -1684,7 +1691,9 @@ export class GameController {
     // ONLINE, the accumulator runs a few percent fast or slow while the lead controller slews
     // the prediction onto its target (`src/net/leadControl.ts`). Solo adds exactly `dt`, as it
     // always has — the branch, not a multiply by one, keeps it bit-identical.
-    const dtS = Math.min(dtMs / 1000, 0.25);
+    // clamped at BOTH ends: a negative gap (a clock change, e.g. entering WebXR) must not drain
+    // the accumulator into a long freeze
+    const dtS = Math.max(0, Math.min(dtMs / 1000, 0.25));
     this.acc += this.session ? dtS * (1 + this.lead.rate(performance.now())) : dtS;
     // TWO `performance.now()` CALLS AND ONE RING WRITE, always on. This is the number the
     // read-out's SIM row prints, and it is the only way to tell "my machine cannot draw this"
@@ -1790,14 +1799,65 @@ export class GameController {
     // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
     // stays transparent and draws only its cheap overlay (name labels), never the field.
     // While the scene is still LOADING it draws nothing: the view's loading panel covers it.
-    if (this.sceneLoading) {
+    if (this.xrDriving) {
+      // nobody can see the page while the headset is presenting: no 2D overlay pass
+    } else if (this.sceneLoading) {
       this.ctx.setTransform(1, 0, 0, 1, 0, 0);
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     } else this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
     this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
-    this.raf = requestAnimationFrame(this.loop);
+    if (!this.xrDriving) this.raf = requestAnimationFrame(this.loop);
   };
+
+  // ---------------------------------------------------------------------------- WebXR --
+
+  /** an "Enter VR" button over the 3D view, shown only when the scene can open a session */
+  private mountXrButton(scene: GameScene): void {
+    this.xrButton?.remove();
+    this.xrButton = null;
+    if (!scene.xr || !this.sceneHost) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ds-btn primary game-xr-enter';
+    b.textContent = 'Enter VR';
+    b.title = 'Stand at your driver station in VR. Press a controller button first and allow controller access if Safari asks.';
+    b.addEventListener('click', () => void this.enterXR());
+    this.sceneHost.appendChild(b);
+    this.xrButton = b;
+  }
+
+  private async enterXR(): Promise<void> {
+    const xr = this.scene?.xr;
+    if (!xr || xr.presenting) return;
+    // set BEFORE the session starts: the first XR frame may run `loop` before `enter` resolves, and
+    // a window rAF queued then would fire after exit as a second, duplicate loop
+    this.xrDriving = true;
+    this.lastT = 0;
+    try {
+      await xr.enter(
+        // the XR frame timestamp is on a DIFFERENT clock from window rAF on Vision Pro (measured
+        // 2026-10-11: ~406 s behind, which made dt hugely negative and froze the accumulator), so
+        // XR frames are timed on the page's own clock instead
+        () => this.loop(performance.now()),
+        () => {
+          this.xrDriving = false;
+          this.lastT = 0;
+          if (this.xrButton) this.xrButton.hidden = false;
+          if (!this.disposed) this.raf = requestAnimationFrame(this.loop);
+        },
+      );
+      cancelAnimationFrame(this.raf);
+      if (this.xrButton) this.xrButton.hidden = true;
+    } catch (err) {
+      // the window loop stopped re-queuing itself once `xrDriving` went up; restart it exactly once
+      this.xrDriving = false;
+      cancelAnimationFrame(this.raf);
+      if (!this.disposed) this.raf = requestAnimationFrame(this.loop);
+      // eslint-disable-next-line no-console
+      console.warn('WebXR session failed to start', err);
+    }
+  }
 
   /**
    * Rolling FRAME, SIM and RENDER samples — everything the in-match performance read-out
