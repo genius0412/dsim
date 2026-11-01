@@ -28804,20 +28804,36 @@ const dumperSetup = (): RobotSetup => {
         J(DEFAULT_BINDINGS.pad.buttons.intake) === J([6]) &&
         ACTION_LABELS.bbRamp === 'Deploy ramp' && ACTION_LABELS.bbBar === 'NECTAR bar',
     );
+    // a map saved before the bar had a pad default: Intake on the old LT + B
     const oldPad = mergeBindings({ pad: { buttons: { fire: [7, 0], intake: [6, 1], bbRamp: [11] } } });
     check(
-      'bar pad: a saved map keeps B on Intake, and its NECTAR bar loads with no pad button (one press, one action)',
-      J(oldPad.pad.buttons.intake) === J([6, 1]) && J(oldPad.pad.buttons.bbBar) === J([]),
+      'bar pad: a saved map on the old LT + B Intake loads with Intake on LT and the bar on B',
+      J(oldPad.pad.buttons.intake) === J([6]) && J(oldPad.pad.buttons.bbBar) === J([1]) &&
+        !seasonUnbound(oldPad, 'biobuzz').includes('bbBar'),
       J({ intake: oldPad.pad.buttons.intake, bar: oldPad.pad.buttons.bbBar }),
     );
+    // ...and one already saved back with the bar empty, which is what Reset BIOBUZZ could not fix:
+    // a season reset never moves main's Intake (owner: "resetting biobuzz controls does NOT make
+    // nectar bar b")
+    const savedBack = mergeBindings({ pad: { buttons: { intake: [6, 1], bbBar: [] }, combos: { bbBar: [] } } });
     check(
-      'bar pad: ...and BIOBUZZ is marked as needing a look there, since nothing fires the bar on the pad',
-      seasonUnbound(oldPad, 'biobuzz').includes('bbBar') && !seasonUnbound(DEFAULT_BINDINGS, 'biobuzz').includes('bbBar'),
-      J(seasonUnbound(oldPad, 'biobuzz')),
+      'bar pad: ...one already saved back with the bar empty is repaired the same way, and Reset BIOBUZZ lands on B',
+      J(savedBack.pad.buttons.bbBar) === J([1]) && J(resetGame(savedBack, 'biobuzz').pad.buttons.bbBar) === J([1]) &&
+        J(resetGame(cloneBindings(DEFAULT_BINDINGS), 'biobuzz').pad.buttons.bbBar) === J([1]),
+      J({ loaded: savedBack.pad.buttons.bbBar, reset: resetGame(savedBack, 'biobuzz').pad.buttons.bbBar }),
+    );
+    const trigOld = mergeBindings({ pad: { turnWith: 'triggers', buttons: { intake: [6, 1] } } });
+    check(
+      'bar pad: a map turning with the triggers keeps B on Intake (its only live pad Intake), and the bar loads unbound and marked',
+      J(trigOld.pad.buttons.intake) === J([6, 1]) && J(trigOld.pad.buttons.bbBar) === J([]) &&
+        seasonUnbound(trigOld, 'biobuzz').includes('bbBar'),
+      J({ intake: trigOld.pad.buttons.intake, bar: trigOld.pad.buttons.bbBar }),
     );
     check(
-      'bar pad: a saved map that moved Intake off B gives the bar B',
-      J(mergeBindings({ pad: { buttons: { intake: [6] } } }).pad.buttons.bbBar) === J([1]),
+      'bar pad: a bar the player bound, or an Intake that is not exactly LT + B, is left alone',
+      J(mergeBindings({ pad: { buttons: { intake: [6, 1], bbBar: [12] } } }).pad.buttons.intake) === J([6, 1]) &&
+        J(mergeBindings({ pad: { buttons: { intake: [1, 6] } } }).pad.buttons.intake) === J([1, 6]) &&
+        J(mergeBindings({ pad: { buttons: { intake: [1, 6] } } }).pad.buttons.bbBar) === J([]),
     );
     const trigNew = cloneBindings(DEFAULT_BINDINGS);
     trigNew.pad.turnWith = 'triggers';

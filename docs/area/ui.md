@@ -62,9 +62,14 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   **NECTAR bar has its own action** (`bbBar`, 2026-11-01; it rode Deploy ramp before): key `'`,
   fallbacks `[` then `]`, pad B. B was Intake's second bind, so **Intake defaults to LT alone in
   every game** (owner's pick: every other button carries a BIOBUZZ bind, and the defaults are one
-  map for all games). A saved map keeps B on Intake and loads the bar with no pad button, which
-  marks BIOBUZZ in Controls. The cost, known and checked in smoke: a NEW map that turns with the
-  triggers has LT paused and no pad Intake until the player binds one.
+  map for all games). A saved map whose Intake is exactly the old LT + B moves too, on load
+  (`mergeBindings`): a season reset never touches main's Intake, so without that Reset BIOBUZZ
+  could not give the bar B (owner report, same day). Not on a map that turns with the triggers,
+  where B is the only live pad Intake; its bar loads unbound and marks BIOBUZZ. The cost, known
+  and checked in smoke: any map that turns with the triggers has LT paused and no pad Intake until
+  the player binds one.
+  **Why Shoot still has A:** the only job A and B ever did was be Shoot and Intake while the
+  triggers turn. B is gone from that role; A still holds it for Shoot.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,

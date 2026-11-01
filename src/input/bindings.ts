@@ -542,9 +542,10 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     buttons: {
       fire: [7, 0], // RT or A
       // LT. B was a second Intake until 2026-11-01 and is BIOBUZZ's NECTAR bar now (owner's pick:
-      // it was the softest button on the map). A saved map keeps B on Intake. The cost: a NEW
-      // map that turns with the triggers (`turnWith`) has LT paused and no pad Intake until the
-      // player binds one, in every game; Controls strikes the paused LT.
+      // it was the softest button on the map). A saved map still on the old LT + B moves too
+      // (`mergeBindings`). The cost: a map that turns with the triggers (`turnWith`) has LT paused
+      // and no pad Intake until the player binds one, in every game; Controls strikes the paused
+      // LT. A map that already turned with the triggers keeps B on Intake.
       intake: [6],
       // R3 — the MODE TOGGLE role, shared with BIOBUZZ's Deploy ramp (no game has both). D-DOWN
       // stays unbound on purpose (see Deploy ramp below).
@@ -588,8 +589,8 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // undoes nothing when it is pressed by mistake.
       bbReverse: [13],
       // B. Every other standard button carries a BIOBUZZ bind; B was only Intake's second copy
-      // (LT is Intake), so Intake gave it up (owner, 2026-11-01). A saved map with B on Intake
-      // keeps it, and its NECTAR bar loads with no pad button (`mergeBindings`).
+      // (LT is Intake), so Intake gave it up (owner, 2026-11-01). A saved map on the old LT + B
+      // moves too; one that put B on Intake any other way keeps it (`mergeBindings`).
       bbBar: [1],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
@@ -848,6 +849,26 @@ export function mergeBindings(saved: unknown): ControlBindings {
       out.pad.combos[a] = out.pad.combos[a].slice(0, Math.max(0, out.pad.combos[a].length - over));
       out.pad.buttons[a] = out.pad.buttons[a].slice(0, BIND_SLOTS_MAX - out.pad.combos[a].length);
     }
+  }
+  /* ⚠️ INTAKE'S OLD DEFAULT, LT + B (2026-11-01). B is NECTAR bar's default now and Intake is LT
+     alone. A stored Intake of exactly [LT, B] is the old default rather than a choice, the same
+     reading the ramp's key repair above makes of Place POLLEN on exactly Z. Left alone it held B,
+     so the bar loaded with no pad button, and Reset BIOBUZZ could not give it B either: a season
+     reset never moves main's Intake (owner: "resetting biobuzz controls does NOT make nectar bar
+     b"). So Intake drops B and the bar takes it, unless the bar has a pad bind of its own, or the
+     player turns with the triggers, where LT is paused and B is their only pad Intake. */
+  if (
+    out.pad.turnWith !== 'triggers' &&
+    out.pad.buttons.intake.length === 2 &&
+    out.pad.buttons.intake[0] === 6 &&
+    out.pad.buttons.intake[1] === 1 &&
+    out.pad.combos.intake.length === 0 &&
+    (freshPad.includes('bbBar') || (out.pad.buttons.bbBar.length === 0 && out.pad.combos.bbBar.length === 0))
+  ) {
+    out.pad.buttons.intake = [6];
+    out.pad.buttons.bbBar = [...DEFAULT_BINDINGS.pad.buttons.bbBar];
+    // still subject to the new-action rule below, so B is not stacked on anything else that has it
+    if (!freshPad.includes('bbBar')) freshPad.push('bbBar');
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;
