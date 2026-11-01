@@ -1,6 +1,6 @@
 // Rewrite each venue's `PHOTO_LAYERS(...)` rows and byte counts in `environments.ts` from what
 // `meshes.py` and `pack.ts` just wrote, and the picker note's High-tier download (room + furniture
-// textures, meshes and light-gathering map) — stage 5; the RENDER lane checks they agree.
+// textures, meshes, light-gathering map and floor tile) — stage 5; the RENDER lane checks they agree.
 //
 //   node scripts/venues/sync-env.mjs
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ENV = join(ROOT, 'src', 'games', 'biobuzz', 'graphics', 'environments.ts');
 const n = (x) => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, '_');
+// which floor tile each row draws (`floor.py`'s USES)
+const FLOOR_TILES = { 'events-hall': 'hangar', hangar: 'hangar', 'school-hall': 'school-hall', quad: 'quad' };
 
 let src = readFileSync(ENV, 'utf8');
 for (const v of ['school-hall', 'events-hall', 'hangar', 'court', 'quad']) {
@@ -23,7 +25,10 @@ for (const v of ['school-hall', 'events-hall', 'hangar', 'court', 'quad']) {
     `PHOTO_LAYERS('${v}', [${info.fgRows[0]}, ${info.fgRows[1]}], { bg: ${n(b.bg)}, bgLow: ${n(b.bgLow)}, fg: ${n(b.fg)}, fgLow: ${n(b.fgLow)}, mesh: ${n(mesh)} }`,
   );
   const ibl = statSync(join(ROOT, 'public', 'venues', `${v}-ibl.hdr`)).size;
-  const mb = ((b.bg + b.fg + mesh + ibl) / 1e6).toFixed(1);
+  // and the floor tile the row draws, if any (`floor.py`; the events hall's is the hangar's)
+  const tile = FLOOR_TILES[v];
+  const floor = tile ? statSync(join(ROOT, 'public', 'venues', `${tile}-floor.webp`)).size : 0;
+  const mb = ((b.bg + b.fg + mesh + ibl + floor) / 1e6).toFixed(1);
   const note = new RegExp(`(id: '${v}',\\s*name: '[^']*',\\s*note: '[^']*?, )\\d+\\.\\d MB'`);
   if (!note.test(src)) throw new Error(`${v}: no note ending in a size`);
   src = src.replace(note, `$1${mb} MB'`);

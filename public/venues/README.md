@@ -12,6 +12,9 @@ named below by `scripts/venues/derive.cjs`, which checks the source md5 first. R
   `yaw` degrees so the room lines up with the field.
 - `<id>-ibl.hdr` — the light-gathering map: 512 × 256 RGBE, linear, box-filtered from the 4k
   (energy-conserving), same turn.
+- `<id>-floor.webp` (hangar, school hall, quad) — a 1024 × 1024 repeating tile of the floor beside
+  the lens, cut from `<id>-bg-4k.webp` by `scripts/venues/floor.py`, same encoding. The events hall
+  draws the hangar's.
 
 Same origin on purpose: a Discord Activity's CSP refuses `dl.polyhaven.org`, and these load
 there like any other file of the site.

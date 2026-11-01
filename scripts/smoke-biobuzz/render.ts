@@ -492,8 +492,13 @@ import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue'
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
 // -- the venue sight lines (2026-11-01): nothing a venue draws stands in front of the play ------
 import {
+  PHOTO_FLOOR_FAR_IN,
+  PHOTO_FLOOR_LIGHT_IN,
+  PHOTO_FLOOR_NEAR_IN,
+  PHOTO_FLOOR_WALL_IN,
   PHOTO_KEEP_OUT,
   PHOTO_NEAR_IN,
+  PHOTO_VIEW_MAX_DEG,
   photoFurnitureDropped,
   type PhotoLayerPartAsset,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
@@ -14435,7 +14440,7 @@ function photoVenueChecks(check: Check): void {
     // fetched only if they fail), else the box's 4k and the light map
     check(`photo ${e.id}: the 4k backdrop is at most 1.5 MB`, p.bytes.backdrop <= 1.5e6, String(p.bytes.backdrop));
     const l = p.layers;
-    const mb = (l ? l.bytes.bg + l.bytes.fg + l.bytes.mesh + p.bytes.ibl : p.bytes.backdrop + p.bytes.ibl) / 1e6;
+    const mb = ((l ? l.bytes.bg + l.bytes.fg + l.bytes.mesh + p.bytes.ibl : p.bytes.backdrop + p.bytes.ibl) + (p.floorTexture?.bytes ?? 0)) / 1e6;
     check(
       `photo ${e.id}: the picker's note states the High-tier download to 0.1 MB`,
       e.note.includes(`${mb.toFixed(1)} MB`),
@@ -14814,7 +14819,7 @@ function photoVenueChecks(check: Check): void {
       'photo shadow: renderScene builds the catcher from its own sun, with this row’s rig on it',
       /const half = BB_HALF_X \+ 20;/.test(sc) &&
         /cam\.near = 1;\s*cam\.far = 260;/.test(sc) &&
-        /buildPhotoVenue\(def, src, this\.sun, this\.settings\.envLighting\)/.test(sc),
+        /buildPhotoVenue\(def, src, this\.sun, this\.settings\.envLighting, floor\)/.test(sc),
     );
     const half = BB_HALF_X + 20;
     const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
@@ -15102,6 +15107,96 @@ function photoVenueChecks(check: Check): void {
 
   layeredRoomChecks(check, photos, webpSize);
   photoKeepOutChecks(check, photos);
+  photoFloorChecks(check, photos, webpSize);
+}
+
+/**
+ * THE PHOTOGRAPHED FLOOR IS A TEXTURE (2026-11-01; `renderPhotoVenue.ts`, `PhotoFloorTexture`). Owner:
+ * "The scenes are still severely distorted." Projected from the lens 63 in up, the floor a few lens
+ * heights out is texels many inches long, drawn as streaks by every higher or nearer eye; the
+ * events hall's own floor was also painted over (mirrored, de-glossed) right up to the field.
+ */
+function photoFloorChecks(check: Check, photos: EnvironmentDef[], webpSize: (buf: Buffer) => [number, number] | null): void {
+  const tiled = photos.filter((e) => e.photo!.floorTexture).map((e) => e.id);
+  check(
+    'photo floor: the events hall, hangar, school hall and quad draw their floor from a tile; the court keeps its projected, painted court',
+    ['events-hall', 'hangar', 'school-hall', 'quad'].every((id) => tiled.includes(id)) && !tiled.includes('court'),
+    tiled.join(','),
+  );
+  for (const e of photos) {
+    const f = e.photo!.floorTexture;
+    if (!f) continue;
+    const buf = readFileSync(join(root, 'public', f.tile));
+    const wh = webpSize(buf);
+    check(
+      `photo floor ${e.id}: ${f.tile} is a relative public/ path, the size the row states, a 1024 × 1024 WebP`,
+      /^venues\/[a-z-]+-floor\.webp$/.test(f.tile) && buf.length === f.bytes && !!wh && wh[0] === 1024 && wh[1] === 1024,
+      `${buf.length} vs ${f.bytes}; ${wh}`,
+    );
+    check(
+      `photo floor ${e.id}: the tile covers 8–25 ft each way, its mean and the room's floor are positive, its light share 0–1`,
+      f.inches.every((v) => v >= 96 && v <= 300) && [...f.mean, ...f.base].every((v) => v > 0.01 && v < 2) && f.light >= 0 && f.light <= 1,
+      JSON.stringify(f),
+    );
+  }
+  const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+  const frag = /const FRAG = \/\* glsl \*\/ `([\s\S]*?)`;/.exec(pv)?.[1] ?? '';
+  check(
+    'photo floor: the shader draws a level surface below the lens from the tile, recoloured to the room, with the photograph back at a wall’s foot',
+    /float isFloor = abs\( fn\.z \) > 0\.95 \* length\( fn \) && vWorld\.z < bbEye\.z - 12\.0/.test(frag) &&
+      /texture\( bbFloor, vWorld\.xy \* bbFloorScale \)/.test(frag) &&
+      /eT \/ \( 1\.0 - eT \) \/ bbFloorMean \* light/.test(frag) &&
+      /smoothstep\( 0\.0, BB_FLOOR_WALL, min\( wall\.x, wall\.y \) \)/.test(frag) &&
+      /#ifdef BB_FLOOR\s*\n\s*x = photoFloor\( x, uv \);/.test(frag),
+  );
+  check(
+    'photo floor: the floor’s light is the photograph blurred PHOTO_FLOOR_LIGHT_IN across the lens’s ray, fading to the room’s colour from PHOTO_FLOOR_NEAR_IN to PHOTO_FLOOR_FAR_IN',
+    PHOTO_FLOOR_LIGHT_IN === 48 &&
+      PHOTO_FLOOR_NEAR_IN < PHOTO_FLOOR_FAR_IN &&
+      PHOTO_FLOOR_WALL_IN > 0 &&
+      /textureLod\( bbMap, uv, log2\( max\( BB_FLOOR_LIGHT \/ across, 1\.0 \) \) \)/.test(frag) &&
+      /smoothstep\( BB_FLOOR_NEAR, BB_FLOOR_FAR, r \)/.test(frag),
+  );
+  const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const floor = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const unit = (): PhotoLayerPartAsset => ({ geometry: new THREE.BufferGeometry(), position: new THREE.Vector3(), scale: new THREE.Vector3(1, 1, 1) });
+  const build = (id: EnvironmentDef['id'], fl: THREE.Texture | null): THREE.Group =>
+    buildPhotoVenue(environmentDef(id), { bg: tex, fg: tex, parts: new Map(PHOTO_LAYER_PARTS.map((k) => [k, unit()])) }, new THREE.DirectionalLight(), true, fl);
+  const mat = (g: THREE.Group, k: string): THREE.ShaderMaterial | undefined =>
+    (g.getObjectByName(`bb-venue:photo-${k}`) as THREE.Mesh | undefined)?.material as THREE.ShaderMaterial | undefined;
+  const free = (g: THREE.Group): void =>
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  {
+    const g = build('hangar', floor);
+    const f = environmentDef('hangar').photo!.floorTexture!;
+    check(
+      'photo floor: a loaded tile goes on the room’s two parts with the row’s numbers, never on the furniture',
+      ['bg-lo', 'bg-hi'].every(
+        (k) => 'BB_FLOOR' in mat(g, k)!.defines! && mat(g, k)!.uniforms.bbFloor.value === floor && (mat(g, k)!.uniforms.bbFloorScale.value as THREE.Vector2).x === 1 / f.inches[0],
+      ) && ['fg-lo', 'fg-hi'].every((k) => !('BB_FLOOR' in mat(g, k)!.defines!) && !mat(g, k)!.uniforms.bbFloor),
+    );
+    check('photo floor: the tile is one of the textures the venue owns and frees', photoTexturesOf(g).includes(floor));
+    free(g);
+    const h = build('hangar', null);
+    check('photo floor: without the tile (it failed) the room projects its floor, as before', ['bg-lo', 'bg-hi'].every((k) => !('BB_FLOOR' in mat(h, k)!.defines!)));
+    free(h);
+  }
+  {
+    const g = build('events-hall', floor);
+    const c = build('court', null);
+    check(
+      'photo floor: the events hall leaves its furniture above the lens out (its pendant lamps), the court keeps its',
+      environmentDef('events-hall').photo!.layers!.upper === false && !mat(g, 'fg-hi') && !!mat(g, 'fg-lo') && !!mat(c, 'fg-hi'),
+    );
+    free(g);
+    free(c);
+  }
 }
 
 /** the points a camera must see in a match, field inches: the field's corners on the mat and at
@@ -15226,24 +15321,37 @@ function photoKeepOutChecks(check: Check, photos: EnvironmentDef[]): void {
   check('photo keep-out: furniture across the field from the driver is kept', !drop([300, 0, 40], [-160, 0, 66]) && !drop([-300, 250, 40], [-160, 0, 66]));
   check(
     'photo keep-out: furniture the eye sees from behind (past it along the lens’s ray) is dropped, and the same piece from the lens’s side is kept',
-    drop([-150, 1, 100], [-212, 0, 132]) && !drop([-150, 1, 100], [-80, -100, 90]),
+    drop([-150, 1, 100], [-212, 0, 132]) && !drop([-150, 1, 100], [-60, -20, 80]),
+  );
+  // PHOTO_VIEW_MAX_DEG (2026-11-01): relief seen far off the lens's own view shows sides nobody
+  // photographed — the school hall's seats from the overhead and high orbit cameras
+  check(
+    'photo keep-out: furniture seen more than PHOTO_VIEW_MAX_DEG off the lens’s ray is dropped (a seat from straight above), within it kept (the same seat from a driver)',
+    PHOTO_VIEW_MAX_DEG === 40 && drop([0, 150, 10], [0, 0, 800], [0, 0, -1]) && drop([0, 150, 10], [0, 0, 800]) && !drop([-200, 250, 20], [-124, 0, 72]),
   );
   check(
     'photo keep-out: furniture inside half of PHOTO_NEAR_IN of the eye is dropped, the dithered outer half is not counted',
-    drop([300, 300, 60], [300 - PHOTO_NEAR_IN * 0.45, 300, 60]) && !drop([300, 300, 60], [300 - PHOTO_NEAR_IN * 0.55, 300, 60]),
+    // the eye back along the lens's own ray from the piece, so only its distance decides
+    ((): boolean => {
+      const piece: [number, number, number] = [300, 300, 60];
+      const lens = PHOTO_FLOOR_Z + 63;
+      const len = Math.hypot(300, 300, 60 - lens);
+      const back = (d: number): [number, number, number] => [300 - (300 / len) * d, 300 - (300 / len) * d, 60 - ((60 - lens) / len) * d];
+      return drop(piece, back(PHOTO_NEAR_IN * 0.45)) && !drop(piece, back(PHOTO_NEAR_IN * 0.55));
+    })(),
   );
   check(
-    'photo keep-out: an orthographic camera tests along its axis (a floor piece beside the field kept from straight above)',
-    !drop([200, 0, 10], [0, 0, 800], [0, 0, -1]) && drop([60, 0, 10], [0, 0, 800], [0, 0, -1]),
+    'photo keep-out: an orthographic camera tests along its axis (looking along the lens’s ray it keeps a piece its eye point would not)',
+    !drop([300, 0, 40], [300, -500, 40], [1, 0, 0]) && drop([300, 0, 40], [300, -500, 40]) && drop([60, 0, 10], [0, 0, 800], [0, 0, -1]),
   );
 
   // the shader is that rule
   const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
   const frag = /const FRAG = \/\* glsl \*\/ `([\s\S]*?)`;/.exec(pv)?.[1] ?? '';
   check(
-    'photo keep-out: the furniture shader drops what the eye sees from behind, along the view ray or an orthographic camera’s axis',
+    'photo keep-out: the furniture shader drops what the eye sees more than PHOTO_VIEW_MAX_DEG off the lens’s ray, along the view ray or an orthographic camera’s axis',
     /vec3 view = isOrthographic \? - vec3\( viewMatrix\[ 0 \]\[ 2 \], viewMatrix\[ 1 \]\[ 2 \], viewMatrix\[ 2 \]\[ 2 \] \) : vWorld - cameraPosition;/.test(frag) &&
-      /if \( dot\( vWorld - bbEye, view \) < 0\.0 \) discard;/.test(frag),
+      /if \( dot\( normalize\( vWorld - bbEye \), normalize\( view \) \) < BB_VIEW_COS \) discard;/.test(frag),
   );
   check(
     'photo keep-out: ...what the ray on past it carries into the keep-out box (a slab test from t = 0)',

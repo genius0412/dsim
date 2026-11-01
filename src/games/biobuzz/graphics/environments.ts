@@ -266,6 +266,8 @@ export interface PhotoVenue {
   /** the room as its own geometry (`PhotoLayers`), which draws nothing flat; the box above is the
    * fallback when these files cannot load */
   layers?: PhotoLayers;
+  /** the floor drawn from a sharp texture instead of the projection (`PhotoFloorTexture`) */
+  floorTexture?: PhotoFloorTexture;
   /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
    * `hdri.fallback`: painted, and the same venue kind. */
   fallback: EnvironmentId;
@@ -275,6 +277,31 @@ export interface PhotoVenue {
   authors: readonly { name: string; role: string }[];
   license: 'CC0 1.0';
   licenseUrl: string;
+}
+
+/**
+ * A PHOTOGRAPHED FLOOR AS A TEXTURE (2026-11-01; `renderPhotoVenue.ts`, THE FLOOR). Owner: "The scenes
+ * are still severely distorted." The panorama sees its floor from 63 in up, so past a few lens
+ * heights each texel is a long radial strip, and every in-match camera stood higher or nearer
+ * than the lens drew it as streaks. The floor is drawn from this tile instead: cut from a
+ * photograph's own floor beside the lens, where it is sharp, its light flattened and its edges made
+ * to repeat (`scripts/venues/floor.py`), in the backdrop's stored encoding. The photograph keeps the
+ * floor's broad light, blurred.
+ */
+export interface PhotoFloorTexture {
+  /** the tile, 1024 × 1024, same encoding as the backdrop (`scripts/venues/floor.py`) */
+  tile: string;
+  /** how many inches of floor one tile covers, along x and y (a floor with joints is cut to a whole
+   * even number of them each way, so the two can differ) */
+  inches: readonly [number, number];
+  /** the tile's mean, and this room's floor (the median 100–260 in from the lens), both decoded
+   * (`e / (1 − e)`) in their own file's units, so a tile cut in another room (the events hall's,
+   * whose own floor is painted over) is recoloured to this one */
+  mean: readonly [number, number, number];
+  base: readonly [number, number, number];
+  /** how much of the photograph's own light, blurred, the floor keeps near the field (0–1) */
+  light: number;
+  bytes: number;
 }
 
 /** a rectangle of a photographed room's floor, field inches */
@@ -307,6 +334,10 @@ export interface PhotoLayers {
    * field's shadow stops at its edge (the school hall's stage ends 80 in out, over an auditorium
    * 30 in lower) */
   floor?: PhotoFloor;
+  /** false: the furniture above the lens (`fg-hi`) is not drawn. The events hall's is its pendant
+   * lamps, relief seen from one point, which every other eye drew as white streaks under the roof;
+   * the painted-out ceiling shows instead (2026-11-01). */
+  upper?: false;
   bytes: { bg: number; bgLow: number; fg: number; fgLow: number; mesh: number };
 }
 
@@ -814,6 +845,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.703125], { bg: 571_412, bgLow: 175_712, fg: 380_916, fgLow: 126_790, mesh: 86_044 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
+      floorTexture: { tile: 'venues/school-hall-floor.webp', inches: [140.3, 140.3], mean: [0.3455, 0.2142, 0.0534], base: [0.2232, 0.1391, 0.0452], light: 1, bytes: 37_986 },
       furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
@@ -833,7 +865,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'events-hall',
     name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
+    note: 'Brick walls, steel roof, concrete floor, 1.7 MB',
     rig: {
       hemiSky: 0xf2f6ff,
       hemiGround: 0x5f5c56,
@@ -853,7 +885,8 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 300 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('events-hall', [0.177734375, 0.568359375], { bg: 684_238, bgLow: 213_540, fg: 433_312, fgLow: 150_396, mesh: 42_640 }),
+      layers: { ...PHOTO_LAYERS('events-hall', [0.177734375, 0.568359375], { bg: 684_238, bgLow: 213_540, fg: 433_312, fgLow: 150_396, mesh: 42_640 }), upper: false },
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3176, 0.2497, 0.1903], base: [0.3564, 0.3415, 0.3218], light: 0.5, bytes: 65_456 },
       fallback: 'gym',
       ...PH_CREDIT('events_hall_interior', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -890,6 +923,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -737, x1: 882, y0: -441, y1: 441, ceil: 410 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('hangar', [0.376953125, 0.556640625], { bg: 1_148_178, bgLow: 307_092, fg: 341_228, fgLow: 95_796, mesh: 53_484 }),
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3176, 0.2497, 0.1903], base: [0.4121, 0.3339, 0.2655], light: 1, bytes: 65_456 },
       fallback: 'workshop',
       ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
     },
@@ -939,7 +973,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'quad',
     name: 'School quad',
-    note: 'Paving under a canopy, 2.1 MB',
+    note: 'Paving under a canopy, 2.3 MB',
     rig: {
       hemiSky: 0xfff8ee,
       hemiGround: 0x645a4a,
@@ -960,6 +994,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -630, x1: 662, y0: -372, y1: 384, ceil: 190 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('quad', [0.33984375, 0.5625], { bg: 1_271_930, bgLow: 380_350, fg: 342_984, fgLow: 115_444, mesh: 41_700 }),
+      floorTexture: { tile: 'venues/quad-floor.webp', inches: [140.25, 138.2], mean: [0.2721, 0.1966, 0.1107], base: [0.4034, 0.3176, 0.1917], light: 1, bytes: 145_628 },
       fallback: 'overcast',
       ...PH_CREDIT('school_quad', [
         { name: 'Dimitrios Savva', role: 'Photography' },

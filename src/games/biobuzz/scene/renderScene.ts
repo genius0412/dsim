@@ -58,6 +58,7 @@ import {
   buildPhotoVenue,
   disposePhotoSource,
   loadPhotoBackdrop,
+  loadPhotoFloor,
   loadPhotoLayers,
   photoBlocked,
   photoCameraRoom,
@@ -700,17 +701,21 @@ class BiobuzzScene implements GameScene {
           return box();
         })
       : box();
-    this.photoLoading = wanted
-      .then((src) => {
+    // the floor tile beside it: a failure only leaves the projected floor (`loadPhotoFloor`)
+    const floorLoad = loadPhotoFloor(p, aniso);
+    this.photoLoading = Promise.all([wanted, floorLoad])
+      .then(([src, floor]) => {
         if (this.disposed || this.venueKey !== key) {
           disposePhotoSource(src);
+          floor?.dispose();
           return;
         }
-        this.swapVenue(buildPhotoVenue(def, src, this.sun, this.settings.envLighting), def);
+        this.swapVenue(buildPhotoVenue(def, src, this.sun, this.settings.envLighting, floor), def);
         this.tuneMaterials();
         this.renderer.shadowMap.needsUpdate = true;
       })
       .catch((err: unknown) => {
+        void floorLoad.then((floor) => floor?.dispose());
         if (this.disposed || this.venueKey !== key) return;
         console.warn(`BIOBUZZ 3D: the ${def.name} backdrop failed to load; keeping the generated room.`, err);
         this.onQualityEvent?.(`Couldn’t load the ${def.name} photograph. Showing a generated room instead.`);

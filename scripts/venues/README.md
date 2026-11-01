@@ -27,7 +27,24 @@ node scripts/venues/sync-env.mjs
 npx tsx scripts/smoke-biobuzz/index.ts --lane render    # the files, the rows and the meshes agree
 ```
 
-(`--only <id,id>` on each.) Run the Python stages from `scripts/venues/` with a Python that has:
+(`--only <id,id>` on each.)
+
+## The floor tiles (2026-11-01)
+
+`floor.py` writes `public/venues/<id>-floor.webp`: the floor beside the lens seen straight down,
+its light divided out and its edges made to repeat, in the backdrop's encoding (its docstring has
+the method). The renderer draws every photographed floor but the court's from one of these, so the
+floor no longer streaks from cameras above or nearer than the lens. It reads the derived
+`<id>-bg-4k.webp`, so rerun it after `meshes.py`, then copy the numbers it prints into each row's
+`floorTexture` and rerun `sync-env.mjs` (the picker note counts the tile). Needs only numpy and
+Pillow. The events hall uses the hangar's tile: its own floor was refilled from a mirror image and
+de-glossed in `derive.cjs`, and is not usable as texture.
+
+```
+python scripts/venues/floor.py
+```
+
+Run the Python stages from `scripts/venues/` with a Python that has:
 
 - a CUDA `torch` (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`);
 - `moge` **2.0** (`git clone https://github.com/microsoft/MoGe`, `git checkout 925b8ed`,
