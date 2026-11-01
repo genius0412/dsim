@@ -1,4 +1,13 @@
-# HANDOFF — 2026-11-01f (The sections are in the bar; a match ends on Play; Save changes)
+# HANDOFF — 2026-11-01g (Every window shape composed: a 2560px band, portrait layouts, the thin end)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit`, `server:check` pass; `shiftaudit` 636 state changes, 0 shifts. Rules in `docs/area/ui.md`, EVERY WINDOW SHAPE IS COMPOSED and THE SECTIONS ARE IN THE BAR.
+
+- **Owner:** "Aesthetics matter. Do the placements MAKE SENSE AND LOOK GOOD? For ALL dimensions, even ultrawide or super thin?"
+- **How it was judged:** an offscreen sweep (`scratch/aesthetic/sweep.cjs` + `run.sh` in the alpha-ux worktree; `PORT=… OUT=… sh scratch/aesthetic/run.sh`, `sheet.py` for contact sheets) of Home, Play, Solo setup, Configure ▸ Robot, Controls, Records and DECODE's Home and Play at 24 shapes, 5120x1440 to 280x653, landscape phones, portrait tablets. Before: `scratch/aesthetic/before/`, after: `scratch/aesthetic/after/`.
+- **Changed:** a 2560px band past which the bar, Play, the shell body, the footer and Home's column centre (`--ds-wide-max`); the robot panel sized to its cards and centred under the robot; portrait windows (721px+) get Home's column on top with the field below and Play's robot in a full-width band over the picker and the modes; the stage FOV widens for a free area under 1.5:1 (`fitFov`); the trail drops its root while the bar's sections show it; the sections' second row only ≤ 900px wide and 501px+ tall, at their own width; Play's column never under 344px; 280px phones stack Play's tiles and size the game switcher to its labels; the builder hero's Play button is its own grid cell (full width on a phone card).
+- **Left:** landscape phones (844x390, 667x375) scroll on Play and Configure, which is the phone layout's nature at 375px tall; the Records time-range segments wrap under 400px; Configure's sub-nav wraps to a 2-column grid on phones. Not checked signed in (the bar's cluster with an avatar and Admin; widths were computed, not seen).
+
+## HANDOFF — 2026-11-01f (The sections are in the bar; a match ends on Play; Save changes)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass; `shiftaudit` 636 state changes, 0 shifts (it now probes the bar's sections; importer not in that build). Rules in `docs/area/ui.md`, THE SECTIONS ARE IN THE BAR and the Configure paragraph.
 

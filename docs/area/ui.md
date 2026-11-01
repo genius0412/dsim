@@ -481,6 +481,28 @@ rulings below are theirs, not defaults.
   buttons, gone 2026-11-01); the bar is 103px since it holds the sections' row (2026-11-01). Without it
   the strip alone pushed 360x640 Play 51px past the window; measured after the row, 360x640 fits to
   the pixel. Change the picker's or the strip's height and that number moves with it.
+- ⚠️ **EVERY WINDOW SHAPE IS COMPOSED, NOT ONLY FITTED** (owner, 2026-11-01: "Aesthetics matter. Do the
+  placements MAKE SENSE AND LOOK GOOD? For ALL dimensions, even ultrawide or super thin?"). Swept
+  offscreen at 24 shapes (5120x1440 and 3440x1440 down to a 280px folding phone, landscape phones,
+  portrait tablets) over Home, Play, Solo setup, Configure, Controls, Records and DECODE's 2D stage
+  (`scratch/aesthetic/` in the alpha-ux worktree has the sweep). What it changed:
+  - **A 2560px BAND** (`--ds-wide-max`): past it the bar's items, Play, the shell's body, the footer
+    and Home's column (`--home-inset`) keep to a centred band, and the 3D field frames inside it
+    (`insetsFor`'s right inset); only the stage stays full-bleed. At 3440 and 5120 the robot panel
+    ran 1,800-4,600px wide for one card and the bar's sections were 2,000px from their page.
+  - **THE ROBOT PANEL IS AS WIDE AS ITS CARDS, CENTRED UNDER THE ROBOT** (≥ 721px): full width it
+    was one card at the left of a 900-1,800px panel, unrelated to the robot above.
+  - **A PORTRAIT WINDOW (721px+, taller than wide)** puts Home's column on top, centred, and the
+    field below (its scrim is laid on the column, so it ends under it at any height; the 2D field
+    sits at the window's foot), and gives Play a full-width robot band on top with the picker and
+    the modes side by side under it. Beside the column the field had ~300px at 820x1180 and ran off
+    the edge; beside the modes the 3D camera could only fill a 460x800 space with floor.
+  - **THE STAGE'S FOV WIDENS FOR A TALL FREE AREA** (`fitFov`, `STAGE_MIN_ASPECT` 1.5): the poses'
+    FOV is vertical and was set on landscape windows, so a narrow area cut the field and robot off.
+  - **Play's settings column is never under 344px** (`max(38vw, 344px)`): at 311 "Browse rooms"
+    wrapped. **A 280px phone** takes one tile a row and sizes the game switcher to its labels.
+  - **The builder hero's Play button is its own grid cell** (`'view play stats'`), the card's full
+    width on a phone-width card, where in the name's column it broke onto two lines.
 - ⚠️ **BOTH SCREENS FIT THE WINDOW; THERE IS NO PAGE SCROLLBAR** (owner, 2026-10-18). Measured
   `scrollHeight - clientHeight` = 0 on Home and Play at 1920x1080, 1536x864, 1366x768, 1280x720,
   and on both at 390x844 and 360x740 (`scratch/stage.cjs` prints it per size); a phone's Home down
@@ -1062,10 +1084,15 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   fly. Production's 214px left rail was not brought back: it would cover Play's stage and stand
   beside Home's own column. Home has none (its keycaps are this menu): on the stage it fades with
   the bar's left side (`.stage-home .ds-bar > :not(.ds-bar-right)`), off it (a phone) it is not
-  rendered. ≤ 1024px it is the bar's SECOND ROW, full width, and `.has-barnav` sets `--ds-bar-h` to
-  103px (63 + a gap + a 32px row), so what pins under the bar and Play's phone band follow; the band's
-  clamp is `100dvh - 370px - var(--ds-bar-h)`. One line needs ~1,000px with the longest trail and a
-  signed-in cluster, ~1,090 with Admin. Profile stays the avatar's menu. Home is still the
+  rendered. **The trail drops its root while the sections show it** (`AppShell`'s `trail`): "PLAY"
+  twice in one bar said nothing twice, so Play's bar is "DSIM · BIOBUZZ" and Leaderboards' "DSIM ·
+  BIOBUZZ  LEADERBOARDS", the latched section being the way up. ≤ 900px wide AND 501px+ tall the
+  sections are the bar's SECOND ROW, at their own width, left-aligned (stretched to thirds they were
+  330px slabs at 1024), and `.has-barnav` sets `--ds-bar-h` to 103px (63 + a gap + a 32px row), so
+  what pins under the bar and Play's phone band follow; the band's clamp is `100dvh - 370px -
+  var(--ds-bar-h)`. A landscape phone (≤ 500px tall) keeps one line and drops the season name, a row
+  being a quarter of its window. One line needs ~900px with a signed-in cluster and the longest
+  trail; with Admin the trail ellipsizes its last ~70px. Profile stays the avatar's menu. Home is still the
   hub for the game switcher. Every other shell screen also
   shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Ranked, Duo record, Room entry, LAN and Solo record are popups over Play** (2026-10-24, THE MENU STAGE above; shell pages from 2026-10-13): `App`'s `popupShell(body)` is handed to `Matchmaking`, `Lobby`, `LanPanel` and `RecordRun`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`), and the bar shows Play's trail under one. A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is the robot setup over the menu stage (2026-10-18, THE MENU STAGE above): its Solo list is Solo practice, Free drive, Solo record, and its Multiplayer list holds Duo record (a two-driver run). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and

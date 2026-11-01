@@ -153,6 +153,9 @@ export function AppShell({
   // on the stage it is always there and Home's stage rule fades it with the rest of the bar's left
   // side; off the stage (a phone's Home page) Home simply has none
   const barNav = !!stage || !home;
+  // ...and the trail drops that root while the sections show it: "PLAY" twice in one bar said nothing
+  // twice. Deeper crumbs stay ("RANKED", "LEADERBOARDS"); the section button is the way up.
+  const trail = barNav && section ? crumbs.slice(1) : crumbs;
   return (
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
@@ -176,10 +179,10 @@ export function AppShell({
         {/* THE TRAIL, in the place the old title was. Nothing LEFT of it (the mark, the season) depends
             on the screen, so the bar never shifts when you navigate; the trail only grows to the right.
             Every crumb but the last is a link, which is also how you go back (`crumbs.ts`). */}
-        {crumbs.length > 0 && (
+        {trail.length > 0 && (
           <nav className="ds-crumbs" aria-label="Breadcrumb">
             <ol>
-              {crumbs.map((c, i) => (
+              {trail.map((c, i) => (
                 <li key={`${i}:${c.label}`}>
                   {i > 0 && (
                     <span className="sep" aria-hidden="true">

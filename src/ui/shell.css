@@ -391,6 +391,12 @@
      below it, so both read this one number (see `.ds-bar`). */
   --ds-bar-h: 63px;
   --ds-inset: rgba(25, 28, 27, 0.07);
+  /* THE WIDEST THE APP'S CONTENT GETS (2026-11-01): past it the bar's items, Play, the shell's body, the
+     footer and Home's column keep to a centred band and only the stage behind stays full-bleed. On a
+     3440 or 5120 window the robot panel ran 1,800-4,600px wide for one card, the settings column sat at
+     the far edge, and the bar's sections were 2,000px from the page they belong to. 2560 leaves every
+     16:9 and 16:10 screen as it was. */
+  --ds-wide-max: 2560px;
 }
 
 /* ---- app surface + top bar ------------------------------------------- */
@@ -431,7 +437,7 @@
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 14px 22px;
+  padding: 14px calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));
   min-height: var(--ds-bar-h);
   border-bottom: 1px solid var(--ds-line);
   background: var(--ds-bar);
@@ -540,6 +546,13 @@
 .ds-bar-nav + .ds-bar-right {
   margin-left: 0;
 }
+/* A LANDSCAPE PHONE (500px tall or less) keeps one line, a row there being a quarter of the window; the
+   season goes, as it does under 641px wide, so the sections and the cluster fit */
+@media (max-width: 900px) and (max-height: 500px) {
+  .ds-app.has-barnav .ds-bar-season {
+    display: none;
+  }
+}
 .ds-bar-nav-btn {
   font: inherit;
   font-size: var(--ds-t-control);
@@ -565,11 +578,12 @@
   border-color: var(--ds-accent);
   color: var(--ds-accent-soft-ink);
 }
-/* A NARROW WINDOW: the sections are the bar's second row, full width, the way production's phone tab
-   row is. `--ds-bar-h` grows by that row (one gap and a button), so everything pinned under the bar
-   and Play's robot band follow it. 1024: one line needs ~1,000px with the longest trail ("Configure ›
-   Import robot") and a signed-in cluster, ~1,090 with Admin; measured 2026-11-01. */
-@media (max-width: 1024px) {
+/* A NARROW WINDOW: the sections are the bar's second row, left-aligned at their own width, the way
+   production's phone tab row is (stretched to thirds they were 330px slabs at 1024). `--ds-bar-h` grows
+   by that row (one gap and a button), so everything pinned under the bar and Play's robot band follow
+   it. 900: with the trail's root dropped (it is the latched section), one line needs ~900px with a
+   signed-in cluster and the longest trail, and with Admin the trail ellipsizes its last ~70px. */
+@media (max-width: 900px) and (min-height: 501px) {
   .ds-app.has-barnav {
     --ds-bar-h: 103px;
   }
@@ -581,9 +595,6 @@
     order: 1;
     flex: 1 0 100%;
     margin-left: 0;
-  }
-  .ds-bar-nav-btn {
-    flex: 1 1 0;
   }
   .ds-bar-nav + .ds-bar-right {
     margin-left: auto;
@@ -965,6 +976,8 @@
   display: flex;
   align-items: stretch;
   width: 100%;
+  max-width: var(--ds-wide-max);
+  margin-inline: auto;
 }
 
 .ds-subnav-btn.on .sh {
@@ -1783,7 +1796,7 @@
   justify-content: space-between;
   gap: var(--ds-s-4);
   flex-wrap: wrap;
-  padding: var(--ds-s-4) 22px;
+  padding: var(--ds-s-4) calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));
   border-top: 1px solid var(--ds-line);
   background: var(--ds-bar);
   font-size: var(--ds-t-md);
@@ -5590,7 +5603,10 @@ input[type='range'].ds-range:disabled {
 .ds-hero-in {
   display: grid;
   grid-template-columns: minmax(200px, 30%) minmax(0, 1fr) auto;
-  grid-template-areas: 'view info stats';
+  grid-template-areas:
+    'view info stats'
+    'view play stats';
+  align-content: center;
   align-items: center;
   gap: var(--ds-s-3) var(--ds-s-4);
 }
@@ -5666,9 +5682,11 @@ input[type='range'].ds-range:disabled {
   font-size: var(--ds-t-sm);
   line-height: var(--ds-lh-prose);
 }
+/* its own cell under the name (`'view play stats'`), so a phone-width card can give it the full width */
 .ds-hero-play {
-  align-self: flex-start;
-  margin-top: var(--ds-s-2);
+  grid-area: play;
+  justify-self: start;
+  align-self: start;
 }
 /* THE NUMBERS. A caption over a value, on a fixed grid: equal rows, columns as wide as their
    widest entry, no boxes. It used to be a chip per stat, each as wide as its own text, which is
@@ -5727,7 +5745,12 @@ input[type='range'].ds-range:disabled {
     grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
     grid-template-areas:
       'view info'
+      'play play'
       'stats stats';
+  }
+  /* the card's full width: in the name's column it broke onto two lines under 400px */
+  .ds-hero-play {
+    justify-self: stretch;
   }
   .ds-hero-stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -10179,7 +10202,7 @@ input.admin-months {
    2D stage too, which is mounted beside the shell rather than inside it, so it sizes the free area. */
 .ds-app.stage-home,
 .ds-stage-2d {
-  --home-inset: max(var(--ds-s-7), 7vw);
+  --home-inset: max(var(--ds-s-7), 7vw, calc((100vw - var(--ds-wide-max)) / 2 + var(--ds-s-7)));
 }
 /* the field's side: the free area right of Home's column (inset + 420 + 24, see the scrim) less 24 a
    side, and between the bar's account cluster (64) and the footer (~48) less 24 above and below. One
@@ -10191,12 +10214,13 @@ input.admin-months {
    what the column takes (inset + 444), and down by half the difference between the bar (64) and the
    footer (48). */
 .ds-stage-2d.home img {
-  transform: translate(calc(var(--home-inset) / 2 + 222px), var(--ds-s-2));
+  /* less half the band's right margin past --ds-wide-max, so it centres in the band, not the window */
+  transform: translate(calc(var(--home-inset) / 2 + 222px - max(0px, (100vw - var(--ds-wide-max)) / 4)), var(--ds-s-2));
 }
 /* PLAY: under the robot's space (left of the settings column), and dimmed, so the 2D robot card in
    front of it is the picture and the field is only where it stands */
 .ds-stage-2d.setup img {
-  transform: translate(calc(-1 * (min(440px, 38vw) + var(--ds-s-4)) / 2), -12vh);
+  transform: translate(calc(-1 * (min(440px, max(38vw, 344px)) + var(--ds-s-4)) / 2), -12vh);
   opacity: 0.35;
 }
 
@@ -10391,7 +10415,7 @@ input.admin-months {
   position: absolute;
   left: 0;
   right: 0;
-  padding-inline: var(--ds-s-7);
+  padding-inline: calc(var(--ds-s-7) + max(0px, (100% - var(--ds-wide-max)) / 2));
 }
 .ds-app.on-stage .ds-bar::before {
   content: '';
@@ -10457,7 +10481,7 @@ input.admin-months {
 /* ONE spacing on Play: 16px is the page's edge, the gap between its areas, and a panel's own
    padding (`.ds-panel-body`), so every edge on the page is 16 from the next one */
 .ds-main.ds-main-stage {
-  max-width: none;
+  max-width: var(--ds-wide-max);
   display: flex;
   min-height: 480px;
   padding: var(--ds-s-4);
@@ -10467,7 +10491,8 @@ input.admin-months {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) min(440px, 38vw);
+  /* never under 344px: at 38vw a portrait tablet's (311 at 820) broke "Browse rooms" onto two lines */
+  grid-template-columns: minmax(0, 1fr) min(440px, max(38vw, 344px));
   grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas:
     'view side'
@@ -10552,6 +10577,35 @@ input.admin-months {
   grid-area: picker;
   min-width: 0;
 }
+/* AS WIDE AS ITS CARDS, CENTRED UNDER THE ROBOT (2026-11-01): full width it was one card at the left of a
+   panel 900-1,800px wide (1366-2560), unrelated to the robot above it. More cards widen it to the row,
+   which then scrolls as before. A phone keeps the full width. */
+@media (min-width: 721px) {
+  .ds-setup-picker {
+    justify-self: center;
+    width: max-content;
+    max-width: 100%;
+  }
+}
+/* A PORTRAIT WINDOW, 721px and up: the robot is a full-width band on top, and the picker and the modes
+   sit side by side under it (2026-11-01). Beside the modes the robot's space was ~460x800 at 820x1180,
+   which the 3D camera could only fill with floor, and the 2D card covered the field's top. */
+@media (min-width: 721px) and (max-aspect-ratio: 1/1) {
+  .ds-setup {
+    grid-template-columns: minmax(0, 1fr) minmax(344px, 1fr);
+    grid-template-areas:
+      'view view'
+      'picker side';
+  }
+  .ds-setup-picker {
+    justify-self: stretch;
+    align-self: start;
+    width: auto;
+  }
+  .ds-stage-2d.setup img {
+    transform: translateY(calc(var(--ds-bar-h) + var(--ds-s-4) + var(--stage2d-size) / 2 - 50vh));
+  }
+}
 .ds-setup-side {
   grid-area: side;
   min-height: 0;
@@ -10617,6 +10671,19 @@ input.admin-months {
 /* what Solo practice starts with, under its tiles */
 .ds-play-summary {
   margin-top: var(--ds-s-3);
+}
+/* A 280px PHONE (a folding phone's cover screen): one tile a row; two broke "Free drive" and
+   "Solo record" onto two lines each. And the game switcher a size down and sized to its labels: in
+   equal thirds (~80px) "Chain Reaction" was cut. */
+@media (max-width: 300px) {
+  .ds-play-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* one class more than the phone Home's own rule, which comes later in this file */
+  .ds-app.is-home .ds-segs.ds-home-games .ds-seg {
+    flex: 1 1 auto;
+    font-size: var(--ds-t-sm);
+  }
 }
 /* a card here carries a picture beside its name, so it is wider than the builder's preset strip */
 .ds-setup-picker .ds-opts.robots.strip {
@@ -10972,6 +11039,35 @@ input.admin-months {
 body:has(.ds-popup-host > :not(.ds-popup))
   :is(.ds-bar, .ds-foot, .ds-bannerstrip, .ds-main-stage > :not(.ds-popup-host, .overlay, .ds-modal-backdrop)) {
   visibility: hidden;
+}
+
+/* A PORTRAIT WINDOW, 721px and up (a tablet held upright, a window snapped tall): the column at the top,
+   centred, and the field below it (2026-11-01). Beside the column the field had ~300px at 820x1180 and
+   ran off the window's right edge. The scrim is laid on the COLUMN, so it ends under it whatever its
+   height (the live stats add ~100px): the window's full width, from above the window's top to 24px
+   past the column, then a 96px fade. `insetsFor` frames the 3D field below it, and the 2D field sits
+   at the foot of the window, sized to leave the tallest column clear. */
+@media (min-width: 721px) and (max-aspect-ratio: 1/1) {
+  .ds-app.stage-home {
+    overflow-x: clip;
+  }
+  .ds-app.stage-home .ds-main-home {
+    align-items: flex-start;
+    justify-content: center;
+    padding-inline: var(--ds-s-7);
+  }
+  .ds-app.stage-home .ds-home-scrim {
+    position: absolute;
+    inset: -200px auto -120px calc(50% - 50vw);
+    width: 100vw;
+    background: linear-gradient(180deg, var(--ds-scrim-strong) 0 calc(100% - 96px), transparent 100%);
+  }
+  .ds-stage-2d {
+    --stage2d-size: min(calc(100vw - 2 * var(--ds-s-7)), calc(100vh - 728px), 760px);
+  }
+  .ds-stage-2d.home img {
+    transform: translateY(calc((100vh - var(--stage2d-size)) / 2 - var(--ds-s-7) - var(--ds-s-5)));
+  }
 }
 
 /* A SHORT WINDOW (a 720 or 768 laptop): Home's column still fits above the footer, a step

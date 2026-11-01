@@ -600,14 +600,14 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                 </div>
               ) : null}
               <div className="ds-hero-build">{buildWords(spec, settings.game).join(' · ')}</div>
-              {/* THE WAY BACK TO PLAY, in the card that stays on screen: the builder is Configure's
-                  now, and its trail no longer passes through Play */}
-              {onPlay && (
-                <button className="ds-btn primary small ds-hero-play" onClick={onPlay}>
-                  Play with this robot
-                </button>
-              )}
             </div>
+            {/* THE WAY BACK TO PLAY, in the card that stays on screen: the builder is Configure's now,
+                and its trail no longer passes through Play. Its own cell (`.ds-hero-play`). */}
+            {onPlay && (
+              <button className="ds-btn primary small ds-hero-play" onClick={onPlay}>
+                Play with this robot
+              </button>
+            )}
             <dl className="ds-hero-stats">
               {heroStats.map(([label, value, unit]) => (
                 <div key={label}>

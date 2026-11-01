@@ -76,13 +76,33 @@ const ORBIT_RETURN_S = 0.35;
  * OFF THE PAGE: Play's free area is `.ds-setup-view` itself, Home's is everything right of the
  * column. The estimates are for the frame before the page has laid out. On a phone the stage is
  * only the band above the column, so nothing covers it. */
+/**
+ * A TALL FREE AREA KEEPS THE POSE'S WIDTH (2026-11-01). The poses' FOV is vertical and was set on
+ * landscape windows; the scene fits it to the free area (`setViewOffset`), so a portrait tablet's
+ * free area (820x1180: ~300px beside Home's column, ~460 beside Play's) narrowed the horizontal view
+ * and cut the field and the robot off at the sides. Under `STAGE_MIN_ASPECT` the vertical FOV widens
+ * until the horizontal view is what that aspect would show.
+ */
+const STAGE_MIN_ASPECT = 1.5;
+function fitFov(fovDeg: number, w: number, h: number, ins: SceneInsets): number {
+  const aspect = Math.max(0.2, (w - ins.left - ins.right) / Math.max(1, h - ins.top - ins.bottom));
+  if (aspect >= STAGE_MIN_ASPECT) return fovDeg;
+  const halfH = Math.atan((Math.tan((fovDeg * Math.PI) / 360) * STAGE_MIN_ASPECT) / aspect);
+  return Math.min(100, (halfH * 360) / Math.PI);
+}
+
 function insetsFor(view: StageView, w: number, h: number): SceneInsets {
   if (w < 720) return { top: 0, right: 0, bottom: 0, left: 0 };
   if (view === 'home') {
     const col = document.querySelector('.ds-home')?.getBoundingClientRect();
+    // past --ds-wide-max the page keeps to a centred band (shell.css), and the field frames in it
+    const wide = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ds-wide-max')) || Infinity;
+    // A PORTRAIT WINDOW puts the column on top (shell.css), and the field below it, clear of the
+    // scrim's fade and the footer
+    if (col && h > w) return { top: col.bottom + 72, right: 0, bottom: 48, left: 0 };
     return {
       top: 0,
-      right: 0,
+      right: Math.max(0, (w - wide) / 2),
       bottom: 0,
       left: col ? col.right + 24 : Math.min(520, w * 0.4),
     };
@@ -314,7 +334,7 @@ function Stage3d({
         height: size.h,
         dpr: size.dpr,
         insets: ins,
-        pose: drawn,
+        pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },
       });
       const animating = moving || orbit.held || !!dropRobotAt;
       if (animating) kick();

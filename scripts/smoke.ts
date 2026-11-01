@@ -18840,9 +18840,33 @@ const recordDrive: CommandSource = (tick) => {
         /<nav className="ds-bar-nav" aria-label="Sections">/.test(shellSrc));
     check('nav: Home has none (its keycaps are that menu): faded on the stage, not rendered off it',
       shellSrc.includes('const barNav = !!stage || !home;') && /\.ds-app\.stage-home \.ds-bar > :not\(\.ds-bar-right\)/.test(css));
-    check('nav: up to 1024px it is the bar’s second row and --ds-bar-h grows by it, which Play’s phone band reads',
-      /@media \(max-width: 1024px\) \{\n  \.ds-app\.has-barnav \{\n    --ds-bar-h: 103px;/.test(css) &&
+    check('nav: up to 900px wide and 501px+ tall it is the bar’s second row and --ds-bar-h grows by it, which Play’s phone band reads',
+      /@media \(max-width: 900px\) and \(min-height: 501px\) \{\n  \.ds-app\.has-barnav \{\n    --ds-bar-h: 103px;/.test(css) &&
         css.includes('height: clamp(120px, 100dvh - 370px - var(--ds-bar-h), calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));'));
+    check('nav: the trail drops its root while the sections show it (no "PLAY" twice in one bar)',
+      shellSrc.includes('const trail = barNav && section ? crumbs.slice(1) : crumbs;') && /\{trail\.map\(\(c, i\) =>/.test(shellSrc));
+    // EVERY WINDOW SHAPE (owner, 2026-11-01: "Do the placements MAKE SENSE AND LOOK GOOD? For ALL
+    // dimensions, even ultrawide or super thin?")
+    const stageSrc2 = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+    check('shapes: past --ds-wide-max (2560px) the bar, the shell body, Play, the footer and Home’s column keep to a centred band',
+      css.includes('--ds-wide-max: 2560px;') &&
+        css.includes('padding: 14px calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&
+        /\.ds-body \{[^}]*max-width: var\(--ds-wide-max\);/.test(css) &&
+        /\.ds-main\.ds-main-stage \{\s*max-width: var\(--ds-wide-max\);/.test(css) &&
+        css.includes('padding: var(--ds-s-4) calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&
+        css.includes('--home-inset: max(var(--ds-s-7), 7vw, calc((100vw - var(--ds-wide-max)) / 2 + var(--ds-s-7)));') &&
+        stageSrc2.includes('right: Math.max(0, (w - wide) / 2),'));
+    check('shapes: the robot panel is as wide as its cards, centred under the robot, from 721px',
+      /@media \(min-width: 721px\) \{\n  \.ds-setup-picker \{\n    justify-self: center;\n    width: max-content;\n    max-width: 100%;/.test(css));
+    check('shapes: a portrait window puts Home’s column on top (its scrim on the column) and Play’s robot in a band over the picker and the modes',
+      (css.match(/@media \(min-width: 721px\) and \(max-aspect-ratio: 1\/1\) \{/g) ?? []).length === 2 &&
+        /grid-template-areas:\n      'view view'\n      'picker side';/.test(css) &&
+        stageSrc2.includes('if (col && h > w) return { top: col.bottom + 72, right: 0, bottom: 48, left: 0 };'));
+    check('shapes: the stage FOV widens for a free area narrower than 1.5:1, so the field and the robot keep their width',
+      stageSrc2.includes('const STAGE_MIN_ASPECT = 1.5;') && stageSrc2.includes('pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },'));
+    check('shapes: Play’s settings column is never under 344px, and a 280px phone stacks the tiles',
+      css.includes('grid-template-columns: minmax(0, 1fr) min(440px, max(38vw, 344px));') &&
+        /@media \(max-width: 300px\) \{\n  \.ds-play-tiles \{\n    grid-template-columns: minmax\(0, 1fr\);/.test(css));
     check('nav: a finished match goes back to Play, not Home (a test drive and a competition match keep their own)',
       /navigate\('competitions', \{ sub: `\$\{comp\}\/matches` \}\);\s*return;\s*\}[\s\S]{0,400}?navigate\('modes'\);\s*\};/.test(appSrc));
     check('builder: an edit of a saved robot offers Save changes (in place) beside Save as new',
