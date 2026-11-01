@@ -709,7 +709,11 @@ const BASELINE = {
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown
   // scope controls, and the analytics page's sponsor report and imported-history section. Admin
   // only, so no player downloads it.
-  admin: { gzip: 29.75 * 1000 },
+  // 2026-11-01: 29.75 -> 42.80, raised on purpose, measured against its base (4efd1334, 30.99):
+  // `AdminSponsorPdf-*.js` 8.60, NEW, the monthly sponsor report's PDF writer and layout, a lazy
+  // chunk fetched only when someone presses Download PDF; `AdminAnalytics-*.js` 9.21 -> 12.30,
+  // the UTC ranges, the loader that cancels and caches, and the fixed product charts.
+  admin: { gzip: 42.8 * 1000 },
   // 2026-10-04: NEW, the competition pages (0059), MEASURED on the build that introduced them:
   // the list, a competition's page and its tabs (rankings, matches, the bracket, alliance
   // selection, the organizer's desk), the editor, the join screen, the pure rankings/selection/

@@ -1,4 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react';
+import { dayLabel, hourLabel, instantLabel, isPartial } from './adminAnalyticsTime';
 
 /**
  * THE CHARTS, hand-rolled in SVG.
@@ -152,7 +153,9 @@ export function TimeSeries({
   data,
   grain,
   split,
+  end,
 }: {
+  /** every bucket of the range, zero-filled (`fillSeries`): x is spaced by position */
   data: SeriesPoint[];
   grain: 'hour' | 'day';
   /**
@@ -160,39 +163,50 @@ export function TimeSeries({
    * Analytics' imported days. A thin rule between the two marks the change of source.
    */
   split?: string;
+  /** where the range ends; a last bucket still filling is drawn faded and read "so far" */
+  end?: Date;
 }) {
   const id = useId();
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<SVGSVGElement>(null);
+  const last = data[data.length - 1];
+  const partial = !!end && !!last && data.length > 1 && isPartial(last.t, grain, end);
 
-  const { max, xs, area, viewLine, visitorLine, ticks } = useMemo(() => {
+  const { max, xs, area, viewLine, visitorLine, viewTail, visitorTail, ticks } = useMemo(() => {
     const top = Math.max(1, ...data.map((d) => d.views));
     const innerW = W - PAD.left - PAD.right;
     const innerH = H - PAD.top - PAD.bottom;
     const base = PAD.top + innerH;
     const x = (i: number): number => PAD.left + (data.length < 2 ? innerW / 2 : (i / (data.length - 1)) * innerW);
     const y = (v: number): number => base - (v / top) * innerH;
-    const path = (pick: (d: SeriesPoint) => number): string =>
-      data.map((d, i) => `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(pick(d)).toFixed(1)}`).join(' ');
-    const views = path((d) => d.views);
+    const path = (pts: SeriesPoint[], from: number, pick: (d: SeriesPoint) => number): string =>
+      pts.map((d, i) => `${i ? 'L' : 'M'} ${x(from + i).toFixed(1)} ${y(pick(d)).toFixed(1)}`).join(' ');
+    // THE BUCKET STILL FILLING is its own faded segment. Drawn like the others, today (or this
+    // hour) always looked like a collapse at the right edge of the chart.
+    const solid = partial ? data.slice(0, -1) : data;
+    const tail = partial ? data.slice(-2) : [];
+    const views = path(solid, 0, (d) => d.views);
     return {
       max: top,
       xs: data.map((_, i) => x(i)),
-      // the area is the views line closed down to the baseline at both ends
-      area: data.length ? `M ${x(0).toFixed(1)} ${base} ${views.slice(1)} L ${x(data.length - 1).toFixed(1)} ${base} Z` : '',
-      viewLine: views,
-      visitorLine: path((d) => d.visitors),
+      // the area is the views line closed down to the baseline at both ends, over whole buckets
+      area: solid.length ? `M ${x(0).toFixed(1)} ${base} ${views.slice(1)} L ${x(solid.length - 1).toFixed(1)} ${base} Z` : '',
+      viewLine: path(solid, 0, (d) => d.views),
+      visitorLine: path(solid, 0, (d) => d.visitors),
+      viewTail: tail.length ? path(tail, data.length - 2, (d) => d.views) : '',
+      visitorTail: tail.length ? path(tail, data.length - 2, (d) => d.visitors) : '',
       ticks: [0, 0.5, 1].map((f) => ({ v: top * f, y: base - f * innerH })),
     };
-  }, [data]);
+  }, [data, partial]);
 
-  // A day bucket is a UTC day, so it is named in UTC: in a local zone west of Greenwich its
-  // midnight is the evening before, and every label read one day early.
-  const label = (iso: string): string => {
-    const d = new Date(iso);
-    return grain === 'hour'
-      ? d.toLocaleTimeString([], { hour: 'numeric' })
-      : d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  // UTC, like every bucket the server makes. An hour reads "14:00", and the first tick of each
+  // day carries the date, so 24 hours that cross midnight say where (ticks every `step` buckets
+  // rarely land on 00:00 itself).
+  const step = Math.ceil(data.length / 8);
+  const label = (iso: string, i: number): string => {
+    if (grain === 'day') return dayLabel(iso);
+    const newDay = i < step || iso.slice(0, 10) !== data[i - step].t.slice(0, 10);
+    return newDay ? `${dayLabel(iso)} ${hourLabel(iso)}` : hourLabel(iso);
   };
 
   if (!data.length) return <div className="ds-empty an-empty"><div className="big">No traffic yet</div>Nothing was recorded in this range.</div>;
@@ -211,7 +225,7 @@ export function TimeSeries({
         viewBox={`0 0 ${W} ${H}`}
         role="img"
         tabIndex={0}
-        aria-label={`Page views and visitors, ${data.length} ${grain === 'hour' ? 'hours' : 'days'}, peaking at ${fmtExact(max)} views${markX != null ? `; Vercel Web Analytics counts before ${label(data[firstOwn].t)}` : ''}`}
+        aria-label={`Page views and visitors, ${data.length} ${grain === 'hour' ? 'hours' : 'days'} (UTC), peaking at ${fmtExact(max)} views${markX != null ? `; Vercel Web Analytics counts before ${label(data[firstOwn].t, 0)}` : ''}`}
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => {
           const box = ref.current?.getBoundingClientRect();
@@ -257,12 +271,14 @@ export function TimeSeries({
         <path d={area} fill={`url(#${id}-fill)`} />
         <path className="an-line views" d={viewLine} />
         <path className="an-line visitors" d={visitorLine} />
+        {viewTail && <path className="an-line views tail" d={viewTail} />}
+        {visitorTail && <path className="an-line visitors tail" d={visitorTail} />}
         {hover != null && (
           <line className="an-cursor" x1={xs[hover]} x2={xs[hover]} y1={PAD.top} y2={H - PAD.bottom} />
         )}
         {data.map((d, i) =>
-          i % Math.ceil(data.length / 8) === 0 ? (
-            <text key={d.t} className="an-axis" x={xs[i]} y={H - 6} textAnchor="middle">{label(d.t)}</text>
+          i % step === 0 ? (
+            <text key={d.t} className="an-axis" x={xs[i]} y={H - 6} textAnchor={i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle'}>{label(d.t, i)}</text>
           ) : null,
         )}
       </svg>
@@ -275,7 +291,7 @@ export function TimeSeries({
           walking the buckets with the arrow keys hears each one. */}
       <p className="an-readout" role="status">
         {active
-          ? `${new Date(active.t).toLocaleString([], grain === 'hour' ? { month: 'short', day: 'numeric', hour: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })} · ${fmtExact(active.views)} views · ${fmtExact(active.visitors)} visitors${imported(active) ? ' · Vercel' : ''}`
+          ? `${grain === 'hour' ? instantLabel(Date.parse(active.t)) : `${dayLabel(active.t)} (UTC)`} · ${fmtExact(active.views)} views · ${fmtExact(active.visitors)} visitors${imported(active) ? ' · Vercel' : ''}${partial && active === last ? ' · so far' : ''}`
           : 'Hover the chart, or focus it and use the arrow keys.'}
       </p>
     </div>
@@ -327,11 +343,12 @@ export function BarList({
           <>
             <span className="an-bar-fill" style={{ width: `${(r.views / top) * 100}%` }} aria-hidden="true" />
             <span className="an-bar-name">{text}</span>
-            <span className="an-bar-share">{fmtPct(share)}</span>
+            {/* a list with no total (peaks, not parts of a whole) has no share to print */}
+            <span className="an-bar-share">{total ? fmtPct(share) : ''}</span>
             <span className="an-bar-num">{fmt(r.views)}</span>
           </>
         );
-        const title = `${text} — ${fmtExact(r.views)} views, ${fmtExact(r.visitors)} visitors (${fmtPct(share)})`;
+        const title = `${text} — ${fmtExact(r.views)} views, ${fmtExact(r.visitors)} visitors${total ? ` (${fmtPct(share)})` : ''}`;
         return (
           <li key={r.val} className={`an-bar${active === r.val ? ' on' : ''}`}>
             {onPick ? (
@@ -380,12 +397,20 @@ export function Columns({
   height?: number;
   format?: (n: number) => string;
 }) {
-  if (!cols.length) return <div className="ds-empty an-empty"><div className="big">No data</div>Nothing was recorded in this range.</div>;
   const totals = cols.map((c) => c.parts.reduce((s, p) => s + p.value, 0));
+  // every column zero is "nothing happened", said in words rather than as a flat empty frame
+  if (!totals.some((v) => v > 0)) return <div className="ds-empty an-empty"><div className="big">No data</div>Nothing was recorded in this range.</div>;
   const top = Math.max(1, ...totals);
-  const grand = totals.reduce((s, v) => s + v, 0);
+  // AT MOST ~8 LABELS. Thirty "Oct 12"s in a 340px panel overprinted into a grey bar; every
+  // column still names itself in its title.
+  const every = Math.max(1, Math.ceil(cols.length / 8));
   return (
-    <div className="an-cols" style={{ height: `${height}px` }}>
+    <div className="an-colchart">
+      {/* the scale: the tallest column's value, above the plot rather than over its bars */}
+      <span className="an-cols-max" aria-hidden="true">
+        max {format(top)}
+      </span>
+      <div className="an-cols" style={{ height: `${height}px` }}>
       {cols.map((c, i) => (
         <div
           key={c.label + i}
@@ -406,10 +431,12 @@ export function Columns({
               ) : null
             ))}
           </span>
-          <span className="an-col-label">{c.label}</span>
+          {/* a no-break space keeps an unlabelled column's label row as tall as a labelled one,
+              so every bar is measured against the same height */}
+          <span className="an-col-label">{i % every === 0 ? c.label : '\u00a0'}</span>
         </div>
       ))}
-      <span className="an-cols-total" aria-hidden="true">{format(grand)} total</span>
+      </div>
     </div>
   );
 }

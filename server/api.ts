@@ -104,6 +104,7 @@ import {
   currentSalt,
   dimColumn,
   ensureAnalyticsJobs,
+  eventsDaily,
   headerCountry,
   insertEvent,
   insertPageview,
@@ -113,6 +114,8 @@ import {
   primaryLang,
   productReport,
   rateOk,
+  ReadAborted,
+  runRead,
   visitorHash,
   ADDRESS_LIMIT,
   VISITOR_LIMIT,
@@ -184,6 +187,7 @@ const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
  *   POST /api/a/ev                           — one named event (public beacon)
  *   GET  /api/analytics?from&to&game&grain&f — the traffic dashboard (staff only)
  *   GET  /api/analytics/product?from&to&game — matches, retention, ranked, … (staff only)
+ *   GET  /api/analytics/events-daily?from&to&game&names — named events per UTC day (staff only)
  */
 
 /** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
@@ -530,6 +534,7 @@ async function saveLanUpload(
  */
 async function handleAnalytics(
   req: IncomingMessage,
+  res: ServerResponse,
   url: URL,
   json: (code: number, body: unknown) => void,
 ): Promise<boolean> {
@@ -609,15 +614,57 @@ async function handleAnalytics(
   if (from >= to) return json(400, { error: 'empty range' }), true;
   const game = url.searchParams.get('game') ?? '*';
   const grain = url.searchParams.get('grain') === 'hour' ? 'hour' : 'day';
-
-  if (p === '/api/analytics/product') {
-    return json(200, await productReport(from, to, game)), true;
+  if (p !== '/api/analytics' && p !== '/api/analytics/product' && p !== '/api/analytics/events-daily') {
+    return json(404, { error: 'unknown endpoint' }), true;
   }
-  if (p !== '/api/analytics') return json(404, { error: 'unknown endpoint' }), true;
 
-  // `f=<dim>:<value>`, repeatable — the click-to-filter chips. Capped at six: the panel cannot
-  // produce more, and an URL that could would be a way to ask for an arbitrarily long `where`.
-  const filters = url.searchParams
+  // ONE LIVE READ PER PAGE PER ENDPOINT (`server/analytics.ts`, "the dashboard's share of the
+  // pool"). `lane` is a per-page id the dashboard sends, so two open tabs do not cancel each
+  // other; an older client sends none and gets one live read per account, which is all it
+  // ever used, because it already discarded every answer but the newest.
+  const key = `${user.userId}|${p}|${(url.searchParams.get('lane') ?? '').slice(0, 40)}`;
+  liveReads.get(key)?.abort();
+  const ctl = new AbortController();
+  liveReads.set(key, ctl);
+  const abandon = (): void => {
+    if (!res.writableFinished) ctl.abort();
+  };
+  res.once('close', abandon);
+  try {
+    const body = await runRead<unknown>(ctl.signal, async () => {
+      if (p === '/api/analytics/product') return productReport(from, to, game);
+      if (p === '/api/analytics/events-daily') {
+        const names = (url.searchParams.get('names') ?? '')
+          .split(',')
+          .filter((n) => DAILY_EVENT_NAMES.has(n))
+          .slice(0, 8);
+        return { days: await eventsDaily({ from, to, game }, names) };
+      }
+      return analyticsReport({ from, to, game, filters: readFilters(url), grain });
+    });
+    return json(200, body), true;
+  } catch (e) {
+    // the page that asked has asked again, or gone: it will not read this answer
+    if (e instanceof ReadAborted) return json(409, { error: 'superseded' }), true;
+    throw e;
+  } finally {
+    res.off('close', abandon);
+    if (liveReads.get(key) === ctl) liveReads.delete(key);
+  }
+}
+
+/** the dashboard's in-flight reads, keyed by account + endpoint + page */
+const liveReads = new Map<string, AbortController>();
+
+/** the events the daily breakdown answers for: the sponsor report's, and nothing a caller names */
+const DAILY_EVENT_NAMES = new Set(['sponsor_shown', 'sponsor_click', 'player_joined', 'desktop_download']);
+
+/** `f=<dim>:<value>`, repeatable — the click-to-filter chips */
+function readFilters(url: URL): { dim: string; val: string }[] {
+
+  // Capped at six: the panel cannot produce more, and an URL that could would be a way to ask
+  // for an arbitrarily long `where`.
+  return url.searchParams
     .getAll('f')
     .slice(0, 6)
     .map((raw) => {
@@ -625,8 +672,6 @@ async function handleAnalytics(
       return i < 0 ? { dim: raw, val: '' } : { dim: raw.slice(0, i), val: raw.slice(i + 1).slice(0, 128) };
     })
     .filter((f) => dimColumn(f.dim) !== null);
-
-  return json(200, await analyticsReport({ from, to, game, filters, grain })), true;
 }
 
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -650,7 +695,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     // FIRST in the chain because it is the most frequent request this server answers and the
     // cheapest to refuse. See `server/analytics.ts` for what is and is not recorded.
     if (url.pathname.startsWith('/api/a/') || url.pathname.startsWith('/api/analytics')) {
-      return await handleAnalytics(req, url, json);
+      return await handleAnalytics(req, res, url, json);
     }
 
     /* ---- A CLOSED SITE REFUSES EVERY WRITE (0051, scope `site`) -------------------------

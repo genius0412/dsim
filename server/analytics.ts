@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { RATE_SWEEP_EVERY_MS, sweepGate } from './sweepGate';
@@ -844,6 +845,89 @@ export async function insertEvent(e: EventInput, visitor: string): Promise<void>
   noteTraffic();
 }
 
+// ------------------------------------------------ the dashboard's share of the pool ----
+
+/**
+ * THE DASHBOARD GETS THREE OF THE POOL'S FIVE CONNECTIONS, NEVER ALL OF THEM.
+ *
+ * One dashboard load is ~23 aggregate queries started at once (the traffic report and the
+ * product report together), and the pool is `DB_POOL_MAX` 5 shared with everything else this
+ * machine does: match results, profiles, the record boards. pg's pool queues a caller past the
+ * fifth and fails it with "timeout exceeded when trying to connect" after 10 s. Clicking three
+ * ranges in a row queued ~70 slow queries: the later loads died with a 500 and nothing drew
+ * (owner, 2026-11-01: "switching between tabs sometimes glitches it and nothing loads"), and
+ * a match finishing in those seconds waited behind them.
+ *
+ * So every read below goes through `rq`, which runs at most `READ_SLOTS` at a time, and every
+ * read runs inside `runRead` with the request's AbortSignal. A request that has been superseded
+ * (the admin picked another range) or abandoned (the tab closed) drops the queries it has not
+ * started yet instead of running them for nobody.
+ */
+export const READ_SLOTS = 3;
+let readsRunning = 0;
+const readQueue: { wake: () => void }[] = [];
+const readScope = new AsyncLocalStorage<AbortSignal>();
+
+/** thrown by a read whose request was superseded or abandoned; the route answers 409 */
+export class ReadAborted extends Error {
+  constructor() {
+    super('analytics read abandoned');
+  }
+}
+
+function acquireRead(signal: AbortSignal | undefined): Promise<void> {
+  if (readsRunning < READ_SLOTS) {
+    readsRunning++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const entry = {
+      wake: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      },
+    };
+    // leave the queue at once, rather than waiting a turn only to throw
+    const onAbort = (): void => {
+      const i = readQueue.indexOf(entry);
+      if (i >= 0) readQueue.splice(i, 1);
+      reject(new ReadAborted());
+    };
+    readQueue.push(entry);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** a freed slot passes straight to the next waiter, so the count never dips and refills */
+function releaseRead(): void {
+  const next = readQueue.shift();
+  if (next) next.wake();
+  else readsRunning--;
+}
+
+/** `q` for the dashboard: gated, and dropped once its request is gone */
+async function rq<T extends Record<string, unknown> = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
+  const signal = readScope.getStore();
+  if (signal?.aborted) throw new ReadAborted();
+  await acquireRead(signal);
+  try {
+    if (signal?.aborted) throw new ReadAborted();
+    return await q<T>(text, params);
+  } finally {
+    releaseRead();
+  }
+}
+
+/** run a dashboard read under `signal`; every `rq` inside it, however deep, sees the signal */
+export function runRead<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  return readScope.run(signal, fn);
+}
+
+/** how many reads are running and waiting, for the tests */
+export function readGateState(): { running: number; waiting: number } {
+  return { running: readsRunning, waiting: readQueue.length };
+}
+
 // ------------------------------------------------------- the dashboard read ----
 
 export interface RangeQuery {
@@ -867,6 +951,8 @@ export interface BreakdownRow {
   val: string;
   views: number;
   visitors: number;
+  /** every view in this dimension, past the top N too: the denominator a row's share needs */
+  total: number;
 }
 
 export interface AnalyticsReport {
@@ -947,11 +1033,18 @@ function gameSql(game: string, params: unknown[], alias = ''): string {
   return ` and ${alias}game = $${params.length}`;
 }
 
+/**
+ * THE LAST ROLLED-UP DAY A RANGE INCLUDES: the day holding its last instant. `to` is usually now,
+ * and `day < to::date` dropped today, which the rollup job writes every five minutes, so every
+ * long range ended on an empty day. A `to` exactly at midnight (a month) still stops before it.
+ */
+const AGG_TO = `((($2::timestamptz - interval '1 microsecond') at time zone 'UTC')::date + 1)`;
+
 /** headline numbers for one window, off the raw tier (exact, and filterable) */
 async function rawTotals(from: Date, to: Date, game: string, filters: { dim: string; val: string }[]): Promise<Totals> {
   const params: unknown[] = [from, to];
   const where = gameSql(game, params) + filterSql(filters, params);
-  const rows = await q<{ views: string; visitors: string; sessions: string; bounces: string; seconds: string }>(
+  const rows = await rq<{ views: string; visitors: string; sessions: string; bounces: string; seconds: string }>(
     `with ${sessionCte(where)}
      select (select count(*) from pv) as views,
             (select count(distinct visitor) from pv) as visitors,
@@ -968,12 +1061,12 @@ async function rawTotals(from: Date, to: Date, game: string, filters: { dim: str
 /** the same numbers off the rollups, for a range older than the raw tier keeps */
 async function aggTotals(from: Date, to: Date, game: string): Promise<Totals> {
   const params: unknown[] = [from, to, game || '*'];
-  const rows = await q<{ views: string; visitors: string; sessions: string; bounces: string; seconds: string }>(
+  const rows = await rq<{ views: string; visitors: string; sessions: string; bounces: string; seconds: string }>(
     `select coalesce(sum(views),0) as views, coalesce(sum(visitors),0) as visitors,
             coalesce(sum(sessions),0) as sessions, coalesce(sum(bounces),0) as bounces,
             coalesce(sum(seconds),0) as seconds
        from analytics_daily
-      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+      where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
         and game = $3 and dim = 'total'`,
     params,
   );
@@ -998,55 +1091,28 @@ async function aggTotals(from: Date, to: Date, game: string): Promise<Totals> {
  * range starts, so a 30-day range whose first week is imported still reads our part exactly.
  */
 export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> {
-  const floor = new Date(Date.now() - RAW_RETENTION_DAYS * 86_400_000);
-  /**
-   * ⚠️ THE BOUNDARY NEEDS A GRACE, and without one the "30 days" preset could never take the
-   * raw tier it is named after. `from` is computed in the BROWSER and `floor` here, so the
-   * client's "exactly 30 days ago" is always a few hundred milliseconds — plus whatever the
-   * two clocks disagree by — EARLIER than the server's floor. The comparison therefore failed
-   * every single time, and the most useful range on the dashboard answered from
-   * `analytics_daily`: zero views, zero visitors, no chart and no breakdowns on a service
-   * whose raw table held every row of it.
-   *
-   * An hour is sized to swallow clock skew and the request in flight, not to reach for data
-   * the raw tier does not have: `sweepAnalytics` deletes rows OLDER than the retention window,
-   * so the extra hour simply finds fewer rows at the very start of the range rather than
-   * different ones. Under-reporting the oldest sixty minutes of a thirty-day window is a far
-   * smaller error than reporting the whole window as zero.
-   */
-  const BOUNDARY_GRACE_MS = 3_600_000;
-  const inRaw = (d: Date): boolean => d.getTime() >= floor.getTime() - BOUNDARY_GRACE_MS;
-
-  const ctx = await importContext();
-  const ownStart = ctx?.ownFrom ? new Date(`${ctx.ownFrom}T00:00:00Z`) : null;
-  /** where our own part of a window starts: never before the boundary */
-  const own = (from: Date): Date => (ownStart && ownStart > from ? ownStart : from);
-
-  const ownFrom = own(qy.from);
-  const source: 'raw' | 'aggregate' = inRaw(ownFrom) ? 'raw' : 'aggregate';
+  const { floor, inRaw, ctx, own, ownFrom, source, mode, part } = await planRange(qy);
   const span = qy.to.getTime() - qy.from.getTime();
   const prevFrom = new Date(qy.from.getTime() - span);
   const prevOwn = own(prevFrom);
   const prevRaw = source === 'raw' && inRaw(prevOwn);
+  // The rollups cannot apply a chip, so a filtered range whose previous period is past the raw
+  // window has nothing to compare against: unfiltered numbers there drew "▼ 90%" on every tile.
+  const prevComparable = prevRaw || source === 'aggregate' || qy.filters.length === 0;
 
-  // The rollups hold no cross-filter, so on that tier the chips are ignored on both sides.
-  const mode = ctx ? importMode(ctx.channel, qy.game, source === 'raw' ? qy.filters : []) : NO_IMPORT;
-  const part = (from: Date, to: Date): ImportPart | null => {
-    const win = ctx ? importWindow(ctx, from, to) : null;
-    return ctx && win ? { ctx, win, mode } : null;
-  };
   const cur = part(qy.from, qy.to);
   const prev = part(prevFrom, qy.from);
   // imported days are whole days, so a range that reaches them is drawn by day
   const grain = qy.grain === 'hour' && cur && mode.use !== 'none' ? 'day' : qy.grain;
   const fq: RangeQuery = { ...qy, from: ownFrom, grain };
+  const NONE: Totals = { views: 0, visitors: 0, sessions: 0, bounces: 0, seconds: 0 };
 
   const [ownTotals, ownPrev, impTotals, impPrev, ownSeries, impSeries, breakdowns, events, eventProps, online, historyStart, dims] =
     await Promise.all([
       source === 'raw' ? rawTotals(ownFrom, qy.to, qy.game, qy.filters) : aggTotals(ownFrom, qy.to, qy.game),
-      prevRaw ? rawTotals(prevOwn, qy.from, qy.game, qy.filters) : aggTotals(prevOwn, qy.from, qy.game),
+      !prevComparable ? NONE : prevRaw ? rawTotals(prevOwn, qy.from, qy.game, qy.filters) : aggTotals(prevOwn, qy.from, qy.game),
       importedTotals(cur),
-      importedTotals(prev),
+      prevComparable ? importedTotals(prev) : { views: 0, visitors: 0 },
       source === 'raw' ? rawSeries(fq) : aggSeries(fq),
       importedSeries(cur),
       breakdownsFor(fq, source, cur),
@@ -1089,6 +1155,85 @@ export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> 
       dims,
     },
   };
+}
+
+/**
+ * WHICH TIER AND WHICH IMPORTED DAYS ANSWER A RANGE — the decision every dashboard read shares,
+ * so the daily event counts the sponsor report draws can never come from a different source
+ * than the totals printed beside them.
+ */
+async function planRange(qy: RangeQuery) {
+  const floor = new Date(Date.now() - RAW_RETENTION_DAYS * 86_400_000);
+  /**
+   * ⚠️ THE BOUNDARY NEEDS A GRACE, and without one the "30 days" preset could never take the
+   * raw tier it is named after. `from` is computed in the BROWSER and `floor` here, so the
+   * client's "exactly 30 days ago" is always a few hundred milliseconds — plus whatever the
+   * two clocks disagree by — EARLIER than the server's floor. The comparison therefore failed
+   * every single time, and the most useful range on the dashboard answered from
+   * `analytics_daily`: zero views, zero visitors, no chart and no breakdowns on a service
+   * whose raw table held every row of it.
+   *
+   * An hour is sized to swallow clock skew and the request in flight, not to reach for data
+   * the raw tier does not have: `sweepAnalytics` deletes rows OLDER than the retention window,
+   * so the extra hour simply finds fewer rows at the very start of the range rather than
+   * different ones. Under-reporting the oldest sixty minutes of a thirty-day window is a far
+   * smaller error than reporting the whole window as zero.
+   */
+  const BOUNDARY_GRACE_MS = 3_600_000;
+  const inRaw = (d: Date): boolean => d.getTime() >= floor.getTime() - BOUNDARY_GRACE_MS;
+
+  const ctx = await importContext();
+  const ownStart = ctx?.ownFrom ? new Date(`${ctx.ownFrom}T00:00:00Z`) : null;
+  /** where our own part of a window starts: never before the boundary */
+  const own = (from: Date): Date => (ownStart && ownStart > from ? ownStart : from);
+
+  const ownFrom = own(qy.from);
+  const source: 'raw' | 'aggregate' = inRaw(ownFrom) ? 'raw' : 'aggregate';
+
+  // The rollups hold no cross-filter, so on that tier the chips are ignored on both sides.
+  const mode = ctx ? importMode(ctx.channel, qy.game, source === 'raw' ? qy.filters : []) : NO_IMPORT;
+  const part = (from: Date, to: Date): ImportPart | null => {
+    const win = ctx ? importWindow(ctx, from, to) : null;
+    return ctx && win ? { ctx, win, mode } : null;
+  };
+  return { floor, inRaw, ctx, own, ownFrom, source, mode, part };
+}
+
+/**
+ * NAMED EVENTS PER UTC DAY — the sponsor report's daily impressions and clicks. The same tier and
+ * the same imported days as `eventsFor` (`planRange`), so the days add up to its totals exactly.
+ * `names` is a closed list the route checks; at most eight.
+ */
+export async function eventsDaily(
+  qy: Pick<RangeQuery, 'from' | 'to' | 'game'>,
+  names: string[],
+): Promise<{ day: string; name: string; n: number }[]> {
+  if (!names.length) return [];
+  const full: RangeQuery = { ...qy, filters: [], grain: 'day' };
+  const { ownFrom, source, part } = await planRange(full);
+  const p = part(qy.from, qy.to);
+  const params: unknown[] = [ownFrom, qy.to, names];
+  let own: string;
+  if (source === 'raw') {
+    own = `select to_char(${bucketExpr('day', 'at')}, 'YYYY-MM-DD') as day, name, count(*) as n
+             from analytics_events where at >= $1 and at < $2 and name = any($3::text[]) ${gameSql(qy.game, params)}
+            group by 1, 2`;
+  } else {
+    params.push(qy.game || '*');
+    own = `select to_char(day, 'YYYY-MM-DD') as day, val as name, views as n from analytics_daily
+            where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
+              and game = $${params.length} and dim = 'event' and val = any($3::text[])`;
+  }
+  const imp =
+    p && p.mode.why !== 'game'
+      ? ` union all select to_char(day, 'YYYY-MM-DD'), val, views from analytics_imported
+           where ${impWhere(p, params)} and dim = 'event' and val = any($3::text[])`
+      : '';
+  const rows = await rq<{ day: string; name: string; n: string }>(
+    `select day, name, sum(n) as n from (${own}${imp}) u group by 1, 2 order by 1, 2`,
+    params,
+  );
+  return rows.map((r) => ({ day: r.day, name: r.name, n: Number(r.n) }));
 }
 
 // ------------------------------------------- the imported history, folded in ----
@@ -1149,7 +1294,7 @@ const dayInstant = (day: string): string => `${day}T00:00:00.000Z`;
  * source per day is the rule.
  */
 export async function importContext(): Promise<ImportContext | null> {
-  const span = await q<{ source: string; first: string; last: string }>(
+  const span = await rq<{ source: string; first: string; last: string }>(
     `select source, to_char(min(day), 'YYYY-MM-DD') as first, to_char(max(day), 'YYYY-MM-DD') as last
        from analytics_imported where dim = 'total' group by source order by min(day) limit 1`,
   );
@@ -1157,7 +1302,7 @@ export async function importContext(): Promise<ImportContext | null> {
   const source = span[0].source;
   const channel = IMPORT_CHANNEL[source] ?? 'stable';
   // Both lookups walk an index in day/instant order and stop at the first hit.
-  const own = await q<{ d: string | null; covered: boolean }>(
+  const own = await rq<{ d: string | null; covered: boolean }>(
     `with f as (
        select least(
          (select day from analytics_daily where game = '*' and dim = 'channel' and val = $2 order by day limit 1),
@@ -1247,7 +1392,7 @@ async function importedTotals(p: ImportPart | null): Promise<{ views: number; vi
   if (!p || p.mode.use === 'none') return { views: 0, visitors: 0 };
   const params: unknown[] = [];
   const where = `${impWhere(p, params)} and ${impBase(p, params)}`;
-  const rows = await q<{ views: string; visitors: string }>(
+  const rows = await rq<{ views: string; visitors: string }>(
     `select coalesce(sum(views), 0) as views, coalesce(sum(visitors), 0) as visitors from analytics_imported where ${where}`,
     params,
   );
@@ -1258,7 +1403,7 @@ async function importedSeries(p: ImportPart | null): Promise<{ t: string; views:
   if (!p || p.mode.use === 'none') return [];
   const params: unknown[] = [];
   const where = `${impWhere(p, params)} and ${impBase(p, params)}`;
-  const rows = await q<{ d: string; views: string; visitors: string }>(
+  const rows = await rq<{ d: string; views: string; visitors: string }>(
     `select to_char(day, 'YYYY-MM-DD') as d, sum(views) as views, sum(visitors) as visitors
        from analytics_imported where ${where} group by day order by day`,
     params,
@@ -1291,7 +1436,7 @@ async function importedDims(p: ImportPart | null): Promise<string[]> {
   if (!p || p.mode.use === 'none') return [];
   if (p.mode.use === 'marginal' && p.mode.on) return [p.mode.on.dim, 'channel', 'surface'];
   const params: unknown[] = [];
-  const rows = await q<{ dim: string }>(
+  const rows = await rq<{ dim: string }>(
     `select distinct dim from analytics_imported where ${impWhere(p, params)} and dim not in ('total', 'event', 'evprop')`,
     params,
   );
@@ -1310,7 +1455,7 @@ function splitEvprop(val: string): { name: string; key: string; val: string } {
 
 /** where this database's own traffic begins — the dashboard states it beside the imported span */
 async function firstOwnDay(): Promise<string | null> {
-  const rows = await q<{ d: string | null }>(
+  const rows = await rq<{ d: string | null }>(
     `select to_char(least((select min(day) from analytics_daily where dim = 'total'),
                           (select min((at at time zone 'UTC')::date) from analytics_pageviews)), 'YYYY-MM-DD') as d`,
   );
@@ -1330,7 +1475,7 @@ async function rawSeries(qy: RangeQuery): Promise<{ t: string; views: number; vi
   const params: unknown[] = [qy.from, qy.to];
   const where = gameSql(qy.game, params) + filterSql(qy.filters, params);
   const bucket = qy.grain === 'day' ? `to_char(${bucketExpr('day', 'at')}, 'YYYY-MM-DD')` : bucketExpr('hour', 'at');
-  const rows = await q<{ t: Date | string; views: string; visitors: string }>(
+  const rows = await rq<{ t: Date | string; views: string; visitors: string }>(
     `select ${bucket} as t, count(*) as views, count(distinct visitor) as visitors
        from analytics_pageviews
       where at >= $1 and at < $2 ${where}
@@ -1341,9 +1486,9 @@ async function rawSeries(qy: RangeQuery): Promise<{ t: string; views: number; vi
 }
 
 async function aggSeries(qy: RangeQuery): Promise<{ t: string; views: number; visitors: number }[]> {
-  const rows = await q<{ t: string; views: string; visitors: string }>(
+  const rows = await rq<{ t: string; views: string; visitors: string }>(
     `select to_char(day, 'YYYY-MM-DD') as t, views, visitors from analytics_daily
-      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+      where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
         and game = $3 and dim = 'total' order by day`,
     [qy.from, qy.to, qy.game || '*'],
   );
@@ -1359,8 +1504,9 @@ const TOP_N = 12;
  * each source on its own and adding the survivors would drop it.
  */
 function topNSql(inner: string): string {
-  return `select dim, val, views, visitors from (
+  return `select dim, val, views, visitors, dim_views from (
       select dim, val, sum(views) as views, sum(visitors) as visitors,
+             sum(sum(views)) over (partition by dim) as dim_views,
              row_number() over (partition by dim order by sum(views) desc, val) as rn
         from (${inner}) u group by dim, val) r
     where rn <= ${TOP_N} order by dim, views desc, val`;
@@ -1392,28 +1538,31 @@ async function breakdownsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: Impor
   } else {
     params.push(qy.game || '*');
     own = `select dim, val, views, visitors from analytics_daily
-            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+            where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
               and game = $${params.length} and dim not in ('total', 'event', 'evprop')`;
   }
   const imp = importedBreakdownSql(p, params);
-  const rows = await q<{ dim: string; val: string; views: string; visitors: string }>(
+  const rows = await rq<{ dim: string; val: string; views: string; visitors: string; dim_views: string }>(
     topNSql(imp ? `${own} union all ${imp}` : own),
     params,
   );
-  const out = rows.map((r) => ({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) }));
+  const out = rows.map((r) => ({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors), total: Number(r.dim_views) }));
   if (tier === 'aggregate') return out; // entry pages are rolled up as `dim = 'entry'`, already in `out`
 
   // Entry pages come off the sessions rather than the views, so they need the CTE the others do
   // not. Kept in the same result set because the panel grid does not care where a row came from.
   const entryParams: unknown[] = [qy.from, qy.to];
   const entryWhere = gameSql(qy.game, entryParams) + filterSql(qy.filters, entryParams);
-  const entry = await q<{ val: string; views: string; visitors: string }>(
+  const entry = await rq<{ val: string; views: string; visitors: string; total: string }>(
     `with ${sessionCte(entryWhere)}
-     select path as val, count(*) as views, count(distinct visitor) as visitors
+     select path as val, count(*) as views, count(distinct visitor) as visitors, sum(count(*)) over () as total
        from sess group by 1 order by views desc limit ${TOP_N}`,
     entryParams,
   );
-  return [...out, ...entry.map((r) => ({ dim: 'entry', val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) }))];
+  return [
+    ...out,
+    ...entry.map((r) => ({ dim: 'entry', val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors), total: Number(r.total) })),
+  ];
 }
 
 /**
@@ -1430,11 +1579,11 @@ async function eventsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: ImportPar
   } else {
     params.push(qy.game || '*');
     own = `select val as name, views, visitors from analytics_daily
-            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+            where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
               and game = $${params.length} and dim = 'event'`;
   }
   const imp = p && p.mode.why !== 'game' ? ` union all select val, views, visitors from analytics_imported where ${impWhere(p, params)} and dim = 'event'` : '';
-  const rows = await q<{ name: string; views: string; visitors: string }>(
+  const rows = await rq<{ name: string; views: string; visitors: string }>(
     `select name, sum(views) as views, sum(visitors) as visitors from (${own}${imp}) u
       group by 1 order by views desc, name limit 30`,
     params,
@@ -1461,11 +1610,11 @@ async function eventPropsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: Impor
   } else {
     params.push(qy.game || '*');
     own = `select val, views from analytics_daily
-            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+            where day >= ($1 at time zone 'UTC')::date and day < ${AGG_TO}
               and game = $${params.length} and dim = 'evprop'`;
   }
   const imp = p && p.mode.why !== 'game' ? ` union all select val, views from analytics_imported where ${impWhere(p, params)} and dim = 'evprop'` : '';
-  const rows = await q<{ val: string; views: string }>(
+  const rows = await rq<{ val: string; views: string }>(
     `select val, sum(views) as views from (${own}${imp}) u group by 1 order by views desc, val limit 120`,
     params,
   );
@@ -1474,7 +1623,7 @@ async function eventPropsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: Impor
 
 /** live sockets across every region with a fresh heartbeat — the "online now" tile */
 async function onlineNow(): Promise<number> {
-  const rows = await q<{ n: string }>(
+  const rows = await rq<{ n: string }>(
     `select coalesce(sum(online), 0) as n from presence where updated_at > now() - interval '30 seconds'`,
   );
   return Number(rows[0]?.n ?? 0);
@@ -1504,6 +1653,12 @@ export interface ProductReport {
   view: { view: string; n: number }[];
   /** peak and mean concurrency per day per region */
   concurrency: { day: string; region: string; peak: number; mean: number }[];
+  /**
+   * The service-wide peak per day: the most sockets online AT ONE SAMPLE, summed over regions.
+   * Adding each region's own peak instead counts people at different hours as simultaneous.
+   * Absent from an older server.
+   */
+  concurrencyTotal: { day: string; peak: number }[];
 }
 
 /**
@@ -1521,13 +1676,16 @@ export interface ProductReport {
  */
 export async function productReport(from: Date, to: Date, game: string): Promise<ProductReport> {
   const g = game && game !== '*' ? game : null;
-  const day = (col: string): string => `(${col} at time zone 'UTC')::date`;
+  // A UTC DAY, AS TEXT. Handed back as a `date`, the driver builds a Date at the server's LOCAL
+  // midnight, so the day it names depends on the machine. `utc` is for comparing, `day` for output.
+  const utc = (col: string): string => `(${col} at time zone 'UTC')::date`;
+  const day = (col: string): string => `to_char(${utc(col)}, 'YYYY-MM-DD')`;
 
-  const [matches, signups, active, retention, ranked, replays, replayBytes, reports, supporters, view, concurrency] =
+  const [matches, signups, active, retention, ranked, replays, replayBytes, reports, supporters, view, concurrency, concurrencyTotal] =
     await Promise.all([
       // Versus matches and record runs are two tables and one question. `ranked` splits the
       // first into ranked/custom; a record run is its own kind because it has no opponent.
-      q<{ day: string; game: string; kind: string; mode: string; physics: string; n: string }>(
+      rq<{ day: string; game: string; kind: string; mode: string; physics: string; n: string }>(
         `select ${day('created_at')} as day, game,
                 case when ranked then 'ranked' else 'custom' end as kind, mode, physics, count(*) as n
            from matches where created_at >= $1 and created_at < $2 and ($3::text is null or game = $3)
@@ -1539,7 +1697,7 @@ export async function productReport(from: Date, to: Date, game: string): Promise
           order by 1`,
         [from, to, g],
       ),
-      q<{ day: string; n: string }>(
+      rq<{ day: string; n: string }>(
         `select ${day('created_at')} as day, count(*) as n from profiles
           where created_at >= $1 and created_at < $2 group by 1 order by 1`,
         [from, to],
@@ -1547,16 +1705,16 @@ export async function productReport(from: Date, to: Date, game: string): Promise
       // "Played something" = took part in a versus match or submitted a record run. Deliberately
       // not `user_activity`, which is a running TOTAL per account with no dates in it at all
       // (0028 says why), so it can answer how much somebody has played and never when.
-      q<{ day: string; active: string; returning: string }>(
+      rq<{ day: string; active: string; returning: string }>(
         `with acts as (
-           select mp.user_id, ${day('m.created_at')} as day from match_participants mp
+           select mp.user_id, ${utc('m.created_at')} as day from match_participants mp
              join matches m on m.id = mp.match_id
             where m.created_at >= $1 and m.created_at < $2 and ($3::text is null or m.game = $3)
            union
-           select user_id, ${day('created_at')} as day from records
+           select user_id, ${utc('created_at')} as day from records
             where created_at >= $1 and created_at < $2 and ($3::text is null or game = $3))
-         select a.day, count(*) as active,
-                count(*) filter (where p.created_at::date < a.day) as returning
+         select to_char(a.day, 'YYYY-MM-DD') as day, count(*) as active,
+                count(*) filter (where ${utc('p.created_at')} < a.day) as returning
            from acts a join profiles p on p.user_id = a.user_id
           group by a.day order by a.day`,
         [from, to, g],
@@ -1565,16 +1723,16 @@ export async function productReport(from: Date, to: Date, game: string): Promise
       // that later day. "On or after" rather than "on exactly": a player who comes back on day
       // 8 is retained, and the exact-day version measures whether somebody was free on a
       // Tuesday.
-      q<{ cohort: string; size: string; d1: string; d7: string; d30: string }>(
+      rq<{ cohort: string; size: string; d1: string; d7: string; d30: string }>(
         `with cohort as (
-           select user_id, created_at::date as day from profiles
+           select user_id, ${utc('created_at')} as day from profiles
             where created_at >= $1 and created_at < $2),
          acts as (
-           select mp.user_id, m.created_at::date as day from match_participants mp
+           select mp.user_id, ${utc('m.created_at')} as day from match_participants mp
              join matches m on m.id = mp.match_id
            union
-           select user_id, created_at::date from records)
-         select c.day as cohort, count(distinct c.user_id) as size,
+           select user_id, ${utc('created_at')} from records)
+         select to_char(c.day, 'YYYY-MM-DD') as cohort, count(distinct c.user_id) as size,
                 count(distinct c.user_id) filter (where a.day >= c.day + 1) as d1,
                 count(distinct c.user_id) filter (where a.day >= c.day + 7) as d7,
                 count(distinct c.user_id) filter (where a.day >= c.day + 30) as d30
@@ -1586,22 +1744,22 @@ export async function productReport(from: Date, to: Date, game: string): Promise
       // reset wipes the record boards and carries the ratings over), so the live distribution
       // is the one joined to the active season's act — mixing two acts describes nobody, since
       // an act reset is exactly where everyone went back to the middle.
-      q<{ game: string; bucket: string; n: string }>(
+      rq<{ game: string; bucket: string; n: string }>(
         `select e.game, (floor(e.rating / 100.0) * 100)::int as bucket, count(*) as n
            from elo_ratings e join seasons s on s.game = e.game and s.act = e.act and s.active
           where e.games > 0 and ($1::text is null or e.game = $1)
           group by 1, 2 order by 1, 2`,
         [g],
       ),
-      q<{ day: string; n: string }>(
+      rq<{ day: string; n: string }>(
         `select ${day('created_at')} as day, count(*) as n from replays
           where created_at >= $1 and created_at < $2 and ($3::text is null or game = $3)
           group by 1 order by 1`,
         [from, to, g],
       ),
       // What the archive actually weighs, which is the number behind "should we purge a season".
-      q<{ bytes: string }>(`select pg_total_relation_size('replays') as bytes`),
-      q<{ day: string; filed: string; actioned: string }>(
+      rq<{ bytes: string }>(`select pg_total_relation_size('replays') as bytes`),
+      rq<{ day: string; filed: string; actioned: string }>(
         `select ${day('created_at')} as day, count(*) as filed,
                 count(*) filter (where status <> 'open') as actioned
            from player_reports where created_at >= $1 and created_at < $2 group by 1 order by 1`,
@@ -1609,7 +1767,7 @@ export async function productReport(from: Date, to: Date, game: string): Promise
       ),
       // A claim is the conversion event: a payment that reached an account. `supporter_grants`
       // separates the comps an admin handed out from the ones somebody paid for.
-      q<{ day: string; claimed: string; granted: string }>(
+      rq<{ day: string; claimed: string; granted: string }>(
         `select d.day, coalesce(k.n, 0) as claimed, coalesce(sg.n, 0) as granted
            from (select distinct ${day('claimed_at')} as day from kofi_payments
                   where claimed_at >= $1 and claimed_at < $2
@@ -1626,15 +1784,24 @@ export async function productReport(from: Date, to: Date, game: string): Promise
       ),
       // The one table that records which RENDERER somebody watched in — 0039 explains why it is
       // only ever recorded for a practice run.
-      q<{ view: string; n: string }>(
+      rq<{ view: string; n: string }>(
         `select coalesce(view, 'unrecorded') as view, count(*) as n from practice_runs
           where created_at >= $1 and created_at < $2 and ($3::text is null or game = $3)
           group by 1 order by 2 desc`,
         [from, to, g],
       ),
-      q<{ day: string; region: string; peak: string; mean: string }>(
+      rq<{ day: string; region: string; peak: string; mean: string }>(
         `select ${day('at')} as day, region, max(online) as peak, round(avg(online), 1) as mean
            from analytics_concurrency where at >= $1 and at < $2 group by 1, 2 order by 1, 2`,
+        [from, to],
+      ),
+      // every region is written under the same `at` by one sampler, so a sum per `at` is a real
+      // moment and its daily max is the real peak
+      rq<{ day: string; peak: string }>(
+        `select ${day('at')} as day, max(total) as peak
+           from (select at, sum(online) as total from analytics_concurrency
+                  where at >= $1 and at < $2 group by at) s
+          group by 1 order by 1`,
         [from, to],
       ),
     ]);
@@ -1649,8 +1816,9 @@ export async function productReport(from: Date, to: Date, game: string): Promise
     rows.map((r) => {
       const out = { ...r } as Record<string, unknown>;
       for (const k of keys) out[k] = Number(out[k] ?? 0);
+      // the SQL formats every day as text; a Date here would be an older query shape
       for (const k of ['day', 'cohort']) {
-        if (out[k] != null) out[k] = new Date(out[k] as string).toISOString().slice(0, 10);
+        if (out[k] instanceof Date) out[k] = (out[k] as Date).toISOString().slice(0, 10);
       }
       return out as T;
     });
@@ -1667,5 +1835,6 @@ export async function productReport(from: Date, to: Date, game: string): Promise
     supporters: num(supporters, ['claimed', 'granted']) as unknown as ProductReport['supporters'],
     view: num(view, ['n']) as unknown as ProductReport['view'],
     concurrency: num(concurrency, ['peak', 'mean']) as unknown as ProductReport['concurrency'],
+    concurrencyTotal: num(concurrencyTotal, ['peak']) as unknown as ProductReport['concurrencyTotal'],
   };
 }
