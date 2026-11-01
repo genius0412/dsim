@@ -18,6 +18,7 @@ import {
   viewAngleOf,
 } from './field';
 import { addClassified, addOverflow } from './scoring';
+import { autoIntakeOn } from './assists';
 import { approach, dcos, hyp, rot } from '../math';
 import {
   chassisCorners,
@@ -1407,7 +1408,7 @@ export function updateRails(
           const pinDepth = -(C.BALL_RADIUS + C.EXIT_PIN_TOUCH);
           const pinned = world.robots.some((rb) => {
             if (pointDepthInChassis(rb, ahead.pos) > pinDepth) return true;
-            const taking = (commands.get(rb.id)?.intake ?? false) || rb.autoIntake;
+            const taking = (commands.get(rb.id)?.intake ?? false) || autoIntakeOn(world, rb);
             return !taking && pointDepthInRobot(rb, ahead.pos) > pinDepth;
           });
           if (!pinned) {

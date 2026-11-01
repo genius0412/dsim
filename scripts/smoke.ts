@@ -47,6 +47,7 @@ import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../sr
 import { startPollLoop } from '../src/ui/pollLoop';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone, updateRobot, wheelLocals } from '../src/sim/robot';
+import { autoFireOn, autoIntakeOn } from '../src/sim/assists';
 import { drawWheels as drawWheelsDecode } from '../src/render/drawRobot';
 import { drawWheels as drawWheelsBiobuzz } from '../src/games/biobuzz/parts';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
@@ -7457,6 +7458,82 @@ function ramOffCentreSamples(
     '...and crushing it against the wall stays a shove, not a launch',
     worstSpeed <= PHYS_MAX_ROBOT_SPEED * 1.001,
     `peak ${worstSpeed.toFixed(1)} in/s vs cap ${PHYS_MAX_ROBOT_SPEED}`,
+  );
+}
+
+// ---- an AUTO PATH runs the assists only while it drives (SIM_PATCH 12) --------
+{
+  /**
+   * The path used to WRITE `aimAssist`, `autoIntake` and `autoFire` true on every tick it drove,
+   * and nothing wrote them back: a driver who had auto fire off had it ON for the whole of
+   * DRIVER-CONTROLLED, emptying the hopper at the first launch zone it crossed, and the record
+   * (`Room.assistsOf`) said the run was driven with it. From 12 the path is read as an assist
+   * (`src/sim/assists.ts`) and the flags stay the driver's; a replay stamped 11 keeps the write.
+   */
+  const path: AutoPathData = {
+    fileName: 'assists',
+    startPoint: { x: -50, y: 0, heading: 'constant', degrees: 0 },
+    lines: [{ id: 'a1', endPoint: { x: -40, y: 0, heading: 'constant', degrees: 0 } }],
+    sequence: [{ kind: 'path', lineId: 'a1' }],
+  };
+  /** run the path to its end with the driver's auto intake and auto fire OFF, then 2 s of
+   *  DRIVER-CONTROLLED parked in a launch zone with a full hopper and no button held */
+  const run = (patch?: number) => {
+    const w = createWorld('match', 5, [{ ...setup(0, 'red', {}, 0), autoPath: path, autoPathEnabled: true }]);
+    if (patch !== undefined) w.simPatch = patch;
+    w.balls.length = 0;
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = 30;
+    w.match.preCountdown = undefined;
+    const r = w.robots[0];
+    const startedActive = r.autoPathActive;
+    let ranAssists = true;
+    let ticks = 0;
+    for (; ticks < 600 && r.autoPathActive; ticks++) {
+      step(w, SIM_DT, new Map());
+      if (r.autoPathActive) ranAssists &&= autoFireOn(w, r) && autoIntakeOn(w, r);
+    }
+    const flagsAfterPath = { autoIntake: r.autoIntake, autoFire: r.autoFire };
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    // a point inside this robot's launch zone, found rather than assumed
+    let parked = false;
+    for (let x = -60; x <= 60 && !parked; x += 6) {
+      for (let y = -60; y <= 60 && !parked; y += 6) {
+        r.pos = { x, y };
+        parked = robotInLaunchZone(r);
+      }
+    }
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    r.hopper = ['green', 'purple', 'purple'];
+    r.fireReadyAt = 0;
+    for (let i = 0; i < 120; i++) step(w, SIM_DT, new Map());
+    return { startedActive, ticks, ranAssists, flagsAfterPath, parked, left: r.hopper.length };
+  };
+  const live = run();
+  const p11 = run(11);
+  check(
+    'auto path assists: the scene ran a path to its end and parked in a launch zone',
+    live.startedActive && live.ticks > 0 && live.ticks < 600 && live.parked && p11.parked,
+    `ticks=${live.ticks} parked=${live.parked}`,
+  );
+  check('auto path assists: the path still runs auto intake and auto fire while it drives', live.ranAssists && p11.ranAssists);
+  check(
+    'auto path assists: from 12 the driver’s auto intake and auto fire are OFF again after the path',
+    !live.flagsAfterPath.autoIntake && !live.flagsAfterPath.autoFire,
+    JSON.stringify(live.flagsAfterPath),
+  );
+  check(
+    '...so with no button held in a launch zone the robot keeps its artifacts',
+    live.left === 3,
+    `hopper ${live.left}/3`,
+  );
+  // NON-VACUOUS: the same scene stamped 11 is the bug — both flags stuck on, and it fires
+  check(
+    'auto path assists: a replay stamped 11 keeps the old write (both flags stuck on, and it fires)',
+    p11.flagsAfterPath.autoIntake && p11.flagsAfterPath.autoFire && p11.left < 3,
+    `${JSON.stringify(p11.flagsAfterPath)} hopper ${p11.left}/3`,
   );
 }
 

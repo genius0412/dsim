@@ -1,4 +1,13 @@
-# HANDOFF — 2026-11-01h (A record's robot is a spec sheet; no auto fire on a BIOBUZZ record)
+# HANDOFF — 2026-11-01i (DECODE: an auto path no longer leaves auto fire and auto intake on, SIM_PATCH 12)
+
+**State: on `alpha`. Sim change behind `SIM_PATCH` 12; the game server needs the deploy noted below for live play.** `npm test` shared ALL PASS (4664, +5), BIOBUZZ only the known `balls: … LANDED predicted`; golden scenes unchanged; `build`, `server:check`, `docaudit` pass.
+
+- **Owner:** "Yes, fix it here" (the follow-up from 01h).
+- **Bug:** `updateRobotActions` wrote `r.aimAssist`/`r.autoIntake`/`r.autoFire` true on every tick a legacy auto path drove, and nothing wrote them back. A driver with auto fire off had it on for all of DRIVER-CONTROLLED (it emptied the hopper in the first launch zone), and `Room.assistsOf` filed the record as driven with it.
+- **Fix:** `src/sim/assists.ts`. From 12 the path is read as an assist (`autoIntakeOn`/`autoFireOn`/`aimAssistOn`, used by every DECODE reader in `robot.ts`, `goal.ts`, `penalties.ts`), so the robot's flags stay the driver's and the path still runs all three. A replay stamped 11 or lower runs the old write and raw reads (`legacyPathAssists`), bit for bit. Rule in `docs/area/decode.md`.
+- **Smoke:** a path with the driver's auto intake and fire off, then two seconds parked in a launch zone with a full hopper: live keeps 3/3 and both flags off; stamped 11 both flags stay on and it fires (the control).
+
+## HANDOFF — 2026-11-01h (A record's robot is a spec sheet; no auto fire on a BIOBUZZ record)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `server:check`, `uiaudit` (off-grid baseline 100 → 99), `uiindex`, `docaudit`, `contrast` pass. `shiftaudit` not run: Electron would not start under this session's process limits, and nothing added is interactive.
 
@@ -6,7 +15,7 @@
 - **Auto fire:** production BIOBUZZ records carry `autoFire: true` as late as 2026-10-30, because `main` has no `Room.assistsOf` and stores the lobby preference. Fixed where it is shown, which covers old rows too: `drivingWords` (`robotLabels.ts`) prints only what the game's Driving panel offers (`offersAutoFire`), drops aim assist everywhere (always on), drops auto intake on a hand-loaded DECODE robot, and says "Manual fire" instead of a grey "Auto fire".
 - **Descriptions:** `RobotSheet.tsx` replaces the leaderboard's stat tiles and CONFIG sentence: the 2D schematic, one row per job (`specSheet`, with BIOBUZZ's own `GameModule.specSheet`, which replaces `labels.configSummary`), then the chassis numbers and driving chips. The ranked strategy card prints a compact `SpecList` instead of `buildSummary` (deleted). Robot cards are unchanged (owner, 2026-09-22).
 - **Also fixed:** the old BIOBUZZ sentence called every intake a "sweeper", including the deployable ramp most top runs use. On a phone the record detail ran off the right edge; it now sizes to the scroller (`.lb-scroll` container).
-- **Not fixed (sim change):** DECODE's legacy auto path (`updateRobotActions`) sets `r.autoIntake`/`r.autoFire` true and never restores them, so a driver with them off has both on for TeleOp, and `Room.assistsOf` records that.
+- **DECODE's legacy auto path** leaving `autoIntake`/`autoFire` stuck on: fixed in 2026-11-01i above (`SIM_PATCH` 12).
 - **Checked in the browser** against production's read API (`.env.development.local`, gitignored): BIOBUZZ solo and duo, DECODE, Chain Reaction, light and dark, 1100px and 375px. The strategy card was checked by styling only (it needs a ranked lobby).
 
 ## HANDOFF — 2026-11-01g (Every window shape composed: a 2560px band, portrait layouts, the thin end)

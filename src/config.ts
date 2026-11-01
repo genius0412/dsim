@@ -307,8 +307,12 @@ export const SIM_VERSION = 7;
  *      sorter. A ramp laid flat for a FLOWER no longer keeps NECTAR out. Before it a `bar` sorter's
  *      bar rode `bbRamp`, and on a ramp intake the deployed ramp was the bar (`nectarReject.ts`).
  *      2026-11-01, `alpha`.
+ *  12  DECODE, a legacy AUTO PATH runs aim assist, auto intake and auto fire only while it drives
+ *      (`src/sim/assists.ts`). Before it the path WROTE all three on and nothing wrote them back, so
+ *      a driver with auto fire or auto intake off had them on for all of DRIVER-CONTROLLED, and the
+ *      record said so. A robot that ran no path steps bit-identically. 2026-11-01, `alpha`.
  */
-export const SIM_PATCH = 11;
+export const SIM_PATCH = 12;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */
