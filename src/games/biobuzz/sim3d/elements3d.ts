@@ -1,5 +1,5 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { BB_HOOD_DEFAULT_DEG, BB_RAMP_EMBED_DEPTH, bbHeightNow, bbRampDeployS } from '../config';
+import { BB_HOOD_DEFAULT_DEG, BB_RAMP_BAR_E, BB_RAMP_EMBED_DEPTH, bbHeightNow } from '../config';
 import { bbBarStep, bbOnCapture, bbSorterTakes, bbSorterTick } from '../nectarReject';
 import { capturePollen } from '../elements';
 import {
@@ -16,6 +16,9 @@ import {
   bbIntakeAct,
   bbIntakeExtraReach,
   bbLaunch,
+  bbRampAtBar,
+  bbRampFoldNow,
+  bbRampRetracting,
   bbRampReverse,
   bbRampSettled,
   bbRampStep,
@@ -157,27 +160,39 @@ const ZERO_CMD3D: RobotCommand = Object.freeze({
  *   makes it: the deck rides 0.4 in over the tiles and skips the ring plates, so a static can only
  *   push it vertically from inside or above. The same jam came from driving the blade under a hive
  *   foot bar or frame foot (measured: 7 of 400 random drives froze that way, 0 after).
+ *
+ * ⚠️ **A RAMP HELD AT BAR HEIGHT IS NOT SOLID, SO IT FOLDS WHEN IT MEETS SOMETHING** (2026-11-01). Its
+ * collider set is the folded one (`bbRampSettled` is false), and it stands 4.8 in past the tip line,
+ * further out than it lies deployed. Each tick it is settled there, the same query a swing makes
+ * asks whether that pose overlaps a static or another robot; if it does, the ramp folds, the
+ * owner's rule for a swing that meets something ("it should fold back up").
  */
 function bbRampSwingStep3d(world: World, r: RobotState): void {
   const e = bbRampSwingProgress(r, world.time);
   if (e === null) {
     if (bbRampSettled(r, world.time) && rampEmbedded(engineFor(world), r)) {
-      bbRampReverse(r, world.time, bbRampDeployS(r.spec));
+      bbRampFoldNow(r, world.time);
+    } else if (bbRampAtBar(r, world.time) && rampMeets(world, r, BB_RAMP_BAR_E)) {
+      bbRampFoldNow(r, world.time);
     }
     return;
   }
-  if (r.bbRampBlocked && !r.bbRampOut) return;
+  if (r.bbRampBlocked && bbRampRetracting(r)) return;
+  if (rampMeets(world, r, e)) {
+    const elapsed = world.time - (r.bbRampAt ?? world.time);
+    bbRampReverse(r, world.time, elapsed);
+  }
+}
+
+/** does this robot's ramp at pose `e` overlap a static or another robot? (`rampSwingBlocked`) */
+function rampMeets(world: World, r: RobotState, e: number): boolean {
   const engine = engineFor(world);
   const heightIn = bbHeightNow(world, r.spec);
   // every OTHER robot's body, so a swing cannot be deployed through one. Not this robot's own:
   // the blade hangs off that body and would report a hit on every tick of every swing.
   const others = new Set<number>();
   for (const [id, body] of engine.robots) if (id !== r.id) others.add(body.handle);
-  const hit = rampSwingBlocked(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e, others);
-  if (hit) {
-    const elapsed = world.time - (r.bbRampAt ?? world.time);
-    bbRampReverse(r, world.time, elapsed);
-  }
+  return rampSwingBlocked(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e, others);
 }
 
 /** is this robot's settled ramp held VERTICALLY by a fixed body — the jam `bbRampSwingStep3d`
@@ -222,7 +237,7 @@ export function elements3dAimAndLaunch(
     // THE RAMP TOGGLE — same place the 2D pipeline steps it (`play.ts` stage 5b), alongside the
     // turret slew just below, with the same `enabled` gate driver control runs under.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
-    bbBarStep(rob, cmds.get(rob.id), enabled, world.time);
+    bbBarStep(world, rob, cmds.get(rob.id), enabled);
     // THE SWING GUARD, right after the toggle — see `bbRampSwingStep3d`'s own header.
     bbRampSwingStep3d(world, rob);
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);

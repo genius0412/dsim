@@ -1,4 +1,4 @@
-# HANDOFF — 2026-11-01d (The robot: back under Configure, New robot one click from Play, a strip that never shifts)
+# HANDOFF — 2026-11-01e (The robot: back under Configure, New robot one click from Play, a strip that never shifts)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted` (the perf lane flaked twice under a dev server and a 3D tab, then passed 13/13 alone); `build`, `uiaudit`, `docaudit`, `uiindex` pass; `shiftaudit` 546 state changes, 0 shifts (importer not in that build). Rules in `docs/area/ui.md`.
 
@@ -7,6 +7,17 @@
 - **Play's robot panel:** New robot, Edit, Import in its head. The strip lists no presets (they are the builder's Start from) and keeps the last unsaved edit and the last preset build in fixed slots for the page load (`keptEdits`, `keptPresets`), so picking a robot never moves the row or loses an unsaved build. "Setup" reads "Match setup".
 - **Measured before:** New robot was the strip's last card, 1,464 px of sideways scroll at 1366x657 on first launch and up to 7,108 px with imports.
 - **Owner calls left from the audit (not done):** a persistent nav outside Home (production's rail; reverses "THE SHELL HAS NO RAIL", 2026-10-10); Esc/MENU from a match landing on Play, not Home; saving an edited robot updating it ("Save changes" / "Save as new") rather than adding a copy; the game name hidden in the phone bar under 640 px.
+
+## HANDOFF — 2026-11-01d (BIOBUZZ: a ramp doubles as a NECTAR bar, on its own button)
+
+**State: on `alpha` (7bde8c87). Sim + server change behind `SIM_PATCH` 11 (new protocol bit 8192, backward-compatible); DEPLOYED to `dsim-alpha` 2026-11-01 18:17Z from 7bde8c87 (`/health` ok, one machine). Production untouched.** `npm test` shared ALL PASS; BIOBUZZ only the known `balls: … LANDED predicted` (and the `bot-driven 2v2 step3d p95` wall-clock check, which is noise here: untouched `alpha` measured 3.61 / 1.43 / 2.11 ms against this change's 1.92 / 1.77 / 0.74, alternating runs); `build`, `server:check`, `test:workers` (170), `uiaudit`, `docaudit`, `bundleaudit` pass. Rules in `docs/area/biobuzz.md`, "A RAMP DOUBLES AS A NECTAR BAR", and `docs/area/ui.md` (the binding).
+
+- **Owner:** "If someone has a flower ramp, it should be able to double as a nectar bar. It may need another button for control in that case."
+- **What it does:** every `ramp` intake with a POLLEN + NECTAR feed, whatever its sorter, holds its ramp part-way on the new NECTAR bar button (`bbBar`: key `'`, no pad default, touch BAR). There the blade's inboard edge is 3.2 in up (`BB_RAMP_BAR_E` ≈ 0.682, solved from the ramp's geometry), so a POLLEN rolls under and a NECTAR does not. Deploy ramp still lays it flat for a FLOWER, and a flat ramp no longer counts as a bar. A non-ramp `bar` sorter moved to the same button.
+- **Sim:** the ramp has three stops; once the bar is used a swing starts where the ramp is (`RobotState.bbRampFrom`). A ramp that never uses the bar swings byte-identically. Bar swings go through both swing guards; in 3D the bar pose is not solid, so a settled bar that meets a static or robot folds. Patch 10 replays keep the old rules (checked in `scripts/smoke-biobuzz/reject.ts`).
+- **UI:** the builder offers a ramp no separate bar and says the ramp doubles as one. Touch: a bar build has no REV, which keeps the widest pad at eleven (twelve doubled up on 667x375).
+- **Checked in the browser:** builder state (ramp, POLLEN + NECTAR, three sorters, the note) on the dev server; the bar pose drawn in 2D and 3D through the scene preview (`?intake=ramp&park=open&ramp=bar`, new). Not checked live with key presses: the pane ran at 1 fps.
+- **Owner calls:** pad players must bind NECTAR bar themselves (no free button). The AI never drops the bar; Zenith autos have no bar button.
 
 ## HANDOFF — 2026-11-01c (BIOBUZZ photographed venues: the floor is a texture, no more streaks)
 

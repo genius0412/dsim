@@ -2,10 +2,18 @@ import type { Artifact, RobotCommand, RobotSpec, RobotState, World } from '../..
 import { SIM_DT } from '../../src/config';
 import { localizeCommand } from '../../src/net/protocol';
 import { capturePollen } from '../../src/games/biobuzz/elements';
-import { BB_NECTAR_R, BB_SORT_DETECT_S, BB_SORT_IGNORE_S, BB_SORT_PASS_S } from '../../src/games/biobuzz/config';
-import { type BbIntakeSpec, bbIntakeAccepts, bbNectarRejectOf } from '../../src/games/biobuzz/mechs';
-import { bbMouths } from '../../src/games/biobuzz/robot';
-import { bbOnCapture } from '../../src/games/biobuzz/nectarReject';
+import {
+  BB_HALF_X,
+  BB_NECTAR_R,
+  BB_RAMP_BAR_E,
+  BB_RAMP_DEPLOY_S,
+  BB_SORT_DETECT_S,
+  BB_SORT_IGNORE_S,
+  BB_SORT_PASS_S,
+} from '../../src/games/biobuzz/config';
+import { type BbIntakeSpec, bbHasNectarBar, bbHasRampBar, bbIntakeAccepts, bbNectarRejectOf } from '../../src/games/biobuzz/mechs';
+import { bbMouths, bbRampPose, bbRampSettled, bbRampSwingProgress, mouthAxes } from '../../src/games/biobuzz/robot';
+import { bbBarDown, bbOnCapture } from '../../src/games/biobuzz/nectarReject';
 import { bbPollen } from '../../src/games/biobuzz/scenes';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -188,9 +196,17 @@ export function rejectChecks(check: Check): void {
   }
 
   // ── THE NECTAR BAR ────────────────────────────────────────────────────────────────────────────
+  /** how far mouth 0's tip line (the ramp's `uOut`) stands out from the robot's centre */
+  const tipLine = (r: RobotState): number => mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2).uOut;
+  const backToMouth = (r: RobotState, b: Artifact): void => {
+    const m = bbMouths(r.spec)[0];
+    b.state = { kind: 'ground' };
+    b.pos = { x: (m.x0 + m.x1) / 2 + 0.4, y: 0 };
+    b.vel = { x: 0, y: 0 };
+  };
   {
     const { w, r } = staged(506, mech('dumper', { kind: 'sweeper', reject: 'bar' }));
-    run(w, cmd({ bbRamp: true }), SIM_DT);
+    run(w, cmd({ bbBar: true }), SIM_DT);
     run(w, cmd({}), 0.3);
     const red = atMouth(w, r, 'red', 3);
     const blue = atMouth(w, r, 'blue', -3);
@@ -198,21 +214,117 @@ export function rejectChecks(check: Check): void {
     run(w, cmd({ intake: true }), 0.5);
     check('bar: down, the bar keeps EVERY NECTAR out — the robot’s own too — and a POLLEN passes under', red.state.kind === 'ground' && blue.state.kind === 'ground' && p.state.kind === 'held', `red=${red.state.kind} blue=${blue.state.kind} p=${p.state.kind}`);
     check('bar: ...so it never draws G408', g408(w) === 0, `g408=${g408(w)}`);
-    check('bar: it is drawn state, on the robot', r.bbBarOut === true && r.bbRampOut === undefined);
-    run(w, cmd({ bbRamp: true }), SIM_DT);
-    red.pos = { x: (bbMouths(r.spec)[0].x0 + bbMouths(r.spec)[0].x1) / 2 + 0.4, y: 0 };
-    red.vel = { x: 0, y: 0 };
+    check('bar: it is drawn state, on the robot, with a latch of its own', r.bbBarOut === true && r.bbRampOut === undefined && r.bbRampHeld === undefined && r.bbBarHeld === false);
+    run(w, cmd({ bbBar: true }), SIM_DT);
+    backToMouth(r, red);
     run(w, cmd({ intake: true }), 0.5);
     check('bar: lifted, NECTAR comes in again (the opponent’s included)', red.state.kind === 'held' || blue.state.kind === 'held', `red=${red.state.kind} blue=${blue.state.kind}`);
   }
   {
-    // ON A RAMP INTAKE THE RAMP IS THE BAR
+    // THE BAR HAS ITS OWN BUTTON (`SIM_PATCH` 11). Before it a `bar` sorter's bar rode the ramp's
+    // button, and a replay recorded then still drops it that way.
+    const drop = (patch: number | undefined, c: Partial<RobotCommand>): RobotState => {
+      const { w, r } = staged(512, mech('dumper', { kind: 'sweeper', reject: 'bar' }));
+      if (patch !== undefined) w.simPatch = patch;
+      run(w, cmd(c), SIM_DT);
+      run(w, cmd({}), 0.3);
+      return r;
+    };
+    check('bar: the ramp button drops no bar on a build with no ramp', drop(undefined, { bbRamp: true }).bbBarOut === undefined);
+    check(
+      'bar: ...but a replay recorded at SIM_PATCH 10 drops it with the ramp button, and ignores the bar button',
+      drop(10, { bbRamp: true }).bbBarOut === true && drop(10, { bbBar: true }).bbBarOut === undefined,
+    );
+  }
+  {
+    // A RAMP DOUBLES AS A NECTAR BAR (owner, 2026-11-01: "If someone has a flower ramp, it should be
+    // able to double as a nectar bar. It may need another button for control in that case."). No
+    // sorter picked: every POLLEN + NECTAR ramp has it. The bar button holds the ramp part-way; the
+    // ramp button still lays it flat for a FLOWER.
+    const { w, r } = staged(507, mech('dumper', { kind: 'ramp' }));
+    check('ramp bar: every POLLEN + NECTAR ramp has the bar, with no sorter picked', bbHasRampBar(r.spec) && bbHasNectarBar(r.spec) && bbNectarRejectOf(r.spec) === 'none');
+    run(w, cmd({ bbBar: true }), SIM_DT);
+    run(w, cmd({}), 10 * SIM_DT);
+    check('ramp bar: mid-swing it is no bar yet', !bbBarDown(w, r) && bbRampSwingProgress(r, w.time) !== null);
+    run(w, cmd({}), 0.2);
+    check(
+      'ramp bar: the bar button swings the ramp to BB_RAMP_BAR_E and holds it there — not deployed, so no FLOWER reach',
+      bbRampPose(r, w.time) === BB_RAMP_BAR_E && r.bbBarOut === true && !r.bbRampOut && !bbRampSettled(r, w.time) && bbBarDown(w, r),
+      `pose=${bbRampPose(r, w.time)} bar=${r.bbBarOut} ramp=${r.bbRampOut}`,
+    );
+    const red = atMouth(w, r, 'red', 3);
+    const blue = atMouth(w, r, 'blue', -3);
+    const p = atMouth(w, r, 'yellow', 0);
+    run(w, cmd({ intake: true }), 0.5);
+    check('ramp bar: held at bar height it keeps every NECTAR out and a POLLEN passes under', red.state.kind === 'ground' && blue.state.kind === 'ground' && p.state.kind === 'held', `red=${red.state.kind} blue=${blue.state.kind} p=${p.state.kind}`);
+    check('ramp bar: ...so no G408', g408(w) === 0, `g408=${g408(w)}`);
+
+    run(w, cmd({ bbRamp: true }), SIM_DT);
+    run(w, cmd({}), BB_RAMP_DEPLOY_S * (1 - BB_RAMP_BAR_E) + SIM_DT);
+    check(
+      'ramp bar: the ramp button deploys it from the bar, in the share of the swing left (the same servo speed)',
+      r.bbRampOut === true && !r.bbBarOut && bbRampSettled(r, w.time) && bbRampPose(r, w.time) === 1,
+      `pose=${bbRampPose(r, w.time)} at=${r.bbRampAt} t=${w.time}`,
+    );
+    backToMouth(r, red);
+    run(w, cmd({ intake: true }), 0.5);
+    check('ramp bar: laid flat for a FLOWER it is no bar: a NECTAR rolls up it like a POLLEN', red.state.kind === 'held', `red=${red.state.kind}`);
+
+    run(w, cmd({ bbBar: true }), SIM_DT);
+    run(w, cmd({}), 0.3);
+    check('ramp bar: the bar button from deployed swings straight back to bar height', bbRampPose(r, w.time) === BB_RAMP_BAR_E && !r.bbRampOut && bbBarDown(w, r));
+    run(w, cmd({ bbBar: true }), SIM_DT);
+    run(w, cmd({}), 0.3);
+    check('ramp bar: the bar button again folds it', bbRampPose(r, w.time) === 0 && !r.bbBarOut && !bbBarDown(w, r));
+  }
+  {
+    // nothing new on a ramp whose bar is never used, and nothing at all on a POLLEN-only ramp
+    const a = staged(514, mech('dumper', { kind: 'ramp' }));
+    run(a.w, cmd({ bbRamp: true }), SIM_DT);
+    run(a.w, cmd({}), 0.4);
+    check(
+      'ramp bar: a ramp deployed without the bar swings as it always did — no `bbRampFrom`, no bar latch',
+      a.r.bbRampOut === true && a.r.bbRampFrom === undefined && a.r.bbBarOut === undefined && a.r.bbBarHeld === undefined,
+    );
+    const b = staged(515, mech('turret', { kind: 'ramp' }));
+    run(b.w, cmd({ bbBar: true }), SIM_DT);
+    run(b.w, cmd({}), 0.3);
+    check(
+      'ramp bar: a POLLEN-only ramp has no NECTAR to keep out, so the bar button writes nothing',
+      !bbHasRampBar(b.r.spec) && b.r.bbBarOut === undefined && b.r.bbRampFrom === undefined && b.r.bbBarHeld === undefined && bbRampPose(b.r, b.w.time) === 0,
+    );
+  }
+  {
+    // A REPLAY RECORDED AT SIM_PATCH 10: a ramp intake's `bar` sorter was its DEPLOYED ramp
     const { w, r } = staged(507, mech('dumper', { kind: 'ramp', reject: 'bar' }));
+    w.simPatch = 10;
     run(w, cmd({ bbRamp: true }), SIM_DT);
     run(w, cmd({}), 0.5);
     const red = atMouth(w, r, 'red');
     run(w, cmd({ intake: true }), 0.5);
-    check('bar: on a ramp intake the deployed ramp keeps NECTAR out, and no second bar is toggled', r.bbRampOut === true && r.bbBarOut === undefined && red.state.kind === 'ground', `ramp=${r.bbRampOut} red=${red.state.kind}`);
+    check('bar @ patch 10: on a ramp intake the deployed ramp keeps NECTAR out, and no second bar is toggled', r.bbRampOut === true && r.bbBarOut === undefined && red.state.kind === 'ground', `ramp=${r.bbRampOut} red=${red.state.kind}`);
+    run(w, cmd({ bbBar: true }), SIM_DT);
+    check('bar @ patch 10: ...and the bar button does nothing', r.bbBarOut === undefined && r.bbRampFrom === undefined && r.bbBarHeld === undefined);
+  }
+  {
+    // THE SWING GUARD, 2D: held part-way the ramp stands further out (`bbRampPlanReach`, 4.8 in)
+    // than it lies deployed (3.54), so a bar swing tests its own reach, not the deployed one
+    const near = (seed: number): { w: World; r: RobotState } => {
+      const s = staged(seed, mech('dumper', { kind: 'ramp' }));
+      s.r.pos = { x: BB_HALF_X - tipLine(s.r) - 4.2, y: -20 };
+      return s;
+    };
+    const dep = near(516);
+    run(dep.w, cmd({ bbRamp: true }), SIM_DT);
+    run(dep.w, cmd({}), 0.4);
+    const bar = near(517);
+    run(bar.w, cmd({ bbBar: true }), SIM_DT);
+    run(bar.w, cmd({}), 0.4);
+    check(
+      'ramp bar: 4.2 in from a wall the ramp deploys flat, but a bar swing meets the wall and folds back',
+      bbRampSettled(dep.r, dep.w.time) && bbRampPose(bar.r, bar.w.time) === 0 && !bar.r.bbBarOut && bar.r.bbRampBlocked === true,
+      `deployed=${bbRampSettled(dep.r, dep.w.time)} barPose=${bbRampPose(bar.r, bar.w.time)} blocked=${bar.r.bbRampBlocked}`,
+    );
   }
 
   // ── G402, TU06's FIRST EXAMPLE: AUTO, AN ELEMENT FROM THE OPPONENT'S HALF ────────────────────
@@ -260,10 +372,44 @@ export function rejectChecks(check: Check): void {
     }
     check('3D: the auto-reverse sorter takes and throws back an opponent NECTAR in the 3D pipeline too', held && red.state.kind !== 'held' && g408(w) === 1, `held=${held} state=${red.state.kind} g408=${g408(w)}`);
   }
+  {
+    const { w, r } = staged(513, mech('dumper', { kind: 'ramp' }), true);
+    steps(w, cmd({ bbBar: true }), SIM_DT, true);
+    steps(w, cmd({}), 0.3, true);
+    const down = bbBarDown(w, r);
+    const red = atMouth(w, r, 'red');
+    let held = false;
+    for (let i = 0; i < 40; i++) {
+      steps(w, cmd({ intake: true }), SIM_DT, true);
+      if (red.state.kind === 'held') held = true;
+    }
+    check('3D: a ramp held at bar height keeps NECTAR out in the 3D pipeline too', down && !held && g408(w) === 0, `down=${down} held=${held} g408=${g408(w)}`);
+  }
+  {
+    // held at bar height the ramp has the FOLDED collider set (it is not solid there), so the guard
+    // asks each tick whether it meets anything, and folds it if it does
+    const { w, r } = staged(518, mech('dumper', { kind: 'ramp' }), true);
+    r.pos = { x: BB_HALF_X - 30, y: -20 };
+    steps(w, cmd({ bbBar: true }), SIM_DT, true);
+    steps(w, cmd({}), 0.3, true);
+    const down = bbBarDown(w, r);
+    let folded = false;
+    for (let i = 0; i < 150 && !folded; i++) {
+      steps(w, cmd({ driveY: 0.5 }), SIM_DT, true); // forward, toward +x
+      folded = !r.bbBarOut;
+    }
+    const gap = BB_HALF_X - (r.pos.x + tipLine(r));
+    check(
+      '3D: driven at a wall, a ramp held at bar height folds when it meets it, its tip line still well clear',
+      down && folded && r.bbRampBlocked === true && gap > 3 && gap < 5.5,
+      `down=${down} folded=${folded} blocked=${r.bbRampBlocked} gap=${gap.toFixed(2)}`,
+    );
+  }
 
   // ── THE WIRE ──────────────────────────────────────────────────────────────────────────────────
   {
     const base: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
     check('wire: REVERSE survives the quantizer, and an unpressed one adds no key', localizeCommand({ ...base, bbReverse: true }).bbReverse === true && !('bbReverse' in localizeCommand(base)));
+    check('wire: the NECTAR bar survives the quantizer, and an unpressed one adds no key', localizeCommand({ ...base, bbBar: true }).bbBar === true && !('bbBar' in localizeCommand(base)));
   }
 }

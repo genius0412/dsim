@@ -25,6 +25,7 @@ export type KeyAction =
   | 'bbRamp'
   | 'bbPass'
   | 'bbReverse'
+  | 'bbBar'
   | 'viewToggle'
   | 'cameraCycle'
   | 'eyeUp'
@@ -57,6 +58,7 @@ export type PadAction =
   | 'bbRamp'
   | 'bbPass'
   | 'bbReverse'
+  | 'bbBar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -247,7 +249,8 @@ export interface ControlBindings {
 //   fling    → `src/games/chain/play.ts` (the catapult throw)
 //   bbPlace / bbPlaceNectar → `src/games/biobuzz/play.ts` + `sim3d/elements3d.ts`
 //   bbNectar → `src/games/biobuzz/play.ts` (`bbHumanPlayerTick`, shared by the 2D and 3D paths)
-//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake) and `nectarReject.ts` (a `bar` sorter's bar)
+//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake; a `bar` sorter's bar before `SIM_PATCH` 11)
+//   bbBar → `src/games/biobuzz/nectarReject.ts` (`bbBarStep`: a `bar` sorter's bar, or a ramp held at bar height)
 //   bbReverse → `src/games/biobuzz/nectarReject.ts` (`bbSorterTick`, both pipelines)
 //   intake / fire → all three, through three unrelated sites each
 //   flyPreset → `src/sim/flywheel.ts` (`flyStep`), DECODE's presets wheel. BIOBUZZ's fixed launcher
@@ -278,6 +281,7 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbRamp: ['biobuzz'],
   bbPass: ['biobuzz'],
   bbReverse: ['biobuzz'],
+  bbBar: ['biobuzz'],
   viewToggle: ['biobuzz'],
   cameraCycle: ['biobuzz'],
   eyeUp: ['biobuzz'],
@@ -401,6 +405,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbRamp',
   'bbPass',
   'bbReverse',
+  'bbBar',
   'viewToggle',
   'cameraCycle',
   'eyeUp',
@@ -424,6 +429,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'bbRamp',
   'bbPass',
   'bbReverse',
+  'bbBar',
   'driveMode',
   'flipFront',
   'park',
@@ -514,6 +520,9 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // usually). ';', on the home row two keys from Intake's K. Every free letter is spoken for:
     // g, h, j, u and y are the smoke lane's "assumed free" keys and m is the ramp's fallback.
     bbReverse: [';'],
+    // BIOBUZZ: drop / lift the NECTAR bar, or hold a ramp at bar height. The apostrophe, beside
+    // Reverse: the two keys a driver uses on the opponent's NECTAR sit together.
+    bbBar: ["'"],
     // THE VIEW KEYS (`VIEW_ACTIONS`). T flips 2D and 3D, and I / O raise and lower the eye —
     // the keys they always had. The CAMERA moved off C, which is Place POLLEN, onto L: next to
     // I and O, and free in every game. Not U: the bindings smoke lane uses it as a free key.
@@ -574,6 +583,9 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // players said a press "restarted their run"; that was a TOGGLE, and a reverse is HELD and
       // undoes nothing when it is pressed by mistake.
       bbReverse: [13],
+      // UNBOUND. Every standard button is taken in BIOBUZZ once D-DOWN went to Reverse, and a
+      // default combo would make its buttons wait (`padChords.ts`). A pad player binds it.
+      bbBar: [],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X
@@ -604,6 +616,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
  */
 const FRESH_FALLBACK_KEYS: Partial<Record<KeyAction, readonly string[]>> = {
   bbRamp: ['g', 'm'],
+  bbBar: ['[', ']'],
   // DECODE's preset step, when a stored map already has Z on a DECODE action
   flyPreset: ['1'],
 };
@@ -1484,13 +1497,18 @@ export function resetGame(b: ControlBindings, game: GameId): ControlBindings {
  * edit can take a key from an action the All games scope does not list (put Shoot on C and
  * Catalyst and Place POLLEN both lose it), so the screen marks the season that needs a look
  * rather than leaving the player to find out in a match. A pad bind paused by the triggers
- * turning (`turnWith`) does not count: it cannot fire.
+ * turning (`turnWith`) does not count: it cannot fire. An action that ships with NO pad bind
+ * (`bbBar`: the pad has no button left for it) is not flagged for having none: nothing took it,
+ * and flagging it would mark the season on every map ever saved.
  */
 export function seasonUnbound(b: ControlBindings, game: GameId): KeyAction[] {
   const eff = effectiveBindings(b, game);
   const pad = new Set<KeyAction>(seasonPadActions(game));
+  const padDefault = (a: PadAction): boolean => padBinds(DEFAULT_BINDINGS.pad, a).length > 0;
   return seasonKeyActions(game).filter(
-    (a) => eff.keys[a].length === 0 || (pad.has(a) && livePadBinds(eff.pad, a as PadAction).length === 0),
+    (a) =>
+      eff.keys[a].length === 0 ||
+      (pad.has(a) && padDefault(a as PadAction) && livePadBinds(eff.pad, a as PadAction).length === 0),
   );
 }
 

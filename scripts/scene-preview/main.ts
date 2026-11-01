@@ -99,6 +99,8 @@ const intakeParam = urlParams.get('intake');
 const parkAtFlower = urlParams.get('park') === 'flower';
 const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
 const deployRamp = urlParams.get('ramp') === '1';
+// `ramp=bar`: the ramp held at NECTAR bar height (`BB_RAMP_BAR_E`, settled), as the bar button leaves it
+const barRamp = urlParams.get('ramp') === 'bar';
 // `&still=1` — no warm-up and no live stepping: every robot on its start pose and every element
 // staged, so two captures of the same query are the same frame (before/after pictures).
 const stillWorld = urlParams.get('still') === '1';
@@ -265,6 +267,11 @@ async function main(): Promise<void> {
     r0.angVel = 0;
     if (deployRamp) {
       r0.bbRampOut = true;
+      r0.bbRampAt = world.time - 1;
+    }
+    if (barRamp) {
+      r0.bbBarOut = true;
+      r0.bbRampFrom = 0;
       r0.bbRampAt = world.time - 1;
     }
     // `&tank=1`: drop a butterfly's TRACTION set instead of its mecanum set, so both halves of

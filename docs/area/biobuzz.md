@@ -3030,12 +3030,12 @@ roller, which no hardware can do. Now:
   intake: `none` (the driver reverses or launches it), `reverse` (sensor, `BB_SORT_DETECT_S`, then
   the intake runs backwards `BB_SORT_REVERSE_S` and takes nothing), `passthrough` (out of the mouth
   it came in by after `BB_SORT_PASS_S`, intake never stops), `bar` (down, no NECTAR enters at all —
-  the robot's own included — so no G408; on a `ramp` intake the deployed ramp is the bar). An
+  the robot's own included — so no G408; on a `ramp` intake see the next section). An
   auto-sorted reject is ignored by its own intake for `BB_SORT_IGNORE_S`, or a robot driving
   forward re-takes it every tick. The launcher feeds past a reject in transit and a dumper waits for
   it to leave.
 - **REVERSE is a driver control on every build** (`RobotCommand.bbReverse`, protocol bit 4096, key
-  `;`, pad D-DOWN 13, touch REV on a mixed build with no auto-sorter). LIFO, one per
+  `;`, pad D-DOWN 13, touch REV on a mixed build with no auto-sorter and no bar). LIFO, one per
   `BB_REVERSE_PERIOD_S` off `lastIntakeAt`; it wins over `intake`. Counted as driver input by the
   room's participation credit.
 - **One writer for held → ground at the mouth**: `bbEject`. 3D needs nothing more: `syncElement`
@@ -3049,3 +3049,44 @@ roller, which no hardware can do. Now:
 
 Not done: the robot importer's editor does not offer the feed or a sorter (an import reads its
 launcher's old feed), and Zenith autos have no reverse button (`AutoButtons`).
+
+## A RAMP DOUBLES AS A NECTAR BAR — 2026-11-01 (`SIM_PATCH` 11)
+
+Owner: "If someone has a flower ramp, it should be able to double as a nectar bar. It may need
+another button for control in that case."
+
+- **The bar has its own button** (`RobotCommand.bbBar`, protocol bit 8192, key `'`, no pad
+  default, touch BAR), on its own debounced latch (`bbBarHeld`/`bbBarUpAt`, written from the first
+  press). `bbRamp` is the ramp alone now. Before 11 a `bar` sorter's bar rode `bbRamp` and the
+  ramp's latch, and a replay recorded then still does (`bbBarStep`).
+- **Every `ramp` intake with a POLLEN + NECTAR feed has the bar** (`bbHasRampBar`), whatever its
+  sorter: it is the ramp itself, so it costs nothing. The builder offers a ramp no `bar` sorter and
+  says the ramp doubles as one; a ramp spec saved with `bar` behaves as `none` plus the ramp's bar,
+  and coerces to the same bytes (no coerce change, so old replays keep their spec).
+- **Where it sits** (`BB_RAMP_BAR_E` ≈ 0.682 of the swing, solved in `config.ts`). Turned part-way
+  up, the lowest thing across the mouth is the blade's INBOARD underside edge, so `e` puts that edge
+  at `BB_RAMP_BAR_Z` = 3.2 in, between a POLLEN (2.8) and a NECTAR (3.6). The edge stands 2.82 in
+  past the tip line, the blade tilts 40° up to its lip 4.83 in out and 0.5 in over the pivot
+  (checked by rotating the deployed blade's corners about the pivot). Both views draw it: the 3D
+  pivot reads `BB_RAMP_DEPLOYED_ROT · e`.
+- **A flat ramp is no bar.** Before 11 the DEPLOYED ramp was the bar on a ramp intake; a NECTAR
+  rolls up a flat ramp like a POLLEN, so now only the bar pose keeps NECTAR out (`bbBarDown`). The
+  FLOWER deploy is unchanged and still `bbRamp`.
+- **Three stops, one curve** (`robot.ts`): `rampTarget` is 0, `BB_RAMP_BAR_E` or 1;
+  `bbRampSwingProgress` eases from `RobotState.bbRampFrom` to it in `bbRampDeployS × |to − from|`
+  (the same servo at the same speed: bar → deployed takes 0.095 s). With `bbRampFrom` absent every
+  swing is the old full one, byte for byte, which is every ramp that never used the bar. Once
+  written it stays. `bbRampPose` is what both renderers draw; `bbRampSettled` reads `from` for the
+  shorter swing. The bar button from deployed goes to the bar; the ramp button from the bar deploys.
+- **Guards.** A swing to or from the bar is tested like any swing; a blocked one goes back to the
+  stop it left (`bbRampReverse`). 2D tests the rails' plan reach at this tick (`bbRampPlanReach`,
+  up to 4.85 in, further out than the 3.54 a deploy tests), so 4.2 in from a wall the ramp deploys
+  but the bar folds back. In 3D the bar pose keeps the FOLDED collider set (`bbRampSettled` is
+  false), so it is not solid; instead `bbRampSwingStep3d` asks each tick whether the settled bar
+  pose meets a static or another robot and folds it (`bbRampFoldNow`), the owner's 2026-09-20 rule
+  for a swing that meets something.
+- **Touch**: DEPLOY on a ramp, BAR on any bar build, and no REV on a bar build. A ramp bar made the
+  widest pad twelve, which doubled up at 568–667 × 375–400; a bar build keeps the NECTAR out, and
+  SHOOT still empties the hopper. The widest pad is eleven again and fits clean from 375.
+- **Not done:** the AI never drops the bar (it still targets by `bbIntakeWants` and reverses);
+  Zenith autos have no bar button (`AutoButtons`).

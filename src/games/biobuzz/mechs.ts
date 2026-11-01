@@ -142,10 +142,11 @@ export type BbIntakeFeed = (typeof BB_INTAKE_FEEDS)[number];
  *   `passthrough`  the same sensor, but the element is routed through the intake and drops back
  *                  out of the mouth it came in by (`BB_SORT_PASS_S` in transit). The rollers never
  *                  stop, so the rest of the pile keeps coming in.
- *   `bar`          a deployable bar across the mouth (the `bbRamp` button), low enough that a
+ *   `bar`          a deployable bar across the mouth (the `bbBar` button), low enough that a
  *                  POLLEN passes under it and a NECTAR does not. Down, it keeps EVERY NECTAR out,
- *                  the robot's own included. On a `ramp` intake the ramp is the bar: deployed, its
- *                  crossbar does the same job, so the build carries no second mechanism.
+ *                  the robot's own included. On a `ramp` intake the ramp is the bar, held part-way
+ *                  (`bbHasRampBar`), and from `SIM_PATCH` 11 every mixed ramp has it, so there this
+ *                  choice reads as `none`. Before 11 the deployed ramp was the bar, on `bbRamp`.
  *
  * Meaningful on a `mixed` feed only: a `pollen` intake cannot take a NECTAR to sort.
  */
@@ -259,6 +260,22 @@ export function bbNectarRejectOf(spec: RobotSpec): BbNectarReject {
 export function bbAutoSorts(spec: RobotSpec): boolean {
   const k = bbNectarRejectOf(spec);
   return k === 'reverse' || k === 'passthrough';
+}
+
+/**
+ * DOES THIS BUILD'S RAMP DOUBLE AS A NECTAR BAR? (owner, 2026-11-01: "If someone has a flower ramp,
+ * it should be able to double as a nectar bar.") Every `ramp` intake with a POLLEN + NECTAR feed,
+ * whatever its sorter: the bar is the ramp itself held part-way (`BB_RAMP_BAR_E`), so it costs no
+ * hardware, and a sorter still handles whatever gets in while the ramp is up. A POLLEN-only intake
+ * takes no NECTAR to keep out. From `SIM_PATCH` 11 (`nectarReject.ts`).
+ */
+export function bbHasRampBar(spec: RobotSpec): boolean {
+  return bbIntakeKindOf(spec) === 'ramp' && bbIntakeFeedOf(spec) === 'mixed';
+}
+
+/** does this build have a NECTAR bar at all — a `bar` sorter, or a ramp that doubles as one? */
+export function bbHasNectarBar(spec: RobotSpec): boolean {
+  return bbHasRampBar(spec) || bbNectarRejectOf(spec) === 'bar';
 }
 
 /**

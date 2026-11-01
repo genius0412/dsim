@@ -76,6 +76,7 @@ export type TouchHoldField =
   | 'bbRamp'
   | 'bbPass'
   | 'bbReverse'
+  | 'bbBar'
   | 'driveMode'
   | 'flyPreset';
 

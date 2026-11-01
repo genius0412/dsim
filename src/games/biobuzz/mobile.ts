@@ -15,7 +15,7 @@
  */
 import type { GameTouch, TouchButton } from '../../ui/mobileActions';
 import { BB_HOOD_DEFAULT_DEG } from './config';
-import { bbAutoSorts, bbCarriesNectar, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
+import { bbAutoSorts, bbCarriesNectar, bbHasNectarBar, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 
 const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
   {
@@ -62,24 +62,37 @@ const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     ready: (l) => l.held.length > 0,
   },
   {
-    // the deployable ramp, or a `bar` sorter's NECTAR bar on any other intake — one button, as
-    // on the keyboard (`bbRampStep`, `nectarReject.ts`'s `bbBarStep`). Every other build's sim ignores
-    // the bit outright. DEPLOY names both.
+    // the deployable ramp, laid flat for a FLOWER (`bbRampStep`). Every other build's sim ignores
+    // the bit outright.
     action: 'bbRamp',
     hold: 'bbRamp',
     label: 'DEPLOY',
-    aria: 'Deploy ramp / NECTAR bar',
+    aria: 'Deploy ramp',
     glyph: '◣',
     cls: 'bbramp',
     side: 'left',
-    present: (c) => bbIntakeKindOf(c.spec) === 'ramp' || bbNectarRejectOf(c.spec) === 'bar',
+    present: (c) => bbIntakeKindOf(c.spec) === 'ramp',
+  },
+  {
+    // the NECTAR bar: a `bar` sorter's, or a ramp held at bar height (`nectarReject.ts`'s
+    // `bbBarStep`). A ramp build with a POLLEN + NECTAR intake gets both buttons.
+    action: 'bbBar',
+    hold: 'bbBar',
+    label: 'BAR',
+    aria: 'NECTAR bar',
+    glyph: '▬',
+    cls: 'bbbar',
+    side: 'left',
+    present: (c) => bbHasNectarBar(c.spec),
   },
   {
     // REVERSE: run the intake backwards while held (`nectarReject.ts`). On the pad only where it is the
-    // way out for an opponent NECTAR: a POLLEN + NECTAR intake with no sorter of its own. A
-    // POLLEN-only intake never holds one, and an auto-reverse or pass-through build throws it out
-    // by itself. Every build still has the key and the pad button; the touch pad is the room the
-    // narrowest phones do not have to spare.
+    // way out for an opponent NECTAR: a POLLEN + NECTAR intake with no sorter and no bar of its own.
+    // A POLLEN-only intake never holds one, an auto-reverse or pass-through build throws it out by
+    // itself, and a bar build keeps it out (BAR above; SHOOT still empties the hopper). Every build
+    // still has the key and the pad button; the touch pad is the room the narrowest phones do not
+    // have to spare: a ramp build's BAR made the widest pad twelve, which doubled up on an
+    // iPhone 8 held sideways (667x375), where eleven fit.
     action: 'bbReverse',
     hold: 'bbReverse',
     label: 'REV',
@@ -87,7 +100,7 @@ const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     glyph: '◁',
     cls: 'bbreverse',
     side: 'right',
-    present: (c) => bbCarriesNectar(c.spec) && !bbAutoSorts(c.spec),
+    present: (c) => bbCarriesNectar(c.spec) && !bbAutoSorts(c.spec) && !bbHasNectarBar(c.spec),
     ready: (l) => l.held.length > 0,
   },
   {

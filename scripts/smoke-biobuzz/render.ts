@@ -10430,15 +10430,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           }
         }
 
-        // ── THE EASE — the same smoothstep the Box Tube uses, wired the same way (`bbRampAt` /
-        // `world.time`, clamped to [0, 1]) and re-derived standalone here (the RENDER lane has no
-        // `World` to run `sync` against — see the file header). At t0 the robot is still FOLDED
-        // (frac 0); a `BB_RAMP_DEPLOY_S` later it is fully DEPLOYED (frac 1).
+        // ── THE EASE — the same smoothstep the Box Tube uses, re-derived standalone here (the RENDER
+        // lane has no `World` to run `sync` against — see the file header). At t0 the robot is still
+        // FOLDED (frac 0); a `BB_RAMP_DEPLOY_S` later it is fully DEPLOYED (frac 1). Since the ramp
+        // doubles as a NECTAR bar (2026-11-01) the scene reads the SIM's pose, `bbRampPose`, off
+        // `world.time` — the curve the swing guard tests — rather than easing its own copy.
         check(
-          'the sync code eases the ramp off `bbRampAt`/`world.time`, clamped and smoothstepped',
-          robotsCode.includes('r.bbRampAt ?? -Infinity') &&
-            robotsCode.includes('/ bbRampDeployS(r.spec)') && // the swing time, an import's tuning included
-            robotsCode.includes('smoothstep01(t)'),
+          'the sync code poses the ramp off the sim\'s own `bbRampPose(r, world.time)`',
+          robotsCode.includes('BB_RAMP_DEPLOYED_ROT * bbRampPose(r, world.time)') &&
+            robotsCode.includes('const rampOut = bbRampPose(r, world.time)'), // an import's ramp joint too
         );
         check(
           'the side rollers spin off the SAME running gate as the sweeper, opposite senses',
