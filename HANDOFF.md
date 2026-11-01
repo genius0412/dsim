@@ -1,6 +1,6 @@
 # HANDOFF — 2026-11-01i (DECODE: an auto path no longer leaves auto fire and auto intake on, SIM_PATCH 12)
 
-**State: on `alpha`. Sim change behind `SIM_PATCH` 12; the game server needs the deploy noted below for live play.** `npm test` shared ALL PASS (4664, +5), BIOBUZZ only the known `balls: … LANDED predicted`; golden scenes unchanged; `build`, `server:check`, `docaudit` pass.
+**State: on `alpha` (5e91f183). Sim change behind `SIM_PATCH` 12; DEPLOYED to `dsim-alpha` 2026-11-01 23:30Z from 5e91f183 (`/health` ok, one machine). Production untouched.** `npm test` shared ALL PASS (4664, +5), BIOBUZZ only the known `balls: … LANDED predicted`; golden scenes unchanged; `build`, `server:check`, `docaudit` pass.
 
 - **Owner:** "Yes, fix it here" (the follow-up from 01h).
 - **Bug:** `updateRobotActions` wrote `r.aimAssist`/`r.autoIntake`/`r.autoFire` true on every tick a legacy auto path drove, and nothing wrote them back. A driver with auto fire off had it on for all of DRIVER-CONTROLLED (it emptied the hopper in the first launch zone), and `Room.assistsOf` filed the record as driven with it.
