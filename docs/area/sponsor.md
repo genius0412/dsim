@@ -60,6 +60,9 @@ any of this.
   `player_joined` (fired in `UsernameGate`, the last step of signing up; it over-counts legacy
   accounts ONCE and `docs/sponsor.md` footnotes it). No identifiers. Vercel Web Analytics was
   removed in September 2026; its history is imported (`analytics_imported`, migration 0052).
+  The monthly report the sponsor receives is a PDF from the same panel (**Monthly report** ▸
+  **Download PDF**, one per calendar month of `SPONSOR.term`, in UTC); `docs/sponsor.md` says
+  what is in it.
 - **Tests**: the `SPONSOR` lane of `scripts/smoke-biobuzz/` (`npm run test:bb`). Everything it
   covers is a contracted obligation that FAILS SILENTLY — a placement that stops rendering, a
   link that loses its UTM tag, a term that does not cover the season it was sold for.

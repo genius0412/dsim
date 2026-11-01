@@ -111,7 +111,37 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     the panel SAYS so rather than silently degrading. Events and their properties are rolled
     up too (`dim = 'event'` / `'evprop'`, val `name|key|value`), so a month-old sponsor report
     still breaks down by placement. The **Sponsor report** panel lays out `docs/sponsor.md`'s
-    lines; the **Last month** range is the report period.
+    lines, and its **Monthly report** control downloads the month's PDF (`docs/sponsor.md`).
+  - ⚠️ **THE TAB IS UTC, ALL OF IT** (owner, 2026-11-01: "sometimes it records stuff in the future
+    in my time"). The server buckets UTC days and hours, `analytics_daily` and the imported history
+    are UTC days, so a local day cannot be drawn past the raw window. Ranges, the date pickers,
+    Last month, chart labels and the readout are UTC (`src/ui/adminAnalyticsTime.ts`) and the page
+    says so under the toolbar. Before, ranges were picked on the operator's LOCAL calendar while
+    days were labelled in UTC, so an evening in New York showed tomorrow's date. Presets are aligned:
+    "7 days" is today plus six UTC days from midnight, "24 hours" the current hour plus 23, and they
+    are recomputed at every load, so Refresh moves a rolling range forward. A day in the product
+    report is formatted in SQL (`to_char`), never handed back as a `date` the driver turns into the
+    server's local midnight.
+  - ⚠️ **THE DASHBOARD GETS `READ_SLOTS` (3) OF THE POOL'S 5 CONNECTIONS** (`rq`/`runRead` in
+    `server/analytics.ts`). One load is ~23 queries; three quick range clicks used to queue ~70 on
+    the shared pool, pg failed the ones waiting past 10 s, and the tab drew nothing (owner,
+    2026-11-01). Each read runs under the request's AbortSignal: a newer request for the same
+    account + endpoint + `lane` (a per-page id the client sends) or a closed connection drops its
+    queued queries, and the route answers 409. The client settles clicks for 150 ms, aborts the
+    older fetch, keeps two minutes of answers so switching back is instant, and draws the traffic
+    and product halves on their own. Measured on `npm run adminharness` with
+    `HARNESS_DB_MS=800` (production's pool shape): ten quick clicks went from 500s and 32 s to no
+    errors and 9.6 s. Only dashboard reads are gated; the ingest and the rollup job are not.
+  - **CHARTS DRAW EVERY BUCKET.** The server returns only buckets with rows; the client fills the
+    rest with zeros (`fillSeries`, `daysOf`), or a quiet night closed up and the columns skipped
+    days. The bucket still filling (today, this hour) is a faded dashed tail with no area under it.
+    A breakdown row's share is of `BreakdownRow.total`, the whole dimension, not the twelve rows
+    shown. Concurrency is ONE series, `concurrencyTotal`: regions summed at the same sample, then
+    the day's max (stacking each region's own peak added people online at different hours). The
+    ranked chart is one column per 100 points with games stacked and empty buckets kept. Retention
+    prints a dash for a cohort younger than D1/D7/D30. A filtered range whose previous period is
+    past the raw window shows no change rather than comparing against unfiltered rollups. A
+    rollup-tier range includes the day holding its end (`AGG_TO`), so a range ending now has today.
   - **VERCEL HISTORY IS FOLDED IN, ONE SOURCE PER DAY.** `analytics_imported` (0053) holds Vercel
     Web Analytics' daily aggregates from before it was removed, loaded by
     `scripts/vercel-analytics-export.mjs` + `scripts/import-vercel-analytics.ts` (dry run unless

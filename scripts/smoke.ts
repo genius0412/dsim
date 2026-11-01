@@ -224,6 +224,9 @@ import {
 } from '../src/storageKeys';
 import { analyticsAllowed, setAnalyticsAllowed } from '../src/analyticsPref';
 import { normalizePath, refHost, screenBucket, utmOf } from '../src/pageviews';
+import { customSpan, fillSeries, isPartial, presetSpan, reportPeriods, spanLabel } from '../src/ui/adminAnalyticsTime';
+import { PdfDoc, textWidth, wrapText } from '../src/ui/pdfWriter';
+import { sponsorReportPdf } from '../src/ui/AdminSponsorPdf';
 import type { RobotSetup } from '../src/sim/spawn';
 import {
   DEFAULT_BINDINGS,
@@ -29205,12 +29208,152 @@ const dumperSetup = (): RobotSetup => {
   const aa = rd('src/ui/AdminAnalytics.tsx');
   check(
     'admin analytics: an older load landing after a newer one is discarded',
-    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*setReport\(r\);/.test(aa),
+    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*inflight\.current = null;/.test(aa),
+  );
+  check(
+    '⚠️ admin analytics: a new selection ABORTS the older request and names its page (`lane`), so the server drops its queued queries',
+    /const seq = \+\+loadSeq\.current;\s*inflight\.current\?\.abort\(\);/.test(aa) && /lane/.test(aa) && /signal,\n/.test(aa),
   );
   const wl = rd('src/ui/WatchLive.tsx');
   check(
     'watch live: an unattended page does not poll /api/live, and catches up when someone is back',
     /const load = \(\): void => \{[\s\S]{0,600}?if \(userIdle\(\)\) return;/.test(wl) && /onUserActive\(load\)/.test(wl),
+  );
+}
+
+// ---- THE ANALYTICS TAB'S CLOCK AND THE SPONSOR PDF (src/ui/adminAnalyticsTime.ts, pdfWriter.ts)
+{
+  // 2026-11-01 07:40 UTC is 02:40 in New York: the evening-before problem the owner reported
+  const now = Date.parse('2026-11-01T07:40:00Z');
+  const d7 = presetSpan('7d', now);
+  check(
+    '⚠️ analytics time: "7 days" is today and the six UTC days before it, from midnight, ending now',
+    d7.from.toISOString() === '2026-10-26T00:00:00.000Z' && d7.to.getTime() === now && d7.grain === 'day',
+    d7.from.toISOString(),
+  );
+  const h24 = presetSpan('24h', now);
+  check('analytics time: "24 hours" is the current UTC hour and the 23 before it', h24.from.toISOString() === '2026-10-31T08:00:00.000Z' && h24.grain === 'hour');
+  const month = presetSpan('month', now);
+  check(
+    '⚠️ analytics time: "Last month" is the previous UTC calendar month, never the local one',
+    month.from.toISOString() === '2026-10-01T00:00:00.000Z' && month.to.toISOString() === '2026-11-01T00:00:00.000Z',
+  );
+  const one = customSpan('2026-10-31', '2026-10-31');
+  check(
+    'analytics time: a custom range is UTC days, the end day included, and two days or fewer go by the hour',
+    one.from.toISOString() === '2026-10-31T00:00:00.000Z' && one.to.toISOString() === '2026-11-01T00:00:00.000Z' && one.grain === 'hour' &&
+      customSpan('2026-10-01', '2026-10-31').grain === 'day',
+  );
+  const filled = fillSeries([{ t: '2026-10-28T00:00:00.000Z', views: 5 }], d7, 'day', (t) => ({ t, views: 0 }));
+  check(
+    '⚠️ analytics time: the series has EVERY bucket — a quiet day is a zero, not a missing point the chart closes up',
+    filled.length === 7 && filled[2].views === 5 && filled[0].views === 0 && filled[6].t === '2026-11-01T00:00:00.000Z',
+    filled.map((p) => p.views).join(','),
+  );
+  check(
+    'analytics time: the bucket still filling is told apart from the whole ones',
+    isPartial('2026-11-01T00:00:00.000Z', 'day', d7.to) && !isPartial('2026-10-31T00:00:00.000Z', 'day', d7.to) &&
+      !isPartial('2026-10-31T00:00:00.000Z', 'day', month.to),
+  );
+  check('analytics time: the range is stated in UTC', spanLabel(d7) === 'Oct 26 – Nov 1, 07:40 UTC' && spanLabel(month) === 'Oct 1 – Oct 31 (UTC)', `${spanLabel(d7)} | ${spanLabel(month)}`);
+
+  const periods = reportPeriods({ from: '2026-09-12', until: '2027-09-12' }, now);
+  check(
+    '⚠️ sponsor report: one period per month of the term, newest first, the first from kickoff (Sep 12), the current one marked',
+    periods.map((p) => p.id).join(',') === '2026-11,2026-10,2026-09-12' &&
+      periods[2].from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[2].to.toISOString() === '2026-10-01T00:00:00.000Z' &&
+      periods[2].label === 'Sep 12 – Sep 30, 2026' && periods[1].label === 'October 2026' &&
+      periods[0].inProgress && periods[0].to.getTime() === now && !periods[1].inProgress,
+    periods.map((p) => `${p.id}:${p.label}`).join(' | '),
+  );
+  check(
+    'sponsor report: each period compares with the one before it, and the first with nothing',
+    periods[1].prev?.from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[0].prev?.from.toISOString() === '2026-10-01T00:00:00.000Z' && periods[2].prev === null,
+  );
+  check('sponsor report: nothing before the term starts', reportPeriods({ from: '2026-09-12', until: '2027-09-12' }, Date.parse('2026-09-01T00:00:00Z')).length === 0);
+
+  // ---- the writer: a PDF is offsets as much as drawing, and a wrong one opens as "damaged"
+  const doc = new PdfDoc(612, 792, { title: 'Test (one) \\ two', created: new Date(now) });
+  doc.setImage(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), 2, 1);
+  const pg = doc.addPage();
+  pg.text(10, 20, 'Sep 12 – Sep 30 · “quoted” (paren)', { size: 10 });
+  pg.image(10, 30, 20, 10);
+  doc.addPage().rect(0, 0, 10, 10, { fill: [1, 0, 0] });
+  const bytes = doc.toBytes();
+  const latin = (b: Uint8Array): string => Array.from(b, (c) => String.fromCharCode(c)).join('');
+  const s = latin(bytes);
+  const startxref = Number(/startxref\n(\d+)\n%%EOF\n$/.exec(s)?.[1]);
+  const xref = s.slice(startxref);
+  const entries = [...xref.matchAll(/(\d{10}) 00000 n /g)].map((m) => Number(m[1]));
+  check(
+    '⚠️ pdf: every xref offset points at its own object, and startxref at the table',
+    s.startsWith('%PDF-1.4\n') && xref.startsWith('xref\n0 11\n') && entries.length === 10 && entries.every((off, i) => s.startsWith(`${i + 1} 0 obj\n`, off)),
+    `startxref=${startxref} entries=${entries.length}`,
+  );
+  check(
+    'pdf: text is WinAnsi with its parentheses escaped — the en dash, middle dot and curly quotes are one byte each',
+    s.includes('(Sep 12 \x96 Sep 30 \xb7 \x93quoted\x94 \\(paren\\)) Tj') && s.includes('/Title (Test \\(one\\) \\\\ two)'),
+  );
+  check('pdf: the image is drawn only on the page that uses it', (s.match(/\/XObject << \/Im1 6 0 R >>/g) ?? []).length === 1);
+  check(
+    'pdf: text is measured with the face it is drawn in, and wrapped on spaces',
+    Math.abs(textWidth('DSIM', 10) - 25) < 0.01 && textWidth('report', 10, true) > textWidth('report', 10) &&
+      wrapText('one two three four five', textWidth('one two three', 10) + 0.5, 10).join('|') === 'one two three|four five',
+  );
+
+  // ---- the report itself, from fixed numbers
+  const report = (over: Partial<{ events: { name: string; views: number; visitors: number }[] }> = {}) => ({
+    source: 'aggregate' as const,
+    rawFloor: '',
+    totals: { views: 2801, visitors: 934, sessions: 934, bounces: 100, seconds: 9000 },
+    previous: { views: 0, visitors: 0, sessions: 0, bounces: 0, seconds: 0 },
+    series: [{ t: '2026-10-05T00:00:00.000Z', views: 89, visitors: 34 }],
+    breakdowns: [
+      { dim: 'country', val: 'US', views: 500, visitors: 100, total: 2801 },
+      { dim: 'surface', val: 'web', views: 2400, visitors: 800, total: 2801 },
+      { dim: 'surface', val: 'electron', views: 401, visitors: 134, total: 2801 },
+    ],
+    events: over.events ?? [
+      { name: 'sponsor_shown', views: 1646, visitors: 900 },
+      { name: 'sponsor_click', views: 121, visitors: 100 },
+    ],
+    eventProps: [
+      { name: 'sponsor_shown', key: 'placement', val: 'footer', views: 704 },
+      { name: 'sponsor_shown', key: 'placement', val: 'home', views: 942 },
+      { name: 'sponsor_click', key: 'placement', val: 'home', views: 121 },
+      { name: 'sponsor_dwell', key: 'dwell', val: '1-5m', views: 300 },
+    ],
+    online: 0,
+    grain: 'day' as const,
+  });
+  const oct = periods[1];
+  const pdf = latin(
+    sponsorReportPdf({
+      period: oct,
+      prev: oct.prev,
+      sponsor: { name: 'Offset Robotics', url: 'https://offsetrobotics.com', campaign: 'biobuzz-2026' },
+      placements: ['home', 'footer', 'game'],
+      generatedAt: new Date(now),
+      cur: report(),
+      prevReport: report({ events: [{ name: 'sponsor_shown', views: 845, visitors: 500 }, { name: 'sponsor_click', views: 48, visitors: 40 }] }),
+      product: null,
+      daily: [{ day: '2026-10-05', name: 'sponsor_shown', n: 60 }],
+      logo: null,
+    }),
+  );
+  check(
+    '⚠️ sponsor PDF: four pages, the month named, the totals and the per-placement click-through printed',
+    (pdf.match(/\/Type \/Page /g) ?? []).length === 4 && pdf.includes('(October 2026) Tj') && pdf.includes('(1,646) Tj') &&
+      pdf.includes('(121) Tj') && pdf.includes('(Home menu) Tj') && pdf.includes('(13%) Tj'),
+  );
+  check(
+    'sponsor PDF: month over month is a DAILY rate (19 days of September against 31 of October), and says against what',
+    // 1646/31 against 845/19 is +19%; the raw totals would read +95%
+    pdf.includes('(+19% a day vs Sep 12\x9630) Tj'),
+  );
+  check(
+    'sponsor PDF: no player numbers to print says so instead of printing zeros',
+    pdf.includes('(Player numbers could not be read for this period.) Tj'),
   );
 }
 

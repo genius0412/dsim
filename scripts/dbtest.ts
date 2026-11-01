@@ -3424,7 +3424,12 @@ async function main(): Promise<void> {
     check('analytics/rate: the window expires rather than banning', an.rateOk('v1', an.VISITOR_LIMIT, Date.now() + 20 * 60_000));
 
     // ---- ingest, sessions, and the rollup -------------------------------------------------
-    const t0 = new Date('2026-09-10T12:00:00Z');
+    // DATED OFF TODAY, eight days back: inside the 30-day raw window whenever this runs. Pinned to
+    // 2026-09-10 it fell out of the window a month later, the range read from the rollups, and the
+    // filter and job checks below failed for no reason in the code.
+    const D0 = Math.floor(Date.now() / 86_400_000) * 86_400_000 - 8 * 86_400_000;
+    const D = (n: number): string => new Date(D0 + n * 86_400_000).toISOString().slice(0, 10);
+    const t0 = new Date(`${D(0)}T12:00:00Z`);
     const mins = (n: number): Date => new Date(t0.getTime() + n * 60_000);
     const pv = async (visitor: string, at: Date, path: string, game: string, extra: Partial<Record<string, string>> = {}): Promise<void> => {
       await db.query(
@@ -3443,14 +3448,14 @@ async function main(): Promise<void> {
     await pv('bbbb000000000002', mins(20), '/privacy', '', { country: 'DE', device: 'mobile' });
     await db.query(`insert into analytics_events (at, visitor, name, game, path, props) values ($1,$2,'support_view','decode','/decode/donate','{"placement":"footer"}')`, [mins(6), 'aaaa000000000001']);
 
-    const day0 = new Date('2026-09-10T00:00:00Z');
-    const day1 = new Date('2026-09-11T00:00:00Z');
+    const day0 = new Date(`${D(0)}T00:00:00Z`);
+    const day1 = new Date(`${D(1)}T00:00:00Z`);
     await an.runRollup(day0, day1);
 
     const daily = async (game: string, dim: string, val: string) =>
       (await db.query<{ views: number; visitors: number; sessions: number; bounces: number; seconds: string }>(
         `select views, visitors, sessions, bounces, seconds from analytics_daily
-          where day = '2026-09-10' and game = $1 and dim = $2 and val = $3`,
+          where day = '${D(0)}' and game = $1 and dim = $2 and val = $3`,
         [game, dim, val],
       )).rows[0];
 
@@ -3501,7 +3506,7 @@ async function main(): Promise<void> {
     await an.runRollup(mins(15), mins(25));
     const hour12 = (
       await db.query<{ views: number }>(
-        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+        `select views from analytics_hourly where hour = '${D(0)}T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
       )
     ).rows[0];
     check(
@@ -3555,7 +3560,7 @@ async function main(): Promise<void> {
           old.eventProps.some((p) => p.name === 'sponsor_click' && p.key === 'placement' && p.val === 'game' && p.views === 3),
       );
       check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
-      check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
+      check('analytics/report: it says where its own traffic history starts', old.historyStart === D(0), String(old.historyStart));
       check('analytics/report: no import yet means no imported span and nothing folded in', old.imported === null && old.history.imported === null && !old.history.inRange);
       await db.query(`delete from analytics_daily where day = '2025-01-10'`);
     }
@@ -3568,31 +3573,31 @@ async function main(): Promise<void> {
       const file = {
         source: 'vercel' as const,
         environment: 'production',
-        firstDay: '2026-09-13',
-        lastDay: '2026-09-14',
+        firstDay: D(3),
+        lastDay: D(4),
         visits: {
           total: [
-            { day: '2026-09-12', pageviews: 0, visitors: 0 },
-            { day: '2026-09-13', pageviews: 100, visitors: 10 },
-            { day: '2026-09-14', pageviews: 50, visitors: 5 },
+            { day: D(2), pageviews: 0, visitors: 0 },
+            { day: D(3), pageviews: 100, visitors: 10 },
+            { day: D(4), pageviews: 50, visitors: 5 },
           ],
           by: {
             requestPath: [
-              v('2026-09-13', '/decode/profile/alice', 3, 1),
-              v('2026-09-13', '/decode/profile/bob', 2, 1),
-              v('2026-09-13', '/decode/records?token=secret', 5, 2),
+              v(D(3), '/decode/profile/alice', 3, 1),
+              v(D(3), '/decode/profile/bob', 2, 1),
+              v(D(3), '/decode/records?token=secret', 5, 2),
             ],
-            route: [v('2026-09-13', null, 100, 10)],
-            referrerHostname: [v('2026-09-13', null, 90, 9), v('2026-09-13', 'www.google.com', 10, 1)],
-            osName: [v('2026-09-13', 'Mac', 40, 4)],
-            browserName: [v('2026-09-13', 'Microsoft Edge', 20, 2), v('2026-09-13', 'Others', 5, 1)],
+            route: [v(D(3), null, 100, 10)],
+            referrerHostname: [v(D(3), null, 90, 9), v(D(3), 'www.google.com', 10, 1)],
+            osName: [v(D(3), 'Mac', 40, 4)],
+            browserName: [v(D(3), 'Microsoft Edge', 20, 2), v(D(3), 'Others', 5, 1)],
           },
         },
         events: {
-          byName: [{ day: '2026-09-13', name: 'sponsor_click', count: 4, visitors: 3 }],
+          byName: [{ day: D(3), name: 'sponsor_click', count: 4, visitors: 3 }],
           byProp: [
-            { day: '2026-09-13', name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
-            { day: '2026-09-13', name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
+            { day: D(3), name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
+            { day: D(3), name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
           ],
         },
       };
@@ -3608,7 +3613,7 @@ async function main(): Promise<void> {
       );
       check(
         'analytics/import: empty days, route rows and absent property values are left out',
-        !rows.some((r) => r.day === '2026-09-12') && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
+        !rows.some((r) => r.day === D(2)) && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
       );
       const count = async (): Promise<number> =>
         Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported`)).rows[0].n);
@@ -3619,18 +3624,18 @@ async function main(): Promise<void> {
         first.inserted === rows.length && second.deleted === rows.length && (await count()) === rows.length,
         `inserted=${first.inserted} deleted=${second.deleted} rows=${await count()}`,
       );
-      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === '2026-09-14'));
+      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === D(4)));
       check(
         'analytics/import: a narrower re-import replaces only the days it covers',
-        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '${D(3)}'`)).rows[0].n) > 0,
       );
-      // Our own stable-channel count began on 2026-09-10 (the fixture above), which the import
-      // does not reach, so our count starts that day and every imported day (09-13 on) overlaps it.
-      const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      // Our own stable-channel count began on D(0) (the fixture above), which the import does not
+      // reach, so our count starts that day and every imported day (D(3) on) overlaps it.
+      const rep = await an.analyticsReport({ from: new Date(`${D(3)}T00:00:00Z`), to: new Date(`${D(5)}T00:00:00Z`), game: '*', filters: [], grain: 'day' });
       check(
         'analytics/combine: the report names the imported span and where our own count starts',
-        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === '2026-09-13' &&
-          rep.history.imported.lastDay === '2026-09-14' && rep.history.imported.channel === 'stable' && rep.history.ownFrom === '2026-09-10',
+        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === D(3) &&
+          rep.history.imported.lastDay === D(4) && rep.history.imported.channel === 'stable' && rep.history.ownFrom === D(0),
         JSON.stringify(rep.history),
       );
       check(
@@ -3783,6 +3788,24 @@ async function main(): Promise<void> {
         game.history.why === 'game' && game.totals.views === 6 && game.events.find((e) => e.name === 'sponsor_shown')?.views === 1 && !game.history.events,
       );
 
+      // ---- the sponsor report's per-day events: the same days, the same sources ---------------
+      const perDay = await an.eventsDaily({ from: at(6, 0), to: at(0, 0), game: '*' }, ['sponsor_shown']);
+      const shownTotal = all.events.find((e) => e.name === 'sponsor_shown')?.views;
+      check(
+        '⚠️ analytics/daily: events per day add up to the event total, imported days and ours, nothing twice',
+        perDay.reduce((s, r) => s + r.n, 0) === shownTotal && shownTotal === 31 &&
+          perDay.find((r) => r.day === day(6))?.n === 10 && perDay.find((r) => r.day === day(3))?.n === 1 && !perDay.some((r) => r.day === day(2)),
+        JSON.stringify(perDay),
+      );
+      // ⚠️ A SHARE IS OF EVERY VIEW IN THE PANEL. The dashboard divided by the twelve rows it
+      // showed, so with more than twelve pages every row read high; `total` is the whole panel.
+      check(
+        'analytics/breakdown: each row carries its dimension\u2019s full total, past the top N',
+        all.breakdowns.filter((b) => b.dim === 'path').every((b) => b.total === all.totals.views) &&
+          all.breakdowns.filter((b) => b.dim === 'entry').every((b) => b.total === all.totals.sessions),
+        JSON.stringify(all.breakdowns.filter((b) => b.dim === 'path' || b.dim === 'entry').map((b) => [b.dim, b.val, b.total])),
+      );
+
       // ---- ranges -----------------------------------------------------------------------------
       const older = await report(at(6, 0), at(3, 0));
       check('analytics/combine: a range wholly before the start is the import alone', older.totals.views === 330 && older.totals.sessions === 0);
@@ -3840,8 +3863,125 @@ async function main(): Promise<void> {
           agg.breakdowns.find((b) => b.dim === 'channel' && b.val === 'alpha')?.views === 101 &&
           agg.events.find((e) => e.name === 'player_joined')?.views === 5,
       );
+      // ⚠️ A RANGE ENDING MID-DAY INCLUDES THAT DAY'S ROLLUP. `day < to::date` dropped it, and the
+      // range ending now is the usual one: every long range ended on an empty today.
+      const midday = await an.analyticsReport({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-03T12:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/rollup tier: a range ending mid-day reads that day’s row too',
+        midday.source === 'aggregate' && midday.totals.views === 90 + 11 && midday.series.some((s) => s.t.startsWith('2025-03-03')),
+        `views=${midday.totals.views} series=${midday.series.map((s) => s.t.slice(0, 10)).join(',')}`,
+      );
+      const aggDaily = await an.eventsDaily({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-08T00:00:00Z'), game: '*' }, ['player_joined']);
+      check(
+        'analytics/daily: on the rollup tier too, imported days before the start and ours from it',
+        aggDaily.map((r) => `${r.day}:${r.n}`).join(',') === '2025-03-02:3,2025-03-03:2',
+        JSON.stringify(aggDaily),
+      );
       await db.query(`delete from analytics_daily where day between '2025-03-01' and '2025-03-31'`);
       await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the dashboard's share of the pool (2026-11-01) ---------------------------------------
+    // Clicking through ranges queued ~23 queries per click on a pool of five, and the ones past
+    // pg's 10 s queue timeout failed: "switching between tabs sometimes glitches it and nothing
+    // loads". Reads are capped at READ_SLOTS and a superseded request drops what it has not run.
+    {
+      const range = { from: day0, to: day1, game: '*', filters: [], grain: 'day' as const };
+      const gone = new AbortController();
+      gone.abort();
+      let refused = false;
+      try {
+        await an.runRead(gone.signal, () => an.analyticsReport(range));
+      } catch (e) {
+        refused = e instanceof an.ReadAborted;
+      }
+      check('⚠️ analytics/gate: a read whose request is already gone runs no query and says so', refused);
+
+      // Counted AT THE POOL, each query held 5 ms. PGlite answers within the same tick, so
+      // without the hold nothing would ever overlap and both checks would pass for nothing.
+      const poolMod = await import('../server/db/pool');
+      const base = poolMod.pool!;
+      let live = 0;
+      let peak = 0;
+      let ran = 0;
+      poolMod.setPoolForTests({
+        query: (async (text: string, params?: unknown[]) => {
+          live++;
+          ran++;
+          peak = Math.max(peak, live);
+          try {
+            await new Promise((r) => setTimeout(r, 5));
+            return await base.query(text, params);
+          } finally {
+            live--;
+          }
+        }) as typeof base.query,
+        connect: () => base.connect(),
+      });
+      try {
+        await Promise.all([1, 2, 3, 4].map(() => an.runRead(new AbortController().signal, () => an.productReport(day0, day1, '*'))));
+        check(
+          '⚠️ analytics/gate: four reports at once never hold more than READ_SLOTS connections',
+          peak === an.READ_SLOTS,
+          `peak=${peak} slots=${an.READ_SLOTS}`,
+        );
+
+        ran = 0;
+        const late = new AbortController();
+        const run = an.runRead(late.signal, () => an.productReport(day0, day1, '*'));
+        await new Promise((r) => setTimeout(r, 2));
+        late.abort();
+        let dropped = false;
+        try {
+          await run;
+        } catch (e) {
+          dropped = e instanceof an.ReadAborted;
+        }
+        await new Promise((r) => setTimeout(r, 50)); // the queries already running finish
+        const after = an.readGateState();
+        check(
+          '⚠️ analytics/gate: a read abandoned mid-way rejects, runs none of its queued queries, and gives every slot back',
+          dropped && ran === an.READ_SLOTS && after.running === 0 && after.waiting === 0,
+          JSON.stringify({ dropped, ran, after }),
+        );
+      } finally {
+        poolMod.setPoolForTests(base);
+      }
+    }
+
+    // ---- the product half: UTC days, and a peak that is one moment ------------------------------
+    {
+      const T = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+      const yday = new Date(T - 86_400_000).toISOString().slice(0, 10);
+      // two regions sampled together, as `sampleConcurrency` writes them: iad peaks at 14:00 and
+      // lhr at 10:00, and at no moment were 9 + 7 = 16 people on
+      await db.query(
+        `insert into analytics_concurrency (at, region, online, authed, rooms, q1v1, q2v2) values
+           ($1, 'iad', 5, 0, 0, 0, 0), ($1, 'lhr', 7, 0, 0, 0, 0), ($2, 'iad', 9, 0, 0, 0, 0), ($2, 'lhr', 1, 0, 0, 0, 0)`,
+        [new Date(T - 86_400_000 + 10 * 3_600_000), new Date(T - 86_400_000 + 14 * 3_600_000)],
+      );
+      await repo.ensureProfile('utc-late', 'Late');
+      // 23:30 UTC is the evening before in New York: the day is still the UTC one
+      await db.query(`update profiles set created_at = $2 where user_id = $1`, ['utc-late', new Date(T - 30 * 60_000)]);
+      const pr = await an.productReport(new Date(T - 3 * 86_400_000), new Date(), '*');
+      check(
+        '⚠️ analytics/product: the day’s peak adds the regions at ONE moment, not each region’s own peak',
+        pr.concurrencyTotal.find((c) => c.day === yday)?.peak === 12 &&
+          pr.concurrency.filter((c) => c.day === yday).reduce((s, c) => s + c.peak, 0) === 16,
+        JSON.stringify(pr.concurrencyTotal),
+      );
+      check(
+        'analytics/product: a signup at 23:30 UTC lands on that UTC day',
+        pr.signups.some((s) => s.day === yday && s.n >= 1) && pr.retention.some((r) => r.cohort === yday),
+        JSON.stringify(pr.signups),
+      );
+      check(
+        'analytics/product: every day comes back as YYYY-MM-DD text',
+        [...pr.signups, ...pr.concurrency, ...pr.concurrencyTotal, ...pr.matches, ...pr.active].every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.day)) &&
+          pr.retention.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.cohort)),
+      );
+      await db.query(`delete from analytics_concurrency where region in ('iad', 'lhr') and at >= $1`, [new Date(T - 86_400_000)]);
+      await repo.deleteAccount?.('utc-late').catch(() => undefined);
     }
 
     // ---- retention, which is where the privacy promise is either kept or not ---------------

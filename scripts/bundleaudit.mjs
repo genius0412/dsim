@@ -414,7 +414,11 @@ const BASELINE = {
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown
   // scope controls, and the analytics page's sponsor report and imported-history section. Admin
   // only, so no player downloads it.
-  admin: { gzip: 29.75 * 1000 },
+  // 2026-11-01: 29.75 -> 42.05 on main, raised on purpose: `AdminSponsorPdf-*.js` 8.65, NEW, the
+  // monthly sponsor report's PDF writer and layout, a lazy chunk fetched only when someone presses
+  // Download PDF; `AdminAnalytics-*.js` to 12.37, the UTC ranges, the loader that cancels and
+  // caches, and the fixed product charts.
+  admin: { gzip: 42.05 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

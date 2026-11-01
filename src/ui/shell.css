@@ -7692,7 +7692,8 @@ a.ds-cta {
 /* ---- the headline tiles ---- */
 .an-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* 140, so the six tiles share one row in the console's 940px column */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--ds-s-3);
 }
 .an-tile {
@@ -7723,8 +7724,9 @@ a.ds-cta {
 }
 .an-tile-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--ds-s-2);
+  gap: var(--ds-s-0) var(--ds-s-2);
   font-size: var(--ds-t-xs);
 }
 .an-tile-sub {
@@ -7734,6 +7736,7 @@ a.ds-cta {
    land near 3:1 as 11px type, which is the large-text bar, not the body one. */
 .an-delta {
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--ds-mut);
 }
 .an-delta.up {
@@ -7779,6 +7782,12 @@ a.ds-cta {
 .an-line.visitors {
   stroke: var(--ds-viz-2);
   stroke-dasharray: 4 3;
+}
+/* the bucket still filling (today, this hour): faded and dashed, with no area under it, so a
+   partial count does not read as a drop */
+.an-line.tail {
+  opacity: 0.5;
+  stroke-dasharray: 2 4;
 }
 .an-cursor {
   stroke: var(--ds-mut);
@@ -7974,13 +7983,20 @@ a.ds-cta {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
   color: var(--ds-mut);
-  text-align: center;
-  overflow: hidden;
+  /* only every few columns is labelled (`Columns`), so a label runs on over its unlabelled
+     neighbours rather than being clipped to its own 10px column ("0c" for "Oct 12") */
+  text-align: left;
+  overflow: visible;
   white-space: nowrap;
 }
-.an-cols-total {
-  position: absolute;
-  inset: 0 0 auto auto;
+/* the plot's scale, above it: an overlay in the top corner sat on the tallest bars */
+.an-colchart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.an-cols-max {
+  align-self: flex-end;
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
   color: var(--ds-mut);
@@ -8020,15 +8036,12 @@ a.ds-cta {
   padding: var(--ds-s-4) 0;
 }
 
-/* Below the tablet breakpoint the breakdown grid is one column, and the columns chart
-   drops every other label rather than shrinking the type below the scale. */
+/* Below the tablet breakpoint the breakdown grid is one column. The columns chart already
+   labels every few columns only (`Columns`), so it keeps its type on the scale. */
 @media (max-width: 640px) {
   .an-grid,
   .an-grid.two {
     grid-template-columns: 1fr;
-  }
-  .an-col:nth-child(even) .an-col-label {
-    visibility: hidden;
   }
   .an-bar-hit {
     font-size: var(--ds-t-sm);
