@@ -1,4 +1,17 @@
-# HANDOFF — 2026-10-24e (the popups made safe to merge: shell modals wait, Match found locked, search pinned bottom-right)
+# HANDOFF — 2026-11-01 (Home and Play: every mode one click away, a cheap undistorted stage, nothing that shifts or scrolls)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS (4613; five new `play:`/`home:`/`stage:` checks), BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass; `shiftaudit` 540 state changes, 0 shifts. Rules in `docs/area/ui.md`, THE MENU STAGE.
+
+- **Owner:** alpha's Home "still distorted and EXTREMELY laggy on some devices"; the Admin button on Home "very off"; Play's "tiny panel" very awkward, main's navigation far easier; then: the stats cards load late and shift the page, and Home scrolls on some screens.
+- **Play:** the right column is ONE card with every mode on it: Solo (Solo practice, Free drive, Solo record, Setup, a summary line) and Multiplayer (Ranked, Duo record, New room, Browse rooms, Competitions, LAN), two tiles across. The Solo/Multiplayer swap and its Back are gone. Match setup and Practice setup are the **Solo setup popup** (`soloSetupOpen` in `App.tsx`). Phone tabs: Modes | Robot, Modes first; the pinned buttons are gone (band clamp 501 → 433).
+- **Stage (cause of the lag and the distortion):** it drew at the player's MATCH settings, so an Auto-High-or-better machine rendered the photographed events hall (4k + layers), MSAA 4x, shadows, reflections, and on Extreme a 150 % target with SSAO, for a menu; the photograph also smears from Home's eye 150 in up. Now `SceneOptions.quality` Medium (Low on a Low device) + new `SceneOptions.environment` = `arena`, DPR capped 1.5, booted in `requestIdleCallback`, one settle frame after each move. A fixed tier also stops menu frames stepping the stored tier.
+- **2D stage** (DECODE, CR, BIOBUZZ fallback): flat and top-down, no CSS tilt; the fly animates transform and opacity only.
+- **Stats:** rendered from the first frame with dashes (kept on a failed fetch). **Short windows:** Home steps down at ≤ 700 and ≤ 600 tall, Play's floor 480 → 400. Swept 102 sizes (721..2560 x 540..900, three portrait tablets): Home fits all; Play from 625 tall (600 from 1024 wide).
+- **Admin link on Home:** the chips' plate, size and height. Its hover was white text on white in light theme.
+- **Popups:** `.overlay-panel h2` → `.overlay-panel > h2`. As a descendant rule it gave every card title and section heading inside a popup (Solo setup, a room's settings) the match overlay's 20px tracked caps.
+- **Not verified:** a signed-in alpha session (alpha is closed to sign-in here); the Admin cluster was checked with an injected copy of its markup. No low-end device was available: the lag fix is by construction (what the stage renders), not a measured frame time on the owner's device.
+
+# 2026-10-24e (the popups made safe to merge: shell modals wait, Match found locked, search pinned bottom-right)
 
 **State: same branch and PR as 24d (`ui/menu-popups`, PR #122 into `alpha`). Client only, no deploy.** `vite build`, `uiaudit`, `docaudit` pass; `npm test` shared ALL PASS (four new `play:` checks); BIOBUZZ has the same 10 failures as 24d (the Zenith install plus the known `LANDED predicted`). `shiftaudit`: 536 state changes, 0 shifts.
 
