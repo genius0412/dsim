@@ -11,7 +11,7 @@
 - **Popups:** `.overlay-panel h2` → `.overlay-panel > h2`. As a descendant rule it gave every card title and section heading inside a popup (Solo setup, a room's settings) the match overlay's 20px tracked caps.
 - **Not verified:** a signed-in alpha session (alpha is closed to sign-in here); the Admin cluster was checked with an injected copy of its markup. No low-end device was available: the lag fix is by construction (what the stage renders), not a measured frame time on the owner's device.
 
-# 2026-10-24e (the popups made safe to merge: shell modals wait, Match found locked, search pinned bottom-right)
+## 2026-10-24e (the popups made safe to merge: shell modals wait, Match found locked, search pinned bottom-right)
 
 **State: same branch and PR as 24d (`ui/menu-popups`, PR #122 into `alpha`). Client only, no deploy.** `vite build`, `uiaudit`, `docaudit` pass; `npm test` shared ALL PASS (four new `play:` checks); BIOBUZZ has the same 10 failures as 24d (the Zenith install plus the known `LANDED predicted`). `shiftaudit`: 536 state changes, 0 shifts.
 
