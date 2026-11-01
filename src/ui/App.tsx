@@ -246,7 +246,7 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'modes':
       return '/modes';
     case 'configure':
-      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'controls'}`;
+      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
     case 'robotimport':
       return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
@@ -335,7 +335,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const robotImport = rest.match(/^\/configure\/robot\/import(?:\/([0-9a-f]{16}))?\/?$/);
   if (robotImport && importerEnabled()) return at('robotimport', { sub: robotImport[1] ?? null });
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
-  if (configure) return at('configure', { sub: configure[1] ?? 'controls' });
+  if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
   // a bare `/records` is the HUB; `/records/<page>` is one page of it (`recordsPages.ts`)
   if (records) return at('records', { sub: records[1] ?? RECORDS_HUB });
@@ -2244,7 +2244,7 @@ export function App() {
   // control on its own. No bar "Profile" button beside it: the home keycaps and the
   // rail both already go there, and a third copy was the bar repeating nav (review 01-06).
 
-  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'controls';
+  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsView: RecordsView = recordsViewOf(route.sub);
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
@@ -2732,6 +2732,7 @@ export function App() {
           onChange={update}
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
+          onPlay={() => navigate('modes')}
           onImport={importerOn ? (id) => navigate('robotimport', { sub: id ?? null }) : undefined}
           onEditTouchControls={editTouchControls}
           onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}

@@ -35,6 +35,7 @@ export function RobotCard({
   team,
   real = false,
   imported = false,
+  unsaved = false,
   thumb,
   onPick,
   onDelete,
@@ -51,6 +52,8 @@ export function RobotCard({
   /** a robot from the CAD importer (`spec.imported`): an "Imported" badge, the same spelling as
    *  `real`. The CALLER says so, because only the caller knows where the card came from. */
   imported?: boolean;
+  /** a build that is not saved yet (Play's strip keeps it in place): an "Unsaved" badge */
+  unsaved?: boolean;
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
   onPick(): void;
@@ -67,6 +70,7 @@ export function RobotCard({
         <Marquee text={spec.name || 'Unnamed'} />
         {real ? <span className="ds-badge">Real robot</span> : null}
         {imported ? <span className="ds-badge">Imported</span> : null}
+        {unsaved ? <span className="ds-badge">Unsaved</span> : null}
       </span>
       {team ? (
         <span className="od">

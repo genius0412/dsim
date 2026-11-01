@@ -5606,6 +5606,10 @@ input[type='range'].ds-range:disabled {
   font-size: var(--ds-t-sm);
   line-height: var(--ds-lh-prose);
 }
+.ds-hero-play {
+  align-self: flex-start;
+  margin-top: var(--ds-s-2);
+}
 /* THE NUMBERS. A caption over a value, on a fixed grid: equal rows, columns as wide as their
    widest entry, no boxes. It used to be a chip per stat, each as wide as its own text, which is
    what made the wall look ragged. */

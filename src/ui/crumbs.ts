@@ -28,7 +28,7 @@ export interface Crumb {
 const HOME: CrumbTarget = { screen: 'home' };
 const PLAY: Crumb = { label: 'Play', to: { screen: 'modes' } };
 const RECORDS: Crumb = { label: 'Records', to: { screen: 'records', sub: RECORDS_HUB } };
-const ROBOT: Crumb = { label: 'Robot', to: { screen: 'configure', sub: 'robot' } };
+const CONFIGURE: Crumb = { label: 'Configure', to: { screen: 'configure', sub: 'robot' } };
 const PROFILE: Crumb = { label: 'Profile', to: { screen: 'account', sub: 'appearance' } };
 
 /** the pages reached from the footer, each one level under Home */
@@ -76,11 +76,11 @@ export function crumbsFor(screen: string, sub: string | null = null, username: s
       return trail(PLAY)('Room');
     case 'lan':
       return trail(PLAY)('LAN');
-    // Robot is a Play page (a tile beside the two setup tiles) that keeps the `/configure/robot` route
+    // Robot is Configure's first section again (owner, 2026-11-01), so its trail is Configure's
     case 'configure':
-      return sub === 'robot' ? trail(PLAY)('Robot') : [here('Configure')];
+      return [here('Configure')];
     case 'robotimport':
-      return trail(PLAY, ROBOT)('Import robot');
+      return trail(CONFIGURE)('Import robot');
     case 'records': {
       if (!isRecordsPage(sub)) return [here('Records')];
       const page = RECORDS_PAGES.find((p) => p.key === sub);

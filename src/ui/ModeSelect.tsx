@@ -4,7 +4,7 @@ import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
 import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
-import { RobotStrip } from './Menu';
+import { RobotStrip, startNewRobot } from './Menu';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { FootprintSvg } from './FootprintSvg';
@@ -230,9 +230,19 @@ export function ModeSelect({
       <section className="ds-panel ds-setup-picker">
         <div className="ds-panel-h">
           <h2 className="ds-panel-title">Robot</h2>
-          <button className="ds-btn small" onClick={() => onImport()}>
-            Import
-          </button>
+          {/* EDIT SAYS WHAT A SECOND CLICK ON THE CARD THAT IS ON DOES (owner, 2026-11-01: "the UI is
+              still unintuitive"); the builder is Configure's Robot section */}
+          <div className="ds-actions">
+            <button className="ds-btn small" onClick={() => startNewRobot(settings, onChange, onEditRobot)}>
+              New robot
+            </button>
+            <button className="ds-btn small" onClick={onEditRobot}>
+              Edit
+            </button>
+            <button className="ds-btn small" onClick={() => onImport()}>
+              Import
+            </button>
+          </div>
         </div>
         <div className="ds-panel-body">
           <RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} onImport={onImport} />
@@ -252,7 +262,7 @@ export function ModeSelect({
             <div className="ds-play-head">
               <h2 className="ds-panel-title">Solo</h2>
               <button className="ds-btn small" onClick={onSetup}>
-                Setup
+                Match setup
               </button>
             </div>
             <div className="ds-play-tiles">

@@ -44,7 +44,8 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
  * row carries one, since a sub-nav where some rows have a second line and others do not reads
  * as unfinished. The narrow layouts hide `.sh` with the rail's `.rh`.
  */
-const LABELS: Record<Exclude<ConfigureSection, 'robot'>, { label: string; hint: string }> = {
+const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
+  robot: { label: 'Robot', hint: 'Build, save & import' },
   controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and visual', hint: 'Sounds, voice & theme' },
@@ -71,6 +72,7 @@ export function Configure({
   onEditTouchControls,
   onTutorial,
   onImport,
+  onPlay,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
@@ -82,25 +84,17 @@ export function Configure({
   onTutorial?: () => void;
   /** open the robot importer: a new import, or `id` to edit a library robot */
   onImport?: (id?: string) => void;
+  /** to Play with the robot on (the builder's way back, since the shell has no rail) */
+  onPlay?: () => void;
 }) {
   // Graphics only exists for a game with a 3D view (the module's `scene` slot) — every row in it
   // is a 3D setting. The route key stays valid so a bookmarked /configure/graphics under a 2D
   // game lands on Robot rather than a blank page (design review 22-03).
   const has3d = !!moduleFor(settings.game).scene;
-  // Robot is a Play page now (a tile beside Match setup and Practice setup); its route stays
-  // `/configure/robot`, so it renders here without the sub-nav.
-  if (section === 'robot') {
-    return (
-      <>
-        <h1 className="ds-h1">Robot</h1>
-        <Menu settings={settings} onChange={onChange} onImport={onImport} />
-      </>
-    );
-  }
-  const sections = CONFIGURE_SECTIONS.filter(
-    (s): s is Exclude<ConfigureSection, 'robot'> => s !== 'robot' && (s !== 'graphics' || has3d),
-  );
-  if (!sections.includes(section)) section = 'controls';
+  // ROBOT IS CONFIGURE'S FIRST SECTION AGAIN (owner, 2026-11-01: "The robot configure menu feels like
+  // it should be in configure"). It was a Play page without the sub-nav from 2026-10-13.
+  const sections = CONFIGURE_SECTIONS.filter((s) => s !== 'graphics' || has3d);
+  if (!sections.includes(section)) section = 'robot';
   return (
     <>
       <h1 className="ds-h1">Configure</h1>
@@ -129,6 +123,7 @@ export function Configure({
         </nav>
 
         <div className="ds-subnav-body">
+          {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} onPlay={onPlay} />}
           {section === 'controls' && (
             <ControlsSection
               activeGame={settings.game}

@@ -1,4 +1,14 @@
-# HANDOFF — 2026-11-01c (BIOBUZZ photographed venues: the floor is a texture, no more streaks)
+# HANDOFF — 2026-11-01d (The robot: back under Configure, New robot one click from Play, a strip that never shifts)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted` (the perf lane flaked twice under a dev server and a 3D tab, then passed 13/13 alone); `build`, `uiaudit`, `docaudit`, `uiindex` pass; `shiftaudit` 546 state changes, 0 shifts (importer not in that build). Rules in `docs/area/ui.md`.
+
+- **Owner:** "The UI is still unintuitive. The robot configure menu feels like it should be in configure and i should NOT have to scroll an extreme amount in thr play menu to get to 'new robot'." Asked for a user-perspective audit by a subagent: its scripts, screenshots and measurements are in the alpha-ux worktree's `scratch/ui-audit/` (gitignored).
+- **Robot is Configure's first section again** (reverses the 2026-10-13 "Robot is a Play page"): in the sub-nav, what a bare `/configure` opens, trail "Configure", Home's keycap "Robot, controls & settings". The shell has no rail, so the builder's hero has **Play with this robot**.
+- **Play's robot panel:** New robot, Edit, Import in its head. The strip lists no presets (they are the builder's Start from) and keeps the last unsaved edit and the last preset build in fixed slots for the page load (`keptEdits`, `keptPresets`), so picking a robot never moves the row or loses an unsaved build. "Setup" reads "Match setup".
+- **Measured before:** New robot was the strip's last card, 1,464 px of sideways scroll at 1366x657 on first launch and up to 7,108 px with imports.
+- **Owner calls left from the audit (not done):** a persistent nav outside Home (production's rail; reverses "THE SHELL HAS NO RAIL", 2026-10-10); Esc/MENU from a match landing on Play, not Home; saving an edited robot updating it ("Save changes" / "Save as new") rather than adding a copy; the game name hidden in the phone bar under 640 px.
+
+## HANDOFF — 2026-11-01c (BIOBUZZ photographed venues: the floor is a texture, no more streaks)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; RENDER lane 3,107 ALL PASS; `build`, `docaudit`, `server:check`, `bundleaudit` pass. Rules in `docs/area/biobuzz.md`, THE PHOTOGRAPHED FLOOR IS A TEXTURE.
 
@@ -7,7 +17,6 @@
 - **Fix:** `PhotoVenue.floorTexture`: a 1024 tile cut from a floor beside a lens (`scripts/venues/floor.py`, numpy + Pillow; tilt-corrected for the school hall and quad, cut to whole planks/pavers, light divided out, made to repeat), recoloured to the room and lit by the photograph blurred to 48 in (`photoFloor` in `renderPhotoVenue.ts`). Events hall and hangar share the hangar's concrete; school hall parquet; quad paving; the court keeps its projection. Furniture seen more than 40° off the lens's ray is now dropped (was 90°), and the events hall draws no furniture above its lens (`PhotoLayers.upper: false`, its pendant lamps).
 - **Checked:** offscreen captures of all five venues from 35 in-match eyes each, before and after (`scratch/venue-cap/` in the alpha-ux worktree). Picker notes now count the tile: events hall 1.7 MB, quad 2.3 MB.
 - **Left:** the school hall's seat relief still looks rough from high cameras (fewer streaks, some cut-off seat blocks); walls seen from the overhead camera still streak at the frame edges. Not checked on a real GPU at 1080p+ beyond one offscreen 1920 capture.
-- **Next (owner asked, 2026-11-01):** the Play/robot UI. A user-perspective audit is in `scratch/ui-audit/` (alpha-ux worktree); its top items: New robot is the strip's LAST card (up to 7,100 px of sideways scroll), the robot has no home under Configure, there is no nav outside Home.
 
 ## HANDOFF — 2026-11-01b (Admin analytics: tab switching, UTC, the charts, the monthly sponsor PDF)
 

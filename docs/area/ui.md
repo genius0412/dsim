@@ -217,7 +217,7 @@ that season has none) — then the bind panels —
 - **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`) ARE NOT CONFIGURE SECTIONS**
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
   STARTS straight away (behind `guardStart`). Since 2026-11-01 the two cards are Play's **Solo setup
-  popup** (the Solo group's Setup button; App's `soloSetupOpen`, an `OverlayDialog page` with Done and
+  popup** (the Solo group's Match setup button; App's `soloSetupOpen`, an `OverlayDialog page` with Done and
   Start solo practice), not its right column (see THE MENU STAGE below); `/match-setup`, `/practice-setup`, `/solo-setup` and
   `/configure/match` all land on `/modes`. `part` picks the card. Match setup: alliance, start position, the Zenith autonomous routine (its order, library then buttons then preview, is what keeps it reachable in the scrolling column: `docs/area/autos.md`, "The Autonomous panel").
   Practice setup: Practice physics (only where the game offers 3D) and the three other robots —
@@ -400,13 +400,26 @@ rulings below are theirs, not defaults.
   (`.ds-setup-view`) is the 3D ORBIT's drag surface (`stageOrbit`; it eases back on release) — the stage
   is behind the shell, so the page owns the pointer — and on a 2D stage the page draws the 2D preview
   there itself (`useStageMode`). Bottom-left: `RobotStrip` (`Menu.tsx`), ONE scrolling row (a plain wheel scrolls it sideways, owner 2026-10-24) of
-  `RobotCard`s — the unsaved current build when it matches no card, saved robots, imports, presets,
-  then New robot (the first preset's build, then the builder). Picking the card that is ALREADY on
-  opens the builder (an import's opens the importer). Header: Import. Every gate the old tiles had is kept.
+  `RobotCard`s — the kept unsaved edit, the kept preset build, saved robots, imports. Picking the card
+  that is ALREADY on opens the builder (an import's opens the importer). Header: **New robot, Edit,
+  Import**. Every gate the old tiles had is kept.
+- ⚠️ **NEW ROBOT IS A BUTTON, AND THE STRIP HOLDS NO PRESETS** (owner, 2026-11-01: "i should NOT have
+  to scroll an extreme amount in thr play menu to get to 'new robot'"). It was the strip's LAST card,
+  after saved robots, imports and every preset: 1,464 px of sideways scroll at 1366x657 on first
+  launch, 7,108 px for Chain Reaction with ten imports (measured by a user-perspective audit). As the
+  first card it pushed the robot being driven off a phone's panel, so it is in the panel head
+  (`startNewRobot`: the first preset's build under the player's name, then the builder). The presets
+  are the builder's Start from. **Edit** says what a second click on the card that is on does.
+- ⚠️ **A PICK NEVER MOVES THE ROW OR LOSES A BUILD** (same audit): the build on was a card only while
+  it was on, so picking a saved robot removed it, the row slid 332 px left under the cursor, and an
+  unsaved build was gone. Two per-game slots for the page load (`keptEdits`, `keptPresets` in
+  `Menu.tsx`) hold the last unsaved edit (an "Unsaved" badge) and the last preset build driven, each
+  in a fixed place; a slot empties only when its build is saved. Which card is on is the build object
+  itself, because the presets' own match and the cards' `sameRobot` disagree on the default robot.
 - ⚠️ **PLAY'S RIGHT COLUMN IS EVERY MODE, ONE CLICK AWAY** (owner, 2026-11-01: "VERY, VERY awkward to
   navigate the tiny panel on the play page. The current main's navigation is 1000% easier"). ONE card
   (`.ds-play-modes`), two labelled groups the way main's "Pick a mode" page lays them out: **Solo**
-  (Solo practice, Free drive, Solo record, a Setup button, and a one-line summary of what Solo practice
+  (Solo practice, Free drive, Solo record, a Match setup button, and a one-line summary of what Solo practice
   starts with) and **Multiplayer** (Ranked, Duo record, New room, Browse rooms, Competitions, LAN), two
   tiles across (`.ds-play-tiles`; an odd count gives the first tile the whole row). It used to be
   Match setup and Practice setup scrolling in a 420px column with Solo and Multiplayer pinned under
@@ -545,7 +558,7 @@ rulings below are theirs, not defaults.
 
 ## Configure — the sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes five keys at `/configure/<key>`, but **ROBOT IS A PLAY PAGE** (owner, 2026-10-13): a third tile beside Match setup and Practice setup, and the trail reads `Play › Robot`. Its route stays `/configure/robot` (the importer, `/my-robot` and the audit scripts use it) and it renders without the sub-nav, so Configure is four sections and `/configure` opens Controls. **The ARRAY is the order on
+`src/ui/Configure.tsx` routes five keys at `/configure/<key>`. ⚠️ **ROBOT IS CONFIGURE'S FIRST SECTION** (owner, 2026-11-01: "The robot configure menu feels like it should be in configure"; it was a Play page without the sub-nav from 2026-10-13). It is in the sub-nav ("Build, save & import"), a bare `/configure` opens it, its trail is Configure's, and the importer's up is Configure. Home's Configure keycap reads "Robot, controls & settings". The shell has no rail, so the builder carries its own way back: **Play with this robot** in the hero (`onPlay`). Play still picks the robot (the strip) and opens the builder (Edit, New robot). **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
 rename one. Order is task order — Robot, Controls, Audio and Visual, Graphics, Network:
 build it, learn to drive it, set up the session, the two output sections, then the connection.

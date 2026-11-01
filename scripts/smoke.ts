@@ -18787,7 +18787,7 @@ const recordDrive: CommandSource = (tick) => {
   check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
   check('crumbs: the account page sits under Profile (Appearance), which is top-level',
     crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
-  check('crumbs: Import robot goes back to Robot, which is a Play page', parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot')[0].label === 'Play' && crumbsFor('configure', 'controls').length === 1);
+  check('crumbs: Import robot goes back to Configure’s Robot section, whose trail is Configure’s', parentOf(crumbsFor('robotimport')).screen === 'configure' && parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot').length === 1 && crumbsFor('configure', 'robot')[0].label === 'Configure' && crumbsFor('configure', 'controls').length === 1);
   check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
     shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
@@ -18809,6 +18809,26 @@ const recordDrive: CommandSource = (tick) => {
   check('play: Match setup and Practice setup are the Solo setup popup, opened from the Solo group',
     ms.includes('onClick={onSetup}') && appSrc.includes('onSetup={() => setSoloSetupOpen(true)}') &&
       /<OverlayDialog title="Solo setup"[\s\S]{0,400}?part="match"[\s\S]{0,200}?part="practice"/.test(appSrc));
+  // THE ROBOT (owner, 2026-11-01: "The robot configure menu feels like it should be in configure and i
+  // should NOT have to scroll an extreme amount in thr play menu to get to 'new robot'")
+  {
+    const menuSrc = readFileSync('src/ui/Menu.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const strip = menuSrc.slice(menuSrc.indexOf('export function RobotStrip('));
+    const row = strip.slice(strip.indexOf('<div ref={stripRef}'), strip.indexOf('</div>\n  );\n}'));
+    check('play: New robot is a button in the robot panel’s head, and the strip holds no presets (they are the builder’s Start from)',
+      /onClick=\{\(\) => startNewRobot\(settings, onChange, onEditRobot\)\}>\s*New robot\s*</.test(ms) && !row.includes('ds-opt-add') && !row.includes('presets.map('));
+    check('play: the build on keeps its card when another is picked (a kept edit, a kept preset build: the row never shifts)',
+      /const keptEdits = new Map<string, RobotSpec>\(\);/.test(menuSrc) && /const keptPresets = new Map<string, RobotSpec>\(\);/.test(menuSrc) &&
+        row.includes('unsaved\n') && !row.includes('{current &&'));
+    check('play: the robot panel says Edit beside New robot and Import, and the Solo group’s button says Match setup',
+      /<button className="ds-btn small" onClick=\{onEditRobot\}>\s*Edit\s*<\/button>/.test(ms) && /onClick=\{onSetup\}>\s*Match setup\s*</.test(ms));
+    const cfgSrc = readFileSync('src/ui/Configure.tsx', 'utf8');
+    check('configure: Robot is the first section, in the sub-nav, and what a bare /configure opens',
+      cfgSrc.includes("export const CONFIGURE_SECTIONS = ['robot', ") && !cfgSrc.includes("if (section === 'robot') {") && cfgSrc.includes("section === 'robot' && <Menu") &&
+        appSrc.includes("configure[1] ?? 'robot'") && appSrc.includes("isConfigureSection(route.sub) ? route.sub : 'robot'"));
+    check('configure: the builder has its own way back to Play (the shell has no rail)',
+      appSrc.includes("onPlay={() => navigate('modes')}") && /onPlay && \(\s*<button className="ds-btn primary small ds-hero-play" onClick=\{onPlay\}>/.test(menuSrc));
+  }
   // HOME (owner, 2026-11-01): the stats arrived a second in and moved the centred column; Home's stage
   // drew the match's own room and tier ("still distorted and EXTREMELY laggy on some devices")
   const homeMenu = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
@@ -31524,7 +31544,7 @@ const dumperSetup = (): RobotSetup => {
       /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
   check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
     /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
-      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'controls' })"));
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
   check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
     /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
   check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
