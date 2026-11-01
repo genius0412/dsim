@@ -18828,8 +18828,27 @@ const recordDrive: CommandSource = (tick) => {
     check('configure: Robot is the first section, in the sub-nav, and what a bare /configure opens',
       cfgSrc.includes("export const CONFIGURE_SECTIONS = ['robot', ") && !cfgSrc.includes("if (section === 'robot') {") && cfgSrc.includes("section === 'robot' && <Menu") &&
         appSrc.includes("configure[1] ?? 'robot'") && appSrc.includes("isConfigureSection(route.sub) ? route.sub : 'robot'"));
-    check('configure: the builder has its own way back to Play (the shell has no rail)',
+    check('configure: the builder has its own way back to Play, beside the bar’s sections',
       appSrc.includes("onPlay={() => navigate('modes')}") && /onPlay && \(\s*<button className="ds-btn primary small ds-hero-play" onClick=\{onPlay\}>/.test(menuSrc));
+    // THE SECTIONS IN THE BAR (2026-11-01; the owner left the call to analysis): Play, Configure,
+    // Records on every screen but Home, a second row of the bar up to 1024px
+    const shellSrc = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const css = readFileSync('src/ui/shell.css', 'utf8').replace(/\r\n/g, '\n');
+    check('nav: the bar carries Play, Configure and Records (not Profile, the avatar’s), latched on the trail’s root',
+      shellSrc.includes("const BAR_NAV = RAIL_ITEMS.filter((it) => it.id !== 'profile');") &&
+        shellSrc.includes('const section = BAR_NAV.find((it) => it.label === crumbs[0]?.label)?.id;') &&
+        /<nav className="ds-bar-nav" aria-label="Sections">/.test(shellSrc));
+    check('nav: Home has none (its keycaps are that menu): faded on the stage, not rendered off it',
+      shellSrc.includes('const barNav = !!stage || !home;') && /\.ds-app\.stage-home \.ds-bar > :not\(\.ds-bar-right\)/.test(css));
+    check('nav: up to 1024px it is the bar’s second row and --ds-bar-h grows by it, which Play’s phone band reads',
+      /@media \(max-width: 1024px\) \{\n  \.ds-app\.has-barnav \{\n    --ds-bar-h: 103px;/.test(css) &&
+        css.includes('height: clamp(120px, 100dvh - 370px - var(--ds-bar-h), calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));'));
+    check('nav: a finished match goes back to Play, not Home (a test drive and a competition match keep their own)',
+      /navigate\('competitions', \{ sub: `\$\{comp\}\/matches` \}\);\s*return;\s*\}[\s\S]{0,400}?navigate\('modes'\);\s*\};/.test(appSrc));
+    check('builder: an edit of a saved robot offers Save changes (in place) beside Save as new',
+      /const editingSaved = new Map<string, number>\(\);/.test(menuSrc) &&
+        /savedRobots: savedRobots\.map\(\(r, j\) => \(j === editIdx \? \{ \.\.\.spec \} : r\)\)/.test(menuSrc) &&
+        />\s*Save as new\s*<\/button>/.test(menuSrc) && />\s*Save changes\s*<\/button>/.test(menuSrc));
   }
   // HOME (owner, 2026-11-01): the stats arrived a second in and moved the centred column; Home's stage
   // drew the match's own room and tier ("still distorted and EXTREMELY laggy on some devices")
@@ -33555,7 +33574,7 @@ function impPlayCheck(g: GameId): void {
         /entry && stale \? <p className="ds-hint warn">\{COPY\.staleText\}<\/p>/.test(panel) &&
         /entry && stale \? \(\s*<button type="button" className="ds-btn small" onClick=\{onImportFile\}>/.test(panel));
     check('stale copy: picking the card that answers for the active robot changes nothing (an old copy cannot be re-applied over the new spec)',
-      /onPick=\{\(e\) => \(answersFor\(e, importedId\) \? undefined : applySpec\(\{ \.\.\.e\.spec \}\)\)\}/.test(menu) &&
+      /onPick=\{\(e\) => \{\s*if \(answersFor\(e, importedId\)\) return;\s*editingSaved\.delete\(settings\.game\);\s*applySpec\(\{ \.\.\.e\.spec \}\);\s*\}\}/.test(menu) &&
         /libraryEntryFor\(importLibrary\.entries, mySpec\.imported\?\.id\)\?\.id === e\.id \? undefined : pickSpec/.test(rd('src/ui/Lobby.tsx')));
   } finally {
     resetImportedAssetsForTests();

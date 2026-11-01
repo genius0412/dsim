@@ -16,9 +16,21 @@ import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
 import { LanBanner } from './LanBanner';
 import { PresenceProvider, QueueCounts } from './QueueCounts';
+import { RAIL_ITEMS } from './NavRail';
 import type { Presence, RoomInvite } from '../net/api';
 
 export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
+
+/**
+ * THE SECTIONS IN THE BAR (2026-11-01). The owner had called production's navigation "1000% easier and
+ * more intuitive", and a user-perspective audit ranked "no nav outside Home" among the top causes:
+ * every move between sections went through the mark, Home and a one-second camera fly. Production's
+ * answer is a 214px left rail; here it would cover Play's stage and stand beside Home's own column,
+ * so the three sections sit in the bar instead, right-aligned before the cluster, on every screen but
+ * Home (whose keycaps ARE this menu). Profile stays the avatar's menu. Nothing left of them depends
+ * on the screen, so the mark and the season still never move (the 2026-10-11 rule).
+ */
+const BAR_NAV = RAIL_ITEMS.filter((it) => it.id !== 'profile');
 
 /** ambient "who's around" chip in the top bar: a live-green dot + the online /
  * signed-in tally. Renders nothing until presence lands (server unconfigured /
@@ -136,13 +148,18 @@ export function AppShell({
    * the predicate itself, and App's `inActivity`.
    */
   const inActivity = inDiscordActivity();
+  // the section you are in is the trail's root (`crumbs.ts` names them as the rail does)
+  const section = BAR_NAV.find((it) => it.label === crumbs[0]?.label)?.id;
+  // on the stage it is always there and Home's stage rule fades it with the rest of the bar's left
+  // side; off the stage (a phone's Home page) Home simply has none
+  const barNav = !!stage || !home;
   return (
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
     <FootContext.Provider value={{ game, onDownload, onContributors, onPrivacy, onTerms, onDonate, onChangelog }}>
     {/* `is-home` is Home OFF the stage (a phone), where the footer is the "More" sheet instead */}
-    <div className={stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}>
+    <div className={`${stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}${barNav ? ' has-barnav' : ''}`}>
       <header className="ds-bar">
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
           <Logo size={24} />
@@ -181,6 +198,20 @@ export function AppShell({
                 </li>
               ))}
             </ol>
+          </nav>
+        )}
+        {barNav && (
+          <nav className="ds-bar-nav" aria-label="Sections">
+            {BAR_NAV.map((it) => (
+              <button
+                key={it.id}
+                className={`ds-bar-nav-btn${section === it.id ? ' on' : ''}`}
+                aria-current={section === it.id ? 'page' : undefined}
+                onClick={() => onNav(it.id)}
+              >
+                {it.label}
+              </button>
+            ))}
           </nav>
         )}
         <div className="ds-bar-right">

@@ -529,6 +529,66 @@
   align-items: center;
   gap: 12px;
 }
+/* THE SECTIONS (`AppShell`'s BAR_NAV): right-aligned before the cluster, so the trail keeps the left.
+   Latched like production's rail (`--ds-accent-soft`), colour-only on hover, so nothing moves. */
+.ds-bar-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-1);
+  margin-left: auto;
+}
+.ds-bar-nav + .ds-bar-right {
+  margin-left: 0;
+}
+.ds-bar-nav-btn {
+  font: inherit;
+  font-size: var(--ds-t-control);
+  font-weight: 700;
+  height: var(--ds-s-6);
+  padding: 0 var(--ds-s-3);
+  border: 1px solid transparent;
+  border-radius: var(--ds-round);
+  background: none;
+  color: var(--ds-mut);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--ds-dur-fade),
+    background var(--ds-dur-fade),
+    border-color var(--ds-dur-fade);
+}
+.ds-bar-nav-btn:hover {
+  color: var(--ds-ink);
+}
+.ds-bar-nav-btn.on {
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+}
+/* A NARROW WINDOW: the sections are the bar's second row, full width, the way production's phone tab
+   row is. `--ds-bar-h` grows by that row (one gap and a button), so everything pinned under the bar
+   and Play's robot band follow it. 1024: one line needs ~1,000px with the longest trail ("Configure ›
+   Import robot") and a signed-in cluster, ~1,090 with Admin; measured 2026-11-01. */
+@media (max-width: 1024px) {
+  .ds-app.has-barnav {
+    --ds-bar-h: 103px;
+  }
+  .ds-app.has-barnav .ds-bar {
+    flex-wrap: wrap;
+    row-gap: var(--ds-s-2);
+  }
+  .ds-bar-nav {
+    order: 1;
+    flex: 1 0 100%;
+    margin-left: 0;
+  }
+  .ds-bar-nav-btn {
+    flex: 1 1 0;
+  }
+  .ds-bar-nav + .ds-bar-right {
+    margin-left: auto;
+  }
+}
 
 /* ---- the banner strip: the ad's reserved space, or the sponsor's banner when there is no ad ----
    Fixed height, so an ad that arrives late, never arrives or comes back `unfilled` moves nothing:
@@ -10802,12 +10862,12 @@ input.admin-months {
   .ds-setup > * {
     flex: none;
   }
-  /* 42dvh, but never so tall that a short phone's Robot tab scrolls: everything else on it is 433px
-     (bar 63, tabs 36, picker 214, the 72px banner strip, and the gaps), so what is left is the band
+  /* 42dvh, but never so tall that a short phone's Robot tab scrolls: everything else on it is the bar
+     and 370px (tabs 36, picker 214, the 72px banner strip, and the gaps), so what is left is the band
      (measured at 360x640, where the strip alone pushed Play 51px past the window). Never under 120px,
      which still holds the 96px robot. The Modes tab is taller and scrolls. */
   .ds-setup-view {
-    height: clamp(120px, 100dvh - 433px, calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));
+    height: clamp(120px, 100dvh - 370px - var(--ds-bar-h), calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));
     align-items: center;
   }
   /* the cards span the band, one row each where the words fit, so they cover as little of the robot as

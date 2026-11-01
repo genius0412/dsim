@@ -528,6 +528,11 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
     a.teamName === b.teamName &&
     a.teamNumber === b.teamNumber;
   const alreadySaved = savedRobots.some((r) => sameRobot(spec, r));
+  const onSlot = spec.imported ? -1 : savedRobots.findIndex((r) => sameRobot(spec, r));
+  if (onSlot >= 0) editingSaved.set(settings.game, onSlot);
+  const editing = editingSaved.get(settings.game);
+  /** the saved robot this build is an edit of, or -1 */
+  const editIdx = !alreadySaved && editing !== undefined && editing < savedRobots.length ? editing : -1;
   /** why Save is off, or undefined when it is on */
   const saveBlocked = alreadySaved
     ? 'This robot is already saved'
@@ -538,8 +543,16 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
     if (saveBlocked) return;
     set({ savedRobots: [...savedRobots, { ...spec }] });
   };
-  const deleteSavedRobot = (i: number): void =>
+  const saveChanges = (): void => {
+    if (editIdx < 0) return;
+    set({ savedRobots: savedRobots.map((r, j) => (j === editIdx ? { ...spec } : r)) });
+  };
+  const deleteSavedRobot = (i: number): void => {
+    const e = editingSaved.get(settings.game);
+    if (e === i) editingSaved.delete(settings.game);
+    else if (e !== undefined && e > i) editingSaved.set(settings.game, e - 1);
     set({ savedRobots: savedRobots.filter((_, j) => j !== i) });
+  };
 
   return (
     <>
@@ -675,7 +688,11 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                 activeId={importedEntry?.id ?? importedId}
                 // the card that answers for the active robot IS it: picking it again changes nothing,
                 // and applying an out-of-date copy's spec would put the old version back on the account
-                onPick={(e) => (answersFor(e, importedId) ? undefined : applySpec({ ...e.spec }))}
+                onPick={(e) => {
+                  if (answersFor(e, importedId)) return;
+                  editingSaved.delete(settings.game);
+                  applySpec({ ...e.spec });
+                }}
                 onDelete={importActions.requestDelete}
                 onImport={() => onImport?.()}
                 onDropFiles={(files) => {
@@ -706,17 +723,18 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                     // tagline ("Dumper · sweeps both ends, shifts to push") that the build line
                     // under it already says, so it is not printed.
                     team={p.teamNumber ? teamLine(p) : undefined}
-                    onPick={() =>
+                    onPick={() => {
                       // copy the BUILD only — keep the player's own name/team/number.
                       // applySpec swaps assists to the preset's drivetrain slot (so the
                       // Cypher swerve preset loads field-centric, the rest robot-centric).
+                      editingSaved.delete(settings.game);
                       applySpec({
                         ...p,
                         name: spec.name,
                         teamName: spec.teamName,
                         teamNumber: spec.teamNumber,
-                      })
-                    }
+                      });
+                    }}
                   />
                 ))}
               </div>
@@ -752,15 +770,33 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
               {/* THE DISABLED REASON IS SPOKEN, not only hovered: a `title` never reaches a
                   keyboard or a phone. Screen-reader text rather than a visible line, because the
                   reason flips on and off with every edit and a line appearing would move the panel. */}
-              <button
-                className="ds-btn primary small"
-                disabled={!!saveBlocked}
-                title={saveBlocked}
-                aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
-                onClick={saveCurrentRobot}
-              >
-                Save this robot
-              </button>
+              {editIdx >= 0 ? (
+                // AN EDIT OF A SAVED ROBOT: update it, or keep both (the cap still applies to a copy)
+                <div className="ds-actions">
+                  <button
+                    className="ds-btn small"
+                    disabled={!!saveBlocked}
+                    title={saveBlocked}
+                    aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
+                    onClick={saveCurrentRobot}
+                  >
+                    Save as new
+                  </button>
+                  <button className="ds-btn primary small" onClick={saveChanges}>
+                    Save changes
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="ds-btn primary small"
+                  disabled={!!saveBlocked}
+                  title={saveBlocked}
+                  aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
+                  onClick={saveCurrentRobot}
+                >
+                  Save this robot
+                </button>
+              )}
               {saveBlocked && (
                 <span id="ds-save-why" className="ds-sr">
                   {saveBlocked}
@@ -1002,6 +1038,15 @@ const keptEdits = new Map<string, RobotSpec>();
 const keptPresets = new Map<string, RobotSpec>();
 
 /**
+ * WHICH SAVED ROBOT IS BEING EDITED, per game, for this page load: the slot whose robot was last the
+ * one on (picked here or on Play's strip), forgotten when a preset, an import or New robot is picked.
+ * Save then UPDATES that slot ("Save changes", with "Save as new" beside it); it used to add a copy
+ * every time, which with three saved robots (`MAX_SAVED_ROBOTS`) meant an edit could not be saved at
+ * all (a user-perspective audit, 2026-11-01).
+ */
+const editingSaved = new Map<string, number>();
+
+/**
  * "NEW ROBOT": the first preset's build under the player's own name, then the builder. A BUTTON in
  * Play's robot panel head (owner, 2026-11-01: "i should NOT have to scroll an extreme amount in thr
  * play menu to get to 'new robot'"): it was the strip's LAST card, after every saved robot, import
@@ -1012,6 +1057,7 @@ export function startNewRobot(settings: GameSettings, onChange: (s: GameSettings
   const mod = moduleFor(settings.game);
   const p = (mod.presets ? mod.presets.list : settings.game === 'decode' ? ROBOT_PRESETS : CHAIN_PRESETS)[0];
   const spec = settings.spec;
+  editingSaved.delete(settings.game);
   if (p) {
     const next: RobotSpec = { ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber };
     onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
@@ -1119,7 +1165,12 @@ export function RobotStrip({
           on={presetBuildOn}
           team={teamLine(preset)}
           thumb={thumbOf(preset)}
-          onPick={() => pick(presetBuildOn, () => applySpec({ ...preset }))}
+          onPick={() =>
+            pick(presetBuildOn, () => {
+              editingSaved.delete(settings.game);
+              applySpec({ ...preset });
+            })
+          }
         />
       )}
       {settings.savedRobots.map((r, i) => (
@@ -1130,7 +1181,12 @@ export function RobotStrip({
           on={savedOn[i]}
           team={teamLine(r)}
           thumb={thumbOf(r)}
-          onPick={() => pick(savedOn[i], () => applySpec({ ...r }))}
+          onPick={() =>
+            pick(savedOn[i], () => {
+              editingSaved.set(settings.game, i);
+              applySpec({ ...r });
+            })
+          }
         />
       ))}
       {entries.map((e, i) => (
@@ -1150,7 +1206,16 @@ export function RobotStrip({
               ) : null}
             </span>
           }
-          onPick={() => pick(importOn[i], () => applySpec({ ...e.spec }), () => onImport(e.id))}
+          onPick={() =>
+            pick(
+              importOn[i],
+              () => {
+                editingSaved.delete(settings.game);
+                applySpec({ ...e.spec });
+              },
+              () => onImport(e.id),
+            )
+          }
         />
       ))}
     </div>

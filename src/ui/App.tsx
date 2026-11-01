@@ -1829,7 +1829,10 @@ export function App() {
       navigate('competitions', { sub: `${comp}/matches` });
       return;
     }
-    navigate('home');
+    // TO PLAY, NOT HOME (2026-11-01, a user-perspective audit): every match but a test drive and a
+    // competition's is started from Play, which is where the next one starts and the robot is changed;
+    // Home cost a one-second camera fly and a click to get back there
+    navigate('modes');
   };
 
   /**

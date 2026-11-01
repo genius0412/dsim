@@ -476,10 +476,11 @@ rulings below are theirs, not defaults.
   no scroll track (a narrow desktop window carried Home's track into Play and overflowed it by 10px
   at 360x740).
   ⚠️ **The band is CLAMPED so a short phone's Robot tab fits** (2026-10-24): `height: clamp(120px,
-  100dvh - 433px, 42dvh - bar - 16px)`. 433 is everything else on the Robot tab (bar 63, tabs 36,
-  picker 214, the 72px banner strip, the gaps; it was 501 with the pinned Solo / Multiplayer buttons,
-  gone 2026-11-01); without it the strip alone pushed 360x640 Play 51px past the window. Change the
-  picker's or the strip's height and that number moves with it.
+  100dvh - 370px - var(--ds-bar-h), 42dvh - bar - 16px)`. 370 is everything else on the Robot tab but
+  the bar (tabs 36, picker 214, the 72px banner strip, the gaps; 438 with the pinned Solo / Multiplayer
+  buttons, gone 2026-11-01); the bar is 103px since it holds the sections' row (2026-11-01). Without it
+  the strip alone pushed 360x640 Play 51px past the window; measured after the row, 360x640 fits to
+  the pixel. Change the picker's or the strip's height and that number moves with it.
 - ⚠️ **BOTH SCREENS FIT THE WINDOW; THERE IS NO PAGE SCROLLBAR** (owner, 2026-10-18). Measured
   `scrollHeight - clientHeight` = 0 on Home and Play at 1920x1080, 1536x864, 1366x768, 1280x720,
   and on both at 390x844 and 360x740 (`scratch/stage.cjs` prints it per size); a phone's Home down
@@ -562,7 +563,7 @@ rulings below are theirs, not defaults.
 
 ## Configure — the sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes five keys at `/configure/<key>`. ⚠️ **ROBOT IS CONFIGURE'S FIRST SECTION** (owner, 2026-11-01: "The robot configure menu feels like it should be in configure"; it was a Play page without the sub-nav from 2026-10-13). It is in the sub-nav ("Build, save & import"), a bare `/configure` opens it, its trail is Configure's, and the importer's up is Configure. Home's Configure keycap reads "Robot, controls & settings". The shell has no rail, so the builder carries its own way back: **Play with this robot** in the hero (`onPlay`). Play still picks the robot (the strip) and opens the builder (Edit, New robot). **The ARRAY is the order on
+`src/ui/Configure.tsx` routes five keys at `/configure/<key>`. ⚠️ **ROBOT IS CONFIGURE'S FIRST SECTION** (owner, 2026-11-01: "The robot configure menu feels like it should be in configure"; it was a Play page without the sub-nav from 2026-10-13). It is in the sub-nav ("Build, save & import"), a bare `/configure` opens it, its trail is Configure's, and the importer's up is Configure. Home's Configure keycap reads "Robot, controls & settings". The builder also carries a way back in its hero, **Play with this robot** (`onPlay`), beside the bar's sections. **Save changes** updates the saved robot being edited (`editingSaved`, the slot last on, forgotten on another kind of pick), with **Save as new** beside it: Save used to add a copy every time, so with three saved an edit could not be saved at all. Leaving a match lands on **Play**, not Home (`exitGame`; a test drive and a competition match keep their own returns). Play still picks the robot (the strip) and opens the builder (Edit, New robot). **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
 rename one. Order is task order — Robot, Controls, Audio and Visual, Graphics, Network:
 build it, learn to drive it, set up the session, the two output sections, then the connection.
@@ -1052,8 +1053,20 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `ds-outside-shell`.)
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
   has played a match or holds a best — a wall of zeros tells a new player nothing.
-- **THE SHELL HAS NO RAIL (UX redesign, 2026-10-10).** Home is the only hub (Play, Configure,
-  Records; PROFILE is the top-right `ProfileMenu`, not a home entry): every other shell screen
+- ⚠️ **THE SECTIONS ARE IN THE BAR (2026-11-01; it was "THE SHELL HAS NO RAIL", 2026-10-10).** Play,
+  Configure and Records (`AppShell`'s `BAR_NAV`, from `RAIL_ITEMS`) sit right-aligned in the bar
+  before the cluster on every screen but Home, the one you are in latched (`--ds-accent-soft`, the
+  rail's style; the trail's root names it). Owner: production's navigation was "1000% easier and more
+  intuitive"; the owner left the call to analysis, and a user-perspective audit ranked the missing nav
+  among the top causes: every move between sections went through the mark, Home and a 1 s camera
+  fly. Production's 214px left rail was not brought back: it would cover Play's stage and stand
+  beside Home's own column. Home has none (its keycaps are this menu): on the stage it fades with
+  the bar's left side (`.stage-home .ds-bar > :not(.ds-bar-right)`), off it (a phone) it is not
+  rendered. ≤ 1024px it is the bar's SECOND ROW, full width, and `.has-barnav` sets `--ds-bar-h` to
+  103px (63 + a gap + a 32px row), so what pins under the bar and Play's phone band follow; the band's
+  clamp is `100dvh - 370px - var(--ds-bar-h)`. One line needs ~1,000px with the longest trail and a
+  signed-in cluster, ~1,090 with Admin. Profile stays the avatar's menu. Home is still the
+  hub for the game switcher. Every other shell screen also
   shows a BREADCRUMB TRAIL after the season name (`AppShell`'s `crumbs`; Admin is a bar link). **There is no Back button, because one that only exists off Home moves the DSIM mark ~80px between Home and every other screen** (owner, 2026-10-11): nothing left of the trail depends on the screen, so the mark, the season, the bar height and the right-hand cluster are pixel-identical everywhere (measured on six screens at 1366 and 390). `src/ui/crumbs.ts` is the ONE table of trails and of "up" (`parentOf`: the second-to-last crumb), so what the bar shows and where up goes cannot drift. Parents are links, the last crumb is `aria-current` text, a phone shows the last two. A public profile's up is Records (it was Home). **Ranked, Duo record, Room entry, LAN and Solo record are popups over Play** (2026-10-24, THE MENU STAGE above; shell pages from 2026-10-13): `App`'s `popupShell(body)` is handed to `Matchmaking`, `Lobby`, `LanPanel` and `RecordRun`, which wrap only their pre-connection states in it (title + panels, `ConsoleHead` with no `onBack`), and the bar shows Play's trail under one. A joined room, `MatchStrategy`, `WatchLobby`, the game and replays stay full-screen and keep their Back: it leaves a live socket. Leaving a shell page by the trail skips `onCancel`, so App resets the lobby hand-over state when `screen` leaves `lobby`. Play is the robot setup over the menu stage (2026-10-18, THE MENU STAGE above): its Solo list is Solo practice, Free drive, Solo record, and its Multiplayer list holds Duo record (a two-driver run). ⚠️ **NO
   PER-SCREEN COLOUR** (owner, 2026-10-10: "let's not do color coding"): a per-section hue and
   full-width colour tiles were built and dropped; the one accent stays mint and the buttons are the

@@ -84,9 +84,10 @@ const SELECTORS = [
 // SHELL chrome — the rail, wordmark and footer are the SAME markup on all ten routes, so
 // probing them per page was nine redundant passes. Probed once per theme instead.
 // (`.ds-rail-home` is gone: the wordmark IS the home link now, and `.ds-mark` probes it)
-const CHROME = ['.ds-rail-btn', '.ds-mark', '.ds-foot-link'];
+// `.ds-bar-nav-btn`: the bar's sections (2026-11-01), the same markup on every route but Home
+const CHROME = ['.ds-rail-btn', '.ds-bar-nav-btn', '.ds-mark', '.ds-foot-link'];
 const TOGGLE_CLASSES = [
-  ['.ds-seg', 'on'], ['.ds-tab', 'on'], ['.ds-opt', 'on'], ['.ds-rail-btn', 'on'],
+  ['.ds-seg', 'on'], ['.ds-tab', 'on'], ['.ds-opt', 'on'], ['.ds-rail-btn', 'on'], ['.ds-bar-nav-btn', 'on'],
   ['.ds-subnav-btn', 'on'], ['.ds-key', 'on'], ['.ds-key', 'selected'],
   ['.ds-tile', 'primary'], ['.ds-btn', 'primary'], ['.ds-menu-btn', 'primary'],
   // the two held states the keycap/card block added: a key waiting for input, a button mid-request

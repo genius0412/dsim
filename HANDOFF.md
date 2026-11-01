@@ -1,4 +1,15 @@
-# HANDOFF — 2026-11-01e (The robot: back under Configure, New robot one click from Play, a strip that never shifts)
+# HANDOFF — 2026-11-01f (The sections are in the bar; a match ends on Play; Save changes)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass; `shiftaudit` 636 state changes, 0 shifts (it now probes the bar's sections; importer not in that build). Rules in `docs/area/ui.md`, THE SECTIONS ARE IN THE BAR and the Configure paragraph.
+
+- **Owner:** asked whether to bring production's nav back: "You decide after analysis."
+- **Decided:** Play · Configure · Records in the app bar, right-aligned before the online chip, on every screen but Home; latched like production's rail. Not production's 214px left rail: it would cover Play's 3D stage and stand beside Home's column. ≤ 1024px the sections are the bar's second row and `--ds-bar-h` is 103px (`.has-barnav`), so pinned elements and Play's phone band follow (`100dvh - 370px - var(--ds-bar-h)`). Measured: one line at 1366 with 466px spare; 1000x700 and 360x640 Play still fit the window exactly. This reverses "THE SHELL HAS NO RAIL" (2026-10-10); the mark and season still never move.
+- **Leaving a match lands on Play**, not Home (`exitGame`); a test drive and a competition match keep their own returns.
+- **Save changes:** editing a saved robot offers Save changes (updates that slot) and Save as new (`editingSaved` in `Menu.tsx`). With three saved, an edit could not be saved at all before.
+- **Left as it was:** the game name stays hidden in the phone bar under 640px (deliberate: the trail needs the room).
+- **Note:** port 4173 was taken by another process during this session; `DSIM_PORT=4188 npm run shiftaudit` against `npx vite preview --port 4188` is how the audit above was run.
+
+## HANDOFF — 2026-11-01e (The robot: back under Configure, New robot one click from Play, a strip that never shifts)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted` (the perf lane flaked twice under a dev server and a 3D tab, then passed 13/13 alone); `build`, `uiaudit`, `docaudit`, `uiindex` pass; `shiftaudit` 546 state changes, 0 shifts (importer not in that build). Rules in `docs/area/ui.md`.
 
@@ -6,7 +17,7 @@
 - **Robot is Configure's first section again** (reverses the 2026-10-13 "Robot is a Play page"): in the sub-nav, what a bare `/configure` opens, trail "Configure", Home's keycap "Robot, controls & settings". The shell has no rail, so the builder's hero has **Play with this robot**.
 - **Play's robot panel:** New robot, Edit, Import in its head. The strip lists no presets (they are the builder's Start from) and keeps the last unsaved edit and the last preset build in fixed slots for the page load (`keptEdits`, `keptPresets`), so picking a robot never moves the row or loses an unsaved build. "Setup" reads "Match setup".
 - **Measured before:** New robot was the strip's last card, 1,464 px of sideways scroll at 1366x657 on first launch and up to 7,108 px with imports.
-- **Owner calls left from the audit (not done):** a persistent nav outside Home (production's rail; reverses "THE SHELL HAS NO RAIL", 2026-10-10); Esc/MENU from a match landing on Play, not Home; saving an edited robot updating it ("Save changes" / "Save as new") rather than adding a copy; the game name hidden in the phone bar under 640 px.
+- **Owner calls from the audit:** settled in 2026-11-01f above.
 
 ## HANDOFF — 2026-11-01d (BIOBUZZ: a ramp doubles as a NECTAR bar, on its own button)
 
