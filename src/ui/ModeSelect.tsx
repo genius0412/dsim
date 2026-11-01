@@ -4,7 +4,6 @@ import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
 import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
-import { SoloSetup } from './SoloSetup';
 import { RobotStrip } from './Menu';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
@@ -13,22 +12,29 @@ import { moduleFor } from '../games';
 import { stageOrbit, useStageMode } from './MenuStage';
 import { APP_NAME } from '../seasons';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
+import { practiceSeatsFor } from '../settings';
 
 /**
- * THE PLAY PAGE — THE ROBOT SETUP (owner, 2026-10-18, after MoSim's robot select). It sits over the
- * menu stage, which flew the camera down to the player's robot on the way in: the robot is the
- * picture, the picker row is bottom-left, and Match setup and Practice setup are stacked in the right
- * column with Solo and Multiplayer pinned under them. Each of those two REPLACES the column with its
- * own list (Solo practice / Free drive / Solo record; the rooms, ranked, competitions and LAN), with a
- * way back. Every start action is still wrapped in App's `guardStart()` by the caller.
+ * THE PLAY PAGE (owner, 2026-10-18, after MoSim's robot select; the right column rebuilt 2026-11-01).
+ * It sits over the menu stage, which flew the camera down to the player's robot on the way in: the
+ * robot is the picture and the picker row is bottom-left.
+ *
+ * ⚠️ EVERY MODE IS ON SCREEN, ONE CLICK AWAY (owner, 2026-11-01: "VERY, VERY awkward to navigate
+ * the tiny panel on the play page. The current main's navigation is 1000% easier"). The right column
+ * is two groups of tiles, Solo and Multiplayer, the way main's "Pick a mode" page lays them out. It
+ * used to hold Match setup and Practice setup in a scrolling column with Solo and Multiplayer pinned
+ * under them, each of which REPLACED the column with its list and a Back: two clicks and a scroll to
+ * any mode, in a column that showed about a card and a half at 1366x768. The two setup cards are now
+ * the Solo group's Setup popup (`onSetup`, rendered by App), with a one-line summary under the tiles
+ * so a player sees what Solo practice will start with.
+ *
+ * Every start action is still wrapped in App's `guardStart()` by the caller.
  *
  * The free area over the robot is the drag surface for the 3D orbit (`stageOrbit`): the stage is
  * behind the shell, so the page owns the pointer. On a 2D stage the page draws the robot itself.
  *
- * On a phone the robot is on top and the picker and the settings are two tabs under it, with the
- * two buttons pinned at the bottom.
+ * On a phone the robot is on top and the modes and the picker are two tabs under it, Modes first.
  */
-type Side = 'settings' | 'solo' | 'multi';
 
 export function ModeSelect({
   settings,
@@ -49,6 +55,7 @@ export function ModeSelect({
   onCustomRoom,
   onBrowse,
   onCompetitions,
+  onSetup,
   compete = true,
 }: {
   settings: GameSettings;
@@ -74,6 +81,8 @@ export function ModeSelect({
   onCompetitions?: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
+  /** open the Solo setup popup: Match setup and Practice setup (App renders it) */
+  onSetup: () => void;
   /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
   activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
   onRejoin: () => void;
@@ -90,9 +99,8 @@ export function ModeSelect({
   const [seen, setSeen] = useState(() => tutorialSeen(settings.game));
   useEffect(() => setSeen(tutorialSeen(settings.game)), [settings.game]);
   const stageMode = useStageMode();
-  const [side, setSide] = useState<Side>('settings');
   /** the phone's two tabs under the robot; ignored from 721px up, where both are on screen */
-  const [tab, setTab] = useState<'robot' | 'settings'>('robot');
+  const [tab, setTab] = useState<'modes' | 'robot'>('modes');
   const importedActive = !!settings.spec.imported;
   /**
    * TWO OF THE ENTRIES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks the
@@ -133,7 +141,8 @@ export function ModeSelect({
     <ChainRobotPreview spec={spec} size={fit} caption={false} />
   );
 
-  /** one entry of a Solo / Multiplayer list: a tile, as the Play page always drew them */
+  /** one mode tile. A group with an ODD count gives its first tile the whole row (CSS), so the
+   *  primary entry is the widest and no group ends on a half-empty row. */
   const entry = (
     label: ReactNode,
     onClick: () => void,
@@ -148,45 +157,11 @@ export function ModeSelect({
   );
   const importNote = importedActive ? IMPORT_COPY.standardOnly : null;
 
-  const list =
-    side === 'solo' ? (
-      <>
-        {entry('Solo practice', onSoloMatch, { primary: true })}
-        {entry('Free drive', onFreeDrive)}
-        {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer, note: importNote })}
-      </>
-    ) : side === 'multi' ? (
-      <>
-        {/* ORDER (owner, 2026-10-24): Ranked, Duo record, New room, Browse rooms, Competitions, LAN.
-            The sign-in line is CONDITIONAL, never a reserved blank line: a reserved line made
-            every tile in the old grid a line taller for everybody */}
-        {compete &&
-          entry(
-            <>
-              Ranked
-              <QueueCounts className="tile" />
-            </>,
-            onRanked,
-            { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
-          )}
-        {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
-        {entry('New room', onCustomRoom, { disabled: !multiplayer })}
-        {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
-            room, reachable only by its code, so the code is printed where the player looks */}
-        {entry('Browse rooms', onBrowse, {
-          disabled: !multiplayer,
-          note: inActivity
-            ? activityCode
-              ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
-              : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'
-            : null,
-        })}
-        {compete && onCompetitions && entry('Competitions', onCompetitions, { disabled: !multiplayer })}
-        {/* LAN: never disabled on `multiplayer` (not needing our servers is the point); hidden where
-            the flag is off and in a Discord activity */}
-        {lanOn && !inActivity && entry('LAN', onLan)}
-      </>
-    ) : null;
+  /** what Solo practice starts with, so the Setup popup is not a mystery box */
+  const others = practiceSeatsFor(settings, settings.game).filter((seat) => seat.kind !== 'none').length;
+  const soloSummary = `${settings.alliance === 'red' ? 'Red' : 'Blue'} alliance · ${
+    others === 0 ? 'no other robots' : others === 1 ? '1 other robot' : `${others} other robots`
+  }`;
 
   return (
     <div className={`ds-setup tab-${tab}`}>
@@ -244,15 +219,11 @@ export function ModeSelect({
 
       {/* THE PHONE'S TABS. Toggle buttons, not a tablist (OptRow's ruling). Hidden from 721px up. */}
       <div className="ds-setup-tabs ds-segs" role="group" aria-label="Show">
+        <button className={`ds-seg${tab === 'modes' ? ' on' : ''}`} aria-pressed={tab === 'modes'} onClick={() => setTab('modes')}>
+          Modes
+        </button>
         <button className={`ds-seg${tab === 'robot' ? ' on' : ''}`} aria-pressed={tab === 'robot'} onClick={() => setTab('robot')}>
           Robot
-        </button>
-        <button
-          className={`ds-seg${tab === 'settings' ? ' on' : ''}`}
-          aria-pressed={tab === 'settings'}
-          onClick={() => setTab('settings')}
-        >
-          Settings
         </button>
       </div>
 
@@ -269,42 +240,64 @@ export function ModeSelect({
       </section>
 
       <div className="ds-setup-side">
-        {side === 'settings' ? (
-          <div className="ds-setup-scroll">
-            {!multiplayer && (
-              <section className="ds-panel" role="status">
-                <div className="ds-panel-body">
-                  <p className="ds-hint">Online play is unavailable: this build has no game server.</p>
-                </div>
-              </section>
-            )}
-            <SoloSetup settings={settings} onChange={onChange} part="match" />
-            <SoloSetup settings={settings} onChange={onChange} part="practice" />
-          </div>
-        ) : (
-          <section className="ds-panel ds-setup-list">
-            <div className="ds-panel-h">
-              <button className="ds-btn ghost small" onClick={() => setSide('settings')}>
-                ← Back
+        {!multiplayer && (
+          <p className="ds-hint ds-setup-offline" role="status">
+            Online play is unavailable: this build has no game server.
+          </p>
+        )}
+        {/* ONE CARD, TWO LABELLED GROUPS (main's tile sets): a card per group cost a second head, body
+            padding and gap, and the column then scrolled at a 1366x768 laptop's 657px viewport */}
+        <section className="ds-panel ds-play-modes" aria-label="Modes">
+          <div className="ds-play-group">
+            <div className="ds-play-head">
+              <h2 className="ds-panel-title">Solo</h2>
+              <button className="ds-btn small" onClick={onSetup}>
+                Setup
               </button>
-              <h2 className="ds-panel-title">{side === 'solo' ? 'Solo' : 'Multiplayer'}</h2>
             </div>
-            <div className="ds-panel-body ds-setup-entries">{list}</div>
-          </section>
-        )}
-        {side === 'settings' && (
-          <div className="ds-setup-go">
-            <button className="ds-menu-btn primary" onClick={() => setSide('solo')}>
-              <span className="ml">Solo</span>
-            </button>
-            <button className="ds-menu-btn" onClick={() => setSide('multi')}>
-              <span className="ml">
-                Multiplayer
-                <QueueCounts className="menu" />
-              </span>
-            </button>
+            <div className="ds-play-tiles">
+              {entry('Solo practice', onSoloMatch, { primary: true })}
+              {entry('Free drive', onFreeDrive)}
+              {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer, note: importNote })}
+            </div>
+            <p className="ds-hint ds-play-summary">{soloSummary}</p>
           </div>
-        )}
+          <div className="ds-play-group">
+            <div className="ds-play-head">
+              <h2 className="ds-panel-title">Multiplayer</h2>
+            </div>
+            {/* ORDER (owner, 2026-10-24): Ranked, Duo record, New room, Browse rooms, Competitions, LAN.
+                The sign-in line is CONDITIONAL, never a reserved blank line: a reserved line made
+                every tile in the old grid a line taller for everybody */}
+            <div className="ds-play-tiles">
+              {compete &&
+                entry(
+                  <>
+                    Ranked
+                    <QueueCounts className="tile" />
+                  </>,
+                  onRanked,
+                  { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
+                )}
+              {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
+              {entry('New room', onCustomRoom, { disabled: !multiplayer })}
+              {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
+                  room, reachable only by its code, so the code is printed where the player looks */}
+              {entry('Browse rooms', onBrowse, {
+                disabled: !multiplayer,
+                note: inActivity
+                  ? activityCode
+                    ? `This activity’s lobbies aren’t listed. The main one is code ${activityCode}.`
+                    : 'This activity’s lobbies aren’t listed. You need a room code to watch one.'
+                  : null,
+              })}
+              {compete && onCompetitions && entry('Competitions', onCompetitions, { disabled: !multiplayer })}
+              {/* LAN: never disabled on `multiplayer` (not needing our servers is the point); hidden where
+                  the flag is off and in a Discord activity */}
+              {lanOn && !inActivity && entry('LAN', onLan)}
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

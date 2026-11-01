@@ -71,6 +71,7 @@ import {
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
+import { SoloSetup } from './SoloSetup';
 import { MenuStage, usePhone, type StageView } from './MenuStage';
 import { RoomBrowser } from './RoomBrowser';
 import { WatchLobby } from './WatchLobby';
@@ -463,17 +464,27 @@ function screenForNav(n: ShellNav): Screen {
 function OverlayDialog({
   title,
   onClose,
+  page = false,
   children,
 }: {
   title: ReactNode;
   onClose?: () => void;
+  /** a dialog that holds a page's cards (Solo setup): left-aligned, like the popups over Play */
+  page?: boolean;
   children: ReactNode;
 }) {
   const ref = useDialog(onClose);
   const titleId = useId();
   return (
     <div className="overlay">
-      <div ref={ref} className="overlay-panel ds-popup" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div
+        ref={ref}
+        className={page ? 'overlay-panel ds-popup page' : 'overlay-panel ds-popup'}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <h2 className="ds-dialog-title" id={titleId}>
           {title}
         </h2>
@@ -786,6 +797,8 @@ export function App() {
   /** the Public/Private choice for the room about to be created: the dialog is open (`asking`), and
    *  the answer (`listed`) the Lobby reads when it creates the room. Reset when the Lobby is left. */
   const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
+  /** Play's Solo setup popup (Match setup + Practice setup) */
+  const [soloSetupOpen, setSoloSetupOpen] = useState(false);
   /** the Public room being watched from its lobby (`WatchLobby`), or null */
   const [watchedRoom, setWatchedRoom] = useState<{ room: string; game: GameId; region?: string } | null>(null);
   // a history step onto the watch screen with nothing to watch (a reload, a forward button) lands on the list
@@ -2337,6 +2350,35 @@ export function App() {
         />
       )}
 
+      {/* SOLO SETUP (2026-11-01): Match setup and Practice setup, which used to scroll in Play's right
+          column above the modes. A popup the width of every other one, opened from the Solo group's
+          Setup button; it changes settings only, so closing it is the same as Done. */}
+      {soloSetupOpen && screen === 'modes' && !popup && (
+        <OverlayDialog title="Solo setup" onClose={() => setSoloSetupOpen(false)} page>
+          <div className="ds-solosetup">
+            <SoloSetup settings={shown} onChange={update} part="match" />
+            <SoloSetup settings={shown} onChange={update} part="practice" />
+          </div>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button className="ds-btn" onClick={() => setSoloSetupOpen(false)}>
+              Done
+            </button>
+            <button
+              className="ds-btn primary"
+              onClick={() =>
+                guardStart(() => {
+                  setSoloSetupOpen(false);
+                  update({ ...settings, mode: 'match' });
+                  navigate('game');
+                })
+              }
+            >
+              Start solo practice
+            </button>
+          </div>
+        </OverlayDialog>
+      )}
+
       {/* PUBLIC OR PRIVATE, asked before the lobby opens. Public needs an account: the server lists a
           room only while its host is signed in (`Room.listing`), so offering it signed out would
           promise a listing that never appears. Escape and the corner X both just close. */}
@@ -2402,6 +2444,7 @@ export function App() {
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => setRoomChoice({ asking: true, listed: false })}
+          onSetup={() => setSoloSetupOpen(true)}
           onBrowse={() => navigate('rooms')}
           onLan={() => navigate('lan')}
           onCompetitions={() => navigate('competitions')}

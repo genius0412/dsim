@@ -31,6 +31,7 @@ import {
   subscribeGraphics,
   wantsPost,
   wantsSurfaces,
+  type EnvironmentId,
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
@@ -69,7 +70,7 @@ import {
 } from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
+import { BB_ENVIRONMENT_IDS, environmentDefFor, type EnvironmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import {
   SceneUnsupportedError,
@@ -345,6 +346,11 @@ class BiobuzzScene implements GameScene {
     const gfx = getGraphics();
     this.tier = this.fixedTier ?? gfx.tier;
     this.settings = this.fixedTier ? { ...GFX_PRESETS[this.fixedTier] } : gfx.settings;
+    // a fixed-tier scene may name its own room (the menu stage, `SceneOptions.environment`)
+    const room = opts.environment;
+    if (this.fixedTier && room && (BB_ENVIRONMENT_IDS as readonly string[]).includes(room)) {
+      this.settings.environment = room as EnvironmentId;
+    }
 
     /**
      * ⚠️ `antialias: false`, ALWAYS, AND THAT IS WHAT MAKES THE AA SETTING LIVE.

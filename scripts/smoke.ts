@@ -18792,11 +18792,32 @@ const recordDrive: CommandSource = (tick) => {
   check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
   check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes("crumbsFor(popup ? 'modes' : screen, route.sub, route.username)"));
   // THE PLAY PAGE'S POPUPS AND THE MULTIPLAYER ORDER (owner, 2026-10-24)
-  const ms = readFileSync('src/ui/ModeSelect.tsx', 'utf8');
-  const multi = ms.slice(ms.indexOf("side === 'multi' ?"), ms.indexOf(') : null;', ms.indexOf("side === 'multi' ?")));
+  const ms = readFileSync('src/ui/ModeSelect.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const multiHead = ms.indexOf('<h2 className="ds-panel-title">Multiplayer</h2>');
+  const multi = ms.slice(multiHead, ms.indexOf('</section>', multiHead));
   const at = ['Ranked', "'Duo record'", "'New room'", "'Browse rooms'", "'Competitions'", "'LAN'"].map((l) => multi.indexOf(l));
   check('play: Multiplayer reads Ranked, Duo record, New room, Browse rooms, Competitions, LAN',
-    at.every((i, k) => i > 0 && (k === 0 || i > at[k - 1])) && !ms.includes('Find match'), at.join());
+    multiHead > 0 && at.every((i, k) => i > 0 && (k === 0 || i > at[k - 1])) && !ms.includes('Find match'), at.join());
+  // EVERY MODE ON SCREEN (owner, 2026-11-01: the old column was "VERY, VERY awkward to navigate"): no
+  // list that replaces the column, no Back, and the two setup cards in a popup instead of over the modes
+  check('play: every mode is on Play at once, with no Solo / Multiplayer list that replaces the column',
+    !ms.includes('setSide') && !ms.includes('← Back') && !ms.includes('<SoloSetup') &&
+      ["'Solo practice'", "'Free drive'", "'Solo record'", 'Ranked', "'New room'", "'Browse rooms'"].every((l) => ms.includes(l)));
+  check('play: Match setup and Practice setup are the Solo setup popup, opened from the Solo group',
+    ms.includes('onClick={onSetup}') && appSrc.includes('onSetup={() => setSoloSetupOpen(true)}') &&
+      /<OverlayDialog title="Solo setup"[\s\S]{0,400}?part="match"[\s\S]{0,200}?part="practice"/.test(appSrc));
+  // HOME (owner, 2026-11-01): the stats arrived a second in and moved the centred column; Home's stage
+  // drew the match's own room and tier ("still distorted and EXTREMELY laggy on some devices")
+  const homeMenu = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('home: the stats render from the first frame, a dash per number until the fetch lands',
+    homeMenu.includes('{multiplayer && (\n        <div className="ds-homestats"') && !homeMenu.includes('{stats && ('));
+  const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+  check('stage: the 3D menu stage draws its own fixed tier and procedural room, not the match settings',
+    /factory\(host, \{ interactive: false, quality: stageTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
+      /const STAGE_ROOM = 'arena';/.test(stageSrc));
+  const stageCss = readFileSync('src/ui/shell.css', 'utf8');
+  check('stage: the 2D field is flat (no CSS tilt), and the fly animates no width or height',
+    !/\.ds-stage-2d[^{]*\{[^}]*rotate/.test(stageCss) && !/\.ds-stage-2d img \{[^}]*width var\(--ds-dur-fly\)/.test(stageCss));
   const popups = /const POPUPS[^=]*= \{([^}]*)\}/.exec(appSrc)?.[1] ?? '';
   check('play: every Play list entry that was a page is a popup over Play, and Play stays mounted under it',
     ['matchmaking', 'duorecord', 'lobby', 'rooms', 'competitions', 'lan', 'record'].every((k) => popups.includes(`${k}:`)) &&

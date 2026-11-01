@@ -1815,7 +1815,10 @@ button {
 /* THE MATCH OVERLAY'S TITLE — `RED ALLIANCE`, all caps, tracked like the HUD chips it
    sits over. Exactly one element wears it (`GameView`'s pre-match panel); every other
    `.overlay-panel` is a SHELL dialog and takes `.ds-dialog-title` below. */
-.overlay-panel h2 {
+/* THE PANEL'S OWN HEADING only. A popup over Play holds a page's cards (Solo setup, a room's
+   settings), and their card titles and section headings are h2s too: as a descendant rule this gave
+   every one of them the match overlay's 20px tracked caps (2026-11-01). */
+.overlay-panel > h2 {
   letter-spacing: 3px;
   font-size: 20px;
   font-weight: 800;

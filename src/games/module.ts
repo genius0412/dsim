@@ -642,6 +642,12 @@ export interface SceneOptions {
    */
   quality?: 'low' | 'medium' | 'high' | 'ultra';
   /**
+   * THE ROOM a fixed-`quality` scene draws, in place of the tier's own (a game's environment id;
+   * an unknown one is ignored). Ignored without `quality`. The menu stage is the case: it draws a
+   * procedural room at a fixed tier whatever the player picked for matches (`MenuStage.tsx`).
+   */
+  environment?: string;
+  /**
    * `false` for a scene nobody is driving — an export, a still, a thumbnail. It binds no keys
    * and no pointer handlers, which matters because those are WINDOW-level: an off-screen export
    * scene that installed the view key would have the player's `t` press swap a view they cannot
