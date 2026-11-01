@@ -101,7 +101,9 @@ const GROUND_Z = -0.75;
  * near-horizon elevation term to spare. `VenueSpec.half` carries the rest of the reasoning.
  *
  * Going ABOVE a ceiling needs no such guard: the roof is back-faced too, so a top-down orbit
- * past it reads as a cutaway of the room rather than as a hole in one.
+ * past it reads as a cutaway of the room rather than as a hole in one, as long as the rig hung
+ * under the roof is left out too (`syncVenueRigLayer`, 2026-11-01: it was not, and the truss
+ * crossed the field from the orbit's own default elevation wheeled out).
  */
 const VENUE_MIN_HALF = 660;
 
@@ -377,6 +379,51 @@ export function applyVenueLayers(cams: readonly THREE.Camera[]): void {
   for (const c of cams) c.layers.enable(VENUE_OVERHEAD_LAYER);
 }
 
+/** how far below the rig's lowest point an eye starts leaving it out (`syncVenueRigLayer`) */
+export const RIG_CLEAR_IN = 12;
+
+/**
+ * ⚠️ **AN EYE ABOVE THE RIG LEAVES IT OUT, LIKE THE TOP-DOWN CAMERAS (2026-11-01).** The rule above
+ * kept the rig off the overhead shot and the minimap, and drew it for the four side-on cameras on
+ * the reasoning that they look at the field from BESIDE it. Measured offscreen, the orbit and free
+ * cameras do not always: the orbit wheeled out at its own default elevation stands at z 353, above
+ * the practice room's 288-in ceiling (the Low/Medium default), the arena's centre truss beam then
+ * covered the whole field, a free cam pitched down in the 200-in workshop put two beams across it
+ * in an X, and an orbit over a studio lost a quarter of the field under a softbox. The shell is
+ * `BackSide` and so already a clean cutaway from up there; the rig was the one thing in the way.
+ *
+ * So per frame, for the camera being drawn: an eye higher than `RIG_CLEAR_IN` under the lowest part
+ * of the rig (`userData.rigBottomZ`, set by `buildBiobuzzVenue`; absent on a photographed venue,
+ * whose own overhead layer is the room's upper half and stays) does not draw the layer. Below it,
+ * every part of the rig is above the eye and so above every sight line to the field.
+ */
+export function syncVenueRigLayer(cam: THREE.Camera, venue: THREE.Object3D | null): void {
+  const z = venue?.userData.rigBottomZ;
+  if (typeof z !== 'number' || (cam as THREE.OrthographicCamera).isOrthographicCamera) return;
+  if (cam.position.z > z - RIG_CLEAR_IN) cam.layers.disable(VENUE_OVERHEAD_LAYER);
+  else cam.layers.enable(VENUE_OVERHEAD_LAYER);
+}
+
+/** how far in front of the front riser the orbit and free eyes stop (`venueCameraRoom`) */
+export const STANDS_MARGIN_IN = 30;
+
+/**
+ * ⚠️ **THE ORBIT AND FREE CAMERAS STOP IN FRONT OF THE STANDS (2026-11-01)**, the way they stop
+ * inside a photographed room (`renderPhotoVenue.ts`'s `photoCameraRoom`). `VENUE_MIN_HALF` keeps
+ * the walls past the cameras' reach, but the seating banks stand INSIDE the walls: the gym's front
+ * riser is 464 in out and the arena's 544, against a 620-in orbit. Wheeled out at a low elevation
+ * along y, the orbit stood among the crowd and two spectators filled the bottom of the frame.
+ * Held to `STANDS_MARGIN_IN` in front of the front riser on y, the boom shortens there and the
+ * direction holds, so the default framing (212 in out) is untouched. Null for every venue without
+ * built stands; the overhead rig needs no hold (`syncVenueRigLayer`) and the walls none.
+ */
+export function venueCameraRoom(input: VenueSpec, detail: BbVenueDetail): { min: [number, number, number]; max: [number, number, number] } | null {
+  const spec: VenueSpec = input.kind !== 'outdoor' && input.half < VENUE_MIN_HALF ? { ...input, half: VENUE_MIN_HALF } : input;
+  if (spec.kind === 'outdoor' || !spec.stands || !LOD[detail].stands) return null;
+  const y = standTier(spec, 0).y - STAND_TREAD / 2 - STANDS_MARGIN_IN;
+  return { min: [-Infinity, -y, -Infinity], max: [Infinity, y, Infinity] };
+}
+
 /** beams under the ceiling, both ways — a lighting grid, which is what is actually over an FTC
  * field and what the painted domes' `truss` band was a smear of. */
 function buildTruss(spec: VenueSpec): THREE.InstancedMesh {
@@ -552,9 +599,23 @@ function buildHorizon(spec: VenueSpec, count: number): THREE.InstancedMesh {
   return boxes('bb-venue:horizon', surface(spec.trim), specs);
 }
 
-/** floodlight masts at the field's corners — the only fittings in the list that stand IN the
- * picture. A dark ground with lights ABOVE the frame is a dark room; a dark ground with four
- * poles on it is a car park at night, and that is the whole difference. */
+/**
+ * WHERE THE FLOODLIGHT MASTS STAND, on each diagonal: ±`MAST_AT` along x and y.
+ *
+ * ⚠️ **PAST EVERY CAMERA'S REACH, LIKE AN ENCLOSURE'S WALLS (2026-11-01).** They stood at ±210, a
+ * few feet off the field's corners, and the orbit camera wheeled out on a diagonal (620 in, 438 in
+ * along each axis) looked at the field THROUGH a mast: the pole down the middle of the shot and its
+ * lit head over the hives (captured offscreen at every diagonal yaw). A point on a sight line from
+ * an eye inside a 620-in circle to the field is inside that circle too, so a mast whose nearest
+ * part (the head's inner corner, 29 in in from the pole) is outside it can never be in front of
+ * the field: ±480 puts that corner 649 in out. The far pair still stands in the driver's and the
+ * orbit's shot across the field.
+ */
+export const MAST_AT = 480;
+
+/** floodlight masts round the field — the only fittings in the list that stand IN the picture. A
+ * dark ground with lights ABOVE the frame is a dark room; a dark ground with four poles on it is a
+ * car park at night, and that is the whole difference. */
 function buildMasts(spec: VenueSpec): THREE.Group {
   const g = new THREE.Group();
   g.name = 'bb-venue:masts';
@@ -567,8 +628,8 @@ function buildMasts(spec: VenueSpec): THREE.Group {
   const H = 185;
   for (const sx of [-1, 1]) {
     for (const sy of [-1, 1]) {
-      poles.push({ x: sx * 210, y: sy * 210, z: H / 2, w: 9, d: 9, h: H });
-      heads.push({ x: sx * 210, y: sy * 210, z: H + 8, w: 58, d: 26, h: 12 });
+      poles.push({ x: sx * MAST_AT, y: sy * MAST_AT, z: H / 2, w: 9, d: 9, h: H });
+      heads.push({ x: sx * MAST_AT, y: sy * MAST_AT, z: H + 8, w: 58, d: 26, h: 12 });
     }
   }
   // the pole reads AGAINST the night sky, so it is lifted well off `trim` — a mast the colour of
@@ -608,7 +669,7 @@ export function buildBiobuzzVenue(input: VenueSpec, detail: BbVenueDetail): THRE
     group.add(buildCyc(spec, d.cycSeg));
     const soft = buildSoftboxes(spec);
     if (soft) group.add(soft);
-    return group;
+    return markRig(group);
   }
 
   // hall and arena: the same enclosure, differing in what is inside it
@@ -622,5 +683,19 @@ export function buildBiobuzzVenue(input: VenueSpec, detail: BbVenueDetail): THRE
     group.add(buildStands(spec));
     if (d.crowd) group.add(buildCrowd(spec));
   }
+  return markRig(group);
+}
+
+/** the lowest point of everything a venue hangs over the field (`VENUE_OVERHEAD_LAYER`), as
+ * `userData.rigBottomZ` — what `syncVenueRigLayer` compares an eye with */
+function markRig(group: THREE.Group): THREE.Group {
+  let bottom = Infinity;
+  for (const child of group.children) {
+    const im = child as THREE.InstancedMesh;
+    if (!im.isInstancedMesh || im.layers.mask !== 1 << VENUE_OVERHEAD_LAYER) continue;
+    im.computeBoundingBox();
+    bottom = Math.min(bottom, im.boundingBox!.min.z);
+  }
+  if (Number.isFinite(bottom)) group.userData.rigBottomZ = bottom;
   return group;
 }
