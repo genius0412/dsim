@@ -7843,7 +7843,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check(
         '...and the thumbnail is the card’s picture, not its body',
         readFileSync(join(root, 'src', 'ui', 'RobotCard.tsx'), 'utf8').includes('{thumb}') &&
-          !slotCode.includes('bbConfigSummary'),
+          !slotCode.includes('bbSpecSheet'),
       );
       // THE HERO'S 3D FAILURE is a segment state, not a sentence in the 96px preview column —
       // the sentence widened the column until the robot's name was cut to "My Ro…"

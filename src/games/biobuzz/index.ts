@@ -15,7 +15,7 @@ import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
 import { drawBiobuzzRobot } from './drawRobot';
-import { bbConfigSummary, bbStatTiles } from './labels';
+import { bbSpecSheet, bbStatTiles } from './labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 import { BiobuzzStartEditor } from './StartEditor';
@@ -75,7 +75,8 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   pinnedNotice: BiobuzzPinnedNotice,
   resultsRows: biobuzzResultsRows,
-  labels: { configSummary: bbConfigSummary },
+  // what a leaderboard record and the strategy card print about a robot, one row per job
+  specSheet: bbSpecSheet,
   // THE START EDITOR. Empty, Configure fell into Chain Reaction's editor and the 2v2 lobby and
   // strategy screens into DECODE's; this one draws the BIOBUZZ field and judges G304 with
   // `bbEvalStart`, with TOP / BOTTOM roles.

@@ -3356,23 +3356,162 @@ tr.lb-detail td {
   background: var(--ds-bg);
   padding: 0;
 }
+/* a duo's two sheets sit side by side where they fit, and one sheet never stretches to the full
+   width of the board, where its rows would sit a long way from their labels: `auto-fill` keeps
+   the empty tracks, so a solo record takes one column of two or three */
 .lb-config {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  /* ON A PHONE the table is wider than the screen and scrolls sideways, and this row's cell is as
+     wide as the table, so a sheet laid out to the cell ran off the right edge. It is as wide as
+     the scroller's VISIBLE width instead (`.lb-scroll` is the container), and stays in view
+     while the columns scroll under it. Capped at the cell (100%), because `cqw` counts the
+     desktop scroller's vertical scrollbar, and the 15px it adds was a horizontal scrollbar. */
+  position: sticky;
+  left: 0;
+  width: min(100%, 100cqw);
+}
+.lb-scroll {
+  container-type: inline-size;
+}
+
+/* ---- a robot's spec sheet (`RobotSheet`, `SpecList`) -----------------------------------
+   Picture, name, one row per job the robot does, then a foot of the chassis numbers and how it
+   was driven. The picture column wraps above the body on a narrow screen rather than squeezing
+   the rows. */
+.ds-sheet {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-4);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  box-shadow: var(--ds-block-sm);
 }
-.lb-config-name {
-  font-weight: 700;
-  font-size: var(--ds-t-control);
-}
-.lb-config .ds-stats {
-  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
-}
-.lb-config-assists {
+.ds-sheet-top {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
+  gap: var(--ds-s-4);
+}
+.ds-sheet-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3) var(--ds-s-4);
+  padding-top: var(--ds-s-3);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-sheet-pic {
+  flex: none;
+  align-self: flex-start;
+  display: grid;
+  place-items: center;
+  padding: var(--ds-s-2);
+  background: var(--ds-tile);
+  border-radius: var(--ds-round);
+}
+.ds-sheet-body {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.ds-sheet-name {
+  font-size: var(--ds-t-lg);
+  font-weight: 700;
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-ink);
+  overflow-wrap: anywhere;
+}
+.ds-sheet-team {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+/* the label column is as wide as its longest label, and every value starts on one line */
+.ds-specs {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--ds-s-2) var(--ds-s-4);
+}
+.ds-spec {
+  display: contents;
+}
+.ds-specs dt {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-specs dd {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ds-specs .v {
+  font-size: var(--ds-t-control);
+  font-weight: 600;
+  color: var(--ds-ink);
+}
+.ds-specs .s {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-specs .nb {
+  white-space: nowrap;
+}
+/* a part the robot does NOT have ("No box tube") is still a fact, so it stays, quieter */
+.ds-spec.absent .v {
+  font-weight: 500;
+  color: var(--ds-mut);
+}
+/* a strategy card is a narrow column beside a picture: tighter rows, body-size values */
+.ds-specs.compact {
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+.ds-specs.compact .v {
+  font-size: var(--ds-t-md);
+}
+.ds-sheet-chassis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2) var(--ds-s-5);
+}
+.ds-sheet-stat {
+  display: flex;
+  flex-direction: column;
+}
+.ds-sheet-stat b {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-t-control);
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+.ds-sheet-stat span {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-sheet-drive {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
 }
 
 /* ---- states ---------------------------------------------------------- */

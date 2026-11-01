@@ -1,4 +1,15 @@
-# HANDOFF — 2026-11-01g (Every window shape composed: a 2560px band, portrait layouts, the thin end)
+# HANDOFF — 2026-11-01h (A record's robot is a spec sheet; no auto fire on a BIOBUZZ record)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `server:check`, `uiaudit` (off-grid baseline 100 → 99), `uiindex`, `docaudit`, `contrast` pass. `shiftaudit` not run: Electron would not start under this session's process limits, and nothing added is interactive.
+
+- **Owner:** "For descriptions of robots, instead of just listing components, make it look good. For biobuzz leaderboard, it says auto fire enabled for some people and disabled for some, but auto fire does not even exist for biobuzz. Fix this and check other related issues."
+- **Auto fire:** production BIOBUZZ records carry `autoFire: true` as late as 2026-10-30, because `main` has no `Room.assistsOf` and stores the lobby preference. Fixed where it is shown, which covers old rows too: `drivingWords` (`robotLabels.ts`) prints only what the game's Driving panel offers (`offersAutoFire`), drops aim assist everywhere (always on), drops auto intake on a hand-loaded DECODE robot, and says "Manual fire" instead of a grey "Auto fire".
+- **Descriptions:** `RobotSheet.tsx` replaces the leaderboard's stat tiles and CONFIG sentence: the 2D schematic, one row per job (`specSheet`, with BIOBUZZ's own `GameModule.specSheet`, which replaces `labels.configSummary`), then the chassis numbers and driving chips. The ranked strategy card prints a compact `SpecList` instead of `buildSummary` (deleted). Robot cards are unchanged (owner, 2026-09-22).
+- **Also fixed:** the old BIOBUZZ sentence called every intake a "sweeper", including the deployable ramp most top runs use. On a phone the record detail ran off the right edge; it now sizes to the scroller (`.lb-scroll` container).
+- **Not fixed (sim change):** DECODE's legacy auto path (`updateRobotActions`) sets `r.autoIntake`/`r.autoFire` true and never restores them, so a driver with them off has both on for TeleOp, and `Room.assistsOf` records that.
+- **Checked in the browser** against production's read API (`.env.development.local`, gitignored): BIOBUZZ solo and duo, DECODE, Chain Reaction, light and dark, 1100px and 375px. The strategy card was checked by styling only (it needs a ranked lobby).
+
+## HANDOFF — 2026-11-01g (Every window shape composed: a 2560px band, portrait layouts, the thin end)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit`, `server:check` pass; `shiftaudit` 636 state changes, 0 shifts. Rules in `docs/area/ui.md`, EVERY WINDOW SHAPE IS COMPOSED and THE SECTIONS ARE IN THE BAR.
 

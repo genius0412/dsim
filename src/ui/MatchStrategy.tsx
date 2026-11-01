@@ -16,7 +16,8 @@ import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
-import { buildSummary, teamLine } from './robotLabels';
+import { teamLine } from './robotLabels';
+import { SpecList } from './RobotSheet';
 import { RobotCard } from './RobotCard';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
@@ -234,9 +235,8 @@ export function MatchStrategy({
   // module UI slots — absent ⇒ the inline DECODE/CR branches below, unchanged
   const Preview = moduleFor(settings.game).Preview;
   const StartEd = moduleFor(settings.game).startEditor;
-  const buildRow = (spec: RobotSpec): JSX.Element => (
-    <span className="ptm">{buildSummary(spec, settings.game)}</span>
-  );
+  // the build as labelled rows (`SpecList`), not a sentence of parts
+  const buildRow = (spec: RobotSpec): JSX.Element => <SpecList spec={spec} game={settings.game} compact />;
 
   return (
     <div className="ds-console">

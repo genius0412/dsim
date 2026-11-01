@@ -7,7 +7,8 @@ import { sponsorActive } from '../../sponsor';
 // VALUE import here would close the registry cycle `presets.ts` already hit once at boot
 // (`Cannot access 'BB_PRESET_LIST' before initialization`). `import type` is erased.
 import type { GameStatTile } from '../module';
-import { BB_HOOD_DEFAULT_DEG } from './config';
+import { MOUNT_WORDS, mountPhrase } from '../../ui/labelData';
+import { BB_HOOD_DEFAULT_DEG, bbHopperCap } from './config';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
@@ -22,8 +23,9 @@ import {
   type BbNectarReject,
   type BbLiftKind,
   type BbLiftSpec,
-  bbDefaultFeed,
+  bbHasRampBar,
   bbIntakeFeedOf,
+  bbIntakeKindOf,
   bbIsTurreted,
   bbLauncherOf,
   bbLiftOf,
@@ -189,40 +191,60 @@ export const BB_MOUNT_POS_LABELS: Record<BbMountPos, string> = {
 };
 
 /**
- * The one-line config summary a leaderboard row or a match-strategy card shows.
+ * THE SPEC SHEET a leaderboard record and a strategy card print (`GameModule.specSheet`): one row
+ * per job the robot does, in the builder's own words.
  *
- * Reads through the MECHANISM RESOLVERS (`bbLauncherOf`, `bbLiftOf`, `bbIntakeMountOf`) rather
- * than the raw `scoreMode`/`shooterMount`/`bbMech` fields, so a build saved before `bbMech`
- * existed — or routed through an older peer that dropped it — is summarised as the mechanism
- * it will actually spawn with, not as whatever the legacy flat MIRROR happens to carry.
+ * It replaced `bbConfigSummary`, a sentence that joined every part with ` · ` (`Double turret ·
+ * FRONT+BACK sweeper · F·RIGHT + F·LEFT launcher · 4 pollen`). A reader had to parse it, its
+ * mounts were the builder's 3x3 grid labels in capitals, and it called every intake a SWEEPER
+ * because it never read the intake's kind: the deployable ramp most of the board's top runs carry
+ * was described as the one intake that cannot reach into a FLOWER.
  *
- * A DOUBLE turret names BOTH of its cells (POLLEN turret first), because two double turrets
- * that differ only by where the NECTAR turret sits are two different robots.
- *
- * A BOX TUBE is HALF THE BUILD, same as Chain Reaction's catalyst — see the stat-chip comment
- * in `src/ui/Menu.tsx`. Two builds that differ only by a tube must not produce the same line,
- * so it is appended whenever one exists.
+ * Reads through the MECHANISM RESOLVERS (`bbLauncherOf`, `bbLiftOf`, `bbIntakeKindOf`, …), never
+ * the flat mirrors, so a build saved before `bbMech` existed is described as the robot it spawns
+ * as. A DOUBLE turret names both cells, POLLEN turret first, because two double turrets that
+ * differ only by the NECTAR turret's cell are two different robots. An absent Box Tube is a row of
+ * its own (`absent`): only a Box Tube scores a FLOWER, so "cannot" is a fact about the robot.
  */
-export function bbConfigSummary(spec: RobotSpec): string {
+export function bbSpecSheet(spec: RobotSpec): GameStatTile[] {
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(spec);
-  const mount = bbIntakeMountOf(spec) ?? BB_DEFAULT_INTAKE_MOUNT;
-  const parts = [
-    bbLauncherLabel(launcher),
-    `${BB_INTAKE_MOUNT_LABELS[mount]} sweeper`,
-    `${bbLauncherMountLabel(launcher)} launcher`,
-  ];
-  if (lift) parts.push(`${bbLiftKindLabel(lift.kind)} · ${BB_MOUNT_POS_LABELS[lift.mount]}`);
-  // THE FEED when it is not the one the launcher implies (a single turret built POLLEN + NECTAR, a
-  // dumper built POLLEN-only), and a sorter whenever there is one. A build that is neither says
-  // nothing new, so every line written before the feed was a choice reads as it always did.
   const feed = bbIntakeFeedOf(spec);
-  if (feed !== bbDefaultFeed(launcher)) parts.push(BB_FEED_LABELS[feed]);
   const reject = bbNectarRejectOf(spec);
-  if (reject !== 'none') parts.push(BB_REJECT_LABELS[reject]);
-  // POLLEN, never "balls" — the user-visible word for this game's scoring element.
-  parts.push(`${spec.ballStorage ?? 0} pollen`);
-  return parts.join(' · ');
+  const rows: GameStatTile[] = [
+    { label: 'Launcher', value: bbLauncherLabel(launcher), sub: bbLauncherWhere(launcher) },
+    {
+      label: 'Intake',
+      value: BB_INTAKE_LABELS[bbIntakeKindOf(spec)],
+      sub: `${mountPhrase(bbIntakeMountOf(spec) ?? BB_DEFAULT_INTAKE_MOUNT)} · ${BB_FEED_LABELS[feed]}`,
+    },
+  ];
+  // a SORTER is a question only a POLLEN + NECTAR intake has to answer: a POLLEN-only one takes no NECTAR
+  if (feed === 'mixed') {
+    rows.push(
+      reject !== 'none'
+        ? { label: 'Sorter', value: BB_REJECT_LABELS[reject] }
+        : bbHasRampBar(spec)
+          ? { label: 'Sorter', value: 'Ramp as NECTAR bar' }
+          : { label: 'Sorter', value: BB_REJECT_LABELS.none, absent: true },
+    );
+  }
+  rows.push(
+    { label: 'Flower scoring', value: bbLiftLabel(lift), sub: lift ? mountPhrase(lift.mount) : undefined, absent: !lift },
+    // the capacity the sim enforces (`bbHopperCap`), in the builder's word for it
+    { label: 'Hopper', value: `${bbHopperCap(spec)} pollen` },
+  );
+  return rows;
+}
+
+/** where a launcher sits, as a spec-sheet line: a double turret names which turret is where, a
+ * fixed shooter its hood, and a single turret or a dumper its one cell. */
+function bbLauncherWhere(launcher: BbLauncherSpec): string {
+  if (launcher.kind === 'twinturret' && launcher.mount2) {
+    return `POLLEN ${MOUNT_WORDS[launcher.mount]} · NECTAR ${MOUNT_WORDS[launcher.mount2]}`;
+  }
+  const at = mountPhrase(launcher.mount);
+  return launcher.kind === 'fixed' ? `${at} · ${launcher.hoodDeg}° hood` : at;
 }
 
 /**

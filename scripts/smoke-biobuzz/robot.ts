@@ -128,7 +128,7 @@ import {
   bbTurretSolution,
   mouthAxes,
 } from '../../src/games/biobuzz/robot';
-import { bbConfigSummary } from '../../src/games/biobuzz/labels';
+import { bbSpecSheet } from '../../src/games/biobuzz/labels';
 import { bbAimTarget, bbFlightEnters, bbKindOf, bbPassPoint } from '../../src/games/biobuzz/play';
 import {
   BB_PASS_PRESETS,
@@ -388,7 +388,9 @@ export function robotChecks(check: Check): void {
     check(
       `preset [${p.name}]: still reads as SELECTED after coercion`,
       bbSpecMatches(coerced, p),
-      bbConfigSummary(coerced),
+      bbSpecSheet(coerced)
+        .map((r) => `${r.label}: ${r.value}`)
+        .join(' | '),
     );
     check(
       `preset [${p.name}]: every dial sits inside the range the builder offers`,

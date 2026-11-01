@@ -15,7 +15,7 @@ import { type BbIntakeSpec, bbHasNectarBar, bbHasRampBar, bbIntakeAccepts, bbNec
 import { bbMouths, bbRampPose, bbRampSettled, bbRampSwingProgress, mouthAxes } from '../../src/games/biobuzz/robot';
 import { bbBarDown, bbOnCapture } from '../../src/games/biobuzz/nectarReject';
 import { bbPollen } from '../../src/games/biobuzz/scenes';
-import { bbConfigSummary } from '../../src/games/biobuzz/labels';
+import { bbSpecSheet } from '../../src/games/biobuzz/labels';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { type Check, bbCoerce, cmd, mkWorld, mkWorld3d, run } from './harness';
@@ -88,11 +88,19 @@ export function rejectChecks(check: Check): void {
     const n = bbCoerce({ ...mech('dumper', { kind: 'sweeper', reject: 'none' }) });
     check('sorter spec: `none` is never written, so an old dumper coerces to the bytes it had', n.bbMech!.intake!.reject === undefined && n.bbMech!.intake!.feed === undefined);
     check('sorter spec: a sorter is a fixed point of the coercer', JSON.stringify(bbCoerce(s)) === JSON.stringify(s));
+    /** the spec sheet as `label: value (sub)` rows, the way a leaderboard record prints it */
+    const sheet = (spec: typeof s): string =>
+      bbSpecSheet(spec)
+        .map((r) => `${r.label}: ${r.value}${r.sub ? ` (${r.sub})` : ''}`)
+        .join(' | ');
     check(
-      'sorter spec: the config line names a feed the launcher does not imply, and any sorter — and nothing for an old build',
-      bbConfigSummary(s).includes('POLLEN + NECTAR · Pass-through') && !bbConfigSummary(n).includes('NECTAR') &&
-        bbConfigSummary(bbCoerce({ ...mech('dumper', { kind: 'sweeper', feed: 'pollen' }) })).includes('POLLEN only'),
-      bbConfigSummary(s),
+      'sorter spec: the spec sheet names the feed and the sorter, and a POLLEN-only intake has no sorter row',
+      sheet(s).includes('(Front · POLLEN + NECTAR)') &&
+        sheet(s).includes('Sorter: Pass-through') &&
+        sheet(n).includes('Sorter: No sorter') &&
+        !sheet(bbCoerce({ ...mech('dumper', { kind: 'sweeper', feed: 'pollen' }) })).includes('Sorter') &&
+        sheet(bbCoerce({ ...mech('dumper', { kind: 'sweeper', feed: 'pollen' }) })).includes('POLLEN only'),
+      sheet(s),
     );
   }
 

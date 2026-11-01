@@ -40,9 +40,10 @@ import { categoryDefaultIndex, indexCategory } from '../../src/ui/startPositions
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
-import { bbConfigSummary, bbLiftKindLabel } from '../../src/games/biobuzz/labels';
+import { bbLiftKindLabel, bbSpecSheet } from '../../src/games/biobuzz/labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
-import { buildWords, shotRange, teamLine } from '../../src/ui/robotLabels';
+import { buildWords, drivingWords, shotRange, specSheet, teamLine } from '../../src/ui/robotLabels';
+import type { GameStatTile } from '../../src/games/module';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -234,18 +235,23 @@ export function coreChecks(check: Check): void {
   // inside `SPONSOR.term` — so the expected strings are built from `bbLiftKindLabel` rather than
   // typing either spelling; both spellings are pinned against the term further down.
   const TUBE = bbLiftKindLabel('vslide');
-  // ⚠️ THE `line` STRINGS CARRY `BB_DEFAULT_SPEC`'S OWN INTAKE MOUNT, because `rawOf` below
-  // builds each loadout on top of that spec and only replaces the mechanism. They say FRONT
-  // because the default preset (`BB_PRESETS[0]`, the Pollinator) carries a front sweeper; they
-  // said FRONT+BACK while it was the Sniper. A sentence that drifts from the build is exactly
-  // what this fixture exists to catch, so the strings stay literal rather than being derived.
-  const LOADOUTS: { name: string; mech: BbMechSpec; tiles: string[]; line: string }[] = [
+  // ⚠️ THE `sheet` ROWS CARRY `BB_DEFAULT_SPEC`'S OWN INTAKE, because `rawOf` below builds each
+  // loadout on top of that spec and only replaces the mechanism. They say a FRONT sweeper because
+  // the default preset (`BB_PRESETS[0]`, the Pollinator) carries one. A sheet that drifts from the
+  // build is exactly what this fixture exists to catch, so the rows stay literal rather than being
+  // derived. Each row is `label: value (sub)`, and `[none]` marks a part the build does not have.
+  const LOADOUTS: { name: string; mech: BbMechSpec; tiles: string[]; sheet: string[] }[] = [
     {
       name: 'single turret',
       mech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
       // a TURRET solves its own elevation per shot, so it has no hood to report
       tiles: ['Single turret / launcher / CENTER', 'No box tube / flower scoring'],
-      line: 'Single turret · FRONT sweeper · CENTER launcher · 4 pollen',
+      sheet: [
+        'Launcher: Single turret (Center)',
+        'Intake: Sweeper (Front · POLLEN only)',
+        'Flower scoring: No box tube [none]',
+        'Hopper: 4 pollen',
+      ],
     },
     {
       name: 'single turret + Box Tube',
@@ -254,7 +260,12 @@ export function coreChecks(check: Check): void {
         lift: { kind: 'vslide', mount: 'back' },
       },
       tiles: ['Single turret / launcher / CENTER', `${TUBE} / flower scoring / BACK`],
-      line: `Single turret · FRONT sweeper · CENTER launcher · ${TUBE} · BACK · 4 pollen`,
+      sheet: [
+        'Launcher: Single turret (Center)',
+        'Intake: Sweeper (Front · POLLEN only)',
+        `Flower scoring: ${TUBE} (Back)`,
+        'Hopper: 4 pollen',
+      ],
     },
     {
       name: 'double turret',
@@ -263,7 +274,14 @@ export function coreChecks(check: Check): void {
         lift: null,
       },
       tiles: ['Double turret / launcher / RIGHT + LEFT', 'No box tube / flower scoring'],
-      line: 'Double turret · FRONT sweeper · RIGHT + LEFT launcher · 4 pollen',
+      // a double turret takes NECTAR for its NECTAR turret, so it has a sorter to answer for
+      sheet: [
+        'Launcher: Double turret (POLLEN right · NECTAR left)',
+        'Intake: Sweeper (Front · POLLEN + NECTAR)',
+        'Sorter: No sorter [none]',
+        'Flower scoring: No box tube [none]',
+        'Hopper: 4 pollen',
+      ],
     },
     {
       name: 'dumper + Box Tube',
@@ -272,7 +290,13 @@ export function coreChecks(check: Check): void {
         lift: { kind: 'vslide', mount: 'back' },
       },
       tiles: ['Dumper / launcher / FRONT', `${TUBE} / flower scoring / BACK`],
-      line: `Dumper · FRONT sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
+      sheet: [
+        'Launcher: Dumper (Front)',
+        'Intake: Sweeper (Front · POLLEN + NECTAR)',
+        'Sorter: No sorter [none]',
+        `Flower scoring: ${TUBE} (Back)`,
+        'Hopper: 4 pollen',
+      ],
     },
   ];
   /** the raw build for a loadout — the flat mirror is set to agree with the container, the way
@@ -434,27 +458,31 @@ export function coreChecks(check: Check): void {
     [...captions].join(', '),
   );
 
-  // ---- saved-robot lines (the `labels.configSummary` slot) ------------------
-  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the detail
-  // line under each SAVED robot with `mod.labels?.configSummary ? <slot> : isDecode ?
-  // <DECODE fields> : <CR fields>`. A game filling neither branch was described in CHAIN
-  // REACTION's words, off the lossy `scoreMode` mirror, with the Box Tube omitted entirely.
-  section('saved-robot lines (the per-game config summary)');
+  // ---- the spec sheet (the `specSheet` slot) --------------------------------
+  // What a leaderboard record and the ranked strategy card print about somebody else's robot. It
+  // was `labels.configSummary`, ONE SENTENCE of parts in a stat tile captioned CONFIG, and that
+  // sentence called every intake a SWEEPER: it never read the intake's kind, so the deployable
+  // ramp most of the board's top runs carry read as the one intake that cannot reach a FLOWER.
+  // Before that, the same seam bug the preset list had: a game filling neither branch was
+  // described in CHAIN REACTION's words, with the Box Tube omitted entirely.
+  section('the spec sheet (what a record and a strategy card say about a robot)');
   {
-    const summary = moduleFor('biobuzz').labels?.configSummary;
-    check('biobuzz FILLS the labels.configSummary slot', typeof summary === 'function');
-    check('decode does NOT fill labels (its inline arm stays the live path)', !moduleFor('decode').labels);
-    check('chain does NOT fill labels (its inline arm stays the live path)', !moduleFor('chain').labels);
+    const sheetOf = moduleFor('biobuzz').specSheet;
+    check('biobuzz FILLS the specSheet slot', typeof sheetOf === 'function');
+    check('the slot IS bbSpecSheet', sheetOf === bbSpecSheet);
+    check('decode does NOT fill it (its inline arm stays the live path)', !moduleFor('decode').specSheet);
+    check('chain does NOT fill it (its inline arm stays the live path)', !moduleFor('chain').specSheet);
 
-    // THE WIRING, pinned at the source. A correct summary that no screen reads is the whole bug
+    // THE WIRING, pinned at the source. A correct sheet that no screen reads is the whole bug
     // this section exists for, and it is invisible to every check that calls the function
     // directly — the same reason the crawler files below are pinned as text.
     // Since 2026-09-22 a saved robot and a preset are ONE card (`RobotCard`), and its one line
     // is `buildWords`, which reads the game's `statTiles` slot BEFORE either inline arm. The
-    // long sentence (`labels.configSummary`, above) is still the roster's and the leaderboard's.
+    // sheet is the leaderboard's and the strategy card's.
     const menu = readRepo('src/ui/Menu.tsx');
     const card = readRepo('src/ui/RobotCard.tsx');
-    const labelsSrc = readRepo('src/ui/robotLabels.ts');
+    const labelsSrc = readRepo('src/ui/robotLabels.ts').replace(/\r\n/g, '\n');
+    const sheetSrc = readRepo('src/ui/RobotSheet.tsx');
     check(
       'Menu.tsx renders saved robots AND presets through RobotCard, with the active game',
       (menu.match(/<RobotCard\b/g) ?? []).length >= 2 && (menu.match(/game=\{settings\.game\}/g) ?? []).length >= 2,
@@ -465,12 +493,28 @@ export function coreChecks(check: Check): void {
     );
     check(
       'buildWords reads the statTiles SLOT before the DECODE and CR arms',
-      /const tiles = moduleFor\(game\)\.statTiles\?\.\(spec\);\s*\n\s*if \(tiles\)/.test(labelsSrc.replace(/\r\n/g, '\n')),
+      /const tiles = moduleFor\(game\)\.statTiles\?\.\(spec\);\s*\n\s*if \(tiles\)/.test(labelsSrc),
     );
-    // and BOTH shipped arms are there: DECODE names the intake, CR the archetype and catalyst.
-    check('the DECODE arm names the intake', labelsSrc.includes('`${INTAKE_SHORT[spec.intake]} intake`'));
     check(
-      'the CR arm names the archetype and the catalyst',
+      'specSheet reads the specSheet SLOT before the DECODE and CR arms',
+      /const own = moduleFor\(game\)\.specSheet;\s*\n\s*if \(own\)/.test(labelsSrc),
+    );
+    check(
+      'the leaderboard prints each record’s robot as a RobotSheet, the owner’s with its assists',
+      readRepo('src/ui/Leaderboard.tsx').includes('<RobotSheet spec={spec} game={game} assists={assists} />'),
+    );
+    check(
+      'the strategy card prints the build as a compact SpecList',
+      readRepo('src/ui/MatchStrategy.tsx').includes('<SpecList spec={spec} game={settings.game} compact />'),
+    );
+    check(
+      'SpecList and RobotSheet read specSheet and drivingWords',
+      sheetSrc.includes('specSheet(spec, game)') && sheetSrc.includes('drivingWords(assists, spec, game)'),
+    );
+    // and BOTH shipped card arms are there: DECODE names the intake, CR the archetype and catalyst.
+    check('the DECODE card arm names the intake', labelsSrc.includes('`${INTAKE_SHORT[spec.intake]} intake`'));
+    check(
+      'the CR card arm names the archetype and the catalyst',
       labelsSrc.includes('CHAIN_MODE_LABELS[mode]') && labelsSrc.includes('CHAIN_CATALYST_LABELS[spec.catalystType'),
     );
     // THE PRESET LIST is keyed on the SAME slot as always, so a card can never describe a robot
@@ -492,34 +536,56 @@ export function coreChecks(check: Check): void {
       );
     }
 
-    /** the sentence as a saved slot, a leaderboard row and the strategy card all print it. */
-    const say = (raw: unknown): string => (summary ? summary(bbCoerce(raw)) : '');
-    check('the slot IS bbConfigSummary', summary === bbConfigSummary);
+    /** one row as this fixture writes it: `label: value (sub)`, `[none]` for an absent part */
+    const fmtRow = (r: GameStatTile): string =>
+      `${r.label}: ${r.value}${r.sub ? ` (${r.sub})` : ''}${r.absent ? ' [none]' : ''}`;
+    /** the sheet as a leaderboard record prints it, through the shared reader */
+    const sheet = (raw: unknown): string[] => specSheet(bbCoerce(raw), 'biobuzz').map(fmtRow);
+    const say = (raw: unknown): string => sheet(raw).join(' | ');
 
     for (const l of LOADOUTS) {
       const raw = rawOf(l.mech);
       check(`${l.name}: the coerced spec really carries that loadout`, carries(bbCoerce(raw), l.mech));
-      check(`saved-robot line — ${l.name}`, say(raw) === l.line, say(raw));
+      check(`spec sheet — ${l.name}`, say(raw) === l.sheet.join(' | '), say(raw));
     }
     // A BOX TUBE IS HALF THE BUILD. Two robots differing only by one must not read identically.
     check(
-      'a Box Tube CHANGES the sentence',
+      'a Box Tube CHANGES the sheet',
       say(rawOf(LOADOUTS[0].mech)) !== say(rawOf(LOADOUTS[1].mech)),
     );
     // and so does the NECTAR turret's cell: two double turrets differing only by it are two robots
     check(
-      'a double turret’s NECTAR cell CHANGES the sentence',
+      'a double turret’s NECTAR cell CHANGES the sheet',
       say(rawOf(LOADOUTS[2].mech)) !==
         say(rawOf({ ...LOADOUTS[2].mech, launcher: { ...LOADOUTS[2].mech.launcher, mount2: 'backleft' } })),
+    );
+    // THE INTAKE IS NAMED BY ITS KIND. The sentence this replaced said "sweeper" for all three.
+    const withIntake = (kind: 'ramp' | 'siderollers'): RobotSpec =>
+      rawOf({ ...LOADOUTS[2].mech, intake: { kind } });
+    for (const [kind, want] of [
+      ['ramp', 'Intake: Deployable ramp'],
+      ['siderollers', 'Intake: Side rollers'],
+    ] as const) {
+      const got = sheet(withIntake(kind));
+      check(`a ${kind} intake reads as itself, not as a sweeper`, got.some((r) => r.startsWith(want)), got.join(' | '));
+    }
+    // a ramp on a POLLEN + NECTAR feed doubles as the NECTAR bar (`bbHasRampBar`), so its sorter
+    // row says so instead of "No sorter"
+    check(
+      'a POLLEN + NECTAR ramp’s sorter row is the ramp bar',
+      sheet(withIntake('ramp')).includes('Sorter: Ramp as NECTAR bar'),
+      say(withIntake('ramp')),
     );
 
     const builds: unknown[] = [...LOADOUTS.map((l) => rawOf(l.mech)), BB_DEFAULT_SPEC, ...BB_PRESET_LIST];
     const lines = builds.map(say).join(' | ').toLowerCase();
 
-    // NO FOREIGN VOCABULARY. CATALYST and PARTICLE are Chain Reaction's words; ARTIFACT,
-    // SORTER and INERTIA are DECODE's. This game's element is POLLEN. The CR catalyst labels
-    // and DECODE's intake names are taken from their own maps rather than retyped. NOT swept:
-    // SWEEPER, which both games genuinely use for the same part. A shared word is not a leak.
+    // NO FOREIGN VOCABULARY. CATALYST and PARTICLE are Chain Reaction's words; ARTIFACT, MOTIF
+    // and INERTIA are DECODE's. This game's element is POLLEN. The CR catalyst labels and
+    // DECODE's intake names are taken from their own maps rather than retyped. NOT swept:
+    // SWEEPER, which both games genuinely use for the same part, and SORTER, which this game's
+    // own builder offers since the NECTAR sorter became a choice (`BB_REJECT_LABELS`). A shared
+    // word is not a leak. The CARD line below is still swept for SORTER: it never names one.
     const FOREIGN_LINE = [
       ...Object.values(CHAIN_CATALYST_LABELS),
       ...Object.values(INTAKE_SHORT),
@@ -528,7 +594,6 @@ export function coreChecks(check: Check): void {
       'ring stand',
       'accelerator',
       'artifact',
-      'sorter',
       'inertia',
       'motif',
       'classifier',
@@ -537,16 +602,65 @@ export function coreChecks(check: Check): void {
       'vertical slide',
     ].map((w) => w.toLowerCase());
     for (const word of FOREIGN_LINE) {
-      check(`biobuzz saved-robot lines never say "${word}"`, !lines.includes(word));
+      check(`biobuzz spec sheets never say "${word}"`, !lines.includes(word));
     }
-    // and the POSITIVE half: every build names this game's own element, so a summary cannot
-    // pass the sweep above by saying nothing at all.
-    check('every biobuzz build names POLLEN', builds.every((b) => say(b).includes('pollen')));
+    // and the POSITIVE half: every build names this game's own element, so a sheet cannot pass
+    // the sweep above by saying nothing at all.
+    check('every biobuzz build names POLLEN', builds.every((b) => say(b).includes('POLLEN')));
+    // DECODE and CR take their own arms, in their own words
+    const decodeSheet = specSheet({ ...DEFAULT_SPEC, intake: 'vector', canSort: true, flywheelInertia: 0.9 }, 'decode')
+      .map(fmtRow)
+      .join(' | ');
+    check(
+      'DECODE sheet: intake, sorter, shot',
+      decodeSheet === `Intake: Vector | Sorter: Colour sorter | Shooter: ${shotRange(0.9)} (0.90 flywheel inertia)`,
+      decodeSheet,
+    );
+    const chainSheet = specSheet({ ...DEFAULT_SPEC }, 'chain').map(fmtRow).join(' | ');
+    check(
+      'a CR sheet names its shooter, intake and catalyst, and never POLLEN',
+      /^Shooter: .* \| Intake: .* \| Catalyst: .* \| Hopper: \d+ particles \| Clearance: /.test(chainSheet) &&
+        !chainSheet.toLowerCase().includes('pollen'),
+      chainSheet,
+    );
+
+    // ---- HOW IT WAS DRIVEN (`drivingWords`) — only what the game's Driving panel offers ----
+    // The leaderboard printed four on/off assist chips for every game, so BIOBUZZ rows said
+    // "Auto fire" for some drivers and not others in a game with no auto fire. A row stored
+    // before `Room.assistsOf` carries the player's DECODE / CR menu setting, so the display, not
+    // the data, is where the game's own rule has to be applied.
+    const all = { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true };
+    const none = { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: false };
+    const bbSpec = bbCoerce(BB_DEFAULT_SPEC);
+    check(
+      'biobuzz: a stored autoFire true still prints no fire word at all',
+      drivingWords(all, bbSpec, 'biobuzz').join(' · ') === 'Field-centric · Auto intake',
+      drivingWords(all, bbSpec, 'biobuzz').join(' · '),
+    );
+    check('biobuzz: ...and neither does a stored false', !drivingWords(none, bbSpec, 'biobuzz').some((w) => /fire/i.test(w)));
+    check(
+      'decode and chain offer auto fire, and say which way it was set',
+      drivingWords(all, DEFAULT_SPEC, 'decode').includes('Auto fire') &&
+        drivingWords(none, DEFAULT_SPEC, 'chain').includes('Manual fire'),
+    );
+    check(
+      'no game prints aim assist (it is always on and offered nowhere)',
+      (['decode', 'chain', 'biobuzz'] as const).every((g) => !drivingWords(all, DEFAULT_SPEC, g).some((w) => /aim/i.test(w))),
+    );
+    check(
+      'a hand-loaded DECODE robot has no intake word (nothing for the assist to run)',
+      drivingWords(all, { ...DEFAULT_SPEC, intake: 'none' }, 'decode').join(' · ') === 'Field-centric · Auto fire',
+    );
+    // the menu and the record ask ONE slot, so the two cannot disagree about what a game has
+    check(
+      'drivingWords and the menu read the same offersAutoFire slot',
+      labelsSrc.includes('mod.offersAutoFire !== false') && menu.includes('mod.offersAutoFire !== false'),
+    );
 
     // ---- THE CARD LINE (`buildWords`) — every robot card and the hero's build line ----------
     const words = (raw: unknown): string[] => buildWords(bbCoerce(raw), 'biobuzz');
     const cardLines = builds.map((b) => words(b).join(' · ').toLowerCase()).join(' | ');
-    for (const word of FOREIGN_LINE) {
+    for (const word of [...FOREIGN_LINE, 'sorter']) {
       check(`biobuzz card lines never say "${word}"`, !cardLines.includes(word));
     }
     check(
@@ -605,10 +719,12 @@ export function coreChecks(check: Check): void {
       p.name,
       p.teamName,
       buildWords(p, 'biobuzz').join(' · '),
-      bbConfigSummary(p),
+      bbSpecSheet(p)
+        .map((r) => `${r.value} ${r.sub ?? ''}`)
+        .join(' · '),
     ]);
     const hits = shown.filter((t) => VENDOR.test(t));
-    check('no vendor name in any preset name, team name, card line or summary', hits.length === 0, hits.join(' | '));
+    check('no vendor name in any preset name, team name, card line or spec sheet', hits.length === 0, hits.join(' | '));
     // not vacuous: the sweep read real text for every card, and there is more than one card
     check(
       '...and the sweep actually read every card',
