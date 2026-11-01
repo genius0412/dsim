@@ -100,6 +100,9 @@ export const SEAT_ONLY_BUTTONS = BTN_BBFIRE_UNAIMED;
 // is NOT in `SEAT_ONLY_BUTTONS`. An older server masks it off and never reverses, which is the
 // whole of its old behaviour.
 const BTN_BBREVERSE = 4096;
+// BIOBUZZ: the NECTAR bar (`RobotCommand.bbBar`, `nectarReject.ts`), an EDGE like `bbRamp`. An older
+// server ignores it: before `SIM_PATCH` 11 the bar rode the ramp's bit.
+const BTN_BBBAR = 8192;
 const BUTTONS_MAX = 0xffff;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
@@ -120,7 +123,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbPass ? BTN_BBPASS : 0) |
       (c.flyPreset ? BTN_FLYPRESET : 0) |
       (c.bbFireUnaimed ? BTN_BBFIRE_UNAIMED : 0) |
-      (c.bbReverse ? BTN_BBREVERSE : 0),
+      (c.bbReverse ? BTN_BBREVERSE : 0) |
+      (c.bbBar ? BTN_BBBAR : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -191,6 +195,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     ...((q.buttons & BTN_BBFIRE_UNAIMED) !== 0 ? { bbFireUnaimed: true } : {}),
     // only when pressed, so a command that never reverses is the one it always was (replay digests)
     ...((q.buttons & BTN_BBREVERSE) !== 0 ? { bbReverse: true } : {}),
+    ...((q.buttons & BTN_BBBAR) !== 0 ? { bbBar: true } : {}),
   };
 }
 

@@ -152,19 +152,17 @@ export const BB_REJECT_LABELS: Record<BbNectarReject, string> = {
   bar: 'NECTAR bar',
 };
 
-/** the blurb for a sorter on this intake. The bar's depends on the intake: a ramp's IS the ramp. */
-export function bbRejectBlurb(k: BbNectarReject, intake: BbIntakeKind): string {
-  switch (k) {
-    case 'none':
-      return 'Reverse the intake yourself to spit it out';
-    case 'reverse':
-      return 'Sees it, reverses, spits it back out · still G408';
-    case 'passthrough':
-      return 'Routes it through and back out · never stops · still G408';
-    case 'bar':
-      return intake === 'ramp' ? 'Deploy the ramp to keep every NECTAR out' : 'Drop the bar to keep every NECTAR out';
-  }
-}
+/** what each sorter does. A ramp intake is offered no `bar`: its ramp is one (`bbHasRampBar`), and
+ * the builder says so under the choices (`BB_RAMP_BAR_NOTE`). */
+export const BB_REJECT_BLURBS: Record<BbNectarReject, string> = {
+  none: 'Reverse the intake yourself to spit it out',
+  reverse: 'Sees it, reverses, spits it back out · still G408',
+  passthrough: 'Routes it through and back out · never stops · still G408',
+  bar: 'Drop the bar to keep every NECTAR out',
+};
+
+/** under a ramp intake's sorter choices: the ramp doubles as the NECTAR bar, on its own button */
+export const BB_RAMP_BAR_NOTE = 'The ramp doubles as a NECTAR bar: the NECTAR bar button holds it at bar height';
 
 /** MOUNT labels — kept SHORT, because they sit in a 4-up button grid. The buttons carry no
  * blurb (owner, 2026-09-24). */

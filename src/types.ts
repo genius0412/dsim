@@ -103,6 +103,13 @@ export interface RobotCommand {
    * 4096. Optional; absent reads false.
    */
   bbReverse?: boolean;
+  /**
+   * BIOBUZZ, THE NECTAR BAR: drop / lift a `bar` sorter's bar, or swing a `ramp` intake's ramp to
+   * bar height and back (`nectarReject.ts`'s `bbBarStep`). EDGE-triggered and debounced like
+   * `bbRamp`, off `RobotState.bbBarHeld`. Read from `SIM_PATCH` 11; before it a bar rode `bbRamp`.
+   * Protocol bit 8192. Optional; absent reads false.
+   */
+  bbBar?: boolean;
 }
 
 /**
@@ -729,13 +736,24 @@ export interface RobotState {
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;
-  /** BIOBUZZ, a `bar` sorter on any intake but the `ramp` (whose ramp is its bar): is the
-   * NECTAR bar DOWN across the mouth? Toggled by `bbRamp` through the ramp's own latch
-   * (`bbRampHeld`/`bbRampUpAt`, which no other reader shares on such a build). Absent reads false,
-   * the raised start. Every other build leaves both absent. */
+  /**
+   * BIOBUZZ, a `ramp` intake once its ramp has been held at bar height: the pose (0 folded, 1
+   * deployed) the current swing started from (`bbRampPose`, `robot.ts`). Absent, every swing is the
+   * original folded-to-deployed one and starts from the far end. Written by the first swing to or
+   * from the bar and kept after, so a match that never uses the bar never carries it.
+   */
+  bbRampFrom?: number;
+  /** BIOBUZZ, the NECTAR bar: is it DOWN? On a `bar` sorter that is the bar across the mouth; on a
+   * `ramp` intake (POLLEN + NECTAR feed) it is the ramp held at bar height, the swing timed off
+   * `bbRampAt`. Toggled by `bbBar` (by `bbRamp` before `SIM_PATCH` 11). Absent reads false, the
+   * raised start. Every other build leaves it absent. */
   bbBarOut?: boolean;
-  /** `world.time` of the last bar toggle (either direction). */
+  /** `world.time` of the last bar toggle (either direction). Not written for a ramp's bar. */
   bbBarAt?: number;
+  /** the `bbBar` button's debounced edge latch, `bbRampHeld`'s twin (`debouncedPress`). */
+  bbBarHeld?: boolean;
+  /** `world.time` the bar button went up while `bbBarHeld` is still latched; absent otherwise. */
+  bbBarUpAt?: number;
   /**
    * A SETPOINT FLYWHEEL's wheel speed right now, rpm (`src/sim/flywheel.ts`). Written ONLY for a
    * build with `spec.flywheel`, so no other robot carries it on the wire or in its JSON. It ramps

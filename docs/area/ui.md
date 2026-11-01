@@ -58,7 +58,11 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   from D-DOWN (13) to R3 (11), because players reported D-DOWN restarting their run. A stored
   map keeps its own ramp button, D-DOWN included. A map with no ramp row takes R3 unless a
   conflicting action already holds R3 in main or in a BIOBUZZ override; then it loads unbound
-  (no pad fallback). D-DOWN is unbound by default.
+  (no pad fallback). D-DOWN went to Reverse intake on 2026-10-24.
+  **NECTAR bar has its own action** (`bbBar`, 2026-11-01; it rode Deploy ramp before): key `'`,
+  fallbacks `[` then `]`, and NO pad button, because BIOBUZZ uses all sixteen. It is the one
+  member of smoke's `PAD_DEFAULT_EXEMPT`, and `seasonUnbound` does not flag an action that ships
+  with no pad bind (it would mark BIOBUZZ on every saved map). An unbound KEY still flags it.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,

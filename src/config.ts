@@ -302,8 +302,13 @@ export const SIM_VERSION = 7;
  *      cannot tell colours apart (`bbIntakeAccepts`), and holding one is G408. During AUTO, taking
  *      an element from the opponent's half is G402 (TU06's first example, `nectarReject.ts`). Before it,
  *      every intake refused the opponent's NECTAR. 2026-10-24, `alpha`.
+ *  11  BIOBUZZ, the NECTAR bar has its own button (`RobotCommand.bbBar`), and a `ramp` intake with a
+ *      POLLEN + NECTAR feed is a bar when held at bar height (`BB_RAMP_BAR_E`), whatever its
+ *      sorter. A ramp laid flat for a FLOWER no longer keeps NECTAR out. Before it a `bar` sorter's
+ *      bar rode `bbRamp`, and on a ramp intake the deployed ramp was the bar (`nectarReject.ts`).
+ *      2026-11-01, `alpha`.
  */
-export const SIM_PATCH = 10;
+export const SIM_PATCH = 11;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

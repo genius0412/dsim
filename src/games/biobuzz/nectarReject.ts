@@ -14,9 +14,9 @@ import {
   BB_SORT_PASS_S,
   BB_SORT_REVERSE_S,
 } from './config';
-import { bbAutoSorts, bbIntakeKindOf, bbNectarRejectOf } from './mechs';
+import { bbAutoSorts, bbHasNectarBar, bbHasRampBar, bbIntakeKindOf, bbNectarRejectOf } from './mechs';
 import { bbAwardFoul } from './penalties';
-import { bbMouths, bbRampSettled, mouthAxes } from './robot';
+import { bbMouths, bbRampAtBar, bbRampBarToggle, bbRampSettled, mouthAxes } from './robot';
 import type { BbSortEntry } from './state';
 
 /**
@@ -39,9 +39,10 @@ import type { BbSortEntry } from './state';
  *    and the reject leaves first.
  *  · `passthrough`: no reverse. The reject is routed through and drops back out of the mouth it
  *    came in by `BB_SORT_PASS_S` after the capture, while the rollers keep taking the rest.
- *  · `bar`: a bar across the mouth, toggled with `bbRamp`, under which a POLLEN passes and a NECTAR
+ *  · `bar`: a bar across the mouth, toggled with `bbBar`, under which a POLLEN passes and a NECTAR
  *    does not. It is the only one of the four that keeps the opponent's NECTAR out, so the only one
- *    that never draws G408. On a `ramp` intake the deployed ramp is the bar.
+ *    that never draws G408. A `ramp` intake has it whatever its sorter: the ramp held part-way is
+ *    the bar (`bbHasRampBar`, `SIM_PATCH` 11), and `bbRamp` still lays it flat for a FLOWER.
  *
  * ── ONE WRITER FOR "HELD → GROUND AT THE MOUTH" ─────────────────────────────
  * `bbEject` is it, for all four. It writes a `ground` element just past the roller line with the
@@ -69,29 +70,62 @@ const EJECT_CLEAR = 0.3;
 // THE BAR
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** is this robot's NECTAR bar down and keeping NECTAR out RIGHT NOW? A `ramp` intake's bar is its
- * ramp, deployed and settled; any other intake's is `bbBarOut`, once `BB_BAR_DEPLOY_S` has passed. */
-export function bbBarDown(r: RobotState, time: number): boolean {
-  if (bbNectarRejectOf(r.spec) !== 'bar') return false;
-  if (bbIntakeKindOf(r.spec) === 'ramp') return bbRampSettled(r, time);
+/**
+ * is this robot's NECTAR bar down and keeping NECTAR out RIGHT NOW? A `bar` sorter's bar is
+ * `bbBarOut`, once `BB_BAR_DEPLOY_S` has passed. A ramp that doubles as a bar (`bbHasRampBar`) is
+ * one once it has SETTLED at bar height (`bbRampAtBar`); laid flat for a FLOWER it is not, because a
+ * NECTAR rolls up a flat ramp as readily as a POLLEN does.
+ *
+ * Before `SIM_PATCH` 11 only a `bar` sorter had a bar, and on a `ramp` intake it was the ramp
+ * DEPLOYED and settled, which is how a replay recorded then still runs.
+ */
+export function bbBarDown(world: World, r: RobotState): boolean {
+  const time = world.time;
+  if (!simPatchAtLeast(world, 11)) {
+    if (bbNectarRejectOf(r.spec) !== 'bar') return false;
+    if (bbIntakeKindOf(r.spec) === 'ramp') return bbRampSettled(r, time);
+  } else {
+    if (bbIntakeKindOf(r.spec) === 'ramp') return bbHasRampBar(r.spec) && bbRampAtBar(r, time);
+    if (bbNectarRejectOf(r.spec) !== 'bar') return false;
+  }
   return !!r.bbBarOut && time - (r.bbBarAt ?? -Infinity) >= BB_BAR_DEPLOY_S;
 }
 
 /**
- * DROP / LIFT THE BAR on the `bbRamp` button — the ramp's own toggle (`bbRampStep`), for a `bar`
- * build whose intake is not a ramp. The latch is the ramp's (`bbRampHeld`/`bbRampUpAt`): such a
- * build has no ramp, so nothing else writes it, and a second latch would be a second wire field
- * for the same button. Every other build writes nothing.
+ * DROP / LIFT THE BAR on the `bbBar` button (owner, 2026-11-01: a ramp "may need another button
+ * for control" to double as a bar). On a `bar` sorter it toggles `bbBarOut`; on a ramp that
+ * doubles as a bar it swings the ramp to bar height and back (`bbRampBarToggle`), while `bbRamp`
+ * keeps the FLOWER deploy. Debounced like the ramp, on its own latch (`bbBarHeld`/`bbBarUpAt`),
+ * which is written only once the button is first pressed. Every other build writes nothing.
+ *
+ * Before `SIM_PATCH` 11 the bar rode the RAMP's button and the ramp's latch, on a `bar` sorter
+ * whose intake was not a ramp (such a build has no ramp, so nothing else wrote that latch), and a
+ * ramp intake's bar was its deployed ramp. A replay recorded then pressed `bbRamp` for it.
  */
-export function bbBarStep(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean, time: number): void {
-  if (bbNectarRejectOf(r.spec) !== 'bar' || bbIntakeKindOf(r.spec) === 'ramp') return;
-  const e = debouncedPress(r.bbRampHeld ?? false, r.bbRampUpAt, enabled && (cmd?.bbRamp ?? false), time);
-  if (e.press) {
-    r.bbBarOut = !(r.bbBarOut ?? false);
-    r.bbBarAt = time;
+export function bbBarStep(world: World, r: RobotState, cmd: RobotCommand | undefined, enabled: boolean): void {
+  const time = world.time;
+  if (!simPatchAtLeast(world, 11)) {
+    if (bbNectarRejectOf(r.spec) !== 'bar' || bbIntakeKindOf(r.spec) === 'ramp') return;
+    const e = debouncedPress(r.bbRampHeld ?? false, r.bbRampUpAt, enabled && (cmd?.bbRamp ?? false), time);
+    if (e.press) {
+      r.bbBarOut = !(r.bbBarOut ?? false);
+      r.bbBarAt = time;
+    }
+    r.bbRampHeld = e.held;
+    if (e.upAt !== undefined || r.bbRampUpAt !== undefined) r.bbRampUpAt = e.upAt;
+    return;
   }
-  r.bbRampHeld = e.held;
-  if (e.upAt !== undefined || r.bbRampUpAt !== undefined) r.bbRampUpAt = e.upAt;
+  if (!bbHasNectarBar(r.spec)) return;
+  const e = debouncedPress(r.bbBarHeld ?? false, r.bbBarUpAt, enabled && (cmd?.bbBar ?? false), time);
+  if (e.press) {
+    if (bbHasRampBar(r.spec)) bbRampBarToggle(r, time);
+    else {
+      r.bbBarOut = !(r.bbBarOut ?? false);
+      r.bbBarAt = time;
+    }
+  }
+  if (e.held || r.bbBarHeld !== undefined) r.bbBarHeld = e.held;
+  if (e.upAt !== undefined || r.bbBarUpAt !== undefined) r.bbBarUpAt = e.upAt;
 }
 
 /**
@@ -99,7 +133,7 @@ export function bbBarStep(r: RobotState, cmd: RobotCommand | undefined, enabled:
  * spec half is `bbIntakeAccepts`; this adds the bar and the sorter's ignore list.
  */
 export function bbSorterTakes(world: World, r: RobotState, b: Artifact): boolean {
-  if (isNectar(b.color) && bbBarDown(r, world.time)) return false;
+  if (isNectar(b.color) && bbBarDown(world, r)) return false;
   const q = world.biobuzz?.sorter?.[r.id];
   return !q || !q.some((e) => e.out && e.id === b.id);
 }

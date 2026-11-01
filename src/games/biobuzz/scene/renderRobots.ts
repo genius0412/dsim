@@ -60,7 +60,6 @@ import {
   BB_LAUNCH_Z0,
   BB_MOTOR_MOUNT_RIM,
   BB_RAMP_ANGLE,
-  bbRampDeployS,
   BB_BAR_DEPLOY_S,
   BB_RAMP_DECK_Z,
   BB_RAMP_IN,
@@ -109,7 +108,7 @@ import {
   bbRailSegments,
   type BbKeepOut,
 } from '../parts';
-import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal, mouthAxes } from '../robot';
+import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal, bbRampPose, mouthAxes } from '../robot';
 import { bbDumpZ, bbDumperFrame, bbImportTurretAxleZ, bbSideRollerOffsets } from '../importMech';
 import { bbSpecKey } from '../specKey';
 import { loadOptionalChunk } from '../../../optionalChunks';
@@ -5092,7 +5091,7 @@ const IMPORT_SLIDE_S = 0.5;
  *  · ROLLER — `BB_ROLLER_SPIN` while the intake runs (the standard roller's gate).
  *  · FLYWHEEL — at the setpoint wheel's `flyRpm`, else idling while there is something to throw.
  *  · TURRET — the turret's yaw against the chassis (`turretHeading`; a second turret part, the second).
- *  · RAMP — deployed off `bbRampOut` with the standard ramp's ease (`BB_RAMP_DEPLOY_S`).
+ *  · RAMP — the standard ramp's own pose (`bbRampPose`), held at NECTAR bar height included.
  *  · FOLD — stays as it starts.
  */
 function poseImportMotion(motion: readonly ImportedMotionNode[], world: World, r: RobotState, dt: number, wheelSpin: boolean): void {
@@ -5103,9 +5102,7 @@ function poseImportMotion(motion: readonly ImportedMotionNode[], world: World, r
   const vx = r.vel.x * c - r.vel.y * s;
   const vy = r.vel.x * s + r.vel.y * c;
   const w = r.angVel ?? 0;
-  const rampT = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / bbRampDeployS(r.spec)));
-  const rampE = smoothstep01(rampT);
-  const rampOut = r.bbRampOut ? rampE : 1 - rampE;
+  const rampOut = bbRampPose(r, world.time);
   const mecanum = r.spec.drivetrain === 'mecanum' || (r.spec.drivetrain === 'butterfly' && !r.butterflyTank);
   let turret = 0;
   for (const m of motion) {
@@ -5299,9 +5296,8 @@ export function buildBiobuzzRobots(): BbRobots {
       // rather than mid-swing from a toggle that never happened this match.
       const rampPivots = entry.group.userData.rampPivots as THREE.Group[] | undefined;
       if (rampPivots && rampPivots.length > 0) {
-        const t = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / bbRampDeployS(r.spec)));
-        const e = smoothstep01(t);
-        const angle = r.bbRampOut ? BB_RAMP_DEPLOYED_ROT * e : BB_RAMP_DEPLOYED_ROT * (1 - e);
+        // the sim's own pose, held at NECTAR bar height included (`bbRampPose`)
+        const angle = BB_RAMP_DEPLOYED_ROT * bbRampPose(r, world.time);
         for (const pivot of rampPivots) pivot.rotation.y = angle;
       }
       // ...and a NECTAR bar the same way, off `bbBarAt` and `BB_BAR_DEPLOY_S`

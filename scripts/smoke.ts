@@ -6656,11 +6656,13 @@ function queueTenth(w: World): void {
    * THE KEY HALF IS STILL ABSOLUTE. An action with no default key at all cannot be pressed
    * by a new player on any device, which is the failure this check was written for.
    */
-  /* EMPTY NOW, AND THAT IS THE POINT. `bbPass` was the only member: it shipped with no pad
-     button "because there is no button left to give it", while two chain-only actions sat on
-     LB and L3. Sharing those by role bound it, so the exemption is gone — and the check
-     immediately below fails if a member ever gains a default and is not removed from here. */
-  const PAD_DEFAULT_EXEMPT: readonly string[] = [];
+  /* `bbPass` was the first member: it shipped with no pad button "because there is no button
+     left to give it", while two chain-only actions sat on LB and L3. Sharing those by role bound
+     it. `bbBar` (2026-11-01) is the second, and this time it is true: once D-DOWN went to Reverse
+     BIOBUZZ uses every standard button, and no other action is absent from every build that has
+     a bar. `seasonUnbound` does not flag it either. The check immediately below fails if a member
+     ever gains a default and is not removed from here. */
+  const PAD_DEFAULT_EXEMPT: readonly string[] = ['bbBar'];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
   const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
   const exemptBound = PAD_DEFAULT_EXEMPT.filter((a) => (DEFAULT_BINDINGS.pad.buttons[a as PadAction] ?? []).length > 0);
@@ -28277,9 +28279,9 @@ const dumperSetup = (): RobotSetup => {
     touchButtonsFor('chain').map((b) => b.action).join(','),
   );
   check(
-    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp, reverse and the human player',
+    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp, the NECTAR bar, reverse and the human player',
     touchButtonsFor('biobuzz').map((b) => b.action).join(',') ===
-      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbReverse,bbNectar,flipFront,driveMode,park',
+      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbBar,bbReverse,bbNectar,flipFront,driveMode,park',
     touchButtonsFor('biobuzz').map((b) => b.action).join(','),
   );
 
@@ -28729,6 +28731,34 @@ const dumperSetup = (): RobotSetup => {
     check(
       'ramp keys: ...and the camera still starts unbound when the ramp holds L (no fallback for a view key)',
       J(mergeBindings({ keys: { bbPlace: ['z'], bbRamp: ['l'] } }).keys.cameraCycle) === J([]),
+    );
+  }
+  // -- the NECTAR bar got its own action on 2026-11-01 (it rode Deploy ramp before): the apostrophe,
+  // beside Reverse's semicolon, and no pad button (BIOBUZZ uses all sixteen)
+  {
+    check(
+      'bar keys: NECTAR bar defaults to the apostrophe and no pad button, and the label no longer shares the ramp\'s',
+      J(DEFAULT_BINDINGS.keys.bbBar) === J(["'"]) && J(DEFAULT_BINDINGS.pad.buttons.bbBar) === J([]) &&
+        ACTION_LABELS.bbRamp === 'Deploy ramp' && ACTION_LABELS.bbBar === 'NECTAR bar',
+    );
+    check(
+      'bar keys: a map saved before the bar had its own action loads it on the apostrophe',
+      J(mergeBindings({ keys: { bbRamp: ['z'], bbReverse: [';'] } }).keys.bbBar) === J(["'"]),
+    );
+    check(
+      'bar keys: ...or, with the apostrophe on a BIOBUZZ action, on the first free fallback',
+      J(mergeBindings({ keys: { bbPass: ["'"] } }).keys.bbBar) === J(['[']) &&
+        J(mergeBindings({ keys: { bbPass: ["'"], bbPlace: ['['] } }).keys.bbBar) === J([']']),
+    );
+    check(
+      'bar keys: having no default pad button does not mark BIOBUZZ as needing a look',
+      !seasonUnbound(DEFAULT_BINDINGS, 'biobuzz').includes('bbBar') &&
+        !seasonUnbound(mergeBindings({ keys: { bbRamp: ['z'] } }), 'biobuzz').includes('bbBar'),
+      J(seasonUnbound(DEFAULT_BINDINGS, 'biobuzz')),
+    );
+    check(
+      'bar keys: ...but an unbound KEY still does',
+      seasonUnbound(mergeBindings({ keys: { bbBar: [] } }), 'biobuzz').includes('bbBar'),
     );
   }
   // -- the pad ramp moved from D-DOWN (13) to R3 (11) on 2026-09-26: players reported D-DOWN

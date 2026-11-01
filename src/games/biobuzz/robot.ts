@@ -33,7 +33,11 @@ import {
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
   bbRampDeployS,
+  BB_RAMP_ANGLE,
+  BB_RAMP_BAR_E,
+  BB_RAMP_L,
   BB_RAMP_OUT,
+  BB_RAMP_PIVOT_BACK,
   BB_SIDE_ROLLER_PROTRUDE,
   BB_TURRET_AXLE_Z,
   BB_TURRET_SOLVE_PASSES,
@@ -1709,7 +1713,16 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
   if (bbIntakeKindOf(r.spec) !== 'ramp') return;
   const e = debouncedPress(r.bbRampHeld ?? false, r.bbRampUpAt, enabled && (cmd?.bbRamp ?? false), time);
   if (e.press) {
-    r.bbRampOut = !(r.bbRampOut ?? false);
+    if (r.bbRampFrom !== undefined || r.bbBarOut) {
+      // once the bar has been used the swing starts from wherever the ramp IS (`bbRampPose`); from
+      // the bar, the ramp button deploys
+      const from = bbRampPose(r, time);
+      r.bbRampOut = !(r.bbRampOut ?? false);
+      if (r.bbBarOut) r.bbBarOut = false;
+      r.bbRampFrom = from;
+    } else {
+      r.bbRampOut = !(r.bbRampOut ?? false);
+    }
     r.bbRampAt = time;
     // A FRESH PRESS RE-ARMS THE SWING GUARD (owner, 2026-09-20: a swing that would carry the
     // ramp into a static reverses, and — once reversed — does not test again for the REST of
@@ -1722,16 +1735,43 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
 }
 
 /**
- * THE RAMP'S DEPLOY FRACTION RIGHT NOW, `e` in `[0, 1]` — 0 folded, 1 fully deployed — the ONE
- * eased curve both the sim's swing-collision guard (`bbRampSwingShapes`, `bodies.ts`) and the
- * renderer's own ease use, so the physics box and the drawn ramp cannot show two different poses
- * for the same tick. `null` when there is no swing in flight (settled either way, or never
- * toggled) — the caller's cue to skip the guard's own (Rapier or 2D-rect) query entirely.
+ * HOLD THE RAMP AT BAR HEIGHT, OR LIFT IT FROM THERE — the `bbBar` button on a ramp that doubles as
+ * a NECTAR bar (`bbHasRampBar`; `nectarReject.ts`'s `bbBarStep` owns the latch). From folded or
+ * deployed it swings to `BB_RAMP_BAR_E`; from the bar it folds. The swing starts where the ramp is.
+ */
+export function bbRampBarToggle(r: RobotState, time: number): void {
+  const from = bbRampPose(r, time);
+  r.bbBarOut = !(r.bbBarOut ?? false);
+  if (r.bbRampOut) r.bbRampOut = false;
+  r.bbRampFrom = from;
+  r.bbRampAt = time;
+  r.bbRampBlocked = false;
+}
+
+/** the pose the current ramp swing ends at: 0 folded, `BB_RAMP_BAR_E` the NECTAR bar, 1 deployed */
+function rampTarget(r: RobotState): number {
+  return r.bbRampOut ? 1 : r.bbBarOut ? BB_RAMP_BAR_E : 0;
+}
+
+/** the pose the current swing started from: `bbRampFrom`, or the far end on a ramp whose bar was
+ * never used (every swing a full one) */
+function rampFrom(r: RobotState): number {
+  return r.bbRampFrom ?? (r.bbRampOut ? 0 : 1);
+}
+
+/**
+ * THE RAMP'S POSE MID-SWING, `e` in `[0, 1]` — 0 folded, 1 fully deployed — the ONE eased curve
+ * both the sim's swing-collision guard (`bbRampSwingShapes`, `bodies.ts`) and the renderers use
+ * (`bbRampPose`), so the physics box and the drawn ramp cannot show two different poses for the
+ * same tick. `null` when there is no swing in flight (settled at any pose, or never toggled) — the
+ * caller's cue to skip the guard's own (Rapier or 2D-rect) query entirely.
  *
- * The curve is the standard smoothstep `t²(3−2t)` over `t = (time − bbRampAt) / BB_RAMP_DEPLOY_S`
- * — DEPLOYING (`bbRampOut` true) sweeps `e` from 0 to 1, FOLDING sweeps it from 1 to 0 (`1 − e`),
- * so a fold started at any point along a deploy retraces the SAME angle curve backward rather
- * than snapping.
+ * The curve is the standard smoothstep `t²(3−2t)`. Without `bbRampFrom` it runs over
+ * `t = (time − bbRampAt) / BB_RAMP_DEPLOY_S` — DEPLOYING (`bbRampOut` true) sweeps `e` from 0 to 1,
+ * FOLDING sweeps it from 1 to 0 (`1 − e`), so a fold started at any point along a deploy retraces
+ * the SAME angle curve backward rather than snapping. With it (the bar has been used), the swing
+ * runs from `bbRampFrom` to the target pose in `BB_RAMP_DEPLOY_S` times the share of the full
+ * swing it covers: the same servo at the same speed.
  */
 export function bbRampSwingProgress(r: RobotState, time: number): number | null {
   if (bbIntakeKindOf(r.spec) !== 'ramp') return null;
@@ -1739,10 +1779,41 @@ export function bbRampSwingProgress(r: RobotState, time: number): number | null 
   if (at === undefined) return null;
   const elapsed = time - at;
   const swing = bbRampDeployS(r.spec);
-  if (elapsed < 0 || elapsed >= swing) return null; // settled, either way
-  const t = clamp(elapsed / swing, 0, 1);
-  const e = t * t * (3 - 2 * t);
-  return r.bbRampOut ? e : 1 - e;
+  const from = r.bbRampFrom;
+  if (from === undefined) {
+    if (elapsed < 0 || elapsed >= swing) return null; // settled, either way
+    const t = clamp(elapsed / swing, 0, 1);
+    const e = t * t * (3 - 2 * t);
+    return r.bbRampOut ? e : 1 - e;
+  }
+  const to = rampTarget(r);
+  const dur = swing * Math.abs(to - from);
+  if (elapsed < 0 || elapsed >= dur) return null;
+  const t = clamp(elapsed / dur, 0, 1);
+  return from + (to - from) * t * t * (3 - 2 * t);
+}
+
+/** THE RAMP'S POSE RIGHT NOW, swinging or settled — what both renderers draw. 0 on a build with
+ * no ramp. */
+export function bbRampPose(r: RobotState, time: number): number {
+  return bbRampSwingProgress(r, time) ?? rampTarget(r);
+}
+
+/** is this ramp SETTLED at bar height, keeping NECTAR out? (`nectarReject.ts`'s `bbBarDown`) */
+export function bbRampAtBar(r: RobotState, time: number): boolean {
+  return !!r.bbBarOut && !r.bbRampOut && bbIntakeKindOf(r.spec) === 'ramp' && bbRampSwingProgress(r, time) === null;
+}
+
+/** is the swing in flight RETRACTING (toward folded)? A reversed retraction is never re-tested by
+ * the 3D guard: it removes reach, so it cannot land inside anything (`bbRampSwingStep3d`). */
+export function bbRampRetracting(r: RobotState): boolean {
+  return rampTarget(r) < rampFrom(r);
+}
+
+/** how far past the tip line the rails' tips stand in plan at swing progress `e` (in) — the 2D
+ * swing guard's footprint for a swing to or from the bar. `BB_RAMP_OUT` at `e` = 1. */
+export function bbRampPlanReach(e: number): number {
+  return BB_RAMP_L * dsin(e * (Math.PI / 2 + BB_RAMP_ANGLE)) - BB_RAMP_PIVOT_BACK;
 }
 
 /**
@@ -1753,25 +1824,64 @@ export function bbRampSwingProgress(r: RobotState, time: number): number | null 
  * snap — and sets the oscillation guard so this one swing is not tested again (it can only ever
  * retrace ground already proven clear). `elapsed` is the caller's own `time − (the OLD bbRampAt)`,
  * from just before this call flips it.
+ *
+ * Once the bar has been used (`bbRampFrom`), the swing heads back to the stop (folded, the bar,
+ * deployed) it left, from the angle it is at now.
  */
 export function bbRampReverse(r: RobotState, time: number, elapsed: number): void {
-  r.bbRampOut = !r.bbRampOut;
-  r.bbRampAt = time - (bbRampDeployS(r.spec) - elapsed);
+  if (r.bbRampFrom === undefined && !r.bbBarOut) {
+    r.bbRampOut = !r.bbRampOut;
+    r.bbRampAt = time - (bbRampDeployS(r.spec) - elapsed);
+    r.bbRampBlocked = true;
+    return;
+  }
+  const now = bbRampPose(r, time);
+  const from = rampFrom(r);
+  const stops = [0, BB_RAMP_BAR_E, 1];
+  const back = rampTarget(r) > from ? Math.max(...stops.filter((p) => p <= from)) : Math.min(...stops.filter((p) => p >= from));
+  rampRetarget(r, time, back, now);
   r.bbRampBlocked = true;
 }
 
 /**
+ * FOLD THE RAMP NOW, from whatever pose it holds: the 3D guard's answer to a settled ramp a static
+ * pins (`rampEmbedded`) and to a ramp at bar height driven into something (`bbRampSwingStep3d`).
+ * A ramp whose bar was never used folds exactly as `bbRampReverse` always folded it.
+ */
+export function bbRampFoldNow(r: RobotState, time: number): void {
+  if (r.bbRampFrom === undefined && !r.bbBarOut) {
+    bbRampReverse(r, time, bbRampDeployS(r.spec));
+    return;
+  }
+  rampRetarget(r, time, 0, bbRampPose(r, time));
+  r.bbRampBlocked = true;
+}
+
+/** start a swing from pose `from` to the stop `to` (0, `BB_RAMP_BAR_E` or 1) */
+function rampRetarget(r: RobotState, time: number, to: number, from: number): void {
+  if (to === 1) r.bbRampOut = true;
+  else if (r.bbRampOut) r.bbRampOut = false;
+  if (to === BB_RAMP_BAR_E) r.bbBarOut = true;
+  else if (r.bbBarOut) r.bbBarOut = false;
+  r.bbRampFrom = from;
+  r.bbRampAt = time;
+}
+
+/**
  * Is the ramp not merely OUT but SETTLED — `BB_RAMP_DEPLOY_S` past its last toggle, the swing
- * time a servo-driven U-frame actually takes? The ONE reader is `bbFlowerReachOf`'s caller
- * (`play.ts`'s `retrieveFromFlower`, `sim3d/flower3d.ts`'s `flowerRetrieve3d`): a ramp mid-swing
- * reaches nothing, exactly like a folded one.
+ * time a servo-driven U-frame actually takes (less from the bar, `bbRampSwingProgress`)? The ONE
+ * reader is `bbFlowerReachOf`'s caller (`play.ts`'s `retrieveFromFlower`, `sim3d/flower3d.ts`'s
+ * `flowerRetrieve3d`): a ramp mid-swing reaches nothing, exactly like a folded one.
  *
  * Absent `bbRampAt` (the ramp has never been toggled) reads as SETTLED rather than unsettled —
  * there is no swing in flight to wait out, which matters only for `bbRampOut` written some other
  * way (a staged scene, a future spawn default) with no matching stamp.
  */
 export function bbRampSettled(r: RobotState, time: number): boolean {
-  return !!r.bbRampOut && time - (r.bbRampAt ?? -Infinity) >= bbRampDeployS(r.spec);
+  if (!r.bbRampOut) return false;
+  const swing = bbRampDeployS(r.spec);
+  const from = r.bbRampFrom;
+  return time - (r.bbRampAt ?? -Infinity) >= (from === undefined ? swing : swing * (1 - from));
 }
 
 /**

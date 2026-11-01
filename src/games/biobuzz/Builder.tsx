@@ -53,8 +53,9 @@ import {
 import {
   BB_FEED_BLURBS,
   BB_FEED_LABELS,
+  BB_RAMP_BAR_NOTE,
+  BB_REJECT_BLURBS,
   BB_REJECT_LABELS,
-  bbRejectBlurb,
   BB_INTAKE_KIND_BLURBS,
   BB_INTAKE_LABELS,
   BB_INTAKE_MOUNT_LABELS,
@@ -547,22 +548,23 @@ export function BiobuzzBuilder({ spec, setSpec, hideFrame = false }: BiobuzzBuil
           );
         })}
       </div>
-      {/* ...AND WHAT IT DOES WITH THE OPPONENT'S NECTAR, offered only when it can take one. */}
+      {/* ...AND WHAT IT DOES WITH THE OPPONENT'S NECTAR, offered only when it can take one. A ramp
+          is its own NECTAR bar (`bbHasRampBar`), so it is offered the three sorters and a note; a
+          `bar` it was saved with does what `none` does there, and shows as `none`. */}
       {feed === 'mixed' && (
         <div className="ds-opts card4">
-          {BB_NECTAR_REJECTS.map((k) => (
-            <button
-              key={k}
-              className={`ds-opt ${reject === k ? 'on' : ''}`}
-              aria-pressed={reject === k}
-              onClick={() => pickReject(k)}
-            >
-              <span className="ot">{BB_REJECT_LABELS[k]}</span>
-              <span className="od">{bbRejectBlurb(k, intakeKind)}</span>
-            </button>
-          ))}
+          {BB_NECTAR_REJECTS.filter((k) => !(intakeKind === 'ramp' && k === 'bar')).map((k) => {
+            const on = (intakeKind === 'ramp' && reject === 'bar' ? 'none' : reject) === k;
+            return (
+              <button key={k} className={`ds-opt ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => pickReject(k)}>
+                <span className="ot">{BB_REJECT_LABELS[k]}</span>
+                <span className="od">{BB_REJECT_BLURBS[k]}</span>
+              </button>
+            );
+          })}
         </div>
       )}
+      {feed === 'mixed' && intakeKind === 'ramp' && <p className="ds-hint">{BB_RAMP_BAR_NOTE}</p>}
       <div className="ds-opts four">
         {BB_INTAKE_MOUNTS.map((m) => (
           <button
