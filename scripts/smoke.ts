@@ -26463,7 +26463,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     'combos: padBinds is the single-button list when no combo is bound',
-    J(padBinds(DEFAULT_BINDINGS.pad, 'fire')) === J([[7], [0]]) &&
+    J(padBinds({ ...DEFAULT_BINDINGS.pad, buttons: { ...DEFAULT_BINDINGS.pad.buttons, fire: [7, 0] } }, 'fire')) === J([[7], [0]]) &&
+      J(padBinds(DEFAULT_BINDINGS.pad, 'fire')) === J([[7]]) &&
       J(padBinds(DEFAULT_BINDINGS.pad, 'catalyst')) === J([[4]]),
   );
 
@@ -26514,7 +26515,7 @@ const dumperSetup = (): RobotSetup => {
        `bbPlaceNectar` when `bbPlace` went to LB alongside `catalyst`. Re-pointed rather than
        re-baselined — an expected value edited to whatever the code now returns tests nothing. */
     J(b.pad.combos.fling) === J([[7, 12]]) && J(b.pad.buttons.fling) === J([10]) &&
-      J(b.pad.buttons.fire) === J([7, 0]) && J(b.pad.buttons.bbPlaceNectar) === J([12]),
+      J(b.pad.buttons.fire) === J([7]) && J(b.pad.buttons.bbPlaceNectar) === J([12]),
     J({ fling: b.pad.combos.fling, fire: b.pad.buttons.fire }),
   );
   check(
@@ -26529,7 +26530,7 @@ const dumperSetup = (): RobotSetup => {
   b = assignPadBind(b, 'park', 0, [7]); // replace park's X with RT: fire loses its RT single
   check(
     'combos: a single is stolen from every action and no combo loses it',
-    J(b.pad.buttons.park) === J([7]) && J(b.pad.buttons.fire) === J([0]) && J(b.pad.combos.catalyst) === J([[7, 12]]),
+    J(b.pad.buttons.park) === J([7]) && J(b.pad.buttons.fire) === J([]) && J(b.pad.combos.catalyst) === J([[7, 12]]),
     J({ park: b.pad.buttons.park, fire: b.pad.buttons.fire }),
   );
   b = assignPadBind(b, 'catalyst', 1, [5]); // slot 1 is the combo; replacing it with a single
@@ -26611,8 +26612,8 @@ const dumperSetup = (): RobotSetup => {
   check('resolver: and keeps firing while held', s.fire === true);
   // (2) …while an unrelated single never waits.
   r.resolve([], pad, 1000);
-  s = r.resolve([0], pad, 1000);
-  check('resolver: a single that is in no combo fires at once', s.fire === true);
+  s = r.resolve([6], pad, 1000); // LT, Intake: in no combo
+  check('resolver: a single that is in no combo fires at once', s.intake === true);
   // (3) the combo fires on the frame it completes, and MASKS both of its halves.
   r.resolve([], pad, 2000);
   s = r.resolve([7, 12], pad, 2000);
@@ -27015,7 +27016,7 @@ const dumperSetup = (): RobotSetup => {
   p = assignPadBindInGame(p, 'biobuzz', 'fire', 2, [5, 1]);
   check(
     'override/pad: a combo added in a game stays in that game',
-    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[13], [0], [1, 5]]) &&
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[13], [1, 5]]) &&
       J(effectiveBindings(p, 'chain').pad.combos.fire) === J([]),
     J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')),
   );
@@ -27081,7 +27082,7 @@ const dumperSetup = (): RobotSetup => {
   const padStolen = assignPadBind(DEFAULT_BINDINGS, 'catalyst', 0, [7]); // RT is Shoot's
   check(
     'conflict/main: a pad button an every-game action holds is still stolen',
-    J(padStolen.pad.buttons.catalyst) === J([7]) && J(padStolen.pad.buttons.fire) === J([0]),
+    J(padStolen.pad.buttons.catalyst) === J([7]) && J(padStolen.pad.buttons.fire) === J([]),
   );
 
   // A GAME SCOPE steals inside that game only, by DESYNCING the victim there.
@@ -27155,7 +27156,7 @@ const dumperSetup = (): RobotSetup => {
   const padClash = assignPadBind(padPre, 'intake', 0, [13]);
   check(
     'conflict/collision: the pad rule matches — the override loses that single',
-    J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([0]) &&
+    J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([]) &&
       J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13]),
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons),
   );
@@ -27164,7 +27165,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'conflict/collision: a combo scrubs the identical combo and leaves the singles',
     J(effectiveBindings(comboClash, 'biobuzz').pad.combos.fire) === J([]) &&
-      J(effectiveBindings(comboClash, 'biobuzz').pad.buttons.fire) === J([7, 0]),
+      J(effectiveBindings(comboClash, 'biobuzz').pad.buttons.fire) === J([7]),
     J(effectiveBindings(comboClash, 'biobuzz').pad),
   );
 }
@@ -27598,7 +27599,7 @@ const dumperSetup = (): RobotSetup => {
     sharedPadHolder(DEFAULT_BINDINGS, [3]) === 'flipFront' && sharedPadHolder(DEFAULT_BINDINGS, [3, 7]) === null &&
       J(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [3])) === J(DEFAULT_BINDINGS) &&
       J(padBinds(effectiveBindings(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [3, 7]), 'biobuzz').pad, 'fire')) ===
-        J([[7], [0], [3, 7]]),
+        J([[7], [3, 7]]),
   );
   check(
     'season scope: a main edit of a shared control still steals, as it always did',
@@ -27630,7 +27631,7 @@ const dumperSetup = (): RobotSetup => {
   const padSynced = syncPadInGame(padPre, 'biobuzz', 'fire');
   check(
     'sync/pad: RT back on Shoot comes off Deploy ramp, which had taken it',
-    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.fire) === J([7, 0]) &&
+    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.fire) === J([7]) &&
       J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.bbRamp) === J([]),
     J(effectiveBindings(padSynced, 'biobuzz').pad.buttons),
   );
@@ -28838,8 +28839,20 @@ const dumperSetup = (): RobotSetup => {
     const trigNew = cloneBindings(DEFAULT_BINDINGS);
     trigNew.pad.turnWith = 'triggers';
     check(
-      'bar pad: the known cost — a NEW map turning with the triggers has no live pad Intake (LT is paused)',
-      livePadBinds(trigNew.pad, 'intake').length === 0 && J(livePadBinds(trigNew.pad, 'fire')) === J([[0]]),
+      'bar pad: the known cost — a NEW map turning with the triggers has no live pad Shoot or Intake (RT and LT are paused)',
+      livePadBinds(trigNew.pad, 'intake').length === 0 && livePadBinds(trigNew.pad, 'fire').length === 0,
+    );
+    // SHOOT'S DUPLICATE WENT TOO (owner: "why even have the duplicate controls?" … "Drop A too")
+    check(
+      'duplicates: Shoot defaults to RT alone and A is unbound in every game',
+      J(DEFAULT_BINDINGS.pad.buttons.fire) === J([7]) && PAD_ACTIONS.every((a) => !DEFAULT_BINDINGS.pad.buttons[a].includes(0)),
+    );
+    check(
+      'duplicates: a saved map on the old RT + A Shoot loads as RT alone; a trigger-turner keeps A, and any other Shoot is left alone',
+      J(mergeBindings({ pad: { buttons: { fire: [7, 0] } } }).pad.buttons.fire) === J([7]) &&
+        J(mergeBindings({ pad: { turnWith: 'triggers', buttons: { fire: [7, 0] } } }).pad.buttons.fire) === J([7, 0]) &&
+        J(mergeBindings({ pad: { buttons: { fire: [0, 7] } } }).pad.buttons.fire) === J([0, 7]) &&
+        J(mergeBindings({ pad: { buttons: { fire: [7, 0] }, combos: { fire: [[4, 5]] } } }).pad.buttons.fire) === J([7, 0]),
     );
     check(
       'bar keys: a map saved before the bar had its own action loads it on the apostrophe',
@@ -41377,15 +41390,19 @@ function fxImportFixed(): RobotSpec {
       cloneBindings({ ...DEFAULT_BINDINGS, pad: { ...DEFAULT_BINDINGS.pad, turnCurve: 2.5 } }).pad.turnCurve === 2.5,
   );
 
+  // a trigger-turner's map as it loads: Shoot and Intake keep their old A and B (a NEW map has
+  // neither since 2026-11-01, `bar pad:` above), so its NECTAR bar has no pad button
   const trig = cloneBindings(DEFAULT_BINDINGS);
   trig.pad.turnWith = 'triggers';
+  trig.pad.buttons.fire = [7, 0];
+  trig.pad.buttons.intake = [6, 1];
+  trig.pad.buttons.bbBar = [];
   trig.pad.combos.bbPlace = [[6, 12], [12, 13]];
   check('turn with: on the stick, the pad map plays as stored', livePad(DEFAULT_BINDINGS.pad) === DEFAULT_BINDINGS.pad);
   const live = livePad(trig.pad);
   check(
     'turn with: on the triggers, every bind on LT or RT is paused and nothing else is',
-    // Intake is LT alone on a new map since 2026-11-01 (B went to NECTAR bar), so nothing is left
-    J(live.buttons.fire) === J([0]) && J(live.buttons.intake) === J([]) && J(live.combos.bbPlace) === J([[12, 13]]) &&
+    J(live.buttons.fire) === J([0]) && J(live.buttons.intake) === J([1]) && J(live.combos.bbPlace) === J([[12, 13]]) &&
       J(live.buttons.bbPlace) === J(trig.pad.buttons.bbPlace) &&
       // paused, not removed: the stored map still has them
       J(trig.pad.buttons.fire) === J([7, 0]) && J(trig.pad.combos.bbPlace) === J([[6, 12], [12, 13]]),

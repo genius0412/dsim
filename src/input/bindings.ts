@@ -540,12 +540,16 @@ export const DEFAULT_BINDINGS: ControlBindings = {
   pad: {
     driveStick: 'left',
     buttons: {
-      fire: [7, 0], // RT or A
+      // RT. A was a second Shoot until 2026-11-01, there only for a player who turns with the
+      // triggers (`turnWith`, which pauses RT). The owner dropped both duplicates: A is unbound
+      // now, and a saved map still on the old RT + A moves too (`mergeBindings`).
+      fire: [7],
       // LT. B was a second Intake until 2026-11-01 and is BIOBUZZ's NECTAR bar now (owner's pick:
       // it was the softest button on the map). A saved map still on the old LT + B moves too
-      // (`mergeBindings`). The cost: a map that turns with the triggers (`turnWith`) has LT paused
-      // and no pad Intake until the player binds one, in every game; Controls strikes the paused
-      // LT. A map that already turned with the triggers keeps B on Intake.
+      // (`mergeBindings`). The cost of dropping both duplicates: a map that turns with the triggers
+      // (`turnWith`) has LT and RT paused and no pad Shoot or Intake until the player binds them,
+      // in every game; Controls strikes the paused triggers. A map that already turned with the
+      // triggers keeps A and B.
       intake: [6],
       // R3 — the MODE TOGGLE role, shared with BIOBUZZ's Deploy ramp (no game has both). D-DOWN
       // stays unbound on purpose (see Deploy ramp below).
@@ -869,6 +873,17 @@ export function mergeBindings(saved: unknown): ControlBindings {
     out.pad.buttons.bbBar = [...DEFAULT_BINDINGS.pad.buttons.bbBar];
     // still subject to the new-action rule below, so B is not stacked on anything else that has it
     if (!freshPad.includes('bbBar')) freshPad.push('bbBar');
+  }
+  // ...and SHOOT'S OLD DEFAULT, RT + A, the same day and the same reading (owner: "why even have
+  // the duplicate controls?"). A goes unbound. Again not while the triggers turn: A is their Shoot.
+  if (
+    out.pad.turnWith !== 'triggers' &&
+    out.pad.buttons.fire.length === 2 &&
+    out.pad.buttons.fire[0] === 7 &&
+    out.pad.buttons.fire[1] === 0 &&
+    out.pad.combos.fire.length === 0
+  ) {
+    out.pad.buttons.fire = [7];
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;

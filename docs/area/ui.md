@@ -65,11 +65,13 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   map for all games). A saved map whose Intake is exactly the old LT + B moves too, on load
   (`mergeBindings`): a season reset never touches main's Intake, so without that Reset BIOBUZZ
   could not give the bar B (owner report, same day). Not on a map that turns with the triggers,
-  where B is the only live pad Intake; its bar loads unbound and marks BIOBUZZ. The cost, known
-  and checked in smoke: any map that turns with the triggers has LT paused and no pad Intake until
-  the player binds one.
-  **Why Shoot still has A:** the only job A and B ever did was be Shoot and Intake while the
-  triggers turn. B is gone from that role; A still holds it for Shoot.
+  where B is the only live pad Intake; its bar loads unbound and marks BIOBUZZ.
+  **No duplicate defaults** (owner, same day: "why even have the duplicate controls?", then "Drop
+  A too"). A and B were Shoot's and Intake's second binds, and their one job was to be Shoot and
+  Intake while the triggers turn. Shoot is RT alone and A is unbound; a stored Shoot of exactly
+  RT + A loads as RT, by the same rule and with the same trigger exception. The cost, known and
+  checked in smoke: a map that turns with the triggers has no pad Shoot or Intake until the player
+  binds them, and the tutorial hint says "Shoot has no button. Bind one in Controls."
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,

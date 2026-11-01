@@ -363,16 +363,26 @@ export function tutorialChecks(check: Check): void {
     // card across the joysticks on a phone (12-05 — BIOBUZZ's retrieve hint was 55 words).
     const rightStick = cloneBindings(DEFAULT_BINDINGS);
     rightStick.pad.driveStick = 'right';
-    // TURN WITH TRIGGERS: the drive line says so, and Shoot (RT and A by default) names A,
-    // because RT is turning the robot
+    // TURN WITH TRIGGERS: the drive line says so, and Shoot names its other button, because RT is
+    // turning the robot. A trigger-turner's saved map keeps Shoot on RT and A; a NEW map has only
+    // RT since 2026-11-01 (the duplicates went), so its hint says Shoot has no button.
     const triggers = cloneBindings(DEFAULT_BINDINGS);
     triggers.pad.turnWith = 'triggers';
+    triggers.pad.buttons.fire = [7, 0];
     const trig: TutorialHintCtx = { bindings: triggers, gamepad: true, touch: false };
+    const newTriggers = cloneBindings(DEFAULT_BINDINGS);
+    newTriggers.pad.turnWith = 'triggers';
+    const newTrig = hintText(shoot.hint({ bindings: newTriggers, gamepad: true, touch: false }));
     check(
       'hint: with the triggers turning, the drive line names LT and RT and Shoot names its other button',
       hintText(driveHint(trig)) === 'Left stick to drive, LT and RT to turn' &&
         hintText(shoot.hint(trig)).includes('A') && !hintText(shoot.hint(trig)).includes('RT'),
       `${hintText(driveHint(trig))} | ${hintText(shoot.hint(trig))}`,
+    );
+    check(
+      'hint: ...and on a new map, where RT was Shoot\'s only button, it says Shoot has no button',
+      newTrig.startsWith('Shoot has no button.'),
+      newTrig,
     );
     const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }, trig];
     const lower: string[] = [];
