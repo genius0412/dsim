@@ -1,0 +1,894 @@
+{
+  "tool": "dsim-spill-video",
+  "event": "USWASAM1",
+  "season": 2026,
+  "source": "https://api.ftcscout.org/rest/v1/events/2026/USWASAM1/matches",
+  "fetchedAt": "2026-10-31T23:46:04.171Z",
+  "note": "offsetS = FMS start minus the first played match. A video time is match1VideoS + offsetS when the stream has no cuts.",
+  "chosen": [
+    3,
+    9,
+    17,
+    22,
+    15,
+    7,
+    12,
+    16
+  ],
+  "matches": [
+    {
+      "id": 1,
+      "label": "Q01",
+      "level": "Quals",
+      "startUtc": "2026-10-31T18:18:14.130Z",
+      "offsetS": 0,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 35
+      },
+      "blue": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 17
+      },
+      "totalTips": 0,
+      "teams": [
+        {
+          "team": 7732,
+          "alliance": "Red"
+        },
+        {
+          "team": 37372,
+          "alliance": "Red"
+        },
+        {
+          "team": 7830,
+          "alliance": "Blue"
+        },
+        {
+          "team": 23398,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "label": "Q02",
+      "level": "Quals",
+      "startUtc": "2026-10-31T18:29:09.001Z",
+      "offsetS": 654.871,
+      "red": {
+        "tips": 2,
+        "autoTips": 1,
+        "teleopTips": 1,
+        "points": 59
+      },
+      "blue": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 35
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 6427,
+          "alliance": "Red"
+        },
+        {
+          "team": 3861,
+          "alliance": "Red"
+        },
+        {
+          "team": 17303,
+          "alliance": "Blue"
+        },
+        {
+          "team": 11109,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "label": "Q03",
+      "level": "Quals",
+      "startUtc": "2026-10-31T18:37:32.998Z",
+      "offsetS": 1158.868,
+      "red": {
+        "tips": 7,
+        "autoTips": 2,
+        "teleopTips": 5,
+        "points": 180
+      },
+      "blue": {
+        "tips": 4,
+        "autoTips": 0,
+        "teleopTips": 4,
+        "points": 103
+      },
+      "totalTips": 11,
+      "teams": [
+        {
+          "team": 21229,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Red"
+        },
+        {
+          "team": 16655,
+          "alliance": "Blue"
+        },
+        {
+          "team": 35817,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "label": "Q04",
+      "level": "Quals",
+      "startUtc": "2026-10-31T18:47:34.949Z",
+      "offsetS": 1760.819,
+      "red": {
+        "tips": 3,
+        "autoTips": 1,
+        "teleopTips": 2,
+        "points": 84
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 72
+      },
+      "totalTips": 5,
+      "teams": [
+        {
+          "team": 6427,
+          "alliance": "Red"
+        },
+        {
+          "team": 4054,
+          "alliance": "Red"
+        },
+        {
+          "team": 4053,
+          "alliance": "Blue"
+        },
+        {
+          "team": 36412,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "label": "Q05",
+      "level": "Quals",
+      "startUtc": "2026-10-31T18:59:03.632Z",
+      "offsetS": 2449.502,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 26
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 74
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 3861,
+          "alliance": "Red"
+        },
+        {
+          "team": 17303,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Blue"
+        },
+        {
+          "team": 37372,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "label": "Q06",
+      "level": "Quals",
+      "startUtc": "2026-10-31T19:08:01.951Z",
+      "offsetS": 2987.821,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 30
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 53
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 35817,
+          "alliance": "Red"
+        },
+        {
+          "team": 7732,
+          "alliance": "Red"
+        },
+        {
+          "team": 16655,
+          "alliance": "Blue"
+        },
+        {
+          "team": 36412,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "label": "Q07",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:04:58.002Z",
+      "offsetS": 6403.872,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 20
+      },
+      "blue": {
+        "tips": 7,
+        "autoTips": 1,
+        "teleopTips": 6,
+        "points": 168
+      },
+      "totalTips": 7,
+      "teams": [
+        {
+          "team": 4054,
+          "alliance": "Red"
+        },
+        {
+          "team": 4053,
+          "alliance": "Red"
+        },
+        {
+          "team": 21229,
+          "alliance": "Blue"
+        },
+        {
+          "team": 7830,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "label": "Q08",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:15:42.526Z",
+      "offsetS": 7048.396,
+      "red": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 58
+      },
+      "blue": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 49
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 23398,
+          "alliance": "Red"
+        },
+        {
+          "team": 16655,
+          "alliance": "Red"
+        },
+        {
+          "team": 11109,
+          "alliance": "Blue"
+        },
+        {
+          "team": 3861,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "label": "Q09",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:25:45.088Z",
+      "offsetS": 7650.958,
+      "red": {
+        "tips": 4,
+        "autoTips": 1,
+        "teleopTips": 3,
+        "points": 101
+      },
+      "blue": {
+        "tips": 7,
+        "autoTips": 2,
+        "teleopTips": 5,
+        "points": 181
+      },
+      "totalTips": 11,
+      "teams": [
+        {
+          "team": 17303,
+          "alliance": "Red"
+        },
+        {
+          "team": 6427,
+          "alliance": "Red"
+        },
+        {
+          "team": 21229,
+          "alliance": "Blue"
+        },
+        {
+          "team": 4054,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "label": "Q10",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:35:54.824Z",
+      "offsetS": 8260.694,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 27
+      },
+      "blue": {
+        "tips": 4,
+        "autoTips": 0,
+        "teleopTips": 4,
+        "points": 105
+      },
+      "totalTips": 4,
+      "teams": [
+        {
+          "team": 11109,
+          "alliance": "Red"
+        },
+        {
+          "team": 7830,
+          "alliance": "Red"
+        },
+        {
+          "team": 35817,
+          "alliance": "Blue"
+        },
+        {
+          "team": 36412,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "label": "Q11",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:43:45.726Z",
+      "offsetS": 8731.596,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 24
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 46
+      },
+      "totalTips": 1,
+      "teams": [
+        {
+          "team": 23398,
+          "alliance": "Red"
+        },
+        {
+          "team": 7732,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Blue"
+        },
+        {
+          "team": 4053,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "label": "Q12",
+      "level": "Quals",
+      "startUtc": "2026-10-31T20:54:07.968Z",
+      "offsetS": 9353.838,
+      "red": {
+        "tips": 3,
+        "autoTips": 1,
+        "teleopTips": 2,
+        "points": 102
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 1,
+        "teleopTips": 1,
+        "points": 67
+      },
+      "totalTips": 5,
+      "teams": [
+        {
+          "team": 37372,
+          "alliance": "Red"
+        },
+        {
+          "team": 16655,
+          "alliance": "Red"
+        },
+        {
+          "team": 36412,
+          "alliance": "Blue"
+        },
+        {
+          "team": 6427,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "label": "Q13",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:02:42.311Z",
+      "offsetS": 9868.181,
+      "red": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 60
+      },
+      "blue": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 29
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 23398,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Red"
+        },
+        {
+          "team": 7830,
+          "alliance": "Blue"
+        },
+        {
+          "team": 4054,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "label": "Q14",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:10:49.873Z",
+      "offsetS": 10355.743,
+      "red": {
+        "tips": 2,
+        "autoTips": 1,
+        "teleopTips": 1,
+        "points": 71
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 1,
+        "teleopTips": 1,
+        "points": 84
+      },
+      "totalTips": 4,
+      "teams": [
+        {
+          "team": 4053,
+          "alliance": "Red"
+        },
+        {
+          "team": 35817,
+          "alliance": "Red"
+        },
+        {
+          "team": 37372,
+          "alliance": "Blue"
+        },
+        {
+          "team": 3861,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "label": "Q15",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:21:12.746Z",
+      "offsetS": 10978.616,
+      "red": {
+        "tips": 8,
+        "autoTips": 1,
+        "teleopTips": 7,
+        "points": 190
+      },
+      "blue": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 20
+      },
+      "totalTips": 8,
+      "teams": [
+        {
+          "team": 17303,
+          "alliance": "Red"
+        },
+        {
+          "team": 21229,
+          "alliance": "Red"
+        },
+        {
+          "team": 11109,
+          "alliance": "Blue"
+        },
+        {
+          "team": 7732,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "label": "Q16",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:31:10.387Z",
+      "offsetS": 11576.257,
+      "red": {
+        "tips": 2,
+        "autoTips": 0,
+        "teleopTips": 2,
+        "points": 73
+      },
+      "blue": {
+        "tips": 3,
+        "autoTips": 1,
+        "teleopTips": 2,
+        "points": 84
+      },
+      "totalTips": 5,
+      "teams": [
+        {
+          "team": 35817,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Red"
+        },
+        {
+          "team": 6427,
+          "alliance": "Blue"
+        },
+        {
+          "team": 23398,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "label": "Q17",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:41:21.991Z",
+      "offsetS": 12187.861,
+      "red": {
+        "tips": 7,
+        "autoTips": 1,
+        "teleopTips": 6,
+        "points": 187
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 1,
+        "teleopTips": 0,
+        "points": 57
+      },
+      "totalTips": 8,
+      "teams": [
+        {
+          "team": 16655,
+          "alliance": "Red"
+        },
+        {
+          "team": 21229,
+          "alliance": "Red"
+        },
+        {
+          "team": 4054,
+          "alliance": "Blue"
+        },
+        {
+          "team": 37372,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "label": "Q18",
+      "level": "Quals",
+      "startUtc": "2026-10-31T21:50:16.777Z",
+      "offsetS": 12722.647,
+      "red": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 64
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 34
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 36412,
+          "alliance": "Red"
+        },
+        {
+          "team": 11109,
+          "alliance": "Red"
+        },
+        {
+          "team": 4053,
+          "alliance": "Blue"
+        },
+        {
+          "team": 17303,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "label": "Q19",
+      "level": "Quals",
+      "startUtc": "2026-10-31T22:01:22.207Z",
+      "offsetS": 13388.077,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 89
+      },
+      "blue": {
+        "tips": 3,
+        "autoTips": 1,
+        "teleopTips": 2,
+        "points": 93
+      },
+      "totalTips": 3,
+      "teams": [
+        {
+          "team": 3861,
+          "alliance": "Red"
+        },
+        {
+          "team": 7830,
+          "alliance": "Red"
+        },
+        {
+          "team": 7732,
+          "alliance": "Blue"
+        },
+        {
+          "team": 6427,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "label": "Q20",
+      "level": "Quals",
+      "startUtc": "2026-10-31T22:10:08.342Z",
+      "offsetS": 13914.212,
+      "red": {
+        "tips": 1,
+        "autoTips": 1,
+        "teleopTips": 0,
+        "points": 46
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 38
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 37372,
+          "alliance": "Red"
+        },
+        {
+          "team": 11109,
+          "alliance": "Red"
+        },
+        {
+          "team": 27393,
+          "alliance": "Blue"
+        },
+        {
+          "team": 4054,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "label": "Q21",
+      "level": "Quals",
+      "startUtc": "2026-10-31T22:18:20.540Z",
+      "offsetS": 14406.41,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 29
+      },
+      "blue": {
+        "tips": 2,
+        "autoTips": 1,
+        "teleopTips": 1,
+        "points": 77
+      },
+      "totalTips": 2,
+      "teams": [
+        {
+          "team": 7830,
+          "alliance": "Red"
+        },
+        {
+          "team": 4053,
+          "alliance": "Red"
+        },
+        {
+          "team": 17303,
+          "alliance": "Blue"
+        },
+        {
+          "team": 16655,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "label": "Q22",
+      "level": "Quals",
+      "startUtc": "2026-10-31T22:30:55.623Z",
+      "offsetS": 15161.493,
+      "red": {
+        "tips": 7,
+        "autoTips": 2,
+        "teleopTips": 5,
+        "points": 168
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 47
+      },
+      "totalTips": 8,
+      "teams": [
+        {
+          "team": 36412,
+          "alliance": "Red"
+        },
+        {
+          "team": 21229,
+          "alliance": "Red"
+        },
+        {
+          "team": 3861,
+          "alliance": "Blue"
+        },
+        {
+          "team": 23398,
+          "alliance": "Blue"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "label": "Q23",
+      "level": "Quals",
+      "startUtc": "2026-10-31T22:40:22.552Z",
+      "offsetS": 15728.422,
+      "red": {
+        "tips": 0,
+        "autoTips": 0,
+        "teleopTips": 0,
+        "points": 32
+      },
+      "blue": {
+        "tips": 1,
+        "autoTips": 0,
+        "teleopTips": 1,
+        "points": 44
+      },
+      "totalTips": 1,
+      "teams": [
+        {
+          "team": 7732,
+          "alliance": "Red"
+        },
+        {
+          "team": 17303,
+          "alliance": "Red"
+        },
+        {
+          "team": 4054,
+          "alliance": "Blue"
+        },
+        {
+          "team": 35817,
+          "alliance": "Blue"
+        }
+      ]
+    }
+  ]
+}

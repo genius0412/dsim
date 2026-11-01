@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spill Annotator</title>
+<!--
+  DSIM spill annotator (level 1): click where a TIPPED HIVE's elements come to rest in a match
+  video, and get their positions in DSIM's field frame (inches, centre origin, red HIVE at -x).
+
+  Self-contained on purpose: open this file straight from disk (file://). Nothing is uploaded;
+  the video is read by the browser from your own drive. See README.md beside it.
+
+  How the numbers are made: you click 4+ floor landmarks (tile-seam crossings, wall corners) in
+  the video and on the map, which fixes a homography (a plane-to-plane mapping) between the
+  video and the floor. A click on a ball's FLOOR CONTACT POINT then maps to field inches. The
+  mapping is only valid on the floor, so it is right for balls at rest and wrong for balls in
+  the air, which is why level 1 measures where balls stop, not how they fly.
+-->
+<script type="application/json" id="field-json">
+{
+  "note": "DSIM BIOBUZZ field, inches, centre origin. compare.ts checks these against src/games/biobuzz/config.ts and refuses to run if they drift.",
+  "half": 70.674,
+  "seams": [-70.585, -47.004, -23.502, 0, 23.502, 47.004, 70.585],
+  "hiveX": 12.75,
+  "cellDY": 13.44,
+  "cellW": 20.141,
+  "hiveLen": 37.055
+}
+</script>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --ink: #1d1f22; --mut: #5d636b; --line: #d6d6d0;
+    --accent: #1f6feb; --red: #c62828; --blue: #1565c0; --ok: #2e7d32; --warn: #a15c00;
+    --sel: #ffd54f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121417; --panel: #1b1e22; --ink: #e8e8e6; --mut: #9aa1a9; --line: #30353b;
+      --accent: #6ea8ff; --red: #ef6f6c; --blue: #74a9ff; --ok: #6cc070; --warn: #f0b45a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121417; --panel: #1b1e22; --ink: #e8e8e6; --mut: #9aa1a9; --line: #30353b;
+    --accent: #6ea8ff; --red: #ef6f6c; --blue: #74a9ff; --ok: #6cc070; --warn: #f0b45a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  button, select, label.file { font: inherit; padding: 4px 10px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); border-radius: 4px; cursor: pointer; }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.file input { display: none; }
+  #status { color: var(--mut); margin-left: auto; font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  /* The video stays on screen while the side panel scrolls: every step clicks in both. */
+  main > section { position: sticky; top: 16px; align-self: start; }
+  @media (max-width: 900px) { main > section { position: static; } }
+  #stage { position: relative; background: #000; line-height: 0; }
+  #stage video { width: 100%; display: block; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #transport { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 8px; }
+  #scrub { flex: 1 1 200px; }
+  #time { font: 13px ui-monospace, monospace; min-width: 150px; }
+  #motion { width: 100%; height: 64px; margin-top: 8px; background: var(--panel);
+    border: 1px solid var(--line); cursor: pointer; display: none; }
+  aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .hint { color: var(--mut); font-size: 13px; margin: 4px 0; }
+  #map { width: 100%; aspect-ratio: 1; display: block; }
+  #loupe { width: 160px; height: 160px; border: 1px solid var(--line); image-rendering: pixelated; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 4px; border-bottom: 1px solid var(--line); text-align: left; }
+  tr.sel td { background: color-mix(in srgb, var(--sel) 35%, transparent); }
+  tr { cursor: pointer; }
+  .tag-red { color: var(--red); font-weight: 600; }
+  .tag-blue { color: var(--blue); font-weight: 600; }
+  .good { color: var(--ok); } .bad { color: var(--warn); }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Spill Annotator</h1>
+  <label class="file">Open video<input id="fVideo" type="file" accept="video/*"></label>
+  <label class="file">Open plan<input id="fPlan" type="file" accept=".json"></label>
+  <label class="file">Open annotations<input id="fAnn" type="file" accept=".json"></label>
+  <button id="bSave">Save annotations</button>
+  <span id="status">Open a match clip to start.</span>
+</header>
+<main>
+  <section>
+    <div id="stage"><video id="video" preload="auto" muted playsinline></video><canvas id="overlay"></canvas></div>
+    <div id="transport">
+      <button data-step="-1">−1 s</button><button data-step="-0.0334">−1 f</button>
+      <button id="bPlay">Play</button>
+      <button data-step="0.0334">+1 f</button><button data-step="1">+1 s</button>
+      <select id="rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select>
+      <input id="scrub" type="range" min="0" max="1000" value="0">
+      <span id="time">0:00.00</span>
+    </div>
+    <canvas id="motion" width="1200" height="64"></canvas>
+  </section>
+  <aside>
+    <div class="card">
+      <div class="row">
+        <button id="mCal" class="on">1 · Calibrate</button>
+        <button id="mTips">2 · Tips</button>
+        <button id="mBalls">3 · Balls</button>
+      </div>
+      <div id="modeHelp" class="hint"></div>
+    </div>
+    <div class="card">
+      <canvas id="map" width="720" height="720"></canvas>
+      <div id="mapNote" class="hint"></div>
+    </div>
+    <div class="card" id="calCard">
+      <h2>Calibration <span id="calQ"></span></h2>
+      <table id="calTable"></table>
+      <div class="row" style="margin-top:8px">
+        <button id="bGrid" class="on">Grid overlay</button>
+        <button id="bClearCal">Clear</button>
+      </div>
+    </div>
+    <div class="card" id="tipCard">
+      <h2>Tips <span id="expect" class="hint"></span></h2>
+      <div class="row">
+        <button id="bTipRed" class="tag-red">+ Red hive tip here</button>
+        <button id="bTipBlue" class="tag-blue">+ Blue hive tip here</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="bBoxes">Draw hive boxes</button>
+        <button id="bScan" disabled>Scan for motion</button>
+      </div>
+      <table id="tipTable" style="margin-top:8px"></table>
+    </div>
+    <div class="card" id="ballCard">
+      <h2>Balls for the selected tip</h2>
+      <div class="row">
+        <button id="bRest">Go to rest frame</button>
+        <button id="bPre">Hold: pre-tip frame</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        Kind:
+        <button data-kind="pollen" class="on">1 Pollen</button>
+        <button data-kind="nectar">2 Nectar</button>
+        <button data-kind="unknown">0 Unsure</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label><input type="checkbox" id="cDisturbed"> a robot moved the spill before it settled</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        Visibility:
+        <select id="sVis"><option value="clear">clear</option><option value="partial">partial</option><option value="hidden">hidden</option></select>
+      </div>
+      <div id="ballSummary" class="hint"></div>
+    </div>
+    <div class="card">
+      <div class="row"><canvas id="loupe" width="160" height="160"></canvas>
+        <div class="hint">Loupe: 4× around the cursor.<br>
+          <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 1 frame · <kbd>Shift</kbd>+arrows 1 s ·
+          <kbd>P</kbd> hold pre-tip · <kbd>1</kbd><kbd>2</kbd><kbd>0</kbd> kind</div>
+      </div>
+    </div>
+  </aside>
+</main>
+<script>
+'use strict';
+// ─── field, from the embedded JSON (compare.ts verifies it against the sim) ───────────────
+const FIELD = JSON.parse(document.getElementById('field-json').textContent);
+const pivotOf = (a) => ({ x: a === 'red' ? -FIELD.hiveX : FIELD.hiveX, y: 0 });
+
+/** Floor landmarks: every tile-seam crossing. The outermost seams run along the wall base. */
+const LANDMARKS = [];
+FIELD.seams.forEach((sx, i) => FIELD.seams.forEach((sy, j) => {
+  LANDMARKS.push({ id: `S${i}${j}`, x: sx, y: sy });
+}));
+
+// ─── homography: direct linear transform with Hartley normalisation ──────────────────────
+/** 3x3 matrix as a flat row-major array of 9. */
+function normaliser(pts) {
+  const n = pts.length;
+  const cx = pts.reduce((s, p) => s + p[0], 0) / n, cy = pts.reduce((s, p) => s + p[1], 0) / n;
+  const d = pts.reduce((s, p) => s + Math.hypot(p[0] - cx, p[1] - cy), 0) / n || 1;
+  const k = Math.SQRT2 / d;
+  return [k, 0, -k * cx, 0, k, -k * cy, 0, 0, 1];
+}
+function mul(A, B) {
+  const C = new Array(9).fill(0);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) for (let k = 0; k < 3; k++) C[r * 3 + c] += A[r * 3 + k] * B[k * 3 + c];
+  return C;
+}
+function inv(M) {
+  const [a, b, c, d, e, f, g, h, i] = M;
+  const A = e * i - f * h, B = -(d * i - f * g), Cc = d * h - e * g;
+  const det = a * A + b * B + c * Cc;
+  if (Math.abs(det) < 1e-12) return null;
+  return [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), Cc, -(a * h - b * g), a * e - b * d].map((v) => v / det);
+}
+function apply(H, p) {
+  const w = H[6] * p[0] + H[7] * p[1] + H[8];
+  return [(H[0] * p[0] + H[1] * p[1] + H[2]) / w, (H[3] * p[0] + H[4] * p[1] + H[5]) / w];
+}
+/** Least-squares H with h33 = 1 (normal equations, Gaussian elimination). src -> dst. */
+function solveH(src, dst) {
+  if (src.length < 4) return null;
+  const Ts = normaliser(src), Td = normaliser(dst);
+  const s = src.map((p) => apply(Ts, p)), d = dst.map((p) => apply(Td, p));
+  const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0)), Atb = new Array(8).fill(0);
+  const addRow = (row, rhs) => {
+    for (let r = 0; r < 8; r++) { Atb[r] += row[r] * rhs; for (let c = 0; c < 8; c++) AtA[r][c] += row[r] * row[c]; }
+  };
+  for (let k = 0; k < s.length; k++) {
+    const [x, y] = s[k], [u, v] = d[k];
+    addRow([x, y, 1, 0, 0, 0, -u * x, -u * y], u);
+    addRow([0, 0, 0, x, y, 1, -v * x, -v * y], v);
+  }
+  const M = AtA.map((r, i) => [...r, Atb[i]]);
+  for (let c = 0; c < 8; c++) {
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-12) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < 8; r++) if (r !== c) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k < 9; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const h = M.map((r, i) => r[8] / r[i]);
+  const Hn = [...h, 1];
+  const Tdi = inv(Td);
+  const H = mul(mul(Tdi, Hn), Ts);
+  return H.map((v) => v / H[8]);
+}
+
+// ─── state ───────────────────────────────────────────────────────────────────────────────
+const S = {
+  clip: null,          // { name, width, height, duration }
+  plan: null,          // plan.json from plan.mjs (optional)
+  pairs: [],           // { landmark, field:[x,y], img:[u,v] }
+  H: null,             // field -> image
+  Hi: null,            // image -> field
+  rmsPx: null,
+  tips: [],            // { id, t, alliance, visibility, restT, disturbed, balls:[{u,v,x,y,kind}] }
+  sel: -1,             // selected tip index
+  mode: 'cal',
+  pendingLandmark: null,
+  kind: 'pollen',
+  grid: true,
+  hiveBoxes: {},       // { red:[u0,v0,u1,v1], blue:[...] } in video px
+  boxDraw: null,       // 'red' | 'blue' while drawing
+  motion: null,        // { t:[], red:[], blue:[] }
+};
+window.__spill = S;    // for scripted tests (Playwright) and the console
+
+const $ = (id) => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
+const map = $('map'), mctx = map.getContext('2d');
+const loupe = $('loupe'), lctx = loupe.getContext('2d');
+
+function status(msg) { $('status').textContent = msg; }
+function fmtT(t) {
+  if (!isFinite(t)) return '–';
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(2).padStart(5, '0')}`;
+}
+
+// ─── calibration ─────────────────────────────────────────────────────────────────────────
+function recalibrate() {
+  S.H = null; S.Hi = null; S.rmsPx = null;
+  for (const p of S.pairs) p.errPx = null;
+  if (S.pairs.length >= 4) {
+    const H = solveH(S.pairs.map((p) => p.field), S.pairs.map((p) => p.img));
+    if (H) {
+      S.H = H; S.Hi = inv(H);
+      const err = S.pairs.map((p) => { const q = apply(H, p.field); return Math.hypot(q[0] - p.img[0], q[1] - p.img[1]); });
+      S.rmsPx = Math.sqrt(err.reduce((s, e) => s + e * e, 0) / err.length);
+      S.pairs.forEach((p, i) => { p.errPx = err[i]; });
+    }
+  }
+  for (const tip of S.tips) for (const b of tip.balls) {
+    if (S.Hi) { const f = apply(S.Hi, [b.u, b.v]); b.x = f[0]; b.y = f[1]; } else { b.x = b.y = null; }
+  }
+  renderAll();
+}
+function imgToField(u, v) { return S.Hi ? apply(S.Hi, [u, v]) : null; }
+
+// ─── geometry helpers for the overlay ────────────────────────────────────────────────────
+function scale() { return { sx: overlay.width / (S.clip?.width || 1), sy: overlay.height / (S.clip?.height || 1) }; }
+function toCanvas(u, v) { const { sx, sy } = scale(); return [u * sx, v * sy]; }
+function eventToImg(e) {
+  const r = overlay.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * (S.clip?.width || 1), (e.clientY - r.top) / r.height * (S.clip?.height || 1)];
+}
+
+function drawFieldLine(a, b, style, width) {
+  // sample the segment so a line that leaves the frame still draws its visible part
+  ctx.strokeStyle = style; ctx.lineWidth = width; ctx.beginPath();
+  const n = 24;
+  for (let i = 0; i <= n; i++) {
+    const p = [a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n];
+    const q = apply(S.H, p); const c = toCanvas(q[0], q[1]);
+    if (i === 0) ctx.moveTo(c[0], c[1]); else ctx.lineTo(c[0], c[1]);
+  }
+  ctx.stroke();
+}
+
+function renderOverlay() {
+  const r = overlay.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if (overlay.width !== Math.round(r.width * dpr) || overlay.height !== Math.round(r.height * dpr)) {
+    overlay.width = Math.round(r.width * dpr); overlay.height = Math.round(r.height * dpr);
+  }
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!S.clip) return;
+  const lw = Math.max(1, dpr);
+  if (S.H && S.grid) {
+    const L = FIELD.seams[0], R = FIELD.seams[FIELD.seams.length - 1];
+    for (const s of FIELD.seams) {
+      drawFieldLine([s, L], [s, R], 'rgba(0,255,120,.55)', lw);
+      drawFieldLine([L, s], [R, s], 'rgba(0,255,120,.55)', lw);
+    }
+    for (const a of ['red', 'blue']) {
+      const p = pivotOf(a), hw = FIELD.cellW / 2, hl = FIELD.hiveLen / 2;
+      const col = a === 'red' ? 'rgba(255,80,80,.9)' : 'rgba(80,160,255,.9)';
+      drawFieldLine([p.x - hw, -hl], [p.x + hw, -hl], col, 2 * lw);
+      drawFieldLine([p.x + hw, -hl], [p.x + hw, hl], col, 2 * lw);
+      drawFieldLine([p.x + hw, hl], [p.x - hw, hl], col, 2 * lw);
+      drawFieldLine([p.x - hw, hl], [p.x - hw, -hl], col, 2 * lw);
+    }
+  }
+  for (const p of S.pairs) {
+    const [x, y] = toCanvas(p.img[0], p.img[1]);
+    ctx.strokeStyle = '#ffeb3b'; ctx.lineWidth = 2 * lw;
+    ctx.beginPath(); ctx.moveTo(x - 8 * lw, y); ctx.lineTo(x + 8 * lw, y); ctx.moveTo(x, y - 8 * lw); ctx.lineTo(x, y + 8 * lw); ctx.stroke();
+    ctx.fillStyle = '#ffeb3b'; ctx.font = `${12 * lw}px system-ui`; ctx.fillText(p.landmark, x + 6 * lw, y - 6 * lw);
+  }
+  for (const [a, box] of Object.entries(S.hiveBoxes)) {
+    const [x0, y0] = toCanvas(box[0], box[1]), [x1, y1] = toCanvas(box[2], box[3]);
+    ctx.setLineDash([6 * lw, 4 * lw]); ctx.strokeStyle = a === 'red' ? '#ff5252' : '#448aff'; ctx.lineWidth = 2 * lw;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); ctx.setLineDash([]);
+  }
+  const tip = S.tips[S.sel];
+  if (tip) for (const b of tip.balls) {
+    const [x, y] = toCanvas(b.u, b.v);
+    ctx.strokeStyle = b.kind === 'nectar' ? '#ff4081' : b.kind === 'pollen' ? '#ffd600' : '#ffffff';
+    ctx.lineWidth = 2 * lw; ctx.beginPath(); ctx.arc(x, y, 7 * lw, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, 1.5 * lw, 0, Math.PI * 2); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+  }
+}
+
+// ─── the top-down map ────────────────────────────────────────────────────────────────────
+const MAP_HALF = 80; // the field's 70.7 plus room for the north label
+function mapXY(x, y) { const k = map.width / (2 * MAP_HALF); return [(x + MAP_HALF) * k, (MAP_HALF - y) * k]; }
+function mapToField(px, py) { const k = map.width / (2 * MAP_HALF); return [px / k - MAP_HALF, MAP_HALF - py / k]; }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function renderMap() {
+  const W = map.width;
+  mctx.clearRect(0, 0, W, W);
+  mctx.fillStyle = css('--panel'); mctx.fillRect(0, 0, W, W);
+  const [x0, y0] = mapXY(-FIELD.half, FIELD.half), [x1, y1] = mapXY(FIELD.half, -FIELD.half);
+  mctx.fillStyle = 'rgba(128,128,128,.12)'; mctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  mctx.strokeStyle = css('--mut'); mctx.lineWidth = 3; mctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  mctx.strokeStyle = css('--line'); mctx.lineWidth = 1.5;
+  for (const s of FIELD.seams) {
+    let a = mapXY(s, FIELD.seams[0]), b = mapXY(s, FIELD.seams[6]);
+    mctx.beginPath(); mctx.moveTo(a[0], a[1]); mctx.lineTo(b[0], b[1]); mctx.stroke();
+    a = mapXY(FIELD.seams[0], s); b = mapXY(FIELD.seams[6], s);
+    mctx.beginPath(); mctx.moveTo(a[0], a[1]); mctx.lineTo(b[0], b[1]); mctx.stroke();
+  }
+  for (const a of ['red', 'blue']) {
+    const p = pivotOf(a);
+    const [hx0, hy0] = mapXY(p.x - FIELD.cellW / 2, FIELD.hiveLen / 2), [hx1, hy1] = mapXY(p.x + FIELD.cellW / 2, -FIELD.hiveLen / 2);
+    mctx.fillStyle = a === 'red' ? 'rgba(198,40,40,.25)' : 'rgba(21,101,192,.25)';
+    mctx.fillRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
+    mctx.strokeStyle = css(a === 'red' ? '--red' : '--blue'); mctx.lineWidth = 2; mctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
+    const c = mapXY(p.x, 0);
+    mctx.fillStyle = mctx.strokeStyle; mctx.font = '600 22px system-ui'; mctx.textAlign = 'center';
+    mctx.fillText(a === 'red' ? 'RED' : 'BLUE', c[0], c[1] + 8);
+  }
+  mctx.fillStyle = css('--mut'); mctx.font = '20px system-ui'; mctx.textAlign = 'center';
+  mctx.fillText('+y (north)', W / 2, 26);
+  // landmarks
+  if (S.mode === 'cal') for (const L of LANDMARKS) {
+    const [x, y] = mapXY(L.x, L.y);
+    const used = S.pairs.some((p) => p.landmark === L.id);
+    mctx.beginPath(); mctx.arc(x, y, used ? 7 : 5, 0, Math.PI * 2);
+    mctx.fillStyle = S.pendingLandmark === L.id ? css('--accent') : used ? css('--ok') : css('--mut');
+    mctx.fill();
+  }
+  // balls of the selected tip (and faint ones of the others)
+  S.tips.forEach((tip, i) => {
+    for (const b of tip.balls) {
+      if (b.x == null) continue;
+      const [x, y] = mapXY(b.x, b.y);
+      mctx.beginPath(); mctx.arc(x, y, i === S.sel ? 7 : 4, 0, Math.PI * 2);
+      // build the whole colour first: a canvas silently ignores a half-written one
+      const rgb = b.kind === 'nectar' ? '216,27,96' : b.kind === 'pollen' ? '249,168,37' : '120,120,120';
+      mctx.fillStyle = `rgba(${rgb},${i === S.sel ? 1 : 0.35})`;
+      mctx.fill();
+    }
+  });
+  $('mapNote').textContent = S.mode === 'cal'
+    ? (S.pendingLandmark ? `Now click landmark ${S.pendingLandmark} in the video.` : 'Click a dot (a tile-seam crossing) on the map, then the same point in the video.')
+    : 'DSIM frame: red HIVE at −x. Selected tip\'s balls are solid.';
+}
+
+// ─── tables and summaries ────────────────────────────────────────────────────────────────
+function renderCal() {
+  const q = $('calQ');
+  if (S.rmsPx == null) { q.textContent = `(${S.pairs.length}/4+ points)`; q.className = 'hint'; }
+  else { q.textContent = `RMS ${S.rmsPx.toFixed(1)} px`; q.className = S.rmsPx < 4 ? 'good' : 'bad'; }
+  $('calTable').innerHTML = '<tr><th>landmark</th><th>field (in)</th><th>err px</th><th></th></tr>' +
+    S.pairs.map((p, i) => `<tr><td>${p.landmark}</td><td>${p.field[0].toFixed(1)}, ${p.field[1].toFixed(1)}</td>` +
+      `<td>${p.errPx != null ? p.errPx.toFixed(1) : '–'}</td><td><button data-delpair="${i}">×</button></td></tr>`).join('');
+}
+function expectedFor() {
+  if (!S.plan || !S.clip) return null;
+  const m = /Q0*(\d+)/i.exec(S.clip.name);
+  if (!m) return null;
+  return S.plan.matches.find((x) => x.id === Number(m[1])) || null;
+}
+function renderTips() {
+  const ex = expectedFor();
+  $('expect').textContent = ex ? `— FTCScout: red ${ex.red.tips} (auto ${ex.red.autoTips}), blue ${ex.blue.tips} (auto ${ex.blue.autoTips})` : '';
+  $('tipTable').innerHTML = '<tr><th>time</th><th>hive</th><th>vis</th><th>balls</th><th></th></tr>' +
+    S.tips.map((t, i) => `<tr data-tip="${i}" class="${i === S.sel ? 'sel' : ''}"><td>${fmtT(t.t)}</td>` +
+      `<td class="tag-${t.alliance}">${t.alliance}</td><td>${t.visibility}${t.disturbed ? ' · moved' : ''}</td>` +
+      `<td>${t.balls.length}</td><td><button data-deltip="${i}">×</button></td></tr>`).join('');
+  $('bScan').disabled = !(S.hiveBoxes.red || S.hiveBoxes.blue);
+}
+function renderBalls() {
+  const tip = S.tips[S.sel];
+  const out = $('ballSummary');
+  for (const b of document.querySelectorAll('[data-kind]')) b.classList.toggle('on', b.dataset.kind === S.kind);
+  if (!tip) { out.textContent = 'Select a tip in the Tips list.'; return; }
+  $('cDisturbed').checked = !!tip.disturbed;
+  $('sVis').value = tip.visibility;
+  const p = pivotOf(tip.alliance);
+  const ds = tip.balls.filter((b) => b.x != null).map((b) => Math.hypot(b.x - p.x, b.y - p.y)).sort((a, b) => a - b);
+  out.textContent = `${tip.balls.length} balls · rest frame ${fmtT(tip.restT)}` +
+    (ds.length ? ` · from pivot: ${ds.map((d) => d.toFixed(0)).join(', ')} in` : '') +
+    (S.Hi ? '' : ' · calibrate first to get field positions');
+}
+function renderMode() {
+  $('mCal').classList.toggle('on', S.mode === 'cal');
+  $('mTips').classList.toggle('on', S.mode === 'tips');
+  $('mBalls').classList.toggle('on', S.mode === 'balls');
+  $('modeHelp').textContent = {
+    cal: 'Click a landmark dot on the map, then the same floor point in the video. Use 6–8 points spread over the whole floor. The green grid should then sit on the tile seams.',
+    tips: 'Find each tip (the tray swings over). Pause on the moment it starts and press the red or blue button. "Draw hive boxes" + "Scan" plots motion to find tips faster.',
+    balls: 'Go to the rest frame (all spilled balls stopped). Click where each SPILLED ball touches the floor. Click a marked ball again to remove it. Hold P to compare with the frame before the tip.',
+  }[S.mode];
+  $('bBoxes').classList.toggle('on', !!S.boxDraw);
+}
+function renderTime() {
+  $('time').textContent = `${fmtT(video.currentTime)} / ${fmtT(video.duration)}`;
+  if (isFinite(video.duration) && video.duration > 0) $('scrub').value = String(Math.round(video.currentTime / video.duration * 1000));
+}
+function renderMotion() {
+  const c = $('motion');
+  if (!S.motion) { c.style.display = 'none'; return; }
+  c.style.display = 'block';
+  const g = c.getContext('2d'), W = c.width, Hh = c.height;
+  g.clearRect(0, 0, W, Hh);
+  const dur = video.duration || 1;
+  for (const a of ['red', 'blue']) {
+    const ys = S.motion[a]; if (!ys) continue;
+    const mx = Math.max(...ys, 1e-6);
+    g.strokeStyle = a === 'red' ? '#e53935' : '#1e88e5'; g.lineWidth = 2; g.beginPath();
+    ys.forEach((y, i) => { const x = S.motion.t[i] / dur * W, yy = Hh - 4 - y / mx * (Hh - 8); if (i) g.lineTo(x, yy); else g.moveTo(x, yy); });
+    g.stroke();
+  }
+  g.fillStyle = css('--ink'); g.fillRect(video.currentTime / dur * W - 1, 0, 2, Hh);
+  for (const t of S.tips) { g.fillStyle = t.alliance === 'red' ? '#e53935' : '#1e88e5'; g.fillRect(t.t / dur * W - 2, 0, 4, 10); }
+}
+function renderAll() { renderOverlay(); renderMap(); renderCal(); renderTips(); renderBalls(); renderMode(); renderTime(); renderMotion(); autosave(); }
+
+// ─── persistence ─────────────────────────────────────────────────────────────────────────
+function snapshot() {
+  return {
+    tool: 'dsim-spill-video', version: 1,
+    event: S.plan?.event ?? null,
+    match: expectedFor()?.id ?? null,
+    clip: S.clip,
+    field: FIELD,
+    calibration: { pairs: S.pairs.map(({ landmark, field, img }) => ({ landmark, field, img })), H: S.H, rmsPx: S.rmsPx },
+    hiveBoxes: S.hiveBoxes,
+    tips: S.tips.map((t) => ({ ...t, balls: t.balls.map((b) => ({ ...b })) })),
+    savedAt: new Date().toISOString(),
+  };
+}
+function restore(d) {
+  S.pairs = (d.calibration?.pairs || []).map((p) => ({ ...p }));
+  S.tips = (d.tips || []).map((t) => ({ ...t, balls: (t.balls || []).map((b) => ({ ...b })) }));
+  S.hiveBoxes = d.hiveBoxes || {};
+  S.sel = S.tips.length ? 0 : -1;
+  recalibrate();
+}
+function autosave() {
+  if (!S.clip) return;
+  try { localStorage.setItem('spill:' + S.clip.name, JSON.stringify(snapshot())); } catch (e) { /* storage unavailable: Save still works */ }
+}
+function download(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ─── video ───────────────────────────────────────────────────────────────────────────────
+function openVideo(file) {
+  video.src = URL.createObjectURL(file);
+  video.onloadedmetadata = () => {
+    S.clip = { name: file.name, width: video.videoWidth, height: video.videoHeight, duration: video.duration };
+    let restored = false;
+    try { const saved = localStorage.getItem('spill:' + file.name); if (saved) { restore(JSON.parse(saved)); restored = true; } } catch (e) { /* ignore */ }
+    status(`${file.name} · ${video.videoWidth}×${video.videoHeight} · ${fmtT(video.duration)}${restored ? ' · restored your last session' : ''}`);
+    renderAll();
+  };
+}
+function seek(t) {
+  return new Promise((res) => {
+    const target = Math.max(0, Math.min(video.duration || 0, t));
+    if (Math.abs(video.currentTime - target) < 1e-4) { res(); return; }
+    video.addEventListener('seeked', () => res(), { once: true });
+    video.currentTime = target;
+  });
+}
+video.addEventListener('timeupdate', () => { renderTime(); renderMotion(); });
+video.addEventListener('seeked', () => { renderTime(); renderMotion(); });
+
+// ─── motion scan: mean absolute frame difference inside each hive box ────────────────────
+async function scanMotion() {
+  const step = 0.5, boxes = S.hiveBoxes;
+  const off = document.createElement('canvas'), oc = off.getContext('2d', { willReadFrequently: true });
+  const prev = {}, out = { t: [], red: boxes.red ? [] : null, blue: boxes.blue ? [] : null };
+  const keep = video.currentTime;
+  video.pause();
+  for (let t = 0; t < video.duration; t += step) {
+    await seek(t);
+    out.t.push(t);
+    for (const a of ['red', 'blue']) {
+      const b = boxes[a]; if (!b) continue;
+      const w = Math.max(8, Math.round(b[2] - b[0])), h = Math.max(8, Math.round(b[3] - b[1]));
+      off.width = w; off.height = h;
+      oc.drawImage(video, b[0], b[1], w, h, 0, 0, w, h);
+      const px = oc.getImageData(0, 0, w, h).data;
+      let diff = 0;
+      if (prev[a]) for (let i = 0; i < px.length; i += 4) diff += Math.abs(px[i] - prev[a][i]) + Math.abs(px[i + 1] - prev[a][i + 1]) + Math.abs(px[i + 2] - prev[a][i + 2]);
+      prev[a] = px;
+      out[a].push(diff / (w * h));
+    }
+    if (out.t.length % 20 === 0) status(`Scanning… ${fmtT(t)} / ${fmtT(video.duration)}`);
+  }
+  S.motion = out;
+  await seek(keep);
+  status('Scan done: peaks in a line are moments of motion in that hive box. Click the strip to jump there.');
+  renderMotion();
+}
+
+// ─── input ───────────────────────────────────────────────────────────────────────────────
+let dragStart = null;
+overlay.addEventListener('mousedown', (e) => {
+  if (!S.clip) return;
+  const [u, v] = eventToImg(e);
+  if (S.boxDraw) { dragStart = [u, v]; return; }
+  if (S.mode === 'cal') {
+    if (!S.pendingLandmark) { status('Pick a landmark on the map first.'); return; }
+    const L = LANDMARKS.find((l) => l.id === S.pendingLandmark);
+    S.pairs = S.pairs.filter((p) => p.landmark !== L.id);
+    S.pairs.push({ landmark: L.id, field: [L.x, L.y], img: [u, v] });
+    S.pendingLandmark = null;
+    recalibrate();
+    status(S.pairs.length < 4 ? `${S.pairs.length} of at least 4 points. Pick the next landmark on the map.`
+      : S.rmsPx == null ? `${S.pairs.length} points but no solution: they lie along one line. Add a point off that line (another row or column of seams).`
+      : `Calibrated on ${S.pairs.length} points, RMS ${S.rmsPx.toFixed(1)} px. Check that the green grid sits on the seams; add points or delete bad ones.`);
+  } else if (S.mode === 'balls') {
+    const tip = S.tips[S.sel];
+    if (!tip) { status('Select or add a tip first.'); return; }
+    const { sx } = scale(), hitPx = 9 / sx * (window.devicePixelRatio || 1);
+    const hit = tip.balls.findIndex((b) => Math.hypot(b.u - u, b.v - v) < hitPx);
+    if (hit >= 0) tip.balls.splice(hit, 1);
+    else {
+      const f = imgToField(u, v);
+      tip.balls.push({ u, v, x: f ? f[0] : null, y: f ? f[1] : null, kind: S.kind });
+    }
+    renderAll();
+  }
+});
+overlay.addEventListener('mouseup', (e) => {
+  if (!S.boxDraw || !dragStart) return;
+  const [u, v] = eventToImg(e);
+  S.hiveBoxes[S.boxDraw] = [Math.min(dragStart[0], u), Math.min(dragStart[1], v), Math.max(dragStart[0], u), Math.max(dragStart[1], v)];
+  dragStart = null;
+  S.boxDraw = S.boxDraw === 'red' ? 'blue' : null;
+  status(S.boxDraw ? 'Now drag a box around the BLUE hive tray.' : 'Hive boxes set. Press "Scan for motion".');
+  renderAll();
+});
+overlay.addEventListener('mousemove', (e) => {
+  if (!S.clip) return;
+  const [u, v] = eventToImg(e);
+  const R = 20;
+  lctx.imageSmoothingEnabled = false;
+  lctx.fillStyle = '#000'; lctx.fillRect(0, 0, 160, 160);
+  try { lctx.drawImage(video, u - R, v - R, 2 * R, 2 * R, 0, 0, 160, 160); } catch (err) { /* frame not ready */ }
+  lctx.strokeStyle = '#ff1744'; lctx.lineWidth = 1;
+  lctx.beginPath(); lctx.moveTo(80, 60); lctx.lineTo(80, 100); lctx.moveTo(60, 80); lctx.lineTo(100, 80); lctx.stroke();
+  const f = imgToField(u, v);
+  if (f) { lctx.fillStyle = '#fff'; lctx.font = '12px ui-monospace'; lctx.fillText(`${f[0].toFixed(1)}, ${f[1].toFixed(1)} in`, 4, 154); }
+});
+map.addEventListener('click', (e) => {
+  if (S.mode !== 'cal') return;
+  const r = map.getBoundingClientRect();
+  const [fx, fy] = mapToField((e.clientX - r.left) / r.width * map.width, (e.clientY - r.top) / r.height * map.height);
+  let best = null, bd = 1e9;
+  for (const L of LANDMARKS) { const d = Math.hypot(L.x - fx, L.y - fy); if (d < bd) { bd = d; best = L; } }
+  if (best && bd < 10) { S.pendingLandmark = best.id; renderMap(); status(`Landmark ${best.id} (${best.x.toFixed(1)}, ${best.y.toFixed(1)}): now click it in the video.`); }
+});
+$('motion').addEventListener('click', (e) => {
+  const r = e.target.getBoundingClientRect();
+  seek((e.clientX - r.left) / r.width * video.duration);
+});
+
+function addTip(alliance) {
+  if (!S.clip) return;
+  const t = video.currentTime;
+  S.tips.push({ id: Date.now().toString(36), t, alliance, visibility: 'clear', restT: t + 4, disturbed: false, balls: [] });
+  S.tips.sort((a, b) => a.t - b.t);
+  S.sel = S.tips.findIndex((x) => x.t === t && x.alliance === alliance);
+  setMode('balls');
+}
+function setMode(m) { S.mode = m; S.pendingLandmark = null; renderAll(); }
+
+$('fVideo').addEventListener('change', (e) => e.target.files[0] && openVideo(e.target.files[0]));
+$('fPlan').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  S.plan = JSON.parse(await f.text()); status(`Plan for ${S.plan.event}: ${S.plan.matches.length} matches.`); renderAll();
+});
+$('fAnn').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  restore(JSON.parse(await f.text())); status(`Loaded annotations ${f.name}.`);
+});
+$('bSave').addEventListener('click', () => {
+  if (!S.clip) return;
+  download(S.clip.name.replace(/\.[^.]+$/, '') + '.spill.json', JSON.stringify(snapshot(), null, 2));
+});
+$('bPlay').addEventListener('click', () => { if (video.paused) video.play(); else video.pause(); });
+video.addEventListener('play', () => { $('bPlay').textContent = 'Pause'; });
+video.addEventListener('pause', () => { $('bPlay').textContent = 'Play'; });
+for (const b of document.querySelectorAll('[data-step]')) b.addEventListener('click', () => { video.pause(); seek(video.currentTime + Number(b.dataset.step)); });
+$('rate').addEventListener('change', (e) => { video.playbackRate = Number(e.target.value); });
+$('scrub').addEventListener('input', (e) => seek(Number(e.target.value) / 1000 * video.duration));
+$('mCal').addEventListener('click', () => setMode('cal'));
+$('mTips').addEventListener('click', () => setMode('tips'));
+$('mBalls').addEventListener('click', () => setMode('balls'));
+$('bGrid').addEventListener('click', () => { S.grid = !S.grid; $('bGrid').classList.toggle('on', S.grid); renderOverlay(); });
+$('bClearCal').addEventListener('click', () => { S.pairs = []; recalibrate(); });
+$('bTipRed').addEventListener('click', () => addTip('red'));
+$('bTipBlue').addEventListener('click', () => addTip('blue'));
+$('bBoxes').addEventListener('click', () => { S.boxDraw = 'red'; status('Drag a box around the RED hive tray in the video.'); renderMode(); });
+$('bScan').addEventListener('click', scanMotion);
+$('bRest').addEventListener('click', () => { const t = S.tips[S.sel]; if (t) { video.pause(); seek(t.restT); } });
+$('cDisturbed').addEventListener('change', (e) => { const t = S.tips[S.sel]; if (t) { t.disturbed = e.target.checked; renderAll(); } });
+$('sVis').addEventListener('change', (e) => { const t = S.tips[S.sel]; if (t) { t.visibility = e.target.value; renderAll(); } });
+for (const b of document.querySelectorAll('[data-kind]')) b.addEventListener('click', () => { S.kind = b.dataset.kind; renderBalls(); });
+
+let preHold = null;
+async function preDown() { const t = S.tips[S.sel]; if (!t || preHold != null) return; preHold = video.currentTime; video.pause(); await seek(Math.max(0, t.t - 0.5)); }
+async function preUp() { if (preHold == null) return; const back = preHold; preHold = null; await seek(back); }
+$('bPre').addEventListener('mousedown', preDown);
+$('bPre').addEventListener('mouseup', preUp);
+$('bPre').addEventListener('mouseleave', preUp);
+
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.dataset.delpair != null) { S.pairs.splice(Number(t.dataset.delpair), 1); recalibrate(); return; }
+  if (t.dataset.deltip != null) { S.tips.splice(Number(t.dataset.deltip), 1); S.sel = Math.min(S.sel, S.tips.length - 1); renderAll(); e.stopPropagation(); return; }
+  const row = t.closest && t.closest('tr[data-tip]');
+  if (row) { S.sel = Number(row.dataset.tip); const tip = S.tips[S.sel]; video.pause(); seek(tip.t); renderAll(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === ' ') { e.preventDefault(); $('bPlay').click(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); video.pause(); seek(video.currentTime + (e.shiftKey ? 1 : 1 / 30)); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); video.pause(); seek(video.currentTime - (e.shiftKey ? 1 : 1 / 30)); }
+  else if (e.key === 'p' || e.key === 'P') { if (!e.repeat) preDown(); }
+  else if (e.key === '1') { S.kind = 'pollen'; renderBalls(); }
+  else if (e.key === '2') { S.kind = 'nectar'; renderBalls(); }
+  else if (e.key === '0') { S.kind = 'unknown'; renderBalls(); }
+});
+document.addEventListener('keyup', (e) => { if (e.key === 'p' || e.key === 'P') preUp(); });
+// In the Balls step, remember the frame the user chose as the rest frame.
+video.addEventListener('seeked', () => {
+  const t = S.tips[S.sel];
+  if (S.mode === 'balls' && t && preHold == null && video.currentTime > t.t) t.restT = video.currentTime;
+});
+window.addEventListener('resize', renderOverlay);
+new ResizeObserver(renderOverlay).observe($('stage'));
+renderAll();
+</script>
+</body>
+</html>

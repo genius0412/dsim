@@ -37,3 +37,6 @@ vendor/zenith/*.tgz
 
 # npm run tune:ai writes its log and accepted weights to the working directory
 aitune.*.json*
+
+# spill-video: match clips are cut locally and never committed (scripts/spill-video/README.md)
+scripts/spill-video/data/*/clips/
