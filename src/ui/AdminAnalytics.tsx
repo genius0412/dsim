@@ -175,7 +175,7 @@ const RANGES = [
   { id: '7d', label: '7 days', hours: 24 * 7, grain: 'day' as const },
   { id: '30d', label: '30 days', hours: 24 * 30, grain: 'day' as const },
   { id: '90d', label: '90 days', hours: 24 * 90, grain: 'day' as const },
-  // the previous calendar month: the period the sponsor report is owed for
+  // the previous UTC calendar month; the sponsor PDF has its own 12th-to-11th periods
   { id: 'month', label: 'Last month', hours: 0, grain: 'day' as const },
   { id: 'custom', label: 'Custom', hours: 0, grain: 'day' as const },
 ] as const;
@@ -904,16 +904,16 @@ function SponsorReport({
 const DAILY_EVENTS = 'sponsor_shown,sponsor_click,player_joined,desktop_download';
 
 /**
- * THE MONTHLY REPORT, AS A FILE TO SEND. One period per calendar month of the sponsorship term
- * (`SPONSOR.term`, from BIOBUZZ kickoff on 2026-09-12), read on its own, independent of the
+ * THE MONTHLY REPORT, AS A FILE TO SEND. One period per sponsor month, the 12th to the 11th
+ * (`SPONSOR.term` opened at BIOBUZZ kickoff on 2026-09-12), read on its own, independent of the
  * range picked above, so the report for a month is the same whoever downloads it and whenever.
  * The PDF writer and the layout are a separate lazy chunk (`AdminSponsorPdf`), fetched on the
  * first press.
  */
 function MonthlyReport() {
   const periods = useMemo(() => reportPeriods(SPONSOR.term, Date.now()), []);
-  // the newest FINISHED month by default: the in-progress one is there, marked, but a report
-  // that is sent is almost always the last whole month
+  // the newest FINISHED period by default: the in-progress one is there, marked, but a report
+  // that is sent is almost always the last whole one
   const [id, setId] = useState(() => (periods.find((p) => !p.inProgress) ?? periods[0])?.id ?? '');
   const [working, setWorking] = useState(false);
   const [note, setNote] = useState<{ text: string; err: boolean } | null>(null);

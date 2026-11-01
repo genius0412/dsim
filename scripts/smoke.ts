@@ -30900,20 +30900,28 @@ const dumperSetup = (): RobotSetup => {
   );
   check('analytics time: the range is stated in UTC', spanLabel(d7) === 'Oct 26 – Nov 1, 07:40 UTC' && spanLabel(month) === 'Oct 1 – Oct 31 (UTC)', `${spanLabel(d7)} | ${spanLabel(month)}`);
 
-  const periods = reportPeriods({ from: '2026-09-12', until: '2027-09-12' }, now);
+  const term = { from: '2026-09-12', until: '2027-09-12' };
+  const periods = reportPeriods(term, now);
   check(
-    '⚠️ sponsor report: one period per month of the term, newest first, the first from kickoff (Sep 12), the current one marked',
-    periods.map((p) => p.id).join(',') === '2026-11,2026-10,2026-09-12' &&
-      periods[2].from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[2].to.toISOString() === '2026-10-01T00:00:00.000Z' &&
-      periods[2].label === 'Sep 12 – Sep 30, 2026' && periods[1].label === 'October 2026' &&
+    '⚠️ sponsor report: a period is the 12th to the 11th, newest first, the current one marked and cut at now',
+    periods.map((p) => p.id).join(',') === '2026-10-12,2026-09-12' &&
+      periods[1].from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[1].to.toISOString() === '2026-10-12T00:00:00.000Z' &&
+      periods[1].label === 'Sep 12 – Oct 11, 2026' && periods[0].label === 'Oct 12 – Nov 11, 2026' &&
       periods[0].inProgress && periods[0].to.getTime() === now && !periods[1].inProgress,
     periods.map((p) => `${p.id}:${p.label}`).join(' | '),
   );
   check(
     'sponsor report: each period compares with the one before it, and the first with nothing',
-    periods[1].prev?.from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[0].prev?.from.toISOString() === '2026-10-01T00:00:00.000Z' && periods[2].prev === null,
+    periods[0].prev?.from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[0].prev?.to.toISOString() === '2026-10-12T00:00:00.000Z' && periods[1].prev === null,
   );
-  check('sponsor report: nothing before the term starts', reportPeriods({ from: '2026-09-12', until: '2027-09-12' }, Date.parse('2026-09-01T00:00:00Z')).length === 0);
+  const all = reportPeriods(term, Date.parse('2027-12-01T00:00:00Z'));
+  check(
+    'sponsor report: twelve periods in the term, the last ending the day before it does, and one across New Year names both years',
+    all.length === 12 && all[0].id === '2027-08-12' && all[0].to.toISOString() === '2027-09-12T00:00:00.000Z' && !all[0].inProgress &&
+      all.find((p) => p.id === '2026-12-12')?.label === 'Dec 12, 2026 – Jan 11, 2027',
+    all.map((p) => p.label).join(' | '),
+  );
+  check('sponsor report: nothing before the term starts', reportPeriods(term, Date.parse('2026-09-01T00:00:00Z')).length === 0);
 
   // ---- the writer: a PDF is offsets as much as drawing, and a wrong one opens as "damaged"
   const doc = new PdfDoc(612, 792, { title: 'Test (one) \\ two', created: new Date(now) });
@@ -30969,30 +30977,31 @@ const dumperSetup = (): RobotSetup => {
     online: 0,
     grain: 'day' as const,
   });
-  const oct = periods[1];
+  // Oct 12 – Nov 11 (31 days), finished, against Sep 12 – Oct 11 (30 days)
+  const done = reportPeriods(term, Date.parse('2026-11-20T00:00:00Z'))[1];
   const pdf = latin(
     sponsorReportPdf({
-      period: oct,
-      prev: oct.prev,
+      period: done,
+      prev: done.prev,
       sponsor: { name: 'Offset Robotics', url: 'https://offsetrobotics.com', campaign: 'biobuzz-2026' },
       placements: ['home', 'footer', 'game'],
       generatedAt: new Date(now),
       cur: report(),
-      prevReport: report({ events: [{ name: 'sponsor_shown', views: 845, visitors: 500 }, { name: 'sponsor_click', views: 48, visitors: 40 }] }),
+      prevReport: report({ events: [{ name: 'sponsor_shown', views: 1200, visitors: 700 }, { name: 'sponsor_click', views: 48, visitors: 40 }] }),
       product: null,
-      daily: [{ day: '2026-10-05', name: 'sponsor_shown', n: 60 }],
+      daily: [{ day: '2026-10-15', name: 'sponsor_shown', n: 60 }],
       logo: null,
     }),
   );
   check(
-    '⚠️ sponsor PDF: four pages, the month named, the totals and the per-placement click-through printed',
-    (pdf.match(/\/Type \/Page /g) ?? []).length === 4 && pdf.includes('(October 2026) Tj') && pdf.includes('(1,646) Tj') &&
+    '⚠️ sponsor PDF: four pages, the period named, the totals and the per-placement click-through printed',
+    (pdf.match(/\/Type \/Page /g) ?? []).length === 4 && pdf.includes('(Oct 12 \x96 Nov 11, 2026) Tj') && pdf.includes('(1,646) Tj') &&
       pdf.includes('(121) Tj') && pdf.includes('(Home menu) Tj') && pdf.includes('(13%) Tj'),
   );
   check(
-    'sponsor PDF: month over month is a DAILY rate (19 days of September against 31 of October), and says against what',
-    // 1646/31 against 845/19 is +19%; the raw totals would read +95%
-    pdf.includes('(+19% a day vs Sep 12\x9630) Tj'),
+    'sponsor PDF: month over month is a DAILY rate (31 days against 30), and says against what',
+    // 1646/31 against 1200/30 is +33%; the raw totals would read +37%
+    pdf.includes('(+33% a day vs Sep 12\x96Oct 11) Tj'),
   );
   check(
     'sponsor PDF: no player numbers to print says so instead of printing zeros',

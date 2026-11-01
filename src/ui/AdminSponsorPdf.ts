@@ -107,13 +107,12 @@ export function sponsorReportPdf(input: SponsorReportInput): Uint8Array<ArrayBuf
     : Math.max(0, ...(product?.concurrency ?? []).map((c) => c.peak));
 
   /**
-   * MONTH-OVER-MONTH, PER DAY. The periods are not the same length (the term opened on the
-   * 12th, months run 30 or 31 days, the current month is partial), so totals are compared as
-   * daily rates.
+   * MONTH-OVER-MONTH, PER DAY. The periods are not the same length (12th to 11th runs 28 to 31
+   * days, and the current one is partial), so totals are compared as daily rates.
    */
-  // "Sep" for a whole month, "Sep 12–30" for the term's opening part-month: it has to fit a tile
+  // "Sep 12–Oct 11": it has to fit a tile
   const prevShort = prev ? shortPeriod(prev.from, prev.to) : '';
-  // a month a few days old against a whole one is noise, not a trend
+  // a period a few days old against a whole one is noise, not a trend
   const comparable = !!prev && !!prevReport && prevDays > 0 && spanDays >= 7;
   const change = (now: number, before: number): { text: string; color: Rgb } | null => {
     if (!comparable || !prev || !before) return null;
@@ -138,7 +137,7 @@ export function sponsorReportPdf(input: SponsorReportInput): Uint8Array<ArrayBuf
   p1.text(M, y + 26, period.label, { size: 24, bold: true, color: INK });
   y += 44;
   const range = `${dayYearLabel(period.from.getTime())} – ${
-    period.inProgress ? `${instantLabel(period.to.getTime())} (month in progress)` : `${dayYearLabel(period.to.getTime() - DAY_MS)}, UTC`
+    period.inProgress ? `${instantLabel(period.to.getTime())} (in progress)` : `${dayYearLabel(period.to.getTime() - DAY_MS)}, UTC`
   }`;
   p1.text(M, y, range, { size: 10, color: DIM });
   y += 14;
@@ -496,13 +495,10 @@ function table(
   return y + 8;
 }
 
-/** "Sep" for a whole calendar month, else "Sep 12–30" */
+/** "Sep 12–Oct 11", or "Sep 12–30" inside one month */
 function shortPeriod(from: Date, to: Date): string {
-  const a = from.getTime();
-  const end = to.getTime() - 1;
-  const month = new Intl.DateTimeFormat('en-US', { month: 'short', timeZone: 'UTC' });
-  const wholeMonth = from.getUTCDate() === 1 && new Date(to.getTime()).getUTCDate() === 1 && to.getTime() > a;
-  return wholeMonth ? month.format(from) : `${dayLabel(a)}–${new Date(end).getUTCDate()}`;
+  const last = new Date(to.getTime() - 1);
+  return from.getUTCMonth() === last.getUTCMonth() ? `${dayLabel(from.getTime())}–${last.getUTCDate()}` : `${dayLabel(from.getTime())}–${dayLabel(last.getTime())}`;
 }
 
 function osName(v: string): string {
