@@ -6656,13 +6656,12 @@ function queueTenth(w: World): void {
    * THE KEY HALF IS STILL ABSOLUTE. An action with no default key at all cannot be pressed
    * by a new player on any device, which is the failure this check was written for.
    */
-  /* `bbPass` was the first member: it shipped with no pad button "because there is no button
-     left to give it", while two chain-only actions sat on LB and L3. Sharing those by role bound
-     it. `bbBar` (2026-11-01) is the second, and this time it is true: once D-DOWN went to Reverse
-     BIOBUZZ uses every standard button, and no other action is absent from every build that has
-     a bar. `seasonUnbound` does not flag it either. The check immediately below fails if a member
-     ever gains a default and is not removed from here. */
-  const PAD_DEFAULT_EXEMPT: readonly string[] = ['bbBar'];
+  /* EMPTY NOW, AND THAT IS THE POINT. `bbPass` was the only member: it shipped with no pad
+     button "because there is no button left to give it", while two chain-only actions sat on
+     LB and L3. Sharing those by role bound it, so the exemption is gone — and the check
+     immediately below fails if a member ever gains a default and is not removed from here.
+     `bbBar` (2026-11-01) nearly joined it on the same argument; B was a second Intake. */
+  const PAD_DEFAULT_EXEMPT: readonly string[] = [];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
   const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
   const exemptBound = PAD_DEFAULT_EXEMPT.filter((a) => (DEFAULT_BINDINGS.pad.buttons[a as PadAction] ?? []).length > 0);
@@ -27157,7 +27156,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'conflict/collision: the pad rule matches — the override loses that single',
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([0]) &&
-      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13, 1]),
+      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13]),
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons),
   );
   const comboPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [7, 12]);
@@ -28797,12 +28796,34 @@ const dumperSetup = (): RobotSetup => {
     );
   }
   // -- the NECTAR bar got its own action on 2026-11-01 (it rode Deploy ramp before): the apostrophe,
-  // beside Reverse's semicolon, and no pad button (BIOBUZZ uses all sixteen)
+  // beside Reverse's semicolon, and B on the pad, which Intake gave up (it keeps LT)
   {
     check(
-      'bar keys: NECTAR bar defaults to the apostrophe and no pad button, and the label no longer shares the ramp\'s',
-      J(DEFAULT_BINDINGS.keys.bbBar) === J(["'"]) && J(DEFAULT_BINDINGS.pad.buttons.bbBar) === J([]) &&
+      'bar keys: NECTAR bar defaults to the apostrophe and B, Intake to LT alone, and the label no longer shares the ramp\'s',
+      J(DEFAULT_BINDINGS.keys.bbBar) === J(["'"]) && J(DEFAULT_BINDINGS.pad.buttons.bbBar) === J([1]) &&
+        J(DEFAULT_BINDINGS.pad.buttons.intake) === J([6]) &&
         ACTION_LABELS.bbRamp === 'Deploy ramp' && ACTION_LABELS.bbBar === 'NECTAR bar',
+    );
+    const oldPad = mergeBindings({ pad: { buttons: { fire: [7, 0], intake: [6, 1], bbRamp: [11] } } });
+    check(
+      'bar pad: a saved map keeps B on Intake, and its NECTAR bar loads with no pad button (one press, one action)',
+      J(oldPad.pad.buttons.intake) === J([6, 1]) && J(oldPad.pad.buttons.bbBar) === J([]),
+      J({ intake: oldPad.pad.buttons.intake, bar: oldPad.pad.buttons.bbBar }),
+    );
+    check(
+      'bar pad: ...and BIOBUZZ is marked as needing a look there, since nothing fires the bar on the pad',
+      seasonUnbound(oldPad, 'biobuzz').includes('bbBar') && !seasonUnbound(DEFAULT_BINDINGS, 'biobuzz').includes('bbBar'),
+      J(seasonUnbound(oldPad, 'biobuzz')),
+    );
+    check(
+      'bar pad: a saved map that moved Intake off B gives the bar B',
+      J(mergeBindings({ pad: { buttons: { intake: [6] } } }).pad.buttons.bbBar) === J([1]),
+    );
+    const trigNew = cloneBindings(DEFAULT_BINDINGS);
+    trigNew.pad.turnWith = 'triggers';
+    check(
+      'bar pad: the known cost — a NEW map turning with the triggers has no live pad Intake (LT is paused)',
+      livePadBinds(trigNew.pad, 'intake').length === 0 && J(livePadBinds(trigNew.pad, 'fire')) === J([[0]]),
     );
     check(
       'bar keys: a map saved before the bar had its own action loads it on the apostrophe',
@@ -28814,13 +28835,7 @@ const dumperSetup = (): RobotSetup => {
         J(mergeBindings({ keys: { bbPass: ["'"], bbPlace: ['['] } }).keys.bbBar) === J([']']),
     );
     check(
-      'bar keys: having no default pad button does not mark BIOBUZZ as needing a look',
-      !seasonUnbound(DEFAULT_BINDINGS, 'biobuzz').includes('bbBar') &&
-        !seasonUnbound(mergeBindings({ keys: { bbRamp: ['z'] } }), 'biobuzz').includes('bbBar'),
-      J(seasonUnbound(DEFAULT_BINDINGS, 'biobuzz')),
-    );
-    check(
-      'bar keys: ...but an unbound KEY still does',
+      'bar keys: an unbound key marks BIOBUZZ too',
       seasonUnbound(mergeBindings({ keys: { bbBar: [] } }), 'biobuzz').includes('bbBar'),
     );
   }
@@ -41353,7 +41368,8 @@ function fxImportFixed(): RobotSpec {
   const live = livePad(trig.pad);
   check(
     'turn with: on the triggers, every bind on LT or RT is paused and nothing else is',
-    J(live.buttons.fire) === J([0]) && J(live.buttons.intake) === J([1]) && J(live.combos.bbPlace) === J([[12, 13]]) &&
+    // Intake is LT alone on a new map since 2026-11-01 (B went to NECTAR bar), so nothing is left
+    J(live.buttons.fire) === J([0]) && J(live.buttons.intake) === J([]) && J(live.combos.bbPlace) === J([[12, 13]]) &&
       J(live.buttons.bbPlace) === J(trig.pad.buttons.bbPlace) &&
       // paused, not removed: the stored map still has them
       J(trig.pad.buttons.fire) === J([7, 0]) && J(trig.pad.combos.bbPlace) === J([[6, 12], [12, 13]]),

@@ -3055,8 +3055,8 @@ launcher's old feed), and Zenith autos have no reverse button (`AutoButtons`).
 Owner: "If someone has a flower ramp, it should be able to double as a nectar bar. It may need
 another button for control in that case."
 
-- **The bar has its own button** (`RobotCommand.bbBar`, protocol bit 8192, key `'`, no pad
-  default, touch BAR), on its own debounced latch (`bbBarHeld`/`bbBarUpAt`, written from the first
+- **The bar has its own button** (`RobotCommand.bbBar`, protocol bit 8192, key `'`, pad B, which
+  Intake gave up in every game, touch BAR; `docs/area/ui.md` has the binding rules), on its own debounced latch (`bbBarHeld`/`bbBarUpAt`, written from the first
   press). `bbRamp` is the ramp alone now. Before 11 a `bar` sorter's bar rode `bbRamp` and the
   ramp's latch, and a replay recorded then still does (`bbBarStep`).
 - **Every `ramp` intake with a POLLEN + NECTAR feed has the bar** (`bbHasRampBar`), whatever its

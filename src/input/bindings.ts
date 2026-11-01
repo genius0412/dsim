@@ -541,7 +541,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     driveStick: 'left',
     buttons: {
       fire: [7, 0], // RT or A
-      intake: [6, 1], // LT or B
+      // LT. B was a second Intake until 2026-11-01 and is BIOBUZZ's NECTAR bar now (owner's pick:
+      // it was the softest button on the map). A saved map keeps B on Intake. The cost: a NEW
+      // map that turns with the triggers (`turnWith`) has LT paused and no pad Intake until the
+      // player binds one, in every game; Controls strikes the paused LT.
+      intake: [6],
       // R3 — the MODE TOGGLE role, shared with BIOBUZZ's Deploy ramp (no game has both). D-DOWN
       // stays unbound on purpose (see Deploy ramp below).
       flyPreset: [11],
@@ -583,9 +587,10 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // players said a press "restarted their run"; that was a TOGGLE, and a reverse is HELD and
       // undoes nothing when it is pressed by mistake.
       bbReverse: [13],
-      // UNBOUND. Every standard button is taken in BIOBUZZ once D-DOWN went to Reverse, and a
-      // default combo would make its buttons wait (`padChords.ts`). A pad player binds it.
-      bbBar: [],
+      // B. Every other standard button carries a BIOBUZZ bind; B was only Intake's second copy
+      // (LT is Intake), so Intake gave it up (owner, 2026-11-01). A saved map with B on Intake
+      // keeps it, and its NECTAR bar loads with no pad button (`mergeBindings`).
+      bbBar: [1],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X
@@ -1497,18 +1502,13 @@ export function resetGame(b: ControlBindings, game: GameId): ControlBindings {
  * edit can take a key from an action the All games scope does not list (put Shoot on C and
  * Catalyst and Place POLLEN both lose it), so the screen marks the season that needs a look
  * rather than leaving the player to find out in a match. A pad bind paused by the triggers
- * turning (`turnWith`) does not count: it cannot fire. An action that ships with NO pad bind
- * (`bbBar`: the pad has no button left for it) is not flagged for having none: nothing took it,
- * and flagging it would mark the season on every map ever saved.
+ * turning (`turnWith`) does not count: it cannot fire.
  */
 export function seasonUnbound(b: ControlBindings, game: GameId): KeyAction[] {
   const eff = effectiveBindings(b, game);
   const pad = new Set<KeyAction>(seasonPadActions(game));
-  const padDefault = (a: PadAction): boolean => padBinds(DEFAULT_BINDINGS.pad, a).length > 0;
   return seasonKeyActions(game).filter(
-    (a) =>
-      eff.keys[a].length === 0 ||
-      (pad.has(a) && padDefault(a as PadAction) && livePadBinds(eff.pad, a as PadAction).length === 0),
+    (a) => eff.keys[a].length === 0 || (pad.has(a) && livePadBinds(eff.pad, a as PadAction).length === 0),
   );
 }
 

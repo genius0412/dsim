@@ -60,9 +60,11 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   conflicting action already holds R3 in main or in a BIOBUZZ override; then it loads unbound
   (no pad fallback). D-DOWN went to Reverse intake on 2026-10-24.
   **NECTAR bar has its own action** (`bbBar`, 2026-11-01; it rode Deploy ramp before): key `'`,
-  fallbacks `[` then `]`, and NO pad button, because BIOBUZZ uses all sixteen. It is the one
-  member of smoke's `PAD_DEFAULT_EXEMPT`, and `seasonUnbound` does not flag an action that ships
-  with no pad bind (it would mark BIOBUZZ on every saved map). An unbound KEY still flags it.
+  fallbacks `[` then `]`, pad B. B was Intake's second bind, so **Intake defaults to LT alone in
+  every game** (owner's pick: every other button carries a BIOBUZZ bind, and the defaults are one
+  map for all games). A saved map keeps B on Intake and loads the bar with no pad button, which
+  marks BIOBUZZ in Controls. The cost, known and checked in smoke: a NEW map that turns with the
+  triggers has LT paused and no pad Intake until the player binds one.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). **On a pad,
