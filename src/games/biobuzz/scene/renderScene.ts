@@ -52,7 +52,7 @@ import { loadElementGeometries } from './renderElementsGlb';
 import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
-import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
+import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, venueCameraRoom } from './renderVenue';
 import {
   bbPhotoDetail,
   buildPhotoVenue,
@@ -635,8 +635,9 @@ class BiobuzzScene implements GameScene {
     }
     // a photographed room is as big as it was, so the orbit and free cameras stay inside it from
     // the moment it is picked (not when it lands, which would jump a zoomed-out camera in), and
-    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`)
-    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : null);
+    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`). A procedural one
+    // holds them in front of its seating banks, where it has any (`venueCameraRoom`).
+    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : venueCameraRoom(def.venue, detail));
     setPhotoVenueLighting(this.venue, def, s.envLighting);
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
@@ -1253,6 +1254,8 @@ class BiobuzzScene implements GameScene {
     this.lastViewAngle = frame.viewAngle;
     this.lastCamera = this.resolvedCamera(frame.camera);
     const camera = this.cameras.update(frame, world, this.lastCamera);
+    // an eye above a procedural venue's overhead rig leaves it out, as the top-down shots do
+    syncVenueRigLayer(camera, this.venue);
 
     // THE FRAME'S GPU WORK starts here: the probe, the scene pass, post, the blit and the minimap
     if (timeGpu) this.gpuTimer?.begin();

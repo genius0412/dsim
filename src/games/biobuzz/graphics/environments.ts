@@ -189,8 +189,8 @@ export interface VenueSpec {
    * and studio therefore starts at `VENUE_MIN_HALF` (`scene/renderVenue.ts`, which clamps this
    * as a guard rather than trusting the numbers below), and character comes from the CEILING
    * height, the colours and what is in the room — a low dark 660-in shop still reads as a shop.
-   * Going ABOVE a ceiling degrades gracefully to a cutaway and needs no guard; going outside a
-   * WALL does not.
+   * Going ABOVE a ceiling degrades gracefully to a cutaway, because an eye above the overhead rig
+   * leaves the rig out (`scene/renderVenue.ts`, `syncVenueRigLayer`); going outside a WALL does not.
    */
   half: number;
   /** ceiling height, inches. Ignored by `outdoor`. */

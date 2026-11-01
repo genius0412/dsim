@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { BB_HALF_X, BB_HALF_Y } from '../config';
+import { ALLIANCE_AREA } from '../fieldDims.gen';
 import type { EnvironmentDef, PhotoFloor, PhotoVenue } from '../graphics/environments';
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import { VENUE_OVERHEAD_LAYER } from './renderVenue';
@@ -67,9 +68,17 @@ import { VENUE_OVERHEAD_LAYER } from './renderVenue';
  * Both are projected exactly as the box is (the lookup along the ray from the lens), so from the
  * lens the picture is the photograph and from anywhere else it is the room. The room is `BackSide`
  * like the box, which makes it visible only from the lens's side of each surface: an eye above the
- * ceiling or outside a wall sees through it, so these meshes need no push. The upper halves are on
- * `VENUE_OVERHEAD_LAYER` anyway, which the top-down cameras do not draw. The box stays the fallback
- * for a row without layers and for a layer file that fails to load.
+ * ceiling or outside a wall sees through it, so these meshes need no push. (Re-measured 2026-11-01
+ * from the one eye that stands outside a room, the height-accurate driver on a portrait phone 22 in
+ * past the school hall's −x wall: the floor it lacks is below the frame, and the dark shapes in its
+ * lower corners are the stage curtains' feet in the painted-out room, unchanged by a push.) The
+ * upper halves are on `VENUE_OVERHEAD_LAYER` anyway, which the top-down cameras do not draw. The
+ * box stays the fallback for a row without layers and for a layer file that fails to load.
+ *
+ * ── AND NOTHING OF IT STANDS IN FRONT OF THE PLAY (2026-11-01) ──────────────────────────────
+ * The furniture is relief seen from one point, and from the cameras it was found blocking the field
+ * or floating in frame: `PHOTO_KEEP_OUT` has the measurements. Its shader drops what an eye sees
+ * from behind, what stands between the eye and the field, and what is at the eye (`PHOTO_NEAR_IN`).
  *
  * ── WHAT ELSE IS HERE ───────────────────────────────────────────────────────────────────────
  * The field's shadow on the photographed floor (`ShadowMaterial`, the sun's own map), and a soft
@@ -429,11 +438,34 @@ uniform vec2 bbRows;
 uniform float bbScale;
 uniform float bbSat;
 uniform float bbKnee;
+#ifdef BB_FURNITURE
+uniform vec3 bbKeepMin;
+uniform vec3 bbKeepMax;
+#endif
 varying vec3 vWorld;
 #define BB_E_MAX ${E_MAX}
 void main() {
 	vec3 d = normalize( vWorld - bbEye );
 	#ifdef BB_FURNITURE
+	// the ray this camera sees this fragment along: from the eye, or the view axis on an
+	// orthographic (top-down) camera. PHOTO_KEEP_OUT's header, and photoFurnitureDropped mirrors it.
+	vec3 view = isOrthographic ? - vec3( viewMatrix[ 0 ][ 2 ], viewMatrix[ 1 ][ 2 ], viewMatrix[ 2 ][ 2 ] ) : vWorld - cameraPosition;
+	// SEEN FROM BEHIND, AS THE LENS SAW IT: the eye is past this point along the lens's own ray, so
+	// it looks at the side of the relief the photograph never showed (a curtain from the wings, a
+	// pendant lamp from the far side, a depth error's sky-coloured shard round the orbit eye).
+	if ( dot( vWorld - bbEye, view ) < 0.0 ) discard;
+	// AND NOTHING PHOTOGRAPHED STANDS IN FRONT OF THE FIELD: the ray on past this fragment enters
+	// the keep-out box (the field, its hives, the alliance areas), or this fragment is inside it.
+	vec3 ray = mix( view, vec3( 1e-6 ), vec3( lessThan( abs( view ), vec3( 1e-6 ) ) ) );
+	vec3 ta = ( bbKeepMin - vWorld ) / ray;
+	vec3 tb = ( bbKeepMax - vWorld ) / ray;
+	vec3 tlo = min( ta, tb );
+	vec3 thi = max( ta, tb );
+	if ( min( min( thi.x, thi.y ), thi.z ) >= max( max( max( tlo.x, tlo.y ), tlo.z ), 0.0 ) ) discard;
+	// AND NONE OF IT RIGHT AT THE EYE: dissolved over the last BB_NEAR inches (PHOTO_NEAR_IN), gone
+	// inside half of that. A piece of relief beside the eye fills the frame however it faces.
+	float nearEye = length( vWorld - cameraPosition ) / BB_NEAR;
+	if ( nearEye < 0.5 + 0.5 * fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) ) ) discard;
 	// WHERE THE LENS SAW NO TEXTURE, DRAW NONE. A piece of furniture is only the relief its own
 	// photograph shows, so a face the lens saw edge-on carries a pixel or two across its whole width;
 	// a camera that faces it squarely draws those pixels as streaks (the school hall's far seat block
@@ -606,13 +638,81 @@ export function clipToFloor(poly: [number, number][], r: PhotoFloor): [number, n
  * the fragment is dropped (see `FRAG`, BB_FURNITURE) */
 export const PHOTO_STRETCH_MAX = 1.75;
 
+/**
+ * WHAT NO PHOTOGRAPHED FURNITURE MAY COVER (2026-11-01), field inches: the field and its hives, and
+ * both alliance areas (the drive team's strip and the human player's elements on it), from the
+ * photographed floor to 96 in, above the hives' 66 and most of a shot's arc.
+ *
+ * Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or
+ * just look weird." Measured offscreen from every in-match camera (the RENDER lane's
+ * `photoKeepOutChecks`): every blocker was a piece of furniture relief. The court's default free cam
+ * had a white sky-textured sliver (a light pole MoGe put 150 in from the lens) standing through
+ * the field; its default orbit had two sky shards floating in front of it; the events hall's free
+ * cam dollied out looked at the field through a pendant lamp drawn as a streaked drape; the school
+ * hall's orbit at its lowest looked through the stage-wing curtains. The fragment shader drops
+ * three kinds of fragment, all mirrored by `photoFurnitureDropped`:
+ *   • SEEN FROM BEHIND: the eye is past the fragment along the lens's own ray (the angle between
+ *     the lens's ray and the eye's is over 90°), so the eye faces the side of the relief the lens
+ *     never saw. Every blocker above was one, from the side the camera stood on.
+ *   • IN FRONT OF THE FIELD: the ray on past the fragment enters this box (or the fragment is in it).
+ *     The guarantee, whatever the relief's errors: nothing photographed covers the play.
+ *   • AT THE EYE: within `PHOTO_NEAR_IN` of it.
+ * The painted-out room shows wherever furniture is dropped, as it does for `PHOTO_STRETCH_MAX`.
+ */
+export const PHOTO_KEEP_OUT: { min: readonly [number, number, number]; max: readonly [number, number, number] } = (() => {
+  const x = Math.max(BB_HALF_X, ...(['red', 'blue'] as const).flatMap((a) => [Math.abs(ALLIANCE_AREA[a].x0), Math.abs(ALLIANCE_AREA[a].x1)])) + 2;
+  const y = Math.max(BB_HALF_Y, ...(['red', 'blue'] as const).flatMap((a) => [Math.abs(ALLIANCE_AREA[a].y0), Math.abs(ALLIANCE_AREA[a].y1)])) + 2;
+  return { min: [-x, -y, PHOTO_FLOOR_Z], max: [x, y, 96] };
+})();
+
+/**
+ * FURNITURE NEAR AN EYE IS DISSOLVED, inches: a fragment closer than this to the camera drawing it
+ * is dropped on a screen-space dither, all of it inside half the distance. A piece of relief beside
+ * the eye fills the frame whichever way it faces, and from beside it it is never what the lens saw:
+ * the sweep of every in-match eye (`photoKeepOutChecks`) found the school hall's orbit at its
+ * default elevation wheeled out standing inside a stage light 168 in up, and a free cam panned to a
+ * corner in the events hall 2 in from a piece by the wall. A chase camera, the closest any eye
+ * comes to furniture in play, is 60 in behind its robot.
+ */
+export const PHOTO_NEAR_IN = 72;
+
+/**
+ * `FRAG`'s furniture drops above `PHOTO_STRETCH_MAX`, in plain numbers (see `PHOTO_KEEP_OUT` and
+ * `PHOTO_NEAR_IN`): is the furniture point `p` never drawn for a camera at `eye` (perspective), or
+ * looking along `axis` (orthographic, when given)? The near band's dithered outer half is drawn in
+ * part, so it is not counted. The GLSL and this must say the same thing; the RENDER lane checks the
+ * shader's text as well.
+ */
+export function photoFurnitureDropped(
+  p: readonly [number, number, number],
+  eye: readonly [number, number, number],
+  axis?: readonly [number, number, number],
+  lensHeight = 63,
+  keep = PHOTO_KEEP_OUT,
+): boolean {
+  const view = axis ?? [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+  const lz = PHOTO_FLOOR_Z + lensHeight;
+  if (p[0] * view[0] + p[1] * view[1] + (p[2] - lz) * view[2] < 0) return true;
+  if (Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]) < PHOTO_NEAR_IN / 2) return true;
+  let tn = 0;
+  let tf = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const v = Math.abs(view[i]) < 1e-6 ? 1e-6 : view[i];
+    const ta = (keep.min[i] - p[i]) / v;
+    const tb = (keep.max[i] - p[i]) / v;
+    tn = Math.max(tn, Math.min(ta, tb));
+    tf = Math.min(tf, Math.max(ta, tb));
+  }
+  return tf >= tn;
+}
+
 /** the projection material, for the box (`VERT`, the push) or a layered part (`LAYER_VERT`);
  * `furniture` drops what the lens never saw (`PHOTO_STRETCH_MAX`) */
 function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: readonly [number, number], ibl: boolean, layered: boolean, side: THREE.Side, furniture = false): THREE.ShaderMaterial {
   const box = photoRoomBox(p);
   return new THREE.ShaderMaterial({
     name,
-    defines: furniture ? { BB_FURNITURE: '', BB_STRETCH_MAX: PHOTO_STRETCH_MAX.toFixed(1) } : {},
+    defines: furniture ? { BB_FURNITURE: '', BB_STRETCH_MAX: PHOTO_STRETCH_MAX.toFixed(1), BB_NEAR: PHOTO_NEAR_IN.toFixed(1) } : {},
     uniforms: {
       bbMap: { value: map },
       bbEye: { value: new THREE.Vector3(0, 0, PHOTO_FLOOR_Z + p.height) },
@@ -623,6 +723,9 @@ function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: re
       bbScale: { value: photoScale(p, ibl) },
       bbSat: { value: p.saturation },
       bbKnee: { value: photoKnee(ibl) },
+      ...(furniture
+        ? { bbKeepMin: { value: new THREE.Vector3(...PHOTO_KEEP_OUT.min) }, bbKeepMax: { value: new THREE.Vector3(...PHOTO_KEEP_OUT.max) } }
+        : {}),
     },
     vertexShader: layered ? LAYER_VERT : VERT,
     fragmentShader: FRAG,
