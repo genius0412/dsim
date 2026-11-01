@@ -97,7 +97,6 @@ export function isPartial(t: string, grain: Grain, to: Date): boolean {
 
 const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const fmtDayYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-const fmtMonth = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
 const pad = (n: number): string => String(n).padStart(2, '0');
 
@@ -122,11 +121,6 @@ export function instantLabel(ms: number): string {
   return `${fmtDay.format(d)}, ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
-/** "October 2026" */
-export function monthLabel(ms: number): string {
-  return fmtMonth.format(new Date(ms));
-}
-
 /**
  * THE RANGE IN WORDS, as the page states it under the toolbar: "Oct 26 – Nov 1, 07:40 UTC".
  * `to` is exclusive; a range ending on a midnight is named by its last whole day.
@@ -141,44 +135,53 @@ export function spanLabel(span: Span): string {
 // ---- the sponsor report's periods ------------------------------------------
 
 export interface ReportPeriod {
-  /** `YYYY-MM`, or the term's first day for the opening partial month */
+  /** the period's first day, `YYYY-MM-DD` */
   id: string;
   label: string;
   from: Date;
   to: Date;
-  /** the month is not over yet */
+  /** the period is not over yet */
   inProgress: boolean;
   /** the previous period, for month-over-month; null for the first */
   prev: { from: Date; to: Date; label: string } | null;
 }
 
 /**
- * ONE PERIOD PER CALENDAR MONTH OF THE TERM, newest first. The first runs from the term's start
- * (BIOBUZZ kickoff, 2026-09-12) to the end of that month; the last is the month in progress,
- * up to now. Nothing before the term or after it ends.
+ * ONE PERIOD PER SPONSOR MONTH, newest first. A sponsor month starts on the day of the month the
+ * term started and ends the day before it a month later: the term opened on 2026-09-12 (BIOBUZZ
+ * kickoff), so every period is the 12th to the 11th (owner, 2026-11-01). The last is the one in
+ * progress, up to now. Nothing before the term or after it ends.
  */
 export function reportPeriods(term: { from: string; until: string }, now: number): ReportPeriod[] {
   const start = dayStart(term.from);
-  const until = Math.min(dayStart(term.until), now);
-  if (!Number.isFinite(start) || !Number.isFinite(until) || until <= start) return [];
+  const end = dayStart(term.until);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || Math.min(end, now) <= start) return [];
+  const s = new Date(start);
+  // the term's start day in the k-th month after it, held to that month's last day
+  const at = (k: number): number => {
+    const last = new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + k + 1, 0)).getUTCDate();
+    return Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + k, Math.min(s.getUTCDate(), last));
+  };
   const out: ReportPeriod[] = [];
-  let a = start;
-  while (a < until && out.length < 36) {
-    const d = new Date(a);
-    const monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
-    const b = Math.min(monthEnd, dayStart(term.until));
-    const first = a === start && d.getUTCDate() !== 1;
-    const label = first ? `${dayLabel(a)} – ${dayYearLabel(b - DAY_MS)}` : monthLabel(a);
+  for (let k = 0; at(k) < Math.min(end, now) && k < 36; k++) {
+    const a = at(k);
+    const b = Math.min(at(k + 1), end);
     const prev = out[out.length - 1];
     out.push({
-      id: first ? term.from : `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`,
-      label,
+      id: utcDay(a),
+      label: periodLabel(a, b),
       from: new Date(a),
       to: new Date(Math.min(b, now)),
       inProgress: now < b,
       prev: prev ? { from: prev.from, to: prev.to, label: prev.label } : null,
     });
-    a = b;
   }
   return out.reverse();
+}
+
+/** "Sep 12 – Oct 11, 2026", with the year on both ends when they differ */
+function periodLabel(from: number, to: number): string {
+  const last = to - DAY_MS;
+  const sameYear = new Date(from).getUTCFullYear() === new Date(last).getUTCFullYear();
+  return `${sameYear ? dayLabel(from) : dayYearLabel(from)} – ${dayYearLabel(last)}`;
 }

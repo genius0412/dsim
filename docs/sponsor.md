@@ -184,10 +184,11 @@ All of it from DSIM's own analytics (`src/analytics.ts` → `server/analytics.ts
 **Analytics** tab has a **Sponsor report** panel laid out as the lines below.
 
 **The report that is sent is the PDF** (owner, 2026-11-01): in the Sponsor report panel, pick the
-month under **Monthly report** and press **Download PDF**. One period per calendar month of the
-term, in UTC: the first runs from kickoff (2026-09-12) to September 30, then October, November and
-on; the month in progress is listed as "(so far)". It is read on its own, whatever range the
-dashboard is showing, so the same month gives the same file. Four pages: the totals with
+month under **Monthly report** and press **Download PDF**. A sponsor month runs from the 12th to
+the 11th (owner, 2026-11-01), in UTC, because the term opened on 2026-09-12: Sep 12 – Oct 11,
+Oct 12 – Nov 11, and on to Aug 12 – Sep 11, 2027; the one in progress is listed as "(so far)".
+It is read on its own, whatever range the dashboard is showing (the dashboard's **Last month** is
+a calendar month, not a sponsor month), so the same period gives the same file. Four pages: the totals with
 month-over-month change, impressions and clicks per day, the placement table; time on screen,
 videos, downloads, site traffic per day and the audience; players (matches, new accounts, the
 busiest moment) and how each number is counted; the daily figures. Month-over-month compares
