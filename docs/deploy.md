@@ -729,8 +729,12 @@ deployments had accumulated by 2026-09-18.
 **`/assets/*` is served `immutable` (2026-10-12).** Vite names every file it emits there by its
 content hash, so a name never changes meaning. Without the header Vercel sent
 `max-age=0, must-revalidate`, and every page view re-checked every asset: one Edge Request per
-file per visit. Nothing else gets the header: `public/models` and `public/sounds` keep their
-names across edits, so caching them hard would serve a stale field mesh. The scheduled cost
+file per visit. `public/models` and `public/sounds` do NOT get it: they keep their names across
+edits, so caching them hard would serve a stale field mesh. **`/venues/*` is `immutable` too
+(2026-11-02)**, because every URL the app fetches there carries `?v=<bytes>` from the venue's row
+(`venueAssetUrl`, `venueFileBytes`); the RENDER lane fails if a row's count and its file disagree,
+or if any fetched venue file lacks the version. A file under `/venues` fetched without
+`venueAssetUrl` would be cached for a year under its bare name, so do not add one. The scheduled cost
 checkup flags it if the header ever disappears. The `/version.json` poll is the other
 per-tab request; `src/net/version.ts` skips it while a tab is hidden.
 

@@ -12,11 +12,12 @@ Everything under `public/venues/` is derived here. Two pipelines:
 
 | stage | script | writes |
 |---|---|---|
-| depth | `depth.py` | `scratch/venues-depth/<id>/distance.npy`, `normal.npy`: MoGe-2 on twelve 90° views, fused |
-| layers | `layers.py` | `scratch/venues-layers/<id>/`: furniture depth, its mask, the inpainted panorama |
-| meshes | `meshes.py` | raw meshes (scratch) and `public/venues/<id>-bg-{4k,2k}.webp`, `<id>-fg-{4k,2k}.webp` |
+| depth (GPU) | `depth.py` | `scratch/venues-depth/<id>/distance.npy`, `normal.npy`: MoGe-2 on twelve 90° views, fused |
+| layers (GPU) | `layers.py` | `scratch/venues-layers/<id>/`: furniture depth, its mask, the inpainted panorama, `meta.json` |
+| meshes (CPU) | `meshes.py` | raw meshes (scratch) and `public/venues/<id>-bg-{4k,2k}.webp`, `<id>-fg-{4k,2k}.webp` |
 | pack | `pack.ts` | `public/venues/<id>-room.glb` (meshopt, quantised; the importer's format) |
-| sync | `sync-env.mjs` | each row's `PHOTO_LAYERS(...)` rows and sizes, and the picker note, in `environments.ts` |
+| sync | `sync-env.mjs` | each row's `PHOTO_FILES` sizes, `height`, `room`, `PHOTO_LAYERS(...)` rows, sizes and stage rectangle, and the picker note, in `environments.ts` |
+| rescale | `rescale-lens.ts` | only when a lens is RE-MEASURED: `public/venues/<id>-room.glb` scaled about the lens, no GPU |
 
 ```
 python scripts/venues/depth.py
@@ -27,7 +28,34 @@ node scripts/venues/sync-env.mjs
 npx tsx scripts/smoke-biobuzz/index.ts --lane render    # the files, the rows and the meshes agree
 ```
 
-(`--only <id,id>` on each.)
+(`--only <id,id>` on each.) The two GPU stages need CUDA; `meshes.py` runs on any CPU with numpy,
+opencv, scipy and pillow (torch and moge are imported only where the GPU stages use them).
+**`GPU-REBUILD.md` is the runbook** for a rebuild of the GPU stages, end to end on a CUDA machine.
+The last one (2026-10-24) turned the hangar 18° and gave it a gable roof, put the school hall's
+auditorium 44 in below a stage edge with its two thrusts, and gave the events hall a gable roof;
+its "Not in this rebuild" list is what is left.
+
+### The lens height is per venue
+
+Every room was read off its photograph in LENS HEIGHTS, so each venue's lens (`PhotoVenue.height`,
+measured off its own photograph — `PHOTO_LENS_IN`'s note in `environments.ts`) sets the size of its
+whole room against the field. `layers.py` carries it per venue (`LENS`, with `eye(venue)`), and
+`meshes.py` takes it from there; `ROOMS` and `FLOOR_STEPS` must equal the rows (the RENDER lane
+compares the meshes with them; `sync-env.mjs` writes `room` and `height` from `meta.json`).
+
+A re-measured lens does not need the GPU stages. Everything scales about the lens by
+k = new / old: the floor stays at `PHOTO_FLOOR_Z`, the lens moves, and a direction from it is
+unchanged, so the photograph's lookup, the furniture's rows and the split at the lens all hold.
+
+```
+npx tsx scripts/venues/rescale-lens.ts --only court --from 63 --to 64.6   # prints the new size
+```
+
+then, by the same k, the row's `room` (and its `PhotoLayers.floor`), `layers.py`'s `ROOMS`,
+`FLOOR_STEPS` (`y0` × k; `z` → `FLOOR_Z + k (z − FLOOR_Z)`) and `LENS`; the row's `height`; the
+printed size into the row's `bytes.mesh`; and the RENDER lane. A derive patch's `room`
+(`venues.cjs`) is in lens heights and does not change. The court was rescaled this way on
+2026-10-24 (63 → 64.6 in).
 
 ## The floor tiles (2026-11-01)
 

@@ -875,6 +875,12 @@ export function bbWheelDetail(settings: Pick<GraphicsSettings, 'meshDetail'>, ti
   return tier === 'low' || tier === 'medium' ? 'low' : 'high';
 }
 
+/** WOULD A ROBOT BUILT UNDER THESE SETTINGS NEED THE BAY CHUNK? (`warmBiobuzz3d` asks, so the chunk
+ * lands before the first High build and not after it) */
+export function bbWantsBay(settings: Pick<GraphicsSettings, 'meshDetail'>, tier: GraphicsTier): boolean {
+  return ROBOT_LOD[bbWheelDetail(settings, tier)].bay;
+}
+
 const WHEEL_LOD: Record<BbWheelDetail, {
   /** sides of a roller barrel, and profile samples along it. */
   rollerSeg: number;

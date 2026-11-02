@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
@@ -487,6 +487,7 @@ import {
   clipToFloor,
   photoTexturesOf,
   type PhotoLayerAssets,
+  venueAssetUrl,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
@@ -839,6 +840,12 @@ export function renderChecks(check: Check): void {
       'and they all name ONE module, so the chunk stays one measurable file',
       specifiers.size === 1 && specifiers.has('./scene/renderScene'),
       [...specifiers].join(', '),
+    );
+    // the idle warm (`preloadRoomView` → `warmScene`) rides the same chunk, never a fourth one
+    check(
+      'warmScene is filled from the SAME ./scene/renderScene chunk',
+      /warmScene:\s*\(\)\s*=>\s*import\(\s*['"]\.\/scene\/renderScene['"]\s*\)/.test(indexSrc),
+      'warmScene missing or on another specifier',
     );
   }
 
@@ -7815,11 +7822,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       // and the chunk itself is fetched on idle from whatever screen comes first, not when the
       // turntable mounts — gated by preloadRoomView on a scene-bearing game and the 3D view
-      check(
-        'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
-        /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game\]\);/.test(readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8')) &&
-          readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8').includes('const warm = (): void => preloadRoomView(settings.game);'),
-      );
+      {
+        const app = readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8');
+        const rv = readFileSync(join(root, 'src', 'net', 'roomView.ts'), 'utf8');
+        check(
+          'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
+          /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game, warmAll\]\);/.test(app) &&
+            app.includes('const warm = (): void => preloadRoomView(settings.game, warmAll);'),
+        );
+        // ...and the FULL warm (the 3D solve, the venue's ~1–2 MB) only where a match is a click
+        // away: Play and its popups. Home asks for the chunk alone, which its stage draws from anyway.
+        check(
+          '...the full warm (3D solve, venue files) only on Play and its popups; elsewhere, Home included, the chunk alone',
+          app.includes("const warmAll = screen === 'modes' || !!POPUPS[screen];") &&
+            /export function preloadRoomView\(game: GameId, assets = true\): void \{[\s\S]{0,200}if \(!assets\) \{\s*void m\.scene\(\)\.catch\(\(\) => \{\}\);\s*return;\s*\}/.test(rv),
+        );
+      }
       check(
         'the preview scene warms its shaders with compileAsync and draws nothing until then',
         previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
@@ -14389,7 +14407,7 @@ function photoVenueChecks(check: Check): void {
     slug: string;
     md5: string;
     gain: number;
-    patches?: { room?: Record<string, number> }[];
+    patches?: { room?: Record<string, number>; e?: [number, number] }[];
   }[];
   const { decodeRgbe } = req('../venues/rgbe.cjs') as {
     decodeRgbe: (b: Buffer) => { width: number; height: number; data: Float32Array };
@@ -14403,6 +14421,36 @@ function photoVenueChecks(check: Check): void {
     return null;
   };
   const readme = readFileSync(join(root, 'public', 'venues', 'README.md'), 'utf8');
+  /**
+   * `/venues` IS SERVED IMMUTABLE (`vercel.json`), so every file a row fetches has to carry its own
+   * version, or a rebuilt backdrop cached under the old name is drawn against the new row's room for
+   * a year. The version is the row's byte count, which the checks below hold to the file on disk.
+   */
+  {
+    const vercel = JSON.parse(readFileSync(join(root, 'vercel.json'), 'utf8')) as { headers: { source: string; headers: { key: string; value: string }[] }[] };
+    const cc = (src: string): string => vercel.headers.find((h) => h.source === src)?.headers.find((x) => x.key === 'Cache-Control')?.value ?? '';
+    check('venues: /venues/(.*) is cached immutable for a year', /max-age=31536000/.test(cc('/venues/(.*)')) && /immutable/.test(cc('/venues/(.*)')), cc('/venues/(.*)'));
+    check(
+      'venues: /models is NOT given a long cache (its files carry no version, and the field GLB must match the colliders in the bundle)',
+      !vercel.headers.some((h) => h.source.includes('models') && h.headers.some((x) => x.key === 'Cache-Control')),
+    );
+    const files: [string, number][] = [];
+    for (const e of photos) {
+      const p = e.photo!;
+      files.push([p.backdrop, p.bytes.backdrop], [p.backdropLow, p.bytes.backdropLow], [p.ibl, p.bytes.ibl]);
+      if (p.layers) {
+        const l = p.layers;
+        files.push([l.bg, l.bytes.bg], [l.bgLow, l.bytes.bgLow], [l.fg, l.bytes.fg], [l.fgLow, l.bytes.fgLow], [l.mesh, l.bytes.mesh]);
+      }
+      if (p.floorTexture) files.push([p.floorTexture.tile, p.floorTexture.bytes]);
+    }
+    const bad = files.filter(([path, bytes]) => !venueAssetUrl(path).endsWith(`/${path}?v=${bytes}`));
+    check(`venues: every file a photographed row fetches (${files.length}) is fetched as ?v=<its bytes>`, files.length >= 40 && bad.length === 0, bad.map(([f]) => `${f} → ${venueAssetUrl(f)}`).join(', '));
+    for (const [path, bytes] of files) {
+      const on = statSync(join(root, 'public', path)).size;
+      if (on !== bytes) check(`venues: ${path} is the ${bytes} bytes its version says`, false, `${on} on disk`);
+    }
+  }
   for (const e of photos) {
     const p = e.photo!;
     const cfg = venuesCfg.find((v) => v.id === e.id);
@@ -14454,10 +14502,11 @@ function photoVenueChecks(check: Check): void {
       p.fallback,
     );
     check(`photo ${e.id}: not also a cross-origin HDRI (one light source per row)`, !e.hdri);
-    // THE ROOM: the lens 1.6 m up (the court lines' measurement), the field well inside it, and a
-    // ceiling above the lens
+    // THE ROOM: the lens at its venue's MEASURED height (`PHOTO_LENS_IN`'s note: off each photograph
+    // separately, the court 64.6 in off its lines), the field well inside it, and a ceiling above it.
+    // A tripod's eye height: a number outside that is a typo or feet, not a measurement
     const r = p.room;
-    check(`photo ${e.id}: the lens height is the measured 63 in`, p.height === 63);
+    check(`photo ${e.id}: the lens height is a measured tripod height, 55–75 in`, p.height >= 55 && p.height <= 75, String(p.height));
     check(
       `photo ${e.id}: the room surrounds the field and its alliance areas (every wall 200+ in out)`,
       r.x0 < -200 && r.x1 > 200 && r.y0 < -200 && r.y1 > 200,
@@ -14473,12 +14522,15 @@ function photoVenueChecks(check: Check): void {
       `photo ${e.id}: public/venues/README.md names its source, md5 and authors`,
       !!cfg && readme.includes(cfg.slug) && readme.includes(cfg.md5) && p.authors.every((a) => readme.includes(a.name)),
     );
-    // a FURNITURE PATCH's room is the row's room in lens heights — the two must describe one box
+    // a FURNITURE PATCH's room is the row's room in lens heights — the two must describe one box.
+    // Its walls: a patch lies below the horizon (`e` < 0, checked), where derive.cjs never reads
+    // its `ceil`, and the row's `ceil` is a gable's ridge where it has one (`PhotoRoom.eave`)
     for (const patch of cfg?.patches ?? []) {
       if (!patch.room) continue;
       const k = p.height;
-      const same = (['x0', 'x1', 'y0', 'y1', 'ceil'] as const).every((f) => Math.abs((patch.room![f] ?? NaN) * k - r[f]) <= 2);
-      check(`photo ${e.id}: the derive patch's room (× ${k} in) is the row's room, within 2 in`, same, JSON.stringify(patch.room));
+      const same = (['x0', 'x1', 'y0', 'y1'] as const).every((f) => Math.abs((patch.room![f] ?? NaN) * k - r[f]) <= 2);
+      check(`photo ${e.id}: the derive patch's walls (× ${k} in) are the row's, within 2 in`, same, JSON.stringify(patch.room));
+      check(`photo ${e.id}: the derive patch lies below the horizon (so its ceiling is never read)`, !!patch.e && patch.e[1] < 0, String(patch.e));
     }
   }
 
@@ -14790,8 +14842,8 @@ function photoVenueChecks(check: Check): void {
     {
       const unlayered = photos.filter((e) => !e.photo!.layers).map((e) => e.id);
       check(
-        'menu stage: the Home eye is above the lens, so every photographed venue has its layered room',
-        MENU_POSES.home.eye[2] > PHOTO_FLOOR_Z + 63 + PUSH_MARGIN_IN && unlayered.length === 0,
+        'menu stage: the Home eye is above every lens, so every photographed venue has its layered room',
+        MENU_POSES.home.eye[2] > PHOTO_FLOOR_Z + Math.max(...photos.map((e) => e.photo!.height)) + PUSH_MARGIN_IN && unlayered.length === 0,
         unlayered.join(', '),
       );
       const out: string[] = [];
@@ -14994,7 +15046,7 @@ function photoVenueChecks(check: Check): void {
         [shadow, contact].every((m) => m.position.z > PHOTO_FLOOR_Z && m.position.z < -0.589),
     );
     const eye = rm.uniforms.bbEye.value as THREE.Vector3;
-    check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + 63);
+    check('photo venues: the projection centre is the lens, above the field centre', eye.x === 0 && eye.y === 0 && eye.z === PHOTO_FLOOR_Z + def.photo!.height);
     // ⚠️ A PHOTOGRAPHED HIGHLIGHT NEVER OUTSHINES THE FIELD'S LIT WHITE PANELS (1.2–1.7 raw): the
     // knee rolls everything off toward twice itself. The shader's line is pinned and mirrored here,
     // and the mirror is run on every venue's HOTTEST texel (its `.hdr`, which keeps the light the
@@ -15474,17 +15526,21 @@ function photoKeepOutChecks(check: Check, photos: EnvironmentDef[]): void {
       }
       if (label === 'free default') freeEye = cam.position.toArray() as [number, number, number];
     });
-    // in the default orbit's picture and within 150 in of its eye: the two shards, 55–124 in away
+    // in the default orbit's picture and within 150 in of its eye: the two shards, 12–52 in away.
+    // 41 of their vertices since the court's lens was re-measured at 64.6 in and its room scaled
+    // about the lens (2026-10-24): the shards moved out with it and part of them left the frame
+    // (90 before). The court's own lens height, as the shader has it.
+    const lens = court.photo!.height;
     const near = pts.filter((p) => orbitEye && Math.hypot(p[0] - orbitEye[0], p[1] - orbitEye[1], p[2] - orbitEye[2]) < 150 && orbitView.containsPoint(new THREE.Vector3(...p)));
     const sliver = pts.filter((p) => Math.abs(p[1]) < 4 && p[0] > -170 && p[0] < -128 && p[2] > 80);
     check(
       'photo keep-out: the court’s default orbit draws none of the furniture within 150 in of its eye that is in its picture (the two sky shards)',
-      !!orbitEye && near.length > 50 && near.every((p) => photoFurnitureDropped(p, orbitEye!)),
-      `${near.filter((p) => !photoFurnitureDropped(p, orbitEye!)).length} of ${near.length} kept`,
+      !!orbitEye && near.length > 30 && near.every((p) => photoFurnitureDropped(p, orbitEye!, undefined, lens)),
+      `${near.filter((p) => !photoFurnitureDropped(p, orbitEye!, undefined, lens)).length} of ${near.length} kept`,
     );
     check(
       'photo keep-out: ...and its default free cam drops the whole light-pole sliver it looked at the field through',
-      !!freeEye && sliver.length > 50 && sliver.every((p) => photoFurnitureDropped(p, freeEye!)),
+      !!freeEye && sliver.length > 50 && sliver.every((p) => photoFurnitureDropped(p, freeEye!, undefined, lens)),
       `${sliver.length} verts`,
     );
   }
@@ -15566,6 +15622,14 @@ function layeredRoomChecks(check: Check, photos: EnvironmentDef[], webpSize: (bu
       near(rb.min.x, box.min[0]) && near(rb.max.x, box.max[0]) && near(rb.min.y, box.min[1]) && near(rb.max.y, box.max[1]) && near(rb.max.z, box.max[2]) && rb.min.z <= box.min[2] + 0.5,
       `${rb.min.toArray().map((v) => v.toFixed(0))} … ${rb.max.toArray().map((v) => v.toFixed(0))}`,
     );
+    // a GABLE roof (`PhotoRoom.eave`): the side walls top out at the eave, the ridge at `ceil` (above).
+    // Up to 8 in short of it: pack.ts keeps a subset of the room's grid, whose rays are 0.35° apart
+    // (6 in on a wall 1000 in out); never past it, where a flat ceiling would put the walls' tops
+    if (p.room.eave !== undefined) {
+      const side = room.filter((v) => Math.abs(v.y - box.min[1]) < 1 || Math.abs(v.y - box.max[1]) < 1);
+      const top = Math.max(...side.map((v) => v.z)) - (PHOTO_FLOOR_Z + p.room.eave);
+      check(`photo ${e.id}: the room mesh's side walls meet its gable roof at the eave`, top <= 2 && top >= -8, top.toFixed(1));
+    }
     const offFloor = room.filter((v) => Math.abs(v.x) < 100 && Math.abs(v.y) < 76 && v.z < eye.z && Math.abs(v.z - PHOTO_FLOOR_Z) > 0.1).length;
     check(`photo ${e.id}: the room's floor round the field is the photographed floor plane`, offFloor === 0, String(offFloor));
     // THE FURNITURE: in the rows its texture holds, clear of the field, inside the room

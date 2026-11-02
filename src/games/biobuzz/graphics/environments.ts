@@ -224,8 +224,15 @@ export interface PhotoRoom {
   x1: number;
   y0: number;
   y1: number;
-  /** the ceiling above the floor, inches */
+  /** the ceiling above the floor, inches — the HIGHEST, a gable's ridge: the box and the cameras'
+   * room are flat at it */
   ceil: number;
+  /** a GABLE roof, the layered room's (`scripts/venues/layers.py`, `room_distance`): `eave` above
+   * the floor at the side walls (`y0`, `y1`), rising in two flat slopes to `ceil` along a ridge
+   * parallel to x at y = `ridgeY`. The room file carries the shape; the RENDER lane holds its eaves
+   * to `eave`. Absent: a flat ceiling. */
+  eave?: number;
+  ridgeY?: number;
 }
 
 export interface PhotoVenue {
@@ -331,8 +338,8 @@ export interface PhotoLayers {
   /** the panorama's rows `fg` holds, as shares of its height, top first */
   fgRows: readonly [number, number];
   /** where the room's floor is the photographed floor plane, when that is not the whole room: the
-   * field's shadow stops at its edge (the school hall's stage ends 80 in out, over an auditorium
-   * 30 in lower) */
+   * field's shadow stops at its edge (the school hall's stage edge is 80 in out at its nearest, with
+   * two thrusts further out, over an auditorium 44 in lower) */
   floor?: PhotoFloor;
   /** false: the furniture above the lens (`fg-hi`) is not drawn. The events hall's is its pendant
    * lamps, relief seen from one point, which every other eye drew as white streaks under the roof;
@@ -442,11 +449,20 @@ const PH_CREDIT = (
 });
 
 /**
- * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED rather than
- * assumed: on `netball_court` the court's own painted lines (a 30.5 × 15.25 m netball court) span
- * 18.6 × 9.9 lens heights in the floor projection, which puts the lens at 1.64 and 1.54 m. 1.6 m it
- * is, for every venue: the same photographer's rig, and the floor's scale next to the field is
- * set by this one number.
+ * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED PER VENUE
+ * (2026-10-24), because the rooms were read off the photographs in lens heights: a wrong lens sizes
+ * the whole room wrong against the true-scale field and gives wrong parallax from every eye off it.
+ * Each is read off gnomonic crops of its own backdrop: an object of known height h on the field's
+ * floor, its base α_b and top α_t below the horizon, gives h / (1 − tan α_t / tan α_b).
+ *
+ * This 63 is for the venues the measurement leaves within 2 % of it: the events hall's tables (0.76 m,
+ * two of them: 63.2 and 63.3 in), the quad's two steel doors (2.032 m leaves on a walkway 0.145 lens
+ * heights up, measured off its curb: 62.9 and 63.8). The school hall's references disagree by more
+ * than the change (the covered grand piano over its near leg 62.4–64.5, the wing door's leaf 65.5 at
+ * an old 1981 mm, 67.1 at 2032 mm) and the hangar's are too far out and too irregular to read (a
+ * bench, a table, a motorcycle wheel: 59–81), so both keep it. The COURT is measured to a few tenths
+ * and carries its own (`height` on its row): it was this number's source, read as 1.64 and 1.54 m off
+ * the netball lines, and averaged to 1.6.
  */
 const PHOTO_LENS_IN = 63;
 
@@ -844,8 +860,8 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.703125], { bg: 571_412, bgLow: 175_712, fg: 380_916, fgLow: 126_790, mesh: 86_044 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
-      floorTexture: { tile: 'venues/school-hall-floor.webp', inches: [140.3, 140.3], mean: [0.3455, 0.2142, 0.0534], base: [0.2232, 0.1391, 0.0452], light: 1, bytes: 37_986 },
+      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.71484375], { bg: 564_494, bgLow: 173_284, fg: 386_642, fgLow: 129_016, mesh: 86_668 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
+      floorTexture: { tile: 'venues/school-hall-floor.webp', inches: [140.31, 140.31], mean: [0.3455, 0.2142, 0.0534], base: [0.2428, 0.159, 0.0523], light: 1, bytes: 37_812 },
       furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
@@ -865,7 +881,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'events-hall',
     name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.7 MB',
+    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
     rig: {
       hemiSky: 0xf2f6ff,
       hemiGround: 0x5f5c56,
@@ -883,10 +899,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       intensity: 0.6,
       saturation: 0.85,
       height: PHOTO_LENS_IN,
-      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 300 },
+      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 250, eave: 145, ridgeY: 20 },
       shadow: 0.4,
-      layers: { ...PHOTO_LAYERS('events-hall', [0.177734375, 0.568359375], { bg: 684_238, bgLow: 213_540, fg: 433_312, fgLow: 150_396, mesh: 42_640 }), upper: false },
-      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3176, 0.2497, 0.1903], base: [0.3564, 0.3415, 0.3218], light: 0.5, bytes: 65_456 },
+      layers: { ...PHOTO_LAYERS('events-hall', [0.283203125, 0.568359375], { bg: 684_836, bgLow: 213_750, fg: 380_700, fgLow: 126_826, mesh: 43_676 }), upper: false },
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.3564, 0.3417, 0.3218], light: 0.5, bytes: 63_886 },
       fallback: 'gym',
       ...PH_CREDIT('events_hall_interior', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -897,33 +913,34 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
   {
     /**
      * A HANGAR — a big shed with a clear floor, a light aircraft at one end and the open door at
-     * the other. Turned 90° so that axis is x, the drivers' line of sight. Daylight through the
-     * side windows (`fieldlight`: az 64°, el 20°), which the key follows at 40°.
+     * the other. Turned 72° so that axis is x, the drivers' line of sight (90° left every long line
+     * of the shed at ~+18°). Daylight through the side windows (`fieldlight`: az 45°, el 20°),
+     * which the key follows at 40°.
      */
     id: 'hangar',
     name: 'Hangar',
-    note: 'Daylight through high windows, 2.0 MB',
+    note: 'Daylight through high windows, 1.9 MB',
     rig: {
       hemiSky: 0xfff6ec,
       hemiGround: 0x625a4e,
       hemiIbl: 1.3,
       hemiNoIbl: 2.1,
-      sun: [61, 115, 109],
+      sun: [94, 90, 109],
       sunColor: 0xfff2e0,
       sunIntensity: 1.9,
       exposure: 1.2,
     },
     venue: { kind: 'hall', floor: 0x7d7465, wall: 0xa59d8c, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.1, half: 760, ceil: 360 },
     photo: {
-      ...PHOTO_FILES('hangar', 1_329_858, 344_362, 430_444),
+      ...PHOTO_FILES('hangar', 1_331_394, 343_558, 430_660),
       gain: 1.5,
       intensity: 0.65,
       saturation: 0.85,
       height: PHOTO_LENS_IN,
-      room: { x0: -737, x1: 882, y0: -441, y1: 441, ceil: 410 },
+      room: { x0: -709, x1: 857, y0: -435, y1: 435, ceil: 483, eave: 328, ridgeY: 0 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('hangar', [0.376953125, 0.556640625], { bg: 1_148_178, bgLow: 307_092, fg: 341_228, fgLow: 95_796, mesh: 53_484 }),
-      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3176, 0.2497, 0.1903], base: [0.4121, 0.3339, 0.2655], light: 1, bytes: 65_456 },
+      layers: PHOTO_LAYERS('hangar', [0.44140625, 0.556640625], { bg: 1_151_120, bgLow: 306_910, fg: 204_964, fgLow: 59_102, mesh: 43_028 }),
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.412, 0.3336, 0.2653], light: 1, bytes: 63_886 },
       fallback: 'workshop',
       ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
     },
@@ -931,10 +948,21 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
   {
     /**
      * AN OUTDOOR COURT at the end of the day — a fenced netball court, so the field stands on a
-     * painted sports surface whose lines give the eye an exact scale (the court lines measured
-     * the lens at 1.6 m). The box is the fence: 11.4 / 12.4 lens heights out along x, 6.1 / 5.8
-     * along y. The sun is low in the photograph (12°) and the key is raised to 40° for the
-     * RENDER lane's 25° rule (`sunset`'s measurement).
+     * painted sports surface whose lines give the eye an exact scale. The box is the fence: 11.4 /
+     * 12.4 lens heights out along x, 6.1 / 5.8 along y.
+     *
+     * THE LENS IS 64.6 in, MEASURED OFF THE LINES (2026-10-24): two courts are painted on it, a
+     * tennis court (white) and a netball court (yellow), centred on the lens. Each pair of parallel
+     * lines either side of it, read where it crosses the axis, puts the lens at its span over the
+     * sum of the two lines' cotangents: the service lines (12.75 m centre to centre) 64.8, the
+     * baselines (23.72) 64.9, the singles sidelines (8.18) 64.4, the doubles (10.92) 64.6, the netball
+     * sidelines (15.20) 64.5 and its third lines (10.12) 64.3. The first reading's 1.54 m does not
+     * reproduce off any pair; the surface tilts 0.2–0.5 % (drainage), which moves the far lines a few
+     * tenths and no more. The room was rescaled from 63 about the lens (× 1.0254,
+     * `scripts/venues/rescale-lens.ts`).
+     *
+     * The sun is low in the photograph (12°) and the key is raised to 40° for the RENDER lane's 25°
+     * rule (`sunset`'s measurement).
      */
     id: 'court',
     name: 'Outdoor court',
@@ -955,10 +983,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       gain: 2.5,
       intensity: 1,
       saturation: 0.8,
-      height: PHOTO_LENS_IN,
-      room: { x0: -718, x1: 781, y0: -384, y1: 365, ceil: 2000 },
+      height: 64.6,
+      room: { x0: -736, x1: 801, y0: -394, y1: 374, ceil: 2051 },
       shadow: 0.45,
-      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_296 }),
+      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_320 }),
       fallback: 'overcast',
       ...PH_CREDIT('netball_court', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -1034,6 +1062,38 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
 
 export function environmentDef(id: EnvironmentId): EnvironmentDef {
   return BB_ENVIRONMENTS.find((e) => e.id === id) ?? BB_ENVIRONMENTS[0];
+}
+
+/**
+ * THE VERSION A VENUE FILE'S URL CARRIES — its size in bytes, as its row states it, for every file
+ * a photographed venue fetches (`venueAssetUrl` appends `?v=`). `vercel.json` serves `/venues`
+ * immutable for a year, which is only safe because a rebuilt file comes with a new URL: the rows
+ * that place a room live in the hashed JS bundle and update at once, and a backdrop cached under
+ * the same name would be drawn against the new room's numbers. The RENDER lane checks every row's
+ * byte count against the file on disk, so a rebuild cannot ship with the old version.
+ */
+let venueBytes: Map<string, number> | null = null;
+export function venueFileBytes(path: string): number | undefined {
+  if (!venueBytes) {
+    venueBytes = new Map();
+    for (const e of BB_ENVIRONMENTS) {
+      const p = e.photo;
+      if (!p) continue;
+      venueBytes.set(p.backdrop, p.bytes.backdrop);
+      venueBytes.set(p.backdropLow, p.bytes.backdropLow);
+      venueBytes.set(p.ibl, p.bytes.ibl);
+      const l = p.layers;
+      if (l) {
+        venueBytes.set(l.bg, l.bytes.bg);
+        venueBytes.set(l.bgLow, l.bytes.bgLow);
+        venueBytes.set(l.fg, l.bytes.fg);
+        venueBytes.set(l.fgLow, l.bytes.fgLow);
+        venueBytes.set(l.mesh, l.bytes.mesh);
+      }
+      if (p.floorTexture) venueBytes.set(p.floorTexture.tile, p.floorTexture.bytes);
+    }
+  }
+  return venueBytes.get(path.replace(/^\/+/, ''));
 }
 
 /**

@@ -888,16 +888,22 @@ export function App() {
    * the moment that screen mounts. `preloadRoomView` gates on a game with a scene and on the 3D
    * view, so DECODE, Chain Reaction and 2D players fetch nothing. It measured as no gain against
    * localhost (2026-09-23), where there is no network to hide; the live site has one.
+   *
+   * THE FULL WARM (the 3D solve, the selected venue's files: ~2.5 MB for BIOBUZZ) only on Play and
+   * the popups over it, where a match is a click away. Everywhere else, Home included, the chunk
+   * alone: Home's stage draws from it anyway, and a visitor who only opens Home should not pay for a
+   * match they never start.
    */
+  const warmAll = screen === 'modes' || !!POPUPS[screen];
   useEffect(() => {
-    const warm = (): void => preloadRoomView(settings.game);
+    const warm = (): void => preloadRoomView(settings.game, warmAll);
     if (typeof requestIdleCallback !== 'function') {
       const t = setTimeout(warm, 2000);
       return () => clearTimeout(t);
     }
     const h = requestIdleCallback(warm, { timeout: 5000 });
     return () => cancelIdleCallback(h);
-  }, [settings.game]);
+  }, [settings.game, warmAll]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the

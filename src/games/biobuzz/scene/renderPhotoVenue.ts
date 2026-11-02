@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { ALLIANCE_AREA } from '../fieldDims.gen';
-import type { EnvironmentDef, PhotoFloor, PhotoVenue } from '../graphics/environments';
+import { type EnvironmentDef, type PhotoFloor, type PhotoVenue, venueFileBytes } from '../graphics/environments';
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import { VENUE_OVERHEAD_LAYER } from './renderVenue';
 
@@ -55,7 +55,7 @@ import { VENUE_OVERHEAD_LAYER } from './renderVenue';
  * (`scripts/venues/`: MoGe-2 depth for every pixel, OneFormer to say which pixels are furniture,
  * LaMa to paint the furniture out):
  *   • THE ROOM (`bg-lo`, `bg-hi`): the measured room as a mesh closed round the lens — the box,
- *     with the floor step a venue has (the school hall's auditorium, 25 in below its stage, which the
+ *     with the floor step a venue has (the school hall's auditorium, 44 in below its stage, which the
  *     box drew at stage level and 0.6 × as deep) — textured with the INPAINTED backdrop, so a gap a
  *     camera sees behind a chair shows the floor that is there, not the chair again. MoGe's own room
  *     was tried and lost: its walls are a few per cent of noise, and a closed mesh bridges every jump
@@ -148,12 +148,14 @@ export function bbPhotoDetail(
 }
 
 /** a `public/` path → a URL, through Vite's base (the Electron build's is `./`, under which a
- * bare `/venues/…` resolves at the filesystem root and 404s silently) */
+ * bare `/venues/…` resolves at the filesystem root and 404s silently), versioned by the file's
+ * size from its row (`venueFileBytes`), because `/venues` is served immutable */
 export function venueAssetUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   const env = (import.meta as { env?: { BASE_URL?: string } }).env;
   const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
-  return `${base}/${path.replace(/^\/+/, '')}`;
+  const v = venueFileBytes(path);
+  return `${base}/${path.replace(/^\/+/, '')}${v === undefined ? '' : `?v=${v}`}`;
 }
 
 /** the room box in field inches: x/y from the capture point (the field's centre), z from the floor */
