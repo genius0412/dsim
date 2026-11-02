@@ -370,8 +370,14 @@ function buildFittings(spec: VenueSpec, d: (typeof LOD)['low']): THREE.Instanced
  *
  * Everything on this layer is opt-IN for a camera: `applyVenueLayers` enables it on the
  * cameras that should see it, and the two overhead ones simply never do.
+ *
+ * ⚠️ **NOT LAYER 1 OR 2: THOSE ARE THE HEADSET'S EYES.** three's WebXR draws each eye with the
+ * camera's mask plus layer 1 for the left eye and layer 2 for the right, and takes the other eye's
+ * layer OFF (`WebXRManager.updateCamera`). On layer 1, as this was until 2026-11-02, the rig and a
+ * photographed room's upper half (`fg-hi`, `bg-hi`) drew in the LEFT eye only in VR
+ * (`renderXR.ts`). Any layer from 3 up is seen by both eyes of a camera that enables it.
  */
-export const VENUE_OVERHEAD_LAYER = 1;
+export const VENUE_OVERHEAD_LAYER = 3;
 
 /** enable the overhead-furniture layer on the cameras that look at the field from the SIDE.
  *  Deliberately NOT the overhead camera and NOT the PiP — see `VENUE_OVERHEAD_LAYER`. */

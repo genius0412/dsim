@@ -720,6 +720,37 @@ export function renderChecks(check: Check): void {
 
   check('scene/ actually has files (else every check below is vacuous)', sceneFiles.length > 0, String(sceneFiles.length));
 
+  // ---- IMMERSIVE VR (`renderXR.ts`, merged 2026-11-02) -------------------------------------
+  {
+    const xr = readFileSync(join(SCENE_DIR, 'renderXR.ts'), 'utf8');
+    const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    const css = readFileSync(join(root, 'src', 'ui', 'styles.css'), 'utf8');
+    // the MATCH score, as the flat HUD shows it: `bbScoreWorld` leaves out the fouls and a RED's void
+    check(
+      'VR: the scoreboard draws the MATCH score (fouls in, a voided alliance 0), not the points on the field',
+      /m\.scores\.red\.total/.test(xr) && /m\.scores\.blue\.total/.test(xr) && !/import[^;]*\bbbScoreWorld\b/.test(xr),
+    );
+    // three draws each eye with layer 1 (left) or 2 (right) and takes the other one off
+    check('VR: the venue overhead layer is not one of three’s eye layers (1 left, 2 right)', VENUE_OVERHEAD_LAYER > 2, String(VENUE_OVERHEAD_LAYER));
+    check('VR: ...and the headset camera is given it, like the other side-on cameras', /applyVenueLayers\(\[[^\]]*this\.xrRig \? \[this\.xrRig\.camera\]/.test(sc));
+    // the headset's MSAA without the page's: the flat view draws through its own target
+    check(
+      'VR: an XR-capable browser builds the page context WITHOUT default-framebuffer MSAA and reports it to three’s XR manager',
+      /createSceneRenderer\(canvas, \{ antialias: false, alpha: false, context: Xr\?\.context\(canvas\) \}\)/.test(sc) &&
+        /static context\([\s\S]{0,200}antialias: false,[\s\S]{0,400}gl\.getContextAttributes = \(\) => \{[\s\S]{0,120}antialias: true/.test(xr),
+    );
+    check(
+      'VR: only an interactive scene probes for a headset (not the menu stage, not the replay export), and only then fetches the VR chunk',
+      /opts\.interactive !== false && \(await xrSupported\(\)\)\s*\? await loadOptionalChunk\('renderXR', \(\) => import\('\.\/renderXR'\)\)/.test(sc),
+    );
+    // its own lazy chunk (`xr` in bundleaudit.mjs): a browser that cannot open a session never loads it
+    const xrImporters = sceneFiles.filter((f) => /^import (?!type)[^;]*from '\.\/renderXR'/m.test(readFileSync(f, 'utf8')));
+    check('VR: renderXR.ts is a LAZY chunk (no static import of it anywhere in scene/)', xrImporters.length === 0, xrImporters.map(relPosix).join(', '));
+    // the bottom centre is the score bar's clock
+    const btn = /\.game-xr-enter \{[^}]*\}/.exec(css)?.[0] ?? '';
+    check('VR: the Enter VR button sits at the top, clear of the score bar', /\btop:/.test(btn) && !/\bbottom:/.test(btn), btn.replace(/\s+/g, ' '));
+  }
+
   // ---- every file under scene/ is named render*.ts ---------------------------------------
   const badNames = sceneFiles.filter((p) => !/^render[^/\\]*\.ts$/.test(relative(SCENE_DIR, p)));
   check(

@@ -3189,6 +3189,8 @@ stands. Net of fouls the guarded AI still scores more than the old AI under thes
 **Not done:** issue #42 item 9 (the 2D solve at `play.ts` lets an element sit inside a frame); the
 control test already uses each element's own radius, so the fix is in the physics, not here.
 
+---
+
 # IMMERSIVE VR (`scene/renderXR.ts`) — WebXR, added 2026-10-11
 
 **What it is.** On a browser that can open an `immersive-vr` session (Safari on Apple Vision
@@ -3199,7 +3201,8 @@ path is a second CAMERA on the existing scene and nothing else. `src/sim/`, `sim
 `src/input/` are untouched, so solo free drive and solo matches step exactly as on the flat view.
 
 **How it fits.** `GameScene.xr?: SceneXR` (`src/games/module.ts`) is optional and only the
-BIOBUZZ scene supplies it, and only when `BbXR.supported()` says yes, so no other game and no
+BIOBUZZ scene supplies it, and only when `xrSupported()` (`renderScene.ts`) says yes — which is also
+what fetches `renderXR.ts`, its own lazy chunk (`xr` in `bundleaudit.mjs`) — so no other game and no
 non-XR browser sees a change except the dt clamp below. The rig (a Group parent of the XR
 camera) carries the whole units/axes conversion: 39.37 in/m, WebXR +Y up → field +Z up, WebXR
 forward → across the field. It sits on the floor at `driverEyePoint`'s x/y for the local
@@ -3225,9 +3228,28 @@ real failure before the fix:
 
 **Cost.** Render scale 0.5 of native (`XR_FRAMEBUFFER_SCALE`), foveation 1, shadows OFF while
 presenting (restored on exit). On Vision Pro that is ~200k triangles, ~2 ms CPU per frame, and
-90 fps. An XR-capable browser also creates its WebGL context with `antialias: true`, because
-the XR framebuffer is drawn into directly with no MSAA target to resolve through. That flag is
-set once at context creation and so also applies to that browser's flat view.
+90 fps (the contributor's measurement, 2026-10-11).
+
+**MSAA: the headset's, not the page's** (merge review, 2026-11-02). The XR framebuffer is drawn
+into directly, with no MSAA target to resolve through, so it wants multisampling. three asks for it
+from the context's `antialias` attribute, read once when the renderer is built and used for nothing
+else. The contributor's build created the context with `antialias: true` on every XR-capable
+browser, which also multisampled the page's default framebuffer for the FLAT view, which draws
+through its own target and never needed it. `BbXR.context` now builds the context
+without it and reports `antialias: true` to three (measured in a browser with a stubbed
+`navigator.xr`: three reads true, the page's `SAMPLES` is 0). NOT checked on a headset: if a
+browser tied the layer's MSAA to the context's, VR would lose its MSAA and nothing else.
+
+⚠️ **THE VENUE OVERHEAD LAYER WAS AN EYE LAYER.** three draws each eye with the camera's layers plus
+layer 1 (left) or 2 (right), the other eye's taken off. `VENUE_OVERHEAD_LAYER` was 1, so the
+lighting rig and a photographed room's upper half (`fg-hi`/`bg-hi`) drew in the LEFT EYE ONLY. It
+is 3 now, and the headset camera gets it like the other side-on cameras (`applyVenueLayers`).
+
+**Merge review fixes (2026-11-02):** the scoreboard draws `world.match.scores` (fouls in, a voided
+alliance 0), as the flat HUD does — it drew `bbScoreWorld`'s field points; the Enter VR button sits
+at the top centre (the bottom centre is now the score bar's clock); only an interactive scene probes
+for a headset; a session three cannot take is ended rather than left open; `exit` swallows the
+rejection of a session already ending.
 
 **Known gaps (not bugs in the sim):**
 - Controller input is `navigator.getGamepads()` only (a paired DualSense on Vision Pro, which
@@ -3240,5 +3262,5 @@ set once at context creation and so also applies to that browser's flat view.
 - Untested on Quest and other headsets. Nothing in the code is Apple-specific, but Quest's
   input and GPU budget are the two open questions.
 - On Vision Pro the FLAT Safari window ran the 3D view at ~7 fps (CPU ~2.6 ms/frame, so a GPU
-  or compositor limit). Not investigated. The `antialias` flag above is one suspect, since it
-  only applies to XR-capable browsers. The immersive view is unaffected.
+  or compositor limit; the contributor's report). Not investigated. The page's `antialias` was one
+  suspect and is gone (above); whether it was the cause is not known.

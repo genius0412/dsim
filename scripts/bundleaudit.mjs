@@ -213,6 +213,8 @@ function routeFor(file, buf) {
   if (/^renderSurfaces-[^/]*\.js$/.test(base)) return 'surfaces';
   // The bay under a High robot's deck, by FILENAME for the same reason (see the route table)
   if (/^renderBay-[^/]*\.js$/.test(base)) return 'bay';
+  // The WebXR driver station, by FILENAME for the same reason (see the route table)
+  if (/^renderXR-[^/]*\.js$/.test(base)) return 'xr';
   // THE ROBOT IMPORTER, by FILENAME (see the route table). `engineLoader-*.js` exists only in the
   // measurement build, where the loader is an entry of its own; in the app it is inlined.
   // `geometry-*.js` is the measurement code (`src/robotImport/geometry.ts`) once the editor and the
@@ -684,6 +686,12 @@ const BASELINE = {
   // introduced it: the 5203s, the REV hubs and battery, their pure-number layout (`bbBayLayout`) and
   // the lead router (`bayWires`, 3.3 KB of it). Lazy: fetched by the first High robot built.
   bay: { gzip: 7.89 * 1000 },
+  // 2026-11-02: NEW. `renderXR-*.js`, the WebXR driver station (PR #119), measured on the build that
+  // made it lazy: the rig, the session hand-off, the venue scoreboard and the page context that
+  // keeps MSAA off the flat view. Lazy: fetched by `createBiobuzzScene` only on a browser that can
+  // open an `immersive-vr` session. As a static import it took `scene` to 249.12 over its 248.08
+  // tolerance line; lazy, `scene` measures 247.99 (alpha was 247.33 before #123 and #119).
+  xr: { gzip: 1.77 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.

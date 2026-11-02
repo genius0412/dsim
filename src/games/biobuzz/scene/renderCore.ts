@@ -140,17 +140,24 @@ export const SCENE_SHADOW_NORMAL_BIAS = 0.035;
  * `alpha` is the other caller's decision: the match view is opaque (it owns the whole viewport
  * and paints its own letterbox), the preview is transparent so the card's themed surface shows
  * through and it needs no background of its own to keep in step with the theme.
+ *
+ * `context`: a WebGL2 context made by the caller, which three then uses as it is — the match view
+ * passes one on a browser that can go immersive (`BbXR.context`, `renderXR.ts`, which says why).
  */
 export function createSceneRenderer(
   canvas: HTMLCanvasElement,
-  opts: { antialias: boolean; alpha: boolean },
+  opts: { antialias: boolean; alpha: boolean; context?: WebGL2RenderingContext },
 ): THREE.WebGLRenderer {
   const renderer = new THREE.WebGLRenderer({
     canvas,
+    context: opts.context,
     antialias: opts.antialias,
     alpha: opts.alpha,
     powerPreference: 'high-performance',
   });
+  // a context handed in sets three's background alpha from its own attribute (always `alpha: true`,
+  // as three creates them), so restate the caller's
+  renderer.setClearAlpha(opts.alpha ? 0 : 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // FIDELITY PASS (plan-3d.md §4.4): filmic tone mapping so the key light's highlights roll off
   // instead of clipping — see `SCENE_EXPOSURE` for how the exposure was landed on.
@@ -161,7 +168,6 @@ export function createSceneRenderer(
   // bare PCF filter, its blur radius (`shadow.radius`) is genuinely a BLUR rather than a wider
   // hard-edge sample pattern, which is what "shadows don't look good" was pointing at.
   renderer.shadowMap.type = THREE.VSMShadowMap;
-  if (opts.alpha) renderer.setClearAlpha(0);
   return renderer;
 }
 

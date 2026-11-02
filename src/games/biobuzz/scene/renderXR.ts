@@ -17,7 +17,6 @@
 import * as THREE from 'three';
 import type { Alliance, World } from '../../../types';
 import { bbRoleLabel } from '../config';
-import { bbScoreWorld } from '../score';
 import { driverEyePoint, type DriverRole } from '../graphics/driverEye';
 import type { SceneXR } from '../../module';
 
@@ -57,10 +56,38 @@ export class BbXR implements SceneXR {
     return this.session !== null;
   }
 
-  static async supported(): Promise<boolean> {
-    const xr = (navigator as Navigator & { xr?: XRSystem }).xr;
-    if (!xr || !window.isSecureContext) return false;
-    return xr.isSessionSupported('immersive-vr').catch(() => false);
+  /**
+   * THE PAGE'S CONTEXT, FOR A SCENE THAT CAN GO IMMERSIVE: the HEADSET gets MSAA and the page does
+   * not (merge review, 2026-11-02). The XR framebuffer is drawn into directly, with no MSAA target to
+   * resolve through, so it wants multisampling. three asks for it from the context's own `antialias`
+   * attribute, read once when the renderer is built (`WebXRManager`: the `XRWebGLLayer`'s `antialias`,
+   * or 4 samples on its projection-layer target), and reads the attribute for nothing else. A context
+   * created with `antialias: true` for the headset's sake also multisampled the PAGE's default
+   * framebuffer, which the flat view never needed (it draws through its own MSAA target) and paid
+   * for every frame. So the context is created here with three's own attributes and no
+   * default-framebuffer MSAA, and reports `antialias: true` to three. Undefined when the browser
+   * refuses (three then makes its own and reports its usual error). Measured in a browser with a
+   * stubbed `navigator.xr`: three reads true, the page's `SAMPLES` is 0. Not checked on a headset —
+   * if a browser tied a layer's MSAA to its context's, the headset would lose MSAA and nothing else.
+   */
+  static context(canvas: HTMLCanvasElement): WebGL2RenderingContext | undefined {
+    const gl = canvas.getContext('webgl2', {
+      alpha: true,
+      depth: true,
+      stencil: false,
+      antialias: false,
+      premultipliedAlpha: true,
+      preserveDrawingBuffer: false,
+      powerPreference: 'high-performance',
+      failIfMajorPerformanceCaveat: false,
+    });
+    if (!gl) return undefined;
+    const own = gl.getContextAttributes.bind(gl);
+    gl.getContextAttributes = () => {
+      const a = own();
+      return a ? { ...a, antialias: true } : a;
+    };
+    return gl;
   }
 
   /** Must be called from a user gesture. `onFrame` is the host's loop; `onEnd` hands it back. */
@@ -68,11 +95,19 @@ export class BbXR implements SceneXR {
     const xr = (navigator as Navigator & { xr?: XRSystem }).xr;
     if (!xr) throw new Error('WebXR unavailable');
     const session = await xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
-    this.renderer.xr.enabled = true;
-    this.renderer.xr.setReferenceSpaceType('local-floor');
-    this.renderer.xr.setFramebufferScaleFactor(XR_FRAMEBUFFER_SCALE);
-    this.renderer.xr.setFoveation(1);
-    await this.renderer.xr.setSession(session);
+    try {
+      this.renderer.xr.enabled = true;
+      this.renderer.xr.setReferenceSpaceType('local-floor');
+      this.renderer.xr.setFramebufferScaleFactor(XR_FRAMEBUFFER_SCALE);
+      this.renderer.xr.setFoveation(1);
+      await this.renderer.xr.setSession(session);
+    } catch (err) {
+      // the headset granted a session that three could not take: close it rather than leave the
+      // player in an immersive session nothing draws into, and let the host restart its loop
+      this.renderer.xr.enabled = false;
+      session.end().catch(() => {});
+      throw err;
+    }
     this.session = session;
     this.placedFor = '';
     this.board.mesh.visible = true;
@@ -91,7 +126,8 @@ export class BbXR implements SceneXR {
   }
 
   exit(): void {
-    void this.session?.end();
+    // `end` rejects on a session that is already ending; nothing is left to do then
+    this.session?.end().catch(() => {});
   }
 
   /** Re-place the rig when the local robot's alliance or TOP/BOTTOM role changes; refresh the board. */
@@ -160,7 +196,8 @@ class Scoreboard {
     const now = performance.now();
     if (now - this.lastDraw < 200) return;
     this.lastDraw = now;
-    const s = bbScoreWorld(world);
+    // the MATCH score, as the flat HUD shows it: fouls in, and 0 for an alliance a RED CARD voided
+    // (`bbApplyScore`). `bbScoreWorld` is the points on the field, which is neither.
     const m = world.match;
     const c = this.ctx;
     c.fillStyle = '#0b0d12';
@@ -173,8 +210,8 @@ class Scoreboard {
     c.textBaseline = 'middle';
     c.fillStyle = '#fff';
     c.font = 'bold 150px -apple-system, system-ui, sans-serif';
-    c.fillText(String(s.red.total), 170, 140);
-    c.fillText(String(s.blue.total), 854, 140);
+    c.fillText(String(m.scores.red.total), 170, 140);
+    c.fillText(String(m.scores.blue.total), 854, 140);
     const phase = m.phase === 'freeplay' ? 'FREE DRIVE' : m.phase.toUpperCase();
     c.font = 'bold 44px -apple-system, system-ui, sans-serif';
     c.fillText(phase, 512, 60);

@@ -208,11 +208,13 @@ button {
 }
 /* WEBXR: "Enter VR", over the 3D view, added by `GameController.mountXrButton` only when the
    browser can open an immersive session. Above the HUD (z-10) so it stays clickable mid-match.
-   Centred with auto margins, not a translate: the keycap's hover/press sink owns `transform`. */
+   Centred with auto margins, not a translate: the keycap's hover/press sink owns `transform`.
+   At the TOP, in the gap between the left chrome and the hopper column: the bottom centre is the
+   score bar's clock. */
 .game-xr-enter {
   position: absolute;
   inset-inline: 0;
-  bottom: var(--ds-s-5);
+  top: var(--ds-s-3);
   width: max-content;
   margin-inline: auto;
   z-index: 20;

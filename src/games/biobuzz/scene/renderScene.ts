@@ -73,7 +73,14 @@ import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } fro
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { BB_ENVIRONMENT_IDS, environmentDefFor, type EnvironmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
-import { BbXR } from './renderXR';
+import { loadOptionalChunk } from '../../../optionalChunks';
+/**
+ * `renderXR.ts` is its own LAZY chunk (`xr` in `scripts/bundleaudit.mjs`), fetched by
+ * `createBiobuzzScene` only on a browser that can open an immersive session: the scene chunk is
+ * within a few KB of its ceiling, and VR is drawn by nobody else. Type-only here.
+ */
+type XrRigClass = typeof import('./renderXR').BbXR;
+type XrRig = InstanceType<XrRigClass>;
 import {
   SceneUnsupportedError,
   createSceneLights,
@@ -214,7 +221,7 @@ class BiobuzzScene implements GameScene {
   get xr(): SceneXR | undefined {
     return this.xrRig ?? undefined;
   }
-  private readonly xrRig: BbXR | null;
+  private readonly xrRig: XrRig | null;
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
@@ -343,7 +350,7 @@ class BiobuzzScene implements GameScene {
   private dragX = 0;
   private dragY = 0;
 
-  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions, gpuName: string, xrCapable = false) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions, gpuName: string, Xr: XrRigClass | null = null) {
     this.canvas = canvas;
     this.gpuName = gpuName;
     this.host = host;
@@ -374,10 +381,11 @@ class BiobuzzScene implements GameScene {
     // filter come with the shared factory (`renderCore.ts`), which the builder preview builds
     // its renderer from too — so the same robot cannot come out two different colours in the
     // two places this game draws it.
-    // XR renders straight into the headset's framebuffer (no MSAA target to resolve through), so an
-    // XR-capable browser asks for a multisampled default framebuffer instead.
-    this.renderer = createSceneRenderer(canvas, { antialias: xrCapable, alpha: false });
-    this.xrRig = xrCapable ? new BbXR(this.renderer, this.scene) : null;
+    // XR renders straight into the headset's framebuffer (no MSAA target to resolve through), so a
+    // scene that can go immersive has three ask the HEADSET for MSAA — and still not the page, whose
+    // flat view keeps drawing through its own target (`BbXR.context`)
+    this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false, context: Xr?.context(canvas) });
+    this.xrRig = Xr ? new Xr(this.renderer, this.scene) : null;
     /**
      * THE SUN'S SHADOW MAP IS DRAWN ONCE PER FRAME, not once per `renderer.render`. With
      * `autoUpdate` on, every call that sees the shadow-casting sun redraws the whole VSM map: the
@@ -688,8 +696,9 @@ class BiobuzzScene implements GameScene {
        over the field — the lighting grid, the ceiling fittings — sits on
        `VENUE_OVERHEAD_LAYER`, and enabling it here for the side-on cameras only is what
        keeps a 5×5 beam grid from being drawn as a giant cross across the overhead shot
-       and the PiP. Re-applied on every rebuild because the cameras outlive the venue. */
-    applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free]);
+       and the PiP. Re-applied on every rebuild because the cameras outlive the venue. The VR
+       camera stands at a driver station, side-on like the driver camera. */
+    applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free, ...(this.xrRig ? [this.xrRig.camera] : [])]);
     this.scene.add(next);
   }
 
@@ -1260,32 +1269,16 @@ class BiobuzzScene implements GameScene {
   }
 
   render(world: World, frame: SceneFrame): void {
-    // ── WEBXR: one pass into the headset's framebuffer, from the driver-station rig ─────────
-    // No frame cap (the headset paces it), no MSAA target or blit, no minimap, no governor.
-    if (this.xrRig?.presenting) {
-      updateBiobuzzField(this.field, world);
-      updateBiobuzzElements(this.elements, world);
-      updateBiobuzzRobots(this.robots, world);
-      updateBiobuzzReticle(this.reticle, world, frame.localRobotId, this.reticleOn);
-      // a robot appeared, left or was rebuilt: the same tuning the flat path gives it below
-      if (this.robotsChanged()) {
-        this.withSurfaces('could not be applied', (sf) => sf.applyRobots(this.robots.group));
-        this.tuneMaterials();
-      }
-      this.xrRig.update(world, frame.localRobotId, frame.localStartCat);
-      // NO setRenderTarget(null) here: three binds the headset's framebuffer at the start of each
-      // XR frame, and null would send the frame to the hidden page canvas (a black headset —
-      // measured on Vision Pro 2026-10-11: 761 frames drawn, nothing seen)
-      this.renderer.render(this.scene, this.xrRig.camera);
-      return;
-    }
+    // WEBXR (`renderXR.ts`): the headset paces its own frames, so no frame cap and no GPU timer;
+    // the meshes are posed as below, and then one pass goes into its framebuffer from the rig
+    const xr = this.xrRig?.presenting ? this.xrRig : null;
     const t0 = performance.now();
     // ── the frame cap (§4.4 row 2) ─────────────────────────────────────────────────────────
     // A SKIPPED FRAME RETURNS BEFORE ANY WORK, including the mesh updates: they are the other
     // half of the cost, and a cap that still posed 56 instances and every robot would save the
     // GPU and not the CPU. The world is read fresh on the next frame that does draw, so nothing
     // goes stale — this is a render cap, not a simulation one.
-    if (this.frameInterval > 0 && t0 - this.lastDraw < this.frameInterval) return;
+    if (!xr && this.frameInterval > 0 && t0 - this.lastDraw < this.frameInterval) return;
     this.lastDraw = t0;
     // GPU times of frames drawn a few frames ago (`renderGpuTimer.ts`), before this one's query.
     // This frame is timed only while the governor reads GPU time; the timer is made the first
@@ -1303,6 +1296,15 @@ class BiobuzzScene implements GameScene {
     if (this.robotsChanged()) {
       this.withSurfaces('could not be applied', (sf) => sf.applyRobots(this.robots.group));
       this.tuneMaterials();
+    }
+    if (xr) {
+      xr.update(world, frame.localRobotId, frame.localStartCat);
+      // no MSAA target or blit, no minimap, no governor — and NO setRenderTarget(null): three
+      // binds the headset's framebuffer at the start of each XR frame, and null would send the
+      // frame to the hidden page canvas (a black headset — measured on Vision Pro 2026-10-11:
+      // 761 frames drawn, nothing seen)
+      this.renderer.render(this.scene, xr.camera);
+      return;
     }
 
     this.lastW = Math.max(1, frame.width);
@@ -1613,6 +1615,13 @@ function detectOnce(onEvent?: (line: string) => void): void {
  * constants field on any failure, logging its own warning) BEFORE the `BiobuzzScene` is
  * constructed, so the scene never exists half-built.
  */
+/** can this browser open an `immersive-vr` session? (`renderXR.ts`; asked before its chunk is fetched) */
+async function xrSupported(): Promise<boolean> {
+  const xr = (navigator as Navigator & { xr?: XRSystem }).xr;
+  if (!xr || !window.isSecureContext) return false;
+  return xr.isSessionSupported('immersive-vr').catch(() => false);
+}
+
 export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, options?: SceneOptions): Promise<GameScene> => {
   const opts = options ?? {};
   if (!opts.quality) detectOnce(opts.onQualityEvent);
@@ -1653,11 +1662,18 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
     !opts.quality && wantsPost(quality) ? import('./renderPost').catch(() => null) : null,
     !opts.quality && surfacesOn(quality) ? import('./renderSurfaces').catch(() => null) : null,
   ]);
-  const xrCapable = await BbXR.supported();
+  // only the live game view can go immersive: a non-interactive host (the menu stage, the replay
+  // export) never asks, so it never pays for the probe
+  // (and the VR chunk is fetched only where a headset can be opened; a failed fetch is a scene
+  // without VR, `loadOptionalChunk` keeping it from reloading the page)
+  const Xr =
+    opts.interactive !== false && (await xrSupported())
+      ? await loadOptionalChunk('renderXR', () => import('./renderXR')).then((m) => m.BbXR, () => null)
+      : null;
   host.appendChild(canvas);
   // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
   // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
-  const made = new BiobuzzScene(canvas, field, host, opts, probe.renderer, xrCapable);
+  const made = new BiobuzzScene(canvas, field, host, opts, probe.renderer, Xr);
   // THE FIRST FRAME'S SHADERS LINK BEFORE THE FACTORY RESOLVES. The canvas is blank until it does
   // anyway, and a first `render()` would otherwise compile every program synchronously and block on
   // the link (the freeze on the first 3D scene). Capped: a driver with no
