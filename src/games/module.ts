@@ -623,6 +623,21 @@ export interface GameScene {
    * on the placeholder. OPTIONAL: a scene with no lazy assets need not implement it.
    */
   assetsSettled?(world: World): Promise<void>;
+  /**
+   * WEBXR. Present only when this browser can open an `immersive-vr` session; see `SceneXR`.
+   */
+  readonly xr?: SceneXR;
+}
+
+/**
+ * A scene's immersive (WebXR) mode. `enter` must be called from a user gesture. While the headset
+ * is presenting, the window's `requestAnimationFrame` is frozen (Safari on Vision Pro), so the
+ * scene drives the host's loop through `onFrame` until the session ends, then calls `onEnd`.
+ */
+export interface SceneXR {
+  enter(onFrame: (t: number) => void, onEnd: () => void): Promise<void>;
+  exit(): void;
+  readonly presenting: boolean;
 }
 
 /**

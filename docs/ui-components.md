@@ -784,7 +784,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:953 | 374 |
+| `.ds-btn` | src/ui/shell.css:953 | 375 |
 
 ## `ds-checkline` — 1
 
