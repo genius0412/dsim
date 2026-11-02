@@ -1154,14 +1154,12 @@ export const AWARD_DEPTH = { ranked_act: 3, record_overall: 3, record_drivetrain
 export const AWARD_DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
 
 /**
- * WHICH RECORD BOARDS A SEASON AWARD READS. SOLO ONLY, and that is a reading of the owner's
- * words rather than an accident: the 2026-09-22 criteria name "the records leaderboard" —
- * overall and each drivetrain — and REPLACE the 2026-09-21 set, which is the one that added
- * the duo board. Badges are meant to be rare, and a duo board would double the record payout
- * every season. Adding `'duo'` here is the whole change if that reading is wrong; a duo row
- * decorates BOTH members (`partnerId`), which `recordSeasonGrants` already handles.
+ * WHICH RECORD BOARDS A SEASON AWARD READS: solo and duo (owner, 2026-11-01). The 2026-09-22
+ * criteria were read as solo only; the owner then asked for the duo board's prizes to reach
+ * BOTH drivers, each keeping only their best placement on a board (`recordSeasonGrants`).
+ * Still one grant and one badge per player per season, however many boards they placed on.
  */
-export const RECORD_AWARD_MODES: readonly ('solo' | 'duo')[] = ['solo'];
+export const RECORD_AWARD_MODES: readonly ('solo' | 'duo')[] = ['solo', 'duo'];
 
 /** every award this account holds, newest season first — the profile read. */
 export async function userAwards(userId: string): Promise<SeasonAward[]> {
@@ -1681,34 +1679,42 @@ async function rankedActGrants(game: Game, act: number, lastSeason: number): Pro
  * always #1 of their own drivetrain as well, and a badge that ticked twice for one run would
  * make the rarer reward the commoner one.
  *
+ * TIES SHARE THE PLACE (owner, 2026-11-01: "handle tied records better"). The slice is every
+ * entry whose board rank is within the depth, so two runs tied at #3 are both #3 and both paid.
+ * It used to go to whoever set the score first, which the board itself never said.
+ *
+ * A DUO ENTRY IS A PAIR and both drivers are decorated. One person can be in several pairs on
+ * the same board (A+B #1, A+C #2); they keep only their best placement there, and their other
+ * pair's partner still gets that pair's place.
+ *
  * Final standings here need no snapshot: `records` rows are stamped with their season
  * (`balance_version`) and a closed season takes no new ones. What the board shows now is what
  * it showed at close, minus any run a moderator has deleted since.
  */
 async function recordSeasonGrants(game: Game, balanceVersion: number, act: number, seasonNo: number): Promise<RewardGrantInput[]> {
   const byUser = new Map<string, RecordPlacement[]>();
-  const add = (uid: string | null | undefined, p: RecordPlacement): void => {
-    if (!uid) return;
+  const add = (uid: string, p: RecordPlacement): void => {
     const list = byUser.get(uid) ?? [];
     list.push(p);
     byUser.set(uid, list);
   };
   for (const mode of RECORD_AWARD_MODES) {
     const tag = mode === 'duo' ? { mode: 'duo' as const } : {};
-    const overall = await recordLeaderboard({ mode, balanceVersion, limit: AWARD_DEPTH.record_overall, game });
-    overall.forEach((r, i) => {
-      const p: RecordPlacement = { board: 'overall', rank: i + 1, score: Math.round(r.score), ...tag };
-      add(r.userId, p);
-      // a duo row is a PAIR's run, so both members are decorated
-      if (mode === 'duo') add(r.partnerId, p);
-    });
+    // rows arrive best first, so the first placement a person meets on a board is their best
+    const place = (board: RecordPlacement['board'], rows: BoardRow[]): void => {
+      const placed = new Set<string>();
+      for (const r of rows) {
+        const p: RecordPlacement = { board, rank: r.rank, score: Math.round(r.score), ...tag };
+        for (const uid of mode === 'duo' ? [r.userId, r.partnerId] : [r.userId]) {
+          if (!uid || placed.has(uid)) continue;
+          placed.add(uid);
+          add(uid, p);
+        }
+      }
+    };
+    place('overall', await recordLeaderboard({ mode, balanceVersion, throughRank: AWARD_DEPTH.record_overall, game }));
     for (const dt of AWARD_DRIVETRAINS) {
-      const rows = await recordLeaderboard({ mode, drivetrain: dt, balanceVersion, limit: AWARD_DEPTH.record_drivetrain, game });
-      rows.forEach((r, i) => {
-        const p: RecordPlacement = { board: dt, rank: i + 1, score: Math.round(r.score), ...tag };
-        add(r.userId, p);
-        if (mode === 'duo') add(r.partnerId, p);
-      });
+      place(dt, await recordLeaderboard({ mode, drivetrain: dt, balanceVersion, throughRank: AWARD_DEPTH.record_drivetrain, game }));
     }
   }
   const out: RewardGrantInput[] = [];
@@ -2931,6 +2937,25 @@ export const coerceCategory = (v: unknown): BoardCategory =>
 /** the column behind each category — a closed map, so a request value never reaches the SQL text */
 const CATEGORY_COLUMN: Record<BoardCategory, string> = { total: 'score', auto: 'auto_score', teleop: 'teleop_score' };
 
+/**
+ * WHO ONE ENTRY ON A RECORD BOARD IS: the player on a solo board, the PAIR on a duo board.
+ *
+ * A duo run is one row whose `user_id` is whichever driver the room seated first and whose
+ * `partner_id` is the other, so the same two people are (A, B) on one run and (B, A) on the
+ * next. Keyed on `user_id`, the duo board listed that pair twice with the names swapped. The
+ * pair is UNORDERED (`least`/`greatest` of the two ids), so both runs are one entry, and a
+ * person with two partners is two entries. A duo with a guest partner (`partner_id` null) is
+ * keyed on the account alone: `least`/`greatest` skip a NULL.
+ *
+ * Compare a pair against ids from the request with `least($a::text, $b::text)` in SQL, never
+ * with ids sorted in JS: the database collation and JS string order need not agree.
+ */
+function entryCols(mode: 'solo' | 'duo', a = ''): [lo: string, hi: string] {
+  return mode === 'duo'
+    ? [`least(${a}user_id, ${a}partner_id)`, `greatest(${a}user_id, ${a}partner_id)`]
+    : [`${a}user_id`, `${a}user_id`];
+}
+
 export interface BoardRow {
   userId: string;
   handle: string;
@@ -2939,6 +2964,8 @@ export interface BoardRow {
   /** partner's display name + username (duo runs only; null for solo / unknown) */
   partnerHandle: string | null;
   partnerUsername: string | null;
+  /** the entry's place. Tied scores SHARE it (1, 2, 2, 4); within a tie, who set it first is listed first */
+  rank: number;
   score: number;
   replayId: string | null;
   createdAt: string;
@@ -2956,9 +2983,9 @@ export interface BoardRow {
   physics?: string;
 }
 
-/** best score per player within a season × mode × drivetrain, ranked. Pass
- * drivetrain 'overall' (or omit) for the cross-drivetrain board (each player's
- * best run on ANY drivetrain). */
+/** best score per entry (a player, or a duo PAIR — `entryCols`) within a season × mode ×
+ * drivetrain, ranked. Pass drivetrain 'overall' (or omit) for the cross-drivetrain board
+ * (each entry's best run on ANY drivetrain). */
 export async function recordLeaderboard(opts: {
   mode: 'solo' | 'duo';
   drivetrain?: string;
@@ -2988,8 +3015,11 @@ export async function recordLeaderboard(opts: {
    * era is `physics` here, else the live solve of the game (none for a one-solve game).
    */
   lifetime?: boolean;
+  /** every entry placed at or above this rank, ties included, however many that is (the awards) */
+  throughRank?: number;
 }): Promise<BoardRow[]> {
   const col = CATEGORY_COLUMN[opts.category ?? 'total'];
+  const [lo, hi] = entryCols(opts.mode, 'r.');
   // lifetime reads every season: $1 stays in the text (`is null`) so Postgres can type it
   const params: unknown[] = [opts.lifetime ? null : opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
@@ -3009,27 +3039,35 @@ export async function recordLeaderboard(opts: {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
   }
+  let rankFilter = '';
+  if (opts.throughRank !== undefined) {
+    params.push(opts.throughRank);
+    rankFilter = `where b.rank <= $${params.length}`;
+  }
   params.push(opts.limit ?? 100);
   return q<BoardRow>(
     `with best as (
-       select distinct on (r.user_id)
+       select distinct on (${lo}, ${hi})
          r.user_id, r.partner_id, r.${col} as score, r.replay_id, r.created_at, r.config, r.physics
        from records r
        where ${opts.lifetime ? '$1::int is null' : 'r.balance_version = $1'} and r.mode = $2 and r.game = $3
          and r.${col} is not null ${opts.category === 'auto' ? '' : `and r.run_length = 'full'`} ${dtFilter} ${sinceFilter} ${physFilter}
-       order by r.user_id, r.${col} desc, r.created_at asc
+       order by ${lo}, ${hi}, r.${col} desc, r.created_at asc
+     ), ranked as (
+       -- over EVERY entry, before the limit: a shared place is the same on page one and in the awards
+       select best.*, (rank() over (order by best.score desc))::int as rank from best
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
             pp.handle as "partnerHandle", pp.username as "partnerUsername",
             ${badgeCols('pp.', 'partner')},
-            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config, b.physics
-     from best b
+            b.rank, b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config, b.physics
+     from ranked b
        join profiles p on p.user_id = b.user_id
        left join profiles pp on pp.user_id = b.partner_id
-     -- user_id LAST: a tie on score AND on the instant it was set is decided the same way on
-     -- every read, so an award computed off this board (recordSeasonGrants) agrees with it
-     order by b.score desc, b.created_at asc, b.user_id
+     ${rankFilter}
+     -- within a tie the earlier run is listed first; the ids last so every read lists it the same way
+     order by b.score desc, b.created_at asc, b.user_id, b.partner_id
      limit $${params.length}`,
     params,
   );
@@ -3136,9 +3174,11 @@ export async function personalBest(
   drivetrain: string,
   balanceVersion: number,
   game?: Game,
+  /** a duo run's other driver: a duo PB is the PAIR's, the entry the run lands on (`entryCols`) */
+  partnerId?: string | null,
 ): Promise<number | null> {
   // 'overall' = the cross-drivetrain board (no drivetrain filter), matching
-  // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the user's
+  // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the pair's
   // runs in this mode×season, not one drivetrain.
   //
   // ERA-SCOPED like the board it is compared against (`boardPhysics`): a PB that counted an
@@ -3146,7 +3186,9 @@ export async function personalBest(
   // they cannot see on any board and can never beat on this solve.
   const overall = drivetrain === 'overall';
   const phys = await boardPhysics(g(game), balanceVersion);
-  const params: unknown[] = [userId, mode, balanceVersion, g(game)];
+  const [lo, hi] = entryCols(mode);
+  // $5: the other half of the entry (the user again on a solo board, or with a guest partner)
+  const params: unknown[] = [userId, mode, balanceVersion, g(game), (mode === 'duo' && partnerId) || userId];
   if (!overall) params.push(drivetrain);
   const dtFilter = overall ? '' : `and drivetrain = $${params.length}`;
   let physFilter = '';
@@ -3156,46 +3198,52 @@ export async function personalBest(
   }
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
-     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4 and run_length = 'full'
+     where ${lo} = least($1::text, $5::text) and ${hi} = greatest($1::text, $5::text)
+       and mode = $2 and balance_version = $3 and game = $4 and run_length = 'full'
        ${dtFilter} ${physFilter}`,
     params,
   );
   return rows[0]?.score ?? null;
 }
 
-/** the user's standing in a season × mode × drivetrain bucket, by their BEST
- * score there: 1-based `rank` (ties share the better rank) and the bucket's
- * player `total`. Pass drivetrain 'overall' for the cross-drivetrain board (no
- * drivetrain filter — matching recordLeaderboard), where mixed-drivetrain duos
- * land. Call AFTER submitting the run so it reflects it. */
+/** the standing of a user's entry (the user, or on a duo board the PAIR with `partnerId`) in a
+ * season × mode × drivetrain bucket, by its BEST score there: 1-based `rank` (ties share the
+ * better rank, as on the board) and the bucket's entry `total`. Pass drivetrain 'overall' for
+ * the cross-drivetrain board (no drivetrain filter — matching recordLeaderboard), where
+ * mixed-drivetrain duos land. Call AFTER submitting the run so it reflects it. */
 export async function recordRank(
   userId: string,
   mode: 'solo' | 'duo',
   drivetrain: string,
   balanceVersion: number,
   game?: Game,
+  partnerId?: string | null,
 ): Promise<{ rank: number; total: number }> {
   // ERA-SCOPED, and INSIDE `best` — same rule and same placement as `recordLeaderboard`, so
   // the "#3 of 57" a player is shown after a run is a position on the board they can go and
   // look at rather than a rank over a population the board does not contain.
   const overall = drivetrain === 'overall';
   const phys = await boardPhysics(g(game), balanceVersion);
+  const [lo, hi] = entryCols(mode);
   // $4 is always REFERENCED and typed: an overall read (a mixed-drivetrain duo) used to leave it
   // out of the SQL, and Postgres refuses a parameter it cannot type, so that rank threw
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
-       select user_id, max(score) as s from records
+       select ${lo} as lo, ${hi} as hi, max(score) as s from records
        where balance_version = $1 and mode = $2 and game = $5 and run_length = 'full'
          and ($4::text is null or drivetrain = $4)
-         ${phys ? 'and physics = $6' : ''}
-       group by user_id
-     ), me as (select s from best where user_id = $3)
+         ${phys ? 'and physics = $7' : ''}
+       group by 1, 2
+     ), me as (select s from best where lo = least($3::text, $6::text) and hi = greatest($3::text, $6::text))
      select
        (select count(*) from best)::int as total,
        (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
-    phys
-      ? [balanceVersion, mode, userId, overall ? null : drivetrain, g(game), phys]
-      : [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
+    [
+      balanceVersion, mode, userId, overall ? null : drivetrain, g(game),
+      // the other half of the entry: the user again on a solo board, or with a guest partner
+      (mode === 'duo' && partnerId) || userId,
+      ...(phys ? [phys] : []),
+    ],
   );
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
@@ -3213,7 +3261,7 @@ export interface AdminRecordRow {
   createdAt: string;
 }
 
-/** admin: the moderation view of a leaderboard bucket — same best-per-player
+/** admin: the moderation view of a leaderboard bucket — same best-per-entry
  * ranking the public board shows, but carrying the record id for deletion. */
 export async function adminListRecords(opts: {
   mode: 'solo' | 'duo';
@@ -3222,6 +3270,7 @@ export async function adminListRecords(opts: {
   limit?: number;
   game?: Game;
 }): Promise<AdminRecordRow[]> {
+  const [lo, hi] = entryCols(opts.mode, 'r.');
   const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
@@ -3231,11 +3280,11 @@ export async function adminListRecords(opts: {
   params.push(opts.limit ?? 100);
   return q<AdminRecordRow>(
     `with best as (
-       select distinct on (r.user_id)
+       select distinct on (${lo}, ${hi})
          r.id, r.user_id, r.score, r.drivetrain, r.replay_id, r.created_at
        from records r
        where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
-       order by r.user_id, r.score desc, r.created_at asc
+       order by ${lo}, ${hi}, r.score desc, r.created_at asc
      )
      select b.id as "recordId", b.user_id as "userId", p.handle, b.score,
             b.drivetrain, b.replay_id as "replayId", b.created_at as "createdAt"
@@ -5641,6 +5690,7 @@ export async function getUserStats(
    */
   const phys = await boardPhysics(gm, balanceVersion, current);
   const recPhys = phys ? 'and physics = $4' : '';
+  const [duoLo, duoHi] = entryCols('duo');
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null; supporter: boolean; role: string | null }>(
       `select handle, username, role, ${SUPPORTER_COL} from profiles where user_id = $1`,
@@ -5667,22 +5717,29 @@ export async function getUserStats(
       ],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
+      // a duo run counts for BOTH drivers, whichever of them the room seated first
       `select distinct on (mode) mode, score, replay_id
-       from records where user_id = $1 and balance_version = $2 and game = $3 and run_length = 'full' ${recPhys}
+       from records where (user_id = $1 or (mode = 'duo' and partner_id = $1))
+         and balance_version = $2 and game = $3 and run_length = 'full' ${recPhys}
        order by mode, score desc, created_at asc`,
       phys ? [userId, balanceVersion, gm, phys] : [userId, balanceVersion, gm],
     ),
     q<{ mode: 'solo' | 'duo'; rnk: string }>(
       // the era filter sits INSIDE `best`, for the reason `recordLeaderboard` documents:
-      // one row per player, so filtering after it drops a player who has a 3D run
+      // one row per entry, so filtering after it drops a player who has a 3D run.
+      // An entry is the board's (`entryCols`): a player, or a duo PAIR; a player in several
+      // pairs stands where their best pair does.
       `with best as (
-         select user_id, mode, max(score) as score
-         from records where balance_version = $1 and game = $3 and run_length = 'full' ${recPhys} group by user_id, mode
+         select mode,
+                case when mode = 'duo' then ${duoLo} else user_id end as lo,
+                case when mode = 'duo' then ${duoHi} else user_id end as hi,
+                max(score) as score
+         from records where balance_version = $1 and game = $3 and run_length = 'full' ${recPhys} group by 1, 2, 3
        ), ranked as (
-         select user_id, mode, rank() over (partition by mode order by score desc) as rnk
+         select mode, lo, hi, rank() over (partition by mode order by score desc) as rnk
          from best
        )
-       select mode, rnk from ranked where user_id = $2`,
+       select mode, min(rnk) as rnk from ranked where $2::text in (lo, hi) group by mode`,
       phys ? [balanceVersion, userId, gm, phys] : [balanceVersion, userId, gm],
     ),
     // RANKED only — the Career panel labels it "Ranked W–L", and a custom game can be

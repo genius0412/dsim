@@ -30,7 +30,9 @@ import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 
 const ADMIN_ID = 'harness-owner';
-const AUTH_PORT = 8798;
+// `HARNESS_AUTH_PORT` / `HARNESS_PORT` move it off 8798/8799 when another checkout's harness holds them
+const AUTH_PORT = Number(process.env.HARNESS_AUTH_PORT ?? 8798);
+const GAME_PORT = Number(process.env.HARNESS_PORT ?? 8799);
 
 /**
  * `HARNESS_DB_MS=400 npm run adminharness` makes every query take that long and puts it behind
@@ -143,7 +145,7 @@ async function main(): Promise<void> {
   await db.waitReady;
   setPoolForTests(adapt(db));
 
-  process.env.PORT = '8799';
+  process.env.PORT = String(GAME_PORT);
   process.env.ADMIN_USER_IDS = ADMIN_ID;
   process.env.OWNER_USER_ID = ADMIN_ID;
   process.env.NEON_AUTH_JWKS_URL = `http://localhost:${AUTH_PORT}/.well-known/jwks.json`;
@@ -168,7 +170,7 @@ async function main(): Promise<void> {
 
   // ---- the real server
   await import('../server/index');
-  console.log(`[harness] game server on :8799 — admin is ${ADMIN_ID}`);
+  console.log(`[harness] game server on :${GAME_PORT} — admin is ${ADMIN_ID}`);
   // ratings on the live act of every game, for the ranked distribution. The server writes a
   // season row the first time a game records something, so one is made here for each game that
   // has none yet.
@@ -209,7 +211,7 @@ async function main(): Promise<void> {
       .sign(privateKey);
   const join = async (sub: string, name: string, room: string): Promise<void> => {
     const t = await sign(sub, name);
-    const ws = new WebSocket('ws://localhost:8799');
+    const ws = new WebSocket(`ws://localhost:${GAME_PORT}`);
     ws.on('open', () =>
       ws.send(
         JSON.stringify({ t: 'join', room, player: { name, alliance: 'red', ready: false }, authToken: t }),
@@ -288,6 +290,20 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     await repo.addMatchParticipant({ matchId: mid, userId: id, alliance: 'red', drivetrain: 'mecanum', score: 120 - i * 7, won: i % 2 === 0, ratingBefore: 1500, ratingAfter: 1512 });
     await repo.addMatchParticipant({ matchId: mid, userId: 'u-alan', alliance: 'blue', drivetrain: 'tank', score: 90, won: i % 2 !== 0, ratingBefore: 1500, ratingAfter: 1488 });
   }
+  // DUO runs and TIES: Ada + Grace seated both ways round is one board entry (150), Ada has a
+  // second partner, two pairs tie for #2, and Annie ties Grace on the solo board
+  for (const [userId, partnerId, score] of [
+    ['u-ada', 'u-grace', 150], ['u-grace', 'u-ada', 140], ['u-ada', 'u-alan', 130], ['u-margaret', 'u-annie', 130],
+  ] as const) {
+    await repo.submitRecord({
+      userId, partnerId, mode: 'duo', drivetrain: 'mecanum', score, balanceVersion: SEASON,
+      replayId: null as unknown as string, game: 'decode',
+    }).catch(() => {});
+  }
+  await repo.submitRecord({
+    userId: 'u-annie', mode: 'solo', drivetrain: 'tank', score: 169, balanceVersion: SEASON,
+    replayId: null as unknown as string, game: 'decode',
+  }).catch(() => {});
 
   // NOTICES (0057). The OWNER lost a ranked match, filed a misscore claim on it and reported the
   // opponent, so working those three through the console (correct the score from the replay with

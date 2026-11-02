@@ -18803,7 +18803,16 @@ const recordDrive: CommandSource = (tick) => {
   check('feed: a player beating their own best is an entry, and is not ranked against themselves', better.length === 2 && better[0].rank === 1);
 
   const tie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 5)], null, 10);
-  check('feed: a tie goes to whoever set it first (b is No.2)', tie.find((e) => e.userId === 'b')?.rank === 2);
+  check('feed: a tie SHARES the place, as on the board (b equals No.1, so is No.1)', tie.find((e) => e.userId === 'b')?.rank === 1);
+  const behindTie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 1), run(3, 'c', 90, 2)], null, 10);
+  check('feed: ...and the place after a two-way tie is No.3', behindTie.find((e) => e.userId === 'c')?.rank === 3);
+
+  const duo = (id: number, userId: string, partnerId: string, score: number, m: number) => ({ ...run(id, userId, score, m), partnerId });
+  const swapped = feedFromRows([duo(1, 'a', 'b', 100, 0), duo(2, 'b', 'a', 90, 1), duo(3, 'b', 'a', 120, 2)], null, 10);
+  check('⚠️ feed: a duo pair seated the other way round is the SAME entry — not its own No.2, and not ranked against itself',
+    swapped.length === 2 && swapped.every((e) => e.rank === 1), JSON.stringify(swapped.map((e) => [e.userId, e.score, e.rank])));
+  const twoPairs = feedFromRows([duo(1, 'a', 'b', 100, 0), duo(2, 'a', 'c', 90, 1)], null, 10);
+  check('feed: one driver with another partner is another entry', twoPairs.find((e) => e.partnerId === 'c')?.rank === 2);
 
   const crowded = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3)], null, 10);
   check('feed: only the top three places are entries', FEED_TOP === 3 && crowded.length === 3 && !crowded.some((e) => e.userId === 'd'));

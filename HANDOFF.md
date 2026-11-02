@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-01k (Duo boards list a pair once; ties share a place; duo season awards)
+
+**State: on `alpha`. Server change, no migration: needs a `dsim-alpha` deploy, and production only once it reaches `main`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `dbtest` (1108), `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass.
+
+- **Owner:** the duo board showed the same two people twice with the names swapped; prizes must reach both drivers, each only for their best record (A+B #1, A+C #2 ⇒ A gets #1 only); then "handle tied records better".
+- **Cause:** a duo run is one row keyed on whichever driver the room seated first (`user_id`), and every reader keyed on `user_id`. Fix: `entryCols` (`repo.ts`) keys a duo entry on the unordered pair (`least`/`greatest`) in `recordLeaderboard`, `personalBest`/`recordRank` (persist now passes the partner), `getUserStats` (counts for the second driver too), `adminListRecords` and the feed (`recentRecords.ts`).
+- **Ties:** `rank()` everywhere, so 1, 2, 2, 4 on the board (`BoardRow.rank`, the client prints it and falls back to the row number on an older server), after a run, on the profile, in the feed and in the awards. The earlier run is still listed first. The award job reads `throughRank`, so a tie at the cut is paid whole; this replaces "first to set it wins".
+- **Awards:** `RECORD_AWARD_MODES` is solo + duo. Both drivers of a pair are paid; a driver in several pairs keeps their best place PER BOARD (a duo drivetrain #1 from a different pair still counts, as it does for solo). Still one grant and one badge per season. Seasons already closed were paid solo-only and stay claimed; nothing back-pays them.
+- **Checked:** the admin harness (now seeds duo runs and a tie; `HARNESS_AUTH_PORT`/`HARNESS_PORT` move it off 8798/8799, which another worktree's stale harness held) served the duo board as one row per pair with a shared #2, rendered in the browser. The Electron build against the live server renders both boards with no errors (old server, row-number fallback).
+
 # HANDOFF — 2026-11-01j (A robot card's build line is tags, not a list)
 
 **State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `uiindex`, `contrast` (435, +4), `docaudit` pass.

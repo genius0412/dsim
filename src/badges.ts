@@ -19,7 +19,7 @@
  * A badge id goes over the wire, into `profiles.equipped_badges` and into every grant's
  * `items`, so it is a stable KEY — never a label. Eight exist:
  *   ranked-gold / -silver / -bronze   #1 / #2 / #3 on a ranked ladder when an ACT ends
- *   record-holder                     top 3 overall or #1 of a drivetrain when a SEASON ends
+ *   record-holder                     top 3 overall or #1 of a drivetrain, solo or duo, when a SEASON ends
  *   stargazer                         starred DSIM on GitHub — revocable, never counts past 1
  *   developer / beta-tester /         a member of the `dev` / `beta` / `contributor` ACCESS GROUP
  *     contributor                     (0051) — given by an admin, revoked with the membership,
@@ -65,7 +65,7 @@ export const BADGE_EARN: Record<BadgeId, string> = {
   'ranked-gold': 'Finish #1 on a ranked ladder when an act ends.',
   'ranked-silver': 'Finish #2 on a ranked ladder when an act ends.',
   'ranked-bronze': 'Finish #3 on a ranked ladder when an act ends.',
-  'record-holder': 'Finish top 3 on the overall record board, or #1 for a drivetrain, when a season ends.',
+  'record-holder': 'Finish top 3 overall or #1 for a drivetrain on a solo or duo record board when a season ends.',
   stargazer: 'Star DSIM on GitHub and connect GitHub under Account. It stays while the star does.',
   developer: 'Given to the people who build DSIM.',
   'beta-tester': 'Given to the players who test new builds before they ship.',

@@ -514,6 +514,74 @@ async function main(): Promise<void> {
     solo?.partnerSupporter === false,
   );
 
+  /*
+   * A DUO ENTRY IS A PAIR, AND A TIE SHARES ITS PLACE (owner, 2026-11-01). A duo run is one row
+   * keyed on whichever driver the room seated first, so the same two people are (A, B) on one
+   * run and (B, A) on the next: the board used to list them twice with the names swapped. Ties
+   * were numbered by who set the score first, while the results screen called both of them #1.
+   * Its own season (975) so nothing else in this suite is on these boards.
+   */
+  {
+    const BV = 975;
+    for (const u of ['bd-a', 'bd-b', 'bd-c', 'bd-d']) await repo.ensureProfile(u, u.toUpperCase());
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 1, 0, m)).toISOString();
+    const put = async (userId: string, partnerId: string | null, mode: 'solo' | 'duo', score: number, m: number) => {
+      const id = await repo.submitRecord({
+        userId, partnerId: partnerId ?? undefined, mode, drivetrain: 'tank', score, balanceVersion: BV,
+        replayId: null as unknown as string, game: 'decode',
+      });
+      await db.query(`update records set created_at = $2 where id = $1`, [id, at(m)]);
+    };
+    await put('bd-a', 'bd-b', 'duo', 100, 0);
+    await put('bd-b', 'bd-a', 'duo', 120, 1); // the same pair, seated the other way round
+    await put('bd-a', 'bd-c', 'duo', 110, 2); // bd-a with somebody else
+    await put('bd-d', null, 'duo', 90, 3); // a guest partner: no account on the row
+    await put('bd-a', null, 'solo', 50, 0);
+    await put('bd-b', null, 'solo', 60, 1);
+    await put('bd-c', null, 'solo', 50, 2); // ties bd-a, set later
+    await put('bd-d', null, 'solo', 40, 3);
+    const pair = (r: { userId: string; partnerId: string | null }) => [r.userId, r.partnerId ?? ''].sort().join('+');
+    const duoBoard = await repo.recordLeaderboard({ mode: 'duo', balanceVersion: BV, game: 'decode' });
+    check('⚠️ duo board: a pair seated both ways round is ONE entry, at its best run',
+      duoBoard.filter((r) => pair(r) === 'bd-a+bd-b').length === 1 && duoBoard.find((r) => pair(r) === 'bd-a+bd-b')?.score === 120,
+      JSON.stringify(duoBoard.map((r) => [pair(r), r.score])));
+    check('duo board: one driver with two partners is two entries, ranked 1, 2, 3 with the guest run',
+      duoBoard.map((r) => `${pair(r)}:${r.rank}`).join(',') === 'bd-a+bd-b:1,bd-a+bd-c:2,+bd-d:3',
+      duoBoard.map((r) => `${pair(r)}:${r.rank}`).join(','));
+    const soloBoard = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode' });
+    check('⚠️ ties: an equal score SHARES the place, and the next place skips (1, 2, 2, 4)',
+      soloBoard.map((r) => `${r.userId}:${r.rank}`).join(',') === 'bd-b:1,bd-a:2,bd-c:2,bd-d:4',
+      soloBoard.map((r) => `${r.userId}:${r.rank}`).join(','));
+    check('ties: within a tie, whoever set it first is listed first', soloBoard[1]?.userId === 'bd-a');
+    check('ties: a limit cuts rows but never renumbers them',
+      (await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode', limit: 2 })).map((r) => r.rank).join(',') === '1,2');
+    check('⚠️ ties: throughRank keeps EVERY entry at that place, so the awards cannot cut a tie',
+      (await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode', throughRank: 2 })).map((r) => r.userId).join(',') === 'bd-b,bd-a,bd-c');
+
+    const rankAB = await repo.recordRank('bd-a', 'duo', 'overall', BV, 'decode', 'bd-b');
+    check('⚠️ post-run rank: a duo run is ranked as its PAIR, either way round', rankAB.rank === 1 && rankAB.total === 3 &&
+      (await repo.recordRank('bd-b', 'duo', 'overall', BV, 'decode', 'bd-a')).rank === 1, JSON.stringify(rankAB));
+    check('post-run rank: ...and the same driver with another partner is that pair\'s place',
+      (await repo.recordRank('bd-c', 'duo', 'overall', BV, 'decode', 'bd-a')).rank === 2);
+    check('post-run rank: a tie reads the shared place, the same number the board prints',
+      (await repo.recordRank('bd-c', 'solo', 'overall', BV, 'decode')).rank === 2);
+    check('⚠️ post-run PB: a duo PB is the pair\'s, whoever was seated first',
+      (await repo.personalBest('bd-a', 'duo', 'overall', BV, 'decode', 'bd-b')) === 120 &&
+        (await repo.personalBest('bd-a', 'duo', 'overall', BV, 'decode', 'bd-c')) === 110 &&
+        (await repo.personalBest('bd-d', 'duo', 'overall', BV, 'decode', null)) === 90);
+    check('post-run PB: a solo PB is unchanged', (await repo.personalBest('bd-c', 'solo', 'tank', BV, 'decode')) === 50);
+
+    const statC = (await repo.getUserStats('bd-c', BV, 'decode')).records.find((r) => r.mode === 'duo');
+    check('⚠️ profile: a duo run counts for the driver seated SECOND too', statC?.best === 110 && statC.rank === 2, JSON.stringify(statC));
+    const statA = await repo.getUserStats('bd-a', BV, 'decode');
+    check('profile: a driver in two pairs stands where the better pair does',
+      statA.records.find((r) => r.mode === 'duo')?.rank === 1 && statA.records.find((r) => r.mode === 'duo')?.best === 120,
+      JSON.stringify(statA.records));
+    check('profile: a tied solo best reads the shared place', statA.records.find((r) => r.mode === 'solo')?.rank === 2);
+    check('admin: the moderation list is the board\'s entries, one per pair',
+      (await repo.adminListRecords({ mode: 'duo', balanceVersion: BV, game: 'decode' })).length === 3);
+  }
+
   // MATCH HISTORY — the Career page's list, and the one place a name appears
   // for BOTH alliances of somebody else's match.
   const matchId = await repo.saveMatch('1v1', SEASON, null as unknown as string, true, 'decode');
@@ -4906,11 +4974,22 @@ async function main(): Promise<void> {
     await rec('rw-z', 901, 'mecanum', 999, '2026-01-01T00:00:00Z'); // Act 0 season
     await rec('rw-a', 902, 'mecanum', 300, '2026-02-01T00:00:00Z');
     await rec('rw-b', 902, 'tank', 280, '2026-02-01T00:00:00Z');
-    await rec('rw-c', 902, 'mecanum', 250, '2026-02-01T00:00:00Z'); // ⚠️ ties rw-d on score but set it FIRST…
-    await rec('rw-d', 902, 'swerve', 250, '2026-02-02T00:00:00Z'); // …so rw-d is 4th overall, #1 swerve only
-    await rec('rw-e', 902, 'xdrive', 100, '2026-02-01T00:00:00Z');
+    await rec('rw-c', 902, 'mecanum', 250, '2026-02-01T00:00:00Z'); // ⚠️ ties rw-d on score, set it FIRST…
+    await rec('rw-d', 902, 'swerve', 250, '2026-02-02T00:00:00Z'); // …and they SHARE #3 overall; rw-d is also #1 swerve
+    await rec('rw-e', 902, 'xdrive', 100, '2026-02-01T00:00:00Z'); // 5th overall, #1 xdrive only
     await rec('rw-a', 903, 'mecanum', 310, '2026-03-01T00:00:00Z'); // a second season: the counter's case
     await rec('rw-b', 905, 'tank', 999, '2026-05-01T00:00:00Z'); // the LIVE season
+    // THE DUO BOARD of season 902. rw-p is in two pairs; (rw-q, rw-p) is the first pair seated the
+    // other way round; the last two pairs tie for #3.
+    for (const u of ['rw-p', 'rw-q', 'rw-r', 'rw-u', 'rw-v', 'rw-w', 'rw-x']) await repo.ensureProfile(u, u.toUpperCase());
+    const duoRec = (u: string, partner: string, dt: string, score: number, at: string) =>
+      db.query(`insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, game, created_at) values ($1, $2, 'duo', $3, $4, 902, $5, $6)`,
+        [u, partner, dt, score, G, at]);
+    await duoRec('rw-p', 'rw-q', 'mecanum', 500, '2026-02-01T00:00:00Z');
+    await duoRec('rw-q', 'rw-p', 'mecanum', 450, '2026-02-03T00:00:00Z');
+    await duoRec('rw-p', 'rw-r', 'mecanum', 480, '2026-02-02T00:00:00Z');
+    await duoRec('rw-u', 'rw-v', 'swerve', 400, '2026-02-01T00:00:00Z');
+    await duoRec('rw-w', 'rw-x', 'xdrive', 400, '2026-02-02T00:00:00Z');
     // a record 0045 already awarded (the legacy table), to prove the job does not double it
     await db.query(
       `insert into season_awards (game, balance_version, act, season_no, kind, mode, drivetrain, rank, user_id, score)
@@ -4957,12 +5036,34 @@ async function main(): Promise<void> {
       aRec?.reason.kind === 'record_season' && aRec.reason.placements.length === 2 &&
         aRec.items.length === 1 && aRec.items[0].kind === 'badge' && aRec.items[0].id === 'record-holder',
       JSON.stringify(aRec));
-    check('⚠️ job: per-drivetrain #1 — 4th overall on score, but the best swerve run',
-      dRec?.reason.kind === 'record_season' && dRec.reason.placements.length === 1 && dRec.reason.placements[0].board === 'swerve',
-      JSON.stringify(dRec?.reason));
-    check('⚠️ job: a tied score goes to whoever set it FIRST — rw-c is #3 overall, rw-d is not',
-      cRec?.reason.kind === 'record_season' && cRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3),
-      JSON.stringify(cRec?.reason));
+    const eRec = await recOf('rw-e', 902);
+    check('⚠️ job: per-drivetrain #1 — 5th overall on score, but the best xdrive run',
+      eRec?.reason.kind === 'record_season' && eRec.reason.placements.length === 1 && eRec.reason.placements[0].board === 'xdrive',
+      JSON.stringify(eRec?.reason));
+    check('⚠️ job: a tied score SHARES the place — rw-c and rw-d are both #3 overall',
+      cRec?.reason.kind === 'record_season' && cRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3) &&
+        dRec?.reason.kind === 'record_season' && dRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3 && !p.mode),
+      JSON.stringify([cRec?.reason, dRec?.reason]));
+    check('job: ...and rw-d keeps their swerve #1 beside it', dRec?.reason.kind === 'record_season' &&
+      dRec.reason.placements.some((p) => p.board === 'swerve' && p.rank === 1));
+
+    // ---- the duo board: both drivers, each at their best place on it ----------------------
+    const duoPlaces = async (u: string, board: string) => {
+      const r = await recOf(u, 902);
+      return r?.reason.kind === 'record_season' ? r.reason.placements.filter((p) => p.mode === 'duo' && p.board === board).map((p) => p.rank) : [];
+    };
+    check('⚠️ duo: BOTH drivers of the #1 pair are paid, whichever was seated first',
+      (await duoPlaces('rw-p', 'overall')).join() === '1' && (await duoPlaces('rw-q', 'overall')).join() === '1');
+    check('⚠️ duo: a driver in two pairs on one board keeps only the better place — rw-p is #1, not #1 and #2',
+      (await duoPlaces('rw-p', 'overall')).length === 1, JSON.stringify(await recOf('rw-p', 902)));
+    check('duo: ...and their other partner still gets that pair\'s #2', (await duoPlaces('rw-r', 'overall')).join() === '2');
+    check('⚠️ duo: two pairs tied at #3 are all paid #3',
+      (await Promise.all(['rw-u', 'rw-v', 'rw-w', 'rw-x'].map((u) => duoPlaces(u, 'overall')))).every((r) => r.join() === '3'));
+    check('duo: a duo drivetrain #1 pays its pair', (await duoPlaces('rw-p', 'mecanum')).join() === '1' && (await duoPlaces('rw-q', 'mecanum')).join() === '1' &&
+      (await duoPlaces('rw-r', 'mecanum')).length === 0);
+    const pRec = await recOf('rw-p', 902);
+    check('duo: still ONE grant and ONE Record Holder badge for the season', !!pRec && pRec.items.length === 1 && pRec.items[0].id === 'record-holder' &&
+      (await pend('rw-p')).filter((x) => x.reason.kind === 'record_season' && x.reason.balanceVersion === 902).length === 1);
     check('job: a closed season in the CURRENT act still pays its records (bv 904 had none, so nobody)', !(await recOf('rw-a', 904)));
     check('job: the live season pays nothing', !(await recOf('rw-b', 905)));
 

@@ -195,7 +195,7 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
       // Its score IS its AUTO points, it posts only to the Auto board, and it is neither a PB nor
       // a rank on the full-run boards, so it skips both reads below.
       const runLength = o.replay.runLength === 'auto' ? 'auto' : undefined;
-      const prevBest = runLength ? null : await personalBest(primary.userId!, mode, drivetrain, bv, game);
+      const prevBest = runLength ? null : await personalBest(primary.userId!, mode, drivetrain, bv, game, partner?.userId);
       // moderate the robot/team names before they land on the public leaderboard card
       const primarySpec = await scrubSpecNames(primary.spec);
       const partnerSpec = partner?.spec ? await scrubSpecNames(partner.spec) : undefined;
@@ -225,7 +225,7 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
         console.log(`[persist] WROTE auto-only record ${id}: user=${primary.userId} score=${score} dt=${drivetrain} season=${bv}`);
         return {};
       }
-      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game);
+      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game, partner?.userId);
       const info = {
         mode,
         drivetrain,
