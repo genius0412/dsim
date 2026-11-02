@@ -1,4 +1,19 @@
-# HANDOFF — 2026-11-01n (G407 and G408 as TU07 and the Q&A have them: `SIM_PATCH` 13)
+# HANDOFF — 2026-11-02 (PRs #124, #123, #119 fixed, tested, merged into alpha)
+
+**State: on `alpha`. SERVER CHANGE (#124's `SIM_PATCH` 13 and its card strings): `dsim-alpha` needs the deploy noted below.** `npm test` ALL PASS on the merged tree (shared + BIOBUZZ, every lane), `test:ai` ALL PASS (150 matches), `test:mm` 234/234; `build`, `server:check`, `bundleaudit`, `uiaudit`, `docaudit` pass. The PR descriptions' Q&A citations (QA4/23/34) were NOT re-read (the Q&A needs a coach login); the TU07 manual text for G204, G407, G408 and Table 10-6 was.
+
+- **#124 (G407/G408, `SIM_PATCH` 13), review fixes on top:**
+  - G204: the excuse read "an opponent drives at you and you are not driving back", which a robot FLEEING onto the NECTAR passed. It now reads the robot's drive toward the ELEMENT (`bbForcedInto`, `BB_G204_SHOVE_STICK`, `BB_G204_OWN_STICK`).
+  - The intake-mouth carve-out excused a NECTAR at a POLLEN-only mouth: the opponent's NECTAR herded 70 in with the rollers on drew nothing. `ControlGeometry.takes` (shared, optional; DECODE/CR leave it unset) narrows it from 13.
+  - AI: `controlGuard` (`ai/policy.ts`). Voided alliance scores in bot matches 10/48 → 0/288 (2D) and 0/48 (3D); costs ~7–13% of points in 2D, 8–16% in 3D. Cheaper settings brought reds back. Table in `docs/area/biobuzz.md`.
+  - Owner Q1 answered from TU07: the G407 MAJOR stays per instance (Table 10-6 caps only the "MAJOR FOUL per MATCH" row). Owner Q2: fixed in the AI, not by exempting bots.
+- **#123 (idle warm, venue re-measure):** merged alpha in (5 conflicts). `floor.py` re-run on the rebuilt backdrops (it reproduces alpha's old tiles byte for byte from the old ones). Venue URLs carry `?v=<bytes>` and `/venues` is immutable; `/models` is back to default revalidation. The full idle warm (3D solve + venue files, ~2.5 MB) runs only on Play and its popups; Home warms the chunk alone. `GameController` no longer builds a scene for a controller disposed during the chunk load (it fetched a second venue).
+- **#119 (WebXR):** ported from main as Todd Yocum's commit without the AI trailer, then fixed: scoreboard reads `world.match.scores`; `VENUE_OVERHEAD_LAYER` 1 → 3 (1 and 2 are three's eye layers: the rig and a photo room's upper half drew in the left eye only); page context without MSAA, three told `antialias: true` (`BbXR.context`); `renderXR` is a lazy chunk (`xr` route; the scene route had crossed its line); Enter VR moved off the score bar's clock to the top centre.
+- **Also:** net3d's `LANDED predicted` check was a stale source pattern since 97ad369a (it fails on alpha too); updated.
+- ⚠️ **NOT VERIFIED:** nothing in #119 ran on a headset. The MSAA change, the eye-layer fix and the button are measured in a desktop browser with a stubbed `navigator.xr`.
+- **Follow-ups:** the AI's scoring cost under the guard (look-ahead and pile rule are the knobs; see the table); a headset check of #119; Quest input is still unmapped.
+
+## HANDOFF — 2026-11-01n (G407 and G408 as TU07 and the Q&A have them: `SIM_PATCH` 13)
 
 **State: branch `fix/biobuzz-control-penalties`, PR to `alpha`, NOT merged. Server change (foul and card strings, `SIM_PATCH` 13): needs a `dsim-alpha` deploy once merged.** `npm test` shared ALL PASS (4668, after re-pinning the L2 BIOBUZZ 2D JSON pin, patch-12 pin kept); BIOBUZZ 6356 checks with the new CONTROL lane (31) and RULES green, failing only in this worktree's known environment: 22 AUTO (its vendored Zenith tarball reads format 3, the autos are format 4), 9 PERF/PREDICT budgets on a loaded machine, and the baseline `balls: … LANDED predicted`. `build`, `server:check`, `docaudit` pass.
 
