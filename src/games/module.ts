@@ -174,7 +174,7 @@ export interface GameModule extends GameSimModule {
    * sentence of parts is what they had to parse to find it.
    *
    * Same `GameStatTile` shape as `statTiles`, and still a separate slot, because the two have
-   * different consumers: `statTiles` is the builder's own build line (`buildWords`), which the
+   * different consumers: `statTiles` is the builder's own build line (`buildParts`), which the
    * owner keeps to the mechanisms alone, while a sheet has room for the intake's feed and the
    * sorter. A game writes both off ONE vocabulary module so they cannot describe a robot two ways.
    */
@@ -202,7 +202,7 @@ export interface GameModule extends GameSimModule {
    * mechanism is printed, and a game contributing one cannot drift it.
    *
    * ⚠️ NO LONGER TILES ON SCREEN (2026-09-22). The hero's chip wall is gone; each entry is now a
-   * WORD in `buildWords` (`src/ui/robotLabels.ts`) — `value, sub` — which is the build line under
+   * TAG in `buildParts` (`src/ui/robotLabels.ts`) — `value, sub` — which is the build line under
    * the hero's team and the one line on every robot card. The shape stayed so the vocabulary
    * stayed: `value`/`sub` are still what this game says about its mechanisms, and `label` is
    * what the checks assert those words are about.
@@ -234,7 +234,7 @@ export interface GameModule extends GameSimModule {
    * a wrong one, and invisible, because the section still rendered nine plausible cards.
    *
    * A game fills this and gets its own list and its own match test; the card's line is
-   * `buildWords`, which reads the game's `statTiles`. A game that fills nothing is routed
+   * `buildParts`, which reads the game's `statTiles`. A game that fills nothing is routed
    * through the unchanged branch exactly as before.
    *
    * `matches` is a BUILD comparison and deliberately not a deep equality: the player's
@@ -249,7 +249,7 @@ export interface GameModule extends GameSimModule {
     /** does `spec` carry this preset's BUILD? Identity fields are excluded — see above. */
     matches(spec: RobotSpec, preset: RobotSpec): boolean;
     // NO `lines` ANY MORE. A preset card printed a tagline, a spec line and a loadout chip, three
-    // readings of one robot; it prints `buildWords` now, the same one line a saved robot prints,
+    // readings of one robot; it prints `buildParts` now, the same one line a saved robot prints,
     // which already reads this game's `statTiles`.
     /** how many LEADING entries are real, documented robots rather than archetype
      * demos. The builder rules off after them so a player can tell "this is a real

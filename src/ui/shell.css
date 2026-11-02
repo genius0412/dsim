@@ -5461,12 +5461,9 @@ tr.lb-detail td {
   flex: none;
   margin-left: var(--ds-s-2);
 }
-/* the build line is a sentence of words, not a row of figures, so it takes the UI face */
+/* the build line is tags (`BuildLine`), a beat below the team line */
 .ds-robot-card > .om {
-  font-family: var(--ds-font-ui);
-  font-size: var(--ds-t-sm);
-  letter-spacing: normal;
-  line-height: var(--ds-lh-prose);
+  padding-top: var(--ds-s-1);
 }
 /* 96px shows the 192px capture at half, crisp on a 2x panel. It holds its size while the image
    renders, so the card does not jump (§1.4). On the field's dark ground, like the sprite. A 2D
@@ -5815,11 +5812,55 @@ input[type='range'].ds-range:disabled {
   font-size: var(--ds-t-md);
   line-height: var(--ds-lh-tight);
 }
-/* the build's words — drivetrain and mechanisms — as a sentence, so it wraps like one */
+/* the build's parts — drivetrain and mechanisms — as tags (`BuildLine`) */
 .ds-hero-build {
-  color: var(--ds-ink-dim);
+  padding-top: var(--ds-s-1);
+}
+
+/* ---- a build as tags (`BuildLine`) -------------------------------------------------------------
+   One tag per part: the drivetrain, then each mechanism with its mount quiet inside it. An OUTLINE,
+   no fill: the text sits on the card's own surface, so its inks are pairs `contrast` already
+   passes (a 4–7% ink tint dropped `--ds-mut` under AA in dark), and an edge drawn in the text's own
+   colour reads on a panel and on a selected card's accent fill alike. A line wraps BETWEEN tags; a
+   tag too wide for its card drops its mount under its name rather than overflowing. */
+.ds-build {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-1);
+}
+.ds-build-tag {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--ds-s-1);
+  max-width: 100%;
+  padding: var(--ds-s-0) var(--ds-s-2);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-ui);
   font-size: var(--ds-t-sm);
+  font-weight: 600;
+  letter-spacing: normal;
   line-height: var(--ds-lh-prose);
+  color: var(--ds-ink-dim);
+}
+.ds-build-tag .at {
+  font-weight: 400;
+  color: var(--ds-mut);
+}
+/* on a selected card the tag takes the card's own inks, as its name and team do */
+.ds-opt.on .ds-build-tag {
+  color: var(--ds-accent-soft-ink);
+}
+.ds-opt.on .ds-build-tag .at {
+  color: var(--ds-accent-soft-mut);
+}
+/* the lobby's line for an unsaved build: its name, then its tags */
+.ds-build-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
 }
 /* its own cell under the name (`'view play stats'`), so a phone-width card can give it the full width */
 .ds-hero-play {

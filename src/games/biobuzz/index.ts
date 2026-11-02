@@ -87,7 +87,7 @@ export const BIOBUZZ_MODULE: GameModule = {
   offersAutoFire: false,
   /**
    * THE BUILDER'S MECHANISM WORDS (the hero's build line and every robot card's line, through
-   * `buildWords`). The second instance of the preset bug, and the same shape of fix: the hero
+   * `buildParts`). The second instance of the preset bug, and the same shape of fix: the hero
    * picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell into the CHAIN arm and
    * showed a **CATALYST** — Chain Reaction's mechanism, off a field `coerceBiobuzzSpec` deletes.
    * This says launcher and lift, which is what a BIOBUZZ robot has.

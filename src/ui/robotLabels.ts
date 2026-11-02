@@ -2,13 +2,7 @@ import type { AssistConfig, RobotSpec } from '../types';
 import type { GameId } from '../games/types';
 import type { GameStatTile } from '../games/module';
 import { moduleFor } from '../games';
-import {
-  CHAIN_CATALYST_LABELS,
-  CHAIN_CATALYST_MOUNT_LABELS,
-  CHAIN_INTAKE_LABELS,
-  CHAIN_MODE_LABELS,
-  CHAIN_SHOOTER_MOUNT_LABELS,
-} from '../games/chain/labels';
+import { CHAIN_CATALYST_LABELS, CHAIN_INTAKE_LABELS, CHAIN_MODE_LABELS } from '../games/chain/labels';
 import {
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_DEFAULT_CATALYST,
@@ -17,7 +11,7 @@ import {
   CHAIN_STORAGE_DEFAULT,
 } from '../games/chain/config';
 import { catalystMountOf, catalystSwingOf, intakeMountOf, isTurreted, shooterMountOf } from '../games/chain/mounts';
-import { DRIVETRAIN_LABELS, INTAKE_SHORT, mountPhrase } from './labelData';
+import { DRIVETRAIN_LABELS, INTAKE_SHORT, MOUNT_WORDS, mountPhrase } from './labelData';
 
 /**
  * The two label maps moved to the LEAF `./labelData` and are RE-EXPORTED here, so every
@@ -94,7 +88,12 @@ export function drivingWords(assists: AssistConfig, spec: RobotSpec, game: GameI
 /**
  * THE SHORT FORM OF A BUILD: the drivetrain, then the mechanisms that make it this robot and
  * not another. What a robot CARD prints under its name (a saved robot, a preset, the swap row in
- * the lobby and the ranked strategy window) and what the builder hero prints under the team.
+ * the lobby and the ranked strategy window) and what the builder hero prints under the team, as
+ * TAGS (`BuildLine`): one per part, its mount quiet inside it.
+ *
+ * It was `buildWords`, the same parts joined into one ` · ` line with the builder's capitalised
+ * grid labels for mounts (`Double turret, LEFT + RIGHT · OFFSET™ Box Tube, BACK`), which the owner
+ * read as a list, not a description (2026-11-01). The parts are data now and the card draws them.
  *
  * `specSheet` above is the LONG form a leaderboard record or a strategy card prints, and it stays:
  * it carries the detail (mounts, feed, sorter) a card leaves out. This one has no numbers at all,
@@ -106,38 +105,39 @@ export function drivingWords(assists: AssistConfig, spec: RobotSpec, game: GameI
  * arm here is not a default, it is somebody else's game. DECODE and Chain Reaction fill nothing
  * and take the two inline arms.
  */
-export function buildWords(spec: RobotSpec, game: GameId): string[] {
-  const words = [DRIVETRAIN_LABELS[spec.drivetrain]];
+export function buildParts(spec: RobotSpec, game: GameId): BuildPart[] {
+  const parts: BuildPart[] = [{ value: DRIVETRAIN_LABELS[spec.drivetrain] }];
   const tiles = moduleFor(game).statTiles?.(spec);
   if (tiles) {
-    for (const t of tiles) if (!t.absent) words.push(t.sub ? `${t.value}, ${t.sub}` : t.value);
+    for (const t of tiles) if (!t.absent) parts.push({ value: t.value, sub: t.sub });
   } else if (game === 'chain') {
     const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
     // a turret aims itself from wherever it is bolted, so its mount says nothing
-    words.push(
-      isTurreted(mode)
-        ? CHAIN_MODE_LABELS[mode]
-        : `${CHAIN_MODE_LABELS[mode]}, ${CHAIN_SHOOTER_MOUNT_LABELS[shooterMountOf(spec)]}`,
-    );
+    parts.push({ value: CHAIN_MODE_LABELS[mode], sub: isTurreted(mode) ? undefined : MOUNT_WORDS[shooterMountOf(spec)] });
     const swing = catalystSwingOf(spec);
-    words.push(
-      `${CHAIN_CATALYST_LABELS[spec.catalystType ?? CHAIN_DEFAULT_CATALYST]}${
-        swing ? ` swing ${swing === 'fb' ? '↕' : '↔'}` : ''
-      }, ${CHAIN_CATALYST_MOUNT_LABELS[catalystMountOf(spec)]}`,
-    );
+    parts.push({
+      value: CHAIN_CATALYST_LABELS[spec.catalystType ?? CHAIN_DEFAULT_CATALYST],
+      sub: `${MOUNT_WORDS[catalystMountOf(spec)]}${swing ? `, swings ${swing === 'fb' ? '↕' : '↔'}` : ''}`,
+    });
   } else {
-    words.push(spec.intake === 'none' ? INTAKE_SHORT.none : `${INTAKE_SHORT[spec.intake]} intake`);
-    if (spec.canSort) words.push('sorter');
-    words.push(shotRange(spec.flywheelInertia));
+    parts.push({ value: spec.intake === 'none' ? INTAKE_SHORT.none : `${INTAKE_SHORT[spec.intake]} intake` });
+    if (spec.canSort) parts.push({ value: 'Sorter' });
+    parts.push({ value: shotRange(spec.flywheelInertia) });
   }
-  return words;
+  return parts;
+}
+
+/** one tag of a build line: what the part is, and where it sits (lower case, it reads inside the tag) */
+export interface BuildPart {
+  value: string;
+  sub?: string;
 }
 
 /**
  * The shooting range a DECODE flywheel inertia is tuned for: a LOW-inertia wheel spins up fast
  * for close rapid-fire, a HIGH-inertia wheel holds speed to sustain long shots (matches the
- * flywheel-recovery cadence model). It was the chip on a DECODE preset card; it is a word in
- * `buildWords` now, so a saved robot and the hero say it too.
+ * flywheel-recovery cadence model). It was the chip on a DECODE preset card; it is a tag in
+ * `buildParts` now, so a saved robot and the hero say it too.
  */
 export function shotRange(inertia: number): string {
   if (inertia <= 0.4) return 'Close range';

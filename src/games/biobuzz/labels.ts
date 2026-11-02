@@ -79,13 +79,12 @@ export function bbLauncherBlurb(launcher: BbLauncherSpec): string {
   return BB_MODE_BLURBS[launcher.kind];
 }
 
-/** WHERE a resolved launcher sits, as the short position text a tile or a summary prints: one
- * cell for a single turret or a dumper, both cells for a double turret (POLLEN turret first). */
-export function bbLauncherMountLabel(launcher: BbLauncherSpec): string {
-  const first = BB_MOUNT_POS_LABELS[launcher.mount];
-  return launcher.kind === 'twinturret' && launcher.mount2
-    ? `${first} + ${BB_MOUNT_POS_LABELS[launcher.mount2]}`
-    : first;
+/** WHERE a resolved launcher sits, as a build line's tag says it: one cell for a single turret or a
+ * dumper, both cells for a double turret (`right + left`, POLLEN turret first). In words, not the
+ * builder's grid labels, which read as shouting outside a 3x3 picker. */
+export function bbLauncherMountWords(launcher: BbLauncherSpec): string {
+  const first = MOUNT_WORDS[launcher.mount];
+  return launcher.kind === 'twinturret' && launcher.mount2 ? `${first} + ${MOUNT_WORDS[launcher.mount2]}` : first;
 }
 
 /**
@@ -278,15 +277,15 @@ export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
       value: bbLauncherLabel(launcher),
       label: 'launcher',
       sub: bbIsTurreted(launcher)
-        ? bbLauncherMountLabel(launcher)
+        ? bbLauncherMountWords(launcher)
         : launcher.kind === 'fixed'
-          ? `${BB_MOUNT_POS_LABELS[launcher.mount]} · ${launcher.hoodDeg}° hood`
-          : BB_MOUNT_POS_LABELS[launcher.mount],
+          ? `${MOUNT_WORDS[launcher.mount]} · ${launcher.hoodDeg}° hood`
+          : MOUNT_WORDS[launcher.mount],
     },
     {
       value: bbLiftLabel(lift),
       label: 'flower scoring',
-      sub: lift ? BB_MOUNT_POS_LABELS[lift.mount] : undefined,
+      sub: lift ? MOUNT_WORDS[lift.mount] : undefined,
       absent: !lift,
     },
   ];

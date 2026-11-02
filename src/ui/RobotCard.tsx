@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { RobotSpec } from '../types';
 import type { GameId } from '../games/types';
-import { buildWords } from './robotLabels';
+import { BuildLine } from './BuildLine';
 import { Marquee } from './Marquee';
 
 /**
@@ -17,8 +17,8 @@ import { Marquee } from './Marquee';
  * line at all, only a picture — so a thumbnail that did not render left a tall empty block with a
  * name in its corner. The swap rows said a name and a drivetrain.
  *
- * So a card is: the NAME, the TEAM when there is one, and ONE line — `buildWords`, the drivetrain
- * and the mechanisms. The numbers are the hero's; the tagline was flavour. A picture, when the
+ * So a card is: the NAME, the TEAM when there is one, and ONE line — `BuildLine`, the drivetrain
+ * and the mechanisms as tags. The numbers are the hero's; the tagline was flavour. A picture, when the
  * caller passes one (every saved robot in the builder), is the card's LEFT COLUMN, and the name,
  * team and line sit to its right. It never replaces the line.
  *
@@ -77,7 +77,9 @@ export function RobotCard({
           <Marquee text={team} />
         </span>
       ) : null}
-      <span className="om">{buildWords(spec, game).join(' · ')}</span>
+      <span className="om">
+        <BuildLine spec={spec} game={game} />
+      </span>
     </>
   );
   const card = (

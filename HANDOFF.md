@@ -1,4 +1,11 @@
-# HANDOFF — 2026-11-01i (DECODE: an auto path no longer leaves auto fire and auto intake on, SIM_PATCH 12)
+# HANDOFF — 2026-11-01j (A robot card's build line is tags, not a list)
+
+**State: on `alpha`. Client only, no server change, no deploy.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `uiaudit`, `uiindex`, `contrast` (435, +4), `docaudit` pass.
+
+- **Owner:** "It still says 'Mecanum · Double turret, LEFT + RIGHT · OFFSET™ Box Tube, BACK' as a list." That line is every robot card, the builder hero and the lobby, which 01h had left alone.
+- **Now:** `BuildLine` draws `buildParts` (was `buildWords`, a joined string) as outlined tags, one per part, the mount quiet and lower case inside its tag (`MOUNT_WORDS`; BIOBUZZ's `statTiles` subs too). Outline, not fill: a 4–7% ink tint put `--ds-mut` under AA in dark. Checked in the browser: hero, presets, the Play strip's selected card, all three games, both themes. The lobby's unsaved-build line was not seen (needs a room).
+
+## HANDOFF — 2026-11-01i (DECODE: an auto path no longer leaves auto fire and auto intake on, SIM_PATCH 12)
 
 **State: on `alpha` (5e91f183). Sim change behind `SIM_PATCH` 12; DEPLOYED to `dsim-alpha` 2026-11-01 23:30Z from 5e91f183 (`/health` ok, one machine). Production untouched.** `npm test` shared ALL PASS (4664, +5), BIOBUZZ only the known `balls: … LANDED predicted`; golden scenes unchanged; `build`, `server:check`, `docaudit` pass.
 

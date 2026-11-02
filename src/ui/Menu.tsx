@@ -23,7 +23,8 @@ import { coerceSpec, coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
-import { DRIVETRAIN_LABELS, buildWords, teamLine } from './robotLabels';
+import { DRIVETRAIN_LABELS, teamLine } from './robotLabels';
+import { BuildLine } from './BuildLine';
 import { RobotCard } from './RobotCard';
 import { Marquee } from './Marquee';
 import { OptRow, ToggleRow } from './OptRow';
@@ -496,7 +497,7 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
   const realPresets = gamePresets?.realCount ?? 0;
   // THE HERO'S NUMBERS: how this build drives, what it weighs and how big it is. A fixed six,
   // in every game, so the grid is the same shape whatever a season contributes. The build's
-  // WORDS (drivetrain, mechanisms) are the line under the team — `buildWords`, which reads the
+  // WORDS (drivetrain, mechanisms) are the line under the team — `BuildLine`, which reads the
   // game's `statTiles` slot before either inline arm, so a third game is described in its own
   // terms and never in Chain Reaction's. Drive rpm is not here: it is a slider with its value
   // printed beside it, and top speed and accel are what it changes.
@@ -564,7 +565,7 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
             nine one-line chips wrapped inside the sprite's 96px, which scrolled in both directions
             between 1100 and 1280 and clipped its top chip; and under 1100 it was a 509px card, 690px
             on a phone. The chips said the build's words and its numbers in one wall. They are two
-            things now: the WORDS are one line under the team (`buildWords`, the same line every robot
+            things now: the WORDS are one line of tags under the team (`BuildLine`, the same line every robot
             card prints) and the NUMBERS are a fixed grid, so no stat can widen the card. The layout
             follows the CARD's width, not the viewport's — see `.ds-hero` in shell.css. */}
         <div className="ds-hero">
@@ -599,7 +600,9 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                   <Marquee text={heroTeam} />
                 </div>
               ) : null}
-              <div className="ds-hero-build">{buildWords(spec, settings.game).join(' · ')}</div>
+              <div className="ds-hero-build">
+                <BuildLine spec={spec} game={settings.game} />
+              </div>
             </div>
             {/* THE WAY BACK TO PLAY, in the card that stays on screen: the builder is Configure's now,
                 and its trail no longer passes through Play. Its own cell (`.ds-hero-play`). */}

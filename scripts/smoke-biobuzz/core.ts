@@ -42,7 +42,7 @@ import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
 import { bbLiftKindLabel, bbSpecSheet } from '../../src/games/biobuzz/labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
-import { buildWords, drivingWords, shotRange, specSheet, teamLine } from '../../src/ui/robotLabels';
+import { buildParts, drivingWords, shotRange, specSheet, teamLine, type BuildPart } from '../../src/ui/robotLabels';
 import type { GameStatTile } from '../../src/games/module';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
@@ -245,7 +245,7 @@ export function coreChecks(check: Check): void {
       name: 'single turret',
       mech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
       // a TURRET solves its own elevation per shot, so it has no hood to report
-      tiles: ['Single turret / launcher / CENTER', 'No box tube / flower scoring'],
+      tiles: ['Single turret / launcher / center', 'No box tube / flower scoring'],
       sheet: [
         'Launcher: Single turret (Center)',
         'Intake: Sweeper (Front · POLLEN only)',
@@ -259,7 +259,7 @@ export function coreChecks(check: Check): void {
         launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
         lift: { kind: 'vslide', mount: 'back' },
       },
-      tiles: ['Single turret / launcher / CENTER', `${TUBE} / flower scoring / BACK`],
+      tiles: ['Single turret / launcher / center', `${TUBE} / flower scoring / back`],
       sheet: [
         'Launcher: Single turret (Center)',
         'Intake: Sweeper (Front · POLLEN only)',
@@ -273,7 +273,7 @@ export function coreChecks(check: Check): void {
         launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: BB_HOOD_DEFAULT_DEG },
         lift: null,
       },
-      tiles: ['Double turret / launcher / RIGHT + LEFT', 'No box tube / flower scoring'],
+      tiles: ['Double turret / launcher / right + left', 'No box tube / flower scoring'],
       // a double turret takes NECTAR for its NECTAR turret, so it has a sorter to answer for
       sheet: [
         'Launcher: Double turret (POLLEN right · NECTAR left)',
@@ -289,7 +289,7 @@ export function coreChecks(check: Check): void {
         launcher: { kind: 'dumper', mount: 'front', hoodDeg: 80 },
         lift: { kind: 'vslide', mount: 'back' },
       },
-      tiles: ['Dumper / launcher / FRONT', `${TUBE} / flower scoring / BACK`],
+      tiles: ['Dumper / launcher / front', `${TUBE} / flower scoring / back`],
       sheet: [
         'Launcher: Dumper (Front)',
         'Intake: Sweeper (Front · POLLEN + NECTAR)',
@@ -477,7 +477,7 @@ export function coreChecks(check: Check): void {
     // this section exists for, and it is invisible to every check that calls the function
     // directly — the same reason the crawler files below are pinned as text.
     // Since 2026-09-22 a saved robot and a preset are ONE card (`RobotCard`), and its one line
-    // is `buildWords`, which reads the game's `statTiles` slot BEFORE either inline arm. The
+    // is `BuildLine` over `buildParts`, which reads the game's `statTiles` slot BEFORE either inline arm. The
     // sheet is the leaderboard's and the strategy card's.
     const menu = readRepo('src/ui/Menu.tsx');
     const card = readRepo('src/ui/RobotCard.tsx');
@@ -488,11 +488,11 @@ export function coreChecks(check: Check): void {
       (menu.match(/<RobotCard\b/g) ?? []).length >= 2 && (menu.match(/game=\{settings\.game\}/g) ?? []).length >= 2,
     );
     check(
-      'RobotCard prints buildWords as its one `.om` line',
-      card.includes('<span className="om">{buildWords(spec, game).join(\' · \')}</span>'),
+      'RobotCard prints its one `.om` line as BuildLine tags',
+      /<span className="om">\s*<BuildLine spec=\{spec\} game=\{game\} \/>\s*<\/span>/.test(card),
     );
     check(
-      'buildWords reads the statTiles SLOT before the DECODE and CR arms',
+      'buildParts reads the statTiles SLOT before the DECODE and CR arms',
       /const tiles = moduleFor\(game\)\.statTiles\?\.\(spec\);\s*\n\s*if \(tiles\)/.test(labelsSrc),
     );
     check(
@@ -657,8 +657,10 @@ export function coreChecks(check: Check): void {
       labelsSrc.includes('mod.offersAutoFire !== false') && menu.includes('mod.offersAutoFire !== false'),
     );
 
-    // ---- THE CARD LINE (`buildWords`) — every robot card and the hero's build line ----------
-    const words = (raw: unknown): string[] => buildWords(bbCoerce(raw), 'biobuzz');
+    // ---- THE CARD LINE (`buildParts`, drawn as `BuildLine` tags) — every robot card and the hero ----
+    /** one tag as its text: the part, then its mount */
+    const tagText = (p: BuildPart): string => (p.sub ? `${p.value}, ${p.sub}` : p.value);
+    const words = (raw: unknown): string[] => buildParts(bbCoerce(raw), 'biobuzz').map(tagText);
     const cardLines = builds.map((b) => words(b).join(' · ').toLowerCase()).join(' | ');
     for (const word of [...FOREIGN_LINE, 'sorter']) {
       check(`biobuzz card lines never say "${word}"`, !cardLines.includes(word));
@@ -680,14 +682,24 @@ export function coreChecks(check: Check): void {
       words(rawOf(LOADOUTS[0].mech)).join() !== words(rawOf(LOADOUTS[1].mech)).join(),
     );
     // DECODE and CR take their own arms, in their own words
-    const decodeWords = buildWords({ ...DEFAULT_SPEC, intake: 'vector', canSort: true, flywheelInertia: 0.9 }, 'decode');
+    const decodeWords = buildParts({ ...DEFAULT_SPEC, intake: 'vector', canSort: true, flywheelInertia: 0.9 }, 'decode').map(tagText);
     check(
       'DECODE card line: drivetrain, intake, sorter, shot range',
-      decodeWords.join(' · ') === `${decodeWords[0]} · Vector intake · sorter · ${shotRange(0.9)}`,
+      decodeWords.join(' · ') === `${decodeWords[0]} · Vector intake · Sorter · ${shotRange(0.9)}`,
       decodeWords.join(' · '),
     );
-    const chainWords = buildWords({ ...DEFAULT_SPEC }, 'chain').join(' · ').toLowerCase();
+    const chainWords = buildParts({ ...DEFAULT_SPEC }, 'chain').map(tagText).join(' · ').toLowerCase();
     check('a CR card line never says POLLEN or intake style', !chainWords.includes('pollen') && !chainWords.includes('sloped'), chainWords);
+    // A TAG'S MOUNT IS WORDS, never the builder's 3x3 grid labels (`F·LEFT`, `BACK`): those read as
+    // shouting outside the picker, and the line they made read as a parts list (owner, 2026-11-01)
+    const mounts = [...builds.map((b) => buildParts(bbCoerce(b), 'biobuzz')), buildParts({ ...DEFAULT_SPEC }, 'chain')]
+      .flat()
+      .map((p) => p.sub ?? '');
+    check(
+      'a build tag’s mount is lower-case words (no grid label in capitals)',
+      mounts.some((m) => m.length > 0) && mounts.every((m) => m === m.toLowerCase() && !m.includes('·L') && !m.includes('·R')),
+      mounts.filter(Boolean).join(' | '),
+    );
     // THE TEAM LINE: number then name, and nothing at all when there is neither
     check('teamLine: number · name', teamLine({ teamNumber: 12345, teamName: 'Robo Hornets' }) === '12345 · Robo Hornets');
     check('teamLine: empty when there is no team', teamLine({ teamNumber: 0, teamName: '  ' }) === '');
@@ -718,7 +730,9 @@ export function coreChecks(check: Check): void {
     const shown = BB_PRESET_LIST.flatMap((p) => [
       p.name,
       p.teamName,
-      buildWords(p, 'biobuzz').join(' · '),
+      buildParts(p, 'biobuzz')
+        .map((t) => `${t.value} ${t.sub ?? ''}`)
+        .join(' · '),
       bbSpecSheet(p)
         .map((r) => `${r.value} ${r.sub ?? ''}`)
         .join(' · '),
