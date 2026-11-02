@@ -496,16 +496,19 @@ export function Leaderboard({
                 const rec = r as RecordRow;
                 const watchable = isRecords && !!rec.replayId && !!onWatch;
                 const cfg = isRecords ? rec.config : null;
-                const isOpen = openRow === r.userId;
-                const isMe = !!myUserId && r.userId === myUserId;
+                // a duo board lists PAIRS, so one person can be on it twice (A+B, A+C)
+                const rowKey = isRecords && rec.partnerId ? `${r.userId}+${rec.partnerId}` : r.userId;
+                const isOpen = openRow === rowKey;
+                const isMe = !!myUserId && (r.userId === myUserId || (isRecords && rec.partnerId === myUserId));
                 return (
-                  <Fragment key={r.userId}>
+                  <Fragment key={rowKey}>
                     <tr
                       className={`${watchable ? 'ds-clickable' : ''}${isMe ? ' lb-you' : ''}`}
                       onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
                       title={watchable ? 'Watch replay' : undefined}
                     >
-                      <td className="rk">{i + 1}</td>
+                      {/* the server's rank, which a tie shares; the row number from an older server */}
+                      <td className="rk">{(isRecords && rec.rank) || i + 1}</td>
                       <td>
                         <span className="lb-drivers">
                           <DriverName
@@ -542,10 +545,10 @@ export function Leaderboard({
                             <button
                               className="lb-robot"
                               aria-expanded={isOpen}
-                              aria-controls={`lb-detail-${r.userId}`}
+                              aria-controls={`lb-detail-${rowKey}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenRow(isOpen ? null : r.userId);
+                                setOpenRow(isOpen ? null : rowKey);
                               }}
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
@@ -581,7 +584,7 @@ export function Leaderboard({
                       )}
                     </tr>
                     {isRecords && isOpen && cfg && (
-                      <tr className="lb-detail" id={`lb-detail-${r.userId}`}>
+                      <tr className="lb-detail" id={`lb-detail-${rowKey}`}>
                         <td colSpan={5}>
                           <ConfigSummary cfg={cfg} game={game} />
                         </td>

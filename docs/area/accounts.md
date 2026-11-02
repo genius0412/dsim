@@ -21,6 +21,16 @@ LEAVES mid-match is retained (`departed`) so the match still rates. **SOLO RECOR
 (score-attack): results show NET score (earned − own penalties), no opponent/winner, and
 PB / WR / global rank per **mode × drivetrain × season**. Boards, records, and Act→Season
 periods are **keyed per game**, so DECODE and CR never share a leaderboard.
+**A DUO BOARD ENTRY IS THE UNORDERED PAIR** (`entryCols` in `repo.ts`, 2026-11-01). A duo run is
+one row keyed on whichever driver the room seated first (`user_id`) with the other as
+`partner_id`, so keying on `user_id` listed the same two people twice with the names swapped.
+The board, `personalBest`/`recordRank` (persist passes the partner), `getUserStats` (a run
+counts for the driver seated second too) and the admin list all key on
+`least`/`greatest` of the two ids. One person with two partners is two entries.
+**TIES SHARE THE PLACE** (owner, 2026-11-01): every rank is `rank()` over score, so 1, 2, 2, 4
+on the board (`BoardRow.rank`), after a run, on the profile and in the awards;
+within a tie the earlier run is listed first. Covered in `npm run dbtest` ("duo board:",
+"ties:").
 **A RECORD BOARD IS ALSO ONE PHYSICS** (owner ruling, 2026-09-18): every server-connected match
 of a game that can step 3D runs 3D (`Room.physics` / `serverPhysics`), so the board shows 3D runs
 only. `boardPhysics` in `repo.ts` is the single predicate and it is applied by the DATA LAYER,
@@ -267,11 +277,13 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   name surface gets it free. No evolving art by count yet (owner, 2026-09-24: not now).
 - **THE CRITERIA** (`runRewardJob`, owner 2026-09-22). End of every ranked ACT: top 3 of each ladder
   via `eloLeaderboard` (placed players, `user_id` last on ties) → a podium badge. End of every
-  SEASON: the SOLO record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard`
-  (its `boardPhysics` default) → one grant per player per season, every placement on its
-  `reason`, ONE `record-holder` badge.
-  **Act 0 is never paid**, ranked or records. Duo boards are out (`RECORD_AWARD_MODES`); adding
-  `'duo'` there is the whole change.
+  SEASON: the solo AND duo record boards' overall top 3 and each drivetrain's #1 via
+  `recordLeaderboard` (its `boardPhysics` default, `throughRank` so a tie at the cut is paid
+  whole) → one grant per player per season, every placement on its `reason`, ONE
+  `record-holder` badge. A duo pair pays BOTH drivers; a driver in several pairs on one board
+  keeps only their best place there (owner, 2026-11-01: A+B #1 and A+C #2 ⇒ A is #1, C is #2).
+  **Act 0 is never paid**, ranked or records. Duo awards start with the first season to close
+  after 2026-11-01; earlier closed seasons were paid solo-only and stay claimed.
 - **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
   `reward_periods` (a season is closed once `currentSeasonNumber` is past it; an act once a seasons
   row exists in a later act). It runs at every boot on every machine and after every

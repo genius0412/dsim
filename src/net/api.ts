@@ -81,6 +81,8 @@ export interface RecordRow extends BadgeFields {
   partnerRole?: StaffRole;
   /** ...and the partner's worn badges. */
   partnerBadges?: EquippedBadge[] | null;
+  /** the entry's place: tied scores share it (1, 2, 2, 4). Absent from an older server */
+  rank?: number;
   score: number;
   replayId: string | null;
   createdAt: string;

@@ -151,7 +151,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       // NET score: the alliance's earned total minus the penalty points it handed
       // the (empty) opposing alliance — i.e. the fouls the player(s) committed.
       const score = recordScore(o.result, primary.alliance);
-      const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv, game);
+      const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv, game, partner?.userId);
       // moderate the robot/team names before they land on the public leaderboard card
       const primarySpec = await scrubSpecNames(primary.spec);
       const partnerSpec = partner?.spec ? await scrubSpecNames(partner.spec) : undefined;
@@ -173,7 +173,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         // show both drivetrains (partner absent ⇒ solo run)
         config: { spec: primarySpec, assists: primary.assists, partnerSpec },
       });
-      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game);
+      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game, partner?.userId);
       const info = {
         mode,
         drivetrain,
