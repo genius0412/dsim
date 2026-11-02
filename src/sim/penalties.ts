@@ -606,6 +606,15 @@ export interface ControlGeometry {
    * supplies its own answer here; the ones whose tag does not, say nothing and are unchanged.
    */
   loose?(b: Artifact): boolean;
+  /**
+   * CAN THIS ROBOT'S INTAKE TAKE THIS ARTIFACT RIGHT NOW? The intake-MOUTH carve-out excuses an
+   * artifact "on its way into a slot", and one the rollers will never take is not on its way
+   * anywhere: it is being pushed. Default yes, which is DECODE's and Chain Reaction's answer
+   * (every intake there takes every artifact). BIOBUZZ's POLLEN-only intake refuses a NECTAR,
+   * and a lowered NECTAR bar refuses both colours of it — read as yes, a POLLEN-only robot with
+   * its rollers running herded the opponent's NECTAR the length of the field for nothing.
+   */
+  takes?(r: RobotState, b: Artifact): boolean;
 }
 
 /**
@@ -854,8 +863,10 @@ export function controlledArtifacts(
       .map((id) => {
         const b = loose.find((x) => x.id === id)!;
         const loc = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-        return { id, ahead: loc.x, hold: pen.ballHold[`${r.id}:${b.id}`] ?? 0 };
+        return { id, b, ahead: loc.x, hold: pen.ballHold[`${r.id}:${b.id}`] ?? 0 };
       })
+      // ...and only what the rollers CAN take (`ControlGeometry.takes`)
+      .filter((m) => !geom?.takes || geom.takes(r, m.b))
       /**
        * ...AND ONLY FOR AS LONG AS ACQUIRING TAKES.
        *

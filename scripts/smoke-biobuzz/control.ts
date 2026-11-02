@@ -260,6 +260,76 @@ export function controlChecks(check: Check): void {
       `taken=${forced.taken} g408=${g408n(forced.w)} ${lines(forced.w, 'G408').join(' | ')}`,
     );
   }
+  {
+    /**
+     * G204 IS ABOUT THE NECTAR, NOT THE SHOVER. Blue at the centre facing +x, a red NECTAR ahead
+     * of its mouth, a red robot right behind it driving at it. Whether blue was FORCED depends on
+     * whether blue drove onto the element: fleeing forward onto it is blue's own act, sitting
+     * still while red shoves it there is not.
+     */
+    const chased = (blueDrive: number, spec: Partial<RobotSpec>, s: number): { w: World; b: Artifact; held: boolean } => {
+      const w = field('2d', [
+        { id: 0, alliance: 'blue', spec },
+        { id: 1, alliance: 'red' },
+      ]);
+      pose(w, 0, -20, 40, 0);
+      const eb = footprintExtents(w.robots[0].spec);
+      const er = footprintExtents(w.robots[1].spec);
+      const b = put(w, '2d', 'red', -20 + eb.front + BB_NECTAR_R + 6, 40);
+      pose(w, 1, -20 - eb.rear - er.front - 0.5, 40, 0);
+      let held = false;
+      for (let i = 0; i < Math.round(s / SIM_DT); i++) {
+        drive(w, { 0: cmd({ intake: true, driveY: blueDrive }), 1: cmd({ driveY: 0.8 }) }, SIM_DT);
+        held ||= b.state.kind === 'held';
+      }
+      return { w, b, held };
+    };
+    const flee = chased(0.6, MIXED, 1);
+    check(
+      'G408 G204: FLEEING a defender straight onto the opponent’s NECTAR is not forced — the instance warns',
+      flee.held && g408n(flee.w) === 1 && warns(flee.w, 'G408') === 1,
+      `held=${flee.held} g408=${g408n(flee.w)} ${lines(flee.w, 'G408').join(' | ')}`,
+    );
+    const shoved = chased(0, MIXED, 1);
+    check(
+      'G408 G204: SHOVED from behind onto the opponent’s NECTAR while not driving is forced — nothing bills',
+      shoved.held && g408n(shoved.w) === 0 && warns(shoved.w, 'G408') === 0,
+      `held=${shoved.held} g408=${g408n(shoved.w)} ${lines(shoved.w, 'G408').join(' | ')}`,
+    );
+    // a POLLEN-only intake cannot take it, so it HERDS it: driving it up the field with a defender
+    // on its tail is still herding
+    const herd = chased(1, mech('turret', { kind: 'sweeper', feed: 'pollen' }), 1.6);
+    check(
+      'G408 G204: HERDING the opponent’s NECTAR while chased is not forced — the instance warns',
+      !herd.held && herd.b.pos.x > -20 + 30 && g408n(herd.w) === 1,
+      `held=${herd.held} x=${herd.b.pos.x.toFixed(1)} g408=${g408n(herd.w)} ${lines(herd.w, 'G408').join(' | ')}`,
+    );
+  }
+
+  // ═══ THE MOUTH CARVE-OUT COVERS ONLY WHAT THE ROLLERS CAN TAKE ═════════════════════════════════
+  {
+    /**
+     * A POLLEN-only intake refuses a NECTAR, so a NECTAR pressed into its running rollers is being
+     * PUSHED. Read as "on its way into a slot", the carve-out excused it for as long as the push
+     * lasted: measured, the opponent's NECTAR herded 70 in up the field with the rollers on drew
+     * nothing, and the same push with them off drew the warning.
+     */
+    const POLLEN_ONLY = mech('turret', { kind: 'sweeper', feed: 'pollen' });
+    const push = (patch: number | undefined, colors: ArtifactColor[]): World => {
+      const w = field('2d', [{ id: 0, alliance: 'blue', spec: POLLEN_ONLY }], patch);
+      pose(w, 0, -40, 40, 0);
+      const e = footprintExtents(w.robots[0].spec);
+      colors.forEach((c, i) => put(w, '2d', c, -40 + e.front + BB_NECTAR_R + 4, 40 + (i - (colors.length - 1) / 2) * (2 * BB_NECTAR_R + 0.2)));
+      drive(w, { 0: cmd({ intake: true, driveY: 1 }) }, 1.4);
+      return w;
+    };
+    const one = push(undefined, ['red']);
+    check('G408: a POLLEN-only intake with its rollers RUNNING that herds the opponent’s NECTAR warns', g408n(one) === 1 && warns(one, 'G408') === 1, lines(one, 'G408').join(' | '));
+    const five = push(undefined, ['blue', 'blue', 'blue', 'blue', 'blue']);
+    check('G407: five NECTAR herded into a POLLEN-only intake’s running rollers are five CONTROLLED, not four', warns(five, 'G407') >= 1, lines(five, 'G407').join(' | '));
+    const old = push(12, ['blue', 'blue', 'blue', 'blue', 'blue']);
+    check('G407 replay: a world stamped SIM_PATCH 12 keeps the old carve-out (one excused at the mouth, no warning)', warns(old, 'G407') === 0, lines(old, 'G407').join(' | '));
+  }
 
   // ═══ G407 — the YELLOW CARD, and the third MOMENTARY five ═════════════════════════════════════
   {

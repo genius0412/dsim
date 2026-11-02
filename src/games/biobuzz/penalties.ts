@@ -18,6 +18,8 @@ import {
 } from './config';
 import { bbInGarden, bbKindOf } from './score';
 import { bbImportSolids } from './importMech';
+import { bbIntakeAccepts } from './mechs';
+import { bbSorterTakes } from './nectarReject';
 import { biobuzzPhysics } from './state';
 
 /**
@@ -267,6 +269,12 @@ function bbControlGeometry(world: World): ControlGeometry {
     hopperCap: (r) => bbHopperCap(r.spec),
     // ...and what counts as loose on the floor, which under the 3D solve is not the tag alone.
     loose: bbLooseElement(world),
+    // ...and from `SIM_PATCH` 13, the mouth carve-out covers only what this intake will take: a
+    // POLLEN-only intake refuses a NECTAR and a lowered bar refuses every NECTAR, so one pressed
+    // into either mouth is being pushed, not acquired.
+    ...(simPatchAtLeast(world, 13)
+      ? { takes: (r: RobotState, b: Artifact) => bbIntakeAccepts(r.spec, r.alliance, b.color, simPatchAtLeast(world, 10)) && bbSorterTakes(world, r, b) }
+      : {}),
   };
 }
 
@@ -359,6 +367,19 @@ export const BB_ABOARD_SLIP = 12; // in/s
 export const BB_G408_SHOVE_GAP = 2 * BB_NECTAR_R + BB_FOUL_SLOP;
 
 /**
+ * HOW HARD THE SHOVER MUST BE DRIVING AT THIS ROBOT (stick, 0–1), for G204. `APPROX`: a quarter
+ * stick is a deliberate drive, and keeps a stick resting just off centre from excusing anyone.
+ */
+export const BB_G204_SHOVE_STICK = 0.25;
+
+/**
+ * HOW MUCH THIS ROBOT MAY BE DRIVING TOWARD THE NECTAR AND STILL HAVE BEEN FORCED (stick), for
+ * G204. `APPROX`: a tenth, so a driver holding still against the shove is excused and one
+ * driving onto the element at any real throttle is not.
+ */
+export const BB_G204_OWN_STICK = 0.1;
+
+/**
  * WHICH ELEMENTS ARE RIDING ON OR UNDER A ROBOT'S FRAME — CONTROL by the glossary's first clause,
  * "fully supported by or stuck in, on, or under the ROBOT", and QA34: "This would include
  * SCORING ELEMENTS stuck under an intake." 3D only (`SIM_PATCH` 13): the 2D solve cannot put an
@@ -433,10 +454,26 @@ function bbScoresFor(b: Artifact, a: Alliance): boolean {
  * The same INTENT test G402's `bbShovedAcross` uses, for the same reason: a NECTAR driven into a
  * robot moves exactly like one the robot drove into, so velocity cannot tell them apart and the
  * sticks can. Forced when an opposing robot within one NECTAR's width (`BB_G408_SHOVE_GAP`) is
- * driving at this one, and this one is not driving at it. A command-less fixture is never
- * excused: something has to be pushing.
+ * driving at this one (`BB_G204_SHOVE_STICK`), AND this one is not driving toward the NECTAR
+ * (`BB_G204_OWN_STICK`). A command-less fixture is never excused: something has to be pushing.
+ *
+ * ⚠️ **THE SECOND HALF IS ABOUT THE NECTAR, NOT THE SHOVER.** It used to read "this one is not
+ * driving back at the shover", which a robot FLEEING satisfies: driving away from a defender
+ * straight onto the opponent's NECTAR ahead of it was excused, held or herded. G204 asks for "a
+ * deliberate act with limited or no opportunity for the team being acted on to avoid the
+ * penalty", and a robot driving onto the element had every opportunity. Reading the direction to
+ * the element covers both real shapes: the shover pushing its NECTAR into this robot (the
+ * element is between them, and this robot is not driving at it) and the shover pushing this
+ * robot onto one (the element is ahead, and this robot is not driving there — leaning back
+ * against the shove included).
+ *
+ * WHERE THE NECTAR IS: a loose one's own position; a held one's capture point. `capturePollen`
+ * leaves `pos` where the intake took it, and neither solve moves a held element (it has no body
+ * in 3D), so on the tick an instance opens (penalties run before gameplay) `pos` is the mouth it
+ * came in by. An element at the robot's very centre has no direction, and falls back to "not
+ * driving at the shover".
  */
-function bbForcedInto(world: World, r: RobotState, commands: Map<number, RobotCommand>): boolean {
+function bbForcedInto(world: World, r: RobotState, b: Artifact, commands: Map<number, RobotCommand>): boolean {
   const own = driveIntent(r, commands.get(r.id));
   for (const y of world.robots) {
     if (y.alliance === r.alliance || y.passive) continue;
@@ -446,8 +483,14 @@ function bbForcedInto(world: World, r: RobotState, commands: Map<number, RobotCo
     const d = hyp(dx, dy);
     if (d < 1e-6) continue;
     const at = driveIntent(y, commands.get(y.id));
-    // y drives at r, and r is not driving back at y
-    if ((at.x * dx + at.y * dy) / d > 0 && (own.x * dx + own.y * dy) / d >= 0) return true;
+    // y drives at r
+    if ((at.x * dx + at.y * dy) / d <= BB_G204_SHOVE_STICK) continue;
+    // ...and r is not driving toward the element (or, for one at its centre, back at y)
+    const ex = b.pos.x - r.pos.x;
+    const ey = b.pos.y - r.pos.y;
+    const de = hyp(ex, ey);
+    const toward = de > 1e-6 ? (own.x * ex + own.y * ey) / de : -(own.x * dx + own.y * dy) / d;
+    if (toward <= BB_G204_OWN_STICK) return true;
   }
   return false;
 }
@@ -520,7 +563,8 @@ function bbG408(world: World, commands: Map<number, RobotCommand>, loose: Map<nu
       let inst = map[key];
       if (!inst || now - inst.last > BB_CONTROL_REARM_S) {
         inst = map[key] = { at: now, last: now };
-        if (bbForcedInto(world, r, commands)) inst.forced = true;
+        const b = world.balls.find((x) => x.id === id);
+        if (b && bbForcedInto(world, r, b, commands)) inst.forced = true;
         else bbG408Open(world, r);
       }
       inst.last = now;
