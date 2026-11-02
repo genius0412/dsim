@@ -3085,6 +3085,58 @@ tr.lb-detail td {
   gap: 8px;
   flex-wrap: wrap;
 }
+/* A DUO: one block per driver, side by side where they fit, stacked where they do not. Each block
+   spans four rows of the grid and lays its parts on them (subgrid: who drove, the robot's name,
+   its stats, its assists), so the two names, stat grids and chip rows line up even when one
+   block's content is shorter. */
+.lb-config.duo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: var(--ds-s-6);
+}
+/* its own row gap is the gap INSIDE a block; the parent's is the gap between two stacked blocks */
+.lb-driver {
+  grid-row: span 4;
+  display: grid;
+  grid-template-rows: subgrid;
+  row-gap: var(--ds-s-3);
+}
+.lb-driver > .lb-config-assists,
+.lb-driver > .lb-config-note {
+  align-self: start;
+}
+.lb-driver-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ds-s-1) var(--ds-s-2);
+  padding-bottom: var(--ds-s-2);
+  border-bottom: 1px solid var(--ds-line);
+}
+.lb-driver-by .k {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.lb-driver-by .n {
+  font-size: var(--ds-t-control);
+  font-weight: 600;
+  color: var(--ds-ink);
+  overflow-wrap: anywhere;
+}
+/* what a run did not keep, said where the thing would be */
+.lb-config-note {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.lb-config-note.empty {
+  grid-row: span 3;
+  align-self: center;
+  justify-self: center;
+}
 
 /* ---- states ---------------------------------------------------------- */
 /* a headline-only empty state should not reserve the gap for a sentence */

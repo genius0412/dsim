@@ -169,9 +169,9 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         // that offers it, which is the point: a board fed by two different solves is two
         // boards, and this is what lets one be told from the other without a season reset.
         physics: o.replay.physics,
-        // each driver brings their OWN robot; a duo stores both so the board can
-        // show both drivetrains (partner absent ⇒ solo run)
-        config: { spec: primarySpec, assists: primary.assists, partnerSpec },
+        // each driver brings their OWN robot and drives it their own way; a duo stores both
+        // builds and both drivers' assists (partner absent ⇒ solo run)
+        config: { spec: primarySpec, assists: primary.assists, partnerSpec, partnerAssists: partner?.assists },
       });
       const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game, partner?.userId);
       const info = {

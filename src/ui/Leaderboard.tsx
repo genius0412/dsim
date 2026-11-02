@@ -37,7 +37,7 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_CLEARANCE_DEFAULT,
 } from '../games/chain/config';
-import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
+import type { AssistConfig, DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
 
 type Kind = 'records' | 'ranked';
 
@@ -168,22 +168,64 @@ function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
   );
 }
 
-/** the robot config a record was set with — each driver's spec stats + the
- * owner's assists. A duo shows BOTH robots (drivers bring their own builds). */
-function ConfigSummary({ cfg, game }: { cfg: RecordConfig; game?: GameId }) {
-  const { spec, assists, partnerSpec } = cfg;
-  const chip = (label: string, on: boolean) => (
-    <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
+/** a driver's name as the row prints it */
+const nameOf = (handle: string | null, username: string | null): string => handle ?? (username ? `@${username}` : 'Player');
+
+/** how a robot was driven. Absent, the run did not keep it (a duo partner's, before 0064, when the
+ * replay could not say), and that is said in a sentence rather than left as a gap. */
+function AssistChips({ assists }: { assists?: AssistConfig | null }) {
+  if (!assists) return <p className="lb-config-note">Driving settings weren’t saved for this run.</p>;
+  const chip = (label: string, on: boolean) => <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>;
+  return (
+    <div className="lb-config-assists">
+      {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
+      {chip('Aim assist', assists.aimAssist)}
+      {chip('Auto intake', assists.autoIntake)}
+      {chip('Auto fire', assists.autoFire)}
+    </div>
+  );
+}
+
+/**
+ * The robot config a record was set with. A solo record is the build and how it was driven. A duo
+ * is one block per driver, headed by their name, each with their own build and their own assists
+ * (0064): the row names both people without saying whose robot is whose, and the assists used to
+ * be the first driver's alone, printed under both robots. A partner the run kept no robot for still
+ * gets a block, so the pair reads as a pair.
+ */
+function ConfigSummary({ cfg, game, driver, partner }: { cfg: RecordConfig; game?: GameId; driver: string; partner: string | null }) {
+  const { spec, assists, partnerSpec, partnerAssists } = cfg;
+  if (!partner) {
+    return (
+      <div className="lb-config">
+        <RobotSpecSummary spec={spec} game={game} />
+        <AssistChips assists={assists} />
+      </div>
+    );
+  }
+  const by = (name: string) => (
+    <div className="lb-driver-by">
+      <span className="k">Driven by</span>
+      <span className="n">{name}</span>
+    </div>
   );
   return (
-    <div className="lb-config">
-      <RobotSpecSummary spec={spec} game={game} />
-      {partnerSpec && <RobotSpecSummary spec={partnerSpec} game={game} />}
-      <div className="lb-config-assists">
-        {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
-        {chip('Aim assist', assists.aimAssist)}
-        {chip('Auto intake', assists.autoIntake)}
-        {chip('Auto fire', assists.autoFire)}
+    <div className="lb-config duo">
+      <div className="lb-driver">
+        {by(driver)}
+        <RobotSpecSummary spec={spec} game={game} />
+        <AssistChips assists={assists} />
+      </div>
+      <div className="lb-driver">
+        {by(partner)}
+        {partnerSpec ? (
+          <>
+            <RobotSpecSummary spec={partnerSpec} game={game} />
+            <AssistChips assists={partnerAssists} />
+          </>
+        ) : (
+          <p className="lb-config-note empty">Their robot wasn’t saved for this run.</p>
+        )}
       </div>
     </div>
   );
@@ -586,7 +628,12 @@ export function Leaderboard({
                     {isRecords && isOpen && cfg && (
                       <tr className="lb-detail" id={`lb-detail-${rowKey}`}>
                         <td colSpan={5}>
-                          <ConfigSummary cfg={cfg} game={game} />
+                          <ConfigSummary
+                            cfg={cfg}
+                            game={game}
+                            driver={nameOf(r.handle, r.username)}
+                            partner={rec.partnerId ? nameOf(rec.partnerHandle, rec.partnerUsername) : null}
+                          />
                         </td>
                       </tr>
                     )}

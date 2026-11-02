@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-01 (Records on main: duo pairs once, shared tie ranks, duo awards, both drivers' settings)
+
+**State: on `main`; server change with migration 0064, so production needs the Fly deploy as well as Vercel.** `npm test` (2975) ALL PASS, `dbtest` (914), `build`, `server:check`, `uiaudit`, `uiindex`, `docaudit` pass.
+
+- **Owner:** duo board listed the same pair twice with the names swapped; prizes to both drivers, each only their best place; "handle tied records better"; the partner's field/robot-centric and auto intake were not shown. Then "ship to prod". Done on `alpha` first (2984384c, 0e81e96c); this is the port.
+- **Ported:** the board, PB, post-run rank, profile stats and admin list key a duo entry on the unordered pair (`entryCols`); ranks are `rank()` (1, 2, 2, 4) everywhere, and the season awards pay a tie at the cut whole; `RECORD_AWARD_MODES` is solo + duo; `partnerAssists` is written by `persistMatch` and backfilled by 0064 from the replay's setups (by build, never position). Rules in `docs/area/accounts.md`.
+- **Not ported, on purpose:** the records feed changes (main has no feed), and alpha's record-detail redesign, which sits on the spec-sheet card (d6008266) and alpha-only importer work. On main a duo's detail is one block per driver ("Driven by …", own stats, own assist chips), sharing rows through a subgrid; solo is unchanged.
+- **Migration gap:** main jumps 0058 → 0064. `migrate.ts` applies by name from a set, so alpha's 0059–0063 still apply when they reach main.
+- **Known, pre-existing on main:** on a phone the record detail is as wide as the table and scrolls sideways; alpha fixed it in the spec-sheet commit.
+
 # HANDOFF — 2026-10-10 (BIOBUZZ 3D: the online wall bump fix reaches main)
 
 **State: on `main` (d0739721); DEPLOYED to PRODUCTION 2026-10-10 19:01Z from `main` (2-minute announcement, 17 clients notified, all 8 machines on the new image, client build d073972).** `npm test` (5176), `build`, `server:check`, `docaudit`, `bundleaudit`, `test:workers` (83) pass. Sim change behind `SIM_PATCH` 8 (it is 3 on `alpha`). No `SIM_VERSION` bump, no wire change.

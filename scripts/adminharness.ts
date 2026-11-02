@@ -291,18 +291,31 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     await repo.addMatchParticipant({ matchId: mid, userId: 'u-alan', alliance: 'blue', drivetrain: 'tank', score: 90, won: i % 2 !== 0, ratingBefore: 1500, ratingAfter: 1488 });
   }
   // DUO runs and TIES: Ada + Grace seated both ways round is one board entry (150), Ada has a
-  // second partner, two pairs tie for #2, and Annie ties Grace on the solo board
-  for (const [userId, partnerId, score] of [
-    ['u-ada', 'u-grace', 150], ['u-grace', 'u-ada', 140], ['u-ada', 'u-alan', 130], ['u-margaret', 'u-annie', 130],
+  // second partner, two pairs tie for #2, and Annie ties Grace on the solo board. The robots give
+  // the expanded rows something to show: both drivers' settings on Ada + Grace, and none for the
+  // partner on Ada + Alan, a run from before duo records stored them.
+  const { DEFAULT_SPEC } = await import('../src/sim/specDefaults');
+  const bot = (name: string, teamName: string, teamNumber: number, drivetrain: 'mecanum' | 'tank'): typeof DEFAULT_SPEC =>
+    ({ ...DEFAULT_SPEC, name, teamName, teamNumber, drivetrain, ...(drivetrain === 'tank' ? { intake: 'vector' as const, massLb: 31, driveRpm: 435 } : {}) });
+  const fc = { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true };
+  const rc = { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: true };
+  const adaBot = bot('Analytical Engine', 'Lovelace Labs', 1815, 'mecanum');
+  const graceBot = bot('Mark II', 'Harvard Computation', 1944, 'tank');
+  const alanBot = bot('Bombe', 'Bletchley', 1939, 'mecanum');
+  for (const [userId, partnerId, score, config] of [
+    ['u-ada', 'u-grace', 150, { spec: adaBot, assists: fc, partnerSpec: graceBot, partnerAssists: rc }],
+    ['u-grace', 'u-ada', 140, { spec: graceBot, assists: rc, partnerSpec: adaBot, partnerAssists: fc }],
+    ['u-ada', 'u-alan', 130, { spec: adaBot, assists: fc, partnerSpec: alanBot }],
+    ['u-margaret', 'u-annie', 130, { spec: alanBot, assists: rc }], // older still: no partner robot either
   ] as const) {
     await repo.submitRecord({
       userId, partnerId, mode: 'duo', drivetrain: 'mecanum', score, balanceVersion: SEASON,
-      replayId: null as unknown as string, game: 'decode',
+      replayId: null as unknown as string, game: 'decode', config: (config ?? undefined) as never,
     }).catch(() => {});
   }
   await repo.submitRecord({
     userId: 'u-annie', mode: 'solo', drivetrain: 'tank', score: 169, balanceVersion: SEASON,
-    replayId: null as unknown as string, game: 'decode',
+    replayId: null as unknown as string, game: 'decode', config: { spec: graceBot, assists: rc } as never,
   }).catch(() => {});
 
   // NOTICES (0057). The OWNER lost a ranked match, filed a misscore claim on it and reported the
