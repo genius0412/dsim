@@ -1640,8 +1640,9 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
  * (`preloadRoomView` → `GameModule.warmScene`; same chunk, same specifier as `scene`). The effects
  * chunks its settings want, the bay chunk if its robots would be High, and the SELECTED venue's and
  * the field's files, fetched at low priority so they only fill the cache (the real load then reads
- * it; `vercel.json` gives `/venues` and `/models` a day's `max-age`). A generated venue fetches
- * nothing. Idempotent per URL, every failure ignored: the scene's own load is the error path.
+ * it; `vercel.json` serves `/venues` immutable, each URL versioned by `venueAssetUrl`, and `/models`
+ * revalidates). A generated venue fetches nothing. Idempotent per URL, every failure ignored: the
+ * scene's own load is the error path. Only where a match is a click away (`preloadRoomView`).
  * ⚠️ The texture size assumes a 4096 GPU; a smaller one fetches a file the scene does not use.
  */
 const warmed = new Set<string>();
@@ -1665,5 +1666,6 @@ export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().setting
     get(venueAssetUrl(hi ? l.fg : l.fgLow));
     get(venueAssetUrl(l.mesh));
   } else get(venueAssetUrl(hi ? p.backdrop : p.backdropLow));
+  if (p.floorTexture) get(venueAssetUrl(p.floorTexture.tile));
   if (settings.envLighting) get(venueAssetUrl(p.ibl));
 }

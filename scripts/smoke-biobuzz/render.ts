@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
@@ -487,6 +487,7 @@ import {
   clipToFloor,
   photoTexturesOf,
   type PhotoLayerAssets,
+  venueAssetUrl,
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
@@ -7821,11 +7822,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       // and the chunk itself is fetched on idle from whatever screen comes first, not when the
       // turntable mounts — gated by preloadRoomView on a scene-bearing game and the 3D view
-      check(
-        'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
-        /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game\]\);/.test(readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8')) &&
-          readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8').includes('const warm = (): void => preloadRoomView(settings.game);'),
-      );
+      {
+        const app = readFileSync(join(root, 'src', 'ui', 'App.tsx'), 'utf8');
+        const rv = readFileSync(join(root, 'src', 'net', 'roomView.ts'), 'utf8');
+        check(
+          'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
+          /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game, warmAll\]\);/.test(app) &&
+            app.includes('const warm = (): void => preloadRoomView(settings.game, warmAll);'),
+        );
+        // ...and the FULL warm (the 3D solve, the venue's ~1–2 MB) only where a match is a click
+        // away: Play and its popups. Home asks for the chunk alone, which its stage draws from anyway.
+        check(
+          '...the full warm (3D solve, venue files) only on Play and its popups; elsewhere, Home included, the chunk alone',
+          app.includes("const warmAll = screen === 'modes' || !!POPUPS[screen];") &&
+            /export function preloadRoomView\(game: GameId, assets = true\): void \{[\s\S]{0,200}if \(!assets\) \{\s*void m\.scene\(\)\.catch\(\(\) => \{\}\);\s*return;\s*\}/.test(rv),
+        );
+      }
       check(
         'the preview scene warms its shaders with compileAsync and draws nothing until then',
         previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
@@ -14409,6 +14421,36 @@ function photoVenueChecks(check: Check): void {
     return null;
   };
   const readme = readFileSync(join(root, 'public', 'venues', 'README.md'), 'utf8');
+  /**
+   * `/venues` IS SERVED IMMUTABLE (`vercel.json`), so every file a row fetches has to carry its own
+   * version, or a rebuilt backdrop cached under the old name is drawn against the new row's room for
+   * a year. The version is the row's byte count, which the checks below hold to the file on disk.
+   */
+  {
+    const vercel = JSON.parse(readFileSync(join(root, 'vercel.json'), 'utf8')) as { headers: { source: string; headers: { key: string; value: string }[] }[] };
+    const cc = (src: string): string => vercel.headers.find((h) => h.source === src)?.headers.find((x) => x.key === 'Cache-Control')?.value ?? '';
+    check('venues: /venues/(.*) is cached immutable for a year', /max-age=31536000/.test(cc('/venues/(.*)')) && /immutable/.test(cc('/venues/(.*)')), cc('/venues/(.*)'));
+    check(
+      'venues: /models is NOT given a long cache (its files carry no version, and the field GLB must match the colliders in the bundle)',
+      !vercel.headers.some((h) => h.source.includes('models') && h.headers.some((x) => x.key === 'Cache-Control')),
+    );
+    const files: [string, number][] = [];
+    for (const e of photos) {
+      const p = e.photo!;
+      files.push([p.backdrop, p.bytes.backdrop], [p.backdropLow, p.bytes.backdropLow], [p.ibl, p.bytes.ibl]);
+      if (p.layers) {
+        const l = p.layers;
+        files.push([l.bg, l.bytes.bg], [l.bgLow, l.bytes.bgLow], [l.fg, l.bytes.fg], [l.fgLow, l.bytes.fgLow], [l.mesh, l.bytes.mesh]);
+      }
+      if (p.floorTexture) files.push([p.floorTexture.tile, p.floorTexture.bytes]);
+    }
+    const bad = files.filter(([path, bytes]) => !venueAssetUrl(path).endsWith(`/${path}?v=${bytes}`));
+    check(`venues: every file a photographed row fetches (${files.length}) is fetched as ?v=<its bytes>`, files.length >= 40 && bad.length === 0, bad.map(([f]) => `${f} → ${venueAssetUrl(f)}`).join(', '));
+    for (const [path, bytes] of files) {
+      const on = statSync(join(root, 'public', path)).size;
+      if (on !== bytes) check(`venues: ${path} is the ${bytes} bytes its version says`, false, `${on} on disk`);
+    }
+  }
   for (const e of photos) {
     const p = e.photo!;
     const cfg = venuesCfg.find((v) => v.id === e.id);
@@ -15484,17 +15526,21 @@ function photoKeepOutChecks(check: Check, photos: EnvironmentDef[]): void {
       }
       if (label === 'free default') freeEye = cam.position.toArray() as [number, number, number];
     });
-    // in the default orbit's picture and within 150 in of its eye: the two shards, 55–124 in away
+    // in the default orbit's picture and within 150 in of its eye: the two shards, 12–52 in away.
+    // 41 of their vertices since the court's lens was re-measured at 64.6 in and its room scaled
+    // about the lens (2026-10-24): the shards moved out with it and part of them left the frame
+    // (90 before). The court's own lens height, as the shader has it.
+    const lens = court.photo!.height;
     const near = pts.filter((p) => orbitEye && Math.hypot(p[0] - orbitEye[0], p[1] - orbitEye[1], p[2] - orbitEye[2]) < 150 && orbitView.containsPoint(new THREE.Vector3(...p)));
     const sliver = pts.filter((p) => Math.abs(p[1]) < 4 && p[0] > -170 && p[0] < -128 && p[2] > 80);
     check(
       'photo keep-out: the court’s default orbit draws none of the furniture within 150 in of its eye that is in its picture (the two sky shards)',
-      !!orbitEye && near.length > 50 && near.every((p) => photoFurnitureDropped(p, orbitEye!)),
-      `${near.filter((p) => !photoFurnitureDropped(p, orbitEye!)).length} of ${near.length} kept`,
+      !!orbitEye && near.length > 30 && near.every((p) => photoFurnitureDropped(p, orbitEye!, undefined, lens)),
+      `${near.filter((p) => !photoFurnitureDropped(p, orbitEye!, undefined, lens)).length} of ${near.length} kept`,
     );
     check(
       'photo keep-out: ...and its default free cam drops the whole light-pole sliver it looked at the field through',
-      !!freeEye && sliver.length > 50 && sliver.every((p) => photoFurnitureDropped(p, freeEye!)),
+      !!freeEye && sliver.length > 50 && sliver.every((p) => photoFurnitureDropped(p, freeEye!, undefined, lens)),
       `${sliver.length} verts`,
     );
   }

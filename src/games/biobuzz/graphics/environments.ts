@@ -1065,6 +1065,38 @@ export function environmentDef(id: EnvironmentId): EnvironmentDef {
 }
 
 /**
+ * THE VERSION A VENUE FILE'S URL CARRIES — its size in bytes, as its row states it, for every file
+ * a photographed venue fetches (`venueAssetUrl` appends `?v=`). `vercel.json` serves `/venues`
+ * immutable for a year, which is only safe because a rebuilt file comes with a new URL: the rows
+ * that place a room live in the hashed JS bundle and update at once, and a backdrop cached under
+ * the same name would be drawn against the new room's numbers. The RENDER lane checks every row's
+ * byte count against the file on disk, so a rebuild cannot ship with the old version.
+ */
+let venueBytes: Map<string, number> | null = null;
+export function venueFileBytes(path: string): number | undefined {
+  if (!venueBytes) {
+    venueBytes = new Map();
+    for (const e of BB_ENVIRONMENTS) {
+      const p = e.photo;
+      if (!p) continue;
+      venueBytes.set(p.backdrop, p.bytes.backdrop);
+      venueBytes.set(p.backdropLow, p.bytes.backdropLow);
+      venueBytes.set(p.ibl, p.bytes.ibl);
+      const l = p.layers;
+      if (l) {
+        venueBytes.set(l.bg, l.bytes.bg);
+        venueBytes.set(l.bgLow, l.bytes.bgLow);
+        venueBytes.set(l.fg, l.bytes.fg);
+        venueBytes.set(l.fgLow, l.bytes.fgLow);
+        venueBytes.set(l.mesh, l.bytes.mesh);
+      }
+      if (p.floorTexture) venueBytes.set(p.floorTexture.tile, p.floorTexture.bytes);
+    }
+  }
+  return venueBytes.get(path.replace(/^\/+/, ''));
+}
+
+/**
  * ⚠️ **CAN THIS CLIENT FETCH A CROSS-ORIGIN ASSET AT ALL?** — false inside a Discord Activity,
  * where the answer is decided before any request is made and can never change.
  *
