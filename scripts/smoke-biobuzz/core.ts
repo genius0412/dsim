@@ -500,8 +500,9 @@ export function coreChecks(check: Check): void {
       /const own = moduleFor\(game\)\.specSheet;\s*\n\s*if \(own\)/.test(labelsSrc),
     );
     check(
-      'the leaderboard prints each record’s robot as a RobotSheet, the owner’s with its assists',
-      readRepo('src/ui/Leaderboard.tsx').includes('<RobotSheet spec={spec} game={game} assists={assists} />'),
+      'the leaderboard prints each record’s robot as a RobotSheet, BOTH duo drivers with their own assists',
+      readRepo('src/ui/Leaderboard.tsx').includes('<RobotSheet spec={spec} game={game} assists={assists} driver={partner ? driver : undefined} />') &&
+        readRepo('src/ui/Leaderboard.tsx').includes('<RobotSheet spec={partnerSpec} game={game} assists={partnerAssists} driver={partner} />'),
     );
     check(
       'the strategy card prints the build as a compact SpecList',

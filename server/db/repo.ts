@@ -91,6 +91,9 @@ export interface RecordConfig {
   /** in a DUO run, the co-op PARTNER's robot (each driver brings their own build,
    * so a duo can mix drivetrains). Absent for solo runs / legacy rows. */
   partnerSpec?: RobotSpec;
+  /** ...and how the PARTNER drove it (0064). Absent before 0064, unless that migration found it
+   *  in the run's replay; absent with `partnerSpec` present means nobody knows. */
+  partnerAssists?: AssistConfig;
 }
 
 /**

@@ -582,6 +582,74 @@ async function main(): Promise<void> {
       (await repo.adminListRecords({ mode: 'duo', balanceVersion: BV, game: 'decode' })).length === 3);
   }
 
+  /*
+   * 0064: A DUO RUN KEEPS HOW THE PARTNER DROVE (owner, 2026-11-01). New runs write
+   * `partnerAssists`; the migration fills it on older runs from the run's replay, whose setups
+   * hold every robot's assists, finding the partner's setup by its BUILD (a replay names no
+   * account, and the first driver is not always setup 0). Re-run here on rows staged the way
+   * they stood before it.
+   */
+  {
+    const BV = 976;
+    for (const u of ['pa-a', 'pa-b']) await repo.ensureProfile(u, u.toUpperCase());
+    const fc = { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true };
+    const rc = { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: true };
+    const mine = { name: 'Mine', teamName: 'A', drivetrain: 'mecanum', massLb: 30 };
+    const theirs = { name: 'Theirs', teamName: 'B', drivetrain: 'tank', massLb: 40 };
+    const replay = async (setups: unknown[]) =>
+      (await db.query<{ id: string }>(
+        `insert into replays (format, balance_version, seed, ticks, setups, tracks) values (2, $1, 1, 10, $2, '{}') returning id`,
+        [BV, JSON.stringify(setups)],
+      )).rows[0].id;
+    const rec = async (mode: 'solo' | 'duo', replayId: string | null, config: unknown) =>
+      (await db.query<{ id: string }>(
+        `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game)
+         values ('pa-a', ${mode === 'duo' ? `'pa-b'` : 'null'}, $1, 'overall', 10, $2, $3, $4, 'decode') returning id`,
+        [mode, BV, replayId, JSON.stringify(config)],
+      )).rows[0].id;
+    // the PARTNER is setup 0 here, and the first driver's name was moderated after the replay was saved
+    const swapped = await rec('duo', await replay([{ id: 0, spec: theirs, assists: rc }, { id: 1, spec: { ...mine, name: 'Rude' }, assists: fc }]),
+      { spec: { ...mine, name: 'My Robot' }, assists: fc, partnerSpec: theirs });
+    // the same build twice, driven two ways: nothing says which was the partner's
+    const twinsApart = await rec('duo', await replay([{ id: 0, spec: mine, assists: fc }, { id: 1, spec: mine, assists: rc }]),
+      { spec: mine, assists: fc, partnerSpec: mine });
+    // the same build twice, driven the SAME way: either answer is the answer
+    const twinsAlike = await rec('duo', await replay([{ id: 0, spec: mine, assists: rc }, { id: 1, spec: mine, assists: rc }]),
+      { spec: mine, assists: rc, partnerSpec: mine });
+    const noReplay = await rec('duo', null, { spec: mine, assists: fc, partnerSpec: theirs });
+    const kept = await rec('duo', await replay([{ id: 0, spec: mine, assists: fc }, { id: 1, spec: theirs, assists: rc }]),
+      { spec: mine, assists: fc, partnerSpec: theirs, partnerAssists: fc });
+    const solo = await rec('solo', await replay([{ id: 0, spec: mine, assists: fc }]), { spec: mine, assists: fc });
+    const m64 = readFileSync(join(ROOT, 'server/db/migrations/0064_record_partner_assists.sql'), 'utf8');
+    await db.exec(m64);
+    // jsonb re-orders an object's keys, so assists are compared by VALUE
+    const same = (v: unknown, want: Record<string, boolean>): boolean =>
+      !!v && typeof v === 'object' && Object.keys(v).length === Object.keys(want).length &&
+      Object.entries(want).every(([k, x]) => (v as Record<string, unknown>)[k] === x);
+    const pa = async (id: string) =>
+      (await db.query<{ v: unknown }>(`select config -> 'partnerAssists' as v from records where id = $1`, [id])).rows[0]?.v ?? null;
+    check('⚠️ 0064: the partner\'s assists come back from the replay, found by BUILD (they were setup 0)',
+      same(await pa(swapped), rc), JSON.stringify(await pa(swapped)));
+    check('⚠️ 0064: two identical builds driven differently are left unknown, never guessed', (await pa(twinsApart)) === null);
+    check('0064: ...and two identical builds driven alike are filled', same(await pa(twinsAlike), rc));
+    check('0064: a run whose replay is gone stays unknown', (await pa(noReplay)) === null);
+    check('0064: a value already there is not touched', same(await pa(kept), fc));
+    check('0064: a solo run gains nothing', (await pa(solo)) === null);
+    const before = (await db.query(`select id, config from records where balance_version = $1 order by id`, [BV])).rows;
+    await db.exec(m64);
+    check('0064: running it again changes nothing',
+      JSON.stringify((await db.query(`select id, config from records where balance_version = $1 order by id`, [BV])).rows) === JSON.stringify(before));
+    // and a NEW duo run carries it from the start, through to the board
+    await repo.submitRecord({
+      userId: 'pa-b', partnerId: 'pa-a', mode: 'duo', drivetrain: 'tank', score: 99, balanceVersion: BV + 1,
+      replayId: null as unknown as string, game: 'decode',
+      config: { spec: theirs, assists: rc, partnerSpec: mine, partnerAssists: fc } as never,
+    });
+    const row = (await repo.recordLeaderboard({ mode: 'duo', balanceVersion: BV + 1, game: 'decode' }))[0];
+    check('0064: a new duo run shows BOTH drivers\' assists on the board',
+      same(row?.config?.assists, rc) && same(row?.config?.partnerAssists, fc));
+  }
+
   // MATCH HISTORY — the Career page's list, and the one place a name appears
   // for BOTH alliances of somebody else's match.
   const matchId = await repo.saveMatch('1v1', SEASON, null as unknown as string, true, 'decode');

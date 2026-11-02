@@ -27,6 +27,13 @@ one row keyed on whichever driver the room seated first (`user_id`) with the oth
 The board, `personalBest`/`recordRank` (persist passes the partner), `getUserStats` (a run
 counts for the driver seated second too), the admin list and the records feed all key on
 `least`/`greatest` of the two ids. One person with two partners is two entries.
+**A DUO RECORD STORES BOTH DRIVERS' ASSISTS** (`RecordConfig.partnerAssists`, 2026-11-01): it
+kept the partner's build but only the first driver's assists, so the board showed nothing for how
+the partner drove. Migration 0064 backfills older runs from the replay's `setups`, matching the
+partner's setup by BUILD (`partnerSpec`, names aside) and the other setup to `spec`, never by
+position: a replay names no account and a reconnect reorders participants. Identical builds
+driven differently stay unknown, and the board says "Driving settings weren’t saved for this run."
+On the board each duo sheet is headed "Driven by …" and the pair shares row heights (subgrid).
 **TIES SHARE THE PLACE** (owner, 2026-11-01): every rank is `rank()` over score, so 1, 2, 2, 4
 on the board (`BoardRow.rank`), after a run, on the profile, in the feed and in the awards;
 within a tie the earlier run is listed first. Covered in `npm run dbtest` ("duo board:",

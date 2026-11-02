@@ -26,7 +26,7 @@ import { RANKED_PLACEMENT } from '../config';
 
 /** what a server older than 2026-10-03 places at, for both modes (it sends no `minGames`) */
 const OLD_SERVER_PLACEMENT = 5;
-import { RobotSheet } from './RobotSheet';
+import { RobotSheet, UnsavedSheet } from './RobotSheet';
 import type { DrivetrainType, GameId } from '../types';
 
 type Kind = 'records' | 'ranked';
@@ -103,15 +103,27 @@ function DriverName({
   );
 }
 
-/** the robot config a record was set with: each driver's build as a sheet, and the owner's
- * assists on the owner's. A duo shows BOTH robots (drivers bring their own builds); the partner's
- * assists are not stored, so its sheet says nothing about them. */
-function ConfigSummary({ cfg, game }: { cfg: RecordConfig; game: GameId }) {
-  const { spec, assists, partnerSpec } = cfg;
+/** a driver's name as the row prints it */
+const nameOf = (handle: string | null, username: string | null): string => handle ?? (username ? `@${username}` : 'Player');
+
+/**
+ * WHO DROVE WHAT: each driver's robot as a sheet, with how they drove it. A solo record is one
+ * sheet across the panel, which lays itself out as a row at that width. A duo is two equal sheets
+ * headed by their drivers (drivers bring their own builds and their own assists, 0064), in the
+ * order the row names them; a partner the run kept no robot for still gets a card, so the pair
+ * reads as a pair.
+ */
+function ConfigSummary({ cfg, game, driver, partner }: { cfg: RecordConfig; game: GameId; driver: string; partner: string | null }) {
+  const { spec, assists, partnerSpec, partnerAssists } = cfg;
   return (
-    <div className="lb-config">
-      <RobotSheet spec={spec} game={game} assists={assists} />
-      {partnerSpec && <RobotSheet spec={partnerSpec} game={game} />}
+    <div className={`lb-config${partner ? ' duo' : ''}`}>
+      <RobotSheet spec={spec} game={game} assists={assists} driver={partner ? driver : undefined} />
+      {partner &&
+        (partnerSpec ? (
+          <RobotSheet spec={partnerSpec} game={game} assists={partnerAssists} driver={partner} />
+        ) : (
+          <UnsavedSheet driver={partner} />
+        ))}
     </div>
   );
 }
@@ -593,7 +605,12 @@ export function Leaderboard({
                     {isRecords && isOpen && cfg && (
                       <tr className="lb-detail" id={`lb-detail-${rowKey}`}>
                         <td colSpan={5}>
-                          <ConfigSummary cfg={cfg} game={moduleFor(game).id} />
+                          <ConfigSummary
+                            cfg={cfg}
+                            game={moduleFor(game).id}
+                            driver={nameOf(r.handle, r.username)}
+                            partner={rec.partnerId ? nameOf(rec.partnerHandle, rec.partnerUsername) : null}
+                          />
                         </td>
                       </tr>
                     )}

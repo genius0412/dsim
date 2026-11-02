@@ -3356,12 +3356,14 @@ tr.lb-detail td {
   background: var(--ds-bg);
   padding: 0;
 }
-/* a duo's two sheets sit side by side where they fit, and one sheet never stretches to the full
-   width of the board, where its rows would sit a long way from their labels: `auto-fill` keeps
-   the empty tracks, so a solo record takes one column of two or three */
+/* a duo's two sheets sit side by side where they fit and stack where they do not; a solo record's
+   one sheet takes the whole width. `auto-fit` collapses the empty tracks: it was `auto-fill`,
+   which kept them, so a solo sheet filled one column of two and left the other half of the panel
+   empty. A sheet that wide lays itself out as a row (`.ds-sheet-grid` below), so its rows still
+   sit beside their labels. */
 .lb-config {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   gap: var(--ds-s-3);
   padding: var(--ds-s-3) var(--ds-s-4);
   /* ON A PHONE the table is wider than the screen and scrolls sideways, and this row's cell is as
@@ -3378,10 +3380,12 @@ tr.lb-detail td {
 }
 
 /* ---- a robot's spec sheet (`RobotSheet`, `SpecList`) -----------------------------------
-   Picture, name, one row per job the robot does, then a foot of the chassis numbers and how it
-   was driven. The picture column wraps above the body on a narrow screen rather than squeezing
-   the rows. */
+   Who drove it (a duo's), picture, name, one row per job the robot does, then the chassis numbers
+   and how it was driven. The picture column wraps above the body on a narrow screen rather than
+   squeezing the rows. The sheet is a SIZE CONTAINER and lays itself out by its own width: a foot
+   under the build when narrow, a column beside it when wide (the `@container sheet` block). */
 .ds-sheet {
+  container: sheet / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--ds-s-3);
@@ -3390,6 +3394,32 @@ tr.lb-detail td {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   box-shadow: var(--ds-block-sm);
+}
+.ds-sheet-driver {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ds-s-1) var(--ds-s-2);
+  padding-bottom: var(--ds-s-3);
+  border-bottom: 1px solid var(--ds-line);
+}
+.ds-sheet-driver .k {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-sheet-driver .n {
+  font-size: var(--ds-t-control);
+  font-weight: 600;
+  color: var(--ds-ink);
+  overflow-wrap: anywhere;
+}
+.ds-sheet-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
 }
 .ds-sheet-top {
   display: flex;
@@ -3404,6 +3434,84 @@ tr.lb-detail td {
   gap: var(--ds-s-3) var(--ds-s-4);
   padding-top: var(--ds-s-3);
   border-top: 1px solid var(--ds-line);
+}
+/* what a run did not keep, said where the thing would be */
+.ds-sheet-note {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-sheet-note.empty {
+  display: grid;
+  place-items: center;
+  padding: var(--ds-s-5) 0;
+  text-align: center;
+}
+/* A DUO'S TWO SHEETS SHARE THEIR ROWS (subgrid): driver line, build, foot. Equal-height cards
+   alone put the two FEET at different heights whenever one build or one foot is shorter (a
+   partner's "not saved" sentence is shorter than a row of chips), so the rules under the two
+   builds did not line up. Each card spans three rows of `.lb-config` and lays its parts on them;
+   `.ds-sheet-grid` steps aside so the build and the foot are rows of their own.
+   ⚠️ NOT A SIZE CONTAINER HERE: `container-type` brings layout containment, and a contained
+   element cannot be a subgrid (its rows computed to `none`, silently). A duo card is never wide
+   enough for the row layout anyway (the board is capped near 1050px), so it gives that up. */
+.lb-config.duo > .ds-sheet {
+  container-type: normal;
+  grid-row: span 3;
+  display: grid;
+  grid-template-rows: subgrid;
+}
+.lb-config.duo .ds-sheet-grid {
+  display: contents;
+}
+.lb-config.duo .ds-sheet-foot {
+  align-self: start;
+}
+.lb-config.duo .ds-sheet-note.empty {
+  grid-row: span 2;
+}
+/* WIDE: three zones in a row behind rules: the build, the chassis numbers, how it was driven.
+   The build is as wide as it needs (capped, so a long BIOBUZZ line wraps rather than starving
+   the others), and the two side zones share what is left, each holding its content in its
+   middle. Letting the BUILD take the slack left one 300px hole after its rows; this spreads it
+   so the rules split the card into even panels. Below 800px of content the build has too little
+   room beside two zones, and the foot goes back under it. */
+@container sheet (min-width: 800px) {
+  .ds-sheet-grid {
+    display: grid;
+    grid-template-columns: fit-content(480px) minmax(max-content, 1fr) minmax(max-content, 1fr);
+    column-gap: var(--ds-s-5);
+  }
+  /* the picture stays BESIDE the rows: the zone is sized to its content, and the body's 220px
+     basis wraps the row at a width wider than that content measures (328px against 364px) */
+  .ds-sheet-top {
+    flex-wrap: nowrap;
+  }
+  .ds-sheet-body {
+    flex: 1 1 auto;
+  }
+  .ds-sheet-foot {
+    display: contents;
+  }
+  .ds-sheet-foot > * {
+    align-self: stretch;
+    padding-left: var(--ds-s-5);
+    border-left: 1px solid var(--ds-line);
+  }
+  .ds-sheet-foot .ds-sheet-chassis {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    justify-content: center;
+    align-content: start;
+    gap: var(--ds-s-4) var(--ds-s-5);
+  }
+  /* one column of chips, as wide as the widest, in the middle of its zone */
+  .ds-sheet-foot .ds-sheet-drive {
+    display: grid;
+    justify-content: center;
+    justify-items: start;
+    align-content: start;
+  }
 }
 .ds-sheet-pic {
   flex: none;

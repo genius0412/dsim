@@ -65,11 +65,48 @@ export function RobotPicture({ spec, game, size }: { spec: RobotSpec; game: Game
   );
 }
 
+/** who drove the robot on a sheet: a duo prints two sheets, and the row above them names both
+ * people without saying whose robot is whose */
+function DriverLine({ driver }: { driver: string }) {
+  return (
+    <div className="ds-sheet-driver">
+      <span className="k">Driven by</span>
+      <span className="n">{driver}</span>
+    </div>
+  );
+}
+
+/** a duo partner's place when the run kept no robot for them: the same card, so the two still pair */
+export function UnsavedSheet({ driver }: { driver: string }) {
+  return (
+    <div className="ds-sheet">
+      <DriverLine driver={driver} />
+      <p className="ds-sheet-note empty">Their robot wasn’t saved for this run.</p>
+    </div>
+  );
+}
+
 /**
- * One robot's full sheet. `assists` is how it was DRIVEN: present for the record's owner, absent
- * for a duo partner, whose assists a record does not store.
+ * One robot's full sheet. `assists` is how it was DRIVEN; absent, the run did not keep it (a duo
+ * partner's, before 0064, when the replay could not say) and the sheet says so in a sentence
+ * rather than leaving the partner's card a row shorter than the driver's. `driver` heads the card.
+ *
+ * THE CARD LAYS ITSELF OUT BY ITS OWN WIDTH (`.ds-sheet` is a size container): narrow, the
+ * chassis numbers and driving settings are a foot under the build; wide, they are a column
+ * beside it. A solo record is one sheet across the whole board, and laid out as a card there it
+ * filled half the width and left the other half empty.
  */
-export function RobotSheet({ spec, game, assists }: { spec: RobotSpec; game: GameId; assists?: AssistConfig }) {
+export function RobotSheet({
+  spec,
+  game,
+  assists,
+  driver,
+}: {
+  spec: RobotSpec;
+  game: GameId;
+  assists?: AssistConfig | null;
+  driver?: string;
+}) {
   // THE PICTURE GETS A COERCED SPEC. A record stores the build it was set with, and a schematic
   // drawn from a spec older than today's fields could throw and take the board down with it. The
   // TEXT reads the stored spec: every resolver `specSheet` calls is safe on a raw one, and the
@@ -84,36 +121,41 @@ export function RobotSheet({ spec, game, assists }: { spec: RobotSpec; game: Gam
   );
   return (
     <div className="ds-sheet">
-      <div className="ds-sheet-top">
-        <div className="ds-sheet-pic" aria-hidden>
-          <RobotPicture spec={drawn} game={game} size={112} />
-        </div>
-        <div className="ds-sheet-body">
-          <div className="ds-sheet-head">
-            <span className="ds-sheet-name">{spec.name || 'Unnamed'}</span>
-            {team ? <span className="ds-sheet-team">{team}</span> : null}
+      {driver ? <DriverLine driver={driver} /> : null}
+      <div className="ds-sheet-grid">
+        <div className="ds-sheet-top">
+          <div className="ds-sheet-pic" aria-hidden>
+            <RobotPicture spec={drawn} game={game} size={112} />
           </div>
-          <SpecList spec={spec} game={game} />
-        </div>
-      </div>
-      {/* the FOOT spans the whole card, picture column included: the numbers and the chips are
-          short items in a row, and beside the picture they wrapped in a two-column board */}
-      <div className="ds-sheet-foot">
-        <div className="ds-sheet-chassis">
-          {stat(DRIVETRAIN_LABELS[spec.drivetrain], 'drivetrain')}
-          {stat(String(spec.massLb), 'lb')}
-          {stat(String(spec.driveRpm), 'rpm')}
-          {stat(`${spec.length}×${spec.width}"`, 'size')}
-        </div>
-        {assists ? (
-          <div className="ds-sheet-drive">
-            {drivingWords(assists, spec, game).map((w) => (
-              <span key={w} className="ds-chip">
-                {w}
-              </span>
-            ))}
+          <div className="ds-sheet-body">
+            <div className="ds-sheet-head">
+              <span className="ds-sheet-name">{spec.name || 'Unnamed'}</span>
+              {team ? <span className="ds-sheet-team">{team}</span> : null}
+            </div>
+            <SpecList spec={spec} game={game} />
           </div>
-        ) : null}
+        </div>
+        {/* the FOOT spans the whole card, picture column included: the numbers and the chips are
+            short items in a row, and beside the picture they wrapped in a two-column board */}
+        <div className="ds-sheet-foot">
+          <div className="ds-sheet-chassis">
+            {stat(DRIVETRAIN_LABELS[spec.drivetrain], 'drivetrain')}
+            {stat(String(spec.massLb), 'lb')}
+            {stat(String(spec.driveRpm), 'rpm')}
+            {stat(`${spec.length}×${spec.width}"`, 'size')}
+          </div>
+          {assists ? (
+            <div className="ds-sheet-drive">
+              {drivingWords(assists, spec, game).map((w) => (
+                <span key={w} className="ds-chip">
+                  {w}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="ds-sheet-note">Driving settings weren’t saved for this run.</p>
+          )}
+        </div>
       </div>
     </div>
   );

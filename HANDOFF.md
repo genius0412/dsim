@@ -1,3 +1,12 @@
+# HANDOFF — 2026-11-01l (Record detail: both duo drivers' settings; a solo sheet that fills the row)
+
+**State: on `alpha`. Server change (migration 0064 + `persistMatch`): needs a `dsim-alpha` deploy, production once on `main`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `dbtest` (1116), `build`, `server:check`, `uiaudit`, `uiindex`, `docaudit` pass.
+
+- **Owner:** field/robot-centric, auto intake and the rest were not shown for the duo partner; a solo record's card sat on one side of the row. "Please, think when you design."
+- **Data:** `RecordConfig.partnerAssists`, written by `persistMatch`. 0064 backfills older duo runs from the replay's `setups`, matching the partner's setup by build, never by position (rules in `docs/area/accounts.md`). Identical builds driven differently stay unknown.
+- **Design:** `RobotSheet` is a size container. Under 800px of content it is the card it was; wider, three zones behind rules (build, chassis numbers, driving settings), the build sized to content and the side zones sharing the rest, content centred. A solo record is one sheet across the board (`.lb-config` is `auto-fit` now; `auto-fill` kept an empty column). A duo is two cards headed "Driven by …", sharing row heights through a subgrid so the rules line up; a run that kept no partner robot gets a card saying so. ⚠️ `container-type` brings layout containment, which silently turns `subgrid` into `none`, so duo cards are not containers.
+- **Checked** in the admin harness (seeds now carry robots, both drivers' settings, an older duo without the partner's, and one without a partner robot): 1280 and 1920 (the board caps near 1050px), 820, 390, both themes, offscreen Electron captures.
+
 # HANDOFF — 2026-11-01k (Duo boards list a pair once; ties share a place; duo season awards)
 
 **State: on `alpha`. Server change, no migration: needs a `dsim-alpha` deploy, and production only once it reaches `main`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `dbtest` (1108), `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass.

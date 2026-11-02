@@ -217,9 +217,9 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
         autoScore: o.split?.[primary.alliance].auto ?? (runLength ? score : undefined),
         teleopScore: o.split?.[primary.alliance].teleop,
         runLength,
-        // each driver brings their OWN robot; a duo stores both so the board can
-        // show both drivetrains (partner absent ⇒ solo run)
-        config: { spec: primarySpec, assists: primary.assists, partnerSpec },
+        // each driver brings their OWN robot and drives it their own way; a duo stores both
+        // builds and both drivers' assists (partner absent ⇒ solo run)
+        config: { spec: primarySpec, assists: primary.assists, partnerSpec, partnerAssists: partner?.assists },
       });
       if (runLength) {
         console.log(`[persist] WROTE auto-only record ${id}: user=${primary.userId} score=${score} dt=${drivetrain} season=${bv}`);
