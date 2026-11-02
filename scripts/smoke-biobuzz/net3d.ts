@@ -1591,9 +1591,11 @@ export function net3dChecks(check: Check): void {
       /this\.clearElementSmoothing\(\);/.test(game) &&
         (game.match(/this\.clearElementSmoothing\(\)/g) ?? []).length >= 2,
     );
+    // (`!riding.has(…)` since 2026-10-12: an element seated in a moving HIVE tray is drawn at the
+    // tray's interpolation clock instead — `trayDraw.ts`)
     check(
       'balls: ...`ground`/`flight` are drawn from it, and a seated `element` only if it LANDED predicted',
-      /const use =\s*!!e && \(kind === 'ground' \|\| kind === 'flight' \|\| \(kind === 'element' && this\.ballPredicted\.has\(ball\.id\)\)\);/.test(game),
+      /const use =\s*!!e &&\s*!riding\.has\(ball\.id\) &&\s*\(kind === 'ground' \|\| kind === 'flight' \|\| \(kind === 'element' && this\.ballPredicted\.has\(ball\.id\)\)\);/.test(game),
     );
     check(
       'balls: nothing about this touches `this.world` (it is cosmetic, like `localSmooth`)',
