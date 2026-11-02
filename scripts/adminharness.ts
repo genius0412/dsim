@@ -317,6 +317,21 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     userId: 'u-annie', mode: 'solo', drivetrain: 'tank', score: 169, balanceVersion: SEASON,
     replayId: null as unknown as string, game: 'decode', config: { spec: graceBot, assists: rc } as never,
   }).catch(() => {});
+  // a BIOBUZZ record with a long build (double turret, deployable ramp), for the record sheet's
+  // widest rows, on the season the board reads
+  {
+    const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+    const { bbCoerceSpec } = await import('../src/games/biobuzz/robotConfig');
+    const spec = bbCoerceSpec({
+      ...BB_PRESETS[0], name: 'Dream', teamName: 'DreamTeam', teamNumber: 66666,
+      bbMech: { launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: 45 }, intake: { kind: 'ramp' }, lift: null },
+    });
+    await repo.submitRecord({
+      userId: 'u-margaret', mode: 'solo', drivetrain: spec.drivetrain, score: 651, balanceVersion: SEASON, physics: '3d',
+      replayId: null as unknown as string, game: 'biobuzz',
+      config: { spec, assists: { fieldCentric: false, aimAssist: false, autoIntake: true, autoFire: false } } as never,
+    }).catch((e: unknown) => console.warn('[harness] biobuzz record seed failed:', e));
+  }
 
   // NOTICES (0057). The OWNER lost a ranked match, filed a misscore claim on it and reported the
   // opponent, so working those three through the console (correct the score from the replay with

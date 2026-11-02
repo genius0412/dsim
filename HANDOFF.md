@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-01m (Record sheet: a wide layout that composes; the record fixes reach production)
+
+**State: on `alpha`. Client only (plus a harness seed), no server change.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `build`, `server:check`, `uiaudit`, `uiindex`, `docaudit` pass.
+
+- **Production, same day:** the duo-pair dedupe, shared tie ranks, duo awards and partner settings (01k, 01l's data half) were ported to `main` as 5099a855 and 62d2446e and DEPLOYED to PRODUCTION from `main` (announce-deploy, 2-minute warning, all 8 machines healthy; Vercel build 62d2446). Production check: every duo row a distinct pair, `rank` on rows, 208/208 duo records with the partner's settings after 0064. `main` jumps 0058 → 0064 (set-based runner, so alpha's 0059–0063 still apply later). NOT ported: alpha's record-detail redesign (it sits on the spec-sheet commit d6008266, which conflicts on main and builds on alpha-only importer work); main got its own per-driver duo blocks instead. Details in main's HANDOFF.
+- **Owner (ultrawide screenshot):** "Spacing is very off. Please make things responsive." The board column is 1034px at every desktop width (`.ds-main` caps at 1080), so it was the sheet: three zones behind full-height rules, two of them a few short items centred, left most of the card empty.
+- **Now (`@container sheet`, from 680px of content):** the sheet is regrouped with grid areas over `display: contents` wrappers: picture down the left, name and team with the chassis numbers on the right of the top row, the build rows two to a line, the driving settings in one line. Under 680 it is the card. 680 is measured: the longest BIOBUZZ value is ~148px, each value column gets ~156 there.
+- ⚠️ **The wide block must come AFTER every base `.ds-sheet-*` rule.** Above `.ds-sheet-body` the body stayed `flex` at equal specificity and the build rows never joined the grid.
+- **Checked** offscreen at 3440, 2560, 1920, 1280, 860, 768, 740 and 390, both themes, DECODE and BIOBUZZ (the harness seeds a BIOBUZZ solo run with a double turret and ramp now). Duo cards (488px) stay cards.
+
 # HANDOFF — 2026-11-01l (Record detail: both duo drivers' settings; a solo sheet that fills the row)
 
 **State: on `alpha`. Server change (migration 0064 + `persistMatch`): needs a `dsim-alpha` deploy, production once on `main`.** `npm test` shared ALL PASS, BIOBUZZ only the known `balls: … LANDED predicted`; `dbtest` (1116), `build`, `server:check`, `uiaudit`, `uiindex`, `docaudit` pass.

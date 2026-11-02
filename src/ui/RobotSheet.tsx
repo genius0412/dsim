@@ -92,9 +92,10 @@ export function UnsavedSheet({ driver }: { driver: string }) {
  * rather than leaving the partner's card a row shorter than the driver's. `driver` heads the card.
  *
  * THE CARD LAYS ITSELF OUT BY ITS OWN WIDTH (`.ds-sheet` is a size container): narrow, the
- * chassis numbers and driving settings are a foot under the build; wide, they are a column
- * beside it. A solo record is one sheet across the whole board, and laid out as a card there it
- * filled half the width and left the other half empty.
+ * chassis numbers and driving settings are a foot under the build; wide, the chassis numbers sit
+ * beside the name, the build rows two to a line, the settings in one line under them. A solo
+ * record is one sheet across the whole board, and laid out as a card there it filled half the
+ * width and left the other half empty.
  */
 export function RobotSheet({
   spec,

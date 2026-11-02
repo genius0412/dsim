@@ -3382,8 +3382,8 @@ tr.lb-detail td {
 /* ---- a robot's spec sheet (`RobotSheet`, `SpecList`) -----------------------------------
    Who drove it (a duo's), picture, name, one row per job the robot does, then the chassis numbers
    and how it was driven. The picture column wraps above the body on a narrow screen rather than
-   squeezing the rows. The sheet is a SIZE CONTAINER and lays itself out by its own width: a foot
-   under the build when narrow, a column beside it when wide (the `@container sheet` block). */
+   squeezing the rows. The sheet is a SIZE CONTAINER and lays itself out by its own width: a card
+   when narrow, regrouped across the row when wide (the `@container sheet` block). */
 .ds-sheet {
   container: sheet / inline-size;
   display: flex;
@@ -3469,49 +3469,6 @@ tr.lb-detail td {
 }
 .lb-config.duo .ds-sheet-note.empty {
   grid-row: span 2;
-}
-/* WIDE: three zones in a row behind rules: the build, the chassis numbers, how it was driven.
-   The build is as wide as it needs (capped, so a long BIOBUZZ line wraps rather than starving
-   the others), and the two side zones share what is left, each holding its content in its
-   middle. Letting the BUILD take the slack left one 300px hole after its rows; this spreads it
-   so the rules split the card into even panels. Below 800px of content the build has too little
-   room beside two zones, and the foot goes back under it. */
-@container sheet (min-width: 800px) {
-  .ds-sheet-grid {
-    display: grid;
-    grid-template-columns: fit-content(480px) minmax(max-content, 1fr) minmax(max-content, 1fr);
-    column-gap: var(--ds-s-5);
-  }
-  /* the picture stays BESIDE the rows: the zone is sized to its content, and the body's 220px
-     basis wraps the row at a width wider than that content measures (328px against 364px) */
-  .ds-sheet-top {
-    flex-wrap: nowrap;
-  }
-  .ds-sheet-body {
-    flex: 1 1 auto;
-  }
-  .ds-sheet-foot {
-    display: contents;
-  }
-  .ds-sheet-foot > * {
-    align-self: stretch;
-    padding-left: var(--ds-s-5);
-    border-left: 1px solid var(--ds-line);
-  }
-  .ds-sheet-foot .ds-sheet-chassis {
-    display: grid;
-    grid-template-columns: repeat(2, max-content);
-    justify-content: center;
-    align-content: start;
-    gap: var(--ds-s-4) var(--ds-s-5);
-  }
-  /* one column of chips, as wide as the widest, in the middle of its zone */
-  .ds-sheet-foot .ds-sheet-drive {
-    display: grid;
-    justify-content: center;
-    justify-items: start;
-    align-content: start;
-  }
 }
 .ds-sheet-pic {
   flex: none;
@@ -3620,6 +3577,65 @@ tr.lb-detail td {
   display: flex;
   flex-wrap: wrap;
   gap: var(--ds-s-2);
+}
+
+/* WIDE: one robot across a whole board row (a solo record at desktop width), regrouped rather
+   than spread. Name and team on the left of the top row and the chassis numbers on its right; the
+   build rows two to a line under a rule; the driving settings in one line under another; the
+   picture down the left. Every part keeps its natural width, so nothing floats in a zone too wide
+   for it: three zones side by side (build, numbers, settings, each full height behind a rule) left
+   most of the card empty, because two of the three hold a few short items (owner, 2026-11-01:
+   "spacing is very off"). The parts are regrouped with grid areas on `display: contents`
+   wrappers, so the narrow card's markup and reading order stay as they are. From 680px of content
+   two build rows fit side by side (measured: the longest BIOBUZZ value, "POLLEN right · NECTAR
+   left", is ~148px and each value column gets ~156 there), so a tablet takes this layout too;
+   below it the card is the narrow one.
+   ⚠️ IT COMES AFTER EVERY BASE `.ds-sheet-*` RULE: it overrides them at the same specificity, and
+   above `.ds-sheet-body` the body stayed `flex`, so the build rows never joined this grid. */
+@container sheet (min-width: 680px) {
+  .ds-sheet-grid {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'pic head chassis'
+      'pic specs specs'
+      'pic drive drive';
+    align-items: start;
+    gap: var(--ds-s-4) var(--ds-s-5);
+  }
+  .ds-sheet-top,
+  .ds-sheet-body,
+  .ds-sheet-foot {
+    display: contents;
+  }
+  .ds-sheet-pic {
+    grid-area: pic;
+  }
+  .ds-sheet-head {
+    grid-area: head;
+  }
+  .ds-sheet-foot .ds-sheet-chassis {
+    grid-area: chassis;
+    column-gap: var(--ds-s-6);
+  }
+  .ds-sheet-body .ds-specs {
+    grid-area: specs;
+    padding-top: var(--ds-s-4);
+    border-top: 1px solid var(--ds-line);
+    /* two rows to a line: label, value, label, value */
+    grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+    row-gap: var(--ds-s-3);
+  }
+  /* the second pair on a line starts a column of its own, not a value's continuation */
+  .ds-sheet-body .ds-spec:nth-child(even) > dt {
+    padding-left: var(--ds-s-4);
+  }
+  .ds-sheet-foot .ds-sheet-drive,
+  .ds-sheet-foot .ds-sheet-note {
+    grid-area: drive;
+    padding-top: var(--ds-s-4);
+    border-top: 1px solid var(--ds-line);
+  }
 }
 
 /* ---- states ---------------------------------------------------------- */
