@@ -3103,7 +3103,8 @@ re-simulates the match it was (golden `'biobuzz 2v2 (2d) @ patch 12'`, fixed `PI
 | G408 CONTROL | held (hopper) only | held, herded, chained, or on/under the frame: `controlledArtifacts` with an `ids` out-set, plus `bbAboard` in 3D | TU07 G408, QA34 |
 | G408 STRATEGIC | the 2nd instance | also the 1st, if held past MOMENTARY (`BB_MOMENTARY_S`) or if the NECTAR scores for the controlling alliance (its GARDEN or HIVE) while controlled or within 3 s after | §10.6, QA4, TU06 |
 | G408 instance | one edge per robot × element | drop and re-take within `BB_CONTROL_REARM_S` (1 s) is ONE instance | §10.6 MOMENTARY |
-| G408 forced | billed | an opponent driving the NECTAR into you (`bbForcedInto`) is excused while momentary | G204 |
+| G408 forced | billed | an opponent within a NECTAR's width driving at you (`BB_G204_SHOVE_STICK`) while you are NOT driving toward the element (`BB_G204_OWN_STICK`) is excused while momentary (`bbForcedInto`) | G204 |
+| mouth carve-out | any element at a running mouth was "on its way in" | only one this intake can take (`ControlGeometry.takes`: `bbIntakeAccepts` and the bar) | herding |
 | G407 STRATEGIC | MAJOR | MAJOR + YELLOW CARD per MATCH (`awardCard`, latch `g407card`); the MAJOR still bills per instance | Table 10-4, owner 2026-09-22 |
 | G407 REPEATED | — | the 3rd 5+ instance this match is STRATEGIC however short (`BB_G407_REPEAT_N`); instances re-arm on `pen.episodes['g407-<id>']`, 1 s | QA23 |
 | G407 count, 3D | an element resting on the frame was not counted | `bbAboard`: centre inside the chassis in plan, moving with the robot (≤ `BB_ABOARD_SLIP` 12 in/s relative), for `POSSESSION_CONFIRM` | QA34 |
@@ -3121,15 +3122,54 @@ re-simulates the match it was (golden `'biobuzz 2v2 (2d) @ patch 12'`, fixed `PI
 - **Verification**: the CONTROL lane (`scripts/smoke-biobuzz/control.ts`), one incidental and one
   strategic check per change, 2D and 3D.
 
-**OPEN, the owner's call:** Table 10-4 says "MAJOR FOUL and YELLOW CARD per MATCH". The sim bills
-the MAJOR per instance (the 2026-09-22 ruling above) and the card once per match. A literal
-reading is one MAJOR per match too.
+⚠️ **G204 IS ABOUT THE NECTAR, NOT THE SHOVER** (review, 2026-11-02). The excuse first read "an
+opponent drives at you and you are not driving back at it", which a robot FLEEING satisfies: driving
+away from a defender straight onto the opponent's NECTAR was excused, held or herded. G204 wants "a
+deliberate act with limited or no opportunity for the team being acted on to avoid the penalty". It
+now reads the robot's drive toward the ELEMENT — a loose one's position, a held one's capture point
+(`pos` is left where the intake took it). Checks: shoved in (excused), fleeing onto it (warns),
+shoved from behind onto it while not driving (excused), herding it while chased (warns).
 
-**OPEN, the owner's call: the AI.** Bot 2v2 matches on the same seeds, live against a world stamped 12
-(`playBotMatch`'s `patch`): a RED voided an alliance's score in 9 of 60 alliance-matches, against 0.
-Each is one bot's second yellow, G408 and G407 together. The AI never aims at the opponent's NECTAR
-but its intake takes it, and it fills to five. Teaching it to stay at four and drop the opponent's
-NECTAR is the follow-up; until then a human's AI partner can void the human's alliance.
+⚠️ **A POLLEN-ONLY INTAKE COULD HERD THE OPPONENT'S NECTAR FOR FREE** (review, 2026-11-02). The
+intake-mouth carve-out excused any element at a running mouth for its acquire window, including a
+NECTAR the rollers can never take. Measured: the opponent's NECTAR pushed 70 in up the field with
+the rollers on drew nothing, and the same push with them off drew the warning. It also let five
+NECTAR at a POLLEN-only mouth count as four. `ControlGeometry.takes` (shared, optional, absent in
+DECODE and Chain Reaction) narrows the carve-out to what the intake will take; BIOBUZZ sets it from
+`SIM_PATCH` 13.
+
+**G407's MAJOR stays per instance.** TU07's Table 10-6 expands the G407 row ("VERBAL WARNING. MAJOR
+FOUL and YELLOW CARD per MATCH, if STRATEGIC") without capping the MAJOR; the cap ("Only 1 MAJOR FOUL
+... in a single MATCH") belongs to a different row, "MAJOR FOUL per MATCH". With §10.6's "Unless
+otherwise noted, all penalties are assigned for each instance", per instance is the reading, and it
+is the owner's 2026-09-22 ruling. Manual text re-read 2026-11-02 from the TU07 HTML manual; the Q&A
+answers cited above (QA4, QA23, QA34) sit behind a coach login and were not re-read.
+
+**THE AI: `controlGuard` (`ai/policy.ts`).** Before it, bot 2v2 matches under these rules voided an
+alliance's score with a RED in 10 of 48 2D alliance-matches (8 seeds a tier); every red was a bot's
+second yellow. 211 G408 instances came from bots swallowing the opponent's NECTAR (POLLEN + NECTAR
+intakes) or pushing it (POLLEN-only intakes), and most G407 instances from ploughing a pile with room
+for one. On every command, for each loose element it must not CONTROL — the opponent's NECTAR, and
+the whole pile when hopper + pile would make five — the bot closes on it at no more than
+`BB_AI_HERD_SAFE` × `POSSESSION_HERD_SPEED` (the herd test never acquires below that), sliding the
+rest of its speed round it, and an opponent NECTAR within `BB_AI_MOUTH_GUARD` of a mouth that would
+take it stops the rollers. Measured after (`scratch` card bench, `npm run bench:ai`'s seats):
+
+| | voided alliance-matches | card events | points without fouls (easy/medium/hard) |
+|---|---|---|---|
+| 2D, old AI, patch 12 rules (seeds 1–16) | 0/96 | 51 | 196 / 291 / 352 |
+| 2D, old AI, patch 13 (seeds 1–16) | 20/96 | 120 | 196 / 291 / 352 |
+| 2D, guarded AI, patch 13 (seeds 1–16) | 0/96 | 4 | 181 / 270 / 308 |
+| 2D, guarded AI, patch 13 (seeds 17–48) | 0/192 | 20 | 178 / 268 / 319 |
+| 3D, old AI, patch 13 (seeds 1–8) | 2/48 | 45 | 144 / 261 / 300 |
+| 3D, guarded AI, patch 13 (seeds 1–8) | 0/48 | 5 | 132 / 220 / 261 |
+
+The guard COSTS scoring — about 7–13% of points in 2D and 8–16% in 3D, most of it the pile rule and
+the stopped rollers. Cheaper settings were measured (a 2–3 in look-ahead, a 1 in mouth margin,
+counting only touching elements toward the pile) and each brought reds back at about 1–4 per 100
+alliance-matches; the owner's worry was a bot voiding a human partner, so the strict setting
+stands. Net of fouls the guarded AI still scores more than the old AI under these rules (2D medium:
+270 against 225). Replays are untouched: a recording carries every bot's commands.
 
 **Not done:** issue #42 item 9 (the 2D solve at `play.ts` lets an element sit inside a frame); the
 control test already uses each element's own radius, so the fix is in the physics, not here.

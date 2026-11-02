@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
 import type { BotSeat } from '../../types';
-import { SIM_DT, TELEOP_DURATION, TRANSITION_DURATION } from '../../../config';
+import { POSSESSION_HERD_SPEED, SIM_DT, TELEOP_DURATION, TRANSITION_DURATION } from '../../../config';
 import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../../math';
 import { localizeCommand } from '../../../net/protocol';
 import { driveParams } from '../../../sim/drivetrain';
@@ -29,7 +29,7 @@ import {
 import { hiveCellTarget } from '../elements';
 import { bbElementRadius, flowerFits, flowerScore, type BbElementKind } from '../flower';
 import { hiveLoad, hiveTakingSide, otherSide } from '../hive';
-import { bbAutoSorts, bbCarriesNectar, bbIntakeWants, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
+import { bbAutoSorts, bbCarriesNectar, bbIntakeAccepts, bbIntakeWants, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
 import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, MOUNT_DIR, bbIntakeEdges, bbIntakeMountOf } from '../mounts';
 import { bbAimTarget, bbCellSideOf, bbFixedBand, bbFlightEnters } from '../play';
 import {
@@ -41,6 +41,7 @@ import {
   bbTurretSolution,
   mouthAxes,
 } from '../robot';
+import { BB_CONTROL_LIMIT } from '../penalties';
 import { bbKindIndex, bbParkedNow } from '../score';
 import { bbOwnSide } from '../start';
 import { biobuzzPhysics, type BbCellSide, type BiobuzzState, type ScoreTarget } from '../state';
@@ -57,6 +58,10 @@ import {
   BB_AI_PLACE_S,
   BB_AI_TIP_PRIOR_S,
   BB_AI_ROLL_LEAD,
+  BB_AI_HERD_LEAD,
+  BB_AI_HERD_LOOK,
+  BB_AI_HERD_SAFE,
+  BB_AI_MOUTH_GUARD,
   BB_AI_ROLL_V,
   BB_AI_ROLL_VZ,
   BB_AI_STAND_COOLDOWN,
@@ -1523,15 +1528,16 @@ function command(c: Ctx, dir: Vec2, speed: number, turn: number, buttons: BbAiBu
    * second it is held is CONTROL (G408), and it takes a slot a POLLEN should have.
    */
   const reject = !bbAutoSorts(r.spec) && r.hopper.some((h) => (h === 'red' || h === 'blue') && h !== r.alliance);
+  const guard = controlGuard(c, rot({ x: dir.x * speed, y: dir.y * speed }, -r.heading), dp.maxSpeed);
   const base = {
-    intake: buttons.intake && !reject,
+    intake: buttons.intake && !reject && !guard.intakeOff,
     ...(reject ? { bbReverse: true } : {}),
     fire: buttons.fire,
     bbPlace: buttons.place,
     bbPlaceNectar: buttons.placeNectar,
     bbNectar: buttons.nectar,
   };
-  const robotVec = rot({ x: dir.x * speed, y: dir.y * speed }, -r.heading);
+  const robotVec = guard.vec;
   if (dp.saturation === 'tank') {
     const room = 1 - Math.abs(turn);
     const f = clamp(robotVec.x, -room, room);
@@ -1556,6 +1562,112 @@ function command(c: Ctx, dir: Vec2, speed: number, turn: number, buttons: BbAiBu
     rightDrive: 0,
     ...base,
   });
+}
+
+/**
+ * THE CONTROL GUARD — G407 and G408 from the bot's side, on every command it sends.
+ *
+ * The policy never TARGETS the opponent's NECTAR (`bbIntakeWants`), but a bot drives through the
+ * field, and from `SIM_PATCH` 13 everything it does on the way counts: a POLLEN + NECTAR intake
+ * swallows the opponent's NECTAR it rolls over (a G408 instance, and the second is a YELLOW CARD),
+ * a POLLEN-only one pushes it up the field (herded: the same), and a full hopper that ploughs one
+ * more element is five (G407, and the third instance is a MAJOR and a card) — as is a bot with
+ * room for one ploughing a pile at speed. Two cards are a RED and a voided alliance score:
+ * measured over 24 2D bot matches before this guard (8 seeds a tier), a red voided an alliance in
+ * 10 of 48.
+ *
+ * So, for every loose element the bot must not CONTROL (which ones: `pile`, below):
+ *   · THE FACE CLOSES SLOWLY. The herd test only acquires an element pushed at
+ *     `POSSESSION_HERD_SPEED` or faster, so the commanded velocity toward one inside the look-ahead
+ *     is capped at `BB_AI_HERD_SAFE` of it, and what is taken off is handed to the perpendicular,
+ *     so a holonomic bot slides round the element instead of stopping at it. A tank cannot slide;
+ *     it only slows, and a slow push is bulldozing, not CONTROL.
+ *   · THE ROLLERS STOP. An opponent NECTAR within `BB_AI_MOUTH_GUARD` of a mouth that would take it
+ *     turns the intake off for this decision.
+ *
+ * In the ROBOT frame and in stick units, like `command` itself; `maxSpeed` turns in/s into stick.
+ */
+function controlGuard(c: Ctx, vec: Vec2, maxSpeed: number): { vec: Vec2; intakeOff: boolean } {
+  const { r } = c;
+  const opp: Alliance = c.a === 'red' ? 'blue' : 'red';
+  const hop = r.hopper.length;
+  const swallows = bbIntakeAccepts(r.spec, c.a, opp, true);
+  const ch = dcos(r.heading);
+  const sh = dsin(r.heading);
+  const safe = (BB_AI_HERD_SAFE * POSSESSION_HERD_SPEED) / Math.max(1, maxSpeed);
+  // the chassis velocity in the robot frame (in/s)
+  const vlx = r.vel.x * ch + r.vel.y * sh;
+  const vly = -r.vel.x * sh + r.vel.y * ch;
+  let intakeOff = false;
+  let mouths: ReturnType<typeof bbMouths> | null = null;
+  // PASS 1 — every loose element inside the look-ahead that this command closes on (or is already
+  // touching), with the face it would be pushed by
+  const near: { opp: boolean; lx: number; ly: number; ux: number; uy: number }[] = [];
+  for (const b of c.world.balls) {
+    if (b.state.kind !== 'ground' && (b.state.kind !== 'flight' || b.z > BB3_INTAKE_Z)) continue;
+    const dx = b.pos.x - r.pos.x;
+    const dy = b.pos.y - r.pos.y;
+    if (Math.abs(dx) > c.fp.circ + 40 || Math.abs(dy) > c.fp.circ + 40) continue;
+    const lx = dx * ch + dy * sh;
+    const ly = -dx * sh + dy * ch;
+    const rb = b.r ?? BB_POLLEN_R;
+    const isOpp = b.color === opp;
+    if (isOpp && swallows && !intakeOff) {
+      mouths ??= bbMouths(r.spec);
+      const m = BB_AI_MOUTH_GUARD + rb;
+      intakeOff = mouths.some((q) => lx >= q.x0 - m && lx <= q.x1 + m && ly >= q.y0 - m && ly <= q.y1 + m);
+    }
+    // from the nearest point of the footprint to the element — or, for one INSIDE the footprint
+    // box (the mouth is: the sweeper's reach is part of the box), out through the nearest face.
+    // Skipping those skipped exactly the element a bot was pushing in its mouth.
+    const nx = lx - clamp(lx, -c.fp.rear, c.fp.front);
+    const ny = ly - clamp(ly, -c.fp.half, c.fp.half);
+    let nd = hyp(nx, ny);
+    let ux: number;
+    let uy: number;
+    if (nd > 1e-6) {
+      ux = nx / nd;
+      uy = ny / nd;
+    } else {
+      nd = 0;
+      const depth = [c.fp.front - lx, lx + c.fp.rear, c.fp.half - ly, ly + c.fp.half];
+      const k = depth.indexOf(Math.min(...depth));
+      ux = k === 0 ? 1 : k === 1 ? -1 : 0;
+      uy = k === 2 ? 1 : k === 3 ? -1 : 0;
+    }
+    const gap = nd - rb;
+    if (gap > BB_AI_HERD_LOOK + Math.max(0, vlx * ux + vly * uy) * BB_AI_HERD_LEAD) continue;
+    if (vec.x * ux + vec.y * uy <= 0 && gap > 1) continue;
+    near.push({ opp: isOpp, lx, ly, ux, uy });
+  }
+  /**
+   * WHICH OF THEM IT MAY NOT PUSH: the opponent's NECTAR always; and every one of them when the
+   * hopper plus the pile would make FIVE — the rollers take one at a time (the herd test's mouth
+   * carve-out excuses one, and only while there is room), and the rest of a pile ploughed at
+   * speed is herded. Measured, that was most of what G407 was left billing the bots once the
+   * opponent's NECTAR was guarded: a bot with room for two driving fast into a pile of seven.
+   */
+  const room = Math.max(0, c.cap - hop);
+  const pile = hop + near.length - Math.min(1, room) > BB_CONTROL_LIMIT;
+  // PASS 2 — close slowly on each, sliding round it
+  let v = { x: vec.x, y: vec.y };
+  for (const e of near) {
+    if (!e.opp && !pile) continue;
+    const along = v.x * e.ux + v.y * e.uy;
+    if (along <= safe) continue;
+    const speed = hyp(v.x, v.y);
+    // the perpendicular, on the side the command already leans to, else away from the element
+    let px = -e.uy;
+    let py = e.ux;
+    const lean = v.x * px + v.y * py;
+    const side = Math.abs(lean) > 0.05 * speed ? Math.sign(lean) : -Math.sign(e.lx * px + e.ly * py) || 1;
+    px *= side;
+    py *= side;
+    const kept = { x: v.x - e.ux * (along - safe), y: v.y - e.uy * (along - safe) };
+    const slide = Math.sqrt(Math.max(0, speed * speed - (kept.x * kept.x + kept.y * kept.y)));
+    v = { x: kept.x + px * slide, y: kept.y + py * slide };
+  }
+  return { vec: v, intakeOff };
 }
 
 function nearWall(p: Vec2): boolean {

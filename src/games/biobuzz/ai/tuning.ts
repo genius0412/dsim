@@ -93,6 +93,18 @@ export const BB_AI_TOUR_MARGIN = 3;
 /** the prior on a bot's own TIP rate — one TIP per this many seconds (`tipRate`) */
 export const BB_AI_TIP_PRIOR_S = 12;
 
+/**
+ * THE CONTROL GUARD (`controlGuard`, `SIM_PATCH` 13's G407/G408). How fast a bot's face may close
+ * on an element it must not CONTROL, as a fraction of the herd test's `POSSESSION_HERD_SPEED`;
+ * how far ahead of the frame it starts to care (in, plus `LEAD` seconds of its own closing
+ * speed, so a fast bot brakes early enough between two 100-ms decisions); and how far around an
+ * intake mouth an opponent NECTAR turns a POLLEN + NECTAR intake off (in).
+ */
+export const BB_AI_HERD_SAFE = 0.6;
+export const BB_AI_HERD_LOOK = 6;
+export const BB_AI_HERD_LEAD = 0.25;
+export const BB_AI_MOUTH_GUARD = 4;
+
 /** ROLLING ELEMENTS (3D, `candidates`): a low `flight` element slower than `V` (in/s) in plan and
  * `VZ` vertically is collectable, aimed `LEAD` seconds ahead along its roll */
 export const BB_AI_ROLL_V = 60;
