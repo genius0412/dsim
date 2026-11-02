@@ -548,6 +548,8 @@ export class GameController {
   private disposed = false;
   private prevPhase: MatchPhase;
   private warningPlayed = false;
+  /** `GameModule.teleopChimes` marks already played this match */
+  private chimesPlayed = new Set<number>();
   /** performance.now() ms when the match entered phase 'post' — WALL time, used only to give up
    * on a final score that never arrives (`resultLost`); null until the match ends */
   private matchOverAt: number | null = null;
@@ -1748,6 +1750,15 @@ export class GameController {
       this.warningPlayed = true;
       this.audio.play('warning');
     }
+    // the season's own CHIMES (`GameModule.teleopChimes`), each once a match, the warning's way
+    if (phase === 'teleop') {
+      for (const at of this.mod.teleopChimes ?? []) {
+        if (this.chimesPlayed.has(at) || this.world.match.phaseTimeLeft > at) continue;
+        this.chimesPlayed.add(at);
+        // a match joined or scrubbed in well past the mark plays nothing: the cue is the moment
+        if (at - this.world.match.phaseTimeLeft < 1) this.audio.sfxChime();
+      }
+    }
     // announcer during the transition, like a real event:
     // "Drivers, pick up your controllers" ... "3, 2, 1" -> firebell
     if (phase === 'transition') {
@@ -2244,6 +2255,7 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.acc = 0;
     this.warningPlayed = false;
+    this.chimesPlayed.clear();
     this.matchOverAt = null;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -3492,6 +3504,7 @@ export class GameController {
     this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
+    this.chimesPlayed.clear();
     this.matchOverAt = null;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -3626,6 +3639,7 @@ export class GameController {
     this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
+    this.chimesPlayed.clear();
     this.matchOverAt = null;
     this.settle = newSettleClock();
     this.settleDone = false;

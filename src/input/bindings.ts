@@ -24,6 +24,8 @@ export type KeyAction =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'bbReverse'
+  | 'bbBar'
   | 'viewToggle'
   | 'cameraCycle'
   | 'eyeUp'
@@ -55,6 +57,8 @@ export type PadAction =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'bbReverse'
+  | 'bbBar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -245,7 +249,9 @@ export interface ControlBindings {
 //   fling    → `src/games/chain/play.ts` (the catapult throw)
 //   bbPlace / bbPlaceNectar → `src/games/biobuzz/play.ts` + `sim3d/elements3d.ts`
 //   bbNectar → `src/games/biobuzz/play.ts` (`bbHumanPlayerTick`, shared by the 2D and 3D paths)
-//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake archetype only)
+//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake; a `bar` sorter's bar before `SIM_PATCH` 11)
+//   bbBar → `src/games/biobuzz/nectarReject.ts` (`bbBarStep`: a `bar` sorter's bar, or a ramp held at bar height)
+//   bbReverse → `src/games/biobuzz/nectarReject.ts` (`bbSorterTick`, both pipelines)
 //   intake / fire → all three, through three unrelated sites each
 //   flyPreset → `src/sim/flywheel.ts` (`flyStep`), DECODE's presets wheel. BIOBUZZ's fixed launcher
 //               runs ONE setpoint (`coerceBiobuzzSpec` folds presets), so it never reads the bit
@@ -274,6 +280,8 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbNectar: ['biobuzz'],
   bbRamp: ['biobuzz'],
   bbPass: ['biobuzz'],
+  bbReverse: ['biobuzz'],
+  bbBar: ['biobuzz'],
   viewToggle: ['biobuzz'],
   cameraCycle: ['biobuzz'],
   eyeUp: ['biobuzz'],
@@ -396,6 +404,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbNectar',
   'bbRamp',
   'bbPass',
+  'bbReverse',
+  'bbBar',
   'viewToggle',
   'cameraCycle',
   'eyeUp',
@@ -418,6 +428,8 @@ export const PAD_ACTIONS: PadAction[] = [
   'bbNectar',
   'bbRamp',
   'bbPass',
+  'bbReverse',
+  'bbBar',
   'driveMode',
   'flipFront',
   'park',
@@ -504,6 +516,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // BIOBUZZ: PASS to your partner — launch the held element at a field POINT rather than at
     // your own hive. Shares 'v' with Chain Reaction's catapult throw; see the role table above.
     bbPass: ['v'],
+    // BIOBUZZ: run the intake BACKWARDS while held (spit out what it took — the opponent's NECTAR,
+    // usually). ';', on the home row two keys from Intake's K. Every free letter is spoken for:
+    // g, h, j, u and y are the smoke lane's "assumed free" keys and m is the ramp's fallback.
+    bbReverse: [';'],
+    // BIOBUZZ: drop / lift the NECTAR bar, or hold a ramp at bar height. The apostrophe, beside
+    // Reverse: the two keys a driver uses on the opponent's NECTAR sit together.
+    bbBar: ["'"],
     // THE VIEW KEYS (`VIEW_ACTIONS`). T flips 2D and 3D, and I / O raise and lower the eye —
     // the keys they always had. The CAMERA moved off C, which is Place POLLEN, onto L: next to
     // I and O, and free in every game. Not U: the bindings smoke lane uses it as a free key.
@@ -521,8 +540,17 @@ export const DEFAULT_BINDINGS: ControlBindings = {
   pad: {
     driveStick: 'left',
     buttons: {
-      fire: [7, 0], // RT or A
-      intake: [6, 1], // LT or B
+      // RT. A was a second Shoot until 2026-11-01, there only for a player who turns with the
+      // triggers (`turnWith`, which pauses RT). The owner dropped both duplicates: A is unbound
+      // now, and a saved map still on the old RT + A moves too (`mergeBindings`).
+      fire: [7],
+      // LT. B was a second Intake until 2026-11-01 and is BIOBUZZ's NECTAR bar now (owner's pick:
+      // it was the softest button on the map). A saved map still on the old LT + B moves too
+      // (`mergeBindings`). The cost of dropping both duplicates: a map that turns with the triggers
+      // (`turnWith`) has LT and RT paused and no pad Shoot or Intake until the player binds them,
+      // in every game; Controls strikes the paused triggers. A map that already turned with the
+      // triggers keeps A and B.
+      intake: [6],
       // R3 — the MODE TOGGLE role, shared with BIOBUZZ's Deploy ramp (no game has both). D-DOWN
       // stays unbound on purpose (see Deploy ramp below).
       flyPreset: [11],
@@ -559,6 +587,15 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // and `mergeBindings` will not stack it on a button such a map already uses.
       bbRamp: [11],
       bbPass: [10], // L3 — shared with `fling`
+      // D-DOWN — run the intake backwards: "back it out". The last free standard button (D-RIGHT
+      // is the in-match menu, `PAD_MENU_BUTTON`). It was the ramp's until 2026-09-26, moved after
+      // players said a press "restarted their run"; that was a TOGGLE, and a reverse is HELD and
+      // undoes nothing when it is pressed by mistake.
+      bbReverse: [13],
+      // B. Every other standard button carries a BIOBUZZ bind; B was only Intake's second copy
+      // (LT is Intake), so Intake gave it up (owner, 2026-11-01). A saved map on the old LT + B
+      // moves too; one that put B on Intake any other way keeps it (`mergeBindings`).
+      bbBar: [1],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X
@@ -589,6 +626,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
  */
 const FRESH_FALLBACK_KEYS: Partial<Record<KeyAction, readonly string[]>> = {
   bbRamp: ['g', 'm'],
+  bbBar: ['[', ']'],
   // DECODE's preset step, when a stored map already has Z on a DECODE action
   flyPreset: ['1'],
 };
@@ -815,6 +853,37 @@ export function mergeBindings(saved: unknown): ControlBindings {
       out.pad.combos[a] = out.pad.combos[a].slice(0, Math.max(0, out.pad.combos[a].length - over));
       out.pad.buttons[a] = out.pad.buttons[a].slice(0, BIND_SLOTS_MAX - out.pad.combos[a].length);
     }
+  }
+  /* ⚠️ INTAKE'S OLD DEFAULT, LT + B (2026-11-01). B is NECTAR bar's default now and Intake is LT
+     alone. A stored Intake of exactly [LT, B] is the old default rather than a choice, the same
+     reading the ramp's key repair above makes of Place POLLEN on exactly Z. Left alone it held B,
+     so the bar loaded with no pad button, and Reset BIOBUZZ could not give it B either: a season
+     reset never moves main's Intake (owner: "resetting biobuzz controls does NOT make nectar bar
+     b"). So Intake drops B and the bar takes it, unless the bar has a pad bind of its own, or the
+     player turns with the triggers, where LT is paused and B is their only pad Intake. */
+  if (
+    out.pad.turnWith !== 'triggers' &&
+    out.pad.buttons.intake.length === 2 &&
+    out.pad.buttons.intake[0] === 6 &&
+    out.pad.buttons.intake[1] === 1 &&
+    out.pad.combos.intake.length === 0 &&
+    (freshPad.includes('bbBar') || (out.pad.buttons.bbBar.length === 0 && out.pad.combos.bbBar.length === 0))
+  ) {
+    out.pad.buttons.intake = [6];
+    out.pad.buttons.bbBar = [...DEFAULT_BINDINGS.pad.buttons.bbBar];
+    // still subject to the new-action rule below, so B is not stacked on anything else that has it
+    if (!freshPad.includes('bbBar')) freshPad.push('bbBar');
+  }
+  // ...and SHOOT'S OLD DEFAULT, RT + A, the same day and the same reading (owner: "why even have
+  // the duplicate controls?"). A goes unbound. Again not while the triggers turn: A is their Shoot.
+  if (
+    out.pad.turnWith !== 'triggers' &&
+    out.pad.buttons.fire.length === 2 &&
+    out.pad.buttons.fire[0] === 7 &&
+    out.pad.buttons.fire[1] === 0 &&
+    out.pad.combos.fire.length === 0
+  ) {
+    out.pad.buttons.fire = [7];
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;

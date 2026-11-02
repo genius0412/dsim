@@ -7,7 +7,7 @@ import type { ShellNav } from './AppShell';
  * the top bar's title lookup. (The left rail that also read it is gone: home is the only hub.) */
 export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string; hint: string }> = [
   { id: 'play', label: 'Play', hint: 'Robot, setup & matches' },
-  { id: 'configure', label: 'Configure', hint: 'Controls, audio & network' },
+  { id: 'configure', label: 'Configure', hint: 'Robot, controls & settings' },
   { id: 'records', label: 'Records', hint: 'Leaderboard & career' },
   { id: 'profile', label: 'Profile', hint: 'Appearance & account' },
 ];

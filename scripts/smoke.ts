@@ -47,6 +47,7 @@ import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../sr
 import { startPollLoop } from '../src/ui/pollLoop';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone, updateRobot, wheelLocals } from '../src/sim/robot';
+import { autoFireOn, autoIntakeOn } from '../src/sim/assists';
 import { drawWheels as drawWheelsDecode } from '../src/render/drawRobot';
 import { drawWheels as drawWheelsBiobuzz } from '../src/games/biobuzz/parts';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
@@ -236,6 +237,9 @@ import {
 } from '../src/storageKeys';
 import { analyticsAllowed, setAnalyticsAllowed } from '../src/analyticsPref';
 import { normalizePath, refHost, screenBucket, utmOf } from '../src/pageviews';
+import { customSpan, fillSeries, isPartial, presetSpan, reportPeriods, spanLabel } from '../src/ui/adminAnalyticsTime';
+import { PdfDoc, textWidth, wrapText } from '../src/ui/pdfWriter';
+import { sponsorReportPdf } from '../src/ui/AdminSponsorPdf';
 import type { RobotSetup } from '../src/sim/spawn';
 import {
   DEFAULT_BINDINGS,
@@ -6592,7 +6596,8 @@ function queueTenth(w: World): void {
   // a returning player finding the new button on the map and finding nothing there. The stored
   // binds sit on a key and a button NO default uses, because a missing action whose default the
   // blob holds elsewhere is meant to lose it (the new-action rule, checked in the ramp block).
-  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [13] } } });
+  // (16, the guide button: since 2026-10-24 every standard button 0..15 has a default)
+  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [16] } } });
   const dropped = [
     ...KEY_ACTIONS.filter(
       (a) => a !== 'fire' && JSON.stringify(stale.keys[a]) !== JSON.stringify(DEFAULT_BINDINGS.keys[a]),
@@ -6655,7 +6660,8 @@ function queueTenth(w: World): void {
   /* EMPTY NOW, AND THAT IS THE POINT. `bbPass` was the only member: it shipped with no pad
      button "because there is no button left to give it", while two chain-only actions sat on
      LB and L3. Sharing those by role bound it, so the exemption is gone — and the check
-     immediately below fails if a member ever gains a default and is not removed from here. */
+     immediately below fails if a member ever gains a default and is not removed from here.
+     `bbBar` (2026-11-01) nearly joined it on the same argument; B was a second Intake. */
   const PAD_DEFAULT_EXEMPT: readonly string[] = [];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
   const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
@@ -7452,6 +7458,82 @@ function ramOffCentreSamples(
     '...and crushing it against the wall stays a shove, not a launch',
     worstSpeed <= PHYS_MAX_ROBOT_SPEED * 1.001,
     `peak ${worstSpeed.toFixed(1)} in/s vs cap ${PHYS_MAX_ROBOT_SPEED}`,
+  );
+}
+
+// ---- an AUTO PATH runs the assists only while it drives (SIM_PATCH 12) --------
+{
+  /**
+   * The path used to WRITE `aimAssist`, `autoIntake` and `autoFire` true on every tick it drove,
+   * and nothing wrote them back: a driver who had auto fire off had it ON for the whole of
+   * DRIVER-CONTROLLED, emptying the hopper at the first launch zone it crossed, and the record
+   * (`Room.assistsOf`) said the run was driven with it. From 12 the path is read as an assist
+   * (`src/sim/assists.ts`) and the flags stay the driver's; a replay stamped 11 keeps the write.
+   */
+  const path: AutoPathData = {
+    fileName: 'assists',
+    startPoint: { x: -50, y: 0, heading: 'constant', degrees: 0 },
+    lines: [{ id: 'a1', endPoint: { x: -40, y: 0, heading: 'constant', degrees: 0 } }],
+    sequence: [{ kind: 'path', lineId: 'a1' }],
+  };
+  /** run the path to its end with the driver's auto intake and auto fire OFF, then 2 s of
+   *  DRIVER-CONTROLLED parked in a launch zone with a full hopper and no button held */
+  const run = (patch?: number) => {
+    const w = createWorld('match', 5, [{ ...setup(0, 'red', {}, 0), autoPath: path, autoPathEnabled: true }]);
+    if (patch !== undefined) w.simPatch = patch;
+    w.balls.length = 0;
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = 30;
+    w.match.preCountdown = undefined;
+    const r = w.robots[0];
+    const startedActive = r.autoPathActive;
+    let ranAssists = true;
+    let ticks = 0;
+    for (; ticks < 600 && r.autoPathActive; ticks++) {
+      step(w, SIM_DT, new Map());
+      if (r.autoPathActive) ranAssists &&= autoFireOn(w, r) && autoIntakeOn(w, r);
+    }
+    const flagsAfterPath = { autoIntake: r.autoIntake, autoFire: r.autoFire };
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    // a point inside this robot's launch zone, found rather than assumed
+    let parked = false;
+    for (let x = -60; x <= 60 && !parked; x += 6) {
+      for (let y = -60; y <= 60 && !parked; y += 6) {
+        r.pos = { x, y };
+        parked = robotInLaunchZone(r);
+      }
+    }
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    r.hopper = ['green', 'purple', 'purple'];
+    r.fireReadyAt = 0;
+    for (let i = 0; i < 120; i++) step(w, SIM_DT, new Map());
+    return { startedActive, ticks, ranAssists, flagsAfterPath, parked, left: r.hopper.length };
+  };
+  const live = run();
+  const p11 = run(11);
+  check(
+    'auto path assists: the scene ran a path to its end and parked in a launch zone',
+    live.startedActive && live.ticks > 0 && live.ticks < 600 && live.parked && p11.parked,
+    `ticks=${live.ticks} parked=${live.parked}`,
+  );
+  check('auto path assists: the path still runs auto intake and auto fire while it drives', live.ranAssists && p11.ranAssists);
+  check(
+    'auto path assists: from 12 the driver’s auto intake and auto fire are OFF again after the path',
+    !live.flagsAfterPath.autoIntake && !live.flagsAfterPath.autoFire,
+    JSON.stringify(live.flagsAfterPath),
+  );
+  check(
+    '...so with no button held in a launch zone the robot keeps its artifacts',
+    live.left === 3,
+    `hopper ${live.left}/3`,
+  );
+  // NON-VACUOUS: the same scene stamped 11 is the bug — both flags stuck on, and it fires
+  check(
+    'auto path assists: a replay stamped 11 keeps the old write (both flags stuck on, and it fires)',
+    p11.flagsAfterPath.autoIntake && p11.flagsAfterPath.autoFire && p11.left < 3,
+    `${JSON.stringify(p11.flagsAfterPath)} hopper ${p11.left}/3`,
   );
 }
 
@@ -8792,8 +8874,8 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // renders the `.ds-back` itself
     const consoleHead = readFileSync('src/ui/ConsoleHead.tsx', 'utf8');
     check(
-      'lan screen: is a shell page (app bar + trail is the way back), with no Back button of its own',
-      /shell\(\s*<div className="ds-console-in narrow">\s*<ConsoleHead title="LAN play"/.test(lan) && /<LanPanel\s+shell=\{shell\}/.test(app) && consoleHead.includes('{onBack && ('),
+      'lan screen: is a popup over Play (its close control is the way back), with no Back button of its own',
+      /shell\(\s*<div className="ds-console-in narrow">\s*<ConsoleHead title="LAN play"/.test(lan) && /<LanPanel\s+shell=\{popupShell\}/.test(app) && consoleHead.includes('{onBack && ('),
     );
     check(
       'lan screen: Esc is the same exit as the button, not a second one',
@@ -10575,11 +10657,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
    */
   {
     const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
-    const ranked = /if \(screen === 'matchmaking'\) \{[\s\S]*?\n {2}\}\n/.exec(app)?.[0] ?? '';
+    // a popup over Play since 2026-10-24: it renders in the shell's tree, under the shell's own AccountSync
+    const shellSync = app.indexOf('{authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}\n      {/* THE BLOCKING GATES');
     check(
-      'ranked reload: the ranked screen mounts AccountSync, ahead of Matchmaking',
-      /\{authEnabled && <AccountSync onUser=\{onSyncUser\} onLoad=\{onSyncLoad\} seed=\{onSyncSeed\} \/>\}/.test(ranked) &&
-        ranked.indexOf('<AccountSync') < ranked.indexOf('<Matchmaking'),
+      'ranked reload: the ranked screen is under the shell\'s AccountSync, ahead of Matchmaking',
+      !/if \(screen === 'matchmaking'\)/.test(app) && shellSync > 0 && shellSync < app.indexOf('<Matchmaking'),
     );
     const sync = readFileSync('src/ui/AccountSync.tsx', 'utf8').replace(/\r\n/g, '\n');
     check(
@@ -18721,7 +18803,16 @@ const recordDrive: CommandSource = (tick) => {
   check('feed: a player beating their own best is an entry, and is not ranked against themselves', better.length === 2 && better[0].rank === 1);
 
   const tie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 5)], null, 10);
-  check('feed: a tie goes to whoever set it first (b is No.2)', tie.find((e) => e.userId === 'b')?.rank === 2);
+  check('feed: a tie SHARES the place, as on the board (b equals No.1, so is No.1)', tie.find((e) => e.userId === 'b')?.rank === 1);
+  const behindTie = feedFromRows([run(1, 'a', 100, 0), run(2, 'b', 100, 1), run(3, 'c', 90, 2)], null, 10);
+  check('feed: ...and the place after a two-way tie is No.3', behindTie.find((e) => e.userId === 'c')?.rank === 3);
+
+  const duo = (id: number, userId: string, partnerId: string, score: number, m: number) => ({ ...run(id, userId, score, m), partnerId });
+  const swapped = feedFromRows([duo(1, 'a', 'b', 100, 0), duo(2, 'b', 'a', 90, 1), duo(3, 'b', 'a', 120, 2)], null, 10);
+  check('⚠️ feed: a duo pair seated the other way round is the SAME entry — not its own No.2, and not ranked against itself',
+    swapped.length === 2 && swapped.every((e) => e.rank === 1), JSON.stringify(swapped.map((e) => [e.userId, e.score, e.rank])));
+  const twoPairs = feedFromRows([duo(1, 'a', 'b', 100, 0), duo(2, 'a', 'c', 90, 1)], null, 10);
+  check('feed: one driver with another partner is another entry', twoPairs.find((e) => e.partnerId === 'c')?.rank === 2);
 
   const crowded = feedFromRows([run(1, 'a', 400, 0), run(2, 'b', 300, 1), run(3, 'c', 200, 2), run(4, 'd', 100, 3)], null, 10);
   check('feed: only the top three places are entries', FEED_TOP === 3 && crowded.length === 3 && !crowded.some((e) => e.userId === 'd'));
@@ -18783,13 +18874,120 @@ const recordDrive: CommandSource = (tick) => {
   check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
   check('crumbs: the account page sits under Profile (Appearance), which is top-level',
     crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
-  check('crumbs: Import robot goes back to Robot, which is a Play page', parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot')[0].label === 'Play' && crumbsFor('configure', 'controls').length === 1);
+  check('crumbs: Import robot goes back to Configure’s Robot section, whose trail is Configure’s', parentOf(crumbsFor('robotimport')).screen === 'configure' && parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot').length === 1 && crumbsFor('configure', 'robot')[0].label === 'Configure' && crumbsFor('configure', 'controls').length === 1);
   check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
     shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
   const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));
-  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes('crumbsFor(screen, route.sub, route.username)'));
+  check('crumbs: App no longer carries its own back rules; the trail is the one table', !appSrc.includes("screen === 'matchsetup' || screen === 'rooms'") && appSrc.includes("crumbsFor(popup ? 'modes' : screen, route.sub, route.username)"));
+  // THE PLAY PAGE'S POPUPS AND THE MULTIPLAYER ORDER (owner, 2026-10-24)
+  const ms = readFileSync('src/ui/ModeSelect.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const multiHead = ms.indexOf('<h2 className="ds-panel-title">Multiplayer</h2>');
+  const multi = ms.slice(multiHead, ms.indexOf('</section>', multiHead));
+  const at = ['Ranked', "'Duo record'", "'New room'", "'Browse rooms'", "'Competitions'", "'LAN'"].map((l) => multi.indexOf(l));
+  check('play: Multiplayer reads Ranked, Duo record, New room, Browse rooms, Competitions, LAN',
+    multiHead > 0 && at.every((i, k) => i > 0 && (k === 0 || i > at[k - 1])) && !ms.includes('Find match'), at.join());
+  // EVERY MODE ON SCREEN (owner, 2026-11-01: the old column was "VERY, VERY awkward to navigate"): no
+  // list that replaces the column, no Back, and the two setup cards in a popup instead of over the modes
+  check('play: every mode is on Play at once, with no Solo / Multiplayer list that replaces the column',
+    !ms.includes('setSide') && !ms.includes('← Back') && !ms.includes('<SoloSetup') &&
+      ["'Solo practice'", "'Free drive'", "'Solo record'", 'Ranked', "'New room'", "'Browse rooms'"].every((l) => ms.includes(l)));
+  check('play: Match setup and Practice setup are the Solo setup popup, opened from the Solo group',
+    ms.includes('onClick={onSetup}') && appSrc.includes('onSetup={() => setSoloSetupOpen(true)}') &&
+      /<OverlayDialog title="Solo setup"[\s\S]{0,400}?part="match"[\s\S]{0,200}?part="practice"/.test(appSrc));
+  // THE ROBOT (owner, 2026-11-01: "The robot configure menu feels like it should be in configure and i
+  // should NOT have to scroll an extreme amount in thr play menu to get to 'new robot'")
+  {
+    const menuSrc = readFileSync('src/ui/Menu.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const strip = menuSrc.slice(menuSrc.indexOf('export function RobotStrip('));
+    const row = strip.slice(strip.indexOf('<div ref={stripRef}'), strip.indexOf('</div>\n  );\n}'));
+    check('play: New robot is a button in the robot panel’s head, and the strip holds no presets (they are the builder’s Start from)',
+      /onClick=\{\(\) => startNewRobot\(settings, onChange, onEditRobot\)\}>\s*New robot\s*</.test(ms) && !row.includes('ds-opt-add') && !row.includes('presets.map('));
+    check('play: the build on keeps its card when another is picked (a kept edit, a kept preset build: the row never shifts)',
+      /const keptEdits = new Map<string, RobotSpec>\(\);/.test(menuSrc) && /const keptPresets = new Map<string, RobotSpec>\(\);/.test(menuSrc) &&
+        row.includes('unsaved\n') && !row.includes('{current &&'));
+    check('play: the robot panel says Edit beside New robot and Import, and the Solo group’s button says Match setup',
+      /<button className="ds-btn small" onClick=\{onEditRobot\}>\s*Edit\s*<\/button>/.test(ms) && /onClick=\{onSetup\}>\s*Match setup\s*</.test(ms));
+    const cfgSrc = readFileSync('src/ui/Configure.tsx', 'utf8');
+    check('configure: Robot is the first section, in the sub-nav, and what a bare /configure opens',
+      cfgSrc.includes("export const CONFIGURE_SECTIONS = ['robot', ") && !cfgSrc.includes("if (section === 'robot') {") && cfgSrc.includes("section === 'robot' && <Menu") &&
+        appSrc.includes("configure[1] ?? 'robot'") && appSrc.includes("isConfigureSection(route.sub) ? route.sub : 'robot'"));
+    check('configure: the builder has its own way back to Play, beside the bar’s sections',
+      appSrc.includes("onPlay={() => navigate('modes')}") && /onPlay && \(\s*<button className="ds-btn primary small ds-hero-play" onClick=\{onPlay\}>/.test(menuSrc));
+    // THE SECTIONS IN THE BAR (2026-11-01; the owner left the call to analysis): Play, Configure,
+    // Records on every screen but Home, a second row of the bar up to 1024px
+    const shellSrc = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
+    const css = readFileSync('src/ui/shell.css', 'utf8').replace(/\r\n/g, '\n');
+    check('nav: the bar carries Play, Configure and Records (not Profile, the avatar’s), latched on the trail’s root',
+      shellSrc.includes("const BAR_NAV = RAIL_ITEMS.filter((it) => it.id !== 'profile');") &&
+        shellSrc.includes('const section = BAR_NAV.find((it) => it.label === crumbs[0]?.label)?.id;') &&
+        /<nav className="ds-bar-nav" aria-label="Sections">/.test(shellSrc));
+    check('nav: Home has none (its keycaps are that menu): faded on the stage, not rendered off it',
+      shellSrc.includes('const barNav = !!stage || !home;') && /\.ds-app\.stage-home \.ds-bar > :not\(\.ds-bar-right\)/.test(css));
+    check('nav: up to 900px wide and 501px+ tall it is the bar’s second row and --ds-bar-h grows by it, which Play’s phone band reads',
+      /@media \(max-width: 900px\) and \(min-height: 501px\) \{\n  \.ds-app\.has-barnav \{\n    --ds-bar-h: 103px;/.test(css) &&
+        css.includes('height: clamp(120px, 100dvh - 370px - var(--ds-bar-h), calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));'));
+    check('nav: the trail drops its root while the sections show it (no "PLAY" twice in one bar)',
+      shellSrc.includes('const trail = barNav && section ? crumbs.slice(1) : crumbs;') && /\{trail\.map\(\(c, i\) =>/.test(shellSrc));
+    // EVERY WINDOW SHAPE (owner, 2026-11-01: "Do the placements MAKE SENSE AND LOOK GOOD? For ALL
+    // dimensions, even ultrawide or super thin?")
+    const stageSrc2 = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+    check('shapes: past --ds-wide-max (2560px) the bar, the shell body, Play, the footer and Home’s column keep to a centred band',
+      css.includes('--ds-wide-max: 2560px;') &&
+        css.includes('padding: 14px calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&
+        /\.ds-body \{[^}]*max-width: var\(--ds-wide-max\);/.test(css) &&
+        /\.ds-main\.ds-main-stage \{\s*max-width: var\(--ds-wide-max\);/.test(css) &&
+        css.includes('padding: var(--ds-s-4) calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&
+        css.includes('--home-inset: max(var(--ds-s-7), 7vw, calc((100vw - var(--ds-wide-max)) / 2 + var(--ds-s-7)));') &&
+        stageSrc2.includes('right: Math.max(0, (w - wide) / 2),'));
+    check('shapes: the robot panel is as wide as its cards, centred under the robot, from 721px',
+      /@media \(min-width: 721px\) \{\n  \.ds-setup-picker \{\n    justify-self: center;\n    width: max-content;\n    max-width: 100%;/.test(css));
+    check('shapes: a portrait window puts Home’s column on top (its scrim on the column) and Play’s robot in a band over the picker and the modes',
+      (css.match(/@media \(min-width: 721px\) and \(max-aspect-ratio: 1\/1\) \{/g) ?? []).length === 2 &&
+        /grid-template-areas:\n      'view view'\n      'picker side';/.test(css) &&
+        stageSrc2.includes('if (col && h > w) return { top: col.bottom + 72, right: 0, bottom: 48, left: 0 };'));
+    check('shapes: the stage FOV widens for a free area narrower than 1.5:1, so the field and the robot keep their width',
+      stageSrc2.includes('const STAGE_MIN_ASPECT = 1.5;') && stageSrc2.includes('pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },'));
+    check('shapes: Play’s settings column is never under 344px, and a 280px phone stacks the tiles',
+      css.includes('grid-template-columns: minmax(0, 1fr) min(440px, max(38vw, 344px));') &&
+        /@media \(max-width: 300px\) \{\n  \.ds-play-tiles \{\n    grid-template-columns: minmax\(0, 1fr\);/.test(css));
+    check('nav: a finished match goes back to Play, not Home (a test drive and a competition match keep their own)',
+      /navigate\('competitions', \{ sub: `\$\{comp\}\/matches` \}\);\s*return;\s*\}[\s\S]{0,400}?navigate\('modes'\);\s*\};/.test(appSrc));
+    check('builder: an edit of a saved robot offers Save changes (in place) beside Save as new',
+      /const editingSaved = new Map<string, number>\(\);/.test(menuSrc) &&
+        /savedRobots: savedRobots\.map\(\(r, j\) => \(j === editIdx \? \{ \.\.\.spec \} : r\)\)/.test(menuSrc) &&
+        />\s*Save as new\s*<\/button>/.test(menuSrc) && />\s*Save changes\s*<\/button>/.test(menuSrc));
+  }
+  // HOME (owner, 2026-11-01): the stats arrived a second in and moved the centred column; Home's stage
+  // drew the match's own room and tier ("still distorted and EXTREMELY laggy on some devices")
+  const homeMenu = readFileSync('src/ui/HomeMenu.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('home: the stats render from the first frame, a dash per number until the fetch lands',
+    homeMenu.includes('{multiplayer && (\n        <div className="ds-homestats"') && !homeMenu.includes('{stats && ('));
+  const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+  check('stage: the 3D menu stage draws its own fixed tier and procedural room, not the match settings',
+    /factory\(host, \{ interactive: false, quality: stageTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
+      /const STAGE_ROOM = 'arena';/.test(stageSrc));
+  const stageCss = readFileSync('src/ui/shell.css', 'utf8');
+  check('stage: the 2D field is flat (no CSS tilt), and the fly animates no width or height',
+    !/\.ds-stage-2d[^{]*\{[^}]*rotate/.test(stageCss) && !/\.ds-stage-2d img \{[^}]*width var\(--ds-dur-fly\)/.test(stageCss));
+  const popups = /const POPUPS[^=]*= \{([^}]*)\}/.exec(appSrc)?.[1] ?? '';
+  check('play: every Play list entry that was a page is a popup over Play, and Play stays mounted under it',
+    ['matchmaking', 'duorecord', 'lobby', 'rooms', 'competitions', 'lan', 'record'].every((k) => popups.includes(`${k}:`)) &&
+      appSrc.includes("{(screen === 'modes' || popup) && (\n        <ModeSelect") &&
+      !/if \((lanOn && )?screen === '(lobby|duorecord|record|lan|matchmaking)'\)/.test(appSrc));
+  // a popup can be a joined room or the strategy window: no shell backdrop may land on it
+  check('play: the gates, the claim and notice dialogs and the announcements all wait for a popup',
+    /const modalsWait = [^;]*!!popup;/.test(appSrc) && (appSrc.match(/blocked=\{modalsWait\}/g) ?? []).length === 2 &&
+      appSrc.includes('<TermsGate suspended={legalScreen || !!popup}>') && appSrc.includes('<UsernameGate suspended={legalScreen || !!popup}>') &&
+      appSrc.includes('{!legalScreen && !popup && (\n        <Announcements'));
+  const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('play: Ranked\'s "Match found" cannot be closed (no ×, no Escape); a search can, and keeps going',
+    mm.includes('useEscape(onCancel, !strategy && !found);') && /'Match found',[\s\S]{0,400}?true, \/\/ no ×/.test(mm) &&
+      appSrc.includes('onClose={locked ? undefined : closePopup}') && !mm.includes('← Back</b> keeps'));
+  // a joined room sits inside `.ds-main` now; the in-shell column reset flattened it to the window's edge
+  check('play: a full-screen console in the popup host keeps its own gutter',
+    readFileSync('src/ui/shell.css', 'utf8').includes('.ds-main .ds-console-in:not(.ds-console > *) {'));
 }
 
 /** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
@@ -26351,7 +26549,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     'combos: padBinds is the single-button list when no combo is bound',
-    J(padBinds(DEFAULT_BINDINGS.pad, 'fire')) === J([[7], [0]]) &&
+    J(padBinds({ ...DEFAULT_BINDINGS.pad, buttons: { ...DEFAULT_BINDINGS.pad.buttons, fire: [7, 0] } }, 'fire')) === J([[7], [0]]) &&
+      J(padBinds(DEFAULT_BINDINGS.pad, 'fire')) === J([[7]]) &&
       J(padBinds(DEFAULT_BINDINGS.pad, 'catalyst')) === J([[4]]),
   );
 
@@ -26402,7 +26601,7 @@ const dumperSetup = (): RobotSetup => {
        `bbPlaceNectar` when `bbPlace` went to LB alongside `catalyst`. Re-pointed rather than
        re-baselined — an expected value edited to whatever the code now returns tests nothing. */
     J(b.pad.combos.fling) === J([[7, 12]]) && J(b.pad.buttons.fling) === J([10]) &&
-      J(b.pad.buttons.fire) === J([7, 0]) && J(b.pad.buttons.bbPlaceNectar) === J([12]),
+      J(b.pad.buttons.fire) === J([7]) && J(b.pad.buttons.bbPlaceNectar) === J([12]),
     J({ fling: b.pad.combos.fling, fire: b.pad.buttons.fire }),
   );
   check(
@@ -26417,7 +26616,7 @@ const dumperSetup = (): RobotSetup => {
   b = assignPadBind(b, 'park', 0, [7]); // replace park's X with RT: fire loses its RT single
   check(
     'combos: a single is stolen from every action and no combo loses it',
-    J(b.pad.buttons.park) === J([7]) && J(b.pad.buttons.fire) === J([0]) && J(b.pad.combos.catalyst) === J([[7, 12]]),
+    J(b.pad.buttons.park) === J([7]) && J(b.pad.buttons.fire) === J([]) && J(b.pad.combos.catalyst) === J([[7, 12]]),
     J({ park: b.pad.buttons.park, fire: b.pad.buttons.fire }),
   );
   b = assignPadBind(b, 'catalyst', 1, [5]); // slot 1 is the combo; replacing it with a single
@@ -26499,8 +26698,8 @@ const dumperSetup = (): RobotSetup => {
   check('resolver: and keeps firing while held', s.fire === true);
   // (2) …while an unrelated single never waits.
   r.resolve([], pad, 1000);
-  s = r.resolve([0], pad, 1000);
-  check('resolver: a single that is in no combo fires at once', s.fire === true);
+  s = r.resolve([6], pad, 1000); // LT, Intake: in no combo
+  check('resolver: a single that is in no combo fires at once', s.intake === true);
   // (3) the combo fires on the frame it completes, and MASKS both of its halves.
   r.resolve([], pad, 2000);
   s = r.resolve([7, 12], pad, 2000);
@@ -26903,7 +27102,7 @@ const dumperSetup = (): RobotSetup => {
   p = assignPadBindInGame(p, 'biobuzz', 'fire', 2, [5, 1]);
   check(
     'override/pad: a combo added in a game stays in that game',
-    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[13], [0], [1, 5]]) &&
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[13], [1, 5]]) &&
       J(effectiveBindings(p, 'chain').pad.combos.fire) === J([]),
     J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')),
   );
@@ -26969,7 +27168,7 @@ const dumperSetup = (): RobotSetup => {
   const padStolen = assignPadBind(DEFAULT_BINDINGS, 'catalyst', 0, [7]); // RT is Shoot's
   check(
     'conflict/main: a pad button an every-game action holds is still stolen',
-    J(padStolen.pad.buttons.catalyst) === J([7]) && J(padStolen.pad.buttons.fire) === J([0]),
+    J(padStolen.pad.buttons.catalyst) === J([7]) && J(padStolen.pad.buttons.fire) === J([]),
   );
 
   // A GAME SCOPE steals inside that game only, by DESYNCING the victim there.
@@ -27043,8 +27242,8 @@ const dumperSetup = (): RobotSetup => {
   const padClash = assignPadBind(padPre, 'intake', 0, [13]);
   check(
     'conflict/collision: the pad rule matches — the override loses that single',
-    J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([0]) &&
-      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13, 1]),
+    J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([]) &&
+      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([13]),
     J(effectiveBindings(padClash, 'biobuzz').pad.buttons),
   );
   const comboPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [7, 12]);
@@ -27052,7 +27251,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'conflict/collision: a combo scrubs the identical combo and leaves the singles',
     J(effectiveBindings(comboClash, 'biobuzz').pad.combos.fire) === J([]) &&
-      J(effectiveBindings(comboClash, 'biobuzz').pad.buttons.fire) === J([7, 0]),
+      J(effectiveBindings(comboClash, 'biobuzz').pad.buttons.fire) === J([7]),
     J(effectiveBindings(comboClash, 'biobuzz').pad),
   );
 }
@@ -27486,7 +27685,7 @@ const dumperSetup = (): RobotSetup => {
     sharedPadHolder(DEFAULT_BINDINGS, [3]) === 'flipFront' && sharedPadHolder(DEFAULT_BINDINGS, [3, 7]) === null &&
       J(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [3])) === J(DEFAULT_BINDINGS) &&
       J(padBinds(effectiveBindings(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [3, 7]), 'biobuzz').pad, 'fire')) ===
-        J([[7], [0], [3, 7]]),
+        J([[7], [3, 7]]),
   );
   check(
     'season scope: a main edit of a shared control still steals, as it always did',
@@ -27518,7 +27717,7 @@ const dumperSetup = (): RobotSetup => {
   const padSynced = syncPadInGame(padPre, 'biobuzz', 'fire');
   check(
     'sync/pad: RT back on Shoot comes off Deploy ramp, which had taken it',
-    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.fire) === J([7, 0]) &&
+    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.fire) === J([7]) &&
       J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.bbRamp) === J([]),
     J(effectiveBindings(padSynced, 'biobuzz').pad.buttons),
   );
@@ -28229,9 +28428,9 @@ const dumperSetup = (): RobotSetup => {
     touchButtonsFor('chain').map((b) => b.action).join(','),
   );
   check(
-    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp and the human player',
+    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp, the NECTAR bar, reverse and the human player',
     touchButtonsFor('biobuzz').map((b) => b.action).join(',') ===
-      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbNectar,flipFront,driveMode,park',
+      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbBar,bbReverse,bbNectar,flipFront,driveMode,park',
     touchButtonsFor('biobuzz').map((b) => b.action).join(','),
   );
 
@@ -28403,15 +28602,15 @@ const dumperSetup = (): RobotSetup => {
     check('touch: THROW is idle unless carrying', !ready('fling', ring(false, 'pickup')) && ready('fling', ring(true, null)));
     const bb = (flowerInReach: boolean, held: TouchLive['held'], nectarOk = false): Partial<TouchLive> => ({
       held,
-      bb: { flowerInReach, nectarOk },
+      bb: { flowerInReach, nectarOk, alliance: 'blue' },
     });
     check(
       'touch: place POLLEN needs a FLOWER in reach AND a POLLEN held',
       !ready('bbPlace', bb(false, ['yellow'])) && !ready('bbPlace', bb(true, ['red'])) && ready('bbPlace', bb(true, ['yellow'])),
     );
     check(
-      'touch: place NECTAR needs a FLOWER in reach AND a NECTAR held',
-      !ready('bbPlaceNectar', bb(true, ['yellow'])) && ready('bbPlaceNectar', bb(true, ['blue'])),
+      'touch: place NECTAR needs a FLOWER in reach AND its OWN alliance’s NECTAR held (the tube never places the opponent’s)',
+      !ready('bbPlaceNectar', bb(true, ['yellow'])) && !ready('bbPlaceNectar', bb(true, ['red'])) && ready('bbPlaceNectar', bb(true, ['blue'])),
     );
     check('touch: PASS is idle with an empty hopper', !ready('bbPass', bb(false, [])) && ready('bbPass', bb(false, ['yellow'])));
     check('touch: HUMAN is idle unless the tick says an entry would be taken', !ready('bbNectar', bb(false, [])) && ready('bbNectar', bb(false, [], true)));
@@ -28563,8 +28762,10 @@ const dumperSetup = (): RobotSetup => {
           }
         }
         // 320 and 347 are a 10-button pad on a phone that genuinely has no room for one — the
-        // overflow doubles up there and always did. From 360 up, the widest build fits CLEAN.
-        if (vp.h >= 360) {
+        // overflow doubles up there and always did. From 360 up, a 10-button build fits CLEAN.
+        // The ELEVEN-button pad (2026-10-24: REV joins a POLLEN + NECTAR build with no sorter of
+        // its own) doubles up at 360 as well, and fits clean from 375 — measured on every width.
+        if (vp.h >= (p.buttons.length > 10 ? 375 : 360)) {
           for (let i = 0; i < all.length; i++) {
             for (let j = i + 1; j < all.length; j++) {
               if (Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) < (all[i].size + all[j].size) / 2) {
@@ -28577,7 +28778,7 @@ const dumperSetup = (): RobotSetup => {
     }
     check('⚠️ touch: on a narrow landscape phone the primary steps to 64px, never to the 44px floor', shrunk === '', shrunk);
     check('⚠️ touch: no button — overflow included — ever lands on a stick base on a real phone', onStick === '', onStick);
-    check('⚠️ touch: the widest pad the app can build is overlap-free on every landscape phone 360px and taller', stacked === '', stacked);
+    check('⚠️ touch: the widest pad the app can build is overlap-free on every landscape phone 360px and taller (375 for eleven buttons)', stacked === '', stacked);
     check('touch: and nothing in the band is under the 44px finger floor', tiny === '', tiny);
   }
 }
@@ -28681,12 +28882,85 @@ const dumperSetup = (): RobotSetup => {
       J(mergeBindings({ keys: { bbPlace: ['z'], bbRamp: ['l'] } }).keys.cameraCycle) === J([]),
     );
   }
+  // -- the NECTAR bar got its own action on 2026-11-01 (it rode Deploy ramp before): the apostrophe,
+  // beside Reverse's semicolon, and B on the pad, which Intake gave up (it keeps LT)
+  {
+    check(
+      'bar keys: NECTAR bar defaults to the apostrophe and B, Intake to LT alone, and the label no longer shares the ramp\'s',
+      J(DEFAULT_BINDINGS.keys.bbBar) === J(["'"]) && J(DEFAULT_BINDINGS.pad.buttons.bbBar) === J([1]) &&
+        J(DEFAULT_BINDINGS.pad.buttons.intake) === J([6]) &&
+        ACTION_LABELS.bbRamp === 'Deploy ramp' && ACTION_LABELS.bbBar === 'NECTAR bar',
+    );
+    // a map saved before the bar had a pad default: Intake on the old LT + B
+    const oldPad = mergeBindings({ pad: { buttons: { fire: [7, 0], intake: [6, 1], bbRamp: [11] } } });
+    check(
+      'bar pad: a saved map on the old LT + B Intake loads with Intake on LT and the bar on B',
+      J(oldPad.pad.buttons.intake) === J([6]) && J(oldPad.pad.buttons.bbBar) === J([1]) &&
+        !seasonUnbound(oldPad, 'biobuzz').includes('bbBar'),
+      J({ intake: oldPad.pad.buttons.intake, bar: oldPad.pad.buttons.bbBar }),
+    );
+    // ...and one already saved back with the bar empty, which is what Reset BIOBUZZ could not fix:
+    // a season reset never moves main's Intake (owner: "resetting biobuzz controls does NOT make
+    // nectar bar b")
+    const savedBack = mergeBindings({ pad: { buttons: { intake: [6, 1], bbBar: [] }, combos: { bbBar: [] } } });
+    check(
+      'bar pad: ...one already saved back with the bar empty is repaired the same way, and Reset BIOBUZZ lands on B',
+      J(savedBack.pad.buttons.bbBar) === J([1]) && J(resetGame(savedBack, 'biobuzz').pad.buttons.bbBar) === J([1]) &&
+        J(resetGame(cloneBindings(DEFAULT_BINDINGS), 'biobuzz').pad.buttons.bbBar) === J([1]),
+      J({ loaded: savedBack.pad.buttons.bbBar, reset: resetGame(savedBack, 'biobuzz').pad.buttons.bbBar }),
+    );
+    const trigOld = mergeBindings({ pad: { turnWith: 'triggers', buttons: { intake: [6, 1] } } });
+    check(
+      'bar pad: a map turning with the triggers keeps B on Intake (its only live pad Intake), and the bar loads unbound and marked',
+      J(trigOld.pad.buttons.intake) === J([6, 1]) && J(trigOld.pad.buttons.bbBar) === J([]) &&
+        seasonUnbound(trigOld, 'biobuzz').includes('bbBar'),
+      J({ intake: trigOld.pad.buttons.intake, bar: trigOld.pad.buttons.bbBar }),
+    );
+    check(
+      'bar pad: a bar the player bound, or an Intake that is not exactly LT + B, is left alone',
+      J(mergeBindings({ pad: { buttons: { intake: [6, 1], bbBar: [12] } } }).pad.buttons.intake) === J([6, 1]) &&
+        J(mergeBindings({ pad: { buttons: { intake: [1, 6] } } }).pad.buttons.intake) === J([1, 6]) &&
+        J(mergeBindings({ pad: { buttons: { intake: [1, 6] } } }).pad.buttons.bbBar) === J([]),
+    );
+    const trigNew = cloneBindings(DEFAULT_BINDINGS);
+    trigNew.pad.turnWith = 'triggers';
+    check(
+      'bar pad: the known cost — a NEW map turning with the triggers has no live pad Shoot or Intake (RT and LT are paused)',
+      livePadBinds(trigNew.pad, 'intake').length === 0 && livePadBinds(trigNew.pad, 'fire').length === 0,
+    );
+    // SHOOT'S DUPLICATE WENT TOO (owner: "why even have the duplicate controls?" … "Drop A too")
+    check(
+      'duplicates: Shoot defaults to RT alone and A is unbound in every game',
+      J(DEFAULT_BINDINGS.pad.buttons.fire) === J([7]) && PAD_ACTIONS.every((a) => !DEFAULT_BINDINGS.pad.buttons[a].includes(0)),
+    );
+    check(
+      'duplicates: a saved map on the old RT + A Shoot loads as RT alone; a trigger-turner keeps A, and any other Shoot is left alone',
+      J(mergeBindings({ pad: { buttons: { fire: [7, 0] } } }).pad.buttons.fire) === J([7]) &&
+        J(mergeBindings({ pad: { turnWith: 'triggers', buttons: { fire: [7, 0] } } }).pad.buttons.fire) === J([7, 0]) &&
+        J(mergeBindings({ pad: { buttons: { fire: [0, 7] } } }).pad.buttons.fire) === J([0, 7]) &&
+        J(mergeBindings({ pad: { buttons: { fire: [7, 0] }, combos: { fire: [[4, 5]] } } }).pad.buttons.fire) === J([7, 0]),
+    );
+    check(
+      'bar keys: a map saved before the bar had its own action loads it on the apostrophe',
+      J(mergeBindings({ keys: { bbRamp: ['z'], bbReverse: [';'] } }).keys.bbBar) === J(["'"]),
+    );
+    check(
+      'bar keys: ...or, with the apostrophe on a BIOBUZZ action, on the first free fallback',
+      J(mergeBindings({ keys: { bbPass: ["'"] } }).keys.bbBar) === J(['[']) &&
+        J(mergeBindings({ keys: { bbPass: ["'"], bbPlace: ['['] } }).keys.bbBar) === J([']']),
+    );
+    check(
+      'bar keys: an unbound key marks BIOBUZZ too',
+      seasonUnbound(mergeBindings({ keys: { bbBar: [] } }), 'biobuzz').includes('bbBar'),
+    );
+  }
   // -- the pad ramp moved from D-DOWN (13) to R3 (11) on 2026-09-26: players reported D-DOWN
   // restarting their run. A stored map keeps whatever it has; only a map with no ramp row takes R3,
   // and not if the player already put R3 on something that fires in BIOBUZZ.
   {
-    check('ramp pad: Deploy ramp defaults to R3, and D-DOWN is left unbound', J(DEFAULT_BINDINGS.pad.buttons.bbRamp) === J([11]) &&
-      !PAD_ACTIONS.some((a) => DEFAULT_BINDINGS.pad.buttons[a].includes(13)));
+    // D-DOWN went unbound with the move and became BIOBUZZ's held Reverse intake on 2026-10-24
+    check('ramp pad: Deploy ramp defaults to R3, and D-DOWN is only Reverse intake now', J(DEFAULT_BINDINGS.pad.buttons.bbRamp) === J([11]) &&
+      J(PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].includes(13))) === J(['bbReverse']));
     check(
       'ramp pad: a stored map with the ramp on D-DOWN keeps D-DOWN',
       J(mergeBindings({ pad: { buttons: { bbRamp: [13] } } }).pad.buttons.bbRamp) === J([13]),
@@ -30800,12 +31074,161 @@ const dumperSetup = (): RobotSetup => {
   const aa = rd('src/ui/AdminAnalytics.tsx');
   check(
     'admin analytics: an older load landing after a newer one is discarded',
-    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*setReport\(r\);/.test(aa),
+    /const seq = \+\+loadSeq\.current;/.test(aa) && /if \(seq !== loadSeq\.current\) return;\s*inflight\.current = null;/.test(aa),
+  );
+  check(
+    '⚠️ admin analytics: a new selection ABORTS the older request and names its page (`lane`), so the server drops its queued queries',
+    /const seq = \+\+loadSeq\.current;\s*inflight\.current\?\.abort\(\);/.test(aa) && /lane/.test(aa) && /signal,\n/.test(aa),
   );
   const wl = rd('src/ui/WatchLive.tsx');
   check(
     'watch live: an unattended page does not poll /api/live, and catches up when someone is back',
     /const load = \(\): void => \{[\s\S]{0,600}?if \(userIdle\(\)\) return;/.test(wl) && /onUserActive\(load\)/.test(wl),
+  );
+}
+
+// ---- THE ANALYTICS TAB'S CLOCK AND THE SPONSOR PDF (src/ui/adminAnalyticsTime.ts, pdfWriter.ts)
+{
+  // 2026-11-01 07:40 UTC is 02:40 in New York: the evening-before problem the owner reported
+  const now = Date.parse('2026-11-01T07:40:00Z');
+  const d7 = presetSpan('7d', now);
+  check(
+    '⚠️ analytics time: "7 days" is today and the six UTC days before it, from midnight, ending now',
+    d7.from.toISOString() === '2026-10-26T00:00:00.000Z' && d7.to.getTime() === now && d7.grain === 'day',
+    d7.from.toISOString(),
+  );
+  const h24 = presetSpan('24h', now);
+  check('analytics time: "24 hours" is the current UTC hour and the 23 before it', h24.from.toISOString() === '2026-10-31T08:00:00.000Z' && h24.grain === 'hour');
+  const month = presetSpan('month', now);
+  check(
+    '⚠️ analytics time: "Last month" is the previous UTC calendar month, never the local one',
+    month.from.toISOString() === '2026-10-01T00:00:00.000Z' && month.to.toISOString() === '2026-11-01T00:00:00.000Z',
+  );
+  const one = customSpan('2026-10-31', '2026-10-31');
+  check(
+    'analytics time: a custom range is UTC days, the end day included, and two days or fewer go by the hour',
+    one.from.toISOString() === '2026-10-31T00:00:00.000Z' && one.to.toISOString() === '2026-11-01T00:00:00.000Z' && one.grain === 'hour' &&
+      customSpan('2026-10-01', '2026-10-31').grain === 'day',
+  );
+  const filled = fillSeries([{ t: '2026-10-28T00:00:00.000Z', views: 5 }], d7, 'day', (t) => ({ t, views: 0 }));
+  check(
+    '⚠️ analytics time: the series has EVERY bucket — a quiet day is a zero, not a missing point the chart closes up',
+    filled.length === 7 && filled[2].views === 5 && filled[0].views === 0 && filled[6].t === '2026-11-01T00:00:00.000Z',
+    filled.map((p) => p.views).join(','),
+  );
+  check(
+    'analytics time: the bucket still filling is told apart from the whole ones',
+    isPartial('2026-11-01T00:00:00.000Z', 'day', d7.to) && !isPartial('2026-10-31T00:00:00.000Z', 'day', d7.to) &&
+      !isPartial('2026-10-31T00:00:00.000Z', 'day', month.to),
+  );
+  check('analytics time: the range is stated in UTC', spanLabel(d7) === 'Oct 26 – Nov 1, 07:40 UTC' && spanLabel(month) === 'Oct 1 – Oct 31 (UTC)', `${spanLabel(d7)} | ${spanLabel(month)}`);
+
+  const term = { from: '2026-09-12', until: '2027-09-12' };
+  const periods = reportPeriods(term, now);
+  check(
+    '⚠️ sponsor report: a period is the 12th to the 11th, newest first, the current one marked and cut at now',
+    periods.map((p) => p.id).join(',') === '2026-10-12,2026-09-12' &&
+      periods[1].from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[1].to.toISOString() === '2026-10-12T00:00:00.000Z' &&
+      periods[1].label === 'Sep 12 – Oct 11, 2026' && periods[0].label === 'Oct 12 – Nov 11, 2026' &&
+      periods[0].inProgress && periods[0].to.getTime() === now && !periods[1].inProgress,
+    periods.map((p) => `${p.id}:${p.label}`).join(' | '),
+  );
+  check(
+    'sponsor report: each period compares with the one before it, and the first with nothing',
+    periods[0].prev?.from.toISOString() === '2026-09-12T00:00:00.000Z' && periods[0].prev?.to.toISOString() === '2026-10-12T00:00:00.000Z' && periods[1].prev === null,
+  );
+  const all = reportPeriods(term, Date.parse('2027-12-01T00:00:00Z'));
+  check(
+    'sponsor report: twelve periods in the term, the last ending the day before it does, and one across New Year names both years',
+    all.length === 12 && all[0].id === '2027-08-12' && all[0].to.toISOString() === '2027-09-12T00:00:00.000Z' && !all[0].inProgress &&
+      all.find((p) => p.id === '2026-12-12')?.label === 'Dec 12, 2026 – Jan 11, 2027',
+    all.map((p) => p.label).join(' | '),
+  );
+  check('sponsor report: nothing before the term starts', reportPeriods(term, Date.parse('2026-09-01T00:00:00Z')).length === 0);
+
+  // ---- the writer: a PDF is offsets as much as drawing, and a wrong one opens as "damaged"
+  const doc = new PdfDoc(612, 792, { title: 'Test (one) \\ two', created: new Date(now) });
+  doc.setImage(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), 2, 1);
+  const pg = doc.addPage();
+  pg.text(10, 20, 'Sep 12 – Sep 30 · “quoted” (paren)', { size: 10 });
+  pg.image(10, 30, 20, 10);
+  doc.addPage().rect(0, 0, 10, 10, { fill: [1, 0, 0] });
+  const bytes = doc.toBytes();
+  const latin = (b: Uint8Array): string => Array.from(b, (c) => String.fromCharCode(c)).join('');
+  const s = latin(bytes);
+  const startxref = Number(/startxref\n(\d+)\n%%EOF\n$/.exec(s)?.[1]);
+  const xref = s.slice(startxref);
+  const entries = [...xref.matchAll(/(\d{10}) 00000 n /g)].map((m) => Number(m[1]));
+  check(
+    '⚠️ pdf: every xref offset points at its own object, and startxref at the table',
+    s.startsWith('%PDF-1.4\n') && xref.startsWith('xref\n0 11\n') && entries.length === 10 && entries.every((off, i) => s.startsWith(`${i + 1} 0 obj\n`, off)),
+    `startxref=${startxref} entries=${entries.length}`,
+  );
+  check(
+    'pdf: text is WinAnsi with its parentheses escaped — the en dash, middle dot and curly quotes are one byte each',
+    s.includes('(Sep 12 \x96 Sep 30 \xb7 \x93quoted\x94 \\(paren\\)) Tj') && s.includes('/Title (Test \\(one\\) \\\\ two)'),
+  );
+  check('pdf: the image is drawn only on the page that uses it', (s.match(/\/XObject << \/Im1 6 0 R >>/g) ?? []).length === 1);
+  check(
+    'pdf: text is measured with the face it is drawn in, and wrapped on spaces',
+    Math.abs(textWidth('DSIM', 10) - 25) < 0.01 && textWidth('report', 10, true) > textWidth('report', 10) &&
+      wrapText('one two three four five', textWidth('one two three', 10) + 0.5, 10).join('|') === 'one two three|four five',
+  );
+
+  // ---- the report itself, from fixed numbers
+  const report = (over: Partial<{ events: { name: string; views: number; visitors: number }[] }> = {}) => ({
+    source: 'aggregate' as const,
+    rawFloor: '',
+    totals: { views: 2801, visitors: 934, sessions: 934, bounces: 100, seconds: 9000 },
+    previous: { views: 0, visitors: 0, sessions: 0, bounces: 0, seconds: 0 },
+    series: [{ t: '2026-10-05T00:00:00.000Z', views: 89, visitors: 34 }],
+    breakdowns: [
+      { dim: 'country', val: 'US', views: 500, visitors: 100, total: 2801 },
+      { dim: 'surface', val: 'web', views: 2400, visitors: 800, total: 2801 },
+      { dim: 'surface', val: 'electron', views: 401, visitors: 134, total: 2801 },
+    ],
+    events: over.events ?? [
+      { name: 'sponsor_shown', views: 1646, visitors: 900 },
+      { name: 'sponsor_click', views: 121, visitors: 100 },
+    ],
+    eventProps: [
+      { name: 'sponsor_shown', key: 'placement', val: 'footer', views: 704 },
+      { name: 'sponsor_shown', key: 'placement', val: 'home', views: 942 },
+      { name: 'sponsor_click', key: 'placement', val: 'home', views: 121 },
+      { name: 'sponsor_dwell', key: 'dwell', val: '1-5m', views: 300 },
+    ],
+    online: 0,
+    grain: 'day' as const,
+  });
+  // Oct 12 – Nov 11 (31 days), finished, against Sep 12 – Oct 11 (30 days)
+  const done = reportPeriods(term, Date.parse('2026-11-20T00:00:00Z'))[1];
+  const pdf = latin(
+    sponsorReportPdf({
+      period: done,
+      prev: done.prev,
+      sponsor: { name: 'Offset Robotics', url: 'https://offsetrobotics.com', campaign: 'biobuzz-2026' },
+      placements: ['home', 'footer', 'game'],
+      generatedAt: new Date(now),
+      cur: report(),
+      prevReport: report({ events: [{ name: 'sponsor_shown', views: 1200, visitors: 700 }, { name: 'sponsor_click', views: 48, visitors: 40 }] }),
+      product: null,
+      daily: [{ day: '2026-10-15', name: 'sponsor_shown', n: 60 }],
+      logo: null,
+    }),
+  );
+  check(
+    '⚠️ sponsor PDF: four pages, the period named, the totals and the per-placement click-through printed',
+    (pdf.match(/\/Type \/Page /g) ?? []).length === 4 && pdf.includes('(Oct 12 \x96 Nov 11, 2026) Tj') && pdf.includes('(1,646) Tj') &&
+      pdf.includes('(121) Tj') && pdf.includes('(Home menu) Tj') && pdf.includes('(13%) Tj'),
+  );
+  check(
+    'sponsor PDF: month over month is a DAILY rate (31 days against 30), and says against what',
+    // 1646/31 against 1200/30 is +33%; the raw totals would read +37%
+    pdf.includes('(+33% a day vs Sep 12\x96Oct 11) Tj'),
+  );
+  check(
+    'sponsor PDF: no player numbers to print says so instead of printing zeros',
+    pdf.includes('(Player numbers could not be read for this period.) Tj'),
   );
 }
 
@@ -31324,7 +31747,7 @@ const dumperSetup = (): RobotSetup => {
       /import \{ importerOpenOn \} from '\.\/net\/imported';/.test(sv) && /readonly VITE_ROBOT_IMPORT\?: string;/.test(rdG('src/vite-env.d.ts')));
   check('importer gate/client: the editor route is matched only where the importer is open, and otherwise falls through to the robot page',
     /if \(robotImport && importerEnabled\(\)\) return at\('robotimport'/.test(app) &&
-      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'controls' })"));
+      app.indexOf("at('robotimport'") < app.indexOf("return at('configure', { sub: configure[1] ?? 'robot' })"));
   check('importer gate/client: the editor renders, and the robot page can open it, only where the importer is open',
     /\{screen === 'robotimport' && importerOn && \(/.test(app) && /onImport=\{importerOn \? \(id\) => navigate\('robotimport', \{ sub: id \?\? null \}\) : undefined\}/.test(app));
   check('importer gate/client: App keeps the stored copy and renders from `shown`; every write goes through `keepImportActive`',
@@ -33305,7 +33728,7 @@ function impPlayCheck(g: GameId): void {
         /entry && stale \? <p className="ds-hint warn">\{COPY\.staleText\}<\/p>/.test(panel) &&
         /entry && stale \? \(\s*<button type="button" className="ds-btn small" onClick=\{onImportFile\}>/.test(panel));
     check('stale copy: picking the card that answers for the active robot changes nothing (an old copy cannot be re-applied over the new spec)',
-      /onPick=\{\(e\) => \(answersFor\(e, importedId\) \? undefined : applySpec\(\{ \.\.\.e\.spec \}\)\)\}/.test(menu) &&
+      /onPick=\{\(e\) => \{\s*if \(answersFor\(e, importedId\)\) return;\s*editingSaved\.delete\(settings\.game\);\s*applySpec\(\{ \.\.\.e\.spec \}\);\s*\}\}/.test(menu) &&
         /libraryEntryFor\(importLibrary\.entries, mySpec\.imported\?\.id\)\?\.id === e\.id \? undefined : pickSpec/.test(rd('src/ui/Lobby.tsx')));
   } finally {
     resetImportedAssetsForTests();
@@ -34919,9 +35342,12 @@ function impPlayCheck(g: GameId): void {
 const L2_MECH_PINS: Record<string, string> = {
   decode: 'held=3611 2049313317:2420555697 2788731338:1198073570 1577943677:3474038497',
   chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
-  biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459',
+  biobuzz: 'held=1093 3422097223:1254981451 993448729:176113124 1743880239:96600886',
   bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
 };
+// `biobuzz` re-pinned 2026-10-24 for `SIM_PATCH` 10: the double turret and the dumper are POLLEN +
+// NECTAR intakes and take the opponent's NECTAR now. The patch-9 run must still be the old pin.
+const L2_MECH_PINS_PATCH9 = { biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459' };
 // `bb3d` re-pinned 2026-10-04 for `SIM_PATCH` 7 (the FLOWER plates over their measured outline); the
 // old pin is the patch-6 run's, checked beside it.
 const L2_MECH_PINS_PATCH6 = { bb3d: 'held=693 385226777:3749707125 2128002571:24819118' };
@@ -35025,6 +35451,8 @@ function l2MechRun(g: GameId | 'bb3d', ticks: number, patch?: number): string {
 {
   const got = l2MechRun('biobuzz', 900);
   check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 2D (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.biobuzz, got);
+  const old9 = l2MechRun('biobuzz', 900, 9);
+  check('imported mechanisms: …and under SIM_PATCH 9 (opponent NECTAR refused at the intake) the 2D run lands on the pin it had before patch 10', old9 === L2_MECH_PINS_PATCH9.biobuzz, old9);
 }
 {
   await initPhysics3d();
@@ -41048,8 +41476,13 @@ function fxImportFixed(): RobotSpec {
       cloneBindings({ ...DEFAULT_BINDINGS, pad: { ...DEFAULT_BINDINGS.pad, turnCurve: 2.5 } }).pad.turnCurve === 2.5,
   );
 
+  // a trigger-turner's map as it loads: Shoot and Intake keep their old A and B (a NEW map has
+  // neither since 2026-11-01, `bar pad:` above), so its NECTAR bar has no pad button
   const trig = cloneBindings(DEFAULT_BINDINGS);
   trig.pad.turnWith = 'triggers';
+  trig.pad.buttons.fire = [7, 0];
+  trig.pad.buttons.intake = [6, 1];
+  trig.pad.buttons.bbBar = [];
   trig.pad.combos.bbPlace = [[6, 12], [12, 13]];
   check('turn with: on the stick, the pad map plays as stored', livePad(DEFAULT_BINDINGS.pad) === DEFAULT_BINDINGS.pad);
   const live = livePad(trig.pad);
@@ -41072,7 +41505,7 @@ function fxImportFixed(): RobotSpec {
       padConflict(trig, 'biobuzz', 'bbPass', [6])?.action === 'rotateCCW' &&
       padConflict(trig, null, 'park', [6, 13])?.action === 'rotateCCW' &&
       padConflict(trig, null, 'fire', [7])?.action === 'rotateCW' &&
-      padConflict(trig, null, 'bbPass', [13]) === null &&
+      padConflict(trig, null, 'bbPass', [16]) === null &&
       // on the stick the triggers are ordinary buttons again
       padConflict(DEFAULT_BINDINGS, null, 'bbPass', [7])?.action === 'fire',
   );

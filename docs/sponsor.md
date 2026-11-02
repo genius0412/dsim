@@ -181,9 +181,24 @@ whose plate is painted `rgba(18,21,26,0.86)` regardless of theme.
 
 All of it from DSIM's own analytics (`src/analytics.ts` → `server/analytics.ts`,
 `VITE_ANALYTICS=1`, cookieless, no identifiers in any payload). The admin console's
-**Analytics** tab has a **Sponsor report** panel laid out as the lines below: pick **Last
-month** and press **Export CSV**. A month older than the 30 days of raw events still reads
-correctly — events and their properties are kept in the daily rollups.
+**Analytics** tab has a **Sponsor report** panel laid out as the lines below.
+
+**The report that is sent is the PDF** (owner, 2026-11-01): in the Sponsor report panel, pick the
+month under **Monthly report** and press **Download PDF**. A sponsor month runs from the 12th to
+the 11th (owner, 2026-11-01), in UTC, because the term opened on 2026-09-12: Sep 12 – Oct 11,
+Oct 12 – Nov 11, and on to Aug 12 – Sep 11, 2027; the one in progress is listed as "(so far)".
+It is read on its own, whatever range the dashboard is showing (the dashboard's **Last month** is
+a calendar month, not a sponsor month), so the same period gives the same file. Four pages: the totals with
+month-over-month change, impressions and clicks per day, the placement table; time on screen,
+videos, downloads, site traffic per day and the audience; players (matches, new accounts, the
+busiest moment) and how each number is counted; the daily figures. Month-over-month compares
+DAILY rates, because the periods differ in length, and is left out for a period under a week
+old. The **Export CSV** beside it is the dashboard range's lines, as before. Built by
+`src/ui/AdminSponsorPdf.ts` on the hand-written `src/ui/pdfWriter.ts` (no library: the client
+takes none), a lazy chunk fetched on the first press; the per-day events come from
+`GET /api/analytics/events-daily`, which reads the same tier and imported days as the totals so
+the days add up to them. A month older than the 30 days of raw events still reads correctly —
+events and their properties are kept in the daily rollups.
 
 Until September 2026 the report was read off Vercel Web Analytics. That was removed; its history
 (2026-09-13 onward, loaded by `scripts/import-vercel-analytics.ts`) is folded into the same panel:
@@ -234,7 +249,9 @@ before the report month closes, not after.
 
 ### What the report cannot say, and must not pretend to
 
-- **`player_joined` over-counts once, and the report must footnote it.** It fires when the
+- **`player_joined` over-counts once, and the report must footnote it.** The PDF prints it as
+  "New players (sign-up step)" beside **New accounts**, counted from `profiles`, which does not
+  over-count, and footnotes the difference. It fires when the
   username gate is satisfied, which is the last step of signing up — and that gate also
   catches LEGACY accounts that predate usernames, so each of those bills as a join the first
   time its owner comes back. A one-off tail, not a recurring bias. A second signal that
@@ -251,8 +268,9 @@ before the report month closes, not after.
   Its clicks are visible only to Offset, via the `utm_medium=loading` tag.
 - **Sessions are not people.** The visitor key is a hash salted per day, so nothing is
   deduplicated across days or devices.
-- **Months either side of the switch are not like for like.** Our own count honours Do Not
-  Track and Global Privacy Control and Vercel's did not, so the same traffic reads somewhat
-  lower from then on. Say so if a report compares across the switch.
+- **Months either side of the switch are not like for like.** Vercel's counter and ours filter
+  bots differently, and Vercel counted no sessions. (Ours ignored Do Not Track and Global Privacy
+  Control from 2026-09-25, owner's call, so that is no longer a difference.) The PDF names the
+  day the count switched whenever its month holds imported days.
 - **A click is a click-through, not a visit.** Offset's own analytics is the authority on what
   arrived.

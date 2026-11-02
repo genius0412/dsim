@@ -19,6 +19,7 @@ import { autoUiChecks } from './autosUi';
 import { goldenChecks } from './golden';
 import { importedChecks, importedPerfChecks } from './imported';
 import { fixedChecks } from './fixed';
+import { rejectChecks } from './reject';
 import type { Check } from './harness';
 
 /**
@@ -114,6 +115,9 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // the FIXED launcher (2026-10-02): the kit robot's one-wheel launcher at a setpoint — the pins
   // that prove every other launcher is untouched, where it scores from, and that the ROBOT aims
   { name: 'FIXED', fn: fixedChecks },
+  // the opponent's NECTAR (2026-10-24, SIM_PATCH 10): a POLLEN + NECTAR intake takes it, G408 warns
+  // and cards, and REVERSE / auto-reverse / pass-through / the NECTAR bar get rid of it (`nectarReject.ts`)
+  { name: 'REJECT', fn: rejectChecks },
   // EVERY ABSOLUTE WALL-CLOCK BUDGET ("this costs <= N ms"), and nothing else. A budget is a claim
   // about what the work costs on an idle machine, so `bbshard.mjs` never packs this lane beside
   // another: it runs alone after the other shards, and under `npm test` after the shared suite

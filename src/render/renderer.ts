@@ -187,7 +187,7 @@ export class Renderer {
         // auto-intake must not draw it live either.
         const intakeOn =
           robotsEnabled(world) &&
-          ((r.id === localRobotId && (lastCommand?.intake ?? false)) || (r.autoIntake && r.hopper.length < 3));
+          ((r.id === localRobotId && (lastCommand?.intake ?? false)) || ((r.autoIntake || r.autoPathActive) && r.hopper.length < 3));
         // NO_HELD is shared and never written to — every `drawRobot` treats `held` as read-only.
         const held = heldBy.get(r.id) ?? NO_HELD;
         (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);

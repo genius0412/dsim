@@ -490,6 +490,28 @@ import {
 } from '../../src/games/biobuzz/scene/renderPhotoVenue';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
+// -- the venue sight lines (2026-11-01): nothing a venue draws stands in front of the play ------
+import {
+  PHOTO_FLOOR_FAR_IN,
+  PHOTO_FLOOR_LIGHT_IN,
+  PHOTO_FLOOR_NEAR_IN,
+  PHOTO_FLOOR_WALL_IN,
+  PHOTO_KEEP_OUT,
+  PHOTO_NEAR_IN,
+  PHOTO_VIEW_MAX_DEG,
+  photoFurnitureDropped,
+  type PhotoLayerPartAsset,
+} from '../../src/games/biobuzz/scene/renderPhotoVenue';
+import {
+  MAST_AT,
+  RIG_CLEAR_IN,
+  STANDS_MARGIN_IN,
+  applyVenueLayers,
+  syncVenueRigLayer,
+  venueCameraRoom,
+} from '../../src/games/biobuzz/scene/renderVenue';
+import type { CameraRoom } from '../../src/games/biobuzz/scene/renderCameras';
+import { BB_HIVE_X as SIGHT_HIVE_X } from '../../src/games/biobuzz/config';
 import {
   ORBIT_CENTER_Z as CAM_ORBIT_CENTER_Z,
   ORBIT_RADIUS_MAX as CAM_ORBIT_RADIUS_MAX,
@@ -1952,6 +1974,7 @@ export function renderChecks(check: Check): void {
   importedRobotChecks(check);
   fixedShooterChecks(check);
   photoVenueChecks(check);
+  venueSightChecks(check);
   movedDefaultChecks(check);
   hidpiBudgetChecks(check);
 }
@@ -7826,7 +7849,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check(
         '...and the thumbnail is the card’s picture, not its body',
         readFileSync(join(root, 'src', 'ui', 'RobotCard.tsx'), 'utf8').includes('{thumb}') &&
-          !slotCode.includes('bbConfigSummary'),
+          !slotCode.includes('bbSpecSheet'),
       );
       // THE HERO'S 3D FAILURE is a segment state, not a sentence in the 96px preview column —
       // the sentence widened the column until the robot's name was cut to "My Ro…"
@@ -10413,15 +10436,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           }
         }
 
-        // ── THE EASE — the same smoothstep the Box Tube uses, wired the same way (`bbRampAt` /
-        // `world.time`, clamped to [0, 1]) and re-derived standalone here (the RENDER lane has no
-        // `World` to run `sync` against — see the file header). At t0 the robot is still FOLDED
-        // (frac 0); a `BB_RAMP_DEPLOY_S` later it is fully DEPLOYED (frac 1).
+        // ── THE EASE — the same smoothstep the Box Tube uses, re-derived standalone here (the RENDER
+        // lane has no `World` to run `sync` against — see the file header). At t0 the robot is still
+        // FOLDED (frac 0); a `BB_RAMP_DEPLOY_S` later it is fully DEPLOYED (frac 1). Since the ramp
+        // doubles as a NECTAR bar (2026-11-01) the scene reads the SIM's pose, `bbRampPose`, off
+        // `world.time` — the curve the swing guard tests — rather than easing its own copy.
         check(
-          'the sync code eases the ramp off `bbRampAt`/`world.time`, clamped and smoothstepped',
-          robotsCode.includes('r.bbRampAt ?? -Infinity') &&
-            robotsCode.includes('/ bbRampDeployS(r.spec)') && // the swing time, an import's tuning included
-            robotsCode.includes('smoothstep01(t)'),
+          'the sync code poses the ramp off the sim\'s own `bbRampPose(r, world.time)`',
+          robotsCode.includes('BB_RAMP_DEPLOYED_ROT * bbRampPose(r, world.time)') &&
+            robotsCode.includes('const rampOut = bbRampPose(r, world.time)'), // an import's ramp joint too
         );
         check(
           'the side rollers spin off the SAME running gate as the sweeper, opposite senses',
@@ -14423,7 +14446,7 @@ function photoVenueChecks(check: Check): void {
     // fetched only if they fail), else the box's 4k and the light map
     check(`photo ${e.id}: the 4k backdrop is at most 1.5 MB`, p.bytes.backdrop <= 1.5e6, String(p.bytes.backdrop));
     const l = p.layers;
-    const mb = (l ? l.bytes.bg + l.bytes.fg + l.bytes.mesh + p.bytes.ibl : p.bytes.backdrop + p.bytes.ibl) / 1e6;
+    const mb = ((l ? l.bytes.bg + l.bytes.fg + l.bytes.mesh + p.bytes.ibl : p.bytes.backdrop + p.bytes.ibl) + (p.floorTexture?.bytes ?? 0)) / 1e6;
     check(
       `photo ${e.id}: the picker's note states the High-tier download to 0.1 MB`,
       e.note.includes(`${mb.toFixed(1)} MB`),
@@ -14762,10 +14785,11 @@ function photoVenueChecks(check: Check): void {
     }
     check('photo cameras: the overhead and minimap shots move only the ceiling', topDownWalls === 0, String(topDownWalls));
     // renderScene hands the room over when the row is PICKED (a camera does not jump in when the
-    // backdrop lands), and clears it for a procedural venue
+    // backdrop lands), and a procedural venue's own hold otherwise (null where it has no stands,
+    // `venueSightChecks`)
     check(
-      'photo cameras: renderScene sets the room from the photographed row, null for any other',
-      /this\.cameras\.setRoom\(def\.photo \? photoCameraRoom\(def\.photo\) : null\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
+      'photo cameras: renderScene sets the room from the photographed row, the procedural venue’s hold for any other',
+      /this\.cameras\.setRoom\(def\.photo \? photoCameraRoom\(def\.photo\) : venueCameraRoom\(def\.venue, detail\)\);/.test(readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8')),
     );
 
     // THE MENU STAGE'S EYES (`src/ui/menuStagePoses.ts`). Home is a high shot, 87 in above the lens,
@@ -14805,7 +14829,7 @@ function photoVenueChecks(check: Check): void {
       'photo shadow: renderScene builds the catcher from its own sun, with this row’s rig on it',
       /const half = BB_HALF_X \+ 20;/.test(sc) &&
         /cam\.near = 1;\s*cam\.far = 260;/.test(sc) &&
-        /buildPhotoVenue\(def, src, this\.sun, this\.settings\.envLighting\)/.test(sc),
+        /buildPhotoVenue\(def, src, this\.sun, this\.settings\.envLighting, floor\)/.test(sc),
     );
     const half = BB_HALF_X + 20;
     const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
@@ -15092,6 +15116,388 @@ function photoVenueChecks(check: Check): void {
   }
 
   layeredRoomChecks(check, photos, webpSize);
+  photoKeepOutChecks(check, photos);
+  photoFloorChecks(check, photos, webpSize);
+}
+
+/**
+ * THE PHOTOGRAPHED FLOOR IS A TEXTURE (2026-11-01; `renderPhotoVenue.ts`, `PhotoFloorTexture`). Owner:
+ * "The scenes are still severely distorted." Projected from the lens 63 in up, the floor a few lens
+ * heights out is texels many inches long, drawn as streaks by every higher or nearer eye; the
+ * events hall's own floor was also painted over (mirrored, de-glossed) right up to the field.
+ */
+function photoFloorChecks(check: Check, photos: EnvironmentDef[], webpSize: (buf: Buffer) => [number, number] | null): void {
+  const tiled = photos.filter((e) => e.photo!.floorTexture).map((e) => e.id);
+  check(
+    'photo floor: the events hall, hangar, school hall and quad draw their floor from a tile; the court keeps its projected, painted court',
+    ['events-hall', 'hangar', 'school-hall', 'quad'].every((id) => tiled.includes(id)) && !tiled.includes('court'),
+    tiled.join(','),
+  );
+  for (const e of photos) {
+    const f = e.photo!.floorTexture;
+    if (!f) continue;
+    const buf = readFileSync(join(root, 'public', f.tile));
+    const wh = webpSize(buf);
+    check(
+      `photo floor ${e.id}: ${f.tile} is a relative public/ path, the size the row states, a 1024 × 1024 WebP`,
+      /^venues\/[a-z-]+-floor\.webp$/.test(f.tile) && buf.length === f.bytes && !!wh && wh[0] === 1024 && wh[1] === 1024,
+      `${buf.length} vs ${f.bytes}; ${wh}`,
+    );
+    check(
+      `photo floor ${e.id}: the tile covers 8–25 ft each way, its mean and the room's floor are positive, its light share 0–1`,
+      f.inches.every((v) => v >= 96 && v <= 300) && [...f.mean, ...f.base].every((v) => v > 0.01 && v < 2) && f.light >= 0 && f.light <= 1,
+      JSON.stringify(f),
+    );
+  }
+  const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+  const frag = /const FRAG = \/\* glsl \*\/ `([\s\S]*?)`;/.exec(pv)?.[1] ?? '';
+  check(
+    'photo floor: the shader draws a level surface below the lens from the tile, recoloured to the room, with the photograph back at a wall’s foot',
+    /float isFloor = abs\( fn\.z \) > 0\.95 \* length\( fn \) && vWorld\.z < bbEye\.z - 12\.0/.test(frag) &&
+      /texture\( bbFloor, vWorld\.xy \* bbFloorScale \)/.test(frag) &&
+      /eT \/ \( 1\.0 - eT \) \/ bbFloorMean \* light/.test(frag) &&
+      /smoothstep\( 0\.0, BB_FLOOR_WALL, min\( wall\.x, wall\.y \) \)/.test(frag) &&
+      /#ifdef BB_FLOOR\s*\n\s*x = photoFloor\( x, uv \);/.test(frag),
+  );
+  check(
+    'photo floor: the floor’s light is the photograph blurred PHOTO_FLOOR_LIGHT_IN across the lens’s ray, fading to the room’s colour from PHOTO_FLOOR_NEAR_IN to PHOTO_FLOOR_FAR_IN',
+    PHOTO_FLOOR_LIGHT_IN === 48 &&
+      PHOTO_FLOOR_NEAR_IN < PHOTO_FLOOR_FAR_IN &&
+      PHOTO_FLOOR_WALL_IN > 0 &&
+      /textureLod\( bbMap, uv, log2\( max\( BB_FLOOR_LIGHT \/ across, 1\.0 \) \) \)/.test(frag) &&
+      /smoothstep\( BB_FLOOR_NEAR, BB_FLOOR_FAR, r \)/.test(frag),
+  );
+  const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const floor = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const unit = (): PhotoLayerPartAsset => ({ geometry: new THREE.BufferGeometry(), position: new THREE.Vector3(), scale: new THREE.Vector3(1, 1, 1) });
+  const build = (id: EnvironmentDef['id'], fl: THREE.Texture | null): THREE.Group =>
+    buildPhotoVenue(environmentDef(id), { bg: tex, fg: tex, parts: new Map(PHOTO_LAYER_PARTS.map((k) => [k, unit()])) }, new THREE.DirectionalLight(), true, fl);
+  const mat = (g: THREE.Group, k: string): THREE.ShaderMaterial | undefined =>
+    (g.getObjectByName(`bb-venue:photo-${k}`) as THREE.Mesh | undefined)?.material as THREE.ShaderMaterial | undefined;
+  const free = (g: THREE.Group): void =>
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  {
+    const g = build('hangar', floor);
+    const f = environmentDef('hangar').photo!.floorTexture!;
+    check(
+      'photo floor: a loaded tile goes on the room’s two parts with the row’s numbers, never on the furniture',
+      ['bg-lo', 'bg-hi'].every(
+        (k) => 'BB_FLOOR' in mat(g, k)!.defines! && mat(g, k)!.uniforms.bbFloor.value === floor && (mat(g, k)!.uniforms.bbFloorScale.value as THREE.Vector2).x === 1 / f.inches[0],
+      ) && ['fg-lo', 'fg-hi'].every((k) => !('BB_FLOOR' in mat(g, k)!.defines!) && !mat(g, k)!.uniforms.bbFloor),
+    );
+    check('photo floor: the tile is one of the textures the venue owns and frees', photoTexturesOf(g).includes(floor));
+    free(g);
+    const h = build('hangar', null);
+    check('photo floor: without the tile (it failed) the room projects its floor, as before', ['bg-lo', 'bg-hi'].every((k) => !('BB_FLOOR' in mat(h, k)!.defines!)));
+    free(h);
+  }
+  {
+    const g = build('events-hall', floor);
+    const c = build('court', null);
+    check(
+      'photo floor: the events hall leaves its furniture above the lens out (its pendant lamps), the court keeps its',
+      environmentDef('events-hall').photo!.layers!.upper === false && !mat(g, 'fg-hi') && !!mat(g, 'fg-lo') && !!mat(c, 'fg-hi'),
+    );
+    free(g);
+    free(c);
+  }
+}
+
+/** the points a camera must see in a match, field inches: the field's corners on the mat and at
+ *  its wall tops, both hive tops, the centre, and both alliance areas' centres */
+const SIGHT_POINTS: readonly [number, number, number][] = (() => {
+  const pts: [number, number, number][] = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      pts.push([sx * BB_HALF_X, sy * BB_HALF_Y, 0], [sx * BB_HALF_X, sy * BB_HALF_Y, BB3_WALL_H]);
+    }
+    pts.push([sx * SIGHT_HIVE_X, 0, 66]);
+    const a = ALLIANCE_AREA[sx < 0 ? 'red' : 'blue'];
+    pts.push([(a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2, 0]);
+  }
+  pts.push([0, 0, 0]);
+  return pts;
+})();
+
+/**
+ * EVERY EYE A PLAYER CAN TAKE IN A MATCH, through the REAL camera code (`createCameras`) with `room`
+ * set as `renderScene` sets it: the fitted driver camera and the height-accurate one (48–84 in) on
+ * five screen shapes (16:9, 21:9, 4:3, a portrait and a landscape phone), both alliances and both
+ * roles; the chase camera behind a robot at nine points of the field facing eight ways; the orbit
+ * at its default, then at seven elevations and twelve yaws, wheeled in and out to its limits; the
+ * free cam at its default, then panned to the centre and the corners, at six yaws, its lowest,
+ * middle and highest pitch, dollied in and out; the overhead; and the menu stage's eyes. `visit`
+ * gets each camera as `update` returned it.
+ */
+function sweepMatchEyes(room: CameraRoom | null, visit: (label: string, cam: THREE.Camera) => void): void {
+  const world = mkWorld('practice', 1);
+  const robot = world.robots[0];
+  const cams = createPhotoCameras();
+  cams.setRoom(room);
+  cams.setFreeNav({ ...FREE_CAM_NAV_DEFAULT, smoothing: false });
+  const frame = (o: Partial<SceneFrame> = {}): SceneFrame => ({ alpha: 0, viewAngle: viewAngleOf('red'), camera: 'orbit', width: 1600, height: 900, dpr: 1, ...o });
+  const saved = { alliance: robot.alliance, pos: { ...robot.pos }, heading: robot.heading };
+  for (const [w, h] of [[1600, 900], [2100, 900], [1024, 768], [390, 844], [844, 390]]) {
+    for (const height of [null, 48, 70, 84]) {
+      setDriverHeightIn(height);
+      for (const al of ['red', 'blue'] as const) {
+        robot.alliance = al;
+        for (const cat of ['close', 'far'] as const) {
+          visit(`driver ${w}×${h} ${height ?? 'fit'} ${al} ${cat}`, cams.update(frame({ camera: 'driver', viewAngle: viewAngleOf(al), width: w, height: h, localRobotId: robot.id, localStartCat: cat }), world, 'driver'));
+        }
+      }
+    }
+  }
+  setDriverHeightIn(null);
+  robot.alliance = 'red';
+  for (const x of [-66, 0, 66]) {
+    for (const y of [-66, 0, 66]) {
+      for (let k = 0; k < 8; k++) {
+        robot.pos = { x, y };
+        robot.heading = (k / 8) * 2 * Math.PI;
+        visit(`chase ${x},${y} ${k * 45}°`, cams.update(frame({ camera: 'chase', localRobotId: robot.id }), world, 'chase'));
+      }
+    }
+  }
+  visit('overhead', cams.update(frame({ camera: 'overhead' }), world, 'overhead'));
+  visit('orbit default', cams.update(frame(), world, 'orbit'));
+  for (let el = 0; el <= 6; el++) {
+    cams.orbitDrag(0, -10_000);
+    cams.orbitDrag(0, (el / 6) * 400);
+    for (let k = 0; k < 12; k++) {
+      cams.orbitDrag(-(2 * Math.PI) / 12 / 0.006, 0);
+      for (const z of [-1e5, 1e5]) {
+        for (let i = 0; i < 20; i++) cams.orbitZoom(z / 20);
+        visit(`orbit el${el} yaw${k * 30} ${z < 0 ? 'in' : 'out'}`, cams.update(frame(), world, 'orbit'));
+      }
+    }
+  }
+  visit('free default', cams.update(frame({ camera: 'free' }), world, 'free'));
+  for (const [tx, ty] of [[0, 0], [1, 1], [-1, 1], [-1, -1], [1, -1]]) {
+    for (let k = 0; k < 6; k++) {
+      for (const dp of [-10_000, 0, 10_000]) {
+        for (const sign of [-1, 1]) {
+          cams.freeReset(viewAngleOf('red'));
+          cams.freePan(tx * 10_000, ty * 10_000);
+          cams.freeOrbit((k / 6) * 2000, dp);
+          for (let i = 0; i < 20; i++) cams.freeDolly(sign * 2000);
+          visit(`free ${tx},${ty} ${k} ${dp} ${sign}`, cams.update(frame({ camera: 'free' }), world, 'free'));
+        }
+      }
+    }
+  }
+  for (const [view, p] of Object.entries(MENU_POSES)) {
+    visit(`menu ${view}`, cams.update(frame({ pose: { eye: p.eye, target: p.target, fovDeg: p.fovDeg } }), world, 'free'));
+  }
+  robot.alliance = saved.alliance;
+  robot.pos = saved.pos;
+  robot.heading = saved.heading;
+}
+
+/**
+ * NOTHING PHOTOGRAPHED STANDS IN FRONT OF THE PLAY (2026-11-01, `renderPhotoVenue.ts`,
+ * `PHOTO_KEEP_OUT`). Owner: "The scenes inside the actual game sometimes block the game view or are
+ * also distorted or just look weird." Captured offscreen from every in-match camera, every blocker
+ * was furniture relief: the court's default free cam looked at the field through a sky-white pole
+ * sliver, its default orbit through two sky shards; the events hall's free cam dollied out through
+ * a pendant lamp drawn as a streaked drape; the school hall's low orbit through the stage-wing
+ * curtains. The furniture shader drops what an eye sees from behind (as the lens saw it), what
+ * stands between an eye and the keep-out box, and what is right at the eye. Pinned: the box holds
+ * the play, the shader is the mirror, and on the real rooms, from every in-match eye, the furniture
+ * that stood in front of the field is dropped.
+ */
+function photoKeepOutChecks(check: Check, photos: EnvironmentDef[]): void {
+  const K = PHOTO_KEEP_OUT;
+  const inKeep = (p: readonly number[]): boolean => [0, 1, 2].every((i) => p[i] >= K.min[i] - 1e-9 && p[i] <= K.max[i] + 1e-9);
+  check(
+    'photo keep-out: the box holds the field’s corners at the mat and the wall tops, both hive tops and both alliance areas, from the photographed floor up',
+    SIGHT_POINTS.every(inKeep) &&
+      (['red', 'blue'] as const).every((a) => inKeep([ALLIANCE_AREA[a].x0, ALLIANCE_AREA[a].y0, 0]) && inKeep([ALLIANCE_AREA[a].x1, ALLIANCE_AREA[a].y1, 0])) &&
+      K.min[2] === PHOTO_FLOOR_Z &&
+      K.max[2] >= 66 + 24,
+    JSON.stringify(K),
+  );
+
+  // the rule, in plain numbers (`photoFurnitureDropped`, the shader's mirror)
+  const drop = (p: [number, number, number], eye: [number, number, number], axis?: [number, number, number]): boolean => photoFurnitureDropped(p, eye, axis);
+  check('photo keep-out: furniture inside the box is dropped from any eye', drop([-100, 30, 20], [-400, 300, 200]) && drop([0, 0, 90], [300, 0, 60]));
+  check('photo keep-out: furniture between a driver standing back and the field is dropped', drop([-200, 10, 60], [-300, 0, 70]));
+  check('photo keep-out: furniture across the field from the driver is kept', !drop([300, 0, 40], [-160, 0, 66]) && !drop([-300, 250, 40], [-160, 0, 66]));
+  check(
+    'photo keep-out: furniture the eye sees from behind (past it along the lens’s ray) is dropped, and the same piece from the lens’s side is kept',
+    drop([-150, 1, 100], [-212, 0, 132]) && !drop([-150, 1, 100], [-60, -20, 80]),
+  );
+  // PHOTO_VIEW_MAX_DEG (2026-11-01): relief seen far off the lens's own view shows sides nobody
+  // photographed — the school hall's seats from the overhead and high orbit cameras
+  check(
+    'photo keep-out: furniture seen more than PHOTO_VIEW_MAX_DEG off the lens’s ray is dropped (a seat from straight above), within it kept (the same seat from a driver)',
+    PHOTO_VIEW_MAX_DEG === 40 && drop([0, 150, 10], [0, 0, 800], [0, 0, -1]) && drop([0, 150, 10], [0, 0, 800]) && !drop([-200, 250, 20], [-124, 0, 72]),
+  );
+  check(
+    'photo keep-out: furniture inside half of PHOTO_NEAR_IN of the eye is dropped, the dithered outer half is not counted',
+    // the eye back along the lens's own ray from the piece, so only its distance decides
+    ((): boolean => {
+      const piece: [number, number, number] = [300, 300, 60];
+      const lens = PHOTO_FLOOR_Z + 63;
+      const len = Math.hypot(300, 300, 60 - lens);
+      const back = (d: number): [number, number, number] => [300 - (300 / len) * d, 300 - (300 / len) * d, 60 - ((60 - lens) / len) * d];
+      return drop(piece, back(PHOTO_NEAR_IN * 0.45)) && !drop(piece, back(PHOTO_NEAR_IN * 0.55));
+    })(),
+  );
+  check(
+    'photo keep-out: an orthographic camera tests along its axis (looking along the lens’s ray it keeps a piece its eye point would not)',
+    !drop([300, 0, 40], [300, -500, 40], [1, 0, 0]) && drop([300, 0, 40], [300, -500, 40]) && drop([60, 0, 10], [0, 0, 800], [0, 0, -1]),
+  );
+
+  // the shader is that rule
+  const pv = readFileSync(join(SCENE_DIR, 'renderPhotoVenue.ts'), 'utf8');
+  const frag = /const FRAG = \/\* glsl \*\/ `([\s\S]*?)`;/.exec(pv)?.[1] ?? '';
+  check(
+    'photo keep-out: the furniture shader drops what the eye sees more than PHOTO_VIEW_MAX_DEG off the lens’s ray, along the view ray or an orthographic camera’s axis',
+    /vec3 view = isOrthographic \? - vec3\( viewMatrix\[ 0 \]\[ 2 \], viewMatrix\[ 1 \]\[ 2 \], viewMatrix\[ 2 \]\[ 2 \] \) : vWorld - cameraPosition;/.test(frag) &&
+      /if \( dot\( normalize\( vWorld - bbEye \), normalize\( view \) \) < BB_VIEW_COS \) discard;/.test(frag),
+  );
+  check(
+    'photo keep-out: ...what the ray on past it carries into the keep-out box (a slab test from t = 0)',
+    /vec3 ta = \( bbKeepMin - vWorld \) \/ ray;/.test(frag) &&
+      /vec3 tb = \( bbKeepMax - vWorld \) \/ ray;/.test(frag) &&
+      /if \( min\( min\( thi\.x, thi\.y \), thi\.z \) >= max\( max\( max\( tlo\.x, tlo\.y \), tlo\.z \), 0\.0 \) \) discard;/.test(frag),
+  );
+  check(
+    'photo keep-out: ...and what is nearer the eye than BB_NEAR, on a dither over its outer half',
+    /float nearEye = length\( vWorld - cameraPosition \) \/ BB_NEAR;/.test(frag) && /if \( nearEye < 0\.5 \+ 0\.5 \* fract\(/.test(frag),
+  );
+  check(
+    'photo keep-out: all three only on the furniture (inside #ifdef BB_FURNITURE)',
+    /#ifdef BB_FURNITURE\s*\n\s*\/\/ the ray this camera sees[\s\S]*?nearEye[\s\S]*?#endif/.test(frag),
+  );
+  {
+    const def = environmentDef('court');
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    const unit = (): PhotoLayerPartAsset => ({ geometry: new THREE.BufferGeometry(), position: new THREE.Vector3(), scale: new THREE.Vector3(1, 1, 1) });
+    const g = buildPhotoVenue(def, { bg: tex, fg: tex, parts: new Map(PHOTO_LAYER_PARTS.map((k) => [k, unit()])) }, new THREE.DirectionalLight(), true);
+    const mat = (k: string): THREE.ShaderMaterial => (g.getObjectByName(`bb-venue:photo-${k}`) as THREE.Mesh).material as THREE.ShaderMaterial;
+    check(
+      'photo keep-out: the furniture materials carry PHOTO_KEEP_OUT and PHOTO_NEAR_IN, the room’s none',
+      ['fg-lo', 'fg-hi'].every((k) => (mat(k).uniforms.bbKeepMin.value as THREE.Vector3).toArray().every((v, i) => v === K.min[i]) && (mat(k).uniforms.bbKeepMax.value as THREE.Vector3).toArray().every((v, i) => v === K.max[i]) && mat(k).defines!.BB_NEAR === PHOTO_NEAR_IN.toFixed(1)) &&
+        ['bg-lo', 'bg-hi'].every((k) => !mat(k).uniforms.bbKeepMin && !('BB_NEAR' in mat(k).defines!)),
+    );
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+    });
+  }
+
+  // THE REAL ROOMS, FROM EVERY IN-MATCH EYE: the furniture vertices that stand between an eye and
+  // the box, counted with the rule off; every one of them is one the rule drops. 2026-11-01, over
+  // this sweep's 505 eyes per room: the school hall 9,617, the court 7,381, the events hall 1,499,
+  // the quad 236, the hangar 210, every room from the orbit and the free cam and 4,284 of them from
+  // driver eyes (the school hall's stage clutter, the court's light-pole sliver).
+  const front = (p: readonly number[], e: readonly number[]): boolean => {
+    let tn = 0;
+    let tf = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const v = p[i] - e[i] || 1e-6;
+      const ta = (K.min[i] - p[i]) / v;
+      const tb = (K.max[i] - p[i]) / v;
+      tn = Math.max(tn, Math.min(ta, tb));
+      tf = Math.min(tf, Math.max(ta, tb));
+    }
+    return tf >= tn;
+  };
+  const counts: string[] = [];
+  let kept = 0;
+  let total = 0;
+  let driverFront = 0;
+  for (const e of photos) {
+    const g = VENUE_ROOMS.get(e.id) ?? null;
+    if (!g) continue;
+    g.updateMatrixWorld(true);
+    const fg: [number, number, number][] = [];
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !String((m.userData.name as string | undefined) ?? m.name).startsWith('fg')) return;
+      const a = m.geometry.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < a.count; i++) {
+        v.set(a.getX(i), a.getY(i), a.getZ(i)).applyMatrix4(m.matrixWorld);
+        fg.push([v.x, v.y, v.z]);
+      }
+    });
+    let n = 0;
+    sweepMatchEyes(photoCameraRoom(e.photo!), (label, cam) => {
+      if ((cam as THREE.OrthographicCamera).isOrthographicCamera) return;
+      const eye = cam.position.toArray() as [number, number, number];
+      for (const p of fg) {
+        if (!front(p, eye)) continue;
+        n++;
+        if (label.startsWith('driver')) driverFront++;
+        if (!photoFurnitureDropped(p, eye, undefined, e.photo!.height)) kept++;
+      }
+    });
+    total += n;
+    counts.push(`${e.id} ${n}`);
+  }
+  check(
+    'photo keep-out: on the real rooms, furniture stood in front of the field from in-match eyes (the rule is not idle), driver eyes among them',
+    total > 1000 && driverFront > 0 && photos.every((e) => counts.some((c) => c.startsWith(`${e.id} `) && !c.endsWith(' 0'))),
+    `${counts.join(', ')}; ${driverFront} from driver eyes`,
+  );
+  check('photo keep-out: ...and the shader drops every one of them', kept === 0, `${kept} kept`);
+
+  // the two pictures the report was made from, by name
+  {
+    const parts = new Map<string, THREE.Mesh>();
+    VENUE_ROOMS.get('court')?.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) parts.set((m.userData.name as string | undefined) ?? m.name, m);
+    });
+    const pts: [number, number, number][] = [];
+    for (const k of ['fg-lo', 'fg-hi']) {
+      const m = parts.get(k);
+      if (!m) continue;
+      const a = m.geometry.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < a.count; i++) {
+        v.set(a.getX(i), a.getY(i), a.getZ(i)).applyMatrix4(m.matrixWorld);
+        pts.push([v.x, v.y, v.z]);
+      }
+    }
+    const court = environmentDef('court');
+    let orbitEye: [number, number, number] | null = null;
+    let freeEye: [number, number, number] | null = null;
+    const orbitView = new THREE.Frustum();
+    sweepMatchEyes(photoCameraRoom(court.photo!), (label, cam) => {
+      if (label === 'orbit default') {
+        orbitEye = cam.position.toArray() as [number, number, number];
+        cam.updateMatrixWorld();
+        orbitView.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      }
+      if (label === 'free default') freeEye = cam.position.toArray() as [number, number, number];
+    });
+    // in the default orbit's picture and within 150 in of its eye: the two shards, 55–124 in away
+    const near = pts.filter((p) => orbitEye && Math.hypot(p[0] - orbitEye[0], p[1] - orbitEye[1], p[2] - orbitEye[2]) < 150 && orbitView.containsPoint(new THREE.Vector3(...p)));
+    const sliver = pts.filter((p) => Math.abs(p[1]) < 4 && p[0] > -170 && p[0] < -128 && p[2] > 80);
+    check(
+      'photo keep-out: the court’s default orbit draws none of the furniture within 150 in of its eye that is in its picture (the two sky shards)',
+      !!orbitEye && near.length > 50 && near.every((p) => photoFurnitureDropped(p, orbitEye!)),
+      `${near.filter((p) => !photoFurnitureDropped(p, orbitEye!)).length} of ${near.length} kept`,
+    );
+    check(
+      'photo keep-out: ...and its default free cam drops the whole light-pole sliver it looked at the field through',
+      !!freeEye && sliver.length > 50 && sliver.every((p) => photoFurnitureDropped(p, freeEye!)),
+      `${sliver.length} verts`,
+    );
+  }
 }
 
 /**
@@ -15311,6 +15717,222 @@ function layeredRoomChecks(check: Check, photos: EnvironmentDef[], webpSize: (bu
       /mesh\.userData\.aoExclude === true \|\|/.test(readFileSync(join(SCENE_DIR, 'renderPost.ts'), 'utf8')),
     );
   }
+}
+
+/**
+ * NOTHING A PROCEDURAL VENUE BUILDS STANDS BETWEEN AN IN-MATCH EYE AND THE PLAY (2026-11-01). Captured
+ * offscreen: the orbit wheeled out at its default elevation (z 353) above the practice room's ceiling
+ * (the Low/Medium default) looked at the field through the lighting grid, the arena's centre truss
+ * beam covered it whole, a free cam pitched down in the workshop crossed it with two beams, a softbox
+ * hid a quarter of it in the studios, the orbit low along y stood among the gym's crowd, and on a
+ * diagonal it looked through a night floodlight mast. Fixed by `syncVenueRigLayer` (an eye above the
+ * rig leaves it out), `venueCameraRoom` (the orbit and free eyes stop in front of the stands) and
+ * `MAST_AT` (masts past every camera's reach). Every row's venue (the photographed rows' stand-in
+ * too), High and Low, every in-match eye: each instance of every instanced part the camera draws is
+ * tested against the sight lines to `SIGHT_POINTS`. The ground lies under the field and the shell
+ * and the cyclorama are `BackSide` (seen from outside they vanish), so they are not tested.
+ */
+function venueSightChecks(check: Check): void {
+  // the ground's `CanvasTexture` is the venue's one DOM call: the same one-method stub the venue
+  // block above builds it behind
+  const hadDoc = 'document' in globalThis;
+  const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {} }) });
+  if (!hadDoc) (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx, style: {} }) };
+  try {
+    venueSightChecksBuilt(check);
+  } finally {
+    if (!hadDoc) delete (globalThis as { document?: unknown }).document;
+  }
+}
+
+function venueSightChecksBuilt(check: Check): void {
+  const segHitsBox = (a: readonly number[], b: readonly number[], lo: THREE.Vector3, hi: THREE.Vector3): boolean => {
+    let t0 = 0;
+    let t1 = 1;
+    for (let i = 0; i < 3; i++) {
+      const d = b[i] - a[i];
+      const l = lo.getComponent(i);
+      const h = hi.getComponent(i);
+      if (Math.abs(d) < 1e-9) {
+        if (a[i] < l || a[i] > h) return false;
+        continue;
+      }
+      let ta = (l - a[i]) / d;
+      let tb = (h - a[i]) / d;
+      if (ta > tb) [ta, tb] = [tb, ta];
+      t0 = Math.max(t0, ta);
+      t1 = Math.min(t1, tb);
+      if (t0 > t1) return false;
+    }
+    return true;
+  };
+  /** every instance box of every instanced part, with the layer mask it is drawn on */
+  const partsOf = (g: THREE.Group): { name: string; layers: THREE.Layers; boxes: [THREE.Vector3, THREE.Vector3][] }[] => {
+    const out: { name: string; layers: THREE.Layers; boxes: [THREE.Vector3, THREE.Vector3][] }[] = [];
+    const m4 = new THREE.Matrix4();
+    const unit = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+    g.traverse((o) => {
+      const im = o as THREE.InstancedMesh;
+      if (!im.isInstancedMesh) return;
+      const boxes: [THREE.Vector3, THREE.Vector3][] = [];
+      for (let i = 0; i < im.count; i++) {
+        im.getMatrixAt(i, m4);
+        const b = unit.clone().applyMatrix4(m4).applyMatrix4(im.matrixWorld);
+        boxes.push([b.min, b.max]);
+      }
+      out.push({ name: im.name, layers: im.layers, boxes });
+    });
+    return out;
+  };
+  const sweep = (fixed: boolean, envs: readonly EnvironmentDef[], details: readonly ('high' | 'low')[]): { hits: number; eyes: number; worst: Map<string, string> } => {
+    let hits = 0;
+    let eyes = 0;
+    const worst = new Map<string, string>();
+    for (const e of envs) {
+      for (const detail of details) {
+        const g = buildBiobuzzVenue(e.venue, detail);
+        g.updateMatrixWorld(true);
+        const parts = partsOf(g);
+        sweepMatchEyes(fixed ? venueCameraRoom(e.venue, detail) : null, (label, cam) => {
+          eyes++;
+          // what the scene does for the camera it draws: the rig layer for this eye
+          applyVenueLayers([cam]);
+          if (fixed) syncVenueRigLayer(cam, g);
+          if ((cam as THREE.OrthographicCamera).isOrthographicCamera) cam.layers.disable(VENUE_OVERHEAD_LAYER);
+          const eye = cam.position.toArray();
+          for (const part of parts) {
+            if (!cam.layers.test(part.layers)) continue;
+            for (const [lo, hi] of part.boxes) {
+              const from = (cam as THREE.OrthographicCamera).isOrthographicCamera ? null : eye;
+              if (SIGHT_POINTS.some((p) => segHitsBox(from ?? [p[0], p[1], 800], p, lo, hi))) {
+                hits++;
+                const key = `${e.id}/${detail} ${part.name.replace('bb-venue:', '')}`;
+                if (!worst.has(key)) worst.set(key, label);
+                break;
+              }
+            }
+          }
+        });
+        g.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.isMesh) {
+            m.geometry.dispose();
+            const mats = Array.isArray(m.material) ? m.material : [m.material];
+            for (const mt of mats) mt.dispose();
+          }
+        });
+      }
+    }
+    return { hits, eyes, worst };
+  };
+  const after = sweep(true, BB_ENVIRONMENTS, ['high', 'low']);
+  check(
+    'venue sight: no part of any procedural venue (High or Low) stands between any in-match eye and the field, its hives or the alliance areas',
+    after.hits === 0 && after.eyes > 5000,
+    `${after.hits} over ${after.eyes} eyes; ${[...after.worst].slice(0, 6).map(([k, v]) => `${k} from ${v}`).join('; ')}`,
+  );
+  // the control: without the rig rule and the stands hold, the same sweep finds the blockers
+  const before = sweep(false, (['room', 'cyc-light', 'gym'] as const).map((id) => environmentDef(id)), ['high']);
+  const found = [...before.worst.keys()].join(', ');
+  check(
+    'venue sight: ...and without the rig rule and the stands hold the same sweep finds the lighting grid, the softboxes and the crowd',
+    before.hits > 0 && /room\/high (truss|fittings)/.test(found) && /cyc-light\/high softbox/.test(found) && /gym\/high (crowd|stands)/.test(found),
+    `${before.hits}: ${found}`,
+  );
+
+  // the rig: its lowest point recorded on every venue that hangs one, and the rule's threshold
+  {
+    const rigged = BB_ENVIRONMENTS.filter((e) => e.venue.kind !== 'outdoor' && e.venue.lampPower > 0);
+    check(
+      'venue sight: every lit enclosed venue records the bottom of what it hangs over the field, and no outdoor one does',
+      rigged.every((e) => typeof buildBiobuzzVenue(e.venue, 'high').userData.rigBottomZ === 'number' && typeof buildBiobuzzVenue(e.venue, 'low').userData.rigBottomZ === 'number') &&
+        BB_ENVIRONMENTS.filter((e) => e.venue.kind === 'outdoor').every((e) => buildBiobuzzVenue(e.venue, 'high').userData.rigBottomZ === undefined),
+      rigged.map((e) => `${e.id} ${(buildBiobuzzVenue(e.venue, 'high').userData.rigBottomZ as number).toFixed(1)}`).join(', '),
+    );
+    const g = buildBiobuzzVenue(environmentDef('room').venue, 'high');
+    const z = g.userData.rigBottomZ as number;
+    const cam = new THREE.PerspectiveCamera();
+    applyVenueLayers([cam]);
+    cam.position.set(0, -200, z - RIG_CLEAR_IN - 1);
+    syncVenueRigLayer(cam, g);
+    const under = cam.layers.isEnabled(VENUE_OVERHEAD_LAYER);
+    cam.position.z = z - RIG_CLEAR_IN + 1;
+    syncVenueRigLayer(cam, g);
+    const over = cam.layers.isEnabled(VENUE_OVERHEAD_LAYER);
+    cam.position.z = 40;
+    syncVenueRigLayer(cam, g);
+    const back = cam.layers.isEnabled(VENUE_OVERHEAD_LAYER);
+    const ortho = new THREE.OrthographicCamera();
+    ortho.position.set(0, 0, 800);
+    syncVenueRigLayer(ortho, g);
+    check(
+      'venue sight: an eye under the rig draws it, one above it does not, and coming back down draws it again; a top-down camera is left alone',
+      under && !over && back && !ortho.layers.isEnabled(VENUE_OVERHEAD_LAYER),
+    );
+    // a photographed venue's own overhead layer is the room's upper half: never touched
+    const photo = new THREE.Group();
+    const pc = new THREE.PerspectiveCamera();
+    applyVenueLayers([pc]);
+    pc.position.set(0, 0, 900);
+    syncVenueRigLayer(pc, photo);
+    check('venue sight: a venue with no rig (a photographed one) never has the layer taken off a camera', pc.layers.isEnabled(VENUE_OVERHEAD_LAYER));
+  }
+
+  // the stands hold: only where stands are built, in front of the front riser, and the default
+  // framing untouched
+  {
+    const gym = environmentDef('gym').venue;
+    const room = venueCameraRoom(gym, 'high');
+    const g = buildBiobuzzVenue(gym, 'high');
+    g.updateMatrixWorld(true);
+    // the front riser's face: the nearest of the +y bank's boxes
+    const front = Math.min(...partsOf(g).filter((p) => p.name === 'bb-venue:stands').flatMap((p) => p.boxes.filter(([lo]) => lo.y > 0).map(([lo]) => lo.y)));
+    check(
+      'venue sight: the gym holds the orbit and free eyes STANDS_MARGIN_IN in front of its front riser, on y only',
+      !!room && Math.abs(room.max[1] - (front - STANDS_MARGIN_IN)) < 1e-9 && room.min[1] === -room.max[1] && room.max[0] === Infinity && room.min[0] === -Infinity && room.max[2] === Infinity,
+      `${JSON.stringify(room)} vs front ${front}`,
+    );
+    check(
+      'venue sight: no hold where no stands are built (the Low detail, a hall without seating, outdoors)',
+      venueCameraRoom(gym, 'low') === null && venueCameraRoom(environmentDef('room').venue, 'high') === null && venueCameraRoom(environmentDef('night').venue, 'high') === null,
+    );
+    let same = true;
+    for (const id of ['gym', 'arena'] as const) {
+      const eyes: THREE.Vector3[] = [];
+      for (const r of [null, venueCameraRoom(environmentDef(id).venue, 'high')]) {
+        sweepMatchEyes(r, (label, cam) => {
+          if (label === 'orbit default' || label === 'free default') eyes.push(cam.position.clone());
+        });
+      }
+      // the orbit turns slowly on its own (`ORBIT_AUTO_RATE`) between two sweeps' updates
+      if (!(eyes.length === 4 && eyes[0].distanceTo(eyes[2]) < 0.5 && eyes[1].distanceTo(eyes[3]) < 1e-9)) same = false;
+    }
+    check('venue sight: the hold leaves the default orbit and free framings where they were', same);
+  }
+
+  // the masts: every part of every mast past the orbit's reach, so no sight line from inside it can
+  // cross one
+  {
+    const g = buildBiobuzzVenue(environmentDef('night').venue, 'high');
+    g.updateMatrixWorld(true);
+    let nearest = Infinity;
+    for (const part of partsOf(g).filter((p) => p.name.startsWith('bb-venue:mast'))) {
+      for (const [lo, hi] of part.boxes) {
+        // the box's nearest point to the vertical axis through the field's centre
+        const x = Math.max(lo.x, Math.min(0, hi.x));
+        const y = Math.max(lo.y, Math.min(0, hi.y));
+        nearest = Math.min(nearest, Math.hypot(x, y));
+      }
+    }
+    check('venue sight: every part of the night masts stands past the orbit camera’s 620-in reach', nearest > CAM_ORBIT_RADIUS_MAX && MAST_AT > 0, nearest.toFixed(1));
+  }
+
+  // the wiring
+  const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+  check(
+    'venue sight: renderScene applies the rig rule to the camera it is about to draw, every frame',
+    /const camera = this\.cameras\.update\(frame, world, this\.lastCamera\);\s*\n(\s*\/\/[^\n]*\n)*\s*syncVenueRigLayer\(camera, this\.venue\);/.test(sc),
+  );
 }
 
 /**

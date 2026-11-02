@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { BB_HALF_X, BB_HALF_Y } from '../config';
+import { ALLIANCE_AREA } from '../fieldDims.gen';
 import type { EnvironmentDef, PhotoFloor, PhotoVenue } from '../graphics/environments';
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import { VENUE_OVERHEAD_LAYER } from './renderVenue';
@@ -67,9 +68,29 @@ import { VENUE_OVERHEAD_LAYER } from './renderVenue';
  * Both are projected exactly as the box is (the lookup along the ray from the lens), so from the
  * lens the picture is the photograph and from anywhere else it is the room. The room is `BackSide`
  * like the box, which makes it visible only from the lens's side of each surface: an eye above the
- * ceiling or outside a wall sees through it, so these meshes need no push. The upper halves are on
- * `VENUE_OVERHEAD_LAYER` anyway, which the top-down cameras do not draw. The box stays the fallback
- * for a row without layers and for a layer file that fails to load.
+ * ceiling or outside a wall sees through it, so these meshes need no push. (Re-measured 2026-11-01
+ * from the one eye that stands outside a room, the height-accurate driver on a portrait phone 22 in
+ * past the school hall's −x wall: the floor it lacks is below the frame, and the dark shapes in its
+ * lower corners are the stage curtains' feet in the painted-out room, unchanged by a push.) The
+ * upper halves are on `VENUE_OVERHEAD_LAYER` anyway, which the top-down cameras do not draw. The
+ * box stays the fallback for a row without layers and for a layer file that fails to load.
+ *
+ * ── AND NOTHING OF IT STANDS IN FRONT OF THE PLAY (2026-11-01) ──────────────────────────────
+ * The furniture is relief seen from one point, and from the cameras it was found blocking the field
+ * or floating in frame: `PHOTO_KEEP_OUT` has the measurements. Its shader drops what an eye sees
+ * from behind, what stands between the eye and the field, and what is at the eye (`PHOTO_NEAR_IN`).
+ *
+ * ── THE FLOOR IS A TEXTURE (2026-11-01) ─────────────────────────────────────────────────────
+ * Owner: "The scenes are still severely distorted." The projection is exact in POSITION from every
+ * eye, but not in DETAIL: the lens sees its floor from 63 in up, so 300 in out one texel of the 4k
+ * is 2.3 in long (along the ray) by 0.5 in wide, 600 in out 9 in by 1; every in-match camera is
+ * higher or nearer than the lens and drew those strips as radial streaks. The events hall's floor
+ * was also refilled from a mirror image and de-glossed in the derive, which drew a symmetric blotch
+ * pattern right up to the field. A row with `PhotoVenue.floorTexture` draws every level surface
+ * below the lens from a tile cut from a photographed floor beside its lens, where it is sharp
+ * (`scripts/venues/floor.py`), recoloured from the tile's mean to the room's floor and lit by the
+ * photograph's own light blurred to `PHOTO_FLOOR_LIGHT_IN` (`photoFloor`). The court keeps its
+ * projected floor: its painted lines are straight and the tile would repeat them.
  *
  * ── WHAT ELSE IS HERE ───────────────────────────────────────────────────────────────────────
  * The field's shadow on the photographed floor (`ShadowMaterial`, the sun's own map), and a soft
@@ -429,11 +450,65 @@ uniform vec2 bbRows;
 uniform float bbScale;
 uniform float bbSat;
 uniform float bbKnee;
+#ifdef BB_FURNITURE
+uniform vec3 bbKeepMin;
+uniform vec3 bbKeepMax;
+#endif
+#ifdef BB_FLOOR
+uniform vec3 bbBoxMin;
+uniform vec3 bbBoxMax;
+uniform sampler2D bbFloor;
+uniform vec2 bbFloorScale;
+uniform vec3 bbFloorMean;
+uniform vec3 bbFloorBase;
+uniform float bbFloorLight;
+#endif
 varying vec3 vWorld;
 #define BB_E_MAX ${E_MAX}
+#ifdef BB_FLOOR
+// THE FLOOR (PhotoVenue.floorTexture, PHOTO_FLOOR_LIGHT_IN): the tile, recoloured from its own mean
+// to this room's floor, lit by the photograph's light here blurred to BB_FLOOR_LIGHT inches across
+// the lens's ray, fading to the room's plain floor colour past BB_FLOOR_NEAR. Sampled outside any
+// branch, so the tile's mip comes from derivatives every pixel of a quad agrees on.
+vec3 photoFloor( vec3 photo, vec2 uv ) {
+	vec3 fn = cross( dFdx( vWorld ), dFdy( vWorld ) );
+	float isFloor = abs( fn.z ) > 0.95 * length( fn ) && vWorld.z < bbEye.z - 12.0 ? 1.0 : 0.0;
+	float r = max( length( vWorld.xy - bbEye.xy ), 1.0 );
+	float across = r * 3.14159265 / float( textureSize( bbMap, 0 ).y );
+	vec3 eLow = min( textureLod( bbMap, uv, log2( max( BB_FLOOR_LIGHT / across, 1.0 ) ) ).rgb, vec3( BB_E_MAX ) );
+	vec3 low = clamp( eLow / ( 1.0 - eLow ), bbFloorBase * 0.6, bbFloorBase * 1.6 );
+	vec3 light = mix( bbFloorBase, low, bbFloorLight * ( 1.0 - smoothstep( BB_FLOOR_NEAR, BB_FLOOR_FAR, r ) ) );
+	vec3 eT = min( texture( bbFloor, vWorld.xy * bbFloorScale ).rgb, vec3( BB_E_MAX ) );
+	// AT A WALL'S FOOT the photograph comes back over the last BB_FLOOR_WALL inches: the wall's
+	// own lowest rows are photographed floor, and a tile running up to them drew a ledge
+	vec2 wall = min( vWorld.xy - bbBoxMin.xy, bbBoxMax.xy - vWorld.xy );
+	float tile = isFloor * smoothstep( 0.0, BB_FLOOR_WALL, min( wall.x, wall.y ) );
+	return mix( photo, eT / ( 1.0 - eT ) / bbFloorMean * light, tile );
+}
+#endif
 void main() {
 	vec3 d = normalize( vWorld - bbEye );
 	#ifdef BB_FURNITURE
+	// the ray this camera sees this fragment along: from the eye, or the view axis on an
+	// orthographic (top-down) camera. PHOTO_KEEP_OUT's header, and photoFurnitureDropped mirrors it.
+	vec3 view = isOrthographic ? - vec3( viewMatrix[ 0 ][ 2 ], viewMatrix[ 1 ][ 2 ], viewMatrix[ 2 ][ 2 ] ) : vWorld - cameraPosition;
+	// SEEN FROM WHERE THE LENS WAS NOT: more than PHOTO_VIEW_MAX_DEG between the lens's ray to this
+	// point and the eye's, so the eye looks at a side of the relief the photograph never showed (a
+	// curtain from the wings, a pendant lamp from the far side, a depth error's sky-coloured shard
+	// round the orbit eye, the school hall's seats from above).
+	if ( dot( normalize( vWorld - bbEye ), normalize( view ) ) < BB_VIEW_COS ) discard;
+	// AND NOTHING PHOTOGRAPHED STANDS IN FRONT OF THE FIELD: the ray on past this fragment enters
+	// the keep-out box (the field, its hives, the alliance areas), or this fragment is inside it.
+	vec3 ray = mix( view, vec3( 1e-6 ), vec3( lessThan( abs( view ), vec3( 1e-6 ) ) ) );
+	vec3 ta = ( bbKeepMin - vWorld ) / ray;
+	vec3 tb = ( bbKeepMax - vWorld ) / ray;
+	vec3 tlo = min( ta, tb );
+	vec3 thi = max( ta, tb );
+	if ( min( min( thi.x, thi.y ), thi.z ) >= max( max( max( tlo.x, tlo.y ), tlo.z ), 0.0 ) ) discard;
+	// AND NONE OF IT RIGHT AT THE EYE: dissolved over the last BB_NEAR inches (PHOTO_NEAR_IN), gone
+	// inside half of that. A piece of relief beside the eye fills the frame however it faces.
+	float nearEye = length( vWorld - cameraPosition ) / BB_NEAR;
+	if ( nearEye < 0.5 + 0.5 * fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) ) ) discard;
 	// WHERE THE LENS SAW NO TEXTURE, DRAW NONE. A piece of furniture is only the relief its own
 	// photograph shows, so a face the lens saw edge-on carries a pixel or two across its whole width;
 	// a camera that faces it squarely draws those pixels as streaks (the school hall's far seat block
@@ -465,7 +540,11 @@ void main() {
 	if ( abs( ay ) < abs( dy.x ) ) dy.x = ay;
 	vec3 e = min( textureGrad( bbMap, uv, dx, dy ).rgb, vec3( BB_E_MAX ) );
 	// the stored curve inverted (scripts/venues/derive.cjs, ENCODING), then the dim
-	vec3 x = e / ( 1.0 - e ) * bbScale;
+	vec3 x = e / ( 1.0 - e );
+	#ifdef BB_FLOOR
+	x = photoFloor( x, uv );
+	#endif
+	x *= bbScale;
 	float l = dot( x, vec3( 0.2126, 0.7152, 0.0722 ) );
 	// the knee (PHOTO_KNEE), on luminance so a window keeps its colour
 	float k = l > bbKnee ? bbKnee + ( l - bbKnee ) / ( 1.0 + ( l - bbKnee ) / bbKnee ) : l;
@@ -606,14 +685,147 @@ export function clipToFloor(poly: [number, number][], r: PhotoFloor): [number, n
  * the fragment is dropped (see `FRAG`, BB_FURNITURE) */
 export const PHOTO_STRETCH_MAX = 1.75;
 
+/**
+ * WHAT NO PHOTOGRAPHED FURNITURE MAY COVER (2026-11-01), field inches: the field and its hives, and
+ * both alliance areas (the drive team's strip and the human player's elements on it), from the
+ * photographed floor to 96 in, above the hives' 66 and most of a shot's arc.
+ *
+ * Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or
+ * just look weird." Measured offscreen from every in-match camera (the RENDER lane's
+ * `photoKeepOutChecks`): every blocker was a piece of furniture relief. The court's default free cam
+ * had a white sky-textured sliver (a light pole MoGe put 150 in from the lens) standing through
+ * the field; its default orbit had two sky shards floating in front of it; the events hall's free
+ * cam dollied out looked at the field through a pendant lamp drawn as a streaked drape; the school
+ * hall's orbit at its lowest looked through the stage-wing curtains. The fragment shader drops
+ * three kinds of fragment, all mirrored by `photoFurnitureDropped`:
+ *   • SEEN FROM WHERE THE LENS WAS NOT: the angle between the lens's ray and the eye's is over
+ *     `PHOTO_VIEW_MAX_DEG`, so the eye faces a side of the relief the lens never saw. Every blocker
+ *     above was one (they were past 90°: the eye stood beyond the fragment along the lens's ray).
+ *   • IN FRONT OF THE FIELD: the ray on past the fragment enters this box (or the fragment is in it).
+ *     The guarantee, whatever the relief's errors: nothing photographed covers the play.
+ *   • AT THE EYE: within `PHOTO_NEAR_IN` of it.
+ * The painted-out room shows wherever furniture is dropped, as it does for `PHOTO_STRETCH_MAX`.
+ */
+export const PHOTO_KEEP_OUT: { min: readonly [number, number, number]; max: readonly [number, number, number] } = (() => {
+  const x = Math.max(BB_HALF_X, ...(['red', 'blue'] as const).flatMap((a) => [Math.abs(ALLIANCE_AREA[a].x0), Math.abs(ALLIANCE_AREA[a].x1)])) + 2;
+  const y = Math.max(BB_HALF_Y, ...(['red', 'blue'] as const).flatMap((a) => [Math.abs(ALLIANCE_AREA[a].y0), Math.abs(ALLIANCE_AREA[a].y1)])) + 2;
+  return { min: [-x, -y, PHOTO_FLOOR_Z], max: [x, y, 96] };
+})();
+
+/**
+ * FURNITURE NEAR AN EYE IS DISSOLVED, inches: a fragment closer than this to the camera drawing it
+ * is dropped on a screen-space dither, all of it inside half the distance. A piece of relief beside
+ * the eye fills the frame whichever way it faces, and from beside it it is never what the lens saw:
+ * the sweep of every in-match eye (`photoKeepOutChecks`) found the school hall's orbit at its
+ * default elevation wheeled out standing inside a stage light 168 in up, and a free cam panned to a
+ * corner in the events hall 2 in from a piece by the wall. A chase camera, the closest any eye
+ * comes to furniture in play, is 60 in behind its robot.
+ */
+export const PHOTO_NEAR_IN = 72;
+
+/**
+ * THE MOST THE EYE'S RAY TO A PIECE OF FURNITURE MAY TURN FROM THE LENS'S, degrees. Relief is the
+ * photograph's one view given depth; turned far from it, it shows sides nobody photographed. It was
+ * 90° (only what an eye saw from behind) until 2026-11-01, when the floor became a texture (THE
+ * FLOOR) and the school hall's seats, seen from the overhead and high orbit cameras 70–80° off the
+ * lens, were the last thing in the room drawn as radial black streaks. The driver eyes see the
+ * furniture within ~35° of the lens, the default orbit within ~15°, the default free cam within ~55°.
+ */
+export const PHOTO_VIEW_MAX_DEG = 40;
+
+/**
+ * `FRAG`'s furniture drops above `PHOTO_STRETCH_MAX`, in plain numbers (see `PHOTO_KEEP_OUT` and
+ * `PHOTO_NEAR_IN`): is the furniture point `p` never drawn for a camera at `eye` (perspective), or
+ * looking along `axis` (orthographic, when given)? The near band's dithered outer half is drawn in
+ * part, so it is not counted. The GLSL and this must say the same thing; the RENDER lane checks the
+ * shader's text as well.
+ */
+export function photoFurnitureDropped(
+  p: readonly [number, number, number],
+  eye: readonly [number, number, number],
+  axis?: readonly [number, number, number],
+  lensHeight = 63,
+  keep = PHOTO_KEEP_OUT,
+): boolean {
+  const view = axis ?? [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+  const lz = PHOTO_FLOOR_Z + lensHeight;
+  const lensRay = Math.hypot(p[0], p[1], p[2] - lz) * Math.hypot(view[0], view[1], view[2]);
+  if (p[0] * view[0] + p[1] * view[1] + (p[2] - lz) * view[2] < Math.cos((PHOTO_VIEW_MAX_DEG * Math.PI) / 180) * lensRay) return true;
+  if (Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]) < PHOTO_NEAR_IN / 2) return true;
+  let tn = 0;
+  let tf = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const v = Math.abs(view[i]) < 1e-6 ? 1e-6 : view[i];
+    const ta = (keep.min[i] - p[i]) / v;
+    const tb = (keep.max[i] - p[i]) / v;
+    tn = Math.max(tn, Math.min(ta, tb));
+    tf = Math.min(tf, Math.max(ta, tb));
+  }
+  return tf >= tn;
+}
+
+/**
+ * THE FLOOR'S LIGHT, inches (`FRAG`, `photoFloor`). The tile carries the floor's texture and none of
+ * its light; the photograph's own light is kept at this blur, across the lens's ray (along it a
+ * texel is `(r² + h²) / (h·r)` times longer, which is the streak this replaces), and only near the
+ * field: from `PHOTO_FLOOR_NEAR_IN` out to `PHOTO_FLOOR_FAR_IN` it fades to the row's `base`, the
+ * room's floor colour, because out there even the blurred light is a radial smear.
+ */
+export const PHOTO_FLOOR_LIGHT_IN = 48;
+export const PHOTO_FLOOR_NEAR_IN = 150;
+export const PHOTO_FLOOR_FAR_IN = 450;
+/** the band at each wall's foot where the projected floor comes back, inches (`photoFloor`) */
+export const PHOTO_FLOOR_WALL_IN = 36;
+
+/** LOAD a row's floor tile (`PhotoVenue.floorTexture`), repeating both ways; null when the row has
+ * none or it fails, and the floor is then the projection, as before */
+export async function loadPhotoFloor(p: PhotoVenue, anisotropy: number): Promise<THREE.Texture | null> {
+  if (!p.floorTexture || photoBlocked(venueAssetUrl(p.floorTexture.tile))) return null;
+  try {
+    const tex = await loadPhotoBackdrop(p.floorTexture.tile, anisotropy);
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  } catch (err) {
+    console.warn(`BIOBUZZ 3D: the floor texture ${p.floorTexture.tile} failed to load; projecting the photograph's floor.`, err);
+    return null;
+  }
+}
+
 /** the projection material, for the box (`VERT`, the push) or a layered part (`LAYER_VERT`);
- * `furniture` drops what the lens never saw (`PHOTO_STRETCH_MAX`) */
-function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: readonly [number, number], ibl: boolean, layered: boolean, side: THREE.Side, furniture = false): THREE.ShaderMaterial {
+ * `furniture` drops what the lens never saw (`PHOTO_STRETCH_MAX`); `floor`, on a room, draws the
+ * floor from the row's tile (`photoFloor`) */
+function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: readonly [number, number], ibl: boolean, layered: boolean, side: THREE.Side, furniture = false, floor: THREE.Texture | null = null): THREE.ShaderMaterial {
   const box = photoRoomBox(p);
+  const f = floor && !furniture ? p.floorTexture : undefined;
   return new THREE.ShaderMaterial({
     name,
-    defines: furniture ? { BB_FURNITURE: '', BB_STRETCH_MAX: PHOTO_STRETCH_MAX.toFixed(1) } : {},
+    defines: furniture
+      ? {
+          BB_FURNITURE: '',
+          BB_STRETCH_MAX: PHOTO_STRETCH_MAX.toFixed(1),
+          BB_NEAR: PHOTO_NEAR_IN.toFixed(1),
+          BB_VIEW_COS: Math.cos((PHOTO_VIEW_MAX_DEG * Math.PI) / 180).toFixed(4),
+        }
+      : f
+        ? {
+            BB_FLOOR: '',
+            BB_FLOOR_LIGHT: PHOTO_FLOOR_LIGHT_IN.toFixed(1),
+            BB_FLOOR_NEAR: PHOTO_FLOOR_NEAR_IN.toFixed(1),
+            BB_FLOOR_FAR: PHOTO_FLOOR_FAR_IN.toFixed(1),
+            BB_FLOOR_WALL: PHOTO_FLOOR_WALL_IN.toFixed(1),
+          }
+        : {},
     uniforms: {
+      ...(f
+        ? {
+            bbFloor: { value: floor },
+            bbFloorScale: { value: new THREE.Vector2(1 / f.inches[0], 1 / f.inches[1]) },
+            bbFloorMean: { value: new THREE.Vector3(...f.mean) },
+            bbFloorBase: { value: new THREE.Vector3(...f.base) },
+            bbFloorLight: { value: f.light },
+          }
+        : {}),
       bbMap: { value: map },
       bbEye: { value: new THREE.Vector3(0, 0, PHOTO_FLOOR_Z + p.height) },
       bbRows: { value: new THREE.Vector2(rows[0], rows[1]) },
@@ -623,6 +835,9 @@ function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: re
       bbScale: { value: photoScale(p, ibl) },
       bbSat: { value: p.saturation },
       bbKnee: { value: photoKnee(ibl) },
+      ...(furniture
+        ? { bbKeepMin: { value: new THREE.Vector3(...PHOTO_KEEP_OUT.min) }, bbKeepMax: { value: new THREE.Vector3(...PHOTO_KEEP_OUT.max) } }
+        : {}),
     },
     vertexShader: layered ? LAYER_VERT : VERT,
     fragmentShader: FRAG,
@@ -635,10 +850,10 @@ function photoMaterial(name: string, p: PhotoVenue, map: THREE.Texture, rows: re
  * see the header) or one backdrop on the box. One group, freed with `disposeObject3D` — EXCEPT the
  * textures, which are uniforms and so invisible to that walk: the caller owns them and frees them
  * with the venue (`photoTexturesOf`). `sun` is the scene's key light with this row's rig on it (the
- * catcher is its shadow footprint, `shadowFootprint`) and `ibl` the environment-lighting row
- * (`photoScale`).
+ * catcher is its shadow footprint, `shadowFootprint`), `ibl` the environment-lighting row
+ * (`photoScale`), and `floor` the row's floor tile when it loaded (`loadPhotoFloor`).
  */
-export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoLayerAssets, sun: THREE.DirectionalLight, ibl: boolean): THREE.Group {
+export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoLayerAssets, sun: THREE.DirectionalLight, ibl: boolean, floor: THREE.Texture | null = null): THREE.Group {
   const p = def.photo!;
   const group = new THREE.Group();
   group.name = 'bb-venue';
@@ -650,9 +865,11 @@ export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoL
     for (const part of PHOTO_LAYER_PARTS) {
       const asset = layers.parts.get(part);
       if (!asset) continue;
+      // a row whose furniture above the lens is only ceiling fittings leaves it out (`PhotoLayers.upper`)
+      if (part === 'fg-hi' && p.layers?.upper === false) continue;
       const room = part.startsWith('bg');
       const mat = room
-        ? photoMaterial(`bb-venue:photo-${part}`, p, layers.bg, [0, 1], ibl, true, THREE.BackSide)
+        ? photoMaterial(`bb-venue:photo-${part}`, p, layers.bg, [0, 1], ibl, true, THREE.BackSide, false, floor)
         : photoMaterial(`bb-venue:photo-${part}`, p, layers.fg, p.layers!.fgRows, ibl, true, THREE.DoubleSide, true);
       const mesh = new THREE.Mesh(asset.geometry, mat);
       mesh.name = `bb-venue:photo-${part}`;
@@ -669,7 +886,7 @@ export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoL
       group.add(mesh);
     }
   } else {
-    group.add(buildBoxRoom(p, src as THREE.Texture, ibl));
+    group.add(buildBoxRoom(p, src as THREE.Texture, ibl, floor));
   }
 
   // the field's shadow on the photographed floor — the sun's own map, so it is the shadow the mat
@@ -697,12 +914,12 @@ export function buildPhotoVenue(def: EnvironmentDef, src: THREE.Texture | PhotoL
 
 /** the photograph on the box (`VERT`/`FRAG`, see the header): a row without layers, or one whose
  * layer files failed */
-function buildBoxRoom(p: PhotoVenue, backdrop: THREE.Texture, ibl: boolean): THREE.Mesh {
+function buildBoxRoom(p: PhotoVenue, backdrop: THREE.Texture, ibl: boolean, floor: THREE.Texture | null): THREE.Mesh {
   const box = photoRoomBox(p);
   const size = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
   const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
   geo.translate((box.max[0] + box.min[0]) / 2, (box.max[1] + box.min[1]) / 2, (box.max[2] + box.min[2]) / 2);
-  const room = new THREE.Mesh(geo, photoMaterial('bb-venue:photo', p, backdrop, [0, 1], ibl, false, THREE.BackSide));
+  const room = new THREE.Mesh(geo, photoMaterial('bb-venue:photo', p, backdrop, [0, 1], ibl, false, THREE.BackSide, false, floor));
   room.name = 'bb-venue:photo';
   // the vertex shader moves the walls per camera, so no bounding volume holds; it surrounds the
   // eye anyway
@@ -712,14 +929,13 @@ function buildBoxRoom(p: PhotoVenue, backdrop: THREE.Texture, ibl: boolean): THR
   return room;
 }
 
-/** the textures a built photo venue is drawing (one on the box, two on the layered room), which
- * the caller owns and frees with it; empty for any other venue */
+/** the textures a built photo venue is drawing (one on the box, two on the layered room, and the
+ * floor tile), which the caller owns and frees with it; empty for any other venue */
 export function photoTexturesOf(venue: THREE.Object3D | null): THREE.Texture[] {
   if (!venue) return [];
   const out = new Set<THREE.Texture>();
   for (const mat of photoMaterials(venue)) {
-    const t = mat.uniforms.bbMap?.value as THREE.Texture | undefined;
-    if (t) out.add(t);
+    for (const t of [mat.uniforms.bbMap?.value, mat.uniforms.bbFloor?.value] as (THREE.Texture | undefined)[]) if (t) out.add(t);
   }
   return [...out];
 }

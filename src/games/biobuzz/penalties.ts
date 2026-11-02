@@ -4,6 +4,7 @@ import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../
 import { driveIntent, robotCorners, robotHullWorld } from '../../sim/physics';
 import { polyGap, polySatGap } from '../../sim/imported';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
+import { awardCard } from '../../sim/scoring';
 import { type ControlGeometry, controlKeyLive, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
 import {
@@ -43,9 +44,11 @@ import { biobuzzPhysics } from './state';
  *
  * ── WHAT IS ENFORCED, AND WHAT IS DELIBERATELY NOT ──────────────────────────
  * HERE: **G410** (NECTAR into a FLOWER before the 1:00 cue), **G402** (AUTO interference
- * across the field's halves), **G421** (PINNING), **G407** (CONTROL of more than 4 SCORING
- * ELEMENTS — a WARNING, escalating to a MAJOR when STRATEGIC per Table 10-4) and **G409**
- * (catching a spilling element — a WARNING, and 3D only; see `bbBillG409`).
+ * across the field's halves — contact here, and taking an element off the opponent's half in
+ * `nectarReject.ts`'s `bbOnCapture`), **G421** (PINNING), **G407** (CONTROL of more than 4 SCORING
+ * ELEMENTS — a WARNING, escalating to a MAJOR when STRATEGIC per Table 10-4), **G408** (CONTROL
+ * of the opponent's NECTAR — a WARNING, and a YELLOW CARD when REPEATED) and **G409** (catching a
+ * spilling element — a WARNING, and 3D only; see `bbBillG409`).
  *
  * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
  * paragraph above — it is the ONLY rule in Section 11 that carries a per-3-seconds clause
@@ -85,7 +88,7 @@ import { biobuzzPhysics } from './state';
  * ── AND A THIRD SEVERITY THE SHARED FUNCTION DOES NOT HAVE: `warning` ───────
  * Table 10-4's base sanction for most of Section 11 is a **VERBAL WARNING**, with the FOUL
  * reserved for the STRATEGIC case, and this game has a rule whose ONLY sanction is that
- * warning: **G409** (catching a spill), which BIOBUZZ has no card machinery to escalate.
+ * warning: **G409** (catching a spill), whose escalation is a card this sim does not issue.
  * **G407** starts at the same warning and can climb to a MAJOR (owner ruling 2026-09-19, see
  * the rule's own block below). A warning moves **no points** and bumps **no tally**: it is an
  * event line and nothing else, which is exactly what a referee saying "four, blue" across the
@@ -127,7 +130,7 @@ export function bbAwardFoul(
  *
  * ── A WARNING, AND ONLY A WARNING ───────────────────────────────────────────
  * The base sanction in Table 10-4 is verbal, and the escalation is a CARD rather than a FOUL —
- * and BIOBUZZ has no card machinery at all (`bbAwardFoul`'s own note). So there is no points
+ * and the only card BIOBUZZ issues is G408's (the shared `awardCard`, below). So there is no points
  * branch here to get wrong: a caught spill costs nothing and says so, which is exactly what a
  * referee saying "blue, don't catch that" across the field is worth.
  *
@@ -424,12 +427,56 @@ export function updateBiobuzzPenalties(
       for (const id of f.stack) {
         const k = kind.get(id);
         if (k === undefined || k === 'pollen') continue;
-        // The OFFENDER is the alliance whose NECTAR it is. A nectar is only ever handled by
-        // its own alliance (G408 refuses the opponent's at the intake), so its colour names
-        // who put it there without the sim having to remember who carried it.
+        // The OFFENDER is the alliance whose NECTAR it is. Only a Box Tube puts a NECTAR in a
+        // FLOWER, and a tube places its own alliance's only (`placeInFlower`) — an opponent
+        // NECTAR a POLLEN + NECTAR intake took never goes in — so its colour names who put it
+        // there without the sim having to remember who carried it.
         fire(`g410-${id}`, k, 'major', 'G410 NECTAR in a FLOWER before 1:00');
       }
     }
+  }
+
+  // ── G408 — CONTROL of the opponent's NECTAR. WARNING, then a YELLOW CARD. ──
+  /**
+   * "A ROBOT may not CONTROL the opponent's NECTAR." Violation: **VERBAL WARNING. YELLOW CARD per
+   * MATCH, if STRATEGIC.** TU06 adds the test this block runs: "REPEATED instances of a ROBOT
+   * CONTROLLING an opponent's NECTAR are likely to be perceived as STRATEGIC, even if the ROBOT
+   * has a sorting mechanism that automatically discards opponent NECTAR by returning it to
+   * approximately its original state." REPEATED is the glossary's "more than once within a
+   * MATCH", so:
+   *
+   *  · every INSTANCE is a WARNING — the rising edge of "this robot holds that NECTAR", keyed per
+   *    (robot, element), so one held for a minute is one instance and one taken twice is two;
+   *  · the SECOND instance this match is STRATEGIC, and draws the YELLOW CARD, once per MATCH
+   *    (`bb.held[id].g408card`). The shared `awardCard` issues it, so a team already holding a
+   *    yellow goes to red and its alliance's score is voided, which `score.ts` already honours.
+   *
+   * WHICH CONTROL. Holding: the element is `held` by this robot. A POLLEN + NECTAR intake takes
+   * the opponent's NECTAR from `SIM_PATCH` 10 (`bbIntakeAccepts`), and a sorter that throws it
+   * back out (`nectarReject.ts`) still held it for `BB_SORT_DETECT_S` or `BB_SORT_PASS_S`, which is the
+   * whole of TU06's point. The `bar` sorter is the one that never holds it. HERDING is not
+   * counted: `controlledArtifacts`' herd test is tuned to count a pile for G407, and an opponent
+   * NECTAR the chassis shoves through is far likelier "bulldozing" (G407.D) than control a
+   * referee would call.
+   *
+   * No points move, as the manual says. The tally rides `bb.g408` for the HUD.
+   */
+  for (const b of world.balls) {
+    if (b.state.kind !== 'held') continue;
+    if (b.color !== 'red' && b.color !== 'blue') continue;
+    const holder = world.robots.find((x) => x.id === (b.state as { robot: number }).robot);
+    if (!holder || holder.passive || b.color === holder.alliance) continue;
+    const key = `g408-${holder.id}-${b.id}`;
+    if (!bb.foulEdge[key]) {
+      const n = ((bb.g408 ??= {})[holder.id] = (bb.g408[holder.id] ?? 0) + 1);
+      bbAwardFoul(world, holder.alliance, 'warning', `G408 CONTROL of the opponent’s NECTAR`);
+      const latch = (bb.held[holder.id] ??= {});
+      if (n >= 2 && !latch.g408card) {
+        latch.g408card = true;
+        awardCard(world, holder, 'G408 REPEATED CONTROL of the opponent’s NECTAR');
+      }
+    }
+    seen[key] = true;
   }
 
   // ── G407 — CONTROL of more than 4 SCORING ELEMENTS. WARNING, then MAJOR. ──
@@ -453,10 +500,11 @@ export function updateBiobuzzPenalties(
    * `BB_MOMENTARY_S` is the manual's own number for both clocks, so a one-tick contact-chain
    * blip to six is not a MAJOR — a referee could not see it either.
    *
-   * ⚠️ THE YELLOW CARD IS NOT MODELLED. BIOBUZZ has no card machinery at all — `bbAwardFoul`
-   * awards points and nothing else, and a card carries DQ consequences through scoring and the
-   * results screen that no BIOBUZZ lane has built. The FOUL is the half that changes a score,
-   * so the foul is the half that is here.
+   * ⚠️ THE YELLOW CARD IS NOT MODELLED HERE. G408 issues one through the shared `awardCard`
+   * (2026-10-24), and `score.ts` honours a red's void, so the machinery exists now; this rule's
+   * card is still left out because two yellows make a red that voids the match, and with G407's
+   * STRATEGIC branch billing every instance (owner ruling 2026-09-22) a card per MATCH on top
+   * is the owner's call, not a side effect of wiring G408.
    *
    * ── THE WARNING IS EDGE-TRIGGERED, AND ITS COUNT IS A PER-MATCH TALLY ─────
    * Unchanged from the 2026-09-12 model: the key is per ROBOT, so a robot that climbs to five,

@@ -31,6 +31,7 @@ import {
   subscribeGraphics,
   wantsPost,
   wantsSurfaces,
+  type EnvironmentId,
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
@@ -51,12 +52,13 @@ import { loadElementGeometries } from './renderElementsGlb';
 import { bbWantsBay, bbLoadBay, bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
-import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
+import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, venueCameraRoom } from './renderVenue';
 import {
   bbPhotoDetail,
   buildPhotoVenue,
   disposePhotoSource,
   loadPhotoBackdrop,
+  loadPhotoFloor,
   loadPhotoLayers,
   photoBlocked,
   photoCameraRoom,
@@ -69,7 +71,7 @@ import {
 } from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
+import { BB_ENVIRONMENT_IDS, environmentDefFor, type EnvironmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import {
   SceneUnsupportedError,
@@ -345,6 +347,11 @@ class BiobuzzScene implements GameScene {
     const gfx = getGraphics();
     this.tier = this.fixedTier ?? gfx.tier;
     this.settings = this.fixedTier ? { ...GFX_PRESETS[this.fixedTier] } : gfx.settings;
+    // a fixed-tier scene may name its own room (the menu stage, `SceneOptions.environment`)
+    const room = opts.environment;
+    if (this.fixedTier && room && (BB_ENVIRONMENT_IDS as readonly string[]).includes(room)) {
+      this.settings.environment = room as EnvironmentId;
+    }
 
     /**
      * ⚠️ `antialias: false`, ALWAYS, AND THAT IS WHAT MAKES THE AA SETTING LIVE.
@@ -629,8 +636,9 @@ class BiobuzzScene implements GameScene {
     }
     // a photographed room is as big as it was, so the orbit and free cameras stay inside it from
     // the moment it is picked (not when it lands, which would jump a zoomed-out camera in), and
-    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`)
-    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : null);
+    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`). A procedural one
+    // holds them in front of its seating banks, where it has any (`venueCameraRoom`).
+    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : venueCameraRoom(def.venue, detail));
     setPhotoVenueLighting(this.venue, def, s.envLighting);
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
@@ -698,17 +706,20 @@ class BiobuzzScene implements GameScene {
           return box();
         })
       : box();
-    this.photoLoading = wanted
-      .then(async (src) => {
+    // the floor tile beside it: a failure only leaves the projected floor (`loadPhotoFloor`)
+    const floorLoad = loadPhotoFloor(p, aniso);
+    this.photoLoading = Promise.all([wanted, floorLoad])
+      .then(async ([src, floor]) => {
         if (this.disposed || this.venueKey !== key) {
           disposePhotoSource(src);
+          floor?.dispose();
           return;
         }
         // UPLOAD AND COMPILE BEFORE THE SWAP, NOT ON THE FIRST FRAME THAT DRAWS IT. A 4k texture's
         // upload + mip chain and the projection shader's link were a visible hitch on the frame the
         // room appeared. `initTexture` does the upload now; `compileAsync` links off the main thread.
         // The procedural venue keeps drawing meanwhile. Either may fail: the swap still happens.
-        const room = buildPhotoVenue(def, src, this.sun, this.settings.envLighting);
+        const room = buildPhotoVenue(def, src, this.sun, this.settings.envLighting, floor);
         try {
           for (const t of photoTexturesOf(room)) this.renderer.initTexture(t);
           await this.renderer.compileAsync(room, this.cameras.active, this.scene);
@@ -719,6 +730,7 @@ class BiobuzzScene implements GameScene {
         if (this.disposed || this.venueKey !== key) {
           disposeObject3D(room);
           disposePhotoSource(src);
+          floor?.dispose();
           return;
         }
         this.swapVenue(room, def);
@@ -726,6 +738,7 @@ class BiobuzzScene implements GameScene {
         this.renderer.shadowMap.needsUpdate = true;
       })
       .catch((err: unknown) => {
+        void floorLoad.then((floor) => floor?.dispose());
         if (this.disposed || this.venueKey !== key) return;
         console.warn(`BIOBUZZ 3D: the ${def.name} backdrop failed to load; keeping the generated room.`, err);
         this.onQualityEvent?.(`Couldn’t load the ${def.name} photograph. Showing a generated room instead.`);
@@ -1269,6 +1282,8 @@ class BiobuzzScene implements GameScene {
     this.lastViewAngle = frame.viewAngle;
     this.lastCamera = this.resolvedCamera(frame.camera);
     const camera = this.cameras.update(frame, world, this.lastCamera);
+    // an eye above a procedural venue's overhead rig leaves it out, as the top-down shots do
+    syncVenueRigLayer(camera, this.venue);
 
     // THE FRAME'S GPU WORK starts here: the probe, the scene pass, post, the blit and the minimap
     if (timeGpu) this.gpuTimer?.begin();

@@ -24,6 +24,7 @@ import {
 import { polyFeature } from './imported';
 import { pushingGate, ZERO_CMD } from './goal';
 import { awardCard, awardFoul } from './scoring';
+import { autoIntakeOn } from './assists';
 import { hyp, rot } from '../math';
 
 /**
@@ -320,12 +321,12 @@ function updatePossession(
   for (const key of Object.keys(pen.ballCarry)) if (!live(key)) delete pen.ballCarry[key];
 
   for (const r of world.robots) {
-    // `cmd.intake || r.autoIntake` is what actually RUNS the intake (robot.ts), and the
+    // `cmd.intake || autoIntakeOn` is what actually RUNS the intake (robot.ts), and the
     // acquire carve-out has to ask the same question. Reading the raw button alone meant the
-    // AUTO-INTAKE assist — a menu option, and forced on for an auto-path robot — silently
+    // AUTO-INTAKE assist — a menu option, and on for an auto-path robot (`assists.ts`) — silently
     // turned the exemption off for everyone who used it: the assist made the rule HARSHER for
     // its users than for a driver holding the button, which is the opposite of an assist.
-    const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
+    const intaking = (commands.get(r.id)?.intake ?? false) || autoIntakeOn(world, r);
     const controlled = controlledArtifacts(world, r, dt, intaking);
     const over = controlled - C.POSSESSION_LIMIT;
 

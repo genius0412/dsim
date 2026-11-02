@@ -4,6 +4,7 @@ import type { GameId } from '../games/types';
 import type { GameScene, SceneInsets, ScenePose } from '../games/module';
 import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
+import { getGraphics } from '../games/biobuzz/graphics/settings';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
 import { POSES, SHOW, type StageView } from './menuStagePoses';
 
@@ -17,8 +18,11 @@ import { POSES, SHOW, type StageView } from './menuStagePoses';
  * - **3D** (BIOBUZZ): the match's own scene (`createBiobuzzScene`, lazy), drawn through a
  *   host-placed camera (`SceneFrame.pose`). It draws on demand, not every frame: nothing on the
  *   field moves, so it renders while the camera moves and once more when a late asset lands.
+ *   ⚠️ AT ITS OWN FIXED TIER AND IN ITS OWN ROOM, not the player's match settings (2026-11-01,
+ *   owner: Home "still distorted and EXTREMELY laggy on some devices"): see `STAGE_ROOM`.
  * - **2D** (DECODE, Chain Reaction, and BIOBUZZ wherever 3D cannot run): the game's own 2D field,
- *   drawn once and tilted in CSS. Play zooms the tilt; the robot is the page's own 2D preview.
+ *   drawn once and shown FLAT, top-down, the way those games are played; the robot is the page's
+ *   own 2D preview.
  *
  * Nothing here steps a world. Owner rulings in `docs/area/ui.md`, "THE MENU STAGE".
  */
@@ -43,6 +47,26 @@ export function usePhone(): boolean {
 }
 type StageMode = '2d' | '3d';
 
+/**
+ * THE STAGE'S ROOM AND TIER (2026-11-01). The stage used to draw at the player's own graphics
+ * settings, and on a machine Auto had put on High or above that meant the photographed events hall
+ * (4k backdrop plus layers, ~45 MB of textures), MSAA 4x, soft or max shadows, reflections, and on
+ * Extreme a 150 % supersampled target with SSAO, all of it for a menu. Two problems came with it:
+ *  - DISTORTED. A photographed venue is exact only near its lens, and Home's camera is 150 in up at
+ *    the corner: the floor around the field drew blurred and the window light smeared across it.
+ *    The procedural rooms are geometry, so they are right from every eye. The arena is the darkest
+ *    of them, which is what lets the field and the column's scrim read.
+ *  - LAGGY. Every fly frame and every orbit drag paid the match's full cost, and Home's own load
+ *    (the backdrop decode and upload, the post chain's shaders) stalled the page on a weak GPU. And
+ *    the scene's quality governor measured MENU frames and could step the player's stored tier.
+ * Medium is MSAA 2x, low shadows and no post. A device whose own tier is Low gets Low. A fixed tier
+ * also measures without deciding, so the menu no longer touches the match settings.
+ */
+const STAGE_ROOM = 'arena';
+const stageTier = (): 'low' | 'medium' => (getGraphics().tier === 'low' ? 'low' : 'medium');
+/** the stage's device-pixel cap: a menu backdrop at 2x on a 4K panel was 8 MP a frame */
+const STAGE_MAX_DPR = 1.5;
+
 /** fly time, Home ↔ Play (owner: "about 1 second"); zero under reduced motion */
 const FLY_MS = 1000;
 /** the orbit's drift back to the showcase angle after a drag, as a half-life */
@@ -52,13 +76,33 @@ const ORBIT_RETURN_S = 0.35;
  * OFF THE PAGE: Play's free area is `.ds-setup-view` itself, Home's is everything right of the
  * column. The estimates are for the frame before the page has laid out. On a phone the stage is
  * only the band above the column, so nothing covers it. */
+/**
+ * A TALL FREE AREA KEEPS THE POSE'S WIDTH (2026-11-01). The poses' FOV is vertical and was set on
+ * landscape windows; the scene fits it to the free area (`setViewOffset`), so a portrait tablet's
+ * free area (820x1180: ~300px beside Home's column, ~460 beside Play's) narrowed the horizontal view
+ * and cut the field and the robot off at the sides. Under `STAGE_MIN_ASPECT` the vertical FOV widens
+ * until the horizontal view is what that aspect would show.
+ */
+const STAGE_MIN_ASPECT = 1.5;
+function fitFov(fovDeg: number, w: number, h: number, ins: SceneInsets): number {
+  const aspect = Math.max(0.2, (w - ins.left - ins.right) / Math.max(1, h - ins.top - ins.bottom));
+  if (aspect >= STAGE_MIN_ASPECT) return fovDeg;
+  const halfH = Math.atan((Math.tan((fovDeg * Math.PI) / 360) * STAGE_MIN_ASPECT) / aspect);
+  return Math.min(100, (halfH * 360) / Math.PI);
+}
+
 function insetsFor(view: StageView, w: number, h: number): SceneInsets {
   if (w < 720) return { top: 0, right: 0, bottom: 0, left: 0 };
   if (view === 'home') {
     const col = document.querySelector('.ds-home')?.getBoundingClientRect();
+    // past --ds-wide-max the page keeps to a centred band (shell.css), and the field frames in it
+    const wide = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ds-wide-max')) || Infinity;
+    // A PORTRAIT WINDOW puts the column on top (shell.css), and the field below it, clear of the
+    // scrim's fade and the footer
+    if (col && h > w) return { top: col.bottom + 72, right: 0, bottom: 48, left: 0 };
     return {
       top: 0,
-      right: 0,
+      right: Math.max(0, (w - wide) / 2),
       bottom: 0,
       left: col ? col.right + 24 : Math.min(520, w * 0.4),
     };
@@ -213,6 +257,8 @@ function Stage3d({
     let orbit = { yaw: 0, pitch: 0, held: false };
     let lastT = 0;
     let dropRobotAt = 0;
+    let wasAnimating = false;
+    let settle = 0;
 
     const buildWorld = (): void => {
       const { spec, alliance } = live.current;
@@ -288,10 +334,21 @@ function Stage3d({
         height: size.h,
         dpr: size.dpr,
         insets: ins,
-        pose: drawn,
+        pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },
       });
-      if (moving || orbit.held || dropRobotAt) kick();
-      else lastT = 0;
+      const animating = moving || orbit.held || !!dropRobotAt;
+      if (animating) kick();
+      else {
+        lastT = 0;
+        // THE RESTING POSE IS DRAWN ONCE MORE after a move ends: Low caps the frame rate, and a render
+        // that lands inside the cap's interval is skipped, which left the camera a frame short of
+        // where the fly ended
+        if (wasAnimating) {
+          clearTimeout(settle);
+          settle = window.setTimeout(kick, 50);
+        }
+      }
+      wasAnimating = animating;
     };
     const kick = (): void => {
       if (!raf && !dead) raf = requestAnimationFrame(frame);
@@ -341,7 +398,7 @@ function Stage3d({
       size = {
         w: Math.max(1, r.width),
         h: Math.max(1, r.height),
-        dpr: Math.min(window.devicePixelRatio || 1, 2),
+        dpr: Math.min(window.devicePixelRatio || 1, STAGE_MAX_DPR),
       };
       scene?.resize(size.w, size.h, size.dpr);
       kick();
@@ -350,35 +407,48 @@ function Stage3d({
       clearTimeout(settle);
       settle = window.setTimeout(kick, 150);
     };
-    let settle = 0;
     const ro = new ResizeObserver(resize);
 
     robotOn = live.current.view === 'setup';
     buildWorld();
-    load()
-      .then((factory) => factory(host, { interactive: false }))
-      .then((s) => {
-        if (dead) {
-          s.dispose();
-          return;
-        }
-        scene = s;
-        // A LOST CONTEXT DRAWS NOTHING AND THROWS NOTHING (`watchContextLoss`): the stage goes to its
-        // 2D field, the way a match goes to its 2D view, instead of showing an empty backdrop
-        s.element.addEventListener('webglcontextlost', () => live.current.onFail(), { once: true });
-        ro.observe(host);
-        resize();
-        frame(performance.now());
-        setShown(true);
-        // a photographed venue or an imported robot's mesh lands after the first frame
-        if (world) void s.assetsSettled?.(world).then(kick);
-      })
-      .catch(() => {
-        if (!dead) live.current.onFail();
-      });
+    // THE PAGE FIRST, THE FIELD WHEN THE BROWSER IS IDLE: the scene's chunk, the field's meshes and
+    // the shader compile are a few hundred ms of main thread on a weak machine, and Home's keycaps
+    // should answer before they run. The backdrop is dark until the scene fades in either way.
+    const boot = (): Promise<void> =>
+      load()
+        .then((factory) => factory(host, { interactive: false, quality: stageTier(), environment: STAGE_ROOM }))
+        .then((s) => {
+          if (dead) {
+            s.dispose();
+            return;
+          }
+          scene = s;
+          // A LOST CONTEXT DRAWS NOTHING AND THROWS NOTHING (`watchContextLoss`): the stage goes to its
+          // 2D field, the way a match goes to its 2D view, instead of showing an empty backdrop
+          s.element.addEventListener('webglcontextlost', () => live.current.onFail(), { once: true });
+          ro.observe(host);
+          resize();
+          frame(performance.now());
+          setShown(true);
+          // an imported robot's mesh lands after the first frame
+          if (world) void s.assetsSettled?.(world).then(kick);
+        })
+        .catch(() => {
+          if (!dead) live.current.onFail();
+        });
+    const start = (): void => {
+      if (!dead) void boot();
+    };
+    const idle =
+      typeof window.requestIdleCallback === 'function'
+        ? window.requestIdleCallback(start, { timeout: 1200 })
+        : window.setTimeout(start, 200);
 
     return () => {
       dead = true;
+      if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
+      else clearTimeout(idle);
+      clearTimeout(settle);
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       orbitSink = null;
@@ -402,7 +472,7 @@ function Stage3d({
   return <div ref={hostRef} className={`ds-stage-3d${shown ? ' shown' : ''}`} />;
 }
 
-/** the 2D field's canvas size in CSS px (`.ds-stage-2d canvas` states it too); the tilt scales it */
+/** the 2D field's drawn size in CSS px; `.ds-stage-2d img` scales it to the free area */
 const FIELD_PX = 900;
 
 function Stage2d({ game, view }: { game: GameId; view: StageView }) {

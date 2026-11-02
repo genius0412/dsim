@@ -6,7 +6,8 @@
 //   - `room` and `height`: the measured room and lens `layers.py` built it on (its meta.json), so a
 //     re-measured room cannot ship with the row still describing the old one;
 //   - `PHOTO_FILES(...)`: the backdrop and light map's byte counts (`derive.cjs` rewrites those files);
-//   - the picker note's High-tier download (room + furniture textures, meshes and light map).
+//   - the picker note's High-tier download (room + furniture textures, meshes, light map and the
+//     floor tile the row draws, `floor.py`).
 //
 //   node scripts/venues/sync-env.mjs [--only hangar,events-hall]
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -23,6 +24,8 @@ const only = i >= 0 ? process.argv[i + 1].split(',') : VENUES;
 const LENS_IN = Number(/const PHOTO_LENS_IN = ([\d.]+);/.exec(readFileSync(ENV, 'utf8'))?.[1]);
 const size = (f) => statSync(join(ROOT, 'public', 'venues', f)).size;
 const obj = (o) => `{ ${Object.entries(o).map(([k, v]) => `${k}: ${Math.round(v * 10) / 10}`).join(', ')} }`;
+// which floor tile each row draws (`floor.py`'s USES)
+const FLOOR_TILES = { 'events-hall': 'hangar', hangar: 'hangar', 'school-hall': 'school-hall', quad: 'quad' };
 
 let src = readFileSync(ENV, 'utf8');
 for (const v of only) {
@@ -54,7 +57,9 @@ for (const v of only) {
   );
   src = src.slice(0, at) + row + src.slice(end);
 
-  const mb = ((b.bg + b.fg + mesh + size(`${v}-ibl.hdr`)) / 1e6).toFixed(1);
+  // and the floor tile the row draws, if any (`floor.py`; the events hall's is the hangar's)
+  const tile = FLOOR_TILES[v];
+  const mb = ((b.bg + b.fg + mesh + size(`${v}-ibl.hdr`) + (tile ? size(`${tile}-floor.webp`) : 0)) / 1e6).toFixed(1);
   const note = new RegExp(`(id: '${v}',\\s*name: '[^']*',\\s*note: '[^']*?, )\\d+\\.\\d MB'`);
   if (!note.test(src)) throw new Error(`${v}: no note ending in a size`);
   src = src.replace(note, `$1${mb} MB'`);

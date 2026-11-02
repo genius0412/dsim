@@ -45,7 +45,7 @@ import { authClient, authEnabled } from '../lib/authClient';
  */
 const BACKGROUND_QUEUE_TIP = (
   <>
-    <b>← Back</b> keeps you in the queue.
+    <b>Closing this</b> keeps you in the queue.
   </>
 );
 
@@ -124,8 +124,9 @@ export function Matchmaking({
   myUserId?: string | null;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
-  /** wraps a pre-connection page in the app shell (App's `shell`); live-socket states stay full-screen */
-  shell: (body: ReactNode) => JSX.Element;
+  /** wraps a pre-connection page in App's popup (`popupShell`); `locked` is a popup with no way out
+   *  (Match found). The strategy window stays full-screen. */
+  shell: (body: ReactNode, locked?: boolean) => JSX.Element;
   onSignIn: () => void;
   onSettingsChange: (s: GameSettings) => void;
   /** arrived here from a RATED "play a friend" challenge: queue under its token
@@ -258,9 +259,10 @@ export function Matchmaking({
    *  claiming to be searching, which is the state the report above describes */
   const [found, setFound] = useState(false);
 
-  // Esc backs out, same as ← Back — but NOT once a match has paired: MatchStrategy
-  // owns the screen then, and its ← Leave forfeits. A stray Esc must not do that.
-  useEscape(onCancel, !strategy);
+  // Esc backs out, same as the popup's × — but NOT once a match has been found: the 20s clocks
+  // are running and leaving only parks the seat for the takeover to drag straight back, and
+  // once MatchStrategy owns the screen its ← Leave forfeits. A stray Esc must not do either.
+  useEscape(onCancel, !strategy && !found);
 
   /** the parked shape, built from what is true RIGHT NOW. Everything about a match already
    *  found travels with it — see `foundRef` for what the alternative cost. */
@@ -1046,7 +1048,7 @@ export function Matchmaking({
 
   /** the console scaffold every full-screen setup surface shares (Lobby, Record
    * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
-  const page = (title: string, sub: string, body: JSX.Element): JSX.Element => (
+  const page = (title: string, sub: string, body: JSX.Element, locked = false): JSX.Element => (
     shell(
       <div className="ds-console-in narrow">
         {/* the sub's line is RESERVED: `sub` is '' on every state except searching, so
@@ -1055,6 +1057,7 @@ export function Matchmaking({
         <ConsoleHead title={title} sub={sub} reserveSub />
         <div className="ds-panel ds-panel-body stack">{body}</div>
       </div>,
+      locked,
     )
   );
 
@@ -1125,6 +1128,7 @@ export function Matchmaking({
         {dodgeNote()}
         {lockNote()}
       </>,
+      true, // no × and no Escape: see `useEscape` above
     );
   }
 

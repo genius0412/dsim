@@ -81,7 +81,7 @@ export function aiPlayChecks(check: Check): void {
     check('the roster fields every launcher (turret, double turret, dumper)', kinds.size === 3, [...kinds].join(','));
     check(
       'the roster fields a NECTAR carrier with a Box Tube (the FLOWER plan has a robot)',
-      specs.some((s) => bbLiftOf(s) !== null && bbCarriesNectar(bbLauncherOf(s, 75))),
+      specs.some((s) => bbLiftOf(s) !== null && bbCarriesNectar(s)),
     );
     check('the roster fields at least four drivetrains', new Set(specs.map((s) => s.drivetrain)).size >= 4);
     check('bot builds are named for what they are', specs.every((s) => s.name.includes('bot') && s.teamName.startsWith('AI')));

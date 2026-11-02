@@ -32,6 +32,7 @@ import {
   bbPassPresetPoint,
   isBbPassPreset,
 } from './passTargets';
+import { bbBarStep, bbOnCapture, bbSorterTakes, bbSorterTick } from './nectarReject';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
@@ -48,6 +49,7 @@ import {
   bbIntakeExtraReach,
   bbLaunch,
   bbMouths,
+  bbRampPlanReach,
   bbRampReverse,
   bbRampSettled,
   bbRampStep,
@@ -251,14 +253,22 @@ function intakeTick(
   cmd: RobotCommand | undefined,
   enabled: boolean,
 ): void {
+  // THE SORTER AND REVERSE FIRST (`nectarReject.ts`, the same call 3D makes): a due reject leaves, and
+  // an intake running backwards this tick neither pulls nor swallows.
+  if (bbSorterTick(world, rob, cmd, enabled)) return;
   if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) return;
   // ⚠️ `extraReach` — same predicate as 3D's `elements3dCapture` (owner report 2026-09-20). 2D
   // HAS NO RAMP COLLIDER (`docs/area/biobuzz.md`: "2D stays DRAWING-ONLY"), so nothing here is
   // solid for the element to meet — it is simply pulled from further out, the same shape as the
   // sweeper's own reach, and a real bar's push is not modelled here on purpose.
-  const act = bbIntakeAct(world, rob, { extraReach: bbIntakeExtraReach(rob, world.time) });
+  const act = bbIntakeAct(world, rob, {
+    extraReach: bbIntakeExtraReach(rob, world.time),
+    takes: (b) => bbSorterTakes(world, rob, b),
+  });
   for (const p of act.pull) p.ball.vel = p.vel;
-  for (const b of act.take) capturePollen(world, rob, b);
+  act.take.forEach((b, k) => {
+    if (capturePollen(world, rob, b)) bbOnCapture(world, rob, b, act.mouth[k]);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -715,6 +725,8 @@ export function updateBiobuzz(
     // just below, a ramp press IS driver control (like drive/intake/fire) and is gated on
     // `enabled`, so a press during `pre`/a phase transition/`post` is dropped, not queued.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
+    // ...and the NECTAR bar: a `bar` sorter's, or the ramp held at bar height (`nectarReject.ts`)
+    bbBarStep(world, rob, cmds.get(rob.id), enabled);
     // THE SWING GUARD, right after the toggle — the 2D half of it (`bbRampSwingStep2d`).
     bbRampSwingStep2d(world, rob);
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
@@ -927,7 +939,10 @@ export function placeInFlower(
   let color: Artifact['color'] | null = null;
   for (let j = rob.hopper.length - 1; j >= 0; j--) {
     const c = rob.hopper[j];
-    if ((c === 'red' || c === 'blue') === nectar) {
+    // THE TUBE PLACES ITS OWN ALLIANCE'S NECTAR ONLY. An opponent NECTAR a POLLEN + NECTAR
+    // intake took is in the hopper too, and no driver places one: it would hand the opponent the
+    // FLOWER (the top-most NECTAR owns it). It also keeps G410's offender the NECTAR's colour.
+    if (nectar ? c === rob.alliance : c !== 'red' && c !== 'blue') {
       color = c;
       break;
     }
@@ -1128,10 +1143,11 @@ export function retrieveFromFlower(
 // returns non-null for).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** the ramp's flat, fully-deployed footprint rect's 4 corners, in WORLD space, for one mouth. */
-function bbRampFootprintCorners(rob: RobotState, ax: BbMouthAxes): Vec2[] {
+/** the ramp's footprint rect's 4 corners, in WORLD space, for one mouth, `reach` past the tip line
+ * (the flat, fully-deployed `BB_RAMP_OUT` for a swing that never involved the bar). */
+function bbRampFootprintCorners(rob: RobotState, ax: BbMouthAxes, reach: number): Vec2[] {
   const corners: Vec2[] = [];
-  for (const u of [ax.uOut, ax.uOut + BB_RAMP_OUT]) {
+  for (const u of [ax.uOut, ax.uOut + reach]) {
     for (const v of [ax.vc - ax.half, ax.vc + ax.half]) {
       const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
       const w = rot(local, rob.heading);
@@ -1177,13 +1193,17 @@ function bbRampSwingStep2d(world: World, rob: RobotState): void {
   if (rob.bbRampBlocked) return;
   const e = bbRampSwingProgress(rob, world.time);
   if (e === null) return; // no swing in flight — settled either way
+  // a swing to or from the NECTAR bar tests where the ramp IS this tick: part-way up it stands
+  // further out than it lies deployed (`bbRampPlanReach`), and near folded it is inside the outline
+  const reach = rob.bbRampFrom === undefined ? BB_RAMP_OUT : bbRampPlanReach(e);
+  if (reach <= 0) return;
   const hl = rob.spec.length / 2;
   const hw = rob.spec.width / 2;
   const edgeAxes = [rot({ x: 1, y: 0 }, rob.heading), rot({ x: 0, y: 1 }, rob.heading)];
   let hit = false;
   for (const m of bbMouths(rob.spec)) {
     const ax = mouthAxes(m, hl, hw);
-    const corners = bbRampFootprintCorners(rob, ax);
+    const corners = bbRampFootprintCorners(rob, ax, reach);
     for (const s of biobuzzColliders.statics) {
       const rect = { x0: s.tx - s.hx, x1: s.tx + s.hx, y0: s.ty - s.hy, y1: s.ty + s.hy };
       if (bbSatOverlap(corners, rect, edgeAxes)) {

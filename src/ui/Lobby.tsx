@@ -15,7 +15,8 @@ import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
 import { Menu } from './Menu';
-import { buildWords, teamLine } from './robotLabels';
+import { teamLine } from './robotLabels';
+import { BuildLine } from './BuildLine';
 import { RobotCard } from './RobotCard';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
@@ -1684,9 +1685,10 @@ export function Lobby({
               </p>
             ) : (
               !settings.savedRobots.some(isMine) && (
-                <p className="ds-sub">
-                  {mySpec.name} · {buildWords(mySpec, settings.game).join(' · ')}
-                </p>
+                <div className="ds-sub ds-build-sub">
+                  {mySpec.name}
+                  <BuildLine spec={mySpec} game={settings.game} />
+                </div>
               )
             )}
             <div className="ds-opts robots">

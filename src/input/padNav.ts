@@ -204,8 +204,8 @@ export function padBackButton(f: PadFamily): number {
  *
  * It is next to controls a thumb already knows. The default binds are fire 7/0, intake 6/1,
  * catalyst and place POLLEN 4, fling and pass 10, place NECTAR 12, nectar 14, ramp 11 (R3),
- * driveMode 5, flip 3, park 2, start 9, restart 8. D-DOWN (13) is unbound by default; it was the
- * ramp's until 2026-09-26.
+ * driveMode 5, flip 3, park 2, start 9, restart 8, reverse intake 13 (D-DOWN, the ramp's until
+ * 2026-09-26; BIOBUZZ's reverse since 2026-10-24).
  */
 export const PAD_MENU_BUTTON = 15;
 

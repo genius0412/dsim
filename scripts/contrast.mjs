@@ -431,6 +431,11 @@ const serverPairs = (t) => {
     // .legal-warn paints --ds-warn as TEXT on a 9% tint of itself over the page
     ['Legal unfinished-terms warning', t('--ds-warn'), composite(t('--ds-warn'), 0.09, bg), AA],
     ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],
+    // a build tag (`BuildLine`) has no fill: its name and mount sit on the card itself
+    ['Build tag name on a card', t('--ds-ink-dim'), panel, AA],
+    ['Build tag mount on a card', t('--ds-mut'), panel, AA],
+    ['Build tag name on a selected card', t('--ds-accent-soft-ink'), t('--ds-accent-soft'), AA],
+    ['Build tag mount on a selected card', t('--ds-accent-soft-mut'), t('--ds-accent-soft'), AA],
     ['ds-opt-del hover glyph', t('--ds-red-ink'), panel, AA],
 
     /* TINTED OPTION ROWS + the start-pose legality banner. Each paints a semantic

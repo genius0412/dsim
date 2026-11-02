@@ -110,6 +110,10 @@ now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 **THE PHOTOGRAPHED VENUES DRAW NOTHING FLAT (2026-10-24).** Owner: "can you just make it NOT smear?" Each row's `PhotoVenue.layers` is the measured room (the box, plus a venue's floor step: the school hall's auditorium 44 in below its stage) textured with the backdrop with its furniture painted out, and the furniture alone as MoGe-2 relief textured with the original. `scripts/venues/README.md` is the pipeline (depth, layers, meshes, pack, sync) and its rules; `renderPhotoVenue.ts`'s header is the renderer's. Measured verdicts: MoGe's own room smeared (noisy walls; every depth jump a stretched sheet), so the room is the box; a seat block blurred into one surface became floor paint again, so furniture is blurred ~1° only and the shader drops what the lens saw edge-on (`PHOTO_STRETCH_MAX`); and whatever the classes are sure is furniture is painted out of the room even where it is not drawn as relief, or LaMa copies it into every gap. The box is still the fallback when a layer file fails.
 
+**THE PHOTOGRAPHED FLOOR IS A TEXTURE (2026-11-01).** Owner, after the keep-out fix below: "The scenes are still severely distorted." Seen from above (a scratch tool projecting each `bg-4k` straight down), the floors were the distortion: the panorama sees its floor from 63 in up, so 300 in out a 4k texel is 2.3 × 0.5 in and 600 in out 9 × 1 in, and every in-match eye is higher or nearer than the lens; the events hall's floor (the default from High up) was also a mirrored blotch pattern from the derive's furniture patch and de-gloss, right up to the field; the school hall's had its seats painted across it as radial stripes. Every photographed floor but the court's is now drawn from a 1024 tile (`PhotoVenue.floorTexture`, `renderPhotoVenue.ts` THE FLOOR, `scripts/venues/floor.py`): the floor beside a lens seen straight down (the school hall and quad turned by their lens's measured tilt, so planks and joints run straight), its light divided out, cut to a whole even number of planks or pavers and made to repeat; recoloured to the room and lit by the photograph blurred to 48 in, fading to the room's plain colour from 150 to 450 in out, and back to the projection over the last 36 in at a wall's foot (the wall's lowest rows are photographed floor). The events hall uses the hangar's concrete. The court keeps its projection (its lines are straight and must not repeat). Two furniture rules went with it: relief seen more than `PHOTO_VIEW_MAX_DEG` (40°) off the lens's ray is dropped (was 90°: the school hall's seats from the overhead and high orbit cameras were radial black streaks), and the events hall draws no furniture above its lens (`PhotoLayers.upper: false`: its pendant lamps were white streaks under the roof). Captured from 35 in-match eyes per room before and after; the RENDER lane's `photoFloorChecks` pin the files, the shader and the build.
+
+**NOTHING A VENUE DRAWS STANDS IN FRONT OF THE PLAY (2026-11-01).** Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or just look weird." Captured offscreen from every in-match camera (driver fitted and height-accurate on 16:9, 21:9, 4:3 and both phone shapes, chase, orbit and free at their limits, overhead), all 15 environments at High and Medium. Every photographed blocker was furniture RELIEF: the court's default free cam looked at the field through a sky-white light-pole sliver MoGe put 150 in from the lens, its default orbit had two sky shards floating in frame, the events hall's free cam dollied out looked through a pendant lamp drawn as a streaked drape, the school hall's low orbit through the stage-wing curtains; swept over 505 in-match eyes per room, furniture stood between an eye and the field in all five (school hall 9,617 vertices, court 7,381, events hall 1,499; 4,284 of them from driver eyes). The furniture shader now drops three kinds of fragment (`renderPhotoVenue.ts`, `PHOTO_KEEP_OUT`, `PHOTO_NEAR_IN`, mirrored by `photoFurnitureDropped`): what an eye sees FROM BEHIND (past it along the lens's own ray, where the relief has no picture), what stands between the eye and the keep-out box (the field, the hives to 96 in, both alliance areas), and what is within 72 in of the eye (a dither over the outer half). The painted-out room shows there, as for `PHOTO_STRETCH_MAX`. Procedural venues had three blockers of their own, below under the venue rules. The RENDER lane's `photoKeepOutChecks` and `venueSightChecks` sweep every in-match eye through the real camera code.
+
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via
 `GameSettings.practicePhysics` (default `'3d'`; Practice setup has the control). A record run
 whose 3D chunk fails to load REFUSES (`RecordRun.tsx` preflights it); only a practice falls back
@@ -1103,8 +1107,32 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       - ⚠️ **AN ENCLOSED VENUE MUST BE WIDER THAN THE ORBIT CAMERA'S REACH.** `workshop` was
         290 in across and the orbit camera zooms to 620, so the eye stood OUTSIDE its own
         `BackSide` shell and the walls simply vanished. `VENUE_MIN_HALF` (660) is clamped in the
-        BUILDER, not trusted to the data. Going above a ceiling degrades to a cutaway and needs
-        no guard.
+        BUILDER, not trusted to the data. Going above a ceiling degrades to a cutaway, but only
+        because of the next rule.
+      - ⚠️ **NOTHING IT BUILDS MAY STAND BETWEEN AN IN-MATCH EYE AND THE PLAY (2026-11-01).** "A
+        cutaway that needs no guard" was measured wrong: the orbit wheeled out at its DEFAULT
+        elevation stands at z 353, above the practice room's 288-in ceiling (the Low/Medium
+        default), and looked at the field through the lighting grid; the arena's centre truss beam
+        covered it whole; a free cam pitched down in the 200-in workshop crossed it with two beams;
+        a softbox hid a quarter of it in the studios. Three rules, `renderVenue.ts`:
+        - **An eye above the rig leaves it out** (`syncVenueRigLayer`, per frame, for the camera
+          being drawn): above `RIG_CLEAR_IN` under the lowest part on `VENUE_OVERHEAD_LAYER`
+          (`userData.rigBottomZ`), the layer is off, as it always was for the overhead and the
+          minimap. The `BackSide` shell is then a clean cutaway. No hold, so the workshop's
+          default orbit (z 157 under a 162-in rig) frames as before.
+        - **The orbit and free eyes stop in front of the stands** (`venueCameraRoom`, through the
+          same `BbCameras.setRoom` the photographed rooms use): the gym's front riser is 464 in
+          out and the arena's 544, inside the 620-in orbit, and low along y the eye stood among
+          the crowd. Held `STANDS_MARGIN_IN` in front of it, on y only; null where no stands are
+          built (Low, halls without seating, outdoors), and the default framings are untouched.
+        - **The night masts stand past every camera's reach** (`MAST_AT` 480, was 210): wheeled
+          out on a diagonal the orbit looked through a pole and its lit head. A sight line from an
+          eye inside the 620-in circle to the field stays inside it, so a mast whose nearest part
+          is 649 in out can never be in front of the field.
+        The RENDER lane's `venueSightChecks` tests every instanced part of every venue, High and
+        Low, against the sight lines from 505 eyes each to the field's corners, hive tops and
+        alliance areas: 0 hits; with the rig rule and the stands hold off, 182 in the practice
+        room, a studio and the gym alone.
       - ⚠️ **`color` × `map` MULTIPLY.** The ground was handed `spec.floor` as BOTH tint and
         texture, so it rendered its own albedo squared and the practice room came out near
         black. White-tinted now, and pinned.
@@ -1268,7 +1296,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
           look-at point shortens to stay inside (`boomInRoom`), the direction holds, and a wheel
           notch works from the distance on screen (no dead zone). Closest reach at the lowest
           elevation: school hall 178 in, events hall 288, court 335, quad 342, hangar 411; the
-          quad's canopy holds the eye under 159 in. Procedural venues pass null and are unchanged.
+          quad's canopy holds the eye under 159 in. Procedural venues pass their stands hold (`venueCameraRoom`, null where none is built).
           The driver and chase eyes are NOT held: the fitted driver eye stands 94–124 in out on 16:9
           (the HUD's safe rect moves it) and 213 on a portrait phone, the height-accurate one 160
           and 293. All are inside every
@@ -2979,3 +3007,101 @@ shrink every saved 15 × 17 build of that shape. Now the length range is the uni
 range is the widest one any rectangle holding that length allows; `coerceBiobuzzSpec` clamps
 length first and then reads width off it. The HOPPER slider is still 1–4 for every build
 (`BB_STORAGE_MAX`, owner ruling).
+
+# THE OPPONENT'S NECTAR, AND TEAM UPDATES THROUGH TU06 — 2026-10-24 (`SIM_PATCH` 10)
+
+The sim was built on Competition Manual V1. Everything TU01–TU06 changed in the game sections
+(a word diff of V1 against the TU06 PDF) and what the sim does about each:
+
+| change | sim |
+|---|---|
+| G408 note: REPEATED CONTROL of the opponent's NECTAR is likely STRATEGIC "even if the ROBOT has a sorting mechanism that automatically discards opponent NECTAR" | modelled, below |
+| G407 note: the same for CONTROL of 5+ with a "keep and discard the rest" sorter | nothing to change: a full hopper never pulls (`bbIntakeAct`), so no intake takes a fifth to sort |
+| G402 examples: (A) CONTROLLING elements on the opposing side, (B) contacting an opposing ROBOT on its side | (A) is new: `bbOnCapture` bills a MAJOR for an element taken from wholly across the line in AUTO. (B) was already the contact rule |
+| Table 9-1: the 1:00 FLOWER-unlock cue is a "Chime" (V1: TBD) | `GameModule.teleopChimes`, `MatchAudio.sfxChime` |
+| §10.3.4: a pre-load on the TILES is "fully contained on its own ALLIANCE side" | `spawn.ts`'s overflow pre-load tries the front face, then the rear, then the line |
+| G426: one NECTAR per TIP, re-entry of NECTAR that left the FIELD, no need to enter at once | already true: the human player is a button, and nothing leaves the field |
+| G419 (exposed wiring, a delicate intake), G425's penalty owner, the violation-table rewording, Section 12 tables | not modelled (no damage, no drive-team bodies) or wording only |
+| Table 10-2/10-3 | layout only; every number unchanged. `manual.ts` still cites TU03 for the RP table, which is right: the numbers have not moved |
+
+**A ROLLER CANNOT SEE COLOUR.** Before patch 10 every intake refused the opponent's NECTAR at the
+roller, which no hardware can do. Now:
+
+- **The intake's FEED is its own choice** (`BbIntakeSpec.feed`, `bbIntakeFeedOf`): `pollen` (no
+  NECTAR fits) or `mixed`. It used to follow the launcher (`bbCarriesNectar(launcher)`); the owner
+  ruled a single turret can fire NECTAR too, so the feed is picked in the builder and
+  `bbCarriesNectar` takes the spec. An absent feed is the launcher's old one (`bbDefaultFeed`:
+  double turret and dumper mixed, single turret and fixed shooter POLLEN only), and the coercer
+  writes `feed` only when it differs, so every old spec coerces to its old bytes. A double turret is
+  always mixed.
+- **A mixed intake takes EITHER alliance's NECTAR** (`bbIntakeAccepts(…, opponentNectar)`), from
+  patch 10. Replays stamped below 10 pass `false` and refuse it, and the golden lane re-simulates
+  the 2v2 scene at patch 9 onto the row it had (`'biobuzz 2v2 (2d) @ patch 9'`).
+- **G408** (`penalties.ts`): each instance of HOLDING one is a VERBAL WARNING (edge per
+  robot × element), the second this match is STRATEGIC and draws the shared `awardCard` YELLOW, once
+  per match (`bb.held[id].g408card`). Herding is not counted. The HUD pins `G408 OPPONENT NECTAR`
+  for 3 s per instance (`bb.g408`).
+- **Getting rid of it** (`BbNectarReject`, `nectarReject.ts`), picked in the builder for a mixed
+  intake: `none` (the driver reverses or launches it), `reverse` (sensor, `BB_SORT_DETECT_S`, then
+  the intake runs backwards `BB_SORT_REVERSE_S` and takes nothing), `passthrough` (out of the mouth
+  it came in by after `BB_SORT_PASS_S`, intake never stops), `bar` (down, no NECTAR enters at all —
+  the robot's own included — so no G408; on a `ramp` intake see the next section). An
+  auto-sorted reject is ignored by its own intake for `BB_SORT_IGNORE_S`, or a robot driving
+  forward re-takes it every tick. The launcher feeds past a reject in transit and a dumper waits for
+  it to leave.
+- **REVERSE is a driver control on every build** (`RobotCommand.bbReverse`, protocol bit 4096, key
+  `;`, pad D-DOWN 13, touch REV on a mixed build with no auto-sorter and no bar). LIFO, one per
+  `BB_REVERSE_PERIOD_S` off `lastIntakeAt`; it wins over `intake`. Counted as driver input by the
+  room's participation credit.
+- **One writer for held → ground at the mouth**: `bbEject`. 3D needs nothing more: `syncElement`
+  builds the body next tick, as for a side roller's FLOWER release.
+- **The Box Tube places its own alliance's NECTAR only** (`placeInFlower`, both pipelines), which
+  keeps G410's offender the NECTAR's colour.
+- **The AI** targets by `bbIntakeWants` (never the opponent's NECTAR) and, with no sorter, reverses
+  one out at once (`ai/policy.ts`'s `command`).
+- **State**: `bb.sorter`, `bb.sortRev`, `bb.g408`, `RobotState.bbBarOut`/`bbBarAt` — every one
+  absent until used, so a match without them ships what it did.
+
+Not done: the robot importer's editor does not offer the feed or a sorter (an import reads its
+launcher's old feed), and Zenith autos have no reverse button (`AutoButtons`).
+
+## A RAMP DOUBLES AS A NECTAR BAR — 2026-11-01 (`SIM_PATCH` 11)
+
+Owner: "If someone has a flower ramp, it should be able to double as a nectar bar. It may need
+another button for control in that case."
+
+- **The bar has its own button** (`RobotCommand.bbBar`, protocol bit 8192, key `'`, pad B, which
+  Intake gave up in every game, touch BAR; `docs/area/ui.md` has the binding rules), on its own debounced latch (`bbBarHeld`/`bbBarUpAt`, written from the first
+  press). `bbRamp` is the ramp alone now. Before 11 a `bar` sorter's bar rode `bbRamp` and the
+  ramp's latch, and a replay recorded then still does (`bbBarStep`).
+- **Every `ramp` intake with a POLLEN + NECTAR feed has the bar** (`bbHasRampBar`), whatever its
+  sorter: it is the ramp itself, so it costs nothing. The builder offers a ramp no `bar` sorter and
+  says the ramp doubles as one; a ramp spec saved with `bar` behaves as `none` plus the ramp's bar,
+  and coerces to the same bytes (no coerce change, so old replays keep their spec).
+- **Where it sits** (`BB_RAMP_BAR_E` ≈ 0.682 of the swing, solved in `config.ts`). Turned part-way
+  up, the lowest thing across the mouth is the blade's INBOARD underside edge, so `e` puts that edge
+  at `BB_RAMP_BAR_Z` = 3.2 in, between a POLLEN (2.8) and a NECTAR (3.6). The edge stands 2.82 in
+  past the tip line, the blade tilts 40° up to its lip 4.83 in out and 0.5 in over the pivot
+  (checked by rotating the deployed blade's corners about the pivot). Both views draw it: the 3D
+  pivot reads `BB_RAMP_DEPLOYED_ROT · e`.
+- **A flat ramp is no bar.** Before 11 the DEPLOYED ramp was the bar on a ramp intake; a NECTAR
+  rolls up a flat ramp like a POLLEN, so now only the bar pose keeps NECTAR out (`bbBarDown`). The
+  FLOWER deploy is unchanged and still `bbRamp`.
+- **Three stops, one curve** (`robot.ts`): `rampTarget` is 0, `BB_RAMP_BAR_E` or 1;
+  `bbRampSwingProgress` eases from `RobotState.bbRampFrom` to it in `bbRampDeployS × |to − from|`
+  (the same servo at the same speed: bar → deployed takes 0.095 s). With `bbRampFrom` absent every
+  swing is the old full one, byte for byte, which is every ramp that never used the bar. Once
+  written it stays. `bbRampPose` is what both renderers draw; `bbRampSettled` reads `from` for the
+  shorter swing. The bar button from deployed goes to the bar; the ramp button from the bar deploys.
+- **Guards.** A swing to or from the bar is tested like any swing; a blocked one goes back to the
+  stop it left (`bbRampReverse`). 2D tests the rails' plan reach at this tick (`bbRampPlanReach`,
+  up to 4.85 in, further out than the 3.54 a deploy tests), so 4.2 in from a wall the ramp deploys
+  but the bar folds back. In 3D the bar pose keeps the FOLDED collider set (`bbRampSettled` is
+  false), so it is not solid; instead `bbRampSwingStep3d` asks each tick whether the settled bar
+  pose meets a static or another robot and folds it (`bbRampFoldNow`), the owner's 2026-09-20 rule
+  for a swing that meets something.
+- **Touch**: DEPLOY on a ramp, BAR on any bar build, and no REV on a bar build. A ramp bar made the
+  widest pad twelve, which doubled up at 568–667 × 375–400; a bar build keeps the NECTAR out, and
+  SHOOT still empties the hopper. The widest pad is eleven again and fits clean from 375.
+- **Not done:** the AI never drops the bar (it still targets by `bbIntakeWants` and reverses);
+  Zenith autos have no bar button (`AutoButtons`).

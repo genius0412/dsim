@@ -17,7 +17,7 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { BB_FLOWERS, BB_GARDEN, BB_HIVE_CELL_DY, BB_HIVE_X, BB_LZ, BB_PRESETS } from '../../src/games/biobuzz/config';
-import { bbCarriesNectar, bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import { bbCarriesNectar, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import { bbFlowerInReach } from '../../src/games/biobuzz/robot';
 import { bbHopperCap } from '../../src/games/biobuzz/robot';
 import { DECODE_TUTORIAL } from '../../src/games/decode/tutorial';
@@ -363,16 +363,26 @@ export function tutorialChecks(check: Check): void {
     // card across the joysticks on a phone (12-05 — BIOBUZZ's retrieve hint was 55 words).
     const rightStick = cloneBindings(DEFAULT_BINDINGS);
     rightStick.pad.driveStick = 'right';
-    // TURN WITH TRIGGERS: the drive line says so, and Shoot (RT and A by default) names A,
-    // because RT is turning the robot
+    // TURN WITH TRIGGERS: the drive line says so, and Shoot names its other button, because RT is
+    // turning the robot. A trigger-turner's saved map keeps Shoot on RT and A; a NEW map has only
+    // RT since 2026-11-01 (the duplicates went), so its hint says Shoot has no button.
     const triggers = cloneBindings(DEFAULT_BINDINGS);
     triggers.pad.turnWith = 'triggers';
+    triggers.pad.buttons.fire = [7, 0];
     const trig: TutorialHintCtx = { bindings: triggers, gamepad: true, touch: false };
+    const newTriggers = cloneBindings(DEFAULT_BINDINGS);
+    newTriggers.pad.turnWith = 'triggers';
+    const newTrig = hintText(shoot.hint({ bindings: newTriggers, gamepad: true, touch: false }));
     check(
       'hint: with the triggers turning, the drive line names LT and RT and Shoot names its other button',
       hintText(driveHint(trig)) === 'Left stick to drive, LT and RT to turn' &&
         hintText(shoot.hint(trig)).includes('A') && !hintText(shoot.hint(trig)).includes('RT'),
       `${hintText(driveHint(trig))} | ${hintText(shoot.hint(trig))}`,
+    );
+    check(
+      'hint: ...and on a new map, where RT was Shoot\'s only button, it says Shoot has no button',
+      newTrig.startsWith('Shoot has no button.'),
+      newTrig,
     );
     const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }, trig];
     const lower: string[] = [];
@@ -519,7 +529,7 @@ export function tutorialChecks(check: Check): void {
     );
     const bt = boxTubeSpec();
     check('applies: a Box Tube that can carry NECTAR gets the PLACE step', new TutorialRunner(BIOBUZZ_TUTORIAL, bt).steps.some((s) => s.id === 'nectar'));
-    check('applies: …and that build really has both pieces of hardware', !!bbLiftOf(bt) && bbCarriesNectar(bbLauncherOf(bt, 0)));
+    check('applies: …and that build really has both pieces of hardware', !!bbLiftOf(bt) && bbCarriesNectar(bt));
     check('applies: the default build (single turret, no tube) gets the RETRIEVE step', new TutorialRunner(BIOBUZZ_TUTORIAL, BB_DEFAULT_SPEC).steps.some((s) => s.id === 'retrieve'));
   }
 

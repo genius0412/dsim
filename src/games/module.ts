@@ -41,6 +41,12 @@ import type { TutorialSpec } from '../tutorial/types';
  *   it is not in anybody's way.
  */
 export interface GameModule extends GameSimModule {
+  /**
+   * TELEOP seconds-left marks at which the field plays its CHIME (`MatchAudio.sfxChime`). BIOBUZZ's
+   * Table 9-1 has one, FLOWER Ownership Unlocked at 1:00 ("Chime", TU06; V1 had it as TBD). Absent
+   * ⇒ no chime, which is DECODE and Chain Reaction.
+   */
+  teleopChimes?: readonly number[];
   /** `screenUp` is world-space "up" for z-lift — CR raises the beams into extruded tubes. */
   drawField(ctx: CanvasRenderingContext2D, world: World, screenUp?: Vec2): void;
   /** extra overlays drawn after the field, before robots (DECODE: ramp strips) */
@@ -163,17 +169,27 @@ export interface GameModule extends GameSimModule {
   /** the Autonomous section's PREVIEW (`src/ui/AutonomousSetup.tsx`): a Zenith auto drawn on this
    * game's own field. Absent means a game that plays no Zenith autos (`GameSimModule.zenithAutos`). */
   autoPreview?: ComponentType<AutoPreviewProps>;
-  /** display strings a non-game screen needs. `configSummary` is the ONE line that
-   * says what a build is — printed by the leaderboard, the lobby roster and the
-   * strategy screen. */
-  labels?: {
-    configSummary(spec: RobotSpec): string;
-  };
+  /**
+   * THE SPEC SHEET: what a build is, one row per job, for the screens that show someone ELSE's
+   * robot — a leaderboard record and the ranked strategy card (`src/ui/RobotSheet.tsx`, through
+   * `specSheet` in `src/ui/robotLabels.ts`). DECODE and Chain Reaction fill nothing and take the
+   * two inline arms there.
+   *
+   * It was `labels.configSummary`, a SENTENCE (`Double turret · FRONT+BACK sweeper · …`) printed
+   * in a stat tile captioned CONFIG. Rows are what a reader scans for ("what intake?"), and a
+   * sentence of parts is what they had to parse to find it.
+   *
+   * Same `GameStatTile` shape as `statTiles`, and still a separate slot, because the two have
+   * different consumers: `statTiles` is the builder's own build line (`buildParts`), which the
+   * owner keeps to the mechanisms alone, while a sheet has room for the intake's feed and the
+   * sorter. A game writes both off ONE vocabulary module so they cannot describe a robot two ways.
+   */
+  specSheet?(spec: RobotSpec): readonly GameStatTile[];
   /**
    * The PER-GAME tiles in the builder hero's stat grid — the summary of what
    * MECHANISMS this build carries, beside the shared speed / mass / drivetrain tiles.
    *
-   * ── WHY THIS IS A SLOT, AND A SIBLING OF `labels` RATHER THAN A MEMBER OF IT ──
+   * ── WHY THIS IS A SLOT, AND A SIBLING OF `specSheet` RATHER THAN A MEMBER OF IT ──
    * `Menu.tsx` picked these tiles with `isDecode ? <intake tile> : <scoring + catalyst
    * tiles>` — the same two-valued shape `presets` was built to replace, and with the
    * same result: a third game did not fall back to "no per-game tile", it fell into the
@@ -182,20 +198,17 @@ export interface GameModule extends GameSimModule {
    * tile was printing `CHAIN_CATALYST_LABELS[CHAIN_DEFAULT_CATALYST]`, a default label
    * for a field the spec does not have. Confident, populated, and about another game.
    *
-   * It is a SIBLING of `labels` because the slot table is a map from slot to CONSUMER,
-   * and these have different ones: `labels.configSummary` is a SENTENCE for screens that
-   * are not the builder (`robotLabels.buildSummary` → the leaderboard, the lobby roster,
-   * the strategy card), while this is the builder hero's own tile grid and its shape is
-   * structured, not a line. Folding a tile list into a bag named `labels` would turn that
-   * bag into a catch-all with two unrelated readers, which is the point at which a slot
-   * stops saying where it is rendered. A game that wants both still writes them off ONE
-   * vocabulary module, which is what keeps the two from describing a robot differently.
+   * It is a SIBLING of `specSheet` because the slot table is a map from slot to CONSUMER,
+   * and these have different ones: `specSheet` is for screens that are not the builder (a
+   * leaderboard record, the strategy card), while this is the builder's own build line. A game
+   * that wants both still writes them off ONE vocabulary module, which is what keeps the two
+   * from describing a robot differently.
    *
    * Returns DATA, not markup, for the reason `resultsRows` does: the builder owns how a
    * mechanism is printed, and a game contributing one cannot drift it.
    *
    * ⚠️ NO LONGER TILES ON SCREEN (2026-09-22). The hero's chip wall is gone; each entry is now a
-   * WORD in `buildWords` (`src/ui/robotLabels.ts`) — `value, sub` — which is the build line under
+   * TAG in `buildParts` (`src/ui/robotLabels.ts`) — `value, sub` — which is the build line under
    * the hero's team and the one line on every robot card. The shape stayed so the vocabulary
    * stayed: `value`/`sub` are still what this game says about its mechanisms, and `label` is
    * what the checks assert those words are about.
@@ -227,7 +240,7 @@ export interface GameModule extends GameSimModule {
    * a wrong one, and invisible, because the section still rendered nine plausible cards.
    *
    * A game fills this and gets its own list and its own match test; the card's line is
-   * `buildWords`, which reads the game's `statTiles`. A game that fills nothing is routed
+   * `buildParts`, which reads the game's `statTiles`. A game that fills nothing is routed
    * through the unchanged branch exactly as before.
    *
    * `matches` is a BUILD comparison and deliberately not a deep equality: the player's
@@ -242,7 +255,7 @@ export interface GameModule extends GameSimModule {
     /** does `spec` carry this preset's BUILD? Identity fields are excluded — see above. */
     matches(spec: RobotSpec, preset: RobotSpec): boolean;
     // NO `lines` ANY MORE. A preset card printed a tagline, a spec line and a loadout chip, three
-    // readings of one robot; it prints `buildWords` now, the same one line a saved robot prints,
+    // readings of one robot; it prints `buildParts` now, the same one line a saved robot prints,
     // which already reads this game's `statTiles`.
     /** how many LEADING entries are real, documented robots rather than archetype
      * demos. The builder rules off after them so a player can tell "this is a real
@@ -641,6 +654,12 @@ export interface SceneOptions {
    * ask for a tier above what a hand pick on the live device can reach.
    */
   quality?: 'low' | 'medium' | 'high' | 'ultra';
+  /**
+   * THE ROOM a fixed-`quality` scene draws, in place of the tier's own (a game's environment id;
+   * an unknown one is ignored). Ignored without `quality`. The menu stage is the case: it draws a
+   * procedural room at a fixed tier whatever the player picked for matches (`MenuStage.tsx`).
+   */
+  environment?: string;
   /**
    * `false` for a scene nobody is driving — an export, a still, a thumbnail. It binds no keys
    * and no pointer handlers, which matters because those are WINDOW-level: an off-screen export

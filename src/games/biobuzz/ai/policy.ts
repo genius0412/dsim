@@ -29,7 +29,7 @@ import {
 import { hiveCellTarget } from '../elements';
 import { bbElementRadius, flowerFits, flowerScore, type BbElementKind } from '../flower';
 import { hiveLoad, hiveTakingSide, otherSide } from '../hive';
-import { bbCarriesNectar, bbIntakeAccepts, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
+import { bbAutoSorts, bbCarriesNectar, bbIntakeWants, bbIsTurreted, bbLauncherOf, bbLiftOf } from '../mechs';
 import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, MOUNT_DIR, bbIntakeEdges, bbIntakeMountOf } from '../mounts';
 import { bbAimTarget, bbCellSideOf, bbFixedBand, bbFlightEnters } from '../play';
 import {
@@ -392,7 +392,7 @@ function perceive(world: World, r: RobotState, t: BbAiTierSpec, bb: BiobuzzState
     : band
       ? [band[0] + 1, Math.max(band[0] + 1, band[1] - 1)]
       : [mem.w.dumpD0, mem.w.dumpD1];
-  const carriesNectar = bbCarriesNectar(launcher);
+  const carriesNectar = bbCarriesNectar(r.spec);
   const lift = bbLiftOf(r.spec) !== null;
   const ctx: Ctx = {
     world,
@@ -792,7 +792,9 @@ function candidates(c: Ctx, mem: BbBotMemory): Cand[] {
     }
     const nectar = b.color === 'red' || b.color === 'blue';
     if (nectar ? !wantNectar : !wantPollen) continue;
-    if (!bbIntakeAccepts(r.spec, r.alliance, b.color)) continue;
+    // WHAT THE BOT MEANS TO TAKE, not what its intake would take: a POLLEN + NECTAR intake takes
+    // the opponent's NECTAR too (G408), and no driver steers at one on purpose
+    if (!bbIntakeWants(r.spec, r.alliance, b.color)) continue;
     // a NECTAR lying against a FLOWER is left alone until the 1:00 cue: nudging it into the stack
     // is a G410 MAJOR against this alliance (see the flower zone in `route`)
     if (nectar && !c.placeWindow && BB_FLOWERS.some((f) => hyp(b.pos.x - f.x, b.pos.y - f.y) < 16)) continue;
@@ -1514,8 +1516,16 @@ function turnFor(r: RobotState, wantHeading: number | null, t: BbAiTierSpec): nu
 function command(c: Ctx, dir: Vec2, speed: number, turn: number, buttons: BbAiButtons): RobotCommand {
   const { r } = c;
   const dp = driveParams(r.spec, r.butterflyTank);
+  /**
+   * AN OPPONENT NECTAR IN THE HOPPER GOES STRAIGHT BACK OUT. A build with a sorter throws it out
+   * by itself (`nectarReject.ts`); one without has only the driver's REVERSE, so the bot holds it — and
+   * stops intaking for that moment, or the rollers would pull the reject straight back in. Every
+   * second it is held is CONTROL (G408), and it takes a slot a POLLEN should have.
+   */
+  const reject = !bbAutoSorts(r.spec) && r.hopper.some((h) => (h === 'red' || h === 'blue') && h !== r.alliance);
   const base = {
-    intake: buttons.intake,
+    intake: buttons.intake && !reject,
+    ...(reject ? { bbReverse: true } : {}),
     fire: buttons.fire,
     bbPlace: buttons.place,
     bbPlaceNectar: buttons.placeNectar,

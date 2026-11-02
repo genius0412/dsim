@@ -31,8 +31,13 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
     'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
     'biobuzz solo (3d)': ['d519c92daeaeff1e', '12ef7941c78c6823', 'd46fe240f75c7ca5'],
   },
+  // `SIM_PATCH` 10 (2026-10-24): a POLLEN + NECTAR intake takes the opponent's NECTAR, and the 2v2
+  // scene's double turret and dumper meet some by tick 800. The live scene is re-pinned, and the
+  // same scene stamped patch 9 — how a replay recorded before it re-simulates — must still land on
+  // the hashes the row had, which is what keeps those replays exact without a SIM_VERSION bump.
   7: {
-    'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
+    'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', 'fa3c62480cf3d832', 'fd2d0c6c61504af9', 'e86bb911f0f091c5', 'c981465a5b43a2b9', '5dac4ceb4eccbe59'],
+    'biobuzz 2v2 (2d) @ patch 9': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
     'biobuzz solo (3d)': ['d519c92daeaeff1e', '12ef7941c78c6823', 'd46fe240f75c7ca5'],
   },
 };
@@ -68,6 +73,24 @@ export function goldenChecks(check: Check): void {
             setup(3, 'red', preset(3), 1),
           ]),
         ),
+      step: biobuzzStep,
+      command: bbCommand,
+      ticks: 2400,
+      every: 400,
+    },
+    {
+      name: 'biobuzz 2v2 (2d) @ patch 9',
+      game: 'biobuzz',
+      build: () =>
+        armed(
+          createBiobuzzWorld('match', 31, [
+            setup(0, 'blue', preset(0), 0),
+            setup(1, 'red', preset(1), 0),
+            setup(2, 'blue', preset(2), 1),
+            setup(3, 'red', preset(3), 1),
+          ]),
+        ),
+      patch: 9,
       step: biobuzzStep,
       command: bbCommand,
       ticks: 2400,

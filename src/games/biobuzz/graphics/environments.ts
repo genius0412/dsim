@@ -189,8 +189,8 @@ export interface VenueSpec {
    * and studio therefore starts at `VENUE_MIN_HALF` (`scene/renderVenue.ts`, which clamps this
    * as a guard rather than trusting the numbers below), and character comes from the CEILING
    * height, the colours and what is in the room — a low dark 660-in shop still reads as a shop.
-   * Going ABOVE a ceiling degrades gracefully to a cutaway and needs no guard; going outside a
-   * WALL does not.
+   * Going ABOVE a ceiling degrades gracefully to a cutaway, because an eye above the overhead rig
+   * leaves the rig out (`scene/renderVenue.ts`, `syncVenueRigLayer`); going outside a WALL does not.
    */
   half: number;
   /** ceiling height, inches. Ignored by `outdoor`. */
@@ -273,6 +273,8 @@ export interface PhotoVenue {
   /** the room as its own geometry (`PhotoLayers`), which draws nothing flat; the box above is the
    * fallback when these files cannot load */
   layers?: PhotoLayers;
+  /** the floor drawn from a sharp texture instead of the projection (`PhotoFloorTexture`) */
+  floorTexture?: PhotoFloorTexture;
   /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
    * `hdri.fallback`: painted, and the same venue kind. */
   fallback: EnvironmentId;
@@ -282,6 +284,31 @@ export interface PhotoVenue {
   authors: readonly { name: string; role: string }[];
   license: 'CC0 1.0';
   licenseUrl: string;
+}
+
+/**
+ * A PHOTOGRAPHED FLOOR AS A TEXTURE (2026-11-01; `renderPhotoVenue.ts`, THE FLOOR). Owner: "The scenes
+ * are still severely distorted." The panorama sees its floor from 63 in up, so past a few lens
+ * heights each texel is a long radial strip, and every in-match camera stood higher or nearer
+ * than the lens drew it as streaks. The floor is drawn from this tile instead: cut from a
+ * photograph's own floor beside the lens, where it is sharp, its light flattened and its edges made
+ * to repeat (`scripts/venues/floor.py`), in the backdrop's stored encoding. The photograph keeps the
+ * floor's broad light, blurred.
+ */
+export interface PhotoFloorTexture {
+  /** the tile, 1024 × 1024, same encoding as the backdrop (`scripts/venues/floor.py`) */
+  tile: string;
+  /** how many inches of floor one tile covers, along x and y (a floor with joints is cut to a whole
+   * even number of them each way, so the two can differ) */
+  inches: readonly [number, number];
+  /** the tile's mean, and this room's floor (the median 100–260 in from the lens), both decoded
+   * (`e / (1 − e)`) in their own file's units, so a tile cut in another room (the events hall's,
+   * whose own floor is painted over) is recoloured to this one */
+  mean: readonly [number, number, number];
+  base: readonly [number, number, number];
+  /** how much of the photograph's own light, blurred, the floor keeps near the field (0–1) */
+  light: number;
+  bytes: number;
 }
 
 /** a rectangle of a photographed room's floor, field inches */
@@ -314,6 +341,10 @@ export interface PhotoLayers {
    * field's shadow stops at its edge (the school hall's stage edge is 80 in out at its nearest, with
    * two thrusts further out, over an auditorium 44 in lower) */
   floor?: PhotoFloor;
+  /** false: the furniture above the lens (`fg-hi`) is not drawn. The events hall's is its pendant
+   * lamps, relief seen from one point, which every other eye drew as white streaks under the roof;
+   * the painted-out ceiling shows instead (2026-11-01). */
+  upper?: false;
   bytes: { bg: number; bgLow: number; fg: number; fgLow: number; mesh: number };
 }
 
@@ -830,6 +861,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.71484375], { bg: 564_494, bgLow: 173_284, fg: 386_642, fgLow: 129_016, mesh: 86_668 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
+      floorTexture: { tile: 'venues/school-hall-floor.webp', inches: [140.31, 140.31], mean: [0.3455, 0.2142, 0.0534], base: [0.2428, 0.159, 0.0523], light: 1, bytes: 37_812 },
       furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
       // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
       fallback: 'gym',
@@ -849,7 +881,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'events-hall',
     name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.5 MB',
+    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
     rig: {
       hemiSky: 0xf2f6ff,
       hemiGround: 0x5f5c56,
@@ -869,7 +901,8 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       height: PHOTO_LENS_IN,
       room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 250, eave: 145, ridgeY: 20 },
       shadow: 0.4,
-      layers: PHOTO_LAYERS('events-hall', [0.283203125, 0.568359375], { bg: 684_836, bgLow: 213_750, fg: 380_700, fgLow: 126_826, mesh: 43_676 }),
+      layers: { ...PHOTO_LAYERS('events-hall', [0.283203125, 0.568359375], { bg: 684_836, bgLow: 213_750, fg: 380_700, fgLow: 126_826, mesh: 43_676 }), upper: false },
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.3564, 0.3417, 0.3218], light: 0.5, bytes: 63_886 },
       fallback: 'gym',
       ...PH_CREDIT('events_hall_interior', [
         { name: 'Dimitrios Savva', role: 'Photography' },
@@ -886,7 +919,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'hangar',
     name: 'Hangar',
-    note: 'Daylight through high windows, 1.8 MB',
+    note: 'Daylight through high windows, 1.9 MB',
     rig: {
       hemiSky: 0xfff6ec,
       hemiGround: 0x625a4e,
@@ -907,6 +940,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -709, x1: 857, y0: -435, y1: 435, ceil: 483, eave: 328, ridgeY: 0 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('hangar', [0.44140625, 0.556640625], { bg: 1_151_120, bgLow: 306_910, fg: 204_964, fgLow: 59_102, mesh: 43_028 }),
+      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.412, 0.3336, 0.2653], light: 1, bytes: 63_886 },
       fallback: 'workshop',
       ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
     },
@@ -967,7 +1001,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'quad',
     name: 'School quad',
-    note: 'Paving under a canopy, 2.1 MB',
+    note: 'Paving under a canopy, 2.3 MB',
     rig: {
       hemiSky: 0xfff8ee,
       hemiGround: 0x645a4a,
@@ -988,6 +1022,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       room: { x0: -630, x1: 662, y0: -372, y1: 384, ceil: 190 },
       shadow: 0.4,
       layers: PHOTO_LAYERS('quad', [0.33984375, 0.5625], { bg: 1_271_930, bgLow: 380_350, fg: 342_984, fgLow: 115_444, mesh: 41_700 }),
+      floorTexture: { tile: 'venues/quad-floor.webp', inches: [140.25, 138.2], mean: [0.2721, 0.1966, 0.1107], base: [0.4034, 0.3176, 0.1917], light: 1, bytes: 145_628 },
       fallback: 'overcast',
       ...PH_CREDIT('school_quad', [
         { name: 'Dimitrios Savva', role: 'Photography' },

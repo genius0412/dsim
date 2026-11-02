@@ -249,6 +249,19 @@ export class MatchAudio {
   }
 
   /**
+   * THE FIELD'S CHIME — Table 9-1's "Chime" (BIOBUZZ, FLOWER Ownership Unlocked at 1:00). No FIRST
+   * recording ships with the sim for it, so it is synthesised: two struck sine partials a fifth
+   * apart with a long ring, a bell and not a beep, on the field-cue level (`gameVolume`) beside the
+   * WAV cues it sits among rather than the alert level the lobby chimes use.
+   */
+  sfxChime(): void {
+    const v = this.gameVolume;
+    this.tone(1047, 1047, 0.9, 'sine', 0.3, 0, v);
+    this.tone(1568, 1568, 0.7, 'sine', 0.16, 0, v);
+    this.tone(1047, 1047, 0.9, 'sine', 0.22, 0.42, v);
+  }
+
+  /**
    * MATCH FOUND — a rising three-note chime, deliberately unlike anything the match
    * itself makes. It has to cut through whatever the player is doing (browsing, or
    * driving a practice run) and read as "come back now", so it is a melodic figure

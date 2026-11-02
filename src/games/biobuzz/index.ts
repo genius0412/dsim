@@ -10,11 +10,12 @@ import {
   BiobuzzScoreBar,
   biobuzzResultsRows,
 } from './HudSlots';
+import { BB_FLOWER_UNLOCK_S } from './config';
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
 import { drawBiobuzzRobot } from './drawRobot';
-import { bbConfigSummary, bbStatTiles } from './labels';
+import { bbSpecSheet, bbStatTiles } from './labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 import { BiobuzzStartEditor } from './StartEditor';
@@ -39,6 +40,8 @@ import { BIOBUZZ_TUTORIAL } from './tutorial';
  *    filled (2026-09-21) — a different slot in a different coordinate system, over a live scene.
  */
 export const BIOBUZZ_MODULE: GameModule = {
+  // Table 9-1: the 1:00 "Chime", FLOWER Ownership Unlocked — the moment G410 lifts
+  teleopChimes: [BB_FLOWER_UNLOCK_S],
   ...BIOBUZZ_SIM,
   // ---- renderers. The scene gallery draws through these same three functions, which is what
   // makes a gallery cell evidence about the real game screen rather than about a second
@@ -72,7 +75,8 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   pinnedNotice: BiobuzzPinnedNotice,
   resultsRows: biobuzzResultsRows,
-  labels: { configSummary: bbConfigSummary },
+  // what a leaderboard record and the strategy card print about a robot, one row per job
+  specSheet: bbSpecSheet,
   // THE START EDITOR. Empty, Configure fell into Chain Reaction's editor and the 2v2 lobby and
   // strategy screens into DECODE's; this one draws the BIOBUZZ field and judges G304 with
   // `bbEvalStart`, with TOP / BOTTOM roles.
@@ -83,7 +87,7 @@ export const BIOBUZZ_MODULE: GameModule = {
   offersAutoFire: false,
   /**
    * THE BUILDER'S MECHANISM WORDS (the hero's build line and every robot card's line, through
-   * `buildWords`). The second instance of the preset bug, and the same shape of fix: the hero
+   * `buildParts`). The second instance of the preset bug, and the same shape of fix: the hero
    * picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell into the CHAIN arm and
    * showed a **CATALYST** — Chain Reaction's mechanism, off a field `coerceBiobuzzSpec` deletes.
    * This says launcher and lift, which is what a BIOBUZZ robot has.

@@ -28,13 +28,13 @@ import {
   drawWheels,
 } from './parts';
 import {
+  BB_BAR_DEPLOY_S,
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_PLATE_OVERHANG,
   BB_POLLEN_R,
-  bbRampDeployS,
-  BB_RAMP_OUT,
+  BB_RAMP_BAR_E,
   BB_RAMP_PIVOT_BACK,
   BB_SIDE_ROLLER_BOSS_R,
   BB_SIDE_ROLLER_HUB_R,
@@ -62,7 +62,7 @@ import {
   bbBoxTubeStages,
   type BbBoxTubeFrame,
 } from './config';
-import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
 import {
   EDGE_ANGLE,
   type BbMountPos,
@@ -71,7 +71,7 @@ import {
   turretLocal,
   turretRadius,
 } from './mounts';
-import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
+import { bbFixedAxisLocal, bbFixedFacing, bbFixedHood, bbFixedLocal, bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal, bbRampPlanReach, bbRampPose, mouthAxes } from './robot';
 import { BB_ALLIANCE_BLUE, ELEMENT_FILL, ELEMENT_LINE } from './draw';
 
 /**
@@ -465,17 +465,54 @@ function drawBiobuzzIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boo
 }
 
 /**
- * How far DEPLOYED the ramp is drawn, 0 (folded) .. 1 (deployed) — the 2D twin of the 3D scene's
- * ease, off the same `bbRampAt` stamp and the same `BB_RAMP_DEPLOY_S` window, smoothstepped. A
- * caller with no `World` (the builder's static preview) has no clock to ease against, so it
- * draws the end pose `bbRampOut` alone names, the same fallback the box tube's marker would need
- * if it ever ran clockless.
+ * How far DEPLOYED the ramp is drawn, 0 (folded) .. 1 (deployed) — the sim's own pose
+ * (`bbRampPose`: folded, held at NECTAR bar height, or deployed, and the swing between), which the
+ * 3D scene draws too. A caller with no `World` (the builder's static preview) has no clock to ease
+ * against, so it draws the end pose the state names, the same fallback the box tube's marker would
+ * need if it ever ran clockless.
  */
 function bbRampEaseFrac(r: RobotState, world: World | undefined): number {
-  if (!world) return r.bbRampOut ? 1 : 0;
-  const t = clamp((world.time - (r.bbRampAt ?? -Infinity)) / bbRampDeployS(r.spec), 0, 1);
-  const e = t * t * (3 - 2 * t); // smoothstep — matches `scene/renderRobots.ts`'s `smoothstep01`
-  return r.bbRampOut ? e : 1 - e;
+  if (!world) return r.bbRampOut ? 1 : r.bbBarOut ? BB_RAMP_BAR_E : 0;
+  return bbRampPose(r, world.time); // the sim's own curve, which the 3D scene draws too
+}
+
+/**
+ * THE NECTAR BAR (`nectarReject.ts`) — a plain aluminium bar across each mouth on two short pivot arms,
+ * the 2D twin of the 3D scene's. Raised, it sits back over the roller; down, it stands just past
+ * the roller line, where it stops a NECTAR and lets a POLLEN under. Eased over `BB_BAR_DEPLOY_S`
+ * off `bbBarAt`, the ramp's way (`bbRampEaseFrac`). Plain hardware colours: no marking says it is
+ * a gate (owner, 2026-09-22: FTC-looking parts only).
+ */
+function drawNectarBar(ctx: CanvasRenderingContext2D, r: RobotState, world: World | undefined): void {
+  const t = world ? clamp((world.time - (r.bbBarAt ?? -Infinity)) / BB_BAR_DEPLOY_S, 0, 1) : 1;
+  const ease = t * t * (3 - 2 * t);
+  const e = r.bbBarOut ? ease : 1 - ease;
+  for (const m of bbMouths(r.spec)) {
+    const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
+    const pivot = f.depth - 1.4;
+    const x = pivot + e * 2.1;
+    ctx.save();
+    ctx.translate(f.ox, f.oy);
+    ctx.rotate(f.rot);
+    // the two arms, pivot to bar
+    ctx.strokeStyle = ALU_MID;
+    ctx.lineWidth = 0.35;
+    ctx.beginPath();
+    for (const y of [f.half - 0.3, -(f.half - 0.3)]) {
+      ctx.moveTo(pivot, y);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // the bar
+    ctx.fillStyle = e > 0.5 ? ALU : ALU_MID;
+    ctx.strokeStyle = ALU_DK;
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    ctx.rect(x - 0.25, -f.half, 0.5, 2 * f.half);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 /**
@@ -487,6 +524,8 @@ function bbRampEaseFrac(r: RobotState, world: World | undefined): number {
  */
 export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean, world: World | undefined): void {
   const kind = bbIntakeKindOf(r.spec);
+  // a `bar` sorter's NECTAR bar on any intake but the ramp (whose ramp is its bar)
+  if (kind !== 'ramp' && bbNectarRejectOf(r.spec) === 'bar') drawNectarBar(ctx, r, world);
   if (kind === 'sweeper') return;
   for (const m of bbMouths(r.spec)) {
     const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
@@ -566,10 +605,11 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
       const frac = bbRampEaseFrac(r, world);
       const railY = f.half - 0.7; // just inside the side plates (`h − 0.55` is their inner face)
       const pivotX = tip - BB_RAMP_PIVOT_BACK;
-      // `BB_RAMP_OUT` is measured past the TIP line (the sim's reach box), so the crossbar's
-      // travel from the pivot is the pivot's own set-back plus it: deployed, it lands at exactly
-      // `tip + BB_RAMP_OUT`, where the 3D scene and the retrieval gate put it
-      const outX = pivotX + (BB_RAMP_PIVOT_BACK + BB_RAMP_OUT) * frac;
+      // the crossbar is drawn where the rails' tips stand in PLAN at this pose (`bbRampPlanReach`):
+      // on the pivot line folded, at exactly `tip + BB_RAMP_OUT` deployed (where the 3D scene and
+      // the retrieval gate put it), and furthest out part-way, which is where a ramp held at NECTAR
+      // bar height sits
+      const outX = tip + bbRampPlanReach(frac);
       ctx.strokeStyle = on ? 'rgba(34,197,94,0.55)' : 'rgba(210,224,240,0.45)';
       ctx.lineWidth = 0.18;
       ctx.beginPath();

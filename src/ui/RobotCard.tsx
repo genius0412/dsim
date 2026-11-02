@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { RobotSpec } from '../types';
 import type { GameId } from '../games/types';
-import { buildWords } from './robotLabels';
+import { BuildLine } from './BuildLine';
 import { Marquee } from './Marquee';
 
 /**
@@ -17,8 +17,8 @@ import { Marquee } from './Marquee';
  * line at all, only a picture — so a thumbnail that did not render left a tall empty block with a
  * name in its corner. The swap rows said a name and a drivetrain.
  *
- * So a card is: the NAME, the TEAM when there is one, and ONE line — `buildWords`, the drivetrain
- * and the mechanisms. The numbers are the hero's; the tagline was flavour. A picture, when the
+ * So a card is: the NAME, the TEAM when there is one, and ONE line — `BuildLine`, the drivetrain
+ * and the mechanisms as tags. The numbers are the hero's; the tagline was flavour. A picture, when the
  * caller passes one (every saved robot in the builder), is the card's LEFT COLUMN, and the name,
  * team and line sit to its right. It never replaces the line.
  *
@@ -35,6 +35,7 @@ export function RobotCard({
   team,
   real = false,
   imported = false,
+  unsaved = false,
   thumb,
   onPick,
   onDelete,
@@ -51,6 +52,8 @@ export function RobotCard({
   /** a robot from the CAD importer (`spec.imported`): an "Imported" badge, the same spelling as
    *  `real`. The CALLER says so, because only the caller knows where the card came from. */
   imported?: boolean;
+  /** a build that is not saved yet (Play's strip keeps it in place): an "Unsaved" badge */
+  unsaved?: boolean;
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
   onPick(): void;
@@ -67,13 +70,16 @@ export function RobotCard({
         <Marquee text={spec.name || 'Unnamed'} />
         {real ? <span className="ds-badge">Real robot</span> : null}
         {imported ? <span className="ds-badge">Imported</span> : null}
+        {unsaved ? <span className="ds-badge">Unsaved</span> : null}
       </span>
       {team ? (
         <span className="od">
           <Marquee text={team} />
         </span>
       ) : null}
-      <span className="om">{buildWords(spec, game).join(' · ')}</span>
+      <span className="om">
+        <BuildLine spec={spec} game={game} />
+      </span>
     </>
   );
   const card = (

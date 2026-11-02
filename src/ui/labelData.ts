@@ -6,7 +6,7 @@ import type { DrivetrainType, IntakeStyle } from '../types';
  * ── WHY THEY ARE NOT IN `robotLabels.ts` WITH THEIR ONLY OTHER NEIGHBOUR ────
  * They were, and that made them unreachable from the place that most wants them. These two
  * maps are pure data with no dependency of their own, but `robotLabels.ts` also exports
- * `buildSummary`, which calls `moduleFor` — so importing `robotLabels` pulls in the whole game
+ * `specSheet`, which calls `moduleFor` — so importing `robotLabels` pulls in the whole game
  * registry, and therefore every game module. A GAME MODULE that imports it back closes the
  * loop, and because the registry reads the module objects at evaluation time the failure is
  * not a lint warning, it is `ReferenceError: Cannot access 'X' before initialization` at boot.
@@ -35,3 +35,29 @@ export const INTAKE_SHORT: Record<IntakeStyle, string> = {
   triangle: 'Triangle',
   none: 'Hand loaded',
 };
+
+/**
+ * WHERE A PART IS BOLTED, in words — for a spec sheet or a sentence. Both games' builders name the
+ * same nine chassis cells and four intake mounts, but their labels (`F·LEFT`, `FRONT+BACK`) are
+ * sized for a 3x3 button grid and read as shouting anywhere else. Keyed by the shared position
+ * strings, so either game's mount resolves here without a per-game copy.
+ */
+export const MOUNT_WORDS: Readonly<Record<string, string>> = {
+  frontleft: 'front left',
+  front: 'front',
+  frontright: 'front right',
+  left: 'left',
+  center: 'center',
+  right: 'right',
+  backleft: 'back left',
+  back: 'back',
+  backright: 'back right',
+  side: 'both sides',
+  frontback: 'front and back',
+};
+
+/** `MOUNT_WORDS` starting a line: "Front left". An unknown key prints as itself. */
+export function mountPhrase(pos: string): string {
+  const w = MOUNT_WORDS[pos] ?? pos;
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}

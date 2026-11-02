@@ -484,7 +484,11 @@ const BASELINE = {
   // and the pace line adds +4.17 — the score-bar tag, the Pace setting, the replay viewer's Use as
   // pace, `usePace` and the resolver/curve store it calls, and the live curve solo practice records.
   // The re-simulation itself is the lazy `paceWorker` route, not main.
-  main: { gzip: 1034.49 * 1000 },
+  // 2026-10-24: 1034.49 -> 1055.46, RAISED on purpose and measured: alpha's own base (2c676c1a)
+  // already measures 1052.63 (+18.14 of drift since the last raise, inside the 2% tolerance), and
+  // the opponent-NECTAR work adds +2.83 — the intake feed and sorter vocabulary, `nectarReject.ts`,
+  // G408, the builder's two new pickers, the NECTAR bar sprite and the REV touch button.
+  main: { gzip: 1055.46 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
@@ -705,7 +709,11 @@ const BASELINE = {
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown
   // scope controls, and the analytics page's sponsor report and imported-history section. Admin
   // only, so no player downloads it.
-  admin: { gzip: 29.75 * 1000 },
+  // 2026-11-01: 29.75 -> 42.80, raised on purpose, measured against its base (4efd1334, 30.99):
+  // `AdminSponsorPdf-*.js` 8.60, NEW, the monthly sponsor report's PDF writer and layout, a lazy
+  // chunk fetched only when someone presses Download PDF; `AdminAnalytics-*.js` 9.21 -> 12.30,
+  // the UTC ranges, the loader that cancels and caches, and the fixed product charts.
+  admin: { gzip: 42.8 * 1000 },
   // 2026-10-04: NEW, the competition pages (0059), MEASURED on the build that introduced them:
   // the list, a competition's page and its tabs (rankings, matches, the bracket, alliance
   // selection, the organizer's desk), the editor, the join screen, the pure rankings/selection/

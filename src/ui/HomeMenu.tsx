@@ -104,28 +104,36 @@ export function HomeMenu({
     </div>
   );
 
+  /**
+   * THE STATS ARE ON SCREEN FROM THE FIRST FRAME, with a dash for each number until the fetch lands
+   * (owner, 2026-11-01: the cards "load AFTER the data is received from the server, so it shifts
+   * UI"). Home's column is centred in the window, so a block that appeared a second in moved every
+   * keycap above it up by half its height. A failed fetch keeps the dashes rather than taking the
+   * block away again, which would be the same shift the other way.
+   */
+  const num = (n: number | undefined): string => (n == null ? '—' : n.toLocaleString());
   // two lines: the runs with no opponent, then the versus formats. Sentence case, digits in the
   // mono utility (01-21). In the column on the stage; in the "More" sheet on a phone.
-  const breakdown = stats && (
+  const breakdown = multiplayer && (
     <div className="ds-homestats-break">
       {(
         [
           [
-            ['Solo', stats.byCategory.solo],
-            ['Duo', stats.byCategory.duo],
+            ['Solo', stats?.byCategory.solo],
+            ['Duo', stats?.byCategory.duo],
           ],
           [
-            ['1v1', stats.byCategory['1v1']],
-            ['2v2', stats.byCategory['2v2']],
-            // custom rooms + Discord rooms + LAN; absent from an older server
-            ...(stats.byCategory.custom != null ? [['Custom', stats.byCategory.custom]] : []),
+            ['1v1', stats?.byCategory['1v1']],
+            ['2v2', stats?.byCategory['2v2']],
+            // custom rooms + Discord rooms + LAN; absent from an older server, and held while loading
+            ...(!stats || stats.byCategory.custom != null ? [['Custom', stats?.byCategory.custom]] : []),
           ],
-        ] as [string, number][][]
+        ] as [string, number | undefined][][]
       ).map((line, i) => (
         <span key={i} className="hb-line">
           {line.map(([label, n]) => (
             <span key={label}>
-              {label} <span className="ds-num">{n.toLocaleString()}</span>
+              {label} <span className="ds-num">{num(n)}</span>
             </span>
           ))}
         </span>
@@ -220,14 +228,14 @@ export function HomeMenu({
 
       {stage && links}
 
-      {stats && (
-        <div className="ds-homestats">
+      {multiplayer && (
+        <div className="ds-homestats" aria-busy={!stats}>
           <div className="ds-stat">
-            <span className="sv">{stats.users.toLocaleString()}</span>
+            <span className="sv">{num(stats?.users)}</span>
             <span className="sl">Players</span>
           </div>
           <div className="ds-stat">
-            <span className="sv">{stats.games.toLocaleString()}</span>
+            <span className="sv">{num(stats?.games)}</span>
             <span className="sl">Games played</span>
           </div>
           {stage && breakdown}

@@ -890,6 +890,33 @@ export const BB_INTAKE_CROSS_MAX = 80;
 export const BB_INTAKE_WALL_GRAB = 1.2;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — running the intake backwards, and the opponent-NECTAR sorters (`nectarReject.ts`)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** in/s an element leaves the mouth at when the rollers throw it out, relative to the robot and
+ * along the mouth's outward normal. Under `BB_INTAKE_DRAW_IN` (84): a roller spitting something
+ * out runs the same motor the other way, and an element pushed back across the bumper loses some
+ * of it. APPROX, picked so a parked robot's reject travels about a foot before it stops. */
+export const BB_EJECT_SPEED = 45;
+/** seconds between elements while the driver holds REVERSE (`RobotCommand.bbReverse`). One per
+ * period, last in first out: the last element taken is the one nearest the rollers. */
+export const BB_REVERSE_PERIOD_S = 0.15;
+/** `reverse` sorter: how long the colour sensor takes to call an opponent NECTAR, measured from
+ * the capture. Four ticks plus the feed: a REV colour sensor reads at ~50 Hz. */
+export const BB_SORT_DETECT_S = 0.1;
+/** `reverse` sorter: how long the intake then runs backwards. Nothing is taken in that time. */
+export const BB_SORT_REVERSE_S = 0.35;
+/** `passthrough` sorter: time from capture to the element dropping back out of its mouth. */
+export const BB_SORT_PASS_S = 0.45;
+/** seconds a sorter's reject is ignored by its own intake after it leaves. Without this a robot
+ * driving forward re-takes the element on the next tick and sorts it again, forever; in the real
+ * mechanism the reject leaves over the roller and the sensor is still looking at it. */
+export const BB_SORT_IGNORE_S = 0.6;
+/** seconds the `bar` sorter's bar takes to drop or lift (a servo on a short arm). It keeps NECTAR
+ * out only once it is fully down; lifting, it lets them in at once. */
+export const BB_BAR_DEPLOY_S = 0.2;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — launcher geometry (the four archetypes)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1459,6 +1486,36 @@ export const BB_RAMP_L = (BB_RAMP_OUT + BB_RAMP_PIVOT_BACK) / dcos(BB_RAMP_ANGLE
  * `BB_RAMP_DECK_Z` to within `dsin`'s own ~1e-11 error, which is the whole point of solving `L`/
  * `BB_RAMP_ANGLE` above rather than typing the deck height a second time. */
 export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
+
+/**
+ * ⚠️ **THE RAMP AS A NECTAR BAR** (owner, 2026-11-01: "If someone has a flower ramp, it should be
+ * able to double as a nectar bar. It may need another button for control in that case."). The
+ * height the bar's lowest edge stands at: midway between a POLLEN's 2.8 in and a NECTAR's 3.6, so
+ * the one rolls under and the other stops against it.
+ */
+export const BB_RAMP_BAR_Z = BB_POLLEN_R + BB_NECTAR_R;
+// the blade's inboard UNDERSIDE edge, relative to the pivot, in the deployed pose
+const RAMP_EDGE_DU = BB_RAMP_IN + BB_RAMP_PIVOT_BACK;
+const RAMP_EDGE_DZ = BB_RAMP_FLOOR_Z - BB_RAMP_PIVOT_Z;
+const RAMP_EDGE_RHO = Math.sqrt(RAMP_EDGE_DU * RAMP_EDGE_DU + RAMP_EDGE_DZ * RAMP_EDGE_DZ);
+const RAMP_BAR_COS = (BB_RAMP_BAR_Z - BB_RAMP_PIVOT_Z) / RAMP_EDGE_RHO;
+/**
+ * THE SWING PROGRESS `e` THAT HOLDS THE RAMP AT BAR HEIGHT (`bbRampSwingShapes`'s
+ * `φ(e) = e·(π/2 + BB_RAMP_ANGLE)`; `bbRampPose`). Held part-way, the ramp is a rigid U turned
+ * about the roller shaft, and the lowest thing across the mouth is the blade's INBOARD underside
+ * edge: the lip has swung up past the pivot's height and the rails run outside the mouth. So `e`
+ * puts that edge at `BB_RAMP_BAR_Z`. Solved, not typed: the edge sits `ρ` from the pivot, `ψ₁` from
+ * straight up when deployed; turning the ramp back up by `(1 − e)·φ(1)` leaves it at
+ * `ψ = ψ₁ − (1 − e)·φ(1)` with `z = BB_RAMP_PIVOT_Z + ρ·cos ψ`. `datan2` for both angles, and the
+ * square roots are correctly rounded, so every peer loads the same bits.
+ *
+ * ≈ 0.682. The edge stands 2.8 in past the tip line, the blade tilts up 40° to its lip 4.8 in out
+ * and 0.5 in over the pivot, and nothing but the rails is lower than 4.5 in outboard of the edge.
+ */
+export const BB_RAMP_BAR_E =
+  1 -
+  (datan2(RAMP_EDGE_DU, RAMP_EDGE_DZ) - datan2(Math.sqrt(1 - RAMP_BAR_COS * RAMP_BAR_COS), RAMP_BAR_COS)) /
+    (Math.PI / 2 + BB_RAMP_ANGLE);
 
 /** how long the ramp takes to swing between its two poses (s). APPROX — a servo-driven drop;
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases

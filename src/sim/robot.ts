@@ -18,6 +18,7 @@ import {
 } from './fixedShot';
 import { flyFeedDue, flyReady, flyShot, flyStep } from './flywheel';
 import { allocBallId } from './ballIds';
+import { aimAssistOn, autoFireOn, autoIntakeOn, legacyPathAssists } from './assists';
 
 /** launch is legal when ANY part of the robot is inside a launch zone. Uses a
  * true OBB-vs-triangle overlap (not just corner containment): the launch wedge
@@ -149,7 +150,7 @@ export function updateRobot(
   // motors — slow the LOCAL dp copy (driveParams() itself is untouched so the
   // 75/7/280 calibration holds) and record it for the Rapier shove.
   const intakeDraw =
-    (cmd.intake || r.autoIntake) && r.hopper.length < C.HOPPER_CAPACITY;
+    (cmd.intake || autoIntakeOn(world, r)) && r.hopper.length < C.HOPPER_CAPACITY;
   // flywheel: a small steady HOLD cost (being far barely matters) plus the
   // DOMINANT SPIN-UP cost of accelerating the wheel while driving away from the
   // goal — both scale with the wheel's inertia (heavy = expensive to spin up).
@@ -621,7 +622,7 @@ export function chassisInertia(m: number, spec: RobotSpec): number {
 export function intakeClaims(world: World, commands: Map<number, RobotCommand>): Set<number> {
   const claimed = new Set<number>();
   for (const r of world.robots) {
-    const running = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
+    const running = (commands.get(r.id)?.intake ?? false) || autoIntakeOn(world, r);
     if (!running || r.hopper.length >= C.HOPPER_CAPACITY) continue;
     if (C.noIntake(r.spec)) continue; // nothing to hold an artifact with: loaded by hand
     const preset = C.INTAKE_PRESETS[r.spec.intake];
@@ -658,12 +659,8 @@ export function intakeClaims(world: World, commands: Map<number, RobotCommand>):
 }
 
 export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
-  // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
-  if (r.autoPathActive) {
-    r.aimAssist = true;
-    r.autoIntake = true;
-    r.autoFire = true;
-  }
+  // an auto path runs all three assists (`assists.ts`); before `SIM_PATCH` 12 it wrote them on
+  legacyPathAssists(world, r);
 
   // a FIXED SHOOTER / FIXED HOOD / SETPOINT WHEEL (`fixedShot.ts`) takes its own branch; every
   // robot without one runs the lines below it exactly as before
@@ -673,8 +670,8 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   }
 
   // ---- turret: aim assist tracks the firing solution exactly -------------
-  // Apply aim assist if enabled (now forced true during autoPathActive)
-  if (r.aimAssist) {
+  // aim assist, the driver's or an auto path's
+  if (aimAssistOn(world, r)) {
     r.turretHeading = aimSolution(r).yaw;
   } else {
     // MANUAL AIM: the turret is bolted to the chassis and the driver aims by turning.
@@ -701,9 +698,9 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // (long-range) shots — see fireReadyAt set in fire() -----------------------
   const canFire = robotsEnabled(world) && r.hopper.length > 0 && world.time >= r.fireReadyAt;
   const zoneOk = world.mode === 'free' || robotInLaunchZone(r);
-  // cmd.fire is true if pathTraversal returns it, or if driver presses it.
-  // r.autoFire is true if forced by autoPathActive or set in settings.
-  const fireCommanded = cmd.fire || r.autoFire;
+  // cmd.fire is true if pathTraversal returns it, or if driver presses it; auto fire is the
+  // driver's setting, or on while an auto path drives
+  const fireCommanded = cmd.fire || autoFireOn(world, r);
 
   // console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
 
@@ -732,15 +729,11 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
  *     its hopper at the first wall it faced.
  */
 function updateFixedShotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
-  if (r.autoPathActive) {
-    r.aimAssist = true;
-    r.autoIntake = true;
-    r.autoFire = true;
-  }
+  legacyPathAssists(world, r);
   const fixed = decodeFixedLauncher(r.spec);
   // ---- aim
   if (fixed) r.turretHeading = wrapAngle(r.heading + decodeFixedFacing(r.spec));
-  else r.turretHeading = r.aimAssist ? decodeFixedAim(r).yaw : r.heading;
+  else r.turretHeading = aimAssistOn(world, r) ? decodeFixedAim(r).yaw : r.heading;
 
   // ---- flywheel
   const enabled = robotsEnabled(world);
@@ -768,8 +761,8 @@ function updateFixedShotActions(world: World, r: RobotState, cmd: RobotCommand, 
   let go = false;
   if (cmd.fire) {
     // the driver's call — and with aim assist turning a fixed launcher, once it is on target
-    go = !(fixed && r.aimAssist) || decodeFixedOnTarget(r, cmd, world);
-  } else if (r.autoFire) {
+    go = !(fixed && aimAssistOn(world, r)) || decodeFixedOnTarget(r, cmd, world);
+  } else if (autoFireOn(world, r)) {
     go = decodeFixedShotScores(r, dt);
   }
   if (go) fireFixed(world, r);
@@ -963,7 +956,7 @@ function fire(world: World, r: RobotState): void {
  */
 export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): void {
   if (!robotsEnabled(world)) return;
-  const running = cmd.intake || r.autoIntake;
+  const running = cmd.intake || autoIntakeOn(world, r);
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
   if (C.noIntake(r.spec)) return; // no rollers to pull with
 
@@ -1094,7 +1087,7 @@ export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): v
 
 export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
   if (!robotsEnabled(world)) return;
-  const running = cmd.intake || r.autoIntake;
+  const running = cmd.intake || autoIntakeOn(world, r);
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
   // NO INTAKE: the human player loads it by hand in its loading zone (`humanPlayer.ts`)
   if (C.noIntake(r.spec)) return;

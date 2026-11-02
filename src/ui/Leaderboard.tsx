@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   fetchElo,
   fetchRecords,
@@ -26,20 +26,8 @@ import { RANKED_PLACEMENT } from '../config';
 
 /** what a server older than 2026-10-03 places at, for both modes (it sends no `minGames`) */
 const OLD_SERVER_PLACEMENT = 5;
-import {
-  CHAIN_MODE_LABELS,
-  CHAIN_INTAKE_LABELS,
-  CHAIN_INTAKE_MOUNT_LABELS,
-  CHAIN_SHOOTER_MOUNT_LABELS,
-} from '../games/chain/labels';
-import { intakeMountOf, shooterMountOf } from '../games/chain/mounts';
-import {
-  CHAIN_DEFAULT_SCORE_MODE,
-  CHAIN_DEFAULT_INTAKE,
-  CHAIN_STORAGE_DEFAULT,
-  CHAIN_CLEARANCE_DEFAULT,
-} from '../games/chain/config';
-import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
+import { RobotSheet, UnsavedSheet } from './RobotSheet';
+import type { DrivetrainType, GameId } from '../types';
 
 type Kind = 'records' | 'ranked';
 
@@ -61,12 +49,6 @@ const BOARDS: { id: Board; label: string }[] = [
   { id: 'overall', label: 'Overall' },
   ...BOARD_ORDER.map((id) => ({ id, label: DT_LABEL[id] })),
 ];
-const INTAKE_LABEL: Record<IntakeStyle, string> = {
-  sloped: 'Sloped',
-  vector: 'Vector',
-  triangle: 'Triangle',
-  none: 'Hand loaded',
-};
 
 /** a driver's name on a board: display handle + muted @username, clickable to
  * their public profile when they have a username (legacy rows without one render
@@ -121,81 +103,27 @@ function DriverName({
   );
 }
 
-/** one robot's spec stats (shared by solo + each half of a duo). Game-aware: a
- * Chain Reaction robot shows its CR config (archetype / sweeper mount / hopper /
- * clearance), NOT the DECODE intake-preset + flywheel — those fields are unused in
- * CR and would read as a "weird" random configuration. */
-function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
-  const isChain = game === 'chain';
-  // a game that owns its config sentence (the module's `labels.configSummary`
-  // slot) prints THAT instead of tiles naming fields it may not have
-  const own = moduleFor(game).labels?.configSummary;
-  const stat = (value: ReactNode, label: string, small = false) => (
-    <div className="ds-stat">
-      {/* `small` is the TEXT variant of a stat value (a drivetrain name, an
-          archetype) — a type step, so it is a class, not an inline size. */}
-      <span className={`sv${small ? ' sm' : ''}`}>{value}</span>
-      <span className="sl">{label}</span>
-    </div>
-  );
+/** a driver's name as the row prints it */
+const nameOf = (handle: string | null, username: string | null): string => handle ?? (username ? `@${username}` : 'Player');
 
-  const chainMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
-  // a turret is top-mounted, so its mount is meaningless — only name it for drum/dumper
-  const sMount = shooterMountOf(spec);
-  const archetype =
-    CHAIN_MODE_LABELS[chainMode] +
-    (chainMode !== 'turret' && sMount !== 'front' ? ` · ${CHAIN_SHOOTER_MOUNT_LABELS[sMount].toLowerCase()}` : '');
-  const sweeper = `${CHAIN_INTAKE_LABELS[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE]} · ${CHAIN_INTAKE_MOUNT_LABELS[intakeMountOf(spec)]}`;
-
+/**
+ * WHO DROVE WHAT: each driver's robot as a sheet, with how they drove it. A solo record is one
+ * sheet across the panel, which lays itself out as a row at that width. A duo is two equal sheets
+ * headed by their drivers (drivers bring their own builds and their own assists, 0064), in the
+ * order the row names them; a partner the run kept no robot for still gets a card, so the pair
+ * reads as a pair.
+ */
+function ConfigSummary({ cfg, game, driver, partner }: { cfg: RecordConfig; game: GameId; driver: string; partner: string | null }) {
+  const { spec, assists, partnerSpec, partnerAssists } = cfg;
   return (
-    <>
-      <div className="lb-config-name">
-        {spec.name}
-        {spec.teamNumber ? ` · #${spec.teamNumber}` : ''}
-        {spec.teamName ? ` · ${spec.teamName}` : ''}
-      </div>
-      <div className="ds-stats">
-        {stat(DT_LABEL[spec.drivetrain], 'drivetrain', true)}
-        {stat(spec.massLb, 'lb mass')}
-        {stat(spec.driveRpm, 'drive rpm')}
-        {own ? (
-          stat(own(spec), 'config', true)
-        ) : isChain ? (
-          <>
-            {stat(archetype, 'archetype', true)}
-            {stat(sweeper, 'intake', true)}
-            {stat(Math.round(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT), 'hopper')}
-            {stat(`${(spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT).toFixed(1)}"`, 'clearance')}
-          </>
+    <div className={`lb-config${partner ? ' duo' : ''}`}>
+      <RobotSheet spec={spec} game={game} assists={assists} driver={partner ? driver : undefined} />
+      {partner &&
+        (partnerSpec ? (
+          <RobotSheet spec={partnerSpec} game={game} assists={partnerAssists} driver={partner} />
         ) : (
-          <>
-            {stat(`${INTAKE_LABEL[spec.intake]}${spec.canSort ? ' +sort' : ''}`, 'intake', true)}
-            {stat(spec.flywheelInertia.toFixed(2), 'flywheel')}
-          </>
-        )}
-        {stat(`${spec.length}×${spec.width}"`, 'size')}
-      </div>
-    </>
-  );
-}
-
-/** the robot config a record was set with — each driver's spec stats + the
- * owner's assists. A duo shows BOTH robots (drivers bring their own builds). */
-function ConfigSummary({ cfg, game }: { cfg: RecordConfig; game?: GameId }) {
-  const { spec, assists, partnerSpec } = cfg;
-  const chip = (label: string, on: boolean) => (
-    <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
-  );
-  return (
-    <div className="lb-config">
-      <RobotSpecSummary spec={spec} game={game} />
-      {partnerSpec && <RobotSpecSummary spec={partnerSpec} game={game} />}
-      <div className="lb-config-assists">
-        {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
-        {chip('Aim assist', assists.aimAssist)}
-        {chip('Auto intake', assists.autoIntake)}
-        {chip('Auto fire', assists.autoFire)}
-      </div>
+          <UnsavedSheet driver={partner} />
+        ))}
     </div>
   );
 }
@@ -564,8 +492,9 @@ export function Leaderboard({
              which on a phone did not shrink this table — it CUT it, ~200px of it, with
              no way to scroll to the Score column and driver @usernames sliced mid-word.
              The one table scroller (`.ds-table-scroll`), so every table degrades
-             identically; on a phone `.lb-table` pins the value column to the right. */
-          <div className="ds-table-scroll tall" aria-busy={refetching}>
+             identically; on a phone `.lb-table` pins the value column to the right.
+             `.lb-scroll` makes it the container an opened robot sheet sizes itself to. */
+          <div className="ds-table-scroll tall lb-scroll" aria-busy={refetching}>
           <table className={`ds-table lb-table${isRecords ? ' rec' : ''}`}>
             <thead>
               <tr>
@@ -586,16 +515,19 @@ export function Leaderboard({
                 const rec = r as RecordRow;
                 const watchable = isRecords && !!rec.replayId && !!onWatch;
                 const cfg = isRecords ? rec.config : null;
-                const isOpen = openRow === r.userId;
-                const isMe = !!myUserId && r.userId === myUserId;
+                // a duo board lists PAIRS, so one person can be on it twice (A+B, A+C)
+                const rowKey = isRecords && rec.partnerId ? `${r.userId}+${rec.partnerId}` : r.userId;
+                const isOpen = openRow === rowKey;
+                const isMe = !!myUserId && (r.userId === myUserId || (isRecords && rec.partnerId === myUserId));
                 return (
-                  <Fragment key={r.userId}>
+                  <Fragment key={rowKey}>
                     <tr
                       className={`${watchable ? 'ds-clickable' : ''}${isMe ? ' lb-you' : ''}`}
                       onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
                       title={watchable ? 'Watch replay' : undefined}
                     >
-                      <td className="rk">{i + 1}</td>
+                      {/* the server's rank, which a tie shares; the row number from an older server */}
+                      <td className="rk">{(isRecords && rec.rank) || i + 1}</td>
                       <td>
                         <span className="lb-drivers">
                           <DriverName
@@ -632,10 +564,10 @@ export function Leaderboard({
                             <button
                               className="lb-robot"
                               aria-expanded={isOpen}
-                              aria-controls={`lb-detail-${r.userId}`}
+                              aria-controls={`lb-detail-${rowKey}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenRow(isOpen ? null : r.userId);
+                                setOpenRow(isOpen ? null : rowKey);
                               }}
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
@@ -671,9 +603,14 @@ export function Leaderboard({
                       )}
                     </tr>
                     {isRecords && isOpen && cfg && (
-                      <tr className="lb-detail" id={`lb-detail-${r.userId}`}>
+                      <tr className="lb-detail" id={`lb-detail-${rowKey}`}>
                         <td colSpan={5}>
-                          <ConfigSummary cfg={cfg} game={game} />
+                          <ConfigSummary
+                            cfg={cfg}
+                            game={moduleFor(game).id}
+                            driver={nameOf(r.handle, r.username)}
+                            partner={rec.partnerId ? nameOf(rec.partnerHandle, rec.partnerUsername) : null}
+                          />
                         </td>
                       </tr>
                     )}

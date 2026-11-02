@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { GameSettings } from '../types';
 import type { DrivetrainType, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS, chassisFill } from '../config';
@@ -23,7 +23,8 @@ import { coerceSpec, coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
-import { DRIVETRAIN_LABELS, buildWords, teamLine } from './robotLabels';
+import { DRIVETRAIN_LABELS, teamLine } from './robotLabels';
+import { BuildLine } from './BuildLine';
 import { RobotCard } from './RobotCard';
 import { Marquee } from './Marquee';
 import { OptRow, ToggleRow } from './OptRow';
@@ -86,6 +87,8 @@ interface Props {
   onChange: (s: GameSettings) => void;
   /** open the robot importer: a new import (or the draft), or `id` to edit a library robot */
   onImport?: (id?: string) => void;
+  /** to the Play page with this robot */
+  onPlay?: () => void;
 }
 
 /**
@@ -384,7 +387,7 @@ function CosmeticsRows({
  * identity stay in Account. Matches start from `ModeSelect` — there is
  * deliberately no "start match" here.
  */
-export function Menu({ settings, onChange, onImport }: Props) {
+export function Menu({ settings, onChange, onImport, onPlay }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   // Apply a fully-formed spec. ASSISTS RIDE THE ROBOT, so the ACTIVE assists always
   // re-mirror from the incoming spec — loading a preset or a saved robot (or switching
@@ -494,7 +497,7 @@ export function Menu({ settings, onChange, onImport }: Props) {
   const realPresets = gamePresets?.realCount ?? 0;
   // THE HERO'S NUMBERS: how this build drives, what it weighs and how big it is. A fixed six,
   // in every game, so the grid is the same shape whatever a season contributes. The build's
-  // WORDS (drivetrain, mechanisms) are the line under the team — `buildWords`, which reads the
+  // WORDS (drivetrain, mechanisms) are the line under the team — `BuildLine`, which reads the
   // game's `statTiles` slot before either inline arm, so a third game is described in its own
   // terms and never in Chain Reaction's. Drive rpm is not here: it is a slider with its value
   // printed beside it, and top speed and accel are what it changes.
@@ -526,6 +529,11 @@ export function Menu({ settings, onChange, onImport }: Props) {
     a.teamName === b.teamName &&
     a.teamNumber === b.teamNumber;
   const alreadySaved = savedRobots.some((r) => sameRobot(spec, r));
+  const onSlot = spec.imported ? -1 : savedRobots.findIndex((r) => sameRobot(spec, r));
+  if (onSlot >= 0) editingSaved.set(settings.game, onSlot);
+  const editing = editingSaved.get(settings.game);
+  /** the saved robot this build is an edit of, or -1 */
+  const editIdx = !alreadySaved && editing !== undefined && editing < savedRobots.length ? editing : -1;
   /** why Save is off, or undefined when it is on */
   const saveBlocked = alreadySaved
     ? 'This robot is already saved'
@@ -536,8 +544,16 @@ export function Menu({ settings, onChange, onImport }: Props) {
     if (saveBlocked) return;
     set({ savedRobots: [...savedRobots, { ...spec }] });
   };
-  const deleteSavedRobot = (i: number): void =>
+  const saveChanges = (): void => {
+    if (editIdx < 0) return;
+    set({ savedRobots: savedRobots.map((r, j) => (j === editIdx ? { ...spec } : r)) });
+  };
+  const deleteSavedRobot = (i: number): void => {
+    const e = editingSaved.get(settings.game);
+    if (e === i) editingSaved.delete(settings.game);
+    else if (e !== undefined && e > i) editingSaved.set(settings.game, e - 1);
     set({ savedRobots: savedRobots.filter((_, j) => j !== i) });
+  };
 
   return (
     <>
@@ -549,7 +565,7 @@ export function Menu({ settings, onChange, onImport }: Props) {
             nine one-line chips wrapped inside the sprite's 96px, which scrolled in both directions
             between 1100 and 1280 and clipped its top chip; and under 1100 it was a 509px card, 690px
             on a phone. The chips said the build's words and its numbers in one wall. They are two
-            things now: the WORDS are one line under the team (`buildWords`, the same line every robot
+            things now: the WORDS are one line of tags under the team (`BuildLine`, the same line every robot
             card prints) and the NUMBERS are a fixed grid, so no stat can widen the card. The layout
             follows the CARD's width, not the viewport's — see `.ds-hero` in shell.css. */}
         <div className="ds-hero">
@@ -584,8 +600,17 @@ export function Menu({ settings, onChange, onImport }: Props) {
                   <Marquee text={heroTeam} />
                 </div>
               ) : null}
-              <div className="ds-hero-build">{buildWords(spec, settings.game).join(' · ')}</div>
+              <div className="ds-hero-build">
+                <BuildLine spec={spec} game={settings.game} />
+              </div>
             </div>
+            {/* THE WAY BACK TO PLAY, in the card that stays on screen: the builder is Configure's now,
+                and its trail no longer passes through Play. Its own cell (`.ds-hero-play`). */}
+            {onPlay && (
+              <button className="ds-btn primary small ds-hero-play" onClick={onPlay}>
+                Play with this robot
+              </button>
+            )}
             <dl className="ds-hero-stats">
               {heroStats.map(([label, value, unit]) => (
                 <div key={label}>
@@ -666,7 +691,11 @@ export function Menu({ settings, onChange, onImport }: Props) {
                 activeId={importedEntry?.id ?? importedId}
                 // the card that answers for the active robot IS it: picking it again changes nothing,
                 // and applying an out-of-date copy's spec would put the old version back on the account
-                onPick={(e) => (answersFor(e, importedId) ? undefined : applySpec({ ...e.spec }))}
+                onPick={(e) => {
+                  if (answersFor(e, importedId)) return;
+                  editingSaved.delete(settings.game);
+                  applySpec({ ...e.spec });
+                }}
                 onDelete={importActions.requestDelete}
                 onImport={() => onImport?.()}
                 onDropFiles={(files) => {
@@ -697,17 +726,18 @@ export function Menu({ settings, onChange, onImport }: Props) {
                     // tagline ("Dumper · sweeps both ends, shifts to push") that the build line
                     // under it already says, so it is not printed.
                     team={p.teamNumber ? teamLine(p) : undefined}
-                    onPick={() =>
+                    onPick={() => {
                       // copy the BUILD only — keep the player's own name/team/number.
                       // applySpec swaps assists to the preset's drivetrain slot (so the
                       // Cypher swerve preset loads field-centric, the rest robot-centric).
+                      editingSaved.delete(settings.game);
                       applySpec({
                         ...p,
                         name: spec.name,
                         teamName: spec.teamName,
                         teamNumber: spec.teamNumber,
-                      })
-                    }
+                      });
+                    }}
                   />
                 ))}
               </div>
@@ -743,15 +773,33 @@ export function Menu({ settings, onChange, onImport }: Props) {
               {/* THE DISABLED REASON IS SPOKEN, not only hovered: a `title` never reaches a
                   keyboard or a phone. Screen-reader text rather than a visible line, because the
                   reason flips on and off with every edit and a line appearing would move the panel. */}
-              <button
-                className="ds-btn primary small"
-                disabled={!!saveBlocked}
-                title={saveBlocked}
-                aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
-                onClick={saveCurrentRobot}
-              >
-                Save this robot
-              </button>
+              {editIdx >= 0 ? (
+                // AN EDIT OF A SAVED ROBOT: update it, or keep both (the cap still applies to a copy)
+                <div className="ds-actions">
+                  <button
+                    className="ds-btn small"
+                    disabled={!!saveBlocked}
+                    title={saveBlocked}
+                    aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
+                    onClick={saveCurrentRobot}
+                  >
+                    Save as new
+                  </button>
+                  <button className="ds-btn primary small" onClick={saveChanges}>
+                    Save changes
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="ds-btn primary small"
+                  disabled={!!saveBlocked}
+                  title={saveBlocked}
+                  aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
+                  onClick={saveCurrentRobot}
+                >
+                  Save this robot
+                </button>
+              )}
               {saveBlocked && (
                 <span id="ds-save-why" className="ds-sr">
                   {saveBlocked}
@@ -983,12 +1031,50 @@ export function Menu({ settings, onChange, onImport }: Props) {
 }
 
 /**
- * THE PLAY PAGE'S ROBOT PICKER (owner, 2026-10-18, after MoSim's robot select): ONE row that scrolls
- * sideways — the saved robots, this device's imports, then the presets, each the builder's own
- * `RobotCard` — closed by a "New robot" card. Picking a card is the builder's own pick (the same
- * `applySpec` and the same match rules); picking the card that is ALREADY on opens the builder.
- * An unsaved build matches no card, so it leads the row as "Current build", or it could not be
- * edited from here.
+ * THE BUILDS PLAY'S STRIP KEEPS, per game, for this page load: the last unsaved edit and the last
+ * preset build driven. Each holds its card once it has one, so picking a saved robot or an import
+ * neither loses the build nor moves the row under the cursor (the build on used to be a card only
+ * while it was on, and picking another took it out: the row slid 332 px left and an unsaved build
+ * was gone). Two slots, so "New robot" (a preset's build) never replaces an edit.
+ */
+const keptEdits = new Map<string, RobotSpec>();
+const keptPresets = new Map<string, RobotSpec>();
+
+/**
+ * WHICH SAVED ROBOT IS BEING EDITED, per game, for this page load: the slot whose robot was last the
+ * one on (picked here or on Play's strip), forgotten when a preset, an import or New robot is picked.
+ * Save then UPDATES that slot ("Save changes", with "Save as new" beside it); it used to add a copy
+ * every time, which with three saved robots (`MAX_SAVED_ROBOTS`) meant an edit could not be saved at
+ * all (a user-perspective audit, 2026-11-01).
+ */
+const editingSaved = new Map<string, number>();
+
+/**
+ * "NEW ROBOT": the first preset's build under the player's own name, then the builder. A BUTTON in
+ * Play's robot panel head (owner, 2026-11-01: "i should NOT have to scroll an extreme amount in thr
+ * play menu to get to 'new robot'"): it was the strip's LAST card, after every saved robot, import
+ * and preset, 1,500–7,100 px of sideways scroll away; as the first card it pushed the robot being
+ * driven off a phone's panel. The build it replaces keeps its card in the strip (`keptEdits`).
+ */
+export function startNewRobot(settings: GameSettings, onChange: (s: GameSettings) => void, onEdit: () => void): void {
+  const mod = moduleFor(settings.game);
+  const p = (mod.presets ? mod.presets.list : settings.game === 'decode' ? ROBOT_PRESETS : CHAIN_PRESETS)[0];
+  const spec = settings.spec;
+  editingSaved.delete(settings.game);
+  if (p) {
+    const next: RobotSpec = { ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber };
+    onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
+  }
+  onEdit();
+}
+
+/**
+ * THE PLAY PAGE'S ROBOT PICKER: ONE row that scrolls sideways (owner, 2026-10-18): the unsaved build,
+ * the last preset build driven, the saved robots and this device's imports, each the builder's own
+ * `RobotCard`. PRESETS ARE NOT LISTED (owner, 2026-11-01): with them the row was up to 24 cards;
+ * they are the builder's "Start from". Picking a card is the builder's own pick (the same `applySpec`
+ * and the same match rules); picking the card that is ALREADY on opens the builder, and the panel's
+ * Edit button says so.
  */
 export function RobotStrip({
   settings,
@@ -1021,7 +1107,6 @@ export function RobotStrip({
     SavedThumb ? <SavedThumb spec={s} alliance={settings.alliance} /> : <span className="ds-robot-card-thumb">{preview2d(s, 88)}</span>;
   const presets = mod.presets ? mod.presets.list : isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
   const presetMatches = mod.presets ? mod.presets.matches : isDecode ? specMatches : chainSpecMatches;
-  const realPresets = mod.presets?.realCount ?? 0;
   const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>
     specMatches(a, b) && a.name === b.name && a.teamName === b.teamName && a.teamNumber === b.teamNumber;
   const importerOn = importerEnabled();
@@ -1030,14 +1115,66 @@ export function RobotStrip({
   const entries = library.entries ?? [];
   const savedOn = settings.savedRobots.map((r) => !spec.imported && sameRobot(spec, r));
   const importOn = entries.map((e) => answersFor(e, importedId));
-  const presetOn = presets.map((p) => !spec.imported && presetMatches(spec, p));
-  const current = !savedOn.includes(true) && !importOn.includes(true) && !presetOn.includes(true);
+  // the build on now when it is neither a saved robot nor an import: a preset's build or an edit
+  const loose = !spec.imported && !savedOn.includes(true) && !importOn.includes(true);
+  if (loose) (presets.some((p) => presetMatches(spec, p)) ? keptPresets : keptEdits).set(settings.game, spec);
+  /** a slot's build, unless it has since been saved (it is that saved card now) */
+  const slot = (kept: Map<string, RobotSpec>): RobotSpec | null => {
+    const b = kept.get(settings.game);
+    if (b && settings.savedRobots.some((r) => sameRobot(b, r))) kept.delete(settings.game);
+    return kept.get(settings.game) ?? null;
+  };
+  const preset = slot(keptPresets);
+  // an edit the strip's own match calls the preset build is that card (the default robot is one)
+  const edit = slot(keptEdits);
+  const unsaved = edit && !(preset && sameRobot(edit, preset)) ? edit : null;
+  // ON IS THE BUILD ITSELF: the slot just filled holds this very object, the other an older one
+  const unsavedOn = loose && unsaved === spec;
+  const presetBuildOn = loose && !unsavedOn && !!preset && (preset === spec || sameRobot(spec, preset));
   /** a card's pick: the one already on opens its editor, any other becomes the robot */
   const pick = (on: boolean, apply: () => void, edit: () => void = onEdit) => (on ? edit() : apply());
+  // A PLAIN WHEEL SCROLLS THE ROW (owner, 2026-10-24: not only Shift+wheel). Native and non-passive:
+  // React's wheel listener is passive, so it cannot stop the page scrolling too.
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || el.scrollWidth <= el.clientWidth) return;
+      el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   return (
-    <div className="ds-opts robots strip" role="group" aria-label="Robots" tabIndex={0}>
-      {current && (
-        <RobotCard spec={spec} game={settings.game} on team={teamLine(spec)} thumb={thumbOf(spec)} onPick={onEdit} />
+    <div ref={stripRef} className="ds-opts robots strip" role="group" aria-label="Robots" tabIndex={0}>
+      {unsaved && (
+        <RobotCard
+          spec={unsaved}
+          game={settings.game}
+          on={unsavedOn}
+          unsaved
+          team={teamLine(unsaved)}
+          thumb={thumbOf(unsaved)}
+          onPick={() => pick(unsavedOn, () => applySpec({ ...unsaved }))}
+        />
+      )}
+      {/* the preset build last driven, unedited (the builder's Start from has every preset) */}
+      {preset && (
+        <RobotCard
+          spec={preset}
+          game={settings.game}
+          on={presetBuildOn}
+          team={teamLine(preset)}
+          thumb={thumbOf(preset)}
+          onPick={() =>
+            pick(presetBuildOn, () => {
+              editingSaved.delete(settings.game);
+              applySpec({ ...preset });
+            })
+          }
+        />
       )}
       {settings.savedRobots.map((r, i) => (
         <RobotCard
@@ -1047,7 +1184,12 @@ export function RobotStrip({
           on={savedOn[i]}
           team={teamLine(r)}
           thumb={thumbOf(r)}
-          onPick={() => pick(savedOn[i], () => applySpec({ ...r }))}
+          onPick={() =>
+            pick(savedOn[i], () => {
+              editingSaved.set(settings.game, i);
+              applySpec({ ...r });
+            })
+          }
         />
       ))}
       {entries.map((e, i) => (
@@ -1067,37 +1209,18 @@ export function RobotStrip({
               ) : null}
             </span>
           }
-          onPick={() => pick(importOn[i], () => applySpec({ ...e.spec }), () => onImport(e.id))}
-        />
-      ))}
-      {presets.map((p, i) => (
-        <RobotCard
-          key={p.name}
-          spec={p}
-          game={settings.game}
-          on={presetOn[i]}
-          real={i < realPresets}
-          team={p.teamNumber ? teamLine(p) : undefined}
-          // EVERY CARD HERE CARRIES ITS PICTURE (owner, 2026-10-18: "I can't see the robot"): this
-          // row is how a robot is chosen, so a preset is shown, not only named
-          thumb={thumbOf(p)}
           onPick={() =>
-            pick(presetOn[i], () => applySpec({ ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber }))
+            pick(
+              importOn[i],
+              () => {
+                editingSaved.delete(settings.game);
+                applySpec({ ...e.spec });
+              },
+              () => onImport(e.id),
+            )
           }
         />
       ))}
-      {/* NEW starts from the first preset's build, keeping the player's own name, and opens the builder */}
-      <button
-        type="button"
-        className="ds-opt ds-opt-add"
-        onClick={() => {
-          const p = presets[0];
-          if (p) applySpec({ ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber });
-          onEdit();
-        }}
-      >
-        <span className="ot">New robot</span>
-      </button>
     </div>
   );
 }

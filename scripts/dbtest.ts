@@ -514,6 +514,142 @@ async function main(): Promise<void> {
     solo?.partnerSupporter === false,
   );
 
+  /*
+   * A DUO ENTRY IS A PAIR, AND A TIE SHARES ITS PLACE (owner, 2026-11-01). A duo run is one row
+   * keyed on whichever driver the room seated first, so the same two people are (A, B) on one
+   * run and (B, A) on the next: the board used to list them twice with the names swapped. Ties
+   * were numbered by who set the score first, while the results screen called both of them #1.
+   * Its own season (975) so nothing else in this suite is on these boards.
+   */
+  {
+    const BV = 975;
+    for (const u of ['bd-a', 'bd-b', 'bd-c', 'bd-d']) await repo.ensureProfile(u, u.toUpperCase());
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 1, 0, m)).toISOString();
+    const put = async (userId: string, partnerId: string | null, mode: 'solo' | 'duo', score: number, m: number) => {
+      const id = await repo.submitRecord({
+        userId, partnerId: partnerId ?? undefined, mode, drivetrain: 'tank', score, balanceVersion: BV,
+        replayId: null as unknown as string, game: 'decode',
+      });
+      await db.query(`update records set created_at = $2 where id = $1`, [id, at(m)]);
+    };
+    await put('bd-a', 'bd-b', 'duo', 100, 0);
+    await put('bd-b', 'bd-a', 'duo', 120, 1); // the same pair, seated the other way round
+    await put('bd-a', 'bd-c', 'duo', 110, 2); // bd-a with somebody else
+    await put('bd-d', null, 'duo', 90, 3); // a guest partner: no account on the row
+    await put('bd-a', null, 'solo', 50, 0);
+    await put('bd-b', null, 'solo', 60, 1);
+    await put('bd-c', null, 'solo', 50, 2); // ties bd-a, set later
+    await put('bd-d', null, 'solo', 40, 3);
+    const pair = (r: { userId: string; partnerId: string | null }) => [r.userId, r.partnerId ?? ''].sort().join('+');
+    const duoBoard = await repo.recordLeaderboard({ mode: 'duo', balanceVersion: BV, game: 'decode' });
+    check('⚠️ duo board: a pair seated both ways round is ONE entry, at its best run',
+      duoBoard.filter((r) => pair(r) === 'bd-a+bd-b').length === 1 && duoBoard.find((r) => pair(r) === 'bd-a+bd-b')?.score === 120,
+      JSON.stringify(duoBoard.map((r) => [pair(r), r.score])));
+    check('duo board: one driver with two partners is two entries, ranked 1, 2, 3 with the guest run',
+      duoBoard.map((r) => `${pair(r)}:${r.rank}`).join(',') === 'bd-a+bd-b:1,bd-a+bd-c:2,+bd-d:3',
+      duoBoard.map((r) => `${pair(r)}:${r.rank}`).join(','));
+    const soloBoard = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode' });
+    check('⚠️ ties: an equal score SHARES the place, and the next place skips (1, 2, 2, 4)',
+      soloBoard.map((r) => `${r.userId}:${r.rank}`).join(',') === 'bd-b:1,bd-a:2,bd-c:2,bd-d:4',
+      soloBoard.map((r) => `${r.userId}:${r.rank}`).join(','));
+    check('ties: within a tie, whoever set it first is listed first', soloBoard[1]?.userId === 'bd-a');
+    check('ties: a limit cuts rows but never renumbers them',
+      (await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode', limit: 2 })).map((r) => r.rank).join(',') === '1,2');
+    check('⚠️ ties: throughRank keeps EVERY entry at that place, so the awards cannot cut a tie',
+      (await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'decode', throughRank: 2 })).map((r) => r.userId).join(',') === 'bd-b,bd-a,bd-c');
+
+    const rankAB = await repo.recordRank('bd-a', 'duo', 'overall', BV, 'decode', 'bd-b');
+    check('⚠️ post-run rank: a duo run is ranked as its PAIR, either way round', rankAB.rank === 1 && rankAB.total === 3 &&
+      (await repo.recordRank('bd-b', 'duo', 'overall', BV, 'decode', 'bd-a')).rank === 1, JSON.stringify(rankAB));
+    check('post-run rank: ...and the same driver with another partner is that pair\'s place',
+      (await repo.recordRank('bd-c', 'duo', 'overall', BV, 'decode', 'bd-a')).rank === 2);
+    check('post-run rank: a tie reads the shared place, the same number the board prints',
+      (await repo.recordRank('bd-c', 'solo', 'overall', BV, 'decode')).rank === 2);
+    check('⚠️ post-run PB: a duo PB is the pair\'s, whoever was seated first',
+      (await repo.personalBest('bd-a', 'duo', 'overall', BV, 'decode', 'bd-b')) === 120 &&
+        (await repo.personalBest('bd-a', 'duo', 'overall', BV, 'decode', 'bd-c')) === 110 &&
+        (await repo.personalBest('bd-d', 'duo', 'overall', BV, 'decode', null)) === 90);
+    check('post-run PB: a solo PB is unchanged', (await repo.personalBest('bd-c', 'solo', 'tank', BV, 'decode')) === 50);
+
+    const statC = (await repo.getUserStats('bd-c', BV, 'decode')).records.find((r) => r.mode === 'duo');
+    check('⚠️ profile: a duo run counts for the driver seated SECOND too', statC?.best === 110 && statC.rank === 2, JSON.stringify(statC));
+    const statA = await repo.getUserStats('bd-a', BV, 'decode');
+    check('profile: a driver in two pairs stands where the better pair does',
+      statA.records.find((r) => r.mode === 'duo')?.rank === 1 && statA.records.find((r) => r.mode === 'duo')?.best === 120,
+      JSON.stringify(statA.records));
+    check('profile: a tied solo best reads the shared place', statA.records.find((r) => r.mode === 'solo')?.rank === 2);
+    check('admin: the moderation list is the board\'s entries, one per pair',
+      (await repo.adminListRecords({ mode: 'duo', balanceVersion: BV, game: 'decode' })).length === 3);
+  }
+
+  /*
+   * 0064: A DUO RUN KEEPS HOW THE PARTNER DROVE (owner, 2026-11-01). New runs write
+   * `partnerAssists`; the migration fills it on older runs from the run's replay, whose setups
+   * hold every robot's assists, finding the partner's setup by its BUILD (a replay names no
+   * account, and the first driver is not always setup 0). Re-run here on rows staged the way
+   * they stood before it.
+   */
+  {
+    const BV = 976;
+    for (const u of ['pa-a', 'pa-b']) await repo.ensureProfile(u, u.toUpperCase());
+    const fc = { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true };
+    const rc = { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: true };
+    const mine = { name: 'Mine', teamName: 'A', drivetrain: 'mecanum', massLb: 30 };
+    const theirs = { name: 'Theirs', teamName: 'B', drivetrain: 'tank', massLb: 40 };
+    const replay = async (setups: unknown[]) =>
+      (await db.query<{ id: string }>(
+        `insert into replays (format, balance_version, seed, ticks, setups, tracks) values (2, $1, 1, 10, $2, '{}') returning id`,
+        [BV, JSON.stringify(setups)],
+      )).rows[0].id;
+    const rec = async (mode: 'solo' | 'duo', replayId: string | null, config: unknown) =>
+      (await db.query<{ id: string }>(
+        `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game)
+         values ('pa-a', ${mode === 'duo' ? `'pa-b'` : 'null'}, $1, 'overall', 10, $2, $3, $4, 'decode') returning id`,
+        [mode, BV, replayId, JSON.stringify(config)],
+      )).rows[0].id;
+    // the PARTNER is setup 0 here, and the first driver's name was moderated after the replay was saved
+    const swapped = await rec('duo', await replay([{ id: 0, spec: theirs, assists: rc }, { id: 1, spec: { ...mine, name: 'Rude' }, assists: fc }]),
+      { spec: { ...mine, name: 'My Robot' }, assists: fc, partnerSpec: theirs });
+    // the same build twice, driven two ways: nothing says which was the partner's
+    const twinsApart = await rec('duo', await replay([{ id: 0, spec: mine, assists: fc }, { id: 1, spec: mine, assists: rc }]),
+      { spec: mine, assists: fc, partnerSpec: mine });
+    // the same build twice, driven the SAME way: either answer is the answer
+    const twinsAlike = await rec('duo', await replay([{ id: 0, spec: mine, assists: rc }, { id: 1, spec: mine, assists: rc }]),
+      { spec: mine, assists: rc, partnerSpec: mine });
+    const noReplay = await rec('duo', null, { spec: mine, assists: fc, partnerSpec: theirs });
+    const kept = await rec('duo', await replay([{ id: 0, spec: mine, assists: fc }, { id: 1, spec: theirs, assists: rc }]),
+      { spec: mine, assists: fc, partnerSpec: theirs, partnerAssists: fc });
+    const solo = await rec('solo', await replay([{ id: 0, spec: mine, assists: fc }]), { spec: mine, assists: fc });
+    const m64 = readFileSync(join(ROOT, 'server/db/migrations/0064_record_partner_assists.sql'), 'utf8');
+    await db.exec(m64);
+    // jsonb re-orders an object's keys, so assists are compared by VALUE
+    const same = (v: unknown, want: Record<string, boolean>): boolean =>
+      !!v && typeof v === 'object' && Object.keys(v).length === Object.keys(want).length &&
+      Object.entries(want).every(([k, x]) => (v as Record<string, unknown>)[k] === x);
+    const pa = async (id: string) =>
+      (await db.query<{ v: unknown }>(`select config -> 'partnerAssists' as v from records where id = $1`, [id])).rows[0]?.v ?? null;
+    check('⚠️ 0064: the partner\'s assists come back from the replay, found by BUILD (they were setup 0)',
+      same(await pa(swapped), rc), JSON.stringify(await pa(swapped)));
+    check('⚠️ 0064: two identical builds driven differently are left unknown, never guessed', (await pa(twinsApart)) === null);
+    check('0064: ...and two identical builds driven alike are filled', same(await pa(twinsAlike), rc));
+    check('0064: a run whose replay is gone stays unknown', (await pa(noReplay)) === null);
+    check('0064: a value already there is not touched', same(await pa(kept), fc));
+    check('0064: a solo run gains nothing', (await pa(solo)) === null);
+    const before = (await db.query(`select id, config from records where balance_version = $1 order by id`, [BV])).rows;
+    await db.exec(m64);
+    check('0064: running it again changes nothing',
+      JSON.stringify((await db.query(`select id, config from records where balance_version = $1 order by id`, [BV])).rows) === JSON.stringify(before));
+    // and a NEW duo run carries it from the start, through to the board
+    await repo.submitRecord({
+      userId: 'pa-b', partnerId: 'pa-a', mode: 'duo', drivetrain: 'tank', score: 99, balanceVersion: BV + 1,
+      replayId: null as unknown as string, game: 'decode',
+      config: { spec: theirs, assists: rc, partnerSpec: mine, partnerAssists: fc } as never,
+    });
+    const row = (await repo.recordLeaderboard({ mode: 'duo', balanceVersion: BV + 1, game: 'decode' }))[0];
+    check('0064: a new duo run shows BOTH drivers\' assists on the board',
+      same(row?.config?.assists, rc) && same(row?.config?.partnerAssists, fc));
+  }
+
   // MATCH HISTORY — the Career page's list, and the one place a name appears
   // for BOTH alliances of somebody else's match.
   const matchId = await repo.saveMatch('1v1', SEASON, null as unknown as string, true, 'decode');
@@ -3692,7 +3828,12 @@ async function main(): Promise<void> {
     check('analytics/rate: the window expires rather than banning', an.rateOk('v1', an.VISITOR_LIMIT, Date.now() + 20 * 60_000));
 
     // ---- ingest, sessions, and the rollup -------------------------------------------------
-    const t0 = new Date('2026-09-10T12:00:00Z');
+    // DATED OFF TODAY, eight days back: inside the 30-day raw window whenever this runs. Pinned to
+    // 2026-09-10 it fell out of the window a month later, the range read from the rollups, and the
+    // filter and job checks below failed for no reason in the code.
+    const D0 = Math.floor(Date.now() / 86_400_000) * 86_400_000 - 8 * 86_400_000;
+    const D = (n: number): string => new Date(D0 + n * 86_400_000).toISOString().slice(0, 10);
+    const t0 = new Date(`${D(0)}T12:00:00Z`);
     const mins = (n: number): Date => new Date(t0.getTime() + n * 60_000);
     const pv = async (visitor: string, at: Date, path: string, game: string, extra: Partial<Record<string, string>> = {}): Promise<void> => {
       await db.query(
@@ -3711,14 +3852,14 @@ async function main(): Promise<void> {
     await pv('bbbb000000000002', mins(20), '/privacy', '', { country: 'DE', device: 'mobile' });
     await db.query(`insert into analytics_events (at, visitor, name, game, path, props) values ($1,$2,'support_view','decode','/decode/donate','{"placement":"footer"}')`, [mins(6), 'aaaa000000000001']);
 
-    const day0 = new Date('2026-09-10T00:00:00Z');
-    const day1 = new Date('2026-09-11T00:00:00Z');
+    const day0 = new Date(`${D(0)}T00:00:00Z`);
+    const day1 = new Date(`${D(1)}T00:00:00Z`);
     await an.runRollup(day0, day1);
 
     const daily = async (game: string, dim: string, val: string) =>
       (await db.query<{ views: number; visitors: number; sessions: number; bounces: number; seconds: string }>(
         `select views, visitors, sessions, bounces, seconds from analytics_daily
-          where day = '2026-09-10' and game = $1 and dim = $2 and val = $3`,
+          where day = '${D(0)}' and game = $1 and dim = $2 and val = $3`,
         [game, dim, val],
       )).rows[0];
 
@@ -3769,7 +3910,7 @@ async function main(): Promise<void> {
     await an.runRollup(mins(15), mins(25));
     const hour12 = (
       await db.query<{ views: number }>(
-        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+        `select views from analytics_hourly where hour = '${D(0)}T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
       )
     ).rows[0];
     check(
@@ -3823,7 +3964,7 @@ async function main(): Promise<void> {
           old.eventProps.some((p) => p.name === 'sponsor_click' && p.key === 'placement' && p.val === 'game' && p.views === 3),
       );
       check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
-      check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
+      check('analytics/report: it says where its own traffic history starts', old.historyStart === D(0), String(old.historyStart));
       check('analytics/report: no import yet means no imported span and nothing folded in', old.imported === null && old.history.imported === null && !old.history.inRange);
       await db.query(`delete from analytics_daily where day = '2025-01-10'`);
     }
@@ -3836,31 +3977,31 @@ async function main(): Promise<void> {
       const file = {
         source: 'vercel' as const,
         environment: 'production',
-        firstDay: '2026-09-13',
-        lastDay: '2026-09-14',
+        firstDay: D(3),
+        lastDay: D(4),
         visits: {
           total: [
-            { day: '2026-09-12', pageviews: 0, visitors: 0 },
-            { day: '2026-09-13', pageviews: 100, visitors: 10 },
-            { day: '2026-09-14', pageviews: 50, visitors: 5 },
+            { day: D(2), pageviews: 0, visitors: 0 },
+            { day: D(3), pageviews: 100, visitors: 10 },
+            { day: D(4), pageviews: 50, visitors: 5 },
           ],
           by: {
             requestPath: [
-              v('2026-09-13', '/decode/profile/alice', 3, 1),
-              v('2026-09-13', '/decode/profile/bob', 2, 1),
-              v('2026-09-13', '/decode/records?token=secret', 5, 2),
+              v(D(3), '/decode/profile/alice', 3, 1),
+              v(D(3), '/decode/profile/bob', 2, 1),
+              v(D(3), '/decode/records?token=secret', 5, 2),
             ],
-            route: [v('2026-09-13', null, 100, 10)],
-            referrerHostname: [v('2026-09-13', null, 90, 9), v('2026-09-13', 'www.google.com', 10, 1)],
-            osName: [v('2026-09-13', 'Mac', 40, 4)],
-            browserName: [v('2026-09-13', 'Microsoft Edge', 20, 2), v('2026-09-13', 'Others', 5, 1)],
+            route: [v(D(3), null, 100, 10)],
+            referrerHostname: [v(D(3), null, 90, 9), v(D(3), 'www.google.com', 10, 1)],
+            osName: [v(D(3), 'Mac', 40, 4)],
+            browserName: [v(D(3), 'Microsoft Edge', 20, 2), v(D(3), 'Others', 5, 1)],
           },
         },
         events: {
-          byName: [{ day: '2026-09-13', name: 'sponsor_click', count: 4, visitors: 3 }],
+          byName: [{ day: D(3), name: 'sponsor_click', count: 4, visitors: 3 }],
           byProp: [
-            { day: '2026-09-13', name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
-            { day: '2026-09-13', name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
+            { day: D(3), name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
+            { day: D(3), name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
           ],
         },
       };
@@ -3876,7 +4017,7 @@ async function main(): Promise<void> {
       );
       check(
         'analytics/import: empty days, route rows and absent property values are left out',
-        !rows.some((r) => r.day === '2026-09-12') && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
+        !rows.some((r) => r.day === D(2)) && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
       );
       const count = async (): Promise<number> =>
         Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported`)).rows[0].n);
@@ -3887,18 +4028,18 @@ async function main(): Promise<void> {
         first.inserted === rows.length && second.deleted === rows.length && (await count()) === rows.length,
         `inserted=${first.inserted} deleted=${second.deleted} rows=${await count()}`,
       );
-      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === '2026-09-14'));
+      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === D(4)));
       check(
         'analytics/import: a narrower re-import replaces only the days it covers',
-        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '${D(3)}'`)).rows[0].n) > 0,
       );
-      // Our own stable-channel count began on 2026-09-10 (the fixture above), which the import
-      // does not reach, so our count starts that day and every imported day (09-13 on) overlaps it.
-      const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      // Our own stable-channel count began on D(0) (the fixture above), which the import does not
+      // reach, so our count starts that day and every imported day (D(3) on) overlaps it.
+      const rep = await an.analyticsReport({ from: new Date(`${D(3)}T00:00:00Z`), to: new Date(`${D(5)}T00:00:00Z`), game: '*', filters: [], grain: 'day' });
       check(
         'analytics/combine: the report names the imported span and where our own count starts',
-        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === '2026-09-13' &&
-          rep.history.imported.lastDay === '2026-09-14' && rep.history.imported.channel === 'stable' && rep.history.ownFrom === '2026-09-10',
+        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === D(3) &&
+          rep.history.imported.lastDay === D(4) && rep.history.imported.channel === 'stable' && rep.history.ownFrom === D(0),
         JSON.stringify(rep.history),
       );
       check(
@@ -4051,6 +4192,24 @@ async function main(): Promise<void> {
         game.history.why === 'game' && game.totals.views === 6 && game.events.find((e) => e.name === 'sponsor_shown')?.views === 1 && !game.history.events,
       );
 
+      // ---- the sponsor report's per-day events: the same days, the same sources ---------------
+      const perDay = await an.eventsDaily({ from: at(6, 0), to: at(0, 0), game: '*' }, ['sponsor_shown']);
+      const shownTotal = all.events.find((e) => e.name === 'sponsor_shown')?.views;
+      check(
+        '⚠️ analytics/daily: events per day add up to the event total, imported days and ours, nothing twice',
+        perDay.reduce((s, r) => s + r.n, 0) === shownTotal && shownTotal === 31 &&
+          perDay.find((r) => r.day === day(6))?.n === 10 && perDay.find((r) => r.day === day(3))?.n === 1 && !perDay.some((r) => r.day === day(2)),
+        JSON.stringify(perDay),
+      );
+      // ⚠️ A SHARE IS OF EVERY VIEW IN THE PANEL. The dashboard divided by the twelve rows it
+      // showed, so with more than twelve pages every row read high; `total` is the whole panel.
+      check(
+        'analytics/breakdown: each row carries its dimension\u2019s full total, past the top N',
+        all.breakdowns.filter((b) => b.dim === 'path').every((b) => b.total === all.totals.views) &&
+          all.breakdowns.filter((b) => b.dim === 'entry').every((b) => b.total === all.totals.sessions),
+        JSON.stringify(all.breakdowns.filter((b) => b.dim === 'path' || b.dim === 'entry').map((b) => [b.dim, b.val, b.total])),
+      );
+
       // ---- ranges -----------------------------------------------------------------------------
       const older = await report(at(6, 0), at(3, 0));
       check('analytics/combine: a range wholly before the start is the import alone', older.totals.views === 330 && older.totals.sessions === 0);
@@ -4108,8 +4267,125 @@ async function main(): Promise<void> {
           agg.breakdowns.find((b) => b.dim === 'channel' && b.val === 'alpha')?.views === 101 &&
           agg.events.find((e) => e.name === 'player_joined')?.views === 5,
       );
+      // ⚠️ A RANGE ENDING MID-DAY INCLUDES THAT DAY'S ROLLUP. `day < to::date` dropped it, and the
+      // range ending now is the usual one: every long range ended on an empty today.
+      const midday = await an.analyticsReport({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-03T12:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/rollup tier: a range ending mid-day reads that day’s row too',
+        midday.source === 'aggregate' && midday.totals.views === 90 + 11 && midday.series.some((s) => s.t.startsWith('2025-03-03')),
+        `views=${midday.totals.views} series=${midday.series.map((s) => s.t.slice(0, 10)).join(',')}`,
+      );
+      const aggDaily = await an.eventsDaily({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-08T00:00:00Z'), game: '*' }, ['player_joined']);
+      check(
+        'analytics/daily: on the rollup tier too, imported days before the start and ours from it',
+        aggDaily.map((r) => `${r.day}:${r.n}`).join(',') === '2025-03-02:3,2025-03-03:2',
+        JSON.stringify(aggDaily),
+      );
       await db.query(`delete from analytics_daily where day between '2025-03-01' and '2025-03-31'`);
       await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the dashboard's share of the pool (2026-11-01) ---------------------------------------
+    // Clicking through ranges queued ~23 queries per click on a pool of five, and the ones past
+    // pg's 10 s queue timeout failed: "switching between tabs sometimes glitches it and nothing
+    // loads". Reads are capped at READ_SLOTS and a superseded request drops what it has not run.
+    {
+      const range = { from: day0, to: day1, game: '*', filters: [], grain: 'day' as const };
+      const gone = new AbortController();
+      gone.abort();
+      let refused = false;
+      try {
+        await an.runRead(gone.signal, () => an.analyticsReport(range));
+      } catch (e) {
+        refused = e instanceof an.ReadAborted;
+      }
+      check('⚠️ analytics/gate: a read whose request is already gone runs no query and says so', refused);
+
+      // Counted AT THE POOL, each query held 5 ms. PGlite answers within the same tick, so
+      // without the hold nothing would ever overlap and both checks would pass for nothing.
+      const poolMod = await import('../server/db/pool');
+      const base = poolMod.pool!;
+      let live = 0;
+      let peak = 0;
+      let ran = 0;
+      poolMod.setPoolForTests({
+        query: (async (text: string, params?: unknown[]) => {
+          live++;
+          ran++;
+          peak = Math.max(peak, live);
+          try {
+            await new Promise((r) => setTimeout(r, 5));
+            return await base.query(text, params);
+          } finally {
+            live--;
+          }
+        }) as typeof base.query,
+        connect: () => base.connect(),
+      });
+      try {
+        await Promise.all([1, 2, 3, 4].map(() => an.runRead(new AbortController().signal, () => an.productReport(day0, day1, '*'))));
+        check(
+          '⚠️ analytics/gate: four reports at once never hold more than READ_SLOTS connections',
+          peak === an.READ_SLOTS,
+          `peak=${peak} slots=${an.READ_SLOTS}`,
+        );
+
+        ran = 0;
+        const late = new AbortController();
+        const run = an.runRead(late.signal, () => an.productReport(day0, day1, '*'));
+        await new Promise((r) => setTimeout(r, 2));
+        late.abort();
+        let dropped = false;
+        try {
+          await run;
+        } catch (e) {
+          dropped = e instanceof an.ReadAborted;
+        }
+        await new Promise((r) => setTimeout(r, 50)); // the queries already running finish
+        const after = an.readGateState();
+        check(
+          '⚠️ analytics/gate: a read abandoned mid-way rejects, runs none of its queued queries, and gives every slot back',
+          dropped && ran === an.READ_SLOTS && after.running === 0 && after.waiting === 0,
+          JSON.stringify({ dropped, ran, after }),
+        );
+      } finally {
+        poolMod.setPoolForTests(base);
+      }
+    }
+
+    // ---- the product half: UTC days, and a peak that is one moment ------------------------------
+    {
+      const T = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+      const yday = new Date(T - 86_400_000).toISOString().slice(0, 10);
+      // two regions sampled together, as `sampleConcurrency` writes them: iad peaks at 14:00 and
+      // lhr at 10:00, and at no moment were 9 + 7 = 16 people on
+      await db.query(
+        `insert into analytics_concurrency (at, region, online, authed, rooms, q1v1, q2v2) values
+           ($1, 'iad', 5, 0, 0, 0, 0), ($1, 'lhr', 7, 0, 0, 0, 0), ($2, 'iad', 9, 0, 0, 0, 0), ($2, 'lhr', 1, 0, 0, 0, 0)`,
+        [new Date(T - 86_400_000 + 10 * 3_600_000), new Date(T - 86_400_000 + 14 * 3_600_000)],
+      );
+      await repo.ensureProfile('utc-late', 'Late');
+      // 23:30 UTC is the evening before in New York: the day is still the UTC one
+      await db.query(`update profiles set created_at = $2 where user_id = $1`, ['utc-late', new Date(T - 30 * 60_000)]);
+      const pr = await an.productReport(new Date(T - 3 * 86_400_000), new Date(), '*');
+      check(
+        '⚠️ analytics/product: the day’s peak adds the regions at ONE moment, not each region’s own peak',
+        pr.concurrencyTotal.find((c) => c.day === yday)?.peak === 12 &&
+          pr.concurrency.filter((c) => c.day === yday).reduce((s, c) => s + c.peak, 0) === 16,
+        JSON.stringify(pr.concurrencyTotal),
+      );
+      check(
+        'analytics/product: a signup at 23:30 UTC lands on that UTC day',
+        pr.signups.some((s) => s.day === yday && s.n >= 1) && pr.retention.some((r) => r.cohort === yday),
+        JSON.stringify(pr.signups),
+      );
+      check(
+        'analytics/product: every day comes back as YYYY-MM-DD text',
+        [...pr.signups, ...pr.concurrency, ...pr.concurrencyTotal, ...pr.matches, ...pr.active].every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.day)) &&
+          pr.retention.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.cohort)),
+      );
+      await db.query(`delete from analytics_concurrency where region in ('iad', 'lhr') and at >= $1`, [new Date(T - 86_400_000)]);
+      await repo.deleteAccount?.('utc-late').catch(() => undefined);
     }
 
     // ---- retention, which is where the privacy promise is either kept or not ---------------
@@ -4137,11 +4413,11 @@ async function main(): Promise<void> {
       await an.analyticsTick(mins(140).getTime()); // no traffic noted: must not touch the database
       // cleared so the next check proves the pass took its lock, ran and COMMITTED: a pass that
       // skipped (lock refused) or rolled back would leave the day whole all the same
-      await db.query(`delete from analytics_hourly where hour >= '2026-09-10' and hour < '2026-09-11'`);
+      await db.query(`delete from analytics_hourly where hour >= '${D(0)}' and hour < '${D(1)}'`);
       an.noteTraffic();
       await an.analyticsTick(mins(140).getTime());
       const hour12 = (await db.query<{ views: number }>(
-        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+        `select views from analytics_hourly where hour = '${D(0)}T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
       )).rows[0];
       check('analytics/job: the pass runs under its lock and commits the hours it rolled', hour12?.views === 4, `views=${hour12?.views}`);
       check(
@@ -4159,7 +4435,7 @@ async function main(): Promise<void> {
       check('analytics/job: the lock key is not the one older builds may have leaked', an.ANALYTICS_LOCK_KEY !== 0x414e4c59);
       // One transaction means one failure rolls back the whole pass, so the daily half runs under
       // a savepoint. Break it (the next hour's pass is due one) and the hourly rows must still land.
-      await db.query(`delete from analytics_hourly where hour >= '2026-09-10' and hour < '2026-09-11'`);
+      await db.query(`delete from analytics_hourly where hour >= '${D(0)}' and hour < '${D(1)}'`);
       await db.query(`alter table analytics_daily rename to analytics_daily_off`);
       const logged = console.error;
       console.error = () => {};
@@ -4171,7 +4447,7 @@ async function main(): Promise<void> {
         await db.query(`alter table analytics_daily_off rename to analytics_daily`);
       }
       const kept = (await db.query<{ views: number }>(
-        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+        `select views from analytics_hourly where hour = '${D(0)}T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
       )).rows[0];
       check('analytics/job: a failing daily half does not roll back the hours before it', kept?.views === 4, `views=${kept?.views}`);
       check('analytics/job: ...and the failed pass still gives its lock back', (await advisory()) === 0);
@@ -4766,11 +5042,22 @@ async function main(): Promise<void> {
     await rec('rw-z', 901, 'mecanum', 999, '2026-01-01T00:00:00Z'); // Act 0 season
     await rec('rw-a', 902, 'mecanum', 300, '2026-02-01T00:00:00Z');
     await rec('rw-b', 902, 'tank', 280, '2026-02-01T00:00:00Z');
-    await rec('rw-c', 902, 'mecanum', 250, '2026-02-01T00:00:00Z'); // ⚠️ ties rw-d on score but set it FIRST…
-    await rec('rw-d', 902, 'swerve', 250, '2026-02-02T00:00:00Z'); // …so rw-d is 4th overall, #1 swerve only
-    await rec('rw-e', 902, 'xdrive', 100, '2026-02-01T00:00:00Z');
+    await rec('rw-c', 902, 'mecanum', 250, '2026-02-01T00:00:00Z'); // ⚠️ ties rw-d on score, set it FIRST…
+    await rec('rw-d', 902, 'swerve', 250, '2026-02-02T00:00:00Z'); // …and they SHARE #3 overall; rw-d is also #1 swerve
+    await rec('rw-e', 902, 'xdrive', 100, '2026-02-01T00:00:00Z'); // 5th overall, #1 xdrive only
     await rec('rw-a', 903, 'mecanum', 310, '2026-03-01T00:00:00Z'); // a second season: the counter's case
     await rec('rw-b', 905, 'tank', 999, '2026-05-01T00:00:00Z'); // the LIVE season
+    // THE DUO BOARD of season 902. rw-p is in two pairs; (rw-q, rw-p) is the first pair seated the
+    // other way round; the last two pairs tie for #3.
+    for (const u of ['rw-p', 'rw-q', 'rw-r', 'rw-u', 'rw-v', 'rw-w', 'rw-x']) await repo.ensureProfile(u, u.toUpperCase());
+    const duoRec = (u: string, partner: string, dt: string, score: number, at: string) =>
+      db.query(`insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, game, created_at) values ($1, $2, 'duo', $3, $4, 902, $5, $6)`,
+        [u, partner, dt, score, G, at]);
+    await duoRec('rw-p', 'rw-q', 'mecanum', 500, '2026-02-01T00:00:00Z');
+    await duoRec('rw-q', 'rw-p', 'mecanum', 450, '2026-02-03T00:00:00Z');
+    await duoRec('rw-p', 'rw-r', 'mecanum', 480, '2026-02-02T00:00:00Z');
+    await duoRec('rw-u', 'rw-v', 'swerve', 400, '2026-02-01T00:00:00Z');
+    await duoRec('rw-w', 'rw-x', 'xdrive', 400, '2026-02-02T00:00:00Z');
     // a record 0045 already awarded (the legacy table), to prove the job does not double it
     await db.query(
       `insert into season_awards (game, balance_version, act, season_no, kind, mode, drivetrain, rank, user_id, score)
@@ -4817,12 +5104,34 @@ async function main(): Promise<void> {
       aRec?.reason.kind === 'record_season' && aRec.reason.placements.length === 2 &&
         aRec.items.length === 1 && aRec.items[0].kind === 'badge' && aRec.items[0].id === 'record-holder',
       JSON.stringify(aRec));
-    check('⚠️ job: per-drivetrain #1 — 4th overall on score, but the best swerve run',
-      dRec?.reason.kind === 'record_season' && dRec.reason.placements.length === 1 && dRec.reason.placements[0].board === 'swerve',
-      JSON.stringify(dRec?.reason));
-    check('⚠️ job: a tied score goes to whoever set it FIRST — rw-c is #3 overall, rw-d is not',
-      cRec?.reason.kind === 'record_season' && cRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3),
-      JSON.stringify(cRec?.reason));
+    const eRec = await recOf('rw-e', 902);
+    check('⚠️ job: per-drivetrain #1 — 5th overall on score, but the best xdrive run',
+      eRec?.reason.kind === 'record_season' && eRec.reason.placements.length === 1 && eRec.reason.placements[0].board === 'xdrive',
+      JSON.stringify(eRec?.reason));
+    check('⚠️ job: a tied score SHARES the place — rw-c and rw-d are both #3 overall',
+      cRec?.reason.kind === 'record_season' && cRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3) &&
+        dRec?.reason.kind === 'record_season' && dRec.reason.placements.some((p) => p.board === 'overall' && p.rank === 3 && !p.mode),
+      JSON.stringify([cRec?.reason, dRec?.reason]));
+    check('job: ...and rw-d keeps their swerve #1 beside it', dRec?.reason.kind === 'record_season' &&
+      dRec.reason.placements.some((p) => p.board === 'swerve' && p.rank === 1));
+
+    // ---- the duo board: both drivers, each at their best place on it ----------------------
+    const duoPlaces = async (u: string, board: string) => {
+      const r = await recOf(u, 902);
+      return r?.reason.kind === 'record_season' ? r.reason.placements.filter((p) => p.mode === 'duo' && p.board === board).map((p) => p.rank) : [];
+    };
+    check('⚠️ duo: BOTH drivers of the #1 pair are paid, whichever was seated first',
+      (await duoPlaces('rw-p', 'overall')).join() === '1' && (await duoPlaces('rw-q', 'overall')).join() === '1');
+    check('⚠️ duo: a driver in two pairs on one board keeps only the better place — rw-p is #1, not #1 and #2',
+      (await duoPlaces('rw-p', 'overall')).length === 1, JSON.stringify(await recOf('rw-p', 902)));
+    check('duo: ...and their other partner still gets that pair\'s #2', (await duoPlaces('rw-r', 'overall')).join() === '2');
+    check('⚠️ duo: two pairs tied at #3 are all paid #3',
+      (await Promise.all(['rw-u', 'rw-v', 'rw-w', 'rw-x'].map((u) => duoPlaces(u, 'overall')))).every((r) => r.join() === '3'));
+    check('duo: a duo drivetrain #1 pays its pair', (await duoPlaces('rw-p', 'mecanum')).join() === '1' && (await duoPlaces('rw-q', 'mecanum')).join() === '1' &&
+      (await duoPlaces('rw-r', 'mecanum')).length === 0);
+    const pRec = await recOf('rw-p', 902);
+    check('duo: still ONE grant and ONE Record Holder badge for the season', !!pRec && pRec.items.length === 1 && pRec.items[0].id === 'record-holder' &&
+      (await pend('rw-p')).filter((x) => x.reason.kind === 'record_season' && x.reason.balanceVersion === 902).length === 1);
     check('job: a closed season in the CURRENT act still pays its records (bv 904 had none, so nobody)', !(await recOf('rw-a', 904)));
     check('job: the live season pays nothing', !(await recOf('rw-b', 905)));
 

@@ -30,16 +30,56 @@ import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 
 const ADMIN_ID = 'harness-owner';
-const AUTH_PORT = 8798;
+// `HARNESS_AUTH_PORT` / `HARNESS_PORT` move it off 8798/8799 when another checkout's harness holds them
+const AUTH_PORT = Number(process.env.HARNESS_AUTH_PORT ?? 8798);
+const GAME_PORT = Number(process.env.HARNESS_PORT ?? 8799);
+
+/**
+ * `HARNESS_DB_MS=400 npm run adminharness` makes every query take that long and puts it behind
+ * a copy of production's pool: five connections, and a caller queued past them fails after
+ * 10 s with pg-pool's own message. In memory, PGlite answers the dashboard in milliseconds, so
+ * the analytics tab's pool exhaustion (2026-11-01: switching ranges quickly, nothing loads) only
+ * shows with this on.
+ */
+const SLOW_MS = Number(process.env.HARNESS_DB_MS ?? 0);
+/** off while the harness seeds itself (thousands of inserts), on once the server is up */
+let slowOn = false;
+const POOL_MAX = 5;
+let poolBusy = 0;
+const poolWaiters: (() => void)[] = [];
+async function poolSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (poolBusy >= POOL_MAX) {
+    await new Promise<void>((resolve, reject) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        poolWaiters.splice(poolWaiters.indexOf(wake), 1);
+        reject(new Error('timeout exceeded when trying to connect'));
+      }, 10_000);
+      poolWaiters.push(wake);
+    });
+  } else poolBusy++;
+  try {
+    await new Promise((r) => setTimeout(r, SLOW_MS));
+    return await run();
+  } finally {
+    const next = poolWaiters.shift();
+    if (next) next();
+    else poolBusy--;
+  }
+}
 
 function adapt(db: PGlite): DbPool {
-  const query = async (text: string, params: unknown[] = []) => {
+  const direct = async (text: string, params: unknown[] = []) => {
     if (params.length === 0) {
       const res = await db.exec(text);
       return { rows: (res[res.length - 1]?.rows ?? []) as never[] };
     }
     return (await db.query(text, params)) as { rows: never[] };
   };
+  const query = (text: string, params: unknown[] = []) => (SLOW_MS > 0 && slowOn ? poolSlot(() => direct(text, params)) : direct(text, params));
   return {
     query: query as DbPool['query'],
     connect: async () => ({ query: query as DbPool['query'], release: () => {} }),
@@ -105,7 +145,7 @@ async function main(): Promise<void> {
   await db.waitReady;
   setPoolForTests(adapt(db));
 
-  process.env.PORT = '8799';
+  process.env.PORT = String(GAME_PORT);
   process.env.ADMIN_USER_IDS = ADMIN_ID;
   process.env.OWNER_USER_ID = ADMIN_ID;
   process.env.NEON_AUTH_JWKS_URL = `http://localhost:${AUTH_PORT}/.well-known/jwks.json`;
@@ -117,10 +157,41 @@ async function main(): Promise<void> {
   await migrate();
   const repo = await import('../server/db/repo');
   await seed(repo, db);
+  // The seed writes every account and match NOW, which leaves the analytics tab's product
+  // charts one column wide. Spread them, and some more matches, over the weeks the traffic
+  // covers, so the dashboard and the sponsor report have days to draw.
+  await db.query(
+    `insert into matches (mode, balance_version, game, ranked, physics, created_at)
+     select m.mode, m.balance_version, (array['decode','chain','biobuzz'])[1 + (g % 3)], g % 5 < 3, m.physics,
+            now() - (g * interval '7 hours')
+       from (select * from matches limit 1) m, generate_series(1, 160) g`,
+  );
+  await db.query(`update profiles set created_at = now() - (random() * interval '45 days') where user_id <> $1`, [ADMIN_ID]);
 
   // ---- the real server
   await import('../server/index');
-  console.log(`[harness] game server on :8799 — admin is ${ADMIN_ID}`);
+  console.log(`[harness] game server on :${GAME_PORT} — admin is ${ADMIN_ID}`);
+  // ratings on the live act of every game, for the ranked distribution. The server writes a
+  // season row the first time a game records something, so one is made here for each game that
+  // has none yet.
+  await db.query(
+    `insert into seasons (game, balance_version, name, act, active)
+     select g, 1, 'Harness season', 1, true from unnest(array['decode', 'chain', 'biobuzz']) g
+      where not exists (select 1 from seasons s where s.game = g and s.active)`,
+  );
+  await db.query(
+    `insert into elo_ratings (user_id, mode, rating, games, game, act)
+     select p.user_id, '1v1', 760 + floor(random() * 720)::int, 1 + floor(random() * 12)::int, s.game, s.act
+       from profiles p join seasons s on s.active
+     on conflict do nothing`,
+  );
+  if (SLOW_MS > 0) {
+    // after the server's own boot writes (staff sync, reward jobs), which also go through the pool
+    setTimeout(() => {
+      slowOn = true;
+      console.log(`[harness] slow pool on: ${SLOW_MS} ms a query, ${POOL_MAX} connections, 10 s queue timeout`);
+    }, 15_000);
+  }
 
   // keep the seeded lhr heartbeat inside `adminPresence`'s 20s freshness window
   setInterval(() => {
@@ -140,7 +211,7 @@ async function main(): Promise<void> {
       .sign(privateKey);
   const join = async (sub: string, name: string, room: string): Promise<void> => {
     const t = await sign(sub, name);
-    const ws = new WebSocket('ws://localhost:8799');
+    const ws = new WebSocket(`ws://localhost:${GAME_PORT}`);
     ws.on('open', () =>
       ws.send(
         JSON.stringify({ t: 'join', room, player: { name, alliance: 'red', ready: false }, authToken: t }),
@@ -218,6 +289,48 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     const mid = await repo.saveMatch('1v1', SEASON, replay, true, 'decode');
     await repo.addMatchParticipant({ matchId: mid, userId: id, alliance: 'red', drivetrain: 'mecanum', score: 120 - i * 7, won: i % 2 === 0, ratingBefore: 1500, ratingAfter: 1512 });
     await repo.addMatchParticipant({ matchId: mid, userId: 'u-alan', alliance: 'blue', drivetrain: 'tank', score: 90, won: i % 2 !== 0, ratingBefore: 1500, ratingAfter: 1488 });
+  }
+  // DUO runs and TIES: Ada + Grace seated both ways round is one board entry (150), Ada has a
+  // second partner, two pairs tie for #2, and Annie ties Grace on the solo board. The robots give
+  // the expanded rows something to show: both drivers' settings on Ada + Grace, and none for the
+  // partner on Ada + Alan, a run from before duo records stored them.
+  const { DEFAULT_SPEC } = await import('../src/sim/specDefaults');
+  const bot = (name: string, teamName: string, teamNumber: number, drivetrain: 'mecanum' | 'tank'): typeof DEFAULT_SPEC =>
+    ({ ...DEFAULT_SPEC, name, teamName, teamNumber, drivetrain, ...(drivetrain === 'tank' ? { intake: 'vector' as const, massLb: 31, driveRpm: 435 } : {}) });
+  const fc = { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true };
+  const rc = { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: true };
+  const adaBot = bot('Analytical Engine', 'Lovelace Labs', 1815, 'mecanum');
+  const graceBot = bot('Mark II', 'Harvard Computation', 1944, 'tank');
+  const alanBot = bot('Bombe', 'Bletchley', 1939, 'mecanum');
+  for (const [userId, partnerId, score, config] of [
+    ['u-ada', 'u-grace', 150, { spec: adaBot, assists: fc, partnerSpec: graceBot, partnerAssists: rc }],
+    ['u-grace', 'u-ada', 140, { spec: graceBot, assists: rc, partnerSpec: adaBot, partnerAssists: fc }],
+    ['u-ada', 'u-alan', 130, { spec: adaBot, assists: fc, partnerSpec: alanBot }],
+    ['u-margaret', 'u-annie', 130, { spec: alanBot, assists: rc }], // older still: no partner robot either
+  ] as const) {
+    await repo.submitRecord({
+      userId, partnerId, mode: 'duo', drivetrain: 'mecanum', score, balanceVersion: SEASON,
+      replayId: null as unknown as string, game: 'decode', config: (config ?? undefined) as never,
+    }).catch(() => {});
+  }
+  await repo.submitRecord({
+    userId: 'u-annie', mode: 'solo', drivetrain: 'tank', score: 169, balanceVersion: SEASON,
+    replayId: null as unknown as string, game: 'decode', config: { spec: graceBot, assists: rc } as never,
+  }).catch(() => {});
+  // a BIOBUZZ record with a long build (double turret, deployable ramp), for the record sheet's
+  // widest rows, on the season the board reads
+  {
+    const { BB_PRESETS } = await import('../src/games/biobuzz/config');
+    const { bbCoerceSpec } = await import('../src/games/biobuzz/robotConfig');
+    const spec = bbCoerceSpec({
+      ...BB_PRESETS[0], name: 'Dream', teamName: 'DreamTeam', teamNumber: 66666,
+      bbMech: { launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: 45 }, intake: { kind: 'ramp' }, lift: null },
+    });
+    await repo.submitRecord({
+      userId: 'u-margaret', mode: 'solo', drivetrain: spec.drivetrain, score: 651, balanceVersion: SEASON, physics: '3d',
+      replayId: null as unknown as string, game: 'biobuzz',
+      config: { spec, assists: { fieldCentric: false, aimAssist: false, autoIntake: true, autoFire: false } } as never,
+    }).catch((e: unknown) => console.warn('[harness] biobuzz record seed failed:', e));
   }
 
   // NOTICES (0057). The OWNER lost a ranked match, filed a misscore claim on it and reported the
@@ -408,7 +521,11 @@ async function seedAnalytics(db: PGlite): Promise<void> {
 
   const pvRows: unknown[][] = [];
   const evRows: unknown[][] = [];
-  for (let d = 13; d >= 0; d--) {
+  // 38 days, so the raw tier is past its 30-day window the way production's is: the rollups
+  // below cover the older days, the sweep then deletes their raw rows, and the sponsor report's
+  // earlier months are read from `analytics_daily` exactly as they are live.
+  const OWN_DAYS = 38;
+  for (let d = OWN_DAYS - 1; d >= 0; d--) {
     const sessions = 18 + Math.floor(rnd() * 30);
     for (let s = 0; s < sessions; s++) {
       const visitor = `v${d}-${s.toString(16).padStart(4, '0')}`;
@@ -435,13 +552,25 @@ async function seedAnalytics(db: PGlite): Promise<void> {
           JSON.stringify(propsFor(name)),
         ]);
       }
+      // the sponsor mark, at roughly the rates the placements see: the footer on most visits,
+      // the home menu on many, the in-game chip on a match; a click on a few percent
+      for (const [placement, p] of [['footer', 0.7], ['home', 0.45], ['game', 0.25], ['strip', 0.2]] as const) {
+        if (rnd() >= p) continue;
+        const at = new Date(start + 30_000).toISOString();
+        evRows.push([at, visitor, 'sponsor_shown', pick(GAMES), pick(PATHS), JSON.stringify({ placement })]);
+        evRows.push([at, visitor, 'sponsor_dwell', pick(GAMES), pick(PATHS), JSON.stringify({ placement, dwell: pick(['<5s', '5-15s', '15-60s', '1-5m', '5m+']) })]);
+        if (rnd() < 0.04) evRows.push([at, visitor, 'sponsor_click', pick(GAMES), pick(PATHS), JSON.stringify({ placement })]);
+      }
+      if (rnd() < 0.03) evRows.push([new Date(start).toISOString(), visitor, 'sponsor_shown', '', '/replay/:id', JSON.stringify({ placement: 'replay', format: pick(['mp4', 'webm']) })]);
     }
-    for (const region of ['iad', 'lhr']) {
-      for (let h = 0; h < 24; h += 4) {
+    // one sampler writes every region under the same minute, as `sampleConcurrency` does
+    for (let h = 0; h < 24; h += 4) {
+      const at = new Date(Math.floor((Date.now() - d * 86_400_000 + h * 3_600_000) / 60_000) * 60_000).toISOString();
+      for (const region of ['iad', 'lhr']) {
         await db.query(
           `insert into analytics_concurrency (at, region, online, authed, rooms, q1v1, q2v2)
            values ($1,$2,$3,$4,$5,$6,$7) on conflict do nothing`,
-          [new Date(Date.now() - d * 86_400_000 + h * 3_600_000).toISOString(), region,
+          [at, region,
             5 + Math.floor(rnd() * 40), 3 + Math.floor(rnd() * 20), Math.floor(rnd() * 8), Math.floor(rnd() * 4), Math.floor(rnd() * 3)],
         );
       }
@@ -457,7 +586,11 @@ async function seedAnalytics(db: PGlite): Promise<void> {
   for (const r of evRows) {
     await db.query(`insert into analytics_events (at, visitor, name, game, path, props) values ($1,$2,$3,$4,$5,$6::jsonb)`, r);
   }
-  console.log(`[harness] seeded analytics: ${pvRows.length} pageviews, ${evRows.length} events`);
+  // the rollups production's job writes every five minutes, then its 30-day sweep
+  const an = await import('../server/analytics');
+  await an.runRollup(new Date(Date.now() - OWN_DAYS * 86_400_000), new Date());
+  await an.sweepAnalytics();
+  console.log(`[harness] seeded analytics: ${pvRows.length} pageviews, ${evRows.length} events, rolled up and swept`);
 
   // The imported history: a local Vercel export if one was made
   // (`scripts/vercel-analytics-export.mjs`, gitignored under scratch/), else a small made-up one.
@@ -471,7 +604,9 @@ async function seedAnalytics(db: PGlite): Promise<void> {
   if (existsSync(local)) {
     rows = vercelImportRows(JSON.parse(readFileSync(local, 'utf8')));
   } else {
-    const days = Array.from({ length: 15 }, (_, i) => new Date(Date.now() - (20 - i) * 86_400_000).toISOString().slice(0, 10));
+    // 50 to 36 days ago: the first-party days above begin 37 days ago, so the two overlap by a
+    // day, as the real ones do, and the oldest month of the sponsor report reads the import
+    const days = Array.from({ length: 15 }, (_, i) => new Date(Date.now() - (50 - i) * 86_400_000).toISOString().slice(0, 10));
     // Each breakdown splits the day's total, with the host's "Others" remainder where it had one.
     const split = (day: string, total: number, vals: string[], others = false) => {
       const shares = vals.map(() => 1 + rnd() * 3);

@@ -337,6 +337,12 @@ the one arc, and the unchanged flight stage and `checkGoalEntry` decide the hit.
   `decodeFixedAimTol`. **A driver's shot is not range-gated**: out of band it leaves and
   misses. **Auto fire** (the player default, every auto path) releases only a shot the flight
   stage, run forward (`decodeShotEnters`), says would score.
+- ⚠️ **AN AUTO PATH IS READ AS AN ASSIST, NEVER WRITTEN INTO ONE** (`src/sim/assists.ts`,
+  `SIM_PATCH` 12). Every DECODE reader of `autoIntake` / `autoFire` / `aimAssist` goes through
+  `autoIntakeOn` / `autoFireOn` / `aimAssistOn`. The path used to write all three true and nothing
+  wrote them back, so a driver with auto fire off had it on for all of DRIVER-CONTROLLED and
+  `Room.assistsOf` filed the record that way. A new reader left on the raw flag turns the assist
+  OFF for a path robot.
 - ⚠️ **THE TURN IS A BRAKING PROFILE, NOT A P-GAIN** (`fixedAimTurn`, `src/sim/aimTurn.ts`, both
   games; 2026-10-02, after "the robot shakes constantly while shooting and its cadence is really
   slow"). Commanded spin `min(maxTurn, √(2a|e|), 15|e|)`, `a` half the chassis's braking authority

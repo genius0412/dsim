@@ -26,11 +26,17 @@ import {
 } from './config';
 import { coerceFlywheel } from '../../sim/flywheelSpec';
 import {
+  BB_INTAKE_FEEDS,
   BB_LIFT_KINDS,
   BB_LIFT_POSITIONS,
+  BB_NECTAR_REJECTS,
+  type BbIntakeFeed,
+  type BbIntakeSpec,
   type BbLauncherSpec,
+  type BbNectarReject,
   type BbLiftSpec,
   type BbMechSpec,
+  bbDefaultFeed,
   bbFoldTwinMount,
   bbIntakeKindOf,
   bbLauncherBlocker,
@@ -361,5 +367,24 @@ function coerceBbMech(raw: RobotSpec): BbMechSpec {
   // THE INTAKE ARCHETYPE. Always written, so a container that arrived without one (every spec
   // saved before 2026-09-20) leaves here saying `sweeper` in as many words; an unknown kind from
   // a newer peer folds to the sweeper the same way (`bbIntakeKindOf`).
-  return { launcher, lift, intake: { kind: bbIntakeKindOf(raw) } };
+  //
+  // ...and its FEED and OPPONENT-NECTAR choice (2026-10-24), each written ONLY when it differs
+  // from what the build reads as without it — the launcher's old feed (`bbDefaultFeed`, read off
+  // the launcher resolved ABOVE, so a launcher swap in the same edit is seen) and `none`. A spec
+  // saved before they existed therefore coerces to the bytes it always did, and the resolvers
+  // read the same answer either way. A double turret is `mixed` whatever was asked.
+  const intake: BbIntakeSpec = { kind: bbIntakeKindOf(raw) };
+  const wantFeed = raw.bbMech?.intake?.feed;
+  const feed: BbIntakeFeed =
+    kind === 'twinturret'
+      ? 'mixed'
+      : (BB_INTAKE_FEEDS as readonly string[]).includes(wantFeed as string)
+        ? (wantFeed as BbIntakeFeed)
+        : bbDefaultFeed(launcher);
+  if (feed !== bbDefaultFeed(launcher)) intake.feed = feed;
+  const wantReject = raw.bbMech?.intake?.reject;
+  if (feed === 'mixed' && wantReject !== 'none' && (BB_NECTAR_REJECTS as readonly string[]).includes(wantReject as string)) {
+    intake.reject = wantReject as BbNectarReject;
+  }
+  return { launcher, lift, intake };
 }

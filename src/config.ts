@@ -298,8 +298,21 @@ export const SIM_VERSION = 7;
  *      aim assist's would-land gate (`bbLaunch`), as the team's robot would. Only an auto seat sets
  *      the bit, and no replay before 9 carries it, so 9 only keeps a newer replay honest on an
  *      older client. 2026-10-24, `alpha`.
+ *  10  BIOBUZZ, the opponent's NECTAR: a POLLEN + NECTAR intake takes it like its own, since a roller
+ *      cannot tell colours apart (`bbIntakeAccepts`), and holding one is G408. During AUTO, taking
+ *      an element from the opponent's half is G402 (TU06's first example, `nectarReject.ts`). Before it,
+ *      every intake refused the opponent's NECTAR. 2026-10-24, `alpha`.
+ *  11  BIOBUZZ, the NECTAR bar has its own button (`RobotCommand.bbBar`), and a `ramp` intake with a
+ *      POLLEN + NECTAR feed is a bar when held at bar height (`BB_RAMP_BAR_E`), whatever its
+ *      sorter. A ramp laid flat for a FLOWER no longer keeps NECTAR out. Before it a `bar` sorter's
+ *      bar rode `bbRamp`, and on a ramp intake the deployed ramp was the bar (`nectarReject.ts`).
+ *      2026-11-01, `alpha`.
+ *  12  DECODE, a legacy AUTO PATH runs aim assist, auto intake and auto fire only while it drives
+ *      (`src/sim/assists.ts`). Before it the path WROTE all three on and nothing wrote them back, so
+ *      a driver with auto fire or auto intake off had them on for all of DRIVER-CONTROLLED, and the
+ *      record said so. A robot that ran no path steps bit-identically. 2026-11-01, `alpha`.
  */
-export const SIM_PATCH = 9;
+export const SIM_PATCH = 12;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

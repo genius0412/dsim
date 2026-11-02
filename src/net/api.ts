@@ -72,6 +72,8 @@ export interface RecordConfig {
   /** in a DUO run, the co-op partner's robot (each driver brings their own build,
    * so a duo can mix drivetrains). Absent for solo runs / legacy rows. */
   partnerSpec?: RobotSpec;
+  /** how the partner drove it (0064). Absent on an older duo run whose replay could not say. */
+  partnerAssists?: AssistConfig;
 }
 
 export interface RecordRow extends BadgeFields {
@@ -87,6 +89,8 @@ export interface RecordRow extends BadgeFields {
   partnerRole?: StaffRole;
   /** ...and the partner's worn badges. */
   partnerBadges?: EquippedBadge[] | null;
+  /** the entry's place: tied scores share it (1, 2, 2, 4). Absent from an older server */
+  rank?: number;
   score: number;
   replayId: string | null;
   createdAt: string;

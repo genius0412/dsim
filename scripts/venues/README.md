@@ -55,7 +55,24 @@ then, by the same k, the row's `room` (and its `PhotoLayers.floor`), `layers.py`
 `FLOOR_STEPS` (`y0` × k; `z` → `FLOOR_Z + k (z − FLOOR_Z)`) and `LENS`; the row's `height`; the
 printed size into the row's `bytes.mesh`; and the RENDER lane. A derive patch's `room`
 (`venues.cjs`) is in lens heights and does not change. The court was rescaled this way on
-2026-10-24 (63 → 64.6 in). Run the Python stages from `scripts/venues/` with a Python that has:
+2026-10-24 (63 → 64.6 in).
+
+## The floor tiles (2026-11-01)
+
+`floor.py` writes `public/venues/<id>-floor.webp`: the floor beside the lens seen straight down,
+its light divided out and its edges made to repeat, in the backdrop's encoding (its docstring has
+the method). The renderer draws every photographed floor but the court's from one of these, so the
+floor no longer streaks from cameras above or nearer than the lens. It reads the derived
+`<id>-bg-4k.webp`, so rerun it after `meshes.py`, then copy the numbers it prints into each row's
+`floorTexture` and rerun `sync-env.mjs` (the picker note counts the tile). Needs only numpy and
+Pillow. The events hall uses the hangar's tile: its own floor was refilled from a mirror image and
+de-glossed in `derive.cjs`, and is not usable as texture.
+
+```
+python scripts/venues/floor.py
+```
+
+Run the Python stages from `scripts/venues/` with a Python that has:
 
 - a CUDA `torch` (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`);
 - `moge` **2.0** (`git clone https://github.com/microsoft/MoGe`, `git checkout 925b8ed`,

@@ -1,5 +1,6 @@
 import type { Alliance, Artifact, RobotSpec, RobotState, StartPose, Vec2, World } from '../../types';
 import { rot } from '../../math';
+import { simPatchAtLeast } from '../../config';
 import {
   BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
@@ -84,17 +85,18 @@ export function pollenIn(world: World, r: RobotState, mouth: LocalRect): Artifac
  * `r.hopper` still gets a colour pushed, because the shared renderer, HUD and wire all read
  * hopper LENGTH; the two are mirrored, and `releasePollen` unmirrors them in the same step.
  *
- * ── WHICH ELEMENTS AN INTAKE REFUSES (owner ruling 2026-09-12) ─────────────
- * A NECTAR (colour `red`/`blue`) is refused when:
- *  · it belongs to the OTHER alliance — G408, for every build; and
- *  · this robot's launcher cannot carry NECTAR at all (`bbCarriesNectar`: a SINGLE turret
- *    feeds POLLEN only; a double turret and a dumper take their own NECTAR).
- * Both are the one pure predicate `bbIntakeAccepts` (`mechs.ts`). A refused element is simply
- * not taken: it stays on the floor for the solve to push, exactly like one meeting a full hopper.
+ * ── WHICH ELEMENTS AN INTAKE REFUSES ───────────────────────────────────────
+ * A NECTAR (colour `red`/`blue`) is refused when this build's intake is sized for POLLEN only
+ * (`bbIntakeFeedOf`, `mechs.ts`). A POLLEN + NECTAR intake takes EITHER alliance's NECTAR from
+ * `SIM_PATCH` 10 (2026-10-24): a roller cannot see colour, so holding the opponent's is a G408
+ * matter for `penalties.ts` and a sorting matter for `nectarReject.ts`, not something the intake can
+ * decline. Before 10 the opponent's was refused here for every build, and a replay recorded then
+ * still is. All of it is the one pure predicate `bbIntakeAccepts`. A refused element is simply not
+ * taken: it stays on the floor for the solve to push, exactly like one meeting a full hopper.
  */
 export function capturePollen(world: World, r: RobotState, ball: Artifact): boolean {
   if (ball.state.kind !== 'ground') return false;
-  if (!bbIntakeAccepts(r.spec, r.alliance, ball.color)) return false;
+  if (!bbIntakeAccepts(r.spec, r.alliance, ball.color, simPatchAtLeast(world, 10))) return false;
   if (r.hopper.length >= bbHopperCap(r.spec)) return false;
   ball.state = { kind: 'held', robot: r.id, slot: r.hopper.length, lx: 0, ly: 0, side: 0 };
   ball.vel = { x: 0, y: 0 };
