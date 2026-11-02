@@ -1,8 +1,8 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import { dcos, dsin, hyp } from '../../math';
-import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
-import { driveIntent, robotCorners, robotHullWorld } from '../../sim/physics';
-import { polyGap, polySatGap } from '../../sim/imported';
+import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED, POSSESSION_CONFIRM, simPatchAtLeast } from '../../config';
+import { driveIntent, robotCorners, robotHullWorld, robotPointVelocity } from '../../sim/physics';
+import { polyFeature, polyGap, polySatGap } from '../../sim/imported';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
 import { awardCard } from '../../sim/scoring';
 import { type ControlGeometry, controlKeyLive, controlledArtifacts, isPinning } from '../../sim/penalties';
@@ -11,11 +11,12 @@ import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
   BB_LZ,
+  BB_NECTAR_R,
   BB_POLLEN_R,
   BB_PTS,
   bbHopperCap,
 } from './config';
-import { bbKindOf } from './score';
+import { bbInGarden, bbKindOf } from './score';
 import { bbImportSolids } from './importMech';
 import { biobuzzPhysics } from './state';
 
@@ -269,8 +270,15 @@ function bbControlGeometry(world: World): ControlGeometry {
   };
 }
 
-function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean, geom: ControlGeometry): number {
-  return controlledArtifacts(world, r, dt, intaking, geom);
+function bbControlled(
+  world: World,
+  r: RobotState,
+  dt: number,
+  intaking: boolean,
+  geom: ControlGeometry,
+  ids?: Set<number>,
+): number {
+  return controlledArtifacts(world, r, dt, intaking, geom, ids);
 }
 
 /**
@@ -309,6 +317,254 @@ function bbSweepControlClocks(world: World): void {
   }
   for (const key of Object.keys(pen.ballAnchor)) if (!live(key)) delete pen.ballAnchor[key];
   for (const key of Object.keys(pen.ballCarry)) if (!live(key)) delete pen.ballCarry[key];
+}
+
+/**
+ * HOW LONG A ROBOT MUST BE OUT OF CONTROL BEFORE CONTROLLING AGAIN IS A NEW INSTANCE (s) — G407's
+ * 5+ and G408's per-element instance alike, from `SIM_PATCH` 13.
+ *
+ * `APPROX`. The manual counts instances and gives no gap, but both rules now escalate on a count
+ * (G408 on the second instance, G407 on the third), so "again" has to mean something a driver
+ * can see. Without a window a drop and re-take at the mouth — an element squirting out of the
+ * rollers and straight back in, or a contact chain flickering 5-4-5 across one shove — is two or
+ * three instances inside a second, and the escalation is bought by the solver rather than by the
+ * driver. One second is G402's `BB_G402_REARM_S` for the same reason: short enough that a robot
+ * which really let go and came back is billed again, long enough to swallow the flicker.
+ */
+export const BB_CONTROL_REARM_S = 1; // APPROX, s
+
+/**
+ * THE G407 INSTANCE THAT IS STRATEGIC ON ITS OWN, HOWEVER SHORT (`SIM_PATCH` 13): the third this
+ * match. Orange box (C) excuses an isolated MOMENTARY five, TU05 calls REPEATED instances likely
+ * STRATEGIC "even if the ROBOT has a 'keep 4 and discard the rest' sorting mechanism", and QA23
+ * calls ROUTINE momentary control strategic. Two is "repeated" by the glossary but still within
+ * what (C) forgives twice over; three is a pattern. `APPROX` — a referee's eye, not a number the
+ * manual prints.
+ */
+export const BB_G407_REPEAT_N = 3;
+
+/**
+ * HOW FAST AN ELEMENT MAY SLIP AGAINST A FRAME AND STILL BE RIDING IT (in/s), for `bbAboard`.
+ *
+ * Measured (`scratch/aboard-probe.ts`): a POLLEN resting on a parked robot's top plate jitters
+ * at 2.4 in/s, and a shot crossing a chassis in plan moves at 100+ in/s against it. 12 sits
+ * five times over the jitter and an order of magnitude under the slowest shot.
+ */
+export const BB_ABOARD_SLIP = 12; // in/s
+
+/**
+ * HOW CLOSE AN OPPONENT'S FRAME MUST BE TO HAVE SHOVED A NECTAR INTO THIS ROBOT (in), for G204:
+ * one NECTAR's width between the two footprints, plus the contact slack G402 uses.
+ */
+export const BB_G408_SHOVE_GAP = 2 * BB_NECTAR_R + BB_FOUL_SLOP;
+
+/**
+ * WHICH ELEMENTS ARE RIDING ON OR UNDER A ROBOT'S FRAME — CONTROL by the glossary's first clause,
+ * "fully supported by or stuck in, on, or under the ROBOT", and QA34: "This would include
+ * SCORING ELEMENTS stuck under an intake." 3D only (`SIM_PATCH` 13): the 2D solve cannot put an
+ * element inside a footprint (`placeGroundArtifact` re-places one).
+ *
+ * ⚠️ **THE HERD TEST NEVER SAW THESE.** Measured on the 3D solve: a POLLEN dropped on a parked
+ * robot comes to rest on its top plate 11.3 in up, tagged `flight` (it is off the tiles and
+ * never quite still), so `bbLooseElement` does not offer it to the count at all; and one that is
+ * offered never builds a hold, because a robot carrying something on its back is not PUSHING
+ * it. G407's guidance names exactly this case ("guards to prevent SCORING ELEMENTS from
+ * accidentally becoming stuck on top of the ROBOT").
+ *
+ * The test: a loose element (`ground` or `flight`), its centre inside the CHASSIS FRAME in plan
+ * — the frame and not the intake's reach, so an element in the mouth stays the herd test's and
+ * the mouth carve-out's — and moving WITH the robot (`BB_ABOARD_SLIP` against the frame's own
+ * point velocity), for `POSSESSION_CONFIRM` running. A shot passing over is in plan for a few
+ * ticks at a hundred inches a second against the frame and never accumulates.
+ *
+ * The clocks ride `bb.aboard` (plain JSON, rebuilt each tick, so a lapsed one is gone).
+ */
+function bbAboard(world: World, dt: number): Map<number, Set<number>> {
+  const bb = world.biobuzz!;
+  const out = new Map<number, Set<number>>();
+  const next: Record<string, number> = {};
+  for (const r of world.robots) {
+    const c = dcos(r.heading);
+    const s = dsin(r.heading);
+    const chassis = r.spec.imported ? bbImportSolids(r.spec).chassis : null;
+    const hl = r.spec.length / 2;
+    const hw = r.spec.width / 2;
+    let reach2 = hl * hl + hw * hw;
+    if (chassis) for (const p of chassis) reach2 = Math.max(reach2, p.x * p.x + p.y * p.y);
+    for (const b of world.balls) {
+      if (b.state.kind !== 'ground' && b.state.kind !== 'flight') continue;
+      const dx = b.pos.x - r.pos.x;
+      const dy = b.pos.y - r.pos.y;
+      if (dx * dx + dy * dy > reach2) continue;
+      const loc = { x: dx * c + dy * s, y: -dx * s + dy * c };
+      const inside = chassis ? polyFeature(chassis, loc).inside : Math.abs(loc.x) <= hl && Math.abs(loc.y) <= hw;
+      if (!inside) continue;
+      const pv = robotPointVelocity(r, b.pos);
+      if (hyp(b.vel.x - pv.x, b.vel.y - pv.y) > BB_ABOARD_SLIP) continue;
+      const key = `${r.id}:${b.id}`;
+      const t = (bb.aboard?.[key] ?? 0) + dt;
+      next[key] = t;
+      if (t < POSSESSION_CONFIRM) continue;
+      let set = out.get(r.id);
+      if (!set) out.set(r.id, (set = new Set()));
+      set.add(b.id);
+    }
+  }
+  if (Object.keys(next).length > 0) bb.aboard = next;
+  else delete bb.aboard;
+  return out;
+}
+
+/**
+ * DOES THIS ELEMENT SCORE FOR `a` WHERE IT IS? — G408's "gaining a competitive advantage" test.
+ * An opponent's NECTAR scores for the GARDEN's colour whoever put it there, and for the HIVE it
+ * sits in (`score.ts`). Not a FLOWER: only a Box Tube places in one, and a tube places its own
+ * alliance's NECTAR only (`placeInFlower`).
+ */
+function bbScoresFor(b: Artifact, a: Alliance): boolean {
+  if (b.state.kind === 'element') return b.state.el === `hive:${a}`;
+  return bbInGarden(b, a);
+}
+
+/**
+ * DID AN OPPONENT SHOVE THIS ROBOT'S NEW CONTROL ON IT? — G204: "Violations forced in this
+ * manner will not result in an assignment of a penalty ... to the targeted ALLIANCE."
+ *
+ * The same INTENT test G402's `bbShovedAcross` uses, for the same reason: a NECTAR driven into a
+ * robot moves exactly like one the robot drove into, so velocity cannot tell them apart and the
+ * sticks can. Forced when an opposing robot within one NECTAR's width (`BB_G408_SHOVE_GAP`) is
+ * driving at this one, and this one is not driving at it. A command-less fixture is never
+ * excused: something has to be pushing.
+ */
+function bbForcedInto(world: World, r: RobotState, commands: Map<number, RobotCommand>): boolean {
+  const own = driveIntent(r, commands.get(r.id));
+  for (const y of world.robots) {
+    if (y.alliance === r.alliance || y.passive) continue;
+    if (bbFootprintGap(r, y) > BB_G408_SHOVE_GAP) continue;
+    const dx = r.pos.x - y.pos.x;
+    const dy = r.pos.y - y.pos.y;
+    const d = hyp(dx, dy);
+    if (d < 1e-6) continue;
+    const at = driveIntent(y, commands.get(y.id));
+    // y drives at r, and r is not driving back at y
+    if ((at.x * dx + at.y * dy) / d > 0 && (own.x * dx + own.y * dy) / d >= 0) return true;
+  }
+  return false;
+}
+
+/** G408's sanctions, both through here so the card is issued once per MATCH whichever test fires. */
+function bbG408Open(world: World, r: RobotState): void {
+  const bb = world.biobuzz!;
+  const n = ((bb.g408 ??= {})[r.id] = (bb.g408[r.id] ?? 0) + 1);
+  bbAwardFoul(world, r.alliance, 'warning', `G408 CONTROL of the opponent’s NECTAR`);
+  if (n >= 2) bbG408Card(world, r, 'G408 REPEATED CONTROL of the opponent’s NECTAR');
+}
+
+function bbG408Card(world: World, r: RobotState, rule: string): void {
+  const latch = (world.biobuzz!.held[r.id] ??= {});
+  if (latch.g408card) return;
+  latch.g408card = true;
+  awardCard(world, r, rule);
+}
+
+/**
+ * G408 FROM `SIM_PATCH` 13 — every kind of CONTROL, and STRATEGIC as §10.6 and the Q&A read it.
+ *
+ * ── WHICH CONTROL ───────────────────────────────────────────────────────────
+ * QA4: "If a ROBOT CONTROLS an opponent NECTAR for any amount of time, it's a violation of G408".
+ * So all three of the glossary's ways count, not only HOLDING: an opponent NECTAR in the hopper,
+ * one HERDED or chained (`controlledArtifacts`' own ids, so it passes the same intent gates G407
+ * does — 22 in/s at the contact, 5 in carried, 0.45 s confirmed, a flat or concave face), and
+ * one riding on or under the frame (`bbAboard`). What those gates leave out is exactly the
+ * orange box's not-CONTROL list: bulldozing (D), a deflection (E) and a launched element (F).
+ *
+ * ── AN INSTANCE ─────────────────────────────────────────────────────────────
+ * Per (robot, element), in `bb.g408i`. It opens with a WARNING and stays open while the robot
+ * keeps control; a drop and re-take inside `BB_CONTROL_REARM_S` is the same instance.
+ *
+ * ── STRATEGIC: the YELLOW CARD, once per MATCH ──────────────────────────────
+ *  · the SECOND instance this match (TU06's REPEATED, as before);
+ *  · an instance held past MOMENTARY (`BB_MOMENTARY_S`). QA4: "A ROBOT that immediately ejects
+ *    opponent NECTAR in a way that does not gain a competitive advantage would typically not be
+ *    considered a STRATEGIC violation" — and keeping it three seconds is not ejecting it;
+ *  · the NECTAR SCORING FOR THE CONTROLLER (its GARDEN, or a CELL of its HIVE) while controlled or
+ *    within `BB_MOMENTARY_S` after: the competitive advantage §10.6 defines STRATEGIC by. Herding
+ *    an opponent's NECTAR into your own GARDEN is the case.
+ *
+ * ── G204 ────────────────────────────────────────────────────────────────────
+ * An instance that OPENS because an opponent shoved the NECTAR into this robot (`bbForcedInto`)
+ * draws nothing. It stays excused while it is MOMENTARY; a robot that keeps it longer has made it
+ * its own ("Accidental situations that are then deliberately used to a team's advantage will be
+ * viewed as STRATEGIC", §10.6), and it bills there as an instance past MOMENTARY.
+ */
+function bbG408(world: World, commands: Map<number, RobotCommand>, loose: Map<number, Set<number>>): void {
+  const bb = world.biobuzz!;
+  const now = world.time;
+  const mine = new Map<number, number[]>();
+  for (const b of world.balls) {
+    if (b.state.kind !== 'held' || (b.color !== 'red' && b.color !== 'blue')) continue;
+    const id = b.state.robot;
+    const list = mine.get(id);
+    if (list) list.push(b.id);
+    else mine.set(id, [b.id]);
+  }
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    const opp: Alliance = r.alliance === 'red' ? 'blue' : 'red';
+    const ids: number[] = [];
+    for (const id of mine.get(r.id) ?? []) if (world.balls.find((b) => b.id === id)?.color === opp) ids.push(id);
+    for (const id of loose.get(r.id) ?? []) if (world.balls.find((b) => b.id === id)?.color === opp) ids.push(id);
+    for (const id of ids) {
+      const map = (bb.g408i ??= {});
+      const key = `${r.id}:${id}`;
+      let inst = map[key];
+      if (!inst || now - inst.last > BB_CONTROL_REARM_S) {
+        inst = map[key] = { at: now, last: now };
+        if (bbForcedInto(world, r, commands)) inst.forced = true;
+        else bbG408Open(world, r);
+      }
+      inst.last = now;
+      if (now - inst.at > BB_MOMENTARY_S) {
+        if (inst.forced) {
+          delete inst.forced;
+          bbG408Open(world, r);
+        }
+        bbG408Card(world, r, 'G408 CONTROL of the opponent’s NECTAR past MOMENTARY');
+      }
+    }
+  }
+  if (!bb.g408i) return;
+  for (const key of Object.keys(bb.g408i)) {
+    const inst = bb.g408i[key];
+    if (now - inst.last > BB_MOMENTARY_S) {
+      delete bb.g408i[key];
+      continue;
+    }
+    if (inst.forced) continue;
+    const at = key.indexOf(':');
+    const rid = Number(key.slice(0, at));
+    const bid = Number(key.slice(at + 1));
+    const r = world.robots.find((x) => x.id === rid);
+    const b = world.balls.find((x) => x.id === bid);
+    if (!r || !b) {
+      delete bb.g408i[key];
+      continue;
+    }
+    if (!r.passive && bbScoresFor(b, r.alliance)) bbG408Card(world, r, 'G408 opponent’s NECTAR CONTROLLED to score');
+  }
+  if (Object.keys(bb.g408i).length === 0) delete bb.g408i;
+}
+
+/** G407's STRATEGIC sanction: the MAJOR (every instance, owner ruling 2026-09-22) and, from
+ * `SIM_PATCH` 13, the YELLOW CARD once per MATCH. */
+function bbG407Strategic(world: World, r: RobotState, v13: boolean, rule: string): void {
+  const latch = (world.biobuzz!.held[r.id] ??= {});
+  // a HUD marker, not a gate: `hud.ts` reads it for the `controlMajor` chip.
+  latch.g407billed = true;
+  bbAwardFoul(world, r.alliance, 'major', rule);
+  if (!v13 || latch.g407card) return;
+  latch.g407card = true;
+  awardCard(world, r, rule);
 }
 
 /**
@@ -388,6 +644,10 @@ export function updateBiobuzzPenalties(
      * same reasoning DECODE applies to G408's clocks four lines further down, applied here.
      */
     world.penalties.pins = {};
+    // ...and the G408 instances and the ride-along clocks, for the same reason (`SIM_PATCH` 13;
+    // both are absent on every older world, so this is a no-op there).
+    delete bb.g408i;
+    delete bb.aboard;
     return;
   }
 
@@ -436,47 +696,95 @@ export function updateBiobuzzPenalties(
     }
   }
 
+  /**
+   * `SIM_PATCH` 13 — G407 and G408 as manual TU07 and the Q&A have them (2026-11-01). Every change
+   * below that moves a score or a card sits behind it, so a replay recorded earlier re-simulates
+   * the match it was: herded and on-robot opponent NECTAR, G408's MOMENTARY and scoring tests, the
+   * G204 excuse, the 1-s re-arm, G407's YELLOW CARD and its escalation on the third instance.
+   */
+  const v13 = simPatchAtLeast(world, 13);
+
+  // ── CONTROL, ONCE PER ROBOT — what G408 and G407 both read ────────────────
+  /**
+   * The clock sweep runs ONCE, before the per-robot loop, because it is keyed on every
+   * (robot, element) pair and would otherwise redo the whole scan per robot.
+   */
+  bbSweepControlClocks(world);
+  const pen = world.penalties;
+  // one geometry for the tick — it reads only the world's physics tag and each robot at call time
+  const geom = bbControlGeometry(world);
+  // elements riding ON or UNDER a frame (QA34), which only the 3D solve can produce
+  const aboard = v13 && biobuzzPhysics(world) === '3d' ? bbAboard(world, dt) : null;
+  const counts = new Map<number, number>();
+  /** the loose elements each robot CONTROLS this tick — herded, chained or aboard (`SIM_PATCH` 13) */
+  const loose = new Map<number, Set<number>>();
+  for (const r of world.robots) {
+    /**
+     * THE COUNT AND BOTH STRATEGIC CLOCKS RUN FOR EVERY ROBOT, passive included, and only the
+     * SANCTIONS are skipped. `controlledArtifacts` is not a pure reader — it advances and
+     * DRAINS the per-element hold clocks as a side effect — so skipping a passive robot here
+     * would freeze its clocks at whatever they held when it went passive, and an element it was
+     * once against would still be latched to it if it came back. DECODE's own loop has no
+     * passive guard for the same reason. A passive robot is a prop; it draws no sanction, but
+     * its clocks still drain like anyone else's.
+     */
+    const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
+    const ids = v13 ? new Set<number>() : undefined;
+    let controlled = bbControlled(world, r, dt, intaking, geom, ids);
+    // ...plus what rides on or under it and the herd test did not already count
+    for (const id of aboard?.get(r.id) ?? []) {
+      if (ids?.has(id)) continue;
+      ids?.add(id);
+      controlled++;
+    }
+    counts.set(r.id, controlled);
+    if (ids) loose.set(r.id, ids);
+  }
+
   // ── G408 — CONTROL of the opponent's NECTAR. WARNING, then a YELLOW CARD. ──
   /**
    * "A ROBOT may not CONTROL the opponent's NECTAR." Violation: **VERBAL WARNING. YELLOW CARD per
-   * MATCH, if STRATEGIC.** TU06 adds the test this block runs: "REPEATED instances of a ROBOT
-   * CONTROLLING an opponent's NECTAR are likely to be perceived as STRATEGIC, even if the ROBOT
-   * has a sorting mechanism that automatically discards opponent NECTAR by returning it to
-   * approximately its original state." REPEATED is the glossary's "more than once within a
-   * MATCH", so:
+   * MATCH, if STRATEGIC.** (Table 10-4; QA23 quotes it with a MAJOR, and the manual wins — §1.7.1.)
+   * TU06 adds: "REPEATED instances of a ROBOT CONTROLLING an opponent's NECTAR are likely to be
+   * perceived as STRATEGIC, even if the ROBOT has a sorting mechanism that automatically discards
+   * opponent NECTAR by returning it to approximately its original state." REPEATED is the
+   * glossary's "more than once within a MATCH", so:
    *
-   *  · every INSTANCE is a WARNING — the rising edge of "this robot holds that NECTAR", keyed per
-   *    (robot, element), so one held for a minute is one instance and one taken twice is two;
+   *  · every INSTANCE is a WARNING, keyed per (robot, element), so one held for a minute is one
+   *    instance and one taken twice is two;
    *  · the SECOND instance this match is STRATEGIC, and draws the YELLOW CARD, once per MATCH
    *    (`bb.held[id].g408card`). The shared `awardCard` issues it, so a team already holding a
    *    yellow goes to red and its alliance's score is voided, which `score.ts` already honours.
    *
-   * WHICH CONTROL. Holding: the element is `held` by this robot. A POLLEN + NECTAR intake takes
-   * the opponent's NECTAR from `SIM_PATCH` 10 (`bbIntakeAccepts`), and a sorter that throws it
-   * back out (`nectarReject.ts`) still held it for `BB_SORT_DETECT_S` or `BB_SORT_PASS_S`, which is the
-   * whole of TU06's point. The `bar` sorter is the one that never holds it. HERDING is not
-   * counted: `controlledArtifacts`' herd test is tuned to count a pile for G407, and an opponent
-   * NECTAR the chassis shoves through is far likelier "bulldozing" (G407.D) than control a
-   * referee would call.
+   * From `SIM_PATCH` 13 `bbG408` runs instead of the loop below: every kind of CONTROL counts, not
+   * only a held one, and STRATEGIC has two more readings. See its header.
    *
    * No points move, as the manual says. The tally rides `bb.g408` for the HUD.
    */
-  for (const b of world.balls) {
-    if (b.state.kind !== 'held') continue;
-    if (b.color !== 'red' && b.color !== 'blue') continue;
-    const holder = world.robots.find((x) => x.id === (b.state as { robot: number }).robot);
-    if (!holder || holder.passive || b.color === holder.alliance) continue;
-    const key = `g408-${holder.id}-${b.id}`;
-    if (!bb.foulEdge[key]) {
-      const n = ((bb.g408 ??= {})[holder.id] = (bb.g408[holder.id] ?? 0) + 1);
-      bbAwardFoul(world, holder.alliance, 'warning', `G408 CONTROL of the opponent’s NECTAR`);
-      const latch = (bb.held[holder.id] ??= {});
-      if (n >= 2 && !latch.g408card) {
-        latch.g408card = true;
-        awardCard(world, holder, 'G408 REPEATED CONTROL of the opponent’s NECTAR');
+  if (v13) {
+    bbG408(world, commands, loose);
+  } else {
+    /**
+     * BEFORE `SIM_PATCH` 13: HOLDING only. Herding was not counted, because the herd test was
+     * tuned to count a pile for G407 and nobody had checked it against a single NECTAR.
+     */
+    for (const b of world.balls) {
+      if (b.state.kind !== 'held') continue;
+      if (b.color !== 'red' && b.color !== 'blue') continue;
+      const holder = world.robots.find((x) => x.id === (b.state as { robot: number }).robot);
+      if (!holder || holder.passive || b.color === holder.alliance) continue;
+      const key = `g408-${holder.id}-${b.id}`;
+      if (!bb.foulEdge[key]) {
+        const n = ((bb.g408 ??= {})[holder.id] = (bb.g408[holder.id] ?? 0) + 1);
+        bbAwardFoul(world, holder.alliance, 'warning', `G408 CONTROL of the opponent’s NECTAR`);
+        const latch = (bb.held[holder.id] ??= {});
+        if (n >= 2 && !latch.g408card) {
+          latch.g408card = true;
+          awardCard(world, holder, 'G408 REPEATED CONTROL of the opponent’s NECTAR');
+        }
       }
+      seen[key] = true;
     }
-    seen[key] = true;
   }
 
   // ── G407 — CONTROL of more than 4 SCORING ELEMENTS. WARNING, then MAJOR. ──
@@ -500,17 +808,28 @@ export function updateBiobuzzPenalties(
    * `BB_MOMENTARY_S` is the manual's own number for both clocks, so a one-tick contact-chain
    * blip to six is not a MAJOR — a referee could not see it either.
    *
-   * ⚠️ THE YELLOW CARD IS NOT MODELLED HERE. G408 issues one through the shared `awardCard`
-   * (2026-10-24), and `score.ts` honours a red's void, so the machinery exists now; this rule's
-   * card is still left out because two yellows make a red that voids the match, and with G407's
-   * STRATEGIC branch billing every instance (owner ruling 2026-09-22) a card per MATCH on top
-   * is the owner's call, not a side effect of wiring G408.
+   * ── (C) ROUTINE MOMENTARY CONTROL IS STRATEGIC TOO (`SIM_PATCH` 13) ──────
+   * TU05's note: "REPEATED instances of a ROBOT CONTROLLING 5 or more SCORING ELEMENTS are likely
+   * to be perceived as STRATEGIC, even if the ROBOT has a 'keep 4 and discard the rest' sorting
+   * mechanism", and QA23: "a ROBOT that routinely MOMENTARILY CONTROLS more than 4 SCORING
+   * ELEMENTS ... as part of the ROBOT design and/or strategy is likely to be perceived as
+   * deliberately violating G407". The orange box's (C) excuses an ISOLATED momentary five, so the
+   * sim excuses two and calls the THIRD instance in a match STRATEGIC on its own, however short
+   * (`BB_G407_REPEAT_N`), and every one after it. Such an instance bills once: `g407rep` keeps
+   * (A) and (B) from billing it a second time when it also runs long.
    *
-   * ── THE WARNING IS EDGE-TRIGGERED, AND ITS COUNT IS A PER-MATCH TALLY ─────
-   * Unchanged from the 2026-09-12 model: the key is per ROBOT, so a robot that climbs to five,
-   * drops back to four and climbs again warns TWICE — two separate instances of the violation,
-   * which is what §10.6 means by "each instance". Holding five for a minute is ONE warning,
-   * because the edge memory says the condition never went away.
+   * ── THE YELLOW CARD (`SIM_PATCH` 13) ───────────────────────────────────────
+   * Table 10-4 expands this row as "a MAJOR FOUL is assessed ... and after the MATCH, the
+   * violating team is issued a YELLOW CARD". It goes through the shared `awardCard`, once per
+   * MATCH (`bb.held[id].g407card`), the same way G408's does, so a robot carded for G408 as well
+   * goes to red and its alliance's score is voided. Before 13 the card was left out.
+   *
+   * ── THE WARNING, AND ITS COUNT IS A PER-MATCH TALLY ───────────────────────
+   * The key is per ROBOT, so a robot that climbs to five, drops back to four and climbs again warns
+   * TWICE — two separate instances of the violation, which is what §10.6 means by "each instance".
+   * Holding five for a minute is ONE warning. From `SIM_PATCH` 13 "drops back" means for longer
+   * than `BB_CONTROL_REARM_S`: a pile whose chain flickers 5-4-5 inside a second is one instance,
+   * because the third instance now costs a MAJOR and a flicker must not be able to buy it.
    *
    * The warning tally rides `world.penalties.controlInstances` — the SHARED `PenaltyState`,
    * already `Record<robotId, number>`, already initialised on a BIOBUZZ world and already
@@ -527,33 +846,16 @@ export function updateBiobuzzPenalties(
    * The MAJOR used to sit behind a per-robot LATCH, `bb.held[robot].g407billed`, read off "MAJOR
    * FOUL ... per MATCH" (Table 10-4), so a robot paid once however many qualifying instances it
    * racked up. The owner overruled that reading: each time 6+ is sustained past MOMENTARY, and
-   * each 5+ instance from the second onward, is its own MAJOR.
+   * each 5+ instance from the second onward, is its own MAJOR. (The card, above, is per MATCH,
+   * and whether the MAJOR should be too is still the owner's call — see HANDOFF 2026-11-01.)
    *
    * Nothing debounces it, because nothing needs to: `qualified5`/`qualified6` are the single
    * tick a streak CROSSES `BB_MOMENTARY_S`, so a held pile qualifies once and then has to drop
    * below the count and climb back to qualify again. The flag is still SET, as a HUD marker —
    * `hud.ts`'s `controlMajor` chip reads it to show the escalation — but nothing reads it here.
    */
-  /**
-   * The clock sweep runs ONCE, before the per-robot loop, because it is keyed on every
-   * (robot, element) pair and would otherwise redo the whole scan per robot.
-   */
-  bbSweepControlClocks(world);
-  const pen = world.penalties;
-  // one geometry for the tick — it reads only the world's physics tag and each robot at call time
-  const geom = bbControlGeometry(world);
   for (const r of world.robots) {
-    /**
-     * THE COUNT AND BOTH STRATEGIC CLOCKS RUN FOR EVERY ROBOT, passive included, and only the
-     * SANCTIONS are skipped. `controlledArtifacts` is not a pure reader — it advances and
-     * DRAINS the per-element hold clocks as a side effect — so skipping a passive robot here
-     * would freeze its clocks at whatever they held when it went passive, and an element it was
-     * once against would still be latched to it if it came back. DECODE's own loop has no
-     * passive guard for the same reason. A passive robot is a prop; it draws no sanction, but
-     * its clocks still drain like anyone else's.
-     */
-    const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
-    const controlled = bbControlled(world, r, dt, intaking, geom);
+    const controlled = counts.get(r.id) ?? 0;
 
     // THE 5+ STREAK — rule (B)'s underlying instance count. One continuous stretch of
     // controlling 5+; the INSTANCE is counted the tick the stretch crosses MOMENTARY, exactly
@@ -575,22 +877,39 @@ export function updateBiobuzzPenalties(
     pen.possession[r.id] = now6;
     const qualified6 = six && prev6 < BB_MOMENTARY_S && now6 >= BB_MOMENTARY_S;
 
-    // THE MAJOR — (A) OR (B), once per qualifying instance, and never for a passive prop.
-    const strategic = qualified6 || (qualified5 && (pen.possessionBilled[r.id] ?? 0) >= 2);
+    // THE MAJOR — (A) OR (B), once per qualifying instance, and never for a passive prop — nor
+    // for an instance (C) already billed when it opened.
+    const billedAtOpen = v13 && bb.held[r.id]?.g407rep === true;
+    const strategic = !billedAtOpen && (qualified6 || (qualified5 && (pen.possessionBilled[r.id] ?? 0) >= 2));
     if (!r.passive && strategic) {
-      // a HUD marker, not a gate: `hud.ts` reads it for the `controlMajor` chip.
-      (bb.held[r.id] ??= {}).g407billed = true;
-      bbAwardFoul(world, r.alliance, 'major', `G407 STRATEGIC CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+      bbG407Strategic(world, r, v13, `G407 STRATEGIC CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
     }
 
     if (r.passive) continue;
     if (controlled <= BB_CONTROL_LIMIT) continue;
-    const key = `g407-${r.id}`;
-    if (!bb.foulEdge[key]) {
-      pen.controlInstances[r.id] = (pen.controlInstances[r.id] ?? 0) + 1;
-      bbAwardFoul(world, r.alliance, 'warning', `G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+    if (!v13) {
+      const key = `g407-${r.id}`;
+      if (!bb.foulEdge[key]) {
+        pen.controlInstances[r.id] = (pen.controlInstances[r.id] ?? 0) + 1;
+        bbAwardFoul(world, r.alliance, 'warning', `G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+      }
+      seen[key] = true;
+      continue;
     }
-    seen[key] = true;
+    // `SIM_PATCH` 13: an instance re-arms only after `BB_CONTROL_REARM_S` at 4 or fewer. The clock
+    // is `pen.episodes`, which G402 already keeps the same way and the phase guard already clears.
+    const ek = `g407-${r.id}`;
+    const last = pen.episodes[ek];
+    pen.episodes[ek] = world.time;
+    if (last !== undefined && world.time - last <= BB_CONTROL_REARM_S) continue;
+    const n = (pen.controlInstances[r.id] = (pen.controlInstances[r.id] ?? 0) + 1);
+    bbAwardFoul(world, r.alliance, 'warning', `G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+    if (n >= BB_G407_REPEAT_N) {
+      (bb.held[r.id] ??= {}).g407rep = true;
+      bbG407Strategic(world, r, v13, `G407 REPEATED CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+    } else if (bb.held[r.id]) {
+      delete bb.held[r.id].g407rep;
+    }
   }
 
   // ── G402 — AUTO interference across the halves. MAJOR on the crosser. ─────

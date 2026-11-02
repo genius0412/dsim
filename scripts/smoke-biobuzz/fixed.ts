@@ -49,9 +49,13 @@ function fnv(s: string): number {
  * assists on, the fire button on a cadence. Never re-record one to make a fixed-shooter change pass.
  */
 const PINS: Record<'2d' | '3d', string> = {
-  '2d': 'fired=17 2126857166:3339463799 3482816271:2456356880 1881524541:1265804104',
+  '2d': 'fired=17 2126857166:3273781951 3482816271:29907275 1881524541:3492805298',
   '3d': 'fired=11 3143138018:968569403 2080766:4176946555',
 };
+/** `'2d'` re-recorded 2026-11-01 for `SIM_PATCH` 13 (G407/G408 per TU07): the worldHash halves — the
+ *  physics — are unchanged, and only the penalty state in the whole-world JSON moved. This is the
+ *  pin it had, and a world stepped under patch 12 must still reproduce it. */
+const PIN_2D_PATCH12 = 'fired=17 2126857166:3339463799 3482816271:2456356880 1881524541:1265804104';
 /** `'3d'` re-recorded 2026-10-04 for `SIM_PATCH` 7: a robot meets a FLOWER's middle and top plates
  *  over their measured outline, not a box. This is the pin it had; a world stepped under patch 6
  *  must still reproduce it. */
@@ -227,6 +231,8 @@ export function fixedChecks(check: Check): void {
   {
     const got = pinRun('2d', 900);
     check('fixed: the turret / double turret / dumper builds step byte-identically, 2D (worldHash + whole-world JSON, 900 ticks)', got === PINS['2d'], got);
+    const old12 = pinRun('2d', 900, 12);
+    check('fixed: …and under SIM_PATCH 12 (G407/G408 before TU07) the 2D run lands on the pin it had before patch 13', old12 === PIN_2D_PATCH12, old12);
   }
   {
     const got = pinRun('3d', 600);

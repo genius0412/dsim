@@ -626,12 +626,20 @@ export function controlKeyLive(world: World, isLoose: (b: Artifact) => boolean):
   };
 }
 
+/**
+ * `ids`, when given, receives the id of every LOOSE artifact counted — the herded and chained
+ * ones, never the hopper (which the caller can read off the robot) and never an excused one.
+ * BIOBUZZ's G408 asks WHICH elements a robot controls, not how many, and a second copy of the
+ * herd test to answer that would be a second opinion about the same sentence. Optional, so
+ * DECODE and Chain Reaction step byte-identically.
+ */
 export function controlledArtifacts(
   world: World,
   r: RobotState,
   dt: number,
   intaking: boolean,
   geom?: ControlGeometry,
+  ids?: Set<number>,
 ): number {
   const pen = world.penalties;
   const home = geom?.carveOut ? geom.carveOut(r.alliance) : loadZone(r.alliance);
@@ -953,7 +961,11 @@ export function controlledArtifacts(
     }
   }
   let controlled = 0;
-  for (const id of reached) if (!excused.has(id)) controlled++;
+  for (const id of reached) {
+    if (excused.has(id)) continue;
+    controlled++;
+    ids?.add(id);
+  }
   return r.hopper.length + controlled;
 }
 

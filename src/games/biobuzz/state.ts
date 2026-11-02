@@ -280,6 +280,19 @@ export interface BiobuzzState {
   sortRev?: Record<number, number>;
   /** G408 instances this match (CONTROL of the opponent's NECTAR), per robot id (`penalties.ts`). */
   g408?: Record<number, number>;
+  /**
+   * G408 INSTANCES IN PROGRESS, keyed `<robot id>:<element id>` (`penalties.ts`, `SIM_PATCH` 13):
+   * when the instance began (`at`), the last tick the robot controlled the element (`last`), and
+   * `forced` while it is excused as an opponent's shove (G204). An entry outlives its control by
+   * `BB_MOMENTARY_S` so a drop and re-take is one instance and a herd into a GARDEN is still seen.
+   * ABSENT until a robot first controls an opponent's NECTAR.
+   */
+  g408i?: Record<string, { at: number; last: number; forced?: true }>;
+  /**
+   * SECONDS an element has ridden ON or UNDER a robot's frame, keyed `<robot id>:<element id>`
+   * (`bbAboard`, 3D only, `SIM_PATCH` 13). Absent until one does.
+   */
+  aboard?: Record<string, number>;
   /** the next POLLEN id to hand out. Ids must be UNIQUE and MONOTONIC for the lifetime of a
    * world: the snapshot diff, the renderer's per-ball state and every event that names a
    * pollen key off it, so reusing one silently aliases two objects. Seeded past the initial

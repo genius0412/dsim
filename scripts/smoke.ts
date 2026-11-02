@@ -35342,9 +35342,12 @@ function impPlayCheck(g: GameId): void {
 const L2_MECH_PINS: Record<string, string> = {
   decode: 'held=3611 2049313317:2420555697 2788731338:1198073570 1577943677:3474038497',
   chain: 'held=2913 280568408:432347152 3067491810:3978456955 2730570165:2501872899',
-  biobuzz: 'held=1093 3422097223:1254981451 993448729:176113124 1743880239:96600886',
+  biobuzz: 'held=1093 3422097223:3040454596 993448729:2438157807 1743880239:3853964565',
   bb3d: 'held=691 1360093382:466125504 2139451738:3926563368',
 };
+// `biobuzz` re-pinned 2026-11-01 for `SIM_PATCH` 13 (G407/G408 per TU07): only penalty state moved —
+// the worldHash halves are the same. The patch-12 run must still be the old pin.
+const L2_MECH_PINS_PATCH12 = { biobuzz: 'held=1093 3422097223:1254981451 993448729:176113124 1743880239:96600886' };
 // `biobuzz` re-pinned 2026-10-24 for `SIM_PATCH` 10: the double turret and the dumper are POLLEN +
 // NECTAR intakes and take the opponent's NECTAR now. The patch-9 run must still be the old pin.
 const L2_MECH_PINS_PATCH9 = { biobuzz: 'held=1025 2762021873:2009800956 2776997930:279128570 4136908741:1973256459' };
@@ -35453,6 +35456,8 @@ function l2MechRun(g: GameId | 'bb3d', ticks: number, patch?: number): string {
   check('imported mechanisms: STANDARD robots step byte-identically through every intake kind/launcher/Box Tube — biobuzz 2D (worldHash + whole-world JSON, 900 ticks)', got === L2_MECH_PINS.biobuzz, got);
   const old9 = l2MechRun('biobuzz', 900, 9);
   check('imported mechanisms: …and under SIM_PATCH 9 (opponent NECTAR refused at the intake) the 2D run lands on the pin it had before patch 10', old9 === L2_MECH_PINS_PATCH9.biobuzz, old9);
+  const old12 = l2MechRun('biobuzz', 900, 12);
+  check('imported mechanisms: …and under SIM_PATCH 12 (G407/G408 before TU07) the 2D run lands on the pin it had before patch 13', old12 === L2_MECH_PINS_PATCH12.biobuzz, old12);
 }
 {
   await initPhysics3d();

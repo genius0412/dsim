@@ -14,6 +14,7 @@ import {
 import { type BbIntakeSpec, bbHasNectarBar, bbHasRampBar, bbIntakeAccepts, bbNectarRejectOf } from '../../src/games/biobuzz/mechs';
 import { bbMouths, bbRampPose, bbRampSettled, bbRampSwingProgress, mouthAxes } from '../../src/games/biobuzz/robot';
 import { bbBarDown, bbOnCapture } from '../../src/games/biobuzz/nectarReject';
+import { BB_CONTROL_REARM_S } from '../../src/games/biobuzz/penalties';
 import { bbPollen } from '../../src/games/biobuzz/scenes';
 import { bbSpecSheet } from '../../src/games/biobuzz/labels';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -117,7 +118,10 @@ export function rejectChecks(check: Check): void {
     const m = bbMouths(r.spec)[0];
     check('reverse: the driver’s REVERSE spits it back out of the mouth', red.state.kind === 'ground' && red.pos.x > m.x1, `state=${red.state.kind} x=${red.pos.x.toFixed(2)} mouth=${m.x1.toFixed(2)}`);
     check('reverse: ...moving out along the mouth', red.vel.x > 10, `vx=${red.vel.x.toFixed(1)}`);
-    // take it AGAIN: the second instance this match is REPEATED, and the card comes with it
+    // take it AGAIN: the second instance this match is REPEATED, and the card comes with it. Out
+    // of control for longer than `BB_CONTROL_REARM_S` first — a re-take inside it is the same
+    // instance (`SIM_PATCH` 13; checked on its own in `g408Checks`).
+    run(w, cmd({}), BB_CONTROL_REARM_S + 0.2);
     red.pos = { x: (m.x0 + m.x1) / 2 + 0.4, y: 0 };
     red.vel = { x: 0, y: 0 };
     run(w, cmd({ intake: true }), 0.4);
@@ -127,6 +131,7 @@ export function rejectChecks(check: Check): void {
       `g408=${g408(w)} card=${w.penalties.carded[0]}`,
     );
     run(w, cmd({ bbReverse: true }), 0.2);
+    run(w, cmd({}), BB_CONTROL_REARM_S + 0.2);
     red.pos = { x: (m.x0 + m.x1) / 2 + 0.4, y: 0 };
     red.vel = { x: 0, y: 0 };
     run(w, cmd({ intake: true }), 0.4);

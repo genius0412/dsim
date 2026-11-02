@@ -36,7 +36,11 @@ const GOLDEN: Record<number, Record<string, string[]>> = {
   // same scene stamped patch 9 — how a replay recorded before it re-simulates — must still land on
   // the hashes the row had, which is what keeps those replays exact without a SIM_VERSION bump.
   7: {
-    'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', 'fa3c62480cf3d832', 'fd2d0c6c61504af9', 'e86bb911f0f091c5', 'c981465a5b43a2b9', '5dac4ceb4eccbe59'],
+    // `SIM_PATCH` 13 (2026-11-01): G407/G408 per TU07. Only penalty state moves (the G407 re-arm
+    // window counts fewer instances in this scene); physics is identical, measured position by
+    // position. Stamped 12, the scene still lands on the row it had.
+    'biobuzz 2v2 (2d)': ['e25d6570d218c2d2', 'fa3c62480cf3d832', '7c62475cef000a8a', '56e80d4e303082b9', '00d3b09ef85f2782', 'cdcccbe6e149e398'],
+    'biobuzz 2v2 (2d) @ patch 12': ['e25d6570d218c2d2', 'fa3c62480cf3d832', 'fd2d0c6c61504af9', 'e86bb911f0f091c5', 'c981465a5b43a2b9', '5dac4ceb4eccbe59'],
     'biobuzz 2v2 (2d) @ patch 9': ['e25d6570d218c2d2', '683a19150e00f499', '26119334de40d3f5', '58e510fc59739850', 'fc95c371776b52b8', '9862699b7f18a07c'],
     'biobuzz solo (3d)': ['d519c92daeaeff1e', '12ef7941c78c6823', 'd46fe240f75c7ca5'],
   },
@@ -91,6 +95,24 @@ export function goldenChecks(check: Check): void {
           ]),
         ),
       patch: 9,
+      step: biobuzzStep,
+      command: bbCommand,
+      ticks: 2400,
+      every: 400,
+    },
+    {
+      name: 'biobuzz 2v2 (2d) @ patch 12',
+      game: 'biobuzz',
+      build: () =>
+        armed(
+          createBiobuzzWorld('match', 31, [
+            setup(0, 'blue', preset(0), 0),
+            setup(1, 'red', preset(1), 0),
+            setup(2, 'blue', preset(2), 1),
+            setup(3, 'red', preset(3), 1),
+          ]),
+        ),
+      patch: 12,
       step: biobuzzStep,
       command: bbCommand,
       ticks: 2400,

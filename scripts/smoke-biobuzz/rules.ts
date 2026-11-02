@@ -40,6 +40,7 @@ import {
 } from '../../src/games/biobuzz/score';
 import {
   BB_CONTROL_LIMIT,
+  BB_CONTROL_REARM_S,
   BB_CONTROL_SKITTER_Z,
   BB_G402_CROSS_IN,
   BB_G402_REARM_S,
@@ -1983,9 +1984,10 @@ function penaltyChecks(check: Check): void {
       over.major.red === 0 && over.minor.red === 0 && over.major.blue === 0 && over.minor.blue === 0);
     check('G407: and the foul tally is untouched', legal.major.red === 0 && over.major.red === 0);
 
-    // back to 4 and up again: a SECOND instance is a SECOND warning (§10.6, per instance)
+    // back to 4 and up again: a SECOND instance is a SECOND warning (§10.6, per instance) — once
+    // it has been back at 4 for longer than the re-arm window (`SIM_PATCH` 13, `BB_CONTROL_REARM_S`)
     r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
-    const back = bill(w, 10);
+    const back = bill(w, ticks(BB_CONTROL_REARM_S) + 10);
     check('G407: dropping back to 4 warns nothing', warnings() === 1, String(warnings()));
     r.hopper = ['yellow', 'yellow', 'yellow', 'yellow', 'yellow'];
     bill(w, 10);
@@ -2146,7 +2148,9 @@ function penaltyChecks(check: Check): void {
     const r = w.robots[0];
     r.autoIntake = false;
     r.hopper = []; // EMPTY: every element in the count below is HERDED, none is carried
-    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+    // WARNING lines only: the third instance in this block also draws the STRATEGIC MAJOR and card
+    // (`SIM_PATCH` 13, `BB_G407_REPEAT_N`), which is checked on its own after the mouth carve-out
+    const warnings = () => w.events.filter((e) => e.includes('G407') && e.startsWith('WARNING')).length;
 
     /**
      * A row of `n` POLLEN pressed against the front bumper, spread across its width.
@@ -2192,6 +2196,8 @@ function penaltyChecks(check: Check): void {
         r.pos = { x: r.pos.x + v * SIM_DT, y: r.pos.y };
         for (const b of pile) b.pos = { x: b.pos.x + v * SIM_DT, y: b.pos.y };
         updateBiobuzzPenalties(w, SIM_DT, NO_CMD);
+        // the clock advances, as `step.ts` advances it: G407's re-arm window reads it
+        w.time += SIM_DT;
       }
     };
 
@@ -2242,6 +2248,10 @@ function penaltyChecks(check: Check): void {
     herd(mouth, 1.5, 30);
     check('G407: ...and the exemption AGES OUT, so a long shove warns anyway',
       warnings() === mouthed + 1, String(warnings() - mouthed));
+    check('G407: ...and that is this robot’s THIRD instance, so it is STRATEGIC however short: one MAJOR, one YELLOW CARD',
+      w.events.filter((e) => e.startsWith('MAJOR') && e.includes('G407 REPEATED')).length === 1 &&
+        w.events.filter((e) => e.startsWith('YELLOW') && e.includes('G407')).length === 1,
+      w.events.filter((e) => e.includes('G407') && !e.startsWith('WARNING')).join(' | '));
     r.autoIntake = false;
 
     /**

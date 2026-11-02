@@ -311,8 +311,15 @@ export const SIM_VERSION = 7;
  *      (`src/sim/assists.ts`). Before it the path WROTE all three on and nothing wrote them back, so
  *      a driver with auto fire or auto intake off had them on for all of DRIVER-CONTROLLED, and the
  *      record said so. A robot that ran no path steps bit-identically. 2026-11-01, `alpha`.
+ *  13  BIOBUZZ, G407 and G408 per manual TU07 and the Q&A (`biobuzz/penalties.ts`): G408 counts
+ *      herded, chained and on-robot opponent NECTAR, not only a held one; it is STRATEGIC (YELLOW)
+ *      held past MOMENTARY or controlled into a scoring position, as well as on the second
+ *      instance; a NECTAR an opponent shoved in is excused (G204). G407 STRATEGIC adds a YELLOW CARD
+ *      per MATCH, and its third instance in a match is STRATEGIC however short. Both rules re-arm
+ *      an instance only after `BB_CONTROL_REARM_S`. In 3D an element riding on or under a frame
+ *      is CONTROLLED (QA34). Only fouls and cards move; no physics changes. 2026-11-01, `alpha`.
  */
-export const SIM_PATCH = 12;
+export const SIM_PATCH = 13;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

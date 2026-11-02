@@ -20,6 +20,7 @@ import { goldenChecks } from './golden';
 import { importedChecks, importedPerfChecks } from './imported';
 import { fixedChecks } from './fixed';
 import { rejectChecks } from './reject';
+import { controlChecks } from './control';
 import type { Check } from './harness';
 
 /**
@@ -118,6 +119,9 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // the opponent's NECTAR (2026-10-24, SIM_PATCH 10): a POLLEN + NECTAR intake takes it, G408 warns
   // and cards, and REVERSE / auto-reverse / pass-through / the NECTAR bar get rid of it (`nectarReject.ts`)
   { name: 'REJECT', fn: rejectChecks },
+  // G407 / G408 per manual TU07 and the Q&A (2026-11-01, SIM_PATCH 13): incidental contact is not
+  // called and strategic control is — herding, MOMENTARY, the third five, G204, on top of the robot
+  { name: 'CONTROL', fn: controlChecks },
   // EVERY ABSOLUTE WALL-CLOCK BUDGET ("this costs <= N ms"), and nothing else. A budget is a claim
   // about what the work costs on an idle machine, so `bbshard.mjs` never packs this lane beside
   // another: it runs alone after the other shards, and under `npm test` after the shared suite

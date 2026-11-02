@@ -52,6 +52,8 @@ export interface BotJob {
   builds: string;
   /** stop after this many seconds of MATCH (auto + transition + teleop); absent plays it all */
   stopAtS?: number;
+  /** step the match as a replay stamped with this `SIM_PATCH` would; absent is the live rules */
+  patch?: number;
 }
 
 export interface BotRow {
@@ -87,6 +89,14 @@ export interface MatchRow {
   /** fouls COMMITTED by each alliance, keyed `M:G402` / `m:G426`, counted per event */
   fouls: Record<Alliance, Record<string, number>>;
   warnings: Record<Alliance, number>;
+  /** WARNING lines per rule (`G407`, `G408`, …), both alliances together */
+  warningsByRule: Record<string, number>;
+  /** YELLOW and RED cards each alliance's robots ended the match holding (`world.match.cards`) */
+  cards: Record<Alliance, { yellow: number; red: number }>;
+  /** card lines by colour and reason (`YELLOW:G408 …`), both alliances together */
+  cardsByRule: Record<string, number>;
+  /** alliances whose score a RED CARD voided */
+  voided: Alliance[];
   bots: BotRow[];
   /** TELEOP seconds left when each alliance first had one of its own NECTAR in a FLOWER, or null */
   firstPlaceLeftS: Record<Alliance, number | null>;
@@ -132,6 +142,7 @@ export function playBotMatch(job: BotJob): MatchRow {
     startIndex: s.startIndex,
   }));
   const world: World = BIOBUZZ_SIM.createWorld('match', job.seed, setups, undefined, job.physics);
+  if (job.patch !== undefined) world.simPatch = job.patch;
   startMatch(world);
   // seeded `(matchSeed, seat)` with the same mix `game.ts` and `Room` use
   const bots = seats.map((s) =>
@@ -140,9 +151,12 @@ export function playBotMatch(job: BotJob): MatchRow {
 
   const fouls: Record<Alliance, Record<string, number>> = { red: {}, blue: {} };
   const warnings: Record<Alliance, number> = { red: 0, blue: 0 };
+  const warningsByRule: Record<string, number> = {};
+  const cardsByRule: Record<string, number> = {};
   const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
   const FOUL_RE = /^(MINOR|MAJOR) FOUL - (RED|BLUE) \+(\d+) \((.*)\)$/;
   const WARN_RE = /^WARNING - (RED|BLUE) \((.*)\)$/;
+  const CARD_RE = /^(YELLOW|RED) CARD - (?:RED|BLUE) .*? ((.*))$/;
 
   interface Acc {
     stick: number;
@@ -216,8 +230,18 @@ export function playBotMatch(job: BotJob): MatchRow {
         fouls[offender][rule] = (fouls[offender][rule] ?? 0) + 1;
         continue;
       }
+      const c = CARD_RE.exec(e);
+      if (c) {
+        const key = `${c[1]}:${c[2]}`;
+        cardsByRule[key] = (cardsByRule[key] ?? 0) + 1;
+        continue;
+      }
       const w = WARN_RE.exec(e);
-      if (w) warnings[w[1].toLowerCase() as Alliance]++;
+      if (w) {
+        warnings[w[1].toLowerCase() as Alliance]++;
+        const rule = w[2].split(' ')[0];
+        warningsByRule[rule] = (warningsByRule[rule] ?? 0) + 1;
+      }
     }
     world.robots.forEach((r, i) => {
       const row = rows[i];
@@ -292,6 +316,13 @@ export function playBotMatch(job: BotJob): MatchRow {
     alliances: { red: al('red'), blue: al('blue') },
     fouls,
     warnings,
+    warningsByRule,
+    cardsByRule,
+    voided: (['red', 'blue'] as const).filter((a) => world.match.scores[a].voided),
+    cards: {
+      red: { ...(world.match.cards?.red ?? { yellow: 0, red: 0 }) },
+      blue: { ...(world.match.cards?.blue ?? { yellow: 0, red: 0 }) },
+    },
     bots: rows.filter((r) => r.tier !== 'idle'),
     firstPlaceLeftS: firstPlace,
   };

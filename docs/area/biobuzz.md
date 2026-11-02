@@ -3090,3 +3090,46 @@ another button for control in that case."
   SHOOT still empties the hopper. The widest pad is eleven again and fits clean from 375.
 - **Not done:** the AI never drops the bar (it still targets by `bbIntakeWants` and reverses);
   Zenith autos have no bar button (`AutoButtons`).
+
+## G407 AND G408 AS TU07 AND THE Q&A HAVE THEM — 2026-11-01 (`SIM_PATCH` 13)
+
+Manual TU07 and the Q&A (QA4, QA23, QA34) against what the sim billed. Incidental contact draws
+nothing; strategic CONTROL does. Every change that moves a score or a card is behind
+`simPatchAtLeast(world, 13)`; physics is byte-identical, so a replay stamped 12 or older
+re-simulates the match it was (golden `'biobuzz 2v2 (2d) @ patch 12'`, fixed `PIN_2D_PATCH12`).
+
+| rule | before | now | source |
+|---|---|---|---|
+| G408 CONTROL | held (hopper) only | held, herded, chained, or on/under the frame: `controlledArtifacts` with an `ids` out-set, plus `bbAboard` in 3D | TU07 G408, QA34 |
+| G408 STRATEGIC | the 2nd instance | also the 1st, if held past MOMENTARY (`BB_MOMENTARY_S`) or if the NECTAR scores for the controlling alliance (its GARDEN or HIVE) while controlled or within 3 s after | §10.6, QA4, TU06 |
+| G408 instance | one edge per robot × element | drop and re-take within `BB_CONTROL_REARM_S` (1 s) is ONE instance | §10.6 MOMENTARY |
+| G408 forced | billed | an opponent driving the NECTAR into you (`bbForcedInto`) is excused while momentary | G204 |
+| G407 STRATEGIC | MAJOR | MAJOR + YELLOW CARD per MATCH (`awardCard`, latch `g407card`); the MAJOR still bills per instance | Table 10-4, owner 2026-09-22 |
+| G407 REPEATED | — | the 3rd 5+ instance this match is STRATEGIC however short (`BB_G407_REPEAT_N`); instances re-arm on `pen.episodes['g407-<id>']`, 1 s | QA23 |
+| G407 count, 3D | an element resting on the frame was not counted | `bbAboard`: centre inside the chassis in plan, moving with the robot (≤ `BB_ABOARD_SLIP` 12 in/s relative), for `POSSESSION_CONFIRM` | QA34 |
+
+- **What stays incidental**: driving past, a poke, a robot parked against an opponent NECTAR (the
+  herd test's push speed, carry and face gates still apply), a deflection, and an auto-sorter that
+  ejects at once (QA4: an immediate eject with no advantage is not STRATEGIC; it is still one
+  WARNING).
+- **G408 is a YELLOW, not a MAJOR.** QA23 quotes G408 with a MAJOR; Table 10-4 has none, and the
+  manual wins (§1.7.1).
+- **Card strings**: `G408 CONTROL of the opponent’s NECTAR past MOMENTARY`, `G408 opponent’s NECTAR
+  CONTROLLED to score`, `G407 REPEATED CONTROL of 5+ elements`. Foul strings are a SERVER change.
+- **State**: `bb.g408i` (instances, keyed `robot:element`, expire 3 s after their last tick) and
+  `bb.aboard` (seconds aboard), both cleared outside the played phases and absent until used.
+- **Verification**: the CONTROL lane (`scripts/smoke-biobuzz/control.ts`), one incidental and one
+  strategic check per change, 2D and 3D.
+
+**OPEN, the owner's call:** Table 10-4 says "MAJOR FOUL and YELLOW CARD per MATCH". The sim bills
+the MAJOR per instance (the 2026-09-22 ruling above) and the card once per match. A literal
+reading is one MAJOR per match too.
+
+**OPEN, the owner's call: the AI.** Bot 2v2 matches on the same seeds, live against a world stamped 12
+(`playBotMatch`'s `patch`): a RED voided an alliance's score in 9 of 60 alliance-matches, against 0.
+Each is one bot's second yellow, G408 and G407 together. The AI never aims at the opponent's NECTAR
+but its intake takes it, and it fills to five. Teaching it to stay at four and drop the opponent's
+NECTAR is the follow-up; until then a human's AI partner can void the human's alliance.
+
+**Not done:** issue #42 item 9 (the 2D solve at `play.ts` lets an element sit inside a frame); the
+control test already uses each element's own radius, so the fix is in the physics, not here.
