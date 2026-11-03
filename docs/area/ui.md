@@ -388,10 +388,11 @@ rulings below are theirs, not defaults.
   50 ms after a move ends, and once when `assetsSettled` resolves), not every frame.
   DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
   phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and shown FLAT.
-  Under the 3D, the game's 2D field until the scene has faded in over it (`covered`, on the fade's
-  `transitionend`): the scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty
-  backdrop, on every first load and every return from a match. The 3D fade is `--ds-dur-screen`; at
-  the fly's 1 s the flat map and the perspective field showed as a double exposure. Home has game
+  The scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty backdrop. On the first
+  load the boot screen waits for it (`holdBoot`, capped); otherwise, and past the cap, a loading bar
+  stands where the field will be (`StageWait`, after 600 ms). ⚠️ **NOT THE 2D FIELD UNDER IT**: tried
+  the same day, it was a second picture of the field that the 3D replaced a second later (owner: "the 2d
+  field for a split second before switching to 3d"). The 3D fades in at `--ds-dur-screen`. Home has game
   pieces only; the player's robot joins for Play and leaves when the camera is back at Home.
 - ⚠️ **THE 3D STAGE HAS ITS OWN ROOM AND TIER, NOT THE PLAYER'S MATCH SETTINGS** (2026-11-01, owner:
   Home "still distorted and EXTREMELY laggy on some devices"). `MenuStage` passes
@@ -614,8 +615,10 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   a bar that shows after 600 ms. Its ground is the screen it hands over to: `stage` (the menu stage's
   colours, pinned to the tokens by `npm test`) or `shell` (themed `--ds-bg`), from the path and the
   phone breakpoint. React mounts under it and `dismissBoot` (`screenFade.ts`) fades it once the first
-  screen has painted. The menu, game links and footer are hidden in that look, not removed: they are
-  still what a crawler and a no-JS client get, and the sponsor line is a contracted placement.
+  screen has painted, and once a 3D stage has drawn its first frame (`holdBoot`; at most `HOLD_MAX_MS`
+  3 s after mount, past which the stage shows its bar), so Home appears once, whole. The menu, game
+  links and footer are hidden in that look, not removed: they are still what a crawler and a no-JS
+  client get, and the sponsor line is a contracted placement.
 - **A baked-closed build (the alpha) waits on the boot screen for its first access answer**
   (`main.tsx`, `GATE_WAIT_MS` 10 s), so a tester no longer sees "Alpha is closed · Checking your
   account…" on every cold load. An idle `dsim-alpha-primary` took 7.8 s to answer `/api/status`.
@@ -627,9 +630,20 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   match (`.ds-arrive` on `.ds-app`, decided at mount by `bootDone`; never flipped onto a mounted
   element, which would start the fade on a screen already showing). The stage itself does not fade
   on return: its ground is there at once and its field fades in on its own.
+- ⚠️ **THE FIRST PLAY CLICK** (owner, same day: "Extreme lag when clicking play for the first time").
+  Profiled: every card on Play carries a BIOBUZZ 3D picture, made on first sight, and with no builder
+  turntable to borrow the batch made a scene of its own at the PLAYER's tier. On Ultra that scene built
+  a room environment map and drew with shadows: 640 ms of shader-compile waits (`getProgramInfoLog`),
+  a 559 ms task and a 191 ms frame gap in the camera fly, on a fast desktop. Fixed at the cause: a card
+  on Play (`onStage`) is drawn at `menuTier()`, the tier the robot on the stage beside it is drawn at,
+  never through the turntable; the cache keys on the tier, so the builder still draws its own at the
+  device's. And the cards are drawn ahead, while Home is idle after the boot screen
+  (`GameModule.warmCards`), so the click does none of it and no card swaps a schematic for a render
+  under the cursor. After, same session: no task over 100 ms after the click even at 4x CPU, worst fly
+  frame gap 58 ms (70 at 4x). What is left is the fly's own per-frame rendering.
 - Not changed, measured: the 3D scene's build costs two long tasks (~690 and ~460 ms on this machine)
-  right after the first load; the sponsor logo (two 30 KB PNGs) lands about a second after Home on
-  Slow 4G, into its reserved box.
+  right after the first load, under the boot screen now; the sponsor logo (two 30 KB PNGs) lands about
+  a second after Home on Slow 4G, into its reserved box.
 
 ## Configure — the sections, and the three rules that hold them together
 

@@ -10454,9 +10454,9 @@ input.admin-months {
 
 /* ---- THE MENU STAGE (`MenuStage.tsx`): the field behind Home and Play ------------------------
    Owner, 2026-10-18, after MoSim's home. ONE fixed layer behind the shell for both screens, so Play
-   is a camera fly and not a page load. Its ground is `--ds-stage-bg`, under the game's 2D field until
-   the 3D scene fades in, and it is dark in both themes, which is why what is drawn straight on it is
-   category 3. */
+   is a camera fly and not a page load. Its ground is `--ds-stage-bg` until the scene fades in (with
+   `.ds-stage-wait` on it if that takes a while), and it is dark in both themes, which is why what is
+   drawn straight on it is category 3. */
 .ds-stage {
   position: fixed;
   inset: 0;
@@ -10475,8 +10475,7 @@ input.admin-months {
   overflow-y: auto;
   overflow-x: hidden;
 }
-/* it fades in over the 2D field (`MenuStage`'s placeholder), so at the screen speed: at the fly's 1 s
-   the flat map and the perspective field showed as a double exposure for a full second */
+/* the scene arrives at the screen speed, like every other arrival; it was the fly's 1 s */
 .ds-stage-3d {
   position: absolute;
   inset: 0;
@@ -10485,6 +10484,33 @@ input.admin-months {
 }
 .ds-stage-3d.shown {
   opacity: 1;
+}
+/* THE 3D FIELD IS STILL LOADING (`StageWait`, MenuStage.tsx): the boot screen's bar, placed by script in
+   the middle of the free area the camera will frame. It shows after 600 ms, so a quick load never
+   draws it; the sweep is the match's own (`game-loading-sweep`, styles.css). */
+.ds-stage-wait {
+  position: absolute;
+  width: 160px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--ds-round-full);
+  box-shadow: inset 0 0 0 1px var(--ds-on-field-dim);
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  animation: ds-wait-in var(--ds-dur-screen) var(--ds-ease) 600ms forwards;
+}
+.ds-stage-wait > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--ds-on-field-accent);
+  animation: game-loading-sweep 1.1s ease-in-out infinite;
+}
+@keyframes ds-wait-in {
+  to {
+    opacity: 1;
+  }
 }
 /* THE 2D STAGE: the game's own field, FLAT and top-down, the way DECODE and Chain Reaction are played
    (2026-11-01). It was tilted in CSS (`rotateX(50deg) rotateZ(-30deg)`, zoomed 1.3x on Play), which is
@@ -11441,6 +11467,15 @@ body:has(.ds-popup-host > :not(.ds-popup))
   .ds-app.on-stage .ds-bar::before,
   .ds-app.on-stage .ds-bar > :not(.ds-bar-right) {
     transition: none;
+  }
+  /* a sweep that stops is a bar that looks stuck, so it holds still, centred (as in a match) */
+  .ds-stage-wait > span {
+    animation: none;
+    left: 30%;
+  }
+  .ds-stage-wait {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
   }
 }
 

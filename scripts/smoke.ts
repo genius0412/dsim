@@ -18966,7 +18966,7 @@ const recordDrive: CommandSource = (tick) => {
     homeMenu.includes('{multiplayer && (\n        <div className="ds-homestats"') && !homeMenu.includes('{stats && ('));
   const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
   check('stage: the 3D menu stage draws its own fixed tier and procedural room, not the match settings',
-    /factory\(host, \{ interactive: false, quality: stageTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
+    /factory\(host, \{ interactive: false, quality: menuTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
       /const STAGE_ROOM = 'arena';/.test(stageSrc));
   const stageCss = readFileSync('src/ui/shell.css', 'utf8');
   check('stage: the 2D field is flat (no CSS tilt), and the fly animates no width or height',
@@ -41678,10 +41678,31 @@ function fxImportFixed(): RobotSpec {
     'screen fade: reduced motion caps the arrivals’ iteration count, not only their duration',
     /prefers-reduced-motion[\s\S]*animation-iteration-count:\s*1/.test(arrivals),
   );
-  const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+  const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8').replace(/\r\n/g, '\n');
+  // owner, 2026-11-02: the 2D field drawn under the 3D one showed "for a split second" first
   check(
-    'menu stage: the 2D field holds the place until the 3D scene has faded over it (no empty backdrop)',
-    /\(!use3d \|\| !covered\) && <Stage2d/.test(stageSrc) && /addEventListener\('transitionend', onFaded\)/.test(stageSrc),
+    'menu stage: a 3D stage never draws the 2D field under it; a bar stands in while it loads',
+    /use3d \? \(\s*<Stage3d/.test(stageSrc) && /\) : \(\s*<Stage2d/.test(stageSrc) && /use3d && !ready3d && <StageWait/.test(stageSrc),
+  );
+  check(
+    'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
+    /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,
+  );
+  // the first-Play lag (owner, 2026-11-02): Play's card pictures made a scene at the player's tier
+  const prevSrc = readFileSync('src/games/biobuzz/Preview3D.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const stripSrc = readFileSync('src/ui/Menu.tsx', 'utf8');
+  const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+  check(
+    '⚠️ first Play: a card on Play draws at the menus’ tier (menuTier), never borrowing the player’s turntable',
+    /<SavedThumb spec=\{s\} alliance=\{settings\.alliance\} onStage \/>/.test(stripSrc) &&
+      /const tier = onStage \? menuTier\(\) : null/.test(prevSrc) &&
+      /const shared = fixed === null \? liveTurntable : null/.test(prevSrc) &&
+      /quality: fixed/.test(prevSrc),
+  );
+  check(
+    'first Play: the cards are drawn while Home is idle, after the boot screen has gone',
+    /if \(screen !== 'home'\) return;\s*const m = moduleFor\(settings\.game\);\s*if \(!m\.warmCards\) return;/.test(appSrc) &&
+      /afterBoot\(\)\.then/.test(appSrc),
   );
 }
 

@@ -49,6 +49,7 @@ inline branches stay untouched:
 | `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
 | `resultsRows` | `Results.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
 | ~~`mobileButtons`~~ | **no longer a slot** — a game's touch buttons are `src/games/<id>/mobile.ts`, merged with the shared set by `src/ui/mobileActions.ts`. The set is DERIVED from `ACTION_GAMES` and `npm test` asserts every action a game uses is reachable on touch, so a new season control fails the suite until it has a button or a written reason. A genuinely new action still needs a protocol bit |
+| `savedThumb`, `warmCards` | `Menu.tsx` — a robot card's picture (`onStage` on Play: drawn at the menus' tier, like the stage robot beside it) · `App.tsx` — Home draws Play's card pictures ahead, on idle after the boot screen (BIOBUZZ, 2026-11-02: the first-Play lag) |
 | `specSheet` | `robotLabels.ts` `specSheet` → `RobotSheet.tsx`: a leaderboard record and the strategy card, one row per job (was `labels.configSummary`, a sentence) |
 | `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
 | `offersAutoFire` | `Menu.tsx` Driver assists — `false` hides the Auto fire toggle (BIOBUZZ: Aim Assist gates the driver's fire instead) — and `drivingWords`, so a record never prints one either |

@@ -4,6 +4,10 @@ import type { GamePreviewProps, GameSavedCardProps, RobotPreviewFactory, RobotPr
 import { moduleFor } from '../index';
 import { BB3_STOW_MAX, bbDeployedHeightIn, bbStowHeightIn } from './config';
 import { getViewPref, setViewPref, subscribeViewPref, type ViewPref } from './graphics/store';
+import { getGraphics, menuTier } from './graphics/settings';
+
+/** the tier a card on Play is drawn at (`menuTier`); `null` is the builder's, the device's own */
+type CardTier = ReturnType<typeof menuTier> | null;
 import { BiobuzzRobotPreview } from './RobotPreview';
 import { bbSpecKey } from './specKey';
 
@@ -59,7 +63,8 @@ const THUMB_CAPTURE_PX = 192;
 
 /**
  * THE THUMBNAIL CACHE — in memory, for the life of the document, keyed on the build's geometry
- * identity plus its alliance.
+ * identity, its alliance and the tier it was drawn at (a card on Play and one in the builder are
+ * drawn at different tiers: see `ThumbRequest.tier`).
  *
  * NEVER PERSISTED, deliberately. A data URL of a render is derived data: it would be the largest
  * thing in `localStorage` by an order of magnitude, it would go stale the moment the generator or
@@ -67,14 +72,22 @@ const THUMB_CAPTURE_PX = 192;
  */
 const thumbs = new Map<string, string>();
 
-function thumbKey(spec: RobotSpec, alliance: Alliance): string {
-  return `${bbSpecKey(spec)}|${alliance}`;
+function thumbKey(spec: RobotSpec, alliance: Alliance, tier: CardTier): string {
+  return `${bbSpecKey(spec)}|${alliance}|${tier ?? getGraphics().tier}`;
 }
 
 interface ThumbRequest {
   key: string;
   spec: RobotSpec;
   alliance: Alliance;
+  /**
+   * THE TIER OF THE ROBOT THE CARD STANDS BESIDE. `null` is the builder's garage: the device's own
+   * tier, drawn through the live turntable when one is up. A tier is a card on Play (`menuTier`),
+   * beside the menu stage, which has no turntable to borrow: its batch made a scene of its own at
+   * the PLAYER's tier, and on Ultra that scene built a room environment map and drew with shadows
+   * (~620 ms of shader compiles in one task, during the camera fly: the first-Play lag, 2026-11-02).
+   */
+  tier: CardTier;
   resolve(url: string): void;
 }
 
@@ -119,14 +132,17 @@ function idle(): Promise<void> {
 }
 
 async function drain(): Promise<void> {
-  const batch = queue;
-  queue = [];
+  // ONE TIER PER BATCH: the cards of the other kind wait for the next one (`finally` below)
+  const fixed = queue[0]?.tier ?? null;
+  const batch = queue.filter((r) => r.tier === fixed);
+  queue = queue.filter((r) => r.tier !== fixed);
   let own: RobotPreviewScene | null = null;
   const host = document.createElement('div');
   try {
     const factory = await previewFactory();
-    // read AFTER the chunk resolves: the turntable's own `.then` on the same import runs first
-    const shared = liveTurntable;
+    // read AFTER the chunk resolves: the turntable's own `.then` on the same import runs first. A
+    // card on Play (a fixed tier) never borrows it: the turntable draws at the player's tier.
+    const shared = fixed === null ? liveTurntable : null;
     if (!shared && factory) {
       // off screen rather than `display: none`: a hidden element has no size, and the scene sizes
       // itself from what `capture` asks for anyway — but a laid-out host keeps the canvas real.
@@ -143,7 +159,9 @@ async function drain(): Promise<void> {
       // draw three 96px cards, on a menu screen, for somebody whose own setting asked for the
       // procedural room. The cache is per DOCUMENT and regenerated on demand, so a
       // settings change catching up on the next load is the whole of the cost.
-      own = factory(host, { interactive: false, animate: false });
+      // A CARD ON PLAY IS THE EXCEPTION (`ThumbRequest.tier`): there the robot beside it is the
+      // stage's, drawn at the menus' tier, and so is the card.
+      own = factory(host, fixed === null ? { interactive: false, animate: false } : { interactive: false, animate: false, quality: fixed });
     }
     const scene = shared ?? own;
     // ONE CAPTURE PER IDLE SLICE, after the shaders are compiled off the main thread (`ready`):
@@ -176,16 +194,34 @@ async function drain(): Promise<void> {
   }
 }
 
-function thumbFor(spec: RobotSpec, alliance: Alliance): Promise<string> {
-  const key = thumbKey(spec, alliance);
+/** a picture already asked for and not yet made: a second ask (the warm, then the card) shares it */
+const pending = new Map<string, Promise<string>>();
+
+function thumbFor(spec: RobotSpec, alliance: Alliance, tier: CardTier): Promise<string> {
+  const key = thumbKey(spec, alliance, tier);
   const hit = thumbs.get(key);
   if (hit !== undefined) return Promise.resolve(hit);
-  return new Promise<string>((resolve) => {
-    queue.push({ key, spec, alliance, resolve });
+  const asked = pending.get(key);
+  if (asked) return asked;
+  const p = new Promise<string>((resolve) => {
+    queue.push({ key, spec, alliance, tier, resolve });
     if (draining) return;
     draining = true;
     void idle().then(drain);
-  });
+  }).finally(() => pending.delete(key));
+  pending.set(key, p);
+  return p;
+}
+
+/**
+ * `GameModule.warmCards`: the pictures Play's strip will ask for, at the menus' tier, made while Home
+ * is idle (one per idle slice, `drain`). The first Play click used to make them during the camera fly,
+ * with each card showing the 2D schematic until its render landed. The 3D view only, like the cards.
+ */
+export function warmBiobuzzCards(specs: readonly RobotSpec[], alliance: Alliance): void {
+  if (getViewPref() !== '3d') return;
+  const tier = menuTier();
+  for (const spec of specs) void thumbFor(spec, alliance, tier);
 }
 
 /** the device's view preference, as React state. One hook, three readers in this file. */
@@ -385,21 +421,23 @@ export function BiobuzzPreview3D({
  * The box is a fixed size whichever picture is in it, so the card does not jump when the render
  * lands (§1.4 of `docs/ui-standard.md`).
  */
-export function BiobuzzSavedThumb({ spec, alliance }: GameSavedCardProps) {
+export function BiobuzzSavedThumb({ spec, alliance, onStage }: GameSavedCardProps) {
   const pref = useViewPref();
+  // a card on Play is drawn at the menus' tier, like the robot on the stage beside it
+  const tier = onStage ? menuTier() : null;
   // undefined: still rendering · '': this machine cannot · a data URL: the picture
-  const [url, setUrl] = useState<string | undefined>(() => thumbs.get(thumbKey(spec, alliance)));
+  const [url, setUrl] = useState<string | undefined>(() => thumbs.get(thumbKey(spec, alliance, tier)));
 
   useEffect(() => {
     if (pref !== '3d') return;
     let dead = false;
-    void thumbFor(spec, alliance).then((next) => {
+    void thumbFor(spec, alliance, tier).then((next) => {
       if (!dead) setUrl(next);
     });
     return () => {
       dead = true;
     };
-  }, [pref, spec, alliance]);
+  }, [pref, spec, alliance, tier]);
 
   return (
     <span className="ds-robot-card-thumb">

@@ -1104,7 +1104,7 @@ export function RobotStrip({
       <ChainRobotPreview spec={s} size={size} caption={false} />
     );
   const thumbOf = (s: RobotSpec) =>
-    SavedThumb ? <SavedThumb spec={s} alliance={settings.alliance} /> : <span className="ds-robot-card-thumb">{preview2d(s, 88)}</span>;
+    SavedThumb ? <SavedThumb spec={s} alliance={settings.alliance} onStage /> : <span className="ds-robot-card-thumb">{preview2d(s, 88)}</span>;
   const presets = mod.presets ? mod.presets.list : isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
   const presetMatches = mod.presets ? mod.presets.matches : isDecode ? specMatches : chainSpecMatches;
   const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>

@@ -1,7 +1,7 @@
 import { BiobuzzAutoPreview } from './AutoPreview';
 import type { GameModule } from '../module';
 import { BiobuzzGalleryRoute } from './GalleryRoute';
-import { BiobuzzPreview3D, BiobuzzSavedThumb } from './Preview3D';
+import { BiobuzzPreview3D, BiobuzzSavedThumb, warmBiobuzzCards } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
   BiobuzzDrivingSlot,
@@ -71,6 +71,7 @@ export const BIOBUZZ_MODULE: GameModule = {
   /** the saved-robot card's thumbnail: a 3D render on the 3D view, nothing on the 2D one. See
    * `GameModule.savedThumb` for why the GAME makes that choice and not the menu. */
   savedThumb: BiobuzzSavedThumb,
+  warmCards: warmBiobuzzCards,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
   pinnedNotice: BiobuzzPinnedNotice,

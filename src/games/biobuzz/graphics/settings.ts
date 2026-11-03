@@ -650,6 +650,17 @@ export function extremeTrialFor(g: GraphicsState, gpu: string): ExtremeTrial | u
  * of guessing high on a slow one is two seconds of a slideshow. */
 export const GFX_DEFAULT_TIER: GraphicsTier = 'medium';
 
+/**
+ * THE MENUS' OWN TIER: Medium, or Low where the device's own tier is Low; never the player's match
+ * settings. The menu stage draws at it (`MenuStage.tsx`, 2026-11-01), and so does every picture that
+ * stands beside the stage, so a robot on Play and its card are one rendering. At the player's Ultra a
+ * card's thumbnail scene built a room environment map and a shadowed first draw (~620 ms of shader
+ * compiles on the first Play, 2026-11-02) for 96 px pictures.
+ */
+export function menuTier(): 'low' | 'medium' {
+  return getGraphics().tier === 'low' ? 'low' : 'medium';
+}
+
 function presetState(tier: GraphicsTier, preset: GraphicsPreset = tier): GraphicsState {
   return { preset, tier, settings: { ...GFX_PRESETS[tier] } };
 }

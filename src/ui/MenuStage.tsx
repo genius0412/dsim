@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { Alliance, RobotSpec, World } from '../types';
 import type { GameId } from '../games/types';
 import type { GameScene, SceneInsets, ScenePose } from '../games/module';
 import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
-import { getGraphics } from '../games/biobuzz/graphics/settings';
+import { menuTier } from '../games/biobuzz/graphics/settings';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
 import { POSES, SHOW, type StageView } from './menuStagePoses';
+import { holdBoot } from './screenFade';
 
 /**
  * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to MoSim's) — the field
@@ -59,11 +60,11 @@ type StageMode = '2d' | '3d';
  *  - LAGGY. Every fly frame and every orbit drag paid the match's full cost, and Home's own load
  *    (the backdrop decode and upload, the post chain's shaders) stalled the page on a weak GPU. And
  *    the scene's quality governor measured MENU frames and could step the player's stored tier.
- * Medium is MSAA 2x, low shadows and no post. A device whose own tier is Low gets Low. A fixed tier
- * also measures without deciding, so the menu no longer touches the match settings.
+ * Medium is MSAA 2x, low shadows and no post. A device whose own tier is Low gets Low (`menuTier`,
+ * which Play's robot cards draw at too). A fixed tier also measures without deciding, so the menu no
+ * longer touches the match settings.
  */
 const STAGE_ROOM = 'arena';
-const stageTier = (): 'low' | 'medium' => (getGraphics().tier === 'low' ? 'low' : 'medium');
 /** the stage's device-pixel cap: a menu backdrop at 2x on a 4K panel was 8 MP a frame */
 const STAGE_MAX_DPR = 1.5;
 
@@ -204,29 +205,58 @@ export function MenuStage({
   useEffect(() => setUse3d(wants3d(game)), [game]);
   useEffect(() => setMode(use3d ? '3d' : '2d'), [use3d]);
   /**
-   * THE 2D FIELD HOLDS THE PLACE UNTIL THE 3D ONE IS IN (2026-11-02). The 3D scene boots on idle and
-   * then fetches its chunk and the field (~0.9 MB) and compiles its shaders: 1.3 s on a fast line
-   * and 8 s on Slow 4G before it began its fade, and the stage was an empty dark backdrop all that
-   * time, on Home's first load and again on every return from a match. The game's own flat field is
-   * drawn under it at once (the same picture a 2D device gets), and is dropped once the 3D has faded
-   * over it.
+   * WHILE THE 3D FIELD LOADS (2026-11-02). The scene boots on idle, then fetches its chunk and the
+   * field (~0.9 MB) and compiles its shaders: 1.3 s after mount on a fast line, 8 s on Slow 4G, on an
+   * empty dark backdrop. On the first load the boot screen stays up for it (`holdBoot`, capped), so
+   * Home appears once, whole. Past the cap, and after a match, a loading bar sits where the field will
+   * be. NOT the game's 2D field: drawn under the 3D as a placeholder, it was a second picture of the
+   * field that the 3D replaced a second later (owner: "the 2d field for a split second").
    */
-  const [covered, setCovered] = useState(false);
-  useEffect(() => setCovered(false), [game, use3d]);
+  const [ready3d, setReady3d] = useState(false);
+  useEffect(() => setReady3d(false), [game, use3d]);
   return (
     <div className={`ds-stage ${view}`} aria-hidden="true">
-      {(!use3d || !covered) && <Stage2d game={game} view={view} />}
-      {use3d && (
+      {use3d ? (
         <Stage3d
           game={game}
           view={view}
           spec={spec}
           alliance={alliance}
           onFail={() => setUse3d(false)}
-          onCovered={() => setCovered(true)}
+          onShown={() => setReady3d(true)}
         />
+      ) : (
+        <Stage2d game={game} view={view} />
       )}
+      {use3d && !ready3d && <StageWait view={view} />}
     </div>
+  );
+}
+
+/**
+ * THE 3D FIELD IS STILL LOADING: the boot screen's bar, centred in the free area the camera will
+ * frame (`insetsFor`, the scene's own). CSS shows it only after 600 ms, so a quick load never draws it.
+ */
+function StageWait({ view }: { view: StageView }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const host = el?.parentElement;
+    if (!el || !host) return;
+    const place = (): void => {
+      const r = host.getBoundingClientRect();
+      const ins = insetsFor(view, r.width, r.height);
+      el.style.left = `${(ins.left + r.width - ins.right) / 2}px`;
+      el.style.top = `${(ins.top + r.height - ins.bottom) / 2}px`;
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [view]);
+  return (
+    <span ref={ref} className="ds-stage-wait">
+      <span />
+    </span>
   );
 }
 
@@ -236,21 +266,21 @@ function Stage3d({
   spec,
   alliance,
   onFail,
-  onCovered,
+  onShown,
 }: {
   game: GameId;
   view: StageView;
   spec: RobotSpec;
   alliance: Alliance;
   onFail(): void;
-  /** the scene has faded in over the 2D placeholder, which can go */
-  onCovered(): void;
+  /** the scene has drawn its first frame and is fading in */
+  onShown(): void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
   // the live inputs, read by the frame loop without restarting it
-  const live = useRef({ view, spec, alliance, onFail, onCovered });
-  live.current = { view, spec, alliance, onFail, onCovered };
+  const live = useRef({ view, spec, alliance, onFail, onShown });
+  live.current = { view, spec, alliance, onFail, onShown };
   /** the loop's handle on the running scene: set a new target, rebuild the world */
   const ctl = useRef<{ fly(): void; rebuild(): void } | null>(null);
 
@@ -278,10 +308,8 @@ function Stage3d({
     let dropRobotAt = 0;
     let wasAnimating = false;
     let settle = 0;
-    let covered = 0;
-    const onFaded = (e: TransitionEvent): void => {
-      if (e.target === host && e.propertyName === 'opacity') live.current.onCovered();
-    };
+    // the first load's boot screen waits for this scene's first frame (or its failure)
+    const releaseBoot = holdBoot();
 
     const buildWorld = (): void => {
       const { spec, alliance } = live.current;
@@ -436,10 +464,11 @@ function Stage3d({
     buildWorld();
     // THE PAGE FIRST, THE FIELD WHEN THE BROWSER IS IDLE: the scene's chunk, the field's meshes and
     // the shader compile are a few hundred ms of main thread on a weak machine, and Home's keycaps
-    // should answer before they run. The 2D field is under it until it has faded in (`covered`).
+    // should answer before they run. Until it fades in, `StageWait` (and on the first load the boot
+    // screen) stands in for it.
     const boot = (): Promise<void> =>
       load()
-        .then((factory) => factory(host, { interactive: false, quality: stageTier(), environment: STAGE_ROOM }))
+        .then((factory) => factory(host, { interactive: false, quality: menuTier(), environment: STAGE_ROOM }))
         .then((s) => {
           if (dead) {
             s.dispose();
@@ -453,15 +482,13 @@ function Stage3d({
           resize();
           frame(performance.now());
           setShown(true);
-          // the 2D field goes when the fade has ENDED, not on a timer: the scene's first frame is often
-          // followed by a long task, and a timer could fire before the fade had begun. None under reduced
-          // motion (no transition); the timeout only covers a fade that never reports.
-          host.addEventListener('transitionend', onFaded);
-          covered = window.setTimeout(() => live.current.onCovered(), reducedMotion() ? 0 : 3000);
+          live.current.onShown();
+          releaseBoot();
           // an imported robot's mesh lands after the first frame
           if (world) void s.assetsSettled?.(world).then(kick);
         })
         .catch(() => {
+          releaseBoot();
           if (!dead) live.current.onFail();
         });
     const start = (): void => {
@@ -477,8 +504,7 @@ function Stage3d({
       if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
       else clearTimeout(idle);
       clearTimeout(settle);
-      clearTimeout(covered);
-      host.removeEventListener('transitionend', onFaded);
+      releaseBoot();
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       orbitSink = null;

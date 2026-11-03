@@ -73,6 +73,7 @@ import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { SoloSetup } from './SoloSetup';
 import { MenuStage, usePhone, type StageView } from './MenuStage';
+import { afterBoot } from './screenFade';
 import { RoomBrowser } from './RoomBrowser';
 import { WatchLobby } from './WatchLobby';
 import { LanPanel } from './LanPanel';
@@ -904,6 +905,30 @@ export function App() {
     const h = requestIdleCallback(warm, { timeout: 5000 });
     return () => cancelIdleCallback(h);
   }, [settings.game, warmAll]);
+  /**
+   * PLAY'S ROBOT CARDS ARE DRAWN WHILE HOME IS IDLE (2026-11-02, owner: "Extreme lag when clicking
+   * play for the first time"). Each card on Play carries a 3D picture, made on first sight, so the
+   * first click made them all during the camera fly (at the player's own tier until the same day:
+   * ~620 ms of shader compiles on Ultra). They are made here instead, after the boot screen has gone
+   * (so not beside the stage's own first build) and on idle, into the cache Play reads.
+   */
+  useEffect(() => {
+    if (screen !== 'home') return;
+    const m = moduleFor(settings.game);
+    if (!m.warmCards) return;
+    let dead = false;
+    let h = 0;
+    const warm = (): void => m.warmCards?.([settings.spec, ...settings.savedRobots], settings.alliance);
+    void afterBoot().then(() => {
+      if (dead) return;
+      h = typeof requestIdleCallback === 'function' ? requestIdleCallback(warm, { timeout: 8000 }) : window.setTimeout(warm, 2000);
+    });
+    return () => {
+      dead = true;
+      if (typeof cancelIdleCallback === 'function') cancelIdleCallback(h);
+      else clearTimeout(h);
+    };
+  }, [screen, settings.game, settings.spec, settings.savedRobots, settings.alliance]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the

@@ -230,6 +230,13 @@ export interface GameModule extends GameSimModule {
    */
   savedThumb?: ComponentType<GameSavedCardProps>;
   /**
+   * DRAW PLAY'S CARD PICTURES AHEAD OF TIME (2026-11-02): called while Home is idle with the builds
+   * Play's strip will show, so the first Play click finds them made instead of making them during
+   * the camera fly, and no card swaps a schematic for a render under the cursor. Fire and forget;
+   * absent for a game whose cards draw no picture of their own.
+   */
+  warmCards?(specs: readonly RobotSpec[], alliance: Alliance): void;
+  /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
    * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────
@@ -349,6 +356,9 @@ export interface GamePreviewProps {
 export interface GameSavedCardProps {
   spec: RobotSpec;
   alliance: Alliance;
+  /** the card is on Play, beside the menu stage: drawn the way the robot standing there is, at the
+   * menus' fixed tier, not at the player's (BIOBUZZ: `menuTier`). Absent: the builder's garage. */
+  onStage?: boolean;
 }
 
 /** props for the live-HUD slots (`hudChips`, `scoreBar`) */
