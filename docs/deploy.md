@@ -367,6 +367,24 @@ curl -sI https://dsim-primary.fly.dev/health   # x-region: iad, served by the ga
 Order for production: deploy the game server first (it carries `siteHost`), then the router,
 then let the client reach `main`. A client that finds no router falls back to the Anycast host.
 
+**Moving the alpha to another region** (done iad → ord on 2026-11-03). `fly deploy` updates a
+machine where it is and never moves it. Change the four values first (`primary_region` and
+`MATCHMAKER_REGION` in fly.alpha.toml, `primary_region` and `TARGET_REGION` in
+router/fly.alpha.toml), then for each app: deploy, clone into the new region, destroy the old.
+
+```bash
+./scripts/fly-deploy.sh --alpha
+fly machine clone <old id> --region ord -a dsim-alpha        # wait for 1/1 checks
+fly machine destroy <old id> -a dsim-alpha --force
+./scripts/fly-deploy.sh --router --alpha
+fly machine clone <old id> --region ord -a dsim-alpha-primary
+fly machine destroy <old id> -a dsim-alpha-primary --force
+```
+
+Then set the region in the alpha branch's `VITE_GAME_SERVERS` on Vercel and push `alpha` so the
+client is rebuilt with it. `SINGLE_REGION=1` keeps clients built before that working: the server
+answers their old region hint itself.
+
 ### Multi-region (one app, one machine per region)
 
 For a geographically spread player base, run the SAME app in several regions — this is

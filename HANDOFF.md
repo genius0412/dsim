@@ -1,3 +1,14 @@
+# HANDOFF — 2026-11-03 (Alpha: sign-up on the closed alpha; dsim-alpha moved iad → ord)
+
+**State: on `alpha`. SERVER CHANGE, DEPLOYED: `dsim-alpha` is one machine in ord (7812416b179638, shared-cpu-2x/1024, image `deployment-01M6GQM55SEJWD6M0P1ZG48P36`); `dsim-alpha-primary` is one machine in ord (857156b12d44e8). Both iad machines destroyed. Vercel alpha `VITE_GAME_SERVERS` region is `ord`.** `npm test` (shared 4693, BIOBUZZ 6403), `build`, `server:check`, `docaudit`, `uiaudit` pass.
+
+- **Owner:** "people are unable to create an account on alpha right now", and move the alpha server from US East to US Central. Chose: a new account waits for a grant (alpha stays testers-only).
+- **Found:** Neon Auth sign-up works from alpha (origin trusted; accounts were being created). What broke it for people: (1) the site-closed write door refused the sign-up's `/api/user/username` and `/api/user/accept-terms`, so the one alpha profile made today (04:08Z) has no @username and no terms; (2) the closed screen then said only "This account doesn’t have access"; (3) alpha shares production's Neon Auth, so a playdsim.com player pressing Create account got "Couldn’t create the account. Try again."
+- **Fixed:** both writes in `SITE_WRITE_EXEMPT`; `/api/status` sends a refused account `access.username`; the alpha closed screen says the playdsim.com account works there and tells a refused account to send its name to the team (the 20 s poll lifts the screen after the grant); the sign-up failure says to sign in if the address already has an account. Rules: `docs/area/accounts.md` (lockdown doors).
+- **Move:** `fly deploy` never moves a machine, so: deploy, `fly machine clone <id> --region ord`, destroy the iad one, same for the router. Four values agree on the region: `primary_region` + `MATCHMAKER_REGION` (fly.alpha.toml), `TARGET_REGION`/`primary_region` (router/fly.alpha.toml), the Vercel `VITE_GAME_SERVERS` region. New `SINGLE_REGION=1` on alpha: the server answers every routing hint itself instead of replaying to a region with no machine (checked: `?mm=1`, `?region=iad`, `?room=iad-abc123` all open on ord). The smoke check pins each router to its game app's primary region.
+- **Not checked:** a real sign-up end to end (I may not create accounts); the signed-in closed screen was seen with a stubbed session in a dev build. The alpha DB and Neon Auth stay in us-east-1, so each query from ord is ~20 ms further.
+- **Still open, pre-existing:** `[moderation] check failed — allowing: moderation HTTP 401` on dsim-alpha: names are not moderated there until its `MODERATION_API_KEY` is fixed.
+
 # HANDOFF — 2026-11-03 (Play: the rail on a laptop's short window)
 
 **State: on `alpha`. Client only (CSS).** `npm test`, `build`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` pass (counts in the commit).
