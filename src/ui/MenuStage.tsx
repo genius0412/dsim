@@ -70,6 +70,8 @@ const STAGE_MAX_DPR = 1.5;
 
 /** fly time, Home ↔ Play (owner: "about 1 second"); zero under reduced motion */
 const FLY_MS = 1000;
+/** the most one frame may advance the fly: 20 fps still flies in about `FLY_MS`, a stall does not skip */
+const FLY_STEP_MAX_S = 0.05;
 /** the orbit's drift back to the showcase angle after a drag, as a half-life */
 const ORBIT_RETURN_S = 0.35;
 
@@ -134,6 +136,25 @@ function setMode(m: StageMode): void {
   mode = m;
   modeListeners.forEach((f) => f());
 }
+// ── the fly, for work that should wait until the camera has landed ─────────────────────────────
+let flying = false;
+const stillListeners = new Set<() => void>();
+function setFlying(f: boolean): void {
+  if (f === flying) return;
+  flying = f;
+  if (f) return;
+  stillListeners.forEach((g) => g());
+  stillListeners.clear();
+}
+/**
+ * RESOLVES ONCE NO FLY IS RUNNING (at once when none is). The first Play's idle warm decodes the 3D
+ * physics wasm, a ~75 ms task at 4x CPU, which landed in the fly and stalled it (App's warm waits on
+ * this).
+ */
+export function stageStill(): Promise<void> {
+  return flying ? new Promise((r) => stillListeners.add(r)) : Promise.resolve();
+}
+
 export function useStageMode(): StageMode {
   return useSyncExternalStore(
     (f) => {
@@ -300,12 +321,13 @@ function Stage3d({
     let fly: {
       from: ScenePose;
       fromIns: SceneInsets;
-      t0: number;
+      /** progress 0..1, advanced by frame time (`FLY_STEP_MAX_S`) */
+      p: number;
       ms: number;
     } | null = null;
     let orbit = { yaw: 0, pitch: 0, held: false };
     let lastT = 0;
-    let dropRobotAt = 0;
+    let dropRobot = false;
     let wasAnimating = false;
     let settle = 0;
     // the first load's boot screen waits for this scene's first frame (or its failure)
@@ -325,7 +347,13 @@ function Stage3d({
       const targetIns = insetsFor(live.current.view, size.w, size.h);
       let moving = false;
       if (fly) {
-        const t = fly.ms > 0 ? Math.min(1, (now - fly.t0) / fly.ms) : 1;
+        // ON FRAME TIME, NOT THE WALL CLOCK (2026-11-03, owner: the first Play "jumps half way through
+        // the movement then freezes"). The click's own React commit and the first fly frame, which
+        // builds the robot and links its shaders, were long tasks counted as flight: the camera skipped
+        // ahead. A stalled frame now advances it at most `FLY_STEP_MAX_S`, and the first one none at all
+        // (`lastT` is 0 at rest), so a stall holds the camera where it is instead.
+        fly.p = fly.ms > 0 ? Math.min(1, fly.p + (Math.min(dt, FLY_STEP_MAX_S) * 1000) / fly.ms) : 1;
+        const t = fly.p;
         const k = ease(t);
         pose = {
           eye: mix3(fly.from.eye, target.eye, k),
@@ -345,11 +373,12 @@ function Stage3d({
         ins = targetIns;
       }
       // the robot leaves only once the camera is back (it would vanish mid-flight otherwise)
-      if (robotOn && dropRobotAt && now >= dropRobotAt) {
+      if (robotOn && dropRobot && !fly) {
         robotOn = false;
-        dropRobotAt = 0;
+        dropRobot = false;
         buildWorld();
       }
+      if (!fly) setFlying(false);
       // the orbit, around the showcase target, drifting back once let go
       if (!orbit.held && (orbit.yaw || orbit.pitch)) {
         const k = reducedMotion() ? 1 : 1 - Math.pow(2, -dt / ORBIT_RETURN_S);
@@ -387,7 +416,7 @@ function Stage3d({
         insets: ins,
         pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },
       });
-      const animating = moving || orbit.held || !!dropRobotAt;
+      const animating = moving || orbit.held || dropRobot;
       if (animating) kick();
       else {
         lastT = 0;
@@ -411,17 +440,18 @@ function Stage3d({
         fly = {
           from: pose,
           fromIns: ins,
-          t0: performance.now(),
+          p: 0,
           ms: reducedMotion() ? 0 : FLY_MS,
         };
+        if (fly.ms > 0) setFlying(true);
         if (v === 'setup') {
-          dropRobotAt = 0;
+          dropRobot = false;
           if (!robotOn) {
             robotOn = true;
             buildWorld();
           }
         } else if (robotOn) {
-          dropRobotAt = performance.now() + fly.ms;
+          dropRobot = true;
         }
         kick();
       },
@@ -501,6 +531,7 @@ function Stage3d({
 
     return () => {
       dead = true;
+      setFlying(false);
       if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
       else clearTimeout(idle);
       clearTimeout(settle);

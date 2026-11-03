@@ -7858,7 +7858,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         const rv = readFileSync(join(root, 'src', 'net', 'roomView.ts'), 'utf8');
         check(
           'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
-          /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game, warmAll\]\);/.test(app) &&
+          /requestIdleCallback\(warm[\s\S]{0,260}\}, \[settings\.game, warmAll\]\);/.test(app) &&
             app.includes('const warm = (): void => preloadRoomView(settings.game, warmAll);'),
         );
         // ...and the FULL warm (the 3D solve, the venue's ~1–2 MB) only where a match is a click

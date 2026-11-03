@@ -72,7 +72,7 @@ import {
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { SoloSetup } from './SoloSetup';
-import { MenuStage, usePhone, type StageView } from './MenuStage';
+import { MenuStage, stageStill, usePhone, type StageView } from './MenuStage';
 import { afterBoot } from './screenFade';
 import { RoomBrowser } from './RoomBrowser';
 import { WatchLobby } from './WatchLobby';
@@ -896,14 +896,21 @@ export function App() {
    * match they never start.
    */
   const warmAll = screen === 'modes' || !!POPUPS[screen];
+  // ...and only once the menu stage's camera has landed (`stageStill`): idle gaps between fly frames
+  // still count as idle, and the 3D solve's decode there stalled the first Play's fly
   useEffect(() => {
+    let dead = false;
+    let h = 0;
     const warm = (): void => preloadRoomView(settings.game, warmAll);
-    if (typeof requestIdleCallback !== 'function') {
-      const t = setTimeout(warm, 2000);
-      return () => clearTimeout(t);
-    }
-    const h = requestIdleCallback(warm, { timeout: 5000 });
-    return () => cancelIdleCallback(h);
+    void stageStill().then(() => {
+      if (dead) return;
+      h = typeof requestIdleCallback === 'function' ? requestIdleCallback(warm, { timeout: 5000 }) : window.setTimeout(warm, 2000);
+    });
+    return () => {
+      dead = true;
+      if (typeof cancelIdleCallback === 'function') cancelIdleCallback(h);
+      else clearTimeout(h);
+    };
   }, [settings.game, warmAll]);
   /**
    * PLAY'S ROBOT CARDS ARE DRAWN WHILE HOME IS IDLE (2026-11-02, owner: "Extreme lag when clicking

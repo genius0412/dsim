@@ -18968,6 +18968,12 @@ const recordDrive: CommandSource = (tick) => {
   check('stage: the 3D menu stage draws its own fixed tier and procedural room, not the match settings',
     /factory\(host, \{ interactive: false, quality: menuTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
       /const STAGE_ROOM = 'arena';/.test(stageSrc));
+  // owner, 2026-11-03: the first Play "jumps half way through the movement then freezes"
+  check('stage: the fly advances on frame time capped per frame, never the wall clock, and the robot leaves when it lands',
+    stageSrc.includes('fly.p = fly.ms > 0 ? Math.min(1, fly.p + (Math.min(dt, FLY_STEP_MAX_S) * 1000) / fly.ms) : 1;') &&
+      !/fly\.t0|dropRobotAt/.test(stageSrc) && stageSrc.includes('if (robotOn && dropRobot && !fly) {'));
+  check('stage: App\'s full idle warm waits for the fly to land (stageStill)',
+    /void stageStill\(\)\.then\(\(\) => \{\s*if \(dead\) return;\s*h = [^;]*requestIdleCallback\(warm, \{ timeout: 5000 \}\)/.test(appSrc));
   const stageCss = readFileSync('src/ui/shell.css', 'utf8');
   check('stage: the 2D field is flat (no CSS tilt), and the fly animates no width or height',
     !/\.ds-stage-2d[^{]*\{[^}]*rotate/.test(stageCss) && !/\.ds-stage-2d img \{[^}]*width var\(--ds-dur-fly\)/.test(stageCss));

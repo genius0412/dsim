@@ -383,6 +383,15 @@ rulings below are theirs, not defaults.
 - **ONE stage behind both screens** (`src/ui/MenuStage.tsx`, mounted by `App` while `screen` is `home`
   or `modes`). Going Home → Play is a change of `view`, not a remount, which is what lets the camera
   FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it back).
+- ⚠️ **THE FLY RUNS ON FRAME TIME, NOT THE WALL CLOCK** (2026-11-03, owner: the first Play "jumps half
+  way through the movement then freezes"). It ran on the wall clock. At 4x CPU the click's React commit
+  (126 ms) and the first fly frame, which builds the robot and links its shaders (61 ms), counted as
+  flight, so the camera skipped ahead. Each frame now advances it by at most `FLY_STEP_MAX_S` (50 ms),
+  and the first frame by nothing, so a stall holds the camera instead of skipping it. The robot leaves
+  when the fly ENDS, not at a deadline. **First-time work waits for the landing (`stageStill`)**:
+  idle gaps between fly frames still count as idle, and App's full warm (the 3D solve's wasm decode,
+  74 ms at 4x) ran inside the fly. Measured (scratch Electron trace, RX 6600 XT): at 4x and 6x CPU the
+  fly starts at progress 0 and moves at most 5 % per frame, and the decode runs after it lands.
 - **The selected game's field.** BIOBUZZ: the match's own 3D scene (`createBiobuzzScene`, lazy,
   `interactive: false`), drawn through `SceneFrame.pose` ON DEMAND (while the camera moves, once more
   50 ms after a move ends, and once when `assetsSettled` resolves), not every frame.
