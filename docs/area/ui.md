@@ -442,7 +442,13 @@ rulings below are theirs, not defaults.
   wheel scrolls a column natively; the fades say there is more). The title is a 32px row like a modes
   group's head, so "Robot" and "Solo" stand on one line. ⚠️ **THE RAIL IS HEIGHT-BOUND**: the actions
   share the title's row where they fit (a 340px rail) and wrap under it only on a narrower one; the
-  second row put the third card out of view at 2000x670. ⚠️ **ON PLAY, VIEW HEIGHT IS THE CRITERION**
+  second row put the third card out of view at 2000x670. The columns' caps are a 1080p window's
+  (`--play-rail` 380, `--play-side` 460; owner, 2026-11-02: "slightly too small" there at 340 / 420), and
+  from 860px tall the modes' tiles are 56px and the rail's pictures 72px. The banner strip under Play
+  is the compact 72px frame on a window 820px tall or less (`BannerStrip fitted`, `docs/area/
+  monetization.md`). ⚠️ **AN IMPORT DISABLES SOLO RECORD, RANKED AND DUO RECORD** (owner, same day):
+  they start no import (`robot-import.md`), and used to start the last standard robot under a "Uses your
+  last standard robot" note. ⚠️ **ON PLAY, VIEW HEIGHT IS THE CRITERION**
   (owner, 2026-11-02): responsive layout elsewhere follows width as usual, but here the camera's FOV is
   vertical and the rail stacks its cards, so Play's budgets and breakpoints read the window's height.
   Name the binding constraint from measurements before choosing one.
@@ -462,8 +468,9 @@ rulings below are theirs, not defaults.
 - ⚠️ **PLAY'S RIGHT COLUMN IS EVERY MODE, ONE CLICK AWAY** (owner, 2026-11-01: "VERY, VERY awkward to
   navigate the tiny panel on the play page. The current main's navigation is 1000% easier"). ONE card
   (`.ds-play-modes`), two labelled groups the way main's "Pick a mode" page lays them out: **Solo**
-  (Solo practice, Free drive, Solo record, a Match setup button, and a one-line summary of what Solo practice
-  starts with) and **Multiplayer** (Ranked, Duo record, New room, Browse rooms, Competitions, LAN), two
+  (Solo practice, Free drive, Solo record, a Match setup button; the one-line summary under them, "Red
+  alliance · 2 other robots", is GONE: owner, 2026-11-02, "I dont know why this is here") and
+  **Multiplayer** (Ranked, Duo record, New room, Browse rooms, Competitions, LAN), two
   tiles across (`.ds-play-tiles`; an odd count gives the first tile the whole row). It used to be
   Match setup and Practice setup scrolling in a 420px column with Solo and Multiplayer pinned under
   them, each REPLACING the column with its list and a Back: two clicks and a scroll to any mode, in a

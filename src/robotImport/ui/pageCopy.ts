@@ -36,7 +36,6 @@ export const PAGE_COPY = {
   deleteTitle: (name: string) => `Delete ${name}?`,
   deleteBody: 'It’s removed from this device. Export it first to keep a copy.',
   deleteFallback: (name: string) => `You’ll drive ${name} instead.`,
-  standardOnly: 'Uses your last standard robot',
   exportFailed: (name: string) => `Couldn’t export ${name}. Try again.`,
 
   dupTitle: (name: string) => `${name} is already on this device`,

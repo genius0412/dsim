@@ -41714,6 +41714,25 @@ function fxImportFixed(): RobotSpec {
     'play: the camera frames at most SETUP_FRAME_MAX_H of the robot’s space, so a tall window does not blow the robot up',
     /const SETUP_FRAME_MAX_H = \d+;/.test(stageSrc) && stageSrc.includes('top: free.top + extra,') && stageSrc.includes('bottom: h - free.bottom + extra,'),
   );
+  // owner, 2026-11-02: the strip on Play was "honestly too big" on a short ultrawide; an import showed
+  // "Uses your last standard robot" on tiles it cannot play; the Solo summary line was not wanted
+  const stripSrc2 = readFileSync('src/ui/BannerStrip.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const shellSrc = readFileSync('src/ui/AppShell.tsx', 'utf8');
+  check(
+    'play: on a window 820px tall or less the strip takes the 320x50 frame (72px), on Play only',
+    shellSrc.includes("<BannerStrip fitted={stage === 'setup'} />") &&
+      /const COMPACT_MAX_H = 820;/.test(stripSrc2) &&
+      stripSrc2.includes('const compact = narrow || (fitted && short);') &&
+      stripSrc2.includes('small={compact}') &&
+      /\.ds-bannerstrip\.compact \{\n  height: 72px;/.test(css),
+  );
+  check(
+    'play: an imported robot DISABLES Solo record, Ranked and Duo record (no "last standard robot" note)',
+    (playSrc.match(/disabled: !multiplayer \|\| (!signedIn \|\| )?importedActive/g) ?? []).length === 3 &&
+      !playSrc.includes('standardOnly') &&
+      !playSrc.includes('importNote'),
+  );
+  check('play: no one-line summary under the Solo tiles', !playSrc.includes('ds-play-summary') && !css.includes('.ds-play-summary'));
   // the first-Play lag (owner, 2026-11-02): Play's card pictures made a scene at the player's tier
   const prevSrc = readFileSync('src/games/biobuzz/Preview3D.tsx', 'utf8').replace(/\r\n/g, '\n');
   const stripSrc = readFileSync('src/ui/Menu.tsx', 'utf8');

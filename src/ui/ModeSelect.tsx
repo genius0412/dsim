@@ -3,7 +3,6 @@ import type { GameSettings } from '../types';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
 import { discordInstanceId, inDiscordActivity, roomCodeForInstance } from '../net/discordActivity';
-import { PAGE_COPY as IMPORT_COPY } from '../robotImport/ui/pageCopy';
 import { RobotStrip, startNewRobot } from './Menu';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
@@ -12,7 +11,6 @@ import { moduleFor } from '../games';
 import { stageOrbit, useStageMode } from './MenuStage';
 import { APP_NAME } from '../seasons';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
-import { practiceSeatsFor } from '../settings';
 
 /**
  * THE PLAY PAGE (owner, 2026-10-18, after MoSim's robot select; the right column rebuilt 2026-11-01).
@@ -101,6 +99,11 @@ export function ModeSelect({
   const stageMode = useStageMode();
   /** the phone's two tabs under the robot; ignored from 721px up, where both are on screen */
   const [tab, setTab] = useState<'modes' | 'robot'>('modes');
+  /**
+   * AN IMPORT CANNOT PLAY RANKED OR RUN A RECORD (`docs/area/robot-import.md`), so while one is the
+   * robot those tiles are DISABLED (owner, 2026-11-02). They used to start the last standard robot
+   * under a "Uses your last standard robot" note, which picked a robot the player had not.
+   */
   const importedActive = !!settings.spec.imported;
   /**
    * TWO OF THE ENTRIES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks the
@@ -155,13 +158,6 @@ export function ModeSelect({
       </span>
     </button>
   );
-  const importNote = importedActive ? IMPORT_COPY.standardOnly : null;
-
-  /** what Solo practice starts with, so the Setup popup is not a mystery box */
-  const others = practiceSeatsFor(settings, settings.game).filter((seat) => seat.kind !== 'none').length;
-  const soloSummary = `${settings.alliance === 'red' ? 'Red' : 'Blue'} alliance · ${
-    others === 0 ? 'no other robots' : others === 1 ? '1 other robot' : `${others} other robots`
-  }`;
 
   const notice = !!activeGame || (!!onTutorial && !seen);
   return (
@@ -269,9 +265,8 @@ export function ModeSelect({
             <div className="ds-play-tiles">
               {entry('Solo practice', onSoloMatch, { primary: true })}
               {entry('Free drive', onFreeDrive)}
-              {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer, note: importNote })}
+              {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer || importedActive })}
             </div>
-            <p className="ds-hint ds-play-summary">{soloSummary}</p>
           </div>
           <div className="ds-play-group">
             <div className="ds-play-head">
@@ -288,9 +283,9 @@ export function ModeSelect({
                     <QueueCounts className="tile" />
                   </>,
                   onRanked,
-                  { disabled: !multiplayer || !signedIn, note: multiplayer && !signedIn ? 'Sign in to play ranked' : importNote },
+                  { disabled: !multiplayer || !signedIn || importedActive, note: multiplayer && !signedIn ? 'Sign in to play ranked' : null },
                 )}
-              {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer, note: importNote })}
+              {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer || importedActive })}
               {entry('New room', onCustomRoom, { disabled: !multiplayer })}
               {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
                   room, reachable only by its code, so the code is printed where the player looks */}

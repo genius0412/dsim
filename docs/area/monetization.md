@@ -44,7 +44,10 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   `BannerStrip`'s `banner` unit (`AdSlot`, `w === 728`) and the sponsor's `.ds-adframe` both take `.side-label`: the
   label is sideways text (`writing-mode: vertical-rl` + `rotate(180deg)`, reads bottom-to-top) on the box's left, so
   the frame is 728 + 14 + 4 wide and 90 tall and the strip is `calc(90px + 2 * var(--ds-s-2))` = 106px on EVERY page
-  (the old Play-only `height: auto` override is gone). The label text stays "Advertisement" (AdSense requires it).
+  (the old Play-only `height: auto` override is gone). ⚠️ **EXCEPT PLAY ON A SHORT WINDOW** (owner, 2026-11-02, on
+  an ultrawide: "honestly too big"): Play fits the window, so the strip's height comes out of the robot's, and on a
+  window 820px tall or less (`COMPACT_MAX_H`) `BannerStrip fitted` takes the 320x50 frame at any width, label
+  above, 72px (`AdSlot small`, keyed so a size change is a new unit). Every other page keeps the 728x90. The label text stays "Advertisement" (AdSense requires it).
   The two frames must keep identical outer dimensions so a swap moves nothing. Every other unit (`gameh`, `menu`, ...)
   and the 320x50 phone strip keep the label above. The `max-height: 519px` rule still hides the strip.
 - **Three ad units, each with its own slot id**: `menu` (shell pages) and `results`

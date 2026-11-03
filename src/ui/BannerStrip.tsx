@@ -24,7 +24,15 @@ const FILL_WAIT_MS = 5000;
  * Renders nothing, and so reserves nothing, once the sponsor term is over and there is no ad:
  * an empty strip is a gap, not a placeholder. It is never rendered on Home (`AppShell`).
  */
-export function BannerStrip() {
+export function BannerStrip({ fitted = false }: {
+  /**
+   * THE PAGE FITS THE WINDOW (Play). There the strip's height comes out of the robot's, so on a window
+   * under `COMPACT_MAX_H` tall it takes the 320x50 frame, label above, at any width: 72px, not 106
+   * (owner, 2026-11-02: "on an ultrawide … honestly too big"; a short ultrawide window is ~590 tall).
+   * A page that scrolls keeps the 728x90 (the owner's revenue call, 2026-10-18).
+   */
+  fitted?: boolean;
+}) {
   const adOn = useAdUnitActive('banner');
   const [unfilled, setUnfilled] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -51,23 +59,42 @@ export function BannerStrip() {
   }, [adOn]);
 
   const narrow = useNarrow();
+  const short = useShort();
+  const compact = narrow || (fitted && short);
   const showAd = adOn && !unfilled;
   const sponsor = sponsorActive();
   if (!showAd && !sponsor) return null;
   return (
-    <div className="ds-bannerstrip" ref={box}>
+    <div className={compact && !narrow ? 'ds-bannerstrip compact' : 'ds-bannerstrip'} ref={box}>
       {showAd ? (
-        <AdSlot unit="banner" />
+        // keyed on the size: a filled unit keeps the size it was filled at, so a new size is a new unit
+        <AdSlot key={compact ? 'small' : 'wide'} unit="banner" small={compact} />
       ) : (
-        <div className={`ds-adframe${narrow ? '' : ' side-label'}`}>
+        <div className={`ds-adframe${compact ? '' : ' side-label'}`}>
           <span className="ad-slot-label">Sponsored</span>
           <div className="ds-adframe-box">
-            <SponsorStripMark h={narrow ? 24 : 44} />
+            <SponsorStripMark h={compact ? 24 : 44} />
           </div>
         </div>
       )}
     </div>
   );
+}
+
+/** a window this tall or less takes the compact strip on a page that fits the window */
+const COMPACT_MAX_H = 820;
+function useShort(): boolean {
+  const query = `(max-height: ${COMPACT_MAX_H}px)`;
+  const [short, setShort] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia(query);
+    const on = (): void => setShort(m.matches);
+    on();
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [query]);
+  return short;
 }
 
 /** the phone-sized unit (320x50) below `BANNER_NARROW_PX`, tracked live so a resize swaps the creative */

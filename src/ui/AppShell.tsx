@@ -308,7 +308,7 @@ export function AppShell({
           thing a visitor (and an AdSense reviewer) sees should read as a product, not as inventory,
           and nothing above the page's own content is an ad. `.ds-body` takes the spare height, so on a
           short page the strip still lands at the foot of the window. */}
-      {!home && <BannerStrip />}
+      {!home && <BannerStrip fitted={stage === 'setup'} />}
 
       {stage !== 'setup' && (
         <footer className="ds-foot">

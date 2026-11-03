@@ -31,8 +31,9 @@ const SIZE: Record<AdUnit, { w: number; h: number }> = {
 
 /** the top strip is the one unit whose size depends on the viewport */
 export const BANNER_NARROW_PX = 760;
-function sizeFor(unit: AdUnit): { w: number; h: number } {
-  if ((unit === 'banner' || unit === 'gameh') && typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX) {
+/** `small`: the strip asks for the 320x50 at any width (`BannerStrip`'s compact strip on Play) */
+function sizeFor(unit: AdUnit, small = false): { w: number; h: number } {
+  if ((unit === 'banner' || unit === 'gameh') && (small || (typeof innerWidth === 'number' && innerWidth < BANNER_NARROW_PX))) {
     return { w: 320, h: 50 };
   }
   return SIZE[unit];
@@ -123,7 +124,7 @@ export function ResultsAd() {
   );
 }
 
-export function AdSlot({ unit, className }: { unit: AdUnit; className?: string }) {
+export function AdSlot({ unit, className, small = false }: { unit: AdUnit; className?: string; small?: boolean }) {
   const ref = useRef<HTMLModElement>(null);
   const slot = slotFor(unit);
   const active = useAdUnitActive(unit);
@@ -145,7 +146,7 @@ export function AdSlot({ unit, className }: { unit: AdUnit; className?: string }
 
   if (!active) return null;
 
-  const { w, h } = sizeFor(unit);
+  const { w, h } = sizeFor(unit, small);
   // the reserved box must include the "Advertisement" label, or the unit overflows
   // its own container by the label's height and the box stops being exact
   const LABEL_H = 14;

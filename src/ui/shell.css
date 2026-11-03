@@ -685,6 +685,20 @@
     height: 50px;
   }
 }
+/* PLAY ON A SHORT WINDOW (`BannerStrip`'s `fitted`, 820px tall or less): the phone's frame, 320x50
+   with its label above, at any width. Play fits the window, so the strip's height is the robot's:
+   106px was 18% of a short ultrawide window (owner, 2026-11-02: "honestly too big") */
+.ds-bannerstrip.compact {
+  height: 72px;
+}
+.ds-bannerstrip.compact .ds-adframe {
+  width: 320px;
+  height: 64px;
+}
+.ds-bannerstrip.compact .ds-adframe-box {
+  width: 320px;
+  height: 50px;
+}
 
 /* The admin link in the app bar: outlined, and colour-only on hover like the rest of the bar's controls. */
 .ds-bar-link {
@@ -11012,10 +11026,6 @@ input.admin-months {
 .ds-play-tiles .ds-tile .d {
   font-size: var(--ds-t-sm);
 }
-/* what Solo practice starts with, under its tiles */
-.ds-play-summary {
-  margin-top: var(--ds-s-3);
-}
 /* A 280px PHONE (a folding phone's cover screen): one tile a row; two broke "Free drive" and
    "Solo record" onto two lines each. And the game switcher a size down and sized to its labels: in
    equal thirds (~80px) "Chain Reaction" was cut. */
@@ -11098,9 +11108,10 @@ input.admin-months {
 @media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) {
   .ds-setup,
   .ds-stage-2d {
-    /* 300 is what the three actions and a name beside its badge need on one line each */
-    --play-rail: clamp(300px, 21vw, 340px);
-    --play-side: clamp(344px, 26vw, 420px);
+    /* 300 is what the three actions and a name beside its badge need on one line each. The caps are a
+       1080p window's (owner, 2026-11-02: both "slightly too small" at 1920; they were 340 and 420) */
+    --play-rail: clamp(300px, 21vw, 380px);
+    --play-side: clamp(344px, 26vw, 460px);
   }
   .ds-setup {
     grid-template-columns: var(--play-rail) minmax(0, 1fr) var(--play-side);
@@ -11234,6 +11245,22 @@ input.admin-months {
   }
   .ds-setup-picker .ds-robot-card .om {
     padding-top: 0;
+  }
+}
+/* A TALL WINDOW, the rail layout: the tiles and the rail's pictures a step up. Play is sized by HEIGHT
+   (its camera's FOV is vertical, its rail stacks), so the step is on height: a 1080p window (~960 of
+   viewport) has the room, a short ultrawide does not (owner, 2026-11-02: "slightly too small" at
+   1080p). */
+@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) and (min-height: 860px) {
+  .ds-play-tiles .ds-tile {
+    min-height: calc(var(--ds-s-7) + var(--ds-s-2));
+  }
+  .ds-setup-picker .ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+  .ds-setup-picker .ds-robot-card-thumb {
+    width: 72px;
+    height: 72px;
   }
 }
 /* the column's "there is more" fade runs top and bottom, on its own block-axis scroll */
