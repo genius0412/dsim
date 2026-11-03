@@ -100,6 +100,12 @@ function AccessRow({
   const who = groups.length
     ? `${listOf(groups.map((g) => ACCESS_GROUP_LABEL[g].toLowerCase() + 's'))} can sign in to continue.`
     : 'Admins can sign in to continue.';
+  /* THE ALPHA SIGNS IN WITH THE playdsim.com ACCOUNT: both builds point at the same Neon Auth
+     project (docs/deploy.md), so "Create account" with an address that plays there is refused,
+     and the form cannot say why without telling a stranger the address has an account. */
+  const alpha = appChannel() === 'alpha';
+  // a refused account's tag: its @username here once claimed, else the name it signed in as
+  const tag = site.access?.username ? `@${site.access.username}` : user?.name || '';
 
   let body: ReactNode;
   if (site.checking || session.isPending) {
@@ -116,8 +122,15 @@ function AccessRow({
   } else if (user) {
     body = (
       <>
+        {/* A NEW ACCOUNT ON THE ALPHA LANDS HERE, and is let in by the team granting its tag
+            (Admin ▸ access groups). It used to read only "doesn’t have access", which a tester
+            took as the sign-up failing. The 20 s status poll carries the token on this build,
+            so the screen lifts by itself after the grant. */}
         <p className="ds-closed-note">
-          Signed in as <b>{user.name || 'your account'}</b>. This account doesn’t have access.
+          Signed in as <b>{tag || 'your account'}</b>.{' '}
+          {alpha && tag
+            ? 'This account isn’t on the alpha yet. Send that name to the DSIM team, and this page opens once you’re added.'
+            : 'This account doesn’t have access.'}
         </p>
         <button
           className="ds-btn ghost small"
@@ -133,7 +146,10 @@ function AccessRow({
   } else {
     body = (
       <>
-        <p className="ds-closed-note">{sentenceCase(who)}</p>
+        <p className="ds-closed-note">
+          {sentenceCase(who)}
+          {alpha && ' Your playdsim.com account works here.'}
+        </p>
         <button ref={focusFirst} className="ds-btn small" onClick={() => setAuthOpen(true)}>
           Sign in
         </button>

@@ -125,8 +125,14 @@ import { lockdownRefusal, refreshLockdown } from './siteState';
 import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
 
-/** the two writes a closed site still takes: Ko-fi's webhook, and deleting your own account */
-const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
+/**
+ * The writes a closed site still takes: Ko-fi's webhook, deleting your own account, and the two
+ * a SIGN-UP makes (claiming the @username, recording the terms box). The closed alpha is where
+ * testers make their accounts, and refusing those two left every new account there without the
+ * @username it chose or its acceptance, so the team had no @username to grant and the gates asked
+ * again once it was let in (2026-11-02). Neither one plays, uploads or changes anybody else.
+ */
+const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete', '/api/user/username', '/api/user/accept-terms']);
 
 /**
  * Public read API for the leaderboards + replay viewer (GET), plus ONE
@@ -702,10 +708,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        One door in front of every POST below — profile edits, friends, practice and LAN
        uploads, settings, play counts — rather than a check in each, so a route added later
        is covered without anyone remembering to. Reads stay open: the closed screen and the
-       sign-in need some of them, and none of them changes anything. Two writes are exempt:
-       the Ko-fi webhook (not a player) and deleting your own account (a privacy right does
-       not close with the site). 503 with the lockdown's own sentence; the upload backlogs
-       keep their runs and retry. */
+       sign-in need some of them, and none of them changes anything. Exempt (`SITE_WRITE_EXEMPT`):
+       the Ko-fi webhook (not a player), deleting your own account (a privacy right does not
+       close with the site), and a sign-up's @username and terms writes. 503 with the
+       lockdown's own sentence; the upload backlogs keep their runs and retry. */
     if (req.method !== 'GET' && req.method !== 'HEAD' && !SITE_WRITE_EXEMPT.has(url.pathname)) {
       const w = await refreshLockdown(); // TTL-cached: at most one read per 10 s per machine
       if (w.active && w.scope === 'site') {

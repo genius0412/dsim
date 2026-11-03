@@ -39,7 +39,7 @@
  *   # the sweep step from docs/capacity.md
  *   npx tsx scripts/loadtest.ts --rooms 40 --shape mix --secs 90 --json out/40.json
  *   # against the alpha preview
- *   npx tsx scripts/loadtest.ts --url wss://dsim-alpha.fly.dev --region iad --rooms 20 --secs 90
+ *   npx tsx scripts/loadtest.ts --url wss://dsim-alpha.fly.dev --region ord --rooms 20 --secs 90
  */
 import { WebSocket } from 'ws';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';

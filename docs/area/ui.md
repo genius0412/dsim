@@ -795,6 +795,9 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   to this viewer, for every URL. The way out (the redirect, "Go to DSIM") is the primary action
   and takes focus; the way in is Sign in, after which the status is asked again and the app
   replaces the screen with no reload. Copy: DSIM or "Alpha" is closed, never a game name.
+  On the alpha the sign-in line adds that the playdsim.com account works there (one Neon Auth
+  project), and a signed-in account that does not pass is told its tag (`access.username`, else
+  its name) and to send it to the DSIM team; elsewhere it still reads "doesn’t have access".
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
 - **THE PACE LINE** (`src/ui/pace/`, 2026-10-07; owner asked for a "+/- of what PB would be at
   the given time"): `+12 PB`, the FIRST CHIP in the row over the score bar (`.breakdown-row`,

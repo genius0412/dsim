@@ -919,8 +919,9 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   match-hours a week. A server-side `fly-replay` cannot fix it (the satellite must be running
   to send it), and a `fly-prefer-region` header makes the request CORS-preflighted, and the
   preflight goes to the nearest region. So `dsim-primary` (`dsim-alpha-primary` for alpha) is
-  a separate app whose ONE machine is in iad; it answers every request, sockets included,
-  with `fly-replay: app=<game app>;region=iad`.
+  a separate app whose ONE machine is in the game app's primary region (iad; ord for alpha
+  since 2026-11-02); it answers every request, sockets included, with
+  `fly-replay: app=<game app>;region=<that region>`.
   - `gameServerHttpUrl()` goes through the router. `nearestHttpUrl()` is the Anycast host and
     is only for the `/health` latency probe (`ping.ts`), which measures the nearest region on
     purpose. LAN signalling uses `primaryWsUrl()`. **Match, room, spectate and `?mm=1`

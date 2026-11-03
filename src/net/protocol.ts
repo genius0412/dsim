@@ -1696,6 +1696,12 @@ export interface SiteAccess {
   groups: AccessGroup[];
   /** passes the lockdown in force right now (true when none is) */
   passes: boolean;
+  /**
+   * The account's @username on THIS deployment (each has its own `profiles`), null when it has
+   * none yet. Sent only to an account that does not pass, so the closed screen can say which
+   * tag to send to be let in; absent from an older server.
+   */
+  username?: string | null;
 }
 
 /** `GET /api/status` */

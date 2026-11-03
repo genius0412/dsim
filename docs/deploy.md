@@ -65,7 +65,7 @@ Variables**, scoped to the **Preview** environment (or the `alpha` branch specif
 | Variable | Value |
 | --- | --- |
 | `VITE_GAME_SERVER_URL` | `wss://dsim-alpha.fly.dev` |
-| `VITE_GAME_SERVERS` | `[{"id":"alpha","label":"Alpha preview","region":"iad","url":"wss://dsim-alpha.fly.dev"}]` |
+| `VITE_GAME_SERVERS` | `[{"id":"alpha","label":"Alpha preview","region":"ord","url":"wss://dsim-alpha.fly.dev"}]` |
 | `VITE_APP_CHANNEL` | `alpha` |
 
 Scope them to the **`alpha` git branch** (`vercel env add NAME preview alpha`), not to Preview
@@ -353,8 +353,9 @@ secret; never commit it).
 ### The primary router (`router/`)
 
 `dsim-primary` (production) and `dsim-alpha-primary` (alpha) are tiny separate apps with one
-`shared-cpu-1x`/256 MB machine in iad. They serve nothing: each request is answered with
-`fly-replay: app=<game app>;region=iad`. New clients send their HTTP APIs and LAN signalling
+`shared-cpu-1x`/256 MB machine in their game app's primary region: iad for production, ord for
+alpha (moved 2026-11-02). They serve nothing: each request is answered with
+`fly-replay: app=<game app>;region=<that region>`. New clients send their HTTP APIs and LAN signalling
 there, so an idle tab no longer starts its nearest satellite (see `docs/area/netcode.md`).
 
 ```bash

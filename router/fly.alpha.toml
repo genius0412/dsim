@@ -1,15 +1,18 @@
 # PRIMARY ROUTER for the alpha preview (dsim-alpha). Same as router/fly.toml; idles to zero
 # because the preview is used in bursts. Deploy with ./scripts/fly-deploy.sh --router --alpha.
+#
+# ord, not iad: the router lives in, and replays to, its game app's primary region, and
+# dsim-alpha moved to ord on 2026-11-02 (fly.alpha.toml says what else moves with it).
 
 app = 'dsim-alpha-primary'
-primary_region = 'iad'
+primary_region = 'ord'
 
 [build]
   dockerfile = 'Dockerfile'
 
 [env]
   TARGET_APP = 'dsim-alpha'
-  TARGET_REGION = 'iad'
+  TARGET_REGION = 'ord'
 
 [http_service]
   internal_port = 8080

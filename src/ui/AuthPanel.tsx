@@ -153,7 +153,9 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
         describeAuthError(
           err,
           mode === 'up'
-            ? 'Couldn’t create the account. Try again.'
+            ? // an address that already has an account lands here too (`describeAuthError` will
+              // not name it), so the next step covers it without confirming it
+              'Couldn’t create the account. If this email already has one, sign in instead.'
             : 'Couldn’t sign in. Check your email and password, then try again.',
         ),
       );

@@ -545,6 +545,14 @@ function readAdminBody(req: import('node:http').IncomingMessage): Promise<string
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 
 /**
+ * A ONE-MACHINE DEPLOYMENT NEVER REPLAYS (`SINGLE_REGION=1`, fly.alpha.toml). Every routing hint
+ * names a region, and on the alpha every region but its own has no machine, so replaying sends the
+ * request nowhere: a client built while the alpha was in iad, an invite or room code stamped
+ * there, a competition row naming it. Answered here instead. Production's fleet is unchanged.
+ */
+const SINGLE_REGION = process.env.SINGLE_REGION?.trim() === '1';
+
+/**
  * THIS MACHINE AUTO-STOPS WHEN IDLE: a satellite, not the always-warm primary (Fly sets
  * `PRIMARY_REGION` from fly.toml's `primary_region`, and `min_machines_running` holds only
  * that one up). A satellite is cheap only while it is stopped, so two things below apply to
@@ -2732,7 +2740,7 @@ const httpServer = createServer((req, res) => {
        value the same way and wants the same guard — flagged, not fixed here, because it is not
        this change's to make.) */
     const want = u.searchParams.get('region');
-    if (REGION && want && /^[a-z]{3}$/.test(want) && want !== REGION && !req.headers['fly-replay-src']) {
+    if (REGION && !SINGLE_REGION && want && /^[a-z]{3}$/.test(want) && want !== REGION && !req.headers['fly-replay-src']) {
       res.writeHead(200, {
         'fly-replay': `region=${want}`,
         'access-control-allow-origin': '*',
@@ -2906,6 +2914,11 @@ const httpServer = createServer((req, res) => {
         if (user) {
           if (dbEnabled) await ensureProfile(user.userId, user.handle).catch(() => {});
           body.access = await siteAccess(user.userId);
+          // the tag a refused account sends to be let in; one read, and only for those
+          if (!body.access.passes && dbEnabled) {
+            const names = await profileNames([user.userId]).catch(() => null);
+            body.access.username = names?.get(user.userId)?.username ?? null;
+          }
         } else {
           body.access = null;
         }
@@ -3213,7 +3226,7 @@ httpServer.on('upgrade', (req, socket, head) => {
     // `fly-replay-src` is set by Fly after it has already replayed once — never
     // replay again (loop guard); accept locally as a graceful fallback.
     const alreadyReplayed = !!req.headers['fly-replay-src'];
-    if (REGION && target && target !== REGION && !alreadyReplayed) {
+    if (REGION && !SINGLE_REGION && target && target !== REGION && !alreadyReplayed) {
       socket.write(
         'HTTP/1.1 200 OK\r\n' +
           `fly-replay: region=${target}\r\n` +

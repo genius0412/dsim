@@ -8615,8 +8615,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   // ---- the primary router: idle polls must not start a satellite -------------------------
   /**
    * The game host is Anycast, so a poll lands on the nearest region and starts it. The HTTP
-   * APIs go to a router app pinned to iad instead (src/net/primaryHost.ts). These pin the
-   * mapping and that each routed host has a router config replaying to the right app, in iad.
+   * APIs go to a router app pinned to the game app's primary region instead
+   * (src/net/primaryHost.ts): iad for production, ord for alpha since 2026-11-02. These pin the
+   * mapping and that each routed host has a router config replaying to the right app, in the
+   * region that app's own config names. A router left in the old region replays every request
+   * to a region with no machine.
    */
   {
     check(
@@ -8640,15 +8643,39 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       .map((f) => readFileSync(joinPath('router', f), 'utf8'));
     const field = (toml: string, key: string): string =>
       new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*'([^']*)'`, 'm').exec(toml)?.[1] ?? '';
+    const gameConfigs = ['fly.toml', 'fly.alpha.toml'].map((f) => readFileSync(f, 'utf8'));
     for (const [game, router] of Object.entries(PRIMARY_HOSTS)) {
       const app = router.replace(/\.fly\.dev$/, '');
+      const gameApp = game.replace(/\.fly\.dev$/, '');
       const cfg = configs.find((t) => field(t, 'app') === app);
+      const gameCfg = gameConfigs.find((t) => field(t, 'app') === gameApp);
+      const home = gameCfg ? field(gameCfg, 'primary_region') : '';
       check(
-        `primary router: ${app} has a config replaying to ${game} in iad`,
+        `primary router: ${app} has a config replaying to ${gameApp} in its primary region (${home || '?'})`,
         !!cfg &&
-          field(cfg, 'TARGET_APP') === game.replace(/\.fly\.dev$/, '') &&
-          field(cfg, 'TARGET_REGION') === 'iad' &&
-          field(cfg, 'primary_region') === 'iad',
+          !!home &&
+          field(cfg, 'TARGET_APP') === gameApp &&
+          field(cfg, 'TARGET_REGION') === home &&
+          field(cfg, 'primary_region') === home,
+      );
+    }
+    // A ONE-MACHINE DEPLOYMENT NEVER REPLAYS (`SINGLE_REGION`): the alpha has no machine outside
+    // its own region, so a replay there goes nowhere. Both replay sites read the switch, the alpha
+    // sets it, and production's fleet does not.
+    const idxSrc = readFileSync('server/index.ts', 'utf8');
+    check('single region: the socket upgrade and the lobby read both skip the replay',
+      /if \(REGION && !SINGLE_REGION && target && target !== REGION/.test(idxSrc) &&
+        /if \(REGION && !SINGLE_REGION && want && /.test(idxSrc) &&
+        (idxSrc.match(/'fly-replay'|fly-replay: region=/g) ?? []).length === 2);
+    const [flyProdCfg, flyAlphaCfg] = gameConfigs;
+    check('single region: the alpha sets SINGLE_REGION, production does not',
+      field(flyAlphaCfg, 'SINGLE_REGION') === '1' && !field(flyProdCfg, 'SINGLE_REGION'));
+    // a game app outside iad must say so to its own matchmaker too, or `?mm=1` replays to iad
+    for (const t of gameConfigs) {
+      const home = field(t, 'primary_region');
+      check(
+        `primary region: ${field(t, 'app')} (${home}) sets MATCHMAKER_REGION to it, or is in iad`,
+        home === 'iad' ? !field(t, 'MATCHMAKER_REGION') || field(t, 'MATCHMAKER_REGION') === 'iad' : field(t, 'MATCHMAKER_REGION') === home,
       );
     }
     // ⚠️ A FAILED ROUTER PROBE IS A BACKOFF, NOT A VERDICT FOR THE LIFE OF THE TAB (2026-10-02).
@@ -17755,6 +17782,22 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('maintenance: a biting SITE lockdown leaves the strip empty (the banner stack says it)', siteLine({ biting: true }) === null);
   check('maintenance: a scheduled SITE lockdown says the site closes, not that games pause',
     (siteLine({ startsAt: T + 10 * 60_000 }) ?? '').includes('site closes in 10 minutes'));
+
+  // A SIGN-UP ON A CLOSED SITE KEEPS ITS @username AND ITS TERMS (2026-11-02). The closed alpha is
+  // where testers make their accounts, and the write door refused both, so every account made
+  // there arrived without the @username the team grants access by.
+  const api = readFileSync('server/api.ts', 'utf8');
+  const exempt = /const SITE_WRITE_EXEMPT = new Set\(\[([^\]]*)\]\)/.exec(api)?.[1] ?? '';
+  check('closed site: the write door reads SITE_WRITE_EXEMPT', /!SITE_WRITE_EXEMPT\.has\(url\.pathname\)/.test(api));
+  check("closed site: a sign-up's @username claim and terms acceptance pass the write door",
+    exempt.includes("'/api/user/username'") && exempt.includes("'/api/user/accept-terms'"), exempt);
+  check('closed site: deleting your own account and the Ko-fi webhook still pass it',
+    exempt.includes("'/api/user/delete'") && exempt.includes("'/api/kofi/webhook'"));
+  check('closed site: nothing that plays or uploads is exempt', !/practice|lan|record|settings/.test(exempt), exempt);
+  // and a refused account is told which tag to send, read only for accounts that do not pass
+  const status = readFileSync('server/index.ts', 'utf8');
+  check('closed site: /api/status names a refused account its @username',
+    /if \(!body\.access\.passes && dbEnabled\) \{[\s\S]{0,200}?body\.access\.username =/.test(status));
 }
 
 // ---- SOURCE GUARD: no engine-defined math anywhere the sim can reach --------

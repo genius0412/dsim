@@ -13,8 +13,13 @@
 #     should — see the deploy notes — but the preview no longer has to prove it on production.
 #
 # DIFFERENCES FROM fly.toml, all deliberate and all about cost:
-#   · ONE region. The multi-region layout exists to put a match near its players; a preview
-#     has one or two testers, and the matchmaker has to live somewhere anyway.
+#   · ONE region, ord (US Central; owner, 2026-11-02, from iad). The multi-region layout exists
+#     to put a match near its players; a preview has a handful of testers, and the matchmaker
+#     has to live somewhere anyway. Moving it is four values that must agree: `primary_region`
+#     and `MATCHMAKER_REGION` here, `TARGET_REGION`/`primary_region` in router/fly.alpha.toml,
+#     and the `region` in the alpha Vercel project's VITE_GAME_SERVERS (the client sends it as
+#     a `?region=` hint, and a hint naming a region with no machine is replayed nowhere).
+#     The database and Neon Auth stay in us-east-1, so each query from ord is ~20 ms further.
 #   · min_machines_running = 0. Production keeps the matchmaker warm because a cold boot in
 #     front of a real player is a bad first impression. A preview can eat the ~7s wake.
 #   · shared-cpu-4x. shared-cpu-2x throttled on 09-21 (3h) and 09-25 (1h), so the capacity
@@ -24,7 +29,7 @@
 # NEVER a bare `fly deploy` here either — it would pick up fly.toml and redeploy PRODUCTION.
 
 app = 'dsim-alpha'
-primary_region = 'iad'
+primary_region = 'ord'
 
 [build]
   dockerfile = 'Dockerfile'
@@ -48,6 +53,12 @@ primary_region = 'iad'
   LAN_SIGNALLING = '1'
   # multi-core rooms, as in fly.toml (docs/scaling-multicore.md): shared-cpu-4x gets three workers
   SIM_WORKERS = 'auto'
+  # the ranked queue's `?mm=1` replay target and the competition runner's home (server/regions.ts).
+  # It defaults to iad, which has no alpha machine since the move to ord.
+  MATCHMAKER_REGION = 'ord'
+  # one machine, so every routing hint is answered here rather than replayed to a region with no
+  # machine (server/index.ts `SINGLE_REGION`): an old client's iad hint, a room code stamped iad
+  SINGLE_REGION = '1'
 
 [http_service]
   internal_port = 8080

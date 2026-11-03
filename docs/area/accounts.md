@@ -184,9 +184,19 @@ rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
   room `join` (match, staged rooms exempt), ranked `queue` (match), a room `start`/`restart`/
   rematch vote (match, staged rooms exempt; a lobby formed before the window cannot play
   through it), `lanHost` (match), `spectate` and `lanJoin` (site; `lanJoin` now carries an
-  optional token), every non-GET in `handleApi` (site; exempt: the Ko-fi webhook and
-  `/api/user/delete`). `rejoin` and `abandon` stay open: a match already running finishes and
-  persists. Reads stay open.
+  optional token), every non-GET in `handleApi` (site; exempt, `SITE_WRITE_EXEMPT`: the Ko-fi
+  webhook, `/api/user/delete`, and a sign-up's own two writes, `/api/user/username` and
+  `/api/user/accept-terms`). `rejoin` and `abandon` stay open: a match already running finishes
+  and persists. Reads stay open.
+  ⚠️ **THE CLOSED ALPHA IS WHERE TESTERS MAKE THEIR ACCOUNTS** (2026-11-02). With the sign-up's two
+  writes refused, every account made there arrived without the @username it chose or its terms
+  acceptance, and the closed screen said only "This account doesn’t have access", which testers
+  read as the sign-up failing. Now the writes land, `/api/status` sends a refused account its
+  `access.username`, and the alpha's closed screen says to send that name to the team (the 20 s
+  status poll lifts the screen after the grant). The alpha signs in with production's Neon Auth
+  project, so "Create account" with an address that plays on playdsim.com is refused; the closed
+  screen says the playdsim.com account works there, and the sign-up failure says to sign in if
+  the address already has one, without confirming that it does.
 - **ACCESS GROUPS** (`access_members`): `beta`, `dev`, `contributor`, keyed by USER ID and
   cascading with the profile. Granted by player tag (`resolvePlayerTag`: id, then @username,
   then display name; a shared display name is an error naming the @usernames), listed with
