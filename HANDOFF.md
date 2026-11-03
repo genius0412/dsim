@@ -1,4 +1,21 @@
-# HANDOFF — 2026-11-02 (first load and screen changes: boot screen, last-seen counts, one screen fade; the first Play click)
+# HANDOFF — 2026-11-03 (the first Play's camera fly: frame-timed, the full warm after it lands)
+
+**State: branch `fix/stage-first-play-fly` off `alpha` (9eac735a). Client only: no server change, no deploy beyond Vercel.** `npm test` shared ALL PASS; BIOBUZZ fails only the 9 AUTO/AUTOUI/IMPORT checks this box always fails (its `@horizon36596/zenith-*` are 0.0.0 stubs, `vendor/zenith/` has no tarballs). `vite build`, `uiaudit`, `docaudit` pass. `tsc` shows the same 28 stub errors in `src/auto/**` with and without this change.
+
+- **Owner:** the first Play in BIOBUZZ 3D "jumps to half way through the movement then a freeze", despite the preload work. The movement is Home → Play's camera fly (`MenuStage.tsx`).
+- **Measured on 9eac735a** (which already moved Play's card pictures to Home's idle). Tool: scratch Electron trace with the GPU on (RX 6600 XT), CDP profile, 4x CPU throttle. Three tasks remained on the first Play:
+  - the click's React commit, 126 ms;
+  - the first fly frame, which builds the robot and links its shaders, 61 ms;
+  - App's full idle warm decoding the 3D solve's wasm (`toByteArray`), 74 ms, inside or at the end of the fly.
+  The fly ran on the wall clock, so the first two skipped the camera ahead.
+- **Fix:**
+  - The fly advances by frame time, at most `FLY_STEP_MAX_S` (50 ms) a frame and nothing on its first frame. The robot leaves when the fly ends, not at a deadline.
+  - `stageStill()` (MenuStage) resolves when no fly runs, and App's full warm waits on it.
+  - After the fix, at 4x and 6x CPU, the fly starts at progress 0 after the click's tasks, moves at most 5 % a frame, and lands before the decode runs.
+- **Not done:** the click's own React commit (Play's render, 61–126 ms at 4x, every Play, not only the first) is now a pause before the fly rather than a skip inside it. Robot precompile at boot was not needed: that cost now lands at the start pose.
+- **Smoke:** two `stage:` checks in `scripts/smoke.ts`. render.ts's idle-warm source pattern window widened to 260 characters for the new cleanup.
+
+## HANDOFF — 2026-11-02 (first load and screen changes: boot screen, last-seen counts, one screen fade; the first Play click)
 
 **State: on `alpha`. Client only: no server change, no deploy beyond Vercel.** `npm test` (shared 4674, BIOBUZZ 6403), `build`, `server:check`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` (1252 state changes, 0 shifts, importer included) pass.
 
