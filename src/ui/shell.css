@@ -11140,13 +11140,27 @@ input.admin-months {
 /* THE ROBOT LIST, wherever the picker is a column: one compact card a row, a 64px picture, the name,
    the team, and ONE line of the build (the tags that fit; the builder has the rest) */
 @media (min-width: 1000px) and (min-aspect-ratio: 1001/1000), (min-width: 721px) and (max-aspect-ratio: 1/1) {
-  /* the title on its own line and the three actions sharing the rail's width under it */
+  /* the title on its own line and the three actions sharing the rail's width under it. ONE inset, 16,
+     like the modes card opposite, whose group heads are 32px rows: the title gets the same row, so
+     "Robot" and "Solo" stand on one line when the two columns start together (measured 2026-11-02:
+     the title sat 8 from the panel's top, the first card 20 under the head and the last 13 over the
+     foot, both the horizontal strip's track room) */
   .ds-setup-picker .ds-panel-h {
     flex-wrap: wrap;
     row-gap: var(--ds-s-2);
+    padding: var(--ds-s-4);
   }
+  .ds-setup-picker .ds-panel-h .ds-panel-title {
+    display: flex;
+    align-items: center;
+    min-height: var(--ds-s-6);
+  }
+  /* ...on one row where they fit (a 340px rail, from ~1620px wide), so the head takes no more of the
+     window's HEIGHT than it must: the rail is height-bound, and on a 2000x670 window the second row
+     put the third card out of view. A narrower rail wraps them under the title. */
   .ds-setup-picker .ds-panel-h .ds-actions {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    justify-content: flex-end;
   }
   .ds-setup-picker .ds-panel-h .ds-actions .ds-btn {
     flex: 1 1 auto;
@@ -11157,6 +11171,7 @@ input.admin-months {
     min-height: 0;
     display: flex;
     flex-direction: column;
+    padding: var(--ds-s-4);
   }
   .ds-setup-picker .ds-opts.robots.strip {
     flex: 1 1 auto;
@@ -11168,6 +11183,13 @@ input.admin-months {
     gap: var(--ds-s-2);
     overflow-x: hidden;
     overflow-y: auto;
+    /* room for a card's 2px block and its press, right and below, laid into the body's padding so the
+       cards' own edges keep the 16 */
+    padding: 0 var(--ds-s-1) var(--ds-s-1) 0;
+    margin: 0 calc(-1 * var(--ds-s-1)) calc(-1 * var(--ds-s-1)) 0;
+    /* NO BAR: the wheel scrolls a column natively, the fades top and bottom say there is more, and a
+       thin bar took 10px out of the right inset whenever the list scrolled (27 against the left's 17) */
+    scrollbar-width: none;
   }
   .ds-setup-picker .ds-opts .ds-opt.ds-robot-card {
     padding: var(--ds-s-2) var(--ds-s-3);

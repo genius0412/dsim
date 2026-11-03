@@ -435,6 +435,15 @@ rulings below are theirs, not defaults.
   would be a slit between two columns) and on a phone, the row layout is unchanged. `SETUP_FRAME_MAX_H`
   (840) caps the box the camera frames, so a tall window (3440x1300) does not blow the robot up beside
   fixed-size panels.
+  **ONE INSET IN THE RAIL, 16, like the modes card** (measured with `scratch`-style DOM probes, owner
+  2026-11-02: "make sure padding is correct"): the head's padding, the first card under the head's
+  line, the list's sides and foot. The horizontal strip's track room had left 20 / 13, and a thin
+  scrollbar took the right inset to 27 while the list scrolled, so the vertical list has NO BAR (the
+  wheel scrolls a column natively; the fades say there is more). The title is a 32px row like a modes
+  group's head, so "Robot" and "Solo" stand on one line. ⚠️ **THE RAIL IS HEIGHT-BOUND**: the actions
+  share the title's row where they fit (a 340px rail) and wrap under it only on a narrower one; the
+  second row put the third card out of view at 2000x670. Design from the window's HEIGHT first (team
+  note, 2026-11-02: "ui should be designed around vertical viewport w/ constraints for horizontal ones").
 - ⚠️ **NEW ROBOT IS A BUTTON, AND THE STRIP HOLDS NO PRESETS** (owner, 2026-11-01: "i should NOT have
   to scroll an extreme amount in thr play menu to get to 'new robot'"). It was the strip's LAST card,
   after saved robots, imports and every preset: 1,464 px of sideways scroll at 1366x657 on first
