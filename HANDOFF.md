@@ -9,7 +9,7 @@
 - **Not checked:** a real ultrawide monitor; the captures are offscreen windows at those sizes. Offscreen Electron blanks a 2D robot canvas that is resized after first paint (`ui.md` notes it); the same page in the browser pane draws it.
 - **Known, unchanged:** at a 344px modes column (1000-1330px wide) "Sign in to play ranked" wraps and makes the Ranked row taller.
 - **Padding pass (owner: "make sure padding is correct"):** measured every inset; the rail is 16 throughout now (it had 20 under the head, 13 at the foot, 27 on the right while scrolling). No scrollbar on the vertical list. Head on one row where it fits, so the rail spends less HEIGHT.
-- **Team note via the owner:** "ui should be designed around vertical viewport w/ constraints for horizontal ones. so realistically, the issues ur facing now could have been resolved that way. communicate next time." Read the height budget first, and say the layout model before a structural change.
+- **Team note via the owner:** "ui should be designed around vertical viewport w/ constraints for horizontal ones … communicate next time", then the owner: "Typically, responsive design follows view width, and that is fine. This specific scenario, you must recognize the constraints. view height must be the criterion." So: width-led as usual; on Play (vertical FOV, stacked rail) height is the criterion. Say the layout plan before a structural change.
 
 # HANDOFF — 2026-11-02 (first load and screen changes: boot screen, last-seen counts, one screen fade; the first Play click)
 

@@ -442,8 +442,10 @@ rulings below are theirs, not defaults.
   wheel scrolls a column natively; the fades say there is more). The title is a 32px row like a modes
   group's head, so "Robot" and "Solo" stand on one line. ⚠️ **THE RAIL IS HEIGHT-BOUND**: the actions
   share the title's row where they fit (a 340px rail) and wrap under it only on a narrower one; the
-  second row put the third card out of view at 2000x670. Design from the window's HEIGHT first (team
-  note, 2026-11-02: "ui should be designed around vertical viewport w/ constraints for horizontal ones").
+  second row put the third card out of view at 2000x670. ⚠️ **ON PLAY, VIEW HEIGHT IS THE CRITERION**
+  (owner, 2026-11-02): responsive layout elsewhere follows width as usual, but here the camera's FOV is
+  vertical and the rail stacks its cards, so Play's budgets and breakpoints read the window's height.
+  Name the binding constraint from measurements before choosing one.
 - ⚠️ **NEW ROBOT IS A BUTTON, AND THE STRIP HOLDS NO PRESETS** (owner, 2026-11-01: "i should NOT have
   to scroll an extreme amount in thr play menu to get to 'new robot'"). It was the strip's LAST card,
   after saved robots, imports and every preset: 1,464 px of sideways scroll at 1366x657 on first
