@@ -41730,8 +41730,13 @@ function fxImportFixed(): RobotSpec {
   // owner, 2026-11-02: an import picked on Play stayed on its outline until another robot was picked
   check(
     '⚠️ menu stage: every world it builds draws once more when its imported meshes have settled (it draws on demand)',
-    /world = stageWorld\(game, robotOn \? spec : null, alliance, '3d'\);\s*settleAssets\(\);/.test(stageSrc) &&
+    /world = stageWorld\(game, spec, alliance, '3d'\);\s*settleAssets\(\);/.test(stageSrc) &&
       /scene\.assetsSettled\?\.\(w\)\.then\(\(\) => \{\s*if \(!dead\) kick\(\);/.test(stageSrc),
+  );
+  // owner, 2026-11-03: the robot joined for Play and left at Home, popping in and out across the fly
+  check(
+    'menu stage: the 3D stage’s robot is on the field on Home too, so the fly neither adds nor drops it',
+    /world = stageWorld\(game, spec, alliance, '3d'\);/.test(stageSrc) && !/robotOn|dropRobotAt/.test(stageSrc),
   );
   check(
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',

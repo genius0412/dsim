@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-03b (the robot on Home's stage)
+
+**State: on `alpha`. Client only.** Checks pass (counts in the commit).
+
+- **Owner:** "I want the robot to be shown on the homescreen too, so that it doesnt just suddenly appear and disappear."
+- **Was:** the 3D stage built its world without the robot on Home, added it when the fly to Play began, and dropped it when the fly back ended (`robotOn` / `dropRobotAt` in `MenuStage.tsx`).
+- **Now:** every world the stage builds has the player's robot at `SHOW`, on Home too, so the camera flies to and from a robot that stays put. Checked offscreen at 1366x768: Home, six frames each way, Home again.
+- **Unchanged:** a phone's Home (no stage); the 2D stage (DECODE, Chain Reaction, BIOBUZZ in 2D), where Play's page draws the robot.
+- **Not checked:** an active import on a cold load. Its mesh parses after the first frame, so for a moment Home may show its outline before the redraw (`settleAssets`), as Play already did.
+
 # HANDOFF — 2026-11-03 (Alpha: sign-up on the closed alpha; dsim-alpha moved iad → ord)
 
 **State: on `alpha`. SERVER CHANGE, DEPLOYED: `dsim-alpha` is one machine in ord (7812416b179638, shared-cpu-2x/1024, image `deployment-01M6GQM55SEJWD6M0P1ZG48P36`); `dsim-alpha-primary` is one machine in ord (857156b12d44e8). Both iad machines destroyed. Vercel alpha `VITE_GAME_SERVERS` region is `ord`.** `npm test` (shared 4693, BIOBUZZ 6403), `build`, `server:check`, `docaudit`, `uiaudit` pass.

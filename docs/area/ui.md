@@ -392,8 +392,10 @@ rulings below are theirs, not defaults.
   load the boot screen waits for it (`holdBoot`, capped); otherwise, and past the cap, a loading bar
   stands where the field will be (`StageWait`, after 600 ms). ⚠️ **NOT THE 2D FIELD UNDER IT**: tried
   the same day, it was a second picture of the field that the 3D replaced a second later (owner: "the 2d
-  field for a split second before switching to 3d"). The 3D fades in at `--ds-dur-screen`. Home has game
-  pieces only; the player's robot joins for Play and leaves when the camera is back at Home.
+  field for a split second before switching to 3d"). The 3D fades in at `--ds-dur-screen`. ⚠️ **THE
+  PLAYER'S ROBOT IS ON THE 3D FIELD ON HOME TOO**, at Play's showcase spot (owner, 2026-11-03: "so that it
+  doesn't just suddenly appear and disappear"): it used to join when the fly to Play began and leave
+  when the camera was back at Home, so it popped in and out. The 2D stage's robot is still Play's page.
 - ⚠️ **THE 3D STAGE HAS ITS OWN ROOM AND TIER, NOT THE PLAYER'S MATCH SETTINGS** (2026-11-01, owner:
   Home "still distorted and EXTREMELY laggy on some devices"). `MenuStage` passes
   `SceneOptions.quality` (Medium, or Low where the device's own tier is Low) and

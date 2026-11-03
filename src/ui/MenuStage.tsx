@@ -300,7 +300,6 @@ function Stage3d({
     let scene: GameScene | null = null;
     let raf = 0;
     let world: World | null = null;
-    let robotOn = false;
     let size = { w: 1, h: 1, dpr: 1 };
     // the camera as drawn, and the fly in progress
     let pose: ScenePose = POSES[live.current.view];
@@ -313,15 +312,20 @@ function Stage3d({
     } | null = null;
     let orbit = { yaw: 0, pitch: 0, held: false };
     let lastT = 0;
-    let dropRobotAt = 0;
     let wasAnimating = false;
     let settle = 0;
     // the first load's boot screen waits for this scene's first frame (or its failure)
     const releaseBoot = holdBoot();
 
+    /**
+     * THE ROBOT IS ON THE FIELD ON HOME TOO (owner, 2026-11-03: "so that it doesn't just suddenly appear
+     * and disappear"). It joined the world when the fly to Play began and left when the camera was back,
+     * so it popped in at the start of one fly and out at the end of the other. Now the camera flies to
+     * the robot standing where it was all along.
+     */
     const buildWorld = (): void => {
       const { spec, alliance } = live.current;
-      world = stageWorld(game, robotOn ? spec : null, alliance, '3d');
+      world = stageWorld(game, spec, alliance, '3d');
       settleAssets();
     };
     /**
@@ -366,12 +370,6 @@ function Stage3d({
         pose = target;
         ins = targetIns;
       }
-      // the robot leaves only once the camera is back (it would vanish mid-flight otherwise)
-      if (robotOn && dropRobotAt && now >= dropRobotAt) {
-        robotOn = false;
-        dropRobotAt = 0;
-        buildWorld();
-      }
       // the orbit, around the showcase target, drifting back once let go
       if (!orbit.held && (orbit.yaw || orbit.pitch)) {
         const k = reducedMotion() ? 1 : 1 - Math.pow(2, -dt / ORBIT_RETURN_S);
@@ -409,7 +407,7 @@ function Stage3d({
         insets: ins,
         pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },
       });
-      const animating = moving || orbit.held || !!dropRobotAt;
+      const animating = moving || orbit.held;
       if (animating) kick();
       else {
         lastT = 0;
@@ -429,22 +427,12 @@ function Stage3d({
 
     ctl.current = {
       fly() {
-        const v = live.current.view;
         fly = {
           from: pose,
           fromIns: ins,
           t0: performance.now(),
           ms: reducedMotion() ? 0 : FLY_MS,
         };
-        if (v === 'setup') {
-          dropRobotAt = 0;
-          if (!robotOn) {
-            robotOn = true;
-            buildWorld();
-          }
-        } else if (robotOn) {
-          dropRobotAt = performance.now() + fly.ms;
-        }
         kick();
       },
       rebuild() {
@@ -482,7 +470,6 @@ function Stage3d({
     };
     const ro = new ResizeObserver(resize);
 
-    robotOn = live.current.view === 'setup';
     buildWorld();
     // THE PAGE FIRST, THE FIELD WHEN THE BROWSER IS IDLE: the scene's chunk, the field's meshes and
     // the shader compile are a few hundred ms of main thread on a weak machine, and Home's keycaps
