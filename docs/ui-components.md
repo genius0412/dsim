@@ -268,7 +268,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-home-games` | src/ui/shell.css:1508 | 1 |
 | `.ds-home-link` | src/ui/shell.css:1637 | 4 |
 | `.ds-home-links` | src/ui/shell.css:1523 | 1 |
-| `.ds-home-more` | src/ui/shell.css:11396 | 1 |
+| `.ds-home-more` | src/ui/shell.css:11436 | 1 |
 | `.ds-home-presents` | src/ui/shell.css:8368 | 1 |
 | `.ds-home-scrim` | src/ui/shell.css:10611 | 1 |
 | `.ds-home-title` | src/ui/shell.css:1494 | 1 |
@@ -507,9 +507,9 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-more-backdrop` | src/ui/shell.css:11402 | 1 |
-| `.ds-more-foot` | src/ui/shell.css:11413 | 1 |
-| `.ds-more-sheet` | src/ui/shell.css:11406 | 1 |
+| `.ds-more-backdrop` | src/ui/shell.css:11442 | 1 |
+| `.ds-more-foot` | src/ui/shell.css:11453 | 1 |
+| `.ds-more-sheet` | src/ui/shell.css:11446 | 1 |
 
 ## `ds-play` — 3
 
@@ -523,9 +523,9 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-popup` | src/ui/shell.css:11525 | 6 |
-| `.ds-popup-host` | src/ui/shell.css:11522 | 1 |
-| `.ds-popup-x` | src/ui/shell.css:11541 | 2 |
+| `.ds-popup` | src/ui/shell.css:11565 | 6 |
+| `.ds-popup-host` | src/ui/shell.css:11562 | 1 |
+| `.ds-popup-x` | src/ui/shell.css:11581 | 2 |
 
 ## `ds-presence` — 3
 
@@ -583,7 +583,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-dialog-actions` | src/ui/shell.css:7070 | 13 |
-| `.ds-dialog-title` | src/ui/shell.css:11531 | 12 |
+| `.ds-dialog-title` | src/ui/shell.css:11571 | 12 |
 
 ## `ds-feed` — 2
 
@@ -748,7 +748,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-arrive` | src/ui/shell.css:11724 | 4 |
+| `.ds-arrive` | src/ui/shell.css:11764 | 4 |
 
 ## `ds-autoprev` — 1
 

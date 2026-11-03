@@ -1,3 +1,12 @@
+# HANDOFF — 2026-11-03 (Play: the rail on a laptop's short window)
+
+**State: on `alpha`. Client only (CSS).** `npm test`, `build`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` pass (counts in the commit).
+
+- **Owner:** approved the proposed height steps for the rail's cards.
+- **Measured before** (offscreen Electron, three saved robots, tutorial offer up): the rail showed two cards and a cut third at 1366x657, 1280x610 and 1700x590.
+- **Built:** under 760px tall a rail card drops its team line and its picture is 48px (card 66 tall, was 82); under 640 the head is one 32px row of New robot / Edit / Import, the "Robot" title kept for screen readers. After: three cards at all three shapes; 1366x761 and taller unchanged. Rules: `docs/area/ui.md`, "THE GARAGE RAIL". Smoke checks in the boot-screen block.
+- **Not checked:** a real laptop; captures are offscreen windows at those sizes. With more than three robots the list still scrolls, as designed.
+
 # HANDOFF — 2026-11-02b (Play: the garage rail; an imported robot picked on the stage draws its mesh)
 
 **State: on `alpha`. Client only.** `npm test`, `build`, `server:check`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` pass (counts in the commit).

@@ -11263,6 +11263,46 @@ input.admin-months {
     height: 72px;
   }
 }
+/* A SHORT WINDOW, the rail layout (2026-11-03): a laptop's browser shows ~657 of a 1366x768 screen and
+   ~610 of a 1280x720 one. With the tutorial offer up, the rail showed two cards and a cut third at
+   1366x657, 1280x610 and 1700x590; it shows three at each now (measured). Two steps on height, each
+   dropping what picking a robot needs least. Under 760: the team line, and the picture a step down to
+   48px, so a card is the name and the build. Under 640: the head is one row, the three actions, and its
+   title is for a screen reader only (the modes column's "Solo" still heads the row beside it). */
+@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) and (max-height: 760px) {
+  .ds-setup-picker .ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+  .ds-setup-picker .ds-robot-card-thumb {
+    width: 48px;
+    height: 48px;
+  }
+  .ds-setup-picker .ds-robot-card-thumb svg,
+  .ds-setup-picker .ds-robot-card-thumb canvas {
+    max-width: 40px;
+    max-height: 40px;
+  }
+  .ds-setup-picker .ds-robot-card > .od {
+    display: none;
+  }
+}
+@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) and (max-height: 640px) {
+  /* `.ds-sr`'s rules: the heading stays in the outline */
+  .ds-setup-picker .ds-panel-h .ds-panel-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* the row the title gave the head, 32 like the modes card's group heads opposite */
+  .ds-setup-picker .ds-panel-h .ds-actions {
+    min-height: var(--ds-s-6);
+    align-items: center;
+  }
+}
 /* the column's "there is more" fade runs top and bottom, on its own block-axis scroll */
 @supports (animation-timeline: scroll()) {
   @media (min-width: 1000px) and (min-aspect-ratio: 1001/1000), (min-width: 721px) and (max-aspect-ratio: 1/1) {

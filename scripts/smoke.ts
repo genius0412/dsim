@@ -41733,6 +41733,23 @@ function fxImportFixed(): RobotSpec {
       !playSrc.includes('importNote'),
   );
   check('play: no one-line summary under the Solo tiles', !playSrc.includes('ds-play-summary') && !css.includes('.ds-play-summary'));
+  // owner, 2026-11-03: two HEIGHT steps for the rail, for a laptop's short browser window (1366x657 and
+  // 1280x610 showed two cards and a cut third)
+  const shortRail = (h: number): string => {
+    const at = rail.indexOf(`@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) and (max-height: ${h}px) {`);
+    return at < 0 ? '' : rail.slice(at, rail.indexOf('\n}\n', at));
+  };
+  check(
+    'play: under 760px tall a rail card drops its team line and takes a 48px picture',
+    /\.ds-robot-card > \.od \{\n    display: none;/.test(shortRail(760)) &&
+      /\.ds-robot-card-thumb \{\n    width: 48px;\n    height: 48px;/.test(shortRail(760)),
+  );
+  check(
+    'play: under 640px tall the rail head is one 32px row of actions, its title kept for a screen reader',
+    /\.ds-panel-title \{\n    position: absolute;[^}]*clip-path: inset\(50%\);/.test(shortRail(640)) &&
+      /\.ds-actions \{\n    min-height: var\(--ds-s-6\);/.test(shortRail(640)) &&
+      !/display: none/.test(shortRail(640)),
+  );
   // the first-Play lag (owner, 2026-11-02): Play's card pictures made a scene at the player's tier
   const prevSrc = readFileSync('src/games/biobuzz/Preview3D.tsx', 'utf8').replace(/\r\n/g, '\n');
   const stripSrc = readFileSync('src/ui/Menu.tsx', 'utf8');

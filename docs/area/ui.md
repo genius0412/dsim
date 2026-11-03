@@ -444,7 +444,10 @@ rulings below are theirs, not defaults.
   share the title's row where they fit (a 340px rail) and wrap under it only on a narrower one; the
   second row put the third card out of view at 2000x670. The columns' caps are a 1080p window's
   (`--play-rail` 380, `--play-side` 460; owner, 2026-11-02: "slightly too small" there at 340 / 420), and
-  from 860px tall the modes' tiles are 56px and the rail's pictures 72px. The banner strip under Play
+  from 860px tall the modes' tiles are 56px and the rail's pictures 72px. Two steps DOWN on a laptop's
+  short window (2026-11-03; 1366x657, 1280x610 and 1700x590 showed two cards and a cut third with the
+  tutorial offer up, three now): under 760px tall a card drops its team line and its picture is 48px;
+  under 640 the head is one 32px row of the actions, its title `.ds-sr`-style. The banner strip under Play
   is the compact 72px frame on a window 820px tall or less (`BannerStrip fitted`, `docs/area/
   monetization.md`). ⚠️ **AN IMPORT DISABLES SOLO RECORD, RANKED AND DUO RECORD** (owner, same day):
   they start no import (`robot-import.md`), and used to start the last standard robot under a "Uses your
