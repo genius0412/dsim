@@ -1,6 +1,6 @@
 # HANDOFF — 2026-11-03 (the first Play's camera fly: frame-timed, the full warm after it lands)
 
-**State: branch `fix/stage-first-play-fly` off `alpha` (9eac735a). Client only: no server change, no deploy beyond Vercel.** `npm test` shared ALL PASS; BIOBUZZ fails only the 9 AUTO/AUTOUI/IMPORT checks this box always fails (its `@horizon36596/zenith-*` are 0.0.0 stubs, `vendor/zenith/` has no tarballs). `vite build`, `uiaudit`, `docaudit` pass. `tsc` shows the same 28 stub errors in `src/auto/**` with and without this change.
+**State: branch `fix/stage-first-play-fly` off `alpha`, alpha merged in at 72ee7fd8 (clean; its stage `settleAssets` redraw rides the same on-demand `kick`). Client only: no server change, no deploy beyond Vercel.** `npm test` shared ALL PASS; BIOBUZZ fails only the 9 AUTO/AUTOUI/IMPORT checks this box always fails (its `@horizon36596/zenith-*` are 0.0.0 stubs, `vendor/zenith/` has no tarballs). `vite build`, `uiaudit`, `docaudit` pass. `tsc` shows the same 28 stub errors in `src/auto/**` with and without this change.
 
 - **Owner:** the first Play in BIOBUZZ 3D "jumps to half way through the movement then a freeze", despite the preload work. The movement is Home → Play's camera fly (`MenuStage.tsx`).
 - **Measured on 9eac735a** (which already moved Play's card pictures to Home's idle). Tool: scratch Electron trace with the GPU on (RX 6600 XT), CDP profile, 4x CPU throttle. Three tasks remained on the first Play:
