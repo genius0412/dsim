@@ -385,7 +385,7 @@ rulings below are theirs, not defaults.
   FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it back).
 - **The selected game's field.** BIOBUZZ: the match's own 3D scene (`createBiobuzzScene`, lazy,
   `interactive: false`), drawn through `SceneFrame.pose` ON DEMAND (while the camera moves, once more
-  50 ms after a move ends, and once when `assetsSettled` resolves), not every frame.
+  50 ms after a move ends, and once when `assetsSettled` resolves for EVERY world it builds: 2026-11-02, it was only the boot's, so an import picked on Play stayed on its outline until another robot was picked and back), not every frame.
   DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
   phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and shown FLAT.
   The scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty backdrop. On the first

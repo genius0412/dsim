@@ -314,7 +314,21 @@ function Stage3d({
     const buildWorld = (): void => {
       const { spec, alliance } = live.current;
       world = stageWorld(game, robotOn ? spec : null, alliance, '3d');
+      settleAssets();
     };
+    /**
+     * DRAW AGAIN ONCE AN IMPORTED ROBOT'S MESH HAS LANDED. The stage draws on demand, not every frame,
+     * so a mesh still parsing when its world was built left the robot on its outline until something
+     * else redrew: picking an import on Play, and an import joining for the fly, showed the outline
+     * until the player picked another robot and came back (owner, 2026-11-02). `assetsSettled` never
+     * rejects; the kick redraws whatever world is current by then.
+     */
+    function settleAssets(): void {
+      const w = world;
+      if (scene && w) void scene.assetsSettled?.(w).then(() => {
+        if (!dead) kick();
+      });
+    }
 
     const frame = (now: number): void => {
       raf = 0;
@@ -485,7 +499,7 @@ function Stage3d({
           live.current.onShown();
           releaseBoot();
           // an imported robot's mesh lands after the first frame
-          if (world) void s.assetsSettled?.(world).then(kick);
+          settleAssets();
         })
         .catch(() => {
           releaseBoot();

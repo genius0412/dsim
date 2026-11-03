@@ -41684,6 +41684,12 @@ function fxImportFixed(): RobotSpec {
     'menu stage: a 3D stage never draws the 2D field under it; a bar stands in while it loads',
     /use3d \? \(\s*<Stage3d/.test(stageSrc) && /\) : \(\s*<Stage2d/.test(stageSrc) && /use3d && !ready3d && <StageWait/.test(stageSrc),
   );
+  // owner, 2026-11-02: an import picked on Play stayed on its outline until another robot was picked
+  check(
+    '⚠️ menu stage: every world it builds draws once more when its imported meshes have settled (it draws on demand)',
+    /world = stageWorld\(game, robotOn \? spec : null, alliance, '3d'\);\s*settleAssets\(\);/.test(stageSrc) &&
+      /scene\.assetsSettled\?\.\(w\)\.then\(\(\) => \{\s*if \(!dead\) kick\(\);/.test(stageSrc),
+  );
   check(
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
     /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,
