@@ -163,13 +163,49 @@ export function ModeSelect({
     others === 0 ? 'no other robots' : others === 1 ? '1 other robot' : `${others} other robots`
   }`;
 
+  const notice = !!activeGame || (!!onTutorial && !seen);
   return (
-    <div className={`ds-setup tab-${tab}`}>
+    <div className={`ds-setup tab-${tab}${notice ? ' has-notice' : ''}`}>
       <h1 className="ds-sr">Play</h1>
+      {/* THE REJOIN BANNER AND THE TUTORIAL OFFER (owner, 2026-10-18). A SIBLING of the robot's space,
+          not inside it, so the layout places it: at the top of the rail beside the robot from 1000px
+          (2026-11-02), floating over the robot's space's top-left everywhere else, as before. */}
+      {notice && (
+        <div className="ds-setup-notice">
+          {activeGame && (
+            <div className="ds-rejoin" role="alert">
+              <b>You’re already in a game.</b>
+              <button className="ds-btn primary small" onClick={onRejoin}>
+                Rejoin match →
+              </button>
+            </div>
+          )}
+          {onTutorial && !seen && (
+            <div className="ds-tut-offer">
+              <b>New to {APP_NAME}?</b>
+              {/* NOT NOW sets the flag that finishing or exiting a run sets (design review 12-13) */}
+              <span className="ds-tut-offer-acts">
+                <button
+                  className="ds-btn ghost small"
+                  onClick={() => {
+                    markTutorialSeen(settings.game);
+                    setSeen(true);
+                  }}
+                >
+                  Not now
+                </button>
+                <button className="ds-btn primary small" onClick={onTutorial}>
+                  Start the tutorial
+                </button>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
       {/* THE ROBOT'S SPACE: the drag surface for the 3D orbit, or the 2D robot on a 2D stage */}
       <div
         ref={viewRef}
-        className={activeGame || (onTutorial && !seen) ? 'ds-setup-view has-notice' : 'ds-setup-view'}
+        className={notice ? 'ds-setup-view has-notice' : 'ds-setup-view'}
         onPointerDown={(e) => {
           if (stageMode === '3d') e.currentTarget.setPointerCapture(e.pointerId);
         }}
@@ -180,41 +216,6 @@ export function ModeSelect({
         onPointerCancel={() => stageOrbit.release()}
       >
         {stageMode === '2d' && <div className="ds-setup-robot2d">{robot2d}</div>}
-        {/* THE REJOIN BANNER AND THE TUTORIAL OFFER float over the robot (owner, 2026-10-18), on
-            both desktop and phone. Off Home so the phone's Home fits its screen. Pointer events stop
-            here, so a tap on a button is not an orbit drag. */}
-        {(activeGame || (onTutorial && !seen)) && (
-          <div className="ds-setup-notice" onPointerDown={(e) => e.stopPropagation()}>
-            {activeGame && (
-              <div className="ds-rejoin" role="alert">
-                <b>You’re already in a game.</b>
-                <button className="ds-btn primary small" onClick={onRejoin}>
-                  Rejoin match →
-                </button>
-              </div>
-            )}
-            {onTutorial && !seen && (
-              <div className="ds-tut-offer">
-                <b>New to {APP_NAME}?</b>
-                {/* NOT NOW sets the flag that finishing or exiting a run sets (design review 12-13) */}
-                <span className="ds-tut-offer-acts">
-                  <button
-                    className="ds-btn ghost small"
-                    onClick={() => {
-                      markTutorialSeen(settings.game);
-                      setSeen(true);
-                    }}
-                  >
-                    Not now
-                  </button>
-                  <button className="ds-btn primary small" onClick={onTutorial}>
-                    Start the tutorial
-                  </button>
-                </span>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* THE PHONE'S TABS. Toggle buttons, not a tablist (OptRow's ruling). Hidden from 721px up. */}

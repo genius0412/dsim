@@ -41694,6 +41694,26 @@ function fxImportFixed(): RobotSpec {
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
     /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,
   );
+  // THE GARAGE RAIL (owner, 2026-11-02, on an ultrawide: "the robot selectors are massive and the robot
+  // in the background is tiny"): the robot's space is the page's full height from 1000px wide
+  const playSrc = readFileSync('src/ui/ModeSelect.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const rail = css.slice(css.indexOf('---- THE GARAGE RAIL'));
+  check(
+    'play: from 1000px wide (landscape) the robots are a rail beside the robot, and the robot’s space is the full height',
+    /@media \(min-width: 1000px\) and \(min-aspect-ratio: 1001\/1000\) \{\n  \.ds-setup,\n  \.ds-stage-2d \{/.test(rail) &&
+      rail.includes("grid-template-areas: 'picker view side';") &&
+      rail.includes('grid-template-rows: minmax(0, 1fr);'),
+  );
+  check(
+    'play: the tutorial offer and the rejoin banner are a sibling of the robot’s space (they head the rail; float elsewhere)',
+    playSrc.indexOf('<div className="ds-setup-notice">') > 0 &&
+      playSrc.indexOf('<div className="ds-setup-notice">') < playSrc.indexOf('ref={viewRef}') &&
+      rail.includes("'notice view side'"),
+  );
+  check(
+    'play: the camera frames at most SETUP_FRAME_MAX_H of the robot’s space, so a tall window does not blow the robot up',
+    /const SETUP_FRAME_MAX_H = \d+;/.test(stageSrc) && stageSrc.includes('top: free.top + extra,') && stageSrc.includes('bottom: h - free.bottom + extra,'),
+  );
   // the first-Play lag (owner, 2026-11-02): Play's card pictures made a scene at the player's tier
   const prevSrc = readFileSync('src/games/biobuzz/Preview3D.tsx', 'utf8').replace(/\r\n/g, '\n');
   const stripSrc = readFileSync('src/ui/Menu.tsx', 'utf8');

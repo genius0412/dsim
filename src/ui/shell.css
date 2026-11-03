@@ -10823,6 +10823,8 @@ input.admin-months {
   padding: var(--ds-s-4);
 }
 .ds-setup {
+  /* the tutorial offer and the rejoin banner are placed against it (`.ds-setup-notice`) */
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -10858,7 +10860,8 @@ input.admin-months {
   overflow: hidden;
 }
 /* THE REJOIN BANNER AND THE TUTORIAL OFFER, floating over the robot's space (owner, 2026-10-18) at
-   its top-left, on desktop and phone. They float over the FIELD, so they are opaque and take the
+   its top-left, on desktop and phone. Placed against `.ds-setup`, whose top-left is the robot's
+   space's in every layout but the garage rail's, where they head the rail instead (below). They float over the FIELD, so they are opaque and take the
    floating-surface edge (`--ds-hud-line`); the rejoin's accent tint is mixed into the panel, not
    into transparency, or the field would show through it. */
 .ds-setup-view {
@@ -10933,10 +10936,15 @@ input.admin-months {
       'view view'
       'picker side';
   }
+  /* the picker is a column of compact cards here (below) as tall as the modes beside it: `contain: size`
+     keeps the list from adding to the row, and it scrolls in it (2026-11-02) */
   .ds-setup-picker {
     justify-self: stretch;
-    align-self: start;
+    align-self: stretch;
     width: auto;
+    contain: size;
+    display: flex;
+    flex-direction: column;
   }
   .ds-stage-2d.setup img {
     transform: translateY(calc(var(--ds-bar-h) + var(--ds-s-4) + var(--stage2d-size) / 2 - 50vh));
@@ -11075,6 +11083,155 @@ input.admin-months {
 .ds-setup-tabs .ds-seg.on {
   border-color: var(--ds-accent);
   background: var(--ds-accent);
+}
+
+/* ---- THE GARAGE RAIL (2026-11-02; owner, on an ultrawide: "the robot selectors are massive and the
+   robot in the background is tiny") --------------------------------------------------------------
+   Measured: the camera's FOV is VERTICAL, so the robot's size follows the HEIGHT of the robot's space,
+   and the space was what the picker row (204px) and the banner strip (106) left of the window: 880px
+   at 3440x1300, 190-250 at 1280x610, 1366x657, 2000x670 and the owner's ~1700x590. The cards (320px,
+   a picture each) outweighed the robot they pick. From 1000px wide, in a landscape window, the robots
+   are a COLUMN on the left, the robot stands in the middle at the page's full height, and the modes
+   keep the right. Order of reading: the mode (the action), the robot (the picture), which robot.
+   The two columns' widths are variables because the 2D stage, outside this subtree, centres under
+   the same space. Under 1000px (the robot's space would be a slit) the row layout above stays. */
+@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000) {
+  .ds-setup,
+  .ds-stage-2d {
+    /* 300 is what the three actions and a name beside its badge need on one line each */
+    --play-rail: clamp(300px, 21vw, 340px);
+    --play-side: clamp(344px, 26vw, 420px);
+  }
+  .ds-setup {
+    grid-template-columns: var(--play-rail) minmax(0, 1fr) var(--play-side);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: 'picker view side';
+  }
+  /* the tutorial offer and the rejoin banner head the rail: over the robot's space they covered the
+     robot or, padded aside, narrowed it */
+  .ds-setup.has-notice {
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      'notice view side'
+      'picker view side';
+  }
+  .ds-setup-notice {
+    position: static;
+    grid-area: notice;
+    width: auto;
+    max-width: none;
+  }
+  .ds-setup-view.has-notice {
+    padding-left: 0;
+  }
+  /* as tall as its cards, never past the page: the list scrolls inside it */
+  .ds-setup-picker {
+    justify-self: stretch;
+    align-self: start;
+    width: auto;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .ds-stage-2d.setup img {
+    transform: translate(calc((var(--play-rail) - var(--play-side)) / 2), calc(-1 * var(--ds-s-4)));
+  }
+}
+/* THE ROBOT LIST, wherever the picker is a column: one compact card a row, a 64px picture, the name,
+   the team, and ONE line of the build (the tags that fit; the builder has the rest) */
+@media (min-width: 1000px) and (min-aspect-ratio: 1001/1000), (min-width: 721px) and (max-aspect-ratio: 1/1) {
+  /* the title on its own line and the three actions sharing the rail's width under it */
+  .ds-setup-picker .ds-panel-h {
+    flex-wrap: wrap;
+    row-gap: var(--ds-s-2);
+  }
+  .ds-setup-picker .ds-panel-h .ds-actions {
+    flex: 1 1 100%;
+  }
+  .ds-setup-picker .ds-panel-h .ds-actions .ds-btn {
+    flex: 1 1 auto;
+    white-space: nowrap;
+  }
+  .ds-setup-picker .ds-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .ds-setup-picker .ds-opts.robots.strip {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: var(--ds-s-2);
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .ds-setup-picker .ds-opts .ds-opt.ds-robot-card {
+    padding: var(--ds-s-2) var(--ds-s-3);
+  }
+  .ds-setup-picker .ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .ds-setup-picker .ds-robot-card-thumb {
+    width: 64px;
+    height: 64px;
+  }
+  .ds-setup-picker .ds-robot-card-thumb svg,
+  .ds-setup-picker .ds-robot-card-thumb canvas {
+    max-width: 56px;
+    max-height: 56px;
+  }
+  /* THE BUILD AS ONE LINE OF TEXT, "Mecanum · Single turret center", ending in an ellipsis: as tags,
+     one row held only the drivetrain beside a 64px picture, and the tag outlines were five more boxes
+     in a card that is already one */
+  .ds-setup-picker .ds-robot-card .ds-build {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: var(--ds-t-sm);
+    line-height: var(--ds-lh-prose);
+    color: var(--ds-mut);
+  }
+  .ds-setup-picker .ds-robot-card .ds-build-tag {
+    display: inline;
+    padding: 0;
+    border: 0;
+    font-weight: 500;
+  }
+  .ds-setup-picker .ds-robot-card .ds-build-tag .at {
+    margin-left: var(--ds-s-1);
+  }
+  .ds-setup-picker .ds-robot-card .ds-build-tag + .ds-build-tag::before {
+    content: '·';
+    margin-inline: var(--ds-s-1);
+    color: var(--ds-mut);
+  }
+  .ds-setup-picker .ds-robot-card .om {
+    padding-top: 0;
+  }
+}
+/* the column's "there is more" fade runs top and bottom, on its own block-axis scroll */
+@supports (animation-timeline: scroll()) {
+  @media (min-width: 1000px) and (min-aspect-ratio: 1001/1000), (min-width: 721px) and (max-aspect-ratio: 1/1) {
+    .ds-setup-picker .ds-opts.robots.strip {
+      mask-image: linear-gradient(
+        to bottom,
+        transparent,
+        black var(--strip-fade-l),
+        black calc(100% - var(--strip-fade-r)),
+        transparent
+      );
+      animation-name: strip-fade-l, strip-fade-r;
+      animation-timeline: scroll(self block);
+      animation-range:
+        0 40px,
+        calc(100% - 40px) 100%;
+    }
+  }
 }
 
 /* PHONE: the field on top, the column under it (owner: "field top, menu below"; Play: "robot top,

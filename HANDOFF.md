@@ -1,3 +1,14 @@
+# HANDOFF — 2026-11-02b (Play: the garage rail; an imported robot picked on the stage draws its mesh)
+
+**State: on `alpha`. Client only.** `npm test`, `build`, `server:check`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` pass (counts in the commit).
+
+- **Owner:** on an ultrawide Play window "the robot selectors are massive and the robot in the background is tiny. Redesign the play page with extreme thought, deliberately." Picked the garage rail from three layouts. And: an imported robot picked on Play showed only its outline until another robot was picked and back.
+- **Measured** (offscreen Electron, ten window shapes, three saved robots seeded): the camera's FOV is vertical, so the robot's size follows the height of `.ds-setup-view`, which was what the 204px picker row and the 106px banner strip left (880 at 3440x1300, 190-250 at 1280x610 / 1366x657 / 2000x670; the owner's window was ~1700x590 CSS px).
+- **Built:** from 1000px wide in a landscape window, `[rail | robot | modes]`; the robot's space is the page's full height (470 / 457 / 410 at those shapes). Compact cards wherever the picker is a column (64px picture, name, team, the build as one text line); the tutorial offer and the rejoin banner head the rail; `SETUP_FRAME_MAX_H` (840) caps the camera's box on tall windows. Under 1000px landscape and on a phone, nothing changed. Rules: `docs/area/ui.md`, "THE GARAGE RAIL".
+- **Import outline:** the stage draws on demand and waited for imported meshes only at boot. Every world it builds now redraws when `assetsSettled` resolves (72ee7fd8). Reproduced and checked offscreen with the STL fixture.
+- **Not checked:** a real ultrawide monitor; the captures are offscreen windows at those sizes. Offscreen Electron blanks a 2D robot canvas that is resized after first paint (`ui.md` notes it); the same page in the browser pane draws it.
+- **Known, unchanged:** at a 344px modes column (1000-1330px wide) "Sign in to play ranked" wraps and makes the Ranked row taller.
+
 # HANDOFF — 2026-11-02 (first load and screen changes: boot screen, last-seen counts, one screen fade; the first Play click)
 
 **State: on `alpha`. Client only: no server change, no deploy beyond Vercel.** `npm test` (shared 4674, BIOBUZZ 6403), `build`, `server:check`, `uiaudit`, `contrast`, `bundleaudit`, `docaudit`, `shiftaudit` (1252 state changes, 0 shifts, importer included) pass.

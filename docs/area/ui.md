@@ -420,6 +420,21 @@ rulings below are theirs, not defaults.
   `RobotCard`s — the kept unsaved edit, the kept preset build, saved robots, imports. Picking the card
   that is ALREADY on opens the builder (an import's opens the importer). Header: **New robot, Edit,
   Import**. Every gate the old tiles had is kept.
+- ⚠️ **THE GARAGE RAIL: FROM 1000PX WIDE, IN A LANDSCAPE WINDOW, THE ROBOTS ARE A COLUMN ON THE LEFT**
+  (owner, 2026-11-02, on an ultrawide: "the robot selectors are massive and the robot in the
+  background is tiny"; picked from three layouts). Measured first: the camera's FOV is VERTICAL, so the
+  robot's size follows the HEIGHT of `.ds-setup-view`, and the view was what the 204px picker row and
+  the 106px banner strip left: 880px at 3440x1300 but 190-250 at 1280x610, 1366x657, 2000x670 and the
+  owner's ~1700x590, beside 320px cards that each repeated the robot's picture. Now `[rail | robot |
+  modes]` (`--play-rail` clamp 300..340, `--play-side` clamp 344..420, shared with the 2D stage, which
+  centres under the same space): the view is the page's full height (470 at 2000x670, 457 at 1366x657,
+  410 at 1280x610). The rail is as tall as its cards, never past the page, and scrolls vertically.
+  Wherever the picker is a column (the rail; a portrait window's, beside the modes) a card is COMPACT:
+  a 64px picture, the name, the team, and the build as ONE text line ("Mecanum · Single turret center",
+  ending in an ellipsis), with the three actions sharing a row under the title. Under 1000px (the robot
+  would be a slit between two columns) and on a phone, the row layout is unchanged. `SETUP_FRAME_MAX_H`
+  (840) caps the box the camera frames, so a tall window (3440x1300) does not blow the robot up beside
+  fixed-size panels.
 - ⚠️ **NEW ROBOT IS A BUTTON, AND THE STRIP HOLDS NO PRESETS** (owner, 2026-11-01: "i should NOT have
   to scroll an extreme amount in thr play menu to get to 'new robot'"). It was the strip's LAST card,
   after saved robots, imports and every preset: 1,464 px of sideways scroll at 1366x657 on first
@@ -479,11 +494,12 @@ rulings below are theirs, not defaults.
   the accent-ink label vanished into it (white on white in light, dark on dark in dark) until
   `.ds-app.stage-home .ds-home-games .ds-seg.on` set its own `background`.
 - ⚠️ **THE TUTORIAL OFFER AND THE REJOIN BANNER ARE ON PLAY**, desktop and phone (owner,
-  2026-10-18), as `.ds-setup-notice` floating at the top-left of `.ds-setup-view`, opaque, with the
-  floating edge. On desktop the view gets `.has-notice` and a left padding the width of the stack,
-  so the 2D robot (sized off the content box) and the 3D camera (`insetsFor` reads the content box)
+  2026-10-18), as `.ds-setup-notice`, opaque, with the floating edge. It is a SIBLING of
+  `.ds-setup-view` (2026-11-02), placed against `.ds-setup`: in the garage rail it HEADS the rail
+  (`.ds-setup.has-notice` adds the row), and everywhere else it floats at the top-left of the robot's
+  space as before. There the view gets `.has-notice` and a left padding the width of the stack, so
+  the 2D robot (sized off the content box) and the 3D camera (`insetsFor` reads the content box)
   stand BESIDE the cards. On a phone they span the robot band, over the robot (the owner's choice).
-  Its pointerdown stops, so a tap is not an orbit drag.
 - Phone Play keeps its stage: the robot in a top 42dvh band, Modes | Robot toggle buttons under
   it (Modes first; the page scrolls on Modes), no per-game queue line and no "· N signed in" in the bar (≤ 440px), and
   no scroll track (a narrow desktop window carried Home's track into Play and overflowed it by 10px
@@ -503,8 +519,9 @@ rulings below are theirs, not defaults.
     and Home's column (`--home-inset`) keep to a centred band, and the 3D field frames inside it
     (`insetsFor`'s right inset); only the stage stays full-bleed. At 3440 and 5120 the robot panel
     ran 1,800-4,600px wide for one card and the bar's sections were 2,000px from their page.
-  - **THE ROBOT PANEL IS AS WIDE AS ITS CARDS, CENTRED UNDER THE ROBOT** (≥ 721px): full width it
-    was one card at the left of a 900-1,800px panel, unrelated to the robot above.
+  - **THE ROBOT PANEL IS AS WIDE AS ITS CARDS, CENTRED UNDER THE ROBOT** (721-999px landscape since
+    2026-11-02; wider is the garage rail): full width it was one card at the left of a 900-1,800px
+    panel, unrelated to the robot above.
   - **A PORTRAIT WINDOW (721px+, taller than wide)** puts Home's column on top, centred, and the
     field below (its scrim is laid on the column, so it ends under it at any height; the 2D field
     sits at the window's foot), and gives Play a full-width robot band on top with the picker and

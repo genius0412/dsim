@@ -85,6 +85,13 @@ const ORBIT_RETURN_S = 0.35;
  * until the horizontal view is what that aspect would show.
  */
 const STAGE_MIN_ASPECT = 1.5;
+/**
+ * THE TALLEST BOX PLAY'S CAMERA FRAMES THE ROBOT IN (2026-11-02). The FOV is vertical, so the robot
+ * grows with the robot's space's HEIGHT, and since that space is the page's full height (the garage
+ * rail, shell.css) a 3440x1300 window drew it ~500px tall beside 420px panels. Past this the extra
+ * height is left above and below it.
+ */
+const SETUP_FRAME_MAX_H = 840;
 function fitFov(fovDeg: number, w: number, h: number, ins: SceneInsets): number {
   const aspect = Math.max(0.2, (w - ins.left - ins.right) / Math.max(1, h - ins.top - ins.bottom));
   if (aspect >= STAGE_MIN_ASPECT) return fovDeg;
@@ -110,11 +117,12 @@ function insetsFor(view: StageView, w: number, h: number): SceneInsets {
   }
   const viewEl = document.querySelector<HTMLElement>('.ds-setup-view');
   const free = viewEl?.getBoundingClientRect();
+  const extra = free ? Math.max(0, (free.height - SETUP_FRAME_MAX_H) / 2) : 0;
   if (viewEl && free && free.width > 0)
     return {
-      top: free.top,
+      top: free.top + extra,
       right: w - free.right,
-      bottom: h - free.bottom,
+      bottom: h - free.bottom + extra,
       // its CONTENT box: the rejoin / tutorial cards pad its left edge, and the robot frames beside them
       left: free.left + (parseFloat(getComputedStyle(viewEl).paddingLeft) || 0),
     };

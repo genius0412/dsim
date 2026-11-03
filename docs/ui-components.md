@@ -170,7 +170,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-tut-head` | src/ui/tutorial.css:92 | 1 |
 | `.ds-tut-hint` | src/ui/tutorial.css:83 | 1 |
 | `.ds-tut-nudge` | src/ui/tutorial.css:157 | 1 |
-| `.ds-tut-offer` | src/ui/shell.css:10880 | 2 |
+| `.ds-tut-offer` | src/ui/shell.css:10883 | 2 |
 | `.ds-tut-offer-acts` | src/ui/tutorial.css:219 | 1 |
 | `.ds-tut-pips` | src/ui/tutorial.css:105 | 1 |
 | `.ds-tut-step` | src/ui/tutorial.css:64 | 2 |
@@ -183,13 +183,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-setup` | src/ui/shell.css:714 | 11 |
 | `.ds-setup-bar` | src/ui/shell.css:734 | 0 |
 | `.ds-setup-cols` | src/ui/shell.css:720 | 0 |
-| `.ds-setup-notice` | src/ui/shell.css:10867 | 1 |
-| `.ds-setup-offline` | src/ui/shell.css:10961 | 1 |
-| `.ds-setup-picker` | src/ui/shell.css:10912 | 1 |
-| `.ds-setup-robot2d` | src/ui/shell.css:10856 | 1 |
+| `.ds-setup-notice` | src/ui/shell.css:10870 | 1 |
+| `.ds-setup-offline` | src/ui/shell.css:10969 | 1 |
+| `.ds-setup-picker` | src/ui/shell.css:10915 | 1 |
+| `.ds-setup-robot2d` | src/ui/shell.css:10858 | 1 |
 | `.ds-setup-side` | src/ui/shell.css:2330 | 1 |
-| `.ds-setup-tabs` | src/ui/shell.css:11064 | 1 |
-| `.ds-setup-view` | src/ui/shell.css:10840 | 4 |
+| `.ds-setup-tabs` | src/ui/shell.css:11072 | 1 |
+| `.ds-setup-view` | src/ui/shell.css:10842 | 4 |
 
 ## `ds-closed` — 9
 
@@ -268,7 +268,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-home-games` | src/ui/shell.css:1494 | 1 |
 | `.ds-home-link` | src/ui/shell.css:1623 | 4 |
 | `.ds-home-links` | src/ui/shell.css:1509 | 1 |
-| `.ds-home-more` | src/ui/shell.css:11190 | 1 |
+| `.ds-home-more` | src/ui/shell.css:11347 | 1 |
 | `.ds-home-presents` | src/ui/shell.css:8354 | 1 |
 | `.ds-home-scrim` | src/ui/shell.css:10597 | 1 |
 | `.ds-home-title` | src/ui/shell.css:1480 | 1 |
@@ -422,10 +422,10 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-play-head` | src/ui/shell.css:10976 | 2 |
-| `.ds-play-modes` | src/ui/shell.css:10968 | 1 |
-| `.ds-play-summary` | src/ui/shell.css:11008 | 1 |
-| `.ds-play-tiles` | src/ui/shell.css:10987 | 2 |
+| `.ds-play-head` | src/ui/shell.css:10984 | 2 |
+| `.ds-play-modes` | src/ui/shell.css:10976 | 1 |
+| `.ds-play-summary` | src/ui/shell.css:11016 | 1 |
+| `.ds-play-tiles` | src/ui/shell.css:10995 | 2 |
 
 ## `ds-report` — 4
 
@@ -516,17 +516,17 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-more-backdrop` | src/ui/shell.css:11196 | 1 |
-| `.ds-more-foot` | src/ui/shell.css:11207 | 1 |
-| `.ds-more-sheet` | src/ui/shell.css:11200 | 1 |
+| `.ds-more-backdrop` | src/ui/shell.css:11353 | 1 |
+| `.ds-more-foot` | src/ui/shell.css:11364 | 1 |
+| `.ds-more-sheet` | src/ui/shell.css:11357 | 1 |
 
 ## `ds-popup` — 3
 
 | class | declared | used |
 |---|---|---|
-| `.ds-popup` | src/ui/shell.css:11319 | 6 |
-| `.ds-popup-host` | src/ui/shell.css:11316 | 1 |
-| `.ds-popup-x` | src/ui/shell.css:11335 | 2 |
+| `.ds-popup` | src/ui/shell.css:11476 | 6 |
+| `.ds-popup-host` | src/ui/shell.css:11473 | 1 |
+| `.ds-popup-x` | src/ui/shell.css:11492 | 2 |
 
 ## `ds-presence` — 3
 
@@ -584,7 +584,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-dialog-actions` | src/ui/shell.css:7056 | 13 |
-| `.ds-dialog-title` | src/ui/shell.css:11325 | 12 |
+| `.ds-dialog-title` | src/ui/shell.css:11482 | 12 |
 
 ## `ds-feed` — 2
 
@@ -749,7 +749,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-arrive` | src/ui/shell.css:11518 | 4 |
+| `.ds-arrive` | src/ui/shell.css:11675 | 4 |
 
 ## `ds-autoprev` — 1
 
