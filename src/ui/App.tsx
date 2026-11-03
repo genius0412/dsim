@@ -2306,6 +2306,7 @@ export function App() {
         onSpectate={spectateRoom}
         myUserId={accountUserId}
         game={settings.game}
+        page={popup ? 'modes' : screen}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both

@@ -194,7 +194,7 @@ export function sponsorChecks(check: Check): void {
   );
 
   // ── the loading screen ────────────────────────────────────────────────────
-  // index.html IS the loading screen: React clears #root on mount, so this markup
+  // index.html IS the loading screen: it sits over #root until the app has painted, so this markup
   // is what a visitor looks at while the bundle parses and the Rapier WASM decodes.
   // It ships outside tsc and outside the React tree, so nothing else notices it.
   const html = read('index.html');

@@ -29178,7 +29178,7 @@ const dumperSetup = (): RobotSetup => {
  * configured URL mappings, and whose launch URL is the ONLY carrier of `instance_id`,
  * `frame_id` and `platform`.
  *
- * 1. `index.html` IS the loading screen (React clears `#root` on mount), so it is what
+ * 1. `index.html` IS the loading screen (over `#root` until the app has painted), so it is what
  *    a participant looks at for the whole cold boot. An external anchor with no
  *    `target` there is a SAME-FRAME navigation to a host the embed may not load, with
  *    no back button to undo it — it can strand the activity on launch. Nothing else in
@@ -41632,6 +41632,56 @@ function fxImportFixed(): RobotSpec {
     GAME_IDS.filter((g) => !seasonKeyActions(g).some(actionIsSeasonOnly)).every(
       (g) => J(allGamesPanels(g)) === J(ALL_GAMES_PANELS),
     ) && J(allGamesPanels(null)) === J(ALL_GAMES_PANELS),
+  );
+}
+
+/*
+ * THE BOOT SCREEN AND THE SCREEN FADE (2026-11-02, owner: a smooth first load and transitions).
+ * Read as text: the boot screen ships outside tsc and outside the React tree, and the fades are CSS.
+ */
+{
+  const html = readFileSync('index.html', 'utf8').replace(/\r\n/g, '\n');
+  const css = readFileSync('src/ui/shell.css', 'utf8').replace(/\r\n/g, '\n');
+  const bootAt = html.indexOf('<div id="seo-home">');
+  const rootAt = html.indexOf('<div id="root"></div>');
+  check(
+    'boot screen: #seo-home sits BESIDE an empty #root, so the mount fades it instead of replacing it in one frame',
+    bootAt > 0 && rootAt > bootAt,
+    `seo-home at ${bootAt}, empty root at ${rootAt}`,
+  );
+  // its stage ground is four literals (nothing has loaded yet), so pin them to the tokens they copy
+  const stage = /:root\[data-boot='stage'\] #seo-home \{([^}]*)\}/.exec(html)?.[1] ?? '';
+  const lit = (src: string, name: string): string =>
+    (new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, 'i').exec(src)?.[1] ?? '').toLowerCase();
+  const pairs: [string, string][] = [
+    ['--sh-bg', '--ds-stage-bg'],
+    ['--sh-ink', '--ds-on-field'],
+    ['--sh-mut', '--ds-on-field-dim'],
+    ['--sh-accent', '--ds-on-field-accent'],
+  ];
+  const off = pairs.filter(([b, t]) => !lit(stage, b) || lit(stage, b) !== lit(css, t));
+  check(
+    'boot screen: its stage ground is the menu stage’s own colours, so the hand-over changes no ground',
+    off.length === 0,
+    off.map(([b, t]) => `${b} ${lit(stage, b) || '?'} vs ${t} ${lit(css, t) || '?'}`).join(', '),
+  );
+  check(
+    'boot screen: its loading bar holds still under reduced motion',
+    /prefers-reduced-motion[\s\S]*\.sh-load span \{\s*animation: none/.test(html),
+  );
+  const arrivals = css.slice(css.indexOf('---- SCREEN ARRIVALS'));
+  check(
+    'screen fade: ONE token (--ds-dur-screen) is defined, and the arrivals run on it',
+    /--ds-dur-screen:\s*\d+ms/.test(css) && /ds-screen-in var\(--ds-dur-screen\)/.test(arrivals),
+  );
+  check(
+    'screen fade: reduced motion caps the arrivals’ iteration count, not only their duration',
+    /prefers-reduced-motion[\s\S]*animation-iteration-count:\s*1/.test(arrivals),
+  );
+  const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
+  check(
+    'menu stage: the 2D field holds the place until the 3D scene has faded over it (no empty backdrop)',
+    /\(!use3d \|\| !covered\) && <Stage2d/.test(stageSrc) && /addEventListener\('transitionend', onFaded\)/.test(stageSrc),
   );
 }
 

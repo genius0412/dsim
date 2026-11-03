@@ -203,12 +203,28 @@ export function MenuStage({
   const [use3d, setUse3d] = useState(() => wants3d(game));
   useEffect(() => setUse3d(wants3d(game)), [game]);
   useEffect(() => setMode(use3d ? '3d' : '2d'), [use3d]);
+  /**
+   * THE 2D FIELD HOLDS THE PLACE UNTIL THE 3D ONE IS IN (2026-11-02). The 3D scene boots on idle and
+   * then fetches its chunk and the field (~0.9 MB) and compiles its shaders: 1.3 s on a fast line
+   * and 8 s on Slow 4G before it began its fade, and the stage was an empty dark backdrop all that
+   * time, on Home's first load and again on every return from a match. The game's own flat field is
+   * drawn under it at once (the same picture a 2D device gets), and is dropped once the 3D has faded
+   * over it.
+   */
+  const [covered, setCovered] = useState(false);
+  useEffect(() => setCovered(false), [game, use3d]);
   return (
     <div className={`ds-stage ${view}`} aria-hidden="true">
-      {use3d ? (
-        <Stage3d game={game} view={view} spec={spec} alliance={alliance} onFail={() => setUse3d(false)} />
-      ) : (
-        <Stage2d game={game} view={view} />
+      {(!use3d || !covered) && <Stage2d game={game} view={view} />}
+      {use3d && (
+        <Stage3d
+          game={game}
+          view={view}
+          spec={spec}
+          alliance={alliance}
+          onFail={() => setUse3d(false)}
+          onCovered={() => setCovered(true)}
+        />
       )}
     </div>
   );
@@ -220,18 +236,21 @@ function Stage3d({
   spec,
   alliance,
   onFail,
+  onCovered,
 }: {
   game: GameId;
   view: StageView;
   spec: RobotSpec;
   alliance: Alliance;
   onFail(): void;
+  /** the scene has faded in over the 2D placeholder, which can go */
+  onCovered(): void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
   // the live inputs, read by the frame loop without restarting it
-  const live = useRef({ view, spec, alliance, onFail });
-  live.current = { view, spec, alliance, onFail };
+  const live = useRef({ view, spec, alliance, onFail, onCovered });
+  live.current = { view, spec, alliance, onFail, onCovered };
   /** the loop's handle on the running scene: set a new target, rebuild the world */
   const ctl = useRef<{ fly(): void; rebuild(): void } | null>(null);
 
@@ -259,6 +278,10 @@ function Stage3d({
     let dropRobotAt = 0;
     let wasAnimating = false;
     let settle = 0;
+    let covered = 0;
+    const onFaded = (e: TransitionEvent): void => {
+      if (e.target === host && e.propertyName === 'opacity') live.current.onCovered();
+    };
 
     const buildWorld = (): void => {
       const { spec, alliance } = live.current;
@@ -413,7 +436,7 @@ function Stage3d({
     buildWorld();
     // THE PAGE FIRST, THE FIELD WHEN THE BROWSER IS IDLE: the scene's chunk, the field's meshes and
     // the shader compile are a few hundred ms of main thread on a weak machine, and Home's keycaps
-    // should answer before they run. The backdrop is dark until the scene fades in either way.
+    // should answer before they run. The 2D field is under it until it has faded in (`covered`).
     const boot = (): Promise<void> =>
       load()
         .then((factory) => factory(host, { interactive: false, quality: stageTier(), environment: STAGE_ROOM }))
@@ -430,6 +453,11 @@ function Stage3d({
           resize();
           frame(performance.now());
           setShown(true);
+          // the 2D field goes when the fade has ENDED, not on a timer: the scene's first frame is often
+          // followed by a long task, and a timer could fire before the fade had begun. None under reduced
+          // motion (no transition); the timeout only covers a fade that never reports.
+          host.addEventListener('transitionend', onFaded);
+          covered = window.setTimeout(() => live.current.onCovered(), reducedMotion() ? 0 : 3000);
           // an imported robot's mesh lands after the first frame
           if (world) void s.assetsSettled?.(world).then(kick);
         })
@@ -449,6 +477,8 @@ function Stage3d({
       if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
       else clearTimeout(idle);
       clearTimeout(settle);
+      clearTimeout(covered);
+      host.removeEventListener('transitionend', onFaded);
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       orbitSink = null;
@@ -510,5 +540,6 @@ function Stage2d({ game, view }: { game: GameId; view: StageView }) {
       if (url) URL.revokeObjectURL(url);
     };
   }, [game]);
-  return <div className={`ds-stage-2d ${view}`}>{src && <img src={src} alt="" />}</div>;
+  // keyed on the picture, so a new game's field fades in (`ds-screen-in`) rather than swapping
+  return <div className={`ds-stage-2d ${view}`}>{src && <img key={src} src={src} alt="" />}</div>;
 }

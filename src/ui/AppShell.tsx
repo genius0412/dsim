@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
 import { APP_NAME, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
@@ -17,6 +17,7 @@ import { MaintenanceBanner } from './MaintenanceBanner';
 import { LanBanner } from './LanBanner';
 import { PresenceProvider, QueueCounts } from './QueueCounts';
 import { RAIL_ITEMS } from './NavRail';
+import { bootDone, fadeIn } from './screenFade';
 import type { Presence, RoomInvite } from '../net/api';
 
 export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
@@ -76,6 +77,7 @@ export function AppShell({
   onSpectate,
   myUserId,
   game,
+  page,
 }: {
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
@@ -121,6 +123,9 @@ export function AppShell({
   myUserId?: string | null;
   /** the selected game — the app bar names its season, and footer links carry its URL prefix */
   game: GameId;
+  /** WHICH PAGE this is (App's screen, Play under a popup): a new one fades its content in
+   * (`screenFade.ts`). Not the sub-route, so a Configure section or a Records page does not. */
+  page?: string;
 }) {
   const lanOn = useLanEnabled();
   const presence = usePresence();
@@ -156,13 +161,26 @@ export function AppShell({
   // ...and the trail drops that root while the sections show it: "PLAY" twice in one bar said nothing
   // twice. Deeper crumbs stay ("RANKED", "LEADERBOARDS"); the section button is the way up.
   const trail = barNav && section ? crumbs.slice(1) : crumbs;
+  // A NEW PAGE FADES IN, the bar and the footer do not. Not on a mount: the first one is under the
+  // boot screen's fade, and a later one (back from a match or a replay) fades the whole shell
+  // (`arrive`). Before paint, so no frame shows it at full opacity first.
+  const [arrive] = useState(bootDone);
+  const mainRef = useRef<HTMLElement>(null);
+  const shownPage = useRef(page);
+  useLayoutEffect(() => {
+    if (shownPage.current === page) return;
+    shownPage.current = page;
+    fadeIn(mainRef.current);
+  }, [page]);
   return (
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
     <PresenceProvider value={presence} game={game}>
     <FootContext.Provider value={{ game, onDownload, onContributors, onPrivacy, onTerms, onDonate, onChangelog }}>
     {/* `is-home` is Home OFF the stage (a phone), where the footer is the "More" sheet instead */}
-    <div className={`${stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}${barNav ? ' has-barnav' : ''}`}>
+    <div
+      className={`${stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}${barNav ? ' has-barnav' : ''}${arrive ? ' ds-arrive' : ''}`}
+    >
       <header className="ds-bar">
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
           <Logo size={24} />
@@ -255,10 +273,10 @@ export function AppShell({
       {stage === 'setup' ? (
         // THE PLAY PAGE OVER THE STAGE: the robot is the picture, so no page ad under it and no friends
         // panel beside it (owner, 2026-10-18); the banner strip below still runs
-        <main className="ds-main ds-main-stage">{children}</main>
+        <main ref={mainRef} className="ds-main ds-main-stage">{children}</main>
       ) : !home ? (
         <div className="ds-body">
-          <main className={wide ? 'ds-main wide' : 'ds-main'}>
+          <main ref={mainRef} className={wide ? 'ds-main wide' : 'ds-main'}>
             {children}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
                 there is no clearance rule and no frame budget to protect. It
@@ -279,7 +297,7 @@ export function AppShell({
         // The home screen deliberately gets NO ad of any kind (no page ad, and no top strip above). It is the first thing a new
         // visitor sees and the page an AdSense reviewer lands on; it should read
         // as a product, not as inventory.
-        <main className="ds-main ds-main-home">{children}</main>
+        <main ref={mainRef} className="ds-main ds-main-home">{children}</main>
       )}
 
       {/* floating friend-request / challenge notifications. A live match mounts its own

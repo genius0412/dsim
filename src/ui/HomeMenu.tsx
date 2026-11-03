@@ -11,6 +11,33 @@ import { FootBody, type ShellNav } from './AppShell';
 import { discordAvatarUrl, discordDisplayName, inDiscordActivity, type DiscordParticipant } from '../net/discordActivity';
 import { Logo } from './Logo';
 import { useDialog } from './useDialog';
+import { HOME_STATS_KEY } from '../storageKeys';
+
+/** the counts this device last saw (`HOME_STATS_KEY`), or null; validated field by field */
+function readSeenStats(): GlobalStats | null {
+  try {
+    const raw = localStorage.getItem(HOME_STATS_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Partial<GlobalStats> | null;
+    const ok = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+    const c = v?.byCategory;
+    if (!v || !ok(v.users) || !ok(v.games) || !c || !ok(c.solo) || !ok(c.duo) || !ok(c['1v1']) || !ok(c['2v2'])) return null;
+    return {
+      users: v.users,
+      games: v.games,
+      byCategory: { solo: c.solo, duo: c.duo, '1v1': c['1v1'], '2v2': c['2v2'], ...(ok(c.custom) ? { custom: c.custom } : {}) },
+    };
+  } catch {
+    return null;
+  }
+}
+function writeSeenStats(s: GlobalStats): void {
+  try {
+    localStorage.setItem(HOME_STATS_KEY, JSON.stringify({ users: s.users, games: s.games, byCategory: s.byCategory }));
+  } catch {
+    /* storage blocked: the next visit shows dashes until the fetch, as before */
+  }
+}
 
 /**
  * The main menu: ONE LEFT COLUMN over the menu stage (`MenuStage.tsx`, owner 2026-10-18, after
@@ -56,11 +83,23 @@ export function HomeMenu({
 
   // site-wide counters (players + games played), when the server is configured
   const [stats, setStats] = useState<GlobalStats | null>(null);
+  /**
+   * THE LAST COUNTS THIS DEVICE SAW, until the fetch lands (2026-11-02, owner: the counts were
+   * missing for a long stretch of the first load). The fetch only starts once the app has mounted,
+   * and it waits on the router: one round trip when it is warm, ~4 s when an idle one wakes. They are
+   * totals that only grow, nothing on them reads "live", and `aria-busy` stays on until the fetch
+   * answers. A first visit still shows a dash.
+   */
+  const [seen] = useState(readSeenStats);
   useEffect(() => {
     if (!multiplayer) return;
     let alive = true;
     fetchGlobalStats()
-      .then((s) => alive && setStats(s))
+      .then((s) => {
+        if (!alive) return;
+        setStats(s);
+        writeSeenStats(s);
+      })
       .catch(() => {});
     return () => {
       alive = false;
@@ -105,13 +144,26 @@ export function HomeMenu({
   );
 
   /**
-   * THE STATS ARE ON SCREEN FROM THE FIRST FRAME, with a dash for each number until the fetch lands
+   * THE STATS ARE ON SCREEN FROM THE FIRST FRAME, with the last counts this device saw (or a dash for
+   * each number) until the fetch lands
    * (owner, 2026-11-01: the cards "load AFTER the data is received from the server, so it shifts
    * UI"). Home's column is centred in the window, so a block that appeared a second in moved every
    * keycap above it up by half its height. A failed fetch keeps the dashes rather than taking the
    * block away again, which would be the same shift the other way.
    */
   const num = (n: number | undefined): string => (n == null ? '—' : n.toLocaleString());
+  const shown = stats ?? seen;
+  /** ONE COUNT, keyed on its text: when the fetch lands, a number that changed (a dash, or an old
+   * total) is a new element and fades in (`.ds-arrive`); one that did not change does not move */
+  const count = (pick: (s: GlobalStats) => number | undefined, className: string): ReactNode => {
+    const text = num(shown ? pick(shown) : undefined);
+    const before = num(seen ? pick(seen) : undefined);
+    return (
+      <span key={text} className={text === before ? className : `${className} ds-arrive`}>
+        {text}
+      </span>
+    );
+  };
   // two lines: the runs with no opponent, then the versus formats. Sentence case, digits in the
   // mono utility (01-21). In the column on the stage; in the "More" sheet on a phone.
   const breakdown = multiplayer && (
@@ -119,21 +171,21 @@ export function HomeMenu({
       {(
         [
           [
-            ['Solo', stats?.byCategory.solo],
-            ['Duo', stats?.byCategory.duo],
+            ['Solo', (s) => s.byCategory.solo],
+            ['Duo', (s) => s.byCategory.duo],
           ],
           [
-            ['1v1', stats?.byCategory['1v1']],
-            ['2v2', stats?.byCategory['2v2']],
+            ['1v1', (s) => s.byCategory['1v1']],
+            ['2v2', (s) => s.byCategory['2v2']],
             // custom rooms + Discord rooms + LAN; absent from an older server, and held while loading
-            ...(!stats || stats.byCategory.custom != null ? [['Custom', stats?.byCategory.custom]] : []),
+            ...(!stats || stats.byCategory.custom != null ? [['Custom', (s: GlobalStats) => s.byCategory.custom]] : []),
           ],
-        ] as [string, number | undefined][][]
+        ] as [string, (s: GlobalStats) => number | undefined][][]
       ).map((line, i) => (
         <span key={i} className="hb-line">
-          {line.map(([label, n]) => (
+          {line.map(([label, pick]) => (
             <span key={label}>
-              {label} <span className="ds-num">{num(n)}</span>
+              {label} {count(pick, 'ds-num')}
             </span>
           ))}
         </span>
@@ -231,11 +283,11 @@ export function HomeMenu({
       {multiplayer && (
         <div className="ds-homestats" aria-busy={!stats}>
           <div className="ds-stat">
-            <span className="sv">{num(stats?.users)}</span>
+            {count((s) => s.users, 'sv')}
             <span className="sl">Players</span>
           </div>
           <div className="ds-stat">
-            <span className="sv">{num(stats?.games)}</span>
+            {count((s) => s.games, 'sv')}
             <span className="sl">Games played</span>
           </div>
           {stage && breakdown}

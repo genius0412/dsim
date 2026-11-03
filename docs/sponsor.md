@@ -62,9 +62,10 @@ impression, and the impression it belongs to is the one the site already counts 
 
 Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
 
-- **The loading screen** is `#seo-home` in `index.html` — React clears `#root` on mount, so
-  that static markup is what a visitor looks at while the bundle parses and the Rapier WASM
-  decodes. The bundled logos are fingerprinted by Vite and an absolute `/public/...` path
+- **The loading screen** is `#seo-home` in `index.html`, beside `#root`: that static markup is
+  what a visitor looks at while the bundle downloads and parses and the Rapier WASM decodes,
+  and it fades off once the app has painted (`dismissBoot`). The sponsor line stays visible in
+  its JS-on look (`data-boot`), which hides only the menu. The bundled logos are fingerprinted by Vite and an absolute `/public/...` path
   404s under Electron's `file://`, so the line is a plain link. Its href is the ONE sponsor
   URL in the repo written by hand rather than by `sponsorLink` — the markup ships before any
   bundle runs — so it is UTM-tagged literally, as the `loading` placement, and the smoke lane

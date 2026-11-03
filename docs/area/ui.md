@@ -388,8 +388,11 @@ rulings below are theirs, not defaults.
   50 ms after a move ends, and once when `assetsSettled` resolves), not every frame.
   DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
   phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and shown FLAT.
-  A dark backdrop (`--ds-stage-bg`) until the 3D fades in. Home has game pieces only; the player's
-  robot joins for Play and leaves when the camera is back at Home.
+  Under the 3D, the game's 2D field until the scene has faded in over it (`covered`, on the fade's
+  `transitionend`): the scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty
+  backdrop, on every first load and every return from a match. The 3D fade is `--ds-dur-screen`; at
+  the fly's 1 s the flat map and the perspective field showed as a double exposure. Home has game
+  pieces only; the player's robot joins for Play and leaves when the camera is back at Home.
 - ⚠️ **THE 3D STAGE HAS ITS OWN ROOM AND TIER, NOT THE PLAYER'S MATCH SETTINGS** (2026-11-01, owner:
   Home "still distorted and EXTREMELY laggy on some devices"). `MenuStage` passes
   `SceneOptions.quality` (Medium, or Low where the device's own tier is Low) and
@@ -529,7 +532,12 @@ rulings below are theirs, not defaults.
   received from the server, so it shifts UI"). Home's column is centred, so a block that arrived a
   second in moved every keycap up by half its height. With a game server configured the tiles and the
   breakdown render at once, a dash for each number until `fetchGlobalStats` lands; a failed fetch keeps
-  the dashes rather than removing the block, which would be the same shift the other way.
+  the dashes rather than removing the block, which would be the same shift the other way. Since
+  2026-11-02 a returning device shows the counts it last saw (`HOME_STATS_KEY`) instead of dashes, with
+  `aria-busy` on until the fetch answers; each number is keyed on its text, so only one that changed
+  fades in (`.ds-arrive`). The fetch starts only after mount and waits on the router (one round trip
+  warm, ~4 s when an idle one wakes). Still measured: a first visit on a PHONE re-centres its one-line
+  stats when the dashes become numbers (layout-shift 0.0008); the desktop tiles do not move.
 - **THE ADMIN LINK ON HOME is a plate like the two chips beside it** (owner, 2026-11-01: "genuinely
   very off"): it was the bar's outlined ghost button, an unfilled box with a pale edge over the scene,
   taller than the chips, whose hover fill (`--ds-panel`) was white under on-field white text in light
@@ -591,6 +599,37 @@ rulings below are theirs, not defaults.
   robot"). The 2D robot on Play is sized to the free area (`ResizeObserver`, 96..400px).
 - **A first visit (nothing stored) opens on BIOBUZZ**, web and activity alike; `defaultSettings()`
   stays DECODE.
+
+## The first load and screen changes (2026-11-02)
+
+Owner: the first load was an old static page, then a black field, then missing counts; every
+transition should feel smooth "but not with excessive or annoying animation". Measured cold, in an
+offscreen Electron window, unthrottled and on Chrome's Slow 4G profile (`scratch/coldload/` in the
+worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
+
+- ⚠️ **THE BOOT SCREEN IS `#seo-home`, BESIDE `#root`, NOT IN IT.** It was the pre-stage centred
+  menu inside `#root` (DECODE picked, links that reload the page), replaced by the real Home in one
+  frame when React mounted: 0.3 s on a fast line, 7 s on Slow 4G (the 901 KB entry bundle). With JS on
+  (`data-boot`, stamped by an inline script) it is now a loading screen: the mark, the sponsor line,
+  a bar that shows after 600 ms. Its ground is the screen it hands over to: `stage` (the menu stage's
+  colours, pinned to the tokens by `npm test`) or `shell` (themed `--ds-bg`), from the path and the
+  phone breakpoint. React mounts under it and `dismissBoot` (`screenFade.ts`) fades it once the first
+  screen has painted. The menu, game links and footer are hidden in that look, not removed: they are
+  still what a crawler and a no-JS client get, and the sponsor line is a contracted placement.
+- **A baked-closed build (the alpha) waits on the boot screen for its first access answer**
+  (`main.tsx`, `GATE_WAIT_MS` 10 s), so a tester no longer sees "Alpha is closed · Checking your
+  account…" on every cold load. An idle `dsim-alpha-primary` took 7.8 s to answer `/api/status`.
+- **ONE SCREEN FADE, `--ds-dur-screen` (200 ms), entry only** (`docs/ui-standard.md` §7): a route's
+  content (`AppShell`'s `page`, App's screen, or `modes` under a popup; not the sub-route), popups
+  and dialogs (`.overlay`, `.ds-modal-backdrop`), the presence chip, the 2D stage picture, a match
+  opening (a `--ds-stage-bg` cover lifts off `.game-shell`: a fade from opacity 0 showed the page's
+  `--ds-bg`, white in light theme, between two dark screens), and the shell mounting again after a
+  match (`.ds-arrive` on `.ds-app`, decided at mount by `bootDone`; never flipped onto a mounted
+  element, which would start the fade on a screen already showing). The stage itself does not fade
+  on return: its ground is there at once and its field fades in on its own.
+- Not changed, measured: the 3D scene's build costs two long tasks (~690 and ~460 ms on this machine)
+  right after the first load; the sponsor logo (two 30 KB PNGs) lands about a second after Home on
+  Slow 4G, into its reserved box.
 
 ## Configure — the sections, and the three rules that hold them together
 

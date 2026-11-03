@@ -123,6 +123,8 @@ export const ZENITH_AUTOS_KEY = 'decodesim.zenithAutos.v1';
 export const ROBOT_LIBRARY_DB = 'decodesim.robots';
 /** show other players’ imported robots as their real picture/model (default on), or as an outline — per device */
 export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
+/** Home's player and game counts as last fetched, shown until the fresh ones land (`HomeMenu.tsx`) */
+export const HOME_STATS_KEY = 'decodesim.homeStats.v1';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -267,6 +269,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     purpose:
       'The 3D quality preset for this machine. Kept per device rather than per account, because a graphics card is a property of the computer in front of you.',
     retention: 'Until you clear your browser data.',
+  },
+  {
+    key: HOME_STATS_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'The site-wide player and game counts the home page last showed, so they are on screen while the current ones load. Public totals; nothing about you.',
+    retention: 'Until you clear your browser data. Replaced each time the home page loads the counts.',
   },
   {
     key: IMPORT_VISUALS_KEY,

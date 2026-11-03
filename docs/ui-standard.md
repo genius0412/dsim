@@ -186,9 +186,17 @@ share the same padding**, so the panel does not jump height when data lands.
 
 - Transitions ≤ 150ms, and only on `transform`, `opacity`, `background`, `border-color`,
   `box-shadow`.
+- **A SCREEN ARRIVING is the one longer fade** (2026-11-02): `--ds-dur-screen` (200ms), opacity
+  only, entry only. It covers a route's content (`AppShell`'s `page`), a popup or dialog
+  (`.overlay`, `.ds-modal-backdrop`), the boot screen leaving, a match opening (a
+  `--ds-stage-bg` cover lifting off), the shell mounting again after a match, and a value that
+  lands after first paint (`.ds-arrive`, keyed on the value). The shared rules and their
+  reasons are the SCREEN ARRIVALS block at the end of `shell.css`; `src/ui/screenFade.ts` is the
+  JS half. Nothing leaves with a fade, and no new speed is added for a single surface.
 - `prefers-reduced-motion` must cap **`animation-iteration-count: 1`** as well as duration.
   Capping only the duration makes an infinite animation loop faster, not stop.
-- No animation on first paint of a list or panel.
+- No animation on first paint of a list or panel. A screen fade is not one: it fades the whole
+  screen once, never its rows in turn.
 - **Named exception: the results reveal** (`Results.tsx`, the `.resx-*` keyframes in
   `styles.css`; design review 06-14). Its sections and rows land in sequence on first paint
   because the order carries information: the breakdown before the totals, the totals before

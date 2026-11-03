@@ -123,6 +123,9 @@
      is not transitioned: it snaps, so a label never passes through a sub-contrast mid-tone. */
   --ds-dur-press: 60ms;
   --ds-dur-fade: 150ms;
+  /* a SCREEN arriving: a route's content, a popup or dialog, the boot screen leaving, a match
+     starting. Opacity only, entry only (`screenFade.ts` reads it too). */
+  --ds-dur-screen: 200ms;
   /* the menu stage's camera fly, Home <-> Play (`FLY_MS` in MenuStage.tsx says it too) */
   --ds-dur-fly: 1000ms;
   --ds-ease: ease-out;
@@ -10451,8 +10454,9 @@ input.admin-months {
 
 /* ---- THE MENU STAGE (`MenuStage.tsx`): the field behind Home and Play ------------------------
    Owner, 2026-10-18, after MoSim's home. ONE fixed layer behind the shell for both screens, so Play
-   is a camera fly and not a page load. Its ground is `--ds-stage-bg` until the scene fades in, and
-   it is dark in both themes, which is why what is drawn straight on it is category 3. */
+   is a camera fly and not a page load. Its ground is `--ds-stage-bg`, under the game's 2D field until
+   the 3D scene fades in, and it is dark in both themes, which is why what is drawn straight on it is
+   category 3. */
 .ds-stage {
   position: fixed;
   inset: 0;
@@ -10471,11 +10475,13 @@ input.admin-months {
   overflow-y: auto;
   overflow-x: hidden;
 }
+/* it fades in over the 2D field (`MenuStage`'s placeholder), so at the screen speed: at the fly's 1 s
+   the flat map and the perspective field showed as a double exposure for a full second */
 .ds-stage-3d {
   position: absolute;
   inset: 0;
   opacity: 0;
-  transition: opacity var(--ds-dur-fly) var(--ds-ease);
+  transition: opacity var(--ds-dur-screen) var(--ds-ease);
 }
 .ds-stage-3d.shown {
   opacity: 1;
@@ -11435,5 +11441,53 @@ body:has(.ds-popup-host > :not(.ds-popup))
   .ds-app.on-stage .ds-bar::before,
   .ds-app.on-stage .ds-bar > :not(.ds-bar-right) {
     transition: none;
+  }
+}
+
+/* ---- SCREEN ARRIVALS (2026-11-02, owner: smooth first load and transitions, "not excessive") ----
+   ONE fade for everything that ARRIVES as a screen: a route's content (`screenFade.ts`, from
+   `AppShell`), a popup over Play, a dialog, the boot screen leaving (`index.html`), a match starting,
+   the shell coming back after one.
+   Opacity only, entry only, `--ds-dur-screen`; leaving is instant. `:where()` keeps it at zero
+   specificity, so a surface with its own entrance (`.ann-overlay`, `.rw-backdrop`) keeps that. */
+@keyframes ds-screen-in {
+  from {
+    opacity: 0;
+  }
+}
+:where(.overlay, .ds-modal-backdrop, .ds-presence, .ds-stage-2d img) {
+  animation: ds-screen-in var(--ds-dur-screen) var(--ds-ease);
+}
+/* A MATCH OPENS FROM THE STAGE'S GROUND, not from the page's: a fade from opacity 0 showed `--ds-bg`
+   first, white in light theme, between Play's dark stage and a 3D match's dark loading screen. Almost
+   every match starts from Play, so a cover in `--ds-stage-bg` lifts off it instead. */
+.game-shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--ds-stage-bg);
+  pointer-events: none;
+  animation: ds-cover-out var(--ds-dur-screen) var(--ds-ease) forwards;
+}
+@keyframes ds-cover-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+/* something that ARRIVES after the first frame: Home's counts (`HomeMenu.tsx`, keyed on the value, so
+   only a number that changed fades in), and the shell mounting again after a match or a replay
+   (`bootDone`; the first mount is under the boot screen's fade). Not the stage: its ground is there at
+   once, so the way back to Play never shows `--ds-bg`, and its field fades in on its own. */
+.ds-arrive {
+  animation: ds-screen-in var(--ds-dur-screen) var(--ds-ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(.overlay, .ds-modal-backdrop, .ds-presence, .ds-stage-2d img),
+  .game-shell::before,
+  .ds-arrive {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
   }
 }

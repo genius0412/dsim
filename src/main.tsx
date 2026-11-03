@@ -1,4 +1,4 @@
-import { StrictMode, useSyncExternalStore } from 'react';
+import { StrictMode, useEffect, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { BannerStack } from './ui/BannerStack';
@@ -15,6 +15,7 @@ import { adoptLanFromOrigin } from './net/lanAdopt';
 import { CHUNK_RELOAD_KEY } from './storageKeys';
 import { optionalChunkFailed } from './optionalChunks';
 import { appBuild, probePrimary } from './net/env';
+import { dismissBoot } from './ui/screenFade';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -82,15 +83,35 @@ const statusRead = loadSiteStatus();
 const statusOrTimeout = Promise.race([statusRead, new Promise<void>((r) => setTimeout(r, BOOT_WAIT_MS))]);
 
 let bootReady = false;
+/**
+ * A BUILD BAKED CLOSED (the alpha) KEEPS THE BOOT SCREEN UP WHILE IT ASKS. It mounts at once, and
+ * before the first answer every viewer reads as closed, so a tester saw "Alpha is closed · Checking
+ * your account…" on every cold load until the token and status read came back (it wakes an idle
+ * router: 4 s for `/health` and 7.8 s for `/api/status`, measured on `dsim-alpha-primary` on
+ * 2026-11-02). The closed screen now waits for that answer, or for `GATE_WAIT_MS` if it never comes,
+ * on the boot screen.
+ */
+const GATE_WAIT_MS = 10000;
+let gateWait = BUILD_CLOSED;
+let bootVersion = 0;
 const bootSubs = new Set<() => void>();
-const useBootReady = (): boolean =>
+const bumpBoot = (): void => {
+  bootVersion++;
+  bootSubs.forEach((f) => f());
+};
+const useBootVersion = (): number =>
   useSyncExternalStore(
     (cb) => {
       bootSubs.add(cb);
       return () => bootSubs.delete(cb);
     },
-    () => bootReady,
+    () => bootVersion,
   );
+if (gateWait)
+  window.setTimeout(() => {
+    gateWait = false;
+    bumpBoot();
+  }, GATE_WAIT_MS);
 
 /**
  * THE GATE. Closed means the closed screen, in place of everything else. A player already in a
@@ -100,12 +121,19 @@ const useBootReady = (): boolean =>
 function Root() {
   const site = useSiteState();
   const shell = useShellState();
-  const ready = useBootReady();
+  useBootVersion();
+  const ready = bootReady;
   const closed = isClosed(site) && !shell.inMatch;
+  // the first answer is not in yet, on a build that starts closed: stay on the boot screen
+  const asking = closed && gateWait && !site.loaded;
+  const showing = closed ? !asking : ready;
+  useEffect(() => {
+    if (showing) dismissBoot();
+  }, [showing]);
   return (
     <StrictMode>
       {closed ? (
-        <ClosedScreen />
+        asking ? null : <ClosedScreen />
       ) : ready ? (
         <>
           {/* Wraps everything because the game screen renders OUTSIDE the app shell
@@ -129,8 +157,8 @@ function Root() {
   );
 }
 
-// React clears `#root` (the static crawler homepage) on its first render, so nothing renders
-// until there is something to show: the closed screen, or the app.
+// Nothing renders until there is something to show (the closed screen, or the app). Until then the
+// boot screen (`#seo-home`, beside `#root`) is what is on the page, and `dismissBoot` fades it after.
 let mounted = false;
 const mount = (): void => {
   if (mounted) return;
@@ -143,6 +171,6 @@ void statusRead.then(() => {
 });
 Promise.all([initPhysics(), lanReady, statusOrTimeout]).then(() => {
   bootReady = true;
-  bootSubs.forEach((f) => f());
+  bumpBoot();
   mount();
 });
