@@ -30,7 +30,8 @@
  * with it), so an import with one is not re-attached: that save really did change the robot.
  *
  * **Rules 1 and 3 cover a STANDARD DECODE robot too** when it carries what an older build cannot
- * read (`carriesNew`): a fixed launcher, a fixed hood, a setpoint flywheel, or NO intake. Measured
+ * read (`carriesNew`): a fixed launcher, a fixed hood, a setpoint flywheel, NO intake, or coast
+ * (`zeroPower`, any game; rule 5 covers the builds that keep imports but predate it). Measured
  * the same way (alpha's coercer, 2026-10-02): the three shooter fields are dropped, and `intake:
  * 'none'` comes back as the sloped preset with the length clamped to its 13.5–15 in and the width
  * raised to its 14.5 in floor (`olderReading`), so that rewrite is compared as "not read", not as
@@ -59,12 +60,21 @@ export function keepsTune(caps: unknown): boolean {
   return Array.isArray(caps) && caps.includes(SETTINGS_KEEPS_TUNE);
 }
 
+/** ...and the cap of a build that also round-trips the drive motors' zero-power mode (`RobotSpec.zeroPower`) */
+export const SETTINGS_KEEPS_ZERO_POWER = 'zeroPower';
+
+/** does a settings save come from a build that round-trips coast? */
+export function keepsZeroPower(caps: unknown): boolean {
+  return Array.isArray(caps) && caps.includes(SETTINGS_KEEPS_ZERO_POWER);
+}
+
 type Obj = Record<string, unknown>;
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x);
 const isImported = (spec: unknown): boolean => isObj(spec) && isObj(spec.imported);
 /** does this robot carry something an older build cannot read back (see the header)? */
 const carriesNew = (spec: unknown): boolean =>
-  isObj(spec) && (isObj(spec.imported) || spec.launcher !== undefined || spec.hoodDeg !== undefined || spec.flywheel !== undefined || spec.intake === 'none');
+  isObj(spec) &&
+  (isObj(spec.imported) || spec.launcher !== undefined || spec.hoodDeg !== undefined || spec.flywheel !== undefined || spec.intake === 'none' || spec.zeroPower !== undefined);
 
 const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 /**
@@ -180,6 +190,39 @@ export function keepTuneFromOlderClient(stored: unknown, incoming: Obj): Obj {
     const o = own();
     if (g === inActive) o.spec = st.spec;
     else (o.loadouts as Obj)[g] = { ...((o.loadouts as Obj)[g] as Obj), spec: st.spec };
+  }
+  return out ?? incoming;
+}
+
+/**
+ * 5. **Coast** (`RobotSpec.zeroPower`). A build that predates it (no `SETTINGS_KEEPS_ZERO_POWER`)
+ * rebuilds every robot without the field, so its save turns a coasting robot back into a braking
+ * one on every other device. Per game, the active robot, the last standard robot and each saved
+ * robot that came back as the stored one minus `zeroPower` gets the stored one back. Saved robots
+ * pair by position, since an older build keeps the list's order. Any other difference is a real
+ * change and stands. Never mutates either argument.
+ */
+export function keepZeroPowerFromOlderClient(stored: unknown, incoming: Obj): Obj {
+  if (!isObj(stored)) return incoming;
+  let out: Obj | null = null;
+  const own = (): Obj => (out ??= { ...incoming, ...(isObj(incoming.loadouts) ? { loadouts: { ...incoming.loadouts } } : {}) });
+  const inActive = activeGame(incoming);
+  const lostCoast = (sent: unknown, st: unknown): boolean =>
+    isObj(st) && st.zeroPower !== undefined && isObj(sent) && sent.zeroPower === undefined && deepEqual(sent, { ...st, zeroPower: undefined });
+  for (const g of GAME_IDS) {
+    const st = sliceOf(stored, g);
+    const sent = sliceOf(incoming, g);
+    if (!st || !sent) continue;
+    const patch: Obj = {};
+    for (const k of ['spec', 'lastStandardSpec']) if (lostCoast(sent[k], st[k])) patch[k] = st[k];
+    const stSaved = st.savedRobots;
+    if (Array.isArray(sent.savedRobots) && Array.isArray(stSaved) && sent.savedRobots.some((r, i) => lostCoast(r, stSaved[i]))) {
+      patch.savedRobots = sent.savedRobots.map((r, i) => (lostCoast(r, stSaved[i]) ? stSaved[i] : r));
+    }
+    if (Object.keys(patch).length === 0) continue;
+    const o = own();
+    if (g === inActive) Object.assign(o, patch);
+    else (o.loadouts as Obj)[g] = { ...((o.loadouts as Obj)[g] as Obj), ...patch };
   }
   return out ?? incoming;
 }

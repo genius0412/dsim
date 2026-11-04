@@ -9,6 +9,7 @@ import {
   bbMassLimits,
 } from './config';
 import { flywheelEq } from '../../sim/flywheelSpec';
+import { zeroPowerOf } from '../../sim/zeroPower';
 import { bbIntakeMountOf, bbShooterMountOf } from './mounts';
 import { type BbMechSpec, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbCoerceSpec } from './robotConfig';
@@ -195,6 +196,7 @@ export function bbSpecMatches(spec: RobotSpec, preset: RobotSpec): boolean {
     spec.drivetrain === preset.drivetrain &&
     spec.driveRpm === preset.driveRpm &&
     (spec.tankRpm ?? 0) === (preset.tankRpm ?? 0) &&
+    zeroPowerOf(spec) === zeroPowerOf(preset) &&
     spec.intake === preset.intake &&
     (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) === (preset.scoreMode ?? BB_DEFAULT_SCORE_MODE) &&
     bbIntakeMountOf(spec) === bbIntakeMountOf(preset) &&

@@ -479,7 +479,10 @@ keep:" holds the rules, including the one robot an older build rewrites rather t
 BIOBUZZ fixed launcher reads as a turret there) and so is not re-attached. A second cap,
 `importTune` (2026-10-03), does the same for an import's practice tuning: a save from an import
 build without it keeps the stored `imported.tune` when the robot is otherwise the stored one
-(`keepTuneFromOlderClient`).
+(`keepTuneFromOlderClient`). A third, `zeroPower` (2026-11-04), keeps coast: a save without it
+gets the stored `zeroPower` back on the active robot, the last standard robot and each saved
+robot (paired by position) that came back as the stored one minus the field
+(`keepZeroPowerFromOlderClient`); `carriesNew` lists it too, so a build with no caps at all keeps it.
 ⚠️ **THE FLAG COULD NOT LIVE IN `profiles.settings`.** That blob is client-shaped,
 client-validated and opaque to the server — nothing in SQL reads it — so a privacy bit stored
 there would be enforced only by asking the client, which is not enforcement. It is a real column,

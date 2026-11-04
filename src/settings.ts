@@ -35,6 +35,7 @@ import type { StartSel, StartPose } from './types';
 const startPoseCount = (game: GameId): number => simModuleFor(game).startPoseCount;
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
+import { zeroPowerOf } from './sim/zeroPower';
 
 // the key itself comes from the registry every privacy surface reads (src/storageKeys.ts)
 import { SETTINGS_KEY as STORAGE_KEY } from './storageKeys';
@@ -306,7 +307,8 @@ function coerceStandardSpec(raw: unknown, game: GameId): RobotSpec | undefined {
   return isImportedSpec(spec) ? undefined : spec;
 }
 
-/** the build a picker compares robots by (the six fields `MatchStrategy` always has) plus the name */
+/** the build a picker compares robots by (the six fields `MatchStrategy` always has, and brake or
+ *  coast, which drives differently) plus the name */
 export const sameBuild = (a: RobotSpec, b: RobotSpec): boolean =>
   a.name === b.name &&
   a.length === b.length &&
@@ -314,7 +316,8 @@ export const sameBuild = (a: RobotSpec, b: RobotSpec): boolean =>
   a.intake === b.intake &&
   a.drivetrain === b.drivetrain &&
   a.driveRpm === b.driveRpm &&
-  a.massLb === b.massLb;
+  a.massLb === b.massLb &&
+  zeroPowerOf(a) === zeroPowerOf(b);
 
 /**
  * Keep `lastStandardSpec` current as the settings change. Called from `App`'s `update()`, the one

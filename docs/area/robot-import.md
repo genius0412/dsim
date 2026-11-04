@@ -951,9 +951,9 @@ their calculated values are `ui/tuneFields.ts`.
   `future` instead of re-simulating the untuned robot. Untuned imports stay format 3.
 - **A retune is the same robot** to the library (`sameImportedRobot` ignores `tune`) and does not
   re-bake the mesh (the bake stamp leaves it out).
-- **Settings:** this build sends `caps: ['robotImport', 'importTune']`; a save from an import build
-  without the second keeps the stored tuning when the robot is otherwise the same
-  (`keepTuneFromOlderClient`).
+- **Settings:** this build sends `caps: ['robotImport', 'importTune', 'zeroPower']`; a save from an
+  import build without the second keeps the stored tuning when the robot is otherwise the same
+  (`keepTuneFromOlderClient`). The third is coast's (`docs/area/accounts.md`, "Settings sync").
 
 ## Relayed to a room (VISUALS RELAY)
 

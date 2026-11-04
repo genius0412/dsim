@@ -163,6 +163,13 @@ const valued = (value: number, provenance: string): { value: number; provenance:
  * heading loop lags a 90° turn by about 15°, past the AUTO smoke lane's bound, and at 3 it holds
  * with room to spare. The brake model is left to Zenith's default, stopping at the robot file's
  * deceleration, which for DSIM is the drivetrain's own `accel`.
+ *
+ * ⚠️ THAT FIGURE IS THE SAME FOR A COASTING ROBOT (`RobotSpec.zeroPower`). The follower brakes
+ * under REVERSE power, and coast changes only a wheel at exactly zero power, so a coasting robot
+ * stops under the follower as hard as a braking one. Its roll-out (`coastDecel`) was tried and
+ * measured on the AUTO lane's probe auto (2026-11-04): the follower then started braking far too
+ * early, and the run took 9.8 s instead of 5.5 (mecanum), 11.5 instead of 5.5 (swerve), with the
+ * step ends further off; with `accel` a coasting mecanum or swerve runs within 0.1 s of a braking one.
  */
 /** Can this build strafe? The spec's own drive mode (a butterfly starts in mecanum). */
 export function bbHolonomic(spec: RobotSpec): boolean {
@@ -259,7 +266,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
           ? SIM('tank: cannot strafe; DSIM drives every leg nose- or tail-first, so the sideways cap is the forward top speed (Zenith has no differential drivetrain)')
           : SIM('strafe speed (maxSpeed x strafeMult)'),
       ),
-      forwardDecelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel); DSIM brakes as hard as it accelerates')),
+      forwardDecelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel); under reverse power DSIM brakes as hard as it accelerates, in brake or coast')),
       strafeDecelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel)')),
       accelInPerS2: valued(dp.accel, SIM('drive acceleration (driveParams.accel)')),
       maxAngularVelRadPerS: valued(dp.maxTurn, SIM('turn rate (driveParams.maxTurn)')),

@@ -37,6 +37,7 @@ import { roomTakesImportedRobots, roomTakesImportVisuals, serverCaps } from '../
 import { importVisuals, ownLookLine } from '../net/importVisualsClient';
 import { IMPORT_FELL_BACK, isImportedSpec } from '../net/imported';
 import { standardRobotFor } from '../settings';
+import { zeroPowerOf } from '../sim/zeroPower';
 import { activeZenithAuto } from '../auto/library';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
@@ -1069,14 +1070,15 @@ export function Lobby({
 
   const mySpec = me?.spec ?? settings.spec;
   /** is this saved robot the one this seat is bringing? The chassis fields, as the swap row
-   * has always compared them. */
+   * has always compared them, and brake or coast. */
   const isMine = (r: RobotSpec): boolean =>
     r.length === mySpec.length &&
     r.width === mySpec.width &&
     r.intake === mySpec.intake &&
     r.drivetrain === mySpec.drivetrain &&
     r.driveRpm === mySpec.driveRpm &&
-    r.massLb === mySpec.massLb;
+    r.massLb === mySpec.massLb &&
+    zeroPowerOf(r) === zeroPowerOf(mySpec);
 
   // 2v2 ROLE + consent swap: first robot on the alliance = CLOSE, second = FAR;
   // either can propose a swap the other must accept (see useRoleSwap).

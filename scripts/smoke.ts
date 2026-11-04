@@ -8173,6 +8173,79 @@ function ramOffCentreSamples(
   check('zero power: coast reaches the drive in Chain Reaction, BIOBUZZ and BIOBUZZ 3D', gamesOk, `${games.join(', ')} in (first half second)`);
 }
 
+// ---- zero power: an older build's settings save keeps coast; brake and coast are two builds ------
+{
+  const { SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE, SETTINGS_KEEPS_ZERO_POWER, keepImportsFromOlderClient, keepZeroPowerFromOlderClient, keepsZeroPower } = await import('../src/net/settingsKeep');
+  const { BB_PRESET_LIST, bbSpecMatches } = await import('../src/games/biobuzz/presets');
+  type Blob = Record<string, unknown> & { spec?: Record<string, unknown>; lastStandardSpec?: Record<string, unknown>; savedRobots?: Record<string, unknown>[]; loadouts?: Record<string, Blob> };
+  const json = (x: unknown): Blob => JSON.parse(JSON.stringify(x));
+  const J = (x: unknown): string => JSON.stringify(x);
+  const noCoast = (spec: unknown): Record<string, unknown> => {
+    const o = { ...(spec as Record<string, unknown>) };
+    delete o.zeroPower;
+    return o;
+  };
+  // what this build writes: DECODE active with a coasting robot (its last standard robot too) and two
+  // saved robots, the first coasting; BIOBUZZ archived with a coasting robot
+  const stored = (() => {
+    let st = coerceSettings({ game: 'biobuzz' });
+    st = { ...st, spec: coerceSpec({ ...st.spec, zeroPower: 'coast' }, undefined, 'biobuzz') };
+    st = switchGame(st, 'decode');
+    const coast = coerceSpec({ ...st.spec, name: 'Coaster', zeroPower: 'coast' });
+    const saved = [coerceSpec({ ...DEFAULT_SPEC, name: 'Saved coast', zeroPower: 'coast' }), coerceSpec({ ...DEFAULT_SPEC, name: 'Saved brake' })];
+    return json({ ...st, spec: coast, lastStandardSpec: coast, savedRobots: saved });
+  })();
+  /** what a build from before coast sends back: every robot rebuilt without the field */
+  const olderSave = (b: Blob): Blob => {
+    const o = json(b);
+    const each = (x: Blob): void => {
+      if (x.spec) x.spec = noCoast(x.spec);
+      if (x.lastStandardSpec) x.lastStandardSpec = noCoast(x.lastStandardSpec);
+      if (Array.isArray(x.savedRobots)) x.savedRobots = x.savedRobots.map(noCoast);
+    };
+    each(o);
+    for (const g of Object.keys(o.loadouts ?? {})) each(o.loadouts![g]);
+    return o;
+  };
+  check('zero power settings: the premise (a coasting robot, last standard robot, saved robot and archived robot)',
+    stored.spec?.zeroPower === 'coast' && stored.lastStandardSpec?.zeroPower === 'coast' && stored.savedRobots?.[0]?.zeroPower === 'coast' && !('zeroPower' in (stored.savedRobots?.[1] ?? {})) && stored.loadouts?.biobuzz?.spec?.zeroPower === 'coast');
+
+  const sent = olderSave(stored);
+  const before = J([stored, sent]);
+  const kept = keepZeroPowerFromOlderClient(stored, sent) as Blob;
+  check('zero power settings: a build that keeps imports but predates coast gets coast back on the robot, the last standard robot, the saved robots and the archived game',
+    J(kept.spec) === J(stored.spec) && J(kept.lastStandardSpec) === J(stored.lastStandardSpec) && J(kept.savedRobots) === J(stored.savedRobots) && J(kept.loadouts?.biobuzz?.spec) === J(stored.loadouts?.biobuzz?.spec));
+  const back = coerceSettings(json(kept));
+  check('zero power settings: ...and the merged blob reads back as coast', back.spec.zeroPower === 'coast' && back.savedRobots[0]?.zeroPower === 'coast' && !('zeroPower' in back.savedRobots[1]) && switchGame(back, 'biobuzz').spec.zeroPower === 'coast');
+  check('zero power settings: neither argument is mutated', J([stored, sent]) === before);
+  const slid = { ...sent, spec: { ...sent.spec, driveRpm: (sent.spec?.driveRpm as number) + 10 } };
+  check('zero power settings: another robot picked on the older build stands, braking', !('zeroPower' in ((keepZeroPowerFromOlderClient(stored, slid) as Blob).spec ?? {})));
+  const plain = json(coerceSettings({ game: 'decode' }));
+  check('zero power settings: nothing to restore, or no stored blob, returns the incoming blob itself',
+    keepZeroPowerFromOlderClient(plain, sent) === sent && keepZeroPowerFromOlderClient(null, sent) === sent && keepZeroPowerFromOlderClient(stored, stored) === stored);
+  const noCaps = keepImportsFromOlderClient(stored, sent) as Blob;
+  const noBb = olderSave(stored);
+  delete noBb.loadouts!.biobuzz;
+  check('zero power settings: a build with no caps at all keeps a standard coasting robot whole, and an archived one it never sent (carriesNew)',
+    J(noCaps.spec) === J(stored.spec) && (keepImportsFromOlderClient(stored, noBb) as Blob).loadouts?.biobuzz?.spec?.zeroPower === 'coast');
+  check('zero power settings: this build says it keeps coast, and the server merges any save that does not',
+    keepsZeroPower([SETTINGS_KEEPS_ZERO_POWER]) && !keepsZeroPower([SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE]) &&
+      /caps: \[SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE, SETTINGS_KEEPS_ZERO_POWER\]/.test(readFileSync('src/net/api.ts', 'utf8')) &&
+      /keepsImports\(caps\) && keepsTune\(caps\) && keepsZeroPower\(caps\)/.test(readFileSync('server/db/repo.ts', 'utf8')) &&
+      /keepsZeroPower\(caps\) \? withTune : keepZeroPowerFromOlderClient\(stored, withTune\)/.test(readFileSync('server/db/repo.ts', 'utf8')));
+
+  // brake and coast drive differently, so every build comparison tells them apart
+  const brakeX = coerceSpec({ ...DEFAULT_SPEC, name: 'X' });
+  const coastX = coerceSpec({ ...DEFAULT_SPEC, name: 'X', zeroPower: 'coast' });
+  const pick = { ...coerceSettings({ game: 'decode' }), spec: brakeX, lastStandardSpec: brakeX, savedRobots: [coastX] };
+  check('zero power builds: a brake and a coast copy of one robot are two builds, and the standard-robot picker lists both',
+    !sameBuild(brakeX, coastX) && sameBuild(coastX, { ...coastX }) && standardRobotChoices(pick).length === 2);
+  const card = BB_PRESET_LIST[0];
+  check('zero power builds: a BIOBUZZ preset card stops reading as selected once Coast is picked', bbSpecMatches(card, card) && !bbSpecMatches({ ...card, zeroPower: 'coast' }, card));
+  check('zero power builds: the room lobby and the ranked strategy screen light the saved robot with the same brake or coast',
+    /zeroPowerOf\(r\) === zeroPowerOf\(mySpec\)/.test(readFileSync('src/ui/Lobby.tsx', 'utf8')) && /zeroPowerOf\(r\) === zeroPowerOf\(mySpec\)/.test(readFileSync('src/ui/MatchStrategy.tsx', 'utf8')));
+}
+
 // ---- swerve = 4 independent steered modules (kinematics + pod flip + wobble) --
 {
   const strafe = { driveX: 1, driveY: 0, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
@@ -32452,7 +32525,7 @@ const dumperSetup = (): RobotSetup => {
   check('settings keep: the blob this branch writes holds both imports and both standard robots (the premise)',
     isImportedSpec(st.spec) && (st.spec as { launcher?: string }).launcher === 'fixed' && !!st.lastStandardSpec && isImportedSpec(st.loadouts?.biobuzz?.spec) && !!st.loadouts?.biobuzz?.lastStandardSpec);
   check('settings keep: this build\'s settings save says it keeps imports (`caps` on the POST body)',
-    /body: JSON\.stringify\(\{ settings, caps: \[SETTINGS_KEEPS_IMPORTS(, SETTINGS_KEEPS_TUNE)?\] \}\)/.test(readFileSync('src/net/api.ts', 'utf8')));
+    /body: JSON\.stringify\(\{ settings, caps: \[SETTINGS_KEEPS_IMPORTS(, SETTINGS_KEEPS_TUNE(, SETTINGS_KEEPS_ZERO_POWER)?)?\] \}\)/.test(readFileSync('src/net/api.ts', 'utf8')));
   check('settings keep: only a save whose caps name the import cap is taken as sent',
     keepsImports([SETTINGS_KEEPS_IMPORTS]) && keepsImports(['x', 'robotImport']) && !keepsImports(undefined) && !keepsImports([]) && !keepsImports('robotImport') && !keepsImports({ 0: 'robotImport' }));
 
@@ -40651,7 +40724,7 @@ function fxImportFixed(): RobotSpec {
       (keepTuneFromOlderClient(stored, changed).spec as RobotSpec).imported?.tune === undefined &&
       keepsTune([SETTINGS_KEEPS_TUNE]) && !keepsTune(['robotImport']),
   );
-  check('tune: this build’s settings save says it keeps tuning (source pin)', /caps: \[SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE\]/.test(rd('src/net/api.ts')) && /keepsTune\(caps\) \? withImports : keepTuneFromOlderClient/.test(rd('server/db/repo.ts')));
+  check('tune: this build’s settings save says it keeps tuning (source pin)', /caps: \[SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE(, SETTINGS_KEEPS_ZERO_POWER)?\]/.test(rd('src/net/api.ts')) && /keepsTune\(caps\) \? withImports : keepTuneFromOlderClient/.test(rd('server/db/repo.ts')));
 }
 
 /**

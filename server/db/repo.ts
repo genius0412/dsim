@@ -30,7 +30,7 @@ import {
 } from '../../src/net/protocol';
 import { scrubSpecNames } from '../moderation';
 import { isImportedSpec } from '../../src/net/imported';
-import { keepImportsFromOlderClient, keepTuneFromOlderClient, keepsImports, keepsTune } from '../../src/net/settingsKeep';
+import { keepImportsFromOlderClient, keepTuneFromOlderClient, keepZeroPowerFromOlderClient, keepsImports, keepsTune, keepsZeroPower } from '../../src/net/settingsKeep';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -804,16 +804,18 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
  * cannot interleave between them. Returns what was stored. The profile row is ensured by the caller.
  */
 export async function saveSettingsFromClient(userId: string, settings: Record<string, unknown>, caps: unknown): Promise<Record<string, unknown>> {
-  if (keepsImports(caps) && keepsTune(caps)) {
+  if (keepsImports(caps) && keepsTune(caps) && keepsZeroPower(caps)) {
     await saveUserSettings(userId, settings);
     return settings;
   }
   return tx(async (query) => {
     const rows = await query<{ settings: unknown }>(`select settings from profiles where user_id = $1 for update`, [userId]);
     const stored = rows[0]?.settings ?? null;
-    // a build without imports loses the whole import; one with imports but not tuning, the tuning
+    // a build without imports loses the whole import; one with imports but not tuning, the tuning;
+    // one without coast, every robot's `zeroPower`
     const withImports = keepsImports(caps) ? settings : keepImportsFromOlderClient(stored, settings);
-    const kept = keepsTune(caps) ? withImports : keepTuneFromOlderClient(stored, withImports);
+    const withTune = keepsTune(caps) ? withImports : keepTuneFromOlderClient(stored, withImports);
+    const kept = keepsZeroPower(caps) ? withTune : keepZeroPowerFromOlderClient(stored, withTune);
     await query(`update profiles set settings = $2, updated_at = now() where user_id = $1`, [userId, JSON.stringify(kept)]);
     return kept;
   });

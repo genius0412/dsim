@@ -503,6 +503,30 @@ export function autoChecks(check: Check): void {
     check('AUTO: an endCondition that reads true cuts the path at once', cut?.conditionFired === true && world.robots[0].pos.x > 55, `x ${world.robots[0].pos.x.toFixed(1)}`);
   }
 
+  // ── coast (`RobotSpec.zeroPower`): the follower brakes under reverse power, which coast does not
+  // change, so the file states the braking deceleration. Its roll-out was tried and measured: the
+  // probe auto then took 9.8 s instead of 5.5 (2026-11-04, `biobuzzZenithRobot`).
+  {
+    type K = { kinematics: { forwardDecelInPerS2: { value: number }; strafeDecelInPerS2: { value: number } } };
+    const coastSpec = { ...BB_DEFAULT_SPEC, zeroPower: 'coast' } as RobotSpec;
+    const brakeFile = adapter.robot(BB_DEFAULT_SPEC as RobotSpec) as K;
+    const coastFile = adapter.robot(coastSpec) as K;
+    check(
+      "AUTO: a coasting robot's file states the braking deceleration, like every other drive figure",
+      JSON.stringify(coastFile.kinematics) === JSON.stringify(brakeFile.kinematics) &&
+        coastFile.kinematics.forwardDecelInPerS2.value === Math.round(driveParams(coastSpec).accel * 1e4) / 1e4,
+    );
+    const run = (spec: RobotSpec): { s: number; done: boolean } => {
+      const { world, seat } = stage(zen(probeAuto()), 'blue', '2d', { spec });
+      startMatch(world);
+      const log = drive(world, seat, 12);
+      return { s: log.ticks * SIM_DT, done: seat.status().state === 'done' };
+    };
+    const b = run(BB_DEFAULT_SPEC as RobotSpec);
+    const c = run(coastSpec);
+    check('AUTO: a coasting robot runs the probe auto within 0.5 s of a braking one', b.done && c.done && Math.abs(c.s - b.s) < 0.5, `brake ${b.s.toFixed(2)} s, coast ${c.s.toFixed(2)} s`);
+  }
+
   // ── setRamp: the driver's RAMP toggle, pressed by the auto (DSIM only; the robot has no ramp) ─
   {
     check('AUTO: setRamp is a command the BIOBUZZ adapter runs', (BIOBUZZ_AUTO_COMMANDS as readonly string[]).includes('setRamp') && adapter.commands.includes('setRamp'));

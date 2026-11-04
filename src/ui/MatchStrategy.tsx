@@ -24,6 +24,7 @@ import { MatchAudio } from '../audio';
 import { ConsoleHead } from './ConsoleHead';
 import { isImportedSpec } from '../net/imported';
 import { standardRobotChoices } from '../settings';
+import { zeroPowerOf } from '../sim/zeroPower';
 
 /** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
  * deadline, rising in pitch as it nears (like a match countdown). */
@@ -435,7 +436,8 @@ export function MatchStrategy({
                 r.intake === mySpec.intake &&
                 r.drivetrain === mySpec.drivetrain &&
                 r.driveRpm === mySpec.driveRpm &&
-                r.massLb === mySpec.massLb;
+                r.massLb === mySpec.massLb &&
+                zeroPowerOf(r) === zeroPowerOf(mySpec);
               // the builder's own card (`RobotCard`), so a saved robot reads the same here as
               // it does in Configure and in the custom-room lobby
               return (
