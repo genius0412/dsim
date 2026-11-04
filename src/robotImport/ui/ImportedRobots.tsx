@@ -12,18 +12,20 @@ import { invalidateImportedAssets } from '../../render/importedAssets';
 import { libraryChanged, onRobotNotice, peekRobotNotice, postRobotNotice, takeRobotNotice } from './handoff';
 import type { LibraryView } from './useLibrary';
 import { libraryEntryFor } from '../libraryIds';
+import { identityOf, type RobotIdentity } from '../identity';
 
 /**
  * CONFIGURE ▸ ROBOT'S HALF OF THE IMPORTER, in the main chunk: the Imported robots row (one card
  * per library robot and the add card), the Imported robot panel that stands in for Build while an
- * import is active, and the library actions both of them trigger (rename, duplicate, export,
+ * import is active, and the library actions both of them trigger (edit details, duplicate, export,
  * delete). Everything heavier — the editor, the engine, three.js — is behind the editor's route.
  *
  * The DIALOGS and the EXPORT are not in the main chunk either: they load on the click that needs
  * them (a sub-1 KB chunk the editor shares), so the robot page pays only for what it draws.
  */
 
-const RenameDialog = lazy(() => import('./LibraryDialogs').then((m) => ({ default: m.RenameDialog })));
+/** the edit-details dialog, for the robot lists that edit a SAVED robot the same way (`Menu`) */
+export const IdentityDialog = lazy(() => import('./LibraryDialogs').then((m) => ({ default: m.IdentityDialog })));
 const ConfirmDialog = lazy(() => import('./LibraryDialogs').then((m) => ({ default: m.ConfirmDialog })));
 
 /** how long a "Saved Ironclad." notice holds the Start from title (Controls' NOTICE_MS) */
@@ -52,6 +54,7 @@ export function ImportedRow({
   view,
   activeId,
   onPick,
+  onEdit,
   onDelete,
   onImport,
   onDropFiles,
@@ -59,6 +62,7 @@ export function ImportedRow({
   view: LibraryView;
   activeId: string | null;
   onPick: (e: LibraryEntry) => void;
+  onEdit: (e: LibraryEntry) => void;
   onDelete: (e: LibraryEntry) => void;
   onImport: () => void;
   onDropFiles: (files: File[]) => void;
@@ -89,6 +93,7 @@ export function ImportedRow({
               </span>
             }
             onPick={() => onPick(e)}
+            onEdit={() => onEdit(e)}
             onDelete={() => onDelete(e)}
           />
         ))}
@@ -126,7 +131,7 @@ export function ImportedPanel({
   stale = false,
   error,
   onEdit,
-  onRename,
+  onEditDetails,
   onDuplicate,
   onExport,
   onDelete,
@@ -143,7 +148,7 @@ export function ImportedPanel({
   stale?: boolean;
   error: string | null;
   onEdit: () => void;
-  onRename: () => void;
+  onEditDetails: () => void;
   onDuplicate: () => void;
   onExport: () => void;
   onDelete: () => void;
@@ -207,8 +212,8 @@ export function ImportedPanel({
               ) : null}
             </dl>
             <div className="ds-actions">
-              <button type="button" className="ds-btn small" disabled={!entry} onClick={onRename}>
-                {COPY.rename}
+              <button type="button" className="ds-btn small" disabled={!entry} onClick={onEditDetails}>
+                {COPY.editDetails}
               </button>
               <button type="button" className="ds-btn small" disabled={!entry} onClick={onDuplicate}>
                 {COPY.duplicate}
@@ -247,18 +252,23 @@ export function useImportedActions({
    *  page shows (`libraryEntryFor`: its id, else a share-file copy that carried it) */
   entries?: readonly LibraryEntry[] | null;
 }) {
-  const [dialog, setDialog] = useState<{ kind: 'rename' | 'delete'; entry: LibraryEntry } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: 'edit' | 'delete'; entry: LibraryEntry } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const active = settings.spec.imported?.id ?? null;
   const activeEntryId = libraryEntryFor(entries, active)?.id ?? active;
   const isActive = (e: LibraryEntry): boolean => !!active && e.id === activeEntryId;
 
-  const rename = async (entry: LibraryEntry, name: string): Promise<void> => {
+  /**
+   * NAME, TEAM NAME and TEAM NUMBER, from the card: the library's record (this device) and, when it
+   * is the robot being driven, the active spec too, which is what the account syncs and a room
+   * reads. The same two writes the rename was, so nothing reopens the importer.
+   */
+  const edit = async (entry: LibraryEntry, next: RobotIdentity): Promise<void> => {
     setDialog(null);
-    const { renameRobot } = await import('../library');
-    const r = await renameRobot(entry.id, name);
+    const { updateIdentity } = await import('../library');
+    const r = await updateIdentity(entry.id, next);
     if (!r.ok) return setError(r.message);
-    if (isActive(entry)) applySpec({ ...settings.spec, name });
+    if (isActive(entry)) applySpec({ ...settings.spec, ...identityOf(r.value.spec) });
     setError(null);
     invalidateImportedAssets(entry.id);
     libraryChanged();
@@ -293,8 +303,8 @@ export function useImportedActions({
 
   const fallback = standardRobotFor(settings);
   const open =
-    dialog?.kind === 'rename' ? (
-      <RenameDialog name={dialog.entry.spec.name} onRename={(n) => void rename(dialog.entry, n)} onClose={() => setDialog(null)} />
+    dialog?.kind === 'edit' ? (
+      <IdentityDialog identity={identityOf(dialog.entry.spec)} onSave={(next) => void edit(dialog.entry, next)} onClose={() => setDialog(null)} />
     ) : dialog?.kind === 'delete' ? (
       <ConfirmDialog
         title={COPY.deleteTitle(dialog.entry.spec.name || 'this robot')}
@@ -315,7 +325,7 @@ export function useImportedActions({
   return {
     error,
     dialogs,
-    requestRename: (entry: LibraryEntry) => setDialog({ kind: 'rename', entry }),
+    requestEdit: (entry: LibraryEntry) => setDialog({ kind: 'edit', entry }),
     requestDelete: (entry: LibraryEntry) => setDialog({ kind: 'delete', entry }),
     duplicate: (entry: LibraryEntry) => void duplicate(entry),
     exportIt: (entry: LibraryEntry) => void exportIt(entry),

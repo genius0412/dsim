@@ -496,6 +496,19 @@ rulings below are theirs, not defaults.
   `Menu.tsx`) hold the last unsaved edit (an "Unsaved" badge) and the last preset build driven, each
   in a fixed place; a slot empties only when its build is saved. Which card is on is the build object
   itself, because the presets' own match and the cards' `sameRobot` disagree on the default robot.
+  ⚠️ **EVERY CARD THAT IS NOT A SAVED ROBOT OR AN IMPORT SAYS "UNSAVED"** (owner, 2026-11-04: Play listed
+  four robots beside the builder's "Your robots 3/3"). The kept PRESET build had no badge, so after New
+  robot it read as a fourth saved robot; both kept slots carry it now. The strip is the builder's two
+  lists (`settings.savedRobots`, this device's library) plus those slots, and the 3/3 cap counts only the
+  saved list. The active build is a card even after its saved copy is deleted (and after a reload, which
+  restores it from `settings.spec`): it is the robot being driven, and "Unsaved" is what it is.
+  **EDIT DETAILS IS ON THE CARD**: a saved robot's and an import's card carries a ✎ (`ds-opt-edit`, the
+  delete's twin, beside the ✕ in the builder's lists) that opens ONE dialog (`IdentityDialog`,
+  `robotImport/ui/LibraryDialogs.tsx`, lazy) for the robot name, team name and team number, with the
+  limits `coerceSpec` has (`src/robotImport/identity.ts`: 24 / 48 / 0-99999, an empty name refused).
+  A saved robot's edit writes `settings.savedRobots[i]` (and `settings.spec` when it is the one on, so the
+  card stays on); an import's writes the device library (`updateIdentity`) and the active spec when it is
+  active, which is what the account syncs. The dialog is a portal on Play, whose panel is a floating surface.
 - ⚠️ **PLAY'S RIGHT COLUMN IS EVERY MODE, ONE CLICK AWAY** (owner, 2026-11-01: "VERY, VERY awkward to
   navigate the tiny panel on the play page. The current main's navigation is 1000% easier"). ONE card
   (`.ds-play-modes`), two labelled groups the way main's "Pick a mode" page lays them out: **Solo**

@@ -119,7 +119,7 @@ export function bbLiftLabel(lift: BbLiftSpec | null, now?: number): string {
 }
 
 export const BB_INTAKE_LABELS: Record<BbIntakeKind, string> = {
-  sweeper: 'Sweeper',
+  sweeper: 'Ground intake',
   siderollers: 'Side rollers',
   ramp: 'Deployable ramp',
 };

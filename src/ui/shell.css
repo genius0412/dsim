@@ -5261,12 +5261,48 @@ tr.lb-detail td {
   background: color-mix(in srgb, var(--ds-red) 14%, transparent);
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }
+/* per-card EDIT (✎, the delete's twin): the top-right corner when it is the card's only button, one
+   button's width left of the ✕ when both are there (`.beside`, the slot is `.two`, which gives the
+   card's text the room for both). Its hover is the accent, the delete's is red; neither moves. */
+.ds-opt-edit {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ds-round-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-mut);
+  cursor: pointer;
+  transition: color var(--ds-dur-fade), background var(--ds-dur-fade), border-color var(--ds-dur-fade);
+}
+.ds-opt-edit.beside {
+  right: calc(var(--ds-s-2) + 24px + var(--ds-s-1));
+}
+.ds-opt-edit:hover {
+  color: var(--ds-ink);
+  background: color-mix(in srgb, var(--ds-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
+}
+.ds-opt-slot.two > .ds-opt {
+  padding-right: calc(var(--ds-s-7) + var(--ds-s-4));
+}
 @media (max-width: 640px) {
-  .ds-opt-del {
+  .ds-opt-del,
+  .ds-opt-edit {
     width: 32px;
     height: 32px;
     top: 4px;
     right: 4px;
+  }
+  .ds-opt-edit.beside {
+    right: calc(var(--ds-s-1) + 32px + var(--ds-s-1));
+  }
+  .ds-opt-slot.two > .ds-opt {
+    padding-right: calc(var(--ds-s-7) + var(--ds-s-6));
   }
 }
 /* A LIST OF OPTIONS AT ROW HEIGHT: one column, the name left and its state right, for a set that
@@ -11353,6 +11389,11 @@ input.admin-months {
   }
   .ds-setup-picker .ds-opts .ds-opt.ds-robot-card {
     padding: var(--ds-s-2) var(--ds-s-3);
+  }
+  /* a card with an edit button keeps its name clear of it (one button's room, the picker's padding
+     otherwise undoes the slot's) */
+  .ds-setup-picker .ds-opt-slot > .ds-opt.ds-robot-card {
+    padding-right: calc(var(--ds-s-6) + var(--ds-s-2));
   }
   .ds-setup-picker .ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
     grid-template-columns: 64px minmax(0, 1fr);

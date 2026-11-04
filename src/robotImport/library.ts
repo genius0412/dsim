@@ -14,6 +14,7 @@ import { ROBOT_LIBRARY_DB } from '../storageKeys';
 import type { GameId, ImportedRobot } from '../types';
 import type { LibraryEntry, LibraryRobot } from './types';
 import { libraryEntryFor } from './libraryIds';
+import { cleanIdentity, type RobotIdentity } from './identity';
 
 /** 2 added the two DRAFT stores (lane 4, the editor): `drafts` holds an unfinished import's editor
  *  state (keyPath `key`, index `game`), `draftModels` its simplified source-frame model, written
@@ -258,18 +259,29 @@ export function putRobot(robot: LibraryRobot): Promise<LibraryResult<LibraryEntr
   });
 }
 
-/** change a robot's name (`spec.name`) */
-export function renameRobot(id: string, name: string): Promise<LibraryResult<LibraryEntry>> {
+/**
+ * change who a robot is: its name, team name and team number (`spec.name`, `teamName`,
+ * `teamNumber`), whichever `patch` carries. Cleaned like every other door into a spec
+ * (`cleanIdentity`); a patch that cannot be stored (an empty name) is refused, not half-applied.
+ */
+export function updateIdentity(id: string, patch: Partial<RobotIdentity>): Promise<LibraryResult<LibraryEntry>> {
+  const clean = cleanIdentity(patch);
+  if (!clean) return Promise.resolve(err('failed'));
   return withDb(async (db) => {
     const tx = db.transaction(ROBOTS, 'readwrite');
     const store = tx.objectStore(ROBOTS);
     const entry = (await request(store.get(id))) as LibraryEntry | undefined;
     if (!entry) return err('not-found');
-    const next: LibraryEntry = { ...entry, spec: { ...entry.spec, name: name.trim().slice(0, 64) }, updated: Date.now() };
+    const next: LibraryEntry = { ...entry, spec: { ...entry.spec, ...clean }, updated: Date.now() };
     store.put(next);
     const e = await done(tx);
     return e ? err(e) : ok(next);
   }, () => err('not-found'));
+}
+
+/** change a robot's name (`spec.name`) */
+export function renameRobot(id: string, name: string): Promise<LibraryResult<LibraryEntry>> {
+  return updateIdentity(id, { name });
 }
 
 /** a copy under a new id, named "<name> copy" */

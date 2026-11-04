@@ -248,7 +248,7 @@ export function coreChecks(check: Check): void {
       tiles: ['Single turret / launcher / center', 'No box tube / flower scoring'],
       sheet: [
         'Launcher: Single turret (Center)',
-        'Intake: Sweeper (Front · POLLEN only)',
+        'Intake: Ground intake (Front · POLLEN only)',
         'Flower scoring: No box tube [none]',
         'Hopper: 4 pollen',
       ],
@@ -262,7 +262,7 @@ export function coreChecks(check: Check): void {
       tiles: ['Single turret / launcher / center', `${TUBE} / flower scoring / back`],
       sheet: [
         'Launcher: Single turret (Center)',
-        'Intake: Sweeper (Front · POLLEN only)',
+        'Intake: Ground intake (Front · POLLEN only)',
         `Flower scoring: ${TUBE} (Back)`,
         'Hopper: 4 pollen',
       ],
@@ -277,7 +277,7 @@ export function coreChecks(check: Check): void {
       // a double turret takes NECTAR for its NECTAR turret, so it has a sorter to answer for
       sheet: [
         'Launcher: Double turret (POLLEN right · NECTAR left)',
-        'Intake: Sweeper (Front · POLLEN + NECTAR)',
+        'Intake: Ground intake (Front · POLLEN + NECTAR)',
         'Sorter: No sorter [none]',
         'Flower scoring: No box tube [none]',
         'Hopper: 4 pollen',
@@ -292,7 +292,7 @@ export function coreChecks(check: Check): void {
       tiles: ['Dumper / launcher / front', `${TUBE} / flower scoring / back`],
       sheet: [
         'Launcher: Dumper (Front)',
-        'Intake: Sweeper (Front · POLLEN + NECTAR)',
+        'Intake: Ground intake (Front · POLLEN + NECTAR)',
         'Sorter: No sorter [none]',
         `Flower scoring: ${TUBE} (Back)`,
         'Hopper: 4 pollen',

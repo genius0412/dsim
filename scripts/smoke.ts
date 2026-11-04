@@ -19021,6 +19021,55 @@ const recordDrive: CommandSource = (tick) => {
       /const editingSaved = new Map<string, number>\(\);/.test(menuSrc) &&
         /savedRobots: savedRobots\.map\(\(r, j\) => \(j === editIdx \? \{ \.\.\.spec \} : r\)\)/.test(menuSrc) &&
         />\s*Save as new\s*<\/button>/.test(menuSrc) && />\s*Save changes\s*<\/button>/.test(menuSrc));
+    // THE ROBOT LISTS AGREE (owner, 2026-11-04): Play's strip showed four cards beside the builder's
+    // "Your robots 3/3", because the last PRESET build driven kept a card with no badge, so it read as a
+    // fourth saved robot. Every card in the strip that is not a saved robot or an import says "Unsaved".
+    {
+      const stripAt = menuSrc.indexOf('export function RobotStrip(');
+      const row2 = menuSrc.slice(stripAt);
+      const presetCard = row2.slice(row2.indexOf('{preset && ('), row2.indexOf('{settings.savedRobots.map('));
+      check('play: the kept preset build is badged Unsaved like the kept edit, so it cannot pass for a saved robot',
+        /spec=\{preset\}[\s\S]*?unsaved\n/.test(presetCard) && /spec=\{unsaved\}[\s\S]*?unsaved\n/.test(row2));
+      check('play: the strip and the builder list the same saved robots, from settings.savedRobots, and one sameRobot decides which is on',
+        /settings\.savedRobots\.map\(\(r, i\) => \(/.test(row2) && /savedRobots\.map\(\(r, i\) => \(/.test(menuSrc) &&
+          (menuSrc.match(/function sameRobot\(/g) ?? []).length === 1 && !/const sameRobot =/.test(menuSrc));
+      // EDIT DETAILS FROM THE CARD: a saved robot's and an import's name, team name and team number, on Play
+      // and in the builder, with the limits every other door has
+      check('cards: saved and imported robots carry an edit button on Play and in the builder, over one dialog',
+        (menuSrc.match(/onEdit=\{/g) ?? []).length >= 4 && menuSrc.includes('importActions.requestEdit') &&
+          menuSrc.includes('withSavedIdentity(settings, editingDetails, next)') &&
+          readFileSync('src/robotImport/ui/LibraryDialogs.tsx', 'utf8').includes('export function IdentityDialog('));
+    }
+    {
+      const { cleanIdentity, teamNumberFrom, withIdentityAt, identityOf, ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX } = await import('../src/robotImport/identity');
+      const c = cleanIdentity({ name: '  Bugger II  ', teamName: '  Iron Works ', teamNumber: 18754.4 });
+      check('identity: a name and team are trimmed, a team number is a whole number', c?.name === 'Bugger II' && c.teamName === 'Iron Works' && c.teamNumber === 18754);
+      check('identity: an empty name is refused, whole (not half-applied)', cleanIdentity({ name: '   ', teamName: 'x' }) === null);
+      check('identity: the limits are the ones coerceSpec has (24 / 48 / 0-99999)',
+        ROBOT_NAME_MAX === 24 && TEAM_NAME_MAX === 48 && TEAM_NUMBER_MAX === 99999 &&
+          cleanIdentity({ name: 'n'.repeat(40), teamName: 't'.repeat(80) })?.name?.length === 24 &&
+          cleanIdentity({ teamName: 't'.repeat(80) })?.teamName?.length === 48 &&
+          teamNumberFrom('123456') === 99999 && teamNumberFrom('-5') === 5 && teamNumberFrom('') === 0 && teamNumberFrom('abc') === 0);
+      check('identity: a rename leaves the team alone (only the fields given come back)', JSON.stringify(cleanIdentity({ name: 'A' })) === '{"name":"A"}');
+      const base = coerceSpec({ ...DEFAULT_SPEC, name: 'A', teamName: 'T', teamNumber: 1 }, undefined, 'biobuzz');
+      const list = [base, { ...base, name: 'B' }, { ...base, name: 'C' }];
+      const after = withIdentityAt(list, 1, { name: 'B2', teamNumber: 77 });
+      check('identity: withIdentityAt edits one slot and leaves the others and the list as they were',
+        after[1].name === 'B2' && after[1].teamNumber === 77 && after[1].teamName === 'T' && after[0] === list[0] && after[2] === list[2] && list[1].name === 'B' &&
+          withIdentityAt(list, 1, { name: ' ' })[1] === list[1] && withIdentityAt(list, 9, { name: 'Z' }).length === 3);
+      check('identity: identityOf reads the three fields', JSON.stringify(identityOf(after[1])) === '{"name":"B2","teamName":"T","teamNumber":77}');
+      // what the stored robot comes back as through the sim's own validator: nothing the dialog stores is changed by it
+      const back = coerceSpec(after[1], undefined, 'biobuzz');
+      check('identity: coerceSpec keeps what the dialog stored', back.name === 'B2' && back.teamName === 'T' && back.teamNumber === 77);
+    }
+    // THE INTAKE'S NAME (owner, 2026-11-04): BIOBUZZ's "Sweeper" reads "Ground intake". Display only: the id
+    // (`sweeper`) is what saved robots, the database and replays hold, and Chain Reaction keeps its own word
+    {
+      const { BB_INTAKE_LABELS } = await import('../src/games/biobuzz/labels');
+      const { CHAIN_INTAKE_LABELS } = await import('../src/games/chain/labels');
+      check('intake: BIOBUZZ calls the sweeper a Ground intake, under the same id', BB_INTAKE_LABELS.sweeper === 'Ground intake' && Object.keys(BB_INTAKE_LABELS).join() === 'sweeper,siderollers,ramp');
+      check('intake: Chain Reaction keeps Sweeper', CHAIN_INTAKE_LABELS.sweeper === 'Sweeper');
+    }
   }
   // HOME (owner, 2026-11-01): the stats arrived a second in and moved the centred column; Home's stage
   // drew the match's own room and tier ("still distorted and EXTREMELY laggy on some devices")

@@ -16,7 +16,7 @@ import {
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import { FootprintSvg, importedFootprintLabel } from '../../ui/FootprintSvg';
 import { useImportedTopUrl } from '../../ui/useImportedAssets';
-import { BB_MODE_LABELS } from './labels';
+import { BB_INTAKE_LABELS, BB_MODE_LABELS } from './labels';
 import { BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
 import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
 import { dumperFrame } from './drawRobot';
@@ -409,7 +409,7 @@ export function BiobuzzRobotPreview({
     );
   })();
 
-  const ariaLabel = `${spec.width} by ${spec.length} inch robot, sweeper intake, ${BB_MODE_LABELS[
+  const ariaLabel = `${spec.width} by ${spec.length} inch robot, ${BB_INTAKE_LABELS[intakeKind].toLowerCase()}, ${BB_MODE_LABELS[
     launcher.kind
   ].toLowerCase()}${lift ? ', box tube with a placement point' : ''}`;
 

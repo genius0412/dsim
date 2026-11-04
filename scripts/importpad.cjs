@@ -12,7 +12,7 @@
  * fixture through its file input, then puts the mouse away for good.
  *
  * Then the ROBOT PAGE, by pad again: the import is saved (Y on Review), and the library row, the
- * Imported robot panel and its dialogs (Rename, Duplicate, Export, Delete, a copy's ✕) are walked
+ * Imported robot panel and its dialogs (Edit details, Duplicate, Export, Delete, a copy's ✕) are walked
  * and asserted, the export lands as a file (the download is caught, never a dialog), and the page's
  * OUT-OF-DATE state is staged (the synced spec moved under the record) and checked: the line, the
  * footprint in the hero, Import the file in Edit's place, and the lit card a no-op.
@@ -233,13 +233,13 @@ app.whenReady().then(async () => {
     reached = await js(`!!document.activeElement?.closest('.ds-panel') && document.activeElement.classList.contains('ds-btn') && [...document.querySelectorAll('.ds-panel-title')].some((h) => h.textContent.trim() === 'Imported robot' && h.closest('.ds-panel').contains(document.activeElement))`);
   }
   check('panel: the d-pad reaches the Imported robot panel’s actions from the library row', reached, await active());
-  // Rename: A opens it with focus inside, B closes it and hands focus back
-  await focus(panelBtn('Rename'));
+  // Edit details: A opens it with focus inside, B closes it and hands focus back
+  await focus(panelBtn('Edit details'));
   await js(`__press(${A})`);
-  check('panel: A on Rename opens the dialog with focus inside it', await until(`!!document.activeElement?.closest('.ds-modal') && !!document.querySelector('.ds-modal input')`, 4000));
+  check('panel: A on Edit details opens the dialog with focus inside it', await until(`!!document.activeElement?.closest('.ds-modal') && !!document.querySelector('.ds-modal input')`, 4000));
   await shot('dialog-rename');
   await js(`__press(${B})`);
-  check('panel: B closes Rename and hands focus back to it', await until(`!document.querySelector('.ds-modal') && document.activeElement?.textContent.trim() === 'Rename'`, 4000), await active());
+  check('panel: B closes Edit details and hands focus back to it', await until(`!document.querySelector('.ds-modal') && document.activeElement?.textContent.trim() === 'Edit details'`, 4000), await active());
   // Duplicate: a second card
   await focus(panelBtn('Duplicate'));
   await js(`__press(${A})`);

@@ -15,6 +15,10 @@ session and this is not needed by most of them. The `governs:` line above is rea
 
 # GAME: BIOBUZZ (`biobuzz`)
 
+⚠️ **The `sweeper` intake is called "Ground intake"** (owner, 2026-11-04: `BB_INTAKE_LABELS`, the builder's
+Intake choices, the spec sheet, the importer's "found" line, the preview's aria label). The id stays
+`sweeper`, because saved robots, the database and replays hold it; Chain Reaction keeps its own word.
+
 The FTC 2026–27 season. **Rules land at kickoff on 2026-09-12**, so what is in the repo
 today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robots,
 `scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
