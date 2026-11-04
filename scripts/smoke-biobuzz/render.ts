@@ -359,7 +359,7 @@ import { hFovFromV, vFovForScreen, vFovFromH, HUMAN_BINOCULAR_HFOV_DEG } from '.
 // wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
 import { GFX_PRESETS } from '../../src/games/biobuzz/graphics/settings';
 import { GFX_MOVED_DEFAULTS, GFX_STATE_REV, RETIRED_ENVIRONMENTS } from '../../src/games/biobuzz/graphics/settings';
-import { ACES_IN, ACES_OUT, acesFilmic, acesFilmicInverse, DECODE_FRAG, LATE_LAYER } from '../../src/games/biobuzz/scene/renderSplitPass';
+import { ACES_IN, ACES_OUT, acesFilmic, acesFilmicInverse, canSplit, createSplitPass, DECODE_FRAG, LATE_LAYER } from '../../src/games/biobuzz/scene/renderSplitPass';
 import { aaFingerprint } from '../aa-probe/fingerprint';
 import * as C from '../../src/config';
 import { bbRoleLabel } from '../../src/games/biobuzz/config';
@@ -7239,7 +7239,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       }
       check(
         'the bloom emissive raise and the panel cap are restored in a finally (shared materials must never stay raised)',
-        /try \{\s*if \(this\.target && this\.target\.samples > 0\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,400}?this\.setGlow\(1\);\s*setClearPanelCap\(null\);/.test(sceneSrc),
+        /try \{\s*if \(this\.target && canSplit\(this\.renderer, this\.target\)\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,400}?this\.setGlow\(1\);\s*setClearPanelCap\(null\);/.test(sceneSrc),
       );
       check(
         'a context loss asks contextLossTier (the settings), not the Extreme label',
@@ -14047,7 +14047,7 @@ function environmentAndReadoutChecks(check: Check): void {
 
       check(
         'surf?.lower() runs in the SAME scene-pass finally as the bloom/panel-cap restore',
-        /try \{\s*if \(this\.target && this\.target\.samples > 0\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,600}?surf\?\.lower\(\);/.test(sceneSrc5),
+        /try \{\s*if \(this\.target && canSplit\(this\.renderer, this\.target\)\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,600}?surf\?\.lower\(\);/.test(sceneSrc5),
       );
 
       const probeDirtySets = sceneSrc5.match(/this\.probeDirty = true;/g) ?? [];
@@ -15117,7 +15117,7 @@ function displayResolveChecks(check: Check): void {
   const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
   check(
     'display resolve: the scene pass draws a multisampled target through the split pass, and only a 0-sample one plainly',
-    /if \(this\.target && this\.target\.samples > 0\) \{\s*\(\{ calls, triangles: tris \} = this\.split\.render\(this\.renderer, this\.scene, camera, this\.target\)\);\s*\} else \{\s*this\.renderer\.render\(this\.scene, camera\);/.test(sceneSrc),
+    /if \(this\.target && canSplit\(this\.renderer, this\.target\)\) \{\s*\(\{ calls, triangles: tris \} = this\.split\.render\(this\.renderer, this\.scene, camera, this\.target\)\);\s*\} else \{\s*this\.renderer\.render\(this\.scene, camera\);/.test(sceneSrc),
   );
   check(
     'display resolve: the transparent set is re-collected wherever materials are tuned',
@@ -15128,6 +15128,48 @@ function displayResolveChecks(check: Check): void {
     /flag\.isXRRenderTarget = true;\s*const opaque = this\.renderer\.compileAsync\(this\.scene, camera\);/.test(sceneSrc) && /this\.split\.lateObjects\(\)/.test(sceneSrc),
   );
   check('display resolve: the late layer is one no camera enables', LATE_LAYER > 3 && LATE_LAYER < 32);
+
+  // ── not on a multisampled RENDER-TO-TEXTURE target (Android Chrome on Mali/Adreno, the Quest's 2D
+  // page): three attaches the texture itself, so the decode would read what it draws into ──
+  const stub = (ext: boolean, useRtt?: boolean) => ({
+    extensions: { has: (n: string) => ext && n === 'WEBGL_multisampled_render_to_texture' },
+    properties: { get: () => (useRtt === undefined ? {} : { __useRenderToTexture: useRtt }) },
+  });
+  check('display resolve: a multisampled target splits where three keeps its own samples', canSplit(stub(false), { samples: 4 }) && canSplit(stub(false), { samples: 2 }));
+  check(
+    'display resolve: a device with WEBGL_multisampled_render_to_texture takes the single pass (no feedback loop)',
+    !canSplit(stub(true), { samples: 4 }) && !canSplit(stub(true), { samples: 2 }),
+  );
+  check('display resolve: ...unless three was told not to render to the texture for that target', canSplit(stub(true, false), { samples: 4 }));
+  check('display resolve: a 0-sample target or none never splits', !canSplit(stub(false), { samples: 0 }) && !canSplit(stub(false), null));
+  check(
+    "display resolve: three's own render-to-texture test is still the one canSplit inverts",
+    /return renderTarget\.samples > 0 && extensions\.has\( 'WEBGL_multisampled_render_to_texture' \) === true && renderTargetProperties\.__useRenderToTexture !== false;/.test(threeModule),
+  );
+  check(
+    'display resolve: the warm-up asks canSplit too, so a render-to-texture device compiles the single pass',
+    /if \(!target \|\| !canSplit\(this\.renderer, target\)\) \{/.test(sceneSrc),
+  );
+
+  // ── every transparent DRAWABLE goes late, not meshes alone: the shot path is a THREE.Line ordered
+  // above the reach collar (10 over 9), and left in the opaque half it drew under it ──
+  {
+    const sc = new THREE.Scene();
+    const sun = new THREE.DirectionalLight();
+    const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ transparent: true }));
+    const collar = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ transparent: true }));
+    const solid = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+    sc.add(sun, line, collar, solid);
+    const sp = createSplitPass();
+    sp.collect(sc, [sun]);
+    check(
+      'display resolve: a transparent Line and Mesh both go to the late call, an opaque mesh does not',
+      line.layers.isEnabled(LATE_LAYER) && collar.layers.isEnabled(LATE_LAYER) && !solid.layers.isEnabled(LATE_LAYER) && sun.layers.isEnabled(LATE_LAYER),
+    );
+    check('display resolve: the warm-up is handed the late Line too', sp.lateObjects().includes(line) && sp.lateObjects().includes(collar));
+    sp.dispose();
+    check('display resolve: dispose takes the late layer back off', !line.layers.isEnabled(LATE_LAYER) && !collar.layers.isEnabled(LATE_LAYER));
+  }
   const previewSrc = readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8');
   check(
     "display resolve: a robot card draws at no fewer pixels than its own (Low's 75 % render scale drew 192 px at 144 and stretched it)",

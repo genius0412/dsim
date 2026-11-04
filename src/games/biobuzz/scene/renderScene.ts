@@ -50,7 +50,7 @@ import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuz
 import { loadElementGeometries } from './renderElementsGlb';
 import { bbWantsBay, bbLoadBay, bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { importedMeshesSettled } from './renderImported';
-import { createSplitPass, type BbSplitPass } from './renderSplitPass';
+import { canSplit, createSplitPass, type BbSplitPass } from './renderSplitPass';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, venueCameraRoom } from './renderVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
@@ -665,7 +665,7 @@ class BiobuzzScene implements GameScene {
     // never draws with and compiled its real ones on the first frame anyway. So: the opaque half
     // as the split draws it (tone-mapped into the target), then its late half (the clear panels in
     // linear HDR, and the decode).
-    if (!target || target.samples === 0) {
+    if (!target || !canSplit(this.renderer, target)) {
       this.renderer.setRenderTarget(target);
       return this.renderer.compileAsync(this.scene, camera).catch(() => undefined);
     }
@@ -1351,7 +1351,8 @@ class BiobuzzScene implements GameScene {
     // when it is off (which costs no blit at all — that is the whole reason `off` is a real
     // setting here rather than a 1-sample target). With AO or bloom on there is always a target.
     // A MULTISAMPLED target is drawn in two halves (`renderSplitPass.ts`): its resolve must
-    // average tone-mapped samples, or every dark-on-bright edge keeps a hard step.
+    // average tone-mapped samples, or every dark-on-bright edge keeps a hard step. Not where three
+    // renders it to the texture directly (`canSplit`: mobile GPUs), which keeps nothing to decode.
     this.renderer.setRenderTarget(this.target);
     // the sun's map, once for this frame (see `shadowMap.autoUpdate` in the constructor)
     this.renderer.shadowMap.needsUpdate = true;
@@ -1370,7 +1371,7 @@ class BiobuzzScene implements GameScene {
     let calls = 0;
     let tris = 0;
     try {
-      if (this.target && this.target.samples > 0) {
+      if (this.target && canSplit(this.renderer, this.target)) {
         ({ calls, triangles: tris } = this.split.render(this.renderer, this.scene, camera, this.target));
       } else {
         this.renderer.render(this.scene, camera);

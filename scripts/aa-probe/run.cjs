@@ -4,6 +4,7 @@
 // scores the difference. `npm run aaprobe` (record.mjs) is the usual way in; this is the worker.
 //
 //   electron scripts/aa-probe/run.cjs --port=5203 --tiers=low,medium,high,ultra --dprs=2 //     [--views=driver,tape | none] [--S=6] [--motion=4] [--shadow=1] [--set=aa:off] [--out=dir] [--save=1] [--gpu=1]
+//     [--card=1: a robot card and its 4× capture into --out] [--hdr=1: bloom's share and the decode's clip share]
 //
 // Scores, all in 8-bit sRGB luma levels against the reference:
 //   E      mean |test − ref| over EDGE pixels (reference contrast ≥ 32 levels in the 3×3 around)
@@ -241,6 +242,7 @@ async function probe(dpr, tier) {
         for (let i = 0; i < n0; i++) d += Math.abs(capY[i] - T0[i]);
         compositorDiff.push(+(d / n0).toFixed(3));
       }
+      if (arg('hdr', '0') === '1') console.log(`[aa] hdr ${tier} ${v.id}`, JSON.stringify(await js('window.__aa.hdrStats()')));
       const ref = bitmapOf(await js(`window.__aa.reference(${S})`));
       const cls = bitmapOf(await js('window.__aa.classes()'));
       const refSh = SHADOW ? bitmapOf(await js(`window.__aa.refShadow(${S})`)) : null;

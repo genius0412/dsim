@@ -27,9 +27,18 @@ import * as THREE from 'three';
  *      and their own outlines keep MSAA. That is the difference from `gfx/edge-aa` (2026-10-11,
  *      never merged), which solved each clear layer against the opaque value in a compressed space
  *      and left white dots where one clear layer crossed another.
- * What reaches post and the output is the same linear HDR image as before, in the same target. The
- * cost is one full-screen pass over every sample, one more resolve and the muted draws; no memory
- * (`docs/area/biobuzz.md`, EDGES RESOLVE IN DISPLAY LIGHT, has the numbers).
+ * What reaches post and the output is a linear HDR image in the same target, the old one wherever
+ * the tone curve had not clipped. A pixel ACES clips on every channel decodes to the curve's 1.0
+ * point, about 15.4 / exposure raw (25.7 × 0.6), so post sees anything brighter capped there. Bloom's
+ * threshold is 3.0 after exposure and its boosted lamps reach about 4–8, so the cap binds only on
+ * sun glints past 12.8 raw; with bloom on, no pixel reached it (`docs/area/biobuzz.md`). The cost
+ * is one full-screen pass over every sample, one more resolve and the muted draws; no memory.
+ *
+ * ⚠️ NOT ON A MULTISAMPLED RENDER-TO-TEXTURE TARGET (`canSplit`). Where the browser offers
+ * `WEBGL_multisampled_render_to_texture` (Android Chrome on Mali and Adreno, the Quest browser's 2D
+ * page), three attaches the target's TEXTURE to the framebuffer and lets the driver resolve on tile:
+ * there are no samples kept after the pass and no separate texture to read, so step 2 would read the
+ * texture it is drawing into (a feedback loop). Those devices draw the old single pass.
  */
 
 /** the layer the late call draws: the decode quad, the transparent meshes and the lights. No camera
@@ -99,12 +108,27 @@ void main() {
   gl_FragColor = vec4(invIn * invRRT(r) * invExposure, 1.0);
 }`;
 
+/**
+ * Can `target` take the split pass on this renderer? Only a multisampled target three backs with its
+ * own sample buffers and resolves into the texture: three's own `useMultisampledRTT` test, inverted
+ * (`WebGLTextures`), because on render-to-texture there is nothing to decode from.
+ */
+export function canSplit(
+  renderer: { extensions: { has(name: string): boolean }; properties: { get(o: object): unknown } },
+  target: { samples: number } | null,
+): boolean {
+  if (!target || target.samples <= 0) return false;
+  const props = renderer.properties.get(target) as { __useRenderToTexture?: boolean } | undefined;
+  const rtt = renderer.extensions.has('WEBGL_multisampled_render_to_texture') && props?.__useRenderToTexture !== false;
+  return !rtt;
+}
+
 export interface BbSplitPass {
   /** draw the scene through `camera` into `target` (multisampled, half-float); returns the counts */
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, target: THREE.WebGLRenderTarget): { calls: number; triangles: number };
   /** re-collect the transparent meshes (after anything that adds, swaps or rebuilds materials) */
   collect(scene: THREE.Scene, lights: readonly THREE.Light[]): void;
-  /** what the late call draws (the decode quad and the transparent meshes), for a shader warm-up */
+  /** what the late call draws (the decode quad and the transparent drawables), for a shader warm-up */
   lateObjects(): readonly THREE.Object3D[];
   dispose(): void;
 }
@@ -130,9 +154,9 @@ export function createSplitPass(): BbSplitPass {
   /** the transparent materials and what their two switches were */
   let muted: { m: THREE.Material; color: boolean; depth: boolean }[] = [];
   let tagged: THREE.Object3D[] = [];
-  /** the transparent meshes, for step 1: hidden when they neither cast nor receive */
-  let lateMeshes: THREE.Mesh[] = [];
-  const hidden: THREE.Mesh[] = [];
+  /** the transparent drawables, for step 1: hidden when they neither cast nor receive */
+  let lateMeshes: THREE.Object3D[] = [];
+  const hidden: THREE.Object3D[] = [];
   let home: THREE.Scene | null = null;
   const clear = new THREE.Color();
 
@@ -148,9 +172,11 @@ export function createSplitPass(): BbSplitPass {
         scene.add(quad);
         home = scene;
       }
+      // EVERY DRAWABLE, not meshes alone: the shot path is a `THREE.Line`, and left in step 1 it drew
+      // under the reach collar it is ordered above (renderOrder 10 over 9)
       scene.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh || mesh === quad) return;
+        const mesh = o as THREE.Mesh & { isLine?: boolean; isPoints?: boolean; isSprite?: boolean };
+        if (!(mesh.isMesh || mesh.isLine || mesh.isPoints || mesh.isSprite) || mesh === quad || !mesh.material) return;
         const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         if (!list.some((m) => m.transparent)) return;
         mesh.layers.enable(LATE_LAYER);
@@ -168,7 +194,7 @@ export function createSplitPass(): BbSplitPass {
       }
     },
     lateObjects() {
-      return [quad, ...tagged.filter((o) => (o as THREE.Mesh).isMesh)];
+      return [quad, ...lateMeshes];
     },
     render(renderer, scene, camera, target) {
       const xr = target as unknown as { isXRRenderTarget: boolean };

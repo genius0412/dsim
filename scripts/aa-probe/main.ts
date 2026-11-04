@@ -509,6 +509,33 @@ async function main(): Promise<void> {
       return toPng(c.W, c.H, rgba);
     },
     gpuTime,
+    /** the scene target's HDR after a frame: the share of pixels bloom draws from (luminance ×
+     * exposure past its 3.0 threshold) and the share at the decode's clip (any channel within 2 % of
+     * 25.7 × 0.6 / exposure, where ACES clipped and the split capped it) */
+    hdrStats(): { bloomShare: number; clipShare: number; clipOfBloom: number } | null {
+      const t = gs.target;
+      if (!t) return null;
+      const n = t.width * t.height;
+      const buf = new Uint16Array(n * 4);
+      renderer.readRenderTargetPixels(t, 0, 0, t.width, t.height, buf);
+      const ex = renderer.toneMappingExposure;
+      const cap = (25.7 * 0.6) / ex;
+      let bloom = 0;
+      let clip = 0;
+      let both = 0;
+      for (let i = 0; i < n; i++) {
+        const r = THREE.DataUtils.fromHalfFloat(buf[i * 4]);
+        const g = THREE.DataUtils.fromHalfFloat(buf[i * 4 + 1]);
+        const b = THREE.DataUtils.fromHalfFloat(buf[i * 4 + 2]);
+        const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) * ex;
+        const hot = lum > 3.0;
+        const atCap = Math.max(r, g, b) > cap * 0.98;
+        if (hot) bloom++;
+        if (atCap) clip++;
+        if (hot && atCap) both++;
+      }
+      return { bloomShare: bloom / n, clipShare: clip / n, clipOfBloom: bloom ? both / bloom : 0 };
+    },
     /** a robot CARD as Play draws it (the preview scene at `tier`, `capture(192)`), and the same
      * card at 4× the size for a box-filtered reference: two PNG data URLs */
     async card(cardTier: GraphicsTier): Promise<[string, string]> {

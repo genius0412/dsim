@@ -988,6 +988,21 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       white dots on hive rims or skins (checked in crops). It relies on three keeping a
       multisampled target's samples and depth after a resolve (it invalidates only on Oculus
       Browser, where step 2 rewrites every sample anyway); the lane pins both behaviours.
+      - ⚠️ **NOT ON A MULTISAMPLED RENDER-TO-TEXTURE TARGET (`canSplit`).** Where the browser offers
+        `WEBGL_multisampled_render_to_texture` (Android Chrome on Mali and Adreno, the Quest
+        browser's 2D page), three attaches the target's texture straight to the framebuffer and the
+        driver resolves on tile: no samples survive the pass and step 2 would read the texture it
+        draws into, a feedback loop every frame. Those devices draw the old single pass (their MSAA
+        still resolves in HDR). `canSplit` is three's own `useMultisampledRTT` test, inverted, and
+        the warm-up asks it too; the lane checks it against a stubbed extension, because desktop
+        browsers never offer the extension and the probe cannot see this path.
+      - **Every transparent DRAWABLE goes late, not meshes alone.** The shot path is a `THREE.Line`
+        ordered above the reach collar (10 over 9); left in step 1 it drew under it.
+      - **Post sees HDR capped at the curve's clip.** A pixel ACES clips on every channel decodes to
+        about 15.4 / exposure raw (the curve's 1.0 point, 25.7 × 0.6), so anything brighter reaches
+        bloom capped there. Measured with bloom on (Ultra and Extreme; gym, arena, night; driver,
+        hive, Home, dolly): no pixel reached it, and bloom drew from at most 0.007 % of pixels. Its
+        threshold is 3.0 after exposure and the boosted lamps reach about 4–8.
     - **REAL — LOW HAD NO ANTIALIASING AT ALL**, on the column that draws about half the panel's
       pixels per axis, which the browser then stretches 1.9× (DPR 1) or 3.7× (DPR 2): every
       unsmoothed step became a 2–4 pixel stair. Low is MSAA 2x now (`GFX_MOVED_DEFAULTS` moves a
